@@ -14,6 +14,7 @@ add_library(larecomp_gpu OBJECT
     backend.cpp
     buffer_heap.cpp
     capture.cpp
+    capture_readback.cpp
     constants.cpp
     cut_request.cpp
     cycles.cpp

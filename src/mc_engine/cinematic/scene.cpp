@@ -180,7 +180,11 @@ bool IsWorldTrack(Track t) {
 }
 
 constexpr const char* kVerbList =
-    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, cam, cut, hud, car, start, world, end";
+    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, capture, cam, cut, hud, car, start, world, end";
+
+// The slowest and fastest step a capture can take: the engine timer clamps the scaled step to 0.0001 .. 0.1 s.
+constexpr double kMinCaptureFps = 10.0;
+constexpr double kMaxCaptureFps = 1000.0;
 
 using Args = std::vector<std::string>;
 
@@ -327,6 +331,7 @@ class Parser {
         if (verb == "set") return SetCvar(line, t, a);
         if (verb == "label") return Label(line, t, a);
         if (verb == "mark") return Mark(line, t, a);
+        if (verb == "capture") return Capture(line, t, a);
         if (verb == "end") return End(line, t, a);
         if (verb == "cam" || verb == "cut" || verb == "hud" || verb == "car" || verb == "start") return Opaque(line, t, verb, a);
         Error(line, "unknown statement '" + verb + "' (" + kVerbList + ")");
@@ -598,6 +603,64 @@ class Parser {
         result_.scene.end = t;
     }
 
+    // `capture fps <n> [step 1/<n>]` starts a take, `capture off` ends it. The step of a take is 1/fps (the capture rate and the
+    // simulation step are one; slow motion is a timescale track and a higher fps), so a step that says otherwise is an error.
+    void Capture(int line, double t, const Args& a) {
+        if (a.empty()) {
+            Error(line, "capture fps <n> [step 1/<n>], or capture off: nothing after 'capture'");
+            return;
+        }
+        Event e;
+        e.t = t;
+        e.line = line;
+        e.track = Track::kCapture;
+        if (Lower(a[0]) == "off") {
+            if (a.size() != 1) {
+                Error(line, "capture off takes nothing after it");
+                return;
+            }
+            e.state = 0;
+            Add(std::move(e));
+            return;
+        }
+        if (Lower(a[0]) != "fps") {
+            Error(line, "capture fps <n> [step 1/<n>], or capture off: '" + a[0] + "' is neither");
+            return;
+        }
+        double fps = 0.0;
+        double step = 0.0;
+        bool have_step = false;
+        const bool ok = ForPairs(line, "capture", a, 0, [&](const std::string& key, const std::string& value) {
+            if (key == "fps") {
+                if (!ParseNumber(value, &fps) || fps < kMinCaptureFps || fps > kMaxCaptureFps) {
+                    Error(line, "bad fps '" + value + "' (" + Num(kMinCaptureFps) + " to " + Num(kMaxCaptureFps) +
+                                    ": the engine timer cannot step slower than 10 a second)");
+                    return false;
+                }
+                return true;
+            }
+            if (key == "step") {
+                if (!ParseStep(value, &step)) {
+                    Error(line, "bad step '" + value + "' (seconds, or 1/n)");
+                    return false;
+                }
+                have_step = true;
+                return true;
+            }
+            Error(line, "capture: unknown option '" + key + "' (fps, step)");
+            return false;
+        });
+        if (!ok) return;
+        if (have_step && std::fabs(step * fps - 1.0) > 1e-4) {
+            Error(line, "the step of a capture is 1/fps (here 1/" + Num(fps) + "): one step a scene, and slow motion is a timescale key "
+                        "with a higher capture fps");
+            return;
+        }
+        e.state = 1;
+        e.to = fps;
+        Add(std::move(e));
+    }
+
     // camera, cut, hud, car and start: only their shape is checked here; the packages that apply them read the words.
     void Opaque(int line, double t, const std::string& verb, const Args& a) {
         Event e;
@@ -660,6 +723,41 @@ class Parser {
                                  std::to_string(last[k]->line) + " and this one): the later wins");
             }
             last[k] = &e;
+        }
+
+        // The take: one `capture fps`, an optional `capture off` after it.
+        const Event* cap_start = nullptr;
+        const Event* cap_stop = nullptr;
+        for (const Event& e : events_) {
+            if (e.track != Track::kCapture) continue;
+            if (e.state == 1) {
+                if (cap_start) {
+                    Error(e.line, "a second 'capture fps' (the first is on line " + std::to_string(cap_start->line) +
+                                      "): a scene has one capture rate, and slow motion is a timescale key with a higher fps");
+                } else {
+                    cap_start = &e;
+                }
+            } else if (!cap_start) {
+                Error(e.line, "'capture off' with no 'capture fps' before it");
+            } else if (cap_stop) {
+                Warn(e.line, "a second 'capture off' (the first is on line " + std::to_string(cap_stop->line) + "): the first ends the take");
+            } else if (e.t <= cap_start->t + kEpsilon) {
+                Error(e.line, "'capture off' at t=" + Num(e.t) + " ends a take that starts at t=" + Num(cap_start->t) + " (line " +
+                                  std::to_string(cap_start->line) + "): nothing would be captured");
+            } else {
+                cap_stop = &e;
+            }
+        }
+        if (cap_start) {
+            scene.capture_fps = cap_start->to;
+            scene.capture_from = cap_start->t;
+            scene.capture_to = cap_stop ? cap_stop->t : scene.end;
+            if (scene.fps > 0.0 && std::fabs(scene.fps - scene.capture_fps) > 1e-6) {
+                Warn(cap_start->line, "the header says fps " + Num(scene.fps) + " and the capture says " + Num(scene.capture_fps) + ": the capture's is used");
+            }
+            if (!cap_stop && scene.end < 0.0) {
+                Warn(cap_start->line, "no 'end' and no 'capture off': the take runs until the scene is turned off");
+            }
         }
 
         if (scene.end < 0.0) {
@@ -749,6 +847,7 @@ const char* TrackName(Track track) {
         case Track::kHud: return "hud";
         case Track::kCar: return "car";
         case Track::kStart: return "start";
+        case Track::kCapture: return "capture";
     }
     return "?";
 }
@@ -786,7 +885,7 @@ ParseResult ParseScene(std::string_view text) {
 std::string Summarize(const Scene& scene) {
     constexpr Track kOrder[] = {Track::kHour,   Track::kWeather, Track::kTraffic, Track::kPeds,   Track::kParked,
                                 Track::kPolice, Track::kTimeScale, Track::kCvar,  Track::kLabel,  Track::kMark,
-                                Track::kCamera, Track::kCut,     Track::kHud,     Track::kCar,    Track::kStart};
+                                Track::kCapture, Track::kCamera, Track::kCut,     Track::kHud,     Track::kCar,    Track::kStart};
     std::string out = std::to_string(scene.events.size()) + (scene.events.size() == 1 ? " event" : " events");
     std::string parts;
     for (const Track track : kOrder) {
@@ -851,6 +950,16 @@ WorldState EvaluateWorld(const Scene& scene, double t) {
         w.timescale_set = true;
         w.timescale = RampValue(ts_a, ts_b, ts_t0, ts_over, ts_ease, t);
     }
+    return w;
+}
+
+CaptureWindow EvaluateCapture(const Scene& scene, double t) {
+    CaptureWindow w;
+    if (scene.capture_fps <= 0.0) return w;
+    if (t + kEpsilon < scene.capture_from) return w;
+    if (scene.capture_to >= 0.0 && t + kEpsilon >= scene.capture_to) return w;
+    w.on = true;
+    w.fps = scene.capture_fps;
     return w;
 }
 

@@ -60,7 +60,7 @@ Every row is live: it takes effect at once and is never saved. A page has at mos
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, foliage, break FPS floor. |
 | RENDERING | The Plume renderer's debug views (AO, HDR layers), performance markers, the ghost and memory logs, the aspect ratio override, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
-| TOOLS | Texture dump and reload for texture mods, buttons for F4 and the telemetry card, the leftover TestMovie button, squash and stretch, HUD ALPHA (the game's own UI faded, see below). |
+| TOOLS | Texture dump and reload for texture mods, buttons for F4 and the telemetry card, the leftover TestMovie button, squash and stretch, HUD ALPHA (the game's own UI faded, see below), FIXED STEP and CAPTURE FPS (capture mode, see below). |
 | LOGGING | One switch per diagnostic that adds lines to the log and can be flipped while the game runs (UI colour, map mouse, wheel, music bank, warp, online and others). |
 | INFO | SHOW CHANGED SETTINGS, COPY LAUNCH ARGUMENTS, RESET DEBUG SETTINGS. |
 
@@ -170,6 +170,7 @@ One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases a
 | `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
 | `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
 | `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
+| `capture fps <n> [step 1/<n>]`, `capture off` | a take (capture mode, below): the game steps by exactly 1/n a second and every frame is read back; the take ends at `capture off` or the scene's `end` |
 | `cam`, `cut` | the camera (below) |
 | `hud`, `car`, `start` | kept for the HUD and car packages of the toolkit; read and linted, not applied yet |
 
@@ -216,6 +217,39 @@ Each channel (position, aim, roll, fov, near, far) has its own keys and runs fro
 `cmake --build <dir> --target larecomp_camera_test` builds the checks of the maths, the parser and the camera rig, and `larecomp_cut_request_test` those of the cut requests and the blur constants; neither needs the game. `larecomp_camera_test a.scene` reads the camera keys of scene files and says what the game would say (`camera: 9 position keys (5 attach, 2 orbit), 6 aim keys ...`). The test harness's `cut_frames.py` finds the cuts in a lossless burst clip of a run and says whether the frames round each one are smeared.
 
 CHECK (nothing here has run in the game yet): that the racer matrix rows are the car's right, up and BACK (the camera's attach and look would be mirrored if not); that the camera object's c12 to c15 are the rows the hook wrote, with the field of view left out (the match of a cut to its frame); that c69 to c164 are the motion blur's only previous-frame constants; and that the hook runs once an update (a second run in one update gets the same camera and no second cut).
+
+## Capture mode (a take)
+
+For a recording the game has to advance by exactly one frame's time per picture, whatever the picture costs to make, and no picture may be missed. Capture mode does that, and nothing else changes while it is off.
+
+```
+scene take fps 60
+at 0 capture fps 60          # from here: a take at 60 frames a second
+at 0 hour 17.5 hold
+end 10                       # the take ends with the scene (or at `capture off`)
+```
+
+- **Fixed step.** Every update gives the engine timer exactly `1/n` s in the game's own ticks (60 fps is 831250 ticks), whatever the frame took. The FPS limit, the step cap and frame pacing stand aside. The step is the capture rate (`step 1/<n>` may be written, and must say the same); slow motion is a `timescale` key with a higher capture rate, not another step. The path of a car depends on the step, so a take is tied to its rate.
+- **Frame gate.** The game does not start update `k + 1` until frame `k` has been read back (the 1:1 present output, before the overlays, 8-bit SDR, so the F3 card and menus are not in it; the output must not be HDR and frame generation must be off). The frame of an update is told at the hand-over of the frame to the render thread, where that thread is idle, so a take always holds exactly the pictures of its updates: the first is the take's first update and the last is the update before the take's end gate. The log says `[cap] frame count: N frames for N updates (a..b): exact`, or `[cap] FRAME COUNT: ...` with what is off (and `[cap] TAG:` / `frame of update N lost:` for the cause). A wait that runs out is a `[cap] gate timeout`; three in a row switch the waiting off for the take.
+- **Scene clock.** During a take the upscaler's history rule and the UI movies' pacing read frames times the step instead of the wall clock, so a slow capture is not a stall to them (`[cap] summary` shows `upscaler: ... history_restarts=N (gap_over_100ms=K)`: K is every frame without the clock). `mcla_capture_virtual_clock` turns it off.
+- **The first frame.** The take starts at the first update after the `capture` key; the scene time of its first frame (the key's update plus one step) is in the `[cap] take starts` line and `<prefix>.info.txt` (`first_scene_t`).
+
+Settings (all debug-only and live; the sink and the files are read when a take starts):
+
+| Setting | Does |
+|---|---|
+| `mcla_capture_fps` (row CAPTURE FPS, Plume only), `mcla_fixed_step_fps` (row FIXED STEP) | a take, or the fixed step alone with no gate (for repeatability tests), at this rate; 0 is off. A scene's key wins over the take setting. |
+| `mcla_capture_sink` | `none` (default: the readback and its copies are measured and dropped), `ffmpeg` (a pipe, FFV1 in mkv) or `raw` (B8G8R8A8 frames) |
+| `mcla_capture_out` | the file prefix: `<prefix>.mkv` / `.bgra`, `.cap.csv` (one row of costs per frame), `.info.txt`, `.ffmpeg.log`. A relative prefix is relative to the game folder; a take with the same prefix overwrites the files. |
+| `mcla_capture_ffmpeg`, `mcla_capture_ffmpeg_args` | the program and its output options (default `-c:v ffv1 -level 3 -g 1 -slices 24 -pix_fmt bgr0`) |
+| `mcla_capture_ring`, `mcla_capture_lag` | host buffers between the readback and the writer (2 to 8); how many frames the game may run ahead of the readback (0: lock-step) |
+| `mcla_capture_gate_timeout_ms`, `mcla_capture_delay_ms`, `mcla_capture_log_every` | the gate's wait limit; an artificial wait per frame to try a slow capture; a `[cap] f=` line every n frames |
+
+```powershell
+larecomp.exe --debug_menu --mcla_scene=take --mcla_capture_sink=ffmpeg --mcla_capture_out=C:\takes\a --mcla_gpu_hdr=off
+```
+
+Memory: a take holds the ring (4 host buffers) and six GPU readback buffers of one frame each, 31.6 MiB a frame at 4K; an 8K take is eight times that per buffer, and ffmpeg's FFV1 encoder runs next to the game. Not tried at 8K. `cmake --build <dir> --target larecomp_capture_test` builds the checks of the step maths, the frame books and the clock (they need no game); `larecomp_scene_test` covers the `capture` statement.
 
 ## Adding a debug setting
 

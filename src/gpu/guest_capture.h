@@ -113,7 +113,9 @@ class GuestCapture {
 
   // Writes the present and waits for the render thread to run it. `target_qpc`:
   // when the frame is due on screen (gpu.h SetNextPresentTarget), 0 = when ready.
-  void Present(const uint8_t* base, uint32_t device, uint32_t front_buffer, int64_t target_qpc);
+  // `tag` (capture mode): gpu.h SetNextPresentTag's, carried in the record.
+  void Present(const uint8_t* base, uint32_t device, uint32_t front_buffer, int64_t target_qpc,
+               uint64_t tag = 0);
 
   // A fence the guest inserted (sub_82411CD0), called AFTER the original:
   // whether the capture is on is decided here, after the insertion, which is

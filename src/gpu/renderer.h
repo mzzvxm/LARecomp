@@ -53,6 +53,7 @@
 
 #include "ao.h"
 #include "capture.h"
+#include "capture_readback.h"
 #include "descriptors.h"
 #include "device.h"
 #include "dlss_frame_generation.h"
@@ -346,6 +347,10 @@ class Renderer final : public RenderThread::Executor {
   // executing the next frame's records meanwhile; the next present, a rebuild or
   // the shutdown present it first.
   int64_t present_target_ = 0;
+  // Capture mode: the tag of the guest present being executed (gpu.h SetNextPresentTag), 0 = none, and the take's readback
+  // (capture_readback.h).
+  uint64_t present_tag_ = 0;
+  CaptureReadback capture_readback_;
   struct DeferredPresent {
     bool pending = false;
     uint32_t image = 0;

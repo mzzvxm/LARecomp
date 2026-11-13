@@ -77,6 +77,9 @@ constexpr SlotTable kMenuCamSlots = MakeSlotTable();
 constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
 constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
+// Capture mode (the trailer toolkit): frames a second of the fixed step and of a take; 0 is off.
+constexpr double kFixedStepVals[]       = {0.0, 24.0, 30.0, 60.0, 120.0, 240.0};
+constexpr double kCaptureFpsVals[]      = {0.0, 24.0, 30.0, 60.0, 120.0};
 
 #if defined(LARECOMP_HAS_GPU)
 constexpr const char* kAoViewVals[]  = {"0", "1", "2", "3", "4", "5", "6"};
@@ -227,6 +230,14 @@ const ItemDef kDebugToolsItems[] = {
 #endif
     // The game's own TestMovie button on the pause screen (pause_menu.cpp Hook_EnablePMTeste).
     Bool("PM_RxDbgTestMovie", "show_test_movie", "TEST MOVIE BUTTON: "),
+    // Capture mode (src/mc_engine/cinematic/capture_mode.h): the game steps by exactly 1 / this many frames a second whatever a frame takes
+    // to render (the FPS limit, the step cap and frame pacing stand aside). No take and no frame gate: the world runs fast or slow.
+    Dbl("PM_RxDbgFixedStep", "mcla_fixed_step_fps", "FIXED STEP: ", kFixedStepVals, Len(kFixedStepVals), "%g", "", "OFF"),
+#if defined(LARECOMP_HAS_GPU)
+    // A take: the fixed step at this rate, every frame read back and the game held at the frame gate until it is. Writes to
+    // mcla_capture_out (a launch argument or F4); the sink is mcla_capture_sink (none until set). A scene's capture key does the same.
+    NativeOnly(Dbl("PM_RxDbgCapture", "mcla_capture_fps", "CAPTURE FPS: ", kCaptureFpsVals, Len(kCaptureFpsVals), "%g", "", "OFF")),
+#endif
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),

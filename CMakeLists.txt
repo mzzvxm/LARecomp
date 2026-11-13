@@ -146,6 +146,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
 
+    # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core). Inert unless a scene's
+    # capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
+    src/mc_engine/cinematic/capture_core.cpp
+    src/mc_engine/cinematic/capture_mode.cpp
+
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
@@ -349,6 +354,13 @@ if(NOT WIN32)
     string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
 endif()
+# Capture mode's fixed step, tags, frame gate books, take books and scene clock (src/mc_engine/cinematic/capture_core.h) have a check that
+# needs no game:
+#   cmake --build <build dir> --target larecomp_capture_test, then run <build dir>/larecomp_capture_test (exit 0 = passed).
+add_executable(larecomp_capture_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_core_test.cpp
+    src/mc_engine/cinematic/capture_core.cpp)
+target_include_directories(larecomp_capture_test PRIVATE src/mc_engine/cinematic)
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL

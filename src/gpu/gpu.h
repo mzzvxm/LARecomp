@@ -201,6 +201,10 @@ void SetPresentObserver(PresentObserver observer);
 // `qpc`, and the render thread holds the swap chain's present until then (after
 // the frame's GPU work is submitted and the guest released). 0 = when ready.
 void SetNextPresentTarget(int64_t qpc);
+// Capture mode (trailer toolkit M2a): the same mailbox for a tag the present record carries to the render thread
+// (mc_engine/cinematic/capture_mode.h: the update the frame shows, and whether it is a frame of the capture take; the hand-over of the
+// frame stamped it). Guest render thread, inside D3DDevice_Swap before OnGuestSwap. 0 = none.
+void SetNextPresentTag(uint64_t tag);
 // Whether presents are held to their targets: the renderer runs (Startup
 // succeeded) without mcla_gpu_vsync and without frame generation, on Windows.
 // Any thread.

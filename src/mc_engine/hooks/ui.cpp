@@ -20,6 +20,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "../cinematic/capture_mode.h"
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
 #include "../ui/pad_vendor.h"
@@ -501,10 +502,10 @@ constexpr uint32_t kScriptSetMovieFloatReturn = 0x82209830;
 std::atomic<uint32_t> g_map_movie_context{0};
 std::atomic<bool> g_map_movie_script_set{false};
 
+// The scene clock (cinematic/capture_mode.h): the steady clock, or during a capture take the update count times the step, so that a
+// slow capture does not make the movies step at the wrong rate.
 int64_t SteadyNowNs() {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
+    return mc::cinematic::SceneClockNowNs();
 }
 
 uint32_t R32(const uint8_t* base, uint32_t ea) { return ea ? ReadGuestU32(base, ea) : 0; }
@@ -556,6 +557,7 @@ struct Movie {
     std::string name;
     bool hud = false;
     int64_t next_due_ns = 0;
+    uint32_t clock_epoch = 0;  // the scene clock's domain next_due_ns was set in
     int64_t input_ns = 0;     // the last extra step because of a key event
     uint32_t input_seq = 0;   // the last key event this movie has looked at
     uint32_t advanced = 0;
@@ -666,6 +668,12 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
 // else now.
 bool StepDue(Movie& m, int64_t now, int64_t& step_ns) {
     step_ns = now;
+    if (const uint32_t epoch = mc::cinematic::SceneClockEpoch(); m.clock_epoch != epoch) {
+        // The clock switched between the steady and the take's virtual one: the schedule is in the other one's time.
+        m.clock_epoch = epoch;
+        m.next_due_ns = 0;
+        m.input_ns = 0;
+    }
     bool by_input = false;
     if (!m.hud) {
         const uint32_t seq = g_ui_input_seq.load(std::memory_order_acquire);
@@ -877,7 +885,12 @@ extern "C" REX_FUNC(rex_sub_82223CD8) {
 
     // Only the UI update runs this, one thread.
     static int64_t next_tick[kUiButtons] = {};
+    static uint32_t tick_epoch = 0;
     const int64_t now = SteadyNowNs();
+    if (const uint32_t epoch = mc::cinematic::SceneClockEpoch(); tick_epoch != epoch) {
+        tick_epoch = epoch;  // the scene clock switched: the schedule is in the other clock's time
+        for (int64_t& t : next_tick) t = 0;
+    }
     uint8_t* const count = base + kUiRepeatCount;
     const uint8_t* const target = base + kUiRepeatTarget;
     uint8_t before[kUiButtons] = {};
