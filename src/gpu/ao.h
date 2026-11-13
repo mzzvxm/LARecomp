@@ -178,6 +178,31 @@
 // plain occlusion's to within the bitmask (the history's x channel against mcla_gpu_ao_view 2 with the
 // test off).
 //
+// THIRD STEP: THE BOUNCE LIGHT IN THE PICTURE (hlsl/ao_apply_ps.hlsl compiled with AO_GI; the player's setting
+// mcla_gpu_ssgi, and still the debug override mcla_gpu_ssgi_test): the apply pass reads the filtered bounce
+// (the a-trous output: x the visibility the history kept, yzw the bounce) and the colour chain's level 0
+// and makes the factor one a colour channel,
+//   factor.rgb = ao_factor * contact_factor + strength * B.rgb / max(T, luma(colour)) * (1 - capped) * fade
+// kept under a limit (a share of the pixel's own colour). T is the light the game's constants say fell on the
+// pixel (La + Ls N.L, the sun's term times the game's shadow mask where the frame has one), so the pixel's
+// own colour divided by T is the albedo the technique has no G-buffer for, and colour x B / T is albedo x B:
+// the same multiply (dst.rgb *= src.rgb, the occlusion's blend) carries it, no second pass. Replace, not add:
+// the occlusion took the blocked share of the ambient away, the bounce gives back what the blockers really
+// send, in their colour; a flat surface (B near 0) keeps the occlusion's factor. A pixel brighter than T says
+// (a lamp's pool, headlights) is held to an albedo of 1, a source of light (the chain's alpha: neon, a
+// glint, the sun's disc) gets nothing, and so does everything in the pause menu's and the map's world (the
+// 4x view runs the plain occlusion). The setting's low is the main pass with 2 slices and 2 steps (the
+// occlusion's low), at half the picture's size where nothing else asks for the whole of it (the occlusion
+// low); high is 3 and 3 at the picture's size. `auto` is gpu_class.h's table (off on Low and Mid, low on High).
+// With the setting off and the test off every pass, push block and image is the plain occlusion's, to the bit.
+// The images go back 10 seconds after the last frame that used them (a pause spell does not make them again).
+// CHECK: (none of this could be run) (1) the pictures of GFX-UPGRADES-DESIGN.md 8.3 (night with lamp pools and
+// neon beside walls and car sides, sunlit asphalt beside a car, a coloured wall) off, low and high at the same
+// frame: colour spill, no brighter picture on average (mcla_gpu_ssgi_view 21 against the plain occlusion's
+// pixels), flat ground unchanged, nothing on the pause view; (2) the albedo estimate (view 18) is the surface's
+// colour and neon is black in view 20; (3) the mask's slot is readable in the apply at the trigger (the contact
+// shadows read it there too).
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
@@ -190,8 +215,11 @@
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
 // darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
-// views) and _census (a diagnostic log). The SSGI test: mcla_gpu_ssgi_test and its tuning and view
-// cvars mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain / _history / _history_clamp /
+// views) and _census (a diagnostic log). Bounce light: mcla_gpu_ssgi (auto, off, low, high; live; the pause
+// menu's BOUNCE LIGHT row, grey while the occlusion is off) with the tuning cvars mcla_gpu_ssgi_strength /
+// _radius / _clamp / _view (debug-only). The SSGI test, the debug override that forces the passes on at the
+// occlusion's own quality whatever the setting says: mcla_gpu_ssgi_test and its tuning and view cvars
+// mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain / _history / _history_clamp /
 // _atrous (all debug-only).
 // The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
@@ -346,6 +374,8 @@ class AmbientOcclusion {
     kPassTemporalGi,               // the accumulation over the four channels
     kPassTemporalGiMs,
     kPassAtrous,                   // the a-trous filter of the bounce
+    kPassApplyGi,                  // the apply with the bounce light (G7c), plain and multisampled colour target
+    kPassApplyGiMs,
     kPassCount,
   };
 
@@ -372,9 +402,11 @@ class AmbientOcclusion {
     kVTemporalGi = kVDenoiseGi + 1,
     kVTemporalGiMs = kVTemporalGi + 1,
     kVAtrous = kVTemporalGiMs + 1,
-    kVariantCount = kVAtrous + 1,
+    kVApplyGiBase = kVAtrous + 1,  // + 4 * debug + log2(samples): the apply with the bounce light
+    kVariantCount = kVApplyGiBase + 8,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
+  static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiViewVariant(uint32_t host_samples);
   static std::string VariantName(uint32_t variant);
 
@@ -459,6 +491,15 @@ class AmbientOcclusion {
     uint32_t history = 16;         // the frames the bounce's history spans at most
     float clamp_width = 1.25f;     // the clip of the bounce's history, in standard deviations of the neighbourhood
     uint32_t atrous = 2;           // the a-trous iterations (taps 1, 2, 4 pixels apart)
+    // The third step (G7c): the bounce in the picture.
+    bool test = false;             // mcla_gpu_ssgi_test forced it (the debug override: the occlusion's own quality)
+    Mode mode = Mode::kHigh;       // the setting's quality: low 2 slices and 2 steps, high 3 and 3 (and the picture's size)
+    bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
+    float strength = 0.75f;        // the bounce's gain; 0 runs the passes and adds nothing
+    float limit = 0.5f;            // the most it may add to a pixel, as a share of the pixel's own colour
+    float radius = 1.0f;           // the search radius, a multiple of the occlusion's
+    uint32_t apply_view = 0;       // mcla_gpu_ssgi_view: 1 the factor in colour, 2 the bounce, 3 the albedo estimate,
+                                   // 4 the light T, 5 the surface share, 6 the change against the game's own picture
   };
   struct Plan {
     Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
@@ -585,7 +626,9 @@ class AmbientOcclusion {
   // Settings, read at the frame's start.
   Mode mode_ = Mode::kOff;
   Mode contact_mode_ = Mode::kOff;    // mcla_gpu_contact_shadows, `auto` resolved for this GPU
-  bool gi_test_ = false;              // mcla_gpu_ssgi_test
+  bool gi_test_ = false;              // mcla_gpu_ssgi_test (the debug override), shaders made
+  Mode gi_mode_ = Mode::kOff;         // mcla_gpu_ssgi, `auto` resolved for this GPU
+  bool gi_active_ = false;            // the test or the setting is on, the occlusion is, the shaders exist
   uint32_t census_every_ = 0;
   uint32_t off_frames_ = 0;
 
@@ -812,6 +855,9 @@ class AmbientOcclusion {
   bool images_failed_logged_ = false;
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
+  uint32_t last_gi_logged_ = ~0u;
+  uint32_t gi_idle_frames_ = 0;    // frames since the images were last used (they go back after a while)
+  bool gi_apply_logged_ = false;
   uint64_t gi_runs_ = 0;
   uint64_t gi_history_runs_ = 0;   // ... of them with a history to lean on
   // The census probe's readback.
