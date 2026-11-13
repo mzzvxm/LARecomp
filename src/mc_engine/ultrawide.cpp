@@ -49,6 +49,8 @@ mc::frame::Tracker g_tracker;
 // What the log last said: a window dragged to a new size changes the aspect ratio at every step.
 double g_logged_aspect = 0.0;
 bool g_logged_boxed = false;
+bool g_logged_wide = false;
+bool g_logged_tall = false;
 
 // The setting's text, as the last change left it (a change callback is given the new value; reading
 // the cvar inside the callback is not safe, it may run with the registry locked).
@@ -70,9 +72,8 @@ bool PlumeRenderer() {
 #endif
 }
 
-// The setting's text as a choice. Anything that is none of them (an old value: 16:10 was a debug choice
-// that came to the same as 16:9) is AUTO. The Xenia renderer's present fills the window with the
-// picture and has no frame to draw it in: it always follows the window.
+// The setting's text as a choice. Anything that is none of them is AUTO. The Xenia renderer's present
+// fills the window with the picture and has no frame to draw it in: it always follows the window.
 mc::frame::Choice ChoiceOf(std::string_view ask) {
   mc::frame::Choice choice = mc::frame::Choice::kAuto;
   if (!mc::frame::ParseChoice(ask, &choice)) {
@@ -80,6 +81,11 @@ mc::frame::Choice ChoiceOf(std::string_view ask) {
   }
   return PlumeRenderer() ? choice : mc::frame::Choice::kAuto;
 }
+
+// The narrowest picture the renderer shows: a portrait 9:16 on the native renderer; the game's 16:9 on the
+// Xenia one, whose present stretches the picture over the window and has no vertical squeeze for the UI, so
+// a window taller than 16:9 keeps 16:9 with bars above and below there, as it always did.
+double MinAspect() { return PlumeRenderer() ? mc::frame::kAspectMin : mc::frame::kAspect16x9; }
 
 // The window's size arrives (SetupPresentation) before Init does: the cvar has its value by then.
 std::string Ask() {
@@ -114,17 +120,18 @@ void Recompute(std::string_view ask) {
   bool log = false;
   {
     std::lock_guard<std::mutex> lock(g_layout_mutex);
-    change = g_tracker.Update(choice, window_w, window_h);
+    change = g_tracker.Update(choice, window_w, window_h, MinAspect());
     layout = g_tracker.layout();
     g_aspect.store(layout.aspect, std::memory_order_release);
     g_choice.store(int(choice), std::memory_order_relaxed);
     if (change & (mc::frame::kChoiceChanged | mc::frame::kAspectChanged)) {
       log = (change & mc::frame::kChoiceChanged) != 0 || std::abs(layout.aspect - g_logged_aspect) > 0.02 ||
-            (layout.wide != (g_logged_aspect > kBaseAspect * 1.001)) ||
-            layout.boxed() != g_logged_boxed;
+            layout.wide != g_logged_wide || layout.tall != g_logged_tall || layout.boxed() != g_logged_boxed;
       if (log) {
         g_logged_aspect = layout.aspect;
         g_logged_boxed = layout.boxed();
+        g_logged_wide = layout.wide;
+        g_logged_tall = layout.tall;
       }
     }
   }
@@ -137,7 +144,8 @@ void Recompute(std::string_view ask) {
         "bars {} left {} right {} above {} below{}",
         layout.aspect, mc::frame::ChoiceName(layout.choice), window_w, window_h, layout.frame.w,
         layout.frame.h, layout.frame.x, layout.frame.y, layout.bar_left(), layout.bar_right(), layout.bar_top(),
-        layout.bar_bottom(), layout.wide ? "" : ", the game's own 16:9");
+        layout.bar_bottom(),
+        layout.wide ? "" : layout.tall ? ", taller than 16:9: the vertical view grows (Vert+)" : ", the game's own 16:9");
   }
 }
 
@@ -166,12 +174,18 @@ double DisplayAspect() { return g_aspect.load(std::memory_order_acquire); }
 
 double UiWidthFraction() { return mc::frame::UiFraction(DisplayAspect()); }
 
+double UiHeightFraction() { return mc::frame::UiHeightFraction(DisplayAspect()); }
+
+double CameraFov(double fov_degrees) { return mc::frame::VertPlusFov(fov_degrees, DisplayAspect()); }
+
+double VertPlusScale() { return mc::frame::VertPlusTan(DisplayAspect()); }
+
 mc::frame::Rect FrameFor(uint32_t window_width, uint32_t window_height) {
   // The setting as it is now, the window as the caller measured it (not the app's last report: the
   // renderer's first frames and the map's mouse have their own sizes, and the start of the renderer comes
   // before the app's first report).
   return mc::frame::FrameOf(window_width, window_height,
-                            mc::frame::AspectOf(ChoiceNow(), window_width, window_height));
+                            mc::frame::AspectOf(ChoiceNow(), window_width, window_height, MinAspect()));
 }
 
 mc::frame::Rect FrameRect() {
@@ -185,7 +199,7 @@ double HudWidthFraction() {
 }
 
 float MarkerStageX(float stage_x) {
-  if (!Active()) {
+  if (!Wide()) {
     return stage_x;
   }
   // The UI is squeezed about the middle of the stage by k (gpu/scene.cpp, UiSqueezeOf): a clip at
@@ -196,13 +210,44 @@ float MarkerStageX(float stage_x) {
   return kStageHalfWidth + (stage_x - kStageHalfWidth) / k;
 }
 
-double MapVisibleAspect() {
-  // The map's own 16:9 constant (0x8201FAC8) and the half of the 25 degree vertical field of view it
-  // goes with (0.218166 radians, 0x8208AC60: sub_826206B0 reads it as the same half angle).
-  // CHECK: both numbers against the constants in the guest image (1.7778 and 0.218166).
-  constexpr double kMapBaseAspect = 1.7778;
-  constexpr double kMapHalfFov = 0.218166;
+float MarkerStageY(float stage_y) {
+  if (!Tall()) {
+    return stage_y;
+  }
+  // The same as MarkerStageX turned round: the UI is squeezed about the middle of the stage's height by
+  // k = UiHeightFraction() (gpu/scene.cpp), a clip at y lands at 360 + (y - 360) * k. The game worked y out
+  // (y = 360 - 360 * ndc_y) from the Vert+ camera, which is where the 3D point is once the picture is
+  // stretched to the frame, so the clip is placed at the y the squeeze maps back to it.
+  const float k = float(UiHeightFraction());
+  return kStageHalfHeight + (stage_y - kStageHalfHeight) / k;
+}
+
+namespace {
+// The map's own 16:9 constant (0x8201FAC8) and the half of the 25 degree vertical field of view it
+// goes with (0.218166 radians, 0x8208AC60: sub_826206B0 reads it as the same half angle).
+// CHECK: both numbers against the constants in the guest image (1.7778 and 0.218166).
+constexpr double kMapBaseAspect = 1.7778;
+constexpr double kMapHalfFov = 0.218166;
+}  // namespace
+
+double MapVisibleHalfFov() {
   const double aspect = DisplayAspect();
+  if (!mc::frame::IsTall(aspect)) {
+    return kMapHalfFov;
+  }
+  // Vert+: the camera's half vertical angle grows as tan(half') = tan(half) * (16/9) / aspect, and the
+  // depth of the ground the function works out from it grows with it (tan(tilt +- half)).
+  return std::atan(std::tan(kMapHalfFov) * mc::frame::VertPlusTan(aspect));
+}
+
+double MapVisibleAspect() {
+  const double aspect = DisplayAspect();
+  if (mc::frame::IsTall(aspect)) {
+    // The width of the box is tan(f27 * half) * ...: with the half angle grown (MapVisibleHalfFov) the
+    // value that keeps f27 * half the game's own keeps the box as wide as the game has it at 16:9, which
+    // is the width the Vert+ camera shows.
+    return kMapBaseAspect * kMapHalfFov / MapVisibleHalfFov();
+  }
   if (!(aspect > kBaseAspect * 1.001)) {
     return kMapBaseAspect;
   }
@@ -243,38 +288,47 @@ void NoteWorldIcons(bool begin) {
 namespace {
 
 enum class Side : int8_t { kLeft = -1, kRight = 1 };
+// Which edge a piece goes to in a TALL picture: the top one or the bottom one, from where its clip sits on the
+// 1280x720 stage (y above or below the middle, 360).
+enum class Vert : int8_t { kTop = -1, kBottom = 1 };
 // Which of the two HUD movies a piece is of.
 enum class HudMovie : uint8_t { kGauge, kMinimap };
 
 struct Piece {
   const char* name;  // the instance's name, a child of the clip named "HUD"
   Side side;
+  Vert vert;
   HudMovie movie;
 };
 
 // hud.xsf: the two lists of the script's widescreen branch (the action block at 0xB982: `_x` + 135 for
 // the right pieces, - 135 for the left ones), and `chat`; hudmap.xsf: the minimap's four clips.
 // CHECK: `chat` (no offset in the script) is a left piece: that its text box does not span the middle.
+// The top or bottom edge of a tall picture is the clip's place on the stage (its origin's y before the
+// script's offsets, from the movies: info 630, glows 625, speedometer 584 and the minimap's miniBG 484, ring 573
+// are in the lower half, so bottom; posmeter 79, playerList 90, delivery 75, CTF_score 96, flagTime 85,
+// flagsDelivered 73, bomb 110, flag 105, lapmeter 80, laptime 128, totaltime 49 and chat 104 in the upper
+// half, so top).
 constexpr Piece kPieces[] = {
-    {"info", Side::kRight, HudMovie::kGauge},
-    {"glows", Side::kRight, HudMovie::kGauge},
-    {"speedometer", Side::kRight, HudMovie::kGauge},
-    {"posmeter", Side::kRight, HudMovie::kGauge},
-    {"playerList", Side::kRight, HudMovie::kGauge},
-    {"delivery", Side::kRight, HudMovie::kGauge},
-    {"CTF_score", Side::kRight, HudMovie::kGauge},
-    {"flagTime", Side::kLeft, HudMovie::kGauge},
-    {"flagsDelivered", Side::kLeft, HudMovie::kGauge},
-    {"bomb", Side::kLeft, HudMovie::kGauge},
-    {"flag", Side::kLeft, HudMovie::kGauge},
-    {"lapmeter", Side::kLeft, HudMovie::kGauge},
-    {"laptime", Side::kLeft, HudMovie::kGauge},
-    {"totaltime", Side::kLeft, HudMovie::kGauge},
-    {"chat", Side::kLeft, HudMovie::kGauge},
-    {"miniBG", Side::kLeft, HudMovie::kMinimap},
-    {"ring", Side::kLeft, HudMovie::kMinimap},
-    {"ringNorth", Side::kLeft, HudMovie::kMinimap},
-    {"renderMe", Side::kLeft, HudMovie::kMinimap},
+    {"info", Side::kRight, Vert::kBottom, HudMovie::kGauge},
+    {"glows", Side::kRight, Vert::kBottom, HudMovie::kGauge},
+    {"speedometer", Side::kRight, Vert::kBottom, HudMovie::kGauge},
+    {"posmeter", Side::kRight, Vert::kTop, HudMovie::kGauge},
+    {"playerList", Side::kRight, Vert::kTop, HudMovie::kGauge},
+    {"delivery", Side::kRight, Vert::kTop, HudMovie::kGauge},
+    {"CTF_score", Side::kRight, Vert::kTop, HudMovie::kGauge},
+    {"flagTime", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"flagsDelivered", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"bomb", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"flag", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"lapmeter", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"laptime", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"totaltime", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"chat", Side::kLeft, Vert::kTop, HudMovie::kGauge},
+    {"miniBG", Side::kLeft, Vert::kBottom, HudMovie::kMinimap},
+    {"ring", Side::kLeft, Vert::kBottom, HudMovie::kMinimap},
+    {"ringNorth", Side::kLeft, Vert::kBottom, HudMovie::kMinimap},
+    {"renderMe", Side::kLeft, Vert::kBottom, HudMovie::kMinimap},
 };
 constexpr size_t kPieceCount = sizeof(kPieces) / sizeof(kPieces[0]);
 static_assert(kPieceCount <= 32, "the log's bit mask is 32 bits");
@@ -386,7 +440,8 @@ const Piece* PieceOf(const uint8_t* base, uint32_t instance) {
     if (!(g_pieces_logged.fetch_or(1u << i, std::memory_order_relaxed) & (1u << i))) {
       LARECOMP_APP_INFO("ultrawide: HUD piece \"{}\" ({}) is anchored to the {} edge",
                         piece.name, piece.movie == HudMovie::kGauge ? "hud.swf" : "hudmap.swf",
-                        piece.side == Side::kLeft ? "left" : "right");
+                        Tall() ? (piece.vert == Vert::kTop ? "top" : "bottom")
+                               : (piece.side == Side::kLeft ? "left" : "right"));
     }
     return &piece;
   }
@@ -415,8 +470,8 @@ thread_local uint32_t t_open_piece = 0;
 // manager has as PROMPTMOVIE, the game's shared prompt bar (a census at 3440x1440, 2026-11-12: of the movies
 // with a prompt bar, PROMPTMOVIE's `allprompts` is the one drawn straight onto the screen; PAUSEMOVIE's is
 // inside the pause menu's card, NAVSYSMOVIE's and POPUPMOVIE's belong to their own panels). It sits at the
-// screen's right edge on a wide picture, as far from it as on a 16:9 screen, whatever hud_width is (the
-// owner, 2026-11-12: centred, it looked out of place under the wide title view). Only until the game is
+// screen's right edge on a wide picture (the bottom edge on a tall one), as far from it as on a 16:9 screen,
+// whatever hud_width is (the owner, 2026-11-12: centred, it looked out of place under the wide title view). Only until the game is
 // entered (NoteGameEntered: the player's control map is first built, after the title and the sign-in steps;
 // the driving HUD's movie is no sign of it, it is drawn hidden from the first title frame): later prompts of
 // the same movie belong to screens whose menus stay in the middle.
@@ -472,10 +527,11 @@ void NoteUiPiece(uint32_t instance, bool begin) {
   if (!g_game_entered.load(std::memory_order_relaxed)) {
     if (IsTitlePrompt(base, instance)) {
       if (!g_title_prompt_logged.exchange(true, std::memory_order_relaxed)) {
-        LARECOMP_APP_INFO("ultrawide: the title's prompt bar (PROMPTMOVIE) is at the right edge until the game is entered");
+        LARECOMP_APP_INFO("ultrawide: the title's prompt bar (PROMPTMOVIE) is at the {} edge until the game is entered",
+                          Tall() ? "bottom" : "right");
       }
       t_open_piece = instance;
-      mcla::gpu::OnGuestSceneComposited(kUiEdgeRight);
+      mcla::gpu::OnGuestSceneComposited(Tall() ? kUiEdgeBottom : kUiEdgeRight);
       return;
     }
   }
@@ -487,7 +543,11 @@ void NoteUiPiece(uint32_t instance, bool begin) {
     return;
   }
   t_open_piece = instance;
-  mcla::gpu::OnGuestSceneComposited(piece->side == Side::kLeft ? kUiPieceLeft : kUiPieceRight);
+  if (Tall()) {
+    mcla::gpu::OnGuestSceneComposited(piece->vert == Vert::kTop ? kUiPieceTop : kUiPieceBottom);
+  } else {
+    mcla::gpu::OnGuestSceneComposited(piece->side == Side::kLeft ? kUiPieceLeft : kUiPieceRight);
+  }
 #else
   (void)instance;
   (void)begin;
@@ -512,7 +572,7 @@ void Init() {
     percent = std::clamp<int32_t>(percent, 0, 100);
     if (g_hud_width.exchange(percent, std::memory_order_relaxed) != percent) {
       LARECOMP_APP_INFO("ultrawide: hud_width is {}%{}", percent,
-                        Active() ? "" : " (the picture is not wider than 16:9: nothing moves)");
+                        Active() ? "" : " (the picture is 16:9: nothing moves)");
     }
   });
   rex::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
@@ -539,8 +599,18 @@ void Init() {
 // where the car is on the widened picture with the 3D view at 2560x1080 and 3840x1080 (a name tag
 // over a car at the edge of the picture, online or in a LAN lobby race).
 void Patch_UiMarkerX_82289808(PPCRegister& f7) {
-  if (mc::ultrawide::Active()) {
+  if (mc::ultrawide::Wide()) {
     f7.f64 = double(mc::ultrawide::MarkerStageX(float(f7.f64)));
+  }
+}
+
+// The same tag's y, in a TALL picture: sub_82289530 stores the clip's y as `fmuls f8,f10,f12` at 0x82289810
+// (f10 = 1 - (ndc_y + 1) * 0.5, f12 = 720), the next instruction stores it as "gamertag_y". The UI is squeezed
+// vertically there, so the tag is given the y the squeeze maps back onto the car (MarkerStageY).
+// CHECK: a name tag over a car at the top or the bottom of a 4:3 or 16:10 picture (online or LAN only).
+void Patch_UiMarkerY_82289810(PPCRegister& f8) {
+  if (mc::ultrawide::Tall()) {
+    f8.f64 = double(mc::ultrawide::MarkerStageY(float(f8.f64)));
   }
 }
 
@@ -578,6 +648,19 @@ bool Patch_MapVisibleAspect_82620700(PPCRegister& f27) {
   return true;
 }
 
+// The same function's half vertical field of view: 0x82620708 is `lfs f31,-21408(r11)`, 12.5 degrees in radians
+// (0.218166), which the box's depth is worked from (tan(tilt +- f31) times the distance, and f27 * f31 for its
+// width). In a TALL picture the camera's half angle grows (Vert+), so this does too, and the hook above gave
+// f27 the value that keeps the width the game's; the cursor's box then covers the taller picture. After the
+// load, so f31 is the one the function uses from here on. A no-op unless the picture is tall.
+// CHECK: that the nav map's cursor reaches the top and bottom edges of a 1920x1200 and a 1440x1080 picture
+// (stick), that the icons there are placed, and that nothing moves at 16:9 or in an ultrawide picture.
+void Patch_MapVisibleHalfFov_82620708(PPCRegister& f31) {
+  if (mc::ultrawide::Tall()) {
+    f31.f64 = double(float(mc::ultrawide::MapVisibleHalfFov()));
+  }
+}
+
 // sub_822C0320 (the scene camera update): 0x822C0918 is `lfs f0,-28432(r8)`, the load of 0x820390F0
 // (1.77778) on the branch that sets an ORTHOGRAPHIC projection (sub_8217CC80: left/right = -/+ half
 // height * 1.77778, bottom/top = -/+ half height, half height = the variable's value * 0.5) in place
@@ -589,8 +672,8 @@ bool Patch_MapVisibleAspect_82620700(PPCRegister& f27) {
 // vertical extent is not rescaled anywhere else) and that nothing but a console command or a mod can
 // set "orthoheight", so this cannot be looked at in a normal run.
 bool Patch_AspectRatio_822C0918(PPCRegister& f0) {
-  if (!mc::ultrawide::Active()) {
-    return false;
+  if (!mc::ultrawide::Wide()) {
+    return false;  // (a debug view: a tall picture keeps the game's width, the height is the variable's)
   }
   f0.f64 = double(float(mc::ultrawide::DisplayAspect()));
   return true;
@@ -608,7 +691,8 @@ bool Patch_AspectRatio_822C0918(PPCRegister& f0) {
 // division by the aspect ratio makes the vertical angle. With the widened aspect ratio in f1 the
 // vertical angle shrinks by 16:9 over the aspect ratio and a cutscene is zoomed into the middle of
 // the wide picture. The hook runs before the division and gives it 16:9 whenever the picture is
-// wider, so the vertical angle is the one the game has at 16:9, and the wide picture (its Perspective
+// not 16:9 (wider, or taller: there the Vert+ rewrite of the camera builder follows), so the vertical
+// angle is the one the game has at 16:9, and the wide picture (its Perspective
 // aspect ratio is still the widened one) shows more at the sides, as the gameplay cameras do. f1 is
 // the return value of the call before: nothing reads it after the division (the next uses are
 // loads or the result of a later call). Only this branch divides by it: the gameplay cameras take

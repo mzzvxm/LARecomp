@@ -3,14 +3,15 @@
 void InitHooks();
 
 #include <rex/ppc/context.h>
-bool Patch_AspectRatio_82233EB4(PPCRegister& f0);
+bool Patch_AspectRatio_82233EB4(PPCRegister& f0, PPCRegister& f30);
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10);
-bool Patch_AspectRatio_822E5E68(PPCRegister& f12);
+bool Patch_AspectRatio_822E5E68(PPCRegister& f12, PPCRegister& f30);
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13);
 
 // Ultrawide markers (mc_engine/ultrawide.h). The floating gamertag's Flash x, after
 // `fmuls f7,f9,f13` in sub_82289530; the two ends of the queued world icons' draw, sub_82236558.
 void Patch_UiMarkerX_82289808(PPCRegister& f7);
+void Patch_UiMarkerY_82289810(PPCRegister& f8);
 void Patch_UiWorldIcons_Begin();
 void Patch_UiWorldIcons_End();
 
@@ -21,6 +22,8 @@ void Patch_UiPiece_End(PPCRegister& r30);
 
 // The nav map's visible ground (sub_826206B0), the load of its 16:9 constant at 0x82620700.
 bool Patch_MapVisibleAspect_82620700(PPCRegister& f27);
+// ... and its half vertical field of view, the load at 0x82620708 (after it).
+void Patch_MapVisibleHalfFov_82620708(PPCRegister& f31);
 
 // The orthographic debug camera's width (sub_822C0320), the load of 1.77778 at 0x822C0918.
 bool Patch_AspectRatio_822C0918(PPCRegister& f0);

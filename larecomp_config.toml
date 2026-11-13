@@ -25149,10 +25149,14 @@ name = "Hook_PhotoModeCapture"
 registers = ["r3"]
 
 
+# The camera sites that load the aspect ratio constant. 0x82233EB4: the rear-view mirror's ortho width
+# (f30 = its height: a tall picture gives it 16:9 over the aspect ratio times its value, so that the width
+# stays the game's). 0x822E5E68: the camera builder sub_822E5E10 (f30 = the vertical field of view in degrees:
+# rewritten for a tall picture, Vert+, so that the horizontal field of view stays the game's).
 [[midasm_hook]]
 address = 0x82233EB4
 name = "Patch_AspectRatio_82233EB4"
-registers = ["f0"]
+registers = ["f0", "f30"]
 jump_address_on_true = 0x82233EB8
 
 [[midasm_hook]]
@@ -25164,7 +25168,7 @@ jump_address_on_true = 0x82214BBC
 [[midasm_hook]]
 address = 0x822E5E68
 name = "Patch_AspectRatio_822E5E68"
-registers = ["f12"]
+registers = ["f12", "f30"]
 jump_address_on_true = 0x822E5E6C
 
 [[midasm_hook]]
@@ -25181,6 +25185,14 @@ jump_address_on_true = 0x8223E5E4
 address = 0x82289808
 name = "Patch_UiMarkerX_82289808"
 registers = ["f7"]
+after_instruction = true
+
+# The same tag's y for a tall picture (the UI is squeezed vertically there): `fmuls f8,f10,f12` at 0x82289810 is
+# the clip's y on the 720 stage, stored right after as "gamertag_y".
+[[midasm_hook]]
+address = 0x82289810
+name = "Patch_UiMarkerY_82289810"
+registers = ["f8"]
 after_instruction = true
 
 # sub_82236558 draws the queue of world icons (96 bytes an entry, a 3D movie each with the camera's
@@ -25220,6 +25232,14 @@ name = "Patch_MapVisibleAspect_82620700"
 registers = ["f27"]
 jump_address_on_true = 0x82620704
 
+# The same function's half vertical field of view, `lfs f31,-21408(r11)` at 0x82620708 (0.218166): for a tall
+# picture it grows with the camera's (Vert+), and with it the depth of the ground the cursor's box covers.
+[[midasm_hook]]
+address = 0x82620708
+name = "Patch_MapVisibleHalfFov_82620708"
+registers = ["f31"]
+after_instruction = true
+
 # sub_822C0320 (the scene camera update) builds an orthographic camera instead of the perspective one
 # when the developer variable "orthoheight" is set (default -1: never in play): half width = half
 # height * 1.77778, loaded at 0x822C0918 (`lfs f0,-28432(r8)`, 0x820390F0). The hook gives it the
@@ -25234,7 +25254,8 @@ jump_address_on_true = 0x822C091C
 # camera's angle (radians, taken as horizontal) times 57.2958 over the viewport's aspect ratio, `fdivs
 # f12,f28,f1` at 0x822C04E8 with f1 = sub_82171600's return value, the widened aspect ratio. Divided by
 # it a cutscene is zoomed into the middle of a wide picture; the hook gives f1 16:9 when the picture is
-# wider, so the vertical field of view stays the 16:9 one and the picture shows more at the sides. It
+# not 16:9, so the vertical field of view is the 16:9 one and the picture shows more at the sides (a tall
+# picture then grows the vertical one like any camera, Vert+). It
 # runs before the instruction. The gameplay cameras do not pass through this division.
 [[midasm_hook]]
 address = 0x822C04E8
