@@ -475,7 +475,7 @@ REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
     "old behaviour.")
     .debug_only();
 
-REXCVAR_DEFINE_BOOL(model_mods_part_probe, true, "MCLA/Mods",
+REXCVAR_DEFINE_BOOL(model_mods_part_probe, false, "MCLA/Mods",
     "TEMPORARY diagnostic: every second, while the player's car is waiting to "
     "reattach its parts (car+6467) -- which is when the game draws none of it, "
     "wheels included -- log which selected part is not resident yet and the "

@@ -75,7 +75,7 @@ REXCVAR_DEFINE_STRING(wheel_fake, "off", "MCLA/Wheel",
     .lifecycle(rex::cvar::Lifecycle::kHotReload)
     .debug_only();
 
-REXCVAR_DEFINE_BOOL(wheel_ffb_log, true, "MCLA/Wheel",
+REXCVAR_DEFINE_BOOL(wheel_ffb_log, false, "MCLA/Wheel",
     "Log every force-feedback command the game sends while wheel_fake is on: effect id, type, "
     "duration and parameters. Capped so a long race cannot fill the log.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload)

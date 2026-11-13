@@ -23,7 +23,7 @@ REXCVAR_DEFINE_BOOL(larecomp_discord_rpc, true, "Discord",
                     "Enable Discord Rich Presence.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(larecomp_discord_rpc_log_state, true, "Discord",
+REXCVAR_DEFINE_BOOL(larecomp_discord_rpc_log_state, false, "Discord",
                     "Log Discord RPC state changes with printf.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload)
     .debug_only();
