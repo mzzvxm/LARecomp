@@ -89,7 +89,8 @@
 // them off. A ray toward the sun is marched in view space over the linear depth over a short length
 // (0.6 m, longer when the sun is low: 0.7 / tan(elevation), 1 to 3 times; 8 steps at low, 16 at
 // high), the result is cleaned by the occlusion's own bilateral pass twice (it has no history of its
-// own: the noise rotates every frame and the temporal upscaler, when it runs, averages it), and the
+// own: the noise rotates every frame while a temporal upscaler runs and averages it, and is a fixed
+// pattern without one), and the
 // apply pass darkens only the SUN's share of the light by it:
 //   sun_share = Ls * N.L * vis / (La + Ls * N.L * vis)
 //   factor    = 1 - sun_share * strength * (1 - contact) * distance_fade

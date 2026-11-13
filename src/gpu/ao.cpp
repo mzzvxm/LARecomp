@@ -2076,6 +2076,10 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.lens[3] = c.thickness;
   push.shape[1] = float(c.steps);
   push.extra[1] = c.fade_end;
+  // The ray start's noise has no history here, only the two bilateral passes below. Moved every frame it
+  // would make the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal
+  // upscaler runs and averages the frames, as the shadow filter's and the sun shafts' are.
+  push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   DrawPass(list, raw_, march, push);
   // The occlusion's bilateral pass twice (the way the occlusion has no history of its own): the
   // noise of the ray's start goes, the edges of the depth stay.
