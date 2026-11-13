@@ -19,6 +19,7 @@
 #include "frame.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
+#include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
@@ -316,8 +317,20 @@ const char* ModeName(AmbientOcclusion::Mode mode) {
   return "?";
 }
 
+// The string settings are read through LiveText: the pause menu's thread writes the cvar's string while
+// this one reads it (live_text.h).
+LiveText& AoSetting() {
+  static LiveText text("mcla_gpu_ao");
+  return text;
+}
+
+LiveText& ContactSetting() {
+  static LiveText text("mcla_gpu_contact_shadows");
+  return text;
+}
+
 AmbientOcclusion::Mode ReadMode() {
-  std::string value = REXCVAR_GET(mcla_gpu_ao);
+  std::string value = AoSetting().Get();
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return char(std::tolower(c)); });
   if (value == "low") {
@@ -338,7 +351,7 @@ std::string Lower(std::string value) {
 // mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h).
 AmbientOcclusion::Mode ReadContactMode() {
   const std::string value = gpu_class::Resolve(gpu_class::Effect::kContactShadows,
-                                               Lower(REXCVAR_GET(mcla_gpu_contact_shadows)));
+                                               Lower(ContactSetting().Get()));
   if (value == "low") {
     return AmbientOcclusion::Mode::kLow;
   }
@@ -665,7 +678,7 @@ void AmbientOcclusion::BeginFrame() {
   }
   if (uint32_t(contact) != last_contact_logged_) {
     last_contact_logged_ = uint32_t(contact);
-    const std::string setting = Lower(REXCVAR_GET(mcla_gpu_contact_shadows));
+    const std::string setting = Lower(ContactSetting().Get());
     REXLOG_INFO("[gpu] contact shadows {}{} (mcla_gpu_contact_shadows {}, live)", ModeName(contact),
                 setting == "auto" ? " (auto on this GPU)" : "", setting);
   }

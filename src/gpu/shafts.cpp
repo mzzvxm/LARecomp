@@ -19,6 +19,7 @@
 #include "draw_state.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
+#include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
@@ -203,11 +204,16 @@ bool ParseMode(const std::string& value, SunShafts::Mode* mode) {
   return true;
 }
 
+// The text of the setting, read through LiveText: the pause menu's thread writes the cvar's string while
+// this one reads it (live_text.h).
+LiveText& Setting() {
+  static LiveText text("mcla_gpu_sun_shafts");
+  return text;
+}
+
 SunShafts::Mode ReadMode() {
   SunShafts::Mode mode = SunShafts::Mode::kOff;
-  if (!ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts,
-                                    Lower(REXCVAR_GET(mcla_gpu_sun_shafts))),
-                 &mode)) {
+  if (!ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts, Lower(Setting().Get())), &mode)) {
     ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts, "auto"), &mode);
   }
   return mode;
@@ -378,7 +384,7 @@ void SunShafts::BeginFrame() {
   if (uint32_t(mode) != last_mode_logged_) {
     last_mode_logged_ = uint32_t(mode);
     REXLOG_INFO("[gpu] shafts: sun shafts {} (mcla_gpu_sun_shafts = {}, live)", ModeName(mode),
-                REXCVAR_GET(mcla_gpu_sun_shafts));
+                Setting().Get());
   }
   mode_ = mode;
 }
