@@ -147,7 +147,9 @@ class Spawner {
     bool ok() const { return failure_.empty(); }
     const std::string& failure() const { return failure_; }
     uint32_t racer() const { return opp_; }
-    bool InWorld() const { return added_ && stage_ != Stage::kGone; }
+    // The racer should be in the opponent manager's list: added, and not yet deleted (the delete takes it out of the list at once, so
+    // from the delete call on its absence is the success, not a lost car).
+    bool InWorld() const { return added_ && stage_ != Stage::kGone && stage_ != Stage::kDeleting; }
     // The car's entity (and so its matrix) exists: from the end of the stream to the delete.
     bool HasEntity() const { return stage_ >= Stage::kActivate && stage_ <= Stage::kDelete; }
     const CarCommand& command() const { return cmd_; }
