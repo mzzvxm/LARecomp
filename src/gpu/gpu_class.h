@@ -76,7 +76,8 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
-    {"mcla_gpu_ssgi", "off", "off", "low"},
+    // Off on every class until the bounce light's cost is measured (owner, 2026-11-13); low and high stay a choice.
+    {"mcla_gpu_ssgi", "off", "off", "off"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

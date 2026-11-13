@@ -132,10 +132,8 @@ REXCVAR_DEFINE_STRING(
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
     "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
     "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
-    "default): off on "
-    "an integrated graphics card and on a discrete one with less than 5.5 GiB of video memory, low on "
-    "the rest. Costs graphics card time, high more than low. Not drawn behind the pause menu or on "
-    "the map. Live.")
+    "default): off on every graphics card for now, until its cost is measured. Costs graphics card time, "
+    "high more than low. Not drawn behind the pause menu or on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(

@@ -1754,9 +1754,8 @@ std::string ShaftsLabel(int i) {
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
-// stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on an integrated GPU or
-// a discrete one with under 5.5 GiB, LOW on the rest (gpu/gpu_class.h); or OFF, LOW (a coarser search) or
-// HIGH (the full one). It is made from the ambient occlusion's own passes, so the row is grey while the
+// stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
+// until its cost is measured (gpu/gpu_class.h); or OFF, LOW (a coarser search) or HIGH (the full one). It is made from the ambient occlusion's own passes, so the row is grey while the
 // occlusion is off, as AO INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 11
 // ("AUTO (HIGH)").
 const char* const kNativeSsgiVals[]  = {"auto", "off", "low", "high"};
