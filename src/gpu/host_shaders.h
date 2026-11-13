@@ -19,17 +19,21 @@
 #if defined(LARECOMP_GPU_HAS_D3D12)
 #include "ao_apply_ms_ps.hlsl.dxil.h"
 #include "ao_apply_ps.hlsl.dxil.h"
+#include "ao_atrous_ps.hlsl.dxil.h"
 #include "ao_color_mip_ps.hlsl.dxil.h"
 #include "ao_color_ms_ps.hlsl.dxil.h"
 #include "ao_color_ps.hlsl.dxil.h"
 #include "ao_color_view_ps.hlsl.dxil.h"
 #include "ao_contact_ps.hlsl.dxil.h"
+#include "ao_denoise_gi_ps.hlsl.dxil.h"
 #include "ao_denoise_ps.hlsl.dxil.h"
 #include "ao_depth_ms_ps.hlsl.dxil.h"
 #include "ao_depth_ps.hlsl.dxil.h"
 #include "ao_main_gi_ps.hlsl.dxil.h"
 #include "ao_main_ps.hlsl.dxil.h"
 #include "ao_mip_ps.hlsl.dxil.h"
+#include "ao_temporal_gi_ms_ps.hlsl.dxil.h"
+#include "ao_temporal_gi_ps.hlsl.dxil.h"
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
@@ -82,17 +86,21 @@
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "ao_apply_ms_ps.hlsl.spirv.h"
 #include "ao_apply_ps.hlsl.spirv.h"
+#include "ao_atrous_ps.hlsl.spirv.h"
 #include "ao_color_mip_ps.hlsl.spirv.h"
 #include "ao_color_ms_ps.hlsl.spirv.h"
 #include "ao_color_ps.hlsl.spirv.h"
 #include "ao_color_view_ps.hlsl.spirv.h"
 #include "ao_contact_ps.hlsl.spirv.h"
+#include "ao_denoise_gi_ps.hlsl.spirv.h"
 #include "ao_denoise_ps.hlsl.spirv.h"
 #include "ao_depth_ms_ps.hlsl.spirv.h"
 #include "ao_depth_ps.hlsl.spirv.h"
 #include "ao_main_gi_ps.hlsl.spirv.h"
 #include "ao_main_ps.hlsl.spirv.h"
 #include "ao_mip_ps.hlsl.spirv.h"
+#include "ao_temporal_gi_ms_ps.hlsl.spirv.h"
+#include "ao_temporal_gi_ps.hlsl.spirv.h"
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
@@ -331,7 +339,9 @@ inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
 // march (ao_contact_ps.hlsl), 10 the visibility bitmask that gives the occlusion and a bounce
 // (ao_main_ps.hlsl compiled with AO_GI), 11 the scene colour's level 0 from a plain colour plane, 12
 // the same from a multisampled one, 13 a coarser level of the colour chain, 14 the debug picture of it
-// (ao_color_ps.hlsl; G7a).
+// (ao_color_ps.hlsl; G7a), 15 the denoise over four channels, 16 and 17 the accumulation over frames over
+// four channels (from a plain and from a multisampled depth target's stencil), 18 the a-trous filter of
+// the bounce (ao_denoise_ps.hlsl and ao_temporal_ps.hlsl compiled with AO_GI, ao_atrous_ps.hlsl; G7b).
 inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
@@ -348,6 +358,10 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 12: return MCLA_GPU_HOST_SHADER_BLOB(ao_color_ms_ps);
     case 13: return MCLA_GPU_HOST_SHADER_BLOB(ao_color_mip_ps);
     case 14: return MCLA_GPU_HOST_SHADER_BLOB(ao_color_view_ps);
+    case 15: return MCLA_GPU_HOST_SHADER_BLOB(ao_denoise_gi_ps);
+    case 16: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_gi_ps);
+    case 17: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_gi_ms_ps);
+    case 18: return MCLA_GPU_HOST_SHADER_BLOB(ao_atrous_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
 }
