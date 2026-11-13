@@ -315,7 +315,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
 
 void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
                                   HostPasses& passes, EdramTargets& edram,
-                                  PassTiming& pass_timing) {
+                                  PassTiming& pass_timing, ResolveCache& resolve) {
+  resolve_ = &resolve;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -397,6 +398,7 @@ void AmbientOcclusion::Shutdown() {
   passes_ = nullptr;
   edram_ = nullptr;
   pass_timing_ = nullptr;
+  resolve_ = nullptr;
 }
 
 void AmbientOcclusion::ListPrecache() {

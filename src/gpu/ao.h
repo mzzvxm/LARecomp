@@ -173,7 +173,7 @@ class AmbientOcclusion {
   // Makes the layout and the shaders and lists the pipelines with the host precache (before the
   // Renderer starts it). Never fails the renderer: without them there is no occlusion (logged).
   void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
-                  EdramTargets& edram, PassTiming& pass_timing);
+                  EdramTargets& edram, PassTiming& pass_timing, ResolveCache& resolve);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
 
@@ -517,6 +517,7 @@ class AmbientOcclusion {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
