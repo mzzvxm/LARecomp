@@ -151,6 +151,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/scene.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
     src/mc_engine/cinematic/native_call.cpp
+    # ... and the scene's cars: spawn / delete / the player's garage car through the natives, the registry of poses for the camera.
+    src/mc_engine/cinematic/car_verbs.cpp
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/cars.cpp
 
     src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
