@@ -1,6 +1,6 @@
 # Debug menu and diagnostics
 
-Notes for testers and contributors. A player never sees any of this: the debug menu stays hidden until someone unlocks it on purpose, and the pause menu, the launcher's normal pages and the README do not mention it.
+Notes for testers and contributors. The DEBUG menu of the pause menu stays hidden until someone unlocks it on purpose, and the pause menu, the launcher's normal pages and the README do not mention it. The function-key menus (F2, F4, F9, F10, F11) are not part of it: they work for everyone.
 
 ---
 
@@ -29,14 +29,20 @@ or `[debug] debug menu locked`. The source is `command line`, `environment` or `
 ## What changes when it is unlocked
 
 - The pause menu's SETTINGS tab gets a **DEBUG** button, the last one before QUIT. It opens the seven pages below.
-- **F4** lists every setting. Locked, it lists only the key bindings and the few settings that have no other place (the online server choices, a wheel's emergency stop for its force). Settings that apply after a restart are yellow, and the panel says debug settings are not saved.
-- **F2** dumps the textures of the next frame and **F10** writes a raw trace of the next frame (Plume renderer). **F11** captures the next frame with RenderDoc. **F9** warps the car to a mod's warp point and back; it can break a mission. These four keys do nothing while locked. F3 (the telemetry card) and the other keys work for everyone.
+- Nothing else. The function keys do not depend on it: **F2** (texture dump), **F3** (telemetry card), **F4** (the settings panel, every setting), **F9** (warp the car to a mod's warp point and back), **F10** (raw frame trace) and **F11** (RenderDoc capture) work for everyone, locked or not. Only the pause menu is cleaned up.
 
 ## Debug changes are never saved
 
 A debug-only setting that is changed while the game runs (a DEBUG page, F4, the console) lasts until the game closes. It is not written to `larecomp.toml`, and a line the file already has for it stays exactly as written. F4's Save says how many it left out. Values from the command line, the environment or the file are honoured as always.
 
 To keep one, use a launch argument, the launcher's **More game options**, or a line in `larecomp.toml`.
+
+**F4 for everyone.** F4 lists every setting, debug-only ones included, whether or not the menu is unlocked. A debug-only setting changed there:
+
+- applies for the session if it is a live one (a restart-only one has no effect until the next start, and the next start does not have it);
+- is never written to `larecomp.toml`. Its tooltip says so, the subtitle says debug settings are not saved, and Ctrl+S names how many it left out.
+
+Before the settings clean-up, F4's Save wrote every setting changed in the session, debug-only ones included, so such a change came back at the next start. It no longer does: the never-saved rule holds for every way of changing one (a DEBUG page, F4, the console).
 
 For bug reports, the log lists every debug setting that is not at its default at each start, locked or not, with where the value came from (`command line`, `environment`, `larecomp.toml` or `this session`):
 
@@ -86,7 +92,7 @@ A debug setting that the game reads only at start cannot be a row: a change woul
 larecomp.exe --debug_menu --mcla_gpu_pass_timing=true
 ```
 
-The same text works in the launcher's **More game options**, and as `mcla_gpu_pass_timing = true` in `larecomp.toml`. A switch takes `true` or `false`. Never pass an empty value (`--name=`): the game drops its whole command line. With the debug menu unlocked, F4 shows each of these with its description (use the search box).
+The same text works in the launcher's **More game options**, and as `mcla_gpu_pass_timing = true` in `larecomp.toml`. A switch takes `true` or `false`. Never pass an empty value (`--name=`): the game drops its whole command line. F4 shows each of these with its description (use the search box).
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` is not here: its lifecycle is live, so it is a row on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
@@ -140,7 +146,7 @@ The list, 117 names in 13 groups (the number in brackets is the group's size):
 A new cvar is one of three things, and the check below fails until it is:
 
 1. a row a player can reach (pause menu, or the launcher), with no `.debug_only()`;
-2. on the exception list in `tools/settings_exposure.toml` (visible in a locked F4; it needs the owner's say, and the same name in `kLockedPanelCvars` in `src/mc_engine/ui/settings.cpp`);
+2. on the exception list in `tools/settings_exposure.toml` (a setting that stays an ordinary setting without a pause-menu or launcher row, such as the key bindings and the online choices; it needs the owner's say);
 3. `.debug_only()`, which is the answer for a diagnostic, a probe or a tuning value:
 
 ```cpp
@@ -178,8 +184,7 @@ Every cvar is a row, an exception or `.debug_only()`. Debug rows must be live. `
 1. a cvar has no `.debug_only()`, no row and no place on the exception list;
 2. a `.debug_only()` cvar has a row in a normal (non-debug) table, or is on the exception list;
 3. a row of a debug table names a cvar that is not `.debug_only()`, or whose lifecycle is restart-only;
-4. a cvar is defined twice and only one definition has the tag;
-5. the exception list and `kLockedPanelCvars` (what a locked F4 shows) differ.
+4. a cvar is defined twice and only one definition has the tag.
 
 ```powershell
 python tools\check_settings_exposure.py        # every cvar
