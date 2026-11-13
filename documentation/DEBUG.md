@@ -121,6 +121,45 @@ The list, 112 names in 13 groups (the number in brackets is the group's size):
 
 `debug_options.txt` in the game folder (next to `larecomp.exe`) switches on options from the game's own developer list (`unlockall`, `money`, `timeofday` and the rest of 540, named in `src/mc_engine/debug_options_table.inc`) when the game starts. One option per line: `name`, or `name=value` (a bare name means `1`). `#` and `;` start a comment. An unknown name is logged as `[DbgOpt] unknown option`. It needs no unlock and has no menu row.
 
+## Scenes (the trailer toolkit)
+
+A scene is a text file that says what the world and the settings do on a timeline, so a shot can be recorded again and a setting compared before and after. Nothing runs unless one is armed:
+
+```powershell
+larecomp.exe --debug_menu --mcla_scene=C:\scenes\intro.scene
+```
+
+`mcla_scene` is a path, or a name looked up next to the game and in its `scenes` folder (`.scene` may be left off). Empty means off. Like every debug setting it is live and never saved: set it in F4 or the console to arm another scene, clear it to stop. `mcla_scene_restart` (change the number) runs the scene again from its start; `mcla_scene_t` (0 or more) holds the clock at that many seconds, for stills. The file is read again when it changes and a reload starts the scene over. A file with an error is not run, and the log says which line (`[scene] intro.scene:7: error: unknown weather 'sunny'`).
+
+The clock starts at 0 once a car is on the road. It runs on the game's frame time from before the time scale, so a slow-motion key does not slow the scene, and it stands still while the game is paused. At `end` everything goes back to the game's own: the day cycle, the weather, the ambient switches, the time scale and the settings the scene changed.
+
+```
+scene intro fps 60 step 1/60
+world hour 16.5 hold weather nice traffic off peds off police off     # a bundle at time 0
+at 2 hour 16.5..19.5 over 14 ease inout                               # a ramp: a..b over seconds
+at 6 weather cloudy
+at 10 timescale 1..0.2 over 1 ease inout                              # slow motion
+at 12 set mcla_gpu_ao off                                             # a setting; the old value comes back
+at 14 label "AO OFF" side left fade 0.3 for 3                         # data for a compositor, never drawn in the game
+end 20
+```
+
+One statement a line, `#` starts a comment, times are seconds or `m:ss`. Eases are `linear` (default), `in`, `out`, `inout`. A key's value holds until the next key of the same track.
+
+| Statement | What the game does |
+|---|---|
+| `hour <h>`, `hour <a>..<b> over <s>`, `hour free` | `TimeOfDay_RequestHour`: the hour is pinned (a value over 24 wraps); `free` gives the day cycle back |
+| `weather nice\|cloudy\|stormy\|foggy\|game` | `Weather_RequestIndex`; `game` gives the weather back |
+| `traffic`, `peds`, `parked`, `police` `on\|off` | the game's own script natives (`AmbientMgr_Set*Enable`, `PoliceManager_SetAllPoliceActive`); the enable byte is read back and the log says what it became |
+| `timescale <x>`, `timescale <a>..<b> over <s>` | the engine timer's time scale (below about 0.006 at 60 FPS the game holds its own lowest step) |
+| `set <setting> <value>` | the setting, live ones only; the old value comes back at the end |
+| `label "<text>" [side s] [fade s] [for s]`, `mark <name>` | logged (labels are data for a compositor) |
+| `cam`, `cut`, `hud`, `car`, `start` | kept for the camera, HUD and car packages of the toolkit; read and linted, not applied yet |
+
+The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`, one line for every key as its time comes, a `state` line every 2 s that puts the scene's hour, weather and time scale next to what the game reports, `finished`. Natives are called one or two an update, on the game thread.
+
+The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
+
 ## Adding a debug setting
 
 A new cvar is one of three things, and the check below fails until it is:
