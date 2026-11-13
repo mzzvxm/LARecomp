@@ -8,9 +8,17 @@
 //                (below), or alone by the debug setting mcla_fixed_step_fps (a repeatability test, a slow-motion recording that
 //                is made some other way). The FPS limit, the step cap and frame pacing stand aside while it runs.
 //   take         a scene's `capture fps N` (or the debug setting mcla_capture_fps) starts a take at the next update: the game
-//                steps by 1 / N, every frame is read back (gpu/capture_readback.cpp) and handed to a sink (nothing, ffmpeg or a
-//                raw file), and the game does not start update k + 1 until frame k has been read back: the frame gate. The take
-//                ends when the scene says so (`capture off`, its `end`) and exactly one picture exists for every update of it.
+//                steps by 1 / N, every frame is read back (gpu/capture_readback.cpp) and handed to a sink (nothing, ffmpeg's FFV1
+//                video, PNG pictures or a raw file), and the game does not start update k + 1 until frame k has been read back: the
+//                frame gate. The take ends when the scene says so (`capture off`, its `end`) and exactly one picture exists for
+//                every update of it.
+//   take folder  (M2b) every take is a folder of its own (take_folder.h): take.json (the scene, the exe, the cvars, the size, the rate,
+//                the frame count, the update map, the dropped and repeated counts), the video or the pictures, frames.csv, the scene's
+//                copy and, when the scene asks, state.csv. A take never overwrites another.
+//   memory       (M2b) what a take holds is bounded: a plan made at its first frame (CaptureMemoryPlan) fits a hard cap and the free
+//                memory, the GPU readback buffers and the host ring are made once at that size, a slow writer makes the render thread
+//                wait (the frame gate holds the game), and a take that cannot fit, whose writer stops, or that sees the PC run out of
+//                memory ends with an error.
 //   scene clock  during a take the upscaler's history rule (gpu/temporal.cpp) and the UI movies' pacing (hooks/ui.cpp,
 //                hooks/ui_smooth.cpp) read frames x step instead of the wall clock, so a slow capture (render scale 6, a slow
 //                disk) is not a stall to them. Wall time at any other moment.
@@ -20,6 +28,7 @@
 //
 
 #include <cstdint>
+#include <string>
 
 namespace mc::cinematic {
 
@@ -45,6 +54,16 @@ bool CaptureTakeActive();
 
 // The scene's request (the capture applier): a take at this many frames a second, or 0 for none.
 void CaptureSceneRequest(double fps);
+
+// What the scene's `capture fps` key asked for besides the rate (M2b), read when a take starts: the take's folder name, the sink (none,
+// ffmpeg, png, raw), and whether state.csv is written. Empty / false: the debug settings (mcla_capture_name, mcla_capture_sink,
+// mcla_capture_statelog) and the scene's own name decide.
+struct CaptureSpec {
+    std::string name;
+    std::string sink;
+    bool state_log = false;
+};
+void CaptureSceneSpec(const CaptureSpec& spec);
 
 // ---------------------------------------------------------------------------------------------------------------- fixed step
 
@@ -92,11 +111,22 @@ struct HostBuffer {
     uint32_t slot = 0;
     uint64_t bytes = 0;
 };
+// What a take may use for frames of this size (M2b). Render thread, before the readback buffers are made, at every frame of a take (the
+// first call makes the plan, the rest return it): the number of GPU readback buffers and of host ring buffers that fit the memory cap and
+// the free memory (take_folder.h PlanMemory). `ok` false: the plan does not fit even at `gpu_min` + 2 buffers, or the size changed during
+// the take, or no take is running; the take has failed (the log says why) and the frame is to be reported lost.
+struct MemoryGrant {
+    bool ok = false;
+    uint32_t gpu_buffers = 0;
+    uint32_t ring = 0;
+};
+MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min);
 // Render thread, at the first frame of a take (and after, cheap): opens the sink for this frame size. False: no take is running
 // or no sink could be made (logged); the frame is then reported lost, so the gate does not wait for it.
 bool CaptureSinkOpen(const FrameFormat& format);
-// Render thread: a free host buffer of width x height x 4 bytes, packed rows. Blocks while every buffer waits for the writer
-// (counted in `stall_ms`). data == nullptr when the sink is not open.
+// Render thread: a free host buffer of width x height x 4 bytes, packed rows. Blocks while every buffer waits for the writer (the
+// back-pressure; counted in `stall_ms`), and gives up only when the writer has finished nothing for mcla_capture_gate_timeout_ms (the take
+// then fails). data == nullptr when the sink is not open or the writer is stuck.
 HostBuffer CaptureAcquire(double* stall_ms);
 // Render thread: the buffer holds the frame; the writer takes it and the gate counts the frame as read back.
 void CaptureFrameDone(const HostBuffer& buffer, const FrameCosts& costs);

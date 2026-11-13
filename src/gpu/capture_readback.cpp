@@ -48,19 +48,8 @@ void CaptureReadback::Shutdown() {
   pass_timing_ = nullptr;
 }
 
-bool CaptureReadback::EnsureTarget(uint32_t width, uint32_t height) {
-  if (target_ && width == width_ && height == height_) {
-    return true;
-  }
-  if (format_ != plume::RenderFormat::B8G8R8A8_UNORM &&
-      format_ != plume::RenderFormat::R8G8B8A8_UNORM) {
-    REXLOG_ERROR("[cap] the present target format {} is not 8 bits per channel; no readback "
-                 "(TODO: R10G10B10A2 / float16 for the HDR output)",
-                 static_cast<uint32_t>(format_));
-    return false;
-  }
-  // A new size: the old objects die after the frames that use them, and the copies still in flight are dropped when they
-  // land (generation).
+void CaptureReadback::ReleaseTarget() {
+  // The old objects die after the frames that use them, and the copies still in flight are dropped when they land (generation).
   ++generation_;
   if (framebuffer_) {
     frames_->Retire(std::move(framebuffer_));
@@ -74,6 +63,26 @@ bool CaptureReadback::EnsureTarget(uint32_t width, uint32_t height) {
     }
     r.busy = false;
   }
+  active_readbacks_ = 0;
+  next_readback_ = 0;
+  width_ = 0;
+  height_ = 0;
+}
+
+bool CaptureReadback::EnsureTarget(uint32_t width, uint32_t height, uint32_t buffers) {
+  buffers = std::clamp<uint32_t>(buffers, 2, kReadbacks);
+  if (target_ && width == width_ && height == height_ && buffers == active_readbacks_) {
+    return true;
+  }
+  if (format_ != plume::RenderFormat::B8G8R8A8_UNORM &&
+      format_ != plume::RenderFormat::R8G8B8A8_UNORM) {
+    REXLOG_ERROR("[cap] the present target format {} is not 8 bits per channel; no readback "
+                 "(TODO: R10G10B10A2 / float16 for the HDR output)",
+                 static_cast<uint32_t>(format_));
+    return false;
+  }
+  // A new size, or another number of buffers: the old objects go.
+  ReleaseTarget();
   width_ = width;
   height_ = height;
   row_pitch_ = (width * 4 + 255) / 256 * 256;
@@ -87,13 +96,10 @@ bool CaptureReadback::EnsureTarget(uint32_t width, uint32_t height) {
                                               "capture framebuffer");
   }
   bool ok = target_ && framebuffer_;
-  for (Readback& r : readbacks_) {
-    if (!ok) {
-      break;
-    }
-    r.buffer = device_->CreateBuffer(
+  for (uint32_t i = 0; i < buffers && ok; ++i) {
+    readbacks_[i].buffer = device_->CreateBuffer(
         plume::RenderBufferDesc::ReadbackBuffer(uint64_t(row_pitch_) * height), "capture readback");
-    ok = r.buffer != nullptr;
+    ok = readbacks_[i].buffer != nullptr;
   }
   if (!ok) {
     REXLOG_ERROR("[cap] the {}x{} target or its readbacks could not be made", width, height);
@@ -103,16 +109,22 @@ bool CaptureReadback::EnsureTarget(uint32_t width, uint32_t height) {
       r.buffer.reset();
     }
     width_ = height_ = 0;
+    active_readbacks_ = 0;
     return false;
   }
+  active_readbacks_ = buffers;
   REXLOG_INFO("[cap] readback: {}x{}, {} GPU readback buffers of {:.1f} MiB", width, height,
-              kReadbacks, double(uint64_t(row_pitch_) * height) / 1048576.0);
+              buffers, double(uint64_t(row_pitch_) * height) / 1048576.0);
   return true;
 }
 
 void CaptureReadback::BeginPresent(uint64_t tag) {
   tag_ = (tag & mc::cinematic::capture::kTagCapture) != 0 ? tag : 0;
   handled_ = false;
+  // The take is over (its last frame was read back before the gate let it end): nothing stays allocated between takes.
+  if (target_ && tag_ == 0 && !mc::cinematic::CaptureTakeActive() && frames_) {
+    ReleaseTarget();
+  }
 }
 
 void CaptureReadback::EndPresent() {
@@ -145,7 +157,15 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();
-  if (!EnsureTarget(present.source_width(), present.source_height())) {
+  // The take's memory plan first: how many readback buffers fit the cap and the free memory (2 is enough in lock-step; a lag needs them all).
+  const uint32_t gpu_min = mc::cinematic::CaptureLag() == 0 ? 2 : kReadbacks;
+  const mc::cinematic::MemoryGrant grant =
+      mc::cinematic::CaptureMemoryPlan(present.source_width(), present.source_height(), kReadbacks, gpu_min);
+  if (!grant.ok) {
+    Lost("the take's memory plan does not fit, or the picture size changed (the [cap] TAKE FAILED line says which)");
+    return;
+  }
+  if (!EnsureTarget(present.source_width(), present.source_height(), grant.gpu_buffers)) {
     Lost("the readback target could not be made");
     return;
   }
@@ -158,12 +178,12 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
     return;
   }
   Readback& r = readbacks_[next_readback_];
-  if (r.busy) {
+  if (r.busy || !r.buffer) {
     Lost("every GPU readback buffer is still in flight");
     return;
   }
   const uint32_t index = next_readback_;
-  next_readback_ = (next_readback_ + 1) % kReadbacks;
+  next_readback_ = (next_readback_ + 1) % active_readbacks_;
 
   pass_timing_->Mark(list, "capture");
   list->barriers(plume::RenderBarrierStage::GRAPHICS,

@@ -20,6 +20,11 @@
 // submitted (AfterAdvance), so the readback is done when the present returns and the game's next
 // update can start. With a lag the copy is processed by the ring's own retirement, a frame later.
 //
+// Memory (M2b): how many readback buffers are made (2 to kReadbacks) is the take's memory plan
+// (mc::cinematic::CaptureMemoryPlan: a hard cap and the free memory), asked before anything is made; a
+// plan that does not fit ends the take and the frame is reported lost. The target and the buffers go
+// when the take ends (BeginPresent finds no take running): nothing stays allocated between takes.
+//
 // Threading: render thread only, after Initialize.
 // ===========================================================================
 
@@ -71,7 +76,10 @@ class CaptureReadback {
     bool busy = false;
   };
 
-  bool EnsureTarget(uint32_t width, uint32_t height);
+  // `buffers`: the readback buffers to have (2 to kReadbacks), the take's plan.
+  bool EnsureTarget(uint32_t width, uint32_t height, uint32_t buffers);
+  // Everything made goes after the frames that use it; a copy still in flight is dropped when it lands.
+  void ReleaseTarget();
   void Lost(const char* why);
   // A retire action: the copy into `readback` has run.
   void Process(uint32_t readback, uint64_t update, uint64_t generation, double record_ms);
@@ -91,6 +99,7 @@ class CaptureReadback {
   std::unique_ptr<plume::RenderTexture> target_;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer_;
   std::array<Readback, kReadbacks> readbacks_;
+  uint32_t active_readbacks_ = 0;  // how many of them are made
   uint32_t next_readback_ = 0;
 
   // The present in progress.
