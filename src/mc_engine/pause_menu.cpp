@@ -1540,14 +1540,16 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 //   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
 //      GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
-//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, SHADOW FILTER, CONTACT SHADOWS, SUN
-//      SHAFTS, ROAD REFLECTIONS: the anti-aliasing, filtering, occlusion, shadows, light and reflections
-//      that used to sit on the RENDERER page or came after it);
+//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering and
+//      occlusion that used to sit on the RENDERER page or came after it);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 22 rows (the native renderer on an RTX 50 series card, which has the frame generation
-// multiplier row: 7 here, 3 of the upscaler's, 9 picture rows, 3 of frame generation's); a page over
-// kMaxRowsPerMenu (24) is refused whole: two more picture rows fit, a third does not.
-// CHECK: that a page of 21 or 22 rows scrolls in the pause menu like the 12 and 14 row ones do (the
+// At most 18 rows (the native renderer on an RTX 50 series card, which has the frame generation
+// multiplier row: 7 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
+// kMaxRowsPerMenu (24) is refused whole. The graphics upgrades that came after the occlusion (SHADOW
+// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, ROAD REFLECTIONS) are the GRAPHICS QUALITY page's
+// (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it had 22
+// rows of 24 and the next two graphics packages would not have fitted.
+// CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
@@ -1785,6 +1787,21 @@ std::string RoadReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kRoadReflectionDynamics = {.str_label = RoadReflectionLabel};
+// Shadow detail (mcla_gpu_shadow_resolution, gpu/side_views.h, live): how finely the sun's shadows are drawn,
+// the game's own four 640x640 maps in a 1280x1280 picture (GAME), 2560x2560 (HIGH) or 3840x3840 (ULTRA);
+// with SHADOW FILTER on SOFT the edge of a shadow is half and a third as wide. AUTO says what it comes to on
+// this GPU (the first value's label): GAME on an integrated GPU, HIGH on the rest. The same value names as
+// the road reflections'. The label is "SHADOW DETAIL" (13 characters) with a value of at most 11
+// ("AUTO (HIGH)").
+std::string ShadowDetailLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::side_views::AutoLabel(mcla::gpu::SideView::kShadow);
+    case 1:  return "GAME";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kShadowDetailDynamics = {.str_label = ShadowDetailLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1797,8 +1814,8 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 
 // DISPLAY, after the upscaler's rows (VideoExtraRows): how the picture is smoothed, filtered and
 // shaded, in the order the owner asked for (2026-11-07): MSAA, POST AA, ANISOTROPIC, AMBIENT
-// OCCLUSION, AO INTENSITY, then the graphics upgrades (SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, ROAD
-// REFLECTIONS).
+// OCCLUSION, AO INTENSITY. (The graphics upgrades after them are the GRAPHICS QUALITY page's,
+// kGfxQualityItems below.)
 // One ANISOTROPIC row per renderer (the same name and place), MSAA on both
 // (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
 // Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "DEFAULT" (7), both
@@ -1823,6 +1840,24 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
                                 kNativeAoLevelVals, kNativeAoLevelNames, 4),
                             &kAoIntensityDynamics)),
+#endif
+};
+
+#if defined(LARECOMP_HAS_GPU)
+// GRAPHICS QUALITY (DISPLAY's sister page, the GRAPHICS tab's second button): the graphics upgrades of the
+// NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
+// (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
+// shadows, the sun shafts and the reflections. Every row is live. The order is shadows first (SHADOW
+// DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS), then reflections (ROAD REFLECTIONS; the
+// car reflections' row joins it after that one). The ids and the cvars are the rows' own as they were on
+// DISPLAY: a saved setting reads the same.
+// Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
+// ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
+// ItemRowLabel); no row has a suffix. 5 rows of the 24 a page can hold.
+const ItemDef kGfxQualityItems[] = {
+    NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
+                                "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
+                            &kShadowDetailDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SHADOW FILTER: ",
                                 kNativeShadowFilterVals, kNativeShadowFilterNames, 3),
                             &kShadowFilterDynamics)),
@@ -1835,8 +1870,8 @@ const ItemDef kPictureItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kRoadReflectionDynamics)),
-#endif
 };
+#endif
 
 // The rows DISPLAY has after its own table (MenuDef::extra): the upscaler's, kPictureItems, then
 // frame generation's (frame_generation_menu.cpp puts them together and keeps the table).
@@ -2093,6 +2128,9 @@ const ItemDef kUiItems[] = {
 // no button of its own (MenuIsNested).
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Submenu("PM_RxSubGfxQ", "GRAPHICS QUALITY", "RxGfxQualityMenu")),
+#endif
     Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Submenu("PM_RxSubTex", "TEXTURE MODS", "RxTexMenu")),
@@ -2265,7 +2303,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
      "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
-    {"PM_RxTabGfx", "GRAPHICS", "Display, performance and texture mods.",
+    {"PM_RxTabGfx", "GRAPHICS", "Display, quality, performance, textures.",
      "RxGfxMenu",
      kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
     {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
@@ -2286,6 +2324,11 @@ const MenuDef kMenus[] = {
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
      VideoExtraRows, false, UpscalingMenuRelayout},
+#if defined(LARECOMP_HAS_GPU)
+    {"PM_RxTabGfxQ", "GRAPHICS QUALITY", "Shadows, light and reflections.",
+     "RxGfxQualityMenu",
+     kGfxQualityItems, int(sizeof(kGfxQualityItems) / sizeof(kGfxQualityItems[0]))},
+#endif
     {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
      "RxPerfMenu",
      kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
@@ -2670,8 +2713,10 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "SHADOW FILTER" 13, "AO INTENSITY" 12, "ANISOTROPIC" 11,
-// "SUN SHAFTS" 10, values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)").
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
+// The GRAPHICS QUALITY page (kGfxQualityItems, 5 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
+// then "CONTACT SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "SUN SHAFTS" 10; values at most 11
+// ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
