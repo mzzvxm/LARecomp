@@ -627,6 +627,10 @@ else()
         endif()
     endif()
 
+    # The frame maths of the ASPECT RATIO setting (src/mc_engine/frame_fit.h) has a check that needs no game:
+    # cmake --build <dir> --target larecomp_frame_fit_test, then run it (exit 0 = passed).
+    add_executable(larecomp_frame_fit_test EXCLUDE_FROM_ALL src/mc_engine/frame_fit_test.cpp)
+
     # The shared Rate My Ride server players reach on TCP 31002. Standalone: the
     # store and protocol sources only, no SDK.
     add_executable(larecomp_rmr_server
