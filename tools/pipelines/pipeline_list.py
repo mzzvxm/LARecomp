@@ -36,8 +36,8 @@ pipelines at 4, 8 or 1 samples.
 check --pack: records whose vertex or pixel shader the pack does not have (the game drops them at load:
 "N dropped: a shader the pack does not have"), a spec variant on a shader with no spec mask, and with
 --variant-pack the variants of the variant pack (ps_variant 2 and up: the HDR scene's tone map, the bloom's
-Gaussians) whose pixel shader has no entry for that variant in it. The exit status is 1 when a record has no
-shader or a variant has no entry.
+Gaussians, the shadow collector's soft lookup) whose pixel shader has no entry for that variant in it. The
+exit status is 1 when a record has no shader or a variant has no entry.
 
 reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
 depth bias is not compared), in the FILEs' order, the rest after them in their old order. Use it
@@ -67,7 +67,7 @@ SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
-VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians"}  # ShaderStore::kHdrVariant, kBloomVariant
+VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians", 5: "shadow filter"}  # ShaderStore::kHdrVariant, kBloomVariant, kShadowFilterVariant
 
 # The shader pack (src/shaderpack/pack_format.h): "MSPK", version, count, formats, 16 reserved; entries of 88
 # bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 80

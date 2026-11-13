@@ -31,6 +31,7 @@
 #include "shaderpack/pack_writer.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/hdr_scene.h"
+#include "shaderpack/variants/shadow_filter.h"
 
 namespace larecomp::shaderpack {
 
@@ -522,6 +523,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
     left_out->push_back("hdr_scene: " + why);
   }
   variants.push_back(MakeBloomGaussVariant());
+  variants.push_back(MakeShadowFilterVariant());
   return variants;
 }
 
