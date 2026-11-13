@@ -108,6 +108,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/mods.cpp
     src/mc_engine/hooks/discord.cpp
     src/mc_engine/hooks/audio_mixer.cpp
+    src/mc_engine/hooks/lowcpu_probe.cpp
     src/mc_engine/hooks/job_workers.cpp
     src/mc_engine/hooks/script_aes.cpp
     src/mc_engine/hooks/diagnostics.cpp

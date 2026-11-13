@@ -187,6 +187,8 @@ const ItemDef kDebugRenderingItems[] = {
                    kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),
     NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+    NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
+                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     // Read when frame generation is switched on, so a change shows the next time it is.
     NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ",
                     false, " (ON NEXT USE)")),
@@ -247,6 +249,7 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgOnlineDiag",  "online_diag",           "ONLINE DIAG: "),
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
+    Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
 };
 
 // INFO: what differs from the defaults, and the way back.

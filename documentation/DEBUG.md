@@ -64,6 +64,20 @@ Every row is live: it takes effect at once and is never saved. A page has at mos
 | LOGGING | One switch per diagnostic that adds lines to the log and can be flipped while the game runs (UI colour, map mouse, wheel, music bank, warp, online and others). |
 | INFO | SHOW CHANGED SETTINGS, COPY LAUNCH ARGUMENTS, RESET DEBUG SETTINGS. |
 
+## Diagnostics that write to the log
+
+These only read: they change nothing in the game, they cost nothing while off, and each one is a line or two a tester can send. Switch one on from its row or with a launch argument; the log needs `log_level` info (the default). Why these and not the others of the old local test patches: `feature-parity/T4-DIAGNOSTICS.md`.
+
+| Setting | Where | What it writes |
+|---|---|---|
+| `mcla_gpu_resolve_memory_check` | launch argument (restart) | Slow: every resolve encode also goes into a second, reference pool at once, and what the game reads is compared with it. `[gpu] resolve memory check: ... readers with a different page ...` every 600 frames and at the end `RESULT PASS` or `RESULT FAIL` (an error line for each difference, the first 16). For wrong or flickering textures that the delayed encode (`mcla_gpu_resolve_memory_encode_delay`, 2 by default) could cause. With the delay at 0 it must pass too (that checks the check). |
+| `mcla_gpu_lock_ahead_verify` | launch argument (restart) | A lock whose pages an earlier lock read ahead reads them from the pool as before and compares: `[gpu] lock read-ahead check: ... N pages kept ahead, D different` (D must be 0). The vinyl editor is where it counts. |
+| `mcla_gpu_readable_cache_check` | launch argument (restart) | Asks the guest heap again at every range check the per-frame page cache answers. `[gpu] readable cache: ... N cached answers differ from the heap (must be 0)` at the end, and a warning for each of the first 16. |
+| `mcla_gpu_shader_memo_check` | launch argument (restart) | No draw takes its shaders from the frame's identity memo: every draw reads the shader objects and compares the memo with the full lookup. `[gpu] shader memo: ... N memo answers differ from the full lookup (must be 0)` at the end, and a warning for each of the first 16 (also for a shader object that changed its microcode within a frame). |
+| `mcla_gpu_present_release_check` | launch argument (restart) | Releases the guest at every guest present, also when the GPU is behind, and counts each read or write of guest memory the render thread makes after that: `[gpu] present release: ... N reads or writes of guest memory after the release (must be 0)` at the end. |
+| `mcla_gpu_vram_log` | RENDERING, VRAM LOG EVERY (live; frames, 0 off) | `[gpu] video memory (frame N): X MiB in use, budget Y MiB (Z% used) | held by the caches: textures ..., resolve products ..., EDRAM targets ..., resolve memory ... MiB`, at the first check past the interval (checks are 30 frames apart). The existing `[gpu] video memory: short` lines appear only when memory runs short; this one says how near a healthy run is. For stutter or crashes on a card with little video memory. `mcla_gpu_process_memory_log` does the same for the process's system memory. |
+| `lowcpu_probe` | LOGGING, LOW CPU PROBE (live) | Every 10 s, `[LowCpuProbe] audio ...`: the audio callback's gaps over 8, 12 and 20 ms and how late the game's 1 ms clock tick was, and `[LowCpuProbe] cpu ...`: CPU time of the audio worker and the timer-queue thread. For crackling sound and stutter on a PC with few cores. The always-on `[Audio]` lines count only the gaps over 20 ms. |
+
 ## Launch arguments for restart-only diagnostics
 
 A debug setting that the game reads only at start cannot be a row: a change would not take effect, and it could not be saved for the next start. These are launch arguments:
@@ -76,7 +90,7 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` is not here: its lifecycle is live, so it is a row on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 112 names in 13 groups (the number in brackets is the group's size):
+The list, 117 names in 13 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -90,8 +104,8 @@ The list, 112 names in 13 groups (the number in brackets is the group's size):
 **Plume renderer: timing and statistics** (7)
 `mcla_gpu_pass_timing`, `mcla_gpu_scene_profile`, `mcla_gpu_ab_interleave`, `mcla_gpu_memory_census`, `mcla_gpu_census_ps`, `mcla_gpu_census_targets`, `mcla_gpu_census_scale`
 
-**Plume renderer: finding picture bugs** (12)
-`mcla_gpu_edram_aliasing`, `mcla_gpu_coverage_queries`, `mcla_gpu_edram_capture`, `mcla_gpu_flicker_probe`, `mcla_gpu_flicker_probe_dumps`, `mcla_gpu_flicker_probe_shots`, `mcla_gpu_verify_constants`, `mcla_gpu_validate`, `mcla_gpu_watch_base`, `mcla_gpu_watch_size`, `mcla_gpu_watch_capture`, `mcla_gpu_texture_decode_selftest`
+**Plume renderer: finding picture bugs** (17)
+`mcla_gpu_edram_aliasing`, `mcla_gpu_coverage_queries`, `mcla_gpu_edram_capture`, `mcla_gpu_flicker_probe`, `mcla_gpu_flicker_probe_dumps`, `mcla_gpu_flicker_probe_shots`, `mcla_gpu_verify_constants`, `mcla_gpu_validate`, `mcla_gpu_watch_base`, `mcla_gpu_watch_size`, `mcla_gpu_watch_capture`, `mcla_gpu_texture_decode_selftest`, `mcla_gpu_resolve_memory_check`, `mcla_gpu_lock_ahead_verify`, `mcla_gpu_readable_cache_check`, `mcla_gpu_shader_memo_check`, `mcla_gpu_present_release_check`
 
 **Plume renderer: graphics-API debugging** (3)
 `mcla_gpu_debug_layer`, `mcla_gpu_gpu_based_validation`, `mcla_gpu_object_names`

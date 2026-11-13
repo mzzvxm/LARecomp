@@ -417,6 +417,7 @@ class ResolveMemory {
     uint32_t groups_y = 0;
     uint64_t frame = 0;  // frame_ when it was made
     bool from_product = false;  // a depth copy that reads its product (Copy::from_product)
+    uint64_t check_serial = 0;  // mcla_gpu_resolve_memory_check: its number in the write ledger
     std::array<uint32_t, 17> push{};
   };
   std::vector<Pending> pending_;
@@ -624,6 +625,115 @@ class ResolveMemory {
     uint64_t waiting_max = 0;
   };
   Stats stats_;
+
+  // -------------------------------------------------------------------------
+  // mcla_gpu_resolve_memory_check: a test aid, off by default, slow by design.
+  // -------------------------------------------------------------------------
+  // It checks that no reader of the pool sees other bytes than with
+  // mcla_gpu_resolve_memory_encode_delay 0, in the frames that ran. A second
+  // pool, the reference, gets every upload, growth and encode at once: each
+  // encode runs right after its resolve's conversion pass, reading the product
+  // as that resolve left it (a delay of 0 does the same at the latest; the
+  // console wrote the bytes at the resolve); a depth copy that the real encode
+  // reads from its product (Copy::from_product) goes into the reference from
+  // the EDRAM planes, as it did before that, so the two are compared. At each
+  // reader of the real pool --
+  // a decode, a vertex copy, a lock's write-back -- the valid pages it reads
+  // are copied out of both pools in the frame's list and compared on the CPU
+  // when the frame slot comes round again (the lock: at once, it waits anyway).
+  // Every kCheckSweepFrames frames every waiting encode is recorded and every
+  // valid page of the pool is compared (a difference no reader met yet). A
+  // ledger of the colour writes checks the invariant the delay rests on: no
+  // resolve rewrites texels that a waiting encode still has to read.
+  // Reports: log lines with the prefix "resolve memory check:".
+  enum CheckKind : uint32_t { kCheckDecode, kCheckVertex, kCheckLock, kCheckSweep, kCheckKinds };
+  static constexpr uint64_t kCheckSweepFrames = 600;
+  static constexpr uint64_t kCheckMaxBytes = uint64_t(256) << 20;  // one reader, one pool
+  static constexpr size_t kCheckEvents = 1024;
+  // A page a reader reads, with what the bookkeeping knew of it then.
+  struct CheckPage {
+    uint32_t page = 0;
+    uint32_t writer = 0;        // index in writer_keys_ (page_writer_key_)
+    uint32_t writer_frame = 0;  // frame_, low 32 bits, of the last encode into it
+    uint8_t flags = 0;
+    uint8_t writer_format = 0xFF;
+  };
+  // The pages of one reader, copied out of both pools into `readback`: the
+  // real pool's first, the reference's after them.
+  struct CheckJob {
+    CheckKind kind = kCheckDecode;
+    uint64_t frame = 0;
+    std::string what;
+    std::vector<CheckPage> pages;
+    std::unique_ptr<plume::RenderBuffer> readback;
+  };
+  // A write into a product: colour, or a depth copy read from its product (the ledger).
+  struct CheckWrite {
+    TextureKey key;
+    uint32_t level = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    uint64_t serial = 0;
+    uint64_t frame = 0;
+  };
+  // What became of a waiting encode, for the report of a difference.
+  struct CheckEvent {
+    bool dropped = false;  // else recorded, for `reason`
+    uint32_t reason = 0;
+    TextureKey key;
+    uint32_t level = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    uint32_t first_page = 0;
+    uint32_t last_page = 0;
+    uint64_t made = 0;  // frame_ of the encode
+    uint64_t now = 0;   // frame_ of the event
+  };
+  struct CheckStats {
+    std::array<uint64_t, size_t(kCheckKinds)> readers{};      // compared
+    std::array<uint64_t, size_t(kCheckKinds)> pages{};        // pages compared
+    std::array<uint64_t, size_t(kCheckKinds)> bytes{};        // bytes compared (one pool)
+    std::array<uint64_t, size_t(kCheckKinds)> bad_readers{};  // readers with a different page
+    std::array<uint64_t, size_t(kCheckKinds)> bad_pages{};
+    std::array<uint64_t, size_t(kCheckKinds)> skipped{};      // too big, or no buffer
+    uint64_t bad_dwords = 0;
+    uint64_t recorded = 0;   // waiting encodes recorded, each checked against the ledger
+    uint64_t rewritten = 0;  // ... of which a later resolve had rewritten their texels
+    uint64_t dropped = 0;    // waiting encodes replaced by a later resolve
+    uint64_t unverified = 0; // jobs never read (shutdown, no mapping)
+  };
+  uint64_t CheckPoolOffset(uint32_t page) const;
+  CheckPage CheckPageOf(uint32_t page) const;
+  // Runs a recorded encode (`pipeline` as encode_pipelines_) into the reference pool at once.
+  void CheckEncodeReference(plume::RenderCommandList* list, const void* push, uint32_t push_bytes,
+                            uint32_t pipeline, uint32_t groups_x, uint32_t groups_y);
+  // GrowPool's twin for the reference (the old one retired); false when it could not grow.
+  bool CheckGrowReference(plume::RenderCommandList* list, uint32_t chunks);
+  // Copies the valid pages of `spans` out of both pools into this frame's list; compared when
+  // the slot comes round (CheckVerify). Call after the pages the reader needs were uploaded.
+  void CheckReader(plume::RenderCommandList* list, CheckKind kind, std::string what,
+                   const PageSpan* spans, size_t count);
+  void CheckSweep(plume::RenderCommandList* list);
+  void CheckVerify(std::vector<CheckJob>& jobs);
+  void CheckCompare(CheckKind kind, const std::string& what, uint64_t frame,
+                    const std::vector<CheckPage>& pages, const uint8_t* pool,
+                    const uint8_t* reference);
+  void CheckNoteRecorded(const Pending& p, FlushReason reason);
+  void CheckNoteDropped(const Pending& p);
+  void CheckPushEvent(const CheckEvent& event);
+  void CheckTrimWrites();
+  void CheckLog(const char* when);
+  void CheckFinish();
+  bool check_ = false;
+  std::unique_ptr<plume::RenderBuffer> ref_pool_;
+  std::unique_ptr<plume::RenderDescriptorSet> ref_encode_set_;
+  std::unique_ptr<plume::RenderBuffer> readback_ref_buffer_;  // the lock write-back's twin
+  std::vector<std::vector<CheckJob>> check_jobs_;             // by frame slot
+  std::vector<CheckWrite> check_writes_;                      // in serial order
+  std::vector<CheckEvent> check_events_;                      // a ring of kCheckEvents
+  size_t check_events_next_ = 0;
+  uint64_t check_serial_ = 0;
+  CheckStats check_stats_;
+  uint32_t check_logged_ = 0;           // difference lines logged (16 at most)
+  uint32_t check_rewrites_logged_ = 0;  // ledger lines logged (16 at most)
 };
 
 }  // namespace mcla::gpu
