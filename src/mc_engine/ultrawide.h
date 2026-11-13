@@ -219,8 +219,12 @@ inline bool IsUiMessage(uint32_t bucket) { return (bucket & 0xFF000000u) == 0x7F
 // Around the guest's draw of one instance of the Flash player (the guest render thread): `begin` at the
 // entry of sub_825FB348 with the instance (r3), the end at its exit with the same instance (r30). Sends the
 // renderer kUiPieceLeft / kUiPieceRight / kUiPieceEnd when the instance is a piece and hud_width is above 0,
-// and kUiEdgeRight for the title screen's prompt bar (PROMPTMOVIE's `screen` until the game is entered, ultrawide.cpp);
+// and kUiEdgeRight for the title screen's prompt bar (PROMPTMOVIE's `screen` until the game is entered: NoteGameEntered);
 // a no-op otherwise (the picture is not wider than 16:9, the Xenia renderer).
 void NoteUiPiece(uint32_t instance, bool begin);
+
+// The player's control map has been built (keyboard_native.cpp, the return of sub_822A4DE8): the game proper
+// has started, the title and the sign-in steps are behind. Ends the title prompt bar's place at the edge.
+void NoteGameEntered();
 
 }  // namespace mc::ultrawide

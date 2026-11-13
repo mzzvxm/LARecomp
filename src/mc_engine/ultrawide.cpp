@@ -383,33 +383,20 @@ thread_local uint32_t t_open_piece = 0;
 // with a prompt bar, PROMPTMOVIE's `allprompts` is the one drawn straight onto the screen; PAUSEMOVIE's is
 // inside the pause menu's card, NAVSYSMOVIE's and POPUPMOVIE's belong to their own panels). It sits at the
 // screen's right edge on a wide picture, as far from it as on a 16:9 screen, whatever hud_width is (the
-// owner, 2026-11-12: centred, it looked out of place under the wide title view). Only until the driving HUD
-// has first been drawn (the title and the sign-in steps): later prompts of the same movie belong to screens
-// whose menus stay in the middle.
+// owner, 2026-11-12: centred, it looked out of place under the wide title view). Only until the game is
+// entered (NoteGameEntered: the player's control map is first built, after the title and the sign-in steps;
+// the driving HUD's movie is no sign of it, it is drawn hidden from the first title frame): later prompts of
+// the same movie belong to screens whose menus stay in the middle.
 // CHECK: that nothing but the prompt bar is drawn by PROMPTMOVIE before the game is entered (the sign-in and
-// profile steps included), that a game started with the HUD switched off still draws its speedometer clip
-// (otherwise the bar keeps moving to the edge in those later screens), and that after quitting to the title
-// the bar staying in the middle is acceptable.
+// profile steps included), and that after quitting to the title the bar staying in the middle is acceptable.
 
-// The driving HUD (hud.swf's `speedometer`, a child of its clip "HUD") has been drawn once.
-std::atomic<bool> g_hud_seen{false};
+std::atomic<bool> g_game_entered{false};
 std::atomic<bool> g_title_prompt_logged{false};
-
-void NoteHudSeen(const uint8_t* base, uint32_t instance) {
-  if (g_hud_seen.load(std::memory_order_relaxed) ||
-      !GuestNameIs(base, ReadGuestU32(base, instance + kInstName), "speedometer")) {
-    return;
-  }
-  const uint32_t parent = ReadGuestU32(base, instance + kInstParent);
-  if (PlausibleEa(parent) && GuestNameIs(base, ReadGuestU32(base, parent + kInstName), "HUD")) {
-    g_hud_seen.store(true, std::memory_order_relaxed);
-  }
-}
 
 // `instance` is PROMPTMOVIE's `screen` (the root's child that holds the whole bar: the player draws a movie's
 // root's children through sub_825FB348, not the root itself) and the game has not been entered yet.
 bool IsTitlePrompt(const uint8_t* base, uint32_t instance) {
-  if (g_hud_seen.load(std::memory_order_relaxed) ||
+  if (g_game_entered.load(std::memory_order_relaxed) ||
       !GuestNameIs(base, ReadGuestU32(base, instance + kInstName), "screen")) {
     return false;
   }
@@ -422,6 +409,13 @@ bool IsTitlePrompt(const uint8_t* base, uint32_t instance) {
 }
 
 }  // namespace
+
+void NoteGameEntered() {
+  if (!g_game_entered.exchange(true, std::memory_order_relaxed) &&
+      g_title_prompt_logged.load(std::memory_order_relaxed)) {
+    LARECOMP_APP_INFO("ultrawide: the game is entered: the prompt bar stays in the middle from now on");
+  }
+}
 
 void NoteUiPiece(uint32_t instance, bool begin) {
 #if defined(LARECOMP_HAS_GPU)
@@ -442,8 +436,7 @@ void NoteUiPiece(uint32_t instance, bool begin) {
   if (!base) {
     return;
   }
-  if (!g_hud_seen.load(std::memory_order_relaxed)) {
-    NoteHudSeen(base, instance);
+  if (!g_game_entered.load(std::memory_order_relaxed)) {
     if (IsTitlePrompt(base, instance)) {
       if (!g_title_prompt_logged.exchange(true, std::memory_order_relaxed)) {
         LARECOMP_APP_INFO("ultrawide: the title's prompt bar (PROMPTMOVIE) is at the right edge until the game is entered");

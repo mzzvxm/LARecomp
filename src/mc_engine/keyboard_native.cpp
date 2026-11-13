@@ -1,5 +1,6 @@
 // See keyboard_native.h for the design and what every address below is.
 #include "keyboard_native.h"
+#include "ultrawide.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
@@ -427,6 +428,8 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
 // Hook at the return of sub_822A4DE8. The game has just cleared and rebuilt the
 // mapper from the control map; the keyboard entries go on the end.
 void Hook_ControlMapRebuilt(PPCRegister& r30) {
+    // The game proper has started: the ultrawide title prompt goes back to the middle (ultrawide.h).
+    mc::ultrawide::NoteGameEntered();
     const bool keyboard = REXCVAR_GET(keyboard_native);
     if (!keyboard && !ExtrasEnabled()) return;
     uint8_t* b = GuestBase();
