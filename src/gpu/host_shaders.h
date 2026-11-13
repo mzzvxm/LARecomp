@@ -19,6 +19,7 @@
 #if defined(LARECOMP_GPU_HAS_D3D12)
 #include "ao_apply_ms_ps.hlsl.dxil.h"
 #include "ao_apply_ps.hlsl.dxil.h"
+#include "ao_contact_ps.hlsl.dxil.h"
 #include "ao_denoise_ps.hlsl.dxil.h"
 #include "ao_depth_ms_ps.hlsl.dxil.h"
 #include "ao_depth_ps.hlsl.dxil.h"
@@ -72,6 +73,7 @@
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "ao_apply_ms_ps.hlsl.spirv.h"
 #include "ao_apply_ps.hlsl.spirv.h"
+#include "ao_contact_ps.hlsl.spirv.h"
 #include "ao_denoise_ps.hlsl.spirv.h"
 #include "ao_depth_ms_ps.hlsl.spirv.h"
 #include "ao_depth_ps.hlsl.spirv.h"
@@ -307,7 +309,8 @@ inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
 // The ambient occlusion's passes (ao.h, hlsl/ao_*_ps.hlsl), numbered as AmbientOcclusion::Pass: 0
 // the linear depth, 1 the same from a multisampled depth plane, 2 a coarser level, 3 the
 // visibility, 4 the denoise, 5 the apply, 6 the apply over a multisampled depth plane, 7 the
-// accumulation over frames, 8 the same over a multisampled depth target.
+// accumulation over frames, 8 the same over a multisampled depth target, 9 the contact shadows' ray
+// march (ao_contact_ps.hlsl).
 inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
@@ -318,7 +321,8 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 5: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ps);
     case 6: return MCLA_GPU_HOST_SHADER_BLOB(ao_apply_ms_ps);
     case 7: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ms_ps);
+    case 8: return MCLA_GPU_HOST_SHADER_BLOB(ao_temporal_ms_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
 }
 
