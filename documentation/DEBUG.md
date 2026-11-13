@@ -160,6 +160,27 @@ The log lines start with `[scene]`: `armed`, `loaded` (with the counts), `start`
 
 The format is written out at the top of `src/mc_engine/cinematic/scene.h`. `cmake --build <dir> --target larecomp_scene_test` builds the checks of the parser, the timeline and the reload rule; they need no game. `larecomp_scene_test a.scene` parses files and says what the game would say. The test harness has a lint, `scene_check.py`, that also checks key order, durations, setting names and values, and that a car is spawned before it is used.
 
+### Cars in a scene (spawn, delete, the player's garage car, poses)
+
+The `car` statements of a scene put cars into free roam and dress the player's own. Nothing runs unless a scene has car keys (one flag test an update); they are `mcla_scene` features, so they are debug-only like the rest.
+
+```
+at 0 car p1 spawn vp_lam_murcielago_06 at 812.5,17.6,-799.5 heading 62    # a car by the game's vehicle name
+at 0 car p2 spawn profile 1 at 818.0,17.6,-797.0 heading 242               # garage slot 1 of the save, dressed as the owner left it
+at 0 car player profile 3                                                  # the player's own car becomes garage slot 3
+at 20 car p1 delete
+```
+
+`at` takes `x,y,z` (or three numbers): a world position, x east, z south, y up. `heading` is where the nose points, in degrees, as the camera's yaw: 0 along +Z, 90 along +X (the game's own `Racer_Teleport` angle is this plus 180; the log shows both). Garage slots count from 0 (`garage:N` and `slot:N` also mean `profile N`). The id is what the camera's `car:<id>` will name; `player` takes only `profile`. A car is made the way E4 proved in free roam: `OpponentManager_CreateOpponent`, `LoadOpponent` (or `LoadOpponentByCarConfig` with the garage's config), `AddOpponentToWorld`, wait until the load state is 3 and the car is streamed, `Racer_Activate`, `Racer_SetStreamingLockedIn`, `Racer_Teleport`, then `Racer_GetPosition` as a check. That takes about 4 s: a car exists from the log line `car p1 is ready`, so give its spawn key a few seconds before the shot that needs it.
+
+**Safe point.** The scene runner only queues the keys; `TickCars` (one line in `Patch_DeltaTimePre`, after `TickScene`) makes the calls on the game thread, one native an update at most, and only while the player's car is on the road, the ambient and opponent managers exist, the game is not paused and that has held for 10 updates. A racer is looked up in the opponent manager's active list before a call is made on it: if the world was rebuilt under the scene (a race, the front end) the car is dropped from the books with a warning and nothing is called. A name the game's car table does not have, a garage slot that is not there and an empty opponent pool each fail that car with a warning and nothing else; a car that is not streamed in after 20 s is deleted again.
+
+**The end.** Every car the scene spawned is deleted when it ends (also on a restart, a reload and when `mcla_scene` is cleared), after the spawn has run to its end (a half-made opponent is never deleted: E4 only deleted finished ones), and the player's car goes back to the garage slot it wore before the scene changed it. Both take a few seconds after the scene's `finished` line and the log says so (`[cars] ... is deleted`, `[cars] nothing left to do`).
+
+**Poses (for the camera).** `src/mc_engine/cinematic/cars.h`: `GetCarPose("p1", &pose)` and `CarMatrixById("p1", matrix)` give the position, the axes and the heading of the player (`"player"`) and of every scene car, read from the car entity's world matrix (`racer+48 -> entity, +28 -> matrix, +16`: right, up, back, position) at the moment of the call, with the last good pose as the fallback; a registry (`car_registry.h`) holds each car's last pose and the update that read it. `racer+0x470`, the race cars' own position copy, holds a fill value outside a race and is not used. `CarMatrixById` has the shape of the camera package's `CarResolver` and is installed as its car source when that package is in the build. The log writes a `[cars] pose <id> (x, y, z) heading h` line every 2 s for each car that has one, and `[cars] <id> placed:` once after the placement with the matrix, `Racer_GetPosition` and what the scene asked for side by side.
+
+The log lines start with `[cars]`: the scene's keys as they come due, every native with its arguments and result (so the last line before a crash names the call), `ready`, `pose`, `placed`, `is deleted`. `cmake --build <dir> --target larecomp_cars_test` builds the checks of the statements, the pose maths, the registry and the whole spawn / delete / garage script against a pretend game (222 checks); they need no game.
+
 ## Adding a debug setting
 
 A new cvar is one of three things, and the check below fails until it is:
