@@ -74,6 +74,7 @@
 #include "shaders.h"
 #include "topology.h"
 #include "upload.h"
+#include "upscaler_masks.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -203,9 +204,11 @@ class Scene {
     HdrToneMap::Action hdr_action = HdrToneMap::Action::kNone;
     plume::RenderPipeline* hdr_pipeline = nullptr;
     UploadSpan hdr_shared;
-    // A car's shadow decal, while an upscaler runs: the draw is drawn again into the decals' mask image
-    // once it is recorded (RecordShadowMask, vehicle_motion_mask.h), with this pipeline.
-    plume::RenderPipeline* shadow_pipeline = nullptr;
+    // A draw the upscalers' masks take (a car's shadow decal, a particle, a light volume, glass), while an
+    // upscaler runs: the draw is drawn again into its layer's coverage image once it is recorded
+    // (RecordUpscalerMask, upscaler_masks.h), with this pipeline.
+    plume::RenderPipeline* mask_pipeline = nullptr;
+    UpscalerMasks::Kind mask_kind = UpscalerMasks::Kind::kNone;
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
@@ -283,13 +286,14 @@ class Scene {
   // The draw `d` was just recorded: records it again into the float scene image (its own
   // framebuffer, pipeline, and shared constants for the tone map; everything else the draw's).
   void RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list);
-  // A car's shadow decal (vehicle_motion_mask.h) in the main view, in a frame an upscaler works on and
-  // before its anchor: looks up the pipeline that draws it again into the decals' mask (a build still
-  // under way leaves the second draw out: the frame has no mask).
-  void PrepareShadowMask(PreparedDraw& d, const PipelineInputs& inputs);
-  // The decal `d` was just recorded: records it again into the mask image (its own framebuffer and
-  // pipeline; everything else the draw's), the way RecordHdrDuplicate does.
-  void RecordShadowMask(const PreparedDraw& d, plume::RenderCommandList* list);
+  // A draw the upscalers' masks take (upscaler_masks.h) in the main view, in a frame an upscaler works on
+  // and before its anchor: looks up the pipeline that draws it again into its layer's coverage image (a
+  // build still under way leaves the second draw out: the frame has less of a mask).
+  void PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs, UpscalerMasks::Kind kind);
+  // The draw `d` was just recorded: records it again into the coverage image (its own framebuffer with
+  // the game's depth beside it, and pipeline; everything else the draw's), the way RecordHdrDuplicate
+  // does.
+  void RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list);
   static bool AlwaysMaySkip(const void*) { return true; }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,

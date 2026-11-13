@@ -201,6 +201,18 @@ void HostPasses::ReleaseImage(HostImage& image) {
   image = HostImage{};
 }
 
+std::unique_ptr<plume::RenderFramebuffer> HostPasses::CreateFramebuffer(
+    const plume::RenderTexture* color, const plume::RenderTexture* depth, const char* name) {
+  const plume::RenderTexture* attachments[1] = {color};
+  return device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, 1, depth), name);
+}
+
+void HostPasses::RetireFramebuffer(std::unique_ptr<plume::RenderFramebuffer> framebuffer) {
+  if (framebuffer) {
+    frames_->Retire(std::move(framebuffer));
+  }
+}
+
 void HostPasses::DrawInto(plume::RenderCommandList* list, HostImage& image,
                           const plume::RenderPipeline* pipeline, const void* push,
                           uint32_t push_size, bool clear) const {

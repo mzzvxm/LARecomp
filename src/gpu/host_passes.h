@@ -137,6 +137,13 @@ class HostPasses {
                    plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET);
   // Its slot back to the heap and its objects to the FrameRing.
   void ReleaseImage(HostImage& image);
+  // A framebuffer of `color` (the one colour target) with `depth` attached beside it, which a pass over
+  // a game's draws draws with (upscaler_masks.h): the depth is not written when the pipeline says not.
+  // Null on failure (logged by Device). Retired with RetireFramebuffer, after the lists that name it.
+  std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(const plume::RenderTexture* color,
+                                                              const plume::RenderTexture* depth,
+                                                              const char* name);
+  void RetireFramebuffer(std::unique_ptr<plume::RenderFramebuffer> framebuffer);
   // Outside a render pass: the full-screen triangle into all of `image` with
   // `pipeline` and `push` (cleared to zero first when `clear`, and on the
   // image's first use: a new render target is initialised before it is drawn

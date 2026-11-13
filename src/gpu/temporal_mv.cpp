@@ -89,7 +89,7 @@ void TemporalMotion::Initialize(Device& device, BindlessHeap& heap, HostPasses& 
   heap_ = &heap;
   passes_ = &passes;
   pass_timing_ = &pass_timing;
-  mask_.Initialize(passes, pass_timing);
+  masks_.Initialize(passes, pass_timing);
   failed_ = false;
   initialized_ = true;
 }
@@ -101,7 +101,7 @@ void TemporalMotion::Shutdown() {
   }
   motion_ = HostImage{};
   table_ = HostImage{};
-  mask_.Shutdown();
+  masks_.Shutdown();
   mask_recorded_ = false;
   table_pipeline_.reset();
   depth_pipeline_.reset();
@@ -127,13 +127,13 @@ void TemporalMotion::Release() {
   }
   passes_->ReleaseImage(motion_);
   passes_->ReleaseImage(table_);
-  mask_.Release();
+  masks_.Release();
   mask_recorded_ = false;
   recorded_ = false;
 }
 
 uint64_t TemporalMotion::HeldBytes() const {
-  uint64_t bytes = mask_.HeldBytes();
+  uint64_t bytes = masks_.HeldBytes();
   const auto add = [&bytes](const HostImage& image) {
     if (image.texture) {
       bytes += TextureBytes(image.width, image.height, 1, image.format);
@@ -285,8 +285,8 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   pass_timing_->Mark(list, "temporal motion vectors");
   RecordMotion(list, f, has_previous, stencil, table_slot);
 
-  // The shadow decals' mask, when the Scene drew any (it needs no previous frame).
-  mask_recorded_ = mask_.Resolve(list, rw, rh, stencil);
+  // The masks of the draws the Scene drew again (they need no previous frame).
+  mask_recorded_ = masks_.Resolve(list, rw, rh);
 
   recorded_ = true;
   recorded_frame_ = f.frame;
@@ -408,7 +408,8 @@ TemporalMotion::Kept TemporalMotion::kept() const {
   k.depth = &depth_[cur_];
   k.motion = &motion_;
   k.motion_is_zero = motion_zero_;
-  k.mask = mask_recorded_ ? mask_.mask() : nullptr;
+  k.mask = mask_recorded_ ? masks_.mask(UpscalerMasks::Layer::kReactive) : nullptr;
+  k.transparency = mask_recorded_ ? masks_.mask(UpscalerMasks::Layer::kTransparency) : nullptr;
   return k;
 }
 
@@ -422,7 +423,7 @@ std::string TemporalMotion::Summary() const {
                       c.with_ids, c.frames, c.max_ids, c.ids, c.taken, c.not_sane, c.not_rigid,
                       c.not_finite, c.no_world, c.tables);
   }
-  const std::string mask = mask_.Summary();
+  const std::string mask = masks_.Summary();
   if (!mask.empty()) {
     out += (out.empty() ? "" : " | ") + mask;
   }

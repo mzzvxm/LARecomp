@@ -119,10 +119,15 @@ struct TemporalInputs {
   TemporalImage color;
   TemporalImage depth;
   TemporalImage motion;
-  // Optional (texture null: none this frame): the cars' shadow decals' mask, R8_UNORM at the render
-  // size, SHADER_READ at the COMPUTE stage like the others (vehicle_motion_mask.h). 0 to 1, 1 rejects
-  // the pixel's history: FSR's reactive mask, DLSS's bias-current-colour hint.
+  // Optional (texture null: none this frame): the reactive mask, R8_UNORM at the render size,
+  // SHADER_READ at the COMPUTE stage like the others (upscaler_masks.h): how much of the pixel is a
+  // layer no motion vector is right for, the cars' shadow decals, particles and light volumes. 0 to 1,
+  // 1 rejects the pixel's history: FSR's reactive mask, DLSS's bias-current-colour and reactive hints.
   TemporalImage mask;
+  // Optional likewise: the transparency and composition mask, R8_UNORM, the same size and state: how
+  // much of the pixel is car glass, whose pixel lock the upscaler should give up. 0 to 1: FSR's
+  // transparencyAndComposition, DLSS's hint of that name.
+  TemporalImage transparency;
   TemporalImage output;
   float jitter[2] = {};        // render pixels, +y down: what this frame's draws were moved by
   float motion_scale[2] = {1.0f, 1.0f};  // the vectors times this are render pixels

@@ -428,9 +428,10 @@ class TemporalSystem {
   const temporal::Camera* previous_camera() const { return ran_last_ ? &last_camera_ : nullptr; }
   // The depth and motion vector images kept for the last frame (temporal_mv.h Kept: sizes, formats).
   const TemporalMotion& motion() const { return motion_; }
-  // The cars' shadow decals' mask (vehicle_motion_mask.h): the Scene draws the decals again into it
-  // while an upscaler runs (scene.cpp PrepareShadowMask, RecordShadowMask).
-  ShadowMask& shadow_mask() { return motion_.shadow_mask(); }
+  // The upscalers' masks (upscaler_masks.h): the Scene draws shadow decals, particles, light volumes
+  // and glass again into their coverage images while an upscaler runs (scene.cpp PrepareUpscalerMask,
+  // RecordUpscalerMask).
+  UpscalerMasks& masks() { return motion_.masks(); }
   // The video memory the temporal path holds now: the upscaler's output image, the depth and the
   // vectors at the render size, and the runtime's own context as it reports it (about 500 MB at
   // 4K for FSR). Render thread (the backend's status is read under its lock).
