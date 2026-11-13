@@ -515,10 +515,9 @@ class TemporalSystem {
   // The run: what the frames before this one left.
   bool ran_last_ = false;    // the previous frame's anchor was accepted
   temporal::Camera last_camera_;
-  // The camera's last step (position now minus position before), what the cut test predicts the
-  // next one from; unknown at the first step of a run.
-  double last_step_[3] = {};
-  bool last_step_known_ = false;
+  // What the camera did in its last two steps (position, turn, lens), what the cut rule judges the
+  // next one against; empty at the first step of a run and after a cut.
+  temporal::CutMotion last_cut_motion_;
   Scale last_scale_ = Scale::None();
   Clock::time_point last_anchor_time_{};
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
