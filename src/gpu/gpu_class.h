@@ -24,16 +24,21 @@
 // to, like the low latency row's "AUTO (ON)":
 //     case 0: return gpu_class::AutoLabel(gpu_class::Effect::kSunShafts);   // "AUTO (HIGH)"
 //
+// One setting is not a string table: the city LOD scale (lod_city_scale, a number whose 0 is `auto`),
+// with its own rule below (CityLodScaleFor, CityLodLabelFor).
+//
 // Everything that decides something is a pure inline function here (Classify, Cell, ResolveFor,
-// AutoLabelFor), and this header includes nothing of Plume or ReXGlue: gpu_class_test.cpp builds on
-// its own and checks every cell of the table and the class rule. Current(), Resolve() and AutoLabel()
-// (gpu_class.cpp) only add the class this process found.
+// AutoLabelFor, CityLodScaleFor), and this header includes nothing of Plume or ReXGlue:
+// gpu_class_test.cpp builds on its own and checks every cell of the table and the class rule.
+// Current(), Resolve(), AutoLabel() and the CityLod... pair (gpu_class.cpp) only add the class this
+// process found.
 //
 // The cells are a first guess from the costs in the design file; the main session corrects a cell
 // from the measured cost of its package, and the owner tunes the threshold (design question 1).
 // ===========================================================================
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 
@@ -158,6 +163,46 @@ inline std::string AutoLabelFor(GpuClass c, Effect effect) {
   return AutoLabelOf(Cell(effect, c));
 }
 
+// --- the city LOD scale -------------------------------------------------------------------------
+// lod_city_scale (the pause menu's CITY LOD, the launcher's City LOD) is how far a city sector keeps
+// its detailed model, as a multiple of the game's own 300 m. 0 stands for `auto`; any other value is
+// the player's own and is used as it is (an older larecomp.toml may hold 0.1, 5 or 10).
+// Measured (perf BACKLOG-opt.md, the LOD line): a sector is drawn detailed when it is loaded and nearer
+// than 300 m x the scale x a camera factor (up to 1.5), and loading stops at the 600 m streaming
+// radius, so 2 already makes every loaded sector detailed and 5 and 10 add nothing. It costs about
+// +6% CPU frame time on a fast CPU and +36 MB, so `auto` is 2 where the GPU class is Mid or High and
+// the game's own 1 on Low (integrated GPUs, handhelds, software adapters).
+// The class is only known once Plume has opened the device (Initialize); with the Xenia renderer
+// (debug only) it never is, and until it is known `auto` is the game's own 1 too.
+inline constexpr double kCityLodAutoGame = 1.0;
+inline constexpr double kCityLodAutoFull = 2.0;
+
+// What `auto` stands for: `known` is whether the class has been found (Known()), `c` the class.
+constexpr double CityLodAutoFor(bool known, GpuClass c) {
+  return (known && c != GpuClass::kLow) ? kCityLodAutoFull : kCityLodAutoGame;
+}
+
+// The scale to apply for the cvar's value: the player's own if it is above 0, else what `auto` comes to.
+constexpr double CityLodScaleFor(bool known, GpuClass c, double user_value) {
+  return user_value > 0.0 ? user_value : CityLodAutoFor(known, c);
+}
+
+// "2X", "0.5X", "1.5X": a scale as the pause row shows it.
+inline std::string CityLodScaleText(double scale) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%gX", scale);
+  return buf;
+}
+
+// The pause row's label for the cvar's value: "AUTO (2X)" for 0 (what `auto` comes to now), else the
+// scale itself.
+inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
+  if (user_value > 0.0) {
+    return CityLodScaleText(user_value);
+  }
+  return AutoLabelOf(CityLodScaleText(CityLodAutoFor(known, c)));
+}
+
 // What the class rule looks at, as plain values (gpu_class.cpp fills it from the device).
 struct AdapterFacts {
   bool uma = false;         // the GPU shares memory with the CPU (D3D12 UMA; Vulkan integrated with host-visible local memory)
@@ -204,8 +249,18 @@ void Initialize(const plume::RenderDeviceDescription& description,
 // Initialize (nothing is drawn before the device exists). Any thread, cheap.
 GpuClass Current();
 
+// Whether Current() is a class this process really found: false until Initialize has run, and for the
+// whole run with the Xenia renderer (debug only), which makes its own device and never calls it. A
+// setting whose `auto` is not the same on every class acts as on the weakest while this is false, so
+// that a player is never given the strong class's cost before it is known. Any thread, cheap.
+bool Known();
+
 // ResolveFor / AutoLabelFor for Current(). Any thread.
 std::string Resolve(Effect effect, std::string_view user_value);
 std::string AutoLabel(Effect effect);
+
+// CityLodScaleFor / CityLodLabelFor for Known() and Current(). Any thread.
+double CityLodScale(double user_value);
+std::string CityLodLabel(double user_value);
 
 }  // namespace mcla::gpu::gpu_class

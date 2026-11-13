@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -36,6 +37,14 @@ void CheckEq(const std::string& got, const std::string& want, const std::string&
   if (got != want) {
     ++g_failed;
     std::printf("FAILED: %s: got '%s', want '%s'\n", what.c_str(), got.c_str(), want.c_str());
+  }
+}
+
+void CheckNum(double got, double want, const std::string& what) {
+  ++g_checks;
+  if (got != want) {
+    ++g_failed;
+    std::printf("FAILED: %s: got %g, want %g\n", what.c_str(), got, want);
   }
 }
 
@@ -175,6 +184,55 @@ void CheckClassify() {
   Check(Classify(igpu).why.find("UMA") != std::string::npos, "the reason names UMA");
 }
 
+// The city LOD scale (lod_city_scale, 0 = auto): 2 on a Mid or High class once the class is known, the
+// game's own 1 on Low and while the class is not known (before the device opens; always with the Xenia
+// renderer); the player's own value, whatever it is, in every state.
+void CheckCityLod() {
+  struct State {
+    bool known;
+    GpuClass cls;
+    double want_auto;
+    const char* label;
+    const char* what;
+  };
+  const State states[] = {
+      {false, GpuClass::kLow, 1.0, "AUTO (1X)", "class not known (Low default)"},
+      {false, GpuClass::kMid, 1.0, "AUTO (1X)", "class not known (Mid)"},
+      {false, GpuClass::kHigh, 1.0, "AUTO (1X)", "class not known (High default, as Current() is before Initialize)"},
+      {true, GpuClass::kLow, 1.0, "AUTO (1X)", "Low"},
+      {true, GpuClass::kMid, 2.0, "AUTO (2X)", "Mid"},
+      {true, GpuClass::kHigh, 2.0, "AUTO (2X)", "High"},
+  };
+  // What the cvar can hold: the steps (0.5, 1, 1.5, 2), an old config's values (0.1, 5, 10), a value set by
+  // hand.
+  const double kOwn[] = {0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0};
+  const char* const kOwnText[] = {"0.1X", "0.5X", "1X", "1.5X", "2X", "2.5X", "5X", "10X"};
+  // Zero is auto; so is anything below it and a value that is no number.
+  const double kAuto[] = {0.0, -0.0, -1.0, -10.0, std::numeric_limits<double>::quiet_NaN()};
+
+  for (const State& s : states) {
+    const std::string at = std::string("city LOD, ") + s.what;
+    CheckNum(CityLodAutoFor(s.known, s.cls), s.want_auto, at + ": auto");
+    CheckEq(CityLodLabelFor(s.known, s.cls, 0.0), s.label, at + ": auto's label");
+    for (const double v : kAuto) {
+      CheckNum(CityLodScaleFor(s.known, s.cls, v), s.want_auto, at + ": scale of " + std::to_string(v));
+      CheckEq(CityLodLabelFor(s.known, s.cls, v), s.label, at + ": label of " + std::to_string(v));
+    }
+    for (std::size_t i = 0; i < sizeof(kOwn) / sizeof(kOwn[0]); ++i) {
+      CheckNum(CityLodScaleFor(s.known, s.cls, kOwn[i]), kOwn[i],
+               at + ": the player's " + kOwnText[i] + " is kept");
+      CheckEq(CityLodLabelFor(s.known, s.cls, kOwn[i]), kOwnText[i], at + ": label of " + kOwnText[i]);
+    }
+  }
+
+  // The values the two constants and the text helper stand for.
+  CheckNum(kCityLodAutoGame, 1.0, "the game's own city LOD scale is 1");
+  CheckNum(kCityLodAutoFull, 2.0, "the strong class's city LOD scale is 2");
+  CheckEq(CityLodScaleText(2.0), "2X", "CityLodScaleText(2)");
+  CheckEq(CityLodScaleText(1.5), "1.5X", "CityLodScaleText(1.5)");
+  CheckEq(CityLodScaleText(0.5), "0.5X", "CityLodScaleText(0.5)");
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +240,7 @@ int main() {
   CheckLabels();
   CheckNames();
   CheckClassify();
+  CheckCityLod();
   if (g_failed != 0) {
     std::printf("gpu_class_test: %d of %d checks FAILED\n", g_failed, g_checks);
     return 1;

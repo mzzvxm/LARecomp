@@ -33,6 +33,7 @@ namespace {
 constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
+std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
@@ -100,6 +101,8 @@ std::string AutoSummary(GpuClass c) {
     out += '=';
     out += Cell(effect, c);
   }
+  out += ", lod_city_scale=";
+  out += CityLodScaleText(CityLodAutoFor(true, c));
   return out;
 }
 
@@ -147,6 +150,7 @@ void Initialize(const plume::RenderDeviceDescription& description,
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
 
   ApplyOverride(REXCVAR_GET(mcla_gpu_class));
+  g_known.store(true, std::memory_order_release);
   // A change made while the game runs (the debug menu's F4 panel, the console) takes effect at once:
   // the callback has the new text, so no other thread reads the cvar's string.
   static std::once_flag registered;
@@ -167,12 +171,24 @@ GpuClass Current() {
   return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
 }
 
+bool Known() {
+  return g_known.load(std::memory_order_acquire);
+}
+
 std::string Resolve(Effect effect, std::string_view user_value) {
   return ResolveFor(Current(), effect, user_value);
 }
 
 std::string AutoLabel(Effect effect) {
   return AutoLabelFor(Current(), effect);
+}
+
+double CityLodScale(double user_value) {
+  return CityLodScaleFor(Known(), Current(), user_value);
+}
+
+std::string CityLodLabel(double user_value) {
+  return CityLodLabelFor(Known(), Current(), user_value);
 }
 
 }  // namespace mcla::gpu::gpu_class
