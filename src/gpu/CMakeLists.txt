@@ -97,6 +97,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
 #   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
 add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
+# The render scale cap's arithmetic (scale_cap.h: what a scale needs, what a card allows, the largest scale that fits) likewise:
+#   cmake --build <dir> --target larecomp_scale_cap_test, then run src/gpu/larecomp_scale_cap_test.
+add_executable(larecomp_scale_cap_test EXCLUDE_FROM_ALL scale_cap_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
