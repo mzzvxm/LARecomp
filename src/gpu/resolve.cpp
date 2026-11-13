@@ -1748,7 +1748,11 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
 
   summary.clears_depth = (flags & 0x200) != 0;
 
-  // The clears the call asked for, after the copy, on the aligned rectangle.
+  // The clears the call asked for, after the copy, on the aligned rectangle. Their own mark: the
+  // GPU time of the clears is not billed to the copy's last label ("resolve memory encode (depth)").
+  if ((flags & 0x300) != 0 && pass_timing_->enabled()) {
+    pass_timing_->Mark(list, "resolve clears (in the resolve call)");
+  }
   if (flags & 0x100) {
     if (depth_source || source > 3) {
       Fail(Failure::kNoSource, std::format("colour clear of source {}", source));

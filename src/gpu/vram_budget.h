@@ -131,6 +131,9 @@ class VideoMemoryBudget {
   uint64_t Trim(uint64_t need);
   // One line about what was released since the last, and the use at the check.
   void LogReleased(const backend::VideoMemory& memory);
+  // mcla_gpu_vram_log: every that many frames (a check's frame at the earliest), one line with
+  // the use, the budget and what the caches hold, whether or not memory is short.
+  void LogUse(const backend::VideoMemory& memory, uint64_t frame);
   // With no shortage: releases the EDRAM targets that nothing used for about a
   // minute (see the top of this file). Every kLazyEveryChecks-th check.
   void ReleaseIdleTargets();
@@ -167,6 +170,7 @@ class VideoMemoryBudget {
   EdramTargets* edram_ = nullptr;
   uint64_t next_check_ = 0;
   uint64_t last_log_ = 0;
+  uint64_t next_use_log_ = 0;  // mcla_gpu_vram_log: the frame of the next line
   uint64_t last_onset_ = 0;  // the frame a shortage was last announced in; 0: never
   bool short_ = false;
   Window window_;

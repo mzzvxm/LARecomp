@@ -29,6 +29,15 @@
 #include "upload.h"
 #include "watch.h"
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_lock_ahead_verify, false, "MCLA/GPU",
+    "Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it "
+    "waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the "
+    "log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the "
+    "first 8). The vinyl editor is where it counts. Off: nothing is done.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_UINT32(
     mcla_gpu_resolve_memory_encode_delay, 2, "MCLA/GPU",
     "Frames a colour resolve's encode into the resolve memory (and that of a depth resolve into "
@@ -40,6 +49,16 @@ REXCVAR_DEFINE_UINT32(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_resolve_memory_check, false, "MCLA/GPU",
+    "Diagnostic, slow: every encode also runs at once into a second, reference pool (what "
+    "mcla_gpu_resolve_memory_encode_delay 0 gives), and at each reader of the real pool (decode, "
+    "vertex copy, lock write-back) and for the whole pool every 600 frames the bytes are compared "
+    "with it. Reported in the log with the prefix 'resolve memory check:' every 600 frames and "
+    "at shutdown (RESULT PASS or FAIL). For wrong or flickering textures that the delayed encode "
+    "may cause: the answer is in the log. Off: nothing is done.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -214,6 +233,8 @@ constexpr const char* kReasonNames[] = {
 };
 static_assert(std::size(kBatchLabels) == size_t(ResolveMemory::FlushReason::kCount));
 static_assert(std::size(kReasonNames) == size_t(ResolveMemory::FlushReason::kCount));
+// By the check's reader kind (mcla_gpu_resolve_memory_check).
+constexpr const char* kCheckNames[] = {"decode", "vertex copy", "lock", "whole pool"};
 
 }  // namespace
 
@@ -379,6 +400,24 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
     return false;
   }
   pool_chunks_ = kInitialPoolChunks;
+  check_ = REXCVAR_GET(mcla_gpu_resolve_memory_check);
+  if (check_) {
+    ref_pool_ = device.CreateBuffer(
+        plume::RenderBufferDesc::DefaultBuffer(
+            uint64_t(kInitialPoolChunks) * kChunkBytes,
+            plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS),
+        "resolve memory pool (check reference)");
+    if (!ref_pool_) {
+      REXLOG_ERROR("[gpu] resolve memory check: the reference pool could not be made");
+      return false;
+    }
+    check_jobs_.clear();
+    check_jobs_.resize(kFramesInFlight);
+    REXLOG_INFO("[gpu] resolve memory check: on (mcla_gpu_resolve_memory_check): a reference pool, "
+                "every encode also runs at once into it; compared at each decode, vertex copy and "
+                "lock write-back and for the whole pool every {} frames. Slow by design.",
+                kCheckSweepFrames);
+  }
   return MakeSets();
 }
 
@@ -389,6 +428,13 @@ void ResolveMemory::Shutdown() {
     passes_->precache().Stop();
   }
   // The GPU is idle and the heap goes next: nothing is handed back to it.
+  CheckFinish();
+  check_jobs_.clear();
+  check_writes_.clear();
+  check_events_.clear();
+  readback_ref_buffer_.reset();
+  ref_encode_set_.reset();
+  ref_pool_.reset();
   for (auto& [key, d] : decoded_) {
     d->views.Drop();
   }
@@ -467,13 +513,28 @@ bool ResolveMemory::MakeSets() {
   encode->setBuffer(encode_table_index_, table_.get(), uint64_t(kChunkCount) * 4);
   decode->setBuffer(decode_pool_index_, pool_.get(), pool_bytes);
   decode->setBuffer(decode_table_index_, table_.get(), uint64_t(kChunkCount) * 4);
+  // mcla_gpu_resolve_memory_check: the encode's set over the reference pool.
+  std::unique_ptr<plume::RenderDescriptorSet> reference;
+  if (check_ && ref_pool_) {
+    reference = device_->CreateDescriptorSet(encode_set_builder_, 2, 0,
+                                             "resolve memory check encode set");
+    if (!reference) {
+      return false;
+    }
+    reference->setBuffer(encode_pool_index_, ref_pool_.get(), pool_bytes);
+    reference->setBuffer(encode_table_index_, table_.get(), uint64_t(kChunkCount) * 4);
+  }
   if (encode_set_) {
     // Lists in flight may still name the old sets.
     frames_->Retire(std::move(encode_set_));
     frames_->Retire(std::move(decode_set_));
   }
+  if (ref_encode_set_) {
+    frames_->Retire(std::move(ref_encode_set_));
+  }
   encode_set_ = std::move(encode);
   decode_set_ = std::move(decode);
+  ref_encode_set_ = std::move(reference);
   return true;
 }
 
@@ -491,6 +552,13 @@ void ResolveMemory::BeginFrame(uint32_t slot) {
   if (slot < vertex_chunks_.size()) {
     for (VertexChunk& c : vertex_chunks_[slot]) {
       c.used = 0;
+    }
+  }
+  if (check_ && slot < check_jobs_.size()) {
+    // Same rule: the slot's last frame has completed, its copies out of the pools can be read.
+    CheckVerify(check_jobs_[slot]);
+    if (frame_ % kCheckSweepFrames == 2) {
+      CheckLog("running");
     }
   }
   if (frame_ % 60 == 0) {
@@ -595,6 +663,11 @@ bool ResolveMemory::GrowPool(plume::RenderCommandList* list) {
   pool_chunks_ = chunks;
   pool_access_ = PoolAccess::kCopyWrite;
   ++stats_.pool_growths;
+  if (check_ && !CheckGrowReference(list, chunks)) {
+    // From here on nothing is compared.
+    CheckLog("stopped: the reference pool could not grow");
+    check_ = false;
+  }
   REXLOG_INFO("[gpu] resolve memory: pool grown to {} MiB ({} chunks placed)",
               uint64_t(chunks) * kChunkBytes >> 20, used_chunks_);
   return MakeSets();
@@ -680,6 +753,11 @@ void ResolveMemory::UploadPages(plume::RenderCommandList* list,
     return;
   }
   PoolBarrier(list, PoolAccess::kCopyWrite);
+  if (check_) {
+    // The reference pool gets the same bytes in the same place (check mode).
+    list->barriers(plume::RenderBarrierStage::COPY,
+                   plume::RenderBufferBarrier(ref_pool_.get(), plume::RenderBufferAccess::WRITE));
+  }
   // Runs of pages that sit next to each other in the pool go in one copy.
   size_t run_begin = 0;
   uint64_t run_pool = 0;
@@ -690,6 +768,12 @@ void ResolveMemory::UploadPages(plume::RenderCommandList* list,
                              plume::RenderBufferReference(span.buffer,
                                                           span.offset + run_begin * kPageBytes),
                              uint64_t(run_pages) * kPageBytes);
+      if (check_) {
+        list->copyBufferRegion(plume::RenderBufferReference(ref_pool_.get(), run_pool),
+                               plume::RenderBufferReference(span.buffer,
+                                                            span.offset + run_begin * kPageBytes),
+                               uint64_t(run_pages) * kPageBytes);
+      }
     }
   };
   for (size_t i = 0; i < pages.size(); ++i) {
@@ -968,6 +1052,22 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
       (uint32_t(copy.x1 - push.group_x0) + uint32_t(group) - 1) / uint32_t(group);
   const uint32_t dispatch_x = (groups_x + 7) / 8;
   const uint32_t dispatch_y = (uint32_t(copy.y1 - copy.y0) + 7) / 8;
+  if (check_) {
+    // The reference pool gets the bytes now, whatever the delay does with the real one. A depth
+    // copy that the real encode takes from its product (from_product) goes into the reference as
+    // before: at once, from the EDRAM planes, by the depth shader -- so the check compares the
+    // product-based encode with the old one.
+    EncodePush reference = push;
+    if (copy.from_product) {
+      reference.source = copy.source_slot;
+      reference.stencil = copy.stencil_slot;
+      reference.offset_x = copy.offset_x;
+      reference.offset_y = copy.offset_y;
+      reference.samples = copy.samples;
+    }
+    CheckEncodeReference(list, &reference, uint32_t(sizeof(reference)),
+                         copy.depth ? (copy.msaa ? 2u : 1u) : 0u, dispatch_x, dispatch_y);
+  }
   if (from_edram) {
     if (in_pass) {
       // The dwords are stored by the pixel shader of the pass that follows, from the
@@ -1013,6 +1113,20 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
     p.from_product = copy.from_product;
     static_assert(sizeof(p.push) == sizeof(push));
     std::memcpy(p.push.data(), &push, sizeof(push));
+    if (check_) {
+      // The ledger: this write into the product, numbered after the waiting ones.
+      p.check_serial = ++check_serial_;
+      CheckWrite w;
+      w.key = key;
+      w.level = copy.level;
+      w.x0 = copy.x0;
+      w.y0 = copy.y0;
+      w.x1 = copy.x1;
+      w.y1 = copy.y1;
+      w.serial = p.check_serial;
+      w.frame = frame_;
+      check_writes_.push_back(w);
+    }
     pending_.push_back(p);
   }
 
@@ -1082,6 +1196,9 @@ void ResolveMemory::BeforeResolve(plume::RenderCommandList* list, const TextureK
         // Every byte it would write, the new resolve writes again, later.
         ++stats_.encodes_dropped;
         stats_.depth_product_dropped += p.from_product;
+        if (check_) {
+          CheckNoteDropped(p);
+        }
         continue;
       }
       overlap = true;
@@ -1132,7 +1249,11 @@ size_t ResolveMemory::Choose(Seed&& seed) {
 }
 
 void ResolveMemory::Flush(plume::RenderCommandList* list, FlushReason reason) {
-  if (reason == FlushReason::kEndOfFrame && delay_ > 0) {
+  // Check mode: every kCheckSweepFrames-th end of frame records all the waiting encodes, then
+  // compares every valid page of the pool with the reference (CheckSweep below).
+  const bool sweep = check_ && list && reason == FlushReason::kEndOfFrame &&
+                     frame_ % kCheckSweepFrames == 0;
+  if (reason == FlushReason::kEndOfFrame && delay_ > 0 && !sweep) {
     // The ones that waited `delay_` frames: a prefix of the list (it is in the
     // order they were made), so every older one over their pages comes along.
     Choose([&](const Pending& p) { return p.frame + delay_ <= frame_; });
@@ -1143,6 +1264,12 @@ void ResolveMemory::Flush(plume::RenderCommandList* list, FlushReason reason) {
   if (reason == FlushReason::kEndOfFrame) {
     stats_.waiting_sum += pending_.size();
     stats_.waiting_max = std::max<uint64_t>(stats_.waiting_max, pending_.size());
+  }
+  if (check_ && reason == FlushReason::kEndOfFrame) {
+    CheckTrimWrites();
+    if (sweep) {
+      CheckSweep(list);
+    }
   }
 }
 
@@ -1239,6 +1366,9 @@ void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, s
       continue;
     }
     const Pending& p = pending_[i];
+    if (check_) {
+      CheckNoteRecorded(p, reason);
+    }
     // Encodes over the same pages keep the order the resolves had.
     bool overlaps = false;
     for (const auto& range : wave_) {
@@ -1424,6 +1554,12 @@ bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* 
   }
   UploadPages(list, pages_);
   ArmPages(pages_);
+  if (check_ && source_spans != 0) {
+    CheckReader(list, kCheckVertex,
+                std::format("vertex copy {:#010x} stride {} first {} x {} vertices{}", c.address,
+                            c.stride, c.first, c.vertices, c.fold ? " (fold)" : ""),
+                &source_span, source_spans);
+  }
   PoolBarrier(list, PoolAccess::kComputeRead);
 
   const uint64_t offset =
@@ -1759,6 +1895,9 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
   for (uint32_t page : pages_) {
     newest = std::max(newest, page_sequence_[page]);
   }
+  if (check_) {
+    CheckReader(list, kCheckDecode, key.Describe(), read_spans, read_span_count);
+  }
   PoolBarrier(list, PoolAccess::kGraphicsRead);
 
   plume::RenderPipeline* pipeline = DecodePipeline(d->format);
@@ -1840,6 +1979,18 @@ bool ResolveMemory::EnsureReadback(uint64_t bytes) {
       return false;
     }
     readback_bytes_ = size;
+    if (check_) {
+      // The reference's copy of the same pages (check mode).
+      readback_ref_buffer_.reset();
+      readback_ref_buffer_ = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(size),
+                                                   "resolve memory check readback");
+      if (!readback_ref_buffer_) {
+        readback_bytes_ = 0;
+        Fail("the check's lock readback buffer could not be made",
+             std::format("{} bytes", size));
+        return false;
+      }
+    }
   }
   return true;
 }
@@ -1986,7 +2137,8 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   }
   // Pages an earlier lock read ahead need no GPU. When they are all of this lock,
   // nothing is sent to the queue and nothing waited for.
-  const int64_t taken = TakeAhead();
+  const bool verify = REXCVAR_GET(mcla_gpu_lock_ahead_verify);
+  const int64_t taken = verify ? 0 : TakeAhead();
   if (pages_.empty()) {
     ++stats_.lock_write_backs;
     stats_.locks_without_wait += taken > 0;
@@ -2024,6 +2176,11 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   plume::RenderCommandList* list = readback_list_.get();
   list->begin();
   PoolBarrier(list, PoolAccess::kCopyRead);
+  const bool compare = check_ && ref_pool_ && readback_ref_buffer_;
+  if (compare) {
+    list->barriers(plume::RenderBarrierStage::COPY,
+                   plume::RenderBufferBarrier(ref_pool_.get(), plume::RenderBufferAccess::READ));
+  }
   // Runs of pages next to each other in the pool, one copy each.
   size_t run_begin = 0;
   uint64_t run_pool = 0;
@@ -2034,6 +2191,12 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
                                                           uint64_t(run_begin) * kPageBytes),
                              plume::RenderBufferReference(pool_.get(), run_pool),
                              uint64_t(run_pages) * kPageBytes);
+      if (compare) {
+        list->copyBufferRegion(plume::RenderBufferReference(readback_ref_buffer_.get(),
+                                                            uint64_t(run_begin) * kPageBytes),
+                               plume::RenderBufferReference(ref_pool_.get(), run_pool),
+                               uint64_t(run_pages) * kPageBytes);
+      }
     }
   };
   for (size_t i = 0; i < pages_.size(); ++i) {
@@ -2063,7 +2226,51 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
     Fail("the lock write-back's readback buffer could not be mapped", "");
     return -1;
   }
+  if (compare) {
+    // The bytes the CPU is about to get against what the encodes wrote at once.
+    const auto* reference = static_cast<const uint8_t*>(readback_ref_buffer_->map());
+    if (reference) {
+      std::vector<CheckPage> pages;
+      pages.reserve(pages_.size());
+      for (const uint32_t page : pages_) {
+        pages.push_back(CheckPageOf(page));
+      }
+      CheckCompare(kCheckLock, std::format("lock {:#010x} +{}", address, size), frame_, pages,
+                   mapped, reference);
+      readback_ref_buffer_->unmap();
+    } else {
+      ++check_stats_.unverified;
+    }
+  }
   int64_t written = 0;
+  if (verify) {
+    // The bytes the pool gives now against the ones read ahead for these pages.
+    static uint64_t compared = 0, different = 0;
+    uint64_t here = 0, here_different = 0;
+    for (size_t i = 0; i < locked; ++i) {
+      const auto it = ahead_.find(pages_[i]);
+      if (it == ahead_.end() || it->second.sequence != page_sequence_[pages_[i]]) {
+        continue;
+      }
+      ++here;
+      if (std::memcmp(it->second.bytes.data(), mapped + i * kPageBytes, kPageBytes) != 0) {
+        ++here_different;
+        if (different + here_different <= 8) {
+          REXLOG_ERROR("[gpu] lock read-ahead check: page {:#010x} differs (read ahead at frame "
+                       "{}, now frame {})",
+                       pages_[i] << kPageShift, it->second.frame, frame_);
+        }
+      }
+      ahead_.erase(it);
+    }
+    compared += here;
+    different += here_different;
+    if (here != 0) {
+      REXLOG_INFO("[gpu] lock read-ahead check: lock {:#010x} +{}: {} pages kept ahead, {} "
+                  "different; total {} compared, {} different",
+                  address, size, here, here_different, compared, different);
+    }
+  }
   for (size_t i = 0; i < pages_.size(); ++i) {
     const uint32_t page = pages_[i];
     if (i >= locked) {
@@ -2126,6 +2333,395 @@ void ResolveMemory::MarkInherited(const TextureKey& key, uint32_t level, int32_t
   }
   // Textures decoded from these pages bind again, through Bind's check.
   TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
+}
+
+// ---------------------------------------------------------------------------
+// check (mcla_gpu_resolve_memory_check)
+// ---------------------------------------------------------------------------
+
+uint64_t ResolveMemory::CheckPoolOffset(uint32_t page) const {
+  return (uint64_t(chunk_slot_[page >> (kChunkShift - kPageShift)]) << kChunkShift) |
+         (uint64_t(page & (kPagesPerChunk - 1)) << kPageShift);
+}
+
+ResolveMemory::CheckPage ResolveMemory::CheckPageOf(uint32_t page) const {
+  CheckPage c;
+  c.page = page;
+  c.flags = page_flags_[page];
+  c.writer_format = page_writer_[page];
+  c.writer = page_writer_key_[page];
+  c.writer_frame = page_writer_frame_[page];
+  return c;
+}
+
+void ResolveMemory::CheckEncodeReference(plume::RenderCommandList* list, const void* push,
+                                         uint32_t push_bytes, uint32_t pipeline,
+                                         uint32_t groups_x, uint32_t groups_y) {
+  if (table_read_barrier_) {
+    // The chunk table was written since its last read barrier: the reference reads it too.
+    list->barriers(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE,
+                   plume::RenderBufferBarrier(table_.get(), plume::RenderBufferAccess::READ));
+    table_read_barrier_ = false;
+  }
+  // Every time, as PoolBarrier does for the real pool: encodes over the same pages keep their order.
+  list->barriers(plume::RenderBarrierStage::COMPUTE,
+                 plume::RenderBufferBarrier(ref_pool_.get(), plume::RenderBufferAccess::READ |
+                                                                 plume::RenderBufferAccess::WRITE));
+  list->setComputePipelineLayout(encode_layout_.get());
+  for (uint32_t set = 0; set < 4; ++set) {
+    list->setComputeDescriptorSet(heap_->texture_set(), set);
+  }
+  list->setComputeDescriptorSet(ref_encode_set_.get(), 4);
+  list->setPipeline(encode_pipelines_[pipeline].get());
+  list->setComputePushConstants(0, push, 0, push_bytes);
+  list->dispatch(groups_x, groups_y, 1);
+}
+
+bool ResolveMemory::CheckGrowReference(plume::RenderCommandList* list, uint32_t chunks) {
+  std::unique_ptr<plume::RenderBuffer> bigger = device_->CreateBuffer(
+      plume::RenderBufferDesc::DefaultBuffer(
+          uint64_t(chunks) * kChunkBytes,
+          plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS),
+      "resolve memory pool (check reference)");
+  if (!bigger) {
+    return false;
+  }
+  list->barriers(plume::RenderBarrierStage::COPY,
+                 plume::RenderBufferBarrier(ref_pool_.get(), plume::RenderBufferAccess::READ));
+  list->barriers(plume::RenderBarrierStage::COPY,
+                 plume::RenderBufferBarrier(bigger.get(), plume::RenderBufferAccess::WRITE));
+  list->copyBufferRegion(plume::RenderBufferReference(bigger.get(), 0),
+                         plume::RenderBufferReference(ref_pool_.get(), 0),
+                         uint64_t(used_chunks_) * kChunkBytes);
+  frames_->Retire(std::move(ref_pool_));
+  ref_pool_ = std::move(bigger);
+  return true;
+}
+
+void ResolveMemory::CheckReader(plume::RenderCommandList* list, CheckKind kind, std::string what,
+                                const PageSpan* spans, size_t count) {
+  if (!check_ || !ref_pool_ || !list || slot_ >= check_jobs_.size()) {
+    return;
+  }
+  CheckJob job;
+  job.kind = kind;
+  job.frame = frame_;
+  job.what = std::move(what);
+  // The pages the reader reads that hold the console's bytes (the rest were uploaded
+  // before this call, or are not valid and never read).
+  for (size_t s = 0; s < count; ++s) {
+    const uint32_t last = std::min(spans[s].last, kPageCount - 1);
+    for (uint32_t page = spans[s].first; page <= last; ++page) {
+      if ((page_flags_[page] & kValid) &&
+          chunk_slot_[page >> (kChunkShift - kPageShift)] != kNoChunk) {
+        job.pages.push_back(CheckPageOf(page));
+      }
+    }
+  }
+  std::sort(job.pages.begin(), job.pages.end(),
+            [](const CheckPage& a, const CheckPage& b) { return a.page < b.page; });
+  job.pages.erase(std::unique(job.pages.begin(), job.pages.end(),
+                              [](const CheckPage& a, const CheckPage& b) { return a.page == b.page; }),
+                  job.pages.end());
+  if (job.pages.empty()) {
+    return;
+  }
+  const uint64_t bytes = uint64_t(job.pages.size()) * kPageBytes;
+  if (bytes > kCheckMaxBytes) {
+    ++check_stats_.skipped[kind];
+    return;
+  }
+  job.readback = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(bytes * 2),
+                                       "resolve memory check readback");
+  if (!job.readback) {
+    ++check_stats_.skipped[kind];
+    return;
+  }
+  // After the reader's uploads and the encodes it needed: what it reads is what is copied.
+  PoolBarrier(list, PoolAccess::kCopyRead);
+  list->barriers(plume::RenderBarrierStage::COPY,
+                 plume::RenderBufferBarrier(ref_pool_.get(), plume::RenderBufferAccess::READ));
+  const auto copy_all = [&](const plume::RenderBuffer* source, uint64_t destination) {
+    size_t run_begin = 0;
+    uint64_t run_pool = 0;
+    uint32_t run_pages = 0;
+    const auto flush = [&]() {
+      if (run_pages) {
+        list->copyBufferRegion(
+            plume::RenderBufferReference(job.readback.get(),
+                                         destination + uint64_t(run_begin) * kPageBytes),
+            plume::RenderBufferReference(source, run_pool), uint64_t(run_pages) * kPageBytes);
+      }
+    };
+    for (size_t i = 0; i < job.pages.size(); ++i) {
+      const uint64_t pool = CheckPoolOffset(job.pages[i].page);
+      if (run_pages && pool == run_pool + uint64_t(run_pages) * kPageBytes) {
+        ++run_pages;
+      } else {
+        flush();
+        run_begin = i;
+        run_pool = pool;
+        run_pages = 1;
+      }
+    }
+    flush();
+  };
+  copy_all(pool_.get(), 0);
+  copy_all(ref_pool_.get(), bytes);
+  check_jobs_[slot_].push_back(std::move(job));
+}
+
+void ResolveMemory::CheckSweep(plume::RenderCommandList* list) {
+  // Every chunk that has a place in the pool, whole; CheckReader keeps the valid pages.
+  std::vector<PageSpan> spans;
+  for (uint32_t chunk = 0; chunk < kChunkCount; ++chunk) {
+    if (chunk_slot_[chunk] != kNoChunk) {
+      spans.push_back(PageSpan{chunk * kPagesPerChunk, chunk * kPagesPerChunk + kPagesPerChunk - 1});
+    }
+  }
+  CheckReader(list, kCheckSweep, "the whole pool", spans.data(), spans.size());
+}
+
+void ResolveMemory::CheckVerify(std::vector<CheckJob>& jobs) {
+  for (CheckJob& job : jobs) {
+    const auto* mapped = job.readback ? static_cast<const uint8_t*>(job.readback->map()) : nullptr;
+    if (!mapped) {
+      ++check_stats_.unverified;
+      continue;
+    }
+    const uint64_t bytes = uint64_t(job.pages.size()) * kPageBytes;
+    CheckCompare(job.kind, job.what, job.frame, job.pages, mapped, mapped + bytes);
+    job.readback->unmap();
+  }
+  jobs.clear();
+}
+
+void ResolveMemory::CheckCompare(CheckKind kind, const std::string& what, uint64_t frame,
+                                 const std::vector<CheckPage>& pages, const uint8_t* pool,
+                                 const uint8_t* reference) {
+  CheckStats& s = check_stats_;
+  ++s.readers[kind];
+  s.pages[kind] += pages.size();
+  s.bytes[kind] += uint64_t(pages.size()) * kPageBytes;
+  uint64_t bad_pages = 0;
+  for (size_t i = 0; i < pages.size(); ++i) {
+    const uint8_t* a = pool + i * kPageBytes;
+    const uint8_t* b = reference + i * kPageBytes;
+    if (std::memcmp(a, b, kPageBytes) == 0) {
+      continue;
+    }
+    ++bad_pages;
+    uint32_t differing = 0;
+    uint32_t first = UINT32_MAX;
+    uint32_t first_pool = 0, first_reference = 0;
+    for (uint32_t d = 0; d < kPageBytes / 4; ++d) {
+      uint32_t x = 0, y = 0;
+      std::memcpy(&x, a + size_t(d) * 4, 4);
+      std::memcpy(&y, b + size_t(d) * 4, 4);
+      if (x != y) {
+        if (first == UINT32_MAX) {
+          first = d;
+          first_pool = x;
+          first_reference = y;
+        }
+        ++differing;
+      }
+    }
+    s.bad_dwords += differing;
+    if (check_logged_ >= 16) {
+      continue;
+    }
+    ++check_logged_;
+    const CheckPage& cp = pages[i];
+    std::string writer = "guest memory (uploaded, or no encode since the CPU wrote it)";
+    if ((cp.flags & kNewer) && cp.writer_format != 0xFF && cp.writer < writer_keys_.size()) {
+      writer = std::format("an encode into {}, {} frame(s) before the read",
+                           writer_keys_[cp.writer].Describe(), uint32_t(frame) - cp.writer_frame);
+    }
+    // The waiting encodes that covered the page (dropped, or recorded and when), newest first.
+    std::vector<const CheckEvent*> hits;
+    for (const CheckEvent& e : check_events_) {
+      if (e.first_page <= cp.page && cp.page <= e.last_page) {
+        hits.push_back(&e);
+      }
+    }
+    std::sort(hits.begin(), hits.end(),
+              [](const CheckEvent* x, const CheckEvent* y) { return x->now > y->now; });
+    std::string events;
+    for (size_t h = 0; h < hits.size() && h < 3; ++h) {
+      const CheckEvent& e = *hits[h];
+      events += std::format(
+          "{}{} at frame {} (made at frame {}): {} level {} ({}, {})-({}, {}), pages {:#x}-{:#x}",
+          events.empty() ? "; encodes over the page: " : "; ",
+          e.dropped ? std::string("dropped by a later resolve")
+                    : std::format("recorded for {}", kReasonNames[e.reason]),
+          e.now, e.made, e.key.Describe(), e.level, e.x0, e.y0, e.x1, e.y1, e.first_page,
+          e.last_page);
+    }
+    REXLOG_ERROR(
+        "[gpu] resolve memory check: DIFFERENT {} of 16 logged: {} reader '{}' (frame {}): page "
+        "{:#010x} (valid {}, newer {}) last written by {}; {} of {} dwords differ, the first at "
+        "+{:#x}: pool {:#010x}, reference {:#010x}{}",
+        check_logged_, kCheckNames[kind], what, frame, cp.page << kPageShift,
+        (cp.flags & kValid) ? "yes" : "no", (cp.flags & kNewer) ? "yes" : "no", writer, differing,
+        kPageBytes / 4, first * 4, first_pool, first_reference, events);
+  }
+  if (bad_pages) {
+    ++s.bad_readers[kind];
+    s.bad_pages[kind] += bad_pages;
+  }
+}
+
+void ResolveMemory::CheckPushEvent(const CheckEvent& event) {
+  if (check_events_.size() < kCheckEvents) {
+    check_events_.push_back(event);
+  } else {
+    check_events_[check_events_next_ % kCheckEvents] = event;
+  }
+  ++check_events_next_;
+}
+
+void ResolveMemory::CheckNoteDropped(const Pending& p) {
+  ++check_stats_.dropped;
+  CheckEvent e;
+  e.dropped = true;
+  e.key = p.key;
+  e.level = p.level;
+  e.x0 = p.x0;
+  e.y0 = p.y0;
+  e.x1 = p.x1;
+  e.y1 = p.y1;
+  e.first_page = p.first_page;
+  e.last_page = p.last_page;
+  e.made = p.frame;
+  e.now = frame_;
+  CheckPushEvent(e);
+}
+
+void ResolveMemory::CheckNoteRecorded(const Pending& p, FlushReason reason) {
+  ++check_stats_.recorded;
+  // The invariant a delay rests on: the product still holds the texels of this encode, so no
+  // resolve wrote this level over its rectangle after it (BeforeResolve drops or sends it first).
+  const auto first_later = std::upper_bound(
+      check_writes_.begin(), check_writes_.end(), p.check_serial,
+      [](uint64_t serial, const CheckWrite& w) { return serial < w.serial; });
+  for (auto it = first_later; it != check_writes_.end(); ++it) {
+    const CheckWrite& w = *it;
+    if (w.level == p.level && w.x0 < p.x1 && p.x0 < w.x1 && w.y0 < p.y1 && p.y0 < w.y1 &&
+        w.key == p.key) {
+      ++check_stats_.rewritten;
+      if (check_rewrites_logged_ < 16) {
+        ++check_rewrites_logged_;
+        REXLOG_ERROR(
+            "[gpu] resolve memory check: REWRITTEN {} of 16 logged: the encode of {} level {} "
+            "({}, {})-({}, {}) made at frame {} is recorded at frame {} for {}, after a resolve "
+            "wrote ({}, {})-({}, {}) of the same level at frame {}: the product no longer holds "
+            "its texels",
+            check_rewrites_logged_, p.key.Describe(), p.level, p.x0, p.y0, p.x1, p.y1, p.frame,
+            frame_, kReasonNames[size_t(reason)], w.x0, w.y0, w.x1, w.y1, w.frame);
+      }
+      break;
+    }
+  }
+  CheckEvent e;
+  e.dropped = false;
+  e.reason = uint32_t(reason);
+  e.key = p.key;
+  e.level = p.level;
+  e.x0 = p.x0;
+  e.y0 = p.y0;
+  e.x1 = p.x1;
+  e.y1 = p.y1;
+  e.first_page = p.first_page;
+  e.last_page = p.last_page;
+  e.made = p.frame;
+  e.now = frame_;
+  CheckPushEvent(e);
+}
+
+void ResolveMemory::CheckTrimWrites() {
+  // The ledger keeps the writes that a waiting encode may still have to be compared with.
+  const uint64_t oldest = pending_.empty() ? check_serial_ : pending_.front().check_serial;
+  size_t n = 0;
+  while (n < check_writes_.size() && check_writes_[n].serial <= oldest) {
+    ++n;
+  }
+  check_writes_.erase(check_writes_.begin(), check_writes_.begin() + std::ptrdiff_t(n));
+}
+
+void ResolveMemory::CheckLog(const char* when) {
+  const CheckStats& s = check_stats_;
+  uint64_t readers = 0, bytes = 0, bad_readers = 0, bad_pages = 0, skipped = 0;
+  std::string kinds;
+  for (size_t k = 0; k < size_t(kCheckKinds); ++k) {
+    readers += s.readers[k];
+    bytes += s.bytes[k];
+    bad_readers += s.bad_readers[k];
+    bad_pages += s.bad_pages[k];
+    skipped += s.skipped[k];
+    kinds += std::format("{}{} {} ({} different)", kinds.empty() ? "" : ", ", kCheckNames[k],
+                         s.readers[k], s.bad_readers[k]);
+  }
+  const std::string text = std::format(
+      "resolve memory check: {} at frame {}, encode delay {}: readers compared {} [{}], bytes "
+      "compared {}, readers with a different page {} ({} pages, {} dwords), readers not compared "
+      "{} (too big or no buffer) + {} (not read), waiting encodes recorded {} of which the "
+      "product had been rewritten {}, waiting encodes dropped {}",
+      when, frame_, delay_, readers, kinds, bytes, bad_readers, bad_pages, s.bad_dwords, skipped,
+      s.unverified, s.recorded, s.rewritten, s.dropped);
+  if (bad_readers != 0 || s.rewritten != 0) {
+    REXLOG_ERROR("[gpu] {}", text);
+  } else {
+    REXLOG_INFO("[gpu] {}", text);
+  }
+}
+
+void ResolveMemory::CheckFinish() {
+  if (!check_) {
+    return;
+  }
+  check_ = false;
+  // The GPU is idle: the copies of the last frames can be read. The frame being recorded when the
+  // renderer stopped may be a list that was abandoned: its jobs are not read.
+  if (device_ && !device_->IsLost()) {
+    for (std::vector<CheckJob>& jobs : check_jobs_) {
+      size_t kept = 0;
+      for (size_t i = 0; i < jobs.size(); ++i) {
+        if (jobs[i].frame == frame_) {
+          ++check_stats_.unverified;
+          continue;
+        }
+        if (kept != i) {
+          jobs[kept] = std::move(jobs[i]);
+        }
+        ++kept;
+      }
+      jobs.erase(jobs.begin() + std::ptrdiff_t(kept), jobs.end());
+      CheckVerify(jobs);
+    }
+  }
+  CheckLog("final");
+  const CheckStats& s = check_stats_;
+  uint64_t bad = 0;
+  std::string missing;
+  for (size_t k = 0; k < size_t(kCheckKinds); ++k) {
+    bad += s.bad_readers[k];
+    if (s.readers[k] == 0) {
+      missing += std::format("{}{}", missing.empty() ? "" : ", ", kCheckNames[k]);
+    }
+  }
+  const bool fail = bad != 0 || s.rewritten != 0;
+  const std::string result = std::format(
+      "resolve memory check: RESULT {}: {} reader(s) with a different page, {} encode(s) recorded "
+      "after their product was rewritten; {} waiting encode(s) were left unrecorded at shutdown "
+      "(not compared); reader kinds never exercised in this run: {}",
+      fail ? "FAIL" : "PASS", bad, s.rewritten, pending_.size(),
+      missing.empty() ? std::string("none") : missing);
+  if (fail) {
+    REXLOG_ERROR("[gpu] {}", result);
+  } else {
+    REXLOG_INFO("[gpu] {}", result);
+  }
 }
 
 // ---------------------------------------------------------------------------
