@@ -46,6 +46,7 @@
 #define kFlagSourceFloat24 (1u << 10)
 #define kFlagDestFloat24 (1u << 11)
 #define kFlagSourceNanToZero (1u << 12)
+#define kFlagSourceCeiling7e3 (1u << 13)
 
 uint HostSample(uint i) {
   return (g_push.samples >> (8u + 3u * i)) & 7u;
@@ -90,6 +91,18 @@ float4 ResolveSample(int2 source, uint i) {
     const uint4 bits = asuint(c);
     const uint4 nan = ((0x7F800000u - (bits & 0x7FFFFFFFu)) >> 31u) & nan_to_zero;
     c = asfloat(bits & (nan - 1u));
+  }
+  // kFlagSourceCeiling7e3: the colour of a 7e3 target holds 0 to 31.875 and no more, red, green
+  // and blue each. What is stored is the colour times 2^exp_bias, which is also what the host
+  // target holds, so the limits apply to the sample as loaded. Branch-free, for the reason above:
+  // the clamped colour is computed always and chosen by the flag, so with the flag off the sample
+  // is the loaded one, bit for bit (min and max would turn a NaN of a 16F or 32F source into
+  // +Inf: HLSL returns the other operand). With the flag on the NaNs were zeroed above (the
+  // flag is set with kFlagSourceNanToZero), so min and max have nothing to order.
+  {
+    const bool ceiling_7e3 = (g_push.mode & kFlagSourceCeiling7e3) != 0u;
+    const float3 clamped = max(min(c.rgb, 31.875f), 0.0f);
+    c.rgb = select(ceiling_7e3, clamped, c.rgb);
   }
   if ((g_push.mode & kFlagGammaSource) != 0u) {
     c.rgb = XeLinearToPWLGamma3(c.rgb);

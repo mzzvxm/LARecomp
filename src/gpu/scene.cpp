@@ -2721,7 +2721,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
-  const ResolveCache::Summary summary = resolve_->Execute(record, list);
+  // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
+  const bool float_scene =
+      hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
+  const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset

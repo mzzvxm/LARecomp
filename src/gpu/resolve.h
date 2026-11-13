@@ -173,8 +173,11 @@ class ResolveCache {
 
   // Executes a resolve record into `list` (null: the device is lost; counted).
   // Records outside any render pass and leaves none open; it binds its own
-  // pipeline state, which the caller binds again.
-  Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list);
+  // pipeline state, which the caller binds again. `float_scene`: this frame can carry HDR's
+  // float scene (HdrToneMap::FloatSceneLikely), which wants the range of a 7e3 colour above the
+  // console's, so a 7e3 source is not clamped to it (kFlagSourceCeiling7e3).
+  Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list,
+                  bool float_scene);
 
   // Takes the write notifications (TextureCache::Sync calls it once per draw).
   void Sync() { DrainInvalidations(); }
@@ -253,6 +256,12 @@ class ResolveCache {
     // host kept a NaN. Xenia's host-render-target path does the same where it packs the target
     // into the EDRAM (UnclampedFloat32To7e3), per sample, before the resolve averages them.
     kFlagSourceNanToZero = 1u << 12,
+    // The source is a 7e3 colour target (k_2_10_10_10_FLOAT). The console's target holds 0 to
+    // 31.875 in red, green and blue (the colour times 2^exp_bias; the game's bias is 4, so a
+    // colour of 1.99 at most); the host's float16 holds up to 65504. Each sample is clamped to
+    // the console's range before the samples are summed. Xenia does the same wherever it packs
+    // 7e3 (UnclampedFloat32To7e3, resolve_direct.xesli).
+    kFlagSourceCeiling7e3 = 1u << 13,
   };
   struct Push {
     uint32_t source;
