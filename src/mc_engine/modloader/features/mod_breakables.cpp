@@ -86,9 +86,11 @@
 
 REXCVAR_DEFINE_BOOL(mod_breakables, true, "MCLA/World",
     "Props a mod baked into the city sectors break off when the car hits them fast "
-    "enough (models/<mod>/breakables.bin); a slow bump still stops the car.");
+    "enough (models/<mod>/breakables.bin); a slow bump still stops the car.")
+    .debug_only();
 REXCVAR_DEFINE_DOUBLE(mod_breakable_speed_scale, 1.0, "MCLA/World",
-    "Multiplier on the speed a mod's breakable prop needs to break.");
+    "Multiplier on the speed a mod's breakable prop needs to break.")
+    .debug_only();
 
 namespace {
 

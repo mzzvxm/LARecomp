@@ -41,11 +41,15 @@ REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing 
 REXCVAR_DEFINE_BOOL(disable_dof, true, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD", "Escala de LOD do Tráfego (0.1 - 10.0)")
+REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD",
+    "How far away traffic cars keep their detailed models. 1.0 is the original distance; higher "
+    "keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).")
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade (0.1 - 10.0)")
+REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD",
+    "How far away buildings and other city scenery keep their detail. 1.0 is the original distance; "
+    "higher keeps the detail longer and costs speed, lower simplifies it sooner (0.1 to 10).")
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -57,6 +61,7 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
     "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
     "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
     .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the
@@ -74,6 +79,7 @@ REXCVAR_DEFINE_INT32(hud_width, 0, "MCLA/Patches",
 REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
     "Render the scene in a single predicated-tiling tile instead of two. Halves draw calls "
     "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Off, because it was measured off. e0d9e94 turned the SDK flag on for the
@@ -95,6 +101,7 @@ REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650. "
     "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
     "default) applies instead; not measured here, so it is left alone.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
@@ -269,6 +276,9 @@ void Patch_ScaleTrafficLOD(PPCRegister& f0) {
     f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
 }
 
+// CITY LOD works by writing the scale times 300 to 0x827E0DE0 every frame (called from frame_timing.cpp).
+// A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
+// nothing; it is removed.
 void UpdateCityLODMemory() {
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
@@ -280,11 +290,6 @@ void UpdateCityLODMemory() {
     if (ReadGuestF32(base, city_lod_addr) != final_lod) {
         WriteGuestF32(base, city_lod_addr, final_lod);
     }
-}
-
-void Patch_ScaleCityLOD(PPCRegister& f13) {
-    // Multiplicamos o valor que a engine acabou de ler da memória pelo nosso slider
-    f13.f64 = f13.f64 * REXCVAR_GET(lod_city_scale);
 }
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
@@ -303,6 +308,5 @@ bool Patch_DisableDoF() { return false; }
 void Patch_DofComposite(PPCRegister& r3) {}
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {}
 void UpdateCityLODMemory() {}
-void Patch_ScaleCityLOD(PPCRegister& f13) {}
 bool Patch_DisableImposterShadows(PPCRegister& r11) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

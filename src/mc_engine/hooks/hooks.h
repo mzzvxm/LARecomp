@@ -40,7 +40,6 @@ void Patch_RideHeightFit(PPCRegister& f30);
 // Skips the whole sub_82392F68 fit test, unlocking every stock rim size, tire
 // profile, tire width and ride height. Supersedes Patch_RideHeightFit.
 bool Patch_WheelFitBypass();
-void Patch_ScaleCityLOD(PPCRegister& f13);
 void UpdateCityLODMemory();
 
 void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24);

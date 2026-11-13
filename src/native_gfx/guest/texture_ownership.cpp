@@ -33,6 +33,7 @@ REXCVAR_DEFINE_UINT32(
     "untouched and restored at destruction, so its allocator only frees what it allocated. "
     "Covers only textures born in grcTextureXenon::Init; streamed ones are deserialized with "
     "the header embedded in the resource and stay with the guest.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(
@@ -44,6 +45,7 @@ REXCVAR_DEFINE_UINT32(
     "views of the console's 512 MiB of RAM, and taking 32 MiB of it killed the title during "
     "loading with 'PhysicalHeap::Alloc unable to alloc physical memory in parent heap'. "
     "Raise this if the exhaustion report fires.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::native_gfx {

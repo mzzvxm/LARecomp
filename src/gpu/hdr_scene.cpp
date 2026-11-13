@@ -19,6 +19,7 @@ REXCVAR_DEFINE_INT32(
     "UI layer alone, 2 the scene alone, 3 the UI's coverage as grey, 4 magenta where the scene "
     "is above the game's white, 5 the float scene's difference from the 8-bit scene times 16. "
     "Frames without layers show the front buffer whatever this says. Live.")
+    .debug_only()
     .range(0, 5)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

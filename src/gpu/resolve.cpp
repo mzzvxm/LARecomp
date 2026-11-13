@@ -47,6 +47,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
                     "covers is decoded from guest memory and written as "
                     "mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga next to the executable "
                     "(the vinyl's mip chain).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
@@ -56,6 +57,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
                     "resolve_resolution_scale_fill_half_pixel_offset does. Off: "
                     "the gap keeps whatever was there, a 1-pixel line on the top and left "
                     "edges. A/B switch.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);

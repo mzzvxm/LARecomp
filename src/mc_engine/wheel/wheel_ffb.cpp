@@ -106,7 +106,8 @@ REXCVAR_DEFINE_BOOL(wheel_ffb_autocenter, true, "MCLA/Wheel",
     "Only used when wheel_ffb_centering is 0: leave the wheel driver's own centring spring on. With centring "
     "above 0 the driver's spring is switched off (two springs would fight). Takes effect when the wheel is "
     "opened.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_ffb_panic, false, "MCLA/Wheel",
     "Emergency stop for the wheel's force feedback: switching it on stops every force and "
@@ -121,19 +122,22 @@ REXCVAR_DEFINE_BOOL(wheel_ffb_rearm, false, "MCLA/Wheel",
 REXCVAR_DEFINE_INT32(wheel_ffb_watchdog_ms, 500, "MCLA/Wheel",
     "Force goes to zero when the game has not run an input frame for this long (a loading screen, "
     "a hang) and comes back by itself when it does.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_ffb_selftest, false, "MCLA/Wheel",
     "When force feedback arms, play a staged test and log it: 0.5 s push one way, 0.5 s the other, 2 s of "
     "centring spring (turn the wheel a little and let go), 1 s of damper. Every device call's result and the "
     "wheel's position (every 50 ms) go to the log, so a dead force path shows in the log whatever you feel. "
     "Needs the wheel to be free.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_ffb_trace, false, "MCLA/Wheel",
     "Log the force sent to the wheel about four times a second, every device call's result, and every state "
     "change.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace larecomp::wheel::ffb {
 

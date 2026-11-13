@@ -37,6 +37,7 @@ REXCVAR_DEFINE_DOUBLE(fov_3p_scale, 1.0, "MCLA/Camera", "FOV scale — 3rd perso
 // BadassBaboon's Recomp Adjustments: Continuous exponential camera boom smoothing at 60 FPS
 REXCVAR_DEFINE_BOOL(smooth_chase_cam, true, "MCLA/Camera",
     "Fix: Smooth chase camera boom interpolation at 60 FPS using continuous-time exponential decay.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
@@ -47,12 +48,14 @@ REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
 // BadassBaboon's Recomp Adjustments: Smooth camera transition interpolation & wrap fix
 REXCVAR_DEFINE_BOOL(smooth_camera_transitions, true, "MCLA/Camera",
     "Fix: Eliminate camera transition jitter and 180-degree wrap flipping when transitioning between orbit, menu, and gameplay cameras.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 
 // BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
 REXCVAR_DEFINE_BOOL(scale_camera_shake, true, "MCLA/Camera",
     "Fix: Scale camera shake intensity across framerates (60+ FPS) to prevent violent noise jitter during drifts, burnouts, and crashes.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(camera_shake_scale, 0.6, "MCLA/Camera",
@@ -64,25 +67,30 @@ REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
     "Free-fly camera during live gameplay: left stick moves, right stick looks, triggers change "
     "speed. Gameplay keeps running underneath (drive, traffic, physics).")
     .allowed({"off", "free"})
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(debug_cam_speed, 40.0, "MCLA/Camera",
     "Free-fly camera move speed (world units/second).")
     .range(1.0, 500.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(debug_cam_sens, 2.5, "MCLA/Camera",
     "Free-fly camera look sensitivity (radians/second at full stick).")
     .range(0.2, 10.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(debug_cam_mouse, true, "MCLA/Camera",
     "Free-fly camera: use the mouse to look (captures the cursor while active).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(debug_cam_mouse_sens, 0.0025, "MCLA/Camera",
     "Free-fly mouse look sensitivity (radians per mouse pixel).")
     .range(0.0002, 0.02)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Free-fly camera host state (see Patch_DebugCam). Angles are seeded from the

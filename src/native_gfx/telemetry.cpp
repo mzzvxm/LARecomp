@@ -37,6 +37,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_geomdump, false, "MCLA/NativeGfx",
                     "Dump a per-draw geometry snapshot (streams, strides, input layout, index "
                     "buffer, slicing) built from guest state, to "
                     "mcla_native_gfx_geometry.txt. One entry per distinct draw shape.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texdump, false, "MCLA/NativeGfx",
@@ -45,6 +46,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texdump, false, "MCLA/NativeGfx",
                     "mcla_native_gfx_textures/ for offline inspection. This is the correctness "
                     "test for the texture decoder against real game data; off by default "
                     "because it writes tens of MB.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_telemetry, false, "MCLA/NativeGfx",
@@ -52,6 +54,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_telemetry, false, "MCLA/NativeGfx",
                     "fetch constants) while the native graphics runtime is active. Written to "
                     "mcla_native_gfx_resources_*.csv. Off by default: it takes a mutex and two "
                     "map lookups per fetch slot on every draw.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {

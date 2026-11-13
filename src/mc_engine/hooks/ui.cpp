@@ -1,7 +1,7 @@
-// UI and HUD: intro skip, the movie lighting null check, ReXGlue settings from
-// Game Options, speedometer units, Xbox / PlayStation button glyphs, the UI
-// text language, and the two places the UI counts frames the 360 drew at 30 a
-// second: the Flash movies' step and the menu cursor's auto-repeat.
+// UI and HUD: intro skip, the movie lighting null check, speedometer units,
+// Xbox / PlayStation button glyphs, the UI text language, and the two places
+// the UI counts frames the 360 drew at 30 a second: the Flash movies' step and
+// the menu cursor's auto-repeat.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -20,7 +20,6 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../graphics_button.h"
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
 #include "../ui/pad_vendor.h"
@@ -29,10 +28,6 @@ REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
 
 REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to prevent graphical issues.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(rexglue_settings_in_gameoptions, false, "MCLA/Settings",
-    "Replace Game Options with ReXGlue Settings overlay (F4)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     "Speedometer / distance units. Drives the game's own metric formatter "
@@ -102,6 +97,7 @@ REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
     "frames between the steps are drawn (ui_interpolate, which paces every movie "
     "and ignores this list). Only movies the game steps one frame per update are "
     "paced.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_countdown_fix, true, "MCLA/UI",
@@ -112,6 +108,7 @@ REXCVAR_DEFINE_BOOL(ui_countdown_fix, true, "MCLA/UI",
     "countdown's clock on every step, so with 30 steps a second at 120 FPS the "
     "countdown ran at a quarter of its speed and a race began on the 2 or the 3. "
     "On, the clock is given the time of all the updates since the movie's last step.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_input_repeat_30hz, true, "MCLA/UI",
@@ -121,6 +118,7 @@ REXCVAR_DEFINE_BOOL(ui_input_repeat_30hz, true, "MCLA/UI",
     "repeats faster with every frame: at 144 FPS a quick tap moves a list or the "
     "photo album's slot cursor two places, and holding it scrolls ~24 items a "
     "second. On, the count advances once every 1/30 s.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_advance_on_input, true, "MCLA/UI",
@@ -131,6 +129,7 @@ REXCVAR_DEFINE_BOOL(ui_advance_on_input, true, "MCLA/UI",
     "extra step in the update it comes in, and its 30 Hz schedule starts again from "
     "it, so the animations keep close to the console's speed. The HUD is not "
     "stepped for it.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 bool SkipIntro() {
@@ -424,15 +423,6 @@ void Hook_SwfContextEnter(PPCRegister& r3) {
 
     CallGuestFn3(kSwfSetVarIntFn, ctx, kStrPlatform, uint32_t(want));
     g_swf_ctx[slot].value = want;
-}
-
-bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) {
-    if (!REXCVAR_GET(rexglue_settings_in_gameoptions)) {
-        return false;
-    }
-    mc::ui::RequestOpenRexGraphicsMenu();
-    r3.u64 = 1;
-    return true;
 }
 
 // ── UI movie pacing ──────────────────────────────────────────────────────
@@ -951,5 +941,4 @@ bool ButtonPromptsArePlayStation() { return false; }
 void Hook_PlatformVarInit(PPCRegister& r27) {}
 bool Patch_PlatformPush(PPCRegister& r5) { return false; }
 void Hook_SwfContextEnter(PPCRegister& r3) {}
-bool OpenRexGraphicsFromGameOptions_826686D4(PPCRegister& r3) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

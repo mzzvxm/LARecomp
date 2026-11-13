@@ -41,6 +41,7 @@ REXCVAR_DEFINE_BOOL(
     "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
     "still points at would be read as before the unmapping (the memory stays mapped, so it "
     "cannot fault); off asks the heap at every check, as before.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

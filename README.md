@@ -117,14 +117,7 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 Most settings are cvars, not environment variables. Set them in the pause menu, on the command line as `--name=value`, or in `larecomp.toml` beside the executable.
 
-Two rows that sound alike but are not:
-
-| Setting | What it does |
-|---|---|
-| **REAL FRAME DELTA** | Feeds the simulation the measured frame time instead of the fixed 30 Hz timestep. This is what makes high frame rates correct. It is not a frame rate setting. |
-| **FPS LIMIT** | The actual cap: 30, 60, 120, 144 or uncapped. |
-
-Turning REAL FRAME DELTA off puts the engine back on its original 30 Hz timestep. The hitch clamp, the FPS cap and the city LOD scale keep working either way.
+**FPS LIMIT** is the frame rate cap: 30, 60, 120, 144 or uncapped. High frame rates are correct because the simulation is fed the measured frame time instead of the fixed 30 Hz timestep (REAL FRAME DELTA, on by default). That switch is a fix, not a frame rate setting, so it lives on the hidden debug menu's FIXES page with the other triage switches: see [documentation/DEBUG.md](documentation/DEBUG.md).
 
 These are the environment variables the build reads. Everything else moved to cvars:
 

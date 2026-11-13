@@ -60,12 +60,14 @@ REXCVAR_DEFINE_DOUBLE(tire_offset_step, 0.012, "MCLA/Patches",
     "Metres of lateral wheel movement per TIRE OFFSET notch (17 notches, "
     "-8..+8, so the default spans about +/-10 cm). 0 disables the effect while "
     "leaving the garage row usable.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(tire_offset_targets, 31, "MCLA/Patches",
     "Bitmask (decimal) of the per-wheel matrix blocks TIRE OFFSET moves: 1 = "
     "model+1088 (the tyre), 2 = +1344, 4 = +1600, 8 = +1856, 16 = +1920. "
     "31 moves all five; drop bits to find which block owns which part.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

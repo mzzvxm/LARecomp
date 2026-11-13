@@ -23,13 +23,15 @@ REXCVAR_DEFINE_BOOL(larecomp_discord_rpc, true, "Discord",
                     "Enable Discord Rich Presence.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(larecomp_discord_rpc_log_state, true, "Discord",
+REXCVAR_DEFINE_BOOL(larecomp_discord_rpc_log_state, false, "Discord",
                     "Log Discord RPC state changes with printf.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(larecomp_discord_large_image, "mcla_logo", "Discord",
                       "Discord RPC large image key.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(larecomp_discord_rpc_language, "auto", "Discord",
                       "Rich Presence language. 'auto' follows the game (user_language); or force "

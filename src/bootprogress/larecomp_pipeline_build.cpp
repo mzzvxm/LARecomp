@@ -25,26 +25,30 @@ REXCVAR_DEFINE_BOOL(
     "have to be repeated until the driver, the game files or LARecomp change (the next run "
     "notices and does nothing when everything is current). Progress is printed to the console. "
     "Exit code 0 when the pipelines are prepared or need nothing.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(
     precache_pipelines_backend, "", "MCLA/GPU",
     "With precache_pipelines: which graphics API to prepare. Empty (or auto) is the one the game "
     "runs on (graphics_backend). d3d12 or vulkan prepares that one; one API per run.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(
     precache_pipelines_force, false, "MCLA/GPU",
     "With precache_pipelines: prepare even when the last run says the pipelines are current. For "
     "after the graphics driver's shader cache was cleared (Windows' Disk Cleanup does that).")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 REXCVAR_DEFINE_INT32(
     precache_pipelines_threads, 0, "MCLA/GPU",
     "With precache_pipelines: how many threads compile the pipelines. 0 uses every processor but "
     "one. A lower number leaves the PC more usable meanwhile, and the preparation takes longer.")
     .range(0, 16)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 
 namespace larecomp::pipelinebuild {
 namespace {

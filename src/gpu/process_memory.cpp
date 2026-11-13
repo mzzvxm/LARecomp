@@ -27,6 +27,7 @@ REXCVAR_DEFINE_UINT32(
     "charge and working set, the committed address space by kind, the private regions by size, "
     "the process heaps, the biggest regions). It walks the whole address space, which takes "
     "some milliseconds on the render thread each time. 0: off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

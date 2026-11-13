@@ -41,14 +41,17 @@
 // only way to see a tune's live layout, so it stays.
 REXCVAR_DEFINE_BOOL(tune_field_probe, false, "MCLA/Diagnostics",
                     "Log every tune field name as it registers.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(dbg_print, false, "MCLA/Patches", "Enable DbgPrint console outputs.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(lzx_stats, false, "MCLA/Debug",
     "Measure pgStreamer LZX decompression (XMemDecompressStream): per-2s window stats "
     "appended to <exe>/lzx_stats.txt. For diagnosing streaming stutter (South Central).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(stream_trace, "", "MCLA/Diag",
@@ -64,6 +67,7 @@ REXCVAR_DEFINE_STRING(stream_trace, "", "MCLA/Diag",
     "\n"
     "Empty turns it off. `resources/vehicle` is the useful setting for a car; "
     "`/` logs every file the game opens, which is thousands of lines.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Shared by the two open probes: read the path the call was handed off the
@@ -329,6 +333,7 @@ REXCVAR_DEFINE_STRING(segment_trace, "", "MCLA/Diag",
     "fixup error means by 'Unknown file in an archive' -- and a rebuilt car body "
     "is the only thing in the game past a megabyte. Anything else is matched "
     "against the name.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // 0x821E5908, just after sub_821E57B8 has filled the table. r31 is the table.
@@ -417,6 +422,7 @@ REXCVAR_DEFINE_BOOL(inflate_trace, false, "MCLA/Diag",
     "this prints it. Read consecutive lines: input left falling says it ate "
     "something, output left falling says it produced something, and a pair of "
     "identical lines is the decoder refusing to move.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Entry of zlibInflater's step. r4 is the context: +0 input left, +4 input
@@ -703,6 +709,7 @@ REXCVAR_DEFINE_BOOL(fxc_probe, false, "MCLA/Diag",
     "\n"
     "Compares what the effect (.fxc) parser is handed on two platforms: the same file should "
     "give the same bytes. Observer only; off by default.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // sub_821BE250 entry (the rage stream's read): r3 is the stream. The buffer is the
@@ -748,6 +755,7 @@ REXCVAR_DEFINE_BOOL(input_probe, false, "MCLA/Diag",
     "the status, the packet number, the buttons and the sticks. Off by default. Polling it "
     "pumps the same input path the game uses, so it can only make a pad look better, never worse; "
     "if a pad shows nothing here, the game gets nothing either.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Started once the runtime exists. One thread asks the InputSystem for every user's state twice a second.

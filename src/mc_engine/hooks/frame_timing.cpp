@@ -46,6 +46,7 @@ REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
     "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
     "for correct physics, camera and traffic above 30 FPS. This is NOT a frame "
     "rate cap - see fps_limit for that.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // A number of milliseconds as written in frame_step_cap or MCLA_MAX_FRAME_MS: plain digits, a
@@ -86,6 +87,7 @@ REXCVAR_DEFINE_STRING(frame_step_cap, "adaptive", "MCLA/Patches",
         double ms = 0.0;
         return IsAdaptiveStepCap(v) || ParseStepCapMs(v, ms);
     })
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Default to 60 FPS: with vsync=false for low input lag and fast pacing,
@@ -100,11 +102,13 @@ REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
 REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
     "Hit the frame-limit deadline with a PAUSE spin. Off restores the sleep-then-yield wait, "
     "which gives the core back instead of burning it.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
     "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(intro_original_speed, true, "MCLA/Patches",
@@ -125,11 +129,13 @@ REXCVAR_DEFINE_BOOL(pace_at_swap, true, "MCLA/Performance",
     "Hold each frame to the FPS limit right before it is presented instead of before the "
     "game's update: even present intervals (best on a variable refresh display), at the cost "
     "of up to one more frame of input latency.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(fence_spin_throttle, true, "MCLA/Performance",
     "Yield the host CPU inside the guest's D3D fence poll (sub_82412F98) instead of running "
     "its 32 pipeline-throttle NOPs. Off restores the stock guest spin.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.

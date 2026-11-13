@@ -83,11 +83,13 @@
 REXCVAR_DEFINE_BOOL(mcla_gfx_probe, false, "MCLA/Debug",
                     "Milestone 0: passive D3D9-Xenon probe. Renders nothing, changes nothing. "
                     "Writes mcla_gfx_probe_*.csv next to the executable.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_INT32(mcla_gfx_probe_frames, 900, "MCLA/Debug",
                      "Milestone 0: number of guest frames to capture before the probe dumps its "
                      "report and goes idle (0 = never stop).")
+    .debug_only()
     .range(0, 100000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

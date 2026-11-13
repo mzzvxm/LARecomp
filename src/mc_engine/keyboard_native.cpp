@@ -146,6 +146,7 @@ REXCVAR_DEFINE_STRING(keycaps_dir, "", "MCLA/Input",
     "Folder of the 64x64 key cap PNGs the keyboard glyphs are painted from, named by "
     "lower-case key (return.png, escape.png, a.png, capslock.png ...). Empty = the "
     "set embedded in the executable (src/keycaps/). Built by tools/keycaps/pack_keycaps.py.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The extra buttons of a pad (back paddles: L4, L5, R4, R5). A pad that has them sends nothing

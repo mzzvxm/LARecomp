@@ -24,7 +24,8 @@
 // elsewhere); larecomp adds the file unconditionally, so the guard lives here.
 #if REX_PLATFORM_WIN32 || REX_PLATFORM_LINUX
 
-REXCVAR_DEFINE_BOOL(larecomp_discord_activity, true, "Discord", "Enable Discord Rich Presence activity");
+REXCVAR_DEFINE_BOOL(larecomp_discord_activity, true, "Discord", "Enable Discord Rich Presence activity")
+    .debug_only();
 
 #if REX_PLATFORM_WIN32
 #ifndef NOMINMAX

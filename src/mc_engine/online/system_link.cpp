@@ -26,13 +26,15 @@ REXCVAR_DEFINE_BOOL(online_ignore_content_check, true, "MCLA/Multiplayer",
                     "online. The check is symmetric and fails on any mask difference, so it "
                     "wrongly demands DLC (South Central) even when nobody owns any. Turn off to "
                     "restore the stock behaviour.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(online_diag, false, "MCLA/Multiplayer",
                     "Log online session content masks and the valid-vehicle count at the join "
                     "content check. Used to confirm whether the host's session properties "
                     "transported. Verbose; leave off for normal play.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 // Online session content (DLC) compatibility gate. sub_8238B7E0 runs a symmetric
 // "mine is a superset of theirs" mask test twice on join; any mask difference

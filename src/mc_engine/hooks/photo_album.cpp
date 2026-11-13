@@ -100,13 +100,15 @@ REXCVAR_DEFINE_BOOL(photo_album_keep_new_preview, true, "MCLA/PhotoMode",
     "last saved photo the cursor passed over. The game decodes every photo into one "
     "shared preview image, and in the slot picker it let the slots overwrite the new "
     "one.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(photo_ui_trace, true, "MCLA/Diagnostics",
+REXCVAR_DEFINE_BOOL(photo_ui_trace, false, "MCLA/Diagnostics",
     "Log the UI statechart while the photo album scene is up (photo mode, the album, "
     "the Rate My Ride snapshots): events posted and dispatched, delayed events, the "
     "UI.* and photoAlbum.* commands with the states they touch, and the paced movies' "
     "frame counts every 10 seconds. Silent everywhere else.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_8263CB78);  // snapshot vhsm update

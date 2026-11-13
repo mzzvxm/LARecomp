@@ -25121,13 +25121,6 @@ address = 0x827440D8
 name = "Patch_DisableRubberBanding"
 return_on_true = true
 
-# PM_Graphics Button
-[[midasm_hook]]
-address = 0x826686D4
-name = "OpenRexGraphicsFromGameOptions_826686D4"
-registers = ["r3"]
-jump_address_on_true = 0x82668704
-
 # DiscordRPC: core vhsmState activation — fires for every SCXML state change
 # r31 = state object being activated; hook reads state name from guest memory
 [[midasm_hook]]
@@ -25301,11 +25294,6 @@ jump_address_on_true = 0x823930FC
 address = 0x827903E0
 name = "Patch_ScaleTrafficLOD"
 registers = ["f0"]
-
-[[midasm_hook]]
-address = 0x822D5BC4
-name = "Patch_ScaleCityLOD"
-registers = ["f13"]
 
 # Audi R8 — hook no epílogo de sub_823964C0 (parser de veículos)
 [[midasm_hook]]

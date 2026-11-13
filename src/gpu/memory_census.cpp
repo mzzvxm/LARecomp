@@ -15,6 +15,7 @@ REXCVAR_DEFINE_BOOL(
     "Watch every vertex and index range the executed draws read, the way the buffer cache will, "
     "and log every 600 frames what that cache would upload ("
     "24.21). Diagnostic: it write-protects guest pages.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

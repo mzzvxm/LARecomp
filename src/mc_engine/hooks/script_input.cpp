@@ -52,6 +52,7 @@ REXCVAR_DEFINE_INT32(script_pad_latch_ms, 100, "MCLA/Input",
     "before. Without it the button has to be pressed several times. 0 = the game's own "
     "behaviour: a press is seen only by a script that looks in the update it happened in.")
     .range(0, 500)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

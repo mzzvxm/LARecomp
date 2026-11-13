@@ -40,6 +40,10 @@ std::optional<std::string> CvarTomlValue(std::string_view name, std::string_view
 // user_name): that stays a change.
 void NoteStartupCvar(std::string_view name);
 
+// True when `name` was given a value with NoteStartupCvar and has it still: LARecomp's own default for
+// this PC, not something anybody chose.
+bool IsAtStartupValue(std::string_view name);
+
 // A cvar that belongs to this run only, such as a preview a menu row switches on while the row is
 // highlighted: a save never writes its live value, whoever set it. A line the file already has for it
 // is put back to the cvar's default (so an old save of the cvar is cleaned, not kept), and no line is
@@ -51,7 +55,11 @@ void NoteSessionOnlyCvar(std::string_view name);
 // as it is: other lines, comments, keys of cvars this build does not have. Values
 // from the command line or the environment are not written. A changed value that
 // is back at its default, or at its startup value (NoteStartupCvar), only rewrites
-// a line the file already has. The file is replaced in one step (see
+// a line the file already has. A cvar tagged .debug_only() is never written for a
+// change made while the game runs (the DEBUG menu, the settings panel, the console),
+// and a line the file already has for it is left exactly as it is, so a tester's
+// hand-written value stays. `held` is the exception: a value a menu holds for the
+// next launch is written whatever the cvar is. The file is replaced in one step (see
 // profiles::EditConfig). False, with the file as it was, when it cannot be written.
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held = {});
 

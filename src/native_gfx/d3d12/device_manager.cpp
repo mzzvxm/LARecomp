@@ -11,6 +11,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_device, false, "MCLA/NativeGfx",
                     "Off by default, like mcla_native_gfx_own_swapchain: without that one the "
                     "presenter shows the frame from its own queue, which nothing orders after the "
                     "blit on this one.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::native_gfx {

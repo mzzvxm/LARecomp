@@ -35,7 +35,9 @@ Defaults out of the box are `real_frame_delta = true`, `fps_limit = 60`, `vsync 
 
 Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu.
 
-Two rows sound similar and are not:
+The pause menu holds the settings a player is meant to change. The troubleshooting and developer switches are not in it: they are launch arguments, rows of the launcher's Advanced tab and Troubleshooting section, and, for the ones that work while the game runs, pages of the hidden DEBUG menu (below).
+
+Two settings sound similar and are not (REAL FRAME DELTA is on the DEBUG menu's FIXES page, not in the normal menus):
 
 | Setting | What it does |
 |---|---|
@@ -46,19 +48,23 @@ Turning REAL FRAME DELTA off puts the engine back on its original 30 Hz timestep
 
 ### Pause menu
 
-Press Start or Escape and open **Options**. Seven tabs:
+Press Start or Escape and open the **SETTINGS** tab. Buttons, and what each holds:
 
-| Tab | Contents |
+| Button | Contents |
 |---|---|
-| ReXGlue Settings | Fullscreen, vsync, resolution, resolution scale |
-| Recomp Settings | Real frame delta, FPS limit, MSAA, foliage shadows, AI rubberband, extra vinyl layers, depth of field, motion blur, suspension fix, traffic and city LOD, speed units |
-| Performance | Shadows, shadow phases, cheap car shadow, tree impostors, foliage, screen blur, single tile, ambient culling, traffic range, pedestrians, parked cars, prop draw distance, break FPS floor |
-| Fidelity FX | Upscaler, FSR quality, CAS sharpness, FSR sharpness reduction |
-| Debug Camera | Smooth chase cam, camera smoothing factor, freecam, camera speed |
-| Time of Day | Real clock, hold time, time, day speed, weather |
-| Carbon Fiber | Per-car carbon part toggles |
+| RECOMP SETTINGS | Hide mouse pointer, original intro speed |
+| GRAPHICS | **DISPLAY**: display mode, vsync, resolution, HDR (page), display gamma, FPS limit, smooth UI, then the picture rows (NATIVE renderer: upscaling, render scale, sharpness, MSAA, post AA, anisotropic, ambient occlusion, AO intensity, frame generation; XENIA renderer: render scale, MSAA, anisotropic). **PERFORMANCE**: RENDERING (shadows, depth of field, NVIDIA Reflex or AMD Anti-Lag 2), WORLD DENSITY (traffic range, pedestrians, parked cars, prop draw distance), LOD AND FOLIAGE (foliage shadows, traffic LOD, city LOD). **TEXTURE MODS** (NATIVE only): texture mods on or off |
+| GAMEPLAY | **CAMERA**: motion blur, CHASE CAMERA (smoothing factor), FOV, REAR VIEW, LOOK AROUND (free look). **TIME OF DAY**: real clock, hold time, time, day speed, weather. **CARBON FIBER**: per-car carbon part toggles. **DIFFICULTY**: AI difficulty and the rubberband scales |
+| CONTROLLER | Vibration, DualSense and Xbox trigger effects, stick dead zones, button layout |
+| INTERFACE | **UI**: menu colors, speed units, HUD width. **LANGUAGES** |
+| EXTRAS | Cutscenes, extra vinyl layers, no 8 player limits, start garage |
+| QUIT | Quit or restart |
 
-**F4** toggles the ReXGlue developer overlay.
+Not in these menus: RENDERER and GRAPHICS API (the launcher's Troubleshooting section sets them; `--graphics_backend=auto|d3d12|vulkan` works on the command line, and the renderer is four cvars the launcher writes together), and the developer switches (below).
+
+**DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (cheap car shadow, tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
+
+**F4** opens the settings panel. It lists the key bindings and the online settings; with `--debug_menu` it lists every setting (debug changes are not saved).
 
 ### Environment variables
 

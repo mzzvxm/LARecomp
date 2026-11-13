@@ -27,6 +27,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/debug_menu.h"
 #include "mc_engine/ultrawide.h"
 #include "watch.h"
 
@@ -40,6 +41,7 @@ REXCVAR_DEFINE_BOOL(
     "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
     "memory read in another shape than it was resolved in -- milestone M5. "
     "")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
@@ -52,6 +54,7 @@ REXCVAR_DEFINE_BOOL(
     "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
     "A measurement for the performance work, off by "
     "default.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -59,6 +62,7 @@ REXCVAR_DEFINE_BOOL(
     "Pace presents with the swap chain's latency wait (DXGI waitable object / "
     "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
     "interval 0 and the wait alone paces the frame, so measure before turning it on.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
@@ -76,6 +80,7 @@ REXCVAR_DEFINE_BOOL(
     "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
     "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
     ".")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -83,6 +88,7 @@ REXCVAR_DEFINE_BOOL(
     "Run the milestone M3 validator on every record besides the replay: per-record counters and "
     "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
     "time on the render thread (3.5-7 ms/frame measured in M3).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -90,6 +96,7 @@ REXCVAR_DEFINE_UINT32(
     "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
     "and continue in a new list (0: one submission per guest frame, the default). For measuring "
     "submission batching.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -100,6 +107,7 @@ REXCVAR_DEFINE_BOOL(
     "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
     "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
     "so it never runs more than that ahead.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
@@ -108,6 +116,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
                     "D3D12\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS "
                     "runtime). Vulkan validation is a property of a Debug build of Plume and "
                     "cannot be switched on here.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DECLARE(bool, mcla_native_gfx);
@@ -1857,30 +1866,36 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   // (ProcessKeyEvent stops at the first match), so the SDK's is unregistered
   // first, as the legacy runtime does.
   rex::ui::UnregisterBind("bind_renderdoc_capture");
-  rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
-                        "Capture the next frame with RenderDoc (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestCapture();
-                          }
-                        });
-  // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
-  // frame counter cannot be aimed at (menus, pause, photo mode).
-  rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
-                        "Write a raw trace of the next guest frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTrace();
-                            REXLOG_INFO("[gpu] trace: the frame after the next present will be "
-                                        "written");
-                          }
-                        });
-  // F2: every texture of the next frame to the dump folder, named after the
-  // game's texture and its dictionary, for texture mods (textures.h).
-  rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
-                        "Dump the textures of the next frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTextureDump();
-                          }
-                        });
+  // The three developer keys below (F11, F10, F2) exist only while the debug menu is unlocked
+  // (--debug_menu, REX_DEBUG_MENU=1 or debug_menu = true in larecomp.toml): for a player the keys
+  // do nothing and are not listed in the settings panel. The SDK's F11 bind stays unregistered
+  // either way.
+  if (larecomp::DebugMenuUnlocked()) {
+    rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
+                          "Capture the next frame with RenderDoc (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestCapture();
+                            }
+                          });
+    // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
+    // frame counter cannot be aimed at (menus, pause, photo mode).
+    rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
+                          "Write a raw trace of the next guest frame (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestTrace();
+                              REXLOG_INFO("[gpu] trace: the frame after the next present will be "
+                                          "written");
+                            }
+                          });
+    // F2: every texture of the next frame to the dump folder, named after the
+    // game's texture and its dictionary, for texture mods (textures.h).
+    rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
+                          "Dump the textures of the next frame (Plume renderer)", [] {
+                            if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+                              r->RequestTextureDump();
+                            }
+                          });
+  }
   return true;
 }
 

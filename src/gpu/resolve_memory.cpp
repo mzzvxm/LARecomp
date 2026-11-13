@@ -37,6 +37,7 @@ REXCVAR_DEFINE_UINT32(
     "of its pages needs it, or after N frames; a resolve that rewrites the same rectangle "
     "replaces it before it runs, so most are never recorded (75% on a drive). 2 by default: on a "
     "Radeon iGPU 57 FPS against 52 at 0. At most 120. Hot reload.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
 

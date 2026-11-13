@@ -230,6 +230,10 @@ void NoteStartupCvar(std::string_view name) {
   StartupValues()[std::string(name)] = std::move(value);
 }
 
+bool IsAtStartupValue(std::string_view name) {
+  return AtStartupValue(std::string(name), rex::cvar::GetFlagByName(name));
+}
+
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
   Edits edits;
   // Only cvars whose last writer was SetFlagByName: a menu, the settings panel,
@@ -239,6 +243,10 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // nobody has changed since: it is not the player's choice. A line the file has
   // already still follows the value, so a cvar the player changed, saved and then
   // put back is not left at the changed value.
+  // A cvar tagged .debug_only() that was changed while the game ran is not written at all, and
+  // its line in the file, if any, is not touched: debug settings last one session, and a
+  // tester's hand-written line keeps its value. That covers the DEBUG menu, the settings panel
+  // and the console with no per-cvar call. (`held`, below, is not affected.)
   for (const std::string& name : rex::cvar::ListFlags()) {
     const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
     if (!info || info->type == rex::cvar::FlagType::Command) {
@@ -250,6 +258,9 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
       continue;
     }
     if (info->source != rex::cvar::Source::kRuntime) {
+      continue;
+    }
+    if (info->is_debug_only) {
       continue;
     }
     const std::string value = info->getter();

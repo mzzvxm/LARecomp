@@ -81,11 +81,13 @@ REXCVAR_DEFINE_BOOL(lzx_native, true, "MCLA/Performance",
     "\n"
     "The first streams are decoded by both and compared; any difference switches the native decoder "
     "off for the rest of the session. Read at start.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(lzx_native_check_all, false, "MCLA/Diagnostics",
     "Run the recompiled LZX decoder next to the native one for every stream, not only the first few, "
     "and compare every call. Slower than either alone: for validating a whole session. Read at start.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {

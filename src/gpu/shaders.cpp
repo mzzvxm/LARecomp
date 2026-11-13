@@ -28,6 +28,7 @@ REXCVAR_DEFINE_STRING(
     "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
     "left in the program's assets folder by an older install is still used when there is none "
     "in that folder. When this is set, only this folder is used.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

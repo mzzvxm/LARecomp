@@ -58,11 +58,13 @@
 REXCVAR_DEFINE_BOOL(online_race_prop_guard, true, "MCLA/Multiplayer",
                     "Skip the physics update of a prop whose owner is broken instead of "
                     "crashing. Starting an online race re-syncs every race prop.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(online_race_prop_watch, "", "MCLA/Multiplayer",
                       "Diagnostic: guest address (hex) of a prop inst. Its owner's inst word "
-                      "is polled every frame and every change is logged. Empty = off.");
+                      "is polled every frame and every change is logged. Empty = off.")
+    .debug_only();
 
 namespace {
 

@@ -24,6 +24,7 @@ REXCVAR_DEFINE_BOOL(
     "old bytes (a flicker). Meant for a static scene such as the pause menu. Costs a copy of "
     "the image per frame on the GPU and about a millisecond of render-thread CPU. Off: "
     "nothing is made.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -31,6 +32,7 @@ REXCVAR_DEFINE_UINT32(
     "With mcla_gpu_flicker_probe: how many flicker events also write the frame before, the "
     "first frame of the blip and the frame after as mcla_flicker_<event>_<frame>_<what>.tga "
     "next to the executable (3.7 MB each at 1280x720).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(
@@ -38,6 +40,7 @@ REXCVAR_DEFINE_STRING(
     "With mcla_gpu_flicker_probe: a comma-separated list of guest frame numbers, each written "
     "as mcla_flicker_000_<frame>_shot.tga next to the executable whether or not it flickered. "
     "For comparing what two platforms or builds put in the window at the same frame.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

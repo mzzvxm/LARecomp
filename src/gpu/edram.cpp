@@ -30,6 +30,7 @@ REXCVAR_DEFINE_BOOL(
     "tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would "
     "see another identity's bytes on the console -- which the host does not carry over. Off: "
     "none of its work is done.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -38,6 +39,7 @@ REXCVAR_DEFINE_BOOL(
     "takes to cover its scissor, checking that it did. Costs GPU time, for "
     "checking a report. Off: no query pool is made, read or reset, and such takes go "
     "unchecked (listed once per pair).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -46,6 +48,7 @@ REXCVAR_DEFINE_UINT32(
     "each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps "
     "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
     "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -53,6 +56,7 @@ REXCVAR_DEFINE_UINT32(
     "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_msaa, "2", "MCLA/GPU",

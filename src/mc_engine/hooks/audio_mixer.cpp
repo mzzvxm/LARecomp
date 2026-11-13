@@ -63,6 +63,7 @@ REXCVAR_DEFINE_INT32(audio_mixer_priority, -1, "MCLA/Audio",
     "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
     "a PC with 6 or fewer logical processors, 0 otherwise. Takes effect at the next start.")
     .range(-1, 3)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_823EC8C8);  // the mixer thread's body

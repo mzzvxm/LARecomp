@@ -58,16 +58,19 @@ REXCVAR_DEFINE_STRING(perf_shadow_phase_bits, "0x65E0", "MCLA/Performance",
     "Render phase bits perf_no_shadows clears in renderer+448 (hex). 0x65E0 = sun cascades "
     "(0x61E0, what the game's own 'noshadows' clears) plus the night/blend shadow phase "
     "0x400 that it misses. 0x400 alone isolates the night path.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
     "Drop the shadow pass during races only (dev switch 'noraceshadows').")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
     "Cheap blob shadow under vehicles instead of the real-time one (dev switch "
     "'fastVehShadows'). Use instead of perf_no_shadows to keep world shadows. Applies at the "
     "next start of the game.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
@@ -82,6 +85,7 @@ REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
 REXCVAR_DEFINE_BOOL(perf_no_impostors, false, "MCLA/Performance",
     "Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). "
     "Distant trees lose their billboards. Applies at the next start of the game.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Same shape: sub_82310478 skips the prop parse for $/city/<district> entirely.
@@ -91,6 +95,7 @@ REXCVAR_DEFINE_BOOL(perf_no_impostors, false, "MCLA/Performance",
 REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
     "Skip loading the prop/foliage set (dev switch 'notrees'). Last resort. Applies on "
     "the next district load.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Read once by the game, when it starts (the fork: "the options the game reads once, at
@@ -106,6 +111,7 @@ REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
 REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
     "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
     "the game.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Bumped once per frame from Patch_DeltaTimePre; read by the freeze watchdog.

@@ -8,7 +8,8 @@
 //   <exe>/models/<mod>/warps.txt      name x y z [heading in degrees, 0 = +Z]
 //
 // F9 (bind_map_warp) takes the car to the first of them -- or to warp_spot when
-// that is set -- and back to where it was; the console command reaches any.
+// that is set -- and back to where it was; the console command reaches any. A warp can break a
+// mission, so the key exists only while the debug menu is unlocked (debug_menu.h).
 //
 // RE map (default.xex):
 //
@@ -56,6 +57,7 @@
 #include <string_view>
 #include <vector>
 
+#include "debug_menu.h"
 #include "logging.h"
 #include "map_warp.h"
 #include "profile/larecomp_profile_store.h"
@@ -65,11 +67,13 @@ REXCVAR_DEFINE_STRING(warp_spot, "", "MCLA/World",
     "Where F9 drops the car: \"x y z heading\" (heading in degrees, 0 = facing +Z). "
     "Empty = the first point a mod names in models/<mod>/warps.txt. The car is "
     "dropped onto whatever collision is below the point.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
     "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
     "start_garage = last starts the session there. The game keeps it up to date.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
@@ -363,6 +367,9 @@ bool FindSpot(const std::string& name, Spot* out) {
 
 void RegisterBindOnce() {
     if (g_bind_registered.exchange(true)) return;
+    // The warp can break a mission, so the key is for testers: only while the debug menu is
+    // unlocked (the `warp` console command is tagged debug-only as well).
+    if (!larecomp::DebugMenuUnlocked()) return;
     rex::ui::RegisterBind("bind_map_warp", "F9",
                           "Warp the car to a mod's warp point, and back to where it was",
                           [] { File({Kind::kToggle, {}, {}}); });
@@ -602,7 +609,8 @@ void TickStartGarage() {
 REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
                             "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
                             "where it was), 'warp x y z [heading]', or 'warp' to list the points. "
-                            "The car is dropped onto whatever collision is below the point.");
+                            "The car is dropped onto whatever collision is below the point.")
+    .debug_only();
 
 void TickMapWarp() {
     RegisterBindOnce();

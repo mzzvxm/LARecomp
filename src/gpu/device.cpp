@@ -27,6 +27,7 @@ REXCVAR_DEFINE_BOOL(
     "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
     "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
     "device opens.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DECLARE(bool, mcla_gpu_perf_markers);  // perf_markers.cpp
 

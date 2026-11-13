@@ -96,41 +96,49 @@ REXCVAR_DEFINE_BOOL(rearview_traffic, false, "MCLA/HUD",
     "Put ambient traffic back in the mirror's phase, where retail has it. It draws nothing useful "
     "there (cars show up as black silhouettes, or not at all) and a car close to the mirror's "
     "camera blacks the view out, so it is taken out of the phase unless this is on. Needs rearview on.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(rearview_diag, false, "MCLA/HUD",
     "Log, every couple of seconds, how many objects each render client holds when the mirror's "
     "phase begins. For working out why cars and traffic do not draw in it.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_shift_x, 0, "MCLA/HUD",
     "Fine-tunes the mirror and its frame horizontally on top of rearview_position, in 1280x720 "
     "pixels. Negative is left.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_shift_y, 0, "MCLA/HUD",
     "Fine-tunes the mirror and its frame vertically on top of rearview_position, in 1280x720 "
     "pixels. Positive is down.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_window_dx, 22, "MCLA/HUD",
     "Offset of the scene viewport from the frame window's outer corner, horizontally, in pixels. "
     "The window's left and right edges lean, so the viewport rectangle has to start inside the "
     "narrowest part or its corner pokes out of the frame.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_window_dy, 2, "MCLA/HUD",
     "Offset of the scene viewport from the frame window's outer corner, vertically, in pixels.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_window_w, 229, "MCLA/HUD",
     "Width of the scene viewport in pixels. The widest rectangle that fits inside the leaning "
     "window is 229 wide.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(rearview_window_h, 44, "MCLA/HUD",
     "Height of the scene viewport in pixels. The widest rectangle that fits inside the leaning "
     "window is 44 tall.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Guest layout (see the file comment for where each was read).

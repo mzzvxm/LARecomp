@@ -24,7 +24,8 @@ REXCVAR_DEFINE_BOOL(leaderboards_enabled, true, "MCLA/Multiplayer",
 
 REXCVAR_DEFINE_BOOL(leaderboards_diag, false, "MCLA/Multiplayer",
                     "Log every leaderboard read and write in detail.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace lb::client {
 

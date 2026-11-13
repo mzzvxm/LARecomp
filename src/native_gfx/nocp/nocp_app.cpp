@@ -33,6 +33,7 @@ REXCVAR_DEFINE_BOOL(
     "what the guest still needs and what none of that was: the GPU register window, the vblank "
     "source, and a swapchain to present on. "
     "Decided once at startup -- whether the emulator is in the process is not a runtime setting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -43,6 +44,7 @@ REXCVAR_DEFINE_BOOL(
     "src/graphics/command_processor.cpp, so it lives in the GPU plugin and is simply ABSENT once "
     "that plugin is not loaded -- a `vsync` line in larecomp.toml is an unknown key in this mode, "
     "and querying it by name would silently answer false whatever it was set to.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The fork's SDK also takes the swap timing into rex::perf, for the counter
