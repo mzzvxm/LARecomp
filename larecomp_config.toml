@@ -27276,6 +27276,17 @@ registers = ["r3"]
 address = 0x822A6DD4
 name = "Hook_ScriptHighbeamsRefused"
 
+# Checkpoints and line triggers that a script asks about (hooks/checkpoint_sweep.cpp): the test is a
+# segment from the racer's previous position (+400) to its position, and a script that looks only every
+# 2nd to 4th update above 30 FPS never tests the road the other updates covered. The checkpoint test
+# (sub_822653A8) is overridden in the source file; this is mcTriggerLine::Check (sub_826881A8), at the
+# `beq` after the two vector stores (r1 + 128 = the segment's start, r1 + 144 = its end), r27 = the
+# racer, r31 = the trigger.
+[[midasm_hook]]
+address = 0x82688200
+name = "Hook_TriggerLineSweep"
+registers = ["r1", "r31", "r27"]
+
 # Options > Controller > Customize: the "press a button" capture (sub_82727010) only looks at
 # the raw pad, so with a keyboard it never finishes and swallows every key. After its
 # prologue (r28 = out type ptr, r24 = out value ptr), a key that just went down answers it:
