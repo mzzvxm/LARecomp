@@ -107,10 +107,13 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
 
     // The test the menus use to list a renderer's rows (NativeRendererRuns: the Plume renderer is
     // mcla_gpu), with the names the menus and the docs give the two renderers.
-    StatRow("RENDERER", mcla_menu::NativeRendererRuns() ? "NATIVE" : "XENIA");
+    const bool native = mcla_menu::NativeRendererRuns();
+    StatRow("RENDERER", native ? "NATIVE" : "XENIA");
 
-    const bool vsync_on = (rex::cvar::GetFlagByName("vsync") == "true") ||
-                          (rex::cvar::GetFlagByName("mcla_native_gfx_nocp_vsync") == "true");
+    // Each renderer's own switch: the native renderer's VSYNC row is mcla_gpu_vsync; with Xenia's,
+    // `vsync` (the debug page's XENIA VSYNC).
+    const bool vsync_on =
+        rex::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
     std::snprintf(line, sizeof(line), "%s - %d HZ", vsync_on ? "ON" : "OFF", target_hz);
     StatRow("VSYNC", line);
 
