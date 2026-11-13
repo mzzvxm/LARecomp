@@ -52,6 +52,7 @@
 
 REXCVAR_DEFINE_BOOL(carbon_all_parts, true, "MCLA/Patches",
     "Carbon fiber can be applied to any body part, not just the hood.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Menu instrumentation. Off by default because it is chatty, but it is what
@@ -61,6 +62,7 @@ REXCVAR_DEFINE_BOOL(carbon_all_parts, true, "MCLA/Patches",
 REXCVAR_DEFINE_BOOL(carbon_menu_diag, false, "MCLA/Carbon",
     "Log the garage menu state tree, per-state field dumps and the "
     "activate/command stream while the paint screen is open.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // There is no cvar for the part selection on purpose. The mask is per car —

@@ -55,6 +55,7 @@
 REXCVAR_DEFINE_BOOL(trigger_slip_log, false, "MCLA/Input",
     "Development: once a second while a car is driven, write each wheel's ground speed, slip speed "
     "and the wheelspin and lock-up amounts the trigger effects use to the log.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

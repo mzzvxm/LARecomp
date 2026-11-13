@@ -15,6 +15,7 @@
 #include "larecomp_log.h"
 
 REXCVAR_DEFINE_BOOL(break_pairwise_collision, false, "MCLA/Patches", "Disables pairwise collision resolution.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(unlock_ride_height, false, "MCLA/Patches", "Allow the full stock ride-height table in the shop (down to rh_800 / -8).")
@@ -26,16 +27,19 @@ REXCVAR_DEFINE_BOOL(unlock_wheel_fit, false, "MCLA/Patches", "Allow every stock 
 // BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth continuous filter
 REXCVAR_DEFINE_BOOL(smooth_chassis_depth, true, "MCLA/Physics",
     "Fix: Smooth vehicle chassis suspension and ground depth damping at 60 FPS.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: Continuous-time vehicle physics filters at 60+ FPS
 REXCVAR_DEFINE_BOOL(smooth_vehicle_physics, true, "MCLA/Physics",
     "Fix: Continuous-time tire slip filter at 60+ FPS.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(smooth_bike_gyro, true, "MCLA/Physics",
     "Fix: Step the motorcycle gyro's smoothing in continuous time, so bikes lean and settle "
     "the same at any frame rate.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Traffic (va_) vehicles turned into player cars: chassis-bound substitution.

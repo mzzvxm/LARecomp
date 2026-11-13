@@ -118,6 +118,7 @@ REXCVAR_DEFINE_BOOL(ui_color_buttons, true, "MCLA/UI",
     "Show the pause menu's color buttons (UI OPTIONS) as the garage's own "
     "PickColor: garage.xsf's color button, placed in the pause movie and "
     "driven the way the garage's Fillmenu drives it.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace larecomp {

@@ -24,6 +24,7 @@
 
 REXCVAR_DEFINE_STRING(mcla_audio_output, "auto", "MCLA/Audio",
                       "auto: the default device, or silence when none opens. null: always silent.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::audio {

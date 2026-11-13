@@ -92,6 +92,7 @@ REXCVAR_DEFINE_INT32(frame_pacing, 1, "MCLA/Performance",
     "LIMIT, for a few milliseconds of latency. 0: the step is the measured frame time and frames are "
     "shown when ready, as before. Needs the Plume renderer, and is idle with mcla_gpu_vsync.")
     .range(0, 1)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(bool, real_frame_delta);

@@ -45,6 +45,7 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_yaw_limit, 3.14159, "MCLA/Camera",
     "round. This is the cap on our own angle, not the game's -- the game's own "
     "limits are what this feature overwrites.")
     .range(0.1, 3.15)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_freelook_pitch_limit, 0.7, "MCLA/Camera",
@@ -52,6 +53,7 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_pitch_limit, 0.7, "MCLA/Camera",
     "not the result -- where the camera ends up is decided by the two "
     "elevation limits below, which are what keep it out of the ground.")
     .range(0.05, 1.5)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // A camera bolted to the car -- cockpit, bumper, bonnet -- has nothing to
@@ -80,6 +82,7 @@ REXCVAR_DEFINE_STRING(cam_freelook_inplace_rigs, "0,1", "MCLA/Camera",
     "sitting next to it in the cycle -- which is a reading of the cycle order, "
     "not something measured, so if a view mounted on the car still swings out "
     "of the bodywork, its number belongs in this list.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Rotating the finished matrix means the game's camera collision never sees
@@ -96,6 +99,7 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_min_elev, -0.08, "MCLA/Camera",
     "deliberately low shots, on the understanding that the ground is not "
     "consulted.")
     .range(-0.5, 1.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_freelook_max_elev, 1.3, "MCLA/Camera",
@@ -103,6 +107,7 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_max_elev, 1.3, "MCLA/Camera",
     "overhead the forward vector is parallel to world up and the yaw stops "
     "meaning anything.")
     .range(0.2, 1.5)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Both default to 0 = leave the shipped value alone. Their units are not known
@@ -114,11 +119,13 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_approach, 0.0, "MCLA/Camera",
     "The shipped one eases the view towards its target over a good fraction of "
     "a second, which reads as lag under a mouse.")
     .range(0.0, 200.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_freelook_lerp, 0.0, "MCLA/Camera",
     "LookaroundLerpFactor while free look is on. 0 leaves the shipped value.")
     .range(0.0, 1.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The shipped camera recentres itself: LookaroundDelayTime then
@@ -172,6 +179,7 @@ REXCVAR_DEFINE_INT32(cam_look_obj, 860, "MCLA/Camera",
     "Byte offset into the camera system holding the pointer to the object the "
     "look lives in. 860 is what the field probe found.")
     .range(0, 4096)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_freelook_orbit, 7.5, "MCLA/Camera",
@@ -186,6 +194,7 @@ REXCVAR_DEFINE_DOUBLE(cam_freelook_orbit, 7.5, "MCLA/Camera",
     "it holds something sane, so a camera that keeps a real distance there is "
     "followed rather than overridden.")
     .range(1.0, 200.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(cam_look_phase, 2, "MCLA/Camera",
@@ -200,6 +209,7 @@ REXCVAR_DEFINE_INT32(cam_look_phase, 2, "MCLA/Camera",
     "collision lives on its own switch, cam_freelook_collide, and not on "
     "this one -- see there.")
     .range(0, 2)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_freelook_cs_invert, false, "MCLA/Camera",
@@ -210,6 +220,7 @@ REXCVAR_DEFINE_BOOL(cam_freelook_cs_invert, false, "MCLA/Camera",
     "the maths does not settle. If the view turns opposite to the mouse with "
     "cam_freelook_collide on, this is the switch. Only affects the collide "
     "path.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_freelook_collide, false, "MCLA/Camera",
@@ -221,27 +232,32 @@ REXCVAR_DEFINE_BOOL(cam_freelook_collide, false, "MCLA/Camera",
     "on. Turn cam_freelook_diag on with it -- the log says whether the hook "
     "ran, which camera state it got, and what CollideType that state carries. "
     "With this off, cam_look_phase decides everything, exactly as before.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_freelook_tune, false, "MCLA/Camera",
     "Also pin the LookaroundLimit* tune fields, the first approach. It did not "
     "hold on its own and is kept only so the two can be tried together.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_freelook_diag, false, "MCLA/Camera",
     "Log the lookaround tune fields as they are found and the angles being "
     "written, once a second.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_probe_mark, false, "MCLA/Camera",
     "Button: snapshot the gameplay camera object. Flips back off. Do it with "
     "the car still and the view centred, then look around, then use "
     "cam_probe_dump.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cam_probe_dump, false, "MCLA/Camera",
     "Button: snapshot the camera again, diff it against cam_probe_mark and "
     "write every float that moved to <exe>/cam_fields.txt. Flips back off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The two buttons above cannot be used for the measurement they were written
@@ -255,18 +271,21 @@ REXCVAR_DEFINE_BOOL(cam_probe_run, false, "MCLA/Camera",
     "the camera left alone, and the diff cam_probe_hold_delay after that with "
     "the look held. Both samples happen with nothing on screen. Flips back "
     "off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_probe_arm_delay, 4.0, "MCLA/Camera",
     "Seconds between arming cam_probe_run and the baseline sample. Long "
     "enough to close the overlay and let the camera settle.")
     .range(1.0, 30.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(cam_probe_hold_delay, 6.0, "MCLA/Camera",
     "Seconds between the baseline sample and the diff. Hold the look for all "
     "of it.")
     .range(1.0, 30.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

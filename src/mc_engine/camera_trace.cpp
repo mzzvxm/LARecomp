@@ -65,6 +65,7 @@ REXCVAR_DEFINE_BOOL(cam_trace, false, "MCLA/Diagnostics",
     "Write cam_trace.csv: every game update's camera (position, direction, shake), the player "
     "car's position and the clock's time step, every guest swap, and when each frame was "
     "presented and reached the screen. For measuring camera judder.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_822C0320);  // camera system tick

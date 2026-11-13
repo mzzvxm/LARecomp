@@ -30,16 +30,19 @@ REXCVAR_DEFINE_DOUBLE(map_mouse_fov, 45.0, "MCLA/Input",
     "too large and it runs ahead. The centre of the screen is correct at any "
     "value, so calibrate by pointing at a corner.")
     .range(5.0, 150.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_flip_x, false, "MCLA/Input",
     "Mirror the horizontal axis of the map cursor. Needed only if the camera "
     "basis rows turn out to be left-handed -- the cursor then moves the wrong "
     "way along one axis while the other tracks correctly.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_flip_y, false, "MCLA/Input",
     "Mirror the vertical axis of the map cursor. See map_mouse_flip_x.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_zoom, true, "MCLA/Input",
@@ -50,6 +53,7 @@ REXCVAR_DEFINE_BOOL(map_mouse_zoom, true, "MCLA/Input",
 REXCVAR_DEFINE_DOUBLE(map_mouse_zoom_step, 1.15, "MCLA/Input",
     "Multiplier applied to the map camera's height per wheel detent.")
     .range(1.01, 3.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(map_mouse_zoom_smooth, 0.22, "MCLA/Input",
@@ -58,6 +62,7 @@ REXCVAR_DEFINE_DOUBLE(map_mouse_zoom_smooth, 0.22, "MCLA/Input",
     "straight to it is what made the zoom read as jerky; this eases into it "
     "instead. 1.0 restores the instant jump.")
     .range(0.02, 1.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_zoom_to_cursor, true, "MCLA/Input",
@@ -65,6 +70,7 @@ REXCVAR_DEFINE_BOOL(map_mouse_zoom_to_cursor, true, "MCLA/Input",
     "the view. With this off the camera only changes height, which slides the "
     "world under a pointer that has not moved and drags the cursor towards "
     "the centre on every detent.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_magnet, false, "MCLA/Input",
@@ -88,6 +94,7 @@ REXCVAR_DEFINE_INT32(map_mouse_max_steps, 96, "MCLA/Input",
     "The walk stops as soon as it arrives or stops making progress, so a high "
     "ceiling costs nothing on the small movements that make up most frames.")
     .range(1, 512)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(map_mouse_hide_cursor, true, "MCLA/Input",
@@ -98,6 +105,7 @@ REXCVAR_DEFINE_BOOL(map_mouse_hide_cursor, true, "MCLA/Input",
 REXCVAR_DEFINE_BOOL(map_mouse_diag, false, "MCLA/Input",
     "Log the map screen pointer, camera basis and the world point the mouse "
     "unprojects to, once a second.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

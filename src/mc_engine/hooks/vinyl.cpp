@@ -36,6 +36,7 @@ REXCVAR_DEFINE_BOOL(export_vinyl, false, "MCLA/Garage",
     "Export the current car's vinyl layers to a .vgp file in <exe dir>/vinyls/ "
     "(auto-named vinyl_<car>_<timestamp>.vgp). Toggle ON while in the garage with "
     "a car loaded; it fires once and flips back OFF. Share the file; import later.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(import_vinyl, "", "MCLA/Garage",
@@ -45,6 +46,7 @@ REXCVAR_DEFINE_STRING(import_vinyl, "", "MCLA/Garage",
     "layers and re-composites, then clears the field. Layers past the active "
     "per-surface cap are dropped (enable extra_vinyl_layers first for 31 bumper "
     "slots).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
@@ -54,6 +56,7 @@ REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
     "vulkan_readback_resolve) for ~1.5s around each vinyl (re)composite "
     "(garage entry / edits) so decals appear everywhere, while keeping readback "
     "OFF during racing for full performance. Leave ON.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Vinyl (decal) layer caps. MCLA stores car decals in a fixed 288-slot layer

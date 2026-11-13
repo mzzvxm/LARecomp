@@ -53,11 +53,13 @@
 
 REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
     "Show the TestMovie debug button in the pause menu")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(garage_tire_offset, true, "MCLA/Patches",
     "Add a TIRE OFFSET row to the garage wheels > dimensions screen, editing "
     "the per-car TireOffset0/1 bytes retail parses but never uses.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).

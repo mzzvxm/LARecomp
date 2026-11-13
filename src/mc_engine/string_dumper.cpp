@@ -24,18 +24,22 @@
 #if !__has_include(<rex/system/string_dumper.h>)
 REXCVAR_DEFINE_BOOL(string_dump_enabled, false, "System/String Replacement",
                     "Capture encountered strings to TOML for translation/modding")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(string_replace_enabled, false, "System/String Replacement",
                     "Inject replacement strings from disk when available")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(string_folder, "", "System/String Replacement",
                       "Override the strings folder (empty = <game data>/strings)")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(string_language, "", "System/String Replacement",
                       "Language code for string replacements (e.g. pt_BR, es_ES)")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 #endif
 

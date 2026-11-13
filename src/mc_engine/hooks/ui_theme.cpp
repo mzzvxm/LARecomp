@@ -68,11 +68,13 @@ REXCVAR_DEFINE_STRING(ui_theme_skip_movies, "HUDMOVIE", "MCLA/UI",
     "Comma-separated Flash movie names the theme leaves alone. The HUD movie "
     "shares the menus' teal and yellow in its speedometer; empty themes every "
     "movie.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(ui_color_log, false, "MCLA/Diagnostics",
     "Log every distinct Flash UI color (movie, draw site, ARGB, bound texture) "
     "with a running count, to measure the families ui_theme_* recolors.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_82720908);  // 2D draw phase of one movie

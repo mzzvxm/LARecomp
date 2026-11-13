@@ -69,6 +69,7 @@ REXCVAR_DEFINE_BOOL(pump_wake_on_demand, true, "MCLA/Performance",
     "less than 7 ms; changes nothing under a frame rate cap below that. Needs 4 or more "
     "logical processors, and a watchdog on the audio mixer turns it off if the audio runs "
     "dry. Off is the game's own Sleep.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

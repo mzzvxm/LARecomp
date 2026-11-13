@@ -49,6 +49,7 @@ REXCVAR_DEFINE_BOOL(fma_float_fast, true, "MCLA/Performance",
     "which gives the same bits, instead of the C runtime's software fma (157 to 165 cycles a "
     "call). Nothing changes on a CPU with FMA3. Off passes every call to the runtime. Takes "
     "effect at the next start.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {

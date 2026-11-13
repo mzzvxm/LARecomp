@@ -49,6 +49,7 @@
 REXCVAR_DEFINE_BOOL(showroom_unlimited, true, "MCLA/Patches",
     "The garage's showroom lists every vehicle on sale. Off = the game's own showroom: 70 rows, "
     "and a picture for at most 7 vehicles past the game's own.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_826A9D58);  // mcGarage::ListShowroomVehicles
