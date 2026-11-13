@@ -406,13 +406,19 @@ void NoteHudSeen(const uint8_t* base, uint32_t instance) {
   }
 }
 
-// `instance` is the root of PROMPTMOVIE and the game has not been entered yet.
-bool IsTitlePromptRoot(const uint8_t* base, uint32_t instance) {
-  if (g_hud_seen.load(std::memory_order_relaxed) || ReadGuestU32(base, instance + kInstParent) != 0) {
-    return false;  // (a movie's root has no parent: only the few roots a frame get the lookup)
+// `instance` is PROMPTMOVIE's `screen` (the root's child that holds the whole bar: the player draws a movie's
+// root's children through sub_825FB348, not the root itself) and the game has not been entered yet.
+bool IsTitlePrompt(const uint8_t* base, uint32_t instance) {
+  if (g_hud_seen.load(std::memory_order_relaxed) ||
+      !GuestNameIs(base, ReadGuestU32(base, instance + kInstName), "screen")) {
+    return false;
+  }
+  const uint32_t parent = ReadGuestU32(base, instance + kInstParent);
+  if (!PlausibleEa(parent) || ReadGuestU32(base, parent + kInstParent) != 0) {
+    return false;  // (only a root's `screen`, a few a frame, gets the lookup)
   }
   larecomp::swf::Movie movie;
-  return larecomp::swf::FindMovie(base, "PROMPTMOVIE", movie) && movie.root == instance;
+  return larecomp::swf::FindMovie(base, "PROMPTMOVIE", movie) && movie.root == parent;
 }
 
 }  // namespace
@@ -438,7 +444,7 @@ void NoteUiPiece(uint32_t instance, bool begin) {
   }
   if (!g_hud_seen.load(std::memory_order_relaxed)) {
     NoteHudSeen(base, instance);
-    if (IsTitlePromptRoot(base, instance)) {
+    if (IsTitlePrompt(base, instance)) {
       if (!g_title_prompt_logged.exchange(true, std::memory_order_relaxed)) {
         LARECOMP_APP_INFO("ultrawide: the title's prompt bar (PROMPTMOVIE) is at the right edge until the game is entered");
       }
