@@ -131,6 +131,20 @@ void TestParse() {
     Check(hud && hud->t == 8 && hud->words.size() == 1 && hud->words[0] == "off", "hud off at 8");
     const Event* car = First(r.scene, Track::kCar);
     Check(car && car->t == 0 && car->words.size() >= 2 && car->words[0] == "p1" && car->words[1] == "spawn", "car p1 spawn");
+    {   // the car statements of M4b and the other packages' verbs are all fine to the parser
+        const ParseResult cars = ParseScene(
+            "scene c\n"
+            "at 1 car a spawn vp_x at 1,2,3 heading 90\n"
+            "at 2 car b spawn profile 2 at 1 2 3\n"
+            "at 3 car player profile 4\n"
+            "at 4 car a delete\n"
+            "at 5 car b path sunset.route speed 1\n"
+            "end 9\n");
+        Check(cars.Ok() && cars.WarningCount() == 0, "car spawn, spawn profile, player profile, delete and a path (another package's) all parse");
+        int n = 0;
+        for (const Event& e : cars.scene.events) n += e.track == Track::kCar ? 1 : 0;
+        Check(n == 5, "five car keys");
+    }
     CheckEq(Summarize(r.scene).substr(0, 21), "17 events (hour 2, we", "Summarize starts with the counts");
     Check(Summarize(r.scene).find("ends at 60.00 s") != std::string::npos, "Summarize names the end");
 
@@ -216,6 +230,14 @@ void TestStatementsErrors() {
     CheckError("at 1 car p1", "car <id>");
     CheckError("at 1 car player spawn x", "'player' is the player's own car");
     CheckError("at 1 car 9x spawn x", "car <id>");
+    // the car verbs of the cars package are read at parse time (car_verbs.h; cars_test.cpp has their own checks)
+    CheckError("at 1 car p1 spawn vp_x", "needs a place");
+    CheckError("at 1 car p1 spawn vp_x at 1,2", "bad position");
+    CheckError("at 1 car p1 spawn vp_x at 1,2,3 heading north", "heading needs degrees");
+    CheckError("at 1 car p1 delete now", "takes nothing after it");
+    CheckError("at 1 car p1 profile 3", "only the player's car");
+    CheckError("at 1 car player profile", "car player profile <N>");
+    CheckError("at 1 car player delete", "'player' is the player's own car");
     CheckError("start", "nothing after it");
     CheckError("at 1 dance", "unknown statement 'dance'");
     CheckError("dance 1", "unknown statement 'dance'");

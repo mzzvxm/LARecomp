@@ -158,6 +158,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/camera_runtime.cpp
     src/mc_engine/cinematic/native_call.cpp
+    # ... and the scene's cars: spawn / delete / the player's garage car through the natives, the registry of poses for the camera.
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/cars.cpp
 
     src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
@@ -374,6 +378,13 @@ add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_camera_test PRIVATE src/mc_engine/cinematic)
+# The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements (header only), the registry of poses and the script of native calls, pure) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
+add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/cars_test.cpp
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/car_spawn.cpp)
+target_include_directories(larecomp_cars_test PRIVATE src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

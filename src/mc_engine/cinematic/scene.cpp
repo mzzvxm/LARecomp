@@ -4,6 +4,8 @@
 
 #include "scene.h"
 
+#include "car_verbs.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -691,8 +693,12 @@ class Parser {
                 Error(line, "car <id> <what the car does> (the id is letters, digits and _)");
                 return;
             }
-            if (Lower(a[0]) == "player") {
-                Error(line, "'player' is the player's own car: pick another id");
+            // The car verbs of the cars package (car_verbs.h) are read here, so a bad line is an error with its number; a verb that
+            // is not one of theirs (a path: M4c) passes.
+            CarCommand car;
+            std::string why;
+            if (ParseCarCommand(a, &car, &why) == CarParse::kError) {
+                Error(line, why);
                 return;
             }
         } else {
