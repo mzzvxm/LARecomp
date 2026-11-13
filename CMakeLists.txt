@@ -145,6 +145,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
+
+    # Trailer toolkit: the scene file (parser, timeline, clock).
+    src/mc_engine/cinematic/scene.cpp
+
     src/mc_engine/map_warp.cpp
     src/mc_engine/real_weather.cpp
     src/mc_engine/squash_stretch.cpp
@@ -330,6 +334,13 @@ if(NOT WIN32)
     string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
 endif()
+# The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
+add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/scene_test.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
     # XEO3 Clang fork (this project's compiler cannot produce the calling
