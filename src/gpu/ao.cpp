@@ -523,8 +523,11 @@ AmbientOcclusion::Mode ReadContactMode() {
 
 // mcla_gpu_ssgi with the auto value resolved for this GPU (gpu_class.h): off, low or high.
 AmbientOcclusion::Mode ReadSsgiMode() {
-  const std::string value =
-      gpu_class::Resolve(gpu_class::Effect::kSsgi, Lower(REXCVAR_GET(mcla_gpu_ssgi)));
+  const std::string setting = Lower(REXCVAR_GET(mcla_gpu_ssgi));
+  if (setting == "auto" && !gpu_class::Known()) {
+    return AmbientOcclusion::Mode::kOff;  // the class is not found yet: the weakest one's value (gpu_class.h)
+  }
+  const std::string value = gpu_class::Resolve(gpu_class::Effect::kSsgi, setting);
   if (value == "low") {
     return AmbientOcclusion::Mode::kLow;
   }
