@@ -137,6 +137,7 @@ struct ComposePush {  // hlsl/fg_compose_ps.hlsl
   uint32_t out_width;
   uint32_t out_height;
   uint32_t gap;  // the same, for the UI layer
+  float ui_alpha;  // the HUD fade (FrameLayers::UiAlphaFor, ui_fade.h)
 };
 struct CopyPush {  // hlsl/fg_copy_ps.hlsl
   uint32_t source;
@@ -983,6 +984,7 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
     push.out_width = gen_w;
     push.out_height = gen_h;
     push.gap = layer.gap;
+    push.ui_alpha = layers_->UiAlphaFor(layer);
     passes_->DrawInto(list, composed_, compose_pipeline_.get(), &push, sizeof(push));
   }
   ++stats_.generated;

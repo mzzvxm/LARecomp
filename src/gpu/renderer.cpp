@@ -729,6 +729,8 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
     // switch comes right after the HDR one (both make the swap chain again).
     ApplyHdrSetting();
     ApplyFrameGenerationSetting();
+    // The HUD fade, after the output is settled: it asks for the layers and the compose.
+    ApplyUiFade();
   }
   plume::RenderCommandList* list = frames_.Begin();
   if (!list) {
@@ -807,7 +809,8 @@ void Renderer::OnIdle() {
   // The guest is quiet (not started yet, or stalled): keep the UI passes coming
   // and present when there is something new to show. No frame is open, so this is a boundary where
   // the HDR setting is applied (and what it changed is shown).
-  const bool hdr_changed = ApplyHdrSetting() | ApplyFrameGenerationSetting();
+  // (A change of the HUD fade shows at an idle present too.)
+  const bool hdr_changed = ApplyHdrSetting() | ApplyFrameGenerationSetting() | ApplyUiFade();
   overlay_host_->RequestPass();
   const bool first_frame = presented_ == 0;
   const bool resize = resize_requested_.load(std::memory_order_acquire);

@@ -181,9 +181,10 @@ void FrameLayers::Request(uint32_t requester, bool wanted) {
   const bool made_before = restore_pipeline_ != nullptr;
   active_ = MakePipelines();
   if (active_ && !was_active && made_before) {
-    REXLOG_INFO("[gpu] frame layers: on again (requested by {}{})",
+    REXLOG_INFO("[gpu] frame layers: on again (requested by {}{}{})",
                 (requesters_ & kRequesterHdr) ? "HDR output" : "",
-                (requesters_ & kRequesterFrameGeneration) ? " frame generation" : "");
+                (requesters_ & kRequesterFrameGeneration) ? " frame generation" : "",
+                (requesters_ & kRequesterUiFade) ? " HUD fade" : "");
   }
 }
 
@@ -218,9 +219,10 @@ bool FrameLayers::MakePipelines() {
                  "made; the pause menu and the map keep the front buffer as it is while MSAA is on "
                  "(HDR stage 1)");
   }
-  REXLOG_INFO("[gpu] frame layers: on (requested by {}{})",
+  REXLOG_INFO("[gpu] frame layers: on (requested by {}{}{})",
               (requesters_ & kRequesterHdr) ? "HDR output" : "",
-              (requesters_ & kRequesterFrameGeneration) ? " frame generation" : "");
+              (requesters_ & kRequesterFrameGeneration) ? " frame generation" : "",
+              (requesters_ & kRequesterUiFade) ? " HUD fade" : "");
   return true;
 }
 
@@ -702,6 +704,7 @@ void FrameLayers::OnResolve(const ResolveRecord& record, plume::RenderCommandLis
                         : nullptr;
   captured_.generation = ++generation_;
   captured_.destination = destination;
+  captured_.pause_view = pause_view_;
   phase_ = Phase::kDone;
   ++stats_.captured;
 }

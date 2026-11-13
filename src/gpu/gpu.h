@@ -295,6 +295,22 @@ bool HdrOutputActive();
 float HdrAutoPaperWhiteNits();
 float HdrAutoPeakNits();
 
+// --- the HUD fade (ui_fade.h) ------------------------------------------------------------------
+// The picture shows the 3D scene plus the game's UI layer times an alpha that the debug-only cvar
+// mcla_cin_hud_alpha holds (mc_engine/cinematic/hud.h writes it for a scene). The renderer follows
+// it at each frame boundary. All three are for any thread and need no renderer: before one is up,
+// or with another renderer, they only store.
+// The next change of the alpha takes `seconds` (0 or less, or NaN: at once) instead of being
+// instant. Asked once, used once: by the first change the renderer sees afterwards.
+void SetUiAlphaFade(float seconds);
+// Keep the UI split ready at alpha 1 (the layers run and the present composes them, which costs
+// about 0.4 ms at 3x), so that the first frame below 1 does not pay for making the layers' pipeline
+// and images. Without it the layers start at the frame boundary where the alpha first drops.
+void ArmUiLayer(bool armed);
+// The alpha the present shows the game's UI at now, as the renderer last applied it (1: the game's
+// own frame; also 1 while the layers cannot be made).
+float UiAlpha();
+
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every
 // GPU object, device last, then hands the retired fence back to the vblank

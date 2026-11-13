@@ -34,6 +34,7 @@ struct UiPush {
   float hdr_knee;
   uint hdr_flags;
   uint gap;            // the layer's first columns and rows that hold no picture (Frame::gap): read at `gap`
+  float ui_alpha;      // the HUD fade (ui_fade.h): the UI layer's share of the frame, 0..1
 };
 
 #ifdef __spirv__
@@ -54,7 +55,10 @@ float4 UiTexel(int2 at) {
   const int2 limit = int2(g_push.src_width, g_push.src_height) - 1;
   // As the compose and the frame generation passes read the layers (frame_layers.h, Frame::gap).
   const int2 first = int2(int(g_push.gap), int(g_push.gap));
-  const float4 texel = g_textures[g_push.ui].Load(int3(clamp(at, first, limit), 0));
+  // The HUD fade scales the premultiplied colour and the coverage alike: the hint then matches the
+  // back buffer, whose UI the present composed at the same alpha (hdr_compose_ps).
+  const float4 texel =
+      g_textures[g_push.ui].Load(int3(clamp(at, first, limit), 0)) * saturate(g_push.ui_alpha);
   if (texel.a <= 0.0f) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }

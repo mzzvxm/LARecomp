@@ -66,6 +66,7 @@ void HdrScene::Release() {
   }
   composed_generation_ = 0;
   composed_view_ = 0;
+  composed_alpha_ = 1.0f;
   float_scene_ = false;
   idle_presents_ = 0;
 }
@@ -95,7 +96,10 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
   }
   const uint32_t view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_hdr_layers_view), 0, 5));
   const bool kept = image_.texture && image_.width == width && image_.height == height;
-  if (kept && composed_generation_ == frame.generation && composed_view_ == view) {
+  // The HUD fade: a pause view's frame shows its UI whole (FrameLayers::UiAlphaFor).
+  const float ui_alpha = layers_->UiAlphaFor(frame);
+  if (kept && composed_generation_ == frame.generation && composed_view_ == view &&
+      composed_alpha_ == ui_alpha) {
     ++stats_.reused;
     return true;
   }
@@ -120,10 +124,11 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const TextureKey& front, 
     }
   }
   pass_timing_->Mark(list, "hdr compose");
-  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot, frame.gap};
+  const Push push{scene->slot, frame.ui->slot, view, frame.hudless->slot, frame.gap, ui_alpha};
   passes_->DrawInto(list, image_, pipeline_.get(), &push, sizeof(push));
   composed_generation_ = frame.generation;
   composed_view_ = view;
+  composed_alpha_ = ui_alpha;
   float_scene_ = float_scene;
   ++stats_.composed;
   stats_.composed_float += float_scene ? 1 : 0;

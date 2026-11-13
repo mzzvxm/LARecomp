@@ -78,6 +78,7 @@ add_library(larecomp_gpu OBJECT
     thread_load.cpp
     timing.cpp
     topology.cpp
+    ui_fade.cpp
     upload.cpp
     upscaler_masks.cpp
     validation.cpp
@@ -92,6 +93,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
 #   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
 add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
+# The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
+add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

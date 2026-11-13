@@ -26,6 +26,7 @@ struct ComposePush {
   uint out_width;   // the generation size
   uint out_height;
   uint gap;         // the UI layer's first columns and rows that hold no picture (Frame::gap): read at `gap`
+  float ui_alpha;   // the HUD fade (ui_fade.h): the UI layer's share of the frame, 0..1
 };
 
 #ifdef __spirv__
@@ -70,7 +71,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   // Premultiplied "over", unclamped above: what the scene holds above 1 is kept. The display's table
   // is indexed by what this writes, so it is made finite and not negative, as hdr_compose_ps does.
-  const float3 code = ui.rgb + scene * (1.0f - ui.a);
+  // The HUD fade scales the premultiplied layer's colour and coverage alike, as hdr_compose_ps does.
+  const float fade = saturate(g_push.ui_alpha);
+  const float3 code = ui.rgb * fade + scene * (1.0f - ui.a * fade);
   const uint3 bits = asuint(code) & 0x7FFFFFFFu;
   return float4((bits.x <= 0x7F800000u) ? clamp(code.x, 0.0f, 65504.0f) : 0.0f,
                 (bits.y <= 0x7F800000u) ? clamp(code.y, 0.0f, 65504.0f) : 0.0f,
