@@ -171,10 +171,17 @@ std::string StampKey(const VariantDef& def, std::string_view what) {
 }
 
 // The lines that are true of this build for one variant: the version of its edits and the fingerprint of
-// what else its text depends on.
+// what else its text depends on. A variant that was tried and left out has them too (and a left_out line
+// with the reason, AddLeftOutLine): the stamp says "this build's edits were tried on these game files", so
+// the next start is not stale. The edits fail the same way on the same files; the failure is tried again
+// when the variant's version changes (a new build with other edits) or the game files do.
 void AddVariantLines(const VariantDef& def, std::vector<StampLine>* lines) {
   lines->push_back({StampKey(def, "version"), std::to_string(def.version)});
   if (def.input_xxh3 != 0) lines->push_back({StampKey(def, "input"), Hex64(def.input_xxh3)});
+}
+
+void AddLeftOutLine(const VariantDef& def, std::string_view why, std::vector<StampLine>* lines) {
+  lines->push_back({StampKey(def, kStampVariantLeftOut), std::string(why)});  // informational
 }
 
 class VariantStepImpl final : public VariantStep {
@@ -463,9 +470,15 @@ class VariantStepImpl final : public VariantStep {
         SHADERPACK_LOG_WARN("the shader variant {} was not built: {}", def.name, error);
         if (!left_out_text.empty()) left_out_text += "; ";
         left_out_text += def.name + ": " + error;
+        // Stamped like a built one, with the reason: a variant that cannot be made from these game files
+        // would otherwise leave the stamp one line short and make every start rebuild the packs.
+        AddVariantLines(def, &variant_lines);
+        AddLeftOutLine(def, error, &variant_lines);
       }
     }
-    if (entries.empty()) return fail("no shader variant could be built: " + left_out_text);
+    // When no variant could be made (a game whose shader text none of the edits fit) the pack is written with
+    // no entries: the renderer draws the game's own shaders and the stamp is current, instead of every start
+    // translating the shaders again.
 
     // 2. The file: entries in increasing (variant, pixel shader) order, under a temporary name and then
     // moved into place.
@@ -489,8 +502,8 @@ class VariantStepImpl final : public VariantStep {
     }
     if (!CommitFile(temporary_path, final_path, &error)) return fail(error);
 
-    // 3. What it was built from: the lines of the step and of the variants that are in the pack. A variant
-    // that was left out has none, so the next start tries it again.
+    // 3. What it was built from: the lines of the step and of every variant that was tried, built or left out
+    // (a left out one also has its reason: see AddVariantLines).
     size_t dxil_bytes = 0;
     size_t spirv_bytes = 0;
     for (const PackEntry& entry : entries) {
@@ -498,9 +511,13 @@ class VariantStepImpl final : public VariantStep {
       spirv_bytes += entry.spirv.size();
     }
     result->built = true;
-    result->message = std::format("{} shaders in the variants {}: DXIL {} bytes, SPIR-V {} bytes, {} bytes in all",
-                                  entries.size(), built_text, dxil_bytes, spirv_bytes, bytes.size());
-    if (!left_out_text.empty()) result->message += "; left out: " + left_out_text;
+    if (entries.empty()) {
+      result->message = "no shader variant could be built (the game's own shaders are drawn): " + left_out_text;
+    } else {
+      result->message = std::format("{} shaders in the variants {}: DXIL {} bytes, SPIR-V {} bytes, {} bytes in all",
+                                    entries.size(), built_text, dxil_bytes, spirv_bytes, bytes.size());
+      if (!left_out_text.empty()) result->message += "; left out: " + left_out_text;
+    }
     result->stamp_lines = StepLines();
     for (StampLine& line : variant_lines) result->stamp_lines.push_back(std::move(line));
     // Informational (CheckStamp compares only the lines it expects).

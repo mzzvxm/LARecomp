@@ -29,8 +29,12 @@
 //
 // Each variant is built on its own: one whose edit does not match (a game that is not the retail one)
 // or does not compile is left out, with a warning, and the others are still in the pack; the renderer
-// draws the game's own shader for what is left out. The step fails (no pack, no stamp lines) only when
-// nothing could be built. A variant is compiled for spec variant 0 (no alpha test) with the pack's usual
+// draws the game's own shader for what is left out. A variant that was left out is in the stamp like a built
+// one (its version line) with a variants_<name>_left_out line that says why, so that the next start is not
+// stale and does not translate the shaders again; it is tried again when its version changes or the game
+// files do. When none could be built the pack has no entries. The step fails (no pack, no stamp lines) only
+// for a problem of the build itself (no compiler worker, a file that cannot be written, a cancel). A variant
+// is compiled for spec variant 0 (no alpha test) with the pack's usual
 // dxc arguments; a draw that needs the alpha test keeps the main pack's shader. Shaders of one variant whose
 // edited text comes out the same share one compile (the shadow collector's 147 shaders are four texts), and
 // their blobs one copy in the file.

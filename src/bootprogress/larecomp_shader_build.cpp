@@ -7,6 +7,7 @@
 #include <exception>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <system_error>
@@ -366,6 +367,29 @@ std::string PlayerReason(const sp::BuildResult& result) {
   return std::string(lead) + "\n\n" + ShortReason(result.message);
 }
 
+#if defined(LARECOMP_HAS_GPU)
+// A variant the build tried and left out (its edits did not match this game's shader text, or its text did not
+// compile) has no shaders in the variant pack; the stamp keeps why (variants_<name>_left_out). Said once at
+// the start so the log tells why the renderer draws the game's own shader there.
+void LogLeftOutVariantsOnce(const sp::Stamp& stamp) {
+  static std::once_flag once;
+  std::call_once(once, [&stamp] {
+    const std::string prefix = sp::kStampVariantsPrefix;
+    const std::string suffix = std::string("_") + sp::kStampVariantLeftOut;
+    for (const sp::StampLine& line : stamp.lines()) {
+      if (line.key.size() <= prefix.size() + suffix.size() || !line.key.starts_with(prefix) ||
+          !line.key.ends_with(suffix)) {
+        continue;
+      }
+      const std::string name = line.key.substr(prefix.size(), line.key.size() - prefix.size() - suffix.size());
+      LARECOMP_APP_INFO("[shaderpack] the shader variant {} is not in the variant pack (the game's own shader "
+                        "is drawn instead): {}",
+                        name, line.value);
+    }
+  });
+}
+#endif
+
 // Whether the stamp next to the packs vouches for them (and so whether Startup may attach them).
 bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
@@ -380,6 +404,7 @@ bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
     return true;
   }
   if (check.main_ok && check.variants_ok) {
+    LogLeftOutVariantsOnce(check.stamp);
     return true;
   }
   LARECOMP_APP_INFO("[shaderpack] the packs in {} are not current: {}; they are rebuilt first",
