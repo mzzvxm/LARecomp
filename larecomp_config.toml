@@ -26612,6 +26612,40 @@ address = 0x8259AA40
 registers = ["r30"]
 jump_address_on_true = 0x8259AA90
 
+# A car's shader-variable cache (the object at vehicle + 1060). sub_823793E8 (paint
+# variables, group in +252, pending byte +266) and sub_823794E0 (brake variables,
+# group in +256, pending byte +267) bind it on the render thread: store the shader
+# group in the object, then call sub_82193AF8(group, name, 0) once per variable,
+# loading the group from the object again before every call. When a car is set up
+# on another thread (sub_82353568 -> sub_82377B88 sets both pending bytes and zeroes
+# both group fields) in the middle of that, a later call gets group 0 and
+# sub_82193AF8's lhz r27, 12(r3) reads guest 0xC. Three guards, no setting:
+#  - a lookup in no group finds nothing: the entry of sub_82193AF8 returns 0 at once;
+#  - a bind whose group is gone does not clear its pending byte (the `stb` that does
+#    is skipped, to the epilogue), so the car binds again on the next update. Every
+#    reader of the indices tests the pending byte first (sub_82378368, sub_823784F8,
+#    sub_823780E8, sub_823783B8 ...).
+# See hooks/vehicle.cpp.
+[[midasm_hook]]
+name = "MCLA_ShaderGroupLookup_82193AF8"
+address = 0x82193AF8
+registers = ["r3"]
+return_on_true = true
+
+# 0x82379548 in sub_823794E0, before `stb r9, 267(r31)`; the epilogue is 0x8237954C.
+[[midasm_hook]]
+name = "MCLA_CarShaderBindDone_82379548"
+address = 0x82379548
+registers = ["r31"]
+jump_address_on_true = 0x8237954C
+
+# 0x823794C8 in sub_823793E8, before `stb r11, 266(r31)`; the epilogue is 0x823794CC.
+[[midasm_hook]]
+name = "MCLA_CarShaderBindDone_823794C8"
+address = 0x823794C8
+registers = ["r31"]
+jump_address_on_true = 0x823794CC
+
 # sub_824DF200(owner, type, name, &field, ...) -- every tune field registration.
 # Diagnostic, gated on the tune_field_probe cvar (off by default).
 [[midasm_hook]]

@@ -95,6 +95,70 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) {
     return bound == 0 || base[bound + 4] != 12;
 }
 
+// A car's shader-variable cache: the object at vehicle + 1060 (its constructor is
+// sub_82377808, its per-frame entry sub_823799D0 from the car update sub_823567F8).
+// It holds the car shader group in two fields (+252 for the paint variables, +256 for
+// the brake ones), the variable indices found in it, and two "pending" bytes (+266,
+// +267) that every reader tests before it touches the group.
+//
+//   sub_823793E8 (+266)  binds VinylTex, DmgTex, tintColors, useGradient,
+//                        materialHookups, ShadowImposterTex, shadowProjMtx
+//   sub_823794E0 (+267)  binds BrakeRotorTempVal, brakeCaliperTintColor
+//
+// Each stores the group, then calls sub_82193AF8(group, name, 0) once per variable,
+// loading the group from the object again before every call, and clears its pending
+// byte last. sub_82377B88 (called by sub_82353568 when a car is set up with a new model
+// handle: sub_823320C8 and sub_82335AA8) sets both pending bytes and zeroes both group
+// fields. When that lands between two of those calls on the other thread, the next call
+// gets a null group and sub_82193AF8's first instruction (lhz r27, 12(r3)) reads guest
+// 0xC. Seen once in 1674 logged runs (m1c-roam, 2026-11-13, guest render thread, second
+// call of sub_823794E0, about 6 s after the first free-roam frame).
+//
+// Three small guards, no setting: a lookup in no group finds nothing; and a bind that
+// ends with its group gone does not clear its pending byte, so the car binds again on
+// the next update (which is what the invalidation asked for).
+// CHECK: that sub_82353568 was running on the main thread at that moment (nothing in the
+// log says so; the guards hold whichever thread cleared the fields).
+static std::atomic<uint32_t> g_shader_bind_races{0};
+
+static void NoteShaderBindRace(const char* where) {
+    const uint32_t n = ++g_shader_bind_races;
+    if (n <= 4) {
+        LARECOMP_APP_WARN("[car-shader] {}: the car's shader group was cleared while it was "
+                          "being bound (a car set up on another thread); binding again on "
+                          "the next update ({} so far)", where, n);
+    }
+}
+
+// 0x82193AF8, entry of sub_82193AF8 = look the variable `r4` up in the shader group
+// `r3` (r5 = 1 makes a miss fatal); the result is an index, 0 when nothing matched.
+// A null group has no variables. Returning true is a `blr` with r3 = 0, the answer the
+// function already gives for a miss.
+bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) {
+    if (static_cast<uint32_t>(r3.u64) != 0) return false;
+    r3.u64 = 0;
+    NoteShaderBindRace("lookup");
+    return true;
+}
+
+// 0x82379548 in sub_823794E0, before `stb r9, 267(r31)` that clears the brake bind's
+// pending byte. r31 is the cache. True jumps to the epilogue at 0x8237954C.
+bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) {
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 256) != 0) return false;
+    NoteShaderBindRace("brake variables");
+    return true;
+}
+
+// 0x823794C8 in sub_823793E8, before `stb r11, 266(r31)` that clears the paint bind's
+// pending byte. r31 is the cache. True jumps to the epilogue at 0x823794CC.
+bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) {
+    const auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 252) != 0) return false;
+    NoteShaderBindRace("paint variables");
+    return true;
+}
+
 // Returns 'true' to inject a 'blr' (return from collision function)
 bool Patch_PhysicsCollision() {
     return REXCVAR_GET(break_pairwise_collision);
@@ -264,4 +328,7 @@ void MCLA_TrafficChassisBound_8232D048(PPCRegister& r9, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232D900(PPCRegister& r3, PPCRegister& r11) {}
 void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {}
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
+bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) { return false; }
+bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) { return false; }
+bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET
