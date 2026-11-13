@@ -21,6 +21,7 @@ REXCVAR_DEFINE_BOOL(photo_auto_readback, true, "MCLA/PhotoMode",
     "the global readback_resolve cvar which stalls every resolve of every frame "
     "(on an SDK without the scoped readback, the global one for about a second "
     "around each shot). Leave ON.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
@@ -28,6 +29,7 @@ REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
     "phase transitions and the front buffer addresses the readback is armed for. "
     "Pair with the GPU-side gpu_log_resolve_readback_misses to see whether the "
     "resolve that fills the front buffer actually lands in the armed range.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // ---------------------------------------------------------------------------

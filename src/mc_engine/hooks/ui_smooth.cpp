@@ -61,6 +61,7 @@ REXCVAR_DEFINE_BOOL(ui_interpolate_camera, true, "MCLA/UI",
     "steps: the camera that swings in when the menu opens, between its pages and out "
     "again, and the place, size and turn of the 3D panels. Off leaves them in 30 Hz "
     "steps.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {

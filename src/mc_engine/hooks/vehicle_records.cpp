@@ -60,6 +60,7 @@ REXCVAR_DEFINE_BOOL(vehicle_records_relocate, true, "MCLA/Patches",
     "Keep the parts bought for each car model in a table sized to the roster, so the game "
     "takes more than 77 vehicles. Off = the game's own 77-slot table: past 77 vehicles it "
     "overwrites other profile data, and a large roster crashes the boot.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_8238C9B0);  // LocalOptions reset

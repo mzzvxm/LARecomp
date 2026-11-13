@@ -22,6 +22,7 @@ REXCVAR_DEFINE_BOOL(disable_rubberbanding, false, "MCLA/Patches",
     "Disable the AI RubberBand system outright. Note this also removes MinThrottle, the "
     "leash that slows the AI when it is AHEAD — so it makes races harder, not fairer. "
     "Prefer the rubberband_* scales under MCLA/Difficulty.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // ── AI rubberband scales ────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ REXCVAR_DEFINE_BOOL(disable_rubberbanding, false, "MCLA/Patches",
 REXCVAR_DEFINE_BOOL(rubberband_dump, false, "MCLA/Difficulty",
     "Write every RubberBandTune entry to <exe>/rubberband_dump.txt and flip back off. "
     "Read it before picking the scales below.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(rubberband_catchup_scale, 1.0, "MCLA/Difficulty",
@@ -56,6 +58,7 @@ REXCVAR_DEFINE_INT32(rubberband_level, -1, "MCLA/Difficulty",
     "0 = easiest, 10 = hardest. This is the direct way to make races harder — the tune "
     "index the game normally derives from your racer level and the race's base.")
     .range(-1, 10)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The pause menu's AI DIFFICULTY row, in percent like Midnight Club 3's: the 11

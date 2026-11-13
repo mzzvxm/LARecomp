@@ -78,11 +78,13 @@ REXCVAR_DEFINE_BOOL(warp_transition_fix, true, "MCLA/Patches",
     "facade forever: the warper only notices the flight's end by predicting it one "
     "frame early from a duration measured at a fixed 1/30 s step, and real, varying "
     "frame times slip past that prediction.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(warp_transition_trace, false, "MCLA/Diagnostics",
     "Log every frame the warper spends waiting on a cinematic warp transition: the "
     "transition's time, duration, active flag and the frame delta.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(warp_transition_test_miss, false, "MCLA/Diagnostics",
@@ -90,6 +92,7 @@ REXCVAR_DEFINE_BOOL(warp_transition_test_miss, false, "MCLA/Diagnostics",
     "every cinematic warp ends the way the stuck ones do -- the transition finishes "
     "and reports it while the warper is not looking. With warp_transition_fix off "
     "this reproduces the stuck garage facade on demand.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_8221BE98);  // mcWarper::Update

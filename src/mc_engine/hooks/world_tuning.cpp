@@ -19,6 +19,7 @@
 // BadassBaboon's Recomp Adjustments: Ambient traffic & pedestrian density tuning for city performance
 REXCVAR_DEFINE_BOOL(enable_ambient_tuning, true, "MCLA/Performance",
     "Enable ambient traffic and pedestrian density tuning.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(traffic_unspawn_dist, 250.0, "MCLA/Performance",
@@ -53,6 +54,7 @@ REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
     "stops spawning new fragment breaks. 0 = keep the tune file's value (10); the "
     "engine's own constructor default is 30.")
     .range(0.0, 120.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: ambient traffic / pedestrian density.
