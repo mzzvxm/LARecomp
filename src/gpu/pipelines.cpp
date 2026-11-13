@@ -78,9 +78,31 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_bloom_scale, true, "MCLA/GPU",
+    "Fix: the glow of lights (the bloom) keeps the size the game gives it at render scales above 1x "
+    "(a higher render resolution, or an upscaler to a 1080p or 4K output). The game blurs the bloom "
+    "with taps a fixed number of pixels apart; at 2x or 3x the same taps reach half or a third as far "
+    "on the screen, so a window's glow shrinks and the glow of a lamp or a tail light disappears. This "
+    "makes each tap cover the pixels it stands for, so the glow looks as it does at 1x. At a render "
+    "scale of 1x the picture is the same either way. Off: the game's own taps. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
+
+// The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
+// not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
+// HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
+// mcla_gpu_bloom_scale, read at each draw so a change of the setting shows at the next frame.
+uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
+  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 && REXCVAR_GET(mcla_gpu_bloom_scale)) {
+    return ShaderStore::kBloomVariant;
+  }
+  return 0;
+}
 
 // The pipeline cache file: a header, the layouts, the records.
 // Host byte order; any mismatch discards the whole file.
@@ -1407,6 +1429,11 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
                "variant; nothing is discarded and every sample is covered");
       }
     }
+  }
+  // A variant of the pixel shader from the variant pack, where the settings ask for one. They are built for
+  // spec variant 0, so a draw that needs the alpha test keeps the main pack's shader.
+  if (ps && key.ps_variant == 0 && ps->variants != 0) {
+    key.ps_variant = ChoosePackedVariant(*ps);
   }
   key.input_layout = inputs.input_layout->id;
   key.topology = uint32_t(topology);
