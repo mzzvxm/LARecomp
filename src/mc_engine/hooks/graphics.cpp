@@ -41,11 +41,15 @@ REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing 
 REXCVAR_DEFINE_BOOL(disable_dof, true, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD", "Escala de LOD do Tráfego (0.1 - 10.0)")
+REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD",
+    "How far away traffic cars keep their detailed models. 1.0 is the original distance; higher "
+    "keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).")
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD", "Escala de LOD da Cidade (0.1 - 10.0)")
+REXCVAR_DEFINE_DOUBLE(lod_city_scale, 1.0, "MCLA/LOD",
+    "How far away buildings and other city scenery keep their detail. 1.0 is the original distance; "
+    "higher keeps the detail longer and costs speed, lower simplifies it sooner (0.1 to 10).")
     .range(0.1, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
