@@ -60,10 +60,9 @@ enum class Effect : uint8_t {
   kReflectionResolution,  // mcla_gpu_reflection_resolution  auto, game, high, ultra
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, low, high
-  kDawnShadows,           // mcla_gpu_dawn_shadows       auto, off, on
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
 };
-inline constexpr int kEffectCount = 8;
+inline constexpr int kEffectCount = 7;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -77,7 +76,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
-    {"mcla_gpu_dawn_shadows", "off", "on", "on"},
     {"mcla_gpu_ssgi", "off", "off", "low"},
 };
 
