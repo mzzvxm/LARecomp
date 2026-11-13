@@ -18,6 +18,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "gpu_class.h"
+#include "host_plan.h"
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
@@ -187,29 +188,15 @@ const char* ModeName(SunShafts::Mode mode) {
   return "?";
 }
 
-std::string Lower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  return value;
-}
-
 // ---------------------------------------------------------------------------
 // the setting
 // ---------------------------------------------------------------------------
 // mcla_gpu_sun_shafts with `auto` resolved for this graphics card (gpu_class.h: off on Low, low on
-// Mid, high on High). Anything the list does not know (a hand-edited file) counts as `auto`.
-bool ParseMode(const std::string& value, SunShafts::Mode* mode) {
-  if (value == "off") {
-    *mode = SunShafts::Mode::kOff;
-  } else if (value == "low") {
-    *mode = SunShafts::Mode::kLow;
-  } else if (value == "high") {
-    *mode = SunShafts::Mode::kHigh;
-  } else {
-    return false;
-  }
-  return true;
-}
+// Mid, high on High). Anything the list does not know (a hand-edited file) counts as `auto`
+// (host_plan.h has the rule, which the precache uses too).
+static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(SunShafts::Mode::kOff) &&
+              uint8_t(host_plan::Level::kLow) == uint8_t(SunShafts::Mode::kLow) &&
+              uint8_t(host_plan::Level::kHigh) == uint8_t(SunShafts::Mode::kHigh));
 
 // The text of the setting, read through LiveText: the pause menu's thread writes the cvar's string while
 // this one reads it (live_text.h).
@@ -218,12 +205,12 @@ LiveText& Setting() {
   return text;
 }
 
+host_plan::Choice ShaftsChoice() {
+  return host_plan::Resolve(host_plan::Pass::kShafts, gpu_class::Current(), true, Setting().Get());
+}
+
 SunShafts::Mode ReadMode() {
-  SunShafts::Mode mode = SunShafts::Mode::kOff;
-  if (!ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts, Lower(Setting().Get())), &mode)) {
-    ParseMode(gpu_class::Resolve(gpu_class::Effect::kSunShafts, "auto"), &mode);
-  }
-  return mode;
+  return SunShafts::Mode(uint8_t(ShaftsChoice().level));
 }
 
 }  // namespace
@@ -259,9 +246,15 @@ void SunShafts::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& 
   shaders_failed_ = false;
   // The shaders and the pipelines are made only where the sun shafts are on at the start (not on the Low
   // class, where `auto` is off): where they are off they would be compile work and memory for nothing.
-  // A live switch to on makes the shaders in BeginFrame and the pipelines at their first use.
-  if (ReadMode() != Mode::kOff && MakeShaders()) {
-    ListPrecache();
+  // A live switch to on makes the shaders in BeginFrame and the pipelines in the background
+  // (HoldUntilBuilt).
+  const host_plan::Choice choice = ShaftsChoice();
+  listed_ = false;
+  built_ = false;
+  if (choice.level != host_plan::Level::kOff && MakeShaders()) {
+    ListPrecache(choice);
+  } else {
+    passes.precache().Note(host_plan::Describe(host_plan::Pass::kShafts, choice, gpu_class::Current()), 0);
   }
 }
 
@@ -310,19 +303,59 @@ void SunShafts::Shutdown() {
   pass_timing_ = nullptr;
 }
 
-void SunShafts::ListPrecache() {
-  HostPrecache& precache = passes_->precache();
+std::vector<uint32_t> SunShafts::Variants() const {
   // The add pass for the play view's colour target at 1x, 2x and 4x (the host's MSAA level), 8x
   // when the device has it, so that a switch of the level or the first dusk waits for no pipeline.
-  std::vector<uint32_t> listed = {kVSky, kVSkyMs, kVBlur, AddVariant(false, 1), AddVariant(false, 2),
-                                  AddVariant(false, 4)};
+  std::vector<uint32_t> variants = {kVSky, kVSkyMs, kVBlur, AddVariant(false, 1), AddVariant(false, 2),
+                                    AddVariant(false, 4)};
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
-    listed.push_back(AddVariant(false, 8));
+    variants.push_back(AddVariant(false, 8));
   }
-  for (const uint32_t variant : listed) {
-    precache.Add(HostPrecache::Key(HostPrecache::kSunShafts, variant), VariantName(variant),
-                 [this, variant] { return MakePipeline(variant); });
+  return variants;
+}
+
+void SunShafts::ListPrecache(const host_plan::Choice& choice) {
+  HostPrecache& precache = passes_->precache();
+  uint32_t added = 0;
+  for (const uint32_t variant : Variants()) {
+    added += precache.Add(HostPrecache::Key(HostPrecache::kSunShafts, variant), VariantName(variant),
+                          [this, variant] { return MakePipeline(variant); })
+                 ? 1u
+                 : 0u;
   }
+  listed_ = true;
+  precache.Note(host_plan::Describe(host_plan::Pass::kShafts, choice, gpu_class::Current()), added);
+}
+
+void SunShafts::HoldUntilBuilt(Mode* mode) {
+  if (built_) {
+    return;
+  }
+  HostPrecache& precache = passes_->precache();
+  const std::vector<uint32_t> variants = Variants();
+  if (!listed_) {
+    // Off at the start, on now: made on a worker of their own, in the order of the list.
+    std::vector<HostPrecache::Item> fresh;
+    for (const uint32_t variant : variants) {
+      fresh.push_back({HostPrecache::Key(HostPrecache::kSunShafts, variant), VariantName(variant),
+                       [this, variant] { return MakePipeline(variant); }});
+    }
+    listed_ = true;
+    const uint32_t count = precache.AddLive("sun shafts", std::move(fresh));
+    REXLOG_INFO("[gpu] shafts: the sun shafts were off at the start: {} pipelines are made in the "
+                "background, and the shafts are drawn from the frame those are done",
+                count);
+  }
+  // Not drawn until every pipeline is made (or has failed, which Pipeline says): a frame never waits
+  // for a compile.
+  for (const uint32_t variant : variants) {
+    if (!pipelines_[variant] && !pipeline_failed_[variant] &&
+        !precache.Ready(HostPrecache::Key(HostPrecache::kSunShafts, variant))) {
+      *mode = Mode::kOff;
+      return;
+    }
+  }
+  built_ = true;
 }
 
 std::unique_ptr<plume::RenderPipeline> SunShafts::MakePipeline(uint32_t variant) {
@@ -381,8 +414,8 @@ void SunShafts::BeginFrame() {
   census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_sun_shafts_census)));
   Mode mode = ReadMode();
   if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
-    // Off at the start, on now (a live change): the shaders were not made; the pipelines are made at their
-    // first use (Pipeline: unlisted in the precache, so on this thread, once).
+    // Off at the start, on now (a live change): the shaders were not made; they are made here (a short
+    // call) and the pipelines in the background (HoldUntilBuilt).
     REXLOG_INFO("[gpu] shafts: the sun shafts were off at the start: their shaders are made now");
   }
   if (!ready_ && mode != Mode::kOff) {
@@ -392,6 +425,9 @@ void SunShafts::BeginFrame() {
     last_mode_logged_ = uint32_t(mode);
     REXLOG_INFO("[gpu] shafts: sun shafts {} (mcla_gpu_sun_shafts = {}, live)", ModeName(mode),
                 Setting().Get());
+  }
+  if (mode != Mode::kOff) {
+    HoldUntilBuilt(&mode);
   }
   mode_ = mode;
 }

@@ -133,7 +133,11 @@
 // The push block stays 128 bytes: power rides in shape.x, direct in the free lane extra.z.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
-// made ahead on the host builder thread (host_precache.h).
+// made ahead on the host builder thread (host_precache.h), and only those the settings in force at the
+// start use (host_plan.h: the occlusion's own groups when it is on, the depth, denoise and apply
+// passes and the contact march when the contact shadows are, nothing for what is off). A setting
+// switched on later lists what it lacks in the background (HostPrecache::AddLive); until every
+// pipeline is made the pass is not drawn (HoldUntilBuilt), so no frame waits for a compile.
 // ===========================================================================
 
 #include <array>
@@ -147,6 +151,7 @@
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
+#include "host_plan.h"
 #include "records.h"
 #include "resolve.h"
 #include "temporal_camera.h"
@@ -397,7 +402,16 @@ class AmbientOcclusion {
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
   // The contact march's shader, made when it was not at the start (the contact shadows were off). Render thread.
   bool EnsureContactShader();
-  void ListPrecache();
+  // The pipeline variants the groups of `needs` use, in the order they are made (the likeliest first).
+  std::vector<uint32_t> VariantsFor(const host_plan::AmbientNeeds& needs) const;
+  // The start: lists what the settings in force use with the host precache and says so for its log line.
+  void ListPrecache(const host_plan::Choice& occlusion, const host_plan::Choice& contact);
+  // Every frame, after the settings are read: lists, on a worker, the pipelines of what is on that the
+  // start did not list (a setting switched on since), and turns an effect off for this frame until its
+  // pipelines are made. Render thread.
+  void HoldUntilBuilt(Mode* occlusion, Mode* contact);
+  // Every variant of `variants` is made, taken or failed (nothing is being made for it).
+  bool VariantsReady(const std::vector<uint32_t>& variants) const;
   void Bind(plume::RenderCommandList* list) const;
   // A full-screen triangle into `image` (all of it) with `pipeline` and `push`.
   void DrawPass(plume::RenderCommandList* list, HostImage& image,
@@ -632,6 +646,9 @@ class AmbientOcclusion {
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
+  std::array<bool, kVariantCount> listed_{};  // with the host precache, at the start or later
+  bool occlusion_built_ = false;  // every pipeline of the occlusion is made (HoldUntilBuilt asks no more)
+  bool contact_built_ = false;    // ... of the contact shadows
   Look look_;
   uint32_t look_logged_index_ = ~0u;
   HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it

@@ -73,19 +73,23 @@
 // (debug views), _early and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
-// made ahead on the host builder thread (host_precache.h).
+// made ahead on the host builder thread (host_precache.h) when the setting in force at the start uses
+// them (host_plan.h); a setting switched on later makes them in the background
+// (HostPrecache::AddLive) and the shafts are not drawn until they are made (HoldUntilBuilt).
 // ===========================================================================
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
+#include "host_plan.h"
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
@@ -274,7 +278,13 @@ class SunShafts {
   // Makes the shaders once (Initialize when the shafts are on at the start, else BeginFrame at the switch);
   // false when one could not be made (said in the log, not tried again).
   bool MakeShaders();
-  void ListPrecache();
+  // The pipelines of the pass, in the order they are made (the likeliest first).
+  std::vector<uint32_t> Variants() const;
+  // The start: lists them with the host precache and says so (and why) for its log line.
+  void ListPrecache(const host_plan::Choice& choice);
+  // Every frame while the shafts are on: lists the pipelines on a worker when the start did not (the
+  // setting was switched on since), and turns the shafts off for this frame until they are all made.
+  void HoldUntilBuilt(Mode* mode);
   void Census();
 
   // Settings, read at the frame's start.
@@ -349,6 +359,8 @@ class SunShafts {
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
+  bool listed_ = false;  // the pipelines are with the host precache (at the start, or since the switch)
+  bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
   HostImage sky_;    // R16_FLOAT, half the picture: the sky's brightness
   HostImage shaft_;  // R16_FLOAT, the same size: the blurred image
   uint32_t unused_frames_ = 0;       // frames since a pass was recorded, for giving the images back
