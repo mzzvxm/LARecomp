@@ -297,6 +297,39 @@ bool TimestampsSupported(plume::RenderDevice* device) {
   return dev && dev->timestampFrequency > 1;
 }
 
+std::string RequirementProblem(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return {};
+  }
+  // A query that fails says nothing (a driver that cannot answer is not turned away for it); only
+  // an answer below the line does.
+  std::string problem;
+  // Every host shader and every guest shader is DXIL, which a driver takes from shader model 6.0.
+  // Asked for 6.0, a driver that stops at 5.1 answers with 5.1.
+  D3D12_FEATURE_DATA_SHADER_MODEL model = {};
+  model.HighestShaderModel = D3D_SHADER_MODEL_6_0;
+  if (SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof(model))) &&
+      model.HighestShaderModel < D3D_SHADER_MODEL_6_0) {
+    const uint32_t found = static_cast<uint32_t>(model.HighestShaderModel);
+    problem = std::format("it offers shader model {}.{} and the shaders need 6.0 (an older graphics "
+                          "card or driver)",
+                          found >> 4, found & 0xF);
+  }
+  // The textures of the whole renderer are one unbounded range of 32,768 views in a descriptor
+  // table (descriptors.h); resource binding tier 1 allows 128 shader resource views in all the
+  // tables of a stage, so the root signature cannot be made.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+  if (SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options,
+                                              sizeof(options))) &&
+      options.ResourceBindingTier < D3D12_RESOURCE_BINDING_TIER_2) {
+    problem += std::format("{}its resource binding tier is {} and the renderer needs 2 (an older "
+                           "graphics card)",
+                           problem.empty() ? "" : "; ", static_cast<int>(options.ResourceBindingTier));
+  }
+  return problem;
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {

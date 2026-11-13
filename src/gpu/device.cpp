@@ -81,6 +81,15 @@ Device::~Device() {
   Shutdown();
 }
 
+void Device::Refuse(const std::string& what) {
+  const std::string line =
+      std::string(ActiveBackend() == Backend::kD3D12 ? "Direct3D 12" : "Vulkan") + what;
+  if (refusals_.find(line) != std::string::npos) {
+    return;  // the same backend tried again (Streamline's hook dropped): said once
+  }
+  refusals_ += (refusals_.empty() ? "" : "\n") + line;
+}
+
 bool Device::Initialize(const Options& options) {
   if (device_) {
     return true;
@@ -135,6 +144,7 @@ bool Device::Open(const Options& options) {
   interface_ = backend::CreateInterface();
   if (!interface_) {
     REXLOG_ERROR("[gpu] Plume could not create the {} interface", BackendName());
+    Refuse(": the graphics driver could not be started (is it installed and up to date?)");
     return false;
   }
 
@@ -146,6 +156,7 @@ bool Device::Open(const Options& options) {
   if (!device_) {
     REXLOG_ERROR("[gpu] Plume could not create a {} device{}", BackendName(),
                  adapter.empty() ? std::string() : " on adapter '" + adapter + "'");
+    Refuse(": no graphics card here has a driver for it");
     interface_.reset();
     return false;
   }
@@ -182,15 +193,29 @@ bool Device::Open(const Options& options) {
     if (missing) {
       REXLOG_ERROR("[gpu] {} on {} has no {}; this renderer needs it", backend_info_,
                    device_->getDescription().name, missing);
+      Refuse(" on " + device_->getDescription().name + ": it has no " + missing);
       device_.reset();
       interface_.reset();
       return false;
     }
   }
+  // The rest of what the renderer needs that Plume does not check (backend.h): refused here, in
+  // words, rather than as a root signature or a pipeline that fails afterwards.
+  const std::string problem = backend::RequirementProblem(device_.get());
+  if (!problem.empty()) {
+    REXLOG_ERROR("[gpu] {} on {} cannot run this renderer: {}", backend_info_,
+                 device_->getDescription().name, problem);
+    Refuse(" on " + device_->getDescription().name + ": " + problem);
+    device_.reset();
+    interface_.reset();
+    return false;
+  }
 
   queue_ = device_->createCommandQueue(plume::RenderCommandListType::DIRECT);
   if (backend::IsNullBacked(queue_.get())) {
     REXLOG_ERROR("[gpu] Plume could not create the direct queue on {}", backend_info_);
+    Refuse(" on " + device_->getDescription().name +
+           ": the graphics card would not take a command queue");
     queue_.reset();
     device_.reset();
     interface_.reset();

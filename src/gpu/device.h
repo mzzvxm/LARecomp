@@ -73,6 +73,10 @@ class Device {
   // The backend Initialize was asked for, and whether another one runs instead.
   Backend requested_backend() const { return requested_backend_; }
   bool fell_back() const { return device_ && ActiveBackend() != requested_backend_; }
+  // Why each backend that was tried could not be started, one line each in plain words ("Direct3D
+  // 12 on <graphics card>: it offers shader model 5.1 and the shaders need 6.0"), for the message
+  // the player is shown when none starts. Empty when nothing was refused. Kept after Shutdown.
+  const std::string& refusals() const { return refusals_; }
 
   // Validated creation. Null on failure, never a null-backed wrapper. `name`
   // becomes the debug name (RenderDoc, PIX, validation messages) where Plume
@@ -159,6 +163,8 @@ class Device {
  private:
   // One attempt on the active backend; leaves nothing behind on failure.
   bool Open(const Options& options);
+  // Adds a line to refusals(): the active backend's plain name, then `what`.
+  void Refuse(const std::string& what);
   // Names `object` unless names are off or the caller gave none.
   template <class Object>
   void Name(Object& object, const char* name) const {
@@ -201,6 +207,7 @@ class Device {
   std::unique_ptr<plume::RenderDevice> device_;
   std::unique_ptr<plume::RenderCommandQueue> queue_;
   std::string backend_info_;
+  std::string refusals_;
   Backend requested_backend_ = kDefaultBackend;
   bool debug_layer_ = false;
   bool names_ = false;  // object_names(); set by Open, before any creation or second thread

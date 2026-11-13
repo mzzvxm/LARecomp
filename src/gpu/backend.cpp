@@ -221,6 +221,10 @@ bool TimestampsSupported(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(TimestampsSupported(device));
 }
 
+std::string RequirementProblem(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(RequirementProblem(device));
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DescribeDevice(device));
 }

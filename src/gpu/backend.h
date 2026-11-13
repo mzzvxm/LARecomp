@@ -175,6 +175,17 @@ bool TimestampsSupported(plume::RenderDevice* device);
 // "D3D12 12_2" / "Vulkan 1.3.290": the version a driver bug report needs.
 std::string DescribeDevice(plume::RenderDevice* device);
 
+// What the renderer needs of the device that Plume does not check when it opens one, and that
+// would otherwise fail later (a root signature or every pipeline refused, a black window), in
+// plain words; empty when the device has it all or when this cannot tell. D3D12: shader model
+// 6.0 (every shader is DXIL) and resource binding tier 2 (the texture table is one unbounded
+// range of 32,768 views, which tier 1 caps at 128). Vulkan: 64-bit integers in shaders (the
+// constant buffers' addresses), BC textures, updating the bindless sets after they are bound, and
+// five bound descriptor sets. (Buffer device address and descriptor indexing are checked by
+// Device::Open.) Device::Open calls it once the device exists; a problem there makes the backend
+// count as not startable, so the other one is tried.
+std::string RequirementProblem(plume::RenderDevice* device);
+
 // The adapter to ask Plume for when the user named none (mcla_gpu_adapter empty). D3D12: the
 // one Windows' graphics setting for this exe names (Settings > System > Display > Graphics:
 // power saving or high performance), else the first of Windows' high-performance order; software
