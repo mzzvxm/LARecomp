@@ -12,7 +12,8 @@
 // Every kCheckFrames frames, at the start of a frame, the process's use of the
 // adapter's local video memory is read against the OS budget for it
 // (Device::QueryVideoMemory: DXGI QueryVideoMemoryInfo on D3D12;
-// VK_EXT_memory_budget on Vulkan, when the driver answers it). Past
+// VK_EXT_memory_budget on Vulkan, when the driver answers it; on an adapter that shares memory with
+// the CPU, all the memory the GPU can reach, uma_budget.h). Past
 // kHighPercent of the budget -- or when a texture or buffer creation failed
 // for want of room (Device::TakeFailedBytes), which is the only sign a driver
 // that reports no budget gives -- unused resources are released, the longest
@@ -46,7 +47,9 @@
 //
 // This costs nothing while the budget is not near: a check is one DXGI call
 // every half second. Where the OS budget is the size of system memory (an
-// integrated GPU: 15 GB on a 485 MiB one) the response does not trigger. A
+// integrated GPU: 15 GB on a 485 MiB one) the response does not trigger; on Vulkan that
+// number is the sum of the heaps the GPU can reach, not the one heap labelled device-local
+// (the Steam Deck's carve-out is 1 GiB, uma_budget.h). A
 // failed creation (Device::kBackoffFrames) triggers it on any adapter.
 //
 // What the response cannot release. Frame generation (frame_generation.h) holds images and a

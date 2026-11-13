@@ -19,6 +19,7 @@
 #include <plume_vulkan.h>
 
 #include "temporal_dlss.h"
+#include "uma_budget.h"
 
 namespace plume {
 extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
@@ -140,20 +141,30 @@ std::string DescribeDevice(plume::RenderDevice* device) {
                      VK_API_VERSION_PATCH(v));
 }
 
-VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
-  // VK_EXT_memory_budget through vkGetPhysicalDeviceMemoryProperties2, read
-  // through volk (Plume's loader). Not through VMA's vmaGetHeapBudgets: this
-  // SDK's rexruntime DLL exports its own copy of VMA, and a call to vma* from
-  // this translation unit binds to that import before plume_vulkan.obj (which
-  // defines the same names) is loaded, which the linker refuses
-  // ("vmaGetHeapBudgets was replaced", measured 05/10).
-  // Plume enables the extension where the driver has it (memoryBudgetSupported);
-  // without it nothing is reported, and the budget response (vram_budget.h)
-  // runs only on a creation that failed.
+namespace {
+
+static_assert(uma_budget::kMaxHeaps == VK_MAX_MEMORY_HEAPS);
+
+// The heaps vkGetPhysicalDeviceMemoryProperties2 lists with their budgets, as uma_budget.h's list,
+// and whether the adapter shares memory with the CPU. VK_EXT_memory_budget through volk (Plume's
+// loader). Not through VMA's vmaGetHeapBudgets: this SDK's rexruntime DLL exports its own copy of
+// VMA, and a call to vma* from this translation unit binds to that import before plume_vulkan.obj
+// (which defines the same names) is loaded, which the linker refuses ("vmaGetHeapBudgets was
+// replaced", measured 05/10). Plume enables the extension where the driver has it
+// (memoryBudgetSupported); without it nothing is reported, and the budget response
+// (vram_budget.h) runs only on a creation that failed.
+struct HeapList {
+  uma_budget::Heap heap[uma_budget::kMaxHeaps];
+  uint32_t count = 0;
+  bool shared = false;
+  bool ok = false;
+};
+
+bool ReadHeaps(plume::RenderDevice* device, HeapList& out) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   if (!dev || !dev->memoryBudgetSupported || dev->physicalDevice == VK_NULL_HANDLE ||
       !vkGetPhysicalDeviceMemoryProperties2) {
-    return {};
+    return false;
   }
   VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {};
   budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
@@ -161,25 +172,63 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
   properties.pNext = &budget;
   vkGetPhysicalDeviceMemoryProperties2(dev->physicalDevice, &properties);
-  // The device-local heap Plume sized dedicatedVideoMemory from: the biggest
-  // (the others are the small host-visible window of a discrete card).
   const VkPhysicalDeviceMemoryProperties& memory = properties.memoryProperties;
-  uint32_t heap = UINT32_MAX;
-  VkDeviceSize biggest = 0;
-  for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
-    if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
-        memory.memoryHeaps[i].size > biggest) {
-      heap = i;
-      biggest = memory.memoryHeaps[i].size;
+  out.count = memory.memoryHeapCount < uma_budget::kMaxHeaps ? memory.memoryHeapCount
+                                                              : uma_budget::kMaxHeaps;
+  for (uint32_t i = 0; i < out.count; ++i) {
+    uma_budget::Heap& heap = out.heap[i];
+    heap.size = memory.memoryHeaps[i].size;
+    heap.budget = budget.heapBudget[i];
+    heap.usage = budget.heapUsage[i];
+    heap.device_local = (memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+  }
+  // A heap the CPU can map is memory the GPU can be given too (every type of a host-only heap on an
+  // APU is HOST_VISIBLE: RADV's GTT third, Windows' host heap).
+  for (uint32_t t = 0; t < memory.memoryTypeCount; ++t) {
+    if ((memory.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+        memory.memoryTypes[t].heapIndex < out.count) {
+      out.heap[memory.memoryTypes[t].heapIndex].host_visible = true;
     }
   }
-  if (heap == UINT32_MAX || budget.heapBudget[heap] == 0) {
+  const plume::RenderDeviceType type = dev->getDescription().type;
+  out.shared = uma_budget::IsSharedMemory(dev->getCapabilities().uma,
+                                          type == plume::RenderDeviceType::INTEGRATED,
+                                          type == plume::RenderDeviceType::CPU);
+  out.ok = true;
+  return true;
+}
+
+uma_budget::Result BudgetOf(const HeapList& list) {
+  return uma_budget::Compute(list.heap, list.count, list.shared,
+                             uma_budget::SystemMemoryBytes());
+}
+
+}  // namespace
+
+VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
+  // A card with its own memory: the biggest device-local heap, as always. An adapter that shares
+  // memory with the CPU: every heap the GPU can reach, held to a share of the RAM and floored
+  // (uma_budget.h), because the heap labelled device-local is only part of it (RADV's 2/3 of the
+  // Deck's carve-out plus GTT; a driver that lists only the carve-out).
+  HeapList list;
+  if (!ReadHeaps(device, list)) {
     return {};
   }
+  const uma_budget::Result result = BudgetOf(list);
   VideoMemory out;
-  out.used = budget.heapUsage[heap];
-  out.budget = budget.heapBudget[heap];
+  out.used = result.used;
+  out.budget = result.budget;
   return out;
+}
+
+std::string DescribeVideoMemory(plume::RenderDevice* device) {
+  HeapList list;
+  if (!ReadHeaps(device, list)) {
+    return uma_budget::Describe(uma_budget::Result{}, nullptr, 0, 0) +
+           "; the driver has no VK_EXT_memory_budget";
+  }
+  return uma_budget::Describe(BudgetOf(list), list.heap, list.count,
+                              uma_budget::SystemMemoryBytes());
 }
 
 int64_t DeviceRemovedReason(plume::RenderDevice*) {
