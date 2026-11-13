@@ -193,6 +193,10 @@ const ItemDef kDebugRenderingItems[] = {
 #endif
     Str("PM_RxDbgAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames,
         Len(kAspectVals)),
+    // The SDK's vsync on the Xenia renderer: it sets the guest's vblank interval (the game then paces
+    // to it, about 30 % slower) but does not stop tearing, and the start-up flags set it again at every
+    // start; a test switch, not a player setting.
+    XeniaOnly(Bool("PM_RxDbgXeVsync", "vsync", "XENIA VSYNC: ")),
 };
 
 // CAMERA: the developer free camera, the free-look collision test and the camera diagnostics.
