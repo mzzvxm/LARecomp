@@ -43,7 +43,8 @@
 REXCVAR_DEFINE_BOOL(mod_bodykits, true, "MCLA/Garage",
     "Line N of a car's `body` part shows wide body kit N-1 (widebody, spoiler_wide, "
     "hood_wide, door_l_wide, door_r_wide, trunk_wide index N-1). Shipped cars only "
-    "have body_0/body_1 and are unaffected.");
+    "have body_0/body_1 and are unaffected.")
+    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_82391EA8);
 REX_EXTERN(__imp__rex_sub_82391F48);

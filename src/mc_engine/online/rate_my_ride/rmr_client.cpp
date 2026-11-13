@@ -40,7 +40,8 @@ REXCVAR_DEFINE_INT32(rmr_server_port, rmr::kDefaultPort, "MCLA/Multiplayer",
 
 REXCVAR_DEFINE_BOOL(rmr_diag, false, "MCLA/Multiplayer",
                     "Log every Rate My Ride request and record in detail.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 // mcla_online_enable / mcla_online_server belong to the fork SDK's online
 // client (src/kernel/xam/mcla_online.cpp) and are read by name: declaring them

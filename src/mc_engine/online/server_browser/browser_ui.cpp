@@ -57,7 +57,8 @@ REXCVAR_DEFINE_BOOL(server_browser_show_icons, true, "MCLA/Multiplayer",
 REXCVAR_DEFINE_STRING(server_browser_pending, "", "MCLA/Multiplayer",
                       "Set by the server browser when a room needs another server: the room to "
                       "offer right after the restart (address|vip|label). Cleared once used.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace larecomp {
 namespace {

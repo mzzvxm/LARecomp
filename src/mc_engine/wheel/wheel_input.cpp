@@ -69,7 +69,8 @@ REXCVAR_DEFINE_STRING(wheel_device, "auto", "MCLA/Wheel",
     "none. Anything else is matched against the device name (part of it, any case) or written as "
     "vendor:product in hex (046d:c24f) and opens that device even if SDL does not call it a wheel. "
     "Takes effect when the device is next scanned (about a second).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_INT32(wheel_device_range, 900, "MCLA/Wheel",
     "The lock-to-lock rotation the wheel is set to in its own driver, in degrees. The wheel reports "
@@ -90,46 +91,53 @@ REXCVAR_DEFINE_DOUBLE(wheel_steer_deadzone, 0.01, "MCLA/Wheel",
 REXCVAR_DEFINE_DOUBLE(wheel_steer_gamma, 1.0, "MCLA/Wheel",
     "Shapes steering after the range scaling: 1 is linear, above 1 softens the centre. The game "
     "applies its own curve afterwards, so leave this at 1 unless the car feels twitchy.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(wheel_virtual, "off", "MCLA/Wheel",
     "Test aid: create a virtual SDL wheel (type wheel, 4 axes, 20 buttons, a hat) driven from the "
     "keyboard (A/D steer, W throttle, S brake, Q/E paddles) so the whole SDL path can be run without "
     "hardware. off, low (pedals rest at -32768) or high (pedals rest at +32767).")
     .allowed({"off", "low", "high"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_learn, false, "MCLA/Wheel",
     "Run the wheel setup: a console window walks through the steering, the pedals, the paddles and "
     "the H-shifter, watches which axes and buttons move, and writes the wheel's section of "
     "wheel_profiles.ini. Switches itself off when it is done. Start the game with --wheel_learn=true "
     "before playing.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_auto_setup, true, "MCLA/Wheel",
     "The first time a wheel is found that has no section in wheel_profiles.ini, ask whether to run the setup "
     "now (a yes/no box, shown once the game window is up). Answering no writes a marker so it is not asked "
     "again; the setup can always be started with wheel_learn. Off: never ask.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_DOUBLE(wheel_cancel_game_deadzone, 0.05, "MCLA/Wheel",
     "The game puts a dead zone of about 5% on its stick and pedal axes (measured: steering comes out as "
     "(x - 0.05) / 0.95), written for a thumb stick. A wheel is precise, so the first few degrees would do nothing. "
     "This lifts the wheel's output by that amount, so the game's own dead zone cancels and the response is "
     "linear. 0 turns it off. Set it to what you measure if a wheel still feels dead around centre.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_trace, false, "MCLA/Wheel",
     "Log, once a second, every axis and pressed button SDL reads from the wheel and what the game is given "
     "(who drives, steering, pedals, buttons). For finding out why a wheel behaves oddly: start the game with it, "
     "reproduce the problem, send the log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(wheel_pedal_autorange, true, "MCLA/Wheel",
     "Pedals that never reach the end of their travel read full once they have been pressed to where "
     "they do reach (after the first firm press). Off: the pedals use their full nominal range. A "
     "pedal with throttle_full / brake_full in the profile is never auto-ranged.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace larecomp::wheel {
 

@@ -69,13 +69,17 @@
 
 REXCVAR_DEFINE_BOOL(mod_glows, true, "MCLA/World",
     "Light glows a mod places in the world (models/<mod>/glows.bin), drawn by MCLA's "
-    "glow renderer.");
+    "glow renderer.")
+    .debug_only();
 REXCVAR_DEFINE_INT32(mod_glows_max, 64, "MCLA/World",
     "Mod glows submitted per frame, nearest first. MCLA draws 96 a frame in all, "
-    "car lights included.");
+    "car lights included.")
+    .debug_only();
 REXCVAR_DEFINE_DOUBLE(mod_glow_size, 1.8, "MCLA/World",
-    "Mod glow size multiplier (on top of each glow's own).");
-REXCVAR_DEFINE_DOUBLE(mod_glow_intensity, 1.0, "MCLA/World", "Mod glow intensity multiplier.");
+    "Mod glow size multiplier (on top of each glow's own).")
+    .debug_only();
+REXCVAR_DEFINE_DOUBLE(mod_glow_intensity, 1.0, "MCLA/World", "Mod glow intensity multiplier.")
+    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_82729438);
 REX_EXTERN(rex_sub_822FC250);

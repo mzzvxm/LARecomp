@@ -54,7 +54,8 @@ REXCVAR_DEFINE_BOOL(skip_save_import, false, "MCLA",
     "Skip the save import wizard shown on first launch and start with no save. "
     "The wizard is skipped automatically anyway when no Xenia or RPCS3 save is "
     "found on the machine.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace larecomp {
 

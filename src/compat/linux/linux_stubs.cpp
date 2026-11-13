@@ -9,16 +9,21 @@
 // The cvars native_gfx.cpp defines and the guest-side files Plume shares read.
 REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
                     "The D3D12 native graphics runtime. Not built on this platform.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_decl_float, true, "MCLA/NativeGfx",
-                    "Read the two 32-bit float vertex declaration types at their measured width.");
+                    "Read the two 32-bit float vertex declaration types at their measured width.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth32, false, "MCLA/NativeGfx",
-                    "Give a guest kD24S8 depth surface a D32_FLOAT_S8X24 host format.");
+                    "Give a guest kD24S8 depth surface a D32_FLOAT_S8X24 host format.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_diag, false, "MCLA/NativeGfx",
-                    "Native graphics diagnostics. Not built on this platform.");
+                    "Native graphics diagnostics. Not built on this platform.")
+    .debug_only();
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_fetch_size_unit, 4, "MCLA/NativeGfx",
                       "Bytes per unit of the vertex fetch constant's 24-bit size field. 0 uses 4.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload)
+    .debug_only();
 
 namespace mcla::native_gfx {
 // Only the D3D12 pipeline cache listens for it.

@@ -75,9 +75,11 @@
 
 REXCVAR_DEFINE_BOOL(mod_lights, true, "MCLA/World",
     "Dynamic lights a mod adds to its part of the map (models/<mod>/lights.bin): its lamps "
-    "light the ground and the cars at night, on a light grid of its own. Built at city load.");
+    "light the ground and the cars at night, on a light grid of its own. Built at city load.")
+    .debug_only();
 REXCVAR_DEFINE_DOUBLE(mod_light_intensity, 1.0, "MCLA/World",
-    "Mod light intensity multiplier, applied when the mod's light grid is built (city load).");
+    "Mod light intensity multiplier, applied when the mod's light grid is built (city load).")
+    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_822F87E8);
 REX_EXTERN(__imp__rex_sub_82302078);
