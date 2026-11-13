@@ -44,8 +44,8 @@
 // THE SUN: the game has two (shafts_sun.h). The light's direction and colour are the game's own constants
 // as the ambient occlusion reads them (VS c16 the direction the light travels, PS c39 the sun colour),
 // taken from the draws of the main view before the first point. The sun the player sees is the sky's:
-// PS c65 `SunDirection` of the sky shaders (xrage_atmoscatt_clouds ps_main*, ps_sunonly; the direction
-// toward the sun), told by the sky's own draws (NoteSkyDraw). The two differ: at 17.7 h the light is 18.7
+// PS c65 `SunDirection` of the sky shaders (the city's xSkyhat ps_main*, ps_sunonly, listed in
+// shafts_sun.h; the direction toward the sun), told by the sky's own draws (NoteSkyDraw). The two differ: at 17.7 h the light is 18.7
 // degrees above the horizon and the disc about 2 (ports/run/w1s-survey-h17_7-both), so a blur toward the
 // light's place converged above the picture. The rays radiate from the disc: THE PLACE IN THE PICTURE
 // comes from the sky's constant, and from the light when no sky draw has told it, when it is not a
@@ -127,9 +127,9 @@ class SunShafts {
   bool wants_draws() const { return mode_ != Mode::kOff; }
 
   // A prepared draw of the main view (play or pause/map, temporal_identities.h MatchMainView), with
-  // the draw's own banks and its pixel shader's identity (the sky's draws tell where the sun is).
+  // the draw's own banks and its shaders' identities (the sky's draws tell where the sun is).
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks,
-                  uint64_t ps_identity);
+                  uint64_t vs_identity, uint64_t ps_identity);
   // The game's motion blur draw: this frame's camera, which the next frame's shafts use.
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list
@@ -232,8 +232,9 @@ class SunShafts {
     bool vertex_pose = false;      // the rotation came from the vertex constants
   };
   bool ComputeSun(Sun* out) const;
-  // A draw of the main view whose pixel shader is one of the sky's: its PS c65 is the sun disc's direction.
-  void NoteSkyDraw(uint64_t ps_identity, const ConstantBanks::Banks& banks);
+  // A draw of the main view whose pixel shader is one of the sky's (shafts_sun.h): its PS c65 is the sun disc's
+  // direction. A draw with the dome's vertex shader and another pixel shader is counted and logged, and tells nothing.
+  void NoteSkyDraw(uint64_t vs_identity, uint64_t ps_identity, const ConstantBanks::Banks& banks);
   // What the log says about the sky's sun constant, a few times and no more: first used, further from the
   // light than it may be, never told.
   void LogSkySun(const Sun& sun);
@@ -296,6 +297,7 @@ class SunShafts {
   uint64_t frame_ = 0;
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
+  bool first_colour_seen_ = false;   // the frame's first colour draw of the main view was noted (the sky dome)
   bool play_view_ = false;           // the frame had main view draws at the play samples
   bool pause_view_ = false;          // ... at the pause/map samples (4x)
   bool first_point_seen_ = false;    // the first point's resolve came (whatever became of it)
@@ -345,6 +347,13 @@ class SunShafts {
   uint64_t sky_ps_ = 0;
   uint32_t sky_draws_ = 0;
   uint64_t sky_draws_total_ = 0;
+  // The shaders of the last frame's first colour draw of the main view (the dome), and the dome draws whose pixel
+  // shader the table does not list: what the log says when no sky draw ever told the sun.
+  uint64_t first_colour_vs_ = 0;
+  uint64_t first_colour_ps_ = 0;
+  uint64_t sky_unknown_draws_ = 0;
+  uint64_t sky_unknown_ps_ = 0;
+  uint32_t sky_unknown_logged_ = 0;
   uint32_t sky_missing_frames_ = 0;  // frames in a row with a sun to place and no sky constant
   uint32_t sky_missing_logged_ = 0;
   uint32_t sky_far_logged_ = 0;

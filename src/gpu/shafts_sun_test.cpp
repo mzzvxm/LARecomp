@@ -6,6 +6,7 @@
 //   <build dir>/src/gpu/larecomp_shafts_sun_test
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <limits>
 #include <string>
@@ -280,6 +281,72 @@ void ElevationFades() {
   }
 }
 
+// SKY-ID: which draws tell the sun constant. The first table held the five pixel shaders of xrage_atmoscatt_clouds; the
+// main view draws the city's xSkyhat (census: the dome is VS 7E5802436ED6C520 with PS D3B9FE4A90C0EF08).
+void SkyDrawTables() {
+  // the identities are distinct and not zero, in both tables and across them, and every one has a name
+  constexpr size_t kPixel = sizeof(kSkyPixelShaders) / sizeof(kSkyPixelShaders[0]);
+  constexpr size_t kVertex = sizeof(kSkyVertexShaders) / sizeof(kSkyVertexShaders[0]);
+  bool distinct = true;
+  bool named = true;
+  for (size_t i = 0; i < kPixel; ++i) {
+    named = named && kSkyPixelShaders[i].identity != 0 && kSkyPixelShaders[i].name && kSkyPixelShaders[i].name[0];
+    for (size_t j = i + 1; j < kPixel; ++j) distinct = distinct && kSkyPixelShaders[i].identity != kSkyPixelShaders[j].identity;
+    for (size_t j = 0; j < kVertex; ++j) distinct = distinct && kSkyPixelShaders[i].identity != kSkyVertexShaders[j].identity;
+  }
+  for (size_t i = 0; i < kVertex; ++i) {
+    named = named && kSkyVertexShaders[i].identity != 0 && kSkyVertexShaders[i].name && kSkyVertexShaders[i].name[0];
+    for (size_t j = i + 1; j < kVertex; ++j) distinct = distinct && kSkyVertexShaders[i].identity != kSkyVertexShaders[j].identity;
+  }
+  Check(distinct, "no sky shader identity is listed twice");
+  Check(named, "every listed sky shader has an identity and a name");
+  Check(kPixel == 11 && kVertex == 4, "six xSkyhat and five xrage_atmoscatt_clouds pixel shaders, four dome vertex shaders");
+
+  // the six pixel shaders of the city's sky (the pack builder's names, shafts_log.py ids checks them against its table)
+  struct { uint64_t id; const char* name; } city[] = {
+      {0xC7D5174E04D352E4ull, "xSkyhat ps_main"},
+      {0x37BB7CE96694769Eull, "xSkyhat ps_main_cheap"},
+      {0x45484886A2840899ull, "xSkyhat ps_main_withmoon"},
+      {0xD3B9FE4A90C0EF08ull, "xSkyhat ps_main_withstarfield"},
+      {0xCE703509D1285287ull, "xSkyhat ps_main_withstarfield_withmoon"},
+      {0x347BAEE87E5AE632ull, "xSkyhat ps_sunonly"},
+  };
+  const uint64_t dome_vs = 0x7E5802436ED6C520ull;  // xSkyhat vs_main
+  for (const auto& c : city) {
+    const char* name = SkyPixelShaderName(c.id);
+    Check(name && std::string(name) == c.name, std::string("the pixel shader ") + c.name + " is a sky shader");
+    Check(ClassifySkyDraw(dome_vs, c.id) == SkyDraw::kTells, std::string(c.name) + " with the dome's vertex shader tells the sun");
+    Check(ClassifySkyDraw(0, c.id) == SkyDraw::kTells, std::string(c.name) + " tells the sun whatever the vertex shader (the pixel shader is the key)");
+  }
+  // the census' own main-view sky draw
+  Check(ClassifySkyDraw(0x7E5802436ED6C520ull, 0xD3B9FE4A90C0EF08ull) == SkyDraw::kTells, "the census' dome (VS 7E58..., PS D3B9...) tells the sun");
+  // the old table is still recognised (the register is the same)
+  Check(SkyPixelShaderName(0xA6755E24615016F2ull) && SkyPixelShaderName(0xF1CFDA6F8EC76266ull), "xrage_atmoscatt_clouds ps_main and ps_sunonly stay in the table");
+
+  // what is not the sky: the dome's stencil mask (VS only), the environment map's and the mini sky's shaders, the ground
+  // dome, the anchor, the tone map, the shadow collector, a draw without shaders
+  struct { uint64_t vs, ps; const char* what; } others[] = {
+      {0x892C3FF3002828BDull, 0ull, "the dome's stencil mask (xSkyhat vs_stencil, no pixel shader)"},
+      {0x5A2CA13B2568F03Bull, 0x1B0336CB63F48F9Eull, "the environment map's sky (xSkyhat vs_DpBackMain + ps_dpenvmapsky)"},
+      {0xB869978B200BFF5Bull, 0xC68BEA0366BA9DE0ull, "the mini sky (xSkyhat vs_MiniSky + ps_miniSky)"},
+      {0xAEAF86AD49C20C9Aull, 0xE1C19293E5FB9F5Bull, "the blurred sky (xSkyhat vs_BlurSky + ps_BlurSky)"},
+      {0xCFBFDB994A1B3D35ull, 0x5F6C293FBD9AE1B8ull, "the ground dome (xGroundHat)"},
+      {0x95C121D46C9C1B5Full, 0x0F681CC854B766D4ull, "the anchor (the motion blur draw)"},
+      {0xF097B3E9236CB05Aull, 0xBC5F0EED0A746DEAull, "the tone map"},
+      {0x03540FDC130BD4DAull, 0x2CDEA0E25045AD9Eull, "the shadow collector"},
+      {0, 0, "nothing"},
+  };
+  for (const auto& o : others) {
+    Check(ClassifySkyDraw(o.vs, o.ps) == SkyDraw::kNone, std::string(o.what) + " is no sky draw");
+  }
+
+  // the dome's vertex shader with a pixel shader the table does not have: counted and logged, tells nothing
+  Check(ClassifySkyDraw(0x7E5802436ED6C520ull, 0x1234567812345678ull) == SkyDraw::kUnknownPs, "xSkyhat vs_main with an unlisted pixel shader is an unknown sky draw");
+  Check(ClassifySkyDraw(0xBA77A519EF33AFBDull, 0x1234567812345678ull) == SkyDraw::kUnknownPs, "xSkyhat vs_main_fast with an unlisted pixel shader is an unknown sky draw");
+  Check(SkyPixelShaderName(0x1234567812345678ull) == nullptr && SkyVertexShaderName(0x1234567812345678ull) == nullptr, "an unlisted identity has no name");
+  Check(SkyVertexShaderName(0x7E5802436ED6C520ull) && std::string(SkyVertexShaderName(0x7E5802436ED6C520ull)) == "xSkyhat vs_main", "the dome's vertex shader is named");
+}
+
 }  // namespace
 
 int main() {
@@ -291,6 +358,7 @@ int main() {
   ElevationAndAngles();
   JudgingTheSky();
   ElevationFades();
+  SkyDrawTables();
   std::printf("shafts_sun_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

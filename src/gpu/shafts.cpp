@@ -125,18 +125,9 @@ constexpr float kShineLimit = 4.0f;
 // The wetness (VS c43.x) at which the rain's gate starts and ends: 0.095 dry, 1.17 in rain.
 constexpr double kWetStart = 0.2;
 constexpr double kWetEnd = 0.7;
-// The sky shaders that draw the main view's sky and sun disc (xrage_atmoscatt_clouds ps_main, ps_main_withmoon,
-// ps_main_withstarfield, ps_main_withstarfield_withmoon, ps_sunonly), as the renderer identifies them (FNV-1a 64
-// of the microcode with the vertex fetches normalised: shader_identity.h; computed from the game's own XEX shader
-// containers with native/tools/build_shader_pack.py's functions, which reproduce the anchor's identities too).
-// Every one reads the direction toward the sun at PS c65 `SunDirection` (the same register in all five).
-constexpr uint64_t kSkyPixelShaders[] = {
-    0xA6755E24615016F2ull,  // ps_main
-    0xC59AA42D684F1D98ull,  // ps_main_withmoon
-    0x42099300C5CFA72Full,  // ps_main_withstarfield
-    0xA2B20192EA547E84ull,  // ps_main_withstarfield_withmoon
-    0xF1CFDA6F8EC76266ull,  // ps_sunonly
-};
+// The sky shaders that draw the main view's sky and sun disc are listed in shafts_sun.h (kSkyPixelShaders: the city's
+// xSkyhat ps_main*, ps_sunonly, as the renderer identifies them). Every one reads the direction toward the sun at
+// PS c65 `SunDirection`.
 constexpr uint32_t kPsSkySunDirection = 65;
 // A sky constant told this many frames ago or less is still used (the sky's draws come every frame of the play
 // view: this only bridges a frame whose sky draw was not seen before the first point).
@@ -470,12 +461,25 @@ bool SunShafts::EnsureImages(const Pending& plan) {
 // what the draws tell
 // ---------------------------------------------------------------------------
 
-void SunShafts::NoteSkyDraw(uint64_t ps_identity, const ConstantBanks::Banks& banks) {
-  bool sky = false;
-  for (const uint64_t identity : kSkyPixelShaders) {
-    sky = sky || identity == ps_identity;
+void SunShafts::NoteSkyDraw(uint64_t vs_identity, uint64_t ps_identity,
+                            const ConstantBanks::Banks& banks) {
+  const shafts_sun::SkyDraw kind = shafts_sun::ClassifySkyDraw(vs_identity, ps_identity);
+  if (kind == shafts_sun::SkyDraw::kNone) {
+    return;
   }
-  if (!sky) {
+  if (kind == shafts_sun::SkyDraw::kUnknownPs) {
+    // The dome's own vertex shader with a pixel shader the table does not have (another game build, a variant):
+    // its c65 is not read, and the log says which shader it was, a few times.
+    ++sky_unknown_draws_;
+    if (sky_unknown_logged_ < kSkyLogsMax && ps_identity != sky_unknown_ps_) {
+      ++sky_unknown_logged_;
+      sky_unknown_ps_ = ps_identity;
+      REXLOG_WARN("[gpu] shafts: frame {}: a draw of the sky dome ({} {:016x}) used the pixel shader {:016x}, "
+                  "which is not one of the sky's in shafts_sun.h (kSkyPixelShaders): its sun constant is "
+                  "not read (logged {} of at most {})",
+                  frame_, shafts_sun::SkyVertexShaderName(vs_identity), vs_identity, ps_identity,
+                  sky_unknown_logged_, kSkyLogsMax);
+    }
     return;
   }
   const uint8_t* ps = banks.ps.data();
@@ -495,7 +499,7 @@ void SunShafts::NoteSkyDraw(uint64_t ps_identity, const ConstantBanks::Banks& ba
 }
 
 void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks,
-                           uint64_t ps_identity) {
+                           uint64_t vs_identity, uint64_t ps_identity) {
   if (!match) {
     return;
   }
@@ -509,7 +513,14 @@ void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks
   }
   // The sun disc's direction: the sky's draws tell it (kept from frame to frame; a sky draw after the first
   // point serves the next frame).
-  NoteSkyDraw(ps_identity, banks);
+  NoteSkyDraw(vs_identity, ps_identity, banks);
+  // The frame's first colour draw of the main view is the sky dome: what it was is in the log when no sky draw
+  // ever told the sun (LogSkySun), the way to find the sky's real identity if the table is out of date.
+  if (!first_colour_seen_) {
+    first_colour_seen_ = true;
+    first_colour_vs_ = vs_identity;
+    first_colour_ps_ = ps_identity;
+  }
   // The light of the frame is the one most colour draws before the first point carry (a draw whose
   // shaders do not use a register leaves what an earlier one set).
   if (first_point_seen_) {
@@ -763,12 +774,13 @@ void SunShafts::LogSkySun(const Sun& sun) {
       sky_missing_frames_ = 0;
       if (!sky_used_logged_) {
         sky_used_logged_ = true;
+        const char* sky_name = shafts_sun::SkyPixelShaderName(sky_ps_);
         REXLOG_INFO("[gpu] shafts: the sun's place in the picture comes from the sky's own sun "
-                    "constant (PS c65 of the sky shader {:016x}, {} sky draws told it so far): {}; "
+                    "constant (PS c65 of the sky shader {} {:016x}, {} sky draws told it so far): {}; "
                     "the light's sun (VS c16, height {:.1f} deg) would be at ({:.2f}, {:.2f}) of the "
                     "picture",
-                    sky_ps_, sky_draws_total_, SkyText(sun), sun.elevation, sun.light_uv[0],
-                    sun.light_uv[1]);
+                    sky_name ? sky_name : "?", sky_ps_, sky_draws_total_, SkyText(sun), sun.elevation,
+                    sun.light_uv[0], sun.light_uv[1]);
       }
       break;
     case shafts_sun::SkyState::kFarFromLight:
@@ -786,9 +798,15 @@ void SunShafts::LogSkySun(const Sun& sun) {
       if (++sky_missing_frames_ == kSkyMissingFramesToWarn &&
           sky_missing_logged_ < kSkyLogsMax - 1) {
         ++sky_missing_logged_;
-        REXLOG_WARN("[gpu] shafts: frame {}: {} for {} frames in a row ({} sky draws seen in all): "
-                    "the light's place ({:.2f}, {:.2f}) is used",
+        const char* first_vs = shafts_sun::SkyVertexShaderName(first_colour_vs_);
+        const char* first_ps = shafts_sun::SkyPixelShaderName(first_colour_ps_);
+        REXLOG_WARN("[gpu] shafts: frame {}: {} for {} frames in a row ({} sky draws seen in all, {} dome "
+                    "draws with a pixel shader the table does not list); the main view's first colour "
+                    "draw (the dome, when there is one) used VS {:016x} ({}) and PS {:016x} ({}); the "
+                    "light's place ({:.2f}, {:.2f}) is used",
                     frame_, SkyText(sun), kSkyMissingFramesToWarn, sky_draws_total_,
+                    sky_unknown_draws_, first_colour_vs_, first_vs ? first_vs : "not a sky vertex shader",
+                    first_colour_ps_, first_ps ? first_ps : "not a sky pixel shader",
                     sun.light_uv[0], sun.light_uv[1]);
       }
       break;
@@ -1296,6 +1314,7 @@ void SunShafts::OnPresent() {
   }
   anchor_seen_ = false;
   composite_seen_ = false;
+  first_colour_seen_ = false;
   play_view_ = false;
   pause_view_ = false;
   first_point_seen_ = false;

@@ -6,7 +6,7 @@
 //
 //   the light   VS c16 of the world draws (the direction the sunlight travels): what lights the street. At 17.7 h it
 //               is 18.7 degrees above the horizon.
-//   the sky's   PS c65 `SunDirection` of the sky shaders (xrage_atmoscatt_clouds ps_main*, ps_sunonly; the direction
+//   the sky's   PS c65 `SunDirection` of the sky shaders (the city's xSkyhat ps_main*, ps_sunonly; the direction
 //               TOWARD the sun, in the same world axes the dome's vertices are rotated into): the sun disc the player
 //               sees. In the 17.7 h survey (ports/run/w1s-survey-h17_7-both, tour_02_spot0-b.png) the disc is about 5
 //               degrees above the view axis while the light's sun came out 21 degrees above it, off the top of the
@@ -17,14 +17,89 @@
 // (a constant more than kMaxSkyLightAngle from the light is not the sun in the same axes: it is not used and the log
 // says so). A frame without a sky draw falls back to the light, as before.
 //
+// WHICH DRAWS TELL IT (SKY-ID). The constant is read from the draws of the sky's pixel shaders, found by the renderer's
+// shader identity (FNV-1a 64 of the microcode with the vertex fetches normalised: native_gfx/shader_identity.h). The
+// first table named the five pixel shaders of xrage_atmoscatt_clouds (the engine's own sky, in the XEX): their identities
+// were right (the pack builder's own) but the main view never draws them. The play view's sky is the CITY's, xSkyhat
+// (an RPF shader of the city folder): the main view's first colour draw is the dome, VS 7E5802436ED6C520 (xSkyhat
+// vs_main, after the dome's stencil mask by vs_stencil 892C3FF3002828BD) with PS D3B9FE4A90C0EF08 (xSkyhat
+// ps_main_withstarfield) in the temporal census (ports/run/cen-day: "first draw VS ... PS ...", by the main view), and
+// ports/diffs/upscaler-masks-identities.tsv names those identities. All six main-pass pixel shaders of xSkyhat read the
+// sun at PS c65 `SunDirection` (the same register in all of them; they differ by the moon and the star field, and
+// ps_sunonly draws the disc alone). The shaders that draw into the environment map and the mini sky (ps_dpenvmapsky,
+// ps_miniSky, ps_BlurSky) read it too but draw into other targets, so the main-view match never sees them: not listed.
+//
 // Pure maths, no renderer: shafts_sun_test.cpp builds on its own.
 // ===========================================================================
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace mcla::gpu::shafts_sun {
+
+struct SkyShader {
+  uint64_t identity;
+  const char* name;
+};
+
+// The pixel shaders whose PS c65 is the sun disc's direction. The city's sky first (the one the census shows in the main
+// view), then the engine's own (xrage_atmoscatt_clouds: no census has seen it in the main view; kept in case a scene or
+// a game build draws with it, the register is the same).
+inline constexpr SkyShader kSkyPixelShaders[] = {
+    {0xC7D5174E04D352E4ull, "xSkyhat ps_main"},
+    {0x37BB7CE96694769Eull, "xSkyhat ps_main_cheap"},
+    {0x45484886A2840899ull, "xSkyhat ps_main_withmoon"},
+    {0xD3B9FE4A90C0EF08ull, "xSkyhat ps_main_withstarfield"},
+    {0xCE703509D1285287ull, "xSkyhat ps_main_withstarfield_withmoon"},
+    {0x347BAEE87E5AE632ull, "xSkyhat ps_sunonly"},
+    {0xA6755E24615016F2ull, "xrage_atmoscatt_clouds ps_main"},
+    {0xC59AA42D684F1D98ull, "xrage_atmoscatt_clouds ps_main_withmoon"},
+    {0x42099300C5CFA72Full, "xrage_atmoscatt_clouds ps_main_withstarfield"},
+    {0xA2B20192EA547E84ull, "xrage_atmoscatt_clouds ps_main_withstarfield_withmoon"},
+    {0xF1CFDA6F8EC76266ull, "xrage_atmoscatt_clouds ps_sunonly"},
+};
+
+// The vertex shaders that draw the sky dome of the main view. A dome draw whose pixel shader is not in the table above
+// is logged (a game build or a variant the table does not know) and tells nothing.
+inline constexpr SkyShader kSkyVertexShaders[] = {
+    {0x7E5802436ED6C520ull, "xSkyhat vs_main"},
+    {0xBA77A519EF33AFBDull, "xSkyhat vs_main_fast"},
+    {0x8E498B4ADDCDB58Bull, "xrage_atmoscatt_clouds vs_main"},
+    {0xF5A4D43E31D42CABull, "xrage_atmoscatt_clouds vs_main_fast"},
+};
+
+// The name of a listed shader, null when `identity` is not in `table`.
+template <size_t N>
+inline const char* SkyShaderName(const SkyShader (&table)[N], uint64_t identity) {
+  for (const SkyShader& s : table) {
+    if (s.identity == identity) {
+      return s.name;
+    }
+  }
+  return nullptr;
+}
+inline const char* SkyPixelShaderName(uint64_t identity) {
+  return SkyShaderName(kSkyPixelShaders, identity);
+}
+inline const char* SkyVertexShaderName(uint64_t identity) {
+  return SkyShaderName(kSkyVertexShaders, identity);
+}
+
+// What a main-view colour draw is to the sky constant.
+enum class SkyDraw : uint8_t {
+  kNone,       // not a sky draw
+  kTells,      // a sky pixel shader: its PS c65 is the sun's direction
+  kUnknownPs,  // the sky dome's vertex shader with a pixel shader the table does not have: says so, tells nothing
+};
+
+inline SkyDraw ClassifySkyDraw(uint64_t vs_identity, uint64_t ps_identity) {
+  if (SkyPixelShaderName(ps_identity)) {
+    return SkyDraw::kTells;
+  }
+  return SkyVertexShaderName(vs_identity) ? SkyDraw::kUnknownPs : SkyDraw::kNone;
+}
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegrees = 180.0 / kPi;
