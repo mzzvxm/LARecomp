@@ -135,6 +135,9 @@ const ItemDef kDebugFixesItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),
+    // The glow of lights keeps its size above a render scale of 1x: the bloom's Gaussian taps follow the
+    // scale. The renderer reads the cvar at each draw, so the row is live.
+    NativeOnly(Bool("PM_RxDbgBloomScale", "mcla_gpu_bloom_scale", "BLOOM SIZE FIX: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

@@ -8,14 +8,14 @@
 //   the guest image of default.xex  (the other 119, found in guest memory: no XEX decryption)
 //   dxcompiler.dll + dxil.dll       in `dxc_dir`, loaded at run time
 //
-// The result is <out_dir>/mcla_shaders.v8.pack (what src/gpu/shaders.cpp reads) and, when an HDR
-// step is given, mcla_shaders_hdr.v1.pack, plus the stamp that says what they were built from.
+// The result is <out_dir>/mcla_shaders.v8.pack (what src/gpu/shaders.cpp reads) and, when a variant
+// step is given, mcla_shaders_variants.v2.pack, plus the stamp that says what they were built from.
 // With the same dxc the bytes are those of native/tools/build_shader_pack_v8.py (the Python chain
 // by mzzvxm that this replaces: v2, v3 and v8 in one pass).
 //
 // Usage (the app, at LaunchModule; the tool, from a flat image file):
-//   StampCheck check = CheckStamp(out_dir, formats, {game_root, dxc_dir}, hdr_step);   // stat only
-//   if (!(check.main_ok && check.hdr_ok)) {
+//   StampCheck check = CheckStamp(out_dir, formats, {game_root, dxc_dir}, variant_step);   // stat only
+//   if (!(check.main_ok && check.variants_ok)) {
 //     BuildRequest request; ... ; BuildResult result = BuildShaderPacks(request);
 //   }
 //
@@ -72,37 +72,40 @@ struct ImageView {
 };
 
 // ---------------------------------------------------------------------------
-// The HDR variant step (written separately: hdr_variant.{h,cpp})
+// The variant step (written separately: variant_pack.{h,cpp})
 // ---------------------------------------------------------------------------
-// Builds mcla_shaders_hdr.v1.pack after the main pack. The builder calls it at one place (the
-// "HDR VARIANT STEP" in builder.cpp), with the containers it has already read, a loaded compiler
-// and the main pack's fingerprint, and records the lines it returns in the stamp.
+// Builds mcla_shaders_variants.v2.pack after the main pack: the pixel shaders the renderer can draw
+// with another version of the game's own text (the HDR scene's tone map, the bloom's Gaussians at a
+// render scale, ...), each made from the translator's HLSL by an anchored text edit. The builder calls
+// it at one place (the "VARIANT STEP" in builder.cpp), with the containers it has already read, a
+// loaded compiler and the main pack's fingerprint, and records the lines it returns in the stamp.
 
-struct HdrStepInput {
-  const ContainerSet* containers = nullptr;  // for an HDR-only rebuild only the image's shaders are in it
+struct VariantStepInput {
+  const ContainerSet* containers = nullptr;  // for a variant-only rebuild only the image's shaders are in it
   std::shared_ptr<DxcRuntime> dxc;           // loaded; make a DxcWorker per thread
-  std::filesystem::path out_dir;             // mcla_shaders_hdr.v1.pack goes here (kHdrPackFileName)
+  std::filesystem::path out_dir;             // mcla_shaders_variants.v2.pack goes here (kVariantPackFileName)
   uint32_t formats = 0;                      // build these formats (the main pack's)
   unsigned threads = 1;
   ProgressSink* sink = nullptr;              // never null
 };
 
-struct HdrStepResult {
+struct VariantStepResult {
   bool built = false;                  // the file is in place
   std::string message;                 // why not, or a one line summary
-  std::vector<StampLine> stamp_lines;  // what it was built from (hlsli hash, contract, ...)
+  std::vector<StampLine> stamp_lines;  // what it was built from (the edits' versions, the curve's hash, ...)
 };
 
-class HdrStep {
+class VariantStep {
  public:
-  virtual ~HdrStep() = default;
-  // The lines (hlsli hash, contract...) that are true for THIS build of larecomp: CheckStamp
-  // compares them with the stamp's, so a changed curve rebuilds the HDR pack alone.
+  virtual ~VariantStep() = default;
+  // The lines (the versions of the edits, the HDR curve's hash, the contract...) that are true for THIS
+  // build of larecomp: CheckStamp compares them with the stamp's, so a changed edit rebuilds the variant
+  // pack alone.
   virtual std::vector<StampLine> ExpectedStampLines() const = 0;
-  // Writes the HDR pack to input.out_dir under its final name (a .tmp then a move is its own
-  // business). A failure here fails the HDR step, not the build: HDR then stays at stage 2, which
-  // the reader allows.
-  virtual HdrStepResult Build(const HdrStepInput& input) = 0;
+  // Writes the variant pack to input.out_dir under its final name (a .tmp then a move is its own
+  // business). A failure here fails the step, not the build: the renderer then draws the game's own
+  // shaders (HDR stays at stage 2, the bloom at the guest's taps), which the reader allows.
+  virtual VariantStepResult Build(const VariantStepInput& input) = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -122,7 +125,7 @@ struct BuildRequest {
   // always done.
   uint32_t position_proof_stride = 1;
   ProgressSink* sink = nullptr;
-  HdrStep* hdr_step = nullptr;  // null: no HDR pack, no hdr_* lines
+  VariantStep* variant_step = nullptr;  // null: no variant pack, no variants_* lines
   std::string app_version;      // goes into the stamp, informational
 };
 
@@ -157,14 +160,14 @@ struct BuildResult {
   uint64_t pack_bytes = 0;
   uint64_t pack_xxh3 = 0;
   unsigned threads = 0;
-  bool hdr_built = false;
-  std::string hdr_message;
-  bool hdr_only = false;        // only the HDR pack was rebuilt
+  bool variants_built = false;
+  std::string variants_message;
+  bool variants_only = false;   // only the variant pack was rebuilt
 
   double seconds_read = 0;      // game files and containers
   double seconds_compile = 0;   // translate, check, compile, prove
   double seconds_write = 0;     // pack, validate, stamp
-  double seconds_hdr = 0;
+  double seconds_variants = 0;
   double seconds_total = 0;
 
   bool ok() const { return status == Status::kOk || status == Status::kUpToDate; }
@@ -179,10 +182,10 @@ struct GameFilesQuick {
 // What the stamp says (stat only; the hash of a DLL is read only when its size or time moved).
 struct StampCheck {
   bool main_ok = false;  // the main pack is current and carries the formats asked
-  // The HDR pack is current too (true when there is no HDR step). Judged whenever inputs_match, so
-  // it can be true while main_ok is false (the game files' times moved); "nothing to do" is
-  // main_ok && hdr_ok.
-  bool hdr_ok = false;
+  // The variant pack is current too (true when there is no variant step). Judged whenever inputs_match,
+  // so it can be true while main_ok is false (the game files' times moved); "nothing to do" is
+  // main_ok && variants_ok.
+  bool variants_ok = false;
   // Everything but `formats` and the game files' times matches: the pack is the right one in every
   // respect that does not need the game files read.
   bool inputs_match = false;
@@ -194,7 +197,7 @@ struct StampCheck {
 };
 
 StampCheck CheckStamp(const std::filesystem::path& out_dir, uint32_t formats_needed,
-                      const GameFilesQuick& files, const HdrStep* hdr_step);
+                      const GameFilesQuick& files, const VariantStep* variant_step);
 
 BuildResult BuildShaderPacks(const BuildRequest& request);
 

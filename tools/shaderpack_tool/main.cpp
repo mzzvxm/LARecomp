@@ -37,9 +37,9 @@
 #include "shaderpack/rpf_shaders.h"
 #include "shaderpack/xex_image.h"
 
-// The HDR variant step: the tool builds the HDR pack too when the build has the HDR curve embedded
-// (--no-hdr leaves it out).
-#include "shaderpack/hdr_variant.h"
+// The variant step: the tool builds the variant pack too (the bloom's Gaussians always, the HDR scene's
+// tone map when the build has the HDR curve embedded); --no-variants leaves it out.
+#include "shaderpack/variant_pack.h"
 
 namespace sp = larecomp::shaderpack;
 namespace fs = std::filesystem;
@@ -66,7 +66,7 @@ struct Args {
 };
 
 const std::set<std::string>& KnownFlags() {
-  static const std::set<std::string> flags = {"--force", "--no-blobs", "--no-contract", "--no-hdr"};
+  static const std::set<std::string> flags = {"--force", "--no-blobs", "--no-contract", "--no-variants"};
   return flags;
 }
 
@@ -140,8 +140,8 @@ void Usage() {
       "\n"
       "  build         --game <dir> (--xex <default.xex> | --image <flat image>) --out <dir> --dxc <dir>\n"
       "                [--formats dxil|spirv|both (default both)] [--threads N] [--force]\n"
-      "                [--position-stride N] [--no-hdr]\n"
-      "                Builds mcla_shaders.v8.pack (and the HDR pack when built in) and the stamp.\n"
+      "                [--position-stride N] [--no-variants]\n"
+      "                Builds mcla_shaders.v8.pack, mcla_shaders_variants.v2.pack and the stamp.\n"
       "                --game   the folder with xarchive_cache.rpf and default.xex\n"
       "                --xex    default.xex itself: its image is decoded here, as larecomp.exe\n"
       "                         --build_shader_packs does it\n"
@@ -202,10 +202,11 @@ class ConsoleSink : public sp::ProgressSink {
   int next_print_ = 0;
 };
 
-std::unique_ptr<sp::HdrStep> MakeHdrStep(const Args& args) {
-  if (args.Flag("--no-hdr")) return nullptr;
-  std::unique_ptr<sp::HdrStep> step = sp::CreateHdrStep();
-  if (!step) std::printf("no HDR step: %s\n", sp::HdrStepUnavailableReason().c_str());
+std::unique_ptr<sp::VariantStep> MakeVariantStep(const Args& args) {
+  if (args.Flag("--no-variants")) return nullptr;
+  std::vector<std::string> left_out;
+  std::unique_ptr<sp::VariantStep> step = sp::CreateBuiltInVariantStep(&left_out);
+  for (const std::string& line : left_out) std::printf("no shader variant %s\n", line.c_str());
   return step;
 }
 
@@ -243,7 +244,7 @@ int CommandBuild(const Args& args) {
   }
 
   ConsoleSink sink;
-  const std::unique_ptr<sp::HdrStep> hdr = MakeHdrStep(args);
+  const std::unique_ptr<sp::VariantStep> variants = MakeVariantStep(args);
   sp::BuildRequest request;
   request.game_root = args.Path("--game");
   request.out_dir = args.Path("--out");
@@ -256,7 +257,7 @@ int CommandBuild(const Args& args) {
   request.force = args.Flag("--force");
   request.position_proof_stride = UnsignedOption(args, "--position-stride", 1);
   request.sink = &sink;
-  request.hdr_step = hdr.get();
+  request.variant_step = variants.get();
   request.app_version = "shaderpack_tool";
 
   std::printf("building %s from %s into %s\n", FormatsText(formats).c_str(), args.Get("--game").c_str(),
@@ -275,11 +276,11 @@ int CommandBuild(const Args& args) {
                 result.blobs_reused);
     std::printf("pack       : %llu bytes, xxh3 %s\n", static_cast<unsigned long long>(result.pack_bytes),
                 sp::Hex64(result.pack_xxh3).c_str());
-    std::printf("hdr pack   : %s%s%s\n", result.hdr_built ? "built" : "not built",
-                result.hdr_message.empty() ? "" : " - ", result.hdr_message.c_str());
+    std::printf("variants   : %s%s%s\n", result.variants_built ? "built" : "not built",
+                result.variants_message.empty() ? "" : " - ", result.variants_message.c_str());
     std::printf("threads    : %u\n", result.threads);
-    std::printf("time       : %.2f s (read %.2f, compile %.2f, write %.2f, hdr %.2f)\n", result.seconds_total,
-                result.seconds_read, result.seconds_compile, result.seconds_write, result.seconds_hdr);
+    std::printf("time       : %.2f s (read %.2f, compile %.2f, write %.2f, variants %.2f)\n", result.seconds_total,
+                result.seconds_read, result.seconds_compile, result.seconds_write, result.seconds_variants);
   }
   return result.ok() ? 0 : 1;
 }
@@ -445,17 +446,17 @@ int CommandStamp(const Args& args) {
     std::fprintf(stderr, "--formats takes dxil, spirv or both\n");
     return 2;
   }
-  const std::unique_ptr<sp::HdrStep> hdr = MakeHdrStep(args);
+  const std::unique_ptr<sp::VariantStep> variants = MakeVariantStep(args);
   const sp::StampCheck check = sp::CheckStamp(args.Path("--out"), formats,
-                                              sp::GameFilesQuick{args.Path("--game"), args.Path("--dxc")}, hdr.get());
+                                              sp::GameFilesQuick{args.Path("--game"), args.Path("--dxc")}, variants.get());
   for (const sp::StampLine& line : check.stamp.lines()) std::printf("  %s=%s\n", line.key.c_str(), line.value.c_str());
   std::printf("main pack   : %s\n", check.main_ok ? "current" : "stale");
-  std::printf("hdr pack    : %s\n", check.hdr_ok ? "current" : "stale");
+  std::printf("variant pack: %s\n", check.variants_ok ? "current" : "stale");
   std::printf("formats     : stamp %s, asked %s\n", FormatsText(check.stamped_formats).c_str(),
               FormatsText(formats).c_str());
   if (check.content_check_needed) std::printf("note        : only the game files' times differ\n");
   if (!check.why.empty()) std::printf("why         : %s\n", check.why.c_str());
-  return check.main_ok && check.hdr_ok ? 0 : 1;
+  return check.main_ok && check.variants_ok ? 0 : 1;
 }
 
 }  // namespace

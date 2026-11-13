@@ -245,9 +245,10 @@ class Renderer final : public RenderThread::Executor {
   // first time and wires them in. `layers_ok`: the frame layers run. False (logged) when they
   // cannot, with the layers off: the HDR output then shows the front buffer (stage 1).
   bool SetUpHdrScene(bool layers_ok);
-  // Loads the HDR variant pack beside the main pack when it is not loaded yet (a no-op without a
-  // main pack or once loaded; logs when there is none).
-  void LoadHdrVariants();
+  // Loads the shader variant pack (the HDR scene's tone map, the bloom's Gaussians at a render scale)
+  // beside the main pack when it is not loaded yet (a no-op without a main pack or once loaded; logs
+  // when there is none).
+  void LoadShaderVariants();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();

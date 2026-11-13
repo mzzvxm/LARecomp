@@ -1623,7 +1623,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kUpload);
 
   ++window_.conversions[size_t(d.primitive.conversion)];
-  if (d.key.ps_variant) {
+  if (d.key.ps_variant == 1) {  // the alpha test / alpha to coverage variant (2 and up are the variant pack's)
     ++window_.alpha_coverage_draws;
     if (ComputeAlphaTest(s).discard) ++window_.alpha_test_draws;
   }
