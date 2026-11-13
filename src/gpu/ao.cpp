@@ -24,14 +24,16 @@
 #include "texture_bytes.h"
 
 REXCVAR_DEFINE_STRING(
-    mcla_gpu_ao, "high", "MCLA/GPU",
+    mcla_gpu_ao, "auto", "MCLA/GPU",
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
-    "constants say how much of a surface's light is which). off, low (half resolution, 2 slices) "
-    "or high (full resolution, 3 slices; the default). Costs graphics card time, high more than "
-    "low. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
+    "constants say how much of a surface's light is which). off, low (half resolution, 2 slices), "
+    "high (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
+    "low on a discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics "
+    "card time, high more than low. A value an older larecomp.toml holds (off, low, high) is kept as "
+    "it is. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
     "Live.")
-    .allowed({"off", "low", "high"})
+    .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao_intensity, "default", "MCLA/GPU",
@@ -329,10 +331,17 @@ LiveText& ContactSetting() {
   return text;
 }
 
-AmbientOcclusion::Mode ReadMode() {
-  std::string value = AoSetting().Get();
+std::string Lower(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return char(std::tolower(c)); });
+  return value;
+}
+
+// mcla_gpu_ao with `auto` resolved for this GPU (gpu_class.h): a value the player chose, or an older
+// larecomp.toml holds, is used as it is.
+AmbientOcclusion::Mode ReadMode() {
+  const std::string value = gpu_class::Resolve(gpu_class::Effect::kAmbientOcclusion,
+                                               Lower(AoSetting().Get()));
   if (value == "low") {
     return AmbientOcclusion::Mode::kLow;
   }
@@ -340,12 +349,6 @@ AmbientOcclusion::Mode ReadMode() {
     return AmbientOcclusion::Mode::kHigh;
   }
   return AmbientOcclusion::Mode::kOff;
-}
-
-std::string Lower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  return value;
 }
 
 // mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h).
@@ -669,7 +672,9 @@ void AmbientOcclusion::BeginFrame() {
   }
   if (uint32_t(mode) != last_mode_logged_) {
     last_mode_logged_ = uint32_t(mode);
-    REXLOG_INFO("[gpu] ao: ambient occlusion {} (mcla_gpu_ao, live)", ModeName(mode));
+    const std::string setting = Lower(AoSetting().Get());
+    REXLOG_INFO("[gpu] ao: ambient occlusion {}{} (mcla_gpu_ao {}, live)", ModeName(mode),
+                setting == "auto" ? " (auto on this GPU)" : "", setting);
   }
   mode_ = mode;
   Mode contact = ReadContactMode();

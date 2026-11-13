@@ -63,8 +63,9 @@ enum class Effect : uint8_t {
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, low, high
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
+  kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, low, high
 };
-inline constexpr int kEffectCount = 7;
+inline constexpr int kEffectCount = 8;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -79,6 +80,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
     {"mcla_gpu_ssgi", "off", "off", "low"},
+    // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for high at 720p on
+    // the RTX 5080, estimated 1.0 ms at 4K there): high is about 3 ms at 1080p on a GTX 1050-class
+    // card (Mid), low about 1 ms, so Mid gets low and keeps a frame at 60 FPS; the Low class (shared
+    // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
+    {"mcla_gpu_ao", "off", "low", "high"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

@@ -121,7 +121,8 @@
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
 //
-// Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row),
+// Settings: mcla_gpu_ao (auto, off, low, high; live; the pause menu's AMBIENT OCCLUSION row; auto is off
+// on an integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h),
 // mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
 // integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h) with the tuning cvars
 // mcla_gpu_contact_shadows_length / _strength / _thickness / _mask_gain / _view, and
