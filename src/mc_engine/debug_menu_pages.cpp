@@ -141,9 +141,10 @@ const ItemDef kDebugFixesItems[] = {
 
 // PERFORMANCE: the switches that trade frame pacing, CPU time and picture for speed, and that have no row
 // in the normal menus (SX-G5; owner's answer 3: debug for now; a switch comes back after it is
-// measured as a safe win on weak hardware). Not here: CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR
-// (perf_fast_vehicle_shadows, perf_no_impostors, perf_no_fullscreen_blur) are read once at start, so they
-// are launch arguments, not rows.
+// measured as a safe win on weak hardware). Not here: TREE IMPOSTORS and SCREEN BLUR
+// (perf_no_impostors, perf_no_fullscreen_blur) are read once at start, so they are launch arguments,
+// not rows. CHEAP CAR SHADOW (perf_fast_vehicle_shadows) is here since the game was found to read its
+// switch at every car shadow draw (render_phases.cpp).
 const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgPaceSwap",   "pace_at_swap",           "PACE AT PRESENTATION: "),
     // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so the next fence poll
@@ -162,6 +163,10 @@ const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgSingleTile", "single_tile",            "SINGLE TILE: "),
     Str ("PM_RxDbgShadowBits", "perf_shadow_phase_bits", "SHADOW PHASES: ",
          kShadowBitVals, kShadowBitNames, Len(kShadowBitVals)),
+    // Live: the game reads the switch each time it draws a car into a shadow pass (the daylight
+    // cascades), and the dev-option node is kept equal to the cvar every frame. Nothing changes at night.
+    // CHECK: the car's shadow before and after a flip in daylight (chain-live3b.ps1).
+    Bool("PM_RxDbgCarShadow",  "perf_fast_vehicle_shadows", "CHEAP CAR SHADOW: "),
     // The cvar is live; the prop parse it skips runs when a district loads.
     // CHECK: whether that parse runs again after a district change or only at start-up (render_phases.cpp).
     Bool("PM_RxDbgNoTrees",    "perf_no_trees",          "FOLIAGE: ", true, " (ON RELOAD)"),

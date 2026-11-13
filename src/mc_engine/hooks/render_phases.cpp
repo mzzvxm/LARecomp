@@ -66,12 +66,25 @@ REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
+// Live. The one reader of the dev switch is sub_8235FA90, Vehicle::Draw's phase 0x10 / shadow-pass
+// routine (feature-parity/GFX-UPGRADES-DESIGN.md 13.2). The recompiled code reads node+4 with
+// `lwz r11,4(r9)` at 0x8235FB20 on every call and keeps no copy. The routine sets the car up at
+// LOD 2 and, only while the switch is OFF, sets it up once more at the forced LOD
+// (dword_827E624C, 1) before the draw: with the switch on the car is drawn at LOD 2. (That LOD 2 is
+// the coarser one is the usual order of LODs, not checked.) ApplyLoadTimeDevOptions already keeps
+// node+4 equal to this cvar every frame, so a flip reaches the game at the next shadow draw; the
+// restart tag and "applies at the next start" came from the fork, which listed the switch among
+// the options read at start-up (true for TREE IMPOSTORS and SCREEN BLUR, below, not for this one).
+// CHECK: perf/scripts/chain-live3b.ps1 flips it in free roam in daylight and compares the car's
+// shadow before and after. At night the 0x400 phase does not go through this routine, so nothing
+// changes there.
 REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
-    "Cheap blob shadow under vehicles instead of the real-time one (dev switch "
-    "'fastVehShadows'). Use instead of perf_no_shadows to keep world shadows. Applies at the "
-    "next start of the game.")
+    "Draw cars into the shadow passes with less detail (dev switch 'fastVehShadows'): the game "
+    "skips the extra, more detailed draw it adds for each car's shadow. Use instead of "
+    "perf_no_shadows to keep world shadows. Takes effect at the next frame that draws shadows: "
+    "no restart.")
     .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
 // ShadowImpostor / ImpostorColor / ImpostorNormal render targets. node+4 is kept

@@ -250,10 +250,12 @@ void ApplyPerfDebugOptions() {
 // toggled instantly.
 //
 // What this does buy: node+4 is kept in sync with the cvar every frame, so the
-// consumers pick the new value up whenever their system loads. For some of them
-// that is only the start: the impostor targets are made once, with the world
-// (perf_no_impostors, render_phases.cpp), and the fork found the car-shadow and
-// full-screen blur switches read at start-up too, so those rows say "(RESTART)".
+// consumers pick the new value up whenever they read it. That is each time for
+// fastVehShadows (read at every car shadow draw: live, render_phases.cpp) and
+// the foliage ones whenever their system loads. For some it is only the start:
+// the impostor targets are made once, with the world (perf_no_impostors,
+// render_phases.cpp), and the full-screen blur object copies its switch in its
+// constructor, which the start-up chain makes (perf_no_fullscreen_blur).
 //
 // The scratch pointer for "1" is allocated once per option and reused, so
 // flipping a switch repeatedly does not walk the bump allocator forward.

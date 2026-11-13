@@ -1637,11 +1637,11 @@ const ItemDef kControllerItems[] = {
 // Everything that trades image quality for framerate, in one place.
 //
 // The developer switches that used to be here are not rows of the normal menus any more
-// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, FOLIAGE, SINGLE TILE, FENCE SPIN YIELD,
-// BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's PERFORMANCE page
-// (debug_menu_pages.cpp). CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR are read once at start, so
-// they are launch arguments (--perf_fast_vehicle_shadows, --perf_no_impostors,
-// --perf_no_fullscreen_blur) and rows of the launcher's Advanced tab. CITY AMBIENT CULLING
+// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, CHEAP CAR SHADOW, FOLIAGE, SINGLE TILE,
+// FENCE SPIN YIELD, BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's
+// PERFORMANCE page (debug_menu_pages.cpp). TREE IMPOSTORS and SCREEN BLUR are read once at start, so
+// they are launch arguments (--perf_no_impostors, --perf_no_fullscreen_blur) and rows of the
+// launcher's Advanced tab. CITY AMBIENT CULLING
 // (enable_ambient_tuning), the master switch over TRAFFIC RANGE, PEDESTRIANS and PARKED CARS, is no
 // row either: those three stand alone and 400M / 1X / 1X is the stock game (the cvar stays, so an
 // old larecomp.toml that turns it off still acts).

@@ -62,7 +62,7 @@ Press Start or Escape and open the **SETTINGS** tab. Buttons, and what each hold
 
 Not in these menus: RENDERER and GRAPHICS API (the launcher's Troubleshooting section sets them; `--graphics_backend=auto|d3d12|vulkan` works on the command line, and the renderer is four cvars the launcher writes together), and the developer switches (below).
 
-**DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (cheap car shadow, tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
+**DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
 
 **F4** opens the settings panel. It lists the key bindings and the online settings; with `--debug_menu` it lists every setting (debug changes are not saved).
 
