@@ -88,6 +88,9 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# So does the text of the device-loss report (device_fault_format.h):
+#   cmake --build <dir> --target larecomp_device_fault_test, then run src/gpu/larecomp_device_fault_test.
+add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
