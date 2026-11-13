@@ -85,6 +85,7 @@ REXCVAR_DEFINE_BOOL(
     "Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable "
     "refresh display follows the frames. On presents immediately instead, which tears. Read when "
     "frame generation is switched on.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(int32_t, mcla_gpu_hdr_layers_view);  // hdr_scene.cpp

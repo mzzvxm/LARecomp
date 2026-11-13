@@ -47,6 +47,7 @@ REXCVAR_DEFINE_BOOL(
     "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
     "draw), one line per window of 600 frames. Off: nothing is timed.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // The switch over the renderer work of 17/10/2026, asked for by
 // the user, live: on, every part of it runs as its own cvar says; off, the
@@ -58,18 +59,21 @@ REXCVAR_DEFINE_BOOL(
     "(mcla_gpu_scale_depth_bias), the delayed colour encodes "
     "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
     "that day. Hot reload.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_scale_depth_bias, true, "MCLA/GPU",
     "With a resolution scale above 1 (M6b.3c): the slope-scaled depth bias times the "
     "scale of the draw's targets, as Xenia does -- a host pixel is 1/scale of the guest's. Off: "
     "the guest's factor unchanged (for A/B). Hot reload.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_census_scale, false, "MCLA/GPU",
     "Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution "
     "scale reads (with the fetch's filters) and each copy of an image of the screen that lands "
     "away from its source. Off: nothing is checked.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);

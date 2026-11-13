@@ -20,6 +20,7 @@ REXCVAR_DEFINE_BOOL(
     "command processor. Reports the vblank counter, the flip counter and the pending-flip queue "
     "indices in the D3DDevice, so the offsets the replacement will drive are proven while the "
     "emulated path still works. Writes nothing.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {

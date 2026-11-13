@@ -40,6 +40,7 @@ REXCVAR_DEFINE_BOOL(
     "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
     "memory read in another shape than it was resolved in -- milestone M5. "
     "")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
@@ -52,6 +53,7 @@ REXCVAR_DEFINE_BOOL(
     "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
     "A measurement for the performance work, off by "
     "default.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -59,6 +61,7 @@ REXCVAR_DEFINE_BOOL(
     "Pace presents with the swap chain's latency wait (DXGI waitable object / "
     "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
     "interval 0 and the wait alone paces the frame, so measure before turning it on.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
@@ -76,6 +79,7 @@ REXCVAR_DEFINE_BOOL(
     "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
     "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
     ".")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -83,6 +87,7 @@ REXCVAR_DEFINE_BOOL(
     "Run the milestone M3 validator on every record besides the replay: per-record counters and "
     "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
     "time on the render thread (3.5-7 ms/frame measured in M3).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -90,6 +95,7 @@ REXCVAR_DEFINE_UINT32(
     "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
     "and continue in a new list (0: one submission per guest frame, the default). For measuring "
     "submission batching.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -100,6 +106,7 @@ REXCVAR_DEFINE_BOOL(
     "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
     "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
     "so it never runs more than that ahead.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
@@ -108,6 +115,7 @@ REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
                     "D3D12\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS "
                     "runtime). Vulkan validation is a property of a Debug build of Plume and "
                     "cannot be switched on here.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DECLARE(bool, mcla_native_gfx);

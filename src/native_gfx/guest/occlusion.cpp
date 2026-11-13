@@ -27,6 +27,7 @@ REXCVAR_DEFINE_BOOL(
     "without query support belongs. Cost: geometry that is genuinely hidden is "
     "still drawn -- GPU time, never a missing object. "
     "Turn off only to reproduce the vanishing body, or once real queries exist.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {

@@ -21,10 +21,12 @@ REXCVAR_DEFINE_UINT64(mcla_gpu_trace_frame, 0, "MCLA/GPU",
                       "Write a raw trace of the guest frame that begins after this many guest "
                       "frames (0 = off) to mcla_gpu_trace_<frame>.txt next to the executable. "
                       "Decoded by tools/gpu/trace_analyze.py. A 6000-draw frame is tens of MB.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_gpu_trace_count, 1, "MCLA/GPU",
                       "How many consecutive frames mcla_gpu_trace_frame writes, one file each.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
@@ -48,7 +50,8 @@ REXCVAR_DEFINE_COMMAND(
         REXLOG_INFO("[gpu] trace: the frame after the next present will be written");
       }
     },
-    "MCLA/GPU", "Write a raw trace of the next guest frame (see mcla_gpu_trace_frame).");
+    "MCLA/GPU", "Write a raw trace of the next guest frame (see mcla_gpu_trace_frame).")
+    .debug_only();
 
 namespace mcla::gpu {
 

@@ -18,12 +18,14 @@ REXCVAR_DEFINE_STRING(
     "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
     "distribution. Empty: off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_census_targets, false, "MCLA/GPU",
     "Diagnostic: per report window, every pass the frames drew into (its EDRAM "
     "targets) with its draws per frame and the pixel shaders that drew there.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

@@ -9,6 +9,7 @@ REXCVAR_DEFINE_BOOL(
     "Diagnostic (M6a): alternate the render thread's code under test between its old "
     "(A) and candidate (B) path every statistics window, and log each window's prepare time "
     "under its variant. Off: the candidate path always runs.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu::ab {

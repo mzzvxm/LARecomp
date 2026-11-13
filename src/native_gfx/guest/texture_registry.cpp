@@ -26,6 +26,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_registry, false, "MCLA/NativeGfx",
                     "address-keyed texture cache cannot: which asset a given guest address is. "
                     "Overwrites mcla_native_gfx_textures.txt every 600 frame boundaries, so "
                     "the file always reflects the current state rather than the boot state.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {

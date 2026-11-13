@@ -46,12 +46,14 @@ REXCVAR_DEFINE_INT32(
     mcla_gpu_fsr_max_passes, 4, "MCLA/GPU",
     "Most FSR1 EASU passes (each at most 2x per axis); a bilinear stretch finishes what they "
     "leave. The SDK presenter's present_fsr_max_upsampling_passes. Live.")
+    .debug_only()
     .range(1, 4)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_present_dither, true, "MCLA/GPU",
     "Adds a faint noise, at most half of one colour step of the screen, to the finished picture "
     "just before it is shown, so that smooth gradients (the sky at dusk) show fewer bands. Live.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

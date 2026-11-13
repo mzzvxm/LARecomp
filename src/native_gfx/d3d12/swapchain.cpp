@@ -11,6 +11,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_own_swapchain, false, "MCLA/NativeGfx",
                     "bypasses rex::ui::Presenter, so present_effect (FSR) and every ImGui overlay "
                     "(console, F3, toasts) are gone and the frame is stretched bilinearly. Needs "
                     "mcla_native_gfx_own_device.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::native_gfx {

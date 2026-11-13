@@ -15,6 +15,7 @@ REXCVAR_DEFINE_BOOL(
     "debug utils labels on Vulkan; how deep, mcla_gpu_perf_markers_level. Nsight GPU "
     "Trace's multi-pass metrics need them. Off: no label is recorded. Read when a frame "
     "starts.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(
@@ -24,6 +25,7 @@ REXCVAR_DEFINE_INT32(
     "metrics need. 2: also a label per guest clear, resolve, composite and Lock write-back "
     "inside Scene; their count changes from frame to frame, so multi-pass metrics drop them. "
     "Read when a frame starts.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

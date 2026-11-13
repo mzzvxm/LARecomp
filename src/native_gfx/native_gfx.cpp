@@ -81,6 +81,7 @@ REXCVAR_DEFINE_UINT32(
     "Bisection: first per-frame draw number to skip. The number is the draw's position within the "
     "frame, the same counter the report calls `offered`, and it restarts every frame. Inert until "
     "mcla_native_gfx_skip_draw_last is non-zero.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(
@@ -89,6 +90,7 @@ REXCVAR_DEFINE_UINT32(
     "Set a range, look at the screen, halve the range that still shows the artefact. Eleven runs "
     "isolate one draw out of two thousand, and unlike a hypothesis it cannot be wrong -- which is "
     "why it exists after nine guesses failed on the black shards.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(
@@ -96,6 +98,7 @@ REXCVAR_DEFINE_UINT32(
     "First per-frame draw number to dump to native_gfx_draws.txt. Same numbering as the skip "
     "range, so a range narrowed by bisection can be pasted straight in. Inert until "
     "mcla_native_gfx_dump_draw_last is non-zero.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(
@@ -104,6 +107,7 @@ REXCVAR_DEFINE_UINT32(
     "target, every vertex stream's guest base and stride, and the world-view-projection -- the "
     "fields that have actually explained artefacts on this path. The file is appended to and grows "
     "fast: narrow the range with the skip cvars first.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(
@@ -118,6 +122,7 @@ REXCVAR_DEFINE_UINT32(
     "Both cannot be right about the same field. Run once with 16: if the shards go and nothing "
     "else regresses, the unit is 16; if geometry that works today starts reading past its buffer, "
     "it is 4 and the quad draws are misread somewhere else.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -131,6 +136,7 @@ REXCVAR_DEFINE_BOOL(
     "blending POSITION0 with a zeroed POSITION1 gives exactly the long stretched triangles seen "
     "across the scene. Turn this on for one run: if an artefact disappears, the zero stream is "
     "producing it; if it stays, this branch is eliminated.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -143,6 +149,7 @@ REXCVAR_DEFINE_BOOL(
     "Does NOT replace the write watch: writes that never go through a lock (streaming straight "
     "into resource memory) are only caught by the watch. Off by default until the counters show "
     "the ranges are sane -- see the lock line in the periodic report.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -156,6 +163,7 @@ REXCVAR_DEFINE_BOOL(
     "composite render target and DXT-compresses it on the CPU, so a surface with a mip chain "
     "gets its smaller levels as well, derived from level 0. Costs one GPU wait per lock of such "
     "a surface and nothing otherwise. Off for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -166,6 +174,7 @@ REXCVAR_DEFINE_BOOL(
     "the depth copy -- a near-black picture with the scene's outline. With this on, the SDK's "
     "write watch covers every resolve destination, and a CPU write there makes fetches decode "
     "guest memory until the guest resolves to it again. Off for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -173,6 +182,7 @@ REXCVAR_DEFINE_BOOL(
     "TEMP DIAG for mcla_native_gfx_lock_writeback: after each write-back, read the guest memory "
     "back the way the photo grab does (untile, swap every dword, bytes 1..3 as R,G,B) and write "
     "it to native_gfx_lockwb_<address>.tga, plus the average colour in the log line.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -180,6 +190,7 @@ REXCVAR_DEFINE_BOOL(
     "TEMP DIAG: log every resolve into a texture with a mip chain (rage GenerateMipMaps "
     "targets, the vinyl composite among them) with its DestLevel, source lookup and the "
     "capture's draw tallies, and every lock of such a texture with its level.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -188,6 +199,7 @@ REXCVAR_DEFINE_BOOL(
     "composite), untile what guest memory holds at that moment into "
     "lockdump_<renderer>_<address>_<size>_<n>.tga. Works in both renderers, so the emulated path "
     "is the reference the native write-back is compared against.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
@@ -195,6 +207,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx, false, "MCLA/NativeGfx",
                     "normal Xenia-based path, nothing changes. ON: the native D3D12 backend is "
                     "initialized and the bring-up instrumentation runs (see "
                     "mcla_native_gfx_present for the presentation takeover).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_firstdraw, false, "MCLA/NativeGfx",
@@ -202,31 +215,36 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_firstdraw, false, "MCLA/NativeGfx",
                     "render target, and write mcla_native_gfx_firstdraw.txt/.tga. Does not "
                     "present and does not touch the guest render path, so it cannot fight the "
                     "Xenia command processor. Runs once per session.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_capture, 0, "MCLA/NativeGfx",
                       "Accumulate this many guest draws of the main scene pass into one native "
                       "render target and write mcla_native_gfx_frame.txt/.tga. 0 disables. "
-                      "Supersedes mcla_native_gfx_firstdraw when non-zero.");
+                      "Supersedes mcla_native_gfx_firstdraw when non-zero.")
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_capture_delay, 0, "MCLA/NativeGfx",
                       "Frame boundaries to skip before arming the one-shot capture. The early "
                       "frames after boot show low-detail placeholder textures (LZX streaming has "
                       "not caught up) and an unconverged HDR exposure, giving a dark, muddy "
-                      "image. Set e.g. 300 to capture a fully-streamed, well-exposed frame.");
+                      "image. Set e.g. 300 to capture a fully-streamed, well-exposed frame.")
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxstage, 0, "MCLA/NativeGfx",
                       "Continuous mode: automatic auxiliary-pass safety policy. "
                       "0 = stage 3 normally, but stage 2 on adapters with under 512 MiB "
                       "dedicated VRAM; display/UI passes are not suppressed by this policy. "
                       "1 = acquire auxiliary targets, 2 = bind and clear without non-display "
-                      "auxiliary draws, 3 = draw all auxiliary passes.");
+                      "auxiliary draws, 3 = draw all auxiliary passes.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_depth_cs, true, "MCLA/NativeGfx",
                     "Resolve a multisampled depth surface with the compute pass. Off restores "
                     "the shipped behaviour, an all-zero depth copy, which is what killed the "
                     "distance fog, the per-object contact shadow under vehicles and the depth of "
-                    "field's circle of confusion at the same time. Diagnostic only.");
+                    "field's circle of confusion at the same time. Diagnostic only.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth_reclear_infer, true, "MCLA/NativeGfx",
                     "Let an ATLAS-shaped full-source depth resolve arm the depth re-clear on its "
@@ -244,6 +262,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth_reclear_infer, true, "MCLA/NativeGfx",
                     "moved the daytime shadows, so it is narrowed instead: only a resolve whose "
                     "DESTINATION is larger than the source is an atlas page. Off leaves only the "
                     "guest's declared clear, which is the shape that showed the shadow change.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear_probe, false, "MCLA/NativeGfx",
@@ -252,6 +271,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear_probe, false, "MCLA/NativeGfx",
                     "RenderTargetPool::NoteResolve and the guest's own clear request in "
                     "NotifyResolve -- and once it is set they are indistinguishable, so "
                     "attributing a wrong re-clear needs this.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(mcla_native_gfx_shadow_bias, 16, "MCLA/NativeGfx",
@@ -270,7 +290,8 @@ REXCVAR_DEFINE_INT32(mcla_native_gfx_shadow_bias, 16, "MCLA/NativeGfx",
                      "the viewport is [0,1], ZSCALE/ZOFFSET are neutral, the guest programs no "
                      "polygon offset (the registers read zero and the enable bits are set), and "
                      "the resolve into the atlas is bit-exact against the 640x640 target. 0 "
-                     "restores the unbiased behaviour.");
+                     "restores the unbiased behaviour.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_rectlist_nocull, true, "MCLA/NativeGfx",
                     "Disable face culling for kRectangleList draws. The Xenos rect primitive "
@@ -278,15 +299,18 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_rectlist_nocull, true, "MCLA/NativeGfx",
                     "corner on the CPU gives them a winding the guest never chose. Measured on "
                     "the minimap: the circular punch came out clockwise on a Y-down target "
                     "against cull_back with CCW-front, so every fragment was culled and the map "
-                    "kept its square corners. Off restores the old behaviour, for A/B.");
+                    "kept its square corners. Off restores the old behaviour, for A/B.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_exp_bias_unit, false, "MCLA/NativeGfx",
                     "Neutraliza gInvColorExpBias para 1.0 em vez de multiplicar o valor "
                     "enviado pelo 2^bias do alvo. Diagnostico do mar estourado: no passe de "
-                    "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.");
+                    "reflexo da agua o produto da 0.25 enquanto na cena da 1.0.")
+    .debug_only();
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_skip_water, 0, "MCLA/NativeGfx",
                       "Diagnostico: pula draws de agua por familia, para saber qual pinta a "
                       "faixa branca. Bitmask: 1 = xCityOceanShore, 2 = xCityOceanWater, "
-                      "4 = xCityOceanWaterLOD, 8 = xCityPondWater.");
+                      "4 = xCityOceanWaterLOD, 8 = xCityPondWater.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_pack_depth_stencil, true, "MCLA/NativeGfx",
                     "Monta por compute, em cada resolve de profundidade de resolucao "
                     "cheia, duas copias dos dois planos: R32G32_FLOAT (profundidade em R, "
@@ -295,16 +319,19 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_pack_depth_stencil, true, "MCLA/NativeGfx",
                     "mesmo resolve. E pela segunda que o motion blur da MCLA le o id de "
                     "veiculo que a cena escreveu no stencil; sem ela o carro do jogador e "
                     "reprojetado como cenario estatico e borra. Custa duas alocacoes do "
-                    "tamanho do alvo por endereco de resolve. Desligar so para bissectar.");
+                    "tamanho do alvo por endereco de resolve. Desligar so para bissectar.")
+    .debug_only();
 REXCVAR_DEFINE_STRING(mcla_native_gfx_ab_cvar, "", "MCLA/NativeGfx",
                       "Performance A/B within one session: the name of a boolean cvar to flip "
                       "every mcla_native_gfx_ab_frames frames. Each perfwin line in "
                       "native_gfx_diag.txt is tagged ab=0/1 with the state it ran under, and "
-                      "settle=1 on the window right after a flip. Empty disables it.");
+                      "settle=1 on the window right after a flip. Empty disables it.")
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_ab_frames, 240, "MCLA/NativeGfx",
                       "Frames between flips of mcla_native_gfx_ab_cvar; rounded to whole "
-                      "60-frame report windows.");
+                      "60-frame report windows.")
+    .debug_only();
 
 REXCVAR_DEFINE_STRING(mcla_native_gfx_dump_ps, "", "MCLA/NativeGfx",
                       "Diagnostico: despeja TODO slot de textura ligado do draw cujo PIXEL "
@@ -315,18 +342,21 @@ REXCVAR_DEFINE_STRING(mcla_native_gfx_dump_ps, "", "MCLA/NativeGfx",
                       "IsRenderTargetSourcedFormat, e e justamente esse predicado que decide "
                       "se o fetch recebe a copia empacotada de profundidade+stencil ou a "
                       "superficie crua de dois planos: um fetch que ele rejeita nunca aparece "
-                      "la. Vazio = nao despeja nada.");
+                      "la. Vazio = nao despeja nada.")
+    .debug_only();
 REXCVAR_DEFINE_STRING(mcla_native_gfx_skip_ps, "", "MCLA/NativeGfx",
                       "Diagnostico: pula todo draw cujo PIXEL SHADER tem esta identidade, "
                       "em hexadecimal (ex. \"0xF43F1D5258D0F6EF\"). Vazio = nao pula nada. "
                       "A bisseccao por numero de draw (skip_draw_first/last) reindexa a cada "
                       "frame e nao serve para um passe de pos-processamento, que aparece uma "
                       "vez por frame em posicao variavel; a identidade do shader nao muda. "
-                      "O ps_id sai no log em DEPTHFETCH e nos dumps de draw.");
+                      "O ps_id sai no log em DEPTHFETCH e nos dumps de draw.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_skip_punch, false, "MCLA/NativeGfx",
                     "Diagnostic: drop the minimap's circular punch draw. On, the 220x220 "
                     "target should keep its square corners; if it looks identical with the "
-                    "punch on, the punch is changing no pixel at all.");
+                    "punch on, the punch is changing no pixel at all.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_textures, true, "MCLA/NativeGfx",
                     "Re-check a cached TEXTURE against the guest memory it was decoded from, "
                     "once per entry per frame, and drop it when they differ. Same lost-invalidation "
@@ -334,7 +364,8 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_textures, true, "MCLA/NativeGfx",
                     "0x02D64000 held an unrelated texture for the whole session while guest "
                     "memory still held the circle, so the punch sampled a near-constant mask "
                     "and the map kept its square corners. Off restores the old behaviour, for "
-                    "A/B.");
+                    "A/B.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_regions, true, "MCLA/NativeGfx",
                     "Re-check a clean buffer region against guest memory once per frame "
                     "before binding it, and re-upload when they differ. The write watch "
@@ -343,13 +374,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_regions, true, "MCLA/NativeGfx",
                     "each while still marked clean, which is what draws a pedestrian with "
                     "the previous mesh's vertices. Off restores the old behaviour, for A/B; "
                     "the cost is one hash of each region something actually binds, once a "
-                    "frame.");
+                    "frame.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_decl_float, true, "MCLA/NativeGfx",
                     "Read the two 32-bit float vertex declaration types at their measured "
                     "width: 0x002C23A5 is FLOAT2 and 0x001A23A6 is FLOAT4, not FLOAT1 and "
                     "FLOAT2. Off restores the previous (short) reading, for A/B. Measured "
                     "with DECLGAP, which counts the bytes an element actually occupies: "
-                    "0x001A23A6 spans 16 bytes across 7170 samples, 0x002C23A5 spans 8.");
+                    "0x001A23A6 spans 16 bytes across 7170 samples, 0x002C23A5 spans 8.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear, true, "MCLA/NativeGfx",
                     "Honour a guest clear that arrives after the target was already cleared "
                     "this frame, restricted to the pass's viewport. One pooled target is "
@@ -357,7 +390,8 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear, true, "MCLA/NativeGfx",
                     "of a frame inherits the first one's pixels: the foliage impostor atlases "
                     "came back with other species smeared over the background, which put every "
                     "texel above the shadow shader's 10/255 cut and made every tree shadow a "
-                    "square.");
+                    "square.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear_depth, true, "MCLA/NativeGfx",
                     "Extend mcla_native_gfx_reclear to a guest clear of depth/stencil ONLY "
                     "(no colour), applied when the draw that consumes it is still on the "
@@ -365,19 +399,22 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_reclear_depth, true, "MCLA/NativeGfx",
                     "first 3D object (sub_82722170); dropped, the 3D menu cards were depth "
                     "tested against whatever an earlier pass of the same shape left in the "
                     "pooled depth buffer -- the Rate My Ride leaderboard lost everything below "
-                    "the garage floor's depth. Off restores colour-only re-clears, for A/B.");
+                    "the garage floor's depth. Off restores colour-only re-clears, for A/B.")
+    .debug_only();
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_reclear_depth_probe, 0, "MCLA/NativeGfx",
                       "TEMP DIAG: log depth/stencil-only guest clears that reach an "
                       "already-cleared target (applied or not, and why) to native_gfx_diag.txt, "
                       "one line per distinct case (target shape, shader, flags, decision) up to "
                       "N cases, repeated at counts 10, 100, 1000... 0 = off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_dumprt, false, "MCLA/NativeGfx",
                     "Diagnostic: write every large resolve destination to a .tga at the end "
                     "of the capture. Counting a fetch as resolved only proves a resource was "
                     "handed back, not that it holds the right pixels. Costs a full GPU stall "
-                    "per target, so it is off by default.");
+                    "per target, so it is off by default.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_present, false, "MCLA/NativeGfx",
                     "Native presentation takeover (smoke-test stage): suppress the guest swap "
@@ -386,6 +423,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_present, false, "MCLA/NativeGfx",
                     "submission never closes and the GPU eventually TDRs (observed DEVICE_HUNG). "
                     "It becomes the default path once the native runtime executes the draws "
                     "itself and the guest command stream is empty.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, false, "MCLA/NativeGfx",
@@ -394,6 +432,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_continuous, false, "MCLA/NativeGfx",
                     "across frames, so the HDR exposure adaptation converges. Does NOT suppress "
                     "the guest swap (avoids the command-processor TDR), so the guest still runs "
                     "underneath. Requires mcla_native_gfx.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
@@ -415,6 +454,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_upload_mb, 64, "MCLA/NativeGfx",
                       "minimap keeps its square corners instead of being clipped to a circle. "
                       "Intermittent by nature -- it only bites on a frame where the burst leaves "
                       "less than 4 MiB. Measured need was 31.7 MiB in use plus the 4 MiB request.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_region_kb, 128, "MCLA/NativeGfx",
@@ -426,6 +466,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_region_kb, 128, "MCLA/NativeGfx",
                       "in it is dirtied, so runaway merging turns small dynamic writes into "
                       "tens of MiB of re-upload per frame. Lower this if the exhaustion report "
                       "still shows geometry filling the ring.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -439,6 +480,7 @@ REXCVAR_DEFINE_BOOL(
     "a uniform 1.8x brighter than the emulated one and clips 11.6% of the screen against "
     "2.6%, with the HDR SCENE target identical between the paths (0.0312 against 0.0327), "
     "so the gain enters at this stage. Turn off to get the dropped resolve back.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -454,6 +496,7 @@ REXCVAR_DEFINE_BOOL(
     "rect all agree AND whose guest clear is still pending -- the draw path consumes a "
     "pending clear on a pass's first draw, so it surviving until the resolve is the "
     "no-draw signal. Turn off to get the dropped resolve back while bisecting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -465,7 +508,8 @@ REXCVAR_DEFINE_BOOL(
     "(perf_no_shadows, by day) sub_82311450 binds the Collector as ShadowCollectorTex and "
     "every city material lights the sun with 2 * s, so the sunlit world came out twice as "
     "bright as the emulated path. Applied only when the pending clear was made on the "
-    "surface being resolved. Off restores the old behaviour, for A/B.");
+    "surface being resolved. Off restores the old behaviour, for A/B.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(
     mcla_native_gfx_gen_mips, false, "MCLA/NativeGfx",
@@ -477,11 +521,13 @@ REXCVAR_DEFINE_BOOL(
     "um nivel so -- e 70% desses (9.0M) sao formato 6 (k_8_8_8_8), que e box filter na "
     "CPU sem precisar recomprimir BC. E MELHORIA, nao paridade: o 360 tambem aliasava "
     "nessas superficies, por isso o default e off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_gamma_ramp, true, "MCLA/NativeGfx",
                     "Apply the guest display gamma ramp at present, which is what the "
-                    "emulated path does as the DC_LUT and the no-CP path never did.");
+                    "emulated path does as the DC_LUT and the no-CP path never did.")
+    .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, true, "MCLA/NativeGfx",
                     "Apply the fetch constant's 12-bit swizzle to the SRV's "
                     "Shader4ComponentMapping instead of the D3D12 default. The two encodings "
@@ -492,6 +538,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_swizzle, true, "MCLA/NativeGfx",
                     "8-in-32 endian swap already puts the channels in host order for at least "
                     "some of them and the swizzle is then applied twice. OFF until a per-format "
                     "host swizzle (the piece Xenia composes with the guest one) is worked out.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_swizzle_by_source, true, "MCLA/NativeGfx",
@@ -501,6 +548,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_swizzle_by_source, true, "MCLA/NativeGfx",
                     "anything decoded from guest memory is in the guest's own layout and gets it, "
                     "tiled or not. Off: the old rule (tiled = cancelled), which swaps red and blue "
                     "on the photo album thumbnails and in the car paint's flake noise.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -524,6 +572,7 @@ REXCVAR_DEFINE_BOOL(
     "that changes between targets within a frame stays correct because the "
     "register is read per draw rather than assumed. "
     "Turn off to get the pre-fix behaviour back while bisecting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_bind_memo, true, "MCLA/NativeGfx",
@@ -537,6 +586,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_bind_memo, true, "MCLA/NativeGfx",
                     "GAMEPLAY repeats far more (traffic is one model drawn many times) and has not "
                     "been measured yet. Kept behind this cvar for exactly that A/B -- turn it off "
                     "to get the unconditional rebind back.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_resolve_variants, true, "MCLA/NativeGfx",
@@ -547,6 +597,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_resolve_variants, true, "MCLA/NativeGfx",
                     "packed depth+stencil twin), ~8% of the render thread in driver allocate/free. "
                     "Lookups are unchanged: they see the most recent resolve at each address. "
                     "Off restores destroy-and-recreate, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
@@ -559,6 +610,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_slot_cache, true, "MCLA/NativeGfx",
                     "texture cache or render-target pool changes what backs an address; queued "
                     "invalidations are drained before each draw's lookups. Off restores the "
                     "resolve on every slot, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, true, "MCLA/NativeGfx",
@@ -567,6 +619,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_verify_per_frame, true, "MCLA/NativeGfx",
                     "batch. The batch counter advances ~14 times a frame, so every bound "
                     "texture was being re-hashed that many times. Off restores the per-batch "
                     "check, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_stencil, true, "MCLA/NativeGfx",
@@ -576,13 +629,15 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_msaa_stencil, true, "MCLA/NativeGfx",
                     "copy's stencil stayed zero and the car motion blur took vehicle index 0 "
                     "for every pixel, blurring the player's car with the world. Off restores "
                     "the old behaviour, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_stencil_probe, 0, "MCLA/NativeGfx",
                       "Diagnostic. Every N full-size depth+stencil packs, read back the stencil "
                       "channel of the depth-as-8888 copy the car motion blur samples and log "
                       "STENCILPROBE to native_gfx_diag.txt: share of pixels with a non-zero "
-                      "vehicle id and the ids seen. 0 disables it.");
+                      "vehicle id and the ids seen. 0 disables it.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "Remember the geometry region each address resolved to, so a draw does "
@@ -592,6 +647,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_region_memo, true, "MCLA/NativeGfx",
                     "whenever a region is created, merged or erased, and the remembered "
                     "extent is re-checked against each request. Off restores the map walk, "
                     "for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_submit_thread, false, "MCLA/NativeGfx",
@@ -599,6 +655,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_submit_thread, false, "MCLA/NativeGfx",
                     "the D3D12 command list and submits it, so the driver calls, Close and "
                     "ExecuteCommandLists leave the guest's render thread. Implies "
                     "mcla_native_gfx_record_replay. Off submits on the render thread, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_record_replay, false, "MCLA/NativeGfx",
@@ -607,6 +664,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_record_replay, false, "MCLA/NativeGfx",
                     "made. The first step towards a submission thread: every cache and state "
                     "decision stays where it is, only the driver calls move. Off issues them "
                     "directly, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
@@ -614,6 +672,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_fenced, true, "MCLA/NativeGfx",
                     "upload ring instead of the inline vertex ring, which continuous mode "
                     "rewinds at the start of every frame without waiting for the GPU. Off "
                     "restores the old ring, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_direct, false, "MCLA/NativeGfx",
@@ -621,6 +680,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_inline_direct, false, "MCLA/NativeGfx",
                     "instead of using BufferCache. Off is the default because the direct path "
                     "can stall MCLA; cached inline regions use exact per-block hashes on every "
                     "draw so same-frame command-buffer rewrites do not flicker the 2D/UI.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, true, "MCLA/NativeGfx",
@@ -630,6 +690,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_tex_cached_decode, true, "MCLA/NativeGfx",
                     "uncached memory: copy_and_swap_16 was 16% of the render thread while "
                     "driving. The uploaded bytes are identical. Off restores the old path, "
                     "for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, true, "MCLA/NativeGfx",
@@ -638,31 +699,37 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_incremental, true, "MCLA/NativeGfx",
                     "in it until they outnumber the live ones. While driving it was being "
                     "rebuilt several times a frame, ~3.4% of the render thread. Off restores "
                     "the rebuild-on-change, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_pipeline_library, true, "MCLA/NativeGfx",
                     "Persist compiled D3D12 pipeline state objects (PSOs) to disk using "
                     "ID3D12PipelineLibrary to eliminate runtime shader compilation stutter.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_profiler, true, "MCLA/NativeGfx",
                     "Query GPU hardware timestamps via ID3D12QueryHeap to measure exact GPU frame "
                     "and pass execution durations.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_pix_markers, true, "MCLA/NativeGfx",
                     "Emit BeginEvent/EndEvent and SetMarker on D3D12 graphics command lists for "
                     "RenderDoc, PIX, and NSight pass hierarchy inspection.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_enhanced_barriers, true, "MCLA/NativeGfx",
                     "Use D3D12 Enhanced Barriers (ID3D12GraphicsCommandList7) when supported by "
                     "hardware and OS to minimize GPU pipeline flushes and transition overhead.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_gpu_untile, true, "MCLA/NativeGfx",
                     "Use compute shader untiling and endian swapping on GPU for uploaded textures "
                     "to eliminate CPU decode overhead.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
@@ -670,6 +737,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_overlap_index, true, "MCLA/NativeGfx",
                     "correct when regions overlap (declined merges leave overlaps). The old "
                     "binary search assumed disjoint regions and could skip a large region "
                     "containing the write, losing the invalidation. Off restores it, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_watch_before_copy, true, "MCLA/NativeGfx",
@@ -677,6 +745,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_watch_before_copy, true, "MCLA/NativeGfx",
                     "instead of after. Armed after, a write another guest thread makes between "
                     "the copy and the re-arm raises no fault and leaves stale bytes in a region "
                     "marked clean. Off restores the old order, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_partial_reupload, true, "MCLA/NativeGfx",
@@ -686,6 +755,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_partial_reupload, true, "MCLA/NativeGfx",
                     "~2 MB a frame while ~18 MB were being re-sent. Dirt found by the sampled "
                     "hash, which only reads part of each block, still re-sends the whole "
                     "region. Off restores whole-region re-uploads, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
@@ -699,6 +769,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_frames, 3, "MCLA/NativeGfx",
                       "sampled block hash instead, once a frame over the blocks a draw reads, "
                       "so unchanged bytes still cost no upload; four unchanged frames put it "
                       "back under the watch.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_streaming_sticky, false, "MCLA/NativeGfx",
@@ -717,6 +788,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_streaming_sticky, false, "MCLA/NativeGfx",
                     "(stretched triangles across the screen, HUD pieces missing): more regions "
                     "off the watch means more rewrites left to the sampled hash, which misses "
                     "them. Sampled-hash regions therefore ignore this setting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_demote_frames, 30, "MCLA/NativeGfx",
@@ -725,6 +797,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_streaming_demote_frames, 30, "MCLA/NativeG
                       "region goes back under the write watch. 0 never puts it back, which "
                       "leaves every rewrite to the full hash. Sampled-hash geometry always demotes "
                       "after four clean frames regardless of this value.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
@@ -737,6 +810,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_state_cache, true, "MCLA/NativeGfx",
                     "the render thread. The copy is dropped whenever the list is reset or another "
                     "pass (a compute pass, a blit) records its own state onto it. Off restores the "
                     "full set per draw, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(
@@ -753,6 +827,7 @@ REXCVAR_DEFINE_INT32(
     "eligibility rule the emulated path uses: forcing anisotropy onto a point-sampled or\n"
     "base-map sampler would change what the game asked for rather than how sharply it is\n"
     "filtered.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -762,6 +837,7 @@ REXCVAR_DEFINE_BOOL(
     "With this on, a missed colour resolve is aliased onto the most recent colour copy so the "
     "question 'does anything sample that destination' can be answered by looking at the screen. "
     "The content is deliberately wrong; this is a probe, not a fix.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -775,6 +851,7 @@ REXCVAR_DEFINE_BOOL(
     "gets displayed -- with this on, the whole 2D layer disappears, HUD included. The merge is "
     "load-bearing: it stands in for the composition the native runtime deliberately does not "
     "model. Kept as a bisection switch, not as a fix.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -796,6 +873,7 @@ REXCVAR_DEFINE_UINT32(
     "different addresses. With one target bound, both resolves copied target 0, the impostor\n"
     "shader read the colour atlas as its normal atlas, and normalize(colour*2-1) came out a\n"
     "constant -- a flat, uniformly lit canopy.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -820,6 +898,7 @@ REXCVAR_DEFINE_UINT32(
     "depth resolve, and MAX keeps the nearest surface under the reverse-Z main pass.\n"
     "Measured at 4x on the menu camera: silhouette transitions widened 34-39% against the\n"
     "same scene at 1x, with zero validation errors.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_guest_clear, true, "MCLA/NativeGfx",
@@ -835,6 +914,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_guest_clear, true, "MCLA/NativeGfx",
                     "confirmed in game that it brings the distant sun back; the single global "
                     "pending slot is the part still to be checked, since a clear that belongs to "
                     "one surface would then be handed to whichever pass draws next.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
@@ -858,6 +938,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_alpha_ref, true, "MCLA/NativeGfx",
                     "fix, i.e. with transposed UVs, so the foliage was sampling the wrong texels "
                     "and its alpha mask meant nothing -- it has to be re-measured. ON by default "
                     "now; the switch stays so the fixed 0.5 can be put back while bisecting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth32, false, "MCLA/NativeGfx",
@@ -879,6 +960,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_depth32, false, "MCLA/NativeGfx",
                     "format of EVERY kD24S8 target, not just the shadow atlas, which changes render target "
                     "keys and pool behaviour globally. Shadow artefacts and missing geometry were reported "
                     "with it on; it goes back off until someone measures a frame with and without.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_half_pixel, true, "MCLA/NativeGfx",
@@ -889,6 +971,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_half_pixel, true, "MCLA/NativeGfx",
                     "which is where the soft 2D edges come from. On by default because the "
                     "shaders demand it; the switch exists so it can be taken out of the picture "
                     "while bisecting a colour or coverage regression.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_swapped_texcoords, true, "MCLA/NativeGfx",
@@ -899,6 +982,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_swapped_texcoords, true, "MCLA/NativeGfx",
                     "like a 90-degree rotation to the left. The translated shaders already carry "
                     "the fix (tfetchTexcoord -> value.yxwz) and only needed the mask. On by "
                     "default; the switch exists to take it back out while bisecting.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_texcache_mb, 2048, "MCLA/NativeGfx",
@@ -907,7 +991,8 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_texcache_mb, 2048, "MCLA/NativeGfx",
                       "geometry and textures in and out; without a budget every one of them stays "
                       "resident for the session and the footprint grows without bound. Over the "
                       "budget, least-recently-used entries are released (fence-gated, never one "
-                      "the current frame bound). 0 = unbounded, the old behaviour.");
+                      "the current frame bound). 0 = unbounded, the old behaviour.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_index, true, "MCLA/NativeGfx",
                     "Apply queued texture invalidations through an index of the cache entries "
@@ -916,6 +1001,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_texinv_index, true, "MCLA/NativeGfx",
                     "about 600 ranges a frame in gameplay against ~970 entries, and the walk "
                     "measured 16.9% of the render thread. Same entries dropped either way; off "
                     "restores the walk, for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_diag, false, "MCLA/NativeGfx",
@@ -927,6 +1013,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_diag, false, "MCLA/NativeGfx",
                     "default because together they cost the render thread several milliseconds "
                     "a frame -- MESHCHK alone hashes a whole buffer region per skinned draw. "
                     "The one-shot capture mode keeps them on regardless.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_census, 0, "MCLA/NativeGfx",
@@ -935,7 +1022,8 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_census, 0, "MCLA/NativeGfx",
                       "non-local usage, and the live size of every native cache. The pool whose "
                       "delta tracks the process delta is the leak. 0 disables (default: each "
                       "report walks the whole address space with VirtualQuery, measured at 2.8% "
-                      "of the render thread at 120).");
+                      "of the render thread at 120).")
+    .debug_only();
 
 namespace mcla::native_gfx {
 

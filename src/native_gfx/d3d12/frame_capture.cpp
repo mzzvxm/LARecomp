@@ -64,7 +64,8 @@ REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_exposure, 8.0, "MCLA/NativeGfx",
                       "Exposure multiplier applied by the present-time tonemap (HDR anchor -> "
                       "LDR). The raw scene target is very dark (linear, unconverged exposure); "
                       "this lifts it before the ACES curve and gamma. Only used when "
-                      "mcla_native_gfx_present_anchor is on.");
+                      "mcla_native_gfx_present_anchor is on.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
                     "Run NVIDIA FXAA over the composite at present. The console had no "
@@ -76,6 +77,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
                     "resolves geometry edges only, FXAA also catches shader and alpha-test "
                     "edges, and the two compose. Ignored on the present_anchor path, whose "
                     "source is the raw HDR scene target.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_keep_idle_display, true, "MCLA/NativeGfx",
@@ -88,6 +90,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_keep_idle_display, true, "MCLA/NativeGfx",
                     "the presented R8G8B8A8 surface keeps its colour on a frame where no other "
                     "screen-sized pass has drawn and the guest asked for no clear. Depth is "
                     "cleared as before. Off for A/B.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // TEMP DIAG helper for the rim probe: IEEE half -> float. first_draw.cpp has one
@@ -128,6 +131,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_shadow_quads, 0, "MCLA/NativeGfx",
                       "reads as a whole map with no sun. Reads the RESOLVED copy: a pooled "
                       "1280x1280 hands back its clear colour through recycling and would read "
                       "as a false negative.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_exposure_probe, 0, "MCLA/NativeGfx",
@@ -136,16 +140,20 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_exposure_probe, 0, "MCLA/NativeGfx",
                       "raw floats. The native path renders cam 53 with its midtones +84 and "
                       "11.6% of the frame clipped white against the emulated path's 2.6%, with "
                       "matching shadows -- the shape of a gain before the tonemap.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_addr, 0x02DE6000, "MCLA/NativeGfx",
                       "TEMP DIAG: guest address mcla_native_gfx_lowres_dump reads.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_w, 320, "MCLA/NativeGfx",
                       "TEMP DIAG: width for mcla_native_gfx_lowres_dump.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_h, 180, "MCLA/NativeGfx",
                       "TEMP DIAG: height for mcla_native_gfx_lowres_dump.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_dump, 0, "MCLA/NativeGfx",
@@ -154,6 +162,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_dump, 0, "MCLA/NativeGfx",
                       "frames. That buffer's resolve misses every frame (the key asks for "
                       "R8G8B8A8, the only 320x180 pass in the pool is the HDR one), so a fetch "
                       "of it reads whatever the title left in memory.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_rim_probe, 0, "MCLA/NativeGfx",
@@ -161,6 +170,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_rim_probe, 0, "MCLA/NativeGfx",
                       "TEXCOORD0 of the first vertices, and VS constants 206..215 (tintColors). "
                       "The wheel picks its paint slot with a0 = trunc(TEXCOORD0.z), so a wrong "
                       "third component reads a neighbouring part's colour.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_aniso_census, false, "MCLA/NativeGfx",
@@ -168,6 +178,7 @@ REXCVAR_DEFINE_BOOL(mcla_native_gfx_aniso_census, false, "MCLA/NativeGfx",
                     "anisotropy and whether the texture actually has a mip chain to filter "
                     "down. Anisotropy picks a finer level along the major axis, so a "
                     "single-level texture makes a correct 16x sampler change nothing.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_ps_census, 0, "MCLA/NativeGfx",
@@ -177,6 +188,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_ps_census, 0, "MCLA/NativeGfx",
                       "the identity column of shader_report.tsv; translate these with "
                       "build_shader_pack.collect_shaders(). This is what NAMES an unknown "
                       "material: run the scene that shows the bug and read the list.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_eye_probe, 0, "MCLA/NativeGfx",
@@ -184,6 +196,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_eye_probe, 0, "MCLA/NativeGfx",
                       "(xCharacter_teeth_normalmap) with its tintColor constant and its bound "
                       "textures. Chasing eyes that render black in the native path and normal "
                       "in the emulated one.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_fxaa_dump, 0, "MCLA/NativeGfx",
@@ -191,6 +204,7 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_fxaa_dump, 0, "MCLA/NativeGfx",
                       "(native_gfx_fxaa_pre_N.tga / _post_N.tga). Both come from the same "
                       "frame and the same submission, so the difference between them is the "
                       "filter and nothing else.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_threshold, 0.125, "MCLA/NativeGfx",
@@ -198,6 +212,7 @@ REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_threshold, 0.125, "MCLA/NativeGfx",
                       "the brighter luma, before a pixel is filtered at all. Lower catches "
                       "more edges and softens more of the frame; 0.333 is NVIDIA's fastest "
                       "preset, 0.125 the default quality one, 0.063 the most aggressive.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_subpixel, 0.75, "MCLA/NativeGfx",
@@ -205,19 +220,22 @@ REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_subpixel, 0.75, "MCLA/NativeGfx",
                       "handles thin features and lone pixels the edge walk cannot resolve -- "
                       "wires, railings, distant lamp posts -- and it is also the part that "
                       "blurs. 0 turns it off and keeps the image sharpest, 1 is the softest.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_present_anchor, false, "MCLA/NativeGfx",
                     "Continuous mode: present the anchor (raw scene target) instead of the "
                     "readback (composite) pass. The continuous readback comes out flat/black "
                     "while the anchor holds the real rendered scene, so this makes the native "
-                    "world visible while the composite-selection bug is still open.");
+                    "world visible while the composite-selection bug is still open.")
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_drawcap, 0, "MCLA/NativeGfx",
                       "Continuous mode: cap the number of native ANCHOR (main scene) draws "
                       "recorded per frame. 0 = uncapped. A low value (e.g. 300) tests whether "
                       "the DEVICE_HUNG TDR is aggregate GPU load rather than one bad draw: if "
-                      "capping stops the crash, it is load. Also a direct performance lever.");
+                      "capping stops the crash, it is load. Also a direct performance lever.")
+    .debug_only();
 
 REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxcap, 8192, "MCLA/NativeGfx",
                       "Per-frame cap on AUXILIARY draws (shadow, light, reflection passes) the "
@@ -227,13 +245,15 @@ REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxcap, 8192, "MCLA/NativeGfx",
                       "failure is aggregate GPU load exceeding the TDR window on weak hardware, "
                       "not one resource running out -- lower it if frame time regresses. The "
                       "shipped default should come from the measured peak (peak_aux in the prepare "
-                      "log), not a guess; 8192 is a deliberately loose value for that measurement.");
+                      "log), not a guess; 8192 is a deliberately loose value for that measurement.")
+    .debug_only();
 
 REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
                     "Diagnostic: in continuous mode, submit each recorded draw on its own and "
                     "wait for it with a timeout. The draw whose shader spins forever (the "
                     "DEVICE_HUNG TDR) is the one that times out; its vs/ps identity is written "
-                    "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.");
+                    "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.")
+    .debug_only();
 
 REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 REXCVAR_DECLARE(bool, mcla_native_gfx_state_cache);

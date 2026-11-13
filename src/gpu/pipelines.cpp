@@ -48,6 +48,7 @@ REXCVAR_DEFINE_STRING(
     "of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which "
     "overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + "
     "68387d4a0b431769 (each alone is fine).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
@@ -74,6 +75,7 @@ REXCVAR_DEFINE_BOOL(
     "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
     "executable on exit, and are read back at start -- the other backend's file too, so what one "
     "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {

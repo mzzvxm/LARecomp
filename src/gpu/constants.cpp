@@ -48,6 +48,7 @@ REXCVAR_DEFINE_BOOL(
     "console and Xenia -- samples the pre-pass gave depth and the colour pass dropped keep the "
     "clear (white dots on fences and foliage, a white checkerboard on LOD cross-fades; with "
     "MSAA off, whole pixels). Hot reload.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

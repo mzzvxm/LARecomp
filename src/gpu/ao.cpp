@@ -44,6 +44,7 @@ REXCVAR_DEFINE_DOUBLE(
     "The distance, in the game's world units (about metres), where ambient occlusion has faded "
     "out entirely; it starts to fade at half of it. Fog, rain and particles are not darkened "
     "either way: they are drawn over the picture afterwards. Live.")
+    .debug_only()
     .range(20.0, 1000.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
@@ -55,6 +56,7 @@ REXCVAR_DEFINE_INT32(
     "so it is new, a vehicle whose own motion is not known, or has no history yet; the history itself "
     "goes on as usual). 0: "
     "off. Live.")
+    .debug_only()
     .range(0, 6)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
@@ -63,6 +65,7 @@ REXCVAR_DEFINE_INT32(
     "64. Each frame's occlusion is found again in the next by the camera's motion and kept only "
     "where it is the same surface; more frames is smoother and slower to follow a moving shadow "
     "(a car's), fewer is noisier. 1: no averaging (two blur passes on every frame instead). Live.")
+    .debug_only()
     .range(1, 64)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
@@ -75,6 +78,7 @@ REXCVAR_DEFINE_INT32(
     "depth (read back from the graphics card, so the first three frames and every Nth one run the "
     "depth passes even with the occlusion off). Frames where the main view does not have exactly "
     "one qualifying resolve are logged as they come (the first 40). 0: off. Live.")
+    .debug_only()
     .range(0, 100000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

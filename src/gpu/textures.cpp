@@ -40,6 +40,7 @@ REXCVAR_DEFINE_BOOL(
     "<name>__<hash>.dds, once per texture per session (F2 does it for one frame). Texture mods "
     "replace a texture by the hash at the end of the file name, from "
     "<mods>/<Mod>/textures_replace/; <mods> is modloader/, mods/ or models/.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(
@@ -52,6 +53,7 @@ REXCVAR_DEFINE_BOOL(
     texture_reload, false, "MCLA/Textures",
     "Set to true to reload the texture mods (<mods>/<Mod>/textures_replace/) at the start of the "
     "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(
@@ -61,6 +63,7 @@ REXCVAR_DEFINE_INT32(
     "road does not stall the render thread. -1: one thread per 4 logical processors, up to 3, none "
     "below 4 processors. 0: the render thread decodes every texture itself, when its draw needs "
     "it. The threads run below the game's.")
+    .debug_only()
     .range(-1, 8)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -69,6 +72,7 @@ REXCVAR_DEFINE_BOOL(
     "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
     "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
     "with the plain per-block one, and logs whether every byte matched.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_BOOL(
@@ -76,6 +80,7 @@ REXCVAR_DEFINE_BOOL(
     "Test only: every texture level the game uploads is decoded a second time with the plain "
     "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
     "once per texture. Slow: it brings the old cost back.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

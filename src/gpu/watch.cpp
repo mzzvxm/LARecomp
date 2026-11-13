@@ -18,10 +18,12 @@ REXCVAR_DEFINE_STRING(
     "[base, base + mcla_gpu_watch_size) is logged in order with the guest frame and draw: the "
     "last 1500 events are kept until the first decode of the range, then written out with "
     "every later one (at most 20000 lines). Empty: off.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_STRING(mcla_gpu_watch_size, "400000", "MCLA/GPU",
                       "Diagnostic: the length, in hex, of mcla_gpu_watch_base's range.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REXCVAR_DEFINE_UINT32(
@@ -29,6 +31,7 @@ REXCVAR_DEFINE_UINT32(
     "Diagnostic, with mcla_gpu_watch_base: a RenderDoc capture of the frame after 1 = the first "
     "decode of the range from the resolve memory, 2 = the first product over it deactivated by "
     "another resolve. 0: none. Needs the game started under RenderDoc.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu::watch {
