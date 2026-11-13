@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <format>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include "device.h"
@@ -14,6 +15,16 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "textures.h"
+
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_vram_log, 0, "MCLA/GPU",
+    "Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), "
+    "log how much video memory the process uses against the budget the system gives it, and what "
+    "the texture, resolve product, EDRAM target and resolve memory caches hold, whether or not "
+    "memory is short. For a report of stutter or crashes on a card with little video memory. "
+    "0: off.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -32,6 +43,7 @@ void VideoMemoryBudget::Initialize(Device& device, TextureCache& textures, Resol
   edram_ = &edram;
   next_check_ = device.frame() + kCheckFrames;
   last_log_ = device.frame();
+  next_use_log_ = 0;
   short_ = false;
   window_ = Window{};
   last_check_time_ = std::chrono::steady_clock::now();
@@ -84,6 +96,7 @@ void VideoMemoryBudget::BeginFrame() {
 
   NoteFrameRate(frame);
   const backend::VideoMemory memory = Sample();
+  LogUse(memory, frame);
   const uint64_t failed = device_->TakeFailedBytes();
   window_.skipped += device_->TakeSkipped();
   ++window_.checks;
@@ -193,6 +206,28 @@ uint64_t VideoMemoryBudget::Trim(uint64_t need) {
     }
   }
   return released;
+}
+
+void VideoMemoryBudget::LogUse(const backend::VideoMemory& memory, uint64_t frame) {
+  const uint32_t every = REXCVAR_GET(mcla_gpu_vram_log);
+  if (every == 0 || frame < next_use_log_) {
+    return;
+  }
+  next_use_log_ = frame + every;
+  const std::string used = memory.used != 0 ? std::format("{} MiB in use", memory.used >> 20)
+                                            : std::string("use not reported");
+  const std::string budget =
+      memory.budget != 0
+          ? std::format("budget {} MiB ({}% used)", memory.budget >> 20,
+                        memory.used * 100 / memory.budget)
+          : std::string("no budget reported");
+  REXLOG_INFO(
+      "[gpu] video memory (frame {}): {}, {} | held by the caches: textures {:.0f}, resolve "
+      "products {:.0f}, EDRAM targets {:.0f}, resolve memory {:.0f} MiB{} | {}",
+      frame, used, budget, double(textures_->HeldBytes()) * kMiB,
+      double(resolve_->HeldBytes()) * kMiB, double(edram_->HeldBytes()) * kMiB,
+      double(resolve_memory_->HeldBytes()) * kMiB, HoldersText(),
+      short_ ? "short at the last check" : "not short");
 }
 
 void VideoMemoryBudget::LogReleased(const backend::VideoMemory& memory) {
