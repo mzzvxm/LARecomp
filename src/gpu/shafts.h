@@ -159,7 +159,7 @@ class SunShafts {
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force, for
   // the scene's one line per change of world. Read before OnPresent, which forgets the frame.
   menu_world::World FrameWorld() const;
-  std::string Level() const;
+  std::string LevelName() const;
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
