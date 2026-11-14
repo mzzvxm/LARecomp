@@ -1,241 +1,206 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 //
-// Online Tournament (mcOnlineTournament) hooks.
+// Online Tournament (mcOnlineTournament) on our own backend.
 //
-// The tournament's data path is a dead Rockstar LSP stats/sake read, so the
-// stock menu shows "server not available". These hooks synthesize the tournament
-// locally. Status: it appears and Start passes eligibility, but the actual race
-// is a scripted, parameterized, online-context race whose data is empty
-// standalone, so launching still hits a null AI brain. WIP — see the RE map in
-// the project memory (project_mcla_online_tournament).
+// The mode runs in the game unchanged. The menu's state machine
+// (sub_82740958, ticked by the menu form sub_82642E40) fetches the definition
+// of the running tournament from the rlUpload table "tournament":
+//   7  ReadRecordsByGamer("tournament")   -> 8 (11 if it could not queue)
+//   8  status done, >= 1 record           -> DownloadFile(record +40) -> 9
+//      status done, no record             -> 12 "NO TOURNAMENT AVAILABLE"
+//      status failed                      -> 11 "server is not available"
+//   9  status done                        -> 10, the file sits at the object +48
+// The file names one of the city's races, a leaderboard slot (13..39 or
+// 351..381) and a car restriction (layout in tournament_schedule.h). Start runs
+// that race in game mode 25 with the tournament flag set; at the finish
+// (sub_822D0438) the game posts the time to the slot's stats view through its
+// Stats Worker and XSessionWriteStats, which the leaderboards module serves.
+//
+// Here: the read asks rmr::client (the shared server, or the local store) for
+// this week's definition and answers with one record whose file id carries the
+// week; the download hands over the definition that came with it. Replies are
+// written at the top of the state machine's next tick, on the game thread.
 //
 // Registered as midasm hooks in larecomp_config.toml:
-//   sub_82740958  Hook_TournamentInject
-//   sub_82389668  Hook_TournamentRaceLookup
-//   sub_822BC658  Patch_BrainRacingResetNullGuard
+//   sub_82740958  Hook_TournamentPump        mcOnlineTournament state machine
+// The rlUpload entry points are hooked by rate_my_ride.cpp, which calls
+// tournament::game::OnReadRecords / OnDownload first.
 //
+
+#include "tournament.h"
 
 #include "online_common.h"
+#include "tournament_schedule.h"
+#include "rate_my_ride/rmr_client.h"
 
-#include <atomic>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <vector>
 
-// Sentinel written into the synthetic tournament's race-id slot (obj+64). It is
-// not a real race hash, so Hook_TournamentRaceLookup can recognise it at the
-// city race-table lookup and swap in a race the current city actually has.
-constexpr uint32_t kTourneyRaceSentinel = 0x544F5552;  // 'TOUR'
+#include <rex/system/xmemory.h>
 
-// Online Tournament fake (sub_82740958, mcOnlineTournament state machine).
-// r3 = the state object (menu_form + 249*4). The real flow drives a Rockstar LSP
-// stats read over a socket whose server is long dead: the read task completes
-// with status=2 (fail) at state 7->8, so state 8 falls through to 11 =
-// OT_NoLSPConnection ("server not available"). Confirmed live: state=8 status=0x2.
-//
-// Rather than reimplement the dead LSP wire, we short-circuit the state machine.
-// Every tournament field the menu form and eligibility check read lives in the
-// sake struct at obj+48 (Version/TableId/RestrictionType/RestrictionData/race id/
-// Description), so we populate that and jump straight to state 10 ("found").
-//   obj+48 Version   obj+52 TableId   obj+56 RestrictionType (car class)
-//   obj+60 RestrictionData (0xFFFFFFFF = wildcard -> eligibility always passes)
-//   obj+64 race id (validated by sub_82389668 on Start; 0 = appears but WrongRace)
-//   obj+68 Description[1536] (localized name blob, ':'-delimited per language)
-// Returns true to skip the original body once we've forced the result.
-bool Hook_TournamentInject(PPCRegister& r3) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt) return false;
-    auto* mem = rt->memory();
-    if (!mem) return false;
-    uint32_t obj = static_cast<uint32_t>(r3.u64);
-    if (!IsGuestPtr(obj)) return false;
+namespace {
 
-    uint32_t state = GuestRead32(mem, obj + 4);
+using rex::memory::Memory;
 
-    static uint32_t last_state = 0xFFFFFFFF;
-    if (state != last_state) {
-        last_state = state;
-        LARECOMP_APP_INFO("[tourney] state={} -> injecting at 7/8", state);
-    }
+constexpr char kTable[] = "tournament";
 
-    // States 7/8 are the read+download that hit the dead LSP. Intercept there,
-    // synthesize the tournament, and mark it found.
-    if (state == 7 || state == 8) {
-        GuestWrite32(mem, obj + 48, 1);           // Version
-        GuestWrite32(mem, obj + 52, 13);          // TableId
-        GuestWrite32(mem, obj + 56, 0);           // RestrictionType (0 = none)
-        GuestWrite32(mem, obj + 60, 0xFFFFFFFF);  // RestrictionData = wildcard
-        GuestWrite32(mem, obj + 64, kTourneyRaceSentinel);  // race id sentinel; see
-                                                            // Hook_TournamentRaceLookup
-        // Description blob: leave as-is for v1; a proper ':'-delimited localized
-        // name goes here once appearance is confirmed.
-        GuestWrite32(mem, obj + 4, 10);           // state = found
-        LARECOMP_APP_INFO("[tourney] injected synthetic tournament, state->10");
-        return true;  // skip original state-machine body
-    }
-    return false;
+// rlUpload record, 152 bytes (layout in rate_my_ride.cpp). The state machine
+// only checks the count and reads the file id; the rest makes it a record any
+// other reader of the table would accept.
+constexpr uint32_t kRecordSize = 152;
+constexpr uint32_t kRecHandleId = 8;
+constexpr uint32_t kRecGamertag = 16;
+constexpr uint32_t kRecId = 32;
+constexpr uint32_t kRecFileCount = 36;
+constexpr uint32_t kRecFileIds = 40;
+constexpr uint32_t kRecFileSizes = 52;
+constexpr char kOwnerTag[] = "LARecomp";
+
+enum TaskState : uint32_t { kPending = 1, kFailed = 2, kSucceeded = 3 };
+
+struct Pending {
+  uint32_t records = 0;
+  uint32_t count_out = 0;
+  uint32_t max_records = 0;
+  uint32_t status = 0;
+};
+
+struct Completed {
+  Pending pending;
+  rmr::Response resp;
+};
+
+std::mutex g_mutex;
+std::deque<Completed> g_done;            // replies waiting for the game thread
+std::vector<uint8_t> g_definition;       // game thread only: the last definition
+uint32_t g_definition_id = 0;            // its file id
+uint32_t g_status = 0;                   // the state machine's status object
+
+Memory* Mem() {
+  auto* rt = rex::Runtime::instance();
+  return rt ? rt->memory() : nullptr;
 }
 
-// RAGE string hash, a faithful port of guest sub_821C9790 (used for race-name
-// keys). Lowercases A-Z and folds '\\' to '/', then runs the per-char mix.
-static uint32_t RageHash(const char* s) {
-    uint32_t h = 0;
-    for (; *s; ++s) {
-        uint8_t c = static_cast<uint8_t>(*s);
-        if (c >= 'A' && c <= 'Z')
-            c += 32;
-        else if (c == '\\')
-            c = '/';
-        uint32_t v = static_cast<uint32_t>(c) + h;
-        uint32_t m = 1025u * v;
-        h = (m >> 6) ^ m;
-    }
-    uint32_t m2 = 9u * h;
-    return 32769u * ((m2 >> 11) ^ m2);
+void Put32(uint8_t* p, uint32_t v) {
+  p[0] = static_cast<uint8_t>(v >> 24);
+  p[1] = static_cast<uint8_t>(v >> 16);
+  p[2] = static_cast<uint8_t>(v >> 8);
+  p[3] = static_cast<uint8_t>(v);
 }
 
-// Look up `key` in a RAGE hash map at guest address `map` (+0 = bucket array
-// ptr, +4 = u16 bucket count; each entry is {key, value, next}). Returns the
-// entry address (or 0), matching guest sub_826BDDB0.
-static uint32_t RaceMapFind(rex::memory::Memory* mem, uint32_t map, uint32_t key) {
-    uint16_t buckets = GuestRead16(mem, map + 4);
-    uint32_t bptr = GuestRead32(mem, map + 0);
-    if (!buckets || !IsGuestPtr(bptr))
-        return 0;
-    uint32_t entry = GuestRead32(mem, bptr + 4u * (key % buckets));
-    while (IsGuestPtr(entry)) {
-        if (GuestRead32(mem, entry + 0) == key)
-            return entry;
-        entry = GuestRead32(mem, entry + 8);
-    }
-    return 0;
+uint32_t Get32(const uint8_t* p) {
+  return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
 }
 
-// Tournament race resolver (sub_82389668, the city race-table lookup the
-// tournament eligibility check runs). r3 = race manager (city config), r4 = race
-// id key. The synthetic tournament stores kTourneyRaceSentinel as its race id;
-// no real race matches, so without help the menu reports "WRONG RACE".
-//
-// Picking just any race is wrong: the first city-map entry turned out to be a
-// scripted race that drives an AI "brain" (BrainRacing_Reset), which is null
-// outside its scripted context and crashes. The real tournament races are named
-// "<district>_tournament1" (hw/hl/be/dt). We hash those names the same way the
-// game does and, if one is present in this city's race map, use it — a genuine
-// tournament circuit with no scripted-brain dependency. The diagnostic log
-// reports what the map holds so the choice can be verified on the target.
-void Hook_TournamentRaceLookup(PPCRegister& r3, PPCRegister& r4) {
-    if (static_cast<uint32_t>(r4.u64) != kTourneyRaceSentinel) return;
-    auto* rt = rex::Runtime::instance();
-    if (!rt) return;
-    auto* mem = rt->memory();
-    if (!mem) return;
-    uint32_t race_mgr = static_cast<uint32_t>(r3.u64);
-    if (!IsGuestPtr(race_mgr)) return;
-
-    static const char* const kTourneyRaceNames[] = {
-        "hw_tournament1", "hl_tournament1", "be_tournament1", "dt_tournament1"};
-
-    // The "<district>_tournament1" event lives in the event map at
-    // (*dword_8286D8DC)+8456, but its value is a tournament DEFINITION (a list of
-    // races), not a loadable race -- feeding it to Start crashed. The definition
-    // holds the actual race entries; guest sub_826CD180(def, idx) returns the
-    // current entry and its race name sits at entry+10. We hash that name and use
-    // it in the CITY map (race_mgr+52), so eligibility resolves the tournament's
-    // real race with the correct object layout and Start loads it. No r3 redirect.
-    uint32_t tmgr = GuestRead32(mem, 0x8286D8DC);
-    if (IsGuestPtr(tmgr)) {
-        uint32_t tmap = tmgr + 8456;
-        for (const char* name : kTourneyRaceNames) {
-            uint32_t def_entry = RaceMapFind(mem, tmap, RageHash(name));
-            if (!def_entry) continue;
-            uint32_t def = GuestRead32(mem, def_entry + 4);  // tournament definition
-            if (!IsGuestPtr(def)) continue;
-
-            // sub_826CD180(def, 0): array=*(def+0), count=*(u16)(def+4),
-            // idx=*(def+32); entry = array[clamp(idx)] (or array[0] if idx<0).
-            uint16_t count = GuestRead16(mem, def + 4);
-            uint32_t array = GuestRead32(mem, def + 0);
-            int32_t idx = static_cast<int32_t>(GuestRead32(mem, def + 32));
-            // Diagnostic dump of the tournament definition layout so we can see
-            // whether it is populated and whether our offsets are right.
-            LARECOMP_APP_INFO(
-                "[tourney] def '{}' @0x{:08X}: count={} array=0x{:08X} idx={} "
-                "d8=0x{:08X} d12=0x{:08X} d16=0x{:08X}",
-                name, def, count, array, idx, GuestRead32(mem, def + 8),
-                GuestRead32(mem, def + 12), GuestRead32(mem, def + 16));
-            if (!count || !IsGuestPtr(array)) continue;
-            if (idx < 0) idx = 0;
-            else if (idx > count - 1) idx = count - 1;
-            uint32_t entry = GuestRead32(mem, array + 4u * static_cast<uint32_t>(idx));
-            if (!IsGuestPtr(entry)) continue;
-
-            std::string race_name = GuestCStr(mem, entry + 10, 64);
-            uint32_t rkey = RageHash(race_name.c_str());
-            bool in_city = RaceMapFind(mem, race_mgr + 52, rkey) != 0;
-            LARECOMP_APP_INFO(
-                "[tourney] '{}' entry@0x{:08X} type={} name='{}' key=0x{:08X} in-city-map={}",
-                name, entry, GuestRead32(mem, entry + 4), race_name, rkey, in_city ? 1 : 0);
-            if (in_city) {
-                r4.u64 = rkey;  // real city race for this tournament
-                return;
-            }
-        }
-        LARECOMP_APP_INFO("[tourney] could not resolve a tournament race to a city race");
-    } else {
-        LARECOMP_APP_INFO("[tourney] tournament manager (dword_8286D8DC) is null");
-    }
-
-    // Fallback: first city race. Diagnostic only -- likely a scripted race that
-    // still crashes, but the log tells us the map state.
-    const uint32_t map = race_mgr + 52;
-    uint16_t buckets = GuestRead16(mem, map + 4);
-    uint32_t bptr = GuestRead32(mem, map + 0);
-    int total = 0;
-    uint32_t first_key = 0;
-    if (buckets && IsGuestPtr(bptr)) {
-        for (uint16_t i = 0; i < buckets; ++i) {
-            uint32_t e = GuestRead32(mem, bptr + 4u * i);
-            while (IsGuestPtr(e)) {
-                if (!first_key) first_key = GuestRead32(mem, e + 0);
-                ++total;
-                e = GuestRead32(mem, e + 8);
-            }
-        }
-    }
-    LARECOMP_APP_INFO("[tourney] fallback: city map {} races, first=0x{:08X}", total, first_key);
-    if (first_key)
-        r4.u64 = first_key;
+void SetStatus(Memory* mem, uint32_t status, uint32_t state, uint32_t code) {
+  if (!IsGuestPtr(status)) return;
+  GuestWrite32(mem, status + 4, code);
+  GuestWrite32(mem, status, state);
 }
 
-// Null-brain guard for the Scaleform native command "BrainRacing_Reset"
-// (sub_822BC658). The command does brain = args[0]; brain->vtable[7](); when the
-// tournament race runs a scripted race whose AI brain was never created (no
-// online/scripted context standalone), args[0] is null and the deref crashes in
-// the per-frame HUD update. r3 = the native-call context; args = *(r3+8), brain
-// = *args. Returning true skips the command (return_on_true) when the brain is
-// null, leaving the rest of the frame intact; a real brain runs it normally.
-bool Patch_BrainRacingResetNullGuard(PPCRegister& r3) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt) return false;
-    auto* mem = rt->memory();
-    if (!mem) return false;
-    uint32_t ctx = static_cast<uint32_t>(r3.u64);
-    if (!IsGuestPtr(ctx)) return false;
-    uint32_t args = GuestRead32(mem, ctx + 8);
-    if (!IsGuestPtr(args)) return true;
-    uint32_t brain = GuestRead32(mem, args);
-    if (!IsGuestPtr(brain)) {
-        static std::atomic_bool logged{false};
-        if (!logged.exchange(true))
-            LARECOMP_APP_INFO("[tourney] BrainRacing_Reset on null brain -> skipped");
-        return true;  // skip the null deref
-    }
-    return false;
+void Apply(Memory* mem, const Completed& c) {
+  const Pending& p = c.pending;
+  if (c.resp.err != rmr::kOk || c.resp.data.size() != tournament::kDefinitionSize) {
+    LARECOMP_APP_WARN("[tourney] definition request failed (code {}, {} bytes)", c.resp.err,
+                      c.resp.data.size());
+    GuestWrite32(mem, p.count_out, 0);
+    SetStatus(mem, p.status, kFailed, c.resp.err != rmr::kOk ? c.resp.err : rmr::kUnknown);
+    return;
+  }
+  g_definition = c.resp.data;
+  g_definition_id = tournament::kFileIdTag | (c.resp.count & 0x00FFFFFF);
+
+  uint8_t rec[kRecordSize] = {};
+  rec[0] = 1;
+  Put32(rec + kRecHandleId + 4, g_definition_id);
+  std::memcpy(rec + kRecGamertag, kOwnerTag, sizeof(kOwnerTag) - 1);
+  Put32(rec + kRecId, g_definition_id);
+  Put32(rec + kRecFileCount, 1);
+  Put32(rec + kRecFileIds, g_definition_id);
+  Put32(rec + kRecFileSizes, tournament::kDefinitionSize);
+  std::memcpy(mem->TranslateVirtual<uint8_t*>(p.records), rec, kRecordSize);
+  GuestWrite32(mem, p.count_out, 1);
+  SetStatus(mem, p.status, kSucceeded, 0);
+
+  const char* name = reinterpret_cast<const char*>(g_definition.data() + 23);
+  LARECOMP_APP_INFO("[tourney] week {}: '{}' race {:08X} slot {} restriction {}/{:08X} via {}",
+                    c.resp.count, std::string(name, strnlen(name, 253)),
+                    Get32(g_definition.data() + 16), Get32(g_definition.data() + 4),
+                    Get32(g_definition.data() + 8), Get32(g_definition.data() + 12),
+                    rmr::client::DescribeTarget());
 }
 
-#else // REXGLUE_HAS_XEO3_TARGET
+}  // namespace
+
+namespace tournament::game {
+
+bool OnReadRecords(uint32_t table, uint32_t max_records, uint32_t records, uint32_t count_out,
+                   uint32_t status) {
+  if (!rmr::client::Enabled()) return false;
+  Memory* mem = Mem();
+  if (!mem || !IsGuestPtr(table) || GuestCStr(mem, table, 16) != kTable) return false;
+  if (max_records == 0 || !IsGuestPtr(records) || !IsGuestPtr(count_out)) return false;
+
+  Pending p;
+  p.records = records;
+  p.count_out = count_out;
+  p.max_records = max_records;
+  p.status = status;
+  g_status = status;
+  GuestWrite32(mem, count_out, 0);
+  SetStatus(mem, status, kPending, 0);
+
+  rmr::Request req;
+  req.op = rmr::Op::kTournament;
+  rmr::client::Submit(std::move(req), [p](rmr::Response&& resp) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_done.push_back(Completed{p, std::move(resp)});
+  });
+  return true;
+}
+
+bool OnDownload(uint32_t file_id, uint32_t buffer, uint32_t buffer_size, uint32_t size_out,
+                uint32_t progress) {
+  if (!tournament::IsTournamentFileId(file_id)) return false;
+  Memory* mem = Mem();
+  if (!mem || !IsGuestPtr(buffer) || !IsGuestPtr(size_out)) return false;
+  // The state machine's status object (the read's), which state 9 polls.
+  if (file_id != g_definition_id || g_definition.empty() ||
+      buffer_size < g_definition.size()) {
+    LARECOMP_APP_WARN("[tourney] download of {:08X}: no such definition", file_id);
+    GuestWrite32(mem, size_out, 0);
+    SetStatus(mem, g_status, kFailed, rmr::kFileNotFound);
+    return true;
+  }
+  std::memcpy(mem->TranslateVirtual<uint8_t*>(buffer), g_definition.data(), g_definition.size());
+  GuestWrite32(mem, size_out, static_cast<uint32_t>(g_definition.size()));
+  if (IsGuestPtr(progress)) GuestWrite32(mem, progress, 0x3F800000);  // 1.0f
+  SetStatus(mem, g_status, kSucceeded, 0);
+  return true;
+}
+
+}  // namespace tournament::game
+
+// sub_82740958 entry (r3 = the state object): replies that arrived since the
+// last tick are applied before the state machine looks at its status.
+void Hook_TournamentPump(PPCRegister& r3) {
+  std::deque<Completed> batch;
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_done.empty()) return;
+    batch.swap(g_done);
+  }
+  Memory* mem = Mem();
+  if (!mem) return;
+  for (const Completed& c : batch) Apply(mem, c);
+}
+
+#else  // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
 
-bool Hook_TournamentInject(PPCRegister& r3) { return false; }
-void Hook_TournamentRaceLookup(PPCRegister& r3, PPCRegister& r4) {}
-bool Patch_BrainRacingResetNullGuard(PPCRegister& r3) { return false; }
-#endif // REXGLUE_HAS_XEO3_TARGET
+void Hook_TournamentPump(PPCRegister& r3) {}
+#endif  // REXGLUE_HAS_XEO3_TARGET

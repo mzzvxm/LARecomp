@@ -10,9 +10,10 @@
 // the mode polls the task's status object ({state, code}: 1 pending, 2 failed,
 // 3 done) once per frame in sub_826B2328.
 //
-// We take over those nine functions for the "RateMyRide" table (the other
-// tables - ProfileStats, Rewards, PhotoAlbum, tournament - keep the stock
-// path), send the request to rmr::client (local store or the shared server)
+// We take over those nine functions for the "RateMyRide" table (the table
+// "tournament" and its file ids go to tournament.cpp first; ProfileStats,
+// Rewards and PhotoAlbum keep the stock path), send the request to
+// rmr::client (local store or the shared server)
 // and hand the reply back in the exact shape the rlUpload worker would have.
 //
 // Replies are applied on the game thread at the top of the mode's next poll,
@@ -54,6 +55,7 @@
 
 #include "rmr_client.h"
 #include "rmr_protocol.h"
+#include "../tournament.h"
 
 namespace {
 
@@ -557,6 +559,10 @@ bool Hook_RmrGetTableSize(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPC
 // sub_824F6EA0(client, table, handle*, maxRecords, records*, u32* count, status*)
 bool Hook_RmrReadByGamer(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6,
                          PPCRegister& r7, PPCRegister& r8, PPCRegister& r9) {
+  if (tournament::game::OnReadRecords(U32(r4), U32(r6), U32(r7), U32(r8), U32(r9))) {
+    r3.u64 = 1;
+    return true;
+  }
   Memory* mem = ForRmr(U32(r4));
   if (!mem || !IsGuestPtr(U32(r5)) || U32(r6) == 0 || !IsGuestPtr(U32(r7)) ||
       !IsGuestPtr(U32(r8)))
@@ -739,6 +745,11 @@ bool Hook_RmrOverwriteFile(PPCRegister& r1, PPCRegister& r3, PPCRegister& r4, PP
 // No table here: only our ids (kIdTag) are ours to serve.
 bool Hook_RmrDownloadFile(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6,
                           PPCRegister& r7, PPCRegister& r8, PPCRegister& r9) {
+  if (rmr::client::Enabled() &&
+      tournament::game::OnDownload(U32(r4), U32(r5), U32(r6), U32(r7), U32(r8))) {
+    r3.u64 = 1;
+    return true;
+  }
   if (!rmr::client::Enabled() || !rmr::IsRmrId(U32(r4))) return false;
   Memory* mem = Mem();
   if (!mem || !IsGuestPtr(U32(r5)) || U32(r6) == 0 || !IsGuestPtr(U32(r7)) ||

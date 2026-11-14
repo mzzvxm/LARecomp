@@ -25494,40 +25494,15 @@ address = 0x82567154
 name = "Hook_WheelSlip"
 registers = ["r31"]
 
-# Online Tournament: short-circuit the mcOnlineTournament state machine
-# (sub_82740958) at entry. r3 = the state object. The real read hits a dead
-# Rockstar LSP socket (confirmed: state 8 status=2 -> state 11 "server not
-# available"), so at states 7/8 the hook writes a synthetic tournament into the
-# sake struct and jumps to state 10 ("found"). Returns true to skip the original
-# body only when it has forced the result.
+# Online Tournament (src/mc_engine/online/tournament.cpp): the menu's state
+# machine (sub_82740958) polls the status of its rlUpload "tournament" read and
+# download each tick. The read is answered by our backend (the Rate My Ride
+# hooks below hand it to tournament.cpp); at entry, r3 = the state object, this
+# writes replies that came in since the last tick, before the poll.
 [[midasm_hook]]
 address = 0x82740958
-name = "Hook_TournamentInject"
+name = "Hook_TournamentPump"
 registers = ["r3"]
-return_on_true = true
-after_instruction = false
-
-# Online Tournament: resolve the synthetic tournament's sentinel race id to a
-# real race in the current city. sub_82389668 is the city race-table lookup the
-# eligibility check runs; r3 = race manager, r4 = race id. The hook only acts on
-# our sentinel (0x544F5552), swapping r4 for a real race key so the original
-# lookup succeeds — the game's own race lookups pass through untouched.
-[[midasm_hook]]
-address = 0x82389668
-name = "Hook_TournamentRaceLookup"
-registers = ["r3", "r4"]
-after_instruction = false
-
-# Null-brain guard for the Scaleform "BrainRacing_Reset" native command
-# (sub_822BC658). A tournament race can run a scripted race whose AI brain was
-# never created standalone, so args[0] (the brain) is null and brain->vtable[7]()
-# crashes every frame. r3 = native-call context; the hook returns true to skip
-# the command when the brain is null, and lets it run when the brain is valid.
-[[midasm_hook]]
-address = 0x822BC658
-name = "Patch_BrainRacingResetNullGuard"
-registers = ["r3"]
-return_on_true = true
 after_instruction = false
 
 # Rate My Ride (src/mc_engine/online/rate_my_ride/). The mode talks to the dead
