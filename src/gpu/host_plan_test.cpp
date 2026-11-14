@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 
+#include "ao_size.h"
 #include "host_plan.h"
 
 using namespace mcla::gpu::host_plan;
@@ -32,6 +33,8 @@ void Check(bool ok, const std::string& what) {
     std::printf("FAILED: %s\n", what.c_str());
   }
 }
+
+bool Near(double a, double b, double tolerance) { return (a > b ? a - b : b - a) <= tolerance; }
 
 void CheckEq(const std::string& got, const std::string& want, const std::string& what) {
   ++g_checks;
@@ -336,9 +339,69 @@ void CheckAmbient() {
         "all three on: every group, the occlusion's plain ones too (the pause menu's world runs them)");
 }
 
+// The sizes of the images those levels make (ao_size.h): above 1080 lines of render height the occlusion's and the bounce light's images
+// are half size on every class, 1080 and below are as they were, and the memory is never more than before. The same rule as ao.cpp's.
+void CheckImageSizes() {
+  namespace as = mcla::gpu::ao_size;
+  const double mib = 1024.0 * 1024.0;
+  const struct {
+    uint32_t w, h;
+  } pictures[] = {{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+  for (const GpuClass cls : kClasses) {
+    for (const char* bounce : {"off", "low", "high"}) {
+      const Plan plan = Decide(cls, true, "high", "auto", "off", bounce);
+      const Level ao = plan.of(Pass::kOcclusion).level;
+      const Level cs = plan.of(Pass::kContact).level;
+      const Level gi = plan.of(Pass::kBounce).level;
+      for (const auto& p : pictures) {
+        const std::string what = std::string(kClassNames[static_cast<int>(cls)]) + " class, bounce " + bounce + ", " +
+                                 std::to_string(p.w) + "x" + std::to_string(p.h);
+        as::Inputs in;
+        in.render_height = p.h;
+        in.occlusion = ao != Level::kOff;
+        in.occlusion_high = ao == Level::kHigh;
+        in.contact = cs != Level::kOff;
+        in.contact_high = cs == Level::kHigh;
+        in.bounce = in.occlusion && gi != Level::kOff;
+        in.bounce_high = in.bounce && gi == Level::kHigh;
+        const as::Choice c = as::Decide(in);
+        as::Frame f;
+        f.render[0] = p.w;
+        f.render[1] = p.h;
+        f.choice = c;
+        f.occlusion = in.occlusion;
+        f.contact = in.contact;
+        f.bounce = in.bounce;
+        if (p.h <= 1080) {
+          Check(!c.by_height && !c.contact_full, what + ": 1080 lines and below the height rule does nothing");
+        } else if (in.occlusion) {
+          Check(c.low && c.by_height, what + ": above 1080 lines the occlusion (and the bounce light) is traced at half size");
+          Check(c.contact_full == in.contact, what + ": the contact shadows keep their size exactly when they are on");
+        }
+        Check(as::Bytes(f).Total() <= as::BytesBefore(f).Total(), what + ": no more video memory than before");
+        if (in.occlusion && !in.bounce && p.h > 1080) {
+          Check(as::Bytes(f).Total() < as::BytesBefore(f).Total(), what + ": less video memory than before");
+        }
+        // The numbers of the audit: the occlusion on high alone holds 131.5 MiB at 4K and 58.4 at 1440p, the High class (contact high) as well.
+        if (in.occlusion && !in.bounce && p.h == 2160) {
+          Check(Near(as::BytesBefore(f).Total() / mib, 131.5, 0.1), what + ": before 131.5 MiB");
+          const double want = in.contact ? 80.3 : 32.9;
+          Check(Near(as::Bytes(f).Total() / mib, want, 0.1), what + ": now " + std::to_string(want) + " MiB");
+        }
+        if (in.occlusion && !in.bounce && p.h == 1440) {
+          const double want = in.contact ? 35.7 : 14.6;
+          Check(Near(as::BytesBefore(f).Total() / mib, 58.4, 0.1) && Near(as::Bytes(f).Total() / mib, want, 0.1),
+                what + ": 1440p 58.4 MiB before, " + std::to_string(want) + " now");
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
+  CheckImageSizes();
   CheckOcclusion();
   CheckAutoPasses();
   CheckShafts();

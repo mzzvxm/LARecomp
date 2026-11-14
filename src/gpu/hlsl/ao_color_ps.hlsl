@@ -9,7 +9,9 @@
 //                                     Texture2DMS when the game's MSAA is on) to an RGBA16F image at
 //                                     the AO's size. One texel is the mean of the pixels it covers
 //                                     (2x2 when the passes run at half the picture's size) and of
-//                                     every host sample of each, after each sample was cleaned and
+//                                     every host sample of each (one of them above 1080 lines, where
+//                                     the image is half size by the height rule: flag bit 21, below),
+//                                     after each sample was cleaned and
 //                                     capped (below). The sky is in it as any other colour: the main
 //                                     pass never reads a sample whose depth says sky.
 //   1  ao_color_mip_ps                a coarser level: the mean of the 2x2 texels below it. Run twice,
@@ -33,7 +35,7 @@
 // Push block (ao_common.hlsli AoPush), the fields of these passes:
 //   pass 0   slots.x the colour plane's bindless slot, slots.y its host samples, sizes.xy this image's
 //            size, sizes.zw the colour plane's size (the picture), shape.x the cap (luma), shape.y where a
-//            source of light starts (luma), flags: low
+//            source of light starts (luma), flags: low, bit 21 one sample of each pixel (slots2.x its host sample)
 //   pass 1   slots.z the level below's slot, sizes.xy this level's size, sizes.zw the level below's
 //   pass 2   slots.z the image shown, sizes.xy the colour target's size, flags: bits 0-7 the view (1 the
 //            image's rgb as it is, 2 the image's yzw (the bounce), 3 the image's x as a grey, 4 the
@@ -76,22 +78,32 @@ float4 TakeColour(int2 p, uint s) {
   return float4(carried, SsgiSourceShare(luma, g_push.shape.y));
 }
 
+// Flags bit 21 (the passes' own flag word, ao.cpp kColourOneSampleFlag): the texel takes ONE sample of each pixel it covers, the host sample
+// in slots2.x (the depth's own), instead of every sample of them. Only set where the image is half size by the height rule (ao_size.h:
+// above 1080 lines), so the texel is still the mean of 4 samples (a 2x2 block of pixels): the bounce light's source is a smooth signal that
+// the bounce's denoise, history and a-trous passes blur over many pixels after this, and the colour target's reads are halved at MSAA 2.
+bool AoOneSample() { return (g_push.slots2.z & (1u << 21)) != 0u; }
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const bool low = AoLow();
   const int2 base = int2(position.xy) * (low ? 2 : 1);
   const int2 last = int2(g_push.sizes.zw) - 1;
   const int across = low ? 2 : 1;
 #if AO_COLOR_MS
-  const uint samples = max(g_push.slots.y, 1u);
+  const uint host_samples = max(g_push.slots.y, 1u);
+  const bool one = AoOneSample();
+  const uint samples = one ? 1u : host_samples;
+  const uint first = one ? min(g_push.slots2.x, host_samples - 1u) : 0u;
 #else
   const uint samples = 1u;
+  const uint first = 0u;
 #endif
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   for (int j = 0; j < across; ++j) {
     for (int i = 0; i < across; ++i) {
       const int2 p = min(base + int2(i, j), last);
       for (uint s = 0u; s < samples; ++s) {
-        sum += TakeColour(p, s);
+        sum += TakeColour(p, first + s);
       }
     }
   }

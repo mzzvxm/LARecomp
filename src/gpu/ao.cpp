@@ -117,6 +117,29 @@ REXCVAR_DEFINE_BOOL(
     "render thread (a debug switch: a hitch of tens of milliseconds, once).")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_ao_half_above_1080, true, "MCLA/GPU",
+    "Diagnostic: above 1080 lines of render height (1440p, 4K, an upscaler's larger render size) the ambient "
+    "occlusion's passes (depth chain, visibility, blur, history) run at half the picture's size, 720 lines for 1440p "
+    "and 1080 for 4K, and the apply pass's depth-aware upsample puts the result back; 1080 lines and below are as "
+    "they were. The occlusion's own 18 samples a pixel make a signal that has no more detail than that, so the picture "
+    "is the same to within a thin edge and the passes cost a quarter. The contact shadows keep the picture's size "
+    "(their own depth and images). False: every size at the size the quality says (the render size on high). With "
+    "the bounce light on, mcla_gpu_ssgi_half decides instead (the bounce light's images give the visibility too). "
+    "Live; the first frame after the change makes the images again.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_ssgi_half, true, "MCLA/GPU",
+    "Diagnostic: above 1080 lines of render height the bounce light (every quality, low and high) runs at half the "
+    "picture's size, like mcla_gpu_ao_half_above_1080 does the occlusion, and its colour chain takes one of the "
+    "colour target's MSAA samples a pixel (the four pixels of a 2x2 block give the texel) instead of all of them: the "
+    "bounce light is the lowest frequency signal of the picture (it gathers 5 to 16 metres and is filtered over up to "
+    "30 pixels), so the picture is the same to within a thin edge and its passes cost a quarter and the images a "
+    "quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before "
+    "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_contact_shadows, "auto", "MCLA/GPU",
     "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
@@ -448,6 +471,14 @@ constexpr float kSkyDistance = 60000.0f;
 constexpr uint32_t kApplyOcclusionFlag = 1u << 22;
 constexpr uint32_t kApplyContactFlag = 1u << 23;
 constexpr uint32_t kApplyMaskFlag = 1u << 24;
+// The contact shadows' image is at the picture's size while the occlusion's images are half size (hlsl/ao_apply_ps.hlsl AoContactFull; Plan::SplitContact):
+// the apply then reads it without an upsample and takes its depth from the high 16 bits of slots2.y (the low 16 are the bounce light's colour slot).
+// (The bounce light's own packing: bindless slots are below 32768, so two fit one word.)
+constexpr uint32_t kApplyContactFullFlag = 1u << 21;
+constexpr uint32_t kApplyHighSlotShift = 16;
+static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift), "two bindless slots must fit one 32 bit word");
+// The colour chain's level 0 takes one MSAA sample of each pixel, the host sample in slots2.x (hlsl/ao_color_ps.hlsl AoOneSample; Plan::OneSampleColour).
+constexpr uint32_t kColourOneSampleFlag = 1u << 21;
 // The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): its gain limit rides in flags bits 8-15 (the slices'
 // and steps' place, which the apply does not read) and its cap in bits 26-31 (ssgi_light.h LimitCode and
 // CapCode), and its debug views are 16 to 21 (mcla_gpu_ssgi_view 1 to 6). The far ring's steps ride in the main
@@ -935,6 +966,9 @@ void AmbientOcclusion::Shutdown() {
   }
   raw_ = HostImage{};
   denoised_ = HostImage{};
+  depth_full_ = HostImage{};
+  contact_raw_ = HostImage{};
+  contact_dn_ = HostImage{};
   for (HostImage& image : history_) {
     image = HostImage{};
   }
@@ -1359,6 +1393,9 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   }
   add(raw_);
   add(denoised_);
+  add(depth_full_);
+  add(contact_raw_);
+  add(contact_dn_);
   for (const HostImage& image : history_) {
     add(image);
   }
@@ -1386,6 +1423,9 @@ void AmbientOcclusion::ReleaseImages() {
   }
   passes_->ReleaseImage(raw_);
   passes_->ReleaseImage(denoised_);
+  passes_->ReleaseImage(depth_full_);
+  passes_->ReleaseImage(contact_raw_);
+  passes_->ReleaseImage(contact_dn_);
   for (HostImage& image : history_) {
     passes_->ReleaseImage(image);
   }
@@ -1828,14 +1868,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     }
   }
   PlanGi(&plan);
-  // The passes run at half the picture's size when nothing that is on asks for the whole of it (the bounce
-  // light's high does, as the occlusion's).
-  plan.low = !(plan.occlusion && plan.mode == Mode::kHigh) &&
-             !(contact && plan.contact.mode == Mode::kHigh) &&
-             !(plan.gi.on && plan.gi.mode == Mode::kHigh);
-  if (plan.gi.on && plan.gi.half && !(contact && plan.contact.mode == Mode::kHigh)) {
-    plan.low = true;  // the bounce light's low at half the size, whatever the occlusion's own quality
-  }
+  // (The size of the passes is decided once the picture's size is known, below: ao_size.h.)
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
   // turning it on, the first frame of a pause spell: the play view's lens is not the pause
@@ -1894,11 +1927,32 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     outcome_ = Outcome::kTooSmall;
     return false;
   }
-  const bool low = plan.low;
-  for (uint32_t axis = 0; axis < 2; ++axis) {
-    plan.ao[axis] = low ? (plan.render[axis] + 1) / 2 : plan.render[axis];
-    plan.level[0][axis] = (plan.ao[axis] + 1) / 2;
-    plan.level[1][axis] = (plan.ao[axis] + 3) / 4;
+  // The size of the passes (ao_size.h). The old rule: half the picture's size when nothing that is on asks for the whole of it (the
+  // bounce light's high does, as the occlusion's and the contact shadows'). The new one, above 1080 lines of render height: the
+  // occlusion's and the bounce light's images are traced at half size at every quality, and the contact shadows keep the size they had.
+  {
+    ao_size::Inputs in;
+    in.render_height = plan.render[1];
+    in.occlusion = plan.occlusion;
+    in.occlusion_high = plan.mode == Mode::kHigh;
+    in.contact = contact;
+    in.contact_high = contact && plan.contact.mode == Mode::kHigh;
+    in.bounce = plan.gi.on;
+    in.bounce_high = plan.gi.on && plan.gi.mode == Mode::kHigh;
+    in.bounce_half = plan.gi.on && plan.gi.half;
+    in.half_above_ao = REXCVAR_GET(mcla_gpu_ao_half_above_1080);
+    in.half_above_bounce = plan.gi.half_above;
+    const ao_size::Choice choice = ao_size::Decide(in);
+    plan.low = choice.low;
+    plan.by_height = choice.by_height;
+    plan.contact_full = choice.contact_full;
+    const ao_size::Sizes sizes = ao_size::SizesOf(plan.render, choice);
+    for (uint32_t axis = 0; axis < 2; ++axis) {
+      plan.ao[axis] = sizes.ao[axis];
+      plan.level[0][axis] = sizes.level0[axis];
+      plan.level[1][axis] = sizes.level1[axis];
+      plan.contact_size[axis] = sizes.contact[axis];
+    }
   }
   const bool recorded = Run(summary, list, plan);
   outcome_ = recorded ? Outcome::kRecorded : Outcome::kNotRecorded;
@@ -1914,7 +1968,17 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // level 0 only. The two scratch images hold the occlusion's visibility passes and, after those,
   // the contact shadows'; the history is the occlusion's alone.
   const bool levels = plan.occlusion || plan.probe;
-  const bool scratch = plan.apply;
+  const bool contact = plan.contact.mode != Mode::kOff;
+  // The contact shadows have their own full size depth and images while the occlusion is traced at half size (Plan::SplitContact); else
+  // the march and its filter use the occlusion's scratch images (raw_, denoised_), which the occlusion has finished with by then.
+  const bool split = plan.SplitContact();
+  const bool contact_scratch = plan.apply && contact && !split;
+  const bool in_apply = plan.ContactFilterInApply();
+  // The visibility passes' two images are read by the plain occlusion (the bounce light has its own images) and the contact shadows'
+  // march and filter pass (the filter pass is not run where the apply does the filter): nothing else, so they are not held otherwise.
+  const bool ao_scratch = plan.apply && plan.occlusion && !plan.gi.on;
+  const bool raw_needed = ao_scratch || contact_scratch;
+  const bool denoised_needed = ao_scratch || (contact_scratch && !in_apply);
   bool ok = passes_->EnsureImage(depth_[0], plan.ao[0], plan.ao[1], plume::RenderFormat::R32_FLOAT,
                                  "ao depth");
   if (ok && levels) {
@@ -1931,11 +1995,38 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
       }
     }
   }
-  if (ok && scratch) {
+  if (ok && raw_needed) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
-                              "ao visibility") &&
-         passes_->EnsureImage(denoised_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
+                              "ao visibility");
+  } else if (!raw_needed && raw_.texture) {
+    passes_->ReleaseImage(raw_);
+  }
+  if (ok && denoised_needed) {
+    ok = passes_->EnsureImage(denoised_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
                               "ao denoised visibility");
+  } else if (!denoised_needed && denoised_.texture) {
+    passes_->ReleaseImage(denoised_);
+  }
+  // The contact shadows' own images, at the picture's size.
+  if (ok && split && plan.apply) {
+    ok = passes_->EnsureImage(depth_full_, plan.render[0], plan.render[1], plume::RenderFormat::R32_FLOAT,
+                              "ao contact depth") &&
+         passes_->EnsureImage(contact_raw_, plan.render[0], plan.render[1], plume::RenderFormat::R16_FLOAT,
+                              "ao contact visibility");
+    if (ok && !in_apply) {
+      ok = passes_->EnsureImage(contact_dn_, plan.render[0], plan.render[1], plume::RenderFormat::R16_FLOAT,
+                                "ao contact filtered visibility");
+    }
+  }
+  if (!split || !plan.apply) {
+    for (HostImage* image : {&depth_full_, &contact_raw_}) {
+      if (image->texture) {
+        passes_->ReleaseImage(*image);
+      }
+    }
+  }
+  if ((!split || !plan.apply || in_apply) && contact_dn_.texture) {
+    passes_->ReleaseImage(contact_dn_);
   }
   // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
   // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
@@ -1963,18 +2054,29 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   } else if (weight_.texture) {
     passes_->ReleaseImage(weight_);
   }
-  if (ok && (images_made_for_[0] != plan.ao[0] || images_made_for_[1] != plan.ao[1])) {
+  const uint32_t made_state = (split ? 1u : 0u) | (plan.low ? 2u : 0u);
+  if (ok && (images_made_for_[0] != plan.ao[0] || images_made_for_[1] != plan.ao[1] || images_made_for_[2] != made_state)) {
     images_made_for_[0] = plan.ao[0];
     images_made_for_[1] = plan.ao[1];
+    images_made_for_[2] = made_state;
     const char* what = plan.apply ? (plan.occlusion ? ModeName(plan.mode) : "contact shadows only")
                                   : "census probe only";
-    REXLOG_INFO("[gpu] ao: images at {}x{} for a {}x{} picture ({}): linear depth R32_FLOAT{}{}{}, "
-                "{:.1f} MiB",
+    const ao_size::Frame model = plan.SizeFrame();
+    REXLOG_INFO("[gpu] ao: images at {}x{} for a {}x{} picture ({}{}): linear depth R32_FLOAT{}{}{}{}, "
+                "{:.1f} MiB held (the model of ao_size.h: {:.1f} MiB, {:.1f} MiB at the size and with the images of the version "
+                "before the height rule)",
                 plan.ao[0], plan.ao[1], plan.render[0], plan.render[1], what,
+                plan.by_height ? ", half size above 1080 lines: mcla_gpu_ao_half_above_1080 / mcla_gpu_ssgi_half"
+                               : (plan.low ? ", half size by the quality's own rule" : ""),
                 levels ? " with two coarser levels" : "",
-                scratch ? ", visibility R16_FLOAT x2" : "",
+                raw_needed ? (denoised_needed ? ", visibility R16_FLOAT x2" : ", visibility R16_FLOAT") : "",
                 plan.occlusion && !plan.gi.on ? ", history R16G16_FLOAT x2" : "",
-                double(HeldBytes()) / (1024.0 * 1024.0));
+                split ? std::format(", the contact shadows keep the picture's size ({}x{}: their own depth R32_FLOAT and "
+                                    "visibility R16_FLOAT{})",
+                                    plan.render[0], plan.render[1], in_apply ? "" : " x2")
+                      : std::string(),
+                double(HeldBytes()) / (1024.0 * 1024.0), ao_size::Mib(ao_size::Bytes(model).Total()),
+                ao_size::Mib(ao_size::BytesBefore(model).Total()));
     if (plan.occlusion) {
       const int radius = REXCVAR_GET(mcla_gpu_ao_stable) ? ao_stable::DenoiseRadius(plan.ao[1]) : 1;
       REXLOG_INFO("[gpu] ao: the blur is {0}x{0} pixels and the wide blur of the pixels that have no history {1}x{1} "
@@ -1984,6 +2086,28 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                   radius == 1 && !REXCVAR_GET(mcla_gpu_ao_stable) ? "the first version's, at every size"
                                                                   : "follows the image's height",
                   double(radius) * double(ao_stable::kReferenceHeight) / double(std::max(plan.ao[1], 1u)));
+      if (!plan.gi.on) {
+        // The cost model (ao_size.h Cost): the 5080's measured passes at 3840x2160 scaled by the pixels and the taps; the half size
+        // numbers are not measured.
+        const uint32_t taps = plan.mode == Mode::kLow ? ao_fast::kLowSlices * ao_fast::kLowSteps
+                                                       : ao_fast::kHighSlices * ao_fast::kHighSteps;
+        ao_size::Choice before = plan.SizeChoice();
+        before.low = plan.low && !plan.by_height;
+        before.contact_full = false;
+        const ao_size::Sizes sizes_before = ao_size::SizesOf(plan.render, before);
+        const int radius_before = REXCVAR_GET(mcla_gpu_ao_stable) ? ao_stable::DenoiseRadius(sizes_before.ao[1]) : 1;
+        const ao_size::Sizes sizes_now = ao_size::SizesOf(plan.render, plan.SizeChoice());
+        const ao_size::AoCost cost_now =
+            ao_size::Cost(sizes_now, plan.render, taps, uint32_t(radius), split);
+        const ao_size::AoCost cost_before =
+            ao_size::Cost(sizes_before, plan.render, taps, uint32_t(radius_before), false);
+        REXLOG_INFO("[gpu] ao: cost model for the occlusion at {}x{} ({}): visibility {:.3f} + blur {:.3f} + history {:.3f} + "
+                    "depth {:.3f} + apply {:.3f} = {:.3f} ms on an RTX 5080, {:.3f} ms at the size before the height rule "
+                    "(the passes' measured 4K numbers scaled by pixels and taps; not measured at this size)",
+                    plan.ao[0], plan.ao[1], plan.low ? "traced at half the picture's size" : "traced at the picture's size",
+                    cost_now.main_ms, cost_now.denoise_ms, cost_now.temporal_ms, cost_now.depth_ms, cost_now.apply_ms,
+                    cost_now.Total(), cost_before.Total());
+      }
     }
   }
   return ok;
@@ -2483,6 +2607,17 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[3] = float(plan.level[0][1]);
     DrawPass(list, depth_[2], mip_pipeline, push);
   }
+  if (plan.SplitContact()) {
+    // The occlusion is traced at half size and the contact shadows keep the picture's: their march and filter read this full size
+    // linear depth (the depth pass again, without the half size flag; the vehicle bit is in it as in level 0).
+    pass_timing_->Mark(list, "ao contact depth");
+    push = base;
+    push.slots2[2] &= ~(1u << 16);
+    push.slots[2] = summary.stencil_slot;
+    push.sizes[0] = push.sizes[2] = float(plan.render[0]);
+    push.sizes[1] = push.sizes[3] = float(plan.render[1]);
+    DrawPass(list, depth_full_, depth_pipeline, push);
+  }
   if (plan.gi.on) {
     RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
   }
@@ -2733,6 +2868,13 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                       (mask_slot != kNoSlot ? kApplyMaskFlag : 0u);
     push.slots2[0] = contact_applied ? contact_slot : 0u;
     push.slots2[3] = mask_slot != kNoSlot ? mask_slot : 0u;
+    // slots2.y: the bounce light's colour slot (low 16 bits, below) and, while the contact shadows keep the picture's size beside a half
+    // size occlusion, the slot of their full size depth (high 16 bits); the apply reads neither otherwise (it was the frame number).
+    push.slots2[1] = 0u;
+    if (contact_applied && plan.SplitContact()) {
+      push.slots2[2] |= kApplyContactFullFlag;
+      push.slots2[1] = depth_full_.slot << kApplyHighSlotShift;
+    }
     push.lens[2] = plan.contact.fade_start;
     push.lens[3] = plan.contact.fade_end;
     push.shape[0] = plan.contact.mask_gain;
@@ -2743,7 +2885,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
       // the cap (the ceiling) in bits 26-31.
       push.slots[2] = gi_bounce->slot;
-      push.slots2[1] = colour_[0].slot;
+      push.slots2[1] |= colour_[0].slot;
       push.shape[1] = plan.gi.strength;
       push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
                        ((ssgi_light::LimitCode(plan.gi.limit) << ssgi_light::kLimitShift) & ssgi_light::kLimitMask) |
@@ -2822,8 +2964,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   "{:.2f} m (thickness {:.2f} m, full over the first {:.0f}% of the ray), strength "
                   "{:.2f}, the game's shadow mask {} (the sun's visibility is 1 where it is not "
                   "found), {}",
-                  ModeName(plan.contact.mode), plan.render[0], plan.render[1], plan.ao[0],
-                  plan.ao[1], plan.contact.steps, plan.contact.length, plan.contact.thickness,
+                  ModeName(plan.contact.mode), plan.render[0], plan.render[1], plan.contact_size[0],
+                  plan.contact_size[1], plan.contact.steps, plan.contact.length, plan.contact.thickness,
                   100.0f * plan.contact.end_fade_start, plan.contact.strength,
                   contact_mask_ ? "found" : "not found",
                   plan.occlusion ? "with the occlusion" : "without the occlusion");
@@ -2838,48 +2980,50 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   plan.contact.under_vehicle, up.x, up.y, up.z, traffic_shadow::CastDistance());
     }
     const uint32_t cost_mode = (plan.contact.fast ? 1u : 0u) | (plan.ContactFilterInApply() ? 2u : 0u);
-    if (contact_cost_logged_[0] != plan.ao[0] || contact_cost_logged_[1] != plan.ao[1] ||
+    if (contact_cost_logged_[0] != plan.contact_size[0] || contact_cost_logged_[1] != plan.contact_size[1] ||
         contact_cost_logged_[2] != plan.contact.steps || contact_cost_logged_[3] != cost_mode) {
       // The cost model (contact_trace.h CostModel), once per size, step count and lever state: the march
       // reads the depth `steps` times a pixel of the images, the filter is one 3x3 pass. The numbers are the
       // RTX 5080's measured at 3840x2160 and scale with the pixels and the steps; the first version's two
       // filter passes are shown for comparison, and with mcla_gpu_contact_shadows_fast on the model of the
       // cheaper path (not measured) next to the plain one.
-      contact_cost_logged_[0] = plan.ao[0];
-      contact_cost_logged_[1] = plan.ao[1];
+      contact_cost_logged_[0] = plan.contact_size[0];
+      contact_cost_logged_[1] = plan.contact_size[1];
       contact_cost_logged_[2] = plan.contact.steps;
       contact_cost_logged_[3] = cost_mode;
       const contact_trace::Cost plain =
-          contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 1, true);
+          contact_trace::CostModel(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, 1, true);
       const contact_trace::Cost before =
-          contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 2, false);
+          contact_trace::CostModel(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, 2, false);
       REXLOG_INFO("[gpu] contact shadows: cost model for {}x{} ({:.2f} megapixels, {}): the march "
                   "reads the depth {:.1f} million times ({:.3f} ms) and one filter pass runs over "
                   "all of it ({:.3f} ms), {:.3f} ms in all on an RTX 5080 (the first version, two "
                   "plain filter passes: {:.3f} ms); the images are the render size: a higher "
                   "render scale traces more pixels, so the edges stay as sharp in pixels",
-                  plan.ao[0], plan.ao[1], plain.megapixels,
-                  plan.low ? "half the render size" : "the render size", plain.mega_steps, plain.march_ms,
-                  plain.filter_ms, plain.total_ms, before.total_ms);
+                  plan.contact_size[0], plan.contact_size[1], plain.megapixels,
+                  plan.contact_size[0] < plan.render[0] ? "half the render size"
+                                                        : (plan.low ? "the render size, beside an occlusion traced at half size"
+                                                                    : "the render size"),
+                  plain.mega_steps, plain.march_ms, plain.filter_ms, plain.total_ms, before.total_ms);
       if (plan.contact.fast) {
-        const contact_trace::Cost fast = contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps,
-                                                                      plan.ContactFilterInApply());
+        const contact_trace::Cost fast = contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1],
+                                                                      plan.contact.steps, plan.ContactFilterInApply());
         REXLOG_INFO("[gpu] contact shadows: the cheaper path is on (mcla_gpu_contact_shadows_fast): the march "
                     "keeps {:.0f}% of the steps on average (a ray that is short on the screen needs fewer; "
                     "the model's street average for this size), {}: model {:.3f} ms in all ({:.3f} + {:.3f}) "
                     "against {:.3f} ms with it off; not measured",
-                    100.0 * contact_trace::AdaptiveStepShare(plan.ao[1]),
+                    100.0 * contact_trace::AdaptiveStepShare(plan.contact_size[1]),
                     plan.ContactFilterInApply() ? "the filter is done inside the apply pass (no pass, no target write)"
                                                 : "the filter pass stays (the passes run at half the picture's size)",
                     fast.total_ms, fast.march_ms, fast.filter_ms, plain.total_ms);
         if (plan.ContactFilterInApply()) {
           // The skip under the game's own shadow (a frame that has the mask; the model's shadowed shares, not measured).
           const contact_trace::Cost lit =
-              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.0);
+              contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, true, 0.0);
           const contact_trace::Cost third =
-              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.3);
+              contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, true, 0.3);
           const contact_trace::Cost half =
-              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.5);
+              contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, true, 0.5);
           REXLOG_INFO("[gpu] contact shadows: with the game's sun shadow mask in the frame the march also skips the "
                       "pixels the game's own shadow covers (the picture is unchanged): model {:.3f} ms with none of "
                       "the marched pixels in shadow, {:.3f} ms at 30% and {:.3f} ms at 50% in shadow (a frame without "
@@ -3156,13 +3300,19 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
     return kNoSlot;
   }
   const ContactPlan& c = plan.contact;
-  // The march: the linear depth in, the contact visibility out (raw_). Its constants are in the
+  // Beside a half size occlusion the contact shadows have a full size depth and images of their own (Plan::SplitContact);
+  // otherwise they read the occlusion's depth and use its scratch images, which it has finished with by now.
+  const bool split = plan.SplitContact();
+  const HostImage& contact_depth = split ? depth_full_ : depth_[0];
+  HostImage& contact_raw = split ? contact_raw_ : raw_;
+  HostImage& contact_dn = split ? contact_dn_ : denoised_;
+  // The march: the linear depth in, the contact visibility out (contact_raw). Its constants are in the
   // header of hlsl/ao_contact_ps.hlsl.
   pass_timing_->Mark(list, "ao contact");
   Push push = base;
-  push.slots[2] = depth_[0].slot;
-  push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
-  push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
+  push.slots[2] = contact_depth.slot;
+  push.sizes[0] = push.sizes[2] = float(plan.contact_size[0]);
+  push.sizes[1] = push.sizes[3] = float(plan.contact_size[1]);
   push.lens[2] = c.length;
   push.lens[3] = c.thickness;
   push.shape[0] = c.end_fade_start;
@@ -3210,23 +3360,23 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
                   mask_slot);
     }
   }
-  DrawPass(list, raw_, march, push);
+  DrawPass(list, contact_raw, march, push);
   push.shape[2] = base.shape[2];
   push.extra[3] = base_extra_w;
   if (in_apply) {
     // The apply pass reads the march's own image and does the 3x3 filter itself (flag bit 25 there, ao_apply_ps).
-    return raw_.slot;
+    return contact_raw.slot;
   }
   // The filter: one 3x3 pass of the occlusion's denoise shader in its contact mode, whose weights also
   // fall with the difference of the visibility: the noise of the ray's start goes, the edges of the
   // shadow and of the depth stay (the first version ran the plane-only blur twice, which softened every
-  // edge and cost more than the march). Into denoised_, which the apply reads.
+  // edge and cost more than the march). Into contact_dn (denoised_), which the apply reads.
   pass_timing_->Mark(list, "ao contact denoise");
-  push.slots[2] = raw_.slot;
-  push.slots[3] = depth_[0].slot;
+  push.slots[2] = contact_raw.slot;
+  push.slots[3] = contact_depth.slot;
   push.slots2[2] |= kContactFilterFlag;
-  DrawPass(list, denoised_, denoise, push);
-  return denoised_.slot;
+  DrawPass(list, contact_dn, denoise, push);
+  return contact_dn.slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -3269,6 +3419,7 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
   g.fewer = gi_test_ ? plan->mode == Mode::kLow : (g.mode == Mode::kLow && low_how != 1);
   g.half = !gi_test_ && g.mode == Mode::kLow && low_how >= 1;
+  g.half_above = REXCVAR_GET(mcla_gpu_ssgi_half);  // above 1080 lines, every quality (ao_size.h)
   // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
   // is set (ssgi_level.h).
   const ssgi_level::Level level = ReadSsgiLevel();
@@ -3448,6 +3599,12 @@ void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const P
   push.sizes[3] = float(plan.render[1]);
   push.shape[0] = ssgi_light::RadianceCap(plan.gi.cap, base.light[3], base.extra[0]);
   push.shape[1] = ssgi_light::SourceStart(base.light[3], base.extra[0]);
+  if (ms && plan.OneSampleColour()) {
+    // Half size (above 1080 lines): the texel is the mean of the 2x2 pixels' one sample each, the depth's own host sample, not of every
+    // sample of them (the bounce is a smooth signal, blurred and filtered over many pixels after this; half the colour target's reads).
+    push.slots2[2] |= kColourOneSampleFlag;
+    push.slots2[0] = base.slots[1];
+  }
   DrawPass(list, colour_[0], Pipeline(ms ? kVColorMs : kVColor), push);
   // The coarser levels, one pass each, as the depth chain's.
   plume::RenderPipeline* mip = Pipeline(kVColorMip);
@@ -3607,7 +3764,7 @@ void AmbientOcclusion::OnPresent() {
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
         census_every_ == 0) {
       ReleaseImages();
-      images_made_for_[0] = images_made_for_[1] = 0;
+      images_made_for_[0] = images_made_for_[1] = images_made_for_[2] = 0;
     }
   } else {
     off_frames_ = 0;

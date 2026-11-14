@@ -2,9 +2,17 @@
 //
 // The EDRAM depth target's guest sample 0 (Texture2DMS when AO_DEPTH_MS, else a plain texture),
 // linearised with the lens into view-space distance, R32_FLOAT, at the AO's size. At half
-// resolution (AoLow) each pixel stands for a 2x2 block of the depth plane: the one of its four
-// samples nearest to the block's mean, so that a pixel never takes a depth that no sample of its
-// block has (an average across an edge would).
+// resolution (AoLow) each pixel stands for a 2x2 block of the depth plane: where the four samples
+// are one surface (their spread under kHalfSurfaceShare of the depth, the share the apply's upsample
+// calls the same surface) the MEAN, which is the surface's depth at the block's centre where the pixel's
+// position is; across an edge the one of the four nearest to the block's mean, so that a pixel never
+// takes a depth that no sample of its block has (an average across an edge would).
+// The mean matters on a surface seen at a grazing angle (a road, a wall along the street): its depth
+// changes by centimetres to metres from one row of the plane to the next, and the sample nearest to the
+// mean is always one of the corners, half a pixel off the block's centre. The surface then comes out
+// as a staircase in the half size image, its normals and horizons are wrong and the occlusion is
+// darker by a few hundredths on every grazing plane (measured on the software rasteriser, flat road and
+// wall: 0.04 darker on average against the full size image, 0.003 with the mean).
 //
 // The lowest bit of each depth says whether the pixel is a vehicle (ao_common.hlsli, AoIsVehicle): the
 // depth target's stencil plane (slots.z, 0xFFFFFFFF when there is none) holds a vehicle's ID in its upper
@@ -17,6 +25,14 @@
 // ao_temporal_ps.hlsl.
 static const uint kFirstVehicleId = 1u;
 static const uint kLastVehicleId = 23u;
+
+// The block's four samples are one surface when their spread (largest minus smallest linear depth) is under this share of the mean
+// depth plus 2 cm (ao_size.h kHalfSurfaceShare, kHalfSurfaceFloor): a depth step the apply's upsample (ao_apply_ps.hlsl VisibilityAt,
+// 2% of the depth, 5 cm) takes for the same surface is nearly not an edge here either, and a grazing plane's own slope stays under it for
+// the distances the occlusion works at (a road seen from 1.4 m up: to 105 m in a picture of 2160 rows, to 70 m in 1440; the occlusion has
+// faded out from 80 m).
+static const float kHalfSurfaceShare = 0.04f;
+static const float kHalfSurfaceFloor = 0.02f;
 
 // Whether the depth target's pixel `p` (the guest's sample 0) belongs to a vehicle.
 bool IsVehiclePixel(int2 p) {
@@ -64,6 +80,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
     if (abs(d.w - mean) < best) {
       t = d.w;
       source = p3;
+    }
+    // One surface: its depth at the block's centre (the vehicle mark and the stencil stay the chosen sample's).
+    const float spread = max(max(d.x, d.y), max(d.z, d.w)) - min(min(d.x, d.y), min(d.z, d.w));
+    if (spread <= kHalfSurfaceShare * mean + kHalfSurfaceFloor) {
+      t = mean;
     }
   } else {
     source = min(pixel, last);

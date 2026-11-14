@@ -115,7 +115,9 @@
 // made. The pause menu's world, the garage and the map get them as the occlusion does.
 // SHARPNESS (contact_trace.h has the rules and the reasons, contact_trace_test.cpp checks them): the
 // images are the render size at every render scale (a scale of 3 traces 3840x2160 pixels; only the
-// low setting with the occlusion not on high works at half of it), so what made the first version
+// low setting with the occlusion not on high works at half of it, and the occlusion's own images being
+// traced at half size above 1080 lines leaves the contact shadows' at the render size: see "THE SIZE OF
+// THE PASSES" below), so what made the first version
 // soft was the look of its trace, set at 1280x720 in world units: a ray-end fade that lightened the
 // shadow all along the ray, a depth bias and ramp of 6 cm at 10 m (10 pixels at 720p, 30 at 4K), two
 // plane-only blurs and equally spaced steps. The tolerance is now a few millimetres plus a few
@@ -149,6 +151,30 @@
 // (4) in the pause/map view (no census of whether the collector runs there: the sun is then not
 // shadowed by the mask and the contact shadows go on everything lit); (5) shimmer in motion without
 // an upscaler (no history of their own: if visible, run ao_temporal_ps over a second history).
+//
+// THE SIZE OF THE PASSES (ao_size.h has the rules and the memory they come to, ao_size_test.cpp checks them; debug cvars
+// mcla_gpu_ao_half_above_1080 and mcla_gpu_ssgi_half, both on by default, off is every size as it was). The occlusion's main pass takes
+// the same 18 samples a pixel at every size, so what it makes has no more detail than a 720 line picture's, and the blur (ao_stable.h) that
+// follows takes the rest: above 1080 lines of render height (1440p, 4K, an upscaler's larger render size) the occlusion's and the bounce
+// light's passes (depth chain, visibility, blur, history, a-trous) are traced at HALF the picture's size, 720 lines for 1440p and 1080 for
+// 4K, and the apply pass puts them back with its depth-aware 2x upsample (VisibilityAt, GiAt). 1080 lines and below are unchanged. The
+// radius of the blur and the number of a-trous passes follow the TRACED image's height (plan.ao[1]), the history is dropped when the size
+// changes (a toggle of the cvar, a change of the render size), and the temporal pass takes a half size pixel for a vehicle where the depth
+// pass marked it (ao_temporal_ps.hlsl AoVehicleId). The half size depth takes the MEAN of a 2x2 block where its four samples are one
+// surface and the sample nearest to the mean across an edge (ao_depth_ps.hlsl): the old rule's corner sample put every surface seen at a
+// grazing angle half a pixel off its centre and the occlusion came out 0.04 darker on a road and a wall. The contact shadows keep the size
+// they had (the render size where the occlusion on high or they on high pinned it): the depth pass is then drawn twice, the second time at
+// the picture's size into depth_full_ (Plan::SplitContact) for their march and the apply's filter, and they have their own images
+// (contact_raw_, contact_dn_) because the occlusion's scratch images are half size. The visibility passes' two scratch images are only held
+// where something reads them (the plain occlusion, the contact march and its filter pass). The bounce light's colour chain takes ONE MSAA
+// sample of each pixel of a 2x2 block where its size is half by the height rule (ao_color_ps.hlsl AoOneSample).
+// MEASURED (software rasteriser, the real passes, a road, a wall, a car, a kerb and two poles, 13 frames of the noise lattice): the final
+// AO factor at half size against full size is 0.002 (4K) and 0.003 (1440p) on average, 99% of the pixels within 0.012 and 0.017, bias -0.001,
+// and what differs by more than 0.05 (0.1% of the pixels) is the kerb's 15 cm foot and the far pole: thin geometry. One frame is noisier
+// (1.8 times at 1440p and 4K: a 3x3 / 5x5 blur over a quarter of the pixels), and the history takes that out.
+// CHECK: (none of this could be run in the game) 1440p and 4K, parked and moving, the occlusion's debug views (mcla_gpu_ao_view 1, 2, 6, 7, 12):
+// the tyre's contact line, a kerb's foot, poles, the base of a wall, a car's silhouette against the road; the apply's cost (its upsample
+// reads 4 + 4 texels a pixel at half size; the "ao apply" pass label); the "ao contact depth" label (the extra depth pass).
 //
 // SCREEN-SPACE GLOBAL ILLUMINATION, FIRST STEP (hlsl/ao_color_ps.hlsl, hlsl/ao_main_ps.hlsl compiled
 // with AO_GI; mcla_gpu_ssgi_test, off by default and debug-only: nothing of it runs for a player, and
@@ -312,6 +338,7 @@
 
 #include <plume_render_interface.h>
 
+#include "ao_size.h"
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
@@ -617,7 +644,9 @@ class AmbientOcclusion {
     bool test = false;             // mcla_gpu_ssgi_test forced it (the debug override: the occlusion's own quality)
     Mode mode = Mode::kHigh;       // the setting's quality (high: 3 slices and 3 steps at the picture's size)
     bool fewer = false;            // the main pass takes 2 slices and 2 steps (the occlusion's low)
-    bool half = false;             // the passes run at half the picture's size even where the occlusion is high
+    bool half = false;             // the passes run at half the picture's size even where the occlusion is high (mcla_gpu_ssgi_low 1 / 2)
+    bool half_above = true;        // mcla_gpu_ssgi_half: half size above 1080 lines at every quality (ao_size.h), and then one MSAA sample
+                                   // in the colour chain (Plan::OneSampleColour)
     bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
     // The numbers of the strength level (mcla_gpu_ssgi_intensity; ssgi_level.h) with the debug cvars' overrides:
     float strength = 1.25f;        // the bounce's gain; 0 runs the passes and adds nothing
@@ -638,18 +667,47 @@ class AmbientOcclusion {
     bool probe = false;            // read the coarsest level back for the census
     bool apply = true;             // the apply pass runs (false: the census's probe only)
     bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
-    bool low = false;              // the passes run at half the picture's size
+    bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace)
+    bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
+    bool contact_full = false;     // the contact shadows keep the picture's size (their own depth and images) while `low`
     bool upscaler = false;
     uint32_t render[2] = {};       // the main view, host pixels
-    uint32_t ao[2] = {};           // the passes' size (the depth chain's level 0)
+    uint32_t ao[2] = {};           // the traced passes' size (the depth chain's level 0)
     uint32_t level[2][2] = {};     // the coarser levels' sizes
+    uint32_t contact_size[2] = {}; // the contact shadows' images: the picture's, or half of it where the old rule says so
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
     GiPlan gi;
     // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
     // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
     // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
-    bool ContactFilterInApply() const { return contact.fast && !low; }
+    bool ContactFilterInApply() const { return ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }
+    // The contact shadows have images and a depth of their own (the full size ones) beside a half size trace.
+    bool SplitContact() const { return contact.mode != Mode::kOff && contact_full; }
+    // The bounce light's colour chain takes one sample of the colour target's MSAA samples (per pixel of a 2x2 block), not all.
+    bool OneSampleColour() const { return gi.on && by_height && gi.half_above; }
+    ao_size::Choice SizeChoice() const {
+      ao_size::Choice c;
+      c.legacy_low = low && !by_height;
+      c.low = low;
+      c.by_height = by_height;
+      c.contact_full = contact_full;
+      return c;
+    }
+    // What the frame asks the image rules of ao_size.h (memory and cost models, the tests).
+    ao_size::Frame SizeFrame() const {
+      ao_size::Frame f;
+      f.render[0] = render[0];
+      f.render[1] = render[1];
+      f.choice = SizeChoice();
+      f.occlusion = occlusion;
+      f.apply = apply;
+      f.probe = probe;
+      f.contact = contact.mode != Mode::kOff;
+      f.contact_fast = contact.fast;
+      f.bounce = gi.on;
+      return f;
+    }
   };
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
@@ -970,9 +1028,14 @@ class AmbientOcclusion {
   Look look_;
   uint32_t look_logged_index_ = ~0u;
   float car_reach_logged_ = -1.0f;
-  HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it
-  HostImage raw_;       // the main pass's visibility
-  HostImage denoised_;  // the denoise's
+  HostImage depth_[3];  // the linear depth chain: the traced size (half the picture's above 1080 lines), then 1/2 and 1/4 of it
+  HostImage raw_;       // the main pass's visibility (also the contact shadows' march while their size is the traced one)
+  HostImage denoised_;  // the denoise's (also the contact shadows' filter pass's then)
+  // The contact shadows' own images while the occlusion is traced at half size and they are not (Plan::SplitContact): the picture's size,
+  // the linear depth (R32_FLOAT, the vehicle bit too) that their march and filter read, the march's image and the filter pass's.
+  HostImage depth_full_;
+  HostImage contact_raw_;
+  HostImage contact_dn_;
   // The history: (visibility, linear depth) of the last frame that ran the passes, R16G16_FLOAT,
   // two images that take turns (a pass does not read the image it writes); history_[history_index_]
   // is the one written last.
@@ -1023,7 +1086,7 @@ class AmbientOcclusion {
   uint64_t history_resets_[size_t(HistoryWhy::kCount)] = {};
   uint64_t pose_frames_[3] = {};
   bool history_logged_ = false;
-  uint32_t images_made_for_[2] = {};
+  uint32_t images_made_for_[3] = {};  // the traced size and a word of what the set holds (bit 0 the contact shadows' own images, bit 1 the bounce light)
   bool images_failed_logged_ = false;
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
