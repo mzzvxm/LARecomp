@@ -1,6 +1,7 @@
 // The game window's display mode. See display_mode.h.
 
 #include "display_mode.h"
+#include "display_sizes.h"
 
 #include <algorithm>
 #include <atomic>
@@ -174,81 +175,85 @@ Size WantedExclusiveSize() {
 
 namespace {
 
-// What the display lists. The list is asked of the driver (a few milliseconds), and the menu asks every
-// frame it is open, so it is kept for a few seconds, per display (ListedModes).
-struct ModeRecord {
-  Size size;
-  uint32_t hz = 0;
-};
+// What the display lists, as the rules of display_sizes.h fold it: every look at the driver is added to
+// the Book, none replaces it. The list is asked of the driver (a few milliseconds), and the menu asks
+// every frame it is open, so it is looked at again at most every few seconds, per display (ListedModes).
 struct DisplayInfo {
   std::wstring device;
-  Size desktop;
-  uint32_t desktop_hz = 0;
-  std::vector<ModeRecord> modes;
-  std::vector<Size> sizes;
+  sizes::Book book;
   // The size of the display's work area (its own size less the taskbar), as the monitor said it while
   // the display was in its own mode. Empty when that was not asked.
   Size work;
+  // What the log last said of the book (it says it again only when it changed).
+  std::string logged;
   ULONGLONG when = 0;
 };
 constexpr ULONGLONG kInfoLifetimeMs = 5000;
 
 std::mutex g_info_mutex;
-// The lists kept, by display, and the display this game has switched to another mode (empty: none).
-// Both under g_info_mutex: the menu reads them from any thread, the UI thread changes the mode.
+// The books kept, by display, and the display this game has switched to another mode, from before the
+// switch is asked for to after the display's own mode is back (empty: none). Both under g_info_mutex:
+// the menu reads them from any thread, the UI thread changes the mode.
 std::map<std::wstring, DisplayInfo> g_infos;
 std::wstring g_switched_device;
 
-// The display's own mode: what the player set in Windows, not one this game switched to.
-bool DesktopMode(const wchar_t* device, DEVMODEW* dm) {
-  *dm = {};
-  dm->dmSize = sizeof(DEVMODEW);
-  if (EnumDisplaySettingsExW(device, ENUM_REGISTRY_SETTINGS, dm, 0)) return true;
-  *dm = {};
-  dm->dmSize = sizeof(DEVMODEW);
-  return EnumDisplaySettingsExW(device, ENUM_CURRENT_SETTINGS, dm, 0) != 0;
+// The monitor's own size (its preferred timing; display configuration API, below ReadDisplay).
+Size PreferredSize(const std::wstring& device);
+
+std::string Narrow(const std::wstring& text) {
+  if (text.empty()) return {};
+  const int bytes =
+      WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0, nullptr, nullptr);
+  if (bytes <= 0) return {};
+  std::string out(size_t(bytes), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), out.data(), bytes, nullptr, nullptr);
+  return out;
 }
 
-DisplayInfo ReadDisplay(const std::wstring& device) {
-  DisplayInfo info;
-  info.device = device;
+// One look at the display's driver, added to `info`'s book. `switched`: this game has the display in a
+// mode of its own choosing, so the driver's list is for that mode: whatever it lacks stays as it was and
+// the display's own mode is not read from it.
+void ReadDisplay(DisplayInfo* info, bool switched) {
+  const wchar_t* device = info->device.c_str();
+  sizes::Look look;
+  // The display's own mode: what the player set in Windows (the registry settings), which a mode this
+  // game switched to does not change.
   DEVMODEW dm = {};
-  if (DesktopMode(device.c_str(), &dm)) {
-    info.desktop = {dm.dmPelsWidth, dm.dmPelsHeight};
-    info.desktop_hz = dm.dmDisplayFrequency;
+  dm.dmSize = sizeof(DEVMODEW);
+  if (EnumDisplaySettingsExW(device, ENUM_REGISTRY_SETTINGS, &dm, 0)) {
+    look.desktop = {dm.dmPelsWidth, dm.dmPelsHeight};
+    look.desktop_hz = dm.dmDisplayFrequency;
+    look.desktop_is_registry = true;
   }
-  // Every mode the display lists (not the raw ones it can be driven at), 32 bit, not interlaced, from
-  // the game's own screen up.
+  // The mode it is in now.
+  dm = {};
+  dm.dmSize = sizeof(DEVMODEW);
+  if (EnumDisplaySettingsExW(device, ENUM_CURRENT_SETTINGS, &dm, 0)) {
+    look.current = {dm.dmPelsWidth, dm.dmPelsHeight};
+    look.current_hz = dm.dmDisplayFrequency;
+    if (!look.desktop_is_registry) {
+      look.desktop = look.current;
+      look.desktop_hz = look.current_hz;
+    }
+  }
+  // Every mode the display lists (not the raw ones it can be driven at); the book keeps the 32 bit,
+  // not interlaced ones from the game's own screen up.
   for (DWORD i = 0;; ++i) {
     dm = {};
     dm.dmSize = sizeof(DEVMODEW);
-    if (!EnumDisplaySettingsExW(device.c_str(), i, &dm, 0)) break;
-    if (dm.dmBitsPerPel < 32) continue;
-    if ((dm.dmFields & DM_DISPLAYFLAGS) && (dm.dmDisplayFlags & DM_INTERLACED)) continue;
-    if (dm.dmPelsWidth < kMinWidth || dm.dmPelsHeight < kMinHeight) continue;
-    info.modes.push_back({{dm.dmPelsWidth, dm.dmPelsHeight}, dm.dmDisplayFrequency});
+    if (!EnumDisplaySettingsExW(device, i, &dm, 0)) break;
+    sizes::RawMode mode;
+    mode.size = {dm.dmPelsWidth, dm.dmPelsHeight};
+    mode.hz = dm.dmDisplayFrequency;
+    mode.bits = dm.dmBitsPerPel;
+    mode.interlaced = (dm.dmFields & DM_DISPLAYFLAGS) && (dm.dmDisplayFlags & DM_INTERLACED);
+    look.modes.push_back(mode);
   }
-  // The display's own mode is always one of its modes. The driver's list depends on the mode the display
-  // is in (asked while this game had switched it to 1280x720, the list of a 3840x2160 display left its
-  // own size out: the RESOLUTION row lost the size the player started at), so it is put in when the
-  // list lacks it.
-  if (info.desktop.width >= kMinWidth && info.desktop.height >= kMinHeight) {
-    const bool listed = std::any_of(info.modes.begin(), info.modes.end(),
-                                    [&](const ModeRecord& m) { return m.size == info.desktop; });
-    if (!listed) info.modes.push_back({info.desktop, info.desktop_hz});
-  }
-  for (const ModeRecord& m : info.modes) {
-    if (std::find(info.sizes.begin(), info.sizes.end(), m.size) == info.sizes.end()) {
-      info.sizes.push_back(m.size);
-    }
-  }
-  std::sort(info.sizes.begin(), info.sizes.end(), [](const Size& a, const Size& b) {
-    const uint64_t area_a = uint64_t(a.width) * a.height;
-    const uint64_t area_b = uint64_t(b.width) * b.height;
-    return area_a != area_b ? area_a < area_b : a.width < b.width;
-  });
-  info.when = GetTickCount64();
-  return info;
+  look.preferred = PreferredSize(info->device);
+  // The driver's list depends on the mode the display is in (see display_sizes.h): the display's own
+  // mode, the mode it is in and the monitor's own size are in the book whether it listed them or not.
+  info->book.Add(look, switched, {kMinWidth, kMinHeight});
+  info->when = GetTickCount64();
 }
 
 HWND NativeWindow() { return static_cast<HWND>(g_native.load(std::memory_order_acquire)); }
@@ -262,36 +267,45 @@ bool MonitorOf(HWND hwnd, MONITORINFOEXW* info) {
   return GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(info)) != 0;
 }
 
-// What a display lists, as ReadDisplay saw it not long ago. The list is the display's own: it is asked
-// of the driver only while the display is in its own mode. While this game has the display switched to
-// another mode (FULLSCREEN at a lower size) the list from before the switch is kept and used, whatever
-// its age: Windows answers for the mode the display is in, and a list asked then loses the sizes above
-// it, among them the display's own (the owner's log of 2026-11-07: the RESOLUTION row listed 3840x2160
-// for the 5 seconds the list from before the switch lived, and not after). SetSwitchedDevice drops it
-// when the display's own mode is back, so the next ask is made in that mode again. `monitor`, when it
-// is the display's, also gives the work area.
+// What a display lists, as the book (display_sizes.h) has it from the looks at the driver so far. Windows
+// answers for the mode the display is in, so a look can be a wrong one (the sizes above that mode are
+// missing, the display's own among them: the owner's logs of 2026-11-07 and 2026-11-13, Mz's of
+// 2026-11-13). Two rules keep a wrong look from mattering:
+//   - a look only ADDS to the book (it is never replaced by one), and the display's own mode and the
+//     monitor's own size are in it whether the driver listed them or not;
+//   - while this game has the display in a mode of its own choosing, from before the switch is asked for
+//     (EnterDesktopMode) to after the display's own mode is back (RestoreDesktopMode), the driver is not
+//     asked at all: the book from before is used, whatever its age. The switch used to be marked after the
+//     call that makes it returned, so the menu thread (which asks every frame it is open) could look at
+//     the driver in the second or two the switch takes and take the new mode's list for the display's.
+// SetSwitchedDevice makes the next ask look again once the display's own mode is back. `monitor`, when
+// it is the display's, also gives the work area (only while the display is in its own mode: a switched
+// display reports the smaller one).
 // CHECK: that the list in FULLSCREEN at 1280x720 stays what it was in BORDERLESS (the same sizes,
 // 3840x2160 and every other one, however long the menu stays on the row), and comes back after the
-// display's own mode is back; the log's "the display lists no ..." must not appear for a size the row
-// offered.
+// display's own mode is back; the log's "FULLSCREEN sizes of ..." line (one per change of the list)
+// names the native size on a display at its own mode and again on one the game has switched.
 DisplayInfo ListedModes(const std::wstring& device, const MONITORINFOEXW* monitor) {
   std::lock_guard lock(g_info_mutex);
   const auto kept = g_infos.find(device);
   const bool have = kept != g_infos.end();
   const bool switched = !g_switched_device.empty() && g_switched_device == device;
   const bool fresh = have && GetTickCount64() - kept->second.when <= kInfoLifetimeMs;
-  if (!fresh && !(have && switched)) {
-    DisplayInfo info = ReadDisplay(device);
-    if (monitor && device == monitor->szDevice) {
-      info.work = {uint32_t(monitor->rcWork.right - monitor->rcWork.left),
-                   uint32_t(monitor->rcWork.bottom - monitor->rcWork.top)};
-    } else if (have) {
-      info.work = kept->second.work;
-    }
-    g_infos[device] = info;
-    return info;
+  if (have && (fresh || switched)) return kept->second;
+  DisplayInfo info = have ? kept->second : DisplayInfo{};
+  info.device = device;
+  ReadDisplay(&info, switched);
+  if (!switched && monitor && device == monitor->szDevice) {
+    info.work = {uint32_t(monitor->rcWork.right - monitor->rcWork.left),
+                 uint32_t(monitor->rcWork.bottom - monitor->rcWork.top)};
   }
-  return kept->second;
+  const std::string text = info.book.Describe();
+  if (text != info.logged) {
+    info.logged = text;
+    MC_INFO("[display] FULLSCREEN sizes of {}: {}", Narrow(device), text);
+  }
+  g_infos[device] = info;
+  return info;
 }
 
 // The display the window is on.
@@ -301,7 +315,8 @@ DisplayInfo CurrentDisplay() {
   return ListedModes(monitor.szDevice, &monitor);
 }
 
-// This game has switched `device` to another mode, or (empty) has put the display's own mode back.
+// This game is switching `device` to another mode (set BEFORE the call that does it: see ListedModes), or
+// (empty) has put the display's own mode back, or the switch did not happen.
 void SetSwitchedDevice(const std::wstring& device) {
   std::lock_guard lock(g_info_mutex);
   g_switched_device = device;
@@ -316,6 +331,61 @@ Fn User32(const char* name) {
   const HMODULE user32 = GetModuleHandleW(L"user32.dll");
   const FARPROC proc = user32 ? GetProcAddress(user32, name) : nullptr;
   return reinterpret_cast<Fn>(reinterpret_cast<void*>(proc));
+}
+
+// The monitor's own size on the display `device` (a GDI name, "\\.\DISPLAY1"): its preferred timing,
+// from the display configuration API. Unlike the mode list it does not depend on the mode the display is
+// in, nor on the DPI the process sees. Empty where it cannot be asked (a remote session, an old Windows).
+// CHECK: on the test PC it is 3840x2160 for the 4K display; on a laptop panel with a lower mode set it is
+// the panel's own; the log's "the monitor's own size" says it.
+Size PreferredSize(const std::wstring& device) {
+  using GetSizesFn = LONG(WINAPI*)(UINT32, UINT32*, UINT32*);
+  using QueryFn = LONG(WINAPI*)(UINT32, UINT32*, DISPLAYCONFIG_PATH_INFO*, UINT32*,
+                                DISPLAYCONFIG_MODE_INFO*, DISPLAYCONFIG_TOPOLOGY_ID*);
+  using InfoFn = LONG(WINAPI*)(DISPLAYCONFIG_DEVICE_INFO_HEADER*);
+  static const GetSizesFn get_sizes = User32<GetSizesFn>("GetDisplayConfigBufferSizes");
+  static const QueryFn query = User32<QueryFn>("QueryDisplayConfig");
+  static const InfoFn get_info = User32<InfoFn>("DisplayConfigGetDeviceInfo");
+  if (!get_sizes || !query || !get_info) return {};
+
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+  UINT32 path_count = 0;
+  UINT32 mode_count = 0;
+  LONG result = ERROR_INSUFFICIENT_BUFFER;
+  // The topology can change between the two calls: asked again a few times.
+  for (int attempt = 0; attempt < 3 && result == ERROR_INSUFFICIENT_BUFFER; ++attempt) {
+    if (get_sizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS) return {};
+    paths.assign(path_count, DISPLAYCONFIG_PATH_INFO{});
+    modes.assign(mode_count, DISPLAYCONFIG_MODE_INFO{});
+    result = query(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+  }
+  if (result != ERROR_SUCCESS) return {};
+  paths.resize(path_count);
+
+  for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path.sourceInfo.adapterId;
+    source.header.id = path.sourceInfo.id;
+    if (get_info(&source.header) != ERROR_SUCCESS) continue;
+    if (device != source.viewGdiDeviceName) continue;
+
+    DISPLAYCONFIG_TARGET_PREFERRED_MODE preferred = {};
+    preferred.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE;
+    preferred.header.size = sizeof(preferred);
+    preferred.header.adapterId = path.targetInfo.adapterId;
+    preferred.header.id = path.targetInfo.id;
+    if (get_info(&preferred.header) != ERROR_SUCCESS) continue;
+    // A size no monitor has is a garbage answer: not used.
+    if (preferred.width == 0 || preferred.height == 0 || preferred.width > 16384 ||
+        preferred.height > 16384) {
+      return {};
+    }
+    return {preferred.width, preferred.height};
+  }
+  return {};
 }
 
 UINT WindowDpi(HWND hwnd) {
@@ -425,27 +495,21 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   // The display this game already switched stays the one, wherever the window is now.
   const std::wstring device = g_mode_changed ? g_changed_device : std::wstring(monitor.szDevice);
   const DisplayInfo info = ListedModes(device, &monitor);
-  if (want.empty()) want = info.desktop;
-  if (want == info.desktop) {
+  const Size own = info.book.desktop();
+  if (want.empty()) want = own;
+  if (want == own) {
+    if (!g_mode_changed) {
+      MC_INFO("[display] FULLSCREEN: {} is the display's own size: the display's mode is left as it is",
+              SizeText(want));
+    }
     return RestoreDesktopMode("the display's own size is the choice", true);
   }
   if (g_mode_changed && g_changed_to == want) return false;
 
   // Its refresh rate: the display's own when the size has it, else the highest the size lists. The
-  // row has no rate of its own; the FPS limit and V-SYNC say how fast the game runs.
-  uint32_t hz = 0;
-  for (const ModeRecord& m : info.modes) {
-    if (!(m.size == want)) continue;
-    if (m.hz == info.desktop_hz) {
-      hz = m.hz;
-      break;
-    }
-    hz = std::max(hz, m.hz);
-  }
-  if (hz == 0) {
-    MC_WARN("[display] FULLSCREEN: the display lists no {}; staying borderless", SizeText(want));
-    return RestoreDesktopMode("no such mode", true);
-  }
+  // row has no rate of its own; the FPS limit and V-SYNC say how fast the game runs. 0 for a size whose
+  // rate is not known (the monitor's own size when the driver did not list it): the driver chooses.
+  const uint32_t hz = info.book.RefreshFor(want);
 
   DEVMODEW dm = {};
   dm.dmSize = sizeof(DEVMODEW);
@@ -453,9 +517,16 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   dm.dmPelsHeight = want.height;
   dm.dmBitsPerPel = 32;
   dm.dmDisplayFrequency = hz;
-  dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+  dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | (hz ? DM_DISPLAYFREQUENCY : 0);
+  // The display is marked as switched BEFORE the call: the switch takes a second or two, and a look at
+  // the driver in it (the menu asks every frame) would see the new mode (ListedModes).
+  const bool was_switched = g_mode_changed;
+  SetSwitchedDevice(device);
   const LONG result = ChangeDisplaySettingsExW(device.c_str(), &dm, nullptr, CDS_FULLSCREEN, nullptr);
   if (result != DISP_CHANGE_SUCCESSFUL) {
+    // Still in the mode it was in (the display's own, or the one this game had switched it to: the
+    // restore below puts that one back).
+    if (!was_switched) SetSwitchedDevice({});
     MC_WARN("[display] FULLSCREEN: the display would not switch to {} at {} Hz (code {}); staying "
             "borderless",
             SizeText(want), hz, result);
@@ -464,9 +535,8 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   g_mode_changed = true;
   g_changed_device = device;
   g_changed_to = want;
-  SetSwitchedDevice(device);
   MC_INFO("[display] FULLSCREEN: the display is now {} at {} Hz (its own mode is {} at {} Hz)",
-          SizeText(want), hz, SizeText(info.desktop), info.desktop_hz);
+          SizeText(want), hz, SizeText(own), info.book.desktop_hz());
   FitFullscreenWindow(hwnd);
   return true;
 }
@@ -561,9 +631,20 @@ Size OutputSize() {
   return {uint32_t(rc.right), uint32_t(rc.bottom)};
 }
 
-Size DesktopSize() { return CurrentDisplay().desktop; }
+Size DesktopSize() { return CurrentDisplay().book.desktop(); }
 
-std::vector<Size> ExclusiveSizes() { return CurrentDisplay().sizes; }
+std::vector<Size> ExclusiveSizes() { return CurrentDisplay().book.Sizes(); }
+
+// UI thread, from Initialize: the first look at the display (the log's "FULLSCREEN sizes of ..." line)
+// and what a window can be on it.
+void LookAtDisplay() {
+  const Size own = DesktopSize();
+  const std::vector<Size> steps = WindowedSizes();
+  std::string text;
+  for (const Size& s : steps) text += " " + SizeText(s);
+  MC_INFO("[display] WINDOWED offers {} sizes:{} (the display's own mode is {})", steps.size(), text,
+          own.empty() ? std::string("not known") : SizeText(own));
+}
 
 std::vector<Size> WindowedSizes() {
   const HWND hwnd = NativeWindow();
@@ -726,6 +807,11 @@ void Initialize(rex::ui::Window* window) {
   rex::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
   rex::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
   rex::cvar::RegisterChangeCallback("resolution", SettingChanged);
+#if defined(_WIN32)
+  // The first look at the display, before this game changes anything about it: the book starts from the
+  // display in its own mode, and the log has the sizes the rows will offer.
+  LookAtDisplay();
+#endif
   // The window the SDK made is the start of it: borderless for a saved `fullscreen` (FULLSCREEN is
   // ours to finish), and a window of `resolution` read as LOGICAL pixels, which at 150% scaling is 1.5
   // times as many physical ones as the RESOLUTION row says. One look now makes the window the physical
