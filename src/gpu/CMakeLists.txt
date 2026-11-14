@@ -106,6 +106,10 @@ add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
+# The contact shadows' trace rules and the C++ twin of their march (contact_trace.h: the depth tolerance in pixel footprints, the
+# ray's fade and steps, the filter weights, the cost model) likewise:
+#   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
+add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
