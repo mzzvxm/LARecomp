@@ -63,8 +63,9 @@ enum class Effect : uint8_t {
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
+  kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
 };
-inline constexpr int kEffectCount = 7;
+inline constexpr int kEffectCount = 8;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -80,6 +81,9 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_sun_shafts", "off", "default", "default"},  // a strength, not a quality: DEFAULT where the GPU is not integrated
     // Off on every class until the bounce light's cost is measured (owner, 2026-11-13); low and high stay a choice.
     {"mcla_gpu_ssgi", "off", "off", "off"},
+    // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
+    // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
+    {"mcla_gpu_traffic_shadows", "off", "near", "near"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

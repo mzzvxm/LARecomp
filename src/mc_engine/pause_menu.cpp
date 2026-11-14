@@ -1763,6 +1763,22 @@ std::string ContactLabel(int i) {
     }
 }
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
+// Traffic shadows (mcla_gpu_traffic_shadows, gpu/traffic_shadow.h, mc_engine/hooks/traffic_shadow.cpp, live): the other cars
+// (traffic and opponents) cast into the sun's shadow map like the player's car, which the game does alone, so the ground under
+// them is dark. AUTO says what it comes to on this GPU (NEAR on a discrete card, OFF on an integrated one); NEAR is the nearest
+// few cars within a short distance, ALL every car within a long one (more draws in the cascades). The row is "TRAFFIC SHADOWS"
+// (15 characters) with a value of at most 11 ("AUTO (NEAR)").
+const char* const kNativeTrafficShadowsVals[]  = {"auto", "off", "near", "all"};
+const char* const kNativeTrafficShadowsNames[] = {"AUTO", "OFF", "NEAR", "ALL"};
+std::string TrafficShadowsLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kTrafficShadows);
+    case 1:  return "OFF";
+    case 2:  return "NEAR";
+    default: return "ALL";
+    }
+}
+constexpr RowDynamics kTrafficShadowsDynamics = {.str_label = TrafficShadowsLabel};
 // Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
 // the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
 // picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
@@ -1917,8 +1933,8 @@ const ItemDef kPictureItems[] = {
 // GRAPHICS QUALITY (DISPLAY's sister page, the GRAPHICS tab's second button): the graphics upgrades of the
 // NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
 // (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
-// shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
-// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH), then
+// shadows, the traffic cars' shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
+// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH), then
 // reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
 // were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
 // is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
@@ -1926,7 +1942,7 @@ const ItemDef kPictureItems[] = {
 // Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
 // ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
 // ItemRowLabel); COMPARE KEY is the one row with a suffix, its key's name (33 at most, see kCompareVals).
-// 9 rows of the 24 a page can hold. SUN SHAFTS has the longest value, "AUTO (DEFAULT)" (14), with its 10-character
+// 10 rows of the 24 a page can hold. SUN SHAFTS has the longest value, "AUTO (DEFAULT)" (14), with its 10-character
 // label: 24 together. BOUNCE LIGHT STRENGTH (21) with STRONGEST (9) is the widest pair of a setting at 30.
 // BOUNCE LIGHT STRENGTH is grey while the bounce light is off (SsgiOn).
 const ItemDef kGfxQualityItems[] = {
@@ -1939,6 +1955,9 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
                                 kNativeContactVals, kNativeContactNames, 4),
                             &kContactDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
+                                kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4),
+                            &kTrafficShadowsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
                                 kNativeShaftsVals, kNativeShaftsNames, 7),
                             &kShaftsDynamics)),
@@ -2802,8 +2821,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
-// The GRAPHICS QUALITY page (kGfxQualityItems, 9 rows, one suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"),
-// then 16 ("ROAD REFLECTIONS"), "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13,
+// The GRAPHICS QUALITY page (kGfxQualityItems, 10 rows, one suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"),
+// then 16 ("ROAD REFLECTIONS"), "CONTACT SHADOWS", "TRAFFIC SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13,
 // "BOUNCE LIGHT" 12, "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), SUN SHAFTS'
 // "AUTO (DEFAULT)" 14 and BOUNCE LIGHT STRENGTH's "STRONGEST" 9: 27 together for the older rows, 30 for BOUNCE LIGHT
 // STRENGTH. The last row, COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most (20, under 23),
