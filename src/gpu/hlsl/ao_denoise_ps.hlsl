@@ -9,6 +9,9 @@
 // most of it out of any one frame, and the accumulation over frames (ao_temporal_ps) the rest. It
 // runs once while there is a history to accumulate into, twice (the second reading the first's
 // output) when there is none, and never not at all.
+//
+// The contact shadows use it too (flag bit 25, AoContactFilter): once, with a third weight that falls
+// with the difference of the visibility (AoBilateralEdge), so their edges stay sharp.
 
 #include "ao_common.hlsli"
 
@@ -24,7 +27,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
   const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
-  const float result =
-      AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoDenoiseRadius());
+  const float result = AoContactFilter()
+                           ? AoBilateralEdge(visibility_slot, depth_slot, pixel, isize, tc, pc, normal)
+                           : AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal,
+                                         AoDenoiseRadius());
   return float4(result, 0.0f, 0.0f, 0.0f);
 }

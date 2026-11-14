@@ -65,12 +65,16 @@ ConstantBuffer<AoPush> g_push : register(b0, space4);
 #endif
 
 // flags: bits 0-7 debug view (0 none), 8-11 slices, 12-15 steps, 16 low (half resolution), 17-19
-// the denoise radius, 20 and 21 the temporal pass's (ao_temporal_ps.hlsl).
+// the denoise radius, 20 and 21 the temporal pass's (ao_temporal_ps.hlsl), 22-24 the apply pass's
+// (ao_apply_ps.hlsl), 25 the denoise pass's contact shadow mode (AoContactFilter).
 uint AoView() { return g_push.slots2.z & 0xFFu; }
 uint AoSlices() { return (g_push.slots2.z >> 8) & 0xFu; }
 uint AoSteps() { return (g_push.slots2.z >> 12) & 0xFu; }
 bool AoLow() { return (g_push.slots2.z & (1u << 16)) != 0u; }
 int AoDenoiseRadius() { return int((g_push.slots2.z >> 17) & 0x7u); }
+// The denoise pass cleans the contact shadows' visibility instead of the occlusion's: one 3x3 pass
+// whose weights also fall with the difference of the visibility (AoBilateralEdge).
+bool AoContactFilter() { return (g_push.slots2.z & (1u << 25)) != 0u; }
 
 // What the depth chain holds for the sky and for anything the linearisation cannot place. Also
 // the largest value a half float keeps (65504) with room.
@@ -133,6 +137,48 @@ float3 AoNormalFromImage(uint slot, int2 p, int2 size, float tc, float3 pc) {
 // Interleaved gradient noise (Jimenez 2014) of a pixel position.
 float AoNoise(float2 p) {
   return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+
+// The contact shadows' filter (the denoise pass with flag bit 25): the 3x3 bilateral of AoBilateral
+// with a third weight, the difference of the visibility from the pixel's own, so a neighbour that
+// differs by more than a few tenths is not averaged in. The noise of the ray's start goes (it is a
+// few hundredths of the range, a few tenths in the fade at the ray's end), a shadow's edge, a step
+// of the whole range, stays: the two plane-only passes of the first version blurred every edge by
+// about two pixels at 1280x720 and the same share of a pixel at any scale. The plane tolerance is
+// a few footprints (the world size of one pixel at that distance) so that a thin occluder is not
+// part of the surface behind it. The constants are contact_trace.h's.
+static const float kEdgeRangeSigma = 0.2f;
+static const float kEdgeSpatialSigma = 0.9f;
+static const float kEdgePlanePixels = 4.0f;
+static const float kEdgePlaneFloor = 0.01f;
+float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
+                      float3 normal) {
+  const float2 size = float2(isize);
+  const float footprint = 2.0f * g_push.lens.y / size.y * tc;
+  const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
+  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  float sum = centre;
+  float weights = 1.0f;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      const float tq = AoLoadLinear(depth_slot, q);
+      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
+      const float off_plane = dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = exp(-0.5f * off_plane * off_plane);
+      const float w_space =
+          exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
+      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
+      sum += value * w;
+      weights += w;
+    }
+  }
+  return sum / weights;
 }
 
 // The bilateral blur of the visibility image `vis_slot` at `pixel` (radius 1: 3x3, radius 2: 5x5),

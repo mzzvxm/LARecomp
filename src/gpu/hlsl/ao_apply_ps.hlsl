@@ -25,7 +25,7 @@
 //
 //   contact_factor 1 - sun_share * strength * (1 - cs) * fade: the contact shadows darken only the
 //                  sun's share of the light, so they cannot darken what the game already shadows
-//     cs             the contact visibility (ao_contact_ps, two bilateral passes), upsampled as ao is;
+//     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is;
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it

@@ -13,6 +13,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "contact_trace.h"
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
@@ -78,10 +79,12 @@ REXCVAR_DEFINE_STRING(
     "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
     "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
     "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
-    "They are left out at night and in rain. off, low (half resolution, 8 steps), high (full "
-    "resolution, 16 steps) or auto (the default): off on an integrated graphics card, low on a "
-    "discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics card time, "
-    "high more than low. Also drawn behind the pause menu and on the map. Live.")
+    "They are left out at night and in rain. off, low (8 steps), high (16 steps) or auto (the "
+    "default): off on an integrated graphics card, low on a discrete one with less than 5.5 GiB of "
+    "video memory, high on the rest. They are worked out at the size the game is drawn at, so a "
+    "higher render scale gives sharper shadows (only low, with the ambient occlusion not on high, "
+    "works at half that size). Costs graphics card time, high more than low. Also drawn behind the "
+    "pause menu and on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
@@ -106,6 +109,15 @@ REXCVAR_DEFINE_DOUBLE(
     "nothing. Live.")
     .debug_only()
     .range(0.05, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_fade, 0.6, "MCLA/GPU",
+    "Diagnostic: how much of the contact shadows' ray a shadow stays fully dark over, 0.2 to 0.98: "
+    "past that share of the ray's length it fades out, so that a shadow cut off by the ray's end "
+    "does not end in a hard line. At 0.2 it looks like the first version's fade (a quarter of the "
+    "shadow gone half way along the ray). Live.")
+    .debug_only()
+    .range(0.2, 0.98)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_mask_gain, 2.0, "MCLA/GPU",
@@ -192,6 +204,9 @@ constexpr float kSkyDistance = 60000.0f;
 constexpr uint32_t kApplyOcclusionFlag = 1u << 22;
 constexpr uint32_t kApplyContactFlag = 1u << 23;
 constexpr uint32_t kApplyMaskFlag = 1u << 24;
+// The denoise pass's flag for the contact shadows' filter (hlsl/ao_common.hlsli AoContactFilter): one
+// pass whose weights also fall with the difference of the visibility.
+constexpr uint32_t kContactFilterFlag = 1u << 25;
 // The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
 // are 1 to 6).
 constexpr uint32_t kContactViewBase = 7;
@@ -209,16 +224,12 @@ constexpr double kGateFullDegrees = 12.0;
 // kWetDry + kWetSpan.
 constexpr float kWetDry = 0.2f;
 constexpr float kWetSpan = 0.5f;
-// The ray grows with a low sun, 0.7 / tan(elevation), kept between 1 and 3 times the setting.
-constexpr double kLengthTan = 0.7;
-constexpr double kLengthMaxScale = 3.0;
+// The ray grows with a low sun, 0.7 / tan(elevation), kept between 1 and 3 times the setting
+// (contact_trace.h LengthGrow), and its steps are contact_trace.h's too.
 // The distance fade of the contact shadows, in world units: a ray of a few tenths of a metre is
 // under a pixel far away.
 constexpr float kContactFadeStart = 40.0f;
 constexpr float kContactFadeEnd = 80.0f;
-// The steps of the ray at low and at high.
-constexpr uint32_t kContactStepsLow = 8;
-constexpr uint32_t kContactStepsHigh = 16;
 
 float Smoothstep(double edge0, double edge1, double x) {
   const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
@@ -1960,7 +1971,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     history_age_ = use.on ? std::min(use.age + 1, use.cap) : 0u;
     ao_slot = (plan.view == 6u ? weight_ : history_out).slot;
   }
-  // The contact shadows: their march and its denoise, into the two scratch images the occlusion has
+  // The contact shadows: their march and its filter, into the two scratch images the occlusion has
   // finished with.
   uint32_t contact_slot = kNoSlot;
   uint32_t mask_slot = kNoSlot;
@@ -1997,12 +2008,36 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     contact_mask_ = mask_slot != kNoSlot;
     if (contact_runs_ == 0) {
       REXLOG_INFO("[gpu] contact shadows: the first frame: {} at {}x{} (images {}x{}), {} steps over "
-                  "{:.2f} m (thickness {:.2f} m), strength {:.2f}, the game's shadow mask {} (the "
-                  "sun's visibility is 1 where it is not found), {}",
+                  "{:.2f} m (thickness {:.2f} m, full over the first {:.0f}% of the ray), strength "
+                  "{:.2f}, the game's shadow mask {} (the sun's visibility is 1 where it is not "
+                  "found), {}",
                   ModeName(plan.contact.mode), plan.render[0], plan.render[1], plan.ao[0],
                   plan.ao[1], plan.contact.steps, plan.contact.length, plan.contact.thickness,
-                  plan.contact.strength, contact_mask_ ? "found" : "not found",
+                  100.0f * plan.contact.end_fade_start, plan.contact.strength,
+                  contact_mask_ ? "found" : "not found",
                   plan.occlusion ? "with the occlusion" : "without the occlusion");
+    }
+    if (contact_cost_logged_[0] != plan.ao[0] || contact_cost_logged_[1] != plan.ao[1] ||
+        contact_cost_logged_[2] != plan.contact.steps) {
+      // The cost model (contact_trace.h CostModel), once per size and step count: the march reads the
+      // depth `steps` times a pixel of the images, the filter is one 3x3 pass. The numbers are the RTX
+      // 5080's measured at 3840x2160 and scale with the pixels and the steps; the first version's two
+      // filter passes are shown for comparison.
+      contact_cost_logged_[0] = plan.ao[0];
+      contact_cost_logged_[1] = plan.ao[1];
+      contact_cost_logged_[2] = plan.contact.steps;
+      const contact_trace::Cost now =
+          contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 1, true);
+      const contact_trace::Cost before =
+          contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 2, false);
+      REXLOG_INFO("[gpu] contact shadows: cost model for {}x{} ({:.2f} megapixels, {}): the march "
+                  "reads the depth {:.1f} million times ({:.3f} ms) and one filter pass runs over "
+                  "all of it ({:.3f} ms), {:.3f} ms in all on an RTX 5080 (the first version, two "
+                  "plain filter passes: {:.3f} ms); the images are the render size: a higher "
+                  "render scale traces more pixels, so the edges stay as sharp in pixels",
+                  plan.ao[0], plan.ao[1], now.megapixels,
+                  plan.low ? "half the render size" : "the render size", now.mega_steps, now.march_ms,
+                  now.filter_ms, now.total_ms, before.total_ms);
     }
     ++contact_runs_;
     ++(contact_mask_ ? contact_mask_frames_ : contact_no_mask_frames_);
@@ -2188,13 +2223,13 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.mode = contact_mode_;
   c.strength = contact_strength_;
   // The ray grows with a low sun (its shadows are long): 0.7 / tan(elevation), 1 to 3 times.
-  const double tan_elevation = std::tan(elevation * 3.14159265358979323846 / 180.0);
-  const double grow = tan_elevation > 1e-3
-                          ? std::clamp(kLengthTan / tan_elevation, 1.0, kLengthMaxScale)
-                          : kLengthMaxScale;
-  c.length = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_length), 0.1, 3.0) * grow);
+  c.length = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_length), 0.1, 3.0) *
+                   contact_trace::LengthGrow(elevation));
   c.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_thickness), 0.05, 3.0));
-  c.steps = contact_mode_ == Mode::kLow ? kContactStepsLow : kContactStepsHigh;
+  c.steps = contact_mode_ == Mode::kLow ? contact_trace::kStepsLow : contact_trace::kStepsHigh;
+  c.end_fade_start = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_fade),
+                                      double(contact_trace::kFadeStartMin),
+                                      double(contact_trace::kFadeStartMax)));
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
   c.mask_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_mask_gain), 0.5, 4.0));
@@ -2266,22 +2301,24 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
   push.lens[2] = c.length;
   push.lens[3] = c.thickness;
+  push.shape[0] = c.end_fade_start;
   push.shape[1] = float(c.steps);
   push.extra[1] = c.fade_end;
-  // The ray start's noise has no history here, only the two bilateral passes below. Moved every frame it
-  // would make the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal
-  // upscaler runs and averages the frames, as the shadow filter's and the sun shafts' are.
+  // The ray start's noise has no history here, only the filter below. Moved every frame it would make
+  // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
+  // runs and averages the frames, as the shadow filter's and the sun shafts' are.
   push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   DrawPass(list, raw_, march, push);
-  // The occlusion's bilateral pass twice (the way the occlusion has no history of its own): the
-  // noise of the ray's start goes, the edges of the depth stay.
+  // The filter: one 3x3 pass of the occlusion's denoise shader in its contact mode, whose weights also
+  // fall with the difference of the visibility: the noise of the ray's start goes, the edges of the
+  // shadow and of the depth stay (the first version ran the plane-only blur twice, which softened every
+  // edge and cost more than the march). Into denoised_, which the apply reads.
   pass_timing_->Mark(list, "ao contact denoise");
   push.slots[2] = raw_.slot;
   push.slots[3] = depth_[0].slot;
+  push.slots2[2] |= kContactFilterFlag;
   DrawPass(list, denoised_, denoise, push);
-  push.slots[2] = denoised_.slot;
-  DrawPass(list, raw_, denoise, push);
-  return raw_.slot;
+  return denoised_.slot;
 }
 
 // ---------------------------------------------------------------------------
