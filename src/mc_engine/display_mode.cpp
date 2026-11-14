@@ -498,6 +498,10 @@ bool EnterDesktopMode(HWND hwnd, Size want) {
   const Size own = info.book.desktop();
   if (want.empty()) want = own;
   if (want == own) {
+    if (!g_mode_changed) {
+      MC_INFO("[display] FULLSCREEN: {} is the display's own size: the display's mode is left as it is",
+              SizeText(want));
+    }
     return RestoreDesktopMode("the display's own size is the choice", true);
   }
   if (g_mode_changed && g_changed_to == want) return false;
