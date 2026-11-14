@@ -212,7 +212,7 @@ void EdramTargets::DecideScene() {
   const StartUpscale start = GetStartUpscale();
   const SceneScaleChoice choice = ChooseSceneScale(resolution_scale_, start.ratio);
   scene_scale_ = choice.scale;
-  if (start.runs && msaa_level_ != 1) {
+  if (start.runs && msaa_level_ != 1 && !MsaaKeptUnderUpscaler()) {
     // An upscaler that runs from the start smooths the picture itself, and MSAA under it only
     // costs time: the game still draws its own 2 sample layout and the host gives it 1 sample
     // (msaa_level.h; the temporal system adopts the same start path, so MsaaLevel finds the level

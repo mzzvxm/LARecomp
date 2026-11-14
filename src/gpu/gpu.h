@@ -387,6 +387,8 @@ UpscalerAvailability GetUpscalerAvailability();
 // stood still until its pipelines are made and the targets are made again. The pause menu's MSAA
 // row says (APPLYING). Any thread.
 bool MsaaSwitching();
+// mcla_gpu_msaa_with_upscaler: the player's MSAA level stands while an upscaler runs (msaa_level.h).
+bool MsaaKeptUnderUpscaler();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

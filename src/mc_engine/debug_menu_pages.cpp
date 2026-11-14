@@ -184,10 +184,11 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
     // The upscalers' A/B levers (a shimmer on fine detail at a low base resolution): the extra texture
-    // detail bias and the masks.
+    // detail bias, the masks, and MSAA under the upscaler.
     NativeOnly(Dbl("PM_RxDbgUpMipBias",  "mcla_gpu_scene_extra_bias", "UPSCALER MIP BIAS: ",
                    kMipBiasVals, Len(kMipBiasVals), "%g")),
     NativeOnly(Bool("PM_RxDbgUpMasks",   "mcla_gpu_upscaler_masks", "UPSCALER MASKS: ")),
+    NativeOnly(Bool("PM_RxDbgUpMsaa",    "mcla_gpu_msaa_with_upscaler", "MSAA WITH UPSCALER: ")),
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),
