@@ -169,6 +169,7 @@ void Patch_DeltaTimePre() {
     TickRaceProps();            // online race props: the watched owner word, if any
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     TickRearView();             // rearview: the mirror's visible bit + placement, live
+    TickRoadReflCars();         // mcla_gpu_road_reflection_cars_test (debug): log of a change + counts; changes nothing
     TickVibration();            // controller_vibration: stops a motor that was running when it went off
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved

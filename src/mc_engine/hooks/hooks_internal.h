@@ -113,6 +113,9 @@ void StartFreezeWatchdog();
 // rear_view.cpp
 void TickRearView();
 
+// road_reflection_cars_test.cpp: mcla_gpu_road_reflection_cars_test (debug): the log of a change and the 600-frame counts.
+void TickRoadReflCars();
+
 // stick_deadzone.cpp: state = the guest's X_INPUT_STATE, just read from the SDK.
 void ApplyStickDeadzones(uint8_t* base, uint32_t state);
 
