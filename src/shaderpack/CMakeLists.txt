@@ -166,3 +166,12 @@ add_executable(larecomp_shadow_filter_test EXCLUDE_FROM_ALL
     variants/shadow_filter.cpp)
 target_compile_features(larecomp_shadow_filter_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_shadow_filter_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
+#   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
+#   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).
+add_executable(larecomp_bloom_gauss_test EXCLUDE_FROM_ALL
+    variants/bloom_gauss_test.cpp
+    variants/bloom_gauss.cpp)
+target_compile_features(larecomp_bloom_gauss_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_bloom_gauss_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
