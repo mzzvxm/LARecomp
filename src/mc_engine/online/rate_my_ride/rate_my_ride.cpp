@@ -10,9 +10,9 @@
 // the mode polls the task's status object ({state, code}: 1 pending, 2 failed,
 // 3 done) once per frame in sub_826B2328.
 //
-// We take over those nine functions for the "RateMyRide" table (the table
-// "tournament" and its file ids go to tournament.cpp first; ProfileStats,
-// Rewards and PhotoAlbum keep the stock path), send the request to
+// We take over those nine functions for the "RateMyRide" table (the tables
+// "tournament" and "Rewards" and their file ids go to tournament.cpp first;
+// ProfileStats and PhotoAlbum keep the stock path), send the request to
 // rmr::client (local store or the shared server)
 // and hand the reply back in the exact shape the rlUpload worker would have.
 //
