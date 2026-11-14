@@ -16,9 +16,11 @@
 REXCVAR_DEFINE_STRING(
     mcla_gpu_class, "auto", "MCLA/GPU",
     "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
-    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory, high: the "
+    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory or a "
+    "slower GPU family such as the GTX 10 and 16 series and the RX 400/500 series, high: the "
     "rest). "
-    "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...'. Only "
+    "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...' with "
+    "the rule that chose it (by adapter type, by memory or by name). Only "
     "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
     "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
     "a choice of the player's own is never changed. Live.")
@@ -143,6 +145,10 @@ void Initialize(const plume::RenderDeviceDescription& description,
                    IsSoftwareName(description.name);
   facts.dedicated_bytes = description.dedicatedVideoMemory;
   facts.raytracing = caps.raytracing;
+  // The speed table reads the name and the PCI vendor id (Plume's RenderDeviceVendor holds the id; it
+  // does not carry the device id).
+  facts.name = description.name;
+  facts.vendor_id = static_cast<uint32_t>(description.vendor);
   const Verdict verdict = Classify(facts);
 
   {
