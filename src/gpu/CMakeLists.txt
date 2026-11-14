@@ -103,6 +103,10 @@ add_executable(larecomp_shafts_anchor_test EXCLUDE_FROM_ALL shafts_anchor_test.c
 # Where the sun is in the picture (shafts_sun.h: the sky's sun constant against the light, the placement and the fades) likewise:
 #   cmake --build <dir> --target larecomp_shafts_sun_test, then run src/gpu/larecomp_shafts_sun_test.
 add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
+# The bounce light's cap, falloff and gain maths and its strength levels (ssgi_light.h, ssgi_level.h; given the hlsl folder it also
+# checks that the shaders' constants are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ssgi_test, then run src/gpu/larecomp_ssgi_test [<src/gpu/hlsl dir>].
+add_executable(larecomp_ssgi_test EXCLUDE_FROM_ALL ssgi_test.cpp)
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
