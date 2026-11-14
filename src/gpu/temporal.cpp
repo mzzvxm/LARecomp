@@ -28,6 +28,27 @@
 
 REXCVAR_DECLARE(bool, mcla_gpu_upscaler_masks);  // scene.cpp
 
+// Test levers for the static-scene flicker analysis (debug only, live, never saved; defaults = the
+// behaviour without them).
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_upscaler_zero_jitter, false, "MCLA/GPU",
+    "While FSR or DLSS draws the scene: no sub-pixel jitter at all. The projection is not moved and "
+    "the upscaler is told a jitter of 0 (one value, so the draws, the motion vectors and the upscaler "
+    "agree). The upscaler then has no sub-pixel samples to rebuild detail from and the picture is "
+    "no sharper than the render size; a flicker that follows the jitter phase is gone with it, one "
+    "that stays is not the jitter's. For A/B. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_upscaler_post_reads_output, false, "MCLA/GPU",
+    "While FSR or DLSS draws the scene at the output's size (FSR's Native AA, DLAA): the game's post "
+    "chain before the upscale (the half-size downsample that the bloom's bright pass, the exposure "
+    "and the motion blur's half-size layer are made from) reads the previous frame's upscaled "
+    "picture, as it does at every other mode. Off (today): it reads the raw, jittered scene at that "
+    "size. For A/B. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
@@ -346,10 +367,15 @@ void TemporalSystem::CountPostStandIn() {
                   "the exposure and the motion blur's half-size layer are made from) reads the "
                   "previous frame's upscaled picture in the {}, so the jitter cannot reach them; "
                   "they are one frame late. The scene is drawn at {}x{} for an output of {}x{}; "
-                  "the game alternates {} scene colour products and the stand-in covers {} of them",
+                  "the game alternates {} scene colour products and the stand-in covers {} of them{}",
                   kPrefix, temporal::ViewName(fr.view), last_render_size_[0], last_render_size_[1],
                   last_output_size_[0], last_output_size_[1], kSceneColorProducts,
-                  fr.post_products);
+                  fr.post_products,
+                  last_render_size_[0] == last_output_size_[0] &&
+                          last_render_size_[1] == last_output_size_[1]
+                      ? "; at the output's size only because mcla_gpu_upscaler_post_reads_output "
+                        "is on"
+                      : "");
     }
   } else if (++post_unserved_run_ >= kPostUnservedWarn &&
              !post_unserved_reported_[size_t(fr.view)]) {
@@ -495,6 +521,7 @@ BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
   BackendRequest request;
   request.upscaler = upscaler;
   request.mode = mode;
+  request.debug_view = UpscalerDebugView(upscaler);
   // The same two edges the anchor reports for a frame (OnAnchor: the main view at the scene's
   // scale, the anchor's own target at the images of the screen's), so that the context made before
   // the switch is the one the first frame asks for.
@@ -1002,6 +1029,7 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
 void TemporalSystem::MakeRequest(BackendRequest* request) const {
   request->upscaler = effective_;
   request->mode = mode_in_use_;
+  request->debug_view = UpscalerDebugView(effective_);
   // What the last accepted frame had: the scene at the render size, the output at the size of the
   // images of the screen (one size at Native AA).
   request->render_size[0] = last_render_size_[0];
@@ -1052,10 +1080,18 @@ void TemporalSystem::StandInForPostChain() {
           kMaxGapMs) {
     return;
   }
-  // The scene drawn at the output's size (Native AA, DLAA) has no sub-pixel glint the jitter
-  // drops: its bloom is as steady as without the jitter (measured: 0.2% of bright pixels flicker
-  // against 3% at Quality), and the lag would buy nothing.
-  if (last_render_size_[0] == last_output_size_[0] && last_render_size_[1] == last_output_size_[1]) {
+  // The scene drawn at the output's size (Native AA, DLAA) was taken to have no sub-pixel glint the
+  // jitter drops: its bloom as steady as without the jitter (measured: 0.2% of bright pixels flicker
+  // against 3% at Quality), and the lag would buy nothing. So at equal sizes this returns here and
+  // the reads before the anchor (the half-size downsample the bloom's bright pass, the exposure's
+  // log-luminance chain and the motion blur's half-size layer are made from) get the raw jittered
+  // scene. The levers' test (flat areas flicker at Native AA: step 0.017 against 0.001 at Quality)
+  // asks the question again: mcla_gpu_upscaler_post_reads_output (debug) gives them the previous
+  // upscaled picture at equal sizes too (upscaler_math.h PostChainReadsOutput). Nothing else here
+  // depends on the ratio: the products, the output image and the scale are the same ones.
+  if (!upscaler_math::PostChainReadsOutput(last_render_size_[0], last_render_size_[1],
+                                           last_output_size_[0], last_output_size_[1],
+                                           REXCVAR_GET(mcla_gpu_upscaler_post_reads_output))) {
     return;
   }
   if (!output_.texture || output_.layout != plume::RenderTextureLayout::SHADER_READ ||
@@ -1469,6 +1505,34 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
+    // mcla_gpu_upscaler_zero_jitter (debug): no sub-pixel offset. This one value is the draws'
+    // projection offset (OnMainView), the vectors' jitter (pending_.jitter) and the upscaler's
+    // jitterOffset (RecordUpscale), so all three get the 0.
+    upscaler_math::ApplyZeroJitter(REXCVAR_GET(mcla_gpu_upscaler_zero_jitter), frame_.jitter);
+  }
+  NoteLeverChanges();
+}
+
+void TemporalSystem::NoteLeverChanges() {
+  // One log line each time a test lever of this file changes (and the first time it is on), so that a
+  // run's log says which frames had it.
+  const bool zero = REXCVAR_GET(mcla_gpu_upscaler_zero_jitter);
+  const bool post = REXCVAR_GET(mcla_gpu_upscaler_post_reads_output);
+  if (zero != lever_zero_jitter_) {
+    lever_zero_jitter_ = zero;
+    REXLOG_INFO("{} debug lever mcla_gpu_upscaler_zero_jitter is now {} (from frame {}): {}", kPrefix,
+                zero ? "ON" : "off", frame_number_,
+                zero ? "no sub-pixel jitter in the projection, the vectors or the upscaler's "
+                       "jitterOffset"
+                     : "the jitter sequence is back");
+  }
+  if (post != lever_post_reads_output_) {
+    lever_post_reads_output_ = post;
+    REXLOG_INFO("{} debug lever mcla_gpu_upscaler_post_reads_output is now {} (from frame {}): {}",
+                kPrefix, post ? "ON" : "off", frame_number_,
+                post ? "the post chain reads the previous upscaled picture at every ratio, ratio 1 "
+                       "included"
+                     : "at ratio 1 the post chain reads the raw jittered scene again");
   }
 }
 
@@ -1610,8 +1674,11 @@ void TemporalSystem::OnMainView(const DrawFacts& f, const temporal::MainMatch& m
   // Every gated draw of the frame is moved by the same offset, so the depth-only draws, the world
   // and the colour-only draws agree. The viewport is in host pixels; NDC spans 2 of them, +y up
   // (ComputeViewport negated y), so a shift down by jy pixels is -2 jy / height.
-  shared.pos_offset[0] += 2.0f * fr.jitter[0] / f.viewport->viewport.width;
-  shared.pos_offset[1] -= 2.0f * fr.jitter[1] / f.viewport->viewport.height;
+  float ndc[2];
+  upscaler_math::JitterNdcOffset(fr.jitter, f.viewport->viewport.width, f.viewport->viewport.height,
+                                 ndc);
+  shared.pos_offset[0] += ndc[0];
+  shared.pos_offset[1] += ndc[1];
   ++fr.jittered[kind];
   ++window_.view_moved[size_t(view)];
 }

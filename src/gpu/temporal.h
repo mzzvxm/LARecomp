@@ -76,7 +76,9 @@
 // raw jittered scene: a glint smaller than a render pixel lands on one in some jitter phases and
 // not in others, its bloom pulses with the jitter, and no upscaler can steady what is already in
 // the bloom. While the scene is drawn smaller than the output (at the output's size the jitter
-// does not do this), those reads are given the previous frame's upscaled picture instead
+// was taken not to do this; mcla_gpu_upscaler_post_reads_output, a debug lever, asks the question
+// again and gives those frames the same stand-in), those reads are given the previous frame's
+// upscaled picture instead
 // (StandInForPostChain): the same stand-in as after the anchor, set at the frame's first main view
 // draw, while the output image still holds the frame before. What they make is one frame late: the
 // bloom, the exposure and the motion blur's half-size layer. The scene colour the anchor's own
@@ -523,6 +525,8 @@ class TemporalSystem {
   Scale last_scale_ = Scale::None();
   Clock::time_point last_anchor_time_{};
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
+  bool lever_zero_jitter_ = false;        // what NoteLeverChanges last saw
+  bool lever_post_reads_output_ = false;
   uint32_t misses_ = 0;
   bool disarmed_ = false;
   // The kind of view the run belongs to (the camera, the step, the history): the last frame with a
@@ -591,6 +595,9 @@ class TemporalSystem {
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
   void MakeRequest(BackendRequest* request) const;
+  // The debug levers of this file (mcla_gpu_upscaler_zero_jitter, mcla_gpu_upscaler_post_reads_output):
+  // one log line for each change, at the frame boundary.
+  void NoteLeverChanges();
   // The upscale of the anchor's frame: false when this frame is plain (the reason counted). A real
   // failure turns the upscaler off for the session.
   bool RecordUpscale(plume::RenderCommandList* list);

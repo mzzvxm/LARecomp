@@ -34,6 +34,51 @@
 #include "ffx_common.h"
 #include "frame.h"
 #include "temporal_ffx_glue.h"
+#include "upscaler_math.h"
+
+// Test levers for the static-scene flicker analysis (debug only, live, never saved): FSR's own tuning
+// constants, passed through ffxConfigure on the context (FfxApiConfigureUpscaleKey). -1 is "not set":
+// FSR's own default, as without the lever. A value of 0 or more is passed to the context before its
+// first dispatch and again whenever it changes; the runtime clamps it to its range. FSR 3.1 reads them;
+// FSR 4's provider may refuse the keys (the log says what it answered).
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_fsr_velocity_factor, -1.0, "MCLA/GPU",
+    "Test lever (FSR): FSR's fVelocityFactor, 0 to 1 (its default is 1). AMD: 0 can improve the "
+    "temporal stability of bright pixels (the history is trusted less where something moved). -1: "
+    "not set, FSR's own default. Passed to the context once it exists and again when it changes. "
+    "For A/B. Live.")
+    .debug_only()
+    .range(-1.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_fsr_shading_change_scale, -1.0, "MCLA/GPU",
+    "Test lever (FSR 3.1): FSR's fShadingChangeScale, 0 and up (its default is 1). More makes its "
+    "computed shading change count for more, so a pixel whose lighting changed lets go of its "
+    "history faster. -1: not set, FSR's own default. Passed to the context once it exists and again "
+    "when it changes. For A/B. Live.")
+    .debug_only()
+    .range(-1.0, 16.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_fsr_min_disocclusion_accumulation, -1.0, "MCLA/GPU",
+    "Test lever (FSR 3.1): FSR's fMinDisocclusionAccumulation (its default is -0.333; only 0 to 1 "
+    "can be set here). AMD: raising it may reduce the white flicker of thin objects that "
+    "disocclude one another often; too high, ghosting. -1: not set, FSR's own default. Passed to the "
+    "context once it exists and again when it changes. For A/B. Live.")
+    .debug_only()
+    .range(-1.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// The key numbers upscaler_math.h keeps (so that it needs no SDK) are the SDK's own.
+static_assert(mcla::gpu::upscaler_math::FsrLeverKey(
+                  mcla::gpu::upscaler_math::FsrLever::kVelocityFactor) ==
+              uint64_t(FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR));
+static_assert(mcla::gpu::upscaler_math::FsrLeverKey(
+                  mcla::gpu::upscaler_math::FsrLever::kShadingChangeScale) ==
+              uint64_t(FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE));
+static_assert(mcla::gpu::upscaler_math::FsrLeverKey(
+                  mcla::gpu::upscaler_math::FsrLever::kMinDisocclusionAccumulation) ==
+              uint64_t(FFX_API_CONFIGURE_UPSCALE_KEY_FMINDISOCCLUSIONACCUMULATION));
 
 namespace mcla::gpu {
 
@@ -83,6 +128,9 @@ struct Context {
   bool dispatched = false;  // the first dispatch of a context resets the history
   uint32_t phases = 0;      // the runtime's jitter sequence length for its sizes (0: not asked)
   uint64_t bytes = 0;       // the video memory it reports for itself
+  // What the test levers (mcla_gpu_fsr_velocity_factor and the two after it) passed to this context
+  // so far: render thread only (ApplyLevers, from Upscale), a new context starts at FSR's defaults.
+  upscaler_math::FsrLeverState levers;
 };
 
 }  // namespace
@@ -135,6 +183,9 @@ struct FfxBackend::Impl {
   bool QueryVersions(std::string* why);
   std::shared_ptr<Context> CreateContext(const BackendRequest& request, std::string* why);
   void DestroyContext(Context& context);
+  // Render thread, before a dispatch: passes the test levers' values to the context when they differ
+  // from what it holds (the first dispatch of a context and every change), one log line each.
+  void ApplyLevers(Context& context);
   void SetStatus(BackendState state, bool fsr31, bool fsr4, std::string reason);
   void FailLocked(std::unique_lock<std::mutex>& lock, Upscaler kind, bool whole,
                   const std::string& why);
@@ -377,8 +428,11 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     *why = "the device's native objects are not available";
     return {};
   }
+  // mcla_gpu_fsr_debug_view (a part of the request): the runtime may draw its debug views into the
+  // output (more video memory); a dispatch asks for them (Upscale).
   const uint32_t flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
-                         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+                         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+                         (request.debug_view ? uint32_t(FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION) : 0u);
   context->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
   context->upscale.flags = flags;
   context->upscale.maxRenderSize = {request.render_size[0], request.render_size[1]};
@@ -442,11 +496,50 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
   context->phases = phases > 0 ? uint32_t(phases) : 0u;
   context->bytes = usage_bytes;
   REXLOG_INFO("{} context for {} at {}x{} (output {}x{}) made in {:.0f} ms: provider '{}', about {} "
-              "MB, {} jitter phases (the renderer follows that count)",
+              "MB, {} jitter phases (the renderer follows that count){}",
               kPrefix, UpscalerName(request.upscaler), request.render_size[0], request.render_size[1],
               request.output_size[0], request.output_size[1], ms,
-              context->provider.empty() ? "?" : context->provider, megabytes, phases);
+              context->provider.empty() ? "?" : context->provider, megabytes, phases,
+              request.debug_view ? "; debug visualization ON (mcla_gpu_fsr_debug_view): the "
+                                   "dispatches draw FSR's own views into the output"
+                                 : "");
   return context;
+}
+
+void FfxBackend::Impl::ApplyLevers(Context& context) {
+  const double cvars[upscaler_math::kFsrLeverCount] = {
+      REXCVAR_GET(mcla_gpu_fsr_velocity_factor), REXCVAR_GET(mcla_gpu_fsr_shading_change_scale),
+      REXCVAR_GET(mcla_gpu_fsr_min_disocclusion_accumulation)};
+  const upscaler_math::FsrLeverPlan plan = upscaler_math::PlanFsrLevers(cvars, &context.levers);
+  if (plan.mask == 0) {
+    return;
+  }
+  for (uint32_t k = 0; k < upscaler_math::kFsrLeverCount; ++k) {
+    if (!(plan.mask & (1u << k))) {
+      continue;
+    }
+    const upscaler_math::FsrLever lever = upscaler_math::FsrLever(k);
+    const char* name = upscaler_math::FsrLeverCvar(lever);
+    float value = plan.value[k];
+    const bool restore = !context.levers.asked[k];
+    if (!configure) {
+      REXLOG_WARN("{} {} = {:g} could not be passed to the {} context: the runtime has no "
+                  "ffxConfigure", kPrefix, name, value, UpscalerName(context.request.upscaler));
+      continue;
+    }
+    ffxConfigureDescUpscaleKeyValue desc{};
+    desc.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
+    desc.key = upscaler_math::FsrLeverKey(lever);
+    desc.ptr = &value;  // the runtime reads a float through it
+    const ffxReturnCode_t rc = configure(&context.handle, &desc.header);
+    REXLOG_INFO("{} debug lever {} {} {:g} on the {} context (key {}): {}", kPrefix, name,
+                restore ? "back to FSR's default" : "set to", value,
+                UpscalerName(context.request.upscaler), desc.key,
+                rc == FFX_API_RETURN_OK
+                    ? std::string("taken by the runtime")
+                    : std::format("the runtime answered {} ({}); that provider may not have the key",
+                                  rc, ReturnName(rc)));
+  }
 }
 
 void FfxBackend::Impl::DestroyContext(Context& context) {
@@ -791,6 +884,12 @@ bool FfxBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& i
   d.cameraFovAngleVertical = in.camera_fov_y;
   // CHECK: the game's world unit is about a metre (a car at 64 mph covers 28.7 units a second).
   d.viewSpaceToMetersFactor = 1.0f;
+  // The context made with the debug visualization (mcla_gpu_fsr_debug_view) draws FSR's own views into
+  // the output.
+  d.flags = context->request.debug_view ? uint32_t(FFX_UPSCALE_FLAG_DRAW_DEBUG_VIEW) : 0u;
+  // The test levers' values (mcla_gpu_fsr_velocity_factor and the two after it), before the first
+  // dispatch of the context and whenever they change.
+  i.ApplyLevers(*context);
 
   const ffxReturnCode_t rc = i.dispatch(&context->handle, &d.header);
   if (rc != FFX_API_RETURN_OK) {
