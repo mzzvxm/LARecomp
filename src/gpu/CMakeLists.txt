@@ -106,6 +106,9 @@ add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
+# What a press of the compare key does and says (effect_compare.h, effect_compare_rules.h: the effects, the flip, the label) likewise:
+#   cmake --build <dir> --target larecomp_effect_compare_test, then run src/gpu/larecomp_effect_compare_test.
+add_executable(larecomp_effect_compare_test EXCLUDE_FROM_ALL effect_compare_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
