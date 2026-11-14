@@ -29,6 +29,7 @@
 #include "shaderpack/log.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/pack_writer.h"
+#include "shaderpack/variant_overlap.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
@@ -441,6 +442,7 @@ class VariantStepImpl final : public VariantStep {
     std::vector<StampLine> variant_lines;
     std::string built_text;
     std::string left_out_text;
+    std::vector<VariantTarget> made_targets;  // every (variant, shader) entry, for the overlap check
     for (const VariantDef& def : variants_) {
       std::string error;
       std::string note;
@@ -465,7 +467,10 @@ class VariantStepImpl final : public VariantStep {
         if (!built_text.empty()) built_text += ", ";
         built_text += std::format("{} ({} shader{}{}{})", def.name, made.size(), made.size() == 1 ? "" : "s",
                                   note.empty() ? "" : "; ", note);
-        for (PackEntry& entry : made) entries.push_back(std::move(entry));
+        for (PackEntry& entry : made) {
+          made_targets.push_back({def.name, entry.ps_key});
+          entries.push_back(std::move(entry));
+        }
       } else {
         if (sink.Cancelled()) return fail("The shader build was cancelled.");
         SHADERPACK_LOG_WARN("the shader variant {} was not built: {}", def.name, error);
@@ -480,6 +485,17 @@ class VariantStepImpl final : public VariantStep {
     // When no variant could be made (a game whose shader text none of the edits fit) the pack is written with
     // no entries: the renderer draws the game's own shaders and the stamp is current, instead of every start
     // translating the shaders again.
+
+    // A pixel shader that two variants made an entry for is drawn with one of them only (variant_overlap.h): say so.
+    std::string overlap_text;
+    for (const VariantOverlap& overlap : FindVariantOverlaps(made_targets)) {
+      if (!overlap_text.empty()) overlap_text += "; ";
+      overlap_text += DescribeVariantOverlap(overlap);
+    }
+    if (!overlap_text.empty()) {
+      SHADERPACK_LOG_WARN("shader variants: a pixel shader is in more than one variant, and the renderer draws only the "
+                          "first the settings ask for (pipelines.cpp ChoosePackedVariant): {}", overlap_text);
+    }
 
     // 2. The file: entries in increasing (variant, pixel shader) order, under a temporary name and then
     // moved into place.
@@ -518,6 +534,7 @@ class VariantStepImpl final : public VariantStep {
       result->message = std::format("{} shaders in the variants {}: DXIL {} bytes, SPIR-V {} bytes, {} bytes in all",
                                     entries.size(), built_text, dxil_bytes, spirv_bytes, bytes.size());
       if (!left_out_text.empty()) result->message += "; left out: " + left_out_text;
+      if (!overlap_text.empty()) result->message += "; in more than one variant (only one is drawn): " + overlap_text;
     }
     result->stamp_lines = StepLines();
     for (StampLine& line : variant_lines) result->stamp_lines.push_back(std::move(line));
