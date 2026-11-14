@@ -1763,15 +1763,15 @@ std::string ContactLabel(int i) {
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
 // Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
 // the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
-// picture; then LIGHT, DEFAULT, STRONG and STRONGEST (1x to 4x the built-in strength). The ray quality follows
+// picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
 // the card by itself. They show at dawn and dusk only. At most 26 characters with the longest label
 // ("SUN SHAFTS: AUTO (DEFAULT)"). An older larecomp.toml may still say low or high: the shafts read those as
 // DEFAULT and this row, which does not list them, shows AUTO until it is stepped.
-const char* const kNativeShaftsVals[]  = {"auto", "off", "light", "default", "strong", "strongest"};
-const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LIGHT", "DEFAULT", "STRONG", "STRONGEST"};
+const char* const kNativeShaftsVals[]  = {"auto", "off", "light", "default", "strong", "stronger", "strongest"};
+const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
 std::string ShaftsLabel(int i) {
     if (i == 0) return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSunShafts);
-    return i > 0 && i < 6 ? kNativeShaftsNames[i] : "";
+    return i > 0 && i < 7 ? kNativeShaftsNames[i] : "";
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
@@ -1882,7 +1882,7 @@ const ItemDef kGfxQualityItems[] = {
                                 kNativeContactVals, kNativeContactNames, 4),
                             &kContactDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
-                                kNativeShaftsVals, kNativeShaftsNames, 6),
+                                kNativeShaftsVals, kNativeShaftsNames, 7),
                             &kShaftsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),

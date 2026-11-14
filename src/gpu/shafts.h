@@ -70,8 +70,8 @@
 // view (the pause view has no frame-to-frame camera here, and a lens that is sweeping is worse than
 // none).
 //
-// Settings: mcla_gpu_sun_shafts (auto, off, light, default, strong, strongest: how strong the shafts are,
-// x1 to x4 of the built-in strength, off being the game's own picture; the old low and high are read as
+// Settings: mcla_gpu_sun_shafts (auto, off, light, default, strong, stronger, strongest: how strong the shafts are,
+// x1 to x5 of the built-in strength, off being the game's own picture; the old low and high are read as
 // default; live; the pause menu's SUN SHAFTS row; `auto` is gpu_class.h's: DEFAULT on Mid and High, OFF on
 // Low; shafts_level.h has the rule) and the tuning cvars _intensity (a fine multiplier on top of the level),
 // _steps (the ray steps, which the class chooses), _density, _threshold, _sky_depth, _view (debug views),
@@ -109,7 +109,7 @@ class PassTiming;
 
 class SunShafts {
  public:
-  // How strong the shafts are (the setting; shafts_level.h): off, light, default, strong, strongest.
+  // How strong the shafts are (the setting; shafts_level.h): off, light, default, strong, stronger, strongest.
   using Level = shafts_level::Level;
 
   // The destination of the game's mid-scene depth copy in the retail build, the ambient occlusion's

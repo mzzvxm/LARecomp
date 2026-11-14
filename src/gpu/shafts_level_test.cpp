@@ -6,8 +6,8 @@
 //   <build dir>/src/gpu/larecomp_shafts_level_test
 //
 // The expected values are written out here again on purpose, as gpu_class_test.cpp does: the owner's mapping of
-// 2026-11-13 (LIGHT 1, DEFAULT 2, STRONG 3, STRONGEST 4 times the built-in strength; DEFAULT the usual value;
-// OFF on integrated graphics by `auto`) is the other side of the check.
+// 2026-11-13 (LIGHT 1, DEFAULT 2, STRONG 3, STRONGER 4, STRONGEST 5 times the built-in strength, OFF 0; DEFAULT
+// the usual value; OFF on integrated graphics by `auto`) is the other side of the check.
 
 #include <cstdint>
 #include <cstdio>
@@ -63,7 +63,8 @@ const LevelRow kLevels[] = {
     {Level::kLight, "light", 1.0, "light x1"},
     {Level::kDefault, "default", 2.0, "default x2"},
     {Level::kStrong, "strong", 3.0, "strong x3"},
-    {Level::kStrongest, "strongest", 4.0, "strongest x4"},
+    {Level::kStronger, "stronger", 4.0, "stronger x4"},
+    {Level::kStrongest, "strongest", 5.0, "strongest x5"},
 };
 
 void CheckLevels() {
@@ -91,7 +92,9 @@ void CheckLevels() {
   CheckNum(Multiplier(Level::kLight), 1.0, "LIGHT is the old intensity 1");
   CheckNum(Multiplier(Level::kDefault), 2.0, "DEFAULT is the old intensity 2");
   CheckNum(Multiplier(Level::kStrong), 3.0, "STRONG is the old intensity 3");
-  CheckNum(Multiplier(Level::kStrongest), 4.0, "STRONGEST is the old intensity 4");
+  CheckNum(Multiplier(Level::kStronger), 4.0, "STRONGER is the old intensity 4");
+  CheckNum(Multiplier(Level::kStrongest), 5.0, "STRONGEST is intensity 5");
+  CheckNum(Multiplier(Level::kOff), 0.0, "OFF is 0: the game's own picture");
   Level level = Level::kStrong;
   Check(!ParseLevel("auto", &level) && level == Level::kStrong, "ParseLevel(auto) is no level and leaves the value");
   Check(!ParseLevel("low", &level) && !ParseLevel("high", &level), "ParseLevel(low, high): the old values are not levels");

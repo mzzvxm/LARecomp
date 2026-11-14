@@ -132,7 +132,7 @@ void CheckAutoPasses() {
   }
 }
 
-// The sun shafts' setting is a strength (shafts_level.h): off, light, default, strong, strongest, `auto` (DEFAULT on Mid
+// The sun shafts' setting is a strength (shafts_level.h): off, light, default, strong, stronger, strongest, `auto` (DEFAULT on Mid
 // and High, OFF on Low), and the old low and high (read as default). The plan's level is off for no shafts, else the ray
 // quality the class gives: low on Low and Mid (32 steps), high on High (64).
 void CheckShafts() {
@@ -143,7 +143,8 @@ void CheckShafts() {
     sl::Level strength;
   };
   const Own own[] = {{"off", sl::Level::kOff},         {"light", sl::Level::kLight},   {"default", sl::Level::kDefault},
-                     {"strong", sl::Level::kStrong},   {"strongest", sl::Level::kStrongest}, {"Strong", sl::Level::kStrong},
+                     {"strong", sl::Level::kStrong},   {"stronger", sl::Level::kStronger}, {"strongest", sl::Level::kStrongest},
+                     {"Strong", sl::Level::kStrong},
                      {"OFF", sl::Level::kOff}};
   for (int k = 0; k < 3; ++k) {
     const std::string at = std::string("sun shafts on ") + kClassNames[k];

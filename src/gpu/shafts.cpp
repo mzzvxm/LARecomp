@@ -30,11 +30,11 @@ REXCVAR_DEFINE_STRING(
     "through a haze. They show at dawn and dusk (strongest between 2.5 and 27 degrees of sun "
     "height, none by day above 45 degrees, none at night or in rain) and only while the sun is on "
     "the screen or not far beyond its edge. The value is how strong they are: off is the game's own "
-    "picture, then light, default, strong and strongest (1x to 4x the built-in strength; default is 2x). "
+    "picture, then light, default, strong, stronger and strongest (1x to 5x the built-in strength; default is 2x). "
     "auto (the default) is default on a discrete graphics card and off on an integrated one (a "
     "handheld, or the iGPU of a desktop CPU). The ray quality follows the card by itself. low and high "
     "are values of an older version and mean default. Costs graphics card time only while they show. Live.")
-    .allowed({"auto", "off", "light", "default", "strong", "strongest", "low", "high"})
+    .allowed({"auto", "off", "light", "default", "strong", "stronger", "strongest", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_sun_shafts_intensity, 1.0, "MCLA/GPU",

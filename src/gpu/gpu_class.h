@@ -61,7 +61,7 @@ enum class Effect : uint8_t {
   kEnvResolution,         // mcla_gpu_env_resolution     auto, game, high, ultra
   kReflectionResolution,  // mcla_gpu_reflection_resolution  auto, game, high, ultra
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
-  kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, strongest (shafts_level.h)
+  kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
 };
 inline constexpr int kEffectCount = 7;

@@ -7,7 +7,8 @@
 //   light      the built-in strength x1
 //   default    x2 (the look the owner judged "great" on 2026-11-13; the setting's usual value)
 //   strong     x3
-//   strongest  x4
+//   stronger   x4
+//   strongest  x5
 //   auto       the default of the setting: DEFAULT on the Mid and High GPU classes, OFF on the Low class
 //              (an integrated GPU, a handheld or a software adapter keeps the game's own picture;
 //              gpu_class.h's table, kEffects)
@@ -35,8 +36,8 @@
 
 namespace mcla::gpu::shafts_level {
 
-enum class Level : uint8_t { kOff, kLight, kDefault, kStrong, kStrongest };
-inline constexpr int kLevelCount = 5;
+enum class Level : uint8_t { kOff, kLight, kDefault, kStrong, kStronger, kStrongest };
+inline constexpr int kLevelCount = 6;
 
 // The word of the setting for a level (lower case), for the cvar's value and the logs.
 constexpr std::string_view Name(Level level) {
@@ -45,19 +46,21 @@ constexpr std::string_view Name(Level level) {
     case Level::kLight: return "light";
     case Level::kDefault: return "default";
     case Level::kStrong: return "strong";
+    case Level::kStronger: return "stronger";
     case Level::kStrongest: return "strongest";
   }
   return "?";
 }
 
-// The multiplier of the built-in strength (the old intensity value): 0, 1, 2, 3, 4.
+// The multiplier of the built-in strength (the old intensity value): 0, 1, 2, 3, 4, 5.
 constexpr float Multiplier(Level level) {
   switch (level) {
     case Level::kOff: return 0.0f;
     case Level::kLight: return 1.0f;
     case Level::kDefault: return 2.0f;
     case Level::kStrong: return 3.0f;
-    case Level::kStrongest: return 4.0f;
+    case Level::kStronger: return 4.0f;
+    case Level::kStrongest: return 5.0f;
   }
   return 0.0f;
 }
@@ -76,7 +79,7 @@ inline std::string Lower(std::string_view text) {
   return out;
 }
 
-// "off", "light", "default", "strong" or "strongest" exactly (the text is lower case already); false for
+// "off", "light", "default", "strong", "stronger" or "strongest" exactly (the text is lower case already); false for
 // anything else, `auto` and the old values included.
 inline bool ParseLevel(std::string_view text, Level* level) {
   for (int i = 0; i < kLevelCount; ++i) {

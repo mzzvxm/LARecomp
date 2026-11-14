@@ -23,7 +23,7 @@
 // What each setting's text can be, and what anything else means, is kept as each owner had it:
 //   occlusion  mcla_gpu_ao            off, low, high; no `auto`; anything else is off
 //   contact    mcla_gpu_contact_shadows   auto, off, low, high; anything else is off
-//   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, strongest (a strength, shafts_level.h);
+//   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, stronger, strongest (a strength, shafts_level.h);
 //                                     the old low and high are read as default; anything else counts as `auto`.
 //                                     The plan's level is off, or low (32 ray steps) / high (64) by the class
 //   bounce     mcla_gpu_ssgi          auto, off, low, high; anything else is off; `auto` is off until the
