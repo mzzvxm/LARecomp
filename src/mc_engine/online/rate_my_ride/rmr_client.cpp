@@ -21,6 +21,7 @@
 #include "../identity/identity_store.h"
 #include "rmr_net.h"
 #include "rmr_store.h"
+#include "../leaderboards/lb_client.h"
 
 REXCVAR_DEFINE_BOOL(rmr_enabled, true, "MCLA/Multiplayer",
                     "Rate My Ride: serve the mode from our own backend instead of Rockstar's "
@@ -139,6 +140,7 @@ Store* LocalStore() {
       return nullptr;
     }
     LARECOMP_APP_INFO("[rmr] local store {} ({})", store->dir().string(), store->Summary());
+    store->AttachBoards(lb::client::LocalStoreForAwards());
     g_local = std::move(store);
   }
   return g_local.get();

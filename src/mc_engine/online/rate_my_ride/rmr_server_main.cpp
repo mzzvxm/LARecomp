@@ -110,6 +110,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "cannot open the leaderboards: %s\n", error.c_str());
     return 1;
   }
+  store.AttachBoards(&boards);
   Log("Rate My Ride server on TCP " + std::to_string(port) + ", data in " + data.string());
   Log(store.Summary());
   Log(boards.Summary());

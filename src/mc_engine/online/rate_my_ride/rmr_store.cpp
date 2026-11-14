@@ -70,9 +70,14 @@ bool ReadAll(const fs::path& path, std::vector<uint8_t>& out) {
 
 }  // namespace
 
-Store::Store(fs::path dir) : dir_(std::move(dir)) {
+Store::Store(fs::path dir) : dir_(std::move(dir)), awards_(dir_) {
   std::random_device rd;
   rng_.seed((static_cast<uint64_t>(rd()) << 32) ^ rd() ^ static_cast<uint64_t>(Now()));
+}
+
+void Store::AttachBoards(lb::Store* boards) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  awards_.Attach(boards);
 }
 
 bool Store::Open(std::string* error) {
@@ -495,8 +500,19 @@ Response Store::Handle(const Request& req, std::string* log_line) {
           tournament::Current(static_cast<int64_t>(std::time(nullptr)), dir_);
       resp.data = tournament::EncodeGuest(d);
       resp.count = d.week;
+      awards_.NoteServed(d);
       log += " week " + std::to_string(d.week) + " -> '" + d.name + "' slot " +
              std::to_string(d.table_id);
+      break;
+    }
+
+    case Op::kRewards: {
+      const uint32_t mask = awards_.RewardsFor(me, static_cast<int64_t>(std::time(nullptr)), &log);
+      if (mask) {
+        resp.data = tournament::EncodeRewardsFile(mask);
+        resp.count = mask;
+      }
+      log += " -> mask " + std::to_string(mask);
       break;
     }
   }

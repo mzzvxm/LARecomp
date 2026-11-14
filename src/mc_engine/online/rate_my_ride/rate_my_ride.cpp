@@ -511,7 +511,8 @@ void Apply(Memory* mem, const Pending& p, const rmr::Response& resp) {
     }
 
     case rmr::Op::kTournament:
-      break;  // tournament.cpp queues and applies it itself
+    case rmr::Op::kRewards:
+      break;  // tournament.cpp queues and applies these itself
   }
 
   if (IsGuestPtr(p.status)) {

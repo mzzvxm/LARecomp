@@ -176,8 +176,49 @@ void ApplyOverrides(const std::filesystem::path& file, Definition& d) {
       if (ParseU32(v, u)) d.restriction_data = u;
     } else if (k == "name") {
       if (!v.empty()) d.name = v;
+    } else if (k == "description") {
+      // "\n" in the file is a line break in the menu (written as '\r', see
+      // BuildDescription).
+      d.description.clear();
+      for (size_t i = 0; i < v.size(); ++i) {
+        if (v[i] == '\\' && i + 1 < v.size() && v[i + 1] == 'n') {
+          d.description += '\r';
+          ++i;
+        } else {
+          d.description += v[i];
+        }
+      }
+    } else if (k == "prize_first") {
+      if (ParseU32(v, u)) d.prize_first = u & kRewardsKnown;
+    } else if (k == "prize_podium") {
+      if (ParseU32(v, u)) d.prize_podium = u & kRewardsKnown;
+    } else if (k == "podium") {
+      if (ParseU32(v, u) && u >= 1 && u <= 100) d.podium = u;
     }
   }
+}
+
+// What the menu shows under "TOURNAMENT", one fact per line. The box wraps
+// long lines; it breaks a line on '\r' and shows '\n' as a space (measured in
+// game; the game's own strings never break lines):
+//   South Central Circuit 3
+//   Any car. Ends Monday 00:00 UTC.
+//   1st: Audi R8, TIS rims, hydraulics.
+//   2nd-3rd: TIS rims, hydraulics.
+std::string BuildDescription(const Definition& d) {
+  const char* br = "\r";
+  std::string s = d.name + br;
+  s += d.restriction_data == kAnyCar ? "Any car." : "Restricted cars.";
+  s += " Ends Monday 00:00 UTC.";
+  const std::string first = RewardNames(d.prize_first);
+  const std::string podium = RewardNames(d.prize_podium);
+  if (!first.empty()) s += br + ("1st: " + first + ".");
+  if (!podium.empty() && d.podium > 1) {
+    s += br + std::string("2nd");
+    if (d.podium > 2) s += "-" + std::to_string(d.podium) + (d.podium == 3 ? "rd" : "th");
+    s += ": " + podium + ".";
+  }
+  return s;
 }
 
 }  // namespace
@@ -186,7 +227,8 @@ Definition Current(int64_t now, const std::filesystem::path& dir) {
   Definition d;
   const int64_t since = std::max<int64_t>(now - kFirstMonday, 0);
   d.week = static_cast<uint32_t>(since / kWeek);
-  d.ends = kFirstMonday + (static_cast<int64_t>(d.week) + 1) * kWeek;
+  d.starts = kFirstMonday + static_cast<int64_t>(d.week) * kWeek;
+  d.ends = d.starts + kWeek;
   const Race& race = kRaces[(static_cast<uint64_t>(d.week) * kRaceStride) % kRaceCount];
   d.race_key = race.key;
   d.name = race.name;
@@ -207,8 +249,29 @@ std::vector<uint8_t> EncodeGuest(const Definition& d) {
   StoreBe32(b.data() + 16, d.race_key);
   // One "en:" entry: the menu matches its language's two-letter prefix and
   // otherwise shows the first entry past the prefix, so every language gets it.
-  const std::string text = "en:" + d.name;
+  const std::string text = "en:" + (d.description.empty() ? BuildDescription(d) : d.description);
   std::memcpy(b.data() + 20, text.data(), std::min<size_t>(text.size(), 255));
+  return b;
+}
+
+std::string RewardNames(uint32_t mask) {
+  static const char* const kNames[] = {"Audi R8", "TIS rims", "hydraulics"};
+  std::string s;
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (!(mask & (1u << i))) continue;
+    if (!s.empty()) s += ", ";
+    s += kNames[i];
+  }
+  return s;
+}
+
+std::vector<uint8_t> EncodeRewardsFile(uint32_t mask) {
+  std::vector<uint8_t> b(kRewardsFileSize, 0);
+  b[0] = '0';
+  b[1] = '0';
+  b[2] = '1';
+  for (uint32_t i = 0; i < 8; ++i)
+    if (mask & (1u << i)) StoreBe32(b.data() + 4 + 4 * i, 1);
   return b;
 }
 

@@ -66,6 +66,8 @@ enum class Op : uint32_t {
   kDownload = 9,   // fetch a file blob
   kTournament = 10,  // this week's Online Tournament: data = the game's
                      // definition file, count = the tournament week
+  kRewards = 11,     // the requester's tournament prizes: data = the game's
+                     // rewards file (empty: none), count = the reward mask
 };
 
 const char* OpName(Op op);

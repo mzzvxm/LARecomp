@@ -30,12 +30,20 @@
 #include <vector>
 
 #include "rmr_protocol.h"
+#include "../tournament_awards.h"
+
+namespace lb {
+class Store;
+}
 
 namespace rmr {
 
 class Store {
  public:
   explicit Store(std::filesystem::path dir);
+
+  // The leaderboards that decide the Online Tournament prizes (kRewards).
+  void AttachBoards(lb::Store* boards);
 
   // Loads the index (or starts empty). False only when the directory cannot be
   // created or an existing index is unreadable.
@@ -76,6 +84,7 @@ class Store {
   uint32_t next_record_ = 1;
   uint32_t next_file_ = 1;
   std::mt19937_64 rng_;
+  tournament::Awards awards_;
 };
 
 }  // namespace rmr
