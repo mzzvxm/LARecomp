@@ -376,6 +376,100 @@ void ApplyChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// vehicles (the garage glow, owner 2026-11-13)
+// ---------------------------------------------------------------------------
+// A black car's low body in the garage: colour 0.04 (mostly gloss), T 0.4, the lit floor's radiance 0.25 over half the hemisphere.
+ApplyIn BlackCarSkirt(const ssgi_level::Preset& p, float vehicle) {
+  ApplyIn in;
+  in.ambient = 0.35f;
+  in.sun = 0.4f;
+  in.sun_term = 0.05f;
+  in.colour = {0.04f, 0.04f, 0.04f};
+  in.bounce_radiance = {0.25f, 0.25f, 0.25f};
+  in.ao_part = 0.8f;
+  in.strength = p.strength;
+  in.vehicle = vehicle;
+  in.limit = p.limit;
+  in.cap = p.cap;
+  return in;
+}
+
+void VehicleChecks() {
+  Check(Near(kVehicleShare, 0.35, 1e-6) && Near(kVehicleStrengthMax, 0.8, 1e-6), "a car takes 0.35 of the strength, at most 0.8");
+  // the strength a car gets at every level
+  Check(Near(VehicleStrength(2.0f), 0.7, 1e-6), "DEFAULT (2) on a car is 0.7, about the old default (0.75) the owner found relatively okay");
+  Check(Near(VehicleStrength(1.0f), 0.35, 1e-6), "LIGHT (1) on a car is 0.35");
+  for (const ssgi_level::Preset& p : ssgi_level::kPresets) {
+    Check(VehicleStrength(p.strength) <= kVehicleStrengthMax + 1e-6f, Num("a car's strength never goes over 0.8 (level strength %.2f)", p.strength));
+    Check(VehicleStrength(p.strength) < p.strength, Num("a car always takes less than the world (level strength %.2f)", p.strength));
+  }
+  Check(Near(VehicleStrength(4.5f), kVehicleStrengthMax, 1e-6) && Near(VehicleStrength(7.0f), kVehicleStrengthMax, 1e-6),
+        "STRONGER and STRONGEST do not put the glow back: a car stays at 0.8");
+  // the blend: the world unchanged, a vehicle the car's strength, a silhouette between, monotone
+  {
+    const float s = 2.0f;
+    Check(StrengthFor(s, 0.0f) == s, "a world pixel (vehicle share 0) keeps the level's strength exactly");
+    Check(Near(StrengthFor(s, 1.0f), VehicleStrength(s), 1e-6), "a vehicle pixel (share 1) takes the car's strength");
+    Check(Near(StrengthFor(s, 0.5f), 0.5f * (s + VehicleStrength(s)), 1e-6), "a silhouette is the straight blend");
+    Check(StrengthFor(s, -3.0f) == s && Near(StrengthFor(s, 9.0f), VehicleStrength(s), 1e-6), "the share is kept to 0 to 1");
+    bool mono = true;
+    float last = StrengthFor(s, 0.0f);
+    for (int i = 1; i <= 100; ++i) {
+      const float now = StrengthFor(s, float(i) / 100.0f);
+      mono = mono && now <= last + 1e-7f;
+      last = now;
+    }
+    Check(mono, "the strength falls steadily from the world's to the car's");
+    Check(StrengthFor(0.0f, 1.0f) == 0.0f, "no strength stays none on a car");
+  }
+  // the factor: a world pixel is bit for bit what it was (vehicle 0 is the old formula), a car pixel is the car's strength's
+  {
+    for (const ssgi_level::Preset& p : ssgi_level::kPresets) {
+      ApplyIn world = BlackCarSkirt(p, 0.0f);
+      ApplyIn car = BlackCarSkirt(p, 1.0f);
+      const Rgb w = BounceFactor(world);
+      const Rgb c = BounceFactor(car);
+      // the same pixel with the strength the car gets, as a world pixel: equal
+      ApplyIn as_world = world;
+      as_world.strength = VehicleStrength(p.strength);
+      const Rgb e = BounceFactor(as_world);
+      Check(Near(c.g, e.g, 1e-6), Num("a car pixel takes the factor of the car's strength (level strength %.2f)", p.strength));
+      Check(c.g < w.g, Num("... which is less than a world pixel's (level strength %.2f)", p.strength));
+      // what the glow was: the share of the pixel's own colour the bounce adds
+      const float gain = c.g;  // the factor the colour is multiplied by, on top of the occlusion's
+      Check(gain <= 0.8f * (0.25f / 0.4f) * 1.0f + 1e-4f, Num("a car's bounce factor is at most 0.8 x B / T = 0.5 (got %.3f)", gain));
+    }
+    // the black car at DEFAULT: the old factor was 1.25 (the pixel became 2.25 times as bright: the glow), now 0.44
+    const ssgi_level::Preset& d = ssgi_level::PresetOf(ssgi_level::Level::kDefault);
+    const Rgb w = BounceFactor(BlackCarSkirt(d, 0.0f));
+    const Rgb c = BounceFactor(BlackCarSkirt(d, 1.0f));
+    Check(w.g > 1.0f, Num("the world pixel of the same colour gains more than its own colour at DEFAULT (%.3f): the glow", w.g));
+    Check(c.g < 0.5f, Num("the car's low body gains under half its own colour at DEFAULT (%.3f)", c.g));
+    // every level, random car pixels: a car never takes more than the world pixel with the same numbers, and the factor stays finite
+    Lcg rng;
+    bool never_more = true;
+    bool finite = true;
+    for (int i = 0; i < 20000; ++i) {
+      const ssgi_level::Preset& p = ssgi_level::kPresets[i % ssgi_level::kLevelCount];
+      ApplyIn in = BlackCarSkirt(p, 0.0f);
+      in.colour = {rng.Range(0.0f, 1.5f), rng.Range(0.0f, 1.5f), rng.Range(0.0f, 1.5f)};
+      in.bounce_radiance = {rng.Range(0.0f, 3.0f), rng.Range(0.0f, 3.0f), rng.Range(0.0f, 3.0f)};
+      in.ambient = rng.Range(0.05f, 1.2f);
+      in.sun = rng.Range(0.0f, 2.0f);
+      in.sun_term = rng.Range(0.0f, in.sun);
+      in.source = rng.Range(0.0f, 1.0f) > 0.8f ? rng.Range(0.0f, 1.0f) : 0.0f;
+      const Rgb world = BounceFactor(in);
+      in.vehicle = rng.Range(0.0f, 1.0f);
+      const Rgb on_car = BounceFactor(in);
+      never_more = never_more && on_car.r <= world.r + 1e-4f && on_car.g <= world.g + 1e-4f && on_car.b <= world.b + 1e-4f;
+      finite = finite && std::isfinite(on_car.r) && std::isfinite(on_car.g) && std::isfinite(on_car.b) && on_car.g >= 0.0f;
+    }
+    Check(never_more, "a vehicle share never raises a pixel's bounce (20000 random pixels)");
+    Check(finite, "the factor stays finite and not negative on a car (20000 random pixels)");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the levels
 // ---------------------------------------------------------------------------
 void LevelChecks() {
@@ -526,6 +620,16 @@ void ShaderConstantsMatch(const std::string& dir) {
   Check(apply.find("max(GiCap() * (ambient + g_push.extra.x), kSsgiCapFloor)") != std::string::npos,
         "the apply's ceiling is the header's RadianceCap");
   Check(apply.find("dot(gi_colour.rgb * bounce, kLuma)") != std::string::npos, "the apply's added light is the colour times the bounce, in luma");
+  // the vehicles' strength
+  Check(Near(ConstOf(common, "kSsgiVehicleShare"), kVehicleShare, 1e-6), "ssgi_common.hlsli kSsgiVehicleShare is the header's kVehicleShare");
+  Check(Near(ConstOf(common, "kSsgiVehicleStrengthMax"), kVehicleStrengthMax, 1e-6), "kSsgiVehicleStrengthMax is the header's");
+  Check(common.find("min(strength * kSsgiVehicleShare, kSsgiVehicleStrengthMax)") != std::string::npos &&
+            common.find("lerp(strength, on_car, saturate(vehicle))") != std::string::npos,
+        "the shader's vehicle strength is the header's formula");
+  Check(apply.find("SsgiStrengthFor(g_push.shape.y, gi_vehicle)") != std::string::npos &&
+            apply.find("AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel))") != std::string::npos &&
+            apply.find("vehicle_sum += (AoIsVehicle(td) ? 1.0f : 0.0f) * w;") != std::string::npos,
+        "the apply takes the strength from the vehicle share of the pixel's depth neighbourhood (the depth pass's mark)");
   // ao.cpp
   if (ReadFile(dir + "/../ao.cpp", &ao_cpp)) {
     Check(Near(ConstOf(ao_cpp, "kFalloffRatio"), kFalloffRatio, 1e-6), "ao.cpp's kFalloffRatio is the far falloff's");
@@ -545,6 +649,7 @@ int main(int argc, char** argv) {
   FarRingChecks();
   CodeChecks();
   ApplyChecks();
+  VehicleChecks();
   LevelChecks();
   if (argc > 1) {
     ShaderConstantsMatch(argv[1]);

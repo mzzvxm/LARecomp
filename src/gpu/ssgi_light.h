@@ -34,6 +34,14 @@
 //   side of each slice, from the coarser levels of the colour and depth chains, with the horizon's falloff at the
 //   reach (full to 38% of it, none at it). The ring only adds light (the occlusion's visibility stays what the
 //   near samples found: it comes from the near mask alone) and only into sectors the near samples left open.
+//   Cars. A vehicle's own pixels take a smaller strength (VehicleStrength): the albedo is estimated as the pixel's colour
+//   over the light the game's constants say fell on it, which is right for a matt wall and wrong for paint: a car's
+//   colour is mostly the gloss, the reflection of the sky and the floor, so the estimate reads a black car as a
+//   grey one (0.1 instead of 0.03), and the parts of a car that look at the floor (skirts, lower doors, tyres, the
+//   underside) are what a bright floor lights most. At the full strength a black car in the garage glowed (owner,
+//   2026-11-13, strength 2, clamp 4). The share is not a guess at paint: it is what makes DEFAULT (2) on a car the
+//   0.7 that the owner found "relatively okay" as the old default (0.75), and the cap keeps the stronger levels
+//   from putting the glow back.
 // ===========================================================================
 
 #include <algorithm>
@@ -48,6 +56,8 @@ inline constexpr float kKnee = 0.5f;            // SoftClip is linear up to this
 inline constexpr float kSourceMult = 2.0f;      // a pixel starts to count as a source of light at this multiple of the frame's light
 inline constexpr float kSourceSpan = 1.5f;      // ... and is entirely one at this multiple of that start
 inline constexpr float kFalloffRatio = 0.615f;  // the horizon falloff range as a share of the radius (ao.cpp kFalloffRatio)
+inline constexpr float kVehicleShare = 0.35f;       // a vehicle's pixels take this share of the level's strength ...
+inline constexpr float kVehicleStrengthMax = 0.8f;  // ... and never more than this strength, whatever the level
 
 // The far ring (hlsl/ao_main_ps.hlsl, AO_GI).
 inline constexpr float kFarMaxRadiusShare = 0.4f;  // the ring never reaches farther than this share of the image's height
@@ -97,6 +107,18 @@ inline float SoftClip(float x, float limit) {
   }
   const float span = limit - knee;
   return knee + span * (1.0f - std::exp(-(x - knee) / span));
+}
+
+// The strength a vehicle's pixel gets for the level's `strength`: kVehicleShare of it, at most kVehicleStrengthMax.
+inline float VehicleStrength(float strength) {
+  return std::min(strength * kVehicleShare, kVehicleStrengthMax);
+}
+
+// The strength of a pixel whose `vehicle` share (0 to 1: the share of its depth neighbourhood the depth pass marked as a
+// vehicle) is given: the level's on the world, the car's on a vehicle, a straight blend on a silhouette.
+inline float StrengthFor(float strength, float vehicle) {
+  const float v = Saturate(vehicle);
+  return strength + (VehicleStrength(strength) - strength) * v;
 }
 
 // The cap of a sample's radiance (luma) for a cap multiple and the frame's ambient and sun lumas.
@@ -193,6 +215,7 @@ struct ApplyIn {
   float sun_term = 0.0f; // sun * N.L * the game's shadow mask at the pixel: what T takes of the sun
   float ao_part = 1.0f;  // what the occlusion and the contact shadows already multiply the pixel by (their factor)
   float strength = 1.0f;
+  float vehicle = 0.0f;  // the share of the pixel's depth neighbourhood that is a vehicle (0: the world)
   float fade = 1.0f;     // the distance fade, 1 near
   float limit = 2.5f;    // the most the bounce may add, in multiples of the pixel's colour
   float cap = 2.0f;      // the cap multiple (the ceiling is cap times the frame's light)
@@ -207,7 +230,7 @@ inline float LightT(const ApplyIn& in) {
 inline Rgb BounceFactor(const ApplyIn& in) {
   const float luma_c = Luma(in.colour);
   const float surface = 1.0f - Saturate(in.source);
-  const float scale = in.strength * in.fade * surface / std::max(LightT(in), luma_c);
+  const float scale = StrengthFor(in.strength, in.vehicle) * in.fade * surface / std::max(LightT(in), luma_c);
   Rgb bounce = Scaled(in.bounce_radiance, scale);
   // The gain limit.
   const float peak = MaxChannel(bounce);
