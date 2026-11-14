@@ -1,5 +1,6 @@
 // Check of the rule that says which host passes a start makes pipelines for (host_plan.h): the class
-// against the settings' texts, the plan, the words of the log line and the occlusion's pipeline groups.
+// against the settings' texts, the plan, the words of the log line and the occlusion's pipeline groups
+// (with the contact shadows' and the bounce light's).
 // A program of its own: it needs no renderer, no ReXGlue and no GPU, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_host_plan_test     (src/gpu/CMakeLists.txt)
@@ -43,6 +44,7 @@ const GpuClass kClasses[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
 const char* const kClassNames[] = {"low", "mid", "high"};
 
 // What `auto` stands for, written out again (the design's table, section 9): off/low/high, in class order.
+// The bounce light's is off on every class until its cost is measured (owner, 2026-11-13).
 struct AutoRow {
   Pass pass;
   const char* cells[3];
@@ -50,7 +52,7 @@ struct AutoRow {
 const AutoRow kAuto[] = {
     {Pass::kContact, {"off", "low", "high"}},
     {Pass::kShafts, {"off", "low", "high"}},
-    {Pass::kBounce, {"off", "off", "low"}},
+    {Pass::kBounce, {"off", "off", "off"}},
 };
 
 Level LevelOf(const std::string& name) {
@@ -149,7 +151,7 @@ void CheckPlans() {
       // The defaults of a fresh install (mcla_gpu_ao high, the others auto).
       {"high", "auto", "auto", "auto", GpuClass::kLow, "O---", "defaults, Low: only the occlusion"},
       {"high", "auto", "auto", "auto", GpuClass::kMid, "OCS-", "defaults, Mid: occlusion, contact shadows, shafts"},
-      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCSB", "defaults, High: all four"},
+      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCS-", "defaults, High: the bounce light is off on every class"},
       // The occlusion off: nothing of it, and no bounce light (it needs the occlusion's images).
       {"off", "auto", "auto", "auto", GpuClass::kHigh, "-CS-", "occlusion off, High: contact and shafts stay, bounce light cannot"},
       {"off", "auto", "auto", "auto", GpuClass::kLow, "----", "occlusion off, Low: nothing"},
@@ -161,6 +163,9 @@ void CheckPlans() {
       {"high", "low", "auto", "auto", GpuClass::kLow, "OC--", "contact low on Low"},
       {"high", "auto", "high", "auto", GpuClass::kMid, "OCS-", "shafts high on Mid"},
       {"high", "auto", "auto", "low", GpuClass::kMid, "OCSB", "bounce light low on Mid"},
+      {"high", "auto", "auto", "high", GpuClass::kHigh, "OCSB", "bounce light high on High"},
+      {"low", "off", "off", "low", GpuClass::kLow, "O--B", "bounce light low with the occlusion low on Low"},
+      {"off", "auto", "auto", "high", GpuClass::kHigh, "-CS-", "bounce light high with the occlusion off: held off"},
       // Words that are not values.
       {"auto", "junk", "junk", "junk", GpuClass::kHigh, "--S-", "junk: occlusion off, contact off, shafts as auto (High), bounce off"},
   };
@@ -179,8 +184,12 @@ void CheckPlans() {
         "plan: Mid's levels are low, low, low, off");
   const Plan high = Decide(GpuClass::kHigh, true, "high", "auto", "auto", "auto");
   Check(high.of(Pass::kContact).level == Level::kHigh && high.of(Pass::kShafts).level == Level::kHigh &&
-            high.of(Pass::kBounce).level == Level::kLow,
-        "plan: High's levels are high, high, low");
+            high.of(Pass::kBounce).level == Level::kOff,
+        "plan: High's levels are high, high, off (the bounce light is off on every class)");
+  const Plan high_low = Decide(GpuClass::kHigh, true, "high", "auto", "auto", "low");
+  Check(high_low.of(Pass::kBounce).level == Level::kLow && !high_low.of(Pass::kBounce).automatic &&
+            !high_low.of(Pass::kBounce).held,
+        "plan: the bounce light set to low on High is low, set by the player");
   // The class unknown: the bounce light waits, the rest follow the class given.
   const Plan unknown = Decide(GpuClass::kHigh, false, "high", "auto", "auto", "auto");
   Check(!unknown.on(Pass::kBounce) && unknown.on(Pass::kContact) && unknown.on(Pass::kShafts),
@@ -202,35 +211,74 @@ void CheckDescribe() {
   CheckEq(Describe(Pass::kContact, Resolve(Pass::kContact, GpuClass::kHigh, true, "hgih"), GpuClass::kHigh),
           "contact shadows off (not a value of the setting: off)", "Describe: a word that is off");
   CheckEq(std::string(PassName(Pass::kBounce)), "bounce light", "PassName(bounce)");
+  CheckEq(Describe(Pass::kBounce, Resolve(Pass::kBounce, GpuClass::kHigh, true, "auto"), GpuClass::kHigh),
+          "bounce light off (auto on the high class)", "Describe: the bounce light's auto is off on High");
+  CheckEq(Describe(Pass::kBounce, Resolve(Pass::kBounce, GpuClass::kHigh, true, "low"), GpuClass::kHigh),
+          "bounce light low (set)", "Describe: the bounce light set to low");
+  CheckEq(Describe(Pass::kBounce,
+                   HoldBounce(Resolve(Pass::kBounce, GpuClass::kHigh, true, "high"), Level::kOff),
+                   GpuClass::kHigh),
+          "bounce light off (needs the ambient occlusion, which is off)",
+          "Describe: the bounce light held off by the occlusion");
+}
+
+void CheckHold() {
+  // The bounce light is held off exactly while the occlusion is off and the bounce light would be on.
+  for (const char* text : {"auto", "off", "low", "high", "junk"}) {
+    for (int k = 0; k < 3; ++k) {
+      const std::string where = std::string("'") + text + "' on " + kClassNames[k];
+      const Choice own = Resolve(Pass::kBounce, kClasses[k], true, text);
+      const Choice with_ao = HoldBounce(own, Level::kLow);
+      Check(with_ao.level == own.level && !with_ao.held, "hold: " + where + " with the occlusion on is as it was");
+      const Choice no_ao = HoldBounce(own, Level::kOff);
+      Check(no_ao.level == Level::kOff, "hold: " + where + " with the occlusion off is off");
+      Check(no_ao.held == (own.level != Level::kOff),
+            "hold: " + where + " is marked held only when it would have been on");
+      Check(no_ao.automatic == own.automatic && no_ao.unknown == own.unknown,
+            "hold: " + where + ": what the setting said is kept");
+    }
+  }
 }
 
 void CheckAmbient() {
-  // Every pair of levels, with and without the census.
+  // Every triple of levels, with and without the census.
   const Level levels[] = {Level::kOff, Level::kLow, Level::kHigh};
   for (const Level occlusion : levels) {
     for (const Level contact : levels) {
-      for (const bool census : {false, true}) {
-        const AmbientNeeds n = Ambient(occlusion, contact, census);
-        const bool ao = occlusion != Level::kOff;
-        const bool cs = contact != Level::kOff;
-        const std::string what = std::string("occlusion ") + std::string(LevelName(occlusion)) + ", contact " +
-                                 std::string(LevelName(contact)) + (census ? ", census" : "");
-        Check(n.depth == (ao || cs || census), what + ": depth");
-        Check(n.mip == (ao || census), what + ": mip");
-        Check(n.occlusion == ao, what + ": occlusion's visibility and history");
-        Check(n.denoise == (ao || cs), what + ": denoise");
-        Check(n.apply == (ao || cs), what + ": apply");
-        Check(n.contact == cs, what + ": contact march");
-        Check(n.any() == (ao || cs || census), what + ": any");
+      for (const Level bounce : levels) {
+        for (const bool census : {false, true}) {
+          const AmbientNeeds n = Ambient(occlusion, contact, bounce, census);
+          const bool ao = occlusion != Level::kOff;
+          const bool cs = contact != Level::kOff;
+          const bool gi = ao && bounce != Level::kOff;
+          const std::string what = std::string("occlusion ") + std::string(LevelName(occlusion)) +
+                                   ", contact " + std::string(LevelName(contact)) + ", bounce " +
+                                   std::string(LevelName(bounce)) + (census ? ", census" : "");
+          Check(n.depth == (ao || cs || census), what + ": depth");
+          Check(n.mip == (ao || census), what + ": mip");
+          Check(n.occlusion == ao, what + ": occlusion's visibility and history");
+          Check(n.denoise == (ao || cs), what + ": denoise");
+          Check(n.apply == (ao || cs), what + ": apply");
+          Check(n.contact == cs, what + ": contact march");
+          Check(n.bounce == gi, what + ": bounce light's passes (only with the occlusion)");
+          Check(n.any() == (ao || cs || census), what + ": any");
+        }
       }
     }
   }
-  // The two that matter at start: both off lists nothing; the contact alone has no visibility chain.
-  Check(!Ambient(Level::kOff, Level::kOff, false).any(), "nothing is needed with the occlusion and the contact off");
-  const AmbientNeeds contact_only = Ambient(Level::kOff, Level::kLow, false);
+  // The ones that matter at start: all off lists nothing; the contact alone has no visibility chain; the
+  // bounce light alone (its setting on, the occlusion off) lists nothing; all on lists every group.
+  Check(!Ambient(Level::kOff, Level::kOff, Level::kOff, false).any(),
+        "nothing is needed with the occlusion, the contact shadows and the bounce light off");
+  const AmbientNeeds contact_only = Ambient(Level::kOff, Level::kLow, Level::kOff, false);
   Check(contact_only.depth && contact_only.denoise && contact_only.apply && contact_only.contact &&
-            !contact_only.occlusion && !contact_only.mip,
+            !contact_only.occlusion && !contact_only.mip && !contact_only.bounce,
         "contact alone: depth, denoise, apply and the march; no visibility chain, no coarser levels");
+  Check(!Ambient(Level::kOff, Level::kOff, Level::kHigh, false).any(),
+        "the bounce light without the occlusion needs nothing");
+  const AmbientNeeds all = Ambient(Level::kHigh, Level::kHigh, Level::kHigh, false);
+  Check(all.depth && all.mip && all.occlusion && all.denoise && all.apply && all.contact && all.bounce,
+        "all three on: every group, the occlusion's plain ones too (the pause menu's world runs them)");
 }
 
 }  // namespace
@@ -240,6 +288,7 @@ int main() {
   CheckAutoPasses();
   CheckPlans();
   CheckDescribe();
+  CheckHold();
   CheckAmbient();
   if (g_failed != 0) {
     std::printf("host_plan_test: %d of %d checks FAILED\n", g_failed, g_checks);
