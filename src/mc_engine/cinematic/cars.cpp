@@ -313,9 +313,11 @@ struct ReadHealth {
     int lines = 0;               // fault lines written for this car (capped)
     bool streak_logged = false;  // the current run of refused reads was written
     bool w_noted = false;        // the "w words are garbage" line was written
+    bool ever_taken = false;     // a read was taken: only then is a refusal news (a car that is still arriving has no entity for a second after Racer_Activate; one that never reads at all
+                                 // is the 'placed, but the pose cannot be read' line's)
 };
 constexpr int kFaultLinesPerCar = 6;
-constexpr uint64_t kFaultAfterUpdates = 30;  // a run of refused reads is written once it is half a second old (a car that is still arriving has no entity yet)
+constexpr uint64_t kFaultAfterUpdates = 30;  // a run of refused reads is written once it is half a second old
 
 struct State {
     std::recursive_mutex mutex;  // the camera hook reads poses; both run on the game thread (a native could even call the hook inside TickCars)
@@ -383,6 +385,7 @@ void NoteRead(const std::string& id, uint32_t racer, bool read, const MatrixRead
             if (h.failing_since != 0 && h.streak_logged) LARECOMP_APP_INFO("[cars] {} the matrix reads again after {} update(s)", id, g.frame - h.failing_since);
             h.failing_since = 0;
             h.streak_logged = false;
+            h.ever_taken = true;
             if (MatrixHasBadW(m) && !h.w_noted) {
                 h.w_noted = true;
                 LARECOMP_APP_INFO("[cars] {} a w word of the matrix is not finite (ignored: Racer_Teleport leaves the position row's w from the stack): {}", id, Words(m));
@@ -393,7 +396,7 @@ void NoteRead(const std::string& id, uint32_t racer, bool read, const MatrixRead
     }
     ++h.refused;
     if (h.failing_since == 0) h.failing_since = g.frame;
-    if (h.streak_logged || g.frame - h.failing_since < kFaultAfterUpdates || h.lines >= kFaultLinesPerCar) return;
+    if (!h.ever_taken || h.streak_logged || g.frame - h.failing_since < kFaultAfterUpdates || h.lines >= kFaultLinesPerCar) return;
     h.streak_logged = true;
     ++h.lines;
     LARECOMP_APP_WARN("[cars] {} the matrix has not been taken for {} updates (racer {}, entity {}, matrix {}): {}", id, g.frame - h.failing_since, Hex(racer), Hex(info.entity),
