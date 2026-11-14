@@ -216,16 +216,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 m1 = float3(0.0f, 0.0f, 0.0f);
   float3 m2 = float3(0.0f, 0.0f, 0.0f);
   float wsum = 0.0f;
-  const float plane_sigma = kPlaneShare * tc + kPlaneFloor;
+  const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
+  const float2 clip_scale = 2.0f / size;
   for (int dy = -1; dy <= 1; ++dy) {
     for (int dx = -1; dx <= 1; ++dx) {
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
       const float4 v = g_textures[current_slot].Load(int3(q, 0));
       lo = min(lo, v.x);
       hi = max(hi, v.x);
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, AoLoadLinear(depth_slot, q));
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w = exp(-0.5f * off_plane * off_plane);
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, AoLoadLinear(depth_slot, q));
+      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      const float w = exp2(kAoNegHalfLog2e * off_plane * off_plane);
       m1 += v.yzw * w;
       m2 += v.yzw * v.yzw * w;
       wsum += w;

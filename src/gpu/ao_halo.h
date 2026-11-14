@@ -142,6 +142,9 @@ struct Params {
   int slices = 3;
   int steps = 3;
   bool ratio_sum = true;   // the slice sum as a ratio of what it is for an open surface
+  // The shader's cheaper forms of the same arithmetic (ao_fast.h, "THE SAME WORK"): 1 / size and 1 / distance as factors, the
+  // tangents as -sin n and sin n, the sample's level from comparing its length with 16 and 32 pixels. False: the forms of before.
+  bool lossless = false;
 };
 
 inline constexpr float kSky = 60000.0f;
@@ -251,16 +254,22 @@ inline float Visibility(const Scene& s, const Params& p, int px, int py, int fra
     const float sign_n = dd > 0.0f ? 1.0f : (dd < 0.0f ? -1.0f : 0.0f);
     const float cos_n = Saturate(Dot(projected, view_vec) / std::max(projected_len, 1e-6f));
     const float n = sign_n * std::acos(cos_n);
-    const float low0 = std::cos(n + kHalfPi);
-    const float low1 = std::cos(n - kHalfPi);
+    const float low0 = p.lossless ? -std::sin(n) : std::cos(n + kHalfPi);
+    const float low1 = p.lossless ? std::sin(n) : std::cos(n - kHalfPi);
     float hcos0 = low0, hcos1 = low1;
     for (int st = 0; st < steps; ++st) {
       const float step_noise = Frac(noise_y + float(slice + st * slices) * 0.6180339887f);
       float share = (float(st) + step_noise) / float(steps);
       share = share * share + min_offset;
       const float ox = dpx * share * radius_px, oy = dpy * share * radius_px;
-      const float level_f = std::clamp(std::log2(std::max(std::hypot(ox, oy), 1.0f)) - 3.0f, 0.0f, 2.0f);
-      const int level = int(level_f);
+      int level;
+      if (p.lossless) {
+        const float length_px = share * radius_px;  // dir is a unit vector
+        level = (length_px >= 16.0f ? 1 : 0) + (length_px >= 32.0f ? 1 : 0);
+      } else {
+        const float level_f = std::clamp(std::log2(std::max(std::hypot(ox, oy), 1.0f)) - 3.0f, 0.0f, 2.0f);
+        level = int(level_f);
+      }
       for (int side = 0; side < 2; ++side) {
         const float sx = side == 0 ? float(px) + 0.5f + ox : float(px) + 0.5f - ox;
         const float sy = side == 0 ? float(py) + 0.5f + oy : float(py) + 0.5f - oy;
@@ -269,10 +278,16 @@ inline float Visibility(const Scene& s, const Params& p, int px, int py, int fra
         }
         const int ix = int(std::floor(sx)), iy = int(std::floor(sy));
         const float td = ChainDepth(s, p, level, ix >> level, iy >> level);
-        const V3 sp = ViewPos(s, float(ix) + 0.5f, float(iy) + 0.5f, td);
+        V3 sp = ViewPos(s, float(ix) + 0.5f, float(iy) + 0.5f, td);
+        if (p.lossless) {
+          // AoViewPosInv: the centre times 2 / size (the clip space's scale, made once for the pass).
+          const float scale_x = 2.0f / float(s.width), scale_y = 2.0f / float(s.height);
+          sp = {((float(ix) + 0.5f) * scale_x - 1.0f) * s.tan_x * td, (1.0f - (float(iy) + 0.5f) * scale_y) * s.tan_y * td, td};
+        }
         const V3 delta = sp - pc;
         const float dist = Length(delta);
-        const float cos_sample = Dot(delta * (1.0f / std::max(dist, 1e-6f)), view_vec);
+        const float cos_sample = p.lossless ? Dot(delta, view_vec) * (1.0f / std::max(dist, 1e-6f))
+                                            : Dot(delta * (1.0f / std::max(dist, 1e-6f)), view_vec);
         const float low = side == 0 ? low0 : low1;
         float& hc = side == 0 ? hcos0 : hcos1;
         float w = Falloff(dist, p.radius, ratio);

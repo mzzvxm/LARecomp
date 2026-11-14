@@ -73,6 +73,38 @@
 // from the near samples' mask alone (occupied_near), so the occlusion looks as it did. ssgi_light.h has the
 // same maths in C++.
 
+// COMPILE-TIME COUNTS. The same source is compiled for the counts of a quality (ao.cpp: 3 slices of 3 steps, or 2 of 2; the
+// bounce light adds the far ring's steps a side, 2 or 1): with AO_SLICES and AO_STEPS defined, and in the bounce light's
+// pass AO_FAR_STEPS, the loops run over constants: the loops over the steps (and the ring's) unroll and everything that is a
+// function of the counts folds. The slice loop keeps its count as a loop (the bitmask pass unrolled over the slices is three
+// times the size: AO_UNROLL_SLICES makes that one). Without the counts they are the push block's (flags bits 8-15 and 26-28),
+// as the pass always read them: that compilation stays for a count that no variant has (a debug override). The result is the
+// same to a rounding error (ao_fast.h).
+// AO_FAST_ACOS (the bounce light's pass only, with the counts): the sectors' angles from the polynomial (AoAngleOf; 0.0014 of a
+// sector at most, ao_fast.h) in place of the hardware's acos; ao.cpp picks the pipeline without it when mcla_gpu_ao_fast_math is
+// false.
+#if defined(AO_SLICES) && defined(AO_STEPS)
+#define AO_SPECIALISED 1
+#define AO_UNROLL [unroll]
+#ifdef AO_UNROLL_SLICES
+#define AO_SLICE_LOOP [unroll]
+#else
+#define AO_SLICE_LOOP [loop]
+#endif
+#else
+#define AO_SPECIALISED 0
+#define AO_UNROLL
+#define AO_SLICE_LOOP
+#endif
+#ifdef AO_FAR_STEPS
+#define AO_FAR_UNROLL [unroll]
+#else
+#define AO_FAR_UNROLL
+#endif
+#ifndef AO_FAST_ACOS
+#define AO_FAST_ACOS 0
+#endif
+
 #include "ao_common.hlsli"
 
 #ifndef AO_GI
@@ -94,18 +126,18 @@ static const float kMaxRadiusShare = 0.3f;
 // The linear depth at the continuous pixel position `p` (level-0 pixels), from `level` of the
 // chain, nearest texel. Each level's slot comes straight from the push constants (never a computed
 // index), so the descriptor index is the same for every pixel.
+// The level's size and the shift are constants of each branch (the level's size is a function of the pass's, so the
+// compiler works it out once for the pass): the same texel as ever, without the integer arithmetic of a variable shift.
 float ChainDepth(float2 p, uint level) {
-  const int2 size0 = int2(g_push.sizes.zw);
-  const int shift = int(level);
-  const int2 size = max((size0 + int(1u << level) - 1) >> shift, int2(1, 1));
-  const int2 q = clamp(int2(floor(p)) >> shift, int2(0, 0), size - 1);
+  const int2 size0 = max(int2(g_push.sizes.zw), int2(1, 1));
+  const int2 ip = int2(floor(p));
   if (level == 0u) {
-    return AoLoadLinear(g_push.slots.z, q);
+    return AoLoadLinear(g_push.slots.z, clamp(ip, int2(0, 0), size0 - 1));
   }
   if (level == 1u) {
-    return AoLoadLinear(g_push.slots.w, q);
+    return AoLoadLinear(g_push.slots.w, clamp(ip >> 1, int2(0, 0), max((size0 + 1) >> 1, int2(1, 1)) - 1));
   }
-  return AoLoadLinear(g_push.slots2.x, q);
+  return AoLoadLinear(g_push.slots2.x, clamp(ip >> 2, int2(0, 0), max((size0 + 3) >> 2, int2(1, 1)) - 1));
 }
 
 // Whether the sample at the continuous pixel position `p` (level-0 pixels) is a vehicle: the bit the depth
@@ -129,17 +161,34 @@ static const uint kSectors = 32u;
 // The colour chain's radiance at the continuous pixel position `p` (level-0 pixels), nearest texel of
 // `level`: the slots come straight from the push constants, as the depth chain's do.
 float3 ChainColour(float2 p, uint level) {
-  const int2 size0 = int2(g_push.sizes.zw);
-  const int shift = int(level);
-  const int2 size = max((size0 + int(1u << level) - 1) >> shift, int2(1, 1));
-  const int2 q = clamp(int2(floor(p)) >> shift, int2(0, 0), size - 1);
+  const int2 size0 = max(int2(g_push.sizes.zw), int2(1, 1));
+  const int2 ip = int2(floor(p));
   if (level == 0u) {
-    return g_textures[g_push.slots.x].Load(int3(q, 0)).rgb;
+    return g_textures[g_push.slots.x].Load(int3(clamp(ip, int2(0, 0), size0 - 1), 0)).rgb;
   }
   if (level == 1u) {
-    return g_textures[g_push.slots.y].Load(int3(q, 0)).rgb;
+    return g_textures[g_push.slots.y]
+        .Load(int3(clamp(ip >> 1, int2(0, 0), max((size0 + 1) >> 1, int2(1, 1)) - 1), 0))
+        .rgb;
   }
-  return g_textures[g_push.slots2.w].Load(int3(q, 0)).rgb;
+  return g_textures[g_push.slots2.w]
+      .Load(int3(clamp(ip >> 2, int2(0, 0), max((size0 + 3) >> 2, int2(1, 1)) - 1), 0))
+      .rgb;
+}
+
+// The angle of a cosine, 0 to pi: acos of the cosine kept within -1 to 1 (a NaN counts as 1, as the hardware's min does), or
+// with AO_FAST_ACOS the polynomial of Abramowitz and Stegun 4.4.45, sqrt(1 - |c|) times a cubic in |c|, mirrored for a
+// negative cosine: 6.8e-5 radians at the most, which moves a sector's edge by 0.0014 of a sector at the most, and one
+// square root and three fused multiply-adds where the hardware's acos is a longer sequence. ao_fast.h AcosFast is the
+// same function in C++ and ao_fast_test.cpp has its error.
+float AoAngleOf(float c) {
+#if AO_FAST_ACOS
+  const float a = min(abs(c), 1.0f);
+  const float r = sqrt(1.0f - a) * (1.5707288f + a * (-0.2121144f + a * (0.0742610f + a * -0.0187293f)));
+  return c < 0.0f ? kPi - r : r;
+#else
+  return acos(clamp(c, -1.0f, 1.0f));
+#endif
 }
 
 // Where the signed angle `theta` (from the view vector, positive towards the slice's +direction) falls
@@ -181,29 +230,28 @@ uint AoSectorBits(float lo, float hi) {
 void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3 pc,
                 float3 view_vec, float3 axis, float falloff_mul, float falloff_add, float n,
                 float sin_n, float cos_n, float g_end, float inv_total, float thickness,
-                float facing_weight, bool limit_vehicles, float2 vehicle_fall, inout uint occupied,
-                inout float3 light) {
+                float facing_weight, bool limit_vehicles, float2 vehicle_fall, float2 clip_scale,
+                inout uint occupied, inout float3 light) {
   const float2 size = g_push.sizes.zw;
   if (!(all(p >= 0.0f) && all(p < size))) {
     return;  // off screen: nothing there, the sky share of the hemisphere stays the game's ambient
   }
-  const float3 sp = AoViewPos(floor(p) + 0.5f, size, ChainDepth(p, level));
+  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, ChainDepth(p, level));
   const float3 delta = sp - pc;
   const float dist = length(delta);
   float w = saturate(dist * falloff_mul + falloff_add);
   if (limit_vehicles && w > 0.0f && AoSampleIsVehicle(p)) {
     w = min(w, saturate(dist * vehicle_fall.x + vehicle_fall.y));
   }
-  const float3 dir = delta / max(dist, 1e-6f);
+  const float inv_dist = 1.0f / max(dist, 1e-6f);
+  const float3 dir = delta * inv_dist;
   const float cos_front = max(lerp(low, dot(dir, view_vec), w), low);
-  const float u_front = AoSectorPos(side * acos(clamp(cos_front, -1.0f, 1.0f)), n, sin_n, cos_n,
-                                    g_end, inv_total);
+  const float u_front = AoSectorPos(side * AoAngleOf(cos_front), n, sin_n, cos_n, g_end, inv_total);
   float u_back = side > 0.0f ? 1.0f : 0.0f;  // a solid: everything below the front horizon
   if (thickness > 0.0f) {
     const float3 behind = delta + sp * (thickness / max(length(sp), 1e-6f));
     const float cos_back = max(lerp(low, dot(normalize(behind), view_vec), w), low);
-    u_back = AoSectorPos(side * acos(clamp(cos_back, -1.0f, 1.0f)), n, sin_n, cos_n, g_end,
-                         inv_total);
+    u_back = AoSectorPos(side * AoAngleOf(cos_back), n, sin_n, cos_n, g_end, inv_total);
   }
   const uint bits = AoSectorBits(min(u_front, u_back), max(u_front, u_back));
   const uint fresh = bits & ~occupied;
@@ -223,12 +271,12 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   if (facing_weight > 0.0f) {
     const float2 p2 = p + away * float(1u << level);
     const float t2 = ChainDepth(p2, level);
-    const float3 tangent = AoViewPos(floor(p2) + 0.5f, size, t2) - sp;
+    const float3 tangent = AoViewPosInv(floor(p2) + 0.5f, clip_scale, t2) - sp;
     if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
       float3 normal_s = cross(tangent, axis);
       const float length_n = length(normal_s);
       if (length_n > 1e-6f) {
-        normal_s /= length_n;
+        normal_s *= 1.0f / length_n;
         if (dot(normal_s, sp) > 0.0f) {
           normal_s = -normal_s;
         }
@@ -269,8 +317,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float thickness = max(g_push.shape.z, 0.0f);
   const float facing_weight = saturate(g_push.shape.w);
 
+#if AO_SPECIALISED
+  const uint slices = AO_SLICES;
+  const uint steps = AO_STEPS;
+#else
   const uint slices = max(AoSlices(), 1u);
   const uint steps = max(AoSteps(), 1u);
+#endif
+  const float2 clip_scale = 2.0f / size;
   const float2 noise_at = float2(pixel);
   const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
   const float2 noise = frac(spatial + AoNoiseShift());
@@ -278,7 +332,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   // The far ring: from where the near samples end to the reach, if it goes meaningfully farther.
   const float far_reach = max(g_push.extra.w, 0.0f);
+#ifdef AO_FAR_STEPS
+  const uint far_steps = AO_FAR_STEPS;
+#else
   const uint far_steps = (g_push.slots2.z >> 26) & 0x7u;
+#endif
   const float near_end_px = radius_px * (1.0f + min_offset);
   const float far_px = min(far_reach * pixels_per_unit, kSsgiFarMaxRadiusShare * size.y);
   const bool far_ring = far_steps > 0u && far_px > near_end_px * kSsgiFarMinGrowth + kSsgiFarMinExtraPx;
@@ -287,7 +345,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float visibility = 0.0f;
   float3 bounce = float3(0.0f, 0.0f, 0.0f);
   float open_sum = 0.0f;  // what the slices' weights add up to: the visibility of a surface nothing blocks
-  for (uint slice = 0u; slice < slices; ++slice) {
+  AO_SLICE_LOOP for (uint slice = 0u; slice < slices; ++slice) {
     const float phi = (float(slice) + noise.x) / float(slices) * kPi;
     const float2 dir_px = float2(cos(phi), sin(phi));
     const float3 dir_view = float3(dir_px.x, -dir_px.y, 0.0f);
@@ -298,47 +356,51 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float sign_n = sign(dot(ortho, projected));
     const float cos_n = saturate(dot(projected, view_vec) / max(projected_len, 1e-6f));
     const float n = sign_n * acos(cos_n);
-    const float low0 = cos(n + kHalfPi);
-    const float low1 = cos(n - kHalfPi);
-    // The slice's arc: its sine and its measure (AoSectorPos).
+    // The slice's arc: its sine and its measure (AoSectorPos). The surface's own tangent on each side is the
+    // cosine of n + or - a quarter turn, which is minus and plus the sine of n.
     const float sin_n = sin(n);
+    const float low0 = -sin_n;
+    const float low1 = sin_n;
     const float total = cos_n + n * sin_n;
     const float inv_total = 1.0f / max(total, 1e-3f);
     const float g_end = (2.0f * cos_n + (2.0f * n - kPi) * sin_n) * 0.25f;
 
     uint occupied = 0u;
     float3 light = float3(0.0f, 0.0f, 0.0f);
-    for (uint s = 0u; s < steps; ++s) {
+    AO_UNROLL for (uint s = 0u; s < steps; ++s) {
       const float step_noise = frac(noise.y + float(slice + s * slices) * 0.6180339887f);
       float share = (float(s) + step_noise) / float(steps);
       share = share * share + min_offset;
-      const float2 offset = dir_px * (share * radius_px);
-      const float level_f = clamp(log2(max(length(offset), 1.0f)) - 3.0f, 0.0f, 2.0f);
-      const uint level = uint(level_f);
+      // dir_px is a unit vector: the offset's length is the share of the radius, and the level of the depth chain
+      // the sample reads is 0 under 16 pixels, 1 under 32, 2 from there (the same as log2(length) - 3 cut to 0 to 2
+      // and truncated, without the square root and the logarithm).
+      const float length_px = share * radius_px;
+      const float2 offset = dir_px * length_px;
+      const uint level = (length_px >= 16.0f ? 1u : 0u) + (length_px >= 32.0f ? 1u : 0u);
       AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, falloff_mul,
                  falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
-                 limit_vehicles, vehicle_fall, occupied, light);
+                 limit_vehicles, vehicle_fall, clip_scale, occupied, light);
       AoGiSample(centre - offset, level, -dir_px, -1.0f, low1, pc, view_vec, axis, falloff_mul,
                  falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
-                 limit_vehicles, vehicle_fall, occupied, light);
+                 limit_vehicles, vehicle_fall, clip_scale, occupied, light);
     }
     // The far ring: more samples of this slice, out to the reach, into the sectors still open. The mask
     // the visibility is counted from is the near samples' (occupied_near).
     const uint occupied_near = occupied;
     if (far_ring) {
-      for (uint s = 0u; s < far_steps; ++s) {
+      AO_FAR_UNROLL for (uint s = 0u; s < far_steps; ++s) {
         const float step_noise = frac(noise.y + float(slice + (steps + s) * slices) * 0.6180339887f);
         float share = (float(s) + step_noise) / float(far_steps);
         share *= share;
         const float length_px = lerp(near_end_px, far_px, share);
         const float2 offset = dir_px * length_px;
-        const uint level = uint(clamp(log2(max(length_px, 1.0f)) - 3.0f, 1.0f, 2.0f));
+        const uint level = length_px >= 32.0f ? 2u : 1u;
         AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, far_falloff_mul,
                    falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
-                   limit_vehicles, vehicle_fall, occupied, light);
+                   limit_vehicles, vehicle_fall, clip_scale, occupied, light);
         AoGiSample(centre - offset, level, -dir_px, -1.0f, low1, pc, view_vec, axis, far_falloff_mul,
                    falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
-                   limit_vehicles, vehicle_fall, occupied, light);
+                   limit_vehicles, vehicle_fall, clip_scale, occupied, light);
       }
     }
     // The slice's share of the picture: the arc's measure times the projected normal's length, as the
@@ -367,15 +429,16 @@ float4 main(float4 position : SV_Position) : SV_Target {
 // the shorter falloff `vehicle_fall` (AoVehicleFalloff) if that is the smaller. The vehicle bit is only
 // looked up for a sample that would raise the horizon: the others cost no read.
 float AoHorizonAfter(float2 p, uint level, float3 pc, float3 view_vec, float low, float h,
-                     float falloff_mul, float falloff_add, bool limit_vehicles, float2 vehicle_fall) {
+                     float falloff_mul, float falloff_add, bool limit_vehicles, float2 vehicle_fall,
+                     float2 clip_scale) {
   const float2 size = g_push.sizes.zw;
   if (!(all(p >= 0.0f) && all(p < size))) {
     return h;
   }
-  const float3 sp = AoViewPos(floor(p) + 0.5f, size, ChainDepth(p, level));
+  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, ChainDepth(p, level));
   const float3 delta = sp - pc;
   const float dist = length(delta);
-  const float cos_sample = dot(delta / max(dist, 1e-6f), view_vec);
+  const float cos_sample = dot(delta, view_vec) * (1.0f / max(dist, 1e-6f));
   float w = saturate(dist * falloff_mul + falloff_add);
   float pull = lerp(low, cos_sample, w);
   if (limit_vehicles && pull > h && AoSampleIsVehicle(p)) {
@@ -414,8 +477,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const bool limit_vehicles = car_share > 0.001f && car_share < 0.999f && !AoIsVehicle(tc);
   const float2 vehicle_fall = AoVehicleFalloff(car_share, radius, falloff_ratio);
 
+#if AO_SPECIALISED
+  const uint slices = AO_SLICES;
+  const uint steps = AO_STEPS;
+#else
   const uint slices = max(AoSlices(), 1u);
   const uint steps = max(AoSteps(), 1u);
+#endif
+  const float2 clip_scale = 2.0f / size;
   const float2 noise_at = float2(pixel);
   const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
   // The frame's shift: a lattice of 13 frames (ao_common.hlsli AoNoiseShift, ao_stable.h).
@@ -424,7 +493,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   float visibility = 0.0f;
   float open_sum = 0.0f;  // what the slices' terms add up to for a surface nothing blocks
-  for (uint slice = 0u; slice < slices; ++slice) {
+  AO_SLICE_LOOP for (uint slice = 0u; slice < slices; ++slice) {
     const float phi = (float(slice) + noise.x) / float(slices) * kPi;
     const float2 dir_px = float2(cos(phi), sin(phi));          // pixels, y down
     const float3 dir_view = float3(dir_px.x, -dir_px.y, 0.0f);  // view space, y up
@@ -436,23 +505,28 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float cos_n = saturate(dot(projected, view_vec) / max(projected_len, 1e-6f));
     const float n = sign_n * acos(cos_n);  // the normal's angle from the view vector in the slice
 
-    // The lowest horizon of each side: the surface's own tangent (nothing hides below it).
-    const float low0 = cos(n + kHalfPi);  // the +direction side
-    const float low1 = cos(n - kHalfPi);  // the -direction side
+    // The lowest horizon of each side: the surface's own tangent (nothing hides below it), the cosine of
+    // n + or - a quarter turn, which is minus and plus the sine of n.
+    const float sin_n = sin(n);
+    const float low0 = -sin_n;  // the +direction side
+    const float low1 = sin_n;   // the -direction side
     float hcos0 = low0;
     float hcos1 = low1;
-    for (uint s = 0u; s < steps; ++s) {
+    AO_UNROLL for (uint s = 0u; s < steps; ++s) {
       const float step_noise = frac(noise.y + float(slice + s * slices) * 0.6180339887f);
       float share = (float(s) + step_noise) / float(steps);
       share = share * share + min_offset;
-      const float2 offset = dir_px * (share * radius_px);
-      const float level_f = clamp(log2(max(length(offset), 1.0f)) - 3.0f, 0.0f, 2.0f);
-      const uint level = uint(level_f);
+      // The offset's length is the share of the radius (dir_px is a unit vector); the depth chain's level is 0
+      // under 16 pixels, 1 under 32, 2 from there (log2(length) - 3 cut to 0 to 2 and truncated, without the
+      // square root and the logarithm).
+      const float length_px = share * radius_px;
+      const float2 offset = dir_px * length_px;
+      const uint level = (length_px >= 16.0f ? 1u : 0u) + (length_px >= 32.0f ? 1u : 0u);
 
       hcos0 = AoHorizonAfter(centre + offset, level, pc, view_vec, low0, hcos0, falloff_mul,
-                             falloff_add, limit_vehicles, vehicle_fall);
+                             falloff_add, limit_vehicles, vehicle_fall, clip_scale);
       hcos1 = AoHorizonAfter(centre - offset, level, pc, view_vec, low1, hcos1, falloff_mul,
-                             falloff_add, limit_vehicles, vehicle_fall);
+                             falloff_add, limit_vehicles, vehicle_fall, clip_scale);
     }
 
     // The horizon angles, kept within the hemisphere around the normal, and the arc integral.
@@ -460,7 +534,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
     float h1 = acos(clamp(hcos0, -1.0f, 1.0f));
     h0 = n + clamp(h0 - n, -kHalfPi, kHalfPi);
     h1 = n + clamp(h1 - n, -kHalfPi, kHalfPi);
-    const float sin_n = sin(n);
     const float arc0 = (cos_n + 2.0f * h0 * sin_n - cos(2.0f * h0 - n)) * 0.25f;
     const float arc1 = (cos_n + 2.0f * h1 * sin_n - cos(2.0f * h1 - n)) * 0.25f;
     visibility += projected_len * (arc0 + arc1);

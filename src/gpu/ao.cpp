@@ -17,6 +17,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "ao_fast.h"
 #include "ao_halo.h"
 #include "ao_stable.h"
 #include "contact_trace.h"
@@ -103,6 +104,16 @@ REXCVAR_DEFINE_BOOL(
     "bigger picture and its history is clipped to a wider box. False: the first version's 3x3 blur and 5x5 "
     "wide blur at every size, its additive recurrence, its 2 a-trous iterations and its clip of 1.25 "
     "deviations, for comparing. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_ao_fast_math, true, "MCLA/GPU",
+    "Diagnostic: the bounce light's sectors take the angle of each sample's horizon from a polynomial (Abramowitz and "
+    "Stegun's, 6.8e-5 radians at the most, 0.0014 of one of the 32 sectors) in place of the hardware's acos, which "
+    "costs less; every other saving of the occlusion's and the bounce light's shader passes is the same maths to a "
+    "rounding error and has no switch. False: the hardware's acos (the shader as it was in that one respect), for "
+    "comparing the cost and the picture. Live; the first frame after the change makes the other pipeline on the "
+    "render thread (a debug switch: a hitch of tens of milliseconds, once).")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
@@ -725,6 +736,22 @@ uint32_t AmbientOcclusion::GiViewVariant(uint32_t host_samples) {
   return kVGiView + log2_samples;
 }
 
+uint32_t AmbientOcclusion::MainVariant(bool low) {
+  return ao_fast::PlainCounts(low) == ao_fast::Counts::kLow ? kVMain2 : kVMain3;
+}
+
+uint32_t AmbientOcclusion::MainGiVariant(bool fewer, uint32_t far_steps, bool fast_math) {
+  switch (ao_fast::GiCounts(fewer, far_steps)) {
+    case ao_fast::Counts::kHigh: return fast_math ? kVMainGi3 : kVMainGi3Exact;
+    case ao_fast::Counts::kLow: return fast_math ? kVMainGi2 : kVMainGi2Exact;
+    default: return kVMainGi;  // a ring of another number of steps (the debug override): the pass that reads the counts
+  }
+}
+
+uint32_t AmbientOcclusion::GiPlan::FarStepsSent() const {
+  return reach > 0.0f ? std::min(far_steps, ssgi_light::kFarStepsMax) : 0u;
+}
+
 std::string AmbientOcclusion::VariantName(uint32_t variant) {
   switch (variant) {
     case kVDepth: return "ao depth";
@@ -736,7 +763,13 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVTemporalMs: return "ao temporal (multisampled)";
     case kVVehicleTable: return "ao vehicle table";
     case kVContact: return "ao contact shadows";
+    case kVMain3: return "ao visibility 3x3";
+    case kVMain2: return "ao visibility 2x2";
     case kVMainGi: return "ssgi visibility bitmask";
+    case kVMainGi3: return "ssgi visibility bitmask 3x3+2";
+    case kVMainGi2: return "ssgi visibility bitmask 2x2+1";
+    case kVMainGi3Exact: return "ssgi visibility bitmask 3x3+2 (exact acos)";
+    case kVMainGi2Exact: return "ssgi visibility bitmask 2x2+1 (exact acos)";
     case kVColor: return "ssgi colour";
     case kVColorMs: return "ssgi colour (multisampled)";
     case kVColorMip: return "ssgi colour level";
@@ -796,8 +829,8 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   occlusion_built_ = false;
   contact_built_ = false;
   bounce_built_ = false;
-  for (uint32_t i = 0; i < kCorePassCount && ok; ++i) {
-    if (i == kPassContact && !contact_at_start) {
+  for (uint32_t i = 0; i < kPassCount && ok; ++i) {
+    if (!CorePass(i) || (i == kPassContact && !contact_at_start)) {
       continue;
     }
     const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
@@ -841,13 +874,18 @@ bool AmbientOcclusion::EnsureGiShaders() {
   // failure takes the bounce light only.
   bool ok = true;
   for (uint32_t i = kCorePassCount; i < kPassCount && ok; ++i) {
+    if (CorePass(i)) {
+      continue;  // the occlusion's own (made at the start)
+    }
     const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
     shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
   }
   if (!ok) {
     for (uint32_t i = kCorePassCount; i < kPassCount; ++i) {
-      shaders_[i].reset();
+      if (!CorePass(i)) {
+        shaders_[i].reset();
+      }
     }
     gi_shaders_failed_ = true;
     REXLOG_ERROR("[gpu] ao: a shader of the bounce light could not be made: no bounce light this "
@@ -919,7 +957,10 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
     variants.push_back(kVMip);
   }
   if (needs.occlusion) {
-    variants.push_back(kVMain);
+    // The visibility pass with its counts compiled in, for both qualities (the setting is live: a switch of the level finds the other
+    // made; ao_fast.h). The compilation that reads the counts is made on first use, where a count no variant has is asked for.
+    variants.push_back(kVMain3);
+    variants.push_back(kVMain2);
   }
   if (needs.denoise) {
     variants.push_back(kVDenoise);
@@ -958,7 +999,11 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   // needed with it: the pause menu's and the map's world, and a frame that cannot have the bounce light,
   // run the plain occlusion. The debug override's pictures (kVGiView) are never listed.
   if (needs.bounce && gi_ready_) {
-    for (const uint32_t variant : {uint32_t(kVMainGi), uint32_t(kVColor), uint32_t(kVColorMs),
+    // The bitmask pass with its counts compiled in, for both qualities (the setting is live), with the acos that
+    // mcla_gpu_ao_fast_math says (the other is made on first use after a switch of the cvar: a debug A/B).
+    const bool fast_math = REXCVAR_GET(mcla_gpu_ao_fast_math);
+    for (const uint32_t variant : {uint32_t(fast_math ? kVMainGi3 : kVMainGi3Exact),
+                                   uint32_t(fast_math ? kVMainGi2 : kVMainGi2Exact), uint32_t(kVColor), uint32_t(kVColorMs),
                                    uint32_t(kVColorMip), uint32_t(kVDenoiseGi), uint32_t(kVTemporalGi),
                                    uint32_t(kVTemporalGiMs), uint32_t(kVAtrous),
                                    GiApplyVariant(false, 1), GiApplyVariant(false, 2),
@@ -1024,7 +1069,13 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVContact: return make(kPassContact, plume::RenderFormat::R16_FLOAT, copy, 1);
+    case kVMain3: return make(kPassMain3, plume::RenderFormat::R16_FLOAT, copy, 1);
+    case kVMain2: return make(kPassMain2, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVMainGi: return make(kPassMainGi, kGiFormat, copy, 1);
+    case kVMainGi3: return make(kPassMainGi3, kGiFormat, copy, 1);
+    case kVMainGi2: return make(kPassMainGi2, kGiFormat, copy, 1);
+    case kVMainGi3Exact: return make(kPassMainGi3Exact, kGiFormat, copy, 1);
+    case kVMainGi2Exact: return make(kPassMainGi2Exact, kGiFormat, copy, 1);
     case kVColor: return make(kPassColor, kGiFormat, copy, 1);
     case kVColorMs: return make(kPassColorMs, kGiFormat, copy, 1);
     case kVColorMip: return make(kPassColorMip, kGiFormat, copy, 1);
@@ -1188,6 +1239,13 @@ void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* boun
       *bounce = Mode::kOff;
     }
   }
+}
+
+plume::RenderPipeline* AmbientOcclusion::MainGiPipeline(const GiPlan& gi) {
+  plume::RenderPipeline* pipeline =
+      Pipeline(MainGiVariant(gi.fewer, gi.FarStepsSent(), REXCVAR_GET(mcla_gpu_ao_fast_math)));
+  // The compilation that reads the counts, if the one for them could not be made (it said why): the push block carries them.
+  return pipeline ? pipeline : Pipeline(kVMainGi);
 }
 
 plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
@@ -1985,8 +2043,9 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // (the bounce light's own quality when it runs: its main pass is the occlusion's)
   const bool ao_low = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kLow;
   const bool low = plan.low;
-  const uint32_t slices = ao_low ? 2 : 3;
-  const uint32_t steps = ao_low ? 2 : 3;
+  // (the counts the main pass's pipelines have compiled in: ao_fast.h, MainVariant and MainGiVariant pick the one that fits)
+  const uint32_t slices = ao_low ? ao_fast::kLowSlices : ao_fast::kHighSlices;
+  const uint32_t steps = ao_low ? ao_fast::kLowSteps : ao_fast::kHighSteps;
   // The noise changes every frame (hlsl/ao_main_ps.hlsl). The denoise's radius follows the image's height, so that
   // the blur reaches as far in the picture at 4K as at 720 lines (ao_stable.h: 1, 2 or 3); the first version's
   // 3x3 at every size is mcla_gpu_ao_stable false.
@@ -2308,7 +2367,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plume::RenderPipeline* temporal_pipeline = nullptr;
   plume::RenderPipeline* contact_pipeline = nullptr;
   if (plan.occlusion) {
-    main_pipeline = Pipeline(kVMain);
+    // The plain pass with the occlusion's own counts compiled in (also the frame whose bounce light cannot run, below).
+    main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kLow));
     temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
   }
   if (plan.apply) {
@@ -2440,7 +2500,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       const uint32_t far_steps = plan.gi.reach > 0.0f ? std::min(plan.gi.far_steps, ssgi_light::kFarStepsMax) : 0u;
       gi_push.extra[3] = far_steps != 0 ? plan.gi.reach : 0.0f;
       gi_push.slots2[2] = (gi_push.slots2[2] & ~kGiFarStepsMask) | ((far_steps << kGiFarStepsShift) & kGiFarStepsMask);
-      DrawPass(list, gi_, Pipeline(kVMainGi), gi_push);
+      // The pipeline with the slices, steps and ring steps this frame sends compiled in (FillPush sent the quality's; PrepareGi made it).
+      DrawPass(list, gi_, MainGiPipeline(plan.gi), gi_push);
       main_out = &gi_;
     } else {
       DrawPass(list, raw_, main_pipeline, push);
@@ -3177,7 +3238,7 @@ bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
   if (why.empty()) {
     // The pipelines (made here on first use: the test's are never listed ahead) and the images.
     const bool ms = depth.host_samples > 1;
-    plume::RenderPipeline* main = Pipeline(kVMainGi);
+    plume::RenderPipeline* main = MainGiPipeline(plan.gi);
     plume::RenderPipeline* level0 = Pipeline(ms ? kVColorMs : kVColor);
     plume::RenderPipeline* mip = Pipeline(kVColorMip);
     plume::RenderPipeline* view = plan.gi.view != 0 ? Pipeline(GiViewVariant(depth.host_samples)) : mip;

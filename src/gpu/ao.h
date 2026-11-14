@@ -446,8 +446,22 @@ class AmbientOcclusion {
     kPassAtrous,                   // the a-trous filter of the bounce
     kPassApplyGi,                  // the apply with the bounce light (G7c), plain and multisampled colour target
     kPassApplyGiMs,
+    // The visibility pass with its counts compiled in (ao_fast.h: 3 slices of 3 steps, 2 of 2; the bitmask's also the ring's steps).
+    // The occlusion's two are made with the core passes, the bounce light's four (the polynomial acos, then the hardware's) with
+    // its own. ao_main_ps / ao_main_gi_ps (kPassMain, kPassMainGi) read the counts from the push block and stay for a count that
+    // no variant has; kPassMainGi is also the one with the hardware's acos where the counts are not the variants'.
+    kPassMain3,
+    kPassMain2,
+    kPassMainGi3,
+    kPassMainGi2,
+    kPassMainGi3Exact,
+    kPassMainGi2Exact,
     kPassCount,
   };
+  // A pass the occlusion needs (made at the start with the others), against the bounce light's (made when it is on).
+  static constexpr bool CorePass(uint32_t pass) {
+    return pass < kCorePassCount || pass == kPassMain3 || pass == kPassMain2;
+  }
 
   // The pipelines: one per pass and kind of depth plane, and the apply pass per colour target's
   // sample count and per kind of output (the multiply, or a debug view's write).
@@ -462,10 +476,21 @@ class AmbientOcclusion {
     kVVehicleTable = 7,  // a row of the vehicle table (the temporal system's shader)
     kVApplyBase = 8,     // + 4 * debug + log2(samples)
     kVContact = kVApplyBase + 8,
+    // The occlusion's visibility pass with its counts compiled in (ao_fast.h): 3 slices of 3 steps, 2 of 2. Both are listed where the
+    // occlusion is on (the setting is live: a switch of the level finds the other made), in place of kVMain, which stays for a count
+    // that no variant has and is made on first use.
+    kVMain3 = kVContact + 1,
+    kVMain2 = kVMain3 + 1,
     // The bounce light's (listed with the host precache where the setting is on: host_plan.h; the debug
-    // override's pictures, kVGiView, are made on first use).
-    kVMainGi = kVContact + 1,
-    kVColor = kVMainGi + 1,
+    // override's pictures, kVGiView, are made on first use). kVMainGi reads the counts (and has the hardware's acos): the pass for a
+    // ring of another number of steps; the four after it are the counts compiled in, 3x3 with 2 ring steps and 2x2 with 1, with the
+    // polynomial acos (mcla_gpu_ao_fast_math) and with the hardware's. The first two are listed, the exact two made on first use.
+    kVMainGi = kVMain2 + 1,
+    kVMainGi3 = kVMainGi + 1,
+    kVMainGi2 = kVMainGi3 + 1,
+    kVMainGi3Exact = kVMainGi2 + 1,
+    kVMainGi2Exact = kVMainGi3Exact + 1,
+    kVColor = kVMainGi2Exact + 1,
     kVColorMs = kVColor + 1,
     kVColorMip = kVColorMs + 1,
     kVGiView = kVColorMip + 1,  // + log2(samples), four
@@ -480,6 +505,11 @@ class AmbientOcclusion {
   static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiViewVariant(uint32_t host_samples);
   static std::string VariantName(uint32_t variant);
+  // The visibility pass's pipeline for the counts a frame draws (ao_fast.h): `low` is the occlusion's own quality (the plain pass),
+  // `fewer` the bounce light's with `far_steps` the ring's steps a side the push block says. The bitmask's reads
+  // mcla_gpu_ao_fast_math (live): the polynomial acos or the hardware's; a count that no variant has is kVMainGi.
+  static uint32_t MainVariant(bool low);
+  static uint32_t MainGiVariant(bool fewer, uint32_t far_steps, bool fast_math);
 
   // The light constants of a draw, as the raw big-endian dwords of the registers: PS c26.xyz (the
   // ambient, gLightAmbient), PS c39.xyz (the sun colour, gLightColor), VS c16.xyz (gLightPosDir:
@@ -581,6 +611,8 @@ class AmbientOcclusion {
     float radius = 1.0f;           // the near search radius, a multiple of the occlusion's
     uint32_t apply_view = 0;       // mcla_gpu_ssgi_view: 1 the factor in colour, 2 the bounce, 3 the albedo estimate,
                                    // 4 the light T, 5 the surface share, 6 the change against the game's own picture
+    // The ring's steps a side the main pass is told (flags bits 26-28): none where there is no ring.
+    uint32_t FarStepsSent() const;
   };
   struct Plan {
     Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
@@ -637,6 +669,8 @@ class AmbientOcclusion {
   bool EnsureImages(const Plan& plan);
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
+  // The bitmask pass's pipeline for the counts and the acos this frame has (MainGiVariant), else the one that reads the counts.
+  plume::RenderPipeline* MainGiPipeline(const GiPlan& gi);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
   // The contact march's shader, made when it was not at the start (the contact shadows were off). Render thread.
   bool EnsureContactShader();

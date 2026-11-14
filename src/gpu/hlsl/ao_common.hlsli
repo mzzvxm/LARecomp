@@ -127,6 +127,20 @@ float3 AoViewPos(float2 centre, float2 size, float t) {
                 t);
 }
 
+// exp(-0.5 x) = exp2(x * kAoNegHalfLog2e): the weights of the blurs (AoBilateral, AoBilateral4) and of the a-trous filter, one
+// exp2 for a tap whose exponent is the sum of two terms.
+static const float kAoNegHalfLog2e = -0.72134752044f;
+
+// AoViewPos with `clip_scale` = 2 / size given (made once for the pass, `2.0f / size`): the same position to a rounding error,
+// with a multiply where AoViewPos makes two divisions. For the loops over a pixel's neighbours and samples: the compiler
+// does not take a division out of a loop (the pass's own divisions stay in the tap, and a 1 / size it is given gets folded
+// with the 2 of the clip space back into a 2 / size inside the tap), so the factor is made here as the one value the tap
+// multiplies by.
+float3 AoViewPosInv(float2 centre, float2 clip_scale, float t) {
+  return float3((centre.x * clip_scale.x - 1.0f) * g_push.lens.x * t,
+                (1.0f - centre.y * clip_scale.y) * g_push.lens.y * t, t);
+}
+
 // A linear depth image (R32_FLOAT or R16_FLOAT, bindless slot `slot`) at `p`.
 float AoLoadLinear(uint slot, int2 p) {
   return g_textures[slot].Load(int3(p, 0)).x;
@@ -238,23 +252,28 @@ float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, fl
 // one plane, is blurred like any other. The pixel itself is always in the sum with weight 1: no
 // division by zero, and a pixel with no neighbour on its plane keeps its own value. Used by the
 // denoise pass and by the temporal pass for the pixels that have no history.
+//
+// The two weights are exp(-0.5 a) and exp(-0.5 b): their product is exp(-0.5 (a + b)), one exponential for the tap
+// instead of two (a tap's weight is the same to a rounding error; the radius 3 blur's 49 taps make 49 exponentials,
+// not 98), and the reciprocals of the two sigmas are made once for the pass, not by a division in every tap.
 float AoBilateral(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
                   float3 normal, int radius) {
   const float2 size = float2(isize);
+  const float2 clip_scale = 2.0f / size;
   // How far from the plane a neighbour may be and still be this surface: a share of the distance.
   const float plane_sigma = 0.012f * tc + 0.02f;
+  const float inv_plane_sigma = 1.0f / plane_sigma;
   const float spatial_sigma = AoBlurSigma(radius);
+  const float inv_spatial_sq = 1.0f / (spatial_sigma * spatial_sigma);
   float sum = 0.0f;
   float weights = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {
     for (int dx = -radius; dx <= radius; ++dx) {
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
       const float tq = AoLoadLinear(depth_slot, q);
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w_depth = exp(-0.5f * off_plane * off_plane);
-      const float w_space = exp(-0.5f * float(dx * dx + dy * dy) / (spatial_sigma * spatial_sigma));
-      const float w = w_depth * w_space;
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
+      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      const float w = exp2(kAoNegHalfLog2e * (off_plane * off_plane + float(dx * dx + dy * dy) * inv_spatial_sq));
       sum += g_textures[vis_slot].Load(int3(q, 0)).x * w;
       weights += w;
     }
@@ -269,19 +288,20 @@ float AoBilateral(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float 
 float4 AoBilateral4(uint src_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
                     float3 normal, int radius) {
   const float2 size = float2(isize);
+  const float2 clip_scale = 2.0f / size;
   const float plane_sigma = 0.012f * tc + 0.02f;
+  const float inv_plane_sigma = 1.0f / plane_sigma;
   const float spatial_sigma = AoBlurSigma(radius);
+  const float inv_spatial_sq = 1.0f / (spatial_sigma * spatial_sigma);
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   float weights = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {
     for (int dx = -radius; dx <= radius; ++dx) {
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
       const float tq = AoLoadLinear(depth_slot, q);
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w_depth = exp(-0.5f * off_plane * off_plane);
-      const float w_space = exp(-0.5f * float(dx * dx + dy * dy) / (spatial_sigma * spatial_sigma));
-      const float w = w_depth * w_space;
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
+      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      const float w = exp2(kAoNegHalfLog2e * (off_plane * off_plane + float(dx * dx + dy * dy) * inv_spatial_sq));
       sum += g_textures[src_slot].Load(int3(q, 0)) * w;
       weights += w;
     }
