@@ -26,12 +26,13 @@ REXCVAR_DEFINE_STRING(
     mcla_compare_effect, "bounce", "MCLA/GPU",
     "Which graphics effect the compare key flips off and on, to see what it does: bounce (the bounce light, the "
     "default), contact (contact shadows), shafts (sun shafts), occlusion (ambient occlusion), filter (the sun "
-    "shadow filter) or bloom (the glow size fix: it has no row, set it here or on the command line). The key is "
+    "shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow size fix: it has no row, set it "
+    "here or on the command line). The key is "
     "F1 until it is rebound in the key bindings of F4 (bind_mcla_compare). Pressing it shows the effect the other "
     "way than your setting has it, a label at the top of the screen says how, and the next press puts your "
     "setting back. The flip is never saved, and it is dropped when the setting it flips is changed or this one "
     "is. Live.")
-    .allowed({"bounce", "contact", "shafts", "occlusion", "filter", "bloom"})
+    .allowed({"bounce", "contact", "shafts", "occlusion", "filter", "selfrefl", "bloom"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(
@@ -89,6 +90,7 @@ cmp::Saved ReadSaved() {
   saved.shafts = rex::cvar::GetFlagByName("mcla_gpu_sun_shafts");
   saved.bounce = rex::cvar::GetFlagByName("mcla_gpu_ssgi");
   saved.filter = rex::cvar::GetFlagByName("mcla_gpu_shadow_filter");
+  saved.car_refl = rex::cvar::GetFlagByName("mcla_gpu_car_selfrefl");
   const std::string bloom = rex::cvar::GetFlagByName("mcla_gpu_bloom_scale");
   saved.bloom = bloom != "false" && bloom != "0";
   return saved;

@@ -30,6 +30,7 @@ struct Saved {
   std::string shafts;     // mcla_gpu_sun_shafts
   std::string bounce;     // mcla_gpu_ssgi
   std::string filter;     // mcla_gpu_shadow_filter
+  std::string car_refl = "off";  // mcla_gpu_car_selfrefl
   bool bloom = true;      // mcla_gpu_bloom_scale
 };
 
@@ -41,7 +42,7 @@ struct Standing {
 
 inline Standing StandingOf(Effect effect, const Saved& saved) {
   const host_plan::Plan plan = host_plan::Decide(saved.cls, saved.class_known, saved.occlusion,
-                                                 saved.contact, saved.shafts, saved.bounce);
+                                                 saved.contact, saved.shafts, saved.bounce, saved.car_refl);
   Standing out;
   switch (effect) {
     case Effect::kBounceLight:
@@ -64,6 +65,9 @@ inline Standing StandingOf(Effect effect, const Saved& saved) {
                shadow_filter::Mode::kSoft;
       break;
     }
+    case Effect::kCarSelfRefl:
+      out.on = plan.on(host_plan::Pass::kCarRefl);
+      break;
     case Effect::kBloomFix:
       out.on = saved.bloom;
       break;

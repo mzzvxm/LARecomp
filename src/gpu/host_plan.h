@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- which host passes a start needs pipelines for
 // ===========================================================================
 // The renderer's own screen passes that the graphics settings switch (ambient occlusion, contact
-// shadows, sun shafts and bounce light) make a dozen pipelines each, and a pipeline
+// shadows, sun shafts, bounce light) make a dozen pipelines each, the car self-reflections' history pass two, and a pipeline
 // is a driver compile of 20 to 150 ms. They are made ahead of use (host_precache.h) -- but only the
 // ones the settings in force will use: a pass that is off at the start is not compiled for nothing on a
 // weak PC, and one that is switched on later is made in the background before its first frame
@@ -15,7 +15,7 @@
 //   Resolve   one setting's text -> its level, with `auto` taken from the class (gpu_class.h's table);
 //             the owners' own ReadMode functions call it, so the draws and the precache cannot
 //             disagree about what is on
-//   Decide    the four settings -> the plan of a start
+//   Decide    the five settings -> the plan of a start
 //   Describe  the words of the start's log line: what was decided and why
 //   Ambient   which of the occlusion's pipeline groups a level of the occlusion, of the contact
 //             shadows and of the bounce light need together (the first two share the depth, denoise
@@ -28,6 +28,7 @@
 //   bounce     mcla_gpu_ssgi          auto, off, low, high; anything else is off; `auto` is off until the
 //                                     class is known (and off on every class for now: gpu_class.h);
 //                                     needs the occlusion on (it reads its images)
+//   car refl   mcla_gpu_car_selfrefl  auto, off, low, high; anything else is off (car_selfrefl.h)
 // ===========================================================================
 
 #include <cstdint>
@@ -38,8 +39,8 @@
 
 namespace mcla::gpu::host_plan {
 
-enum class Pass : uint8_t { kOcclusion, kContact, kShafts, kBounce };
-inline constexpr int kPassCount = 4;
+enum class Pass : uint8_t { kOcclusion, kContact, kShafts, kBounce, kCarRefl };
+inline constexpr int kPassCount = 5;
 
 // The same three levels, in the same order, as the owners' own Mode enums.
 enum class Level : uint8_t { kOff, kLow, kHigh };
@@ -50,6 +51,7 @@ constexpr std::string_view PassName(Pass pass) {
     case Pass::kContact: return "contact shadows";
     case Pass::kShafts: return "sun shafts";
     case Pass::kBounce: return "bounce light";
+    case Pass::kCarRefl: return "car self-reflections";
   }
   return "?";
 }
@@ -79,6 +81,7 @@ constexpr gpu_class::Effect EffectOf(Pass pass) {
   switch (pass) {
     case Pass::kContact: return gpu_class::Effect::kContactShadows;
     case Pass::kShafts: return gpu_class::Effect::kSunShafts;
+    case Pass::kCarRefl: return gpu_class::Effect::kCarSelfRefl;
     default: return gpu_class::Effect::kSsgi;
   }
 }
@@ -154,15 +157,18 @@ struct Plan {
   bool on(Pass p) const { return of(p).level != Level::kOff; }
 };
 
-// The plan of a start from the four settings' texts. The bounce light is held off while the occlusion is.
+// The plan of a start from the settings' texts. The bounce light is held off while the occlusion is. The car
+// self-reflections have no dependency (they make their own history pass), so they are on wherever their setting is.
 inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view occlusion,
-                   std::string_view contact, std::string_view shafts, std::string_view bounce) {
+                   std::string_view contact, std::string_view shafts, std::string_view bounce,
+                   std::string_view car_refl = "off") {
   Plan plan;
   plan.pass[static_cast<int>(Pass::kOcclusion)] = Resolve(Pass::kOcclusion, cls, class_known, occlusion);
   plan.pass[static_cast<int>(Pass::kContact)] = Resolve(Pass::kContact, cls, class_known, contact);
   plan.pass[static_cast<int>(Pass::kShafts)] = Resolve(Pass::kShafts, cls, class_known, shafts);
   plan.pass[static_cast<int>(Pass::kBounce)] =
       HoldBounce(Resolve(Pass::kBounce, cls, class_known, bounce), plan.of(Pass::kOcclusion).level);
+  plan.pass[static_cast<int>(Pass::kCarRefl)] = Resolve(Pass::kCarRefl, cls, class_known, car_refl);
   return plan;
 }
 

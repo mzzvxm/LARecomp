@@ -75,6 +75,8 @@ const Row kTable[] = {
      "AUTO (HIGH)"},
     {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)",
      "AUTO (OFF)"},
+    {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
+     "AUTO (HIGH)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.

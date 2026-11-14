@@ -54,6 +54,8 @@ const AutoRow kAuto[] = {
     {Pass::kShafts, {"off", "low", "high"}},
     // off on every class until its cost is measured (owner, 2026-11-13; gpu_class.h ab21a334)
     {Pass::kBounce, {"off", "off", "off"}},
+    // the car self-reflections: off on Low, low (the specular occlusion) on Mid, high (and the reflection) on High
+    {Pass::kCarRefl, {"off", "low", "high"}},
 };
 
 Level LevelOf(const std::string& name) {
@@ -116,6 +118,9 @@ void CheckAutoPasses() {
       const Choice bounce = Resolve(Pass::kBounce, kClasses[k], true, junk);
       Check(bounce.level == Level::kOff && bounce.unknown && !bounce.automatic,
             "bounce light " + where + ": off, unknown");
+      const Choice car = Resolve(Pass::kCarRefl, kClasses[k], true, junk);
+      Check(car.level == Level::kOff && car.unknown && !car.automatic,
+            "car self-reflections " + where + ": off, unknown");
       const Choice shafts = Resolve(Pass::kShafts, kClasses[k], true, junk);
       Check(shafts.level == LevelOf(kAuto[1].cells[k]) && shafts.unknown && shafts.automatic,
             "sun shafts " + where + ": taken as auto (" + kAuto[1].cells[k] + ")");
@@ -133,6 +138,8 @@ void CheckAutoPasses() {
           "sun shafts auto does not wait for the class");
     Check(Resolve(Pass::kContact, kClasses[k], false, "auto").level == LevelOf(kAuto[0].cells[k]),
           "contact shadows auto does not wait for the class");
+    Check(Resolve(Pass::kCarRefl, kClasses[k], false, "auto").level == LevelOf(kAuto[3].cells[k]),
+          "car self-reflections auto does not wait for the class");
   }
 }
 
@@ -142,7 +149,7 @@ struct PlanRow {
   const char* shafts;
   const char* bounce;
   GpuClass cls;
-  // the passes that are on, as four letters in the order occlusion, contact, shafts, bounce: '-' off
+  // the passes that are on, as five letters in the order occlusion, contact, shafts, bounce, car self-reflections: '-' off
   const char* on;
   const char* what;
 };
@@ -150,32 +157,32 @@ struct PlanRow {
 void CheckPlans() {
   const PlanRow rows[] = {
       // The defaults of a fresh install (mcla_gpu_ao high, the others auto).
-      {"high", "auto", "auto", "auto", GpuClass::kLow, "O---", "defaults, Low: only the occlusion"},
-      {"high", "auto", "auto", "auto", GpuClass::kMid, "OCS-", "defaults, Mid: occlusion, contact shadows, shafts"},
-      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCS-", "defaults, High: the bounce light is off on every class"},
+      {"high", "auto", "auto", "auto", GpuClass::kLow, "O----", "defaults, Low: only the occlusion"},
+      {"high", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "defaults, Mid: occlusion, contact shadows, shafts"},
+      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCS--", "defaults, High: the bounce light is off on every class"},
       // The occlusion off: nothing of it, and no bounce light (it needs the occlusion's images).
-      {"off", "auto", "auto", "auto", GpuClass::kHigh, "-CS-", "occlusion off, High: contact and shafts stay, bounce light cannot"},
-      {"off", "auto", "auto", "auto", GpuClass::kLow, "----", "occlusion off, Low: nothing"},
-      {"off", "off", "off", "off", GpuClass::kHigh, "----", "everything off, High"},
-      {"low", "off", "off", "off", GpuClass::kHigh, "O---", "occlusion low only"},
+      {"off", "auto", "auto", "auto", GpuClass::kHigh, "-CS--", "occlusion off, High: contact and shafts stay, bounce light cannot"},
+      {"off", "auto", "auto", "auto", GpuClass::kLow, "-----", "occlusion off, Low: nothing"},
+      {"off", "off", "off", "off", GpuClass::kHigh, "-----", "everything off, High"},
+      {"low", "off", "off", "off", GpuClass::kHigh, "O----", "occlusion low only"},
       // A player's own choices override the class both ways.
-      {"high", "high", "high", "high", GpuClass::kLow, "OCSB", "all high on Low: the player's own"},
-      {"high", "off", "off", "off", GpuClass::kHigh, "O---", "all off on High: the player's own"},
-      {"high", "low", "auto", "auto", GpuClass::kLow, "OC--", "contact low on Low"},
-      {"high", "auto", "high", "auto", GpuClass::kMid, "OCS-", "shafts high on Mid"},
-      {"high", "auto", "auto", "low", GpuClass::kMid, "OCSB", "bounce light low on Mid"},
-      {"high", "auto", "auto", "high", GpuClass::kHigh, "OCSB", "bounce light high on High"},
-      {"low", "off", "off", "low", GpuClass::kLow, "O--B", "bounce light low with the occlusion low on Low"},
-      {"off", "auto", "auto", "high", GpuClass::kHigh, "-CS-", "bounce light high with the occlusion off: held off"},
-      {"high", "auto", "auto", "low", GpuClass::kHigh, "OCSB", "bounce light low on High: the player's own (auto is off)"},
+      {"high", "high", "high", "high", GpuClass::kLow, "OCSB-", "all high on Low: the player's own"},
+      {"high", "off", "off", "off", GpuClass::kHigh, "O----", "all off on High: the player's own"},
+      {"high", "low", "auto", "auto", GpuClass::kLow, "OC---", "contact low on Low"},
+      {"high", "auto", "high", "auto", GpuClass::kMid, "OCS--", "shafts high on Mid"},
+      {"high", "auto", "auto", "low", GpuClass::kMid, "OCSB-", "bounce light low on Mid"},
+      {"high", "auto", "auto", "high", GpuClass::kHigh, "OCSB-", "bounce light high on High"},
+      {"low", "off", "off", "low", GpuClass::kLow, "O--B-", "bounce light low with the occlusion low on Low"},
+      {"off", "auto", "auto", "high", GpuClass::kHigh, "-CS--", "bounce light high with the occlusion off: held off"},
+      {"high", "auto", "auto", "low", GpuClass::kHigh, "OCSB-", "bounce light low on High: the player's own (auto is off)"},
       // Words that are not values.
-      {"auto", "junk", "junk", "junk", GpuClass::kHigh, "--S-", "junk: occlusion off, contact off, shafts as auto (High), bounce off"},
+      {"auto", "junk", "junk", "junk", GpuClass::kHigh, "--S--", "junk: occlusion off, contact off, shafts as auto (High), bounce off"},
   };
   for (const PlanRow& row : rows) {
     const Plan plan = Decide(row.cls, true, row.ao, row.contact, row.shafts, row.bounce);
     std::string got;
     for (int i = 0; i < kPassCount; ++i) {
-      got += plan.pass[i].level != Level::kOff ? "OCSB"[i] : '-';
+      got += plan.pass[i].level != Level::kOff ? "OCSBR"[i] : '-';
     }
     CheckEq(got, row.on, std::string("plan: ") + row.what);
   }
@@ -198,6 +205,51 @@ void CheckPlans() {
   const Plan unknown = Decide(GpuClass::kHigh, false, "high", "auto", "auto", "auto");
   Check(!unknown.on(Pass::kBounce) && unknown.on(Pass::kContact) && unknown.on(Pass::kShafts),
         "plan: with the class not known the bounce light is off");
+}
+
+// The car self-reflections in the plan: they stand alone (no other pass is needed for them, and they need none of the
+// occlusion's images), so the plan holds them on wherever the setting says, with the other four as they were.
+void CheckCarRefl() {
+  struct Row {
+    const char* car;
+    GpuClass cls;
+    Level want;
+    bool automatic;
+    const char* what;
+  };
+  const Row rows[] = {
+      {"auto", GpuClass::kLow, Level::kOff, true, "auto on Low: off (an integrated GPU does without)"},
+      {"auto", GpuClass::kMid, Level::kLow, true, "auto on Mid: low (the specular occlusion)"},
+      {"auto", GpuClass::kHigh, Level::kHigh, true, "auto on High: high (the occlusion and the reflection)"},
+      {"off", GpuClass::kHigh, Level::kOff, false, "off on High"},
+      {"low", GpuClass::kLow, Level::kLow, false, "low on Low: the player's own"},
+      {"high", GpuClass::kLow, Level::kHigh, false, "high on Low: the player's own"},
+      {"High", GpuClass::kMid, Level::kHigh, false, "High (capital) on Mid"},
+      {"hgih", GpuClass::kHigh, Level::kOff, false, "a word that is not a value: off"},
+  };
+  for (const Row& row : rows) {
+    const Plan plan = Decide(row.cls, true, "high", "auto", "auto", "auto", row.car);
+    Check(plan.of(Pass::kCarRefl).level == row.want, std::string("car self-reflections ") + row.what + ": level");
+    Check(plan.of(Pass::kCarRefl).automatic == row.automatic, std::string("car self-reflections ") + row.what + ": automatic");
+    // The other four do not change with it.
+    const Plan without = Decide(row.cls, true, "high", "auto", "auto", "auto");
+    for (const Pass p : {Pass::kOcclusion, Pass::kContact, Pass::kShafts, Pass::kBounce}) {
+      Check(plan.of(p).level == without.of(p).level, std::string("car self-reflections ") + row.what + ": the other passes are as they were");
+    }
+  }
+  // Not asked for: off (the other callers' call, the compare key's old rows).
+  Check(!Decide(GpuClass::kHigh, true, "high", "auto", "auto", "auto").on(Pass::kCarRefl),
+        "car self-reflections: a plan made without the setting has them off");
+  // Not held by the occlusion: with the occlusion off they stay as they are.
+  Check(Decide(GpuClass::kHigh, true, "off", "auto", "auto", "auto", "auto").on(Pass::kCarRefl),
+        "car self-reflections do not need the ambient occlusion");
+  CheckEq(std::string(PassName(Pass::kCarRefl)), "car self-reflections", "PassName(car self-reflections)");
+  CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kMid, true, "auto"), GpuClass::kMid),
+          "car self-reflections low (auto on the mid class)", "Describe: car self-reflections, auto on Mid");
+  CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kHigh, true, "off"), GpuClass::kHigh),
+          "car self-reflections off (set)", "Describe: car self-reflections set to off");
+  CheckEq(std::string(mcla::gpu::gpu_class::CvarName(EffectOf(Pass::kCarRefl))), "mcla_gpu_car_selfrefl",
+          "the car self-reflections' pass reads the cvar's own cell of the table");
 }
 
 void CheckDescribe() {
@@ -291,6 +343,7 @@ int main() {
   CheckOcclusion();
   CheckAutoPasses();
   CheckPlans();
+  CheckCarRefl();
   CheckDescribe();
   CheckHold();
   CheckAmbient();

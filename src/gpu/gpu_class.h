@@ -63,8 +63,9 @@ enum class Effect : uint8_t {
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, low, high
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
+  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, low, high (car_selfrefl.h: low is the specular occlusion, high adds the reflection)
 };
-inline constexpr int kEffectCount = 7;
+inline constexpr int kEffectCount = 8;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -80,6 +81,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
     // Off on every class until the bounce light's cost is measured (owner, 2026-11-13); low and high stay a choice.
     {"mcla_gpu_ssgi", "off", "off", "off"},
+    // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
+    // an RTX 5080 is +0.17 ms for low (the specular occlusion) and +0.26 ms for high (the occlusion and the reflection of the
+    // car's own colour), a full-screen history pass and a short ray on the car's pixels (G8B cost runs, perf/out/G8B.txt, with the
+    // prototype that this setting finished); an integrated GPU does without.
+    {"mcla_gpu_car_selfrefl", "off", "low", "high"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

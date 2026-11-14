@@ -10,7 +10,7 @@
 // The flip is not a setting. It never writes a cvar, so the saved setting stays what it was (the pause
 // menu's row, larecomp.toml, the launcher) and nothing needs to be put back; the readers ask here instead:
 //   LiveText::Get() (live_text.h)      the string settings of the occlusion, the contact shadows, the sun
-//                                      shafts and the bounce light
+//                                      shafts, the bounce light and the car self-reflections
 //   shadow_filter::CurrentMode()       the sun shadow filter
 //   ChoosePackedVariant() (pipelines)  the bloom size fix
 // and take `off` (or the text of an on value) while the flip says so. The flip is dropped as soon as the
@@ -34,10 +34,11 @@ enum class Effect : uint8_t {
   kSunShafts,
   kAmbientOcclusion,
   kShadowFilter,
+  kCarSelfRefl,
   kBloomFix,
   kNone = 0xFF,
 };
-inline constexpr int kEffectCount = 6;
+inline constexpr int kEffectCount = 7;
 
 // What the flip says about an effect: nothing, forced off, or forced on.
 enum class Force : uint8_t { kNone, kOff, kOn };
@@ -57,6 +58,7 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"shafts", "mcla_gpu_sun_shafts", "SUN SHAFTS", "high"},
     {"occlusion", "mcla_gpu_ao", "AMBIENT OCCLUSION", "high"},
     {"filter", "mcla_gpu_shadow_filter", "SHADOW FILTER", "soft"},
+    {"selfrefl", "mcla_gpu_car_selfrefl", "SELF-REFLECTIONS", "high"},
     {"bloom", "mcla_gpu_bloom_scale", "BLOOM FIX", ""},
 };
 
