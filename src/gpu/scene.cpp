@@ -39,6 +39,7 @@
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
+#include "upscaler_math.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -74,6 +75,26 @@ REXCVAR_DEFINE_BOOL(
     "away from its source. Off: nothing is checked.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// The scene's extra texture detail bias under an upscaler (Scene::SceneBias): live, for A/B.
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_scene_extra_bias, -1.0, "MCLA/GPU",
+    "While an upscaler draws the scene smaller than it is shown, its textures are sampled by "
+    "log2(render size / output size) levels of detail lower, as the output's size would pick, plus "
+    "this many levels more. -1 is what AMD's FSR guide asks for (a sharper picture the upscaler "
+    "fills in over its jitter); 0 or -0.5 sample blurrier levels, which shimmer less on fine "
+    "texture detail (grass, road grain, fences) and soften it. For A/B. Live.")
+    .debug_only()
+    .range(-3.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_upscaler_masks, true, "MCLA/GPU",
+    "Whether the upscalers get the reactive mask (the cars' shadow decals, particles, light "
+    "volumes) and the transparency and composition mask (car glass): on, they are drawn "
+    "(upscaler_masks.h). Off: no mask is made and the upscaler trusts its history everywhere, "
+    "for A/B (a mask that is wrong shows as shimmer where it covers). Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
@@ -1590,7 +1611,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // A car's shadow decal, a particle, a light volume or a piece of glass is drawn again into the
   // coverage image of the mask the upscaler takes (upscaler_masks.h).
-  if (d.key.color_count == 1 && UpscalerRunning()) {
+  if (d.key.color_count == 1 && UpscalerRunning() && REXCVAR_GET(mcla_gpu_upscaler_masks)) {
     const UpscalerMasks::Kind kind = UpscalerMasks::KindOf(r.vs_identity, r.ps_identity);
     if (kind != UpscalerMasks::Kind::kNone) {
       PrepareUpscalerMask(d, inputs, kind);
@@ -1783,13 +1804,21 @@ int32_t Scene::SceneBias() {
     if (edram_->SceneApart()) {
       // The scene's textures pick their mip levels from a picture smaller than the output: the
       // levels the output's size would have picked are log2(render / output) lower. One more
-      // level on top is what AMD's guide recommends for FSR. A fetch constant's own bias is added
-      // to it by the sampler.
-      constexpr double kExtraBias = -1.0;
-      const double render = edram_->SceneScale().value();
-      const double output = edram_->resolution_scale().value();
-      const double bias = std::log2(render / output) + kExtraBias;
-      scene_bias_ = int32_t(std::lround(std::clamp(bias, -3.9, 3.9) * 32.0));
+      // level on top is what AMD's guide recommends for FSR (mcla_gpu_scene_extra_bias). A fetch
+      // constant's own bias is added to it by the sampler.
+      scene_bias_ = upscaler_math::SceneMipBias(edram_->SceneScale().value(),
+                                                edram_->resolution_scale().value(),
+                                                REXCVAR_GET(mcla_gpu_scene_extra_bias));
+    }
+    if (scene_bias_ != scene_bias_logged_) {
+      scene_bias_logged_ = scene_bias_;
+      REXLOG_INFO("[gpu] scene: the scene's textures are sampled {:+.3f} levels of detail from the "
+                  "output's pick ({}; render scale {} over output scale {}, extra {:+.2f} from "
+                  "mcla_gpu_scene_extra_bias)",
+                  double(scene_bias_) / 32.0, scene_bias_ == 0 ? "no bias" : "log2(render / output) + extra",
+                  edram_->SceneApart() ? edram_->SceneScale().value() : 1.0,
+                  edram_->SceneApart() ? edram_->resolution_scale().value() : 1.0,
+                  REXCVAR_GET(mcla_gpu_scene_extra_bias));
     }
   }
   return scene_bias_;

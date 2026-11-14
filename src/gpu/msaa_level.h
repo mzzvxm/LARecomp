@@ -36,6 +36,11 @@
 // upscaler turned off draws for a few frames at level 1 before the player's level returns. The
 // pause menu greys the MSAA row while an upscaler runs (upscaling_menu.cpp).
 //
+// mcla_gpu_msaa_with_upscaler (debug, for A/B) lets the player's level stand under an upscaler: the
+// scene then reaches it with the coverage of its edges and of the alpha to mask foliage averaged by
+// the game's resolve (the guest's resolve is the MSAA resolve), so the jitter has less aliasing to
+// average out. It costs the multisampled scene at the render size.
+//
 // Render thread.
 // ===========================================================================
 

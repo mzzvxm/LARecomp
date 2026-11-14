@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "records.h"
+#include "upscaler_math.h"
 
 namespace mcla::gpu::temporal {
 
@@ -186,14 +187,7 @@ Cut TestCut(const Camera& now, const Camera& before, const double* previous_step
 }
 
 double Halton(uint32_t index, uint32_t base) {
-  double f = 1.0;
-  double r = 0.0;
-  while (index > 0) {
-    f /= double(base);
-    r += f * double(index % base);
-    index /= base;
-  }
-  return r;
+  return upscaler_math::Halton(index, base);
 }
 
 }  // namespace mcla::gpu::temporal

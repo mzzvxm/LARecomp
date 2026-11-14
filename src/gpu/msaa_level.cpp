@@ -6,11 +6,21 @@
 #include <atomic>
 #include <format>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include "edram.h"
 #include "gpu.h"
 #include "pipelines.h"
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_msaa_with_upscaler, false, "MCLA/GPU",
+    "While FSR or DLSS draws the scene, keep the MSAA level of mcla_gpu_msaa (2, 4 or 8 samples) "
+    "instead of 1 sample. The upscaler then gets a scene whose edges and alpha tested foliage are "
+    "already smoothed by the sample coverage, and has less aliasing to average over its jitter; it "
+    "costs the multisampled scene at the render size. For A/B. Live (read at start too).")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -25,6 +35,10 @@ double MillisSince(std::chrono::steady_clock::time_point t) {
 }
 
 }  // namespace
+
+bool MsaaKeptUnderUpscaler() {
+  return REXCVAR_GET(mcla_gpu_msaa_with_upscaler);
+}
 
 bool MsaaSwitching() {
   return g_switching.load(std::memory_order_relaxed);
@@ -65,7 +79,7 @@ void MsaaLevel::Initialize(EdramTargets& edram, Pipelines& pipelines) {
 //     together for the frames in flight.
 //  6. Weak hardware: the two tile resolves of a 2 sample layout over 1 host sample on the iGPU.
 uint32_t MsaaLevel::Wanted(bool upscaling) {
-  if (upscaling) {
+  if (upscaling && !MsaaKeptUnderUpscaler()) {
     return 1;  // the upscaler smooths the picture; the setting is kept for when it stops
   }
   const EdramTargets::MsaaSetting setting = EdramTargets::ReadMsaaSetting();
