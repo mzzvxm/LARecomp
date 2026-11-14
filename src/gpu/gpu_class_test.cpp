@@ -278,6 +278,7 @@ AdapterFacts Named(uint32_t vendor, const char* name, uint64_t mib) {
 }
 
 int g_row_hits[64] = {};
+int g_integrated_row_hits[64] = {};
 
 // One adapter as the log line names it: its class and the rule that chose it. `phrase` (when not empty) must be
 // in the reason, so the log line says what it should.
@@ -329,6 +330,21 @@ void CheckSpeedRows() {
       Check(r.lo <= r.hi, at + ": lo <= hi");
     }
   }
+  // The integrated exception's rows: AMD only (the exception is Strix Halo's), and Mid, never a lower cap.
+  Check(kIntegratedMidRows >= 1 && kIntegratedMidRows <= 64, "the integrated exception table has rows");
+  for (int i = 0; i < kIntegratedMidRows; ++i) {
+    const SpeedRow& r = kIntegratedMidTable[i];
+    const std::string at = "integrated row " + std::to_string(i) + " (" + std::string(r.family) + ")";
+    Check(!r.family.empty(), at + ": a family name for the log");
+    Check(r.vendor == kVendorAmd, at + ": AMD only");
+    Check(r.cap == GpuClass::kMid, at + ": Mid (the exception never raises an integrated GPU higher, nor lowers it)");
+    Check(!(r.word.empty() && r.series.empty()), at + ": has a word or a series to match");
+    Check(NormalizeName(r.word) == r.word && NormalizeName(r.series) == r.series,
+          at + ": its word and series are written the way NormalizeName writes a name");
+    if (!r.series.empty()) {
+      Check(r.lo <= r.hi, at + ": lo <= hi");
+    }
+  }
 }
 
 void CheckSeriesNumber() {
@@ -372,9 +388,6 @@ void CheckSpeedTable() {
   CheckAdapter(Named(nv, "NVIDIA GeForce RTX 2060 SUPER", 8192), kH, kByMem);
   CheckAdapter(Named(nv, "NVIDIA GeForce RTX 2070", 8192), kH, kByMem);
   CheckAdapter(Named(nv, "NVIDIA RTX A2000 12GB", 12288), kH, kByMem);  // a workstation name: "rtx a2000" is no model
-  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080", 8192), kH, kByMem);  // about an RTX 2060: not capped
-  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080 Ti", 11264), kH, kByMem);
-  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080 with Max-Q Design", 8192), kH, kByMem);
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX TITAN X", 12288), kH, kByMem);  // no number: the table leaves it
   CheckAdapter(Named(nv, "NVIDIA TITAN Xp", 12288), kH, kByMem);
   CheckAdapter(Named(amd, "AMD Radeon RX 5600 XT", 6144), kH, kByMem);  // the other low end of High
@@ -401,7 +414,13 @@ void CheckSpeedTable() {
   CheckAdapter(Named(nv, "NVIDIA GEFORCE GTX 1060 6GB", 6144), kM, kByName);     // upper case
   CheckAdapter(Named(nv, "nvidia geforce gtx 1060 6gb", 6144), kM, kByName);     // lower case
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1070", 8192), kM, kByName);
-  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1070 Ti", 8192), kM, kByName);      // the cut-off is 1079: the last one capped
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1070 Ti", 8192), kM, kByName);
+  // The GTX 1080 and 1080 Ti are Mid too (the owner, 2026-11-14): Pascal does worse than its paper speed on the
+  // compute-heavy effects. The cut-off is 1099, the end of the GTX 10 series.
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080", 8192), kM, kByName, "by name: GTX 1080 -> mid");
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080 Ti", 11264), kM, kByName, "by name: GTX 1080 -> mid");
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080 with Max-Q Design", 8192), kM, kByName);
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1080 Ti", 11264), kM, kByName, "the memory alone says high");
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 980 Ti", 6144), kM, kByName);
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1660 SUPER", 6144), kM, kByName);
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1660 Ti", 6144), kM, kByName);
@@ -479,6 +498,66 @@ void CheckSpeedTable() {
   CheckAdapter(soft, kL, Rule::kAdapterType, "by adapter type: a software");
   CheckAdapter(Named(nv, "NVIDIA GeForce RTX 5080", 0), kL, Rule::kAdapterType);  // no dedicated memory reported
 
+  // --- the integrated exception (kIntegratedMidTable): AMD's Strix Halo GPUs are Mid, every other integrated GPU Low ---
+  // The owner's 2-CU RDNA 2 and the other integrated AMD and Intel names stay Low by type.
+  const auto uma_gpu = [](uint32_t vendor, const char* name, uint64_t mib) {
+    AdapterFacts f = Named(vendor, name, mib);
+    f.uma = true;
+    return f;
+  };
+  const auto integrated_gpu = [](uint32_t vendor, const char* name, uint64_t mib) {
+    AdapterFacts f = Named(vendor, name, mib);
+    f.integrated = true;
+    return f;
+  };
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 8060S Graphics", 512), kM, kByName, "by name: 8060S -> mid");
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 8060S Graphics", 32768), kM, kByName);  // a large carve-out
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 8050S Graphics", 4096), kM, kByName, "by name: 8050S -> mid");
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 8040S Graphics", 4096), kM, kByName, "by name: 8040S -> mid");
+  CheckAdapter(uma_gpu(amd, "AMD Radeon 8060S Graphics", 4096), kM, kByName);          // without the (TM)
+  CheckAdapter(uma_gpu(amd, "AMD RADEON(TM) 8060S GRAPHICS", 4096), kM, kByName);      // upper case
+  CheckAdapter(integrated_gpu(amd, "AMD Radeon Graphics (RADV GFX1151)", 8192), kM, kByName, "by name: GFX1151 -> mid");
+  AdapterFacts strix_both = uma_gpu(amd, "AMD Radeon(TM) 8060S Graphics", 8192);  // Vulkan sets both flags
+  strix_both.integrated = true;
+  CheckAdapter(strix_both, kM, kByName);
+  Check(SharesMemory(strix_both), "a Strix Halo GPU still shares memory with the CPU (the render scale cap)");
+  CheckEq(std::string(ClassName(Classify(strix_both).cls)), "mid", "a Strix Halo GPU is mid");
+  // Every other integrated GPU is Low, by type: AMD's other APUs, Intel's, the Deck's, the owner's iGPU.
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 890M Graphics", 512), kL, Rule::kAdapterType, "by adapter type: UMA");
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 880M Graphics", 512), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 780M Graphics", 512), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 760M Graphics", 512), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) 680M", 512), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(amd, "AMD Radeon(TM) Graphics", 512), kL, Rule::kAdapterType);  // the owner's 2-CU iGPU
+  CheckAdapter(integrated_gpu(amd, "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)", 8192), kL, Rule::kAdapterType);
+  CheckAdapter(integrated_gpu(amd, "AMD Radeon Graphics (RADV GFX1150)", 8192), kL, Rule::kAdapterType);  // Strix Point
+  CheckAdapter(uma_gpu(intel, "Intel(R) Arc(TM) 140V GPU (16GB)", 16384), kL, Rule::kAdapterType);  // Lunar Lake
+  CheckAdapter(uma_gpu(intel, "Intel(R) Arc(TM) Graphics", 8192), kL, Rule::kAdapterType);
+  // The exception is the AMD vendor's only, applies to integrated adapters only and never to a software one.
+  CheckAdapter(uma_gpu(intel, "AMD Radeon(TM) 8060S Graphics", 4096), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(nv, "AMD Radeon(TM) 8060S Graphics", 4096), kL, Rule::kAdapterType);
+  CheckAdapter(uma_gpu(0, "AMD Radeon(TM) 8060S Graphics", 4096), kL, Rule::kAdapterType);  // no vendor id
+  AdapterFacts strix_soft = uma_gpu(amd, "AMD Radeon(TM) 8060S Graphics", 4096);
+  strix_soft.software = true;
+  CheckAdapter(strix_soft, kL, Rule::kAdapterType, "by adapter type: a software");
+  // A discrete card with such a name (the table is not read for it) keeps the memory rule.
+  CheckAdapter(Named(amd, "AMD Radeon(TM) 8060S Graphics", 16384), kH, kByMem);
+  // The rows of the exception table: AMD only, Mid only, and each one decides a name above.
+  Check(MatchIntegratedMid(amd, "AMD Radeon(TM) 8060S Graphics").row >= 0, "8060S matches its row");
+  Check(MatchIntegratedMid(amd, "AMD Radeon(TM) 890M Graphics").row < 0, "890M matches no row");
+  Check(MatchIntegratedMid(amd, "").row < 0, "an empty name matches no integrated row");
+  Check(MatchIntegratedMid(nv, "AMD Radeon(TM) 8060S Graphics").row < 0, "an integrated row applies to AMD only");
+  Check(MatchIntegratedMid(amd, "AMD Radeon(TM) 8060S Graphics").row != MatchIntegratedMid(amd, "AMD Radeon(TM) 8050S Graphics").row,
+        "8060S and 8050S are different rows");
+  for (const char* name : {"AMD Radeon(TM) 8060S Graphics", "AMD Radeon(TM) 8050S Graphics",
+                           "AMD Radeon(TM) 8040S Graphics", "AMD Radeon Graphics (RADV GFX1151)"}) {
+    const SpeedMatch m = MatchIntegratedMid(amd, name);
+    Check(m.row >= 0 && kIntegratedMidTable[m.row].cap == GpuClass::kMid, std::string("an integrated row for ") + name);
+    if (m.row >= 0 && m.row < 64) {
+      ++g_integrated_row_hits[m.row];
+    }
+  }
+
   // --- a name never raises a class, and an unknown GPU keeps the memory rule ----------------------------------
   CheckAdapter(Named(nv, "NVIDIA GeForce RTX 5080", 4096), kM, kByMem);  // a 4 GB report stays Mid
   CheckAdapter(Named(0x1234, "Some New GPU 9000", 6144), kH, kByMem);
@@ -505,6 +584,11 @@ void CheckSpeedTable() {
   for (int i = 0; i < kSpeedRows; ++i) {
     Check(g_row_hits[i] > 0, "speed row " + std::to_string(i) + " (" + std::string(kSpeedTable[i].family) +
                                  ") has a test name that it decides");
+  }
+  for (int i = 0; i < kIntegratedMidRows; ++i) {
+    Check(g_integrated_row_hits[i] > 0, "integrated row " + std::to_string(i) + " (" +
+                                            std::string(kIntegratedMidTable[i].family) +
+                                            ") has a test name that it decides");
   }
 }
 
