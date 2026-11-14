@@ -628,6 +628,11 @@ else()
         endif()
     endif()
 
+    # The FULLSCREEN RESOLUTION list's rules (mc_engine/display_sizes.h) have a check that needs no
+    # display, no SDK and no GPU: cmake --build <dir> --target larecomp_display_sizes_test, then run
+    # larecomp_display_sizes_test (exit 0 = passed).
+    add_executable(larecomp_display_sizes_test EXCLUDE_FROM_ALL src/mc_engine/display_sizes_test.cpp)
+
     # The shared Rate My Ride server players reach on TCP 31002. Standalone: the
     # store and protocol sources only, no SDK.
     add_executable(larecomp_rmr_server
