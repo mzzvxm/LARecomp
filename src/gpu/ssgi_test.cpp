@@ -247,7 +247,7 @@ void ApplyChecks() {
     Check(old.r <= 0.5f + 1e-6f, "the old rule kept the factor to 0.5");
     Check(fresh.r > 1.5f * old.r, Num("a shaded pixel gains far more than under the old limit (new %.3f, old %.3f)", fresh.r, old.r));
     Check(fresh.r <= in.limit + 1e-5f, "... and never over the level's gain limit");
-    Check(Near(fresh.r, 1.25 * 0.20 / 0.30, 1e-4), Num("below the knees the factor is strength x B / T = 0.833 (got %.4f)", fresh.r));
+    Check(Near(fresh.r, 2.0 * 0.20 / 0.30, 1e-4), Num("below the knees the factor is strength x B / T = 1.333 (got %.4f)", fresh.r));
   }
   // every level, a shaded pixel: the gain grows with the level (the order of the row)
   {
@@ -416,8 +416,11 @@ void LevelChecks() {
     Check(p.reach > 3.0f, Num("every reach is past the occlusion's default 3 m (%.2f)", p.reach));
   }
   const Preset& d = PresetOf(Level::kDefault);
-  Check(d.strength == 1.25f && d.limit == 2.5f && d.reach == 6.0f && d.cap == 2.0f, "DEFAULT is 1.25, 2.5, 6 m, 2");
-  Check(PresetOf(Level::kLight).strength == 0.75f, "LIGHT keeps the old default's strength");
+  Check(d.strength == 2.0f && d.limit == 4.5f && d.reach == 9.0f && d.cap == 2.0f, "DEFAULT is 2, 4.5, 9 m, 2");
+  // the owner's most with the old cvars (clamp 4, radius x3 of a 3 m occlusion radius = 9 m, strength 2) looked "still subtle": DEFAULT is at least that
+  Check(d.strength >= 2.0f && d.limit >= 4.0f && d.reach >= 9.0f, "DEFAULT is at or over the most the old cvars gave (strength 2, limit 4, reach 9 m)");
+  Check(PresetOf(Level::kStrong).strength > d.strength * 1.25f && PresetOf(Level::kStrongest).strength >= 3.0f * d.strength, "STRONG to STRONGEST go clearly beyond DEFAULT");
+  Check(PresetOf(Level::kStrongest).cap <= 4.0f, "the cap (the whitening guard) stays modest even at STRONGEST");
   Check(Near(ssgi_level::kLimitMax, ssgi_light::kLimitMax, 1e-4), "the level range's limit maximum is the push block's");
   Check(Near(ssgi_level::kCapMax, ssgi_light::kCapMax, 1e-6), "the level range's cap maximum is the push block's");
 
@@ -433,11 +436,11 @@ void LevelChecks() {
     Overrides ov;
     ov.strength = 0.0;
     Effective e = Choose(Level::kDefault, ov);
-    Check(e.strength == 0.0f && e.overridden && e.limit == 2.5f, "a strength override of 0 is 0 (not 'not set') and changes only that number");
+    Check(e.strength == 0.0f && e.overridden && e.limit == 4.5f, "a strength override of 0 is 0 (not 'not set') and changes only that number");
     ov = Overrides{};
     ov.reach = 0.0;
     e = Choose(Level::kStrong, ov);
-    Check(e.reach == 0.0f && e.strength == 1.75f && e.overridden, "a reach override of 0 turns the ring off");
+    Check(e.reach == 0.0f && e.strength == 3.0f && e.overridden, "a reach override of 0 turns the ring off");
     ov = Overrides{};
     ov.strength = 50.0;
     ov.limit = 0.0;
@@ -453,7 +456,7 @@ void LevelChecks() {
     ov.strength = -1.0;
     ov.limit = -0.5;
     e = Choose(Level::kStrongest, ov);
-    Check(!e.overridden && e.strength == 3.5f, "a negative override is not set");
+    Check(!e.overridden && e.strength == 7.0f, "a negative override is not set");
   }
   // the row's width: "BOUNCE LIGHT STRENGTH: " + the longest word, under the page's 41
   size_t longest = 0;

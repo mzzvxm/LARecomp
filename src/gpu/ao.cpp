@@ -147,7 +147,7 @@ REXCVAR_DEFINE_STRING(
     mcla_gpu_ssgi_intensity, "default", "MCLA/GPU",
     "How strong the bounce light looks: light, default, strong, stronger or strongest. Each is a set of four "
     "numbers: how much of the light the surroundings send back the picture gets, the most it may add to a pixel "
-    "(a guard against noise in the dark), how far it looks for lit surfaces (4 to 10 metres, past the ambient "
+    "(a guard against noise in the dark), how far it looks for lit surfaces (5 to 16 metres, past the ambient "
     "occlusion's own reach), and the brightest light it may bring (never whiter than a white wall in full sun). "
     "The stronger ones lift shadows and the sides of cars more and look farther. Only used while the bounce light "
     "(mcla_gpu_ssgi) is on (the pause menu's BOUNCE LIGHT STRENGTH row). Live.")
@@ -155,11 +155,11 @@ REXCVAR_DEFINE_STRING(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ssgi_strength, -1.0, "MCLA/GPU",
-    "Diagnostic: replaces the level's strength of the bounce light (mcla_gpu_ssgi_intensity), 0 to 8: how much of "
+    "Diagnostic: replaces the level's strength of the bounce light (mcla_gpu_ssgi_intensity), 0 to 12: how much of "
     "the bounce light the picture gets (1: all that the surroundings send back by the picture's own colours; 0 "
     "runs the passes and adds nothing). -1: the level's. Live.")
     .debug_only()
-    .range(-1.0, 8.0)
+    .range(-1.0, 12.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ssgi_radius, 1.0, "MCLA/GPU",

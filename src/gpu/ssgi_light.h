@@ -25,12 +25,12 @@
 //   starts to count as a source, entirely so at kSourceSpan times that: it receives no bounce (it has no albedo).
 //   Gain. The factor that lights a pixel is bounce = strength * fade * surface * B / max(T, luma(colour)) (T the light
 //   the game's constants say fell on it). It is kept by SoftClip to `limit` times the pixel's own colour: a large
-//   number (2 to 8), a guard against amplifying the colour's own noise in a nearly black pixel, not the look.
+//   number (2 to 10), a guard against amplifying the colour's own noise in a nearly black pixel, not the look.
 //   Ceiling. The bounce may fill a pixel up to what a white surface in full sun would have, `cap` times the frame's
 //   light, and not past it: the light it adds is kept by SoftClip to the room left under that ceiling (a pixel at or
 //   over it gets nothing). That is what makes the stronger settings safe: a shadow gets lighter, nothing gets
 //   whiter than the sun-lit white of the frame.
-//   Reach. A second ring of samples from the occlusion's radius out to `reach` metres (4 to 10), a step or two a
+//   Reach. A second ring of samples from the occlusion's radius out to `reach` metres (5 to 16), a step or two a
 //   side of each slice, from the coarser levels of the colour and depth chains, with the horizon's falloff at the
 //   reach (full to 38% of it, none at it). The ring only adds light (the occlusion's visibility stays what the
 //   near samples found: it comes from the near mask alone) and only into sectors the near samples left open.

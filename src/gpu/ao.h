@@ -214,13 +214,14 @@
 // minimal difference") for three reasons: the factor was kept to half of the pixel's own colour, so a shaded pixel,
 // where the bounce matters most, could gain next to nothing; the gather looked only as far as the occlusion's own
 // radius (1 to 3 m, the same samples give its visibility) while a shaded street's light comes from the sunlit road
-// and walls 4 to 10 m away; and the strength stopped at 2 with a default of 0.75. Now:
+// and walls 4 to 10 m away; and the strength stopped at 2 with a default of 0.75 (the owner, playing with the debug
+// cvars at their most, limit 4, radius x3 and strength 2: "believable, still kinda subtle"). Now:
 //   cap       what a sample may carry into the bounce is a soft clip of its luma at `cap` times the frame's ambient +
 //             sun (never under 0.5), and a pixel's own colour counts as a source of light (no bounce) from twice that
 //             light on, ramped; the bounce may fill a pixel up to the cap's light (a ceiling) and not past it, so a
 //             shadow gets lighter and nothing gets whiter than the sun-lit white of the frame. The per-pixel limit
-//             is a soft guard of several times the pixel's own colour (2 to 8) against the noise of a dark pixel.
-//   reach     a second ring of samples in each slice from the near samples' end out to the level's reach (4 to 10 m),
+//             is a soft guard of several times the pixel's own colour (2 to 10) against the noise of a dark pixel.
+//   reach     a second ring of samples in each slice from the near samples' end out to the level's reach (5 to 16 m),
 //             1 or 2 steps a side (low, high) from the coarser levels of the chains, with the horizon falloff at the
 //             reach. The ring only adds light, into the sectors the near samples left open: the visibility is
 //             counted from the near mask alone, so the occlusion looks as it did.

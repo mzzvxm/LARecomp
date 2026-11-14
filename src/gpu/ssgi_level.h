@@ -13,15 +13,18 @@
 //             multiples of the frame's ambient + sun light
 //
 //   level       strength  limit  reach  cap   what it is
-//   light         0.75     1.0    4 m   1.5   the old default's strength, with the limit and the ring that lift it
-//   default       1.25     2.5    6 m   2.0   the strongest look the maths keeps clean (the albedo estimate errs low,
-//                                            so a little over 1; the limit and the ceiling keep a nearly black pixel
-//                                            and a lamp's neighbour from running away)
-//   strong        1.75     3.5    7 m   2.5
-//   stronger      2.50     5.0    8 m   3.0
-//   strongest     3.50     8.0   10 m   4.0   past the maths' comfort: more noise in the dark, shadows lifted as far as
-//                                            the ceiling lets them
-// `default` is the setting's default. A text that is none of the words (a hand-edited file) is `default`.
+//   light         1.0      2.0     5 m   1.5   the old look at its gentlest, with the ring that lets it reach
+//   default       2.0      4.5     9 m   2.0   at or over the most the old cvars gave (owner, 2026-11-13: clamp 4,
+//                                            radius x3 = 9 m, strength 2 "looked believable, still subtle"): the
+//                                            strongest look the maths keeps clean, since the ceiling (the cap's light)
+//                                            and the soft limit hold a nearly black pixel and a lamp's neighbour
+//   strong        3.0      6.0    11 m   2.5
+//   stronger      4.5      8.0    13 m   3.0
+//   strongest     7.0     10.2    16 m   3.5   clearly past the maths' comfort: more noise in the dark, shadows lifted
+//                                            as far as the ceiling lets them
+// The cap grows slowly on purpose: it is what keeps neon, lamps and the sun-lit sky from whitening what stands beside
+// them (a sample's radiance is cut to it, and a pixel is filled only up to it), so even STRONGEST stops at 3.5 times a
+// white wall in full sun. `default` is the setting's default. A text that is none of the words (a hand-edited file) is `default`.
 //
 // The debug cvars mcla_gpu_ssgi_strength / _clamp / _reach / _test_clamp stay as fine overrides of one number each
 // (-1 = not set: the level's; 0 or more replaces it), and mcla_gpu_ssgi_far_steps overrides the ring's steps. They are
@@ -50,15 +53,15 @@ struct Preset {
 };
 
 inline constexpr std::array<Preset, kLevelCount> kPresets = {{
-    {0.75f, 1.0f, 4.0f, 1.5f},    // light
-    {1.25f, 2.5f, 6.0f, 2.0f},    // default
-    {1.75f, 3.5f, 7.0f, 2.5f},    // strong
-    {2.50f, 5.0f, 8.0f, 3.0f},    // stronger
-    {3.50f, 8.0f, 10.0f, 4.0f},   // strongest
+    {1.0f, 2.0f, 5.0f, 1.5f},     // light
+    {2.0f, 4.5f, 9.0f, 2.0f},     // default
+    {3.0f, 6.0f, 11.0f, 2.5f},    // strong
+    {4.5f, 8.0f, 13.0f, 3.0f},    // stronger
+    {7.0f, 10.2f, 16.0f, 3.5f},   // strongest
 }};
 
 // What a number may be (the override cvars' ranges; ssgi_light.h's pack codes hold the limit and the cap).
-inline constexpr float kStrengthMax = 8.0f;
+inline constexpr float kStrengthMax = 12.0f;
 inline constexpr float kLimitMin = 0.05f;
 inline constexpr float kLimitMax = 10.2f;
 inline constexpr float kReachMax = 16.0f;
