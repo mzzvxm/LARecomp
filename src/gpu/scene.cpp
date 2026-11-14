@@ -1711,6 +1711,62 @@ bool Scene::UpscalerRunning() const {
          temporal_->frame().upscaler != Upscaler::kOff;
 }
 
+void Scene::NoteMenuWorld() {
+  // The world, by whichever effect watches the main view (the occlusion first): a frame with no effect on
+  // has none to say, and the world is not named then.
+  menu_world::World world = menu_world::World::kNone;
+  if (ao_ && ao_->wants_draws()) {
+    world = ao_->FrameWorld();
+  }
+  if (world == menu_world::World::kNone && shafts_ && shafts_->wants_draws()) {
+    world = shafts_->FrameWorld();
+  }
+  if (!menu_world_.Observe(world)) {
+    return;
+  }
+  // How the world is drawn: its main depth's host samples and scale (the player's MSAA level and the scene's
+  // scale reach the 4x world as they do the 2x one), the upscaler that runs, and HDR.
+  EdramKey depth;
+  depth.base_tiles = temporal::kMainDepthBase;
+  depth.pitch = temporal::kMainPitch;
+  depth.depth = 1;
+  depth.format = uint8_t(xe::DepthRenderTargetFormat::kD24FS8);
+  const EdramTargets::Target* target = nullptr;
+  for (const uint32_t samples : {world == menu_world::World::kPlay ? temporal::kPlaySamples
+                                                                    : temporal::kPauseSamples,
+                                 temporal::kPlaySamplesNoMsaa}) {
+    depth.samples = uint8_t(samples);
+    target = edram_->Find(depth);
+    if (target) {
+      break;
+    }
+  }
+  std::string drawn = "no main depth target found";
+  if (target) {
+    drawn = std::format("{} host sample{} at {}x", target->host_samples,
+                        target->host_samples == 1 ? "" : "s", target->scale.Text());
+  }
+  if (UpscalerRunning()) {
+    drawn += std::format(", {} on the scene", UpscalerName(temporal_->frame().upscaler));
+  }
+  drawn += hdr::Active() ? ", HDR" : ", SDR";
+  std::string occlusion = "off";
+  std::string contact = "off";
+  std::string bounce = "off";
+  std::string shafts = "off";
+  if (ao_) {
+    ao_->Levels(&occlusion, &contact, &bounce);
+  }
+  if (shafts_) {
+    shafts = shafts_->Level();
+  }
+  REXLOG_INFO("[gpu] world: {}: drawn with {}; effects: {}", menu_world::Name(world), drawn,
+              menu_world::EffectsText(world, {{"ambient occlusion", occlusion},
+                                              {"contact shadows", contact},
+                                              {"bounce light", bounce},
+                                              {"sun shafts", shafts}}));
+}
+
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
                                  uint64_t vs_identity, uint64_t ps_identity) {
   EdramKey color;
@@ -2963,6 +3019,7 @@ void Scene::OnPresent() {
     hdr_tone_->OnGuestPresent();
   }
   edram_->SetScenePhase(true);  // the next frame's scene
+  NoteMenuWorld();  // before the effects forget the frame
   if (ao_) {
     ao_->OnPresent();
   }

@@ -66,9 +66,12 @@
 //   view       1 while the sun is on the screen, falling to 0 a screen and a half beyond its
 //              edge, and 0 behind the camera: no pop at the edge (the play camera looks through
 //              25 degrees vertically, so a dusk sun is often just above the picture)
-// The pause menu's, the race pause's and the map's world is not handled: the shafts are of the play
-// view (the pause view has no frame-to-frame camera here, and a lens that is sweeping is worse than
-// none).
+// The pause menu's, the race pause's and the garage's world (the 4x view, menu_world.h) have the shafts too,
+// where a sky draw of the frame told where the sun is (the garage is an interior: none is drawn): the camera
+// of that kind of view is kept apart from the play view's, the frames whose lens is sweeping (the pause camera's
+// swing when the menu opens) have none (a lens that is sweeping is worse than none), and they are always added at
+// the first point (the mid-scene depth copy), not at the end of the scene, which was never looked at in the 4x
+// frames and teaches the anchor policy nothing. The map has none: the sun's rays are not a thing seen from 9 km.
 //
 // Settings: mcla_gpu_sun_shafts (auto, off, light, default, strong, stronger, strongest: how strong the shafts are,
 // x1 to x5 of the built-in strength, off being the game's own picture; the old low and high are read as
@@ -95,6 +98,7 @@
 #include "edram.h"
 #include "host_passes.h"
 #include "host_plan.h"
+#include "menu_world.h"
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
@@ -151,6 +155,11 @@ class SunShafts {
   void OnComposite() { composite_seen_ = true; }
   // A guest present: the frame boundary.
   void OnPresent();
+
+  // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force, for
+  // the scene's one line per change of world. Read before OnPresent, which forgets the frame.
+  menu_world::World FrameWorld() const;
+  std::string Level() const;
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -254,6 +263,7 @@ class SunShafts {
     kNoCamera,    // no previous frame's camera
     kNoLight,     // no usable light constants
     kGated,       // the fades gave nothing: no pass recorded
+    kWorld,       // the world has none: the map, or an interior with no sky drawn (menu_world.h ShaftsRun)
     kTooSmall,    // the picture is smaller than the passes are worth
     kNotRecorded, // a pipeline or an image could not be made
     kSkyOnly,     // the sky was taken, the second point never came (nothing was added)
@@ -343,8 +353,16 @@ class SunShafts {
   // vertex constants have been shown to hold a frame's own view (ao.h).
   temporal::Camera previous_;
   bool have_previous_ = false;
+  bool previous_pause_ = false;  // ... and it came from a pause/map view's frame (4x samples)
   uint64_t previous_frame_ = 0;
   bool vs_pose_trusted_ = false;
+  // How much the lens changed between the two cameras before the trigger (the same kind of view,
+  // consecutive frames): the pause camera's swing and the map's zoom move it fast, and a lens that is
+  // sweeping gives no shafts for those frames (menu_world.h LensSteady).
+  bool lens_step_valid_ = false;
+  double lens_step_ = 0.0;
+  menu_world::World trigger_world_ = menu_world::World::kNone;  // the world the first point was in
+  bool first_world_run_logged_ = false;
 
   // The sky's sun constant, told by the sky's draws and kept from frame to frame (the hour moves slowly):
   // the direction toward the sun, the frame and the shader that told it, how many sky draws told it this
@@ -395,6 +413,7 @@ class SunShafts {
   uint64_t runs_ = 0;
   uint64_t runs_end_ = 0;
   uint64_t runs_mid_ = 0;
+  uint64_t runs_world_ = 0;  // passes in the menu worlds (their own count: not the anchor policy's)
   uint64_t triggers_ = 0;
   uint64_t skipped_no_camera_ = 0;
   uint64_t gated_ = 0;

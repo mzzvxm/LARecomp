@@ -147,7 +147,7 @@ REXCVAR_DEFINE_STRING(
     "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
     "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
     "default): off on every graphics card for now, until its cost is measured. Costs graphics card time, "
-    "high more than low. Not drawn behind the pause menu or on the map. Live.")
+    "high more than low. Also drawn behind the pause menu and in the garage, not on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
@@ -1626,6 +1626,13 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   // The trigger. The depth chain also runs, with the occlusion off, at the census's frames: its
   // statistic shows whether the depth convention holds (1 near, 0 far).
   trigger_pause_ = pause;
+  // The world the trigger is in: the previous frame's camera of this kind of view is all there is (the anchor
+  // comes after), and without one (the first frame of a spell) the frame has no effects anyway.
+  trigger_world_ =
+      pause ? menu_world::Classify(true,
+                                   menu_world::LensOf(have_previous_ && previous_pause_ ? &previous_ : nullptr),
+                                   menu_world::GarageLighting())
+            : menu_world::World::kPlay;
   trigger_camera_valid_ = false;
   outcome_ = Outcome::kIdle;
   Plan plan;
@@ -2233,8 +2240,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       }
     }
   } else if (++gi_idle_frames_ >= kGiReleaseAfterFrames) {
-    // A frame without the bounce light (the pause menu's world, a setting turned off): its images are kept
-    // for a while, so that a pause spell does not make them again.
+    // A frame without the bounce light (the map, a setting turned off): its images are kept for a while, so
+    // that a visit to the map does not make them again.
     ReleaseGiImages();
   }
   LightRaw light;
@@ -2913,8 +2920,9 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
 
 void AmbientOcclusion::PlanGi(Plan* plan) {
   plan->gi = GiPlan{};
-  // Not in the pause menu's and the map's world (the 4x view): the plain occlusion runs there.
-  if (!gi_active_ || !plan->occlusion || !plan->apply || trigger_pause_) {
+  // The game view, the pause menu's world and the garage have it; the map (the 4x view seen from 9 km: the
+  // bounce's few metres are under a pixel) runs the plain occlusion (menu_world.h RulesFor).
+  if (!gi_active_ || !plan->occlusion || !plan->apply || !menu_world::RulesFor(trigger_world_).bounce) {
     return;
   }
   GiPlan& g = plan->gi;
@@ -3270,10 +3278,33 @@ void AmbientOcclusion::OnPresent() {
   have_camera_ = false;
   trigger_camera_valid_ = false;
   trigger_pause_ = false;
+  trigger_world_ = menu_world::World::kNone;
   outcome_ = Outcome::kNoTrigger;
   ran_this_frame_ = false;
   applied_this_frame_ = false;
   ++frame_;
+}
+
+menu_world::World AmbientOcclusion::FrameWorld() const {
+  if (play_view_ == pause_view_) {
+    return menu_world::World::kNone;  // no main view in the frame, or both kinds
+  }
+  if (play_view_) {
+    return menu_world::World::kPlay;
+  }
+  // This frame's own camera (the anchor has come by the end of the frame), else the last one of the kind.
+  const temporal::Camera* camera =
+      have_camera_ ? &camera_ : (have_previous_ && previous_pause_ ? &previous_ : nullptr);
+  return menu_world::Classify(true, menu_world::LensOf(camera), menu_world::GarageLighting());
+}
+
+void AmbientOcclusion::Levels(std::string* occlusion, std::string* contact, std::string* bounce) const {
+  *occlusion = ModeName(mode_);
+  *contact = ModeName(contact_mode_);
+  if (contact_mode_ != Mode::kOff && contact_state_ == ContactState::kGated) {
+    *contact += " (none now: the sun's height or the rain gates it)";  // PlanContact's gates
+  }
+  *bounce = !gi_active_ ? "off" : (gi_test_ ? "test" : ModeName(gi_mode_));
 }
 
 const char* AmbientOcclusion::ViewName() const {

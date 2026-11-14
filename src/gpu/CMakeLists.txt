@@ -116,6 +116,9 @@ add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.c
 # What a press of the compare key does and says (effect_compare.h, effect_compare_rules.h: the effects, the flip, the label) likewise:
 #   cmake --build <dir> --target larecomp_effect_compare_test, then run src/gpu/larecomp_effect_compare_test.
 add_executable(larecomp_effect_compare_test EXCLUDE_FROM_ALL effect_compare_test.cpp)
+# Which effects run in the pause menu's world, the garage and the map, and the line that names a world (menu_world.h) likewise:
+#   cmake --build <dir> --target larecomp_menu_world_test, then run src/gpu/larecomp_menu_world_test.
+add_executable(larecomp_menu_world_test EXCLUDE_FROM_ALL menu_world_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
