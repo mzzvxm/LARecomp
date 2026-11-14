@@ -101,11 +101,14 @@ Size DesktopSize();
 // The sizes the display lists (ascending, one per size whatever its refresh rates, from 1280x720 up:
 // the game's own screen is 1280x720), and the sizes a window can have here: 16:9 steps from 1280x720
 // up whose window (frame included) fits the display's work area. Both empty where they cannot be
-// asked; the menu then offers its own steps. Both are the display's OWN: the display's list is asked
-// of the driver while the display is in its own mode, and the one from before is kept while this game
-// has the display switched to another size (Windows lists by the mode the display is in: asked then,
-// the list loses the sizes above it, the display's own among them), and the display's own size is
-// always in it. The window's steps count the work area the display has in its own mode.
+// asked; the menu then offers its own steps. Both are the display's OWN. Windows lists by the mode the
+// display is in (asked while a 3840x2160 display is in 1280x720, the list loses the sizes above it, the
+// display's own among them), so the display's list is a book (display_sizes.h) that every look at the
+// driver is added to and none replaces, the driver is not asked while this game has the display
+// switched, and the display's own mode (the registry settings), the mode it is in and the monitor's own
+// size (the display configuration API) are in it whether the driver listed them or not. The window's
+// steps count the work area the display has in its own mode. Windows only: no FULLSCREEN elsewhere
+// (display_mode.cpp; the Linux side sizes the window through SDL and has no list of modes).
 std::vector<Size> ExclusiveSizes();
 std::vector<Size> WindowedSizes();
 
