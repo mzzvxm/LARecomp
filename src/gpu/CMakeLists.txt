@@ -91,6 +91,9 @@ add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
+# The upscalers' masks (upscaler_mask_plan.h: which views get second draws and with how many samples, the mask pass as a function) have a
+# check that needs no renderer: cmake --build <dir> --target larecomp_upscaler_masks_test, then run src/gpu/larecomp_upscaler_masks_test.
+add_executable(larecomp_upscaler_masks_test EXCLUDE_FROM_ALL upscaler_masks_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
@@ -342,6 +345,9 @@ larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
 # upscalers take as their reactive and transparency inputs (upscaler_masks.h).
 larecomp_gpu_host_shader(temporal_vehicle_table_ps ps_6_0)
 larecomp_gpu_host_shader(upscaler_masks_ps ps_6_0)
+# The same masks from a coverage image with the samples of the game's depth (mcla_gpu_msaa_with_upscaler): the mean
+# of the samples' masks.
+larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DEFINES MASKS_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

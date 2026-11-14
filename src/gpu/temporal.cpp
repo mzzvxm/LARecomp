@@ -26,6 +26,8 @@
 #include "topology.h"
 #include "upscaler_math.h"
 
+REXCVAR_DECLARE(bool, mcla_gpu_upscaler_masks);  // scene.cpp
+
 namespace mcla::gpu {
 
 namespace {
@@ -2089,13 +2091,16 @@ void TemporalSystem::Report() {
                 "served by the stand-in before the anchor; about one a frame when it works, none "
                 "when the reads name a product it does not cover), upscaled in the game view {} "
                 "and in the pause/map view {}, plain: context not ready {}, first frame of a view "
-                "{}, no vectors {}, colour not an input {}{}",
+                "{}, no vectors {}, colour not an input {} | {} | the player's MSAA kept under the "
+                "upscaler (mcla_gpu_msaa_with_upscaler): {}{}",
                 UpscalerName(effective_), ModeInfoOf(effective_, mode_in_use_).name,
                 status.provider.empty() ? std::string() : ", provider " + status.provider, w.frames,
                 w.upscaled, w.upscale_resets, w.post_stand_in_set, w.post_on_previous,
                 w.post_reads_served, w.view_upscaled[kPlayView], w.view_upscaled[kPauseView],
                 w.upscale_plain_not_ready, w.upscale_plain_first, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
+                motion_.masks().StateText(REXCVAR_GET(mcla_gpu_upscaler_masks)),
+                MsaaKeptUnderUpscaler() ? "yes" : "no",
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }
 }

@@ -13,16 +13,30 @@
 // of FSR, the bias-current-colour and reactive hints of DLSS) or whose pixel lock it should give up
 // (FSR's transparency and composition mask, DLSS's hint of the same name).
 //
+// MASKS_MS (upscaler_masks_ms_ps): the coverage image has the samples of the game's depth (the host's
+// MSAA level stands under the upscaler, mcla_gpu_msaa_with_upscaler: the second draws test the
+// multisampled depth, so they draw into a multisampled image). The mask is made for each sample and the
+// samples are averaged, which is what the game's own resolve does to the colour: the mask is the share
+// of the pixel's samples the layer covers (an edge is fractional, as the colour's is), exact for the
+// samples drawn. The mask of the mean would not be: the gain saturates (a glass pixel of alpha 0.3
+// covering 2 of 4 samples is 0.5 here, 0.6 from the mean alpha).
+//
 // mode 1 is the diagnostic (mcla_gpu_upscaler_mask_test): every pixel 1, nothing read, to see whether
 // an upscaler takes the mask at all (the picture loses its accumulation).
 
 #include "host_pass_common.hlsli"
+
+#ifndef MASKS_MS
+#define MASKS_MS 0
+#endif
 
 struct MaskPush {
   uint coverage;      // slot: the coverage image, RGBA8 (not read in mode 1)
   float gain;         // the mask's value for an opaque layer, and the share a fainter one keeps
   float color_gain;   // the same for the added colour
   uint mode;          // 0 the coverage image, 1 every pixel 1
+  uint samples;       // MASKS_MS only: the coverage image's sample count, 2, 4 or 8
+  uint3 reserved;
 };
 
 #ifdef __spirv__
@@ -31,13 +45,24 @@ struct MaskPush {
 ConstantBuffer<MaskPush> g_push : register(b0, space4);
 #endif
 
+float MaskOf(float4 layers) {
+  const float added = max(layers.r, max(layers.g, layers.b));
+  return saturate(max(layers.a * g_push.gain, added * g_push.color_gain));
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   if (g_push.mode == 1u) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
-  const int3 at = int3(int2(position.xy), 0);
-  const float4 layers = g_textures[g_push.coverage & 0x7FFFFFFFu].Load(at);
-  const float added = max(layers.r, max(layers.g, layers.b));
-  const float coverage = max(layers.a * g_push.gain, added * g_push.color_gain);
-  return float4(saturate(coverage), 0.0f, 0.0f, 0.0f);
+  const int2 at = int2(position.xy);
+#if MASKS_MS
+  float sum = 0.0f;
+  for (uint i = 0u; i < g_push.samples; ++i) {
+    sum += MaskOf(g_textures_ms[g_push.coverage & 0x7FFFFFFFu].Load(at, i));
+  }
+  return float4(sum / float(max(g_push.samples, 1u)), 0.0f, 0.0f, 0.0f);
+#else
+  return float4(MaskOf(g_textures[g_push.coverage & 0x7FFFFFFFu].Load(int3(at, 0))), 0.0f, 0.0f,
+                0.0f);
+#endif
 }

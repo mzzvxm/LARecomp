@@ -67,6 +67,7 @@
 #include "temporal_copy_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
 #include "temporal_vehicle_table_ps.hlsl.dxil.h"
+#include "upscaler_masks_ms_ps.hlsl.dxil.h"
 #include "upscaler_masks_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
@@ -120,6 +121,7 @@
 #include "temporal_copy_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
 #include "temporal_vehicle_table_ps.hlsl.spirv.h"
+#include "upscaler_masks_ms_ps.hlsl.spirv.h"
 #include "upscaler_masks_ps.hlsl.spirv.h"
 #endif
 
@@ -282,6 +284,11 @@ inline HostShaderBlob TemporalVehicleTablePixelShader() {
 
 inline HostShaderBlob UpscalerMasksPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(upscaler_masks_ps);
+}
+
+// The same masks from a coverage image with several samples (the host's MSAA level under an upscaler).
+inline HostShaderBlob UpscalerMasksMsPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(upscaler_masks_ms_ps);
 }
 
 // Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated
