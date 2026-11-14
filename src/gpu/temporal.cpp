@@ -24,6 +24,7 @@
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
+#include "upscaler_math.h"
 
 namespace mcla::gpu {
 
@@ -1008,11 +1009,7 @@ void TemporalSystem::MakeRequest(BackendRequest* request) const {
 }
 
 uint32_t TemporalSystem::JitterPhases(double ratio, uint32_t from_runtime) {
-  if (from_runtime != 0) {
-    return std::min(from_runtime, kMaxPhases);
-  }
-  const double wanted = std::ceil(double(kPhasesAtRatio1) * ratio * ratio - 1e-6);
-  return uint32_t(std::clamp(wanted, 1.0, double(kMaxPhases)));
+  return upscaler_math::JitterPhases(ratio, from_runtime);
 }
 
 void TemporalSystem::ClearStandIn() {
@@ -1469,8 +1466,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     frame_.phase_count = JitterPhases(frame_.ratio, ready && backend ? backend->JitterPhaseCount() : 0u);
     frame_.jitter_index = jitter_index_ % frame_.phase_count;
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
-    frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
-    frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
+    upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
   }
 }
 

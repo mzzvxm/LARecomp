@@ -39,6 +39,7 @@
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
+#include "upscaler_math.h"
 #include "watch.h"
 
 REXCVAR_DEFINE_BOOL(
@@ -1785,11 +1786,9 @@ int32_t Scene::SceneBias() {
       // levels the output's size would have picked are log2(render / output) lower. One more
       // level on top is what AMD's guide recommends for FSR. A fetch constant's own bias is added
       // to it by the sampler.
-      constexpr double kExtraBias = -1.0;
-      const double render = edram_->SceneScale().value();
-      const double output = edram_->resolution_scale().value();
-      const double bias = std::log2(render / output) + kExtraBias;
-      scene_bias_ = int32_t(std::lround(std::clamp(bias, -3.9, 3.9) * 32.0));
+      scene_bias_ = upscaler_math::SceneMipBias(edram_->SceneScale().value(),
+                                                edram_->resolution_scale().value(),
+                                                upscaler_math::kRecommendedExtraBias);
     }
   }
   return scene_bias_;

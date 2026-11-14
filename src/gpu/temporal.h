@@ -192,6 +192,7 @@
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "temporal_mv.h"
+#include "upscaler_math.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -203,8 +204,8 @@ class TemporalSystem {
  public:
   // Phases of the sequence at ratio 1: 8 x ratio^2, rounded up (F4-DESIGN.md 3); at another
   // ratio the runtime's own count (FFX's query for the sizes) or that formula (JitterPhases).
-  static constexpr uint32_t kPhasesAtRatio1 = 8;
-  static constexpr uint32_t kMaxPhases = 128;
+  static constexpr uint32_t kPhasesAtRatio1 = upscaler_math::kPhasesAtRatio1;
+  static constexpr uint32_t kMaxPhases = upscaler_math::kMaxPhases;
   // A longer gap between two anchors resets the history; the frame time is clamped to this.
   static constexpr double kMaxGapMs = 100.0;
   // Frames that were jittered, saw the main view, and had no accepted anchor, before the jitter is
