@@ -211,6 +211,10 @@ void Start(rex::ui::ImGuiDrawer* drawer) {
       Hide();
     }
   });
+  MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect), the label stays {:.1f} s",
+          KeyLabel(), kBindName,
+          std::string(cmp::Info(cmp::ParseEffect(rex::cvar::GetFlagByName("mcla_compare_effect"))).label),
+          REXCVAR_GET(mcla_compare_label_seconds));
 }
 
 }  // namespace mcla::compare
