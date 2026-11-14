@@ -209,6 +209,16 @@ REXCVAR_DEFINE_BOOL(
     "The picture is the same to within a shadow edge moving by a pixel. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_contact_skip_stat, 0, "MCLA/GPU",
+    "Diagnostic: with mcla_gpu_contact_shadows_fast and the game's sun shadow mask in the frame, every N frames (0: never) the contact march's "
+    "skip is counted: a second march pass classifies every pixel (skipped under the game's own shadow, the sky or past the fade, turned from "
+    "the sun, marching) with the mask's stored value at its centre, and the log gets the shares, the spread of those values (does the "
+    "game's shade store exactly 0, which the skip needs?) and the model's march time for that share. That frame costs one more march and a "
+    "readback of the picture. Live.")
+    .debug_only()
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_mask_gain, 2.0, "MCLA/GPU",
     "Diagnostic: what the game's sun shadow mask's stored value is multiplied by to give the sun's "
@@ -1396,6 +1406,8 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(depth_full_);
   add(contact_raw_);
   add(contact_dn_);
+  add(contact_skip_);
+  add(contact_stat_);
   for (const HostImage& image : history_) {
     add(image);
   }
@@ -1426,6 +1438,8 @@ void AmbientOcclusion::ReleaseImages() {
   passes_->ReleaseImage(depth_full_);
   passes_->ReleaseImage(contact_raw_);
   passes_->ReleaseImage(contact_dn_);
+  passes_->ReleaseImage(contact_skip_);
+  passes_->ReleaseImage(contact_stat_);
   for (HostImage& image : history_) {
     passes_->ReleaseImage(image);
   }
@@ -3006,13 +3020,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                                                                     : "the render size"),
                   plain.mega_steps, plain.march_ms, plain.filter_ms, plain.total_ms, before.total_ms);
       if (plan.contact.fast) {
-        const contact_trace::Cost fast = contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1],
-                                                                      plan.contact.steps, plan.ContactFilterInApply());
-        REXLOG_INFO("[gpu] contact shadows: the cheaper path is on (mcla_gpu_contact_shadows_fast): the march "
-                    "keeps {:.0f}% of the steps on average (a ray that is short on the screen needs fewer; "
-                    "the model's street average for this size), {}: model {:.3f} ms in all ({:.3f} + {:.3f}) "
+        const contact_trace::Cost fast = contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, true);
+        const bool adaptive = contact_trace::AdaptiveOnAt(plan.contact_size[1]);
+        REXLOG_INFO("[gpu] contact shadows: the cheaper path is on (mcla_gpu_contact_shadows_fast): {}, {}: model {:.3f} ms in all ({:.3f} + {:.3f}) "
                     "against {:.3f} ms with it off; not measured",
-                    100.0 * contact_trace::AdaptiveStepShare(plan.contact_size[1]),
+                    adaptive ? std::format("the march keeps {:.0f}% of the steps on average (a ray that is short on the screen needs fewer; the "
+                                           "model's street average for this size)",
+                                           100.0 * contact_trace::AdaptiveStepShare(plan.contact_size[1]))
+                             : std::string("the march keeps every step (the adaptive count is used up to 1080 lines of picture)"),
                     plan.ContactFilterInApply() ? "the filter is done inside the apply pass (no pass, no target write)"
                                                 : "the filter pass stays (the passes run at half the picture's size)",
                     fast.total_ms, fast.march_ms, fast.filter_ms, plain.total_ms);
@@ -3025,10 +3040,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
           const contact_trace::Cost half =
               contact_trace::CostModelFast(plan.contact_size[0], plan.contact_size[1], plan.contact.steps, true, 0.5);
           REXLOG_INFO("[gpu] contact shadows: with the game's sun shadow mask in the frame the march also skips the "
-                      "pixels the game's own shadow covers (the picture is unchanged): model {:.3f} ms with none of "
-                      "the marched pixels in shadow, {:.3f} ms at 30% and {:.3f} ms at 50% in shadow (a frame without "
-                      "the mask: {:.3f} ms); not measured",
-                      lit.total_ms, third.total_ms, half.total_ms, fast.total_ms);
+                      "pixels the game's own shadow covers (the picture is unchanged): model {:.3f} ms of march + {:.3f} ms of block pass with none of "
+                      "the pixels in shadow, {:.3f} ms at 30% and {:.3f} ms at 50% in shadow (a frame without "
+                      "the mask: {:.3f} ms; the plain march {:.3f} ms); only if the game's shade stores exactly 0 "
+                      "(mcla_gpu_contact_skip_stat says); not measured",
+                      lit.march_ms, lit.block_ms, third.march_ms, half.march_ms, fast.march_ms, plain.march_ms);
         }
       }
     }
@@ -3287,6 +3303,9 @@ uint32_t AmbientOcclusion::FindMaskSlot() {
   const uint32_t slot =
       product->views.Slot(*device_, *heap_, *product->texture, product->format,
                           mask_key_.levels(), format::kHostSwizzleRGBA, "ao contact mask view");
+  // The product is made at the host scale of the targets its resolve read: the picture's size at a render scale (3840x2160 at 3x).
+  mask_dims_[0] = product->scale.Edge(mask_key_.width);
+  mask_dims_[1] = product->scale.Edge(mask_key_.height);
   return slot == kInvalidBindlessSlot ? kNoSlot : slot;
 }
 
@@ -3338,32 +3357,69 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   // runs and averages the frames, as the shadow filter's and the sun shafts' are.
   push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   // The adaptive step count (contact_trace.h AdaptiveSteps): the end gap in pixels in shape.z, which the march
-  // does not otherwise read; 0 is every step, as the setting says.
-  push.shape[2] = c.fast ? contact_trace::kAdaptEndPixels : 0.0f;
+  // does not otherwise read; 0 is every step, as the setting says, and above 1080 lines of picture (kAdaptMaxHeight) the
+  // count costs more than it saves, so it is left off there.
+  push.shape[2] = (c.fast && contact_trace::AdaptiveOnAt(plan.contact_size[1])) ? contact_trace::kAdaptEndPixels : 0.0f;
   // The skip under the game's own shadow (contact_trace.h "the skip under the game's own shadow"): the march returns 1
   // where every mask texel the apply's filter can reach for the pixel is 0 (or so near it that the apply leaves the pixel
   // out), which changes no pixel of the picture. Only where the apply does the filter itself (in_apply), only in a frame
   // that has the mask, and not while a debug picture is on (the apply filters every pixel then and shows the visibility).
-  // The strength and the gain are the apply's own (Run), the light is the base push's (the apply's too); the push fields
-  // are the ones the march does not otherwise read (and the denoise pass below is not drawn when this is on).
+  // The limit is made here from the apply's own numbers (the strength, the gain, the frame's lights in the base push); a block pass
+  // (the same shader, flag kSideFlag) makes an image of 4 x 4 texel blocks of the mask first, which the march reads (slots2.w).
   const bool debug_picture = plan.view != 0u || plan.gi.view != 0u || plan.gi.apply_view != 0u;
-  const bool skip = contact_trace::MaskSkipOn(c.fast, in_apply, mask_slot != kNoSlot, debug_picture, c.strength);
+  const uint32_t mask_w = mask_slot != kNoSlot ? mask_dims_[0] : 0u;
+  const uint32_t mask_h = mask_slot != kNoSlot ? mask_dims_[1] : 0u;
+  const float skip_limit = (c.fast && in_apply && mask_slot != kNoSlot)
+                               ? contact_trace::SkipLimit(base.light[3], base.extra[0], c.strength, c.mask_gain)
+                               : -1.0f;
+  const bool skip = contact_trace::MaskSkipOn(
+      c.fast, in_apply, mask_slot != kNoSlot, debug_picture, skip_limit,
+      contact_trace::SkipScaleOk(int(mask_w), int(mask_h), int(plan.contact_size[0]), int(plan.contact_size[1])));
   if (skip) {
+    const uint32_t block_w = uint32_t(contact_trace::SkipBlockCount(int(mask_w)));
+    const uint32_t block_h = uint32_t(contact_trace::SkipBlockCount(int(mask_h)));
+    if (!passes_->EnsureImage(contact_skip_, block_w, block_h, plume::RenderFormat::R16_FLOAT, "ao contact skip blocks")) {
+      return kNoSlot;
+    }
+    // The block pass: slots2.w the mask's slot, shape.w the limit, extra.x and extra.z one over the mask's size.
+    pass_timing_->Mark(list, "ao contact skip");
+    Push blocks = base;
+    blocks.slots2[2] = contact_trace::kSideFlag;
+    blocks.slots2[3] = mask_slot;
+    blocks.shape[3] = skip_limit;
+    blocks.extra[0] = 1.0f / float(mask_w);
+    blocks.extra[2] = 1.0f / float(mask_h);
+    DrawPass(list, contact_skip_, march, blocks);
+    pass_timing_->Mark(list, "ao contact");
     push.slots2[2] |= contact_trace::kSkipFlag;
-    push.slots2[3] = mask_slot;
-    push.extra[2] = c.mask_gain;
-    push.shape[3] = c.strength;
+    push.slots2[3] = contact_skip_.slot;
+    push.sizes[0] = float(mask_w) / float(plan.contact_size[0]) * 0.25f;
+    push.sizes[1] = float(mask_h) / float(plan.contact_size[1]) * 0.25f;
+    push.extra[0] = 1.0f / float(block_w);
+    push.extra[2] = 1.0f / float(block_h);
     if (!contact_skip_logged_) {
       contact_skip_logged_ = true;
-      REXLOG_INFO("[gpu] contact shadows: the march skips the pixels under the game's own sun shadow (mask slot {}; "
-                  "mcla_gpu_contact_shadows_fast; the picture is not changed: contact_trace.h, logged once)",
-                  mask_slot);
+      REXLOG_INFO("[gpu] contact shadows: the march skips the pixels under the game's own sun shadow (mask slot {}, {}x{} against the {}x{} "
+                  "picture; limit {:.3g} of the stored value, so a shade that stores more than {:.1f}/255 is not skipped; blocks {}x{}; "
+                  "mcla_gpu_contact_shadows_fast; the picture is not changed: contact_trace.h, logged once; "
+                  "mcla_gpu_contact_skip_stat counts what it skips)",
+                  mask_slot, mask_w, mask_h, plan.contact_size[0], plan.contact_size[1], skip_limit, double(skip_limit) * 255.0, block_w,
+                  block_h);
     }
+  } else if (contact_skip_.texture) {
+    passes_->ReleaseImage(contact_skip_);
   }
+  const bool stat_wanted = REXCVAR_GET(mcla_gpu_contact_skip_stat) > 0 && c.fast && in_apply && mask_slot != kNoSlot && !debug_picture;
+  Push stat_push = push;  // the march's push as it is: the statistics pass is the same shader, the flag and the mask's slot added
   DrawPass(list, contact_raw, march, push);
   push.shape[2] = base.shape[2];
   push.extra[3] = base_extra_w;
   if (in_apply) {
+    if (stat_wanted) {
+      RecordContactStat(list, plan, stat_push, mask_slot, skip ? skip_limit : -1.0f);
+    } else if (contact_stat_.texture) {
+      passes_->ReleaseImage(contact_stat_);
+    }
     // The apply pass reads the march's own image and does the 3x3 filter itself (flag bit 25 there, ao_apply_ps).
     return contact_raw.slot;
   }
@@ -3377,6 +3433,146 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.slots2[2] |= kContactFilterFlag;
   DrawPass(list, contact_dn, denoise, push);
   return contact_dn.slot;
+}
+
+// ---------------------------------------------------------------------------
+// the contact skip's statistics
+// ---------------------------------------------------------------------------
+
+void AmbientOcclusion::RecordContactStat(plume::RenderCommandList* list, const Plan& plan, const Push& march_push, uint32_t mask_slot,
+                                         float limit) {
+  const int every = REXCVAR_GET(mcla_gpu_contact_skip_stat);
+  if (stat_busy_ || every <= 0 || (stat_taken_ != 0 && frame_ < stat_last_frame_ + uint64_t(every))) {
+    return;
+  }
+  plume::RenderPipeline* march = Pipeline(kVContact);
+  const uint32_t width = plan.contact_size[0];
+  const uint32_t height = plan.contact_size[1];
+  if (!march || !passes_->EnsureImage(contact_stat_, width, height, plume::RenderFormat::R16_FLOAT, "ao contact skip statistics")) {
+    return;
+  }
+  const uint32_t row_bytes = (width * 2 + 255) / 256 * 256;  // R16_FLOAT, rows 256-aligned
+  const uint64_t bytes = uint64_t(row_bytes) * height;
+  if (!stat_buffer_ || stat_buffer_bytes_ < bytes) {
+    stat_buffer_ = device_->CreateBuffer(plume::RenderBufferDesc::ReadbackBuffer(bytes), "ao contact skip readback");
+    stat_buffer_bytes_ = stat_buffer_ ? bytes : 0;
+    if (!stat_buffer_) {
+      return;
+    }
+  }
+  pass_timing_->Mark(list, "ao contact skip statistics");
+  Push push = march_push;
+  push.slots[0] = mask_slot;  // the statistics pass reads the mask's own value at the pixel's centre, at (pixel + 0.5) x sizes.xy x 4
+  push.sizes[0] = float(mask_dims_[0]) / float(width) * 0.25f;
+  push.sizes[1] = float(mask_dims_[1]) / float(height) * 0.25f;
+  push.slots2[2] |= contact_trace::kSideFlag | contact_trace::kStatFlag;
+  DrawPass(list, contact_stat_, march, push);
+  list->barriers(plume::RenderBarrierStage::COPY,
+                 plume::RenderTextureBarrier(contact_stat_.texture.get(), plume::RenderTextureLayout::COPY_SOURCE));
+  contact_stat_.layout = plume::RenderTextureLayout::COPY_SOURCE;  // the next DrawPass moves it on
+  list->copyTextureRegion(
+      plume::RenderTextureCopyLocation::PlacedFootprint(stat_buffer_.get(), plume::RenderFormat::R16_FLOAT, width, height, 1, row_bytes / 2, 0),
+      plume::RenderTextureCopyLocation::Subresource(contact_stat_.texture.get()));
+  stat_busy_ = true;
+  stat_last_frame_ = frame_;
+  ++stat_taken_;
+  const uint64_t frame = frame_;
+  const uint64_t generation = generation_;
+  const uint32_t row_texels = row_bytes / 2;
+  const bool skip_on = (march_push.slots2[2] & contact_trace::kSkipFlag) != 0u;
+  const uint32_t mask_w = mask_dims_[0], mask_h = mask_dims_[1];
+  frames_->RetireAction([this, frame, generation, width, height, row_texels, limit, skip_on, mask_w, mask_h] {
+    ProcessContactStat(frame, generation, width, height, row_texels, limit, skip_on, mask_w, mask_h);
+  });
+}
+
+void AmbientOcclusion::ProcessContactStat(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t row_texels,
+                                          float limit, bool skip_on, uint32_t mask_w, uint32_t mask_h) {
+  stat_busy_ = false;
+  if (generation != generation_ || !stat_buffer_ || width == 0 || height == 0) {
+    return;
+  }
+  const void* mapped = stat_buffer_->map();
+  if (!mapped) {
+    REXLOG_ERROR("[gpu] contact skip statistics of frame {}: the readback could not be mapped", frame);
+    return;
+  }
+  // What each pixel wrote (hlsl/ao_contact_ps.hlsl SkipStat, contact_trace.h kStat*): -1 skipped, 2 the sky or past the contact fade,
+  // 3 + v turned from the sun, v (0 to 1) marching, v the mask's stored value at the pixel's centre.
+  uint64_t far_count = 0, skipped = 0, back = 0, march = 0;
+  // The spread of the stored value v of the pixels that were not skipped, in 1/255 units: 0, 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65-120, above (a lit pixel stores
+  // up to 0.5 = 127.5/255).
+  uint64_t spread[10] = {};
+  uint64_t tile_counted = 0, tile_all_skipped = 0, tile_skipped_pixels = 0;  // 8 x 4 tiles with a non-sky pixel, of which all skipped
+  const uint16_t* source = static_cast<const uint16_t*>(mapped);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint16_t* row = source + size_t(y) * row_texels;
+    for (uint32_t x = 0; x < width; ++x) {
+      const float value = HalfToFloat(row[x]);
+      if (value < -0.5f) {
+        ++skipped;
+        continue;
+      }
+      if (value > 1.5f && value < 2.5f) {
+        ++far_count;
+        continue;
+      }
+      const bool facing_away = value >= 2.5f;
+      const float stored = facing_away ? value - contact_trace::kStatBack : value - contact_trace::kStatMarch;
+      (facing_away ? back : march)++;
+      const float units = stored * 255.0f;
+      const size_t bucket = units < 0.5f ? 0 : units < 1.5f ? 1 : units < 2.5f ? 2 : units < 4.5f ? 3 : units < 8.5f ? 4 : units < 16.5f ? 5
+                            : units < 32.5f ? 6 : units < 64.5f ? 7 : units < 120.5f ? 8 : 9;
+      ++spread[bucket];
+    }
+  }
+  // Whole 8 x 4 tiles (a warp's pixels, about) in which every pixel that is not sky is skipped: what the GPU saves.
+  for (uint32_t ty = 0; ty < height; ty += 4) {
+    for (uint32_t tx = 0; tx < width; tx += 8) {
+      uint32_t counted = 0, tile_skipped = 0;
+      for (uint32_t y = ty; y < std::min(ty + 4, height); ++y) {
+        const uint16_t* row = source + size_t(y) * row_texels;
+        for (uint32_t x = tx; x < std::min(tx + 8, width); ++x) {
+          const float value = HalfToFloat(row[x]);
+          if (value > 1.5f && value < 2.5f) {
+            continue;
+          }
+          ++counted;
+          tile_skipped += value < -0.5f ? 1 : 0;
+        }
+      }
+      if (counted != 0) {
+        ++tile_counted;
+        if (tile_skipped == counted) {
+          ++tile_all_skipped;
+          tile_skipped_pixels += counted;
+        }
+      }
+    }
+  }
+  stat_buffer_->unmap();
+  const uint64_t all = uint64_t(width) * height;
+  const uint64_t not_far = skipped + back + march;
+  const auto share = [](uint64_t part, uint64_t whole) { return whole ? 100.0 * double(part) / double(whole) : 0.0; };
+  const uint64_t not_skipped = back + march;
+  REXLOG_INFO("[gpu] contact skip statistics of frame {} ({}x{}, mask {}x{}, the skip {}, limit {:.3g}): of {} pixels the sky or past the fade {:.1f}%; of the "
+              "rest ({:.1f}%): skipped {:.1f}%, turned from the sun {:.1f}%, marching {:.1f}%; whole 8x4 tiles skipped (what the GPU saves) {:.1f}% of the pixels "
+              "that are not sky; the mask's stored value at the {} pixels that were not skipped, in 1/255: 0: {:.1f}%, 1: {:.1f}%, 2: {:.1f}%, 3-4: {:.1f}%, 5-8: {:.1f}%, "
+              "9-16: {:.1f}%, 17-32: {:.1f}%, 33-64: {:.1f}%, 65-120: {:.1f}%, 121 or more: {:.1f}% (a game shade that stores more than {:.1f}/255 "
+              "cannot be skipped; the sun stores up to 127.5)",
+              frame, width, height, mask_w, mask_h, skip_on ? "on" : "off", limit, all, share(far_count, all), share(not_far, all),
+              share(skipped, not_far), share(back, not_far), share(march, not_far), share(tile_skipped_pixels, not_far), not_skipped,
+              share(spread[0], not_skipped), share(spread[1], not_skipped), share(spread[2], not_skipped), share(spread[3], not_skipped),
+              share(spread[4], not_skipped), share(spread[5], not_skipped), share(spread[6], not_skipped), share(spread[7], not_skipped),
+              share(spread[8], not_skipped), share(spread[9], not_skipped), double(std::max(limit, 0.0f)) * 255.0);
+  (void)tile_counted;
+  (void)tile_all_skipped;
+  const double shadowed = not_far != 0 ? double(skipped) / double(not_far) : 0.0;
+  const contact_trace::Cost plain = contact_trace::CostModel(width, height, contact_trace::kStepsHigh, 1, true);
+  const contact_trace::Cost fast = contact_trace::CostModelFast(width, height, contact_trace::kStepsHigh, true, shadowed);
+  REXLOG_INFO("[gpu] contact skip statistics of frame {}: the model's march at this share skipped ({:.1f}% of the pixels that are not sky): {:.3f} ms + the block "
+              "pass {:.3f} ms against the plain march's {:.3f} ms (the model of contact_trace.h, an RTX 5080 at 3840x2160 scales with the pixels; not measured)",
+              frame, 100.0 * shadowed, fast.march_ms, fast.block_ms, plain.march_ms);
 }
 
 // ---------------------------------------------------------------------------

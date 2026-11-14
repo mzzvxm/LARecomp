@@ -127,7 +127,8 @@
 // THE CHEAPER PATH (mcla_gpu_contact_shadows_fast, debug-only, on by default; off is every pass as described above):
 // (1) the march takes as many steps as the ray's length on the screen needs, never fewer than 4 and never more than
 // the setting's (contact_trace.h AdaptiveSteps: the squared spacing is kept, the gap between the last two steps is at
-// most 8 pixels): at 3840x2160 that is nearly all 16, at 1080p about 15, at 720p about 14; (2) where the passes run at
+// most 8 pixels): at 1080p about 15 of 16, at 720p about 14, and it is used up to 1080 lines of picture only (above, nearly
+// all 16 stay: 15.84 at 3840x2160, and the count's arithmetic costs half a step); (2) where the passes run at
 // the picture's size (not at half size) the 3x3 filter is done by the apply pass over the march's own image
 // (hlsl/ao_apply_ps.hlsl, AoBilateralEdgeFolded: the same weights, with the neighbours' depths the apply reads for its
 // normal; flag bit 25 there), so the filter pass and the write of its full size target are gone, and a pixel the contact
@@ -140,7 +141,15 @@
 // share * fade, is 0 there, and below the filter's threshold the apply reads no neighbour), so the march returns 1 before
 // its depth reads. Exact, not an approximation: the check compares the factor bit for bit with and without it. The mask is
 // found before the march and the apply gets the same slot; the gain and the strength it is given are the apply's.
-// It saves what the shadow's stored value being 0 lets it: CHECK that a pixel the game shadows stores 0 (view 10 black).
+// It saves what the shadow's stored value being 0 lets it: CHECK that a pixel the game shadows stores 0 (view 10 black does not say:
+// 1/255 is black there too; the statistics below do). The first version of the test measured slower than the plain march in the game
+// (PLAY4: 0.306 against 0.285 ms at 3840x2160): it cost about 90 instructions on every pixel in the sun and 25 texel reads in shade; now a
+// small BLOCK PASS (ao contact skip: an image of the mask's size over 4, 1 where any texel of a 4 x 4 block is above the limit) lets the
+// march test with one load (the pixel in the sun: 17 instructions) or one gather (in shade: the pixel ends at about 106 in all).
+// THE SKIP STATISTICS (mcla_gpu_contact_skip_stat, debug, live: N > 0 = every N frames): a second march pass into a scratch image
+// writes what each pixel did (skipped, sky or past the fade, faces away from the sun, marches) with the mask's stored value at its
+// centre; the CPU counts the picture and the log says what share the skip took, how the mask's values spread (does the game's shade
+// store exactly 0?) and the model's march time for that share. It costs one extra march and a 16 MB readback in that frame.
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -724,6 +733,12 @@ class AmbientOcclusion {
   // pass filters it (its flag bit 25). `mask_slot` is the game's sun shadow mask (FindMaskSlot, kNoSlot without it): the
   // march skips the pixels under it that the apply cannot use (the apply is given the same slot).
   uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base, uint32_t mask_slot);
+  // The statistics of the skip (mcla_gpu_contact_skip_stat): one more march into contact_stat_ with the statistics flag, copied to a
+  // readback buffer, and counted when the GPU has run it (ProcessContactStat). `march_push` is the march's push (its skip fields);
+  // `limit` the skip's limit, -1 where the skip is not on.
+  void RecordContactStat(plume::RenderCommandList* list, const Plan& plan, const Push& march_push, uint32_t mask_slot, float limit);
+  void ProcessContactStat(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t row_texels, float limit,
+                          bool skip_on, uint32_t mask_w, uint32_t mask_h);
   // --- the SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl) ---
   // Decides what it does in this frame: the setting, the occlusion being on, the tuning cvars.
   void PlanGi(Plan* plan);
@@ -1101,6 +1116,16 @@ class AmbientOcclusion {
   std::unique_ptr<plume::RenderBuffer> probe_buffer_;
   uint64_t probe_buffer_bytes_ = 0;
   bool probe_busy_ = false;
+  // The contact skip's block image (R16_FLOAT, the mask's size over 4: ao contact skip) and the statistics' scratch image and readback.
+  HostImage contact_skip_;
+  HostImage contact_stat_;
+  std::unique_ptr<plume::RenderBuffer> stat_buffer_;
+  uint64_t stat_buffer_bytes_ = 0;
+  bool stat_busy_ = false;
+  uint64_t stat_last_frame_ = 0;
+  uint32_t stat_taken_ = 0;
+  uint32_t mask_dims_[2] = {};   // the game's sun shadow mask's size in host texels (FindMaskSlot), 0 where there is none
+  bool contact_skip_geometry_logged_ = false;
   uint64_t generation_ = 1;  // bumped when the images go: a probe in flight is then ignored
 
   // What the log has said once.
