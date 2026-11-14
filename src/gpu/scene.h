@@ -448,6 +448,7 @@ class Scene {
   // SceneBias's value for the frame it was worked out in.
   uint64_t scene_bias_serial_ = 0;
   int32_t scene_bias_ = 0;
+  int32_t scene_bias_logged_ = INT32_MIN;  // the value the log last named
   // Writes one fetch constant's table entries from `memo`.
   static void ApplyFetch(const FetchMemo& memo, uint32_t slot, SharedConstants& sc);
 

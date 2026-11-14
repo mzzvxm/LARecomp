@@ -90,6 +90,7 @@ constexpr const char* kHdrViewNames[] = {"OFF", "UI ONLY", "SCENE ONLY", "UI COV
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
+constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
 #endif
 
@@ -182,6 +183,11 @@ const ItemDef kDebugRenderingItems[] = {
                    kAoFadeEndVals, Len(kAoFadeEndVals), "%g")),
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
+    // The upscalers' A/B levers (a shimmer on fine detail at a low base resolution): the extra texture
+    // detail bias and the masks.
+    NativeOnly(Dbl("PM_RxDbgUpMipBias",  "mcla_gpu_scene_extra_bias", "UPSCALER MIP BIAS: ",
+                   kMipBiasVals, Len(kMipBiasVals), "%g")),
+    NativeOnly(Bool("PM_RxDbgUpMasks",   "mcla_gpu_upscaler_masks", "UPSCALER MASKS: ")),
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),
