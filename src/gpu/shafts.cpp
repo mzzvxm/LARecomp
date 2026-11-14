@@ -1204,7 +1204,7 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
       REXLOG_INFO("[gpu] shafts: the first sun shafts pass in the {}: {} at {}x{}, {} steps, {} host "
                   "samples, the sun at ({:.2f}, {:.2f}) of the picture (from {}), added at {} (the "
                   "world has a sky drawn, a steady lens and the same settings as the game view)",
-                  menu_world::Name(trigger_world_), ModeName(mode_), plan.render[0], plan.render[1],
+                  menu_world::Name(trigger_world_), shafts_level::Name(level_), plan.render[0], plan.render[1],
                   plan.steps, plan.host_samples, plan.sun_uv[0], plan.sun_uv[1],
                   plan.sun_from_sky ? "the sky's sun constant" : "the light's direction",
                   shafts_anchor::AnchorName(anchor_));
@@ -1359,8 +1359,8 @@ menu_world::World SunShafts::FrameWorld() const {
                               menu_world::GarageLighting());
 }
 
-std::string SunShafts::Level() const {
-  return ModeName(mode_);
+std::string SunShafts::LevelName() const {
+  return std::string(shafts_level::Name(level_));
 }
 
 void SunShafts::OnPresent() {
