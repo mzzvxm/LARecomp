@@ -1235,7 +1235,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.prepared;
       if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
           (car_refl_ && car_refl_->wants_draws())) {
-        NoteAmbientOcclusion(banks, d);
+        NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1723,7 +1723,8 @@ bool Scene::UpscalerRunning() const {
          temporal_->frame().upscaler != Upscaler::kOff;
 }
 
-void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d) {
+void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
+                                 uint64_t vs_identity, uint64_t ps_identity) {
   EdramKey color;
   EdramKey depth;
   const EdramKey* color0 = nullptr;
@@ -1747,7 +1748,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     ao_->OnMainDraw(draw, banks);
   }
   if (shafts_ && shafts_->wants_draws()) {
-    shafts_->OnMainDraw(draw.match, banks);
+    shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     car_refl_->OnMainDraw(draw.match, draw.stencil_ids);

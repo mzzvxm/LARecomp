@@ -101,6 +101,15 @@ add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_
 # The car self-reflection's rules (car_selfrefl_rules.h: the modes, the matrix, the constants, the depth linearisation) likewise:
 #   cmake --build <dir> --target larecomp_car_selfrefl_rules_test, then run src/gpu/larecomp_car_selfrefl_rules_test.
 add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_rules_test.cpp)
+# Where the sun shafts are added and when they fall back (shafts_anchor.h) likewise:
+#   cmake --build <dir> --target larecomp_shafts_anchor_test, then run src/gpu/larecomp_shafts_anchor_test.
+add_executable(larecomp_shafts_anchor_test EXCLUDE_FROM_ALL shafts_anchor_test.cpp)
+# Where the sun is in the picture (shafts_sun.h: the sky's sun constant against the light, the placement and the fades) likewise:
+#   cmake --build <dir> --target larecomp_shafts_sun_test, then run src/gpu/larecomp_shafts_sun_test.
+add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
+# Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
+#   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
+add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

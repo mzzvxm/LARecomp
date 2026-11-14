@@ -89,6 +89,7 @@
 #include <rex/graphics/xenos.h>
 
 #include "edram.h"
+#include "live_text.h"
 #include "side_views.h"
 
 REXCVAR_DEFINE_STRING(
@@ -128,7 +129,8 @@ bool Matches(const EdramKey& key, uint32_t size_bits) {
 }
 
 std::string Setting() {
-  return REXCVAR_GET(mcla_gpu_shadow_resolution);
+  static LiveText text("mcla_gpu_shadow_resolution");  // the render thread does not read the cvar's string (live_text.h)
+  return text.Get();
 }
 
 uint32_t HostSamples(Scale scale, uint32_t guest_samples) {

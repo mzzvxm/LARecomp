@@ -931,6 +931,13 @@ bool EdramTargets::FallBackSideView(Target& target) {
                DescribeEdramKey(target.key), target.scale, target.host_samples,
                target.host_samples == 1 ? "" : "s", side_views::Name(view), lower,
                side_views::SettingText(view));
+  // The members of the class that exist keep their texture and their `scale` (the two always agree, so
+  // each is a consistent target on its own) until UpdateSideViews makes them again at the next frame
+  // boundary. In between, a draw that binds one of them with this one has two scales, and Scene::Record
+  // leaves it out (Skip::kTarget, "targets of different resolution scales", checked before the
+  // framebuffer is made and, with change_serial_ bumped here, not skipped by the targets memo): a
+  // framebuffer never gets a colour and a depth of different sizes. The cost is that class's draws for
+  // the rest of this frame, once.
   side_scales_[view] = lower;
   side_dirty_ = true;
   ++change_serial_;  // what was memoized from the targets' scales is stale

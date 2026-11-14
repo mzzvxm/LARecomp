@@ -18,7 +18,9 @@
 #include "format.h"
 #include "frame.h"
 #include "gpu_class.h"
+#include "host_plan.h"
 #include "host_shaders.h"
+#include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
@@ -316,17 +318,37 @@ const char* ModeName(AmbientOcclusion::Mode mode) {
   return "?";
 }
 
+// The string settings are read through LiveText: the pause menu's thread writes the cvar's string while
+// this one reads it (live_text.h).
+LiveText& AoSetting() {
+  static LiveText text("mcla_gpu_ao");
+  return text;
+}
+
+LiveText& ContactSetting() {
+  static LiveText text("mcla_gpu_contact_shadows");
+  return text;
+}
+
+// The levels of host_plan.h are the owners' Modes, in the same order.
+static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(AmbientOcclusion::Mode::kOff) &&
+              uint8_t(host_plan::Level::kLow) == uint8_t(AmbientOcclusion::Mode::kLow) &&
+              uint8_t(host_plan::Level::kHigh) == uint8_t(AmbientOcclusion::Mode::kHigh));
+AmbientOcclusion::Mode ToMode(host_plan::Level level) {
+  return AmbientOcclusion::Mode(uint8_t(level));
+}
+host_plan::Level ToLevel(AmbientOcclusion::Mode mode) {
+  return host_plan::Level(uint8_t(mode));
+}
+
+// mcla_gpu_ao: off, low or high (anything else is off). host_plan.h has the rule, which the precache
+// uses too.
+host_plan::Choice AoChoice() {
+  return host_plan::Resolve(host_plan::Pass::kOcclusion, gpu_class::Current(), true, AoSetting().Get());
+}
+
 AmbientOcclusion::Mode ReadMode() {
-  std::string value = REXCVAR_GET(mcla_gpu_ao);
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  if (value == "low") {
-    return AmbientOcclusion::Mode::kLow;
-  }
-  if (value == "high") {
-    return AmbientOcclusion::Mode::kHigh;
-  }
-  return AmbientOcclusion::Mode::kOff;
+  return ToMode(AoChoice().level);
 }
 
 std::string Lower(std::string value) {
@@ -335,17 +357,14 @@ std::string Lower(std::string value) {
   return value;
 }
 
-// mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h).
+// mcla_gpu_contact_shadows with `auto` resolved for this GPU (gpu_class.h, host_plan.h).
+host_plan::Choice ContactChoice() {
+  return host_plan::Resolve(host_plan::Pass::kContact, gpu_class::Current(), true,
+                            ContactSetting().Get());
+}
+
 AmbientOcclusion::Mode ReadContactMode() {
-  const std::string value = gpu_class::Resolve(gpu_class::Effect::kContactShadows,
-                                               Lower(REXCVAR_GET(mcla_gpu_contact_shadows)));
-  if (value == "low") {
-    return AmbientOcclusion::Mode::kLow;
-  }
-  if (value == "high") {
-    return AmbientOcclusion::Mode::kHigh;
-  }
-  return AmbientOcclusion::Mode::kOff;
+  return ToMode(ContactChoice().level);
 }
 
 // A binary16 as a float.
@@ -452,7 +471,21 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   builder.end();
   layout_ = device.CreatePipelineLayout(builder, "ao layout");
   bool ok = layout_ != nullptr;
+  // The contact march's shader (and, in ListPrecache, its pipeline) is made only where the contact shadows
+  // are on at the start (not on the Low class, where `auto` is off): where they are off it would be
+  // compile work and memory for nothing. A live switch to on makes the shader then (EnsureContactShader)
+  // and its pipeline in the background (HoldUntilBuilt).
+  const host_plan::Choice occlusion_at_start = AoChoice();
+  const host_plan::Choice contact_at_start_choice = ContactChoice();
+  const bool contact_at_start = contact_at_start_choice.level != host_plan::Level::kOff;
+  contact_shader_failed_ = false;
+  listed_.fill(false);
+  occlusion_built_ = false;
+  contact_built_ = false;
   for (uint32_t i = 0; i < kPassCount && ok; ++i) {
+    if (i == kPassContact && !contact_at_start) {
+      continue;
+    }
     const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
     shaders_[i] = passes.CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
@@ -476,7 +509,7 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
                  "no history this session (the wide blur)");
   }
   ready_ = true;
-  ListPrecache();
+  ListPrecache(occlusion_at_start, contact_at_start_choice);
 }
 
 void AmbientOcclusion::Shutdown() {
@@ -517,38 +550,86 @@ void AmbientOcclusion::Shutdown() {
   resolve_ = nullptr;
 }
 
-void AmbientOcclusion::ListPrecache() {
-  HostPrecache& precache = passes_->precache();
-  // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
-  // that opening the pause menu with the occlusion on waits for no pipeline.
-  std::vector<uint32_t> listed = {kVDepth,           kVDepthMs,          kVMip,
-                                  kVMain,            kVDenoise,          kVTemporal,
-                                  kVTemporalMs,      ApplyVariant(false, 1), ApplyVariant(false, 2),
-                                  ApplyVariant(false, 4), kVContact};
+std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeeds& needs) const {
+  std::vector<uint32_t> variants;
+  if (needs.depth) {
+    variants.push_back(kVDepth);
+    variants.push_back(kVDepthMs);
+  }
+  if (needs.mip) {
+    variants.push_back(kVMip);
+  }
+  if (needs.occlusion) {
+    variants.push_back(kVMain);
+  }
+  if (needs.denoise) {
+    variants.push_back(kVDenoise);
+  }
+  if (needs.occlusion) {
+    variants.push_back(kVTemporal);
+    variants.push_back(kVTemporalMs);
+  }
+  if (needs.apply) {
+    // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
+    // that opening the pause menu with the effect on waits for no pipeline.
+    variants.push_back(ApplyVariant(false, 1));
+    variants.push_back(ApplyVariant(false, 2));
+    variants.push_back(ApplyVariant(false, 4));
+  }
+  // The contact march only where its shader was made (the contact shadows are on).
+  if (needs.contact && shaders_[kPassContact]) {
+    variants.push_back(kVContact);
+  }
   // The host's MSAA level changes while the game runs (msaa_level.h) and gives the main view's
   // colour target the new level's samples: the apply pass for 8 samples is listed whatever the
-  // level is at the start, so a switch to 8x finds it made instead of making it on the render
-  // thread in the first frame at that level (the guest's own pipelines are made ahead for the new
-  // level by Pipelines::PrebuildForLevel; this pass is not one of them). 2x and 4x are listed above
-  // (the pause and map view's colour target has the game view's samples, or 1 without MSAA). A level
+  // level is, so a switch to 8x finds it made instead of making it on the render thread in the
+  // first frame at that level (the guest's own pipelines are made ahead for the new level by
+  // Pipelines::PrebuildForLevel; this pass is not one of them). 2x and 4x are listed above (the
+  // pause and map view's colour target has the game view's samples, or 1 without MSAA). A level
   // the device cannot do is not listed.
-  if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
-    listed.push_back(ApplyVariant(false, 8));
+  if (needs.apply && edram_ && edram_->SupportedMsaaLevel(8) == 8) {
+    variants.push_back(ApplyVariant(false, 8));
   }
-  if (vehicle_table_shader_) {
-    listed.push_back(kVVehicleTable);
+  if (needs.occlusion && vehicle_table_shader_) {
+    variants.push_back(kVVehicleTable);
   }
-  for (const uint32_t variant : listed) {
-    precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
-                 VariantName(variant), [this, variant] { return MakePipeline(variant); });
-  }
+  return variants;
+}
+
+void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
+                                    const host_plan::Choice& contact) {
+  HostPrecache& precache = passes_->precache();
+  const gpu_class::GpuClass cls = gpu_class::Current();
+  // What the settings in force at the start use: the occlusion's own groups, and what the contact
+  // shadows add (they share the depth, denoise and apply passes). The census (a debug log) runs the
+  // depth passes with both off. A pass that is off lists nothing: it is not compiled for nothing, and
+  // a switch to on makes its pipelines in the background (HoldUntilBuilt).
+  const bool census = REXCVAR_GET(mcla_gpu_ao_census) != 0;
+  const auto list = [&](const host_plan::AmbientNeeds& needs) {
+    uint32_t added = 0;
+    for (const uint32_t variant : VariantsFor(needs)) {
+      listed_[variant] = true;
+      added += precache.Add(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
+                            VariantName(variant), [this, variant] { return MakePipeline(variant); })
+                   ? 1u
+                   : 0u;
+    }
+    return added;
+  };
+  const uint32_t for_occlusion = list(host_plan::Ambient(occlusion.level, host_plan::Level::kOff, census));
+  const uint32_t for_contact = list(host_plan::Ambient(occlusion.level, contact.level, census));
+  precache.Note(host_plan::Describe(host_plan::Pass::kOcclusion, occlusion, cls), for_occlusion);
+  precache.Note(host_plan::Describe(host_plan::Pass::kContact, contact, cls), for_contact);
 }
 
 std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t variant) {
   const std::string name = VariantName(variant);
   const plume::RenderBlendDesc copy = plume::RenderBlendDesc::Copy();
   const auto make = [&](Pass pass, plume::RenderFormat format, const plume::RenderBlendDesc& blend,
-                        uint32_t samples) {
+                        uint32_t samples) -> std::unique_ptr<plume::RenderPipeline> {
+    if (!shaders_[pass]) {
+      return nullptr;  // the contact march's, while the contact shadows were never on (Pipeline asks first)
+    }
     return passes_->CreatePipeline(*layout_, *shaders_[pass], format, blend, samples, name.c_str());
   };
   switch (variant) {
@@ -588,11 +669,100 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
               plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples);
 }
 
+bool AmbientOcclusion::EnsureContactShader() {
+  if (shaders_[kPassContact]) {
+    return true;
+  }
+  if (contact_shader_failed_ || !passes_) {
+    return false;
+  }
+  // The contact shadows were off at the start and are on now: the shader is made here, on the render thread
+  // (a short call; no worker reads the slot before HoldUntilBuilt lists the pipeline after this), and the
+  // pipeline in the background by HoldUntilBuilt: the compile is not on this thread.
+  const HostShaderBlob blob = AmbientOcclusionPixelShader(kPassContact);
+  shaders_[kPassContact] = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (!shaders_[kPassContact]) {
+    contact_shader_failed_ = true;
+    REXLOG_ERROR("[gpu] ao: the contact shadows' shader could not be made: no contact shadows this session");
+    return false;
+  }
+  REXLOG_INFO("[gpu] ao: the contact shadows were off at the start: their shader is made now, their "
+              "pipeline in the background");
+  return true;
+}
+
+bool AmbientOcclusion::VariantsReady(const std::vector<uint32_t>& variants) const {
+  for (const uint32_t variant : variants) {
+    if (pipelines_[variant] || pipeline_failed_[variant]) {
+      continue;  // taken by Pipeline, or given up on (it logged why)
+    }
+    if (!passes_->precache().Ready(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact) {
+  const bool want_occlusion = *occlusion != Mode::kOff;
+  bool want_contact = *contact != Mode::kOff;
+  if ((!want_occlusion || occlusion_built_) && (!want_contact || contact_built_)) {
+    return;  // nothing is on, or everything that is on has its pipelines
+  }
+  if (want_contact && !EnsureContactShader()) {
+    *contact = Mode::kOff;  // EnsureContactShader said why
+    want_contact = false;
+    if (!want_occlusion) {
+      return;
+    }
+  }
+  using host_plan::Level;
+  const Level occlusion_level = want_occlusion ? ToLevel(*occlusion) : Level::kOff;
+  const Level contact_level = want_contact ? ToLevel(*contact) : Level::kOff;
+  const bool census = census_every_ != 0;
+  // What the start did not list: made on a worker of their own, in the order VariantsFor gives.
+  std::vector<HostPrecache::Item> fresh;
+  for (const uint32_t variant : VariantsFor(host_plan::Ambient(occlusion_level, contact_level, census))) {
+    if (!listed_[variant]) {
+      listed_[variant] = true;
+      fresh.push_back({HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
+                       VariantName(variant), [this, variant] { return MakePipeline(variant); }});
+    }
+  }
+  if (!fresh.empty()) {
+    const char* what = want_occlusion && want_contact ? "ambient occlusion and contact shadows"
+                       : want_occlusion               ? "ambient occlusion"
+                                                      : "contact shadows";
+    const uint32_t count = passes_->precache().AddLive(what, std::move(fresh));
+    REXLOG_INFO("[gpu] ao: {} switched on after the start: {} pipelines are made in the background "
+                "first, and it is drawn from the frame they are done",
+                what, count);
+  }
+  // Not drawn until every pipeline of the effect is made: a frame never waits for a compile.
+  if (want_occlusion) {
+    occlusion_built_ =
+        VariantsReady(VariantsFor(host_plan::Ambient(occlusion_level, Level::kOff, false)));
+    if (!occlusion_built_) {
+      *occlusion = Mode::kOff;
+    }
+  }
+  if (want_contact) {
+    contact_built_ = VariantsReady(VariantsFor(host_plan::Ambient(Level::kOff, contact_level, false)));
+    if (!contact_built_) {
+      *contact = Mode::kOff;
+    }
+  }
+}
+
 plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
   if (pipelines_[variant]) {
     return pipelines_[variant].get();
   }
   if (pipeline_failed_[variant]) {
+    return nullptr;
+  }
+  if (variant == kVContact && !EnsureContactShader()) {
+    pipeline_failed_[variant] = true;  // EnsureContactShader said why
     return nullptr;
   }
   // Made ahead when listed; a variant nobody listed (a debug view, a 4x target) is made here.
@@ -618,17 +788,20 @@ void AmbientOcclusion::BeginFrame() {
     last_mode_logged_ = uint32_t(mode);
     REXLOG_INFO("[gpu] ao: ambient occlusion {} (mcla_gpu_ao, live)", ModeName(mode));
   }
-  mode_ = mode;
   Mode contact = ReadContactMode();
   if (!ready_ || !resolve_) {
     contact = Mode::kOff;  // the passes could not be made (Initialize said so)
   }
   if (uint32_t(contact) != last_contact_logged_) {
     last_contact_logged_ = uint32_t(contact);
-    const std::string setting = Lower(REXCVAR_GET(mcla_gpu_contact_shadows));
+    const std::string setting = Lower(ContactSetting().Get());
     REXLOG_INFO("[gpu] contact shadows {}{} (mcla_gpu_contact_shadows {}, live)", ModeName(contact),
                 setting == "auto" ? " (auto on this GPU)" : "", setting);
   }
+  // The pipelines of what is on are made (listed at the start, or in the background since the switch);
+  // until then that effect is drawn as off.
+  HoldUntilBuilt(&mode, &contact);
+  mode_ = mode;
   contact_mode_ = contact;
 }
 
@@ -1180,6 +1353,14 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                               plume::RenderFormat::R16_FLOAT, "ao depth 1/2") &&
          passes_->EnsureImage(depth_[2], plan.level[1][0], plan.level[1][1],
                               plume::RenderFormat::R16_FLOAT, "ao depth 1/4");
+  } else if (!levels) {
+    // Only the contact shadows run: they read level 0. What an occlusion that has been turned off left
+    // (two coarser levels, about 5 MB at 4K) goes back, as the weight image does below.
+    for (uint32_t i = 1; i < 3; ++i) {
+      if (depth_[i].texture) {
+        passes_->ReleaseImage(depth_[i]);
+      }
+    }
   }
   if (ok && scratch) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
@@ -1192,6 +1373,17 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 1");
+  } else if (!plan.occlusion) {
+    // The history is the occlusion's alone (66 MB at 3840x2160): with the occlusion off and the contact
+    // shadows on it would stay until both were off. Its content is gone with it, so the next occlusion
+    // frame starts a history again (ChooseHistory: kFirst).
+    for (HostImage& image : history_) {
+      if (image.texture) {
+        passes_->ReleaseImage(image);
+      }
+    }
+    history_valid_ = false;
+    history_cut_ = false;
   }
   // The picture of debug view 6, made only while that view is shown.
   if (ok && plan.occlusion && plan.view == 6u) {
@@ -2076,6 +2268,10 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.lens[3] = c.thickness;
   push.shape[1] = float(c.steps);
   push.extra[1] = c.fade_end;
+  // The ray start's noise has no history here, only the two bilateral passes below. Moved every frame it
+  // would make the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal
+  // upscaler runs and averages the frames, as the shadow filter's and the sun shafts' are.
+  push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   DrawPass(list, raw_, march, push);
   // The occlusion's bilateral pass twice (the way the occlusion has no history of its own): the
   // noise of the ray's start goes, the edges of the depth stay.

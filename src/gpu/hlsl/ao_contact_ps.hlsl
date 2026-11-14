@@ -15,14 +15,15 @@
 // What it is not: a shadow of anything that is not on screen, and nothing thinner than the step
 // (the start of the ray is moved per pixel by interleaved gradient noise plus the frame's R2 shift,
 // so the step quantisation is noise that the two bilateral passes (ao_denoise_ps, the occlusion's
-// own) after this one take out; there is no history for it).
+// own) after this one take out; there is no history for it, so the shift is 0 (a fixed pattern)
+// unless a temporal upscaler averages the frames).
 //
 // The apply pass (ao_apply_ps) puts it on the picture: only on the sun's share of the light, so it
 // cannot darken what the game already shadows (the game's mask says that) or the ambient.
 //
 // Push block (ao_common.hlsli AoPush), this pass's fields:
 //   slots.z    the linear depth image (bindless slot)
-//   slots2.y   the frame number (the noise's shift)
+//   slots2.y   the frame number (the noise's shift); 0 while no temporal upscaler runs
 //   sizes      the image's size twice (this pass's target and the depth image are the same size)
 //   lens.xy    tan of the half field of view; lens.z the ray's length in world units, lens.w the
 //              thickness (the farthest a surface may be in front of a step and still hide it)

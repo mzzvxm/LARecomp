@@ -48,6 +48,9 @@ inline constexpr const char* kStampVariantsFormats = "variants_formats";        
 inline constexpr const char* kStampVariantsMainPackXxh3 = "variants_main_pack_xxh3";  // the main pack it was built beside
 inline constexpr const char* kStampVariantsPackSize = "variants_pack_size";         // size of mcla_shaders_variants.v2.pack
 inline constexpr const char* kStampVariantsPrefix = "variants_";
+// variants_<name>_left_out: the reason a variant that was tried was left out of the pack (informational; the
+// variant's version line is there too, so its absence from the pack does not make the stamp stale).
+inline constexpr const char* kStampVariantLeftOut = "left_out";
 // The first version of the variant pack held the HDR tone map only (mcla_shaders_hdr.v1.pack) and its lines
 // began with this.
 inline constexpr const char* kStampLegacyHdrPrefix = "hdr_";

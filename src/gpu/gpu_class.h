@@ -18,7 +18,9 @@
 // The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
 // table of GFX-UPGRADES-DESIGN.md section 9). An effect's package keeps its own cvar and its own
 // values; at the place it reads the cvar it calls
-//     std::string mode = gpu_class::Resolve(gpu_class::Effect::kSunShafts, REXCVAR_GET(mcla_gpu_sun_shafts));
+//     std::string mode = gpu_class::Resolve(gpu_class::Effect::kSunShafts, setting_text);
+// where setting_text is the cvar's text as the render thread may read it (live_text.h: LiveText; the
+// pause menu's thread writes the cvar's own string).
 // and gets the value to act on: the table's cell for `auto`, the user's own choice unchanged for
 // anything else (so `off` and `game` are never overridden). Its pause row shows what `auto` comes
 // to, like the low latency row's "AUTO (ON)":
@@ -76,7 +78,7 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
-    {"mcla_gpu_ssgi", "off", "off", "low"},
+    {"mcla_gpu_ssgi", "off", "off", "off"},  // off everywhere until its cost is measured (owner, 2026-11-13)
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

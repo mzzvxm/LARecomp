@@ -8,20 +8,30 @@
 // radially toward the sun's position in the picture, so the gaps in front of the sun stream light
 // across the scene, and the result is added to the scene colour as scattered sunlight.
 //
-// WHERE (the frame, see AO-DESIGN.md 2.1): two points of the main view.
+// WHERE (the frame, see AO-DESIGN.md 2.1 and GFX-UPGRADES-DESIGN.md 6B.1): two points of the main view.
 //   1. the game's mid-scene depth copy (phase 0x02000000, into 078B0000: the ambient occlusion's
 //      point, ao.h): every opaque draw is in the colour target, the fog, particles and the post chain
 //      are not. Here the sky's brightness is taken from the colour and the depth (one half-size image,
-//      hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here: at the
-//      end of the scene the game resolves and may clear it before it copies the colour.
-//   2. the first copy of the main colour inside EndTiling (the game's end-of-scene resolve of the
-//      picture, phase 0x04000000, one per tile: the first is the trigger), BEFORE the copy is made:
-//      the fog quad and the particles are in the colour by then, so the shafts are added in front of
-//      them (in-scattering lies between the camera and what it sees), and the resolve, the temporal
-//      upscaler, the bloom and the tone map all see them. The radial blur (hlsl/shafts_blur_ps.hlsl)
-//      and the additive pass (hlsl/shafts_add_ps.hlsl) run here.
-// mcla_gpu_sun_shafts_early runs the second step at the first point instead (the fallback of the
-// design: the fog then covers the shafts) so the pictures can compare the two.
+//      hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
+//      point is in every frame of the play view whatever the hour, the weather, the render scale or
+//      the upscaler (the main view's depth is copied there in all of them), and whether the sun gives
+//      shafts is decided by the sun alone (below): a noon, a night or a rain takes no sky and says
+//      nothing.
+//   2. the first copy of the main colour after the first point (the game's end-of-scene copy of the
+//      picture, into 07FE0, two tiles of the picture: the first is the trigger), BEFORE the copy is
+//      made: the fog quad and the particles are in the colour by then, so the shafts are added in
+//      front of them (in-scattering lies between the camera and what it sees), and the copy, the
+//      temporal upscaler, the bloom and the tone map all see them. The radial blur
+//      (hlsl/shafts_blur_ps.hlsl) and the additive pass (hlsl/shafts_add_ps.hlsl) run here. It is
+//      found by its source (colour 0, the main colour's identity at the depth's samples), its place
+//      (after the first point, before the anchor draw) and by being a copy; it does NOT have to be
+//      issued from inside EndTiling: the census shows the game's tile copies of the main depth as plain
+//      Resolve calls (perf/out/AO.txt, caller 0x821790e4), and the first version of this pass, which
+//      asked for a copy inside EndTiling, never found one (w1s-survey-h17_7-both).
+// The second point is the preferred one, and the shafts_anchor.h policy keeps the pass alive if a build
+// or a scene gives no such copy: after a few frames without it the shafts go in at the first point (the
+// fog then covers them at distance), the copy is still watched, and the end of the scene is used again
+// when it comes back. mcla_gpu_sun_shafts_early forces the first point (to compare the two).
 //
 // WHAT: per frame, when it is on and the sun is where shafts show (below):
 //   sky     the half-size image of max(luma(colour) - threshold, 0) where the depth is the far plane
@@ -31,13 +41,22 @@
 //           (ONE, ONE on every sample of the multisampled target, the alpha untouched)
 // Nothing is recorded, and nothing costs, in a frame where the sun gives no shafts.
 //
-// THE SUN: its direction and colour are the game's own constants as the ambient occlusion reads them
-// (VS c16 the direction the light travels, PS c39 the sun colour), taken from the draws of the main
-// view before the first point; the camera is the previous frame's (it exists only at the game's motion
-// blur draw, after both points), or the frame's own view from the vertex constants once those have
-// matched the anchor's (as ao.h: vs_pose_trusted_). The strength is the product of
-//   elevation  0 at and under the horizon, full from 2.5 degrees, falling to none at 45 degrees (the
-//              sun's elevation is asin of minus c16.y): dawn and dusk, where the cascades are off
+// THE SUN: the game has two (shafts_sun.h). The light's direction and colour are the game's own constants
+// as the ambient occlusion reads them (VS c16 the direction the light travels, PS c39 the sun colour),
+// taken from the draws of the main view before the first point. The sun the player sees is the sky's:
+// PS c65 `SunDirection` of the sky shaders (the city's xSkyhat ps_main*, ps_sunonly, listed in
+// shafts_sun.h; the direction toward the sun), told by the sky's own draws (NoteSkyDraw). The two differ: at 17.7 h the light is 18.7
+// degrees above the horizon and the disc about 2 (ports/run/w1s-survey-h17_7-both), so a blur toward the
+// light's place converged above the picture. The rays radiate from the disc: THE PLACE IN THE PICTURE
+// comes from the sky's constant, and from the light when no sky draw has told it, when it is not a
+// direction or when it is more than shafts_sun::kMaxSkyLightAngle from the light (not the sun in these
+// axes). The camera is the previous frame's (it exists only at the game's motion blur draw, after both
+// points), or the frame's own view from the vertex constants once those have matched the anchor's (as
+// ao.h: vs_pose_trusted_). The strength is the product of
+//   elevation  0 at and under the horizon, full from 2.5 degrees, falling to none at 45 degrees: the
+//              light's elevation (asin of minus c16.y) says how much sunlight there is and when the day
+//              is too high for shafts, and the fade in is of the lower of the light's and the sky's sun
+//              (a disc at the horizon gives none): dawn and dusk, where the cascades are off
 //              (the census: none at 6 h, 18 h and 19 h to night) and a screen-space shaft is the only
 //              possible one; noon, 60 degrees, shows none and records nothing
 //   wetness    VS c43.x (gReflectionParams.x, 0.095 dry, 1.17 in rain): none in rain, where the sky is
@@ -54,21 +73,27 @@
 // (debug views), _early and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
-// made ahead on the host builder thread (host_precache.h).
+// made ahead on the host builder thread (host_precache.h) when the setting in force at the start uses
+// them (host_plan.h); a setting switched on later makes them in the background
+// (HostPrecache::AddLive) and the shafts are not drawn until they are made (HoldUntilBuilt).
 // ===========================================================================
 
 #include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
+#include "host_plan.h"
 #include "records.h"
 #include "resolve.h"
+#include "shafts_anchor.h"
+#include "shafts_sun.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 
@@ -102,13 +127,14 @@ class SunShafts {
   bool wants_draws() const { return mode_ != Mode::kOff; }
 
   // A prepared draw of the main view (play or pause/map, temporal_identities.h MatchMainView), with
-  // the draw's own banks.
-  void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
+  // the draw's own banks and its shaders' identities (the sky's draws tell where the sun is).
+  void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks,
+                  uint64_t vs_identity, uint64_t ps_identity);
   // The game's motion blur draw: this frame's camera, which the next frame's shafts use.
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list
-  // outside any render pass: the end-of-scene copy of the main colour is the second point. True
-  // when passes were recorded (the caller's list state is gone).
+  // outside any render pass: the first copy of the main colour after the first point is the second
+  // point (shafts_anchor.h). True when passes were recorded (the caller's list state is gone).
   bool BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list);
   // A resolve, after Execute: the mid-scene depth copy is the first point. `upscaler_running`: a
   // temporal upscaler works on this frame (the noise then shifts every frame, which it averages).
@@ -170,6 +196,7 @@ class SunShafts {
     uint32_t render[2] = {};       // the picture in host pixels
     uint32_t image[2] = {};        // the sky and shaft images' size
     float sun_uv[2] = {};
+    bool sun_from_sky = false;     // the sun's place came from the sky's constant (else the light's)
     float tint[3] = {};            // the light's colour times its strength
     uint32_t steps = 0;
     float density = 0.9f;
@@ -181,19 +208,37 @@ class SunShafts {
   // The sun of a frame: where it is in the picture and how strongly it shines.
   struct Sun {
     bool valid = false;
-    double elevation = 0.0;        // degrees
+    double elevation = 0.0;        // degrees, the light's (c16)
     double wetness = 0.0;
-    double to_sun[3] = {};         // view space, x right, y up, z forward
-    double ndc[2] = {};
+    double to_sun[3] = {};         // the light's sun in view space, x right, y up, z forward
+    double light_ndc[2] = {};      // ... and where the light puts it in the picture
+    float light_uv[2] = {};
+    // The sky's own sun constant (PS c65 of the sky draws): what became of it, and where it puts the sun.
+    shafts_sun::SkyState sky_state = shafts_sun::SkyState::kNotSeen;
+    double sky_elevation = 0.0;    // degrees
+    double sky_light_angle = 0.0;  // degrees between the sky's sun and the light's
+    double sky_to_sun[3] = {};     // view space (set when the sky's constant is a direction)
+    double sky_ndc[2] = {};
+    float sky_uv[2] = {};
+    uint64_t sky_age = 0;          // frames since a sky draw told it (0: this frame)
+    bool from_sky = false;         // the sun's place below is the sky's
+    double ndc[2] = {};            // the place used
+    float uv[2] = {};
     double fade_elevation = 0.0;
     double fade_wet = 0.0;
     double fade_view = 0.0;
-    float uv[2] = {};
     float colour[3] = {};          // the sun's colour, the largest channel 1
     float strength = 0.0f;         // the product of the fades
     bool vertex_pose = false;      // the rotation came from the vertex constants
   };
   bool ComputeSun(Sun* out) const;
+  // A draw of the main view whose pixel shader is one of the sky's (shafts_sun.h): its PS c65 is the sun disc's
+  // direction. A draw with the dome's vertex shader and another pixel shader is counted and logged, and tells nothing.
+  void NoteSkyDraw(uint64_t vs_identity, uint64_t ps_identity, const ConstantBanks::Banks& banks);
+  // What the log says about the sky's sun constant, a few times and no more: first used, further from the
+  // light than it may be, never told.
+  void LogSkySun(const Sun& sun);
+  static std::string SkyText(const Sun& sun);
 
   // Why a frame had no shafts (the census says it).
   enum class Outcome : uint8_t {
@@ -203,7 +248,7 @@ class SunShafts {
     kGated,       // the fades gave nothing: no pass recorded
     kTooSmall,    // the picture is smaller than the passes are worth
     kNotRecorded, // a pipeline or an image could not be made
-    kSkyOnly,     // the sky was taken, the second point never came
+    kSkyOnly,     // the sky was taken, the second point never came (nothing was added)
     kRecorded,    // all three passes
   };
   static const char* OutcomeName(Outcome outcome);
@@ -211,6 +256,13 @@ class SunShafts {
   bool IsFirstPoint(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // The EDRAM identity of a resolve's colour 0 source (as FrameLayers::ResolveSourceKey).
   static bool ColourSourceKey(const ResolveRecord& record, EdramKey* key);
+  // The resolves between the first point and the anchor, kept in short to say what they were when no
+  // copy of the main colour came among them (`key`: the identity of a colour 0 source, else null).
+  void NoteResolve(const ResolveRecord& record, const EdramKey* key);
+  void LogMissingCopy();
+  // The frame's end: the policy, the interval's tally and its log line.
+  void EndSkyFrame();
+  void LogInterval();
   static void PictureSize(const ResolveCache::Summary& summary, uint32_t* width, uint32_t* height);
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
 
@@ -224,7 +276,16 @@ class SunShafts {
   void ReleaseImages();
   plume::RenderPipeline* Pipeline(uint32_t variant);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
-  void ListPrecache();
+  // Makes the shaders once (Initialize when the shafts are on at the start, else BeginFrame at the switch);
+  // false when one could not be made (said in the log, not tried again).
+  bool MakeShaders();
+  // The pipelines of the pass, in the order they are made (the likeliest first).
+  std::vector<uint32_t> Variants() const;
+  // The start: lists them with the host precache and says so (and why) for its log line.
+  void ListPrecache(const host_plan::Choice& choice);
+  // Every frame while the shafts are on: lists the pipelines on a worker when the start did not (the
+  // setting was switched on since), and turns the shafts off for this frame until they are all made.
+  void HoldUntilBuilt(Mode* mode);
   void Census();
 
   // Settings, read at the frame's start.
@@ -236,6 +297,7 @@ class SunShafts {
   uint64_t frame_ = 0;
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
+  bool first_colour_seen_ = false;   // the frame's first colour draw of the main view was noted (the sky dome)
   bool play_view_ = false;           // the frame had main view draws at the play samples
   bool pause_view_ = false;          // ... at the pause/map samples (4x)
   bool first_point_seen_ = false;    // the first point's resolve came (whatever became of it)
@@ -248,10 +310,26 @@ class SunShafts {
   // used: this is kept for every draw).
   uint32_t vs_view_inverse_[16] = {};
   uint32_t vs_view_inverse_draws_ = 0;
-  Pending pending_;
+  Pending pending_;                  // the plan of the frame's shafts; valid until they are added
   Sun sun_;                          // the frame's, for the census
   Outcome outcome_ = Outcome::kNoTrigger;
   bool recorded_this_frame_ = false;
+  // Where the shafts of this frame go and what became of them (a frame in which the sky was taken).
+  bool sky_taken_ = false;           // the sky image was recorded at the first point
+  shafts_anchor::Anchor anchor_ = shafts_anchor::Anchor::kEndOfScene;
+  bool copy_seen_ = false;           // a copy of the main colour came after the first point, before the anchor
+  bool composited_ = false;          // the blur and the add pass were recorded
+  // The resolves seen between the first point and the anchor (what each was, for the log of a miss).
+  struct SeenResolve {
+    uint32_t caller = 0;
+    uint32_t flags = 0;              // ResolveRecord::flags
+    uint32_t resolve_flags = 0;
+    bool keyed = false;              // a colour 0 source whose identity was read
+    EdramKey key;
+  };
+  static constexpr size_t kSeenResolves = 8;
+  std::array<SeenResolve, kSeenResolves> seen_resolves_{};
+  uint32_t seen_resolve_count_ = 0;  // all of them, kept or not
 
   // The camera: the previous frame's (the lens and the view of the sun's position), and whether the
   // vertex constants have been shown to hold a frame's own view (ao.h).
@@ -260,30 +338,59 @@ class SunShafts {
   uint64_t previous_frame_ = 0;
   bool vs_pose_trusted_ = false;
 
+  // The sky's sun constant, told by the sky's draws and kept from frame to frame (the hour moves slowly):
+  // the direction toward the sun, the frame and the shader that told it, how many sky draws told it this
+  // frame and in all, and what the log has said.
+  float sky_dir_[3] = {};
+  bool sky_have_ = false;
+  uint64_t sky_frame_ = 0;
+  uint64_t sky_ps_ = 0;
+  uint32_t sky_draws_ = 0;
+  uint64_t sky_draws_total_ = 0;
+  // The shaders of the last frame's first colour draw of the main view (the dome), and the dome draws whose pixel
+  // shader the table does not list: what the log says when no sky draw ever told the sun.
+  uint64_t first_colour_vs_ = 0;
+  uint64_t first_colour_ps_ = 0;
+  uint64_t sky_unknown_draws_ = 0;
+  uint64_t sky_unknown_ps_ = 0;
+  uint32_t sky_unknown_logged_ = 0;
+  uint32_t sky_missing_frames_ = 0;  // frames in a row with a sun to place and no sky constant
+  uint32_t sky_missing_logged_ = 0;
+  uint32_t sky_far_logged_ = 0;
+  bool sky_used_logged_ = false;
+
   // The GPU side.
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
-  bool ready_ = false;  // the shaders exist
+  bool ready_ = false;  // the shaders exist (made only when the sun shafts are on: MakeShaders)
+  bool shaders_failed_ = false;
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
+  bool listed_ = false;  // the pipelines are with the host precache (at the start, or since the switch)
+  bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
   HostImage sky_;    // R16_FLOAT, half the picture: the sky's brightness
   HostImage shaft_;  // R16_FLOAT, the same size: the blurred image
   uint32_t unused_frames_ = 0;       // frames since a pass was recorded, for giving the images back
   uint32_t images_made_for_[2] = {};
   bool images_failed_logged_ = false;
 
-  // What the log has said once, and the totals.
+  // The anchor policy (shafts_anchor.h), the interval's tally and what the log has said once.
+  shafts_anchor::Policy policy_;
+  shafts_anchor::Tally interval_;
   uint32_t last_mode_logged_ = ~0u;
-  bool no_end_of_scene_logged_ = false;
+  uint32_t missing_copy_logged_ = 0;
   bool first_run_logged_ = false;
   uint32_t census_frames_logged_ = 0;
+  // The totals: composites by anchor, sky frames lost, the frames the sun gave no shafts.
   uint64_t runs_ = 0;
+  uint64_t runs_end_ = 0;
+  uint64_t runs_mid_ = 0;
   uint64_t triggers_ = 0;
   uint64_t skipped_no_camera_ = 0;
   uint64_t gated_ = 0;
-  uint64_t sky_only_ = 0;
+  uint64_t lost_ = 0;
   uint32_t census_end_logged_ = 0;
 };
 
