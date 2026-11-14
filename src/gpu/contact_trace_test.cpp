@@ -43,6 +43,7 @@ std::string Num(const char* fmt, double a, double b = 0.0, double c = 0.0) {
 
 struct Box {
   float x0, x1, y0, y1, z0, z1;
+  bool vehicle = false;  // the depth pass would mark its pixels as a vehicle's (the lowest bit of the depth)
 };
 
 struct Scene {
@@ -52,10 +53,22 @@ struct Scene {
   bool ground = true;
   std::vector<Box> boxes;
 
+  // The linear depth of the pixel (x, y) with the vehicle bit, as the depth pass writes it: the nearer of
+  // the ground and the boxes' first face, the lowest bit set when that face is a vehicle's.
+  float DepthV(int x, int y) const {
+    bool vehicle = false;
+    const float d = Hit(x, y, &vehicle);
+    return DepthWithVehicleBit(d, vehicle);
+  }
   // The linear depth of the pixel (x, y): the nearer of the ground and the boxes' first face.
   float Depth(int x, int y) const {
+    bool vehicle = false;
+    return Hit(x, y, &vehicle);
+  }
+  float Hit(int x, int y, bool* vehicle) const {
     const Vec3 r = ViewPos(cam, float(x) + 0.5f, float(y) + 0.5f, 1.0f);  // (rx, ry, 1)
     float best = 60000.0f;
+    *vehicle = false;
     if (ground) {
       const float den = r.y - incline;
       if (den < -1e-6f) {
@@ -76,8 +89,9 @@ struct Scene {
         tn = std::max(tn, std::min(t1, t2));
         tf = std::min(tf, std::max(t1, t2));
       }
-      if (!miss && tn <= tf && tf > 0.0f) {
-        best = std::min(best, tn);
+      if (!miss && tn <= tf && tf > 0.0f && tn < best) {
+        best = tn;
+        *vehicle = b.vehicle;
       }
     }
     return best;
@@ -425,6 +439,216 @@ void EdgeIsNarrowAtEveryScale() {
   Check(new2160 * 2 <= old2160 || old2160 <= 1, "the new edge at 2160p is at most half of the old one's in pixels");
 }
 
+// ---------------------------------------------------------------------------
+// the ground under a vehicle (a traffic car: no sun shadow of its own)
+// ---------------------------------------------------------------------------
+
+// A car: 1.8 m wide, 4.5 m long, 1.4 m tall with 0.25 m under it, its rear face at 8 m, in front of a camera
+// `cam_height` metres above the ground looking level along +z; the world's up is then (0, 1, 0) in view space.
+Scene MakeCar(int height_px, float cam_height, bool vehicle) {
+  Scene s;
+  s.cam = MakeCamera(height_px);
+  s.ground_y = -cam_height;
+  Box car{-0.9f, 0.9f, -cam_height + 0.25f, -cam_height + 1.4f, 8.0f, 12.5f};
+  car.vehicle = vehicle;
+  s.boxes.push_back(car);
+  return s;
+}
+
+// The world position of the ground the pixel shows (the pixel's ray meets the ground plane).
+Vec3 GroundPoint(const Scene& s, int x, int y) {
+  const float t = s.Depth(x, y);
+  return ViewPos(s.cam, float(x) + 0.5f, float(y) + 0.5f, t);
+}
+
+struct Tally {
+  int count = 0;
+  int dark = 0;           // visibility under 0.15
+  float worst_change = 0.0f;  // the largest |new - old|
+  float sum_new = 0.0f, sum_old = 0.0f;
+};
+
+// Runs the march with and without the term over every ground pixel `select` picks (on the ground, not a vehicle).
+template <class Select>
+Tally RunScene(const Scene& s, const Vec3& up, float strength, Select&& select, int* loads_per_frame = nullptr,
+               int* pixels = nullptr) {
+  const auto depth = [&](int x, int y) { return s.DepthV(x, y); };
+  Trace old_t;
+  old_t.camera = s.cam;
+  old_t.to_sun = Sun(60.0, 180.0);  // high, behind the camera
+  old_t.length = 0.6f;
+  old_t.noise = 0.5f;
+  Trace new_t = old_t;
+  new_t.up = up;
+  new_t.under = strength;
+  Tally tally;
+  int total_loads = 0, total_pixels = 0;
+  for (int y = 0; y < s.cam.height; ++y) {
+    for (int x = 0; x < s.cam.width; ++x) {
+      new_t.under_loads = 0;
+      const float v_new = March(new_t, depth, x, y);
+      total_loads += new_t.under_loads;
+      ++total_pixels;
+      if (!select(x, y)) {
+        continue;
+      }
+      const float v_old = March(old_t, depth, x, y);
+      ++tally.count;
+      tally.dark += v_new < 0.15f ? 1 : 0;
+      tally.worst_change = std::max(tally.worst_change, std::fabs(v_new - v_old));
+      tally.sum_new += v_new;
+      tally.sum_old += v_old;
+    }
+  }
+  if (loads_per_frame) {
+    *loads_per_frame = total_loads;
+  }
+  if (pixels) {
+    *pixels = total_pixels;
+  }
+  return tally;
+}
+
+void UnderAVehicle() {
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  for (int height : {720, 2160}) {
+    const Scene car = MakeCar(height, 1.5f, true);
+    const auto under = [&](int x, int y) {
+      if (DepthIsVehicle(car.DepthV(x, y))) {
+        return false;
+      }
+      const Vec3 g = GroundPoint(car, x, y);
+      return car.Depth(x, y) < 1000.0f && std::fabs(g.y + 1.5f) < 1e-2f && std::fabs(g.x) < 0.75f && g.z > 8.1f && g.z < 12.4f;
+    };
+    int loads = 0, pixels = 0;
+    const Tally t = RunScene(car, up, 1.0f, under, &loads, &pixels);
+    std::printf("%dp: ground seen under the car: %d pixels, visibility old %.2f mean, new %.2f mean, %d of them dark with the term\n",
+                height, t.count, t.sum_old / float(std::max(t.count, 1)), t.sum_new / float(std::max(t.count, 1)), t.dark);
+    Check(t.count > (height == 720 ? 150 : 1500), Num("the scene shows the ground under the car (%.0f pixels)", double(t.count)));
+    // The bug: the contact march alone leaves most of what is under the car lit.
+    const Tally off = RunScene(car, up, 0.0f, under);
+    Check(off.dark * 3 < off.count, Num("without the term most of the ground under the car stays lit (%.0f%% dark): the patchy look",
+                                        100.0 * off.dark / std::max(off.count, 1)));
+    Check(float(t.dark) > 0.97f * float(t.count), Num("with the term every pixel under the car is dark (%.1f%%)", 100.0 * t.dark / std::max(t.count, 1)));
+    Check(t.sum_new / float(t.count) < 0.05f, Num("... mean visibility %.3f", t.sum_new / float(t.count)));
+    // At most three depth reads a pixel, and none for most of the picture's pixels (the sky, the car, a surface that is not horizontal).
+    Check(loads <= 3 * pixels, "the term reads at most three pixels a pixel");
+    Check(double(loads) < 3.0 * double(pixels) * 0.85, Num("... fewer on average (%.2f reads a pixel)", double(loads) / double(pixels)));
+  }
+}
+
+void NoShadowWhereThereIsNoCar() {
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const int height = 720;
+  // In front of the car, beside it, and (from a camera high enough to see it) beyond it: the term adds nothing.
+  struct Region {
+    const char* what;
+    float cam_height;
+    float x0, x1, z0, z1;
+  };
+  const Region regions[] = {
+      {"in front of the car", 1.5f, -3.0f, 3.0f, 3.0f, 7.4f},
+      {"beside the car (0.2 m off its flank and farther)", 1.5f, 1.1f, 4.0f, 8.0f, 12.5f},
+      {"beside the other flank", 1.5f, -4.0f, -1.1f, 8.0f, 12.5f},
+      {"beyond the car, seen from 4 m up", 4.0f, -2.0f, 2.0f, 13.2f, 20.0f},
+  };
+  for (const Region& r : regions) {
+    const Scene s = MakeCar(height, r.cam_height, true);
+    const auto select = [&](int x, int y) {
+      if (DepthIsVehicle(s.DepthV(x, y))) {
+        return false;
+      }
+      const float d = s.Depth(x, y);
+      if (d > 1000.0f) {
+        return false;
+      }
+      const Vec3 g = ViewPos(s.cam, float(x) + 0.5f, float(y) + 0.5f, d);
+      return std::fabs(g.y + r.cam_height) < 1e-2f && g.x >= r.x0 && g.x <= r.x1 && g.z >= r.z0 && g.z <= r.z1;
+    };
+    const Tally t = RunScene(s, up, 1.0f, select);
+    Check(t.count > 100, std::string("the scene shows ground ") + r.what);
+    Check(t.worst_change < 1e-6f, std::string("no shadow added ") + r.what + Num(" (largest change %.4f)", t.worst_change));
+  }
+}
+
+void VehicleBitAndSwitches() {
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const int height = 720;
+  const Scene car = MakeCar(height, 1.5f, true);
+  const auto all = [](int, int) { return true; };
+  // Off: strength 0, or no up: the picture is the old march's, pixel for pixel.
+  Check(RunScene(car, up, 0.0f, all).worst_change < 1e-6f, "a strength of 0 gives the old march's picture");
+  Check(RunScene(car, Vec3{}, 1.0f, all).worst_change < 1e-6f, "an unknown up gives the old march's picture");
+  // The same shape that the depth pass did not mark as a vehicle (a table, a shelter): nothing changes.
+  const Scene table = MakeCar(height, 1.5f, false);
+  Check(RunScene(table, up, 1.0f, all).worst_change < 1e-6f, "a box that is not a vehicle gets no term (the contact march's own job)");
+  // The vehicle's own pixels never change.
+  const auto vehicle_px = [&](int x, int y) { return DepthIsVehicle(car.DepthV(x, y)); };
+  const Tally own = RunScene(car, up, 1.0f, vehicle_px);
+  Check(own.count > 1000 && own.worst_change < 1e-6f, "the car's own pixels are not touched");
+  // A surface that is not horizontal (the car's rear face seen from a pixel-neighbour's normal is vehicle anyway): the ground
+  // tilted by 40 degrees to the up has no term.
+  Check(UnderUpness(0.5f) == 0.0f && UnderUpness(0.74f) == 0.0f && UnderUpness(1.0f) == 1.0f && UnderUpness(0.9f) == 1.0f,
+        "a surface within about 40 degrees of horizontal is ground, one steeper than 41 is not");
+  Check(UnderUpness(0.82f) > 0.0f && UnderUpness(0.82f) < 1.0f, "in between it fades");
+}
+
+void HitWeightRule() {
+  const float fp = Footprint(10.0f, 0.2217f, 2160.0f);
+  Check(UnderHitWeight(-1.0f, fp) == 0.0f && UnderHitWeight(0.0f, fp) == 0.0f, "a step in front of the shell or on it is no hit");
+  Check(UnderHitWeight(UnderTolerance(fp) * 0.5f, fp) == 0.0f, "not within the tolerance");
+  Check(UnderHitWeight(UnderTolerance(fp) * 2.0f, fp) == 1.0f, "fully at twice the tolerance");
+  Check(UnderHitWeight(4.5f, fp) == 1.0f && UnderHitWeight(kUnderReach, fp) == 1.0f, "a car's length behind the shell is inside it");
+  Check(UnderHitWeight(kUnderReach * 1.25f, fp) == 0.0f && UnderHitWeight(kUnderReach * 1.1f, fp) > 0.0f, "past the reach it fades out");
+  float last = 2.0f;
+  bool monotone = true;
+  for (float dz = kUnderReach; dz <= kUnderReach * 1.3f; dz += 0.05f) {
+    monotone = monotone && UnderHitWeight(dz, fp) <= last + 1e-6f;
+    last = UnderHitWeight(dz, fp);
+  }
+  Check(monotone, "the weight never grows with the distance behind the shell");
+  // The tolerance is in footprints, so 4K and 720p agree to within the floor.
+  const float fp720 = Footprint(10.0f, 0.2217f, 720.0f);
+  Check(UnderTolerance(fp) < UnderTolerance(fp720) && UnderTolerance(fp720) < 0.12f, Num("the tolerance at 10 m is %.1f cm at 720p", 100.0 * UnderTolerance(fp720)));
+  // The vehicle bit round trip and its size: one unit in the last place.
+  bool bit_ok = true;
+  for (float d : {0.5f, 3.7f, 12.0f, 80.0f, 1234.5f}) {
+    const float on = DepthWithVehicleBit(d, true), off = DepthWithVehicleBit(d, false);
+    bit_ok = bit_ok && DepthIsVehicle(on) && !DepthIsVehicle(off) && std::fabs(on - d) < d * 2.4e-7f && std::fabs(off - d) < d * 2.4e-7f;
+  }
+  Check(bit_ok, "the vehicle bit is the lowest bit of the depth and changes it by one unit in the last place");
+}
+
+void UpFromTheView() {
+  struct M {
+    double v[4][4];
+    const double* operator[](int i) const { return v[i]; }
+  };
+  const auto length = [](Vec3 a) { return std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z); };
+  M identity = {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
+  const Vec3 u0 = UpInView(identity);
+  Check(std::fabs(u0.x) < 1e-6f && std::fabs(u0.y - 1.0f) < 1e-6f && std::fabs(u0.z) < 1e-6f, "a level camera: up is up");
+  // Looking down by 30 degrees: the world's Y in the game's view space (z backward) is (0, cos, sin), in ours (z forward) (0, cos, -sin):
+  // up points up and toward the camera.
+  const double a = 30.0 * 3.14159265358979323846 / 180.0;
+  M pitched = {{{1, 0, 0, 0}, {0, std::cos(a), std::sin(a), 0}, {0, -std::sin(a), std::cos(a), 0}, {0, 0, 0, 1}}};
+  const Vec3 u1 = UpInView(pitched);
+  Check(std::fabs(u1.y - 0.866f) < 1e-3f && std::fabs(u1.z + 0.5f) < 1e-3f && std::fabs(length(u1) - 1.0f) < 1e-5f,
+        Num("a camera looking down 30 degrees: up is (0, %.3f, %.3f)", u1.y, u1.z));
+  // A scaled row (a matrix with a scale): normalised. A rolled camera: up leans sideways.
+  M scaled = {{{2, 0, 0, 0}, {0, 3, 0, 0}, {0, 0, 2, 0}, {0, 0, 0, 1}}};
+  Check(std::fabs(length(UpInView(scaled)) - 1.0f) < 1e-6f, "the vector is a unit vector whatever the matrix's scale");
+  M rolled = {{{0, 1, 0, 0}, {1, 0, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
+  const Vec3 u2 = UpInView(rolled);
+  Check(std::fabs(u2.x - 1.0f) < 1e-6f && std::fabs(u2.y) < 1e-6f, "a camera rolled a quarter turn: up is to the right");
+  M zero = {{{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 1}}};
+  const Vec3 u3 = UpInView(zero);
+  Check(u3.x == 0.0f && u3.y == 0.0f && u3.z == 0.0f, "an unusable matrix gives no vector (the term is then off)");
+  M broken = {{{1, 0, 0, 0}, {std::nan(""), 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}}};
+  const Vec3 u4 = UpInView(broken);
+  Check(u4.x == 0.0f && u4.y == 0.0f && u4.z == 0.0f, "a NaN gives no vector either");
+}
+
 // The shaders repeat the header's constants as `static const float kName = value;`: read them and compare.
 bool ReadFile(const std::string& path, std::string* out) {
   std::ifstream f(path, std::ios::binary);
@@ -465,6 +689,12 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kNearZ", kNearZ},                 {&common, "kEdgeRangeSigma", kEdgeRangeSigma},
       {&common, "kEdgeSpatialSigma", kEdgeSpatialSigma}, {&common, "kEdgePlanePixels", kEdgePlanePixels},
       {&common, "kEdgePlaneFloor", kEdgePlaneFloor},
+      {&contact, "kUnderHeight", kUnderHeight},     {&contact, "kUnderStep0", kUnderStep0},
+      {&contact, "kUnderStep1", kUnderStep1},       {&contact, "kUnderStep2", kUnderStep2},
+      {&contact, "kUnderJitterLow", kUnderJitterLow}, {&contact, "kUnderJitterSpan", kUnderJitterSpan},
+      {&contact, "kUnderReach", kUnderReach},       {&contact, "kUnderEpsFloor", kUnderEpsFloor},
+      {&contact, "kUnderEpsPixels", kUnderEpsPixels}, {&contact, "kUnderUpLow", kUnderUpLow},
+      {&contact, "kUnderUpHigh", kUnderUpHigh},
   };
   for (const Row& r : rows) {
     double got = 0.0;
@@ -486,6 +716,11 @@ int main(int argc, char** argv) {
   KerbShadowAndNoFalseShadow();
   NoGradientInsideAShadow();
   EdgeIsNarrowAtEveryScale();
+  UnderAVehicle();
+  NoShadowWhereThereIsNoCar();
+  VehicleBitAndSwitches();
+  HitWeightRule();
+  UpFromTheView();
   if (argc > 1) {
     ShaderConstantsMatch(argv[1]);
   } else {

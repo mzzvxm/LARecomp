@@ -129,6 +129,17 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.05, 3.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_vehicles, 1.0, "MCLA/GPU",
+    "Diagnostic: how strongly contact shadows darken the ground under a car, 0 to 1. The game's sun "
+    "shadow map holds only the player's car, so the ground under a traffic car is as lit as an open "
+    "road; a ground pixel with a car's body above it (found from the picture's depth and the cars' "
+    "pixels, seen through the gap under the car) gets the full contact shadow, as the player's car "
+    "gets its sun shadow from the game. 0 is the contact shadows as they were (only a strip along "
+    "the car's edges and its wheels). Live.")
+    .debug_only()
+    .range(0.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_fade, 0.6, "MCLA/GPU",
     "Diagnostic: how much of the contact shadows' ray a shadow stays fully dark over, 0.2 to 0.98: "
     "past that share of the ray's length it fades out, so that a shadow cut off by the ray's end "
@@ -2693,6 +2704,13 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   100.0f * plan.contact.end_fade_start, plan.contact.strength,
                   contact_mask_ ? "found" : "not found",
                   plan.occlusion ? "with the occlusion" : "without the occlusion");
+      const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
+      REXLOG_INFO("[gpu] contact shadows: the ground under a car {} (strength {:.2f}, "
+                  "mcla_gpu_contact_shadows_vehicles; the world's up in view space {:+.2f} {:+.2f} {:+.2f}, "
+                  "the cars' pixels from the depth pass's vehicle bit)",
+                  plan.contact.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f ? "is shadowed"
+                                                                                           : "is as it was",
+                  plan.contact.under_vehicle, up.x, up.y, up.z);
     }
     if (contact_cost_logged_[0] != plan.ao[0] || contact_cost_logged_[1] != plan.ao[1] ||
         contact_cost_logged_[2] != plan.contact.steps) {
@@ -2921,6 +2939,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
   c.mask_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_mask_gain), 0.5, 4.0));
+  c.under_vehicle = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_vehicles), 0.0, 1.0));
   finish();
 }
 
@@ -2992,6 +3011,16 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.shape[0] = c.end_fade_start;
   push.shape[1] = float(c.steps);
   push.extra[1] = c.fade_end;
+  // The ground under a vehicle (contact_trace.h): the world's up in view space in lin.xyz and how strongly
+  // it shadows in lin.w. The march does not read the depth rows that lin holds in the other passes (the
+  // filter below does not either). No usable up (a camera the sun's arrangement cannot read) or a strength
+  // of 0: lin.w is 0 and the pass is as it was.
+  const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
+  const bool under = c.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f;
+  push.lin[0] = under ? up.x : 0.0f;
+  push.lin[1] = under ? up.y : 0.0f;
+  push.lin[2] = under ? up.z : 0.0f;
+  push.lin[3] = under ? c.under_vehicle : 0.0f;
   // The ray start's noise has no history here, only the filter below. Moved every frame it would make
   // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
   // runs and averages the frames, as the shadow filter's and the sun shafts' are.
