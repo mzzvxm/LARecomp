@@ -1134,6 +1134,10 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
     if (surface == 4) return guest::reg::kRbDepthInfo;
     return surface == 0 ? guest::reg::kRbColorInfo : guest::reg::kRbColor1Info + surface - 1;
   };
+  // The declared size of the surface the call's targets are bound through (what a draw into them
+  // classifies by); 0 with no surface bound, where the call's own rectangle tells no pass.
+  const uint32_t bound_size =
+      (surfaces[0] || surfaces[4]) ? EventImageSizeBits(pre, surfaces, r.state, 0) : 0;
   const auto key_of = [&](uint32_t surface, EdramKey* key, uint32_t* format, int32_t* exp_bias,
                           uint32_t* header_samples = nullptr) {
     const bool bound = surfaces[surface] != 0;
@@ -1163,8 +1167,10 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       *exp_bias = 0;
       // The scene's depth or the UI's (EdramTargets::DepthLayer): by the frame's phase, not by
       // the colour bound beside it, which a copy of the depth need not be the scene's (the main
-      // view's depth is copied before the anchor draw, the UI's after it).
-      key->reserved = edram_->DepthLayer(*key, nullptr);
+      // view's depth is copied before the anchor draw, the UI's after it). Or another pass's use of
+      // a side view's depth (the night shadow's, which clears it after its resolve): by the size of
+      // the surface it is bound through, as the draws and the clears of that pass make it.
+      key->reserved = edram_->DepthLayer(*key, nullptr, bound_size);
     } else {
       xreg::RB_COLOR_INFO color_info;
       color_info.value = header_or_register(0x1C, info_register(surface));

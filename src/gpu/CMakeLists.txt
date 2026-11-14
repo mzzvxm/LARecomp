@@ -93,6 +93,10 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
+# reflections' depth through a surface of another size) a target of its own (side_views.h):
+#   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
+add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

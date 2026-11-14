@@ -37,6 +37,18 @@
 //     says which identities are members, which setting chooses the scale and what `auto` is on a
 //     weak, a middle and a strong GPU, and how many host samples a member has at a scale.
 //
+// ONE IDENTITY, TWO USES. The game reuses the EDRAM: a key of a class is also the key of another
+// pass whose surface is declared another size. The night shadow (dusk and night: colour k_8_8_8_8
+// at tile 832, declared 512x512) draws with the depth identity kD24FS8 at tile 0, pitch 520, 4
+// samples, which is the environment map's depth (declared 512x256). A host target is made per
+// identity, so that depth was the class's (2x) while the night shadow's colour, a key no class has,
+// was at 1x: a framebuffer cannot mix them, and every draw of the pass was left out. The class
+// owns an identity only for the uses that are its own (the declared size says which); another use
+// of the key is a FOREIGN USE and gets a host target of its own (EdramKey::reserved =
+// kForeignUseLayer, ForeignUse below), at the scale the rest of that use has: the guest only
+// keeps what a pass writes until the next pass reuses the tiles, so two host targets for the one
+// tile range lose nothing (the pause view's UI depth is the same kind of split, DepthLayer).
+//
 // A class's settings read `auto | game | high | ultra`: game = the guest's size (1x), high = 2x,
 // ultra = 3x; `auto` is the cell of the GPU class table (gpu_class.h, GFX-UPGRADES-DESIGN.md 9).
 // A class at `game` changes nothing about its targets (the guest's size and samples, the same
@@ -121,6 +133,20 @@ namespace side_views {
 
 // The class an EDRAM identity belongs to (kNone: none), as a use of it declared `size_bits`.
 SideView Classify(const EdramKey& key, uint32_t size_bits);
+
+// The layer (EdramKey::reserved) of a foreign use of a class's identity (see ONE IDENTITY, TWO
+// USES): 2, after the main view's depth (0 the scene's, 1 the UI's, EdramTargets::DepthLayer).
+inline constexpr uint8_t kForeignUseLayer = 2;
+
+// Whether a use is a foreign use of a class's identity: the key alone names a class (`by_key`:
+// Classify with the size left out), the use with its declared size `size_bits` (known: not 0) does
+// not (`by_use`: kNone). A use whose size is not known is the class's, as Classify takes it.
+inline constexpr bool ForeignUse(SideView by_key, SideView by_use, uint32_t size_bits) {
+  return size_bits != 0 && by_key != SideView::kNone && by_use == SideView::kNone;
+}
+// ForeignUse for an identity (its layer 0 form: the rules match no other) used through a surface
+// declared `size_bits`.
+bool IsForeignUse(const EdramKey& key, uint32_t size_bits);
 
 const SideViewRule& RuleOf(SideView view);
 const char* Name(SideView view);

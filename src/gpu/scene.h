@@ -212,6 +212,10 @@ class Scene {
     UploadSpan ps_constants;
     UploadSpan shared_constants;
     Scale scale;  // the resolution scale its targets are (or are made) at
+    // The declared size of the surface its targets are bound through (DrawRecord::target_size_bits, as
+    // SizeBits; 0 when not known): what tells a class's use of an identity from another pass's
+    // (EdramTargets::DepthLayer), so every place that makes the draw's depth key needs it.
+    uint32_t target_size_bits = 0;
     // The UI layer split: what OnDraw does before recording the draw (the key's alpha blend was
     // already changed in Prepare when the draw joins the layer).
     FrameLayers::DrawAction ui_layer = FrameLayers::DrawAction::kNone;
