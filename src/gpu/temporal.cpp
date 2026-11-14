@@ -25,6 +25,22 @@
 #include "textures.h"
 #include "topology.h"
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_pause_vehicle_vectors, false, "MCLA/GPU",
+    "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
+    "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
+    "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
+    "the game's slots for the vehicles are not trusted in those frames). Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_temporal_jitter_hold, true, "MCLA/GPU",
+    "Diagnostic: hold the temporal upscalers' sub-pixel jitter at zero while the history restarts in every frame (a "
+    "camera the cut rule or the game's previous-matrix test cannot follow): a frame resolved from one frame is "
+    "steadier unjittered. Off: the jitter goes on as before. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
@@ -1370,6 +1386,7 @@ void TemporalSystem::ResetRun() {
   run_view_ = temporal::View::kPlay;
   pause_misses_ = 0;
   pause_disarmed_ = false;
+  jitter_hold_.Clear();
   frame_open_ = false;
   frame_ = FrameState{};
 }
@@ -1471,6 +1488,10 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     frame_.jitter[0] = float(temporal::Halton(frame_.jitter_index + 1, 2) - 0.5);
     frame_.jitter[1] = float(temporal::Halton(frame_.jitter_index + 1, 3) - 0.5);
+    // While the history restarts in every frame the upscaler cannot take the jitter out: held at zero (temporal_menu.h).
+    const bool hold_on = REXCVAR_GET(mcla_gpu_temporal_jitter_hold);
+    frame_.jitter[0] = temporal::HeldJitter(frame_.jitter[0], jitter_hold_.Held(), hold_on);
+    frame_.jitter[1] = temporal::HeldJitter(frame_.jitter[1], jitter_hold_.Held(), hold_on);
   }
 }
 
@@ -1532,6 +1553,7 @@ void TemporalSystem::StartRun(temporal::View view) {
   // for" is not repeated at each pause (the pause view asks for the same context sizes as play).
   run_view_ = view;
   ran_last_ = false;
+  jitter_hold_.Clear();  // what the other view's frames did says nothing of this one's
   last_step_known_ = false;
   last_dispatch_frame_ = ~uint64_t(0);
   scene_colors_ = {};
@@ -1830,9 +1852,12 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.camera = &fr.camera;
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
-  if (pending_.previous) {
+  if (pending_.previous && temporal::UseGameVehicleMotion(fr.view == temporal::View::kPause,
+                                                          REXCVAR_GET(mcla_gpu_pause_vehicle_vectors))) {
     // The vehicles' own motion from the game's slots, on top of the camera's from this renderer's
-    // own history (vehicle_motion.h); the anchor's constants are only at hand here.
+    // own history (vehicle_motion.h); the anchor's constants are only at hand here. Not in the pause view (the
+    // pause menu, the garage, the map): a vehicle there takes the camera's motion, as the occlusion's history
+    // does (temporal_menu.h says why).
     pending_.vehicle_stats = temporal::BuildVehicleTable(f.banks->ps.data(), fr.stencil_ids, camera,
                                                          *pending_.previous, &pending_.vehicles);
   }
@@ -1937,6 +1962,23 @@ void TemporalSystem::EndFrame() {
   }
   ran_last_ = ran;
   if (ran) {
+    // The jitter hold: did this frame restart the history for a reason of its own (the first frame of a spell and a
+    // change of view are plain frames already, and not one)?
+    const bool restarted = (fr.reset & ~(kResetFirst | kResetView)) != 0;
+    if (jitter_hold_.Observe(restarted) && jitter_hold_lines_ < 8) {
+      ++jitter_hold_lines_;
+      if (jitter_hold_.Held()) {
+        REXLOG_INFO("{} the history restarted in {} frames in a row ({}, in the {}): the jitter is held at zero until a "
+                    "frame keeps its history, so a picture the upscaler cannot accumulate does not shake{}",
+                    kPrefix, temporal::JitterHold::kHoldAfter, ResetText(fr.reset), temporal::ViewName(fr.view),
+                    jitter_hold_lines_ == 8 ? " (the last of these lines; the summaries count)" : "");
+      } else {
+        REXLOG_INFO("{} a frame kept its history again ({} frames restarted it for their own reason in this run so far): "
+                    "the jitter is back{}",
+                    kPrefix, jitter_hold_.restarted_total(),
+                    jitter_hold_lines_ == 8 ? " (the last of these lines; the summaries count)" : "");
+      }
+    }
     last_camera_ = fr.camera;
     last_scale_ = fr.scale;
     last_render_size_[0] = fr.render_size[0];
@@ -2081,6 +2123,11 @@ void TemporalSystem::Report() {
               w.view_resets[kPauseView], w.view_cuts[kPauseView], w.view_draws[kPauseView],
               w.view_moved[kPauseView], refused.empty() ? "none" : refused, w.resets,
               resets.empty() ? "none" : resets, camera);
+  if (jitter_hold_.holds() != 0) {
+    REXLOG_INFO("{} jitter hold: held {} time(s) (after {} frames in a row that restarted the history), {} frames restarted "
+                "it for a reason of their own in all",
+                kPrefix, jitter_hold_.holds(), temporal::JitterHold::kHoldAfter, jitter_hold_.restarted_total());
+  }
   if (const std::string vehicles = motion_.Summary(); !vehicles.empty()) {
     REXLOG_INFO("{} {}", kPrefix, vehicles);
   }

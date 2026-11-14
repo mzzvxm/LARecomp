@@ -126,6 +126,10 @@ add_executable(larecomp_effect_compare_test EXCLUDE_FROM_ALL effect_compare_test
 # Which effects run in the pause menu's world, the garage and the map, and the line that names a world (menu_world.h) likewise:
 #   cmake --build <dir> --target larecomp_menu_world_test, then run src/gpu/larecomp_menu_world_test.
 add_executable(larecomp_menu_world_test EXCLUDE_FROM_ALL menu_world_test.cpp)
+# The temporal upscalers' two menu-world rules (temporal_menu.h: the pause view's vehicles take the camera's motion, a jitter held while
+# the history restarts in every frame) and where temporal.cpp applies them:
+#   cmake --build <dir> --target larecomp_temporal_menu_test, then run src/gpu/larecomp_temporal_menu_test <src/gpu dir>.
+add_executable(larecomp_temporal_menu_test EXCLUDE_FROM_ALL temporal_menu_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

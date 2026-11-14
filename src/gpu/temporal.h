@@ -191,6 +191,7 @@
 #include "temporal_backend.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
+#include "temporal_menu.h"
 #include "temporal_mv.h"
 #include "viewport.h"
 
@@ -532,6 +533,10 @@ class TemporalSystem {
   // upscaler are left alone.
   uint32_t pause_misses_ = 0;
   bool pause_disarmed_ = false;
+  // Frames in a row whose history restarted for a reason of their own: while they last the jitter is held at zero
+  // (temporal_menu.h), so a world the upscaler cannot accumulate does not shake. jitter_hold_lines_ limits its log.
+  temporal::JitterHold jitter_hold_;
+  uint32_t jitter_hold_lines_ = 0;
 
   // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
   TemporalMotion motion_;
