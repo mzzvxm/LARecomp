@@ -29,17 +29,27 @@ REXCVAR_DEFINE_STRING(
     "Sun shafts: a low sun behind trees and buildings streams light across the scene, as light "
     "through a haze. They show at dawn and dusk (strongest between 2.5 and 27 degrees of sun "
     "height, none by day above 45 degrees, none at night or in rain) and only while the sun is on "
-    "the screen or not far beyond its edge. auto (the default) picks by the graphics card: off on an "
-    "integrated one, low on a card with less than 5.5 GiB of video memory, high on the rest; low (32 steps) or "
-    "high (64 steps) at half resolution, off. Costs graphics card time only while they show. Live.")
-    .allowed({"auto", "off", "low", "high"})
+    "the screen or not far beyond its edge. The value is how strong they are: off is the game's own "
+    "picture, then light, default, strong and strongest (1x to 4x the built-in strength; default is 2x). "
+    "auto (the default) is default on a discrete graphics card and off on an integrated one (a "
+    "handheld, or the iGPU of a desktop CPU). The ray quality follows the card by itself. low and high "
+    "are values of an older version and mean default. Costs graphics card time only while they show. Live.")
+    .allowed({"auto", "off", "light", "default", "strong", "strongest", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_sun_shafts_intensity, 1.0, "MCLA/GPU",
-    "Diagnostic: how bright the sun shafts are, a multiplier on the built-in strength (1 is the "
-    "default look). Live.")
+    "Diagnostic: a fine multiplier on the strength mcla_gpu_sun_shafts gives the sun shafts (1 is "
+    "the level as it is). Live.")
     .debug_only()
     .range(0.0, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_sun_shafts_steps, 0, "MCLA/GPU",
+    "Diagnostic: how many steps each ray of the sun shafts marches (8 to 128). 0: by the graphics "
+    "card (32 on a mid-range one, 64 on a fast one). More steps make smoother rays and cost more; "
+    "the light the rays gather stays the same. Live.")
+    .debug_only()
+    .range(0, 128)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_sun_shafts_density, 0.9, "MCLA/GPU",
@@ -113,12 +123,11 @@ constexpr uint32_t kMissingCopyLogs = 3;
 // Below this strength nothing is recorded.
 constexpr float kMinStrength = 1.0f / 256.0f;
 // The built-in strength of the light: the brightness the blurred image holds (a ray through open sky
-// gathers about a quarter of the sky's brightness) times this times the intensity setting.
+// gathers about a quarter of the sky's brightness) times this times the level's multiplier (shafts_level.h)
+// times the debug intensity.
 constexpr float kGain = 2.0f;
-// The steps of a ray at LOW and HIGH. The decay of one step is raised to 64 / steps so that the
-// light a ray gathers is the same at both.
-constexpr uint32_t kStepsLow = 32;
-constexpr uint32_t kStepsHigh = 64;
+// The decay of one step is raised to 64 / steps so that the light a ray gathers is the same whatever
+// the steps (the class's, gpu_class.h SunShaftSteps).
 constexpr float kDecayAt64 = 0.96f;
 // The sky image's brightness is kept under this (the sun's disc is far brighter than the rest).
 constexpr float kShineLimit = 4.0f;
@@ -170,24 +179,13 @@ bool PoseSane(const temporal::Mat4& w) {
 constexpr double kVsMatch = 5e-4;
 constexpr double kVsMoved = 5e-3;
 
-const char* ModeName(SunShafts::Mode mode) {
-  switch (mode) {
-    case SunShafts::Mode::kOff: return "off";
-    case SunShafts::Mode::kLow: return "low";
-    case SunShafts::Mode::kHigh: return "high";
-  }
-  return "?";
-}
-
 // ---------------------------------------------------------------------------
 // the setting
 // ---------------------------------------------------------------------------
-// mcla_gpu_sun_shafts with `auto` resolved for this graphics card (gpu_class.h: off on Low, low on
-// Mid, high on High). Anything the list does not know (a hand-edited file) counts as `auto`
-// (host_plan.h has the rule, which the precache uses too).
-static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(SunShafts::Mode::kOff) &&
-              uint8_t(host_plan::Level::kLow) == uint8_t(SunShafts::Mode::kLow) &&
-              uint8_t(host_plan::Level::kHigh) == uint8_t(SunShafts::Mode::kHigh));
+// mcla_gpu_sun_shafts with `auto` resolved for this graphics card (gpu_class.h: off on Low, default on
+// Mid and High). The old low and high read as default, anything else the list does not know (a
+// hand-edited file) counts as `auto` (shafts_level.h has the rule, host_plan.h passes it on to the
+// precache).
 
 // The text of the setting, read through LiveText: the pause menu's thread writes the cvar's string while
 // this one reads it (live_text.h).
@@ -200,8 +198,13 @@ host_plan::Choice ShaftsChoice() {
   return host_plan::Resolve(host_plan::Pass::kShafts, gpu_class::Current(), true, Setting().Get());
 }
 
-SunShafts::Mode ReadMode() {
-  return SunShafts::Mode(uint8_t(ShaftsChoice().level));
+SunShafts::Level ReadLevel() {
+  return ShaftsChoice().strength;
+}
+
+// The ray steps in force: the class's, or the debug cvar's (shafts_level.h).
+uint32_t ReadSteps() {
+  return shafts_level::Steps(gpu_class::Current(), REXCVAR_GET(mcla_gpu_sun_shafts_steps));
 }
 
 }  // namespace
@@ -318,7 +321,7 @@ void SunShafts::ListPrecache(const host_plan::Choice& choice) {
   precache.Note(host_plan::Describe(host_plan::Pass::kShafts, choice, gpu_class::Current()), added);
 }
 
-void SunShafts::HoldUntilBuilt(Mode* mode) {
+void SunShafts::HoldUntilBuilt(Level* level) {
   if (built_) {
     return;
   }
@@ -342,7 +345,7 @@ void SunShafts::HoldUntilBuilt(Mode* mode) {
   for (const uint32_t variant : variants) {
     if (!pipelines_[variant] && !pipeline_failed_[variant] &&
         !precache.Ready(HostPrecache::Key(HostPrecache::kSunShafts, variant))) {
-      *mode = Mode::kOff;
+      *level = Level::kOff;
       return;
     }
   }
@@ -403,24 +406,26 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
 
 void SunShafts::BeginFrame() {
   census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_sun_shafts_census)));
-  Mode mode = ReadMode();
-  if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
+  Level level = ReadLevel();
+  if (!ready_ && level != Level::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short
     // call) and the pipelines in the background (HoldUntilBuilt).
     REXLOG_INFO("[gpu] shafts: the sun shafts were off at the start: their shaders are made now");
   }
-  if (!ready_ && mode != Mode::kOff) {
-    mode = Mode::kOff;  // the shaders could not be made (MakeShaders said so)
+  if (!ready_ && level != Level::kOff) {
+    level = Level::kOff;  // the shaders could not be made (MakeShaders said so)
   }
-  if (uint32_t(mode) != last_mode_logged_) {
-    last_mode_logged_ = uint32_t(mode);
-    REXLOG_INFO("[gpu] shafts: sun shafts {} (mcla_gpu_sun_shafts = {}, live)", ModeName(mode),
-                Setting().Get());
+  if (uint32_t(level) != last_level_logged_) {
+    last_level_logged_ = uint32_t(level);
+    // The strength, what the setting said, and the ray steps (the class's: the shafts' quality is not a setting).
+    REXLOG_INFO("[gpu] shafts: sun shafts strength {} (mcla_gpu_sun_shafts = {}, {} steps on the {} class, live)",
+                shafts_level::Describe(level), Setting().Get(), ReadSteps(),
+                gpu_class::ClassName(gpu_class::Current()));
   }
-  if (mode != Mode::kOff) {
-    HoldUntilBuilt(&mode);
+  if (level != Level::kOff) {
+    HoldUntilBuilt(&level);
   }
-  mode_ = mode;
+  level_ = level;
 }
 
 uint64_t SunShafts::HeldBytes() const {
@@ -879,9 +884,9 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   }
   sun_ = sun;
   LogSkySun(sun);
-  const Mode mode = mode_;
+  const Level level = level_;
   const float intensity = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_intensity), 0.0, 8.0));
-  const float strength = sun.strength * intensity;
+  const float strength = sun.strength * shafts_level::Multiplier(level) * intensity;
   if (!(strength * kGain > kMinStrength)) {
     // The sun gives no shafts now (noon, night, rain, behind the camera): nothing is recorded.
     outcome_ = Outcome::kGated;
@@ -915,7 +920,8 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   for (int i = 0; i < 3; ++i) {
     plan.tint[i] = sun.colour[i] * strength * kGain;
   }
-  plan.steps = mode == Mode::kLow ? kStepsLow : kStepsHigh;
+  plan.level = level;
+  plan.steps = ReadSteps();
   plan.density = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_density), 0.3, 1.0));
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
   // The noise is a fixed pattern, shifted every frame only while a temporal upscaler averages it.
@@ -1144,10 +1150,10 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   }
   if (!first_run_logged_) {
     first_run_logged_ = true;
-    REXLOG_INFO("[gpu] shafts: the first sun shafts pass: {} at {}x{} (images {}x{}), {} steps, {} "
+    REXLOG_INFO("[gpu] shafts: the first sun shafts pass: strength {} at {}x{} (images {}x{}), {} steps, {} "
                 "host samples, the sun at ({:.2f}, {:.2f}) of the picture (from {}), {}, at {} (the "
                 "debug cvars mcla_gpu_sun_shafts_intensity, _density, _threshold tune the look)",
-                ModeName(mode_), plan.render[0], plan.render[1], plan.image[0], plan.image[1],
+                shafts_level::Describe(plan.level), plan.render[0], plan.render[1], plan.image[0], plan.image[1],
                 plan.steps, plan.host_samples, plan.sun_uv[0], plan.sun_uv[1],
                 plan.sun_from_sky ? "the sky's sun constant" : "the light's direction",
                 plan.view != 0 ? "a debug view" : "added to the colour",
@@ -1282,7 +1288,7 @@ void SunShafts::LogInterval() {
 }
 
 void SunShafts::OnPresent() {
-  if (mode_ != Mode::kOff) {
+  if (level_ != Level::kOff) {
     if (sky_taken_) {
       EndSkyFrame();
     }
@@ -1297,7 +1303,7 @@ void SunShafts::OnPresent() {
   if (census_every_ != 0 && (play_view_ || pause_view_)) {
     Census();
   }
-  if (mode_ == Mode::kOff) {
+  if (level_ == Level::kOff) {
     // Off for a second: the images go back (they are made again by the first pass after).
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
       ReleaseImages();
@@ -1345,7 +1351,7 @@ void SunShafts::Census() {
                 "before the first point; {} first points in all, {} without a camera; {} sky draws "
                 "told the sun disc's direction (this frame {})",
                 kPrefix, frame_, pause_view_ ? "pause/map" : "play", OutcomeName(outcome_),
-                ModeName(mode_), main_draws_, triggers_, skipped_no_camera_, sky_draws_total_,
+                shafts_level::Name(level_), main_draws_, triggers_, skipped_no_camera_, sky_draws_total_,
                 sky_draws_);
     return;
   }

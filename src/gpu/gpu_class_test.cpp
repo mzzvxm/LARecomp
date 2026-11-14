@@ -71,8 +71,8 @@ const Row kTable[] = {
      "AUTO (GAME)", "AUTO (HIGH)", "AUTO (HIGH)"},
     {Effect::kContactShadows, "mcla_gpu_contact_shadows", "off", "low", "high", "AUTO (OFF)",
      "AUTO (LOW)", "AUTO (HIGH)"},
-    {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
-     "AUTO (HIGH)"},
+    {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "default", "default", "AUTO (OFF)",
+     "AUTO (DEFAULT)", "AUTO (DEFAULT)"},
     {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)",
      "AUTO (OFF)"},
 };
@@ -231,10 +231,21 @@ void CheckCityLod() {
   CheckEq(CityLodScaleText(0.5), "0.5X", "CityLodScaleText(0.5)");
 }
 
+// The sun shafts' ray steps are chosen by the class and are no setting: Mid 32, High 64, Low (a strength turned on by
+// hand there) the cheaper 32.
+void CheckSunShaftSteps() {
+  CheckNum(kSunShaftStepsMid, 32, "kSunShaftStepsMid");
+  CheckNum(kSunShaftStepsHigh, 64, "kSunShaftStepsHigh");
+  CheckNum(SunShaftSteps(GpuClass::kLow), 32, "sun shaft steps on Low");
+  CheckNum(SunShaftSteps(GpuClass::kMid), 32, "sun shaft steps on Mid");
+  CheckNum(SunShaftSteps(GpuClass::kHigh), 64, "sun shaft steps on High");
+}
+
 }  // namespace
 
 int main() {
   CheckTable();
+  CheckSunShaftSteps();
   CheckLabels();
   CheckNames();
   CheckClassify();

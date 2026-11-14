@@ -23,7 +23,9 @@
 // What each setting's text can be, and what anything else means, is kept as each owner had it:
 //   occlusion  mcla_gpu_ao            off, low, high; no `auto`; anything else is off
 //   contact    mcla_gpu_contact_shadows   auto, off, low, high; anything else is off
-//   shafts     mcla_gpu_sun_shafts    auto, off, low, high; anything else counts as `auto`
+//   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, strongest (a strength, shafts_level.h);
+//                                     the old low and high are read as default; anything else counts as `auto`.
+//                                     The plan's level is off, or low (32 ray steps) / high (64) by the class
 //   bounce     mcla_gpu_ssgi          auto, off, low, high; anything else is off; `auto` is off until the
 //                                     class is known; needs the occlusion on (it reads its images)
 // ===========================================================================
@@ -33,6 +35,7 @@
 #include <string_view>
 
 #include "gpu_class.h"
+#include "shafts_level.h"
 
 namespace mcla::gpu::host_plan {
 
@@ -66,6 +69,11 @@ struct Choice {
   Level level = Level::kOff;
   bool automatic = false;  // `auto`: the class's cell decided (also a text the setting does not know, for the shafts)
   bool unknown = false;    // the text is not a value of the setting
+  // The sun shafts only (the other passes leave these): the strength the setting came to, and whether it is an
+  // old value (low, high) read as default. `level` is then off for a strength of off, else the ray quality the
+  // class gives (low on Mid and Low, high on High), so `level != kOff` still says whether the pass is on.
+  shafts_level::Level strength = shafts_level::Level::kOff;
+  bool legacy = false;
 };
 
 // The graphics upgrade whose `auto` cell the pass reads (the occlusion has none).
@@ -110,6 +118,17 @@ inline bool ParseLevel(std::string_view text, Level* level) {
 // before it is known).
 inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std::string_view saved) {
   Choice choice;
+  if (pass == Pass::kShafts) {
+    const shafts_level::Choice s = shafts_level::Resolve(cls, saved);
+    choice.strength = s.level;
+    choice.automatic = s.automatic;
+    choice.unknown = s.unknown;
+    choice.legacy = s.legacy;
+    if (shafts_level::On(s.level)) {
+      choice.level = gpu_class::SunShaftSteps(cls) >= gpu_class::kSunShaftStepsHigh ? Level::kHigh : Level::kLow;
+    }
+    return choice;
+  }
   const std::string text = Lower(saved);
   if (!HasAuto(pass)) {
     choice.unknown = !ParseLevel(text, &choice.level);
@@ -126,11 +145,6 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
   if (!ParseLevel(resolved, &choice.level)) {
     choice.unknown = true;
     choice.level = Level::kOff;
-    if (pass == Pass::kShafts) {
-      // A hand-edited text counts as `auto` there.
-      choice.automatic = true;
-      ParseLevel(gpu_class::ResolveFor(cls, EffectOf(pass), "auto"), &choice.level);
-    }
   }
   return choice;
 }
@@ -157,13 +171,16 @@ inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view o
 }
 
 // "contact shadows low (auto on the mid class)", "ambient occlusion high (set)", "sun shafts off (auto
-// on the low class)", "sun shafts high ('hgih' is no value: taken as auto on the high class)".
+// on the low class)", "sun shafts default ('hgih' is no value: taken as auto on the high class)", "sun shafts
+// strong (set)" (the shafts name their strength, the others their level).
 inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass cls) {
   std::string text(PassName(pass));
   text += ' ';
-  text += LevelName(choice.level);
+  text += pass == Pass::kShafts ? shafts_level::Name(choice.strength) : LevelName(choice.level);
   text += " (";
-  if (choice.unknown && choice.automatic) {
+  if (choice.legacy) {
+    text += "an old value of the setting (low or high): read as default";
+  } else if (choice.unknown && choice.automatic) {
     text += "not a value of the setting: taken as auto on the ";
     text += gpu_class::ClassName(cls);
     text += " class";
