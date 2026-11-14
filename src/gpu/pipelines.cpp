@@ -106,6 +106,8 @@ REXCVAR_DEFINE_STRING(
     "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).")
     .debug_only()
     .allowed({"game", "soft"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_luminance_scale_fix, true, "MCLA/GPU",
     "Fix: the game's auto-exposure (how bright the picture is made, which adapts over time) measures the "
