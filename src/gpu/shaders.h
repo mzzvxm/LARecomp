@@ -108,6 +108,9 @@ class ShaderStore {
   static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
   static constexpr uint32_t kEnvVariant = larecomp::shaderpack::kVariantEnvMap;
   static constexpr uint32_t kShadowFilterVariant = larecomp::shaderpack::kVariantShadowFilter;
+  // The auto-exposure's sample pass (PSSampleAverageLuminance) with its nine taps spread over the screen area
+  // they cover at 1x, at a render scale above 1 (shaderpack/variants/luminance_scale.h).
+  static constexpr uint32_t kLuminanceVariant = larecomp::shaderpack::kVariantLuminanceScale;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

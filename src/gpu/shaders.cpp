@@ -549,6 +549,7 @@ bool ShaderStore::LoadVariants(std::string* why) {
               "environment map {}, shadow filter {}",
               total, rex::path_to_utf8(variants_path_), size, per_variant[kHdrVariant],
               per_variant[kBloomVariant], per_variant[kEnvVariant], per_variant[kShadowFilterVariant]);
+  REXLOG_INFO("[gpu] shader pack: auto-exposure sample (luminance scale) variants {}", per_variant[kLuminanceVariant]);
   return true;
 }
 
