@@ -34,6 +34,7 @@
 #include "ssgi_light.h"
 #include "ssgi_stable.h"
 #include "texture_bytes.h"
+#include "traffic_shadow.h"
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao, "high", "MCLA/GPU",
@@ -154,6 +155,17 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.05, 3.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_contact_shadows_vehicles, 1.0, "MCLA/GPU",
+    "Diagnostic: how strongly contact shadows darken the ground under a car, 0 to 1. The game's sun "
+    "shadow map holds only the player's car, so the ground under a traffic car is as lit as an open "
+    "road; a ground pixel with a car's body above it (found from the picture's depth and the cars' "
+    "pixels, seen through the gap under the car) gets the full contact shadow, as the player's car "
+    "gets its sun shadow from the game. 0 is the contact shadows as they were (only a strip along "
+    "the car's edges and its wheels). Live.")
+    .debug_only()
+    .range(0.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_fade, 0.6, "MCLA/GPU",
     "Diagnostic: how much of the contact shadows' ray a shadow stays fully dark over, 0.2 to 0.98: "
     "past that share of the ray's length it fades out, so that a shadow cut off by the ray's end "
@@ -161,6 +173,18 @@ REXCVAR_DEFINE_DOUBLE(
     "shadow gone half way along the ray). Live.")
     .debug_only()
     .range(0.2, 0.98)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_contact_shadows_fast, true, "MCLA/GPU",
+    "Diagnostic: the cheaper contact shadows, to compare against the plain ones (false: the passes as "
+    "they were). The march takes fewer steps where its ray covers few pixels on the screen (far "
+    "pixels, a smaller picture; the squared spacing is kept), and the 3x3 filter that keeps shadow "
+    "edges is done inside the apply pass, which saves a pass and a full size image write (only where "
+    "the contact passes run at the picture's size: high, or the occlusion on high). With that, and in a "
+    "frame that has the game's sun shadow mask, the march is also left out where the game's own shadow "
+    "covers a pixel and its neighbours (the apply cannot use the result there: exactly the same picture). "
+    "The picture is the same to within a shadow edge moving by a pixel. Live.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_mask_gain, 2.0, "MCLA/GPU",
@@ -434,8 +458,9 @@ constexpr uint32_t kGiApplyViewBase = 15;
 // The frames the bounce light's images are kept after the last frame that used them: a pause spell (the
 // pause menu's and the map's world runs the plain occlusion) does not make them again.
 constexpr uint32_t kGiReleaseAfterFrames = 600;
-// The denoise pass's flag for the contact shadows' filter (hlsl/ao_common.hlsli AoContactFilter): one
-// pass whose weights also fall with the difference of the visibility.
+// The flag of the pass that does the contact shadows' filter (hlsl/ao_common.hlsli AoContactFilter): one 3x3
+// pass whose weights also fall with the difference of the visibility. The denoise pass has it, or, with
+// mcla_gpu_contact_shadows_fast, the apply pass (which then reads the march's image and has no filter pass).
 constexpr uint32_t kContactFilterFlag = 1u << 25;
 // The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
 // are 1 to 6).
@@ -2678,9 +2703,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   uint32_t contact_slot = kNoSlot;
   uint32_t mask_slot = kNoSlot;
   if (contact) {
-    contact_slot = RecordContact(list, plan, base);
+    // The game's sun shadow mask is found first: with mcla_gpu_contact_shadows_fast the march leaves out the pixels
+    // under it that the apply cannot use (RecordContact). The apply gets the very same slot.
+    const uint32_t contact_mask = FindMaskSlot();
+    contact_slot = RecordContact(list, plan, base, contact_mask);
     if (contact_slot != kNoSlot) {
-      mask_slot = FindMaskSlot();
+      mask_slot = contact_mask;
     }
   }
   if (mask_slot == kNoSlot && plan.gi.apply) {
@@ -2697,8 +2725,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[1] = float(plan.render[1]);
     push.sizes[2] = float(plan.ao[0]);
     push.sizes[3] = float(plan.ao[1]);
+    // The contact filter's flag (bit 25) tells the apply that slots2.x is the march's own image and that it does the
+    // 3x3 filter itself (mcla_gpu_contact_shadows_fast); without it the image is the denoise pass's output.
     push.slots2[2] |= (plan.occlusion ? kApplyOcclusionFlag : 0u) |
                       (contact_applied ? kApplyContactFlag : 0u) |
+                      (contact_applied && plan.ContactFilterInApply() ? kContactFilterFlag : 0u) |
                       (mask_slot != kNoSlot ? kApplyMaskFlag : 0u);
     push.slots2[0] = contact_applied ? contact_slot : 0u;
     push.slots2[3] = mask_slot != kNoSlot ? mask_slot : 0u;
@@ -2796,17 +2827,29 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   100.0f * plan.contact.end_fade_start, plan.contact.strength,
                   contact_mask_ ? "found" : "not found",
                   plan.occlusion ? "with the occlusion" : "without the occlusion");
+      const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
+      REXLOG_INFO("[gpu] contact shadows: the ground under a car {} (strength {:.2f}, "
+                  "mcla_gpu_contact_shadows_vehicles; the world's up in view space {:+.2f} {:+.2f} {:+.2f}, "
+                  "the cars' pixels from the depth pass's vehicle bit; it stands aside for the cars TRAFFIC "
+                  "SHADOWS draws into the sun shadow map, within the distance the hook publishes: {:.1f} m "
+                  "now)",
+                  plan.contact.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f ? "is shadowed"
+                                                                                           : "is as it was",
+                  plan.contact.under_vehicle, up.x, up.y, up.z, traffic_shadow::CastDistance());
     }
+    const uint32_t cost_mode = (plan.contact.fast ? 1u : 0u) | (plan.ContactFilterInApply() ? 2u : 0u);
     if (contact_cost_logged_[0] != plan.ao[0] || contact_cost_logged_[1] != plan.ao[1] ||
-        contact_cost_logged_[2] != plan.contact.steps) {
-      // The cost model (contact_trace.h CostModel), once per size and step count: the march reads the
-      // depth `steps` times a pixel of the images, the filter is one 3x3 pass. The numbers are the RTX
-      // 5080's measured at 3840x2160 and scale with the pixels and the steps; the first version's two
-      // filter passes are shown for comparison.
+        contact_cost_logged_[2] != plan.contact.steps || contact_cost_logged_[3] != cost_mode) {
+      // The cost model (contact_trace.h CostModel), once per size, step count and lever state: the march
+      // reads the depth `steps` times a pixel of the images, the filter is one 3x3 pass. The numbers are the
+      // RTX 5080's measured at 3840x2160 and scale with the pixels and the steps; the first version's two
+      // filter passes are shown for comparison, and with mcla_gpu_contact_shadows_fast on the model of the
+      // cheaper path (not measured) next to the plain one.
       contact_cost_logged_[0] = plan.ao[0];
       contact_cost_logged_[1] = plan.ao[1];
       contact_cost_logged_[2] = plan.contact.steps;
-      const contact_trace::Cost now =
+      contact_cost_logged_[3] = cost_mode;
+      const contact_trace::Cost plain =
           contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 1, true);
       const contact_trace::Cost before =
           contact_trace::CostModel(plan.ao[0], plan.ao[1], plan.contact.steps, 2, false);
@@ -2815,9 +2858,35 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   "all of it ({:.3f} ms), {:.3f} ms in all on an RTX 5080 (the first version, two "
                   "plain filter passes: {:.3f} ms); the images are the render size: a higher "
                   "render scale traces more pixels, so the edges stay as sharp in pixels",
-                  plan.ao[0], plan.ao[1], now.megapixels,
-                  plan.low ? "half the render size" : "the render size", now.mega_steps, now.march_ms,
-                  now.filter_ms, now.total_ms, before.total_ms);
+                  plan.ao[0], plan.ao[1], plain.megapixels,
+                  plan.low ? "half the render size" : "the render size", plain.mega_steps, plain.march_ms,
+                  plain.filter_ms, plain.total_ms, before.total_ms);
+      if (plan.contact.fast) {
+        const contact_trace::Cost fast = contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps,
+                                                                      plan.ContactFilterInApply());
+        REXLOG_INFO("[gpu] contact shadows: the cheaper path is on (mcla_gpu_contact_shadows_fast): the march "
+                    "keeps {:.0f}% of the steps on average (a ray that is short on the screen needs fewer; "
+                    "the model's street average for this size), {}: model {:.3f} ms in all ({:.3f} + {:.3f}) "
+                    "against {:.3f} ms with it off; not measured",
+                    100.0 * contact_trace::AdaptiveStepShare(plan.ao[1]),
+                    plan.ContactFilterInApply() ? "the filter is done inside the apply pass (no pass, no target write)"
+                                                : "the filter pass stays (the passes run at half the picture's size)",
+                    fast.total_ms, fast.march_ms, fast.filter_ms, plain.total_ms);
+        if (plan.ContactFilterInApply()) {
+          // The skip under the game's own shadow (a frame that has the mask; the model's shadowed shares, not measured).
+          const contact_trace::Cost lit =
+              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.0);
+          const contact_trace::Cost third =
+              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.3);
+          const contact_trace::Cost half =
+              contact_trace::CostModelFast(plan.ao[0], plan.ao[1], plan.contact.steps, true, 0.5);
+          REXLOG_INFO("[gpu] contact shadows: with the game's sun shadow mask in the frame the march also skips the "
+                      "pixels the game's own shadow covers (the picture is unchanged): model {:.3f} ms with none of "
+                      "the marched pixels in shadow, {:.3f} ms at 30% and {:.3f} ms at 50% in shadow (a frame without "
+                      "the mask: {:.3f} ms); not measured",
+                      lit.total_ms, third.total_ms, half.total_ms, fast.total_ms);
+        }
+      }
     }
     ++contact_runs_;
     ++(contact_mask_ ? contact_mask_frames_ : contact_no_mask_frames_);
@@ -3024,6 +3093,8 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
   c.mask_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_mask_gain), 0.5, 4.0));
+  c.under_vehicle = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_vehicles), 0.0, 1.0));
+  c.fast = REXCVAR_GET(mcla_gpu_contact_shadows_fast);
   finish();
 }
 
@@ -3076,10 +3147,12 @@ uint32_t AmbientOcclusion::FindMaskSlot() {
 }
 
 uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const Plan& plan,
-                                         const Push& base) {
+                                         const Push& base, uint32_t mask_slot) {
   plume::RenderPipeline* march = Pipeline(kVContact);
-  plume::RenderPipeline* denoise = Pipeline(kVDenoise);
-  if (!march || !denoise) {
+  // With mcla_gpu_contact_shadows_fast the apply pass does the filter: the denoise pass is not drawn.
+  const bool in_apply = plan.ContactFilterInApply();
+  plume::RenderPipeline* denoise = in_apply ? nullptr : Pipeline(kVDenoise);
+  if (!march || (!in_apply && !denoise)) {
     return kNoSlot;
   }
   const ContactPlan& c = plan.contact;
@@ -3095,11 +3168,55 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.shape[0] = c.end_fade_start;
   push.shape[1] = float(c.steps);
   push.extra[1] = c.fade_end;
+  // The ground under a vehicle (contact_trace.h): the world's up in view space in lin.xyz and how strongly
+  // it shadows in lin.w. The march does not read the depth rows that lin holds in the other passes (the
+  // filter below does not either). No usable up (a camera the sun's arrangement cannot read) or a strength
+  // of 0: lin.w is 0 and the pass is as it was.
+  const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
+  const bool under = c.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f;
+  push.lin[0] = under ? up.x : 0.0f;
+  push.lin[1] = under ? up.y : 0.0f;
+  push.lin[2] = under ? up.z : 0.0f;
+  push.lin[3] = under ? c.under_vehicle : 0.0f;
+  // Cars the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) have their own shadow: the
+  // term stands aside for a car within this distance of the camera (extra.w; 0: no car casts, the term is as it was).
+  // Only the march reads extra.w; the filter below does not, and the value is put back for it all the same.
+  const float base_extra_w = push.extra[3];
+  push.extra[3] = under ? traffic_shadow::CastDistance() : 0.0f;
   // The ray start's noise has no history here, only the filter below. Moved every frame it would make
   // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
   // runs and averages the frames, as the shadow filter's and the sun shafts' are.
   push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
+  // The adaptive step count (contact_trace.h AdaptiveSteps): the end gap in pixels in shape.z, which the march
+  // does not otherwise read; 0 is every step, as the setting says.
+  push.shape[2] = c.fast ? contact_trace::kAdaptEndPixels : 0.0f;
+  // The skip under the game's own shadow (contact_trace.h "the skip under the game's own shadow"): the march returns 1
+  // where every mask texel the apply's filter can reach for the pixel is 0 (or so near it that the apply leaves the pixel
+  // out), which changes no pixel of the picture. Only where the apply does the filter itself (in_apply), only in a frame
+  // that has the mask, and not while a debug picture is on (the apply filters every pixel then and shows the visibility).
+  // The strength and the gain are the apply's own (Run), the light is the base push's (the apply's too); the push fields
+  // are the ones the march does not otherwise read (and the denoise pass below is not drawn when this is on).
+  const bool debug_picture = plan.view != 0u || plan.gi.view != 0u || plan.gi.apply_view != 0u;
+  const bool skip = contact_trace::MaskSkipOn(c.fast, in_apply, mask_slot != kNoSlot, debug_picture, c.strength);
+  if (skip) {
+    push.slots2[2] |= contact_trace::kSkipFlag;
+    push.slots2[3] = mask_slot;
+    push.extra[2] = c.mask_gain;
+    push.shape[3] = c.strength;
+    if (!contact_skip_logged_) {
+      contact_skip_logged_ = true;
+      REXLOG_INFO("[gpu] contact shadows: the march skips the pixels under the game's own sun shadow (mask slot {}; "
+                  "mcla_gpu_contact_shadows_fast; the picture is not changed: contact_trace.h, logged once)",
+                  mask_slot);
+    }
+  }
   DrawPass(list, raw_, march, push);
+  push.shape[2] = base.shape[2];
+  push.extra[3] = base_extra_w;
+  if (in_apply) {
+    // The apply pass reads the march's own image and does the 3x3 filter itself (flag bit 25 there, ao_apply_ps).
+    return raw_.slot;
+  }
   // The filter: one 3x3 pass of the occlusion's denoise shader in its contact mode, whose weights also
   // fall with the difference of the visibility: the noise of the ray's start goes, the edges of the
   // shadow and of the depth stay (the first version ran the plane-only blur twice, which softened every

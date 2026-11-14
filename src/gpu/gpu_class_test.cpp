@@ -75,12 +75,15 @@ const Row kTable[] = {
      "AUTO (DEFAULT)", "AUTO (DEFAULT)"},
     {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)",
      "AUTO (OFF)"},
+    {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near", "AUTO (OFF)",
+     "AUTO (NEAR)", "AUTO (NEAR)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
 const char* const kOwnChoices[] = {"off",  "game", "low",  "high", "ultra",
                                    "soft", "pcss", "on",   "",     "Auto",
-                                   "AUTO", "mid",  "auto " /* a space: not auto */};
+                                   "AUTO", "mid",  "near", "all",
+                                   "auto " /* a space: not auto */};
 
 void CheckTable() {
   Check(sizeof(kTable) / sizeof(kTable[0]) == static_cast<std::size_t>(kEffectCount),

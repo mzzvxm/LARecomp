@@ -122,6 +122,23 @@
 // footprints (the world size of a pixel at that depth), a shadow stays full over the first 60% of
 // the ray (mcla_gpu_contact_shadows_fade), the filter is one pass that keeps edges, and the cost is
 // logged as a model per size (the march is unchanged, the filter one pass instead of two).
+// THE CHEAPER PATH (mcla_gpu_contact_shadows_fast, debug-only, on by default; off is every pass as described above):
+// (1) the march takes as many steps as the ray's length on the screen needs, never fewer than 4 and never more than
+// the setting's (contact_trace.h AdaptiveSteps: the squared spacing is kept, the gap between the last two steps is at
+// most 8 pixels): at 3840x2160 that is nearly all 16, at 1080p about 15, at 720p about 14; (2) where the passes run at
+// the picture's size (not at half size) the 3x3 filter is done by the apply pass over the march's own image
+// (hlsl/ao_apply_ps.hlsl, AoBilateralEdgeFolded: the same weights, with the neighbours' depths the apply reads for its
+// normal; flag bit 25 there), so the filter pass and the write of its full size target are gone, and a pixel the contact
+// shadows cannot darken (the game's own shadow, a surface turned from the sun) skips the filter. The apply pass is
+// compiled the same for both states, so the lever is live and needs no new pipeline. The model (contact_trace.h
+// CostModelFast, not measured) is in the log line.
+// (3) the march is skipped under the game's own shadow (hlsl/ao_contact_ps.hlsl THE SKIP, contact_trace.h "the skip under
+// the game's own shadow"): where the sun shadow mask (a frame that has it, the picture's size, no debug picture) is 0 over
+// everything the apply's filter can read for a pixel, the apply cannot use the march's result (its weight, strength * sun
+// share * fade, is 0 there, and below the filter's threshold the apply reads no neighbour), so the march returns 1 before
+// its depth reads. Exact, not an approximation: the check compares the factor bit for bit with and without it. The mask is
+// found before the march and the apply gets the same slot; the gain and the strength it is given are the apply's.
+// It saves what the shadow's stored value being 0 lets it: CHECK that a pixel the game shadows stores 0 (view 10 black).
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -263,7 +280,7 @@
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row),
 // mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
 // integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h) with the tuning cvars
-// mcla_gpu_contact_shadows_length / _strength / _thickness / _fade / _mask_gain / _view, and
+// mcla_gpu_contact_shadows_length / _strength / _thickness / _fade / _mask_gain / _view / _fast, and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
@@ -577,6 +594,8 @@ class AmbientOcclusion {
     float fade_start = 40.0f;      // the distance fade, world units
     float fade_end = 80.0f;
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
+    float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
+    bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
@@ -627,6 +646,10 @@ class AmbientOcclusion {
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
     GiPlan gi;
+    // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
+    // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
+    // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
+    bool ContactFilterInApply() const { return contact.fast && !low; }
   };
   // Records the passes for the trigger `summary` (whose source target is the depth). True when
   // anything was recorded.
@@ -638,8 +661,11 @@ class AmbientOcclusion {
   void PlanContact(Plan* plan);
   // The ray march into raw_ and its filter (one pass of the denoise shader's contact mode) into
   // denoised_, after the occlusion's own passes have finished with both. Returns the slot of the
-  // result (denoised_), or kNoSlot.
-  uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base);
+  // result (denoised_), or kNoSlot. With mcla_gpu_contact_shadows_fast and the passes at the picture's
+  // size (Plan::ContactFilterInApply) there is no filter pass: the result is raw_, and the apply
+  // pass filters it (its flag bit 25). `mask_slot` is the game's sun shadow mask (FindMaskSlot, kNoSlot without it): the
+  // march skips the pixels under it that the apply cannot use (the apply is given the same slot).
+  uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base, uint32_t mask_slot);
   // --- the SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl) ---
   // Decides what it does in this frame: the setting, the occlusion being on, the tuning cvars.
   void PlanGi(Plan* plan);
@@ -872,8 +898,9 @@ class AmbientOcclusion {
   uint64_t contact_mask_frames_ = 0;
   uint64_t contact_no_mask_frames_ = 0;
   uint32_t last_contact_logged_ = ~0u;
-  uint32_t contact_cost_logged_[3] = {};  // the size (x, y) and the steps the cost model line was last logged for
+  uint32_t contact_cost_logged_[4] = {};  // the size (x, y), the steps and the lever's state (bit 0 fast, bit 1 filter in the apply) the cost model line was last logged for
   bool mask_why_logged_ = false;
+  bool contact_skip_logged_ = false;  // the skip under the game's own shadow was logged once
 
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
   // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave

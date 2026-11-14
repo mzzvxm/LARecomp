@@ -27,12 +27,15 @@
 //   4. equally spaced steps of 7.75 cm (16 over 1.24 m) with a start offset of up to a whole step:
 //      the distance now grows as the square of the step (4 cm at the contact, 12 cm at the far end).
 // Cost: the march is unchanged (16 or 8 steps at the same pixels), the filter is one pass instead of two.
+// The cheaper path (mcla_gpu_contact_shadows_fast: an adaptive step count and the filter inside the apply pass) is
+// described where its numbers are, below ("the adaptive step count"), with its cost model (CostModelFast).
 //
-// Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel (the log line);
-// the rest is mirrored in the shader and run by the check.
+// Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel and CostModelFast (the log lines),
+// MaskSkipOn and kSkipFlag (the march's skip under the game's own shadow); the rest is mirrored in the shader and run by the check.
 // ===========================================================================
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 
@@ -131,6 +134,10 @@ inline float EdgeRangeWeight(float difference) {
   const float x = difference / kEdgeRangeSigma;
   return std::exp(-0.5f * x * x);
 }
+// The apply pass does the filter itself with mcla_gpu_contact_shadows_fast and leaves out a pixel the contact shadows
+// change the picture's factor by less than this (hlsl/ao_apply_ps.hlsl kFoldedFilterSkip): the factor is
+// 1 - weight (1 - cs) with cs in 0 to 1, so it moves by at most the weight.
+inline constexpr float kFoldedFilterSkip = 0.002f;
 
 // ---------------------------------------------------------------------------
 // the cost
@@ -155,6 +162,7 @@ struct Cost {
   double march_ms = 0.0;
   double filter_ms = 0.0;
   double total_ms = 0.0;          // an RTX 5080's; other GPUs scale with their throughput
+  double skipped_share = 0.0;     // CostModelFast: the share of the marched pixels the skip under the game's shadow avoids
 };
 inline Cost CostModel(uint32_t width, uint32_t height, uint32_t steps, uint32_t filter_passes,
                       bool new_march) {
@@ -164,6 +172,88 @@ inline Cost CostModel(uint32_t width, uint32_t height, uint32_t steps, uint32_t 
   c.filter_passes = double(filter_passes);
   c.march_ms = c.mega_steps * kMsPerMegaStep * (new_march ? kMarchAluFactor : 1.0);
   c.filter_ms = c.megapixels * kMsPerMegapixelPass * double(filter_passes);
+  c.total_ms = c.march_ms + c.filter_ms;
+  return c;
+}
+
+// The cheaper contact shadows (mcla_gpu_contact_shadows_fast). NOT MEASURED: both parts are modelled from what the
+// passes read, and the first measurement is the off/on pair of the run plan (the numbers here are the thing to check).
+//   The march: of the 24 depth reads a pixel makes at 16 steps (the pixel's own, 4 for its normal, 3 of the
+//   ground-under-a-vehicle term, 16 steps) only the steps shrink, so a third of the march does not scale with the
+//   step count. The average share of the setting's steps the adaptive count keeps is the twin's, for a street
+//   (contact_trace_test.cpp: AdaptiveStepShare is checked against it).
+//   The filter in the apply: the filter pass reads 22 values a pixel (its depth and the normal's 4, 8 neighbours'
+//   depths, 9 visibilities) and writes one; inside the apply the four neighbours' depths and the pixel's own are
+//   there already, so it reads 13 (4 diagonal depths, 9 visibilities) and writes nothing, and a pixel the contact
+//   shadows cannot darken (the game's own shadow, a surface turned from the sun) skips it. 13 of 22 reads is 59%;
+//   55% is taken for the pass and the target write that are gone. The apply may need more registers and cost the
+//   plain apply a little (not in the model).
+inline constexpr double kMarchFixedShare = 8.0 / 24.0;
+inline constexpr double kFoldedFilterShare = 0.55;
+// The share of the setting's steps the adaptive count keeps on average, by the picture's height in pixels: the twin's
+// street scene at 720p, 1080p and 2160p (the check compares them), between them linearly, flat outside.
+inline constexpr double kAdaptShare720 = 0.88;
+inline constexpr double kAdaptShare1080 = 0.94;
+inline constexpr double kAdaptShare2160 = 0.99;
+inline double AdaptiveStepShare(uint32_t height) {
+  const double h = double(height);
+  if (h <= 720.0) {
+    return kAdaptShare720;
+  }
+  if (h <= 1080.0) {
+    return kAdaptShare720 + (kAdaptShare1080 - kAdaptShare720) * (h - 720.0) / 360.0;
+  }
+  if (h <= 2160.0) {
+    return kAdaptShare1080 + (kAdaptShare2160 - kAdaptShare1080) * (h - 1080.0) / 1080.0;
+  }
+  return kAdaptShare2160;
+}
+// THE SKIP UNDER THE GAME'S OWN SHADOW (the section "the skip under the game's own shadow" below). NOT MEASURED either.
+//   A pixel whose march is skipped reads its own depth (one of the 24 reads) and the texels of the game's sun shadow mask
+//   that its footprint covers (4 to 16 loads of an 8-bit image that is a few MB, sits in the cache and is shared by the
+//   pixels of a warp: counted as 2 reads more), and nothing else: 3 of 24. A pixel that is marched pays one read more for
+//   the test (the first texel it looks at is lit and ends the test). The skip avoids the pixels in the game's shadow minus
+//   the band along each shadow edge (the dilation by the filter's pixel, the mask's bilinear texel and the margin) and
+//   minus the warps that mix lit and shadowed pixels: kSkipCatch is the share of the shadowed pixels the check's scenes
+//   see skipped, whole 8 x 4 pixel tiles only (contact_trace_test.cpp SkipUnderTheGamesShadow prints and compares it),
+//   by the picture's height as the step share is. The apply pass leaves the filter out where its weight is 0, which is
+//   the same pixels (no dilation: its own footprint only), taken at the same share. The share of the screen that is in the
+//   game's shadow is the model's input: a frame without the mask (6 h, 18 h, rain, night) skips nothing and costs the
+//   march as before (shadowed_share < 0).
+inline constexpr double kSkippedPixelShare = 3.0 / 24.0;
+inline constexpr double kMaskTestShare = 1.0 / 24.0;
+inline constexpr double kSkipCatch720 = 0.88;
+inline constexpr double kSkipCatch1080 = 0.94;
+inline constexpr double kSkipCatch2160 = 0.96;
+inline double SkipCatch(uint32_t height) {
+  const double h = double(height);
+  if (h <= 720.0) {
+    return kSkipCatch720;
+  }
+  if (h <= 1080.0) {
+    return kSkipCatch720 + (kSkipCatch1080 - kSkipCatch720) * (h - 720.0) / 360.0;
+  }
+  if (h <= 2160.0) {
+    return kSkipCatch1080 + (kSkipCatch2160 - kSkipCatch1080) * (h - 1080.0) / 1080.0;
+  }
+  return kSkipCatch2160;
+}
+// `folded`: the filter is inside the apply (false at half size, where the filter pass stays: one pass, and the skip is
+// not used). `shadowed_share`: the share of the marched pixels that are in the game's own sun shadow (0 to 1) in a frame
+// that has the mask; negative: no mask in the frame, or the skip is off (the march as it was).
+inline Cost CostModelFast(uint32_t width, uint32_t height, uint32_t steps, bool folded, double shadowed_share = -1.0) {
+  Cost c;
+  const double share = AdaptiveStepShare(height);
+  const bool skipping = folded && shadowed_share >= 0.0;
+  c.skipped_share = skipping ? std::clamp(shadowed_share, 0.0, 1.0) * SkipCatch(height) : 0.0;
+  c.megapixels = double(width) * double(height) / 1e6;
+  c.mega_steps = c.megapixels * double(steps) * share * (1.0 - c.skipped_share);
+  c.filter_passes = (folded ? kFoldedFilterShare : 1.0) * (1.0 - c.skipped_share);
+  const double march_scale =
+      skipping ? (1.0 - c.skipped_share) * (1.0 + kMaskTestShare) + c.skipped_share * kSkippedPixelShare : 1.0;
+  c.march_ms = c.megapixels * double(steps) * kMsPerMegaStep * kMarchAluFactor *
+               (kMarchFixedShare + (1.0 - kMarchFixedShare) * share) * march_scale;
+  c.filter_ms = c.megapixels * kMsPerMegapixelPass * c.filter_passes;
   c.total_ms = c.march_ms + c.filter_ms;
   return c;
 }
@@ -216,6 +306,193 @@ Vec3 NormalFromDepth(const Camera& c, DepthAt&& depth_at, int x, int y, float tc
   return len > 1e-20f ? n * (1.0f / len) : Vec3{0.0f, 0.0f, -1.0f};
 }
 
+// The filter's twin: the denoise pass's AoBilateralEdge, and, with `cross` (the four neighbours' depths left, right,
+// top, bottom, each at the position clamped into the image, as the apply pass reads them for its normal), the apply's
+// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value.
+template <class DepthAt, class VisAt>
+float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int y, float tc, Vec3 pc, Vec3 normal,
+                 const float* cross = nullptr) {
+  const float footprint = FootprintUnit(c.tan_y, float(c.height)) * tc;
+  const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
+  const float centre = vis_at(x, y);
+  float sum = centre;
+  float weights = 1.0f;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      const int qx = std::clamp(x + dx, 0, c.width - 1), qy = std::clamp(y + dy, 0, c.height - 1);
+      float tq;
+      if (cross && dy == 0) {
+        tq = dx < 0 ? cross[0] : cross[1];
+      } else if (cross && dx == 0) {
+        tq = dy < 0 ? cross[2] : cross[3];
+      } else {
+        tq = depth_at(qx, qy);
+      }
+      const Vec3 pq = ViewPos(c, float(qx) + 0.5f, float(qy) + 0.5f, tq);
+      const float off_plane = Dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = std::exp(-0.5f * off_plane * off_plane);
+      const float w_space = std::exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
+      const float value = vis_at(qx, qy);
+      const float w = w_depth * w_space * EdgeRangeWeight(value - centre);
+      sum += value * w;
+      weights += w;
+    }
+  }
+  return sum / weights;
+}
+
+// ---------------------------------------------------------------------------
+// the ground under a vehicle
+// ---------------------------------------------------------------------------
+//
+// Owner, 2026-11-13: the ground under TRAFFIC cars is bright and, with the contact shadows on, only the
+// wheels and the underside's edges darken. Why [I: from the recompiled guest code, not seen in a run; CHECK
+// in a drive]: the game's sun shadow map holds the player's car and no other. Vehicle::Draw (guest
+// 0x82360518) draws a vehicle into the cascade phases only when its byte +594 is set, and the vehicle's
+// constructor (0x8235AF90) sets that byte when its sixth argument is 0 (the same case registers the vehicle
+// as the game's one "own" vehicle, the global at 0x8288DDF8): a traffic car casts no sun shadow and the
+// ground under it is as lit as an open road. The materials do have the cascade technique (every xAmbient*
+// car group has a VS_ShadowDepthLocal), so it is the draw's gate that leaves them out, not the data and not
+// the host (nothing in the renderer filters the cascade draws). What traffic has is the game's soft quad
+// decal (xAmbientOcclusionShadows PS_CalcShadowsQuad, one a car, a darkening of the colour after the world
+// is drawn); the player's car has that and four wheel patches (PS_CalcShadowsSingle) as well as its cascade
+// shadow.
+//
+// The contact march finds a car only within `thickness` (0.3 m) of its ray: a ground pixel seen through
+// the gap under a car has the car's rear face in front of it by up to the car's length, so every ray that
+// starts under the middle of the car ends at a surface "far in front" of it, which hides nothing by design
+// (a wall in front of a ray only overlaps it on the screen). Only the strip along the edges and the wheels
+// are within reach: the owner's patchy picture.
+//
+// For a vehicle that rule is wrong: the surface in front is a car, a solid, and a point behind its visible
+// shell by less than the car's length is inside it. So a ground pixel looks UP the column above it (the
+// world's up, in view space: UpInView) a little way (kUnderHeight): when the pixel a step falls on is a
+// vehicle's (the depth pass's vehicle bit) and the step is behind that shell by more than a tolerance and
+// less than kUnderReach, the ground is under the car. Under a car the sun is blocked, as by its own shadow,
+// so the pixel gets the full contact shadow: the sun's share of the light goes, the ambient stays. That is
+// what the cascade gives the player's car; the apply multiplies by the sun's share AFTER the game's mask,
+// so where the game already shadows the ground (the player's car) the term adds nothing and that car's
+// picture is unchanged. It does not add the decal's extra darkening: the ground under a traffic car is a
+// shadow (ambient only, then the occlusion's own darkening), not a decal's black.
+//
+// What it does not do, by construction: ground in front of a car (the step is nearer than the shell:
+// dz < 0), ground beside it (the column is outside the shell's pixels), ground beyond it (hidden by the
+// car or above its roof line, the column goes away from it), a surface that is not roughly horizontal
+// (kUnderUpLow), a vehicle's own pixel, anything that is not a vehicle (a table: the contact march's own
+// job). Three steps up the column, jittered by the pixel's noise, heights as shares of kUnderHeight.
+inline constexpr float kUnderHeight = 0.9f;       // m: how far up the column the steps reach
+inline constexpr float kUnderStep0 = 1.0f;        // the heights of the three steps, shares of kUnderHeight
+inline constexpr float kUnderStep1 = 0.6f;
+inline constexpr float kUnderStep2 = 0.35f;
+inline constexpr float kUnderJitterLow = 0.85f;   // the steps' heights are multiplied by 0.85 + 0.3 noise
+inline constexpr float kUnderJitterSpan = 0.3f;
+inline constexpr float kUnderReach = 6.0f;        // m: how far behind a vehicle's shell a step is still inside it
+inline constexpr float kUnderEpsFloor = 0.05f;    // m: the shell must be nearer than the step by this ...
+inline constexpr float kUnderEpsPixels = 3.0f;    // ... plus this many footprints (and is fully so at twice that)
+inline constexpr float kUnderUpLow = 0.75f;       // the surface's normal against the world's up: none below this ...
+inline constexpr float kUnderUpHigh = 0.9f;       // ... all from this
+// A car the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) has its shadow already: the
+// term leaves it out. The hook's distance is to the car's origin (its middle) and the shell the step lands on is
+// up to a car's half length nearer or farther, so the term fades in over twice this many metres around that distance.
+inline constexpr float kUnderCastBand = 3.0f;
+
+inline float UnderStep(int k) { return k == 0 ? kUnderStep0 : (k == 1 ? kUnderStep1 : kUnderStep2); }
+
+// The world's up in this renderer's view space (x right, y up, z forward), from the game's view matrix
+// `m` (row vectors, v' = v M, the camera looking down -z; the upper 3x3's row 1 is the world's Y in view
+// space): the same arrangement as the sun's direction (ao.cpp FillPush). Zero when the matrix is not usable.
+template <class Matrix>
+inline Vec3 UpInView(const Matrix& m) {
+  const double x = m[1][0], y = m[1][1], z = -m[1][2];
+  const double length = std::sqrt(x * x + y * y + z * z);
+  if (!std::isfinite(length) || length < 1e-6) {
+    return {};
+  }
+  return {float(x / length), float(y / length), float(z / length)};
+}
+
+// The vehicle bit of a level-0 depth (the lowest bit of the float, ao_common.hlsli AoIsVehicle).
+inline bool DepthIsVehicle(float level0_depth) { return (std::bit_cast<uint32_t>(level0_depth) & 1u) != 0u; }
+inline float DepthWithVehicleBit(float depth, bool vehicle) {
+  return std::bit_cast<float>((std::bit_cast<uint32_t>(depth) & ~1u) | (vehicle ? 1u : 0u));
+}
+inline float UnderTolerance(float footprint) { return kUnderEpsFloor + kUnderEpsPixels * footprint; }
+// The weight of a step whose pixel is a vehicle's: dz is the step's distance minus the shell's (> 0: the
+// shell is nearer to the camera). 0 up to the tolerance, 1 from twice it to kUnderReach, then fading out
+// over a quarter of the reach.
+inline float UnderHitWeight(float dz, float footprint) {
+  const float eps = UnderTolerance(footprint);
+  return Saturate((dz - eps) / eps) * (1.0f - Saturate((dz - kUnderReach) / (0.25f * kUnderReach)));
+}
+// How horizontal a surface is: its normal (facing the camera) against the world's up.
+inline float UnderUpness(float normal_dot_up) { return Smoothstep(kUnderUpLow, kUnderUpHigh, normal_dot_up); }
+// How much of the term a car whose shell is `shell_distance` metres from the camera keeps, when the game draws the
+// cars within `cast_distance` of the camera into the sun shadow map (0: none does, the term is as it was).
+inline float UnderCastWeight(float shell_distance, float cast_distance) {
+  if (!(cast_distance > 0.0f)) {
+    return 1.0f;
+  }
+  return Smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell_distance);
+}
+
+// ---------------------------------------------------------------------------
+// the adaptive step count (mcla_gpu_contact_shadows_fast)
+// ---------------------------------------------------------------------------
+
+// The cheaper contact shadows (the debug cvar mcla_gpu_contact_shadows_fast, on by default; off is the march and
+// the passes as they were) have two parts: the march takes as many steps as the ray's length on the screen needs
+// (this section), and the 3x3 filter is done inside the apply pass (hlsl/ao_apply_ps.hlsl, AoBilateralEdgeFolded).
+//
+// THE NUMBERS. The squared spacing puts the last two steps 2 L / n pixels apart for a ray of L pixels on the screen
+// and n steps. kAdaptEndPixels is the gap the count aims at: 8 pixels is what 16 steps already have at the end of a
+// 64 pixel ray, so a ray that the full march samples at a gap of 8 pixels or less is sampled at 8 here, and one it
+// samples more coarsely keeps all its steps: the adaptive march is never coarser at the end than the full one is
+// on a 64 pixel ray. kAdaptMinSteps is a floor for rays of a few pixels. Tuned on the twin (contact_trace_test.cpp
+// AdaptiveStepsMatchTheFullMarch, which states the tolerance): over a kerb and walls, a bollard grid, a row of cars and
+// a street, at 720p, 1080p and 2160p, with the sun at four heights and six directions (planes at every angle, which
+// must never shadow themselves, are PlanesNeverShadowThemselves), 8 pixels changes the contact visibility by 0.0008 or
+// less on average, by more than 0.2 in at most 0.12% of the marched pixels, and in at most 0.016% of them (one in six
+// thousand, at 720p) without the full march having that value within 2 pixels (a shadow edge that only moved).
+// 12 pixels gives about 2.5 times as many of those for 10%, 6% and 2% fewer steps again at 720p, 1080p and 2160p, 24
+// pixels 15 to 20 times as many: 8 is the value that keeps the picture and saves what there is to save.
+// WHAT IT SAVES. Only rays that are short on the screen: a ray of 0.6 to 1.8 m is 40 to 300 pixels long at 2160p
+// anywhere in the 80 m the contact shadows reach, so at 3840x2160 the count stays at 16 for nearly all of them
+// (the check's street: 15.84 of 16 steps on average), at 1080p it is 15.07 and at 720p 14.08 (all scenes: 15.76,
+// 14.89, 13.90). That is not the saving the idea promised for the 4K picture: there the cheaper path's gain is the
+// filter (below). The cost model takes the street's averages.
+inline constexpr float kAdaptEndPixels = 8.0f;
+inline constexpr uint32_t kAdaptMinSteps = 4;
+
+// The length in depth image pixels of the segment from `a` to `b` (view space points): each end's pixel
+// position is its x and y over z through the lens. Negative when an end is not in front of the near plane
+// (the ray passes the camera: the caller marches every step).
+inline float RayPixelLength(const Camera& c, Vec3 a, Vec3 b) {
+  if (a.z <= kNearZ || b.z <= kNearZ) {
+    return -1.0f;
+  }
+  const float ax = 0.5f * float(c.width) * a.x / (a.z * c.tan_x);
+  const float ay = 0.5f * float(c.height) * a.y / (a.z * c.tan_y);
+  const float bx = 0.5f * float(c.width) * b.x / (b.z * c.tan_x);
+  const float by = 0.5f * float(c.height) * b.y / (b.z * c.tan_y);
+  return std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+}
+// The number of steps a ray of `length_pixels` on the screen needs: the squared spacing puts the last two steps
+// 2 length / n pixels apart, and the count aims at that gap being `end_pixels` (a gap under a pixel only reads the
+// same pixel again), never fewer than kAdaptMinSteps and never more than `max_steps` (the setting's: 8 or 16).
+// `end_pixels` 0 (the lever is off) or a length that is not known (negative): all of them.
+inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end_pixels,
+                              uint32_t min_steps = kAdaptMinSteps) {
+  if (!(end_pixels > 0.0f) || !(length_pixels >= 0.0f)) {
+    return max_steps;
+  }
+  const float want = std::ceil(2.0f * length_pixels / end_pixels);
+  const uint32_t low = std::min(min_steps, max_steps);
+  return want >= float(max_steps) ? max_steps : std::max(uint32_t(want), low);
+}
+
 struct Trace {
   Camera camera;
   Vec3 to_sun;            // unit, view space
@@ -223,17 +500,69 @@ struct Trace {
   float thickness = 0.3f; // m
   float fade_start = kDefaultFadeStart;
   uint32_t steps = kStepsHigh;
+  float adapt_pixels = 0.0f;   // the adaptive step count's end gap in pixels (AdaptiveSteps); 0: every step, as before
+  uint32_t adapt_min_steps = kAdaptMinSteps;
+  mutable uint32_t steps_used = 0;  // out: the number of steps the last March took (0: it returned before the loop)
   float noise = 0.5f;     // the pixel's start offset, 0 to 1
   float sky = 60000.0f;   // depth values at or above sky * 0.5 are the sky
   float max_distance = 80.0f;
   bool classic = false;   // the first version's march (equal steps, bias and ramp 2 cm + 0.4% of z, 1 - along^2)
+  Vec3 up;                // the world's up in view space (UpInView); zero: no ground-under-a-vehicle term
+  float under = 0.0f;     // how strongly the ground under a vehicle is shadowed, 0 (off) to 1
+  float cast_distance = 0.0f;  // cars within this many metres of the camera cast into the sun shadow map: the term leaves them out (0: none)
+  mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
 };
+
+// The ground-under-a-vehicle term of the pixel (x, y), 0 to 1 (the shader's Under): `normal` is the pixel's
+// view-space normal (facing the camera), `pc` its position, `tc` its depth (with the vehicle bit).
+// depth_at(x, y) is the level-0 depth with the vehicle bit.
+template <class DepthAt>
+float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 normal) {
+  if (!(t.under > 0.0f) || Dot(t.up, t.up) < 0.5f || DepthIsVehicle(tc)) {
+    return 0.0f;
+  }
+  const float upness = UnderUpness(Dot(normal, t.up));
+  if (!(upness > 0.0f)) {
+    return 0.0f;
+  }
+  const Camera& cam = t.camera;
+  const float footprint_unit = FootprintUnit(cam.tan_y, float(cam.height));
+  const float jitter = kUnderJitterLow + kUnderJitterSpan * t.noise;
+  float hit = 0.0f;
+  for (int k = 0; k < 3; ++k) {
+    const Vec3 p = pc + t.up * (kUnderHeight * UnderStep(k) * jitter);
+    if (p.z <= kNearZ) {
+      continue;
+    }
+    const float u = 0.5f + 0.5f * p.x / (p.z * cam.tan_x);
+    const float v = 0.5f - 0.5f * p.y / (p.z * cam.tan_y);
+    if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) {
+      continue;
+    }
+    const int qx = std::min(int(u * float(cam.width)), cam.width - 1);
+    const int qy = std::min(int(v * float(cam.height)), cam.height - 1);
+    ++t.under_loads;
+    const float td = depth_at(qx, qy);
+    if (!DepthIsVehicle(td)) {
+      continue;
+    }
+    float weight = UnderHitWeight(p.z - td, footprint_unit * p.z);
+    if (t.cast_distance > 0.0f) {
+      // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+      const float sx = p.x / p.z, sy = p.y / p.z;
+      weight *= UnderCastWeight(td * std::sqrt(1.0f + sx * sx + sy * sy), t.cast_distance);
+    }
+    hit = std::max(hit, weight);
+  }
+  return hit * upness * Saturate(t.under);
+}
 
 // The contact visibility of the pixel (x, y), 1 open to 0 hidden: what one invocation of the shader
 // writes (with `classic`, what the first version's did). depth_at(x, y) is the linear depth image.
 template <class DepthAt>
 float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const Camera& cam = t.camera;
+  t.steps_used = 0;
   const float tc = depth_at(x, y);
   if (tc >= t.sky * 0.5f || tc >= t.max_distance) {
     return 1.0f;
@@ -251,9 +580,20 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const float lift = t.classic ? 0.015f + 0.003f * tc : RayLift(footprint_unit * tc);
   const Vec3 start = pc + normal * lift;
   const float thickness = std::max(t.thickness, 1e-3f);
-  float shadow = 0.0f;
-  for (uint32_t i = 0; i < t.steps; ++i) {
-    const float along = t.classic ? (float(i) + t.noise) / float(t.steps) : Along(i, t.noise, t.steps);
+  // The ground under a vehicle starts the shadow (0 when the term is off or the pixel is not that).
+  float shadow = t.classic ? 0.0f : UnderVehicle(t, depth_at, tc, pc, normal);
+  // The steps: the setting's, or (the lever on) as many as the ray's length on the screen needs.
+  uint32_t steps = t.steps;
+  if (!t.classic && t.adapt_pixels > 0.0f) {
+    steps = AdaptiveSteps(RayPixelLength(cam, start, start + t.to_sun * t.length), t.steps, t.adapt_pixels,
+                          t.adapt_min_steps);
+  }
+  t.steps_used = steps;
+  for (uint32_t i = 0; i < steps; ++i) {
+    if (shadow >= 0.99f) {
+      break;
+    }
+    const float along = t.classic ? (float(i) + t.noise) / float(steps) : Along(i, t.noise, steps);
     const Vec3 p = start + t.to_sun * (along * t.length);
     if (p.z <= kNearZ) {
       break;
@@ -273,7 +613,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     } else {
       const float footprint = footprint_unit * p.z;
       hit = Saturate((dz - HitEpsilon(footprint)) /
-                     HitRamp(footprint, StepLength(i, t.noise, t.steps, t.length), t.to_sun.z));
+                     HitRamp(footprint, StepLength(i, t.noise, steps, t.length), t.to_sun.z));
     }
     hit *= 1.0f - Saturate((dz - thickness) / thickness);
     hit *= t.classic ? ClassicEndFade(along) : EndFade(along, t.fade_start);
@@ -286,6 +626,122 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);
   }
   return 1.0f - shadow;
+}
+
+// ---------------------------------------------------------------------------
+// the skip under the game's own shadow (mcla_gpu_contact_shadows_fast, the third part of the cheaper path)
+// ---------------------------------------------------------------------------
+//
+// WHAT IS SKIPPED. The apply pass darkens by 1 - weight * (1 - cs) with
+//     weight = strength * sun_share * fade,   sun_share = Ls N.L v / (La + Ls N.L v),
+//   v = saturate(gain * mask) the game's own sun shadow mask (the mask's stored value times the gain; 1 where the frame has
+//   no mask), and, with the filter inside the apply (hlsl/ao_apply_ps.hlsl: the picture's size, the same place the march's
+//   image is read), cs is the 3 x 3 filter over the march's image and the filter is left out wherever weight <=
+//   kFoldedFilterSkip (cs stays 1: the factor is exactly 1). So where the game's mask is 0 the march's result is not used,
+//   and the march (the only expensive part of the contact shadows) may return 1 at once.
+//
+// WHY IT IS EXACT (the check, SkipUnderTheGamesShadow, runs the twin of both passes and compares the factor bit for bit).
+//   1. The factor of a pixel P is a function of the march's value at P and at its 8 neighbours Q, and only when
+//      weight(P) > kFoldedFilterSkip: below it the apply never reads them (cs = 1, factor = 1 - weight * 0 = 1 exactly).
+//   2. weight(P) is at most strength * Ls v / (La + Ls v), which grows with v (N.L <= 1, fade <= 1), and v is at most
+//      saturate(gain * the largest texel of the 4 bilinear taps the apply samples at P's centre). SkipLimit turns the bound
+//      weight <= kSkipWeight into the largest stored texel value `limit` for which it still holds; kSkipWeight is half of
+//      kFoldedFilterSkip, so rounding (the apply's normal and the light are not exactly what the bound assumed) cannot
+//      reach the apply's own threshold.
+//   3. A pixel Q is skipped when every texel that any pixel of the 3 x 3 round Q (the pixels whose filter reads Q, and Q
+//      itself) can sample is <= limit. Then each of those pixels has weight <= kSkipWeight, so none of them runs the filter
+//      or reads Q: the skipped value (1) is read by nobody that could notice, and every pixel that does run the filter has
+//      all of its neighbours marched, so its value is the march's own. The factor is the same as without the skip, to the bit.
+//   Not skipping is always safe, so every doubt is resolved towards marching: the texel range is the bilinear footprint of
+//   the 3 x 3 pixels' centres widened by kSkipTexelMargin of a texel (the sampler's fixed-point coordinates: 1/256), clamped
+//   into the mask like the sampler's clamp-to-edge; a span of kSkipMaxTexels or more (a mask much larger than the image)
+//   is not tested; an ambient that is negative, a sun or gain that is not positive, NaN: no skip.
+//   The skip is on only where the apply does the filter itself (the picture's size, not at half size, where the apply
+//   upsamples a filtered image and reads further), only in a frame that has the mask (the shader reads the mask's slot),
+//   and not while a debug picture is on (those run the filter on every pixel and show the visibility itself).
+//
+// WHAT IT COSTS. The test runs after the sky/distance return and before the normal's depth reads: one depth read, a
+// GetDimensions and the texels (4 to 16, fewer once one is lit). What it saves is the pixel's normal (4 reads), the ground
+// under a vehicle term (3), the steps (up to 16) and the arithmetic: CostModelFast has the model. The saving needs whole
+// warps in the shadow, and a shadow edge costs a band of about a mask texel and the filter's pixel on each side.
+//
+// Push fields (hlsl/ao_contact_ps.hlsl): flags bit 24 (kSkipFlag), slots2.w the mask's slot, extra.z the gain, shape.w the
+// strength, and the frame's own light as the apply has it: light.w the ambient's luma, extra.x the sun's. All are the apply's.
+inline constexpr float kSkipWeight = 0.5f * kFoldedFilterSkip;
+inline constexpr float kSkipTexelMargin = 0.015625f;  // 1/64 of a mask texel
+inline constexpr float kSkipMaxTexels = 8.0f;
+inline constexpr uint32_t kSkipFlag = 1u << 24;
+
+// Whether the host turns the skip on in a frame (ao.cpp RecordContact).
+inline bool MaskSkipOn(bool fast, bool filter_in_apply, bool has_mask, bool debug_picture, float strength) {
+  return fast && filter_in_apply && has_mask && !debug_picture && strength > kSkipWeight;
+}
+
+// The largest stored mask value (0 to 1) at which the pixel's weight is surely <= kSkipWeight; a value above it forbids the
+// skip. -1: never skip (the inputs are not the ones the bound is proven for).
+inline float SkipLimit(float ambient, float sun, float strength, float gain) {
+  if (!(ambient >= 0.0f) || !(sun > 0.0f) || !(gain > 0.0f) || !(strength > kSkipWeight)) {
+    return -1.0f;
+  }
+  // strength * sun v / (ambient + sun v) <= kSkipWeight  <=>  sun v <= kSkipWeight * ambient / (strength - kSkipWeight)
+  const float visible = (kSkipWeight * ambient) / ((strength - kSkipWeight) * sun);
+  return visible >= 1.0f ? 3.0e38f : visible / gain;
+}
+
+// The mask texels (first and last, one axis) that the pixels `pixel - 1` to `pixel + 1` can sample: the bilinear taps of
+// a sample at the pixel centre (p + 0.5) / image_size are the texels floor(t) and floor(t) + 1, t = (p + 0.5) mask / image - 0.5.
+inline void SkipTexelRange(int pixel, int image_size, int mask_size, int* first, int* last) {
+  const float scale = float(mask_size) / float(image_size);
+  const float lo = (float(pixel) - 0.5f) * scale - 0.5f - kSkipTexelMargin;
+  const float hi = (float(pixel) + 1.5f) * scale - 0.5f + kSkipTexelMargin;
+  *first = std::clamp(int(std::floor(lo)), 0, mask_size - 1);
+  *last = std::clamp(int(std::floor(hi)) + 1, 0, mask_size - 1);
+}
+
+// True when the march at (x, y) may return 1 without looking: every texel its 3 x 3 of pixels can sample is <= limit.
+// mask_at(tx, ty) is the stored value, 0 to 1. `reach` is how many pixels round (x, y) are counted (1: the filter's 3 x 3;
+// 0 is the pixel alone, which the check uses as the control that shows the dilation is needed).
+template <class MaskAt>
+bool MaskCannotLight(MaskAt&& mask_at, int mask_w, int mask_h, int image_w, int image_h, int x, int y, float limit, int reach = 1) {
+  if (!(limit >= 0.0f)) {
+    return false;
+  }
+  int x0, x1, y0, y1;
+  if (reach == 1) {
+    SkipTexelRange(x, image_w, mask_w, &x0, &x1);
+    SkipTexelRange(y, image_h, mask_h, &y0, &y1);
+  } else {
+    // The pixel alone: the same range with the two pixels either side left out (the control).
+    const float sx = float(mask_w) / float(image_w), sy = float(mask_h) / float(image_h);
+    const float tx = (float(x) + 0.5f) * sx - 0.5f, ty = (float(y) + 0.5f) * sy - 0.5f;
+    x0 = std::clamp(int(std::floor(tx)), 0, mask_w - 1);
+    x1 = std::clamp(int(std::floor(tx)) + 1, 0, mask_w - 1);
+    y0 = std::clamp(int(std::floor(ty)), 0, mask_h - 1);
+    y1 = std::clamp(int(std::floor(ty)) + 1, 0, mask_h - 1);
+  }
+  if (float(x1 - x0) >= kSkipMaxTexels || float(y1 - y0) >= kSkipMaxTexels) {
+    return false;
+  }
+  for (int ty = y0; ty <= y1; ++ty) {
+    for (int tx = x0; tx <= x1; ++tx) {
+      if (mask_at(tx, ty) > limit) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// What one invocation of the shader writes with the skip: the sky/distance return first, then the skip, then the march proper.
+// can_skip(x, y) is MaskCannotLight over the frame's mask. steps_used is 0 for a skipped pixel, as for any return before the loop.
+template <class DepthAt, class CanSkip>
+float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int x, int y) {
+  const float tc = depth_at(x, y);
+  if (tc >= t.sky * 0.5f || tc >= t.max_distance || can_skip(x, y)) {
+    t.steps_used = 0;
+    return 1.0f;
+  }
+  return March(t, depth_at, x, y);
 }
 
 }  // namespace mcla::gpu::contact_trace
