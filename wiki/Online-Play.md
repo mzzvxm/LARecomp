@@ -1,6 +1,6 @@
 # Online Play
 
-How the game's System Link and Xbox LIVE menus work online in LARecomp: the relay, the server browser, the nick check, Rate My Ride and leaderboards. Operators should read [Relay Server](Relay-Server), [Master Server](Master-Server) and [Rate My Ride Server](Rate-My-Ride-Server). Source: `src/mc_engine/online/`.
+How the game's System Link and Xbox LIVE menus work online in LARecomp: the relay, the server browser, the nick check, Rate My Ride, leaderboards and the [Online Tournament](Online-Tournament). Operators should read [Relay Server](Relay-Server), [Master Server](Master-Server) and [Rate My Ride Server](Rate-My-Ride-Server). Source: `src/mc_engine/online/`.
 
 ## How it works
 
@@ -76,6 +76,8 @@ The mode runs in the game; the storage that died with the original servers is re
 
 Without a server, Rate My Ride falls back to a local store on your PC.
 
+The ONLINE TOURNAMENT mode uses the same settings and server; see [Online Tournament](Online-Tournament).
+
 ## Other online cvars
 
 | Cvar | Default | Effect |
@@ -92,7 +94,6 @@ Full rows with sources: [Settings Reference](Settings-Reference#online).
 
 ## Known limits
 
-- The Online Tournament is a work in progress. The tournament data path was a dead server; the code builds the tournament locally. The notes in `src/mc_engine/online/tournament.cpp` say it appears and Start passes eligibility, but launching the race still hits a null brain.
 - A relay older than 16 October 2026 does not answer the info queries the browser uses (`src/mc_engine/online/relay_info.h`).
 
 ## Troubleshooting
@@ -104,3 +105,4 @@ Full rows with sources: [Settings Reference](Settings-Reference#online).
 | Join fails with "networking problem" | The host left before the join finished. |
 | Rate My Ride says "server not available" | `rmr_enabled` is off, or `rmr_server` points at a server that is down. |
 | Boards empty | `leaderboards_enabled` off, or the server on TCP 31002 is not reachable. |
+| ONLINE TOURNAMENT says "server is not available" | Same as Rate My Ride, or the server predates tournaments (13 November 2026). |

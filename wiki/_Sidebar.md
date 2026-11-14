@@ -6,6 +6,7 @@
 - [Settings Reference](Settings-Reference)
 - [Settings Renderer Advanced](Settings-Renderer-Advanced)
 - [Online Play](Online-Play)
+- [Online Tournament](Online-Tournament)
 - [Custom Music](Custom-Music)
 - [Mod Browser](Mod-Browser)
 - [Photo Mode](Photo-Mode)

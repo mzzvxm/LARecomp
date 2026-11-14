@@ -10,6 +10,7 @@ LARecomp is a static recompilation of Midnight Club: Los Angeles (Complete Editi
 | [Settings Reference](Settings-Reference) | Every cvar with type, default, range, menu location and source file; the pause menu layout; environment variables. |
 | [Settings Renderer Advanced](Settings-Renderer-Advanced) | Diagnostic and tuning cvars of the two renderers. |
 | [Online Play](Online-Play) | Relays, server browser, nick check, Rate My Ride, leaderboards, online cvars. |
+| [Online Tournament](Online-Tournament) | The weekly tournament: how it runs, prizes, and the server's `tournament.txt`. |
 | [Custom Music](Custom-Music) | Put MP3 files on the radio. |
 | [Mod Browser](Mod-Browser) | Install, update and switch mods on or off from inside the game. |
 | [Photo Mode](Photo-Mode) | Photo mode and album fixes and options. |

@@ -1,6 +1,6 @@
 # Rate My Ride Server
 
-The shared server for Rate My Ride and leaderboards. Players rate and buy each other's rides and share boards through it. Without it, Rate My Ride uses a local store on each PC and the boards are local. Source: `src/mc_engine/online/rate_my_ride/rmr_server_main.cpp`. Player settings are in [Online Play](Online-Play#rate-my-ride-and-leaderboards).
+The shared server for Rate My Ride, leaderboards and the [Online Tournament](Online-Tournament). Players rate and buy each other's rides, share boards and run the weekly tournament through it. Without it, Rate My Ride uses a local store on each PC and the boards are local. Source: `src/mc_engine/online/rate_my_ride/rmr_server_main.cpp`. Player settings are in [Online Play](Online-Play#rate-my-ride-and-leaderboards).
 
 ## Build and run
 
@@ -25,6 +25,9 @@ Run it on the same machine as the [Relay Server](Relay-Server). Players with onl
 | `<dir>/rmr.db` | Rate My Ride records. |
 | `<dir>/` | The uploaded files. |
 | `<dir>/leaderboards/leaderboards.db` | Leaderboards. |
+| `<dir>/tournament.txt` | Optional overrides for the running tournament, written by the operator. See [Online Tournament](Online-Tournament#tournamenttxt-optional-written-by-you). |
+| `<dir>/tournament_weeks.txt` | Tournaments served and whether each week has been settled. |
+| `<dir>/tournament_awards.txt` | Tournament prizes won, per player. |
 
 Back up the whole folder.
 
