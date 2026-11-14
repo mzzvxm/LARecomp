@@ -27,6 +27,8 @@
 //   4. equally spaced steps of 7.75 cm (16 over 1.24 m) with a start offset of up to a whole step:
 //      the distance now grows as the square of the step (4 cm at the contact, 12 cm at the far end).
 // Cost: the march is unchanged (16 or 8 steps at the same pixels), the filter is one pass instead of two.
+// The cheaper path (mcla_gpu_contact_shadows_fast: an adaptive step count and the filter inside the apply pass) is
+// described where its numbers are, below ("the adaptive step count"), with its cost model (CostModelFast).
 //
 // Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel (the log line);
 // the rest is mirrored in the shader and run by the check.
@@ -132,6 +134,10 @@ inline float EdgeRangeWeight(float difference) {
   const float x = difference / kEdgeRangeSigma;
   return std::exp(-0.5f * x * x);
 }
+// The apply pass does the filter itself with mcla_gpu_contact_shadows_fast and leaves out a pixel the contact shadows
+// change the picture's factor by less than this (hlsl/ao_apply_ps.hlsl kFoldedFilterSkip): the factor is
+// 1 - weight (1 - cs) with cs in 0 to 1, so it moves by at most the weight.
+inline constexpr float kFoldedFilterSkip = 0.002f;
 
 // ---------------------------------------------------------------------------
 // the cost
@@ -165,6 +171,52 @@ inline Cost CostModel(uint32_t width, uint32_t height, uint32_t steps, uint32_t 
   c.filter_passes = double(filter_passes);
   c.march_ms = c.mega_steps * kMsPerMegaStep * (new_march ? kMarchAluFactor : 1.0);
   c.filter_ms = c.megapixels * kMsPerMegapixelPass * double(filter_passes);
+  c.total_ms = c.march_ms + c.filter_ms;
+  return c;
+}
+
+// The cheaper contact shadows (mcla_gpu_contact_shadows_fast). NOT MEASURED: both parts are modelled from what the
+// passes read, and the first measurement is the off/on pair of the run plan (the numbers here are the thing to check).
+//   The march: of the 24 depth reads a pixel makes at 16 steps (the pixel's own, 4 for its normal, 3 of the
+//   ground-under-a-vehicle term, 16 steps) only the steps shrink, so a third of the march does not scale with the
+//   step count. The average share of the setting's steps the adaptive count keeps is the twin's, for a street
+//   (contact_trace_test.cpp: AdaptiveStepShare is checked against it).
+//   The filter in the apply: the filter pass reads 22 values a pixel (its depth and the normal's 4, 8 neighbours'
+//   depths, 9 visibilities) and writes one; inside the apply the four neighbours' depths and the pixel's own are
+//   there already, so it reads 13 (4 diagonal depths, 9 visibilities) and writes nothing, and a pixel the contact
+//   shadows cannot darken (the game's own shadow, a surface turned from the sun) skips it. 13 of 22 reads is 59%;
+//   55% is taken for the pass and the target write that are gone. The apply may need more registers and cost the
+//   plain apply a little (not in the model).
+inline constexpr double kMarchFixedShare = 8.0 / 24.0;
+inline constexpr double kFoldedFilterShare = 0.55;
+// The share of the setting's steps the adaptive count keeps on average, by the picture's height in pixels: the twin's
+// street scene at 720p, 1080p and 2160p (the check compares them), between them linearly, flat outside.
+inline constexpr double kAdaptShare720 = 0.88;
+inline constexpr double kAdaptShare1080 = 0.94;
+inline constexpr double kAdaptShare2160 = 0.99;
+inline double AdaptiveStepShare(uint32_t height) {
+  const double h = double(height);
+  if (h <= 720.0) {
+    return kAdaptShare720;
+  }
+  if (h <= 1080.0) {
+    return kAdaptShare720 + (kAdaptShare1080 - kAdaptShare720) * (h - 720.0) / 360.0;
+  }
+  if (h <= 2160.0) {
+    return kAdaptShare1080 + (kAdaptShare2160 - kAdaptShare1080) * (h - 1080.0) / 1080.0;
+  }
+  return kAdaptShare2160;
+}
+// `folded`: the filter is inside the apply (false at half size, where the filter pass stays: one pass).
+inline Cost CostModelFast(uint32_t width, uint32_t height, uint32_t steps, bool folded) {
+  Cost c;
+  const double share = AdaptiveStepShare(height);
+  c.megapixels = double(width) * double(height) / 1e6;
+  c.mega_steps = c.megapixels * double(steps) * share;
+  c.filter_passes = folded ? kFoldedFilterShare : 1.0;
+  c.march_ms = c.megapixels * double(steps) * kMsPerMegaStep * kMarchAluFactor *
+               (kMarchFixedShare + (1.0 - kMarchFixedShare) * share);
+  c.filter_ms = c.megapixels * kMsPerMegapixelPass * c.filter_passes;
   c.total_ms = c.march_ms + c.filter_ms;
   return c;
 }
@@ -215,6 +267,44 @@ Vec3 NormalFromDepth(const Camera& c, DepthAt&& depth_at, int x, int y, float tc
   const Vec3 n = Cross(v, h);
   const float len = std::sqrt(Dot(n, n));
   return len > 1e-20f ? n * (1.0f / len) : Vec3{0.0f, 0.0f, -1.0f};
+}
+
+// The filter's twin: the denoise pass's AoBilateralEdge, and, with `cross` (the four neighbours' depths left, right,
+// top, bottom, each at the position clamped into the image, as the apply pass reads them for its normal), the apply's
+// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value.
+template <class DepthAt, class VisAt>
+float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int y, float tc, Vec3 pc, Vec3 normal,
+                 const float* cross = nullptr) {
+  const float footprint = FootprintUnit(c.tan_y, float(c.height)) * tc;
+  const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
+  const float centre = vis_at(x, y);
+  float sum = centre;
+  float weights = 1.0f;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      const int qx = std::clamp(x + dx, 0, c.width - 1), qy = std::clamp(y + dy, 0, c.height - 1);
+      float tq;
+      if (cross && dy == 0) {
+        tq = dx < 0 ? cross[0] : cross[1];
+      } else if (cross && dx == 0) {
+        tq = dy < 0 ? cross[2] : cross[3];
+      } else {
+        tq = depth_at(qx, qy);
+      }
+      const Vec3 pq = ViewPos(c, float(qx) + 0.5f, float(qy) + 0.5f, tq);
+      const float off_plane = Dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = std::exp(-0.5f * off_plane * off_plane);
+      const float w_space = std::exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
+      const float value = vis_at(qx, qy);
+      const float w = w_depth * w_space * EdgeRangeWeight(value - centre);
+      sum += value * w;
+      weights += w;
+    }
+  }
+  return sum / weights;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +401,61 @@ inline float UnderCastWeight(float shell_distance, float cast_distance) {
   return Smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell_distance);
 }
 
+// ---------------------------------------------------------------------------
+// the adaptive step count (mcla_gpu_contact_shadows_fast)
+// ---------------------------------------------------------------------------
+
+// The cheaper contact shadows (the debug cvar mcla_gpu_contact_shadows_fast, on by default; off is the march and
+// the passes as they were) have two parts: the march takes as many steps as the ray's length on the screen needs
+// (this section), and the 3x3 filter is done inside the apply pass (hlsl/ao_apply_ps.hlsl, AoBilateralEdgeFolded).
+//
+// THE NUMBERS. The squared spacing puts the last two steps 2 L / n pixels apart for a ray of L pixels on the screen
+// and n steps. kAdaptEndPixels is the gap the count aims at: 8 pixels is what 16 steps already have at the end of a
+// 64 pixel ray, so a ray that the full march samples at a gap of 8 pixels or less is sampled at 8 here, and one it
+// samples more coarsely keeps all its steps: the adaptive march is never coarser at the end than the full one is
+// on a 64 pixel ray. kAdaptMinSteps is a floor for rays of a few pixels. Tuned on the twin (contact_trace_test.cpp
+// AdaptiveStepsMatchTheFullMarch, which states the tolerance): over a kerb and walls, a bollard grid, a row of cars and
+// a street, at 720p, 1080p and 2160p, with the sun at four heights and six directions (planes at every angle, which
+// must never shadow themselves, are PlanesNeverShadowThemselves), 8 pixels changes the contact visibility by 0.0008 or
+// less on average, by more than 0.2 in at most 0.12% of the marched pixels, and in at most 0.016% of them (one in six
+// thousand, at 720p) without the full march having that value within 2 pixels (a shadow edge that only moved).
+// 12 pixels gives about 2.5 times as many of those for 10%, 6% and 2% fewer steps again at 720p, 1080p and 2160p, 24
+// pixels 15 to 20 times as many: 8 is the value that keeps the picture and saves what there is to save.
+// WHAT IT SAVES. Only rays that are short on the screen: a ray of 0.6 to 1.8 m is 40 to 300 pixels long at 2160p
+// anywhere in the 80 m the contact shadows reach, so at 3840x2160 the count stays at 16 for nearly all of them
+// (the check's street: 15.84 of 16 steps on average), at 1080p it is 15.07 and at 720p 14.08 (all scenes: 15.76,
+// 14.89, 13.90). That is not the saving the idea promised for the 4K picture: there the cheaper path's gain is the
+// filter (below). The cost model takes the street's averages.
+inline constexpr float kAdaptEndPixels = 8.0f;
+inline constexpr uint32_t kAdaptMinSteps = 4;
+
+// The length in depth image pixels of the segment from `a` to `b` (view space points): each end's pixel
+// position is its x and y over z through the lens. Negative when an end is not in front of the near plane
+// (the ray passes the camera: the caller marches every step).
+inline float RayPixelLength(const Camera& c, Vec3 a, Vec3 b) {
+  if (a.z <= kNearZ || b.z <= kNearZ) {
+    return -1.0f;
+  }
+  const float ax = 0.5f * float(c.width) * a.x / (a.z * c.tan_x);
+  const float ay = 0.5f * float(c.height) * a.y / (a.z * c.tan_y);
+  const float bx = 0.5f * float(c.width) * b.x / (b.z * c.tan_x);
+  const float by = 0.5f * float(c.height) * b.y / (b.z * c.tan_y);
+  return std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+}
+// The number of steps a ray of `length_pixels` on the screen needs: the squared spacing puts the last two steps
+// 2 length / n pixels apart, and the count aims at that gap being `end_pixels` (a gap under a pixel only reads the
+// same pixel again), never fewer than kAdaptMinSteps and never more than `max_steps` (the setting's: 8 or 16).
+// `end_pixels` 0 (the lever is off) or a length that is not known (negative): all of them.
+inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end_pixels,
+                              uint32_t min_steps = kAdaptMinSteps) {
+  if (!(end_pixels > 0.0f) || !(length_pixels >= 0.0f)) {
+    return max_steps;
+  }
+  const float want = std::ceil(2.0f * length_pixels / end_pixels);
+  const uint32_t low = std::min(min_steps, max_steps);
+  return want >= float(max_steps) ? max_steps : std::max(uint32_t(want), low);
+}
+
 struct Trace {
   Camera camera;
   Vec3 to_sun;            // unit, view space
@@ -318,6 +463,9 @@ struct Trace {
   float thickness = 0.3f; // m
   float fade_start = kDefaultFadeStart;
   uint32_t steps = kStepsHigh;
+  float adapt_pixels = 0.0f;   // the adaptive step count's end gap in pixels (AdaptiveSteps); 0: every step, as before
+  uint32_t adapt_min_steps = kAdaptMinSteps;
+  mutable uint32_t steps_used = 0;  // out: the number of steps the last March took (0: it returned before the loop)
   float noise = 0.5f;     // the pixel's start offset, 0 to 1
   float sky = 60000.0f;   // depth values at or above sky * 0.5 are the sky
   float max_distance = 80.0f;
@@ -377,6 +525,7 @@ float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 n
 template <class DepthAt>
 float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const Camera& cam = t.camera;
+  t.steps_used = 0;
   const float tc = depth_at(x, y);
   if (tc >= t.sky * 0.5f || tc >= t.max_distance) {
     return 1.0f;
@@ -396,11 +545,18 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const float thickness = std::max(t.thickness, 1e-3f);
   // The ground under a vehicle starts the shadow (0 when the term is off or the pixel is not that).
   float shadow = t.classic ? 0.0f : UnderVehicle(t, depth_at, tc, pc, normal);
-  for (uint32_t i = 0; i < t.steps; ++i) {
+  // The steps: the setting's, or (the lever on) as many as the ray's length on the screen needs.
+  uint32_t steps = t.steps;
+  if (!t.classic && t.adapt_pixels > 0.0f) {
+    steps = AdaptiveSteps(RayPixelLength(cam, start, start + t.to_sun * t.length), t.steps, t.adapt_pixels,
+                          t.adapt_min_steps);
+  }
+  t.steps_used = steps;
+  for (uint32_t i = 0; i < steps; ++i) {
     if (shadow >= 0.99f) {
       break;
     }
-    const float along = t.classic ? (float(i) + t.noise) / float(t.steps) : Along(i, t.noise, t.steps);
+    const float along = t.classic ? (float(i) + t.noise) / float(steps) : Along(i, t.noise, steps);
     const Vec3 p = start + t.to_sun * (along * t.length);
     if (p.z <= kNearZ) {
       break;
@@ -420,7 +576,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     } else {
       const float footprint = footprint_unit * p.z;
       hit = Saturate((dz - HitEpsilon(footprint)) /
-                     HitRamp(footprint, StepLength(i, t.noise, t.steps, t.length), t.to_sun.z));
+                     HitRamp(footprint, StepLength(i, t.noise, steps, t.length), t.to_sun.z));
     }
     hit *= 1.0f - Saturate((dz - thickness) / thickness);
     hit *= t.classic ? ClassicEndFade(along) : EndFade(along, t.fade_start);

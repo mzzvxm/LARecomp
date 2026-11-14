@@ -64,7 +64,8 @@
 //   lens.xy    tan of the half field of view; lens.z the ray's length in world units, lens.w the
 //              thickness (the farthest a surface may be in front of a step and still hide it)
 //   shape.x    the share of the ray over which the shadow stays full before it fades out (0.6)
-//   shape.y    the number of steps
+//   shape.y    the number of steps (at most: see shape.z)
+//   shape.z    the adaptive step count's end gap in pixels (THE ADAPTIVE STEP COUNT below; 0: every step)
 //   light.xyz  the direction to the sun in view space (x right, y up, z forward; unit length)
 //   extra.y    the distance beyond which nothing is computed (the caller's contact fade end)
 //   lin.xyz    the world's up in view space (unit length; zero: no under-a-vehicle term), lin.w how
@@ -73,6 +74,14 @@
 //   extra.w    the distance in metres from the camera within which the game draws cars into the sun shadow
 //              map (TRAFFIC SHADOWS, traffic_shadow.h; 0: it does not): the under-a-vehicle term leaves out
 //              a car whose shell is nearer than that, which has its own shadow, and keeps the farther ones
+//
+// THE ADAPTIVE STEP COUNT (mcla_gpu_contact_shadows_fast; shape.z, contact_trace.h AdaptiveSteps). The steps are the
+// squared spacing of the setting's count n, so the last two are 2 L / n pixels apart for a ray of L pixels on the
+// screen. A ray that is short on the screen (a far pixel, a small picture) reads the same pixels again and again: the
+// count is ceil(2 L / shape.z), between kAdaptMinSteps and the setting's (shape.z 8: never a coarser end than the full
+// march has on a 64 pixel ray; contact_trace.h has the numbers and the check). L is the ray's start and end projected
+// into the depth image (an end behind the near plane: every step). At 3840x2160 nearly every ray is long enough
+// to keep all its steps.
 //
 // The constants below are contact_trace.h's: change them there first.
 
@@ -99,6 +108,8 @@ static const float kSunFacingHigh = 0.15f;
 static const float kFadeStartMax = 0.98f;
 // A step nearer to the camera than this is not looked up (behind the lens).
 static const float kNearZ = 0.05f;
+// The fewest steps the adaptive count goes down to (as a float: contact_trace.h's test compares the constant).
+static const float kAdaptMinSteps = 4.0f;
 
 // The ground under a vehicle (header comment). Three steps up the column above the pixel, at these
 // shares of kUnderHeight times a jitter of kUnderJitterLow + kUnderJitterSpan noise; a step counts when
@@ -192,8 +203,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float length_units = g_push.lens.z;
   const float thickness = max(g_push.lens.w, 1e-3f);
   const float fade_start = min(saturate(g_push.shape.x), kFadeStartMax);
-  const uint steps = uint(max(g_push.shape.y, 1.0f));
-  const float inv_steps = 1.0f / float(steps);
+  uint steps = uint(max(g_push.shape.y, 1.0f));
   // The world size of one pixel of the depth image at distance 1 (two tan of the half field of view
   // over the height): times the distance, a footprint.
   const float footprint_unit = 2.0f * g_push.lens.y / size.y;
@@ -203,6 +213,20 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float noise = frac(AoNoise(float2(pixel)) + frame * 0.75487766624669f);
 
   const float3 start = pc + normal * (kLiftFloor + kLiftPixels * footprint_unit * tc);
+  // The adaptive step count: as many steps as the ray's length on the screen needs (contact_trace.h AdaptiveSteps).
+  const float end_gap = g_push.shape.z;
+  if (end_gap > 0.0f) {
+    const float3 ray_end = start + to_sun * length_units;
+    if (start.z > kNearZ && ray_end.z > kNearZ) {
+      const float2 a = float2(start.x / (start.z * g_push.lens.x), start.y / (start.z * g_push.lens.y));
+      const float2 b = float2(ray_end.x / (ray_end.z * g_push.lens.x), ray_end.y / (ray_end.z * g_push.lens.y));
+      const float want = ceil(2.0f * length((b - a) * (0.5f * size)) / end_gap);
+      if (want < float(steps)) {
+        steps = max(uint(want), min(uint(kAdaptMinSteps), steps));
+      }
+    }
+  }
+  const float inv_steps = 1.0f / float(steps);
   // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
   float shadow = Under(depth_slot, tc, pc, normal, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
