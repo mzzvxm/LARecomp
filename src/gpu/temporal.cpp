@@ -40,12 +40,13 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_post_reads_output, false, "MCLA/GPU",
+    mcla_gpu_upscaler_post_reads_output, true, "MCLA/GPU",
     "While FSR or DLSS draws the scene at the output's size (FSR's Native AA, DLAA): the game's post "
     "chain before the upscale (the half-size downsample that the bloom's bright pass, the exposure "
     "and the motion blur's half-size layer are made from) reads the previous frame's upscaled "
-    "picture, as it does at every other mode. Off (today): it reads the raw, jittered scene at that "
-    "size. For A/B. Live.")
+    "picture, as it does at every other mode (on, the default since 2026-11-14: measured on a still "
+    "pause view with FSR Native AA, flat areas 8x and the distant tower 3x steadier). Off: the old "
+    "path, the raw jittered scene at that size, kept for A/B. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
