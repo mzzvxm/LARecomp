@@ -91,6 +91,9 @@ add_library(larecomp_gpu OBJECT
     vram_budget.cpp
     watch.cpp
 )
+# The occlusion's reach round vehicles and its slice sum, with the C++ twin of its main pass (ao_halo.h) likewise:
+#   cmake --build <dir> --target larecomp_ao_halo_test, then run src/gpu/larecomp_ao_halo_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_ao_halo_test EXCLUDE_FROM_ALL ao_halo_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
