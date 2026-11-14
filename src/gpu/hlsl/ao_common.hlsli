@@ -270,7 +270,7 @@ float4 AoBilateral4(uint src_slot, uint depth_slot, int2 pixel, int2 isize, floa
                     float3 normal, int radius) {
   const float2 size = float2(isize);
   const float plane_sigma = 0.012f * tc + 0.02f;
-  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
+  const float spatial_sigma = AoBlurSigma(radius);
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   float weights = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {

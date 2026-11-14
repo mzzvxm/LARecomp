@@ -161,7 +161,8 @@
 // with AO_GI, hlsl/ao_atrous_ps.hlsl; the same test cvar): one frame of the bounce is noisy (a handful of
 // samples' colours, a different handful every frame), and the test now makes it steady the way the
 // occlusion makes its visibility steady, on four channels at once (visibility x, bounce yzw):
-//   denoise   the occlusion's 3x3 depth-aware blur over the four channels (gi_ into gi_dn_); a frame with
+//   denoise   the occlusion's depth-aware blur (3x3 at 720 lines, 5x5 or 7x7 in a bigger picture: ao_stable.h
+//             DenoiseRadius) over the four channels (gi_ into gi_dn_); a frame with
 //             no history to lean on blurs a second time (gi_dn_ into the idle history image)
 //   temporal  the occlusion's own accumulation pass over four channels, into RGBA16F history images
 //             that take turns. Everything the occlusion's history decides is the same decision here:
@@ -175,9 +176,12 @@
 //             of each frame. The visibility's part is to the last operation the plain pass's (its weight is
 //             mcla_gpu_ao_history frames); the bounce averages over mcla_gpu_ssgi_test_history frames
 //             and its history is clipped to a box round the mean of this frame's 3x3 neighbourhood,
-//             mcla_gpu_ssgi_test_history_clamp standard deviations wide (never under 5% of the mean): a light
-//             that changed is a ghost only until the history is clipped to it.
-//   a-trous   mcla_gpu_ssgi_test_atrous iterations (0 to 3, 2 by default) of an edge-avoiding a-trous filter
+//             mcla_gpu_ssgi_test_history_clamp standard deviations wide (never under 5% of the mean, and 15% of the
+//             history's own value wider on each side: ssgi_stable.h has why the first 1.25 deviations alone made the
+//             accumulated bounce 2.5 to 3.5 times as noisy): a light that changed is a ghost only until the history is
+//             clipped to it.
+//   a-trous   mcla_gpu_ssgi_test_atrous iterations (0 to 3, 2 by default at 720 lines, one more for each doubling of
+//             the image's height: ssgi_stable.h AtrousIterations) of an edge-avoiding a-trous filter
 //             of the bounce over the history (5x5 B3 spline, taps 1, 2, 4 pixels apart, each weighed by
 //             its distance from the pixel's tangent plane): the history image itself stays unfiltered, the
 //             filtered copy goes into gi_dn_ and the idle history image, and is what the picture's bounce
@@ -556,8 +560,10 @@ class AmbientOcclusion {
     // bounce's history, 8 the bounce after the a-trous filter, 9 the history's weight
     uint32_t view = 0;
     uint32_t history = 16;         // the frames the bounce's history spans at most
-    float clamp_width = 1.25f;     // the clip of the bounce's history, in standard deviations of the neighbourhood
-    uint32_t atrous = 2;           // the a-trous iterations (taps 1, 2, 4 pixels apart)
+    float clamp_width = 2.0f;      // the clip of the bounce's history, in standard deviations of the neighbourhood (ssgi_stable.h)
+    float clip_history = 0.15f;    // ... plus this share of the history's own value on each side (the first version: 0)
+    uint32_t atrous = 2;           // the a-trous iterations at 720 lines (taps 1, 2, 4 pixels apart); Run adds one for each
+                                   // doubling of the image's height (ssgi_stable.h AtrousIterations)
     // The third step (G7c): the bounce in the picture.
     bool test = false;             // mcla_gpu_ssgi_test forced it (the debug override: the occlusion's own quality)
     Mode mode = Mode::kHigh;       // the setting's quality (high: 3 slices and 3 steps at the picture's size)

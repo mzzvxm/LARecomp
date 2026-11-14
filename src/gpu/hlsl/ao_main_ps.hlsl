@@ -273,8 +273,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
   const float2 noise_at = float2(pixel);
   const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
-  const float frame = float(g_push.slots2.y & 1023u);
-  const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
+  const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
 
   // The far ring: from where the near samples end to the reach, if it goes meaningfully farther.
