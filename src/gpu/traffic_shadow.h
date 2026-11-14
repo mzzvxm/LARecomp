@@ -18,6 +18,10 @@
 // cascade technique (VS_CarShadowDepthLocal, 27 car groups, no pixel shader), and sub_8235FA90 is already
 // called for EVERY vehicle in the rain phase 0x10, so the routine copes with any car's model.
 //
+// CORRECTION (the first run, 2026-11-13: no car ever reached the selector): the routine above draws the player's
+// car and the RACERS' cars only; traffic has its own renderer client and item draw, see "the traffic's own
+// route" below. The hook at 0x8236066C stays for the opponents of a race.
+//
 // What the hook does (hooks/traffic_shadow.cpp, 0x8236066C): for a vehicle that the game would leave out
 // of a cascade (r11 = 0 where the player's car has 1) it answers 1, when the car is one this file picks.
 // Nothing is written into the vehicle, so the +594 readers elsewhere (the vehicle update, the colour
@@ -155,6 +159,103 @@ struct VehicleFlags {
 constexpr bool Eligible(const VehicleFlags& f) {
   return f.casts_in_game == 0 && f.side_views != 0 && f.hidden == 0 && f.disabled == 0 && f.ghost == 0 &&
          f.visible != 0 && f.enabled != 0;
+}
+
+// The flags that failed, one bit each, for the gate counters (traffic_shadow_gates.h); 0 is Eligible().
+enum VehicleReject : uint32_t {
+  kRejectSideViews = 1u << 0,
+  kRejectHidden = 1u << 1,
+  kRejectDisabled = 1u << 2,
+  kRejectGhost = 1u << 3,
+  kRejectNotVisible = 1u << 4,
+  kRejectNotEnabled = 1u << 5,
+};
+
+constexpr uint32_t VehicleRejectBits(const VehicleFlags& f) {
+  return (f.side_views == 0 ? kRejectSideViews : 0u) | (f.hidden != 0 ? kRejectHidden : 0u) |
+         (f.disabled != 0 ? kRejectDisabled : 0u) | (f.ghost != 0 ? kRejectGhost : 0u) |
+         (f.visible == 0 ? kRejectNotVisible : 0u) | (f.enabled == 0 ? kRejectNotEnabled : 0u);
+}
+
+// --- the traffic's own route: mcAmbientCarRenderClass ---------------------------------------------------------
+//
+// [guest, read from default.xex's data and the recompiled code 2026-11-13] Traffic is NOT drawn by Vehicle::Draw
+// (sub_82360518 above): that routine is the item draw of the renderer's client in slot 7 (mcCarModelClass, mask
+// 0x12E183F3: the player's and the racers' cars; the shadow collector 0x1000 is not in its mask either). Traffic
+// cars are the items of slot 9, mcAmbientCarRenderClass: its object's vtable is 0x820D8C0C, its phase mask
+// 0x01118002 (0x2 0x8000 0x10000 0x100000 and the mirror's 0x1000000) has no sun cascade, so the phase loop
+// (sub_822E6408, 0x822E6870: `and r10,r11,r30` with r11 = the client's mask, r30 = the phase) never calls it in
+// one, and its item draw (sub_82793360: r3 = the item, r4 = the phase) would draw nothing in a phase it does not
+// know. That is why the hook in Vehicle::Draw never saw a traffic car (in free roam it sees the player's car only,
+// with +594 set, and returns at its first test).
+//
+// The route: the phase loop's mask test is widened by the cascade phase for this one client (nothing is written
+// into the client), and the item draw is told the phase is kAmbientBodyPhase for the cars this file picks. That
+// phase's branch of the item draw is the plain body draw (sub_82790B08 -> sub_8237AC90([item+528], 0, flag), the
+// routine the vehicle's own cascade path ends in too), with the technique the renderer's current phase picks:
+// every ambient car shader group has the cascade technique (VS_ShadowDepthLocal, from the shader pack's report).
+// The item draw's own tests still decide whether the car is drawn (visible byte, LOD, body): AmbientRejectBits
+// repeats them so that a car it would not draw does not take a place.
+
+inline constexpr uint32_t kCascadeMask = 0x20u | 0x40u | 0x80u | 0x100u;
+inline constexpr uint32_t kAmbientClientVtable = 0x820D8C0Cu;  // the client's object: [client] == this
+inline constexpr uint32_t kAmbientBodyPhase = 0x8000u;          // [guest] the item draw's depth-style body branch
+inline constexpr uint32_t kAmbientBufferGlobal = 0x827E5640u;   // [guest] u32: which copy of the item's state the render thread reads
+
+// The phase loop's mask test for the traffic client: its own mask, plus the phase when it is a cascade and the
+// setting is on.
+constexpr uint32_t WidenedClientMask(uint32_t mask, uint32_t phase, bool on) {
+  return (on && CascadeIndex(phase) != 0) ? (mask | phase) : mask;
+}
+
+// What the item draw reads of an item (offsets in hooks/traffic_shadow.cpp), for the tests it makes in the
+// body branch (the visible byte is +557 plus the buffer index: the update and render threads' copies).
+struct AmbientFlags {
+  uint8_t enabled = 0;       // item +36: 0 = the draw returns
+  uint8_t car_flags = 0;     // [item+16] +500: bit 0x40 must be set, bit 0x20 (a child) and bit 0x80 clear
+  int32_t model_count = 0;   // [[item+24]+32]: the draw wants at least 3
+  int32_t lod = 0;           // item +28: a negative LOD is not drawn (unless item_flags has 0x20)
+  uint8_t item_flags = 0;    // item +556: 0x20 skips the LOD test, 0x80 = there is a body to draw
+  uint8_t visible = 0;       // item +557 + buffer: bit 4 = seen by the main view
+};
+
+enum AmbientReject : uint32_t {
+  kAmbientRejectEnabled = 1u << 0,
+  kAmbientRejectCarFlags = 1u << 1,
+  kAmbientRejectModels = 1u << 2,
+  kAmbientRejectNotVisible = 1u << 3,
+  kAmbientRejectLod = 1u << 4,
+  kAmbientRejectNoBody = 1u << 5,
+};
+
+constexpr uint32_t AmbientRejectBits(const AmbientFlags& f) {
+  const bool car_ok = (f.car_flags & 0x40u) != 0 && (f.car_flags & 0x20u) == 0 && (f.car_flags & 0x80u) == 0;
+  return (f.enabled == 0 ? kAmbientRejectEnabled : 0u) | (car_ok ? 0u : kAmbientRejectCarFlags) |
+         (f.model_count < 3 ? kAmbientRejectModels : 0u) | ((f.visible & 4u) == 0 ? kAmbientRejectNotVisible : 0u) |
+         (((f.item_flags & 0x20u) == 0 && f.lod < 0) ? kAmbientRejectLod : 0u) |
+         ((f.item_flags & 0x80u) == 0 ? kAmbientRejectNoBody : 0u);
+}
+
+constexpr bool AmbientEligible(const AmbientFlags& f) { return AmbientRejectBits(f) == 0; }
+
+// The car's world matrix, as sub_82794EE8 finds it for a car that is not a child: on the render thread (the
+// thread flag [[r13]+72] set) at ((buffer + 4) rotated left by 6) & ~63 from the car, else at +128; its
+// translation is the row at +48. `buffer` is [kAmbientBufferGlobal]; anything above 3 is not a buffer index.
+constexpr bool AmbientBufferValid(uint32_t buffer) { return buffer <= 3u; }
+constexpr uint32_t AmbientMatrixOffset(bool render_copy, uint32_t buffer) {
+  const uint32_t n = buffer + 4u;
+  return render_copy ? (((n << 6) | (n >> 26)) & 0xFFFFFFC0u) : 128u;
+}
+constexpr uint32_t kAmbientTranslation = 48u;
+
+// A position read out of guest memory that is a position: three finite numbers, none beyond a million metres.
+inline bool PlausiblePosition(const float p[3]) {
+  for (int i = 0; i < 3; ++i) {
+    if (!std::isfinite(p[i]) || std::fabs(p[i]) > 1.0e6f) {
+      return false;
+    }
+  }
+  return true;
 }
 
 inline float Distance(const float camera[3], const float position[3]) {

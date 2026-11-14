@@ -25391,17 +25391,41 @@ registers = ["r3"]
 after_instruction = false
 
 # 0x8236066C: the `cmplwi cr6,r11,0` after `lbz r11,594(r30)` in mcCarModel's draw (sub_82360518),
-# on the way to the sun shadow phases (0x20 0x40 0x80 0x100 the cascades, 0x1000 the collector).
-# +594 is set by the vehicle constructor for the player's car only, so the game draws no other car
-# into the sun shadow map and the ground under traffic is lit. The hook runs before the compare with
-# r11 = the byte, r13 = the thread's guest context, r28 = the phase, r30 = the vehicle: for a car
-# the game leaves out and the TRAFFIC SHADOWS setting picks (the nearest few, within a distance) in
-# a cascade phase it raises r11 to 1, and the draw goes on into sub_8235FA90 as for the player's car.
-# Nothing is written into the vehicle. traffic_shadow.cpp, gpu/traffic_shadow.h.
+# on the way to the sun shadow phases (0x20 0x40 0x80 0x100 the cascades). This is the item draw of the
+# renderer's mcCarModelClass client, the player's and the racers' cars (TRAFFIC is NOT here: see the two
+# hooks below). +594 is set by the vehicle constructor for the player's car only, so the game draws no
+# other car of this client into the sun shadow map. The hook runs before the compare with r11 = the
+# byte, r13 = the thread's guest context, r28 = the phase, r30 = the vehicle: for a car the game leaves
+# out and the TRAFFIC SHADOWS setting picks (the nearest few, within a distance) in a cascade phase it
+# raises r11 to 1, and the draw goes on into sub_8235FA90 as for the player's car. Nothing is written
+# into the vehicle. traffic_shadow.cpp, gpu/traffic_shadow.h.
 [[midasm_hook]]
 address = 0x8236066C
 name = "Patch_TrafficCascadeGate"
 registers = ["r11", "r13", "r28", "r30"]
+after_instruction = false
+
+# 0x822E6870: `and r10,r11,r30` in sub_822E6408 (the render phase loop), at the test `client mask & phase`
+# (r11 = [client+4], r30 = the phase, r31 = the client, one of the 13 at renderer+128). TRAFFIC cars are the
+# items of slot 9, mcAmbientCarRenderClass (vtable 0x820D8C0C, mask 0x01118002: no sun cascade), so the loop
+# never calls that client in a cascade. For that one client, in a cascade phase and with TRAFFIC SHADOWS on,
+# the hook adds the phase to r11 (nothing is written into the client). traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x822E6870
+name = "Patch_AmbientCascadeClient"
+registers = ["r11", "r30", "r31"]
+after_instruction = false
+
+# 0x82793360: the entry of sub_82793360, the item draw of mcAmbientCarRenderClass (r3 = the item, r4 = the
+# phase; vtbl+8 of the item). It knows the phases 0x2 4 8 0x8000 0x10000 0x100000 0x1000000 and returns
+# without drawing in any other, the cascades included. For a car the TRAFFIC SHADOWS setting picks (the
+# nearest few, by the car's world position from sub_82794EE8's matrix) the hook makes r4 the phase 0x8000,
+# the branch that draws the body (sub_82790B08 -> sub_8237AC90) with the renderer's current phase's
+# technique (VS_ShadowDepthLocal on every ambient car shader group). traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x82793360
+name = "Patch_AmbientCascadeDraw"
+registers = ["r3", "r4", "r13"]
 after_instruction = false
 
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
