@@ -76,13 +76,14 @@ void Classification() {
 void RulesTable() {
   for (const World world : {World::kPlay, World::kPause, World::kGarage}) {
     const Rules r = RulesFor(world);
-    Check(r.occlusion && r.contact && r.bounce && r.shafts, std::string("every effect runs in the ") + Name(world));
+    Check(r.occlusion && r.contact && r.bounce && r.shafts && r.car_refl, std::string("every effect runs in the ") + Name(world));
   }
   const Rules map = RulesFor(World::kMap);
   Check(map.occlusion && map.contact, "the map keeps the occlusion and the contact shadows as they were");
   Check(!map.bounce && !map.shafts, "the map has no bounce light and no shafts");
+  Check(!map.car_refl, "the map has no car self-reflections (a car is a few pixels from 9 km up)");
   const Rules none = RulesFor(World::kNone);
-  Check(!none.occlusion && !none.contact && !none.bounce && !none.shafts, "no 3D view runs nothing");
+  Check(!none.occlusion && !none.contact && !none.bounce && !none.shafts && !none.car_refl, "no 3D view runs nothing");
 }
 
 void ShaftsNeedSkyOutsideTheGameView() {
@@ -173,6 +174,27 @@ void Text() {
   const std::string map_left = EffectsText(World::kMap, {{"ambient occlusion", "off"}, {"contact shadows", "off"},
                                                           {"bounce light", "low"}, {"sun shafts", "off"}});
   Check(map_left == "no effect is on; left out here: bounce light low", "only the left-out ones on: " + map_left);
+
+  // The car self-reflections are the fifth effect: they run in the game view, the pause world and the garage, and are left
+  // out in the map.
+  const std::string car_play = EffectsText(World::kPlay, {{"ambient occlusion", "high"}, {"contact shadows", "off"},
+                                                           {"bounce light", "off"}, {"sun shafts", "off"},
+                                                           {"car self-reflections", "high"}});
+  Check(car_play == "ambient occlusion high, car self-reflections high", "the game view lists them: " + car_play);
+  const std::string car_garage = EffectsText(World::kGarage, {{"ambient occlusion", "high"}, {"contact shadows", "high"},
+                                                               {"bounce light", "off"}, {"sun shafts", "high"},
+                                                               {"car self-reflections", "low"}});
+  Check(car_garage == "ambient occlusion high, contact shadows high, sun shafts high (where the sky is drawn), car self-reflections low",
+        "the garage lists them, with no sky note of their own: " + car_garage);
+  const std::string car_map = EffectsText(World::kMap, {{"ambient occlusion", "high"}, {"contact shadows", "high"},
+                                                         {"bounce light", "off"}, {"sun shafts", "off"},
+                                                         {"car self-reflections", "high"}});
+  Check(car_map == "ambient occlusion high, contact shadows high; left out here: car self-reflections high",
+        "the map leaves them out: " + car_map);
+  const std::string car_off = EffectsText(World::kPause, {{"ambient occlusion", "off"}, {"contact shadows", "off"},
+                                                           {"bounce light", "off"}, {"sun shafts", "off"},
+                                                           {"car self-reflections", "off"}});
+  Check(car_off == "no effect is on", "all five off says so: " + car_off);
 }
 
 // The announcements: one a change of world, after the world has held a few frames.

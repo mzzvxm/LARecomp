@@ -119,7 +119,10 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::SoftSelected()) {
     return ShaderStore::kShadowFilterVariant;
   }
-  // The car paint's self-reflection (car_selfrefl.h, a debug-only prototype): only while its test cvar is on.
+  // The car paint's self-reflection (car_selfrefl.h): while mcla_gpu_car_selfrefl is on (auto picks by the class), as the
+  // frame's BeginFrame decided. The paint is in this variant alone: the shadow filter's transform leaves it out (it reads no
+  // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two variants
+  // (variant_pack.cpp), because only the first of them here would ever draw.
   if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
     return ShaderStore::kCarSelfReflVariant;
   }

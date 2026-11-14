@@ -39,8 +39,11 @@ constexpr std::string_view kAfterFinalWrite =
 
 // The helper and its types, before main. The constants are declared by the two edits below it.
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant car_selfrefl (src/shaderpack/variants/car_selfrefl.cpp): the paint's two environment reads occluded by,
-// or replaced with, the car's own colour of the previous frame. The history image (g_CarReflC.x): rgb the frame's scene colour,
-// a the view distance of the pixels of a vehicle (0 for everything else). g_CarReflM0..M3 take a world position of this frame
+// or replaced with, the car's own colour of the previous frame. The history image (g_CarReflC.x, the picture's size or half of
+// it): a the view distance of the pixels of a vehicle (0 for everything else), rgb the frame's scene colour of those pixels
+// (0 elsewhere: the host pass reads the colour of a vehicle's pixels only, hlsl/car_history_ps.hlsl), both read as points
+// (no filtering: a filtered read at a vehicle's edge would mix its colour and distance with the zeros of the world's).
+// g_CarReflM0..M3 take a world position of this frame
 // into the history frame's clip space (the vehicle's own motion is in them). g_CarReflA: x mode (0 off, 1 darken, 2 replace),
 // y ray length (m), z thickness (m), w strength. g_CarReflB: x steps, y debug view, z colour gain, w noise frame.
 struct CarReflResult
@@ -183,7 +186,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector, float
         const float share = hi / rayLength;
         const float edge = saturate(min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)) * 12.5);
         const float rayFade = 1.0 - smoothstep(0.55, 1.0, share);
-        const float3 colour = history.SampleLevel(g_SamplerDescriptorHeap[slots.y], uv, 0.0).rgb;
+        const float3 colour = CarReflLoad(history, size, uv).rgb;  // a point read: the image's rgb is a vehicle's pixel or 0
         result.colour = min(max(colour, 0.0) * more.z, 64.0);
         result.dist = share;
         result.hit = agreement * edge * rayFade;
@@ -335,6 +338,7 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
       {"float3 CarReflDebug(", 1},        {"CarReflDebug(carRefl, iTexCoord4.w)", 1},
       {"CarReflResult carRefl = (CarReflResult)0;", 1},
       {"SharedConstants + 608", 1},       {"SharedConstants + 704", 1},
+      {"history.SampleLevel(", 0},        {"CarReflLoad(history, size, uv).rgb", 1},
       {"g_CarReflM0 : packoffset(c38)", 1}, {"g_CarReflC : packoffset(c44)", 1},
   };
   for (const auto& check : kChecks) {

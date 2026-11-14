@@ -136,6 +136,28 @@ int main() {
   Check(Near(cr::LinearDepth(0.0, proj), 1000.0, 1e-6), "stored 0 is the far plane");
   Check(Near(cr::LinearDepth(1.0, proj), 0.5), "stored 1 is the near plane");
 
+  // the history image's size: half for the low setting and for 2560 pixels across and more, the debug override wins
+  Check(cr::HistoryDivisor(cr::Mode::kOcclusion, 1280, 0) == 2, "low: half size at any render size");
+  Check(cr::HistoryDivisor(cr::Mode::kOcclusion, 3840, 0) == 2, "low: half size at 4K");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 1280, 0) == 1, "high at 1280 across: full size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 1920, 0) == 1, "high at 1920 across: full size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 2559, 0) == 1, "high at 2559 across: full size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 2560, 0) == 2, "high at 2560 across: half size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 3840, 0) == 2, "high at 3840 across: half size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 3840, 1) == 1 && cr::HistoryDivisor(cr::Mode::kOcclusion, 3840, 1) == 1,
+        "the override 1 gives the full size");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 1280, 2) == 2 && cr::HistoryDivisor(cr::Mode::kOcclusion, 1280, 2) == 2,
+        "the override 2 gives half");
+  Check(cr::HistoryDivisor(cr::Mode::kReflection, 3840, 7) == 2 && cr::HistoryDivisor(cr::Mode::kReflection, 1280, -1) == 1,
+        "an override that is not 1 or 2 is the rule");
+  Check(cr::HistoryEdge(2160, 1) == 2160 && cr::HistoryEdge(2160, 2) == 1080 && cr::HistoryEdge(2161, 2) == 1081 &&
+            cr::HistoryEdge(1, 2) == 1 && cr::HistoryEdge(720, 0) == 720,
+        "the image's edge is the render edge over the divisor, rounded up");
+  // the memory at 4K (3840x2160, RGBA16F, 8 bytes a texel): 63.3 MiB at full size, 15.8 MiB at half
+  const double full_mib = double(cr::HistoryEdge(3840, 1)) * cr::HistoryEdge(2160, 1) * 8.0 / (1024.0 * 1024.0);
+  const double half_mib = double(cr::HistoryEdge(3840, 2)) * cr::HistoryEdge(2160, 2) * 8.0 / (1024.0 * 1024.0);
+  Check(Near(full_mib, 63.28125, 1e-9) && Near(half_mib, 15.8203125, 1e-9), "the image is 63.3 MiB at full size and 15.8 MiB at half at 4K");
+
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

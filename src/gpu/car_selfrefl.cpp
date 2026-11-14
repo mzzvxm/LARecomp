@@ -3,34 +3,50 @@
 #include "car_selfrefl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
 #include <format>
 #include <string>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include "descriptors.h"
 #include "draw_decode.h"
+#include "gpu_class.h"
+#include "host_plan.h"
 #include "host_shaders.h"
+#include "live_text.h"
+#include "menu_world.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_car_selfrefl, "auto", "MCLA/GPU",
+    "Car self-reflections: your car's paint reflects its own body, which the game's paint does not: the wing shows in the "
+    "trunk lid and the mirror in the door, and the reflection is darker where the body shades it, under a spoiler or "
+    "in a wheel arch. low darkens the reflection there; high does that and also shows the car's own colour in the "
+    "reflection. auto (the default) picks by the graphics card: off on an integrated one, low on a card with less than 5.5 "
+    "GiB of video memory, high on the rest. Costs the graphics card a little while it is on (about 0.2 ms a frame at 4K on "
+    "an RTX 5080). It works in the game, behind the pause menu and in the garage, not on the map. Live.")
+    .allowed({"auto", "off", "low", "high"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_test, 0, "MCLA/GPU",
-    "Diagnostic, a prototype (package G8b): the player's car paint reflects its own car, which the game's paint does not (no "
-    "wing in the trunk lid, no mirror in the door). 0: the game's paint, nothing of this runs. 1: the reflection is darkened "
-    "where a short ray along it passes just behind a part of the car (specular occlusion). 2: the same, and the car's own "
-    "colour of the previous frame is reflected there. Needs the shader pack's car_selfrefl variant and the motion blur "
-    "draw's camera; costs the graphics card time while on (a full-screen pass a frame and the ray in the paint). Live.")
+    "Diagnostic: forces the car self-reflections (mcla_gpu_car_selfrefl) to a level whatever the setting says, for a test "
+    "or a comparison. 0: follow the setting (the default). 1: low, the reflection is darkened where a short ray along it "
+    "passes just behind a part of the car (specular occlusion). 2: high, the same, and the car's own colour of the "
+    "previous frame is reflected there. Needs the shader pack's car_selfrefl variant and the motion blur draw's camera. "
+    "Live.")
     .debug_only()
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while mcla_gpu_car_selfrefl_test is on): "
+    "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): "
     "1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace "
     "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit). 0: "
     "off. Live.")
@@ -70,13 +86,23 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 16.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_car_selfrefl_history, 0, "MCLA/GPU",
+    "Diagnostic: the size of the car self-reflection's history image: 0 the rule (half of the render size for the low setting "
+    "and from 2560 pixels across, the full size otherwise), 1 the full render size, 2 half of it in each direction (a quarter "
+    "of the memory and of the pass's work). Live.")
+    .debug_only()
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
 
 constexpr const char* kPrefix = "[car refl]";
 constexpr uint32_t kMinRenderSize = 64;
-// Frames without the test on before the image is given back (2 s).
+// Frames without the effect on, or with no paint draw of the variant in them (the car is not on the screen), before the image is
+// given back (2 s at 60 FPS).
 constexpr uint32_t kReleaseAfterFrames = 120;
 // How much a lens number may differ between the frame the history was linearised with and the frame it was made in.
 constexpr double kLensTolerance = 0.05;
@@ -95,11 +121,43 @@ float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
 const char* ModeName(CarSelfRefl::Mode mode) {
   switch (mode) {
     case CarSelfRefl::Mode::kOff: return "off";
-    case CarSelfRefl::Mode::kOcclusion: return "occlusion";
-    case CarSelfRefl::Mode::kReflection: return "occlusion and reflection";
+    case CarSelfRefl::Mode::kOcclusion: return "low (specular occlusion)";
+    case CarSelfRefl::Mode::kReflection: return "high (occlusion and reflection)";
   }
   return "?";
 }
+
+// ---------------------------------------------------------------------------
+// the setting
+// ---------------------------------------------------------------------------
+// mcla_gpu_car_selfrefl with `auto` resolved for this graphics card (gpu_class.h: off on Low, low on Mid, high on High), read
+// through LiveText (the pause menu's thread writes the cvar's string while this one reads it; the compare key's flip is in it).
+// The same rule the precache uses (host_plan.h), so the draws and the start's list cannot disagree about what is on.
+static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(car_selfrefl::Mode::kOff) &&
+              uint8_t(host_plan::Level::kLow) == uint8_t(car_selfrefl::Mode::kOcclusion) &&
+              uint8_t(host_plan::Level::kHigh) == uint8_t(car_selfrefl::Mode::kReflection));
+
+LiveText& Setting() {
+  static LiveText text("mcla_gpu_car_selfrefl");
+  return text;
+}
+
+host_plan::Choice CarReflChoice() {
+  return host_plan::Resolve(host_plan::Pass::kCarRefl, gpu_class::Current(), true, Setting().Get());
+}
+
+// The debug override wins when it is above 0.
+bool Forced() { return REXCVAR_GET(mcla_gpu_car_selfrefl_test) > 0; }
+
+CarSelfRefl::Mode ReadMode() {
+  if (Forced()) {
+    return car_selfrefl::ModeOfTest(int(REXCVAR_GET(mcla_gpu_car_selfrefl_test)));
+  }
+  return CarSelfRefl::Mode(uint8_t(CarReflChoice().level));
+}
+
+// What the frame's BeginFrame decided, for the pipelines' per-draw choice of the paint's variant.
+std::atomic<bool> g_selected{false};
 
 car_selfrefl::Tuning ReadTuning() {
   car_selfrefl::Tuning t;
@@ -114,7 +172,7 @@ car_selfrefl::Tuning ReadTuning() {
 
 }  // namespace
 
-bool CarSelfRefl::Selected() { return REXCVAR_GET(mcla_gpu_car_selfrefl_test) > 0; }
+bool CarSelfRefl::Selected() { return g_selected.load(std::memory_order_relaxed); }
 
 CarSelfRefl::~CarSelfRefl() = default;
 
@@ -126,10 +184,35 @@ void CarSelfRefl::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming
   passes_ = &passes;
   edram_ = &edram;
   pass_timing_ = &pass_timing;
+  shaders_failed_ = false;
+  listed_ = false;
+  built_ = false;
+  // The shaders and the pipelines are made only where the effect is on at the start (not on the Low class, where `auto` is
+  // off): where it is off they would be compile work and memory for nothing. A live switch to on makes the shaders in
+  // BeginFrame and the pipelines in the background (HoldUntilBuilt).
+  const host_plan::Choice choice = CarReflChoice();
+  if (Forced()) {
+    if (MakeShaders()) {
+      ListPrecache("car self-reflections forced on (mcla_gpu_car_selfrefl_test)");
+    }
+  } else if (choice.level != host_plan::Level::kOff && MakeShaders()) {
+    ListPrecache(host_plan::Describe(host_plan::Pass::kCarRefl, choice, gpu_class::Current()));
+  } else {
+    passes.precache().Note(host_plan::Describe(host_plan::Pass::kCarRefl, choice, gpu_class::Current()), 0);
+  }
+}
+
+bool CarSelfRefl::MakeShaders() {
+  if (ready_) {
+    return true;
+  }
+  if (shaders_failed_ || !passes_) {
+    return false;
+  }
   bool ok = true;
   for (uint32_t i = 0; i < kPassCount && ok; ++i) {
     const HostShaderBlob blob = CarHistoryPixelShader(i);
-    shaders_[i] = passes.CreateShader(blob.data, blob.size, blob.name);
+    shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
   }
   if (!ok) {
@@ -137,10 +220,11 @@ void CarSelfRefl::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming
     for (auto& shader : shaders_) {
       shader.reset();
     }
-    return;
+    shaders_failed_ = true;
+    return false;
   }
   ready_ = true;
-  ListPrecache();
+  return true;
 }
 
 void CarSelfRefl::Shutdown() {
@@ -163,13 +247,48 @@ void CarSelfRefl::Shutdown() {
   pass_timing_ = nullptr;
 }
 
-void CarSelfRefl::ListPrecache() {
+void CarSelfRefl::ListPrecache(const std::string& note) {
   HostPrecache& precache = passes_->precache();
+  uint32_t added = 0;
   for (uint32_t pass = 0; pass < kPassCount; ++pass) {
-    precache.Add(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
-                 pass == kPassMs ? "car history (multisampled)" : "car history",
-                 [this, pass] { return MakePipeline(pass); });
+    added += precache.Add(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
+                          pass == kPassMs ? "car history (multisampled)" : "car history",
+                          [this, pass] { return MakePipeline(pass); })
+                 ? 1u
+                 : 0u;
   }
+  listed_ = true;
+  precache.Note(note, added);
+}
+
+void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
+  if (built_) {
+    return;
+  }
+  HostPrecache& precache = passes_->precache();
+  if (!listed_) {
+    // Off at the start, on now: made on a worker of their own, in the order of the list.
+    std::vector<HostPrecache::Item> fresh;
+    for (uint32_t pass = 0; pass < kPassCount; ++pass) {
+      fresh.push_back({HostPrecache::Key(HostPrecache::kCarSelfRefl, pass),
+                       pass == kPassMs ? "car history (multisampled)" : "car history",
+                       [this, pass] { return MakePipeline(pass); }});
+    }
+    listed_ = true;
+    const uint32_t count = precache.AddLive("car self-reflections", std::move(fresh));
+    REXLOG_INFO("{} the car self-reflections were off at the start: {} pipelines are made in the background, and the "
+                "effect is drawn from the frame those are done",
+                kPrefix, count);
+  }
+  // Not drawn until every pipeline is made (or has failed, which Pipeline says): a frame never waits for a compile.
+  for (uint32_t pass = 0; pass < kPassCount; ++pass) {
+    if (!pipelines_[pass] && !pipeline_failed_[pass] &&
+        !precache.Ready(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass))) {
+      *mode = Mode::kOff;
+      return;
+    }
+  }
+  built_ = true;
 }
 
 std::unique_ptr<plume::RenderPipeline> CarSelfRefl::MakePipeline(uint32_t pass) {
@@ -197,16 +316,25 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
 }
 
 void CarSelfRefl::BeginFrame() {
-  Mode mode = car_selfrefl::ModeOfTest(int(REXCVAR_GET(mcla_gpu_car_selfrefl_test)));
+  Mode mode = ReadMode();
+  if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
+    // Off at the start, on now (a live change): the shaders were not made; they are made here (a short call) and the
+    // pipelines in the background (HoldUntilBuilt).
+    REXLOG_INFO("{} the car self-reflections were off at the start: their shaders are made now", kPrefix);
+  }
   if (!ready_ && mode != Mode::kOff) {
-    mode = Mode::kOff;  // the shaders could not be made (Initialize said so)
+    mode = Mode::kOff;  // the shaders could not be made (MakeShaders said so)
   }
   if (uint32_t(mode) != last_mode_logged_) {
     last_mode_logged_ = uint32_t(mode);
-    REXLOG_INFO("{} car self-reflection test {} (mcla_gpu_car_selfrefl_test = {}, live)", kPrefix, ModeName(mode),
-                REXCVAR_GET(mcla_gpu_car_selfrefl_test));
+    REXLOG_INFO("{} car self-reflections {} (mcla_gpu_car_selfrefl = {}{}, live)", kPrefix, ModeName(mode),
+                Setting().Get(), Forced() ? ", forced by mcla_gpu_car_selfrefl_test" : "");
+  }
+  if (mode != Mode::kOff) {
+    HoldUntilBuilt(&mode);
   }
   mode_ = mode;
+  g_selected.store(mode != Mode::kOff, std::memory_order_relaxed);
   tuning_ = ReadTuning();
 }
 
@@ -232,10 +360,10 @@ void CarSelfRefl::OnMainDraw(const temporal::MainMatch& match, uint32_t stencil_
     return;
   }
   if (match.samples == temporal::kPauseSamples) {
-    pause_view_ = true;  // the pause menu's, the race pause's and the map's world: no history there
-    return;
+    pause_view_ = true;  // the pause menu's, the race pause's, the garage's and the map's world (menu_world.h)
+  } else {
+    play_view_ = true;
   }
-  play_view_ = true;
   if (!anchor_seen_ && !composite_seen_) {
     stencil_ids_ |= stencil_ids;  // the anchor's constants hold the motion of those only
   }
@@ -246,12 +374,14 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
   const bool had_history = history_pending_;
   history_pending_ = false;
   motion_.valid = 0;
-  // The play view's camera only; a frame with draws of both kinds or of neither gives none, and leaves no history.
-  if (!play_view_ || pause_view_) {
+  // The camera of the frame's kind of view (the play view's or the pause/map world's, kept apart as in ao.cpp: the lenses
+  // differ); a frame with draws of both kinds or of neither gives none, and leaves no history.
+  if (play_view_ == pause_view_) {
     have_previous_ = false;
     history_valid_ = false;
     return;
   }
+  const bool pause = pause_view_;
   const uint8_t* ps = banks.ps.data();
   const float width = BankFloat(ps, 62, 0);
   const float height = BankFloat(ps, 62, 1);
@@ -267,9 +397,12 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
     history_valid_ = false;
     return;
   }
-  // The vehicles' own motion over this frame: the next frame repeats it (the constant velocity guess of ao.h).
-  temporal::ReadVehicleMotion(ps, stencil_ids_, &motion_);
-  motion_frame_ = frame_;
+  // The vehicles' own motion over this frame: the next frame repeats it (the constant velocity guess of ao.h). Not in the
+  // pause view: the game's slots of a 4x frame are not trusted there (a car in the garage or under the menu is still).
+  if (!pause) {
+    temporal::ReadVehicleMotion(ps, stencil_ids_, &motion_);
+    motion_frame_ = frame_;
+  }
   // The history written at this frame's trigger belongs to this camera, when the lens it was linearised with (the
   // previous frame's) is this frame's.
   if (had_history) {
@@ -283,10 +416,12 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
     }
     history_camera_ = camera;
     history_frame_ = frame_;
+    history_pause_ = pause;
   } else {
     history_valid_ = false;  // none made this frame: the image of the frame before is a frame too old
   }
   previous_ = camera;
+  previous_pause_ = pause;
   have_previous_ = true;
   previous_frame_ = frame_;
 }
@@ -296,13 +431,17 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
 // ---------------------------------------------------------------------------
 
 bool CarSelfRefl::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
-  // The ambient occlusion's trigger (ao.cpp Judge, shafts.cpp IsFirstPoint) for the play view: the first copy of the main
-  // depth that is no end-of-scene copy, into 078B0000, before the anchor, whose rectangle starts at the origin and stays
-  // inside the picture (the game copies the picture in two tiles; the target is whole at the first).
+  // The ambient occlusion's trigger (ao.cpp Judge, shafts.cpp IsFirstPoint): the first copy of the main depth that is no
+  // end-of-scene copy, into 078B0000, before the anchor. The play view's rectangle starts at the origin and stays inside the
+  // picture (the game copies the picture in two tiles; the target is whole at the first); the pause view's three tiles come
+  // in an order nobody has looked at, so any rectangle inside the picture will do (the host draws the world once, so the
+  // target is whole at whichever tile comes first) and the destination must be the whole picture (menu_world.h).
   if (!summary.depth_copy || !summary.source || trigger_seen_) {
     return false;
   }
-  if (!temporal::IsPlaySamples(temporal::MainDepthSamples(summary.source_key))) {
+  const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
+  const bool pause = samples == temporal::kPauseSamples;
+  if (!temporal::IsPlaySamples(samples) && !pause) {
     return false;
   }
   if ((record.flags & kEventInsideEndTiling) || summary.clears_depth ||
@@ -311,6 +450,11 @@ bool CarSelfRefl::IsTrigger(const ResolveRecord& record, const ResolveCache::Sum
   }
   uint32_t width = std::min(summary.dest_width, summary.source->width);
   uint32_t height = std::min(summary.dest_height, summary.source->height);
+  if (pause) {
+    return menu_world::PauseFirstPointGeometry(summary.x0, summary.y0, summary.x1, summary.y1, width, height,
+                                               summary.source->width, summary.source->height,
+                                               EdramTargets::kHeightAlignment);
+  }
   return summary.x0 == 0 && summary.y0 == 0 && summary.x1 > summary.x0 && summary.y1 > summary.y0 &&
          uint32_t(summary.x1) <= width && uint32_t(summary.y1) <= height;
 }
@@ -331,10 +475,28 @@ bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   }
   trigger_seen_ = true;
   ++triggers_;
+  // The history is for the NEXT frame's paint draws, which a frame whose own draws had no paint of the variant (no car on the
+  // screen, or the paint's pipeline not yet made) is not going to have either: no pass, no image work, no history. The car
+  // coming into view costs one frame of the game's own paint.
+  if (frame_paint_draws_ == 0) {
+    ++skipped_no_car_;
+    history_valid_ = false;
+    return false;
+  }
+  const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
   // The lens of the history is the previous frame's (this frame's camera comes at its anchor, after this): a frame that
-  // does not follow a frame with a camera has none.
-  if (!have_previous_ || previous_frame_ + 1 != frame_) {
+  // does not follow a frame with a camera of the same kind of view has none.
+  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause) {
     ++no_camera_;
+    history_valid_ = false;
+    return false;
+  }
+  // The world of the frame by that camera, and whether the effect runs in it: the game view, the pause menu's world and the
+  // garage, not the map (menu_world.h).
+  trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&previous_), menu_world::GarageLighting())
+                         : menu_world::World::kPlay;
+  if (!menu_world::RulesFor(trigger_world_).car_refl) {
+    ++world_skipped_;
     history_valid_ = false;
     return false;
   }
@@ -357,6 +519,11 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   if (render_w < kMinRenderSize || render_h < kMinRenderSize) {
     return false;
   }
+  // The image is the render size over a divisor (car_selfrefl_rules.h HistoryDivisor: half for the low setting and from 2560
+  // across, a quarter of the memory), the pass reads the plane's pixel at the lower right of each block.
+  const uint32_t divisor = car_selfrefl::HistoryDivisor(mode_, render_w, int(REXCVAR_GET(mcla_gpu_car_selfrefl_history)));
+  const uint32_t image_w = car_selfrefl::HistoryEdge(render_w, divisor);
+  const uint32_t image_h = car_selfrefl::HistoryEdge(render_h, divisor);
   // The main colour's identity beside the depth's, at the same samples (shafts.cpp RecordSky).
   EdramKey colour_key;
   colour_key.base_tiles = temporal::kMainColorBase;
@@ -380,18 +547,20 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   if (!pipeline) {
     return false;
   }
-  if (!passes_->EnsureImage(history_, render_w, render_h, plume::RenderFormat::R16G16B16A16_FLOAT, "car history")) {
+  if (!passes_->EnsureImage(history_, image_w, image_h, plume::RenderFormat::R16G16B16A16_FLOAT, "car history")) {
     if (!failed_logged_) {
       failed_logged_ = true;
       REXLOG_ERROR("{} the history image could not be made: no car self-reflection while that lasts", kPrefix);
     }
     return false;
   }
-  if (image_for_[0] != render_w || image_for_[1] != render_h) {
-    image_for_[0] = render_w;
-    image_for_[1] = render_h;
-    REXLOG_INFO("{} history image {}x{} R16G16B16A16_FLOAT ({:.1f} MiB) for a {}x{} picture of {} host samples", kPrefix,
-                render_w, render_h, double(HeldBytes()) / (1024.0 * 1024.0), render_w, render_h, depth.host_samples);
+  if (image_for_[0] != image_w || image_for_[1] != image_h) {
+    image_for_[0] = image_w;
+    image_for_[1] = image_h;
+    REXLOG_INFO("{} history image {}x{} R16G16B16A16_FLOAT ({:.1f} MiB, {} of the render size) for a {}x{} picture of {} host "
+                "samples",
+                kPrefix, image_w, image_h, double(HeldBytes()) / (1024.0 * 1024.0), divisor == 1 ? "the full size" : "half",
+                render_w, render_h, depth.host_samples);
   }
   uint32_t colour_slot = 0;
   uint32_t colour_stencil = 0;
@@ -417,6 +586,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   push.slots2[0] = summary.host_sample;
   push.sizes[0] = float(render_w);
   push.sizes[1] = float(render_h);
+  push.sizes[2] = float(divisor);
   // The previous frame's lens (view space to clip, row vectors): the rows the linearisation reads.
   const temporal::Mat4& p = previous_.projection;
   push.lin[0] = float(p.m[2][2]);
@@ -436,8 +606,15 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
                                 car_selfrefl::CarSelfReflConstants* out) {
   *out = car_selfrefl::OffConstants();
   ++paint_draws_;
-  if (mode_ == Mode::kOff || !ready_ || !history_valid_ || history_frame_ + 1 != frame_ || !play_view_ || pause_view_ ||
-      !history_.texture || history_.slot == kNoSlot) {
+  ++frame_paint_draws_;
+  const bool one_view = play_view_ != pause_view_;
+  if (!first_paint_logged_) {
+    first_paint_logged_ = true;
+    REXLOG_INFO("{} the first draw of the paint through the variant: frame {}, {} view, mode {}, history {}", kPrefix,
+                frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_), history_valid_ ? "valid" : "none yet");
+  }
+  if (mode_ == Mode::kOff || !ready_ || !history_valid_ || history_frame_ + 1 != frame_ || !one_view ||
+      history_pause_ != pause_view_ || !history_.texture || history_.slot == kNoSlot) {
     return;
   }
   // The vehicle this draw belongs to: the ID its stencil write names (4 ID + {0, 1}).
@@ -447,8 +624,9 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
     return;
   }
   const uint32_t id = uint32_t(std::countr_zero(ids));
+  // The play view: the vehicle's own motion of the last anchor. The pause view's worlds: the car is still (OnAnchor says why).
   const temporal::Mat4* motion = nullptr;
-  if ((motion_.valid & (1u << id)) != 0 && motion_frame_ == history_frame_) {
+  if (!pause_view_ && (motion_.valid & (1u << id)) != 0 && motion_frame_ == history_frame_) {
     motion = &motion_.world[id];
     ++paint_motion_;
   }
@@ -460,7 +638,17 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
     REXLOG_INFO("{} the first draw of the paint with a history: stencil ID {}, RT0 exponent bias {} (colour gain {}), "
                 "vehicle motion {}",
                 kPrefix, id, exp_bias, car_selfrefl::ExpBiasGain(exp_bias) * tuning_.gain,
-                motion ? "known" : "unknown (the car is taken as still)");
+                motion ? "known" : pause_view_ ? "not used in this view (the car is taken as still)"
+                                               : "unknown (the car is taken as still)");
+  }
+  if (pause_view_) {
+    ++paint_pause_;
+    if (!pause_paint_logged_) {
+      pause_paint_logged_ = true;
+      REXLOG_INFO("{} the first draw of the paint with a history in the pause view's worlds: {} (stencil ID {}), the car "
+                  "is taken as still",
+                  kPrefix, menu_world::Name(trigger_world_), id);
+    }
   }
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
                                      car_selfrefl::ExpBiasGain(exp_bias),
@@ -472,19 +660,44 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
 // the frame boundary
 // ---------------------------------------------------------------------------
 
+menu_world::World CarSelfRefl::FrameWorld() const {
+  if (play_view_ == pause_view_) {
+    return menu_world::World::kNone;  // no main view in the frame, or both kinds
+  }
+  if (play_view_) {
+    return menu_world::World::kPlay;
+  }
+  return menu_world::Classify(true, menu_world::LensOf(have_previous_ && previous_pause_ ? &previous_ : nullptr),
+                              menu_world::GarageLighting());
+}
+
+const char* CarSelfRefl::Level() const {
+  switch (mode_) {
+    case Mode::kOff: return "off";
+    case Mode::kOcclusion: return "low";
+    case Mode::kReflection: return "high";
+  }
+  return "off";
+}
+
 void CarSelfRefl::OnPresent() {
   if (mode_ != Mode::kOff && (play_view_ || pause_view_) && frame_ % kCensusFrames == 0) {
     Census();
   }
-  if (mode_ == Mode::kOff) {
-    // Off for a couple of seconds: the image goes back (the first trigger after makes it again).
+  // Off for a couple of seconds, or on with no car on the screen for as long (no draw of the paint variant): the image goes back
+  // (the first trigger with a car after makes it again).
+  const bool idle = mode_ == Mode::kOff || frame_paint_draws_ == 0;
+  if (idle) {
     if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
       ReleaseImage();
     }
-    history_valid_ = false;
   } else {
     off_frames_ = 0;
   }
+  if (mode_ == Mode::kOff) {
+    history_valid_ = false;
+  }
+  frame_paint_draws_ = 0;
   history_pending_ = false;
   anchor_seen_ = false;
   composite_seen_ = false;
@@ -492,16 +705,24 @@ void CarSelfRefl::OnPresent() {
   play_view_ = false;
   pause_view_ = false;
   stencil_ids_ = 0;
+  trigger_world_ = menu_world::World::kNone;
   ++frame_;
 }
 
 void CarSelfRefl::Census() {
-  REXLOG_INFO("{} frame {}: {} view, mode {}, history {}; {} triggers ({} history passes, {} without the previous "
-              "frame's camera, {} lens changes); {} paint draws, {} with a history ({} with the vehicle's motion, {} "
-              "without a stencil ID); {:.1f} MiB",
-              kPrefix, frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_),
-              history_valid_ ? "valid" : "none", triggers_, passes_run_, no_camera_, lens_changed_, paint_draws_,
-              paint_with_history_, paint_motion_, paint_no_id_, double(HeldBytes()) / (1024.0 * 1024.0));
+  // The numbers of the interval since the last line come first: the totals alone read as "none" for as long as the car is
+  // not on the screen (the title and the loading frames), and in a run's first lines that is all there is.
+  REXLOG_INFO("{} frame {}: {} view, mode {}, history {}; paint draws in the last {} frames: {}, {} with a history ({} of "
+              "them in the pause view's worlds); since the start: {} triggers ({} history passes, {} with no paint draw in "
+              "the frame, {} without the previous frame's camera, {} lens changes, {} in a world with no effect), {} paint draws, {} with a history ({} with "
+              "the vehicle's motion, {} without a stencil ID); {:.1f} MiB",
+              kPrefix, frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_), history_valid_ ? "valid" : "none",
+              kCensusFrames, paint_draws_ - census_paint_, paint_with_history_ - census_with_history_,
+              paint_pause_ - census_pause_, triggers_, passes_run_, skipped_no_car_, no_camera_, lens_changed_, world_skipped_,
+              paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, double(HeldBytes()) / (1024.0 * 1024.0));
+  census_paint_ = paint_draws_;
+  census_with_history_ = paint_with_history_;
+  census_pause_ = paint_pause_;
 }
 
 }  // namespace mcla::gpu

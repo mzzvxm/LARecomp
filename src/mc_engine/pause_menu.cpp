@@ -1833,21 +1833,41 @@ std::string CarReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
+// Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live): the player's car paint reflects its own body, the wing
+// in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. AUTO picks by the graphics
+// card and says what it comes to ("AUTO (HIGH)"): OFF on an integrated GPU, LOW on a discrete one with under 5.5 GiB, HIGH on the
+// rest (gpu/gpu_class.h); or OFF, LOW (the reflection darkened where the body shades it) or HIGH (that, and the car's own colour
+// in the reflection). It works in the game, behind the pause menu and in the garage, not on the map. The label is "CAR
+// SELF-REFLECTIONS" (20 characters, the page's widest with COMPARE KEY (NUMPAD)) with a value of at most 11 ("AUTO (HIGH)").
+const char* const kNativeCarSelfReflVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeCarSelfReflNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+std::string CarSelfReflLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kCarSelfRefl);
+    case 1:  return "OFF";
+    case 2:  return "LOW";
+    default: return "HIGH";
+    }
+}
+constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel};
 // Compare key (mcla_compare_effect, mc_engine/effect_compare.h, live): which effect the key flips off and on to
 // see what it does, with the key's own name in the row's label ("COMPARE KEY (F1)" and the effect as its value).
-// The first five effects of gpu/effect_compare.h, in its order; the bloom size fix is a fix and has no row (F4 or
+// The first six effects of gpu/effect_compare.h, in its order; the bloom size fix is a fix and has no row (F4 or
 // the command line set it). A flip is never saved, and it ends when the row is changed. Width: the label is "COMPARE
-// KEY" (11) and " (F1)" (5), the longest value "AMBIENT OCCLUSION" (17): 33 together, under the 41 a page can
+// KEY" (11) and " (F1)" (5), the longest value "AMBIENT OCCLUSION" (17), 33 together; the page's widest label, "CAR SELF-REFLECTIONS"
+// (20) or the key's name in "COMPARE KEY (NUMPAD)" (20), with that value comes to 37, under the 41 a page can
 // take; a key whose name is longer than six characters is left out of the label, which keeps it under 41 whatever
 // the key.
-constexpr const char* kCompareVals[]  = {"bounce", "contact", "shafts", "occlusion", "filter"};
+constexpr const char* kCompareVals[]  = {"bounce", "contact", "shafts", "occlusion", "filter", "selfrefl"};
 constexpr const char* kCompareNames[] = {"BOUNCE LIGHT", "CONTACT SHADOWS", "SUN SHAFTS", "AMBIENT OCCLUSION",
-                                         "SHADOW FILTER"};
-static_assert(sizeof(kCompareVals) / sizeof(kCompareVals[0]) == 5 &&
-                  sizeof(kCompareNames) / sizeof(kCompareNames[0]) == 5 &&
+                                         "SHADOW FILTER", "SELF-REFLECTIONS"};
+static_assert(sizeof(kCompareVals) / sizeof(kCompareVals[0]) == 6 &&
+                  sizeof(kCompareNames) / sizeof(kCompareNames[0]) == 6 &&
                   std::string_view(kCompareVals[4]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kShadowFilter).choice &&
+                  std::string_view(kCompareVals[5]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kCarSelfRefl).choice &&
+                  std::string_view(kCompareNames[5]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kCarSelfRefl).label &&
                   std::string_view(kCompareNames[3]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kAmbientOcclusion).label,
-              "the COMPARE KEY row lists the first five effects of gpu/effect_compare.h in its order");
+              "the COMPARE KEY row lists the first six effects of gpu/effect_compare.h in its order");
 const char* CompareSuffix() {
     static thread_local std::string text;
     const std::string key = mcla::compare::KeyLabel();
@@ -1902,14 +1922,15 @@ const ItemDef kPictureItems[] = {
 // (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
 // shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
 // first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT), then
-// reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
+// reflections (ROAD REFLECTIONS, then CAR REFLECTIONS, then CAR SELF-REFLECTIONS). The ids and the cvars are the rows' own as they
 // were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
 // is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
 // effect above that the compare key flicks off and on (see kCompareVals).
-// Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
-// ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
-// ItemRowLabel); COMPARE KEY is the one row with a suffix, its key's name (33 at most, see kCompareVals).
-// 8 rows of the 24 a page can hold.
+// Width: the longest label is "CAR SELF-REFLECTIONS" (20, as "COMPARE KEY (NUMPAD)") and the longest value "AMBIENT
+// OCCLUSION" (17, the compare row's), 37 together, under the 41 a page can take ("Page width" above ItemRowLabel); the
+// other rows' longest pair is "ROAD REFLECTIONS" (16) with "AUTO (HIGH)" (11) ("AUTO (ULTRA)" does not happen: AUTO is
+// game or high); COMPARE KEY is the one row with a suffix, its key's name (see kCompareVals).
+// 9 rows of the 24 a page can hold.
 const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -1932,9 +1953,12 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
                                 "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kCarReflectionDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
+                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 4),
+                            &kCarSelfReflDynamics)),
     // The key that flicks one of the effects above off and on to see what it does (not saved).
     NativeOnly(WithDynamics(Str("PM_RxGpuCompare", "mcla_compare_effect", "COMPARE KEY: ",
-                                kCompareVals, kCompareNames, 5),
+                                kCompareVals, kCompareNames, 6),
                             &kCompareDynamics)),
 };
 #endif
@@ -2780,11 +2804,11 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
-// The GRAPHICS QUALITY page (kGfxQualityItems, 8 rows, one suffix): labels at most 16 ("ROAD REFLECTIONS"),
-// then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "BOUNCE LIGHT" 12,
-// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together. The 8th row,
-// COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most (20, under 23), its values
-// at most 17 ("AMBIENT OCCLUSION", under 18): 37 together, under 41.
+// The GRAPHICS QUALITY page (kGfxQualityItems, 9 rows, one suffix): labels at most 20 ("CAR SELF-REFLECTIONS"),
+// then "ROAD REFLECTIONS" 16, "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13,
+// "BOUNCE LIGHT" 12, "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 31 together.
+// The 9th row, COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most (20, under 23), its
+// values at most 17 ("AMBIENT OCCLUSION", under 18): 37 together, under 41.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
