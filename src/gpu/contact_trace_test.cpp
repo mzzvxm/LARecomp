@@ -471,7 +471,7 @@ struct Tally {
 // Runs the march with and without the term over every ground pixel `select` picks (on the ground, not a vehicle).
 template <class Select>
 Tally RunScene(const Scene& s, const Vec3& up, float strength, Select&& select, int* loads_per_frame = nullptr,
-               int* pixels = nullptr) {
+               int* pixels = nullptr, float cast_distance = 0.0f) {
   const auto depth = [&](int x, int y) { return s.DepthV(x, y); };
   Trace old_t;
   old_t.camera = s.cam;
@@ -481,6 +481,7 @@ Tally RunScene(const Scene& s, const Vec3& up, float strength, Select&& select, 
   Trace new_t = old_t;
   new_t.up = up;
   new_t.under = strength;
+  new_t.cast_distance = cast_distance;
   Tally tally;
   int total_loads = 0, total_pixels = 0;
   for (int y = 0; y < s.cam.height; ++y) {
@@ -619,6 +620,60 @@ void HitWeightRule() {
   Check(bit_ok, "the vehicle bit is the lowest bit of the depth and changes it by one unit in the last place");
 }
 
+// A car the game draws into the sun shadow map (TRAFFIC SHADOWS) has its own shadow: the term leaves it out, by
+// the distance of the car's shell from the camera, and keeps the cars beyond it (traffic_shadow.h).
+void CastDistanceRule() {
+  // The weight: 1 with no cast distance, 0 well inside it, 1 well beyond, half in the middle, never falling with distance.
+  Check(UnderCastWeight(5.0f, 0.0f) == 1.0f && UnderCastWeight(500.0f, 0.0f) == 1.0f && UnderCastWeight(5.0f, -3.0f) == 1.0f,
+        "no cast distance: every car keeps the term");
+  Check(UnderCastWeight(10.0f, 40.0f) == 0.0f && UnderCastWeight(40.0f - kUnderCastBand, 40.0f) == 0.0f,
+        "a car well within the cast distance gets none of the term");
+  Check(UnderCastWeight(40.0f + kUnderCastBand, 40.0f) == 1.0f && UnderCastWeight(120.0f, 40.0f) == 1.0f,
+        "a car beyond it keeps all of it");
+  Check(std::fabs(UnderCastWeight(40.0f, 40.0f) - 0.5f) < 1e-6f, "half at the cast distance itself");
+  float last = -1.0f;
+  bool monotone = true;
+  for (float d = 0.0f; d <= 60.0f; d += 0.25f) {
+    const float w = UnderCastWeight(d, 40.0f);
+    monotone = monotone && w >= last - 1e-6f && w >= 0.0f && w <= 1.0f;
+    last = w;
+  }
+  Check(monotone, "the weight never falls with the shell's distance and stays in 0 to 1");
+  // A cast distance nearer than the band's half width still works (a car at 2 m).
+  Check(UnderCastWeight(0.5f, 2.0f) < 1.0f && UnderCastWeight(5.0f, 2.0f) == 1.0f, "a cast distance below the band's width");
+
+  // On the car scene (the car's rear face at 8 m, its far end at 12.5 m, the camera on its axis). The ground under it is
+  // dark with the term and stays lit without it (the bug of the patchy look, see UnderAVehicle).
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const int height = 720;
+  const Scene car = MakeCar(height, 1.5f, true);
+  const auto under = [&](int x, int y) {
+    if (DepthIsVehicle(car.DepthV(x, y))) {
+      return false;
+    }
+    const Vec3 g = GroundPoint(car, x, y);
+    return car.Depth(x, y) < 1000.0f && std::fabs(g.y + 1.5f) < 1e-2f && std::fabs(g.x) < 0.75f && g.z > 8.1f && g.z < 12.4f;
+  };
+  int loads = 0, pixels = 0;
+  const Tally on = RunScene(car, up, 1.0f, under, &loads, &pixels, 0.0f);
+  const Tally near_cast = RunScene(car, up, 1.0f, under, &loads, &pixels, 30.0f);  // the car casts: 8 to 12.5 m, well inside 27 m
+  const Tally far_cast = RunScene(car, up, 1.0f, under, &loads, &pixels, 4.0f);    // the car is beyond 4 + 3 m: it keeps the term
+  Check(on.count > 150 && float(on.dark) > 0.97f * float(on.count), "the car's ground is dark with the term (no cast distance)");
+  Check(near_cast.worst_change < 1e-6f, Num("a car within the cast distance: the term adds nothing (largest change %.4f), the game's shadow does the job",
+                                              near_cast.worst_change));
+  Check(far_cast.dark == on.dark && std::fabs(far_cast.sum_new - on.sum_new) < 1e-3f,
+        "a car beyond the cast distance (and its band): the term is exactly as without a cast distance");
+  // In the band the term is partly there: between the two (the shell is 8 to 12.5 m; a cast distance of 10.5 puts it astride).
+  const Tally band = RunScene(car, up, 1.0f, under, &loads, &pixels, 10.5f);
+  Check(band.sum_new >= far_cast.sum_new - 1e-4f && band.sum_new <= near_cast.sum_new + 1e-4f &&
+            band.sum_new > far_cast.sum_new + 1.0f && band.sum_new < near_cast.sum_new - 1.0f,
+        "in the band the visibility is strictly between the two (the car's shell is astride the cast distance)");
+  // The same through the table: a non-vehicle (a table) is not touched by any cast distance.
+  const Scene table = MakeCar(height, 1.5f, false);
+  Check(RunScene(table, up, 1.0f, [](int, int) { return true; }, nullptr, nullptr, 30.0f).worst_change < 1e-6f,
+        "a box that is not a vehicle is not touched, cast distance or not");
+}
+
 void UpFromTheView() {
   struct M {
     double v[4][4];
@@ -694,7 +749,7 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kUnderJitterLow", kUnderJitterLow}, {&contact, "kUnderJitterSpan", kUnderJitterSpan},
       {&contact, "kUnderReach", kUnderReach},       {&contact, "kUnderEpsFloor", kUnderEpsFloor},
       {&contact, "kUnderEpsPixels", kUnderEpsPixels}, {&contact, "kUnderUpLow", kUnderUpLow},
-      {&contact, "kUnderUpHigh", kUnderUpHigh},
+      {&contact, "kUnderUpHigh", kUnderUpHigh},     {&contact, "kUnderCastBand", kUnderCastBand},
   };
   for (const Row& r : rows) {
     double got = 0.0;
@@ -717,6 +772,7 @@ int main(int argc, char** argv) {
   NoGradientInsideAShadow();
   EdgeIsNarrowAtEveryScale();
   UnderAVehicle();
+  CastDistanceRule();
   NoShadowWhereThereIsNoCar();
   VehicleBitAndSwitches();
   HitWeightRule();

@@ -70,6 +70,9 @@
 //   lin.xyz    the world's up in view space (unit length; zero: no under-a-vehicle term), lin.w how
 //              strongly that term shadows (0 to 1; 0: off, the pass is as it was)
 //              (the contact pass does not read the depth rows lin otherwise holds)
+//   extra.w    the distance in metres from the camera within which the game draws cars into the sun shadow
+//              map (TRAFFIC SHADOWS, traffic_shadow.h; 0: it does not): the under-a-vehicle term leaves out
+//              a car whose shell is nearer than that, which has its own shadow, and keeps the farther ones
 //
 // The constants below are contact_trace.h's: change them there first.
 
@@ -114,6 +117,9 @@ static const float kUnderEpsFloor = 0.05f;
 static const float kUnderEpsPixels = 3.0f;
 static const float kUnderUpLow = 0.75f;
 static const float kUnderUpHigh = 0.9f;
+// A car that casts into the sun shadow map (extra.w) is left out of the term by its shell's distance from
+// the camera, fading in over this many metres either side of that distance (contact_trace.h).
+static const float kUnderCastBand = 3.0f;
 
 // How much of the ground under a vehicle this pixel is, 0 to 1 (contact_trace.h UnderVehicle). `tc` is the
 // pixel's own level-0 depth (with the vehicle bit), `pc` its view position, `normal` its view-space normal
@@ -122,6 +128,7 @@ float Under(uint depth_slot, float tc, float3 pc, float3 normal, float2 size, in
             float footprint_unit, float noise) {
   const float3 up = g_push.lin.xyz;
   const float strength = saturate(g_push.lin.w);
+  const float cast_distance = g_push.extra.w;
   if (!(strength > 0.0f) || dot(up, up) < 0.5f || AoIsVehicle(tc)) {
     return 0.0f;
   }
@@ -146,8 +153,15 @@ float Under(uint depth_slot, float tc, float3 pc, float3 normal, float2 size, in
     if (AoIsVehicle(td)) {
       const float eps = kUnderEpsFloor + kUnderEpsPixels * footprint_unit * p.z;
       const float dz = p.z - td;
-      hit = max(hit, saturate((dz - eps) / eps) *
-                         (1.0f - saturate((dz - kUnderReach) / (0.25f * kUnderReach))));
+      float weight = saturate((dz - eps) / eps) *
+                     (1.0f - saturate((dz - kUnderReach) / (0.25f * kUnderReach)));
+      if (cast_distance > 0.0f) {
+        // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+        const float2 slope = p.xy / p.z;
+        const float shell = td * sqrt(1.0f + dot(slope, slope));
+        weight *= smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell);
+      }
+      hit = max(hit, weight);
     }
   }
   return hit * upness * strength;

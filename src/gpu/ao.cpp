@@ -30,6 +30,7 @@
 #include "ssgi_level.h"
 #include "ssgi_light.h"
 #include "texture_bytes.h"
+#include "traffic_shadow.h"
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao, "high", "MCLA/GPU",
@@ -2707,10 +2708,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
       REXLOG_INFO("[gpu] contact shadows: the ground under a car {} (strength {:.2f}, "
                   "mcla_gpu_contact_shadows_vehicles; the world's up in view space {:+.2f} {:+.2f} {:+.2f}, "
-                  "the cars' pixels from the depth pass's vehicle bit)",
+                  "the cars' pixels from the depth pass's vehicle bit; it stands aside for the cars TRAFFIC "
+                  "SHADOWS draws into the sun shadow map, within the distance the hook publishes: {:.1f} m "
+                  "now)",
                   plan.contact.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f ? "is shadowed"
                                                                                            : "is as it was",
-                  plan.contact.under_vehicle, up.x, up.y, up.z);
+                  plan.contact.under_vehicle, up.x, up.y, up.z, traffic_shadow::CastDistance());
     }
     if (contact_cost_logged_[0] != plan.ao[0] || contact_cost_logged_[1] != plan.ao[1] ||
         contact_cost_logged_[2] != plan.contact.steps) {
@@ -3021,11 +3024,17 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.lin[1] = under ? up.y : 0.0f;
   push.lin[2] = under ? up.z : 0.0f;
   push.lin[3] = under ? c.under_vehicle : 0.0f;
+  // Cars the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) have their own shadow: the
+  // term stands aside for a car within this distance of the camera (extra.w; 0: no car casts, the term is as it was).
+  // Only the march reads extra.w; the filter below does not, and the value is put back for it all the same.
+  const float base_extra_w = push.extra[3];
+  push.extra[3] = under ? traffic_shadow::CastDistance() : 0.0f;
   // The ray start's noise has no history here, only the filter below. Moved every frame it would make
   // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
   // runs and averages the frames, as the shadow filter's and the sun shafts' are.
   push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   DrawPass(list, raw_, march, push);
+  push.extra[3] = base_extra_w;
   // The filter: one 3x3 pass of the occlusion's denoise shader in its contact mode, whose weights also
   // fall with the difference of the visibility: the noise of the ray's start goes, the edges of the
   // shadow and of the depth stay (the first version ran the plane-only blur twice, which softened every

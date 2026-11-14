@@ -267,6 +267,10 @@ inline constexpr float kUnderEpsFloor = 0.05f;    // m: the shell must be nearer
 inline constexpr float kUnderEpsPixels = 3.0f;    // ... plus this many footprints (and is fully so at twice that)
 inline constexpr float kUnderUpLow = 0.75f;       // the surface's normal against the world's up: none below this ...
 inline constexpr float kUnderUpHigh = 0.9f;       // ... all from this
+// A car the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) has its shadow already: the
+// term leaves it out. The hook's distance is to the car's origin (its middle) and the shell the step lands on is
+// up to a car's half length nearer or farther, so the term fades in over twice this many metres around that distance.
+inline constexpr float kUnderCastBand = 3.0f;
 
 inline float UnderStep(int k) { return k == 0 ? kUnderStep0 : (k == 1 ? kUnderStep1 : kUnderStep2); }
 
@@ -298,6 +302,14 @@ inline float UnderHitWeight(float dz, float footprint) {
 }
 // How horizontal a surface is: its normal (facing the camera) against the world's up.
 inline float UnderUpness(float normal_dot_up) { return Smoothstep(kUnderUpLow, kUnderUpHigh, normal_dot_up); }
+// How much of the term a car whose shell is `shell_distance` metres from the camera keeps, when the game draws the
+// cars within `cast_distance` of the camera into the sun shadow map (0: none does, the term is as it was).
+inline float UnderCastWeight(float shell_distance, float cast_distance) {
+  if (!(cast_distance > 0.0f)) {
+    return 1.0f;
+  }
+  return Smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell_distance);
+}
 
 struct Trace {
   Camera camera;
@@ -312,6 +324,7 @@ struct Trace {
   bool classic = false;   // the first version's march (equal steps, bias and ramp 2 cm + 0.4% of z, 1 - along^2)
   Vec3 up;                // the world's up in view space (UpInView); zero: no ground-under-a-vehicle term
   float under = 0.0f;     // how strongly the ground under a vehicle is shadowed, 0 (off) to 1
+  float cast_distance = 0.0f;  // cars within this many metres of the camera cast into the sun shadow map: the term leaves them out (0: none)
   mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
 };
 
@@ -348,7 +361,13 @@ float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 n
     if (!DepthIsVehicle(td)) {
       continue;
     }
-    hit = std::max(hit, UnderHitWeight(p.z - td, footprint_unit * p.z));
+    float weight = UnderHitWeight(p.z - td, footprint_unit * p.z);
+    if (t.cast_distance > 0.0f) {
+      // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+      const float sx = p.x / p.z, sy = p.y / p.z;
+      weight *= UnderCastWeight(td * std::sqrt(1.0f + sx * sx + sy * sy), t.cast_distance);
+    }
+    hit = std::max(hit, weight);
   }
   return hit * upness * Saturate(t.under);
 }
