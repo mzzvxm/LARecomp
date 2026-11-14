@@ -25,9 +25,19 @@ struct CarPose {
     double heading = 0.0;  // degrees in [0, 360), the scene's heading convention: 0 along +Z, 90 along +X
 };
 
-// `m` = right, up, back, position as 4 floats each (the w words are ignored). False when a word is not finite or the rows are
-// no rotation (a forward shorter than 0.5): such a matrix is not a car's.
+// `m` = right, up, back, position as 4 floats each. The w words (m[3], m[7], m[11], m[15]) are IGNORED, whatever they hold: the game
+// does not keep them. Racer_Teleport's wrapper (sub_822AF0F8) copies only x, y, z of the position it is given to its own frame and
+// sub_822AB838 then loads the whole 16 bytes from there, so the position row's w word is whatever was on the stack, which may well
+// be a NaN. A matrix refused for that made a good car's pose unreadable (M4c's first run: "the matrix does not read" for a car
+// that had been put, while Racer_GetPosition answered). False when one of the 12 x, y, z words is not finite or the rows are no
+// rotation (a forward shorter than 0.5): such a matrix is not a car's.
 bool PoseFromMatrix(const float m[16], CarPose* out);
+
+// For the log: why `m` is not a car's matrix, or "" when PoseFromMatrix takes it ("word 13 (position y) is not finite (nan)",
+// "the back row is 0.00 long").
+std::string MatrixFault(const float m[16]);
+// True when a w word of `m` is not finite: PoseFromMatrix ignores it, the log says so once per car.
+bool MatrixHasBadW(const float m[16]);
 
 struct CarEntry {
     std::string id;

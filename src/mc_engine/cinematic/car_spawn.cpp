@@ -517,9 +517,15 @@ void PathDrive::Fail(const std::string& why) {
 void PathDrive::Summary(const char* why) {
     if (mode_ == PathMode::kKinematic) {
         const double mean = stats_.samples ? stats_.sum_off / static_cast<double>(stats_.samples) : 0.0;
-        Event(false, "path " + id_ + " " + why + ": " + std::to_string(stats_.teleports) + " put(s) of the car on the route (" + std::to_string(stats_.refused) +
-                         " not made), " + std::to_string(stats_.samples) + " poses compared with the route's place: " + Fmt1("mean off %.2f m", mean) +
-                         Fmt1(", max %.2f m", stats_.max_off) + Fmt1(", heading off at most %.1f degrees", stats_.max_heading_off));
+        std::string text = "path " + id_ + " " + why + ": " + std::to_string(stats_.teleports) + " put(s) of the car on the route (" + std::to_string(stats_.refused) +
+                           " not made), " + std::to_string(stats_.samples) + " poses compared with the route's place: " + Fmt1("mean off %.2f m", mean) +
+                           Fmt1(", max %.2f m", stats_.max_off) + Fmt1(", heading off at most %.1f degrees", stats_.max_heading_off);
+        // A car whose matrix could not be read says so here: its poses were not compared (the means above are of the updates that had a fresh one).
+        if (stats_.unread > 0) {
+            text += "; " + std::to_string(stats_.unread) + " update(s) had no fresh pose to compare (the matrix was unread for up to " + std::to_string(stats_.unread_max) +
+                    " updates)";
+        }
+        Event(false, std::move(text));
     } else {
         std::string seen;
         for (int s = 0; s < 8; ++s) {
@@ -532,7 +538,7 @@ void PathDrive::Summary(const char* why) {
 
 // ---- kinematic
 
-bool PathDrive::PollTeleport(double clock, const CarPose* pose, Teleport* out) {
+bool PathDrive::PollTeleport(double clock, const CarPose* pose, Teleport* out, uint64_t unread) {
     if (!active_ || mode_ != PathMode::kKinematic) return false;
     if (teleported_ && !stopping_ && clock == last_clock_) return false;  // the clock stood still (a frozen time scale): the car is where it was put
     const double tau = clock - start_clock_;
@@ -552,6 +558,19 @@ bool PathDrive::PollTeleport(double clock, const CarPose* pose, Teleport* out) {
     }
 
     const bool last = stopping_ || s.finished;
+    if (!pose && unread > 0 && teleported_ && !stopping_) {
+        // The matrix cannot be read: there is nothing to compare the route's place with, and the last pose is not where the car is (the car is put on the route
+        // all the same: the picture shows it). The progress line says so, so that a run is not read as "the car lags" (M4c's first run).
+        ++stats_.unread;
+        stats_.unread_max = std::max(stats_.unread_max, unread);
+        if (tau >= next_log_tau_) {
+            next_log_tau_ = tau + timing_.path_log_s;
+            char buf[240];
+            std::snprintf(buf, sizeof(buf), "path %s t=%.2f s=%.1f/%.1f m v=%.1f m/s: route (%.2f, %.2f, %.2f) h %.1f, the car's matrix has not been read for %llu updates: no pose to compare",
+                          id_.c_str(), tau, s.s, sampler_.Length(), s.speed, s.x, y, s.z, s.heading, static_cast<unsigned long long>(unread));
+            Event(false, buf);
+        }
+    }
     if (pose && teleported_ && !stopping_) {
         const double dx = pose->position[0] - s.x;
         const double dz = pose->position[2] - s.z;
@@ -740,7 +759,7 @@ void PathDrive::ReportBrainDelete(const Outcome& o) {
     not_before_ = now_ + timing_.brain_gap_ms;
 }
 
-void PathDrive::NoteBrain(double clock, int state, int dest_index, const CarPose* pose) {
+void PathDrive::NoteBrain(double clock, int state, int dest_index, const CarPose* pose, uint64_t unread) {
     if (!active_ || mode_ != PathMode::kBrain || brain_ == 0 || stage_ < BStage::kRunning) return;
     stats_.brain_states_seen |= 1 << std::clamp(state, 0, 7);
     ++stats_.brain_samples;
@@ -760,6 +779,8 @@ void PathDrive::NoteBrain(double clock, int state, int dest_index, const CarPose
         std::snprintf(buf, sizeof(buf), "; car (%.2f, %.2f, %.2f) h %.1f; nearest route point %.1f of %.1f m, %.2f m off", pose->position[0], pose->position[1], pose->position[2],
                       pose->heading, nearest.s, sampler_.Length(), nearest.distance);
         text += buf;
+    } else if (unread > 0) {
+        text += "; the car's matrix has not been read for " + std::to_string(unread) + " updates: no pose";
     }
     if (changed && last_state_ >= 0) text += "; state was " + std::to_string(last_state_);
     last_state_ = state;
@@ -990,13 +1011,25 @@ void Director::MarkLost(uint32_t racer) {
     }
 }
 
-void Director::PollTeleports(double clock, std::vector<TeleportDue>* out) {
+namespace {
+
+// How many updates the pose of `e` has gone unread at update `frame` (0: fresh, or the caller does not count updates, or it never had one).
+uint64_t UnreadUpdates(const CarEntry* e, uint64_t frame) {
+    if (!e || !e->have_pose || frame == kNoFrame || frame <= e->pose_frame) return 0;
+    const uint64_t age = frame - e->pose_frame;
+    return age > kPoseFreshUpdates ? age : 0;
+}
+
+}  // namespace
+
+void Director::PollTeleports(double clock, std::vector<TeleportDue>* out, uint64_t frame) {
     for (auto& c : cars_) {
         if (c->ended || !c->spawner.Ready() || !c->path.Active() || c->path.mode() != PathMode::kKinematic) continue;
         const CarEntry* e = registry_.Find(c->id);
-        const CarPose* pose = e && e->have_pose ? &e->pose : nullptr;
+        const uint64_t unread = UnreadUpdates(e, frame);
+        const CarPose* pose = e && e->have_pose && unread == 0 ? &e->pose : nullptr;  // a stale pose is not where the car is
         TeleportDue due;
-        if (!c->path.PollTeleport(clock, pose, &due.teleport)) continue;
+        if (!c->path.PollTeleport(clock, pose, &due.teleport, unread)) continue;
         due.car = c->id;
         due.racer = c->spawner.racer();
         out->push_back(std::move(due));
@@ -1020,11 +1053,12 @@ std::vector<Director::BrainReader> Director::BrainReaders() const {
     return out;
 }
 
-void Director::NoteBrain(const std::string& id, double clock, int state, int dest_index) {
+void Director::NoteBrain(const std::string& id, double clock, int state, int dest_index, uint64_t frame) {
     for (auto& c : cars_) {
         if (c->id != id || c->ended) continue;
         const CarEntry* e = registry_.Find(id);
-        c->path.NoteBrain(clock, state, dest_index, e && e->have_pose ? &e->pose : nullptr);
+        const uint64_t unread = UnreadUpdates(e, frame);
+        c->path.NoteBrain(clock, state, dest_index, e && e->have_pose && unread == 0 ? &e->pose : nullptr, unread);
         return;
     }
 }

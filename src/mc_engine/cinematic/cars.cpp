@@ -228,14 +228,34 @@ uint32_t PlayerRacer(const uint8_t* base) {
     return 0;
 }
 
-// The car's live matrix (rows right, up, back, position), or false: the entity does not exist (yet, or any more).
-bool ReadCarMatrix(const uint8_t* base, uint32_t racer, float out[16]) {
-    if (!Mapped(racer + kRacerEntityAt, 4)) return false;
-    const uint32_t ent = R32(base, racer + kRacerEntityAt);
-    if (!Mapped(ent + kEntityMatrixAt, 4)) return false;
-    const uint32_t mtx = R32(base, ent + kEntityMatrixAt);
-    if (!Mapped(mtx + 16, 64)) return false;
-    for (uint32_t i = 0; i < 16; ++i) out[i] = RF(base, mtx + 16 + 4 * i);
+// Where a read of a car's matrix got to, for the log.
+struct MatrixRead {
+    uint32_t entity = 0;
+    uint32_t matrix = 0;
+    const char* stage = "";  // which pointer of the chain stopped it ("" when the 16 words were read)
+};
+
+// The car's live matrix (rows right, up, back, position), or false: the entity does not exist (yet, or any more). The words are what the game holds,
+// NaN w words and all (PoseFromMatrix and the registry ignore those).
+bool ReadCarMatrix(const uint8_t* base, uint32_t racer, float out[16], MatrixRead* info = nullptr) {
+    MatrixRead local;
+    MatrixRead& r = info ? *info : local;
+    r = MatrixRead{};
+    if (!Mapped(racer + kRacerEntityAt, 4)) {
+        r.stage = "the racer is not readable";
+        return false;
+    }
+    r.entity = R32(base, racer + kRacerEntityAt);
+    if (!Mapped(r.entity + kEntityMatrixAt, 4)) {
+        r.stage = r.entity ? "the entity is not readable (racer+48)" : "the racer has no entity (racer+48 is 0)";
+        return false;
+    }
+    r.matrix = R32(base, r.entity + kEntityMatrixAt);
+    if (!Mapped(r.matrix + 16, 64)) {
+        r.stage = r.matrix ? "the matrix is not readable (entity+28)" : "the entity has no matrix (entity+28 is 0)";
+        return false;
+    }
+    for (uint32_t i = 0; i < 16; ++i) out[i] = RF(base, r.matrix + 16 + 4 * i);
     return true;
 }
 
@@ -285,6 +305,18 @@ struct RouteEntry {
     std::string error;  // why there is none
 };
 
+// How a scene car's matrix reads, so that a car whose pose goes stale says why in the log (M4c's first run: a car's pose stopped updating a second into its
+// path, the log said "the car lags" and nothing said the matrix was no longer taken).
+struct ReadHealth {
+    uint64_t failing_since = 0;  // the update the current run of refused reads began (0: the last read was taken)
+    uint64_t refused = 0;        // refused reads of the scene so far
+    int lines = 0;               // fault lines written for this car (capped)
+    bool streak_logged = false;  // the current run of refused reads was written
+    bool w_noted = false;        // the "w words are garbage" line was written
+};
+constexpr int kFaultLinesPerCar = 6;
+constexpr uint64_t kFaultAfterUpdates = 30;  // a run of refused reads is written once it is half a second old (a car that is still arriving has no entity yet)
+
 struct State {
     std::recursive_mutex mutex;  // the camera hook reads poses; both run on the game thread (a native could even call the hook inside TickCars)
     Director dir;
@@ -298,6 +330,7 @@ struct State {
     double path_clock = 0.0;                   // the scene's time with its time scale applied, in seconds
     double last_scene_t = 0.0;
     bool have_scene_t = false;
+    std::map<std::string, ReadHealth> reads;  // how each scene car's matrix reads (for the log only)
 };
 State g;
 std::atomic<bool> g_active{false};  // anything to do: the one flag TickCars tests
@@ -307,6 +340,12 @@ void FlushEvents() {
         if (e.warning) LARECOMP_APP_WARN("[cars] {}", e.text);
         else LARECOMP_APP_INFO("[cars] {}", e.text);
     }
+}
+
+// The one line a scene's cars end with: every car the scene made is deleted (or failed). Written by TickCars when the clean-up after the scene's end finished, or by the
+// scene's end itself when the scene had deleted its cars already (TickCars no longer runs then: M4c's first run waited for a line that was never written).
+void LogNothingLeft() {
+    LARECOMP_APP_INFO("[cars] nothing left to do: {} car(s) made, {} deleted, {} failed", g.dir.spawned(), g.dir.deleted(), g.dir.failed());
 }
 
 std::string Hex(uint32_t v) {
@@ -323,6 +362,44 @@ std::string Triple(double x, double y, double z) {
 
 // ---------------------------------------------------------------- the poses
 
+std::string Words(const float m[16]) {
+    std::string s;
+    char buf[24];
+    for (int i = 0; i < 16; ++i) {
+        std::snprintf(buf, sizeof(buf), "%s%g", i ? " " : "", static_cast<double>(m[i]));
+        s += buf;
+    }
+    return s;
+}
+
+// One read of a scene car's matrix, for the log: the first refused read of a run says which step refused (the pointers of the chain, the words), the first
+// read after it says the matrix is back, and a w word that is not finite is said once (the registry ignores it).
+void NoteRead(const std::string& id, uint32_t racer, bool read, const MatrixRead& info, const float m[16]) {
+    ReadHealth& h = g.reads[id];
+    std::string why = info.stage;
+    if (read) {
+        why = MatrixFault(m);
+        if (why.empty()) {
+            if (h.failing_since != 0 && h.streak_logged) LARECOMP_APP_INFO("[cars] {} the matrix reads again after {} update(s)", id, g.frame - h.failing_since);
+            h.failing_since = 0;
+            h.streak_logged = false;
+            if (MatrixHasBadW(m) && !h.w_noted) {
+                h.w_noted = true;
+                LARECOMP_APP_INFO("[cars] {} a w word of the matrix is not finite (ignored: Racer_Teleport leaves the position row's w from the stack): {}", id, Words(m));
+            }
+            return;
+        }
+        why += "; words " + Words(m);
+    }
+    ++h.refused;
+    if (h.failing_since == 0) h.failing_since = g.frame;
+    if (h.streak_logged || g.frame - h.failing_since < kFaultAfterUpdates || h.lines >= kFaultLinesPerCar) return;
+    h.streak_logged = true;
+    ++h.lines;
+    LARECOMP_APP_WARN("[cars] {} the matrix has not been taken for {} updates (racer {}, entity {}, matrix {}): {}", id, g.frame - h.failing_since, Hex(racer), Hex(info.entity),
+                      Hex(info.matrix), why);
+}
+
 // Reads every car that exists into the registry: the scene's cars that have streamed in, and the player.
 void UpdatePoses(const uint8_t* base, uint32_t player) {
     CarRegistry& reg = g.dir.registry();
@@ -331,7 +408,10 @@ void UpdatePoses(const uint8_t* base, uint32_t player) {
         if (!e) continue;
         e->racer = r.racer;
         float m[16];
-        if (ReadCarMatrix(base, r.racer, m)) reg.UpdatePose(r.id, m, g.frame);
+        MatrixRead info;
+        const bool read = ReadCarMatrix(base, r.racer, m, &info);
+        NoteRead(r.id, r.racer, read, info, m);
+        if (read) reg.UpdatePose(r.id, m, g.frame);
     }
     if (CarEntry* pe = reg.Find("player")) {
         pe->racer = player;
@@ -365,7 +445,11 @@ bool PoseOf(std::string_view id, float matrix[16], CarPose* pose) {
     CarPose p;
     if (racer && ReadCarMatrix(base, racer, m) && PoseFromMatrix(m, &p)) {
         if (e) g.dir.registry().UpdatePose(id, m, g.frame);
-        if (matrix) std::memcpy(matrix, m, sizeof(m));
+        if (matrix) {
+            std::memcpy(matrix, m, sizeof(m));
+            matrix[3] = matrix[7] = matrix[11] = 0.0f;  // the w words may be garbage (see PoseFromMatrix): the camera is given clean ones
+            matrix[15] = 1.0f;
+        }
         if (pose) *pose = p;
         return true;
     }
@@ -699,7 +783,7 @@ void LoadRoute(const std::string& name, int line) {
 // spawn steps' one native an update: these are the same cheap call E4 measured at 0.02 to 0.19 ms, once for each such car.
 void TickPaths(const uint8_t* base, uint32_t mgr) {
     std::vector<Director::TeleportDue> due;
-    g.dir.PollTeleports(g.path_clock, &due);
+    g.dir.PollTeleports(g.path_clock, &due, g.frame);
     const uint32_t wrapper = WrapperFor(Native::kTeleport);
     for (const Director::TeleportDue& d : due) {
         const PathDrive::Teleport& t = d.teleport;
@@ -732,7 +816,7 @@ void TickPaths(const uint8_t* base, uint32_t mgr) {
     for (const Director::BrainReader& b : g.dir.BrainReaders()) {
         int state = 0;
         int dest = 0;
-        if (ReadBrain(base, b.brain, &state, &dest)) g.dir.NoteBrain(b.id, g.path_clock, state, dest);
+        if (ReadBrain(base, b.brain, &state, &dest)) g.dir.NoteBrain(b.id, g.path_clock, state, dest, g.frame);
     }
 }
 
@@ -746,6 +830,7 @@ void ApplierBegin(const Scene& scene) {
     g.path_clock = 0.0;
     g.last_scene_t = 0.0;
     g.have_scene_t = false;
+    g.reads.clear();
     for (const Event& e : scene.events) {
         if (e.track != Track::kCar) continue;
         CarCommand cmd;
@@ -800,11 +885,14 @@ void ApplierApply(const Scene& scene, double t) {
 
 void ApplierEnd() {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    const bool had_cars = !g.keys.empty();
     g.keys.clear();
     g.next_key = 0;
     g.dir.EndScene();
     FlushEvents();
-    g_active.store(g.dir.Active(), std::memory_order_relaxed);  // the cars it spawned are deleted over the next updates
+    const bool active = g.dir.Active();
+    g_active.store(active, std::memory_order_relaxed);  // the cars it spawned are deleted over the next updates
+    if (!active && had_cars) LogNothingLeft();           // ... unless the scene deleted them itself: nothing is left to wait for
 }
 
 const TrackApplier kApplier = {"cars", TrackBit(Track::kCar), &ApplierBegin, &ApplierApply, &ApplierEnd};
@@ -859,7 +947,7 @@ void TickCars() {
     LogPoses(now);
     if (!g.dir.Active()) {
         g_active.store(false, std::memory_order_relaxed);
-        LARECOMP_APP_INFO("[cars] nothing left to do: {} car(s) made, {} deleted, {} failed", g.dir.spawned(), g.dir.deleted(), g.dir.failed());
+        LogNothingLeft();
     }
 }
 

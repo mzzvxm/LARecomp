@@ -249,6 +249,34 @@ void TestPoses() {
     MatrixForNativeHeading(10.0, pos, m);
     m[14] = INFINITY;
     Check(!PoseFromMatrix(m, &pose), "a matrix with an infinity is no car's");
+    // The w words are not the game's to keep: Racer_Teleport leaves the position row's from the stack (M4c's first run: a car whose matrix "does not read")
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    m[3] = NAN;
+    m[7] = INFINITY;
+    m[11] = -INFINITY;
+    m[15] = NAN;
+    Check(PoseFromMatrix(m, &pose), "NaN and infinite w words are no reason to refuse a car's matrix");
+    CheckNum(pose.heading, 62.0, "...and the pose is right", 1e-4);
+    CheckNum(pose.position[0], 900.0, "...the position too");
+    Check(MatrixHasBadW(m) && MatrixFault(m).empty(), "the w words are named, the matrix has no fault");
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    Check(!MatrixHasBadW(m), "clean w words are not named");
+    m[13] = NAN;
+    Check(MatrixFault(m).find("word 13 (position y)") != std::string::npos, "a NaN in the position says which word: " + MatrixFault(m));
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    m[8] = m[9] = m[10] = 0.0f;
+    Check(MatrixFault(m).find("back row") != std::string::npos, "a flat back row says so: " + MatrixFault(m));
+    Check(!MatrixFault(bad).empty(), "an all-zero matrix has a fault");
+    {  // the registry keeps the words clean for the camera
+        CarRegistry reg;
+        reg.Add("p1", false);
+        MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+        m[3] = NAN;
+        m[15] = NAN;
+        Check(reg.UpdatePose("p1", m, 3), "a matrix with a NaN w word is stored");
+        float out[16];
+        Check(reg.Matrix("p1", out) && out[3] == 0.0f && out[7] == 0.0f && out[11] == 0.0f && out[15] == 1.0f && out[12] == 900.0f, "...with clean w words");
+    }
 }
 
 void TestRegistry() {
@@ -982,6 +1010,65 @@ void TestPathKinematic() {
     }
 }
 
+// A car whose matrix stops being read (M4c's first run): the registry keeps its last pose, and the path must not take that for where the car is.
+void TestPathStalePose() {
+    const Route straight = RouteOf("100,200,10\n100,300,10\n");
+    Director dir;
+    FakeGame game;
+    ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+    dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+    std::string text;
+    double last_y = 0.0;
+    uint64_t frame = 2;
+    for (int i = 0; i < 120; ++i, ++frame) {  // two seconds at 60 Hz; the matrix is read for the first 30 updates only
+        const double clock = i / 60.0;
+        if (i < 30) FeedPose(dir, "a", 100.0, 17.5 - 0.001 * i, 200.0 + 10.0 * clock, 0.0, frame);
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(clock, &due, frame);
+        for (const Director::TeleportDue& d : due) {
+            last_y = d.teleport.position[1];
+            dir.ReportTeleport(d.car, true);
+        }
+        for (const CarEvent& e : dir.TakeEvents()) text += e.text + "\n";
+    }
+    const PathDrive::Stats st = dir.PathOf("a")->stats();  // a copy: the path goes on below
+    Check(st.teleports == 120, "a put at every update all the same: " + std::to_string(st.teleports));
+    Check(st.samples >= 30 && st.samples <= 34, "poses compared only while they were fresh (read 30 updates, taken for 3 more): " + std::to_string(st.samples));
+    Check(st.max_off < 0.6, "the stale pose gave no distance from the route (3 updates of lag at 10 m/s is the most a fresh one has): " + std::to_string(st.max_off));
+    Check(st.unread >= 80 && st.unread <= 90 && st.unread_max >= 85, "the unread updates are counted: " + std::to_string(st.unread) + " / " + std::to_string(st.unread_max));
+    CheckNum(last_y, 17.5 - 0.001 * 29, "the height of the last fresh pose is kept", 1e-6);
+    Check(text.find("the car's matrix has not been read for") != std::string::npos && text.find("no pose to compare") != std::string::npos, "a progress line says the matrix is not read");
+    // ... and the pose is back: compared again from there on
+    FeedPose(dir, "a", 100.0, 17.4, 200.0 + 10.0 * 2.0, 0.0, frame);
+    std::vector<Director::TeleportDue> due;
+    dir.PollTeleports(2.0 + 1.0 / 60.0, &due, frame);
+    Check(dir.PathOf("a")->stats().samples == st.samples + 1, "a fresh pose is compared again");
+    dir.ReportTeleport("a", true);
+    dir.Apply(StopCmd("a"), 2.2);
+    due.clear();
+    dir.PollTeleports(2.3, &due, frame);
+    for (const Director::TeleportDue& d : due) dir.ReportTeleport(d.car, true);
+    Check(HasEvent(dir, "update(s) had no fresh pose to compare"), "the summary says how many updates had no pose");
+    {  // the same for the brain: the state line says the pose is stale, and no distance from the route is made of it
+        const Route lane = RouteOf("100,200,8\n100,300,8\n");
+        Director b;
+        FakeGame game2;
+        ReadyCar(b, game2, "b", 100.0, 17.5, 200.0, 0.0);
+        b.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        int64_t t = 20000;
+        for (int i = 0; i < 400; ++i, t += 16) {  // the program: one native at a time, then the polls of HasReachedGoal
+            const Director::Next n = b.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) b.Report(game2.Run(n.call, t));
+        }
+        b.NoteBrain("b", 6.0, 1, 0, 10);  // the pose was read at update 1 (ReadyCar): 9 updates ago at update 10
+        const PathDrive::Stats& bs = b.PathOf("b")->stats();
+        Check(bs.brain_samples == 1 && bs.brain_max_off == 0.0 && bs.brain_best_s == 0.0, "a stale pose is not measured against the route");
+        std::string bt;
+        for (const CarEvent& e : b.TakeEvents()) bt += e.text + "\n";
+        Check(bt.find("brain state 1") != std::string::npos && bt.find("has not been read for 9 updates") != std::string::npos, "the state line says the matrix is unread: " + bt);
+    }
+}
+
 void TestPathBrain() {
     const Route lane = RouteOf("100,200,8\n100,300,8\n");  // 100 m: 12 destinations at 8 m spacing
     {
@@ -1236,6 +1323,7 @@ int main() {
     TestOneCallAnUpdate();
     TestPlayerDress();
     TestPathKinematic();
+    TestPathStalePose();
     TestPathBrain();
     TestLost();
     TestDeleteIsNotLost();

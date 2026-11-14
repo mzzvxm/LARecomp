@@ -118,6 +118,12 @@ struct CarTiming {
     double path_log_s = 0.5;            // path time between two progress lines of a path
 };
 
+// The update counter the registry's poses are stamped with (CarEntry::pose_frame). A pose read this many updates ago or fewer is the car's now; an older one is
+// the last good read of a car whose matrix cannot be read any more (the path code must not take it for where the car is). kNoFrame: the caller does not track
+// updates, every pose counts as fresh (the unit tests that feed one pose and step the clock).
+constexpr uint64_t kNoFrame = ~0ull;
+constexpr uint64_t kPoseFreshUpdates = 3;
+
 // ---------------------------------------------------------------------------------------------------------------- a spawn
 
 class Spawner {
@@ -249,8 +255,8 @@ class PathDrive {
         bool first = false;  // the first put of the car on the route (a jump is expected)
         bool last = false;   // the last one: the car stands there from now on (speed 0)
     };
-    // `pose` is the car as read this update (null: not read yet). True when a teleport is due.
-    bool PollTeleport(double clock, const CarPose* pose, Teleport* out);
+    // `pose` is the car as read this update (null: not read yet, or not read for `unread` updates: 0 when it never was). True when a teleport is due.
+    bool PollTeleport(double clock, const CarPose* pose, Teleport* out, uint64_t unread = 0);
     void ReportTeleport(bool called);
 
     // ---- brain: the program of natives, one at a time
@@ -262,12 +268,15 @@ class PathDrive {
     uint32_t brain() const { return brain_; }
     bool BrainRunning() const { return mode_ == PathMode::kBrain && brain_ != 0 && !brain_gone_ && stage_ >= BStage::kRunning; }
     // The host read the brain's state byte and destination index (and the car's pose): a progress line every path_log_s, and when the state changes.
-    void NoteBrain(double clock, int state, int dest_index, const CarPose* pose);
+    // `pose` null: the matrix has not been read for `unread` updates (the line says so: a stale pose is not where the car is).
+    void NoteBrain(double clock, int state, int dest_index, const CarPose* pose, uint64_t unread = 0);
 
     struct Stats {
         uint64_t teleports = 0;
         uint64_t refused = 0;  // teleports the game side could not make
         uint64_t samples = 0;  // updates with a pose to compare (not the first)
+        uint64_t unread = 0;   // updates (after the first put) with no fresh pose: nothing to compare, the car is put on the route all the same
+        uint64_t unread_max = 0;  // ... the longest the matrix was unread, in updates
         double sum_off = 0.0;  // metres the car was from the route's place at the clock, summed
         double max_off = 0.0;
         double max_heading_off = 0.0;
@@ -363,7 +372,8 @@ class Director {
         uint32_t racer = 0;
         PathDrive::Teleport teleport;
     };
-    void PollTeleports(double clock, std::vector<TeleportDue>* out);
+    // `frame`: the update counter the poses were stamped with (the game side's); a pose older than kPoseFreshUpdates is not passed to the path.
+    void PollTeleports(double clock, std::vector<TeleportDue>* out, uint64_t frame = kNoFrame);
     void ReportTeleport(const std::string& car, bool called);
     // The cars whose brain runs: the game side reads each one's state and destination index and hands them to NoteBrain.
     struct BrainReader {
@@ -371,7 +381,7 @@ class Director {
         uint32_t brain = 0;
     };
     std::vector<BrainReader> BrainReaders() const;
-    void NoteBrain(const std::string& id, double clock, int state, int dest_index);
+    void NoteBrain(const std::string& id, double clock, int state, int dest_index, uint64_t frame = kNoFrame);
     const PathDrive* PathOf(const std::string& id) const;
 
     // The racers that have an entity to read a pose from, with their ids.
