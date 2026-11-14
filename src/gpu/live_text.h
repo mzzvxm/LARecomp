@@ -14,9 +14,8 @@
 // locked accessor (rex::cvar::GetFlagByName). The gpu_class.cpp override and shadow_filter.cpp do the same
 // with an enum; these settings are read in several places as text, so the text is what is kept.
 //
-// The word holds 7 characters, which is more than any value the settings take (the longest is `ultra`):
-// a longer text (a hand-edited file) is cut at 7 and so is not a value either, and the callers take it
-// as `auto` as they did before.
+// The word holds the address of an interned copy of the text, so any length works (it once held 7 characters,
+// and the sun shafts' `stronger` and `strongest` came out as `stronge`, which no setting knows).
 //
 // A change that does not go through SetFlagByName (REXCVAR_SET, rex::cvar::ResetToDefault) does not run
 // the callback and would not show; the settings here are only written through SetFlagByName (the pause
@@ -29,6 +28,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -68,26 +68,24 @@ class LiveText {
     return Unpack(word);
   }
 
-  // The packing (pure).
+  // The packing: the word is the address of the text's interned copy (a node of a set that only grows and is
+  // never freed: the settings have a handful of values, so this is a few dozen bytes for the whole run). Any
+  // length works ("stronger", "strongest"); an interned text never changes, so Unpack reads it without a lock.
   static uint64_t Pack(std::string_view text) {
-    const size_t length = text.size() < kMaxChars ? text.size() : kMaxChars;
-    uint64_t word = uint64_t(length + 1) << 56;  // never 0: 0 is "not read yet"
-    for (size_t i = 0; i < length; ++i) {
-      word |= uint64_t(uint8_t(text[i])) << (8 * i);
+    static std::mutex lock;
+    static auto* interned = new std::set<std::string, std::less<>>();
+    std::lock_guard<std::mutex> guard(lock);
+    auto it = interned->find(text);
+    if (it == interned->end()) {
+      it = interned->emplace(text).first;
     }
-    return word;
+    return reinterpret_cast<uint64_t>(&*it);  // never 0: 0 is "not read yet"
   }
   static std::string Unpack(uint64_t word) {
-    const size_t length = size_t(word >> 56);
-    std::string text;
-    for (size_t i = 0; i + 1 < length && i < kMaxChars; ++i) {
-      text.push_back(char(uint8_t(word >> (8 * i))));
-    }
-    return text;
+    return word == 0 ? std::string() : *reinterpret_cast<const std::string*>(word);
   }
 
  private:
-  static constexpr size_t kMaxChars = 7;
 
   void Register() {
     std::call_once(once_, [this] {
