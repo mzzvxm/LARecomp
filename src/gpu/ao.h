@@ -36,8 +36,9 @@
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
 // frame's camera has no occlusion.
 //
-// The pause menu's, the race pause's and the map's world (the same main view identities at 4x
-// samples, drawn once a frame like the play view, resolved in three tiles) is handled the same way,
+// The pause menu's, the race pause's, the garage's and the map's world (the same main view identities at 4x
+// samples, drawn once a frame like the play view, resolved in three tiles; menu_world.h says which is which and
+// what runs in each) is handled the same way,
 // with its own camera: its motion blur draw runs in every one of those frames with a valid camera
 // (918 of 918 frames in a recorded pause and map session), so the camera kept is the previous
 // frame's of a pause/map view, never the play view's (the pause camera has another field of view,
@@ -105,7 +106,7 @@
 // the frame is the one without the setting.
 // With the setting on and the occlusion off the passes are the depth pass, the contact march, two
 // bilateral passes and the apply: the coarser depth levels, the visibility and the history are not
-// made. The pause menu's and the map's world gets them as the occlusion does.
+// made. The pause menu's world, the garage and the map get them as the occlusion does.
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -191,8 +192,9 @@
 // the occlusion took the blocked share of the ambient away, the bounce gives back what the blockers really
 // send, in their colour; a flat surface (B near 0) keeps the occlusion's factor. A pixel brighter than T says
 // (a lamp's pool, headlights) is held to an albedo of 1, a source of light (the chain's alpha: neon, a
-// glint, the sun's disc) gets nothing, and so does everything in the pause menu's and the map's world (the
-// 4x view runs the plain occlusion). The setting's low is the main pass with 2 slices and 2 steps (the
+// glint, the sun's disc) gets nothing, and so does everything on the map (the 4x view seen from 9 km runs the
+// plain occlusion: the bounce's few metres are under a pixel there; menu_world.h). The pause menu's world and the
+// garage have the bounce light as the game view does. The setting's low is the main pass with 2 slices and 2 steps (the
 // occlusion's low), at half the picture's size where nothing else asks for the whole of it (the occlusion
 // low); high is 3 and 3 at the picture's size. `auto` is gpu_class.h's table (off on Low and Mid, low on High).
 // The cost of a low that leaves the occlusion at full size is a guess (about the design's high at 4K, the
@@ -204,7 +206,8 @@
 // CHECK: (none of this could be run) (1) the pictures of GFX-UPGRADES-DESIGN.md 8.3 (night with lamp pools and
 // neon beside walls and car sides, sunlit asphalt beside a car, a coloured wall) off, low and high at the same
 // frame: colour spill, no brighter picture on average (mcla_gpu_ssgi_view 21 against the plain occlusion's
-// pixels), flat ground unchanged, nothing on the pause view; (2) the albedo estimate (view 18) is the surface's
+// pixels), flat ground unchanged, the same in the pause menu's world and the garage, nothing on the map; (2) the
+// albedo estimate (view 18) is the surface's
 // colour and neon is black in view 20; (3) the mask's slot is readable in the apply at the trigger (the contact
 // shadows read it there too).
 //
@@ -250,6 +253,7 @@
 #include "edram.h"
 #include "host_passes.h"
 #include "host_plan.h"
+#include "menu_world.h"
 #include "records.h"
 #include "resolve.h"
 #include "temporal_camera.h"
@@ -346,6 +350,14 @@ class AmbientOcclusion {
   void OnComposite() { composite_seen_ = true; }
   // A guest present: the frame boundary. Prints the census frame.
   void OnPresent();
+
+  // The world of the frame that is ending, for the scene's one line per change of world (menu_world.h): the
+  // game view, the pause menu's world, the garage or the map by the frame's own camera, or none (no main view
+  // drew, or both kinds did). Read before OnPresent, which forgets the frame.
+  menu_world::World FrameWorld() const;
+  // The levels in force for the line: the occlusion's, the contact shadows' and the bounce light's, "off" when
+  // one is (the bounce light's is "test" under the debug override).
+  void Levels(std::string* occlusion, std::string* contact, std::string* bounce) const;
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -710,6 +722,9 @@ class AmbientOcclusion {
   temporal::Camera trigger_camera_;
   bool trigger_camera_valid_ = false;
   bool trigger_pause_ = false;        // the frame's trigger was a pause/map view's
+  // The world the frame's trigger was in (menu_world.h): by the previous frame's camera of the same kind of
+  // view, which is all that exists at the trigger. It gates the bounce light (RulesFor).
+  menu_world::World trigger_world_ = menu_world::World::kNone;
   Outcome outcome_ = Outcome::kNoTrigger;
   // How much the lens changed from the camera before the previous to the previous one (the same
   // kind of view, consecutive frames): the largest relative change of fov, aspect, near and far.
