@@ -962,6 +962,7 @@ class AmbientOcclusion {
   bool gi_failed_logged_ = false;
   uint32_t last_gi_logged_ = ~0u;
   uint32_t gi_level_logged_ = ~0u;  // the strength level (and whether a debug cvar changed it) the log last said
+  bool gi_light_logged_[5] = {};   // per menu_world::World: the light constants the bounce light first ran with there were logged
   uint32_t gi_idle_frames_ = 0;    // frames since the images were last used (they go back after a while)
   bool gi_apply_logged_ = false;
   uint64_t gi_runs_ = 0;
