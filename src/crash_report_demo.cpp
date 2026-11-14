@@ -141,6 +141,24 @@ void* TwinThread(void*) {
   return nullptr;
 }
 
+// The same as the game's OnTerminate (crash_handler.cpp): the uncaught exception's message becomes
+// the report's "Detalhe:" line, so crash-test.sh can check "uncaught std::exception: demo..." here
+// (and with the kit's libc++ too: that is the library the game is built with).
+void OnDemoTerminate() {
+  char detail[512] = {};
+  if (std::current_exception()) {
+    try {
+      std::rethrow_exception(std::current_exception());
+    } catch (const std::exception& e) {
+      snprintf(detail, sizeof(detail), "uncaught std::exception: %s", e.what());
+    } catch (...) {
+      snprintf(detail, sizeof(detail), "uncaught non-std exception");
+    }
+  }
+  lx::ReportAbortLike("std::terminate", detail);
+  abort();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -160,10 +178,7 @@ int main(int argc, char** argv) {
   time_t now = time(nullptr);
   localtime_r(&now, &tmv);
   lx::InstallEarly(log_abs, static_cast<int>(tmv.tm_gmtoff), &FlushDemoLog);
-  std::set_terminate([] {
-    lx::ReportAbortLike("std::terminate", "demo uncaught exception");
-    abort();
-  });
+  std::set_terminate(&OnDemoTerminate);
 
   if (strcmp(mode, "chain-consumed") == 0 || strcmp(mode, "chain-declined") == 0 ||
       strcmp(mode, "chain-twice") == 0) {
