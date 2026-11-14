@@ -252,6 +252,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // picture's: the flag is only set then). A pixel the contact shadows cannot darken (the game's own
       // shadow there, the surface turned from the sun, past the fade) skips it: its factor is 1 - weight *
       // (1 - cs), under kFoldedFilterSkip of a change.
+      // KEEP IN STEP with ao_contact_ps.hlsl (THE SKIP UNDER THE GAME'S OWN SHADOW): the march returns 1 for a pixel
+      // whose 3x3 neighbourhood has every mask texel at 0 (the weight bound strength * Ls * vis / (La + Ls * vis) under
+      // half of kFoldedFilterSkip), which is exact only because a pixel with weight <= kFoldedFilterSkip never reads the
+      // image. Change the weight (sun_share, the fade, the mask's sample position or gain) or this test and that bound
+      // changes with it (contact_trace.h MaskCannotLight).
       cs = AoBilateralEdgeFolded(g_push.slots2.x, g_push.slots.w, pixel, int2(g_push.sizes.zw), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }

@@ -132,6 +132,13 @@
 // shadows cannot darken (the game's own shadow, a surface turned from the sun) skips the filter. The apply pass is
 // compiled the same for both states, so the lever is live and needs no new pipeline. The model (contact_trace.h
 // CostModelFast, not measured) is in the log line.
+// (3) the march is skipped under the game's own shadow (hlsl/ao_contact_ps.hlsl THE SKIP, contact_trace.h "the skip under
+// the game's own shadow"): where the sun shadow mask (a frame that has it, the picture's size, no debug picture) is 0 over
+// everything the apply's filter can read for a pixel, the apply cannot use the march's result (its weight, strength * sun
+// share * fade, is 0 there, and below the filter's threshold the apply reads no neighbour), so the march returns 1 before
+// its depth reads. Exact, not an approximation: the check compares the factor bit for bit with and without it. The mask is
+// found before the march and the apply gets the same slot; the gain and the strength it is given are the apply's.
+// It saves what the shadow's stored value being 0 lets it: CHECK that a pixel the game shadows stores 0 (view 10 black).
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -618,8 +625,9 @@ class AmbientOcclusion {
   // denoised_, after the occlusion's own passes have finished with both. Returns the slot of the
   // result (denoised_), or kNoSlot. With mcla_gpu_contact_shadows_fast and the passes at the picture's
   // size (Plan::ContactFilterInApply) there is no filter pass: the result is raw_, and the apply
-  // pass filters it (its flag bit 25).
-  uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base);
+  // pass filters it (its flag bit 25). `mask_slot` is the game's sun shadow mask (FindMaskSlot, kNoSlot without it): the
+  // march skips the pixels under it that the apply cannot use (the apply is given the same slot).
+  uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base, uint32_t mask_slot);
   // --- the SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl) ---
   // Decides what it does in this frame: the setting, the occlusion being on, the tuning cvars.
   void PlanGi(Plan* plan);
@@ -852,6 +860,7 @@ class AmbientOcclusion {
   uint32_t last_contact_logged_ = ~0u;
   uint32_t contact_cost_logged_[4] = {};  // the size (x, y), the steps and the lever's state (bit 0 fast, bit 1 filter in the apply) the cost model line was last logged for
   bool mask_why_logged_ = false;
+  bool contact_skip_logged_ = false;  // the skip under the game's own shadow was logged once
 
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
   // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave

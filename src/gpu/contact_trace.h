@@ -30,8 +30,8 @@
 // The cheaper path (mcla_gpu_contact_shadows_fast: an adaptive step count and the filter inside the apply pass) is
 // described where its numbers are, below ("the adaptive step count"), with its cost model (CostModelFast).
 //
-// Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel (the log line);
-// the rest is mirrored in the shader and run by the check.
+// Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel and CostModelFast (the log lines),
+// MaskSkipOn and kSkipFlag (the march's skip under the game's own shadow); the rest is mirrored in the shader and run by the check.
 // ===========================================================================
 
 #include <algorithm>
@@ -162,6 +162,7 @@ struct Cost {
   double march_ms = 0.0;
   double filter_ms = 0.0;
   double total_ms = 0.0;          // an RTX 5080's; other GPUs scale with their throughput
+  double skipped_share = 0.0;     // CostModelFast: the share of the marched pixels the skip under the game's shadow avoids
 };
 inline Cost CostModel(uint32_t width, uint32_t height, uint32_t steps, uint32_t filter_passes,
                       bool new_march) {
@@ -207,15 +208,51 @@ inline double AdaptiveStepShare(uint32_t height) {
   }
   return kAdaptShare2160;
 }
-// `folded`: the filter is inside the apply (false at half size, where the filter pass stays: one pass).
-inline Cost CostModelFast(uint32_t width, uint32_t height, uint32_t steps, bool folded) {
+// THE SKIP UNDER THE GAME'S OWN SHADOW (the section "the skip under the game's own shadow" below). NOT MEASURED either.
+//   A pixel whose march is skipped reads its own depth (one of the 24 reads) and the texels of the game's sun shadow mask
+//   that its footprint covers (4 to 16 loads of an 8-bit image that is a few MB, sits in the cache and is shared by the
+//   pixels of a warp: counted as 2 reads more), and nothing else: 3 of 24. A pixel that is marched pays one read more for
+//   the test (the first texel it looks at is lit and ends the test). The skip avoids the pixels in the game's shadow minus
+//   the band along each shadow edge (the dilation by the filter's pixel, the mask's bilinear texel and the margin) and
+//   minus the warps that mix lit and shadowed pixels: kSkipCatch is the share of the shadowed pixels the check's scenes
+//   see skipped, whole 8 x 4 pixel tiles only (contact_trace_test.cpp SkipUnderTheGamesShadow prints and compares it),
+//   by the picture's height as the step share is. The apply pass leaves the filter out where its weight is 0, which is
+//   the same pixels (no dilation: its own footprint only), taken at the same share. The share of the screen that is in the
+//   game's shadow is the model's input: a frame without the mask (6 h, 18 h, rain, night) skips nothing and costs the
+//   march as before (shadowed_share < 0).
+inline constexpr double kSkippedPixelShare = 3.0 / 24.0;
+inline constexpr double kMaskTestShare = 1.0 / 24.0;
+inline constexpr double kSkipCatch720 = 0.88;
+inline constexpr double kSkipCatch1080 = 0.94;
+inline constexpr double kSkipCatch2160 = 0.96;
+inline double SkipCatch(uint32_t height) {
+  const double h = double(height);
+  if (h <= 720.0) {
+    return kSkipCatch720;
+  }
+  if (h <= 1080.0) {
+    return kSkipCatch720 + (kSkipCatch1080 - kSkipCatch720) * (h - 720.0) / 360.0;
+  }
+  if (h <= 2160.0) {
+    return kSkipCatch1080 + (kSkipCatch2160 - kSkipCatch1080) * (h - 1080.0) / 1080.0;
+  }
+  return kSkipCatch2160;
+}
+// `folded`: the filter is inside the apply (false at half size, where the filter pass stays: one pass, and the skip is
+// not used). `shadowed_share`: the share of the marched pixels that are in the game's own sun shadow (0 to 1) in a frame
+// that has the mask; negative: no mask in the frame, or the skip is off (the march as it was).
+inline Cost CostModelFast(uint32_t width, uint32_t height, uint32_t steps, bool folded, double shadowed_share = -1.0) {
   Cost c;
   const double share = AdaptiveStepShare(height);
+  const bool skipping = folded && shadowed_share >= 0.0;
+  c.skipped_share = skipping ? std::clamp(shadowed_share, 0.0, 1.0) * SkipCatch(height) : 0.0;
   c.megapixels = double(width) * double(height) / 1e6;
-  c.mega_steps = c.megapixels * double(steps) * share;
-  c.filter_passes = folded ? kFoldedFilterShare : 1.0;
+  c.mega_steps = c.megapixels * double(steps) * share * (1.0 - c.skipped_share);
+  c.filter_passes = (folded ? kFoldedFilterShare : 1.0) * (1.0 - c.skipped_share);
+  const double march_scale =
+      skipping ? (1.0 - c.skipped_share) * (1.0 + kMaskTestShare) + c.skipped_share * kSkippedPixelShare : 1.0;
   c.march_ms = c.megapixels * double(steps) * kMsPerMegaStep * kMarchAluFactor *
-               (kMarchFixedShare + (1.0 - kMarchFixedShare) * share);
+               (kMarchFixedShare + (1.0 - kMarchFixedShare) * share) * march_scale;
   c.filter_ms = c.megapixels * kMsPerMegapixelPass * c.filter_passes;
   c.total_ms = c.march_ms + c.filter_ms;
   return c;
@@ -589,6 +626,122 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);
   }
   return 1.0f - shadow;
+}
+
+// ---------------------------------------------------------------------------
+// the skip under the game's own shadow (mcla_gpu_contact_shadows_fast, the third part of the cheaper path)
+// ---------------------------------------------------------------------------
+//
+// WHAT IS SKIPPED. The apply pass darkens by 1 - weight * (1 - cs) with
+//     weight = strength * sun_share * fade,   sun_share = Ls N.L v / (La + Ls N.L v),
+//   v = saturate(gain * mask) the game's own sun shadow mask (the mask's stored value times the gain; 1 where the frame has
+//   no mask), and, with the filter inside the apply (hlsl/ao_apply_ps.hlsl: the picture's size, the same place the march's
+//   image is read), cs is the 3 x 3 filter over the march's image and the filter is left out wherever weight <=
+//   kFoldedFilterSkip (cs stays 1: the factor is exactly 1). So where the game's mask is 0 the march's result is not used,
+//   and the march (the only expensive part of the contact shadows) may return 1 at once.
+//
+// WHY IT IS EXACT (the check, SkipUnderTheGamesShadow, runs the twin of both passes and compares the factor bit for bit).
+//   1. The factor of a pixel P is a function of the march's value at P and at its 8 neighbours Q, and only when
+//      weight(P) > kFoldedFilterSkip: below it the apply never reads them (cs = 1, factor = 1 - weight * 0 = 1 exactly).
+//   2. weight(P) is at most strength * Ls v / (La + Ls v), which grows with v (N.L <= 1, fade <= 1), and v is at most
+//      saturate(gain * the largest texel of the 4 bilinear taps the apply samples at P's centre). SkipLimit turns the bound
+//      weight <= kSkipWeight into the largest stored texel value `limit` for which it still holds; kSkipWeight is half of
+//      kFoldedFilterSkip, so rounding (the apply's normal and the light are not exactly what the bound assumed) cannot
+//      reach the apply's own threshold.
+//   3. A pixel Q is skipped when every texel that any pixel of the 3 x 3 round Q (the pixels whose filter reads Q, and Q
+//      itself) can sample is <= limit. Then each of those pixels has weight <= kSkipWeight, so none of them runs the filter
+//      or reads Q: the skipped value (1) is read by nobody that could notice, and every pixel that does run the filter has
+//      all of its neighbours marched, so its value is the march's own. The factor is the same as without the skip, to the bit.
+//   Not skipping is always safe, so every doubt is resolved towards marching: the texel range is the bilinear footprint of
+//   the 3 x 3 pixels' centres widened by kSkipTexelMargin of a texel (the sampler's fixed-point coordinates: 1/256), clamped
+//   into the mask like the sampler's clamp-to-edge; a span of kSkipMaxTexels or more (a mask much larger than the image)
+//   is not tested; an ambient that is negative, a sun or gain that is not positive, NaN: no skip.
+//   The skip is on only where the apply does the filter itself (the picture's size, not at half size, where the apply
+//   upsamples a filtered image and reads further), only in a frame that has the mask (the shader reads the mask's slot),
+//   and not while a debug picture is on (those run the filter on every pixel and show the visibility itself).
+//
+// WHAT IT COSTS. The test runs after the sky/distance return and before the normal's depth reads: one depth read, a
+// GetDimensions and the texels (4 to 16, fewer once one is lit). What it saves is the pixel's normal (4 reads), the ground
+// under a vehicle term (3), the steps (up to 16) and the arithmetic: CostModelFast has the model. The saving needs whole
+// warps in the shadow, and a shadow edge costs a band of about a mask texel and the filter's pixel on each side.
+//
+// Push fields (hlsl/ao_contact_ps.hlsl): flags bit 24 (kSkipFlag), slots2.w the mask's slot, extra.z the gain, shape.w the
+// strength, and the frame's own light as the apply has it: light.w the ambient's luma, extra.x the sun's. All are the apply's.
+inline constexpr float kSkipWeight = 0.5f * kFoldedFilterSkip;
+inline constexpr float kSkipTexelMargin = 0.015625f;  // 1/64 of a mask texel
+inline constexpr float kSkipMaxTexels = 8.0f;
+inline constexpr uint32_t kSkipFlag = 1u << 24;
+
+// Whether the host turns the skip on in a frame (ao.cpp RecordContact).
+inline bool MaskSkipOn(bool fast, bool filter_in_apply, bool has_mask, bool debug_picture, float strength) {
+  return fast && filter_in_apply && has_mask && !debug_picture && strength > kSkipWeight;
+}
+
+// The largest stored mask value (0 to 1) at which the pixel's weight is surely <= kSkipWeight; a value above it forbids the
+// skip. -1: never skip (the inputs are not the ones the bound is proven for).
+inline float SkipLimit(float ambient, float sun, float strength, float gain) {
+  if (!(ambient >= 0.0f) || !(sun > 0.0f) || !(gain > 0.0f) || !(strength > kSkipWeight)) {
+    return -1.0f;
+  }
+  // strength * sun v / (ambient + sun v) <= kSkipWeight  <=>  sun v <= kSkipWeight * ambient / (strength - kSkipWeight)
+  const float visible = (kSkipWeight * ambient) / ((strength - kSkipWeight) * sun);
+  return visible >= 1.0f ? 3.0e38f : visible / gain;
+}
+
+// The mask texels (first and last, one axis) that the pixels `pixel - 1` to `pixel + 1` can sample: the bilinear taps of
+// a sample at the pixel centre (p + 0.5) / image_size are the texels floor(t) and floor(t) + 1, t = (p + 0.5) mask / image - 0.5.
+inline void SkipTexelRange(int pixel, int image_size, int mask_size, int* first, int* last) {
+  const float scale = float(mask_size) / float(image_size);
+  const float lo = (float(pixel) - 0.5f) * scale - 0.5f - kSkipTexelMargin;
+  const float hi = (float(pixel) + 1.5f) * scale - 0.5f + kSkipTexelMargin;
+  *first = std::clamp(int(std::floor(lo)), 0, mask_size - 1);
+  *last = std::clamp(int(std::floor(hi)) + 1, 0, mask_size - 1);
+}
+
+// True when the march at (x, y) may return 1 without looking: every texel its 3 x 3 of pixels can sample is <= limit.
+// mask_at(tx, ty) is the stored value, 0 to 1. `reach` is how many pixels round (x, y) are counted (1: the filter's 3 x 3;
+// 0 is the pixel alone, which the check uses as the control that shows the dilation is needed).
+template <class MaskAt>
+bool MaskCannotLight(MaskAt&& mask_at, int mask_w, int mask_h, int image_w, int image_h, int x, int y, float limit, int reach = 1) {
+  if (!(limit >= 0.0f)) {
+    return false;
+  }
+  int x0, x1, y0, y1;
+  if (reach == 1) {
+    SkipTexelRange(x, image_w, mask_w, &x0, &x1);
+    SkipTexelRange(y, image_h, mask_h, &y0, &y1);
+  } else {
+    // The pixel alone: the same range with the two pixels either side left out (the control).
+    const float sx = float(mask_w) / float(image_w), sy = float(mask_h) / float(image_h);
+    const float tx = (float(x) + 0.5f) * sx - 0.5f, ty = (float(y) + 0.5f) * sy - 0.5f;
+    x0 = std::clamp(int(std::floor(tx)), 0, mask_w - 1);
+    x1 = std::clamp(int(std::floor(tx)) + 1, 0, mask_w - 1);
+    y0 = std::clamp(int(std::floor(ty)), 0, mask_h - 1);
+    y1 = std::clamp(int(std::floor(ty)) + 1, 0, mask_h - 1);
+  }
+  if (float(x1 - x0) >= kSkipMaxTexels || float(y1 - y0) >= kSkipMaxTexels) {
+    return false;
+  }
+  for (int ty = y0; ty <= y1; ++ty) {
+    for (int tx = x0; tx <= x1; ++tx) {
+      if (mask_at(tx, ty) > limit) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// What one invocation of the shader writes with the skip: the sky/distance return first, then the skip, then the march proper.
+// can_skip(x, y) is MaskCannotLight over the frame's mask. steps_used is 0 for a skipped pixel, as for any return before the loop.
+template <class DepthAt, class CanSkip>
+float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int x, int y) {
+  const float tc = depth_at(x, y);
+  if (tc >= t.sky * 0.5f || tc >= t.max_distance || can_skip(x, y)) {
+    t.steps_used = 0;
+    return 1.0f;
+  }
+  return March(t, depth_at, x, y);
 }
 
 }  // namespace mcla::gpu::contact_trace
