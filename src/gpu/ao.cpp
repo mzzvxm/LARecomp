@@ -13,6 +13,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "ao_halo.h"
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
@@ -51,6 +52,16 @@ REXCVAR_DEFINE_DOUBLE(
     .debug_only()
     .range(20.0, 1000.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ao_car_reach, 0.4, "MCLA/GPU",
+    "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
+    "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "
+    "where the tyres meet the road and the car's footprint, not a halo). The car's own body is "
+    "darkened with the whole radius as before. 1 (or 0): a car blocks the sky light as far as a wall "
+    "does. Live.")
+    .debug_only()
+    .range(0.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_view, 0, "MCLA/GPU",
     "Diagnostic: shows a stage of the ambient occlusion as a grey picture instead of applying it "
@@ -58,10 +69,12 @@ REXCVAR_DEFINE_INT32(
     "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
     "(a log scale), 6 how much of the last frames each pixel kept (white: all it can, black: none, "
     "so it is new, a vehicle whose own motion is not known, or has no history yet; the history itself "
-    "goes on as usual). 0: "
+    "goes on as usual), 7 the occlusion's own part of the factor (the visibility with the ambient "
+    "share, the strength and the distance fade; white: none), 8 the pixels it takes for vehicles "
+    "(white). 0: "
     "off. Live.")
     .debug_only()
-    .range(0, 6)
+    .range(0, 8)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_history, 12, "MCLA/GPU",
@@ -350,6 +363,9 @@ constexpr uint32_t kGiReleaseAfterFrames = 600;
 // The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
 // are 1 to 6).
 constexpr uint32_t kContactViewBase = 7;
+// The apply's debug view of the pixels the depth pass took for vehicles (the setting's 8: the contact
+// shadows' views are 8 to 11 in the shader).
+constexpr uint32_t kVehicleView = 12;
 
 // Contact shadows. The game's shadow mask: the page of the resolve that makes it (the 1280x720
 // k_8_8_8_8 collector output, resolved at the main view's phase 0x4000), a texture key's base page.
@@ -1631,7 +1647,10 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
-  plan.view = plan.occlusion ? uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 6)) : 0u;
+  plan.view = plan.occlusion ? uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 8)) : 0u;
+  if (plan.view == 8u) {
+    plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
+  }
   if (contact) {
     const uint32_t contact_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, 4));
     if (contact_view != 0) {
@@ -1838,11 +1857,24 @@ void AmbientOcclusion::UpdateLook() {
   look_.radius = def.radius;
   look_.power = def.power;
   look_.direct = def.direct;
+  look_.car_reach = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_car_reach), 0.0, 1.0));
   if (index != look_logged_index_) {
     look_logged_index_ = index;
     REXLOG_INFO("[gpu] ao: intensity {} (mcla_gpu_ao_intensity, live): strength {:.3g}, radius {:.3g} "
                 "m, power {:.3g}, direct {:.3g}",
                 def.name, look_.strength, look_.radius, look_.power, look_.direct);
+  }
+  if (look_.car_reach != car_reach_logged_) {
+    car_reach_logged_ = look_.car_reach;
+    if (ao_halo::CarReachLimits(look_.car_reach)) {
+      REXLOG_INFO("[gpu] ao: a car blocks the sky light {:.3g} of the radius on the road ({:.3g} m at "
+                  "this intensity; mcla_gpu_ao_car_reach, live)",
+                  look_.car_reach, look_.car_reach * look_.radius);
+    } else {
+      REXLOG_INFO("[gpu] ao: a car blocks the sky light as far as anything else does "
+                  "(mcla_gpu_ao_car_reach {:.3g})",
+                  look_.car_reach);
+    }
   }
 }
 
@@ -1884,6 +1916,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   push->shape[3] = 0.5f * fade_end;
   push->extra[1] = fade_end;
   push->extra[2] = look_.direct;
+  push->extra[3] = look_.car_reach;  // the main pass's; the temporal and apply passes set their own
 
   // The light: the ambient and the sun as lumas, and the direction to the sun in this renderer's
   // view space (x right, y up, z forward). The game's view space looks along -z, so z changes
@@ -2243,6 +2276,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   push.sizes[1] = float(plan.ao[1]);
   push.sizes[2] = float(plan.render[0]);
   push.sizes[3] = float(plan.render[1]);
+  // The depth target's stencil plane (the vehicles' IDs): the pass marks the vehicles' pixels.
+  push.slots[2] = summary.stencil_slot;
   DrawPass(list, depth_[0], depth_pipeline, push);
   if (levels) {
     // The coarser levels.

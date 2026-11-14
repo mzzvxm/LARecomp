@@ -71,8 +71,11 @@
 // Debug views (flags bits 0-7): 1 the factor, 2 the visibility, 3 the ambient share, 4 the
 // view-space normal, 5 the linear depth (log), 6 the temporal pass's mask (the image it reads then
 // holds the share of the history each pixel kept instead of the visibility: white a full history,
-// black none, grey part of it), 8 the contact factor, 9 the contact visibility, 10 the sun's
-// visibility (the mask, or 1), 11 the sun's share of the light; written as a grey of 0.3 of the value so
+// black none, grey part of it), 7 the occlusion's own factor (the visibility with the ambient share, the
+// strength and the distance fade, without the contact shadows; the picture's factor when they are off),
+// 8 the contact factor, 9 the contact visibility, 10 the sun's
+// visibility (the mask, or 1), 11 the sun's share of the light, 12 the pixels the depth pass took for
+// vehicles (white); written as a grey of 0.3 of the value so
 // that 1.0 reads below the tone map's white.
 
 #include "ao_common.hlsli"
@@ -279,6 +282,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
     } else if (view == 5u) {
       const float d = saturate(log2(1.0f + min(tc, kAoSky)) / log2(1.0f + 2.0f * fade_end));
       grey = float3(d, d, d);
+    } else if (view == 7u) {
+      grey = float3(ao_factor, ao_factor, ao_factor);  // the occlusion's own part of the factor
+    } else if (view == 12u) {
+      // The pixels the depth pass marked as vehicles (white).
+      const int2 asize = int2(g_push.sizes.zw);
+      const int2 q = clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1);
+      const float v = AoIsVehicle(AoLoadLinear(g_push.slots.w, q)) ? 1.0f : 0.0f;
+      grey = float3(v, v, v);
     } else if (view == 8u) {
       grey = float3(contact_factor, contact_factor, contact_factor);
     } else if (view == 9u) {

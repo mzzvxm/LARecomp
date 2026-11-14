@@ -13,7 +13,20 @@
 //   where it is far from the surface (the falloff, which is also what keeps a far wall behind a
 //   near edge from occluding it);
 //   the arc integral of the two horizons around the projected normal, times the length of the
-//   projected normal; the mean over the slices, to a power, never below a floor.
+//   projected normal; the sum over the slices divided by what the same sum is for a surface nothing
+//   blocks (a ratio: an open surface is exactly 1 however few slices there are and whatever angle the
+//   view takes to it), to a power, never below a floor.
+//
+// Two things keep the occlusion off ground that nothing hides the sky from. The slice sum used to be divided
+// by the number of slices and clamped to 1: with two or three slices the sum of a flat road at a grazing angle
+// is 1 only on average, a frame's value above 1 was cut and the rest was not, so a plain road came out
+// 4 to 9% dark (more with the distance) and the power made it worse. And a car, which the depth shows as a
+// wall at the road's edge, darkened the road for the whole radius: the nearest metre or two beside it, then
+// a tail. The depth pass marks a vehicle's pixels in the lowest bit of their depth (ao_common.hlsli,
+// AoIsVehicle); a sample that is a vehicle, seen from a pixel that is not, counts only within a share of the
+// radius (g_push.extra.w, 0 or 1: all of it), so the road keeps the dark line where the tyres meet it and
+// the car's footprint but not a halo; the car's own body (a pixel that is a vehicle) sees everything at the
+// full radius as before.
 //
 // The pixel's own noise is interleaved gradient noise (a fixed spatial pattern) plus a shift that
 // changes every frame by the additive recurrence of the R2 sequence, so the two noise values of one
@@ -77,6 +90,20 @@ float ChainDepth(float2 p, uint level) {
   return AoLoadLinear(g_push.slots2.x, q);
 }
 
+// Whether the sample at the continuous pixel position `p` (level-0 pixels) is a vehicle: the bit the depth
+// pass leaves in level 0, read at the sample's own pixel whatever level the sample's depth comes from.
+bool AoSampleIsVehicle(float2 p) {
+  const int2 size0 = int2(g_push.sizes.zw);
+  return AoIsVehicle(AoLoadLinear(g_push.slots.z, clamp(int2(floor(p)), int2(0, 0), size0 - 1)));
+}
+
+// The falloff of a vehicle's samples as the (mul, add) of the weight saturate(dist * mul + add): the world's
+// ramp (the same share of the radius) over `car_share` of the radius instead of all of it.
+float2 AoVehicleFalloff(float car_share, float radius, float falloff_ratio) {
+  const float car_radius = max(car_share * radius, 0.05f);
+  return float2(-1.0f / (falloff_ratio * car_radius), 1.0f / falloff_ratio);
+}
+
 #if AO_GI
 
 static const uint kSectors = 32u;
@@ -136,7 +163,8 @@ uint AoSectorBits(float lo, float hi) {
 void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3 pc,
                 float3 view_vec, float3 axis, float falloff_mul, float falloff_add, float n,
                 float sin_n, float cos_n, float g_end, float inv_total, float thickness,
-                float facing_weight, inout uint occupied, inout float3 light) {
+                float facing_weight, bool limit_vehicles, float2 vehicle_fall, inout uint occupied,
+                inout float3 light) {
   const float2 size = g_push.sizes.zw;
   if (!(all(p >= 0.0f) && all(p < size))) {
     return;  // off screen: nothing there, the sky share of the hemisphere stays the game's ambient
@@ -144,7 +172,10 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   const float3 sp = AoViewPos(floor(p) + 0.5f, size, ChainDepth(p, level));
   const float3 delta = sp - pc;
   const float dist = length(delta);
-  const float w = saturate(dist * falloff_mul + falloff_add);
+  float w = saturate(dist * falloff_mul + falloff_add);
+  if (limit_vehicles && w > 0.0f && AoSampleIsVehicle(p)) {
+    w = min(w, saturate(dist * vehicle_fall.x + vehicle_fall.y));
+  }
   const float3 dir = delta / max(dist, 1e-6f);
   const float cos_front = max(lerp(low, dot(dir, view_vec), w), low);
   const float u_front = AoSectorPos(side * acos(clamp(cos_front, -1.0f, 1.0f)), n, sin_n, cos_n,
@@ -213,6 +244,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float falloff_ratio = max(g_push.lens.w, 0.01f);
   const float falloff_mul = -1.0f / (falloff_ratio * radius);
   const float falloff_add = 1.0f / falloff_ratio;
+  // A vehicle's samples reach only a share of the radius on a pixel that is not a vehicle itself.
+  const float car_share = g_push.extra.w;
+  const bool limit_vehicles = car_share > 0.001f && car_share < 0.999f && !AoIsVehicle(tc);
+  const float2 vehicle_fall = AoVehicleFalloff(car_share, radius, falloff_ratio);
   const float thickness = max(g_push.shape.z, 0.0f);
   const float facing_weight = saturate(g_push.shape.w);
 
@@ -226,6 +261,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   float visibility = 0.0f;
   float3 bounce = float3(0.0f, 0.0f, 0.0f);
+  float open_sum = 0.0f;  // what the slices' weights add up to: the visibility of a surface nothing blocks
   for (uint slice = 0u; slice < slices; ++slice) {
     const float phi = (float(slice) + noise.x) / float(slices) * kPi;
     const float2 dir_px = float2(cos(phi), sin(phi));
@@ -255,11 +291,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
       const float level_f = clamp(log2(max(length(offset), 1.0f)) - 3.0f, 0.0f, 2.0f);
       const uint level = uint(level_f);
       AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, falloff_mul,
-                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
-                 light);
+                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
+                 limit_vehicles, vehicle_fall, occupied, light);
       AoGiSample(centre - offset, level, -dir_px, -1.0f, low1, pc, view_vec, axis, falloff_mul,
-                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
-                 light);
+                 falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
+                 limit_vehicles, vehicle_fall, occupied, light);
     }
     // The slice's share of the picture: the arc's measure times the projected normal's length, as the
     // plain pass weighs it. The open sectors are the visibility, the radiance of the closed ones the
@@ -267,15 +303,43 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float weight = projected_len * total;
     visibility += weight * float(kSectors - countbits(occupied)) * (1.0f / float(kSectors));
     bounce += weight * light;
+    open_sum += weight;
   }
-  visibility = saturate(visibility / float(slices));
+  // The weighted mean over the slices (the plain pass's ratio): an open surface is 1 exactly, and a
+  // surface that is all radiance gets that radiance, whatever the slices' angles are.
+  const float inv_open = 1.0f / max(open_sum, 1e-3f);
+  visibility = saturate(visibility * inv_open);
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   // A half float keeps 65504; the chain's colours are capped well under that, and a NaN counts as none.
-  bounce = min(max(bounce / float(slices), 0.0f), 60000.0f);
+  bounce = min(max(bounce * inv_open, 0.0f), 60000.0f);
   return float4(visibility, bounce);
 }
 
 #else  // !AO_GI
+
+// One sample of one side of a slice: the horizon cosine after it, `h` before it, `low` the surface's own
+// tangent on that side. The sample pulls the horizon towards the cosine of its direction by its falloff
+// weight (nothing far away counts); where `limit_vehicles` is set a sample that is a vehicle counts by
+// the shorter falloff `vehicle_fall` (AoVehicleFalloff) if that is the smaller. The vehicle bit is only
+// looked up for a sample that would raise the horizon: the others cost no read.
+float AoHorizonAfter(float2 p, uint level, float3 pc, float3 view_vec, float low, float h,
+                     float falloff_mul, float falloff_add, bool limit_vehicles, float2 vehicle_fall) {
+  const float2 size = g_push.sizes.zw;
+  if (!(all(p >= 0.0f) && all(p < size))) {
+    return h;
+  }
+  const float3 sp = AoViewPos(floor(p) + 0.5f, size, ChainDepth(p, level));
+  const float3 delta = sp - pc;
+  const float dist = length(delta);
+  const float cos_sample = dot(delta / max(dist, 1e-6f), view_vec);
+  float w = saturate(dist * falloff_mul + falloff_add);
+  float pull = lerp(low, cos_sample, w);
+  if (limit_vehicles && pull > h && AoSampleIsVehicle(p)) {
+    w = min(w, saturate(dist * vehicle_fall.x + vehicle_fall.y));
+    pull = lerp(low, cos_sample, w);
+  }
+  return max(h, pull);
+}
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -301,6 +365,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float falloff_ratio = max(g_push.lens.w, 0.01f);
   const float falloff_mul = -1.0f / (falloff_ratio * radius);
   const float falloff_add = 1.0f / falloff_ratio;
+  // A vehicle's samples reach only a share of the radius on a pixel that is not a vehicle itself.
+  const float car_share = g_push.extra.w;
+  const bool limit_vehicles = car_share > 0.001f && car_share < 0.999f && !AoIsVehicle(tc);
+  const float2 vehicle_fall = AoVehicleFalloff(car_share, radius, falloff_ratio);
 
   const uint slices = max(AoSlices(), 1u);
   const uint steps = max(AoSteps(), 1u);
@@ -313,6 +381,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float min_offset = kMinOffsetPixels / radius_px;
 
   float visibility = 0.0f;
+  float open_sum = 0.0f;  // what the slices' terms add up to for a surface nothing blocks
   for (uint slice = 0u; slice < slices; ++slice) {
     const float phi = (float(slice) + noise.x) / float(slices) * kPi;
     const float2 dir_px = float2(cos(phi), sin(phi));          // pixels, y down
@@ -338,22 +407,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
       const float level_f = clamp(log2(max(length(offset), 1.0f)) - 3.0f, 0.0f, 2.0f);
       const uint level = uint(level_f);
 
-      const float2 p0 = centre + offset;
-      if (all(p0 >= 0.0f) && all(p0 < size)) {
-        const float3 sp = AoViewPos(floor(p0) + 0.5f, size, ChainDepth(p0, level));
-        const float3 delta = sp - pc;
-        const float dist = length(delta);
-        const float w = saturate(dist * falloff_mul + falloff_add);
-        hcos0 = max(hcos0, lerp(low0, dot(delta / max(dist, 1e-6f), view_vec), w));
-      }
-      const float2 p1 = centre - offset;
-      if (all(p1 >= 0.0f) && all(p1 < size)) {
-        const float3 sp = AoViewPos(floor(p1) + 0.5f, size, ChainDepth(p1, level));
-        const float3 delta = sp - pc;
-        const float dist = length(delta);
-        const float w = saturate(dist * falloff_mul + falloff_add);
-        hcos1 = max(hcos1, lerp(low1, dot(delta / max(dist, 1e-6f), view_vec), w));
-      }
+      hcos0 = AoHorizonAfter(centre + offset, level, pc, view_vec, low0, hcos0, falloff_mul,
+                             falloff_add, limit_vehicles, vehicle_fall);
+      hcos1 = AoHorizonAfter(centre - offset, level, pc, view_vec, low1, hcos1, falloff_mul,
+                             falloff_add, limit_vehicles, vehicle_fall);
     }
 
     // The horizon angles, kept within the hemisphere around the normal, and the arc integral.
@@ -365,8 +422,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float arc0 = (cos_n + 2.0f * h0 * sin_n - cos(2.0f * h0 - n)) * 0.25f;
     const float arc1 = (cos_n + 2.0f * h1 * sin_n - cos(2.0f * h1 - n)) * 0.25f;
     visibility += projected_len * (arc0 + arc1);
+    // With nothing in the way both horizons are the hemisphere's edges and the arcs add up to
+    // cos(n) + n sin(n).
+    open_sum += projected_len * (cos_n + n * sin_n);
   }
-  visibility = saturate(visibility / float(slices));
+  visibility = saturate(visibility / max(open_sum, 1e-3f));
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   return float4(visibility, 0.0f, 0.0f, 0.0f);
 }
