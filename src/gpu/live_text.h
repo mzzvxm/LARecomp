@@ -20,6 +20,9 @@
 // A change that does not go through SetFlagByName (REXCVAR_SET, rex::cvar::ResetToDefault) does not run
 // the callback and would not show; the settings here are only written through SetFlagByName (the pause
 // menu's CvarSet, the debug menu's reset), the way shadow_filter.cpp relies on already.
+//
+// The compare key (effect_compare.h) flips one of these settings without writing it: while its flip is on
+// the setting, Get() answers `off`, or the effect's on text, in place of the saved word.
 // ===========================================================================
 
 #include <atomic>
@@ -31,6 +34,8 @@
 
 #include <rex/cvar.h>
 
+#include "effect_compare.h"
+
 namespace mcla::gpu {
 
 class LiveText {
@@ -41,12 +46,24 @@ class LiveText {
   LiveText(const LiveText&) = delete;
   LiveText& operator=(const LiveText&) = delete;
 
-  // The cvar's current text. Any thread; the first call registers the callback (a few microseconds).
+  // The cvar's current text. Any thread; the first call registers the callback (a few microseconds). The
+  // compare key's flip, if it is on this setting, is in it (effect_compare.h); the cvar itself is not changed.
   std::string Get() {
     uint64_t word = word_.load(std::memory_order_acquire);
     if (word == 0) {
       Register();
       word = word_.load(std::memory_order_acquire);
+    }
+    const compare::Effect effect = static_cast<compare::Effect>(effect_.load(std::memory_order_relaxed));
+    if (effect != compare::Effect::kNone) {
+      switch (compare::Global().ForcedFor(effect)) {
+        case compare::Force::kOff:
+          return "off";
+        case compare::Force::kOn:
+          return std::string(compare::Info(effect).on_text);
+        default:
+          break;
+      }
     }
     return Unpack(word);
   }
@@ -72,6 +89,7 @@ class LiveText {
 
   void Register() {
     std::call_once(once_, [this] {
+      effect_.store(static_cast<uint8_t>(compare::EffectOfCvar(cvar_)), std::memory_order_relaxed);  // before any word
       rex::cvar::RegisterChangeCallback(cvar_, [this](std::string_view, std::string_view value) {
         word_.store(Pack(value), std::memory_order_release);
       });
@@ -84,6 +102,7 @@ class LiveText {
   }
 
   const char* cvar_;
+  std::atomic<uint8_t> effect_{static_cast<uint8_t>(compare::Effect::kNone)};  // the compare key's effect of this setting
   std::atomic<uint64_t> word_{0};
   std::once_flag once_;
 };

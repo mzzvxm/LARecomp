@@ -27,6 +27,7 @@
 #include "constants.h"
 #include "device.h"
 #include "edram.h"
+#include "effect_compare.h"
 #include "format.h"
 #include "layout.h"
 #include "shadow_filter.h"
@@ -106,7 +107,9 @@ namespace {
 // `game` the game's own shaders draw and the picture stays the game's (the environment map's variant is the same
 // arithmetic at the game's size, but that is not asked). A shader has one of them at most.
 uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
-  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 && REXCVAR_GET(mcla_gpu_bloom_scale)) {
+  // (the compare key's flip, effect_compare.h, can force the bloom fix either way for a moment; the setting is not changed)
+  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 &&
+      compare::Global().Apply(compare::Effect::kBloomFix, REXCVAR_GET(mcla_gpu_bloom_scale))) {
     return ShaderStore::kBloomVariant;
   }
   if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&

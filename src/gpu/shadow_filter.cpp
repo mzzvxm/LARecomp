@@ -11,6 +11,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "effect_compare.h"
 #include "gpu_class.h"
 
 REXCVAR_DEFINE_STRING(
@@ -110,7 +111,19 @@ void EnsureRegistered() {
 
 Mode CurrentMode() {
   EnsureRegistered();
-  const Mode mode = ModeFor(EffectiveClass(), static_cast<Choice>(g_choice.load(std::memory_order_relaxed)));
+  Choice choice = static_cast<Choice>(g_choice.load(std::memory_order_relaxed));
+  // The compare key's flip (effect_compare.h): the game's own filter or the soft one, whatever the setting says.
+  switch (compare::Global().ForcedFor(compare::Effect::kShadowFilter)) {
+    case compare::Force::kOff:
+      choice = Choice::kGame;
+      break;
+    case compare::Force::kOn:
+      choice = Choice::kSoft;
+      break;
+    default:
+      break;
+  }
+  const Mode mode = ModeFor(EffectiveClass(), choice);
   LogMode(mode);
   return mode;
 }
