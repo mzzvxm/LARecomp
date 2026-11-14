@@ -208,6 +208,31 @@
 // colour and neon is black in view 20; (3) the mask's slot is readable in the apply at the trigger (the contact
 // shadows read it there too).
 //
+// FOURTH STEP: A STRONGER BOUNCE LIGHT, AND LEVELS OF IT (ssgi_light.h and ssgi_level.h have the maths and the
+// numbers; hlsl/ssgi_common.hlsli, ao_color_ps.hlsl, ao_main_ps.hlsl and ao_apply_ps.hlsl the same in the
+// shaders). The third step's bounce was nearly invisible (owner, 2026-11-13: "even strength 2.0 with high shows a
+// minimal difference") for three reasons: the factor was kept to half of the pixel's own colour, so a shaded pixel,
+// where the bounce matters most, could gain next to nothing; the gather looked only as far as the occlusion's own
+// radius (1 to 3 m, the same samples give its visibility) while a shaded street's light comes from the sunlit road
+// and walls 4 to 10 m away; and the strength stopped at 2 with a default of 0.75. Now:
+//   cap       what a sample may carry into the bounce is a soft clip of its luma at `cap` times the frame's ambient +
+//             sun (never under 0.5), and a pixel's own colour counts as a source of light (no bounce) from twice that
+//             light on, ramped; the bounce may fill a pixel up to the cap's light (a ceiling) and not past it, so a
+//             shadow gets lighter and nothing gets whiter than the sun-lit white of the frame. The per-pixel limit
+//             is a soft guard of several times the pixel's own colour (2 to 8) against the noise of a dark pixel.
+//   reach     a second ring of samples in each slice from the near samples' end out to the level's reach (4 to 10 m),
+//             1 or 2 steps a side (low, high) from the coarser levels of the chains, with the horizon falloff at the
+//             reach. The ring only adds light, into the sectors the near samples left open: the visibility is
+//             counted from the near mask alone, so the occlusion looks as it did.
+//   levels    mcla_gpu_ssgi_intensity (light, default, strong, stronger, strongest; the pause menu's BOUNCE LIGHT
+//             STRENGTH row, live) is a set of strength, limit, reach and cap; the debug cvars mcla_gpu_ssgi_strength /
+//             _clamp / _reach / _test_clamp / _far_steps each replace one number (-1: the level's).
+// Cost: the ring adds 2 samples a side of each slice at high (3 slices: 12 more to the 18) and 1 at low, from
+// coarse levels; the colour chain and the apply a few ALU. CHECK: measure the bounce light's passes (the "ssgi
+// visibility" label) against the third step's at the same frame; judge the pictures of every level at dawn, noon,
+// dusk and night (chain-ssgistrong.ps1): a sunlit road's light in the shade of a wall, a coloured wall's colour on
+// the car beside it, neon and lamps not whitening the walls, no halo at a silhouette's edge from the far ring.
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
@@ -221,8 +246,9 @@
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
 // darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
 // views) and _census (a diagnostic log). Bounce light: mcla_gpu_ssgi (auto, off, low, high; live; the pause
-// menu's BOUNCE LIGHT row, grey while the occlusion is off) with the tuning cvars mcla_gpu_ssgi_strength /
-// _radius / _clamp / _view (debug-only). The SSGI test, the debug override that forces the passes on at the
+// menu's BOUNCE LIGHT row, grey while the occlusion is off) and mcla_gpu_ssgi_intensity (light, default, strong,
+// stronger, strongest; live; the BOUNCE LIGHT STRENGTH row, grey while the bounce light is off) with the tuning
+// cvars mcla_gpu_ssgi_strength / _radius / _clamp / _reach / _far_steps / _view (debug-only). The SSGI test, the debug override that forces the passes on at the
 // occlusion's own quality whatever the setting says: mcla_gpu_ssgi_test and its tuning and view cvars
 // mcla_gpu_ssgi_test_thickness / _clamp / _facing / _view / _view_gain / _history / _history_clamp /
 // _atrous (all debug-only).
@@ -495,7 +521,6 @@ class AmbientOcclusion {
   struct GiPlan {
     bool on = false;
     float thickness = 0.0f;        // the back face of a sample, world units: 0 = a solid (GTAO's horizons)
-    float cap = 2.0f;              // the cap of a sample's radiance, in ambient + sun
     float facing = 1.0f;           // the weight of the facing test (0: surfaces are taken to face the pixel)
     float view_gain = 1.0f;
     // 0 none; 1 the bounce, 2-4 the chain's levels 0-2, 5 the bounce cleaned, 6 the visibility, 7 the
@@ -510,9 +535,15 @@ class AmbientOcclusion {
     bool fewer = false;            // the main pass takes 2 slices and 2 steps (the occlusion's low)
     bool half = false;             // the passes run at half the picture's size even where the occlusion is high
     bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
-    float strength = 0.75f;        // the bounce's gain; 0 runs the passes and adds nothing
-    float limit = 0.5f;            // the most it may add to a pixel, as a share of the pixel's own colour
-    float radius = 1.0f;           // the search radius, a multiple of the occlusion's
+    // The numbers of the strength level (mcla_gpu_ssgi_intensity; ssgi_level.h) with the debug cvars' overrides:
+    float strength = 1.25f;        // the bounce's gain; 0 runs the passes and adds nothing
+    float limit = 2.5f;            // the most it may add to a pixel, as a multiple of the pixel's own colour (a soft guard)
+    float cap = 2.0f;              // the brightest a sample may carry and the ceiling the bounce fills a pixel to, in the frame's light
+    float reach = 6.0f;            // how far the far ring looks, in world units (0: no ring)
+    uint32_t far_steps = 2;        // the ring's samples a side of each slice
+    uint32_t level = 1;            // the level (ssgi_level.h Level) these numbers are of
+    bool overridden = false;       // a debug cvar replaced one of them
+    float radius = 1.0f;           // the near search radius, a multiple of the occlusion's
     uint32_t apply_view = 0;       // mcla_gpu_ssgi_view: 1 the factor in colour, 2 the bounce, 3 the albedo estimate,
                                    // 4 the light T, 5 the surface share, 6 the change against the game's own picture
   };
@@ -892,6 +923,7 @@ class AmbientOcclusion {
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
   uint32_t last_gi_logged_ = ~0u;
+  uint32_t gi_level_logged_ = ~0u;  // the strength level (and whether a debug cvar changed it) the log last said
   uint32_t gi_idle_frames_ = 0;    // frames since the images were last used (they go back after a while)
   bool gi_apply_logged_ = false;
   uint64_t gi_runs_ = 0;

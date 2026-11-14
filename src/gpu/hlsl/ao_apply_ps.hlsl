@@ -44,8 +44,14 @@
 // colour channel,
 //
 //   factor.rgb = ao_factor * contact_factor + bounce
-//   bounce     = strength * B.rgb / max(T, luma(colour)) * (1 - capped) * fade, kept under `limit` (a share of the
-//                pixel's own colour, its largest channel; the hue stays)
+//   bounce     = strength * B.rgb / max(T, luma(colour)) * (1 - source) * fade, then kept by two soft clips (ssgi_common.hlsli
+//                SsgiSoftClip, the hue stays): its largest channel to `limit` times the pixel's own colour (a large number,
+//                2 to 8: a guard against amplifying the noise of a nearly black pixel, not the look), and the light it adds
+//                to the room under the ceiling, `cap` times the frame's light (ambient + sun, never under 0.5): the bounce
+//                may fill a pixel up to what a white surface in full sun would be, and not past it, so a shadow gets lighter
+//                and nothing gets whiter than the sun-lit white of the frame. A pixel at or over the ceiling gets nothing.
+//                (The bounce was kept to half of the pixel's own colour before: a shaded pixel, where the bounce matters
+//                most, gained nothing. ssgi_light.h has the whole story and the same maths in C++.)
 //
 // The scene colour is albedo * (T + point lights) + specular and the game's ambient stands for "the average
 // surroundings": the multiply by lerp(1, V, share) took the blocked part of the ambient away, the bounce gives
@@ -62,7 +68,7 @@
 // Push fields of this variant (the apply's others as above): slots.z the image of the visibility and the bounce
 // (RGBA16F, at the passes' size: the a-trous filter's output), slots2.y the colour chain's level 0 (RGBA16F: rgb
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
-// of 0.02, bit 25 the bounce term. The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or
+// of 0.04, bits 26-31 the cap in units of 0.25 (the ceiling and, in the colour chain, the radiance cap). The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or
 // not the contact shadows are on. Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
 // share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
@@ -77,6 +83,9 @@
 
 #include "ao_common.hlsli"
 #include "host_pass_samplers.hlsli"
+#if AO_GI
+#include "ssgi_common.hlsli"
+#endif
 
 static const float kViewScale = 0.3f;
 
@@ -84,9 +93,11 @@ bool AoTermOn() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 bool ContactOn() { return (g_push.slots2.z & (1u << 23)) != 0u; }
 bool MaskOn() { return (g_push.slots2.z & (1u << 24)) != 0u; }
 #if AO_GI
-// The most the bounce may add to a pixel, as a share of its own colour: flags bits 8-15 in units of 0.02
-// (the apply has no use for the slices and steps the main pass keeps there).
-float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.02f; }
+// The most the bounce factor may be, in multiples of the pixel's own colour: flags bits 8-15 in units of 0.04 (the
+// apply has no use for the slices and steps the main pass keeps there). The cap multiple of the ceiling: bits 26-31 in
+// units of 0.25.
+float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.04f; }
+float GiCap() { return float((g_push.slots2.z >> 26) & 0x3Fu) * 0.25f; }
 static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
 #endif
 
@@ -231,8 +242,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // term, which the game's sun shadow mask takes away where the pixel is in a shadow (1 where the frame has
   // no mask). The pixel is brighter than T when something the constants do not count lights it (a street
   // lamp, headlights) or is one (neon, a glint): then the albedo is taken to be 1 (T is the chain's luma,
-  // so the pixel gets B at most), and a pixel whose samples the chain capped is a source, not a surface,
-  // and gets nothing.
+  // so the pixel gets B at most), and a pixel the chain says is a source of light (its alpha, ramped from where
+  // a source starts) is not a surface and gets less, none when it is entirely one.
   float gi_sun_vis = 1.0f;
   if (MaskOn()) {
     const float2 gi_uv = (float2(pixel) + 0.5f) / size;
@@ -244,12 +255,20 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float luma_c = dot(gi_colour.rgb, kLuma);
   const float surface = 1.0f - saturate(gi_colour.a);
   float3 bounce = (g_push.shape.y * fade * surface / max(light_t, luma_c)) * gi_image.yzw;
+  // The gain limit: the largest channel through the soft clip, the hue kept.
   const float bounce_peak = max(max(bounce.x, bounce.y), bounce.z);
-  const float bounce_limit = GiLimit();
-  if (bounce_peak > bounce_limit) {
-    bounce *= bounce_limit / bounce_peak;
+  if (bounce_peak > 0.0f) {
+    bounce *= SsgiSoftClip(bounce_peak, GiLimit()) / bounce_peak;
   }
-  const float3 gi_factor = ao_factor * contact_factor + bounce;
+  // The ceiling: what the bounce adds (the pixel's colour times it) may fill the pixel up to `cap` times the frame's
+  // light (never under the floor) and no more; a pixel already there gets nothing.
+  const float ceiling = max(GiCap() * (ambient + g_push.extra.x), kSsgiCapFloor);
+  const float room = max(ceiling - luma_c * factor, 0.0f);
+  const float added = dot(gi_colour.rgb * bounce, kLuma);
+  if (added > 1e-6f) {
+    bounce *= SsgiSoftClip(added, room) / added;
+  }
+  const float3 gi_factor = factor + bounce;
   if (view >= 16u) {
     float3 shown = gi_factor * kViewScale;
     if (view == 17u) {

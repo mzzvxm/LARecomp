@@ -3,12 +3,15 @@
 #include "ao.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <mutex>
 #include <string>
+#include <string_view>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -22,6 +25,8 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "ssgi_level.h"
+#include "ssgi_light.h"
 #include "texture_bytes.h"
 
 REXCVAR_DEFINE_STRING(
@@ -138,29 +143,56 @@ REXCVAR_DEFINE_STRING(
     "high more than low. Not drawn behind the pause menu or on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_ssgi_intensity, "default", "MCLA/GPU",
+    "How strong the bounce light looks: light, default, strong, stronger or strongest. Each is a set of four "
+    "numbers: how much of the light the surroundings send back the picture gets, the most it may add to a pixel "
+    "(a guard against noise in the dark), how far it looks for lit surfaces (4 to 10 metres, past the ambient "
+    "occlusion's own reach), and the brightest light it may bring (never whiter than a white wall in full sun). "
+    "The stronger ones lift shadows and the sides of cars more and look farther. Only used while the bounce light "
+    "(mcla_gpu_ssgi) is on (the pause menu's BOUNCE LIGHT STRENGTH row). Live.")
+    .allowed({"light", "default", "strong", "stronger", "strongest"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_strength, 0.75, "MCLA/GPU",
-    "Diagnostic: how much of the bounce light the picture gets, 0 to 2 (1: all that the surroundings "
-    "send back by the picture's own colours; 0 runs the passes and adds nothing). Live.")
+    mcla_gpu_ssgi_strength, -1.0, "MCLA/GPU",
+    "Diagnostic: replaces the level's strength of the bounce light (mcla_gpu_ssgi_intensity), 0 to 8: how much of "
+    "the bounce light the picture gets (1: all that the surroundings send back by the picture's own colours; 0 "
+    "runs the passes and adds nothing). -1: the level's. Live.")
     .debug_only()
-    .range(0.0, 2.0)
+    .range(-1.0, 8.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ssgi_radius, 1.0, "MCLA/GPU",
-    "Diagnostic: how far the bounce light looks, as a multiple of the ambient occlusion's radius "
-    "(mcla_gpu_ao_intensity); the same samples give the occlusion's visibility, so a change moves "
-    "that too. 1: the occlusion's own. Live.")
+    "Diagnostic: how far the bounce light's NEAR samples look, as a multiple of the ambient occlusion's radius "
+    "(mcla_gpu_ao_intensity); the same samples give the occlusion's visibility, so a change moves that too. 1: the "
+    "occlusion's own. (The far ring that reaches past them is mcla_gpu_ssgi_reach.) Live.")
     .debug_only()
     .range(0.5, 3.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_clamp, 0.5, "MCLA/GPU",
-    "Diagnostic: the most the bounce light may add to a pixel, as a share of that pixel's own colour "
-    "(its largest channel; the hue stays), 0.05 to 4: a bright lamp's pool or a neon sign beside a wall "
-    "cannot light it white. (What a sample of the scene may carry into the bounce is "
-    "mcla_gpu_ssgi_test_clamp.) Live.")
+    mcla_gpu_ssgi_reach, -1.0, "MCLA/GPU",
+    "Diagnostic: replaces the level's reach of the bounce light (mcla_gpu_ssgi_intensity), 0 to 16 metres: a "
+    "second ring of samples from the occlusion's radius out to this, into what the near samples left open (the "
+    "occlusion's own look does not change). 0: no ring. -1: the level's. Live.")
     .debug_only()
-    .range(0.05, 4.0)
+    .range(-1.0, 16.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_far_steps, -1, "MCLA/GPU",
+    "Diagnostic: the far ring's samples on each side of each direction, 0 to 7 (0: no ring). -1: by the bounce "
+    "light's quality (2 at high, 1 at low). Live.")
+    .debug_only()
+    .range(-1, 7)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_clamp, -1.0, "MCLA/GPU",
+    "Diagnostic: replaces the level's gain limit of the bounce light (mcla_gpu_ssgi_intensity), 0.05 to 10.2: the "
+    "most the bounce may add to a pixel, as a multiple of that pixel's own colour (its largest channel; the hue "
+    "stays; a soft limit that only guards a nearly black pixel's noise, so a shadow can gain several times "
+    "its own light). The brightest the bounce can make a pixel is set by the cap, not by this. -1: the "
+    "level's. Live.")
+    .debug_only()
+    .range(-1.0, 10.2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ssgi_low, 0, "MCLA/GPU",
@@ -207,13 +239,14 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_clamp, 2.0, "MCLA/GPU",
-    "Diagnostic: the brightest radiance a sample of the scene colour may carry into the bounce, as a "
-    "multiple of the frame's ambient plus sun light (never under 0.5): a street lamp, neon or the sun's "
-    "disc is a source, not a surface that bounces light, and would light its whole neighbourhood "
-    "white. Live.")
+    mcla_gpu_ssgi_test_clamp, -1.0, "MCLA/GPU",
+    "Diagnostic: replaces the level's cap (mcla_gpu_ssgi_intensity), 0.25 to 15.75: the brightest radiance a "
+    "sample of the scene colour may carry into the bounce, and the ceiling the bounce may fill a pixel up to, as a "
+    "multiple of the frame's ambient plus sun light (never under 0.5): a street lamp, neon or the sun's disc is a "
+    "source, not a surface that bounces light, and may light its neighbours no whiter than a white wall in full "
+    "sun. -1: the level's. Live.")
     .debug_only()
-    .range(0.25, 16.0)
+    .range(-1.0, 15.75)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_ssgi_test_facing, 1.0, "MCLA/GPU",
@@ -306,6 +339,7 @@ constexpr uint32_t kVsReflectionParams = 43;
 // radius, the floor of the final visibility (no black blotches). The power of the visibility is
 // part of the look (mcla_gpu_ao_intensity).
 constexpr float kFalloffRatio = 0.615f;
+static_assert(kFalloffRatio == ssgi_light::kFalloffRatio);  // the far ring's falloff (ssgi_light.h) is the same shape
 constexpr float kMinVisibility = 0.1f;
 // The frames the occlusion has to stay off before its images are given back.
 constexpr uint32_t kReleaseAfterFrames = 60;
@@ -337,12 +371,12 @@ constexpr float kSkyDistance = 60000.0f;
 constexpr uint32_t kApplyOcclusionFlag = 1u << 22;
 constexpr uint32_t kApplyContactFlag = 1u << 23;
 constexpr uint32_t kApplyMaskFlag = 1u << 24;
-// The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): its limit rides in flags bits 8-15 (the slices'
-// and steps' place, which the apply does not read) in units of kGiLimitUnit, and its debug views are 16 to
-// 21 (mcla_gpu_ssgi_view 1 to 6).
-constexpr uint32_t kGiLimitShift = 8;
-constexpr uint32_t kGiLimitMask = 0xFFu << kGiLimitShift;
-constexpr float kGiLimitUnit = 0.02f;
+// The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): its gain limit rides in flags bits 8-15 (the slices'
+// and steps' place, which the apply does not read) and its cap in bits 26-31 (ssgi_light.h LimitCode and
+// CapCode), and its debug views are 16 to 21 (mcla_gpu_ssgi_view 1 to 6). The far ring's steps ride in the main
+// pass's flags, bits 26-28, and its reach in extra.w (hlsl/ao_main_ps.hlsl).
+constexpr uint32_t kGiFarStepsShift = 26;
+constexpr uint32_t kGiFarStepsMask = 0x7u << kGiFarStepsShift;
 constexpr uint32_t kGiApplyViewBase = 15;
 // The frames the bounce light's images are kept after the last frame that used them: a pause spell (the
 // pause menu's and the map's world runs the plain occlusion) does not make them again.
@@ -377,10 +411,10 @@ constexpr uint32_t kContactStepsHigh = 16;
 
 // The SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl): the images are RGBA16F
 // (the colour chain's three, and the main pass's visibility + bounce); a sample's radiance is capped at
-// a multiple of the frame's ambient + sun and never under this, so that a night's dim constants
-// (ambient 0.05) do not cap a lamp's pool to nothing.
+// a multiple of the frame's ambient + sun and never under ssgi_light.h kCapFloor, so that a night's dim
+// constants (ambient 0.05) do not cap a lamp's pool to nothing.
 constexpr plume::RenderFormat kGiFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
-constexpr float kGiCapFloor = 0.5f;
+constexpr float kGiCapFloor = ssgi_light::kCapFloor;
 // The debug pictures of mcla_gpu_ssgi_test_view, as the colour view pass numbers them (ao_color_ps.hlsl
 // pass 2): the image's rgb, its yzw, its x, its yzw cleaned by a 5x5 mean.
 constexpr uint32_t kGiViewRgb = 1;
@@ -504,6 +538,27 @@ LiveText& ContactSetting() {
 LiveText& SsgiSetting() {
   static LiveText text("mcla_gpu_ssgi");
   return text;
+}
+
+// The bounce light's strength level (mcla_gpu_ssgi_intensity). Its words are longer than a LiveText holds
+// (7 characters; "strongest" has 9), so the cvar's change callback keeps the parsed level in an atomic instead:
+// the pause menu's thread writes the cvar's string, this thread reads only the atomic. 0xFF: not read yet.
+std::atomic<uint8_t> g_ssgi_level{0xFF};
+std::once_flag g_ssgi_level_once;
+ssgi_level::Level ReadSsgiLevel() {
+  constexpr const char* kCvar = "mcla_gpu_ssgi_intensity";
+  std::call_once(g_ssgi_level_once, [] {
+    rex::cvar::RegisterChangeCallback(kCvar, [](std::string_view, std::string_view value) {
+      g_ssgi_level.store(uint8_t(ssgi_level::Resolve(value)), std::memory_order_release);
+    });
+    // After the callback is in: a change from here on is not missed (one that came between the two lines
+    // already stored its value, which is the newer one).
+    uint8_t expected = 0xFF;
+    g_ssgi_level.compare_exchange_strong(expected, uint8_t(ssgi_level::Resolve(rex::cvar::GetFlagByName(kCvar))),
+                                         std::memory_order_acq_rel);
+  });
+  return ssgi_level::Level(std::min<uint8_t>(g_ssgi_level.load(std::memory_order_acquire),
+                                             uint8_t(ssgi_level::kLevelCount - 1)));
 }
 
 // The levels of host_plan.h are the owners' Modes, in the same order.
@@ -2291,6 +2346,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       gi_push.slots2[3] = colour_[2].slot;
       gi_push.shape[2] = plan.gi.thickness;
       gi_push.shape[3] = plan.gi.facing;
+      // The far ring: its reach and its steps (hlsl/ao_main_ps.hlsl; none: the near samples only).
+      const uint32_t far_steps = plan.gi.reach > 0.0f ? std::min(plan.gi.far_steps, ssgi_light::kFarStepsMax) : 0u;
+      gi_push.extra[3] = far_steps != 0 ? plan.gi.reach : 0.0f;
+      gi_push.slots2[2] = (gi_push.slots2[2] & ~kGiFarStepsMask) | ((far_steps << kGiFarStepsShift) & kGiFarStepsMask);
       DrawPass(list, gi_, Pipeline(kVMainGi), gi_push);
       main_out = &gi_;
     } else {
@@ -2497,13 +2556,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (plan.gi.apply && gi_bounce) {
       // The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): the filtered image holds the visibility
       // (x, as the history kept it) and the bounce, the colour chain's level 0 the pixel's own colour (and
-      // whether it is a source of light); the strength rides in shape.y, the limit in the flags' bits 8-15.
+      // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
+      // the cap (the ceiling) in bits 26-31.
       push.slots[2] = gi_bounce->slot;
       push.slots2[1] = colour_[0].slot;
       push.shape[1] = plan.gi.strength;
-      push.slots2[2] = (push.slots2[2] & ~kGiLimitMask) |
-                       ((uint32_t(std::lround(plan.gi.limit / kGiLimitUnit)) << kGiLimitShift) &
-                        kGiLimitMask);
+      push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
+                       ((ssgi_light::LimitCode(plan.gi.limit) << ssgi_light::kLimitShift) & ssgi_light::kLimitMask) |
+                       ((ssgi_light::CapCode(plan.gi.cap) << ssgi_light::kCapShift) & ssgi_light::kCapMask);
       if (plan.gi.apply_view != 0) {
         push.slots2[2] = (push.slots2[2] & ~0xFFu) | (kGiApplyViewBase + plan.gi.apply_view);
       }
@@ -2557,14 +2617,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (plan.gi.apply && !gi_apply_logged_) {
       gi_apply_logged_ = true;
       REXLOG_INFO("[gpu] ssgi: the bounce light is added to the picture ({} from {}): {} slices and {} steps "
-                  "at {}x{} for the {}x{} picture, strength {:.2f}, at most {:.2f} of a pixel's own colour, "
-                  "search radius x{:.2f} of the occlusion's; the sun's shadow mask {} (without it the "
-                  "albedo estimate takes the sun as unshadowed); the pause menu's and the map's world "
-                  "runs the plain occlusion",
+                  "at {}x{} for the {}x{} picture, plus {} far ring step(s) a side out to {:.1f} m, strength "
+                  "{:.2f}, gain limit {:.2f}, cap {:.2f} x the frame's light, near search radius x{:.2f} of "
+                  "the occlusion's; the sun's shadow mask {} (without it the albedo estimate takes the sun as "
+                  "unshadowed); the pause menu's and the map's world runs the plain occlusion",
                   ModeName(plan.gi.mode), plan.gi.test ? "the debug override mcla_gpu_ssgi_test" : "mcla_gpu_ssgi",
                   plan.gi.fewer ? 2 : 3, plan.gi.fewer ? 2 : 3, plan.ao[0],
-                  plan.ao[1], plan.render[0], plan.render[1], plan.gi.strength, plan.gi.limit,
-                  plan.gi.radius, mask_slot != kNoSlot ? "found" : "not found in this frame");
+                  plan.ao[1], plan.render[0], plan.render[1], plan.gi.reach > 0.0f ? plan.gi.far_steps : 0u,
+                  plan.gi.reach, plan.gi.strength, plan.gi.limit, plan.gi.cap, plan.gi.radius,
+                  mask_slot != kNoSlot ? "found" : "not found in this frame");
     }
     ++gi_runs_;
   }
@@ -2890,12 +2951,34 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
   g.fewer = gi_test_ ? plan->mode == Mode::kLow : (g.mode == Mode::kLow && low_how != 1);
   g.half = !gi_test_ && g.mode == Mode::kLow && low_how >= 1;
-  g.strength = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_strength), 0.0, 2.0));
-  g.limit = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_clamp), 0.05, 4.0));
+  // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
+  // is set (ssgi_level.h).
+  const ssgi_level::Level level = ReadSsgiLevel();
+  ssgi_level::Overrides overrides;
+  overrides.strength = REXCVAR_GET(mcla_gpu_ssgi_strength);
+  overrides.limit = REXCVAR_GET(mcla_gpu_ssgi_clamp);
+  overrides.reach = REXCVAR_GET(mcla_gpu_ssgi_reach);
+  overrides.cap = REXCVAR_GET(mcla_gpu_ssgi_test_clamp);
+  overrides.far_steps = REXCVAR_GET(mcla_gpu_ssgi_far_steps);
+  const ssgi_level::Effective numbers = ssgi_level::Choose(level, overrides);
+  g.level = uint32_t(level);
+  g.overridden = numbers.overridden;
+  g.strength = numbers.strength;
+  g.limit = numbers.limit;
+  g.cap = numbers.cap;
+  g.reach = numbers.reach;
+  g.far_steps = ssgi_light::FarSteps(!g.fewer, numbers.far_steps, numbers.reach);
+  const uint32_t level_key = (uint32_t(level) << 1) | (numbers.overridden ? 1u : 0u);
+  if (level_key != gi_level_logged_) {
+    gi_level_logged_ = level_key;
+    REXLOG_INFO("[gpu] ssgi: bounce strength {}{} (mcla_gpu_ssgi_intensity, live): strength {:.3g}, gain limit "
+                "{:.3g}, reach {:.3g} m ({} far step(s) a side), cap {:.3g} x the frame's light",
+                ssgi_level::Name(level), numbers.overridden ? " with debug overrides" : "", g.strength, g.limit,
+                g.reach, g.far_steps, g.cap);
+  }
   g.radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_radius), 0.5, 3.0));
   g.apply_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_view), 0, 6));
   g.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_thickness), 0.0, 4.0));
-  g.cap = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_clamp), 0.25, 16.0));
   g.facing = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_facing), 0.0, 1.0));
   g.view_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view_gain), 0.1, 16.0));
   g.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view), 0, 9));
@@ -3040,7 +3123,8 @@ void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const P
   push.sizes[1] = float(plan.ao[1]);
   push.sizes[2] = float(plan.render[0]);
   push.sizes[3] = float(plan.render[1]);
-  push.shape[0] = std::max(plan.gi.cap * (base.light[3] + base.extra[0]), kGiCapFloor);
+  push.shape[0] = ssgi_light::RadianceCap(plan.gi.cap, base.light[3], base.extra[0]);
+  push.shape[1] = ssgi_light::SourceStart(base.light[3], base.extra[0]);
   DrawPass(list, colour_[0], Pipeline(ms ? kVColorMs : kVColor), push);
   // The coarser levels, one pass each, as the depth chain's.
   plume::RenderPipeline* mip = Pipeline(kVColorMip);
