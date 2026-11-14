@@ -88,9 +88,11 @@
 // apply pass (hlsl/ao_apply_ps.hlsl), so they work with the occlusion off, and the occlusion with
 // them off. A ray toward the sun is marched in view space over the linear depth over a short length
 // (0.6 m, longer when the sun is low: 0.7 / tan(elevation), 1 to 3 times; 8 steps at low, 16 at
-// high), the result is cleaned by the occlusion's own bilateral pass twice (it has no history of its
-// own: the noise rotates every frame while a temporal upscaler runs and averages it, and is a fixed
-// pattern without one), and the
+// high, closely spaced near the contact and wider apart toward the ray's end), the result is cleaned
+// by one pass of the occlusion's denoise shader in its contact mode (a 3x3 bilateral whose weights
+// also fall with the difference of the visibility, so noise goes and edges stay; the contact term has
+// no history of its own: the noise rotates every frame while a temporal upscaler runs and averages
+// it, and is a fixed pattern without one), and the
 // apply pass darkens only the SUN's share of the light by it:
 //   sun_share = Ls * N.L * vis / (La + Ls * N.L * vis)
 //   factor    = 1 - sun_share * strength * (1 - contact) * distance_fade
@@ -103,9 +105,18 @@
 // and 19 h is at 2.5 degrees with a grey sun) and the wetness (VS c43.x, gReflectionParams.x: 0.095
 // dry, 1.17 in rain: the overcast key light has no shadows to draw). A gate of 0 records nothing:
 // the frame is the one without the setting.
-// With the setting on and the occlusion off the passes are the depth pass, the contact march, two
-// bilateral passes and the apply: the coarser depth levels, the visibility and the history are not
+// With the setting on and the occlusion off the passes are the depth pass, the contact march, one
+// filter pass and the apply: the coarser depth levels, the visibility and the history are not
 // made. The pause menu's and the map's world gets them as the occlusion does.
+// SHARPNESS (contact_trace.h has the rules and the reasons, contact_trace_test.cpp checks them): the
+// images are the render size at every render scale (a scale of 3 traces 3840x2160 pixels; only the
+// low setting with the occlusion not on high works at half of it), so what made the first version
+// soft was the look of its trace, set at 1280x720 in world units: a ray-end fade that lightened the
+// shadow all along the ray, a depth bias and ramp of 6 cm at 10 m (10 pixels at 720p, 30 at 4K), two
+// plane-only blurs and equally spaced steps. The tolerance is now a few millimetres plus a few
+// footprints (the world size of a pixel at that depth), a shadow stays full over the first 60% of
+// the ray (mcla_gpu_contact_shadows_fade), the filter is one pass that keeps edges, and the cost is
+// logged as a model per size (the march is unchanged, the filter one pass instead of two).
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -215,7 +226,7 @@
 // Settings: mcla_gpu_ao (off, low, high; live; the pause menu's AMBIENT OCCLUSION row),
 // mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
 // integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h) with the tuning cvars
-// mcla_gpu_contact_shadows_length / _strength / _thickness / _mask_gain / _view, and
+// mcla_gpu_contact_shadows_length / _strength / _thickness / _fade / _mask_gain / _view, and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
@@ -485,6 +496,7 @@ class AmbientOcclusion {
     float length = 0.6f;           // the ray's length, world units
     float thickness = 0.3f;        // how far in front of a step a surface may be and still hide it
     uint32_t steps = 8;
+    float end_fade_start = 0.6f;   // the share of the ray over which a shadow stays full (contact_trace.h)
     float fade_start = 40.0f;      // the distance fade, world units
     float fade_end = 80.0f;
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
@@ -538,8 +550,9 @@ class AmbientOcclusion {
   // the light constants and the wetness the frame's draws carried before the trigger (the same
   // light the occlusion uses), the ray's length, the steps, the fades. Logs a change of state once.
   void PlanContact(Plan* plan);
-  // The ray march and its two bilateral passes into raw_ (denoised_ is the scratch), after the
-  // occlusion's own passes have finished with both. Returns the slot of the result, or kNoSlot.
+  // The ray march into raw_ and its filter (one pass of the denoise shader's contact mode) into
+  // denoised_, after the occlusion's own passes have finished with both. Returns the slot of the
+  // result (denoised_), or kNoSlot.
   uint32_t RecordContact(plume::RenderCommandList* list, const Plan& plan, const Push& base);
   // --- the SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl) ---
   // Decides what it does in this frame: the setting, the occlusion being on, the tuning cvars.
@@ -765,6 +778,7 @@ class AmbientOcclusion {
   uint64_t contact_mask_frames_ = 0;
   uint64_t contact_no_mask_frames_ = 0;
   uint32_t last_contact_logged_ = ~0u;
+  uint32_t contact_cost_logged_[3] = {};  // the size (x, y) and the steps the cost model line was last logged for
   bool mask_why_logged_ = false;
 
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
