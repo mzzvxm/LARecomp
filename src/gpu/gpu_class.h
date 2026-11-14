@@ -78,7 +78,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "low", "high"},
-    {"mcla_gpu_ssgi", "off", "off", "off"},  // off everywhere until its cost is measured (owner, 2026-11-13)
+    // Bounce light: low on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
+    // low costs about 0.75 ms and high about 1.1 ms at 4K on an RTX 5080. It was off on every class until
+    // that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to low on High, off on Mid
+    // and Low. This branch waits for the owner's look of the low level.
+    {"mcla_gpu_ssgi", "off", "off", "low"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

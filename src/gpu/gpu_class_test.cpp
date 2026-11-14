@@ -73,8 +73,9 @@ const Row kTable[] = {
      "AUTO (LOW)", "AUTO (HIGH)"},
     {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
      "AUTO (HIGH)"},
-    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)",
-     "AUTO (OFF)"},
+    // Bounce light: low on the High class only (about 0.75 ms at 4K on an RTX 5080), off on Mid and Low.
+    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "low", "AUTO (OFF)", "AUTO (OFF)",
+     "AUTO (LOW)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
