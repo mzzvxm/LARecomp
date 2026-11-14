@@ -1546,7 +1546,7 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // At most 18 rows (the native renderer on an RTX 50 series card, which has the frame generation
 // multiplier row: 7 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
 // kMaxRowsPerMenu (24) is refused whole. The graphics upgrades that came after the occlusion (SHADOW
-// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, BOUNCE LIGHT, ROAD REFLECTIONS) are the GRAPHICS QUALITY
+// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, ROAD REFLECTIONS) are the GRAPHICS QUALITY
 // page's (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it
 // had 22 rows of 24 and the next two graphics packages would not have fitted.
 // CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
@@ -1787,6 +1787,20 @@ std::string SsgiLabel(int i) {
     }
 }
 constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn};
+// How strong the bounce light looks (mcla_gpu_ssgi_intensity, gpu/ssgi_level.h, live), the row under it: grey
+// while the bounce light is off, as AO INTENSITY is while the occlusion is. The bounce light is off when the
+// occlusion is, or when BOUNCE LIGHT says OFF, or says AUTO and AUTO comes to OFF on this graphics card (gpu/gpu_class.h).
+// Five levels, no AUTO: LIGHT, DEFAULT, STRONG, STRONGER, STRONGEST. The row is "BOUNCE LIGHT STRENGTH" (21
+// characters) with a value of at most 9 ("STRONGEST"): 30 together, under the page's 41.
+const char* const kNativeSsgiLevelVals[]  = {"light", "default", "strong", "stronger", "strongest"};
+const char* const kNativeSsgiLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
+bool SsgiOn() {
+    if (!AoOn()) return false;
+    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kSsgi,
+                                                           CvarGet("mcla_gpu_ssgi"));
+    return mode == "low" || mode == "high";
+}
+constexpr RowDynamics kSsgiLevelDynamics = {.enabled = SsgiOn};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
 // on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
 // (HIGH) or 768x768 (ULTRA). AUTO says what it comes to on this GPU (the first value's label, like
@@ -1877,13 +1891,14 @@ const ItemDef kPictureItems[] = {
 // NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
 // (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
 // shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
-// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT), then
+// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH), then
 // reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
 // were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
 // is made from the occlusion's passes).
 // Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
 // ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
-// ItemRowLabel); no row has a suffix. 7 rows of the 24 a page can hold.
+// ItemRowLabel); no row has a suffix. 8 rows of the 24 a page can hold. BOUNCE LIGHT STRENGTH (21) with STRONGEST (9)
+// is the widest at 30. BOUNCE LIGHT STRENGTH is grey while the bounce light is off (SsgiOn).
 const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -1900,6 +1915,9 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
                                 kNativeSsgiVals, kNativeSsgiNames, 4),
                             &kSsgiDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
+                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
+                            &kSsgiLevelDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kRoadReflectionDynamics)),
@@ -2750,9 +2768,10 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
-// The GRAPHICS QUALITY page (kGfxQualityItems, 7 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
+// The GRAPHICS QUALITY page (kGfxQualityItems, 8 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
 // then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "BOUNCE LIGHT" 12,
-// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
+// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together; except
+// "BOUNCE LIGHT STRENGTH" 21 with "STRONGEST" 9: 30.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
