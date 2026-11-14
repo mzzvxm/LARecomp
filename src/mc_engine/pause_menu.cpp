@@ -1970,9 +1970,9 @@ const ItemDef kPictureItems[] = {
 // GRAPHICS QUALITY (DISPLAY's sister page, the GRAPHICS tab's second button): the graphics upgrades of the
 // NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
 // (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
-// shadows, the traffic cars' shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
-// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH), then
-// reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
+// shadows, the traffic cars' shadows, the reflections, the sun shafts and the bounce light. Every row is live. The order is shadows
+// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS), then reflections (ROAD REFLECTIONS, then CAR
+// REFLECTIONS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH). The ids and the cvars are the rows' own as they
 // were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
 // is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
 // effect above that the compare key flicks off and on (see kCompareVals).
@@ -1995,6 +1995,12 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
                                 kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4),
                             &kTrafficShadowsDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
+                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
+                            &kRoadReflectionDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
+                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
+                            &kCarReflectionDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
                                 kNativeShaftsVals, kNativeShaftsNames, 7),
                             &kShaftsDynamics)),
@@ -2004,12 +2010,6 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
                                 kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
                             &kSsgiLevelDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
-                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
-                            &kRoadReflectionDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
-                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
-                            &kCarReflectionDynamics)),
     // The key that flicks one of the effects above off and on to see what it does (not saved).
     NativeOnly(WithDynamics(Str("PM_RxGpuCompare", "mcla_compare_effect", "COMPARE KEY: ",
                                 kCompareVals, kCompareNames, 5),
