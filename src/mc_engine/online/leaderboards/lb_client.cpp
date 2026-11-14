@@ -153,6 +153,8 @@ void WorkerMain() {
 
 }  // namespace
 
+Store* LocalStoreForAwards() { return LocalStore(); }
+
 bool Enabled() { return REXCVAR_GET(leaderboards_enabled); }
 bool Diag() { return REXCVAR_GET(leaderboards_diag); }
 

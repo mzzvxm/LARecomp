@@ -16,6 +16,10 @@
 
 #include "lb_protocol.h"
 
+namespace lb {
+class Store;
+}
+
 namespace lb::client {
 
 bool Enabled();
@@ -30,5 +34,9 @@ using Done = std::function<void(Response&&)>;
 
 // The token is filled in here. `done` runs on the worker thread.
 void Submit(Request&& req, Done done);
+
+// The local store (opened on first use), for the Online Tournament prizes the
+// local Rate My Ride store settles from these leaderboards. Null if unusable.
+Store* LocalStoreForAwards();
 
 }  // namespace lb::client

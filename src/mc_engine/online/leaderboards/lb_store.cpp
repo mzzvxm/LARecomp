@@ -225,6 +225,37 @@ std::string Store::Summary() {
          std::to_string(players.size()) + " player(s)";
 }
 
+std::vector<uint64_t> Store::TopWrittenBetween(uint32_t view, size_t n, int64_t from, int64_t to) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<uint64_t> out;
+  auto vit = views_.find(view);
+  if (vit == views_.end()) return out;
+  for (uint64_t owner : Ranked(vit->second)) {
+    if (out.size() >= n) break;
+    const Entry& e = vit->second.at(owner);
+    if (e.updated >= from && e.updated < to) out.push_back(owner);
+  }
+  return out;
+}
+
+size_t Store::DropWrittenBefore(uint32_t view, int64_t before) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto vit = views_.find(view);
+  if (vit == views_.end()) return 0;
+  size_t dropped = 0;
+  for (auto it = vit->second.begin(); it != vit->second.end();) {
+    if (it->second.updated < before) {
+      it = vit->second.erase(it);
+      ++dropped;
+    } else {
+      ++it;
+    }
+  }
+  if (vit->second.empty()) views_.erase(vit);
+  if (dropped) Save();
+  return dropped;
+}
+
 bool Store::Save() {
   rmr::Writer w;
   w.U32(kDbMagic);

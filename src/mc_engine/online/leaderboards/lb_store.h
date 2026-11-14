@@ -43,6 +43,13 @@ class Store {
   std::string Summary();
   const std::filesystem::path& dir() const { return dir_; }
 
+  // Online Tournament support (tournament_awards.cpp). The best `n` owners of
+  // `view` whose row was last written in [from, to), in rank order.
+  std::vector<uint64_t> TopWrittenBetween(uint32_t view, size_t n, int64_t from, int64_t to);
+  // Drops the rows of `view` last written before `before` (a tournament slot
+  // coming round again starts empty). Returns how many went.
+  size_t DropWrittenBefore(uint32_t view, int64_t before);
+
  private:
   struct Cell {
     uint8_t type = 0;
