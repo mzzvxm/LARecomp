@@ -45,6 +45,7 @@
 #include <ctime>
 #include <string>
 
+#include "gpu/menu_world.h"
 #include "larecomp_log.h"
 #include "mc_engine/config_save.h"
 #include "real_weather.h"
@@ -252,6 +253,9 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         // index differs from ours again and the check below forces it once.
         static bool s_garage = false;
         const bool garage = base[mgr + kGarageLight] != 0;
+        // The renderer names the garage by this byte (its effects log line) and leaves the sun shafts out of
+        // an interior with no sky: a hint, one atomic store.
+        mcla::gpu::menu_world::SetGarageLighting(garage);
         if (garage != s_garage) {
             s_garage = garage;
             LARECOMP_APP_INFO("[Weather] garage lighting {}: {}", garage ? "on" : "off",

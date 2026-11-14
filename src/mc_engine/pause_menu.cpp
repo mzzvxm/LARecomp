@@ -1546,9 +1546,9 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // At most 18 rows (the native renderer on an RTX 50 series card, which has the frame generation
 // multiplier row: 7 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
 // kMaxRowsPerMenu (24) is refused whole. The graphics upgrades that came after the occlusion (SHADOW
-// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, ROAD REFLECTIONS) are the GRAPHICS QUALITY page's
-// (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it had 22
-// rows of 24 and the next two graphics packages would not have fitted.
+// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, BOUNCE LIGHT, ROAD REFLECTIONS) are the GRAPHICS QUALITY
+// page's (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it
+// had 22 rows of 24 and the next two graphics packages would not have fitted.
 // CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
 // cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
@@ -1771,6 +1771,22 @@ std::string ShaftsLabel(int i) {
     return i > 0 && i < 4 ? kNativeShaftsNames[i] : "";
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
+// Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
+// stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
+// until its cost is measured (gpu/gpu_class.h); or OFF, LOW (a coarser search) or HIGH (the full one). It
+// is made from the ambient occlusion's own passes, so the row is grey while the occlusion is off, as AO
+// INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 11 ("AUTO (HIGH)").
+const char* const kNativeSsgiVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+std::string SsgiLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsgi);
+    case 1:  return "OFF";
+    case 2:  return "LOW";
+    default: return "HIGH";
+    }
+}
+constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
 // on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
 // (HIGH) or 768x768 (ULTRA). AUTO says what it comes to on this GPU (the first value's label, like
@@ -1860,13 +1876,14 @@ const ItemDef kPictureItems[] = {
 // GRAPHICS QUALITY (DISPLAY's sister page, the GRAPHICS tab's second button): the graphics upgrades of the
 // NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
 // (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
-// shadows, the sun shafts and the reflections. Every row is live. The order is shadows first (SHADOW
-// DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS), then reflections (ROAD REFLECTIONS, then
-// CAR REFLECTIONS). The ids and the cvars are the rows' own as they were on DISPLAY: a saved setting reads
-// the same.
+// shadows, the sun shafts, the bounce light and the reflections. Every row is live. The order is shadows
+// first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT), then
+// reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
+// were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
+// is made from the occlusion's passes).
 // Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
 // ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
-// ItemRowLabel); no row has a suffix. 6 rows of the 24 a page can hold.
+// ItemRowLabel); no row has a suffix. 7 rows of the 24 a page can hold.
 const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -1880,6 +1897,9 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
                                 kNativeShaftsVals, kNativeShaftsNames, 4),
                             &kShaftsDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
+                                kNativeSsgiVals, kNativeSsgiNames, 4),
+                            &kSsgiDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kRoadReflectionDynamics)),
@@ -2730,9 +2750,9 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
-// The GRAPHICS QUALITY page (kGfxQualityItems, 6 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
-// then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "SUN SHAFTS" 10; values at most 11
-// ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
+// The GRAPHICS QUALITY page (kGfxQualityItems, 7 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
+// then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "BOUNCE LIGHT" 12,
+// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.

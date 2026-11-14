@@ -67,6 +67,7 @@
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
+#include "menu_world.h"
 #include "msaa_level.h"
 #include "pipelines.h"
 #include "thread_load.h"
@@ -348,6 +349,10 @@ class Scene {
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
+  // The frame's 3D world (menu_world.h) as the effects that watch the main view saw it, and one log line when
+  // it changed: the world, how it is drawn (the host's samples and scale, the upscaler, HDR) and the effects in
+  // it. At the end of the frame, before the effects forget it.
+  void NoteMenuWorld();
   // Ultrawide (mc_engine/ultrawide.h): the UI the game draws after the scene is composed is made for
   // a 16:9 screen, and the present stretches the whole image over a wider window. The factor (below 1)
   // a draw's screen-space x is squeezed by around the screen's centre so that the stretch brings it
@@ -391,6 +396,7 @@ class Scene {
   AmbientOcclusion* ao_ = nullptr;
   SunShafts* shafts_ = nullptr;
   CarSelfRefl* car_refl_ = nullptr;
+  menu_world::Announcer menu_world_;  // the one line per change of world
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in

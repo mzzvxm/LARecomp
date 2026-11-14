@@ -41,6 +41,27 @@
 // Both the camera's motion and the lens are the previous frame's, and the depth is rendered with a
 // sub-pixel jitter while an upscaler runs: a pixel finds its history within a pixel or so, not
 // exactly. The occlusion is a smooth image and the plane test is wider than that.
+//
+// THE BOUNCE LIGHT TEST (AO_GI=1: ao_temporal_gi_ps and ao_temporal_gi_ms_ps, ao.h mcla_gpu_ssgi_test): the
+// same pass over four channels, the visibility in x (to the last operation what the plain pass makes of it)
+// and the bounce light in yzw. The history is an RGBA16F image of the last frame's result and the depth of
+// that frame is not in it but in an R32_FLOAT image of its own (the plain pass keeps it in the second
+// channel of an RG16F image, which here has no room): a texel of the history is judged by the plane test
+// and the depth test as before, with that depth. The tests, the vehicle rows, the camera's motion and the
+// reasons a pixel has no history are the plain pass's; so is the weight the visibility keeps (extra.w).
+// What the bounce adds:
+//   its own history weight (lens.z; the bounce is noisier than the visibility and the colour of one
+//   neighbour, so it averages over more frames: ao.cpp mcla_gpu_ssgi_test_history);
+//   its own clamp: the history of the bounce is clipped to a box round the weighted mean of this frame's
+//   3x3 neighbourhood (the neighbours that are on the pixel's plane), a width of lens.w standard
+//   deviations of that neighbourhood and never less than kBounceBoxFloor of its mean (the variance clip of
+//   a temporal anti-aliasing filter, a colour at a time: a car that went by and changed the light on a wall
+//   shows as a ghost only until the history is clipped to the new light);
+//   the same wide blur in place of this frame's value where the history does not hold.
+// Push fields (those of the plain pass but for): slots.z the image of this frame's denoised result (RGBA16F),
+// slots2.y the slot of the depth history (R32_FLOAT, the depth image of the last frame), lens.z the weight
+// the bounce's history keeps and lens.w the clip's width. Output: RGBA16F, the next frame's history (the
+// debug view 6 run writes the confidence in x).
 
 #include "ao_common.hlsli"
 
@@ -95,6 +116,131 @@ uint AoVehicleId(int2 pixel) {
 #endif
   return (id >= kFirstVehicleId && id <= kLastVehicleId) ? id : 0u;
 }
+
+#if AO_GI
+
+// The least half width of the bounce's clip box, as a share of the neighbourhood's mean.
+static const float kBounceBoxFloor = 0.05f;
+
+float4 main(float4 position : SV_Position) : SV_Target {
+  const int2 pixel = int2(position.xy);
+  const float2 size = g_push.sizes.zw;
+  const int2 isize = int2(size);
+  const uint current_slot = g_push.slots.z;
+  const uint depth_slot = g_push.slots.w;
+  const float tc = AoLoadLinear(depth_slot, pixel);
+  const float4 current = g_textures[current_slot].Load(int3(pixel, 0));
+  const uint view = AoView();
+  // The sky, and what is past where the effect fades out entirely: nothing to occlude, no bounce.
+  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);
+  }
+  if (!AoHistoryOn()) {
+    return view == 6u ? float4(0.0f, 0.0f, 0.0f, 0.0f) : current;
+  }
+
+  const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
+  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  float3 pe = AoToHistory(pc);
+  float3 ne = AoDirToHistory(normal);
+  // A pixel of a vehicle is found with the vehicle's own motion, as in the plain pass.
+  bool no_history = false;
+  const uint vehicle = AoVehicleId(pixel);
+  if (vehicle != 0u && !AoVehiclesAsWorld()) {
+    no_history = true;
+    const uint table = g_push.slots.x;
+    if (table != kNoSlot && g_textures[table].Load(int3(3, int(vehicle), 0)).x > 0.5f) {
+      const float4 row0 = g_textures[table].Load(int3(0, int(vehicle), 0));
+      const float4 row1 = g_textures[table].Load(int3(1, int(vehicle), 0));
+      const float4 row2 = g_textures[table].Load(int3(2, int(vehicle), 0));
+      const float4 q = float4(pc, 1.0f);
+      pe = float3(dot(row0, q), dot(row1, q), dot(row2, q));
+      ne = float3(dot(row0.xyz, normal), dot(row1.xyz, normal), dot(row2.xyz, normal));
+      no_history = false;
+    }
+  }
+  const float2 tan_half = float2(g_push.extra.x, g_push.extra.z);
+  const uint history_slot = g_push.slots2.x;
+  const uint depth_history_slot = g_push.slots2.y;
+
+  // The history round the place the pixel was: the plain pass's four texels and weights, over four
+  // channels.
+  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float weight = 0.0f;
+  if (!no_history && pe.z > 0.05f) {
+    const float2 uv = float2(0.5f + 0.5f * pe.x / (pe.z * tan_half.x),
+                             0.5f - 0.5f * pe.y / (pe.z * tan_half.y));
+    const float2 hp = clamp(uv * size - 0.5f, float2(-2.0f, -2.0f), size + 2.0f);
+    const int2 h0 = int2(floor(hp));
+    const float2 f = hp - float2(h0);
+    const float sigma = kPlaneShare * pe.z + kPlaneFloor;
+    for (int j = 0; j < 2; ++j) {
+      for (int i = 0; i < 2; ++i) {
+        const int2 q = h0 + int2(i, j);
+        if (q.x < 0 || q.y < 0 || q.x >= isize.x || q.y >= isize.y) {
+          continue;
+        }
+        const float4 texel = g_textures[history_slot].Load(int3(q, 0));
+        const float texel_depth = AoLoadLinear(depth_history_slot, q);
+        const float3 ph = AoHistoryPos(float2(q) + 0.5f, size, texel_depth, tan_half);
+        const float off_plane = dot(ne, ph - pe) / sigma;
+        float w = exp(-0.5f * off_plane * off_plane);
+        w *= abs(texel_depth - pe.z) < kDepthShare * pe.z + 0.05f ? 1.0f : 0.0f;
+        w *= (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+        sum += texel * w;
+        weight += w;
+      }
+    }
+  }
+  float4 history = sum / max(weight, 1e-4f);
+  const float confidence = no_history ? 0.0f : smoothstep(kConfidenceLow, kConfidenceHigh, weight);
+  if (view == 6u) {
+    return float4(confidence, 0.0f, 0.0f, 0.0f);
+  }
+
+  // The anti-ghost clamps. The visibility: the range of this frame's 3x3 neighbourhood plus a margin,
+  // as the plain pass. The bounce: the box of the neighbourhood's mean and spread, the neighbours that
+  // are on the pixel's plane counting (a colour across an edge is not this surface's light).
+  float lo = current.x;
+  float hi = current.x;
+  float3 m1 = float3(0.0f, 0.0f, 0.0f);
+  float3 m2 = float3(0.0f, 0.0f, 0.0f);
+  float wsum = 0.0f;
+  const float plane_sigma = kPlaneShare * tc + kPlaneFloor;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      const float4 v = g_textures[current_slot].Load(int3(q, 0));
+      lo = min(lo, v.x);
+      hi = max(hi, v.x);
+      const float3 pq = AoViewPos(float2(q) + 0.5f, size, AoLoadLinear(depth_slot, q));
+      const float off_plane = dot(normal, pq - pc) / plane_sigma;
+      const float w = exp(-0.5f * off_plane * off_plane);
+      m1 += v.yzw * w;
+      m2 += v.yzw * v.yzw * w;
+      wsum += w;
+    }
+  }
+  m1 /= wsum;
+  const float3 spread = sqrt(max(m2 / wsum - m1 * m1, 0.0f));
+  const float3 half_box = g_push.lens.w * spread + kBounceBoxFloor * m1;
+  history.x = clamp(history.x, lo - kClampMargin, hi + kClampMargin);
+  history.yzw = clamp(history.yzw, max(m1 - half_box, 0.0f), m1 + half_box);
+
+  // Where the history does not hold, the wide blur of this frame instead of its own value.
+  float4 fresh = current;
+  if (confidence < 1.0f) {
+    const float4 wide = AoBilateral4(current_slot, depth_slot, pixel, isize, tc, pc, normal, 2);
+    fresh = lerp(wide, current, confidence);
+  }
+  float4 result;
+  result.x = lerp(fresh.x, history.x, confidence * g_push.extra.w);
+  result.yzw = lerp(fresh.yzw, history.yzw, confidence * g_push.lens.z);
+  // A half float keeps 65504; the chain's colours are capped well under that.
+  return float4(saturate(result.x), clamp(result.yzw, 0.0f, 60000.0f));
+}
+
+#else  // !AO_GI
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -198,3 +344,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float result = lerp(fresh, history, confidence * g_push.extra.w);
   return float4(saturate(result), depth_out, 0.0f, 0.0f);
 }
+
+#endif  // AO_GI

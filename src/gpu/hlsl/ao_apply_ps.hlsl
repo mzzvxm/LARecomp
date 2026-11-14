@@ -37,6 +37,37 @@
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fades) the pixel is not written.
 //
+// BOUNCE LIGHT (compiled with AO_GI=1 as ao_apply_gi_ps / ao_apply_gi_ms_ps, the pass the bounce light's setting
+// uses; the plain compilation above is the source without it, to the byte): the occlusion's visibility and the
+// bounce light come from one image (x the visibility, yzw the bounce: the cosine weighted mean radiance of what
+// blocks the pixel's hemisphere, in the scene colour's own units, ao_main_ps.hlsl) and the factor becomes one per
+// colour channel,
+//
+//   factor.rgb = ao_factor * contact_factor + bounce
+//   bounce     = strength * B.rgb / max(T, luma(colour)) * (1 - capped) * fade, kept under `limit` (a share of the
+//                pixel's own colour, its largest channel; the hue stays)
+//
+// The scene colour is albedo * (T + point lights) + specular and the game's ambient stands for "the average
+// surroundings": the multiply by lerp(1, V, share) took the blocked part of the ambient away, the bounce gives
+// back what the blockers really send, albedo * B. The albedo is not known (no G-buffer), but the pixel's own
+// colour is there as the multiply's destination, so albedo * B = colour * B / T with T the light the constants
+// and the mask say fell on it (La + Ls N.L, the sun's term times the game's sun shadow mask where the frame has
+// one: a pixel in a shadow is lit by La alone): the same multiply carries it, no second pass and no read of the
+// colour target. Where the pixel is brighter than T says (a street lamp's pool, headlights, a specular glint,
+// neon: light the constants do not count) the estimate is held to an albedo of 1, T is the colour chain's luma
+// instead (albedo 1: the pixel receives B at most, never more), and where the chain says the colour was capped
+// (alpha: the share of its samples above the cap of ao_color_ps: a source of light, not a surface) the pixel
+// receives nothing. Replace, not add: a flat surface has B near 0 and its factor stays the occlusion's, a crease
+// beside a lit wall gets the wall's colour back where the occlusion took the ambient away.
+// Push fields of this variant (the apply's others as above): slots.z the image of the visibility and the bounce
+// (RGBA16F, at the passes' size: the a-trous filter's output), slots2.y the colour chain's level 0 (RGBA16F: rgb
+// the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
+// of 0.02, bit 25 the bounce term. The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or
+// not the contact shadows are on. Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
+// the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
+// share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
+// own (grey 0.5: none; unscaled).
+//
 // Debug views (flags bits 0-7): 1 the factor, 2 the visibility, 3 the ambient share, 4 the
 // view-space normal, 5 the linear depth (log), 6 the temporal pass's mask (the image it reads then
 // holds the share of the history each pixel kept instead of the visibility: white a full history,
@@ -52,6 +83,12 @@ static const float kViewScale = 0.3f;
 bool AoTermOn() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 bool ContactOn() { return (g_push.slots2.z & (1u << 23)) != 0u; }
 bool MaskOn() { return (g_push.slots2.z & (1u << 24)) != 0u; }
+#if AO_GI
+// The most the bounce may add to a pixel, as a share of its own colour: flags bits 8-15 in units of 0.02
+// (the apply has no use for the slices and steps the main pass keeps there).
+float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.02f; }
+static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
+#endif
 
 // The stored depth at `p` clamped into the target, as a linear distance.
 float LinearAt(int2 p, int2 last) {
@@ -85,6 +122,40 @@ float VisibilityAt(uint slot, int2 pixel, float tc) {
   return sum / max(weights, 1e-8f);
 }
 
+#if AO_GI
+// The image of the visibility and the bounce (`gi_slot`) and the colour chain's level 0 (`colour_slot`) at the
+// pixel of the picture: as they are, or, from the half resolution ones, one bilinear upsample whose weights fall
+// with the difference of linear depth (VisibilityAt's), the two images by the same weights.
+void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, out float4 colour) {
+  if (!AoLow()) {
+    gi = g_textures[gi_slot].Load(int3(pixel, 0));
+    colour = g_textures[colour_slot].Load(int3(pixel, 0));
+    return;
+  }
+  const int2 asize = int2(g_push.sizes.zw);
+  const float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f;
+  const int2 q0 = int2(floor(q));
+  const float2 f = q - float2(q0);
+  float4 gi_sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float4 colour_sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float weights = 0.0f;
+  for (int j = 0; j < 2; ++j) {
+    for (int i = 0; i < 2; ++i) {
+      const int2 c = clamp(q0 + int2(i, j), int2(0, 0), asize - 1);
+      const float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+      const float td = AoLoadLinear(g_push.slots.w, c);
+      const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
+      const float w = bilinear * max(exp(-dz * dz), 1e-4f);
+      gi_sum += g_textures[gi_slot].Load(int3(c, 0)) * w;
+      colour_sum += g_textures[colour_slot].Load(int3(c, 0)) * w;
+      weights += w;
+    }
+  }
+  gi = gi_sum / max(weights, 1e-8f);
+  colour = colour_sum / max(weights, 1e-8f);
+}
+#endif
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
   const float2 size = g_push.sizes.xy;
@@ -100,7 +171,15 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
 
   // The occlusion's visibility.
+#if AO_GI
+  // From the image of the bounce light too (the pass is only used with the occlusion on).
+  float4 gi_image;
+  float4 gi_colour;
+  GiAt(g_push.slots.z, g_push.slots2.y, pixel, tc, gi_image, gi_colour);
+  const float ao = gi_image.x;
+#else
   const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc) : 1.0f;
+#endif
 
   // The normal from the full resolution depth, as the main pass has it.
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
@@ -147,6 +226,48 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float factor = ao_factor * contact_factor;
 
+#if AO_GI
+  // The bounce light. T is the light the game's constants say fell on the pixel: the ambient and the sun's
+  // term, which the game's sun shadow mask takes away where the pixel is in a shadow (1 where the frame has
+  // no mask). The pixel is brighter than T when something the constants do not count lights it (a street
+  // lamp, headlights) or is one (neon, a glint): then the albedo is taken to be 1 (T is the chain's luma,
+  // so the pixel gets B at most), and a pixel whose samples the chain capped is a source, not a surface,
+  // and gets nothing.
+  float gi_sun_vis = 1.0f;
+  if (MaskOn()) {
+    const float2 gi_uv = (float2(pixel) + 0.5f) / size;
+    gi_sun_vis = saturate(g_push.shape.x *
+                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                                                                  gi_uv, 0.0f).x);
+  }
+  const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
+  const float luma_c = dot(gi_colour.rgb, kLuma);
+  const float surface = 1.0f - saturate(gi_colour.a);
+  float3 bounce = (g_push.shape.y * fade * surface / max(light_t, luma_c)) * gi_image.yzw;
+  const float bounce_peak = max(max(bounce.x, bounce.y), bounce.z);
+  const float bounce_limit = GiLimit();
+  if (bounce_peak > bounce_limit) {
+    bounce *= bounce_limit / bounce_peak;
+  }
+  const float3 gi_factor = ao_factor * contact_factor + bounce;
+  if (view >= 16u) {
+    float3 shown = gi_factor * kViewScale;
+    if (view == 17u) {
+      shown = bounce * (4.0f * kViewScale);
+    } else if (view == 18u) {
+      shown = saturate(gi_colour.rgb / light_t) * kViewScale;
+    } else if (view == 19u) {
+      shown = float3(light_t, light_t, light_t) * kViewScale;
+    } else if (view == 20u) {
+      shown = float3(surface, surface, surface) * kViewScale;
+    } else if (view == 21u) {
+      const float change = saturate(0.5f + 2.0f * (dot(gi_factor, kLuma) - 1.0f));
+      shown = float3(change, change, change);
+    }
+    return float4(shown, 1.0f);
+  }
+#endif
+
   if (view != 0u) {
     float3 grey = float3(factor, factor, factor);
     if (view == 2u || view == 6u) {
@@ -169,8 +290,15 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
     return float4(grey * kViewScale, 1.0f);
   }
+#if AO_GI
+  if (all(abs(gi_factor - 1.0f) < 0.001f)) {
+    discard;
+  }
+  return float4(gi_factor, 1.0f);
+#else
   if (factor >= 0.999f) {
     discard;
   }
   return float4(factor, factor, factor, 1.0f);
+#endif
 }
