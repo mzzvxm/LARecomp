@@ -507,6 +507,9 @@ void Apply(Memory* mem, const Pending& p, const rmr::Response& resp) {
       LARECOMP_APP_INFO("[rmr] {}: {} bytes", op, n);
       break;
     }
+
+    case rmr::Op::kTournament:
+      break;  // tournament.cpp queues and applies it itself
   }
 
   if (IsGuestPtr(p.status)) {

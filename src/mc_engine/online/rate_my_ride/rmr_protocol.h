@@ -64,6 +64,8 @@ enum class Op : uint32_t {
   kOverwrite = 7,  // replace the requester's ride (ratings reset)
   kUserData = 8,   // owner: replace user data; anyone else: purchase
   kDownload = 9,   // fetch a file blob
+  kTournament = 10,  // this week's Online Tournament: data = the game's
+                     // definition file, count = the tournament week
 };
 
 const char* OpName(Op op);

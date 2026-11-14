@@ -192,6 +192,7 @@ set(LARECOMP_SOURCES
     # Online (split out of hooks.cpp): tournament / System Link / Xbox LIVE
     src/mc_engine/online/online_common.cpp
     src/mc_engine/online/tournament.cpp
+    src/mc_engine/online/tournament_schedule.cpp
     src/mc_engine/online/system_link.cpp
     src/mc_engine/online/relay_info.cpp
     src/mc_engine/online/online_toast.cpp
@@ -639,6 +640,7 @@ else()
         src/mc_engine/online/rate_my_ride/rmr_server_main.cpp
         src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
         src/mc_engine/online/rate_my_ride/rmr_store.cpp
+        src/mc_engine/online/tournament_schedule.cpp
         src/mc_engine/online/rate_my_ride/rmr_net.cpp
         src/mc_engine/online/leaderboards/lb_protocol.cpp
         src/mc_engine/online/leaderboards/lb_store.cpp

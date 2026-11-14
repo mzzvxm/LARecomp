@@ -1,5 +1,7 @@
 #include "rmr_store.h"
 
+#include "../tournament_schedule.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <ctime>
@@ -487,6 +489,16 @@ Response Store::Handle(const Request& req, std::string* log_line) {
         log += " " + Hex32(req.file_id) + " -> " + std::to_string(resp.data.size()) + " bytes";
       }
       break;
+
+    case Op::kTournament: {
+      const tournament::Definition d =
+          tournament::Current(static_cast<int64_t>(std::time(nullptr)), dir_);
+      resp.data = tournament::EncodeGuest(d);
+      resp.count = d.week;
+      log += " week " + std::to_string(d.week) + " -> '" + d.name + "' slot " +
+             std::to_string(d.table_id);
+      break;
+    }
   }
 
   if (resp.err != kOk) log += " [err " + std::to_string(resp.err) + "]";

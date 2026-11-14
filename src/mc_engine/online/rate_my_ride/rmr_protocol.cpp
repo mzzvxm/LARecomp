@@ -15,6 +15,7 @@ const char* OpName(Op op) {
     case Op::kOverwrite: return "overwrite";
     case Op::kUserData: return "user_data";
     case Op::kDownload: return "download";
+    case Op::kTournament: return "tournament";
   }
   return "?";
 }
@@ -161,7 +162,7 @@ bool DecodeRequest(const std::vector<uint8_t>& bytes, Request& req) {
   uint32_t magic, op, nfiles;
   std::vector<uint8_t> token;
   if (!rd.U32(magic) || magic != kWireMagic || !rd.U32(op)) return false;
-  if (op < static_cast<uint32_t>(Op::kTableSize) || op > static_cast<uint32_t>(Op::kDownload))
+  if (op < static_cast<uint32_t>(Op::kTableSize) || op > static_cast<uint32_t>(Op::kTournament))
     return false;
   req.op = static_cast<Op>(op);
   if (!rd.Bytes(token, req.token.size()) || token.size() != req.token.size()) return false;
