@@ -4654,14 +4654,28 @@ bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& 
         }
 
         // The dial: the other bone, a static translation and a static rotation.
+        //
+        // Or no other bone at all: vp_nsn_skyline_99's `tach` and `speedo` carry
+        // the translation and the turn on ONE bone (tags 424A / CCA5), with no
+        // static rotation -- the needle turns about that bone's own z, so the dial
+        // can be moved but not tilted. Its rotation is then left alone.
         const ClipTrack* dial_t = nullptr;
         const ClipTrack* dial_r = nullptr;
+        const ClipTrack* self_t = nullptr;
         for (const ClipTrack& track : tracks) {
-            if (track.tag == rotor->tag || track.channels.size() != 1) continue;
+            if (track.channels.size() != 1) continue;
+            if (track.tag == rotor->tag) {
+                if (track.kind == 0 && track.channel_kinds[0] == kChannelStaticVec3) self_t = &track;
+                continue;
+            }
             if (track.kind == 0 && track.channel_kinds[0] == kChannelStaticVec3) dial_t = &track;
             if (track.kind == 1 && track.channel_kinds[0] == kChannelStaticQuat) dial_r = &track;
         }
-        if (dial_t == nullptr || dial_r == nullptr || dial_t->tag != dial_r->tag) {
+        const bool self_turning = (dial_t == nullptr || dial_r == nullptr) && self_t != nullptr;
+        if (self_turning) {
+            dial_t = self_t;
+            dial_r = nullptr;
+        } else if (dial_t == nullptr || dial_r == nullptr || dial_t->tag != dial_r->tag) {
             error = "'" + dial.clip + "' block " + std::to_string(b) +
                     " has no dial bone with a static pose";
             return false;
@@ -4674,7 +4688,7 @@ bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& 
         rotor_tag = rotor->tag;
         tags_known = true;
         plan.dial_translation = dial_t->channels[0];
-        plan.dial_rotation = dial_r->channels[0];
+        plan.dial_rotation = dial_r ? dial_r->channels[0] : 0;
         plan.rotor_z = rotor->channels[2];
         plan.rotor_w = rotor->channels[3];
         plans.push_back(plan);
@@ -4696,8 +4710,9 @@ bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& 
             }
             StoreBEFloat(resource.data.data() + offset, dial.translation[i]);
         }
-        view.U32(plan.dial_rotation + 8, at);
-        for (int i = 0; i < 4; ++i) {
+        // A self-turning dial has no static rotation to write (see the first pass).
+        if (plan.dial_rotation != 0) view.U32(plan.dial_rotation + 8, at);
+        for (int i = 0; i < 4 && plan.dial_rotation != 0; ++i) {
             size_t offset = 0;
             if (!view.Offset(at + 4u * i, 4, offset)) {
                 error = "the dial's rotation is out of the resource";
@@ -4757,19 +4772,24 @@ bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& 
         }
     }
 
-    // The rest pose, for whenever the clip is not playing.
+    // The rest pose, for whenever the clip is not playing. A self-turning dial
+    // keeps the rotation it has (none: its turn is the clip's).
+    const bool self_turning = !plans.empty() && plans.front().dial_rotation == 0;
+    const float no_rotation[3] = {0.0f, 0.0f, 0.0f};
     uint32_t skeleton = 0;
     const bool rest = view.U32(drawable.drawable + drawable.skeleton_field, skeleton) &&
                       skeleton != 0 &&
-                      SetBonePoseByTag(resource, skeleton, dial_tag, dial.translation, dial.rotation);
+                      SetBonePoseByTag(resource, skeleton, dial_tag, dial.translation,
+                                       self_turning ? no_rotation : dial.rotation);
 
     if (summary) {
-        char text[256];
+        char text[320];
         std::snprintf(text, sizeof(text),
-                      "%s: dial bone %04X to (%.4f %.4f %.4f)%s, needle %04X re-quantized over %u "
+                      "%s: dial bone %04X to (%.4f %.4f %.4f)%s%s, needle %04X re-quantized over %u "
                       "frame(s) in %u block(s), %.1f to %.1f degrees",
                       dial.clip.c_str(), dial_tag, dial.translation[0], dial.translation[1],
-                      dial.translation[2], rest ? "" : " (clip only: no skeleton bone)", rotor_tag,
+                      dial.translation[2], rest ? "" : " (clip only: no skeleton bone)",
+                      self_turning ? " (turns on its own bone: tilt not applied)" : "", rotor_tag,
                       static_cast<unsigned>(frames), static_cast<unsigned>(block_count), first_angle,
                       last_angle);
         *summary = text;
