@@ -25,16 +25,43 @@
 // car that jumped (a reset, a race start: more than kMaxGapM, or a previous look older than
 // kWindowMs) starts afresh, so a teleport never sweeps through a gate.
 //
+// One place can ask for several cars. The race script (the thread and opcode of the race trace,
+// 2026-11-12) asks the same checkpoint from the same opcode for the player and for every opponent in
+// turn, so the checkpoint test cannot tell the cars apart by its arguments (it gets two vectors, not the
+// racer). The previous ends are therefore kept per place AND per car, the car being found by where its
+// segment starts: the entry of the place that ended nearest to the start (checkpoint_sweep_tracker.h).
+// With one entry per place the second car found the first car's end 20 to 200 m away, no look was ever
+// stretched in a race, and a gate (a line checkpoint, 46 to 161 m wide in the traced race) could still be
+// missed by a car faster than the game's own probe covers: HasHit looks 2 m ahead, a script that looks
+// every 33 ms (the race script's gap between looks, measured at 30 FPS and uncapped) leaves a stretch
+// of speed x (33 ms - one update) - 2 m untested, i.e. above about 70 m/s at 240 FPS (77 at 144, 120 at 60). The circles of a
+// race (radius 22 to 49 m in the traced race) are crossed in more than half a second even at the
+// fastest car's speed and are not at risk.
+//
+// What is NOT at risk above 30 FPS (from the marker trace, runs mk2 and mk3): the tests that
+// answer for the car's position now. The garages' scripts ask Racer_DistanceToPoint (the car's distance
+// to a point) every 100 ms of game time at every frame rate (measured gap 100 to 104 ms at 30 FPS, 60 FPS
+// and uncapped); the trigger manager's radius, speed and timer triggers (gas stations, sound, nitro) run
+// in every update; a script that asks Trigger_CheckTrigger of a radius trigger gets the same position
+// test. The looks are never further apart in real time than they are at 30 FPS (33 ms), so those cannot
+// be missed by anything that does not already miss them at 30 FPS.
+//
 // CHECK: that the racer's +400 is the position of the previous update is read from how the three tests
 // use it (every one sweeps from it to the current position) and from the trigger manager running the
 // line test once per update; the code that writes it was not found. That HasHit's end is 2 m ahead
 // along the car's velocity (sub_822A8148's vector, normalised, times 2.0 at 0x82040E94) is read from
-// the code, not seen in a running game. No game has run this fix.
+// the code, not seen in a running game (the race trace's segments are the car's travel plus 2 m, which
+// agrees). The hangout fix has run (8ec856d: uncapped 6 of 6 against 2 of 6); the per-car entries of a
+// race have not.
 //
-// kWindowMs and kMaxGapM: a polling script's looks were 20 to 33 ms apart in the runs that measured it
-// (script_input.cpp), so 100 ms is three times that; the fastest car covers about 100 m/s, i.e. 10 m in
-// 100 ms, and 15 m leaves room for the car's own segment on top. A previous look older than that, or
-// further away, is not the same drive.
+// The bookkeeping (checkpoint_sweep_tracker.h) is checked without the game by checkpoint_sweep_test.cpp
+// (how to compile it is in its first lines): the rules of one look, several cars at one place, and a simulated
+// race field against a gate at 30 to 360 FPS.
+//
+// kWindowMs and kMaxGapM (checkpoint_sweep_tracker.h): a polling script's looks were 13 to 33 ms apart in
+// the runs that measured it (script_input.cpp, MARKER3), so 100 ms is three times the longest; the
+// fastest car covers about 100 m/s, i.e. 10 m in 100 ms, and 15 m leaves room for the car's own segment
+// on top. A previous look older than that, or further away, is not the same drive.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/ppc.h>
@@ -46,6 +73,7 @@
 #include <cstdint>
 #include <mutex>
 
+#include "checkpoint_sweep_tracker.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 
@@ -58,12 +86,10 @@ namespace {
 constexpr uint32_t kCurrentScriptThread = 0x828DA3BC;
 constexpr uint32_t kScriptThreadPc = 16;
 
-constexpr int64_t kWindowMs = 100;
-constexpr float kMaxGapM = 15.0f;
-
-struct V3 {
-    float x, y, z;
-};
+using mcla::sweep::Dot;
+using mcla::sweep::LookTable;
+using mcla::sweep::Sub;
+using mcla::sweep::V3;
 
 V3 ReadV3(const uint8_t* base, uint32_t addr) {
     return {ReadGuestF32(base, addr), ReadGuestF32(base, addr + 4), ReadGuestF32(base, addr + 8)};
@@ -75,23 +101,8 @@ void WriteV3(uint8_t* base, uint32_t addr, const V3& v) {
     WriteGuestF32(base, addr + 8, v.z);
 }
 
-float Dot(const V3& a, const V3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-V3 Sub(const V3& a, const V3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-
-// A place that asks, and where its segment ended the last time.
-struct Look {
-    uint32_t thread = 0;
-    uint32_t pc = 0;
-    uint32_t subject = 0;  // the checkpoint or the trigger
-    uint32_t racer = 0;    // 0 where the test does not say (the checkpoint test)
-    V3 end{};
-    int64_t at_ms = 0;  // 0 = unused
-};
-constexpr int kLooks = 256;
-
 std::mutex g_mutex;
-Look g_looks[kLooks];
-int g_next_look = 0;
+LookTable g_looks;
 std::atomic<int> g_told[2];  // checkpoint, line trigger: outcomes changed or segments extended
 
 int64_t NowMs() {
@@ -99,40 +110,14 @@ int64_t NowMs() {
                std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// This place's previous look, if it is recent and the segment [start, end] begins beyond it. Stores
-// `end` as the place's new previous end either way. `gap_ms` is the time since the previous look.
+// This place's previous look of the car that is asked about, if it is recent and the segment [start,
+// end] begins beyond it. Stores `end` as the car's new previous end either way. `gap_ms` is the time
+// since the previous look (-1 if there was none).
 bool PreviousEnd(uint32_t thread, uint32_t pc, uint32_t subject, uint32_t racer, const V3& start,
                  const V3& end, V3& previous, int64_t& gap_ms) {
     const int64_t now = NowMs();
     std::lock_guard<std::mutex> lock(g_mutex);
-    Look* look = nullptr;
-    for (Look& l : g_looks) {
-        if (l.at_ms != 0 && l.thread == thread && l.pc == pc && l.subject == subject &&
-            l.racer == racer) {
-            look = &l;
-            break;
-        }
-    }
-    if (!look) {
-        look = &g_looks[g_next_look];
-        g_next_look = (g_next_look + 1) % kLooks;
-        look->thread = thread;
-        look->pc = pc;
-        look->subject = subject;
-        look->racer = racer;
-        look->end = end;
-        look->at_ms = now;
-        return false;
-    }
-    previous = look->end;
-    gap_ms = now - look->at_ms;
-    look->end = end;
-    look->at_ms = now;
-    if (gap_ms > kWindowMs) return false;
-    const V3 jump = Sub(previous, start);
-    if (!(Dot(jump, jump) <= kMaxGapM * kMaxGapM)) return false;
-    // Behind the game's own segment: the previous end is on the far side of `start`.
-    return Dot(jump, Sub(end, start)) < 0.0f;
+    return g_looks.Update(thread, pc, subject, racer, start, end, now, previous, gap_ms);
 }
 
 }  // namespace
