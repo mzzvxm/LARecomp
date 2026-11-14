@@ -19,11 +19,15 @@
 //    of the mcAmbientCarRenderClass client. The phase loop (sub_822E6408) asks `client mask & phase` at
 //    0x822E6870 (r11 = the mask, r30 = the phase, r31 = the client): the hook adds the cascade phase to the mask
 //    of that one client. Its item draw (sub_82793360, r3 = the item, r4 = the phase) then runs in the cascades,
-//    where it draws nothing, so the hook at its entry tells it the phase is 0x8000 (the plain body draw) for
-//    the cars the selector picks.
+//    where it draws nothing, so the hook at its entry tells it the phase is 0x100000 (the body draw of the colour
+//    pass, which has no side effect on the item's LOD) for the cars the selector picks.
 //
-// Every test of both hooks has a counter (gpu/traffic_shadow_gates.h) and one `[traffic-shadows] gates:` line
-// prints them, so a run says which test turns the cars away.
+// Where the distances are measured from (the second run's finding): in a cascade phase the game's CURRENT viewport
+// ([0x82839704]) is the cascade's own, about 100 m from the cars, so both routes measure from the eye of the main
+// viewport, [[0x8287E064] + 180 + 4 * buffer], the one the game's own LOD tests use (gpu/traffic_shadow.h).
+//
+// Every test of both hooks has a counter (gpu/traffic_shadow_gates.h) and `[traffic-shadows] gates:` / `window:` /
+// `census:` lines print them, so a run says which test turns the cars away and whether the distances are right.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -33,6 +37,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <string>
 
@@ -86,9 +91,9 @@ namespace {
 
 namespace ts = mcla::gpu::traffic_shadow;
 
-// The current camera object (a global pointer); its world position is three floats at +112.
-constexpr uint32_t kCameraGlobal = 0x82839704u;
-constexpr uint32_t kCameraPosition = 112u;
+// A viewport's eye is three floats at +112. The CURRENT viewport (a global pointer) is the one being rendered in: in a
+// sun cascade the cascade's own, so the distances are measured from the main viewport's eye (traffic_shadow.h).
+constexpr uint32_t kCameraPosition = ts::kViewportEye;
 // The vehicle: +20 the entity, whose Matrix44 (the translation is the row at +48) comes in two copies,
 // +144 for the update thread and +208 for the render thread; the byte at [[r13]+72] says which this
 // thread reads (sub_8235F738 picks the car's LOD by the same distance, from the same place).
@@ -107,11 +112,11 @@ constexpr uint32_t kVehicleHidden = 6478u;      // u8
 // The traffic's items (the item draw sub_82793360 reads these; traffic_shadow.h has the story).
 constexpr uint32_t kItemCar = 16u;          // the car object
 constexpr uint32_t kItemModels = 24u;       // -> a block whose +32 is the model count
-constexpr uint32_t kItemLod = 28u;          // i32, negative = not drawn
+constexpr uint32_t kItemLod = 28u;          // i32, negative = outside the main view, 2 = the coarsest (not drawn by the body phase)
 constexpr uint32_t kItemEnabled = 36u;      // u8
-constexpr uint32_t kItemFlags = 556u;       // u8: 0x20 skips the LOD test, 0x80 = a body to draw
-constexpr uint32_t kItemVisible = 557u;     // u8 + the buffer index: bit 4 = seen by the main view
 constexpr uint32_t kModelCount = 32u;       // i32, in the block [item+24] points to
+constexpr uint32_t kItemDepth = 32u;        // float: the view depth + radius from the LOD update's frustum test
+constexpr uint32_t kCarRadius = 492u;       // float in the car object: the bounding radius the LOD update uses
 constexpr uint32_t kCarFlags = 500u;        // u8 in the car object
 
 bool PlausiblePtr(uint32_t p) { return p >= 0x10000u && p < 0xE0000000u; }
@@ -154,19 +159,19 @@ ts::Gates& G() {
     return gates;
 }
 
-// One `[traffic-shadows] gates:` line: after the first 2000 calls of the hooks, then about every 30 s. The call
-// counter is one relaxed add; the clock is read for the first line, then on every 256th call.
+// The `[traffic-shadows] gates:` / `window:` / `census:` lines: 20 s after the 2000th call of the hooks (which come in
+// the world's first half second), then about every 30 s. The call counter is one relaxed add; the schedule (and the
+// clock) is asked on every 256th call.
 void NoteCall() {
-    static std::atomic<bool> first_pending{true};
     static std::mutex log_lock;
     static ts::LogSchedule schedule;
     const uint64_t calls = G().BumpCalls();
-    const bool first = first_pending.load(std::memory_order_relaxed);
-    if (calls < ts::LogSchedule::kFirstAfterCalls || (!first && (calls & 255u) != 0)) return;
+    if (calls < ts::LogSchedule::kFirstAfterCalls || (calls & 255u) != 0) return;
     std::lock_guard<std::mutex> guard(log_lock);
     if (!schedule.Due(calls, ts::NowNs())) return;
-    first_pending.store(false, std::memory_order_relaxed);
     LARECOMP_APP_INFO("{}", G().Line(std::string(ts::ModeName(CurrentMode())).c_str()));
+    LARECOMP_APP_INFO("{}", G().WindowLine());
+    LARECOMP_APP_INFO("{}", G().CensusLine());
 }
 
 // A new setting (or none) starts from a clean census and clean counters.
@@ -247,6 +252,57 @@ bool ThreadReadsRenderCopy(const uint8_t* base, uint32_t r13) {
     return !PlausiblePtr(context) || base[context + kThreadCopyFlag] != 0;
 }
 
+// A viewport's eye (three floats at +112); false if the pointer or the numbers are not plausible.
+bool ReadViewportEye(const uint8_t* base, uint32_t viewport, float eye[3]) {
+    if (!PlausiblePtr(viewport)) return false;
+    for (uint32_t i = 0; i < 3; ++i) eye[i] = ReadGuestF32(base, viewport + kCameraPosition + 4u * i);
+    return ts::PlausiblePosition(eye);
+}
+
+// The main view's viewport for the render buffer: [[0x8287E064] + 180 + 4 * [0x827E5640]], as sub_827902F0 finds it
+// for the LOD test and sub_823115E8 puts it back after the sun cascades. 0 if any link is not plausible (the counters
+// say which: a false renderer pointer, a false buffer, a false viewport).
+uint32_t MainViewport(const uint8_t* base, ts::Gates& gates, bool ambient_route) {
+    const uint32_t renderer = ReadGuestU32(base, ts::kRendererGlobal);
+    if (!PlausiblePtr(renderer)) {
+        if (ambient_route) gates.Add(ts::AmbientGate::kRenderer);
+        return 0;
+    }
+    const uint32_t buffer = ReadGuestU32(base, ts::kAmbientBufferGlobal);
+    if (!ts::AmbientBufferValid(buffer)) {
+        if (ambient_route) gates.Add(ts::AmbientGate::kBuffer);
+        return 0;
+    }
+    const uint32_t viewport = ReadGuestU32(base, renderer + ts::MainViewportSlot(buffer));
+    if (!PlausiblePtr(viewport)) {
+        if (ambient_route) gates.Add(ts::AmbientGate::kViewport);
+        return 0;
+    }
+    return viewport;
+}
+
+// The eye the distances are measured from: the main viewport's; if it cannot be read, the current viewport's (what the
+// first version used: in a cascade the cascade's own eye, so the distances are wrong, but the counters say so). Both are
+// kept: the census compares them. `eye` is the one to measure from; false if no eye was found at all.
+struct Eyes {
+    float eye[3] = {0, 0, 0};
+    float main_eye[3] = {0, 0, 0};
+    float current_eye[3] = {0, 0, 0};
+    uint32_t main_viewport = 0;
+    uint32_t current_viewport = 0;
+    bool have_main = false;
+    bool have_current = false;
+};
+bool FindEyes(const uint8_t* base, ts::Gates& gates, bool ambient_route, Eyes& out) {
+    out.main_viewport = MainViewport(base, gates, ambient_route);
+    out.have_main = out.main_viewport != 0 && ReadViewportEye(base, out.main_viewport, out.main_eye);
+    out.current_viewport = ReadGuestU32(base, ts::kCurrentViewportGlobal);
+    out.have_current = ReadViewportEye(base, out.current_viewport, out.current_eye);
+    const float* chosen = out.have_main ? out.main_eye : out.current_eye;
+    for (int i = 0; i < 3; ++i) out.eye[i] = chosen[i];
+    return out.have_main || out.have_current;
+}
+
 }  // namespace
 #endif
 
@@ -309,26 +365,24 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
         return;
     }
 
-    // Where the car is and where the camera is (the game's own LOD distance).
+    // Where the car is and where the eye is (the main viewport's: in a cascade the current viewport is the cascade's own).
     const uint32_t entity = ReadGuestU32(base, vehicle + kVehicleEntity);
-    const uint32_t camera = ReadGuestU32(base, kCameraGlobal);
     if (!PlausiblePtr(entity)) {
         gates.Add(Gate::kEntityPtr);
         return;
     }
-    if (!PlausiblePtr(camera)) {
+    Eyes eyes;
+    if (!FindEyes(base, gates, false, eyes)) {
         gates.Add(Gate::kCameraPtr);
         return;
     }
+    gates.Add(eyes.have_main ? Gate::kEyeMain : Gate::kEyeFallback);
     // Which copy of the matrix this thread reads (as sub_8235F738 does).
     const bool render_copy = ThreadReadsRenderCopy(base, uint32_t(r13.u64));
     const uint32_t matrix = entity + (render_copy ? kEntityMatrixRender : kEntityMatrixUpdate);
-    float at[3], eye[3];
-    for (uint32_t i = 0; i < 3; ++i) {
-        at[i] = ReadGuestF32(base, matrix + kMatrixTranslation + 4u * i);
-        eye[i] = ReadGuestF32(base, camera + kCameraPosition + 4u * i);
-    }
-    const float distance = ts::Distance(eye, at);
+    float at[3];
+    for (uint32_t i = 0; i < 3; ++i) at[i] = ReadGuestF32(base, matrix + kMatrixTranslation + 4u * i);
+    const float distance = ts::Distance(eyes.eye, at);
     if (!std::isfinite(distance)) {
         gates.Add(Gate::kDistance);
         return;
@@ -371,8 +425,9 @@ void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister&
 }
 
 // 0x82793360, the entry of sub_82793360 (the item draw of mcAmbientCarRenderClass: r3 = the item, r4 = the phase).
-// In a cascade the draw knows no phase and returns; for a car the selector picks the phase becomes 0x8000, the
-// branch that draws the body (traffic_shadow.h). The draw's own tests (visible byte, LOD, body) still apply.
+// In a cascade the draw knows no phase and returns; for a car the selector picks the phase becomes 0x100000, the
+// branch that draws the body (traffic_shadow.h; 0x8000, the first version, is the car's lights). The draw's own tests
+// (LOD, the item's and the car's flags) still apply. Only r4, a register, is changed: no guest memory is written.
 void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13) {
 #if defined(LARECOMP_HAS_GPU)
     using Gate = ts::AmbientGate;
@@ -414,48 +469,81 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
         return;
     }
 
-    // The tests the item draw makes before it draws the body (traffic_shadow.h).
+    // The tests the body phase makes before the model's draw (traffic_shadow.h).
     const uint32_t models = ReadGuestU32(base, item + kItemModels);
     ts::AmbientFlags flags;
     flags.enabled = base[item + kItemEnabled];
     flags.car_flags = base[car + kCarFlags];
     flags.model_count = PlausiblePtr(models) ? int32_t(ReadGuestU32(base, models + kModelCount)) : -1;
     flags.lod = int32_t(ReadGuestU32(base, item + kItemLod));
-    flags.item_flags = base[item + kItemFlags];
-    flags.visible = base[item + kItemVisible + buffer];
     const uint32_t rejected = ts::AmbientRejectBits(flags);
+    const bool census_phase = ts::CascadeIndex(phase) == 1;  // the first cascade: every item once a frame, the census
+
+    // The car's world position (sub_82794EE8's matrix, translation row at +48) and the eye's. In the census phase this
+    // is done for every item, whatever the tests said, so that the counters show where the cars the tests turn away are.
+    Eyes eyes;
+    float at[3] = {0, 0, 0};
+    float distance = std::numeric_limits<float>::quiet_NaN();
+    bool measured = false;
+    bool have_eye = false;
+    if (rejected == 0 || census_phase) {
+        have_eye = FindEyes(base, gates, true, eyes);
+        if (have_eye) {
+            const bool render_copy = ThreadReadsRenderCopy(base, uint32_t(r13.u64));
+            const uint32_t matrix = car + ts::AmbientMatrixOffset(render_copy, buffer);
+            for (uint32_t i = 0; i < 3; ++i) at[i] = ReadGuestF32(base, matrix + ts::kAmbientTranslation + 4u * i);
+            if (ts::PlausiblePosition(at)) {
+                distance = ts::Distance(eyes.eye, at);
+                measured = std::isfinite(distance);
+            }
+            if (census_phase) gates.NoteEyes(eyes.main_viewport, eyes.main_eye, eyes.current_viewport, eyes.current_eye);
+        }
+    }
+    if (census_phase && measured) {
+        ts::BandKind kind = ts::BandKind::kOther;
+        if (rejected == 0) {
+            kind = ts::BandKind::kCandidate;
+        } else if ((rejected & ts::kAmbientRejectLod) != 0) {
+            kind = ts::BandKind::kLodOutside;
+        } else if ((rejected & ts::kAmbientRejectLodCoarse) != 0) {
+            kind = ts::BandKind::kLodCoarse;
+        }
+        gates.AddBand(kind, distance);
+    }
+
     if (rejected != 0) {
         gates.Add(Gate::kIneligible);
         if (rejected & ts::kAmbientRejectEnabled) gates.Add(Gate::kEnabled);
         if (rejected & ts::kAmbientRejectCarFlags) gates.Add(Gate::kCarFlags);
         if (rejected & ts::kAmbientRejectModels) gates.Add(Gate::kModels);
-        if (rejected & ts::kAmbientRejectNotVisible) gates.Add(Gate::kNotVisible);
         if (rejected & ts::kAmbientRejectLod) gates.Add(Gate::kLod);
-        if (rejected & ts::kAmbientRejectNoBody) gates.Add(Gate::kNoBody);
+        if (rejected & ts::kAmbientRejectLodCoarse) gates.Add(Gate::kLodCoarse);
         return;
     }
-
-    // The car's world position (sub_82794EE8's matrix, translation row at +48) and the camera's.
-    const uint32_t camera = ReadGuestU32(base, kCameraGlobal);
-    if (!PlausiblePtr(camera)) {
+    if (!have_eye) {
         gates.Add(Gate::kCameraPtr);
         return;
     }
-    const bool render_copy = ThreadReadsRenderCopy(base, uint32_t(r13.u64));
-    const uint32_t matrix = car + ts::AmbientMatrixOffset(render_copy, buffer);
-    float at[3], eye[3];
-    for (uint32_t i = 0; i < 3; ++i) {
-        at[i] = ReadGuestF32(base, matrix + ts::kAmbientTranslation + 4u * i);
-        eye[i] = ReadGuestF32(base, camera + kCameraPosition + 4u * i);
-    }
-    if (!ts::PlausiblePosition(at) || !ts::PlausiblePosition(eye)) {
+    gates.Add(eyes.have_main ? Gate::kEyeMain : Gate::kEyeFallback);
+    if (!ts::PlausiblePosition(at)) {
         gates.Add(Gate::kPosition);
         return;
     }
-    const float distance = ts::Distance(eye, at);
-    if (!std::isfinite(distance)) {
+    if (!measured) {
         gates.Add(Gate::kDistance);
         return;
+    }
+    if (census_phase) {
+        // Does our distance agree with the item's own view depth (the LOD update's frustum test against the main
+        // viewport)? A candidate is in the main view, so it must be at least its depth from the eye and not far more.
+        const float depth_plus_radius = ReadGuestF32(base, item + kItemDepth);
+        const float radius = ReadGuestF32(base, car + kCarRadius);
+        switch (ts::CheckAgainstDepth(distance, depth_plus_radius, radius)) {
+            case ts::DepthVerdict::kConsistent: gates.Add(Gate::kDepthConsistent); break;
+            case ts::DepthVerdict::kCloserThanDepth: gates.Add(Gate::kDepthCloser); break;
+            case ts::DepthVerdict::kFarBeyondView: gates.Add(Gate::kDepthFar); break;
+            default: gates.Add(Gate::kDepthUnknown); break;
+        }
     }
 
     gates.Add(Gate::kDecided);
