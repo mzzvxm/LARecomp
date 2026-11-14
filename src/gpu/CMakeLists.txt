@@ -109,6 +109,10 @@ add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
 # The sun shafts' strength levels (shafts_level.h: the setting's words, the multipliers, auto per class, the old values, the ray steps) likewise:
 #   cmake --build <dir> --target larecomp_shafts_level_test, then run src/gpu/larecomp_shafts_level_test.
 add_executable(larecomp_shafts_level_test EXCLUDE_FROM_ALL shafts_level_test.cpp)
+# The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
+# also checks that the shaders say what the header says) likewise:
+#   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
+add_executable(larecomp_shafts_image_test EXCLUDE_FROM_ALL shafts_image_test.cpp)
 # The bounce light's cap, falloff and gain maths and its strength levels (ssgi_light.h, ssgi_level.h; given the hlsl folder it also
 # checks that the shaders' constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ssgi_test, then run src/gpu/larecomp_ssgi_test [<src/gpu/hlsl dir>].

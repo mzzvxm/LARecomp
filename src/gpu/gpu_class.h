@@ -91,7 +91,7 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
 // card is kHigh, a 4 GB one kMid. A first guess for the owner to tune.
 inline constexpr uint64_t kMidBelowBytes = 5632ull << 20;
 
-// The ray quality of the sun shafts is not a setting. The blur marches each ray over the half-size sky image in this many
+// The ray quality of the sun shafts is not a setting. The blur marches each ray over the sky image (half the picture, capped at 960x540: shafts_image.h) in this many
 // steps, chosen by the class: 64 on High, 32 on Mid (and on Low, where the shafts are off unless the player turns a
 // strength on by hand: the cheaper one). The debug cvar mcla_gpu_sun_shafts_steps overrides it (shafts_level.h Steps).
 inline constexpr uint32_t kSunShaftStepsMid = 32;

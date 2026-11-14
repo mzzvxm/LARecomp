@@ -5,7 +5,8 @@
 // 64 bytes of push constants), one ShaftsPush for all of them; each reads the fields it needs.
 // Pixels are in the pass's own target pixels, y down; the guest's depth is 1 near and 0 far. The
 // two images the passes make are single-channel (R16_FLOAT): a brightness, to which the sun's
-// colour is given by the last pass.
+// colour is given by the last pass. They are half the picture's size, or capped at a 960x540 box
+// (shafts_image.h): the blur and the add pass work in UV, so they do not depend on it.
 
 #ifndef MCLA_GPU_SHAFTS_COMMON_HLSLI
 #define MCLA_GPU_SHAFTS_COMMON_HLSLI
@@ -26,7 +27,9 @@ struct ShaftsPush {
   // blur: xy the sun's position in the image (0 to 1, y down), z the density (how much of the way
   //       to the sun a ray covers), w the decay of one step
   float4 sun;
-  // sky:  w the threshold, the brightness below which the sky does not shine
+  // sky:  xy the footprint of one texel of the sky image in the picture's pixels (2, 2 for an image half the
+  //       picture's size; render / image when the cap made it smaller), w the threshold, the brightness
+  //       below which the sky does not shine
   // blur: w the frame's noise shift (0 to 1023)
   // add:  xyz the light's colour times its strength (the sun's colour, the intensity and the fades)
   float4 tint;

@@ -2,7 +2,7 @@
 //
 // Drawn into the main view's colour target at the render size, in a pipeline whose blend adds
 // (ONE, ONE: every sample of a multisampled target gets the same light, the alpha is not written).
-// The pixel takes the blurred image bilinearly (it is half the picture's size and smooth) and gives
+// The pixel takes the blurred image bilinearly (it is half the picture's size or less, and smooth) and gives
 // it the light's colour, which the host made of the sun's colour, the intensity and the fades.
 //
 // Debug views (the push's view): 1 the sky image and 2 the blurred image as a grey (0.3 of the value,
