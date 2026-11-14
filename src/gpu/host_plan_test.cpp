@@ -18,6 +18,7 @@
 
 using namespace mcla::gpu::host_plan;
 using mcla::gpu::gpu_class::GpuClass;
+namespace sl = mcla::gpu::shafts_level;
 
 namespace {
 
@@ -43,15 +44,15 @@ void CheckEq(const std::string& got, const std::string& want, const std::string&
 const GpuClass kClasses[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
 const char* const kClassNames[] = {"low", "mid", "high"};
 
-// What `auto` stands for, written out again (the design's table, section 9): off/low/high, in class order.
-// The bounce light's is off on every class until its cost is measured (owner, 2026-11-13).
+// What `auto` stands for, written out again (the design's table, section 9): off/low/high, in class order. The
+// sun shafts are not here: their setting is a strength, not a level (CheckShafts below). The bounce light's is
+// off on every class until its cost is measured (owner, 2026-11-13).
 struct AutoRow {
   Pass pass;
   const char* cells[3];
 };
 const AutoRow kAuto[] = {
     {Pass::kContact, {"off", "low", "high"}},
-    {Pass::kShafts, {"off", "low", "high"}},
     {Pass::kBounce, {"off", "off", "off"}},
 };
 
@@ -105,7 +106,7 @@ void CheckAutoPasses() {
             cell + ": the table gpu_class.h holds is the one this test expects");
     }
   }
-  // A word that is not a value: off for the contact shadows and the bounce light, `auto` for the shafts.
+  // A word that is not a value: off for the contact shadows and the bounce light (the shafts: CheckShafts).
   for (int k = 0; k < 3; ++k) {
     for (const char* junk : {"", "ultra", "hgih", "on", "game", "auto "}) {
       const std::string where = std::string("'") + junk + "' on " + kClassNames[k];
@@ -115,9 +116,6 @@ void CheckAutoPasses() {
       const Choice bounce = Resolve(Pass::kBounce, kClasses[k], true, junk);
       Check(bounce.level == Level::kOff && bounce.unknown && !bounce.automatic,
             "bounce light " + where + ": off, unknown");
-      const Choice shafts = Resolve(Pass::kShafts, kClasses[k], true, junk);
-      Check(shafts.level == LevelOf(kAuto[1].cells[k]) && shafts.unknown && shafts.automatic,
-            "sun shafts " + where + ": taken as auto (" + kAuto[1].cells[k] + ")");
     }
   }
   // The bounce light's `auto` waits for the class: off while it is not known, whatever class is guessed.
@@ -128,10 +126,56 @@ void CheckAutoPasses() {
     const Choice own = Resolve(Pass::kBounce, kClasses[k], false, "high");
     Check(own.level == Level::kHigh, "bounce light high, class not known: the player's own is kept");
     // the other two do not look at it
-    Check(Resolve(Pass::kShafts, kClasses[k], false, "auto").level == LevelOf(kAuto[1].cells[k]),
+    Check(Resolve(Pass::kShafts, kClasses[k], false, "auto").strength ==
+              Resolve(Pass::kShafts, kClasses[k], true, "auto").strength,
           "sun shafts auto does not wait for the class");
     Check(Resolve(Pass::kContact, kClasses[k], false, "auto").level == LevelOf(kAuto[0].cells[k]),
           "contact shadows auto does not wait for the class");
+  }
+}
+
+// The sun shafts' setting is a strength (shafts_level.h): off, light, default, strong, stronger, strongest, `auto` (DEFAULT on Mid
+// and High, OFF on Low), and the old low and high (read as default). The plan's level is off for no shafts, else the ray
+// quality the class gives: low on Low and Mid (32 steps), high on High (64).
+void CheckShafts() {
+  const Level quality[] = {Level::kLow, Level::kLow, Level::kHigh};
+  const sl::Level auto_strength[] = {sl::Level::kOff, sl::Level::kDefault, sl::Level::kDefault};
+  struct Own {
+    const char* text;
+    sl::Level strength;
+  };
+  const Own own[] = {{"off", sl::Level::kOff},         {"light", sl::Level::kLight},   {"default", sl::Level::kDefault},
+                     {"strong", sl::Level::kStrong},   {"stronger", sl::Level::kStronger}, {"strongest", sl::Level::kStrongest},
+                     {"Strong", sl::Level::kStrong},
+                     {"OFF", sl::Level::kOff}};
+  for (int k = 0; k < 3; ++k) {
+    const std::string at = std::string("sun shafts on ") + kClassNames[k];
+    const bool auto_on = auto_strength[k] != sl::Level::kOff;
+    for (const char* text : {"auto", "AUTO"}) {
+      const Choice a = Resolve(Pass::kShafts, kClasses[k], true, text);
+      Check(a.strength == auto_strength[k] && a.automatic && !a.unknown && !a.legacy, at + ": '" + text + "' is automatic: " + std::string(sl::Name(auto_strength[k])));
+      Check(a.level == (auto_on ? quality[k] : Level::kOff), at + ": '" + text + "': the level is the ray quality, or off");
+    }
+    for (const Own& o : own) {
+      const Choice c = Resolve(Pass::kShafts, kClasses[k], true, o.text);
+      const bool on = o.strength != sl::Level::kOff;
+      Check(c.strength == o.strength && !c.automatic && !c.unknown && !c.legacy, at + ": '" + o.text + "' is the player's own");
+      Check(c.level == (on ? quality[k] : Level::kOff), at + ": '" + o.text + "': the level is the ray quality, or off");
+    }
+    // The old values: default on every class (also on Low, where `auto` is off), marked.
+    for (const char* old : {"low", "high", "Low", "HIGH"}) {
+      const Choice c = Resolve(Pass::kShafts, kClasses[k], true, old);
+      Check(c.strength == sl::Level::kDefault && c.legacy && !c.automatic && !c.unknown && c.level == quality[k],
+            at + ": the old '" + old + "' is read as default");
+    }
+    // A word that is not a value counts as `auto`.
+    for (const char* junk : {"", "ultra", "hgih", "on", "game", "auto "}) {
+      const Choice c = Resolve(Pass::kShafts, kClasses[k], true, junk);
+      Check(c.strength == auto_strength[k] && c.unknown && c.automatic && !c.legacy && c.level == (auto_on ? quality[k] : Level::kOff),
+            at + ": '" + junk + "' is taken as auto (" + std::string(sl::Name(auto_strength[k])) + ")");
+    }
+    // The other passes carry no strength.
+    Check(Resolve(Pass::kContact, kClasses[k], true, "high").strength == sl::Level::kOff, at + ": contact shadows leave the strength alone");
   }
 }
 
@@ -158,10 +202,13 @@ void CheckPlans() {
       {"off", "off", "off", "off", GpuClass::kHigh, "----", "everything off, High"},
       {"low", "off", "off", "off", GpuClass::kHigh, "O---", "occlusion low only"},
       // A player's own choices override the class both ways.
-      {"high", "high", "high", "high", GpuClass::kLow, "OCSB", "all high on Low: the player's own"},
+      {"high", "high", "strong", "high", GpuClass::kLow, "OCSB", "all on by hand on Low: the player's own"},
       {"high", "off", "off", "off", GpuClass::kHigh, "O---", "all off on High: the player's own"},
       {"high", "low", "auto", "auto", GpuClass::kLow, "OC--", "contact low on Low"},
-      {"high", "auto", "high", "auto", GpuClass::kMid, "OCS-", "shafts high on Mid"},
+      {"high", "auto", "strong", "auto", GpuClass::kMid, "OCS-", "shafts strong on Mid"},
+      {"high", "auto", "high", "auto", GpuClass::kLow, "O-S-", "the old shafts value high on Low: read as default, on"},
+      {"high", "auto", "light", "auto", GpuClass::kLow, "O-S-", "shafts light on Low: the player's own"},
+      {"high", "auto", "off", "off", GpuClass::kHigh, "OC--", "shafts off on High: the player's own"},
       {"high", "auto", "auto", "low", GpuClass::kMid, "OCSB", "bounce light low on Mid"},
       {"high", "auto", "auto", "high", GpuClass::kHigh, "OCSB", "bounce light high on High"},
       {"low", "off", "off", "low", GpuClass::kLow, "O--B", "bounce light low with the occlusion low on Low"},
@@ -203,11 +250,19 @@ void CheckDescribe() {
           "sun shafts off (auto on the low class)", "Describe: auto on Low");
   CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "high"), GpuClass::kHigh),
           "ambient occlusion high (set)", "Describe: the occlusion's own value");
+  CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kMid, true, "auto"), GpuClass::kMid),
+          "sun shafts default (auto on the mid class)", "Describe: shafts auto on Mid");
+  CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kHigh, true, "strong"), GpuClass::kHigh),
+          "sun shafts strong (set)", "Describe: a strength the player set");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kHigh, true, "high"), GpuClass::kHigh),
-          "sun shafts high (set)", "Describe: a value the player set");
+          "sun shafts default (an old value of the setting (low or high): read as default)",
+          "Describe: an old value");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kHigh, true, "hgih"), GpuClass::kHigh),
-          "sun shafts high (not a value of the setting: taken as auto on the high class)",
+          "sun shafts default (not a value of the setting: taken as auto on the high class)",
           "Describe: a word the shafts take as auto");
+  CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kLow, true, "hgih"), GpuClass::kLow),
+          "sun shafts off (not a value of the setting: taken as auto on the low class)",
+          "Describe: a word the shafts take as auto, on Low");
   CheckEq(Describe(Pass::kContact, Resolve(Pass::kContact, GpuClass::kHigh, true, "hgih"), GpuClass::kHigh),
           "contact shadows off (not a value of the setting: off)", "Describe: a word that is off");
   CheckEq(std::string(PassName(Pass::kBounce)), "bounce light", "PassName(bounce)");
@@ -286,6 +341,7 @@ void CheckAmbient() {
 int main() {
   CheckOcclusion();
   CheckAutoPasses();
+  CheckShafts();
   CheckPlans();
   CheckDescribe();
   CheckHold();

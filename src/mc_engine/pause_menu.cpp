@@ -1761,14 +1761,17 @@ std::string ContactLabel(int i) {
     }
 }
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
-// Sun shafts (gpu/shafts.h, live): AUTO picks by the graphics card and the row says what it comes to
-// ("AUTO (HIGH)"); or OFF, LOW (32 steps) or HIGH (64). They show at dawn and dusk only. At most 23
-// characters with its longest value ("SUN SHAFTS: AUTO (HIGH)").
-const char* const kNativeShaftsVals[]  = {"auto", "off", "low", "high"};
-const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+// Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
+// the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
+// picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
+// the card by itself. They show at dawn and dusk only. At most 26 characters with the longest label
+// ("SUN SHAFTS: AUTO (DEFAULT)"). An older larecomp.toml may still say low or high: the shafts read those as
+// DEFAULT and this row, which does not list them, shows AUTO until it is stepped.
+const char* const kNativeShaftsVals[]  = {"auto", "off", "light", "default", "strong", "stronger", "strongest"};
+const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
 std::string ShaftsLabel(int i) {
     if (i == 0) return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSunShafts);
-    return i > 0 && i < 4 ? kNativeShaftsNames[i] : "";
+    return i > 0 && i < 7 ? kNativeShaftsNames[i] : "";
 }
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
@@ -1883,7 +1886,8 @@ const ItemDef kPictureItems[] = {
 // is made from the occlusion's passes).
 // Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
 // ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
-// ItemRowLabel); no row has a suffix. 7 rows of the 24 a page can hold.
+// ItemRowLabel); no row has a suffix. 7 rows of the 24 a page can hold. SUN SHAFTS has the longest value,
+// "AUTO (DEFAULT)" (14), with its 10-character label: 24 together.
 const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -1895,7 +1899,7 @@ const ItemDef kGfxQualityItems[] = {
                                 kNativeContactVals, kNativeContactNames, 4),
                             &kContactDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
-                                kNativeShaftsVals, kNativeShaftsNames, 4),
+                                kNativeShaftsVals, kNativeShaftsNames, 7),
                             &kShaftsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
                                 kNativeSsgiVals, kNativeSsgiNames, 4),
@@ -2752,7 +2756,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
 // The GRAPHICS QUALITY page (kGfxQualityItems, 7 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
 // then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "BOUNCE LIGHT" 12,
-// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"): 27 together.
+// "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), and SUN SHAFTS' "AUTO (DEFAULT)" 14:
+// 27 together at most.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.

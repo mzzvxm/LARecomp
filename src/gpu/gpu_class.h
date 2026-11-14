@@ -24,7 +24,7 @@
 // and gets the value to act on: the table's cell for `auto`, the user's own choice unchanged for
 // anything else (so `off` and `game` are never overridden). Its pause row shows what `auto` comes
 // to, like the low latency row's "AUTO (ON)":
-//     case 0: return gpu_class::AutoLabel(gpu_class::Effect::kSunShafts);   // "AUTO (HIGH)"
+//     case 0: return gpu_class::AutoLabel(gpu_class::Effect::kSunShafts);   // "AUTO (DEFAULT)"
 //
 // One setting is not a string table: the city LOD scale (lod_city_scale, a number whose 0 is `auto`),
 // with its own rule below (CityLodScaleFor, CityLodLabelFor).
@@ -61,7 +61,7 @@ enum class Effect : uint8_t {
   kEnvResolution,         // mcla_gpu_env_resolution     auto, game, high, ultra
   kReflectionResolution,  // mcla_gpu_reflection_resolution  auto, game, high, ultra
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
-  kSunShafts,             // mcla_gpu_sun_shafts         auto, off, low, high
+  kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
 };
 inline constexpr int kEffectCount = 7;
@@ -77,7 +77,7 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_env_resolution", "game", "game", "high"},
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
-    {"mcla_gpu_sun_shafts", "off", "low", "high"},
+    {"mcla_gpu_sun_shafts", "off", "default", "default"},  // a strength, not a quality: DEFAULT where the GPU is not integrated
     // Off on every class until the bounce light's cost is measured (owner, 2026-11-13); low and high stay a choice.
     {"mcla_gpu_ssgi", "off", "off", "off"},
 };
@@ -86,6 +86,12 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
 // under 6144 MiB (5.9 to 6.1 GiB in practice) and a 4 GB card 4096 MiB, so the limit is 5.5 GiB: a 6 GB
 // card is kHigh, a 4 GB one kMid. A first guess for the owner to tune.
 inline constexpr uint64_t kMidBelowBytes = 5632ull << 20;
+
+// The ray quality of the sun shafts is not a setting. The blur marches each ray over the half-size sky image in this many
+// steps, chosen by the class: 64 on High, 32 on Mid (and on Low, where the shafts are off unless the player turns a
+// strength on by hand: the cheaper one). The debug cvar mcla_gpu_sun_shafts_steps overrides it (shafts_level.h Steps).
+inline constexpr uint32_t kSunShaftStepsMid = 32;
+inline constexpr uint32_t kSunShaftStepsHigh = 64;
 
 // --- the pure rules ----------------------------------------------------------------------------
 
@@ -157,6 +163,11 @@ inline std::string Upper(std::string_view text) {
 // "AUTO (X)" for any display name X: the helper for a row whose values have names of their own.
 inline std::string AutoLabelOf(std::string_view shown) {
   return "AUTO (" + Upper(shown) + ")";
+}
+
+// The ray steps of the sun shafts' blur for a class (see kSunShaftStepsMid).
+constexpr uint32_t SunShaftSteps(GpuClass c) {
+  return c == GpuClass::kHigh ? kSunShaftStepsHigh : kSunShaftStepsMid;
 }
 
 // "AUTO (HIGH)": the pause row's label for `auto`, with the cell's value in capitals.
