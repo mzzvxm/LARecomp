@@ -1779,7 +1779,7 @@ void Scene::NoteMenuWorld() {
     ao_->Levels(&occlusion, &contact, &bounce);
   }
   if (shafts_) {
-    shafts = shafts_->Level();
+    shafts = shafts_->LevelName();
   }
   REXLOG_INFO("[gpu] world: {}: drawn with {}; effects: {}", menu_world::Name(world), drawn,
               menu_world::EffectsText(world, {{"ambient occlusion", occlusion},
