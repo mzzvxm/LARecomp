@@ -124,6 +124,9 @@ void SourceChecks(const std::string& dir) {
   Check(header.find("temporal::JitterHold jitter_hold_;") != std::string::npos, "temporal.h holds the JitterHold");
   Check(cpp.find("mcla_gpu_pause_vehicle_vectors") != std::string::npos && cpp.find("mcla_gpu_temporal_jitter_hold") != std::string::npos,
         "both debug cvars are defined");
+  Check(cpp.find("ProbePauseSlots(f.banks->ps.data(), fr.stencil_ids)") != std::string::npos &&
+            cpp.find("the game's vehicle slots in the pause view") != std::string::npos,
+        "the pause view's unused slots are counted and the summary says what they held");
 }
 
 }  // namespace

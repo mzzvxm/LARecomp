@@ -1860,12 +1860,43 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     // does (temporal_menu.h says why).
     pending_.vehicle_stats = temporal::BuildVehicleTable(f.banks->ps.data(), fr.stencil_ids, camera,
                                                          *pending_.previous, &pending_.vehicles);
+  } else if (fr.view == temporal::View::kPause) {
+    ProbePauseSlots(f.banks->ps.data(), fr.stencil_ids);
   }
   pending_ready_ = motion_.available();
   if (!pending_ready_) {
     DropPostStandIn();  // no passes: RecordAnchorPasses is not called
   }
   return pending_ready_;
+}
+
+void TemporalSystem::ProbePauseSlots(const uint8_t* ps_bank, uint32_t stencil_ids) {
+  PauseSlotCounts& c = pause_slots_;
+  ++c.frames;
+  temporal::VehicleMotion motion;
+  const temporal::VehicleStats stats = temporal::ReadVehicleMotion(ps_bank, stencil_ids, &motion);
+  if (stats.asked == 0) {
+    return;
+  }
+  ++c.with_ids;
+  c.asked += stats.asked;
+  c.taken += stats.taken;
+  c.not_sane += stats.not_sane;
+  c.not_rigid += stats.not_rigid;
+  c.no_world += stats.no_world ? 1 : 0;
+  for (uint32_t k = 1; k < temporal::kVehicleIds; ++k) {
+    if (!(motion.valid & (1u << k))) {
+      continue;
+    }
+    // A rigid transform of row vectors: the rotation in the upper 3x3, the translation in row 3.
+    const temporal::Mat4& m = motion.world[k];
+    const double move = std::sqrt(m.m[3][0] * m.m[3][0] + m.m[3][1] * m.m[3][1] + m.m[3][2] * m.m[3][2]);
+    const double trace = m.m[0][0] + m.m[1][1] + m.m[2][2];
+    const double turn = std::acos(std::clamp((trace - 1.0) * 0.5, -1.0, 1.0)) * 180.0 / kPi;
+    c.max_move = std::max(c.max_move, move);
+    c.max_turn = std::max(c.max_turn, turn);
+    c.moving += (move > 0.05 || turn > 1.0) ? 1 : 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2127,6 +2158,15 @@ void TemporalSystem::Report() {
     REXLOG_INFO("{} jitter hold: held {} time(s) (after {} frames in a row that restarted the history), {} frames restarted "
                 "it for a reason of their own in all",
                 kPrefix, jitter_hold_.holds(), temporal::JitterHold::kHoldAfter, jitter_hold_.restarted_total());
+  }
+  if (pause_slots_.frames != 0) {
+    REXLOG_INFO("{} the game's vehicle slots in the pause view (not used there: a vehicle takes the camera's motion; "
+                "mcla_gpu_pause_vehicle_vectors uses them): {} anchors, {} with vehicle IDs; {} IDs asked, {} usable "
+                "(not sane {}, not rigid {}, no world matrix in {} anchors); {} usable rows moved over 5 cm or 1 degree "
+                "in a frame, the most {:.3f} units and {:.2f} degrees (a still car under an orbiting camera: 0 and 0)",
+                kPrefix, pause_slots_.frames, pause_slots_.with_ids, pause_slots_.asked, pause_slots_.taken,
+                pause_slots_.not_sane, pause_slots_.not_rigid, pause_slots_.no_world, pause_slots_.moving,
+                pause_slots_.max_move, pause_slots_.max_turn);
   }
   if (const std::string vehicles = motion_.Summary(); !vehicles.empty()) {
     REXLOG_INFO("{} {}", kPrefix, vehicles);
