@@ -29,7 +29,8 @@
 //   frames it has and then an exponential average;
 //   gives a pixel with little or no confidence (an edge that just came into view, a pixel of a
 //   vehicle whose motion is not known) the wide blur in place of its own value, a 5x5 of the already
-//   denoised image: the second denoise pass, only where there is no history to lean on. A frame with
+//   denoised image (one radius wider than the denoise pass's, AoWideRadius: ao_stable.h): the second denoise
+//   pass, only where there is no history to lean on. A frame with
 //   no history at all (a cut, the first frame, the pause view switching, a new size) had its two
 //   denoise passes already and passes through.
 //
@@ -338,7 +339,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Where the history does not hold, the wide blur of this frame instead of its own value.
   float fresh = current;
   if (confidence < 1.0f) {
-    const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, 2);
+    const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);
   }
   const float result = lerp(fresh, history, confidence * g_push.extra.w);

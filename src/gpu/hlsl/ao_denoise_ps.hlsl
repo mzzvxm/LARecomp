@@ -1,7 +1,9 @@
 // MCLA GPU renderer -- ambient occlusion, pass 3: the denoise (ao.h).
 //
-// A bilateral blur of the visibility image, R16_FLOAT, 3x3 (radius 1) or 5x5 (radius 2). A
-// neighbour counts by its distance in pixels and by how far it is from the surface plane the
+// A bilateral blur of the visibility image, R16_FLOAT, 3x3 (radius 1) to 7x7 (radius 3): the radius follows the image's
+// height (ao_stable.h DenoiseRadius, ao.cpp FillPush: 1 at 720 lines, 2 at 1080 and 1440, 3 from 2160), because the main
+// pass has the same 18 samples a pixel at any size and a 3x3 blur of a 4K picture reaches a third of what it does at 720p.
+// A neighbour counts by its distance in pixels and by how far it is from the surface plane the
 // centre pixel is on (its position against the centre's tangent plane, from the depth-derived
 // normal), so a blur does not run across a depth edge or round a corner, and a surface seen at a
 // grazing angle, whose neighbours differ a lot in depth but lie in one plane, is blurred like any
