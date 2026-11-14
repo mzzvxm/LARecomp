@@ -34,6 +34,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/config_save.h"
 #include "mc_engine/debug_menu.h"
+#include "mc_engine/effect_compare.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
@@ -614,6 +615,8 @@ class LarecompApp : public rex::ReXApp {
     // The base has already built the ImGui drawer on CreateOverlayDrawer's
     // drawer; the renderer runs its passes from here on.
     if (mcla::gpu::Enabled()) {
+      // The compare key (F1): flicks one graphics effect off and on to see what it does.
+      mcla::compare::Start(imgui_drawer());
       // Shader packs whose stamp is stale are rebuilt before they are attached (the shader phase
       // of LaunchModule), so Startup leaves those alone.
       larecomp::shaderbuild::InstallStartupGate(game_data_root());

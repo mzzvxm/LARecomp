@@ -84,6 +84,12 @@ These only read: they change nothing in the game, they cost nothing while off, a
 | `mcla_gpu_vram_log` | RENDERING, VRAM LOG EVERY (live; frames, 0 off) | `[gpu] video memory (frame N): X MiB in use, budget Y MiB (Z% used) | held by the caches: textures ..., resolve products ..., EDRAM targets ..., resolve memory ... MiB`, at the first check past the interval (checks are 30 frames apart). The existing `[gpu] video memory: short` lines appear only when memory runs short; this one says how near a healthy run is. For stutter or crashes on a card with little video memory. `mcla_gpu_process_memory_log` does the same for the process's system memory. |
 | `lowcpu_probe` | LOGGING, LOW CPU PROBE (live) | Every 10 s, `[LowCpuProbe] audio ...`: the audio callback's gaps over 8, 12 and 20 ms and how late the game's 1 ms clock tick was, and `[LowCpuProbe] cpu ...`: CPU time of the audio worker and the timer-queue thread. For crackling sound and stutter on a PC with few cores. The always-on `[Audio]` lines count only the gaps over 20 ms. |
 
+## The compare key (F1)
+
+The player's compare key (`bind_mcla_compare`, F1 until it is rebound in F4; the COMPARE KEY row on GRAPHICS QUALITY) flicks one graphics effect off and on without writing its setting, so the saved value, the pause row and `larecomp.toml` stay as they were. It is a view of the settings' readers (`src/gpu/effect_compare.h`), not a setting change: `LiveText::Get()` (ambient occlusion, contact shadows, sun shafts, bounce light), `shadow_filter::CurrentMode()` and the bloom variant choice in `pipelines.cpp` take the flip into account. `[compare]` lines in the log say each press.
+
+Two settings are debug-only or hidden from the row. `mcla_compare_effect=bloom` (F4 or the command line; the row stops at the five graphics upgrades, because the bloom size fix is a fix and has no player row) makes the key flick the bloom size fix, the same A/B as the debug menu's BLOOM SIZE FIX row, without changing the setting. `mcla_compare_label_seconds` (debug-only, live, 0.5 to 30, default 1.5) is how long the label stays up; a test run that takes a picture a second after the press sets it higher.
+
 ## Launch arguments for restart-only diagnostics
 
 A debug setting that the game reads only at start cannot be a row: a change would not take effect, and it could not be saved for the next start. These are launch arguments:

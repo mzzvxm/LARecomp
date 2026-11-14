@@ -113,6 +113,9 @@ add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
 # ray's fade and steps, the filter weights, the cost model) likewise:
 #   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
 add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.cpp)
+# What a press of the compare key does and says (effect_compare.h, effect_compare_rules.h: the effects, the flip, the label) likewise:
+#   cmake --build <dir> --target larecomp_effect_compare_test, then run src/gpu/larecomp_effect_compare_test.
+add_executable(larecomp_effect_compare_test EXCLUDE_FROM_ALL effect_compare_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
