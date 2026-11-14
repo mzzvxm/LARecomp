@@ -37,26 +37,30 @@
 #include "upscaler_load_policy.h"
 #include "upscaler_math.h"
 
-// Test levers for the static-scene flicker analysis (debug only, live, never saved): FSR's own tuning
-// constants, passed through ffxConfigure on the context (FfxApiConfigureUpscaleKey). -1 is "not set":
-// FSR's own default, as without the lever. A value of 0 or more is passed to the context before its
-// first dispatch and again whenever it changes; the runtime clamps it to its range. FSR 3.1 reads them;
-// FSR 4's provider may refuse the keys (the log says what it answered).
+// FSR's own tuning constants, passed through ffxConfigure on the context (FfxApiConfigureUpscaleKey;
+// debug only, live, never saved). -1 is "not set": FSR's own default. A value of 0 or more is passed to
+// the context before its first dispatch and again whenever it changes; the runtime clamps it to its
+// range. FSR 3.1 reads them; FSR 4's provider may refuse the keys (the log says what it answered).
+// The first two are 0 by default (the play build's values: measured on a still scene, the strongest
+// flickers drop by about two thirds, and no ghosting shows while driving); the third is a test lever
+// with FSR's own default.
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_velocity_factor, -1.0, "MCLA/GPU",
-    "Test lever (FSR): FSR's fVelocityFactor, 0 to 1 (its default is 1). AMD: 0 can improve the "
-    "temporal stability of bright pixels (the history is trusted less where something moved). -1: "
-    "not set, FSR's own default. Passed to the context once it exists and again when it changes. "
-    "For A/B. Live.")
+    mcla_gpu_fsr_velocity_factor, 0.0, "MCLA/GPU",
+    "FSR's fVelocityFactor, 0 to 1 (FSR's own default is 1). 0, the default here, trusts the history "
+    "less where something moved, which steadies bright pixels (on a still scene the strongest "
+    "flickers drop by about two thirds, with no visible ghosting while driving). -1: not set, FSR's "
+    "own default is restored. Passed to the context once it exists and again when it changes. Debug "
+    "only. Live.")
     .debug_only()
     .range(-1.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_shading_change_scale, -1.0, "MCLA/GPU",
-    "Test lever (FSR 3.1): FSR's fShadingChangeScale, 0 and up (its default is 1). More makes its "
-    "computed shading change count for more, so a pixel whose lighting changed lets go of its "
-    "history faster. -1: not set, FSR's own default. Passed to the context once it exists and again "
-    "when it changes. For A/B. Live.")
+    mcla_gpu_fsr_shading_change_scale, 0.0, "MCLA/GPU",
+    "FSR 3.1's fShadingChangeScale, 0 and up (FSR's own default is 1). More makes its computed "
+    "shading change count for more, so a pixel whose lighting changed lets go of its history "
+    "faster; 0, the default here, turns that off (together with the velocity factor of 0, the "
+    "strongest flickers of a still scene drop by about two thirds). -1: not set, FSR's own default "
+    "is restored. Passed to the context once it exists and again when it changes. Debug only. Live.")
     .debug_only()
     .range(-1.0, 16.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
