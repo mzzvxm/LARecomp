@@ -20,16 +20,20 @@
 //                                     rgb). Never made for a player.
 //
 // Cleaning and the cap (pass 0): a sample is a radiance only if it is a finite non-negative colour, and
-// no sample is brighter than the cap the push block gives (a multiple of the frame's ambient + sun,
-// ao.cpp: a street lamp, neon, the sun's disc and a specular glint are sources of the game's own light,
-// not surfaces that bounce it, and one of them would light its whole neighbourhood white). The cap is
-// on luma and keeps the hue: the colour is scaled down, never clipped per channel. Level 0's alpha is the
-// share of the texel's samples that the cap took something from (0 a surface, 1 a source of light): the
-// apply pass (ao_apply_ps.hlsl, AO_GI) gives such a pixel no bounce, as it has no albedo to estimate.
+// what it carries into the bounce is its luma through a soft clip at the cap the push block gives (a multiple
+// of the frame's ambient + sun, ao.cpp: a street lamp, neon, the sun's disc and a specular glint are sources
+// of the game's own light, not surfaces that bounce it, and one of them would light its whole neighbourhood
+// white; ssgi_common.hlsli SsgiSoftClip: linear up to half the cap, bending to the cap, never over it). The
+// cap is on luma and keeps the hue: the colour is scaled down, never clipped per channel. Level 0's alpha is
+// the share of the texel's samples that are a source of light (0 a surface, 1 a source): a ramp of the
+// sample's own luma from shape.y to 1.5 times it (SsgiSourceShare), which is not the cap: a surface may carry
+// more than a source starts at when the cap is high. The apply pass (ao_apply_ps.hlsl, AO_GI) gives such a
+// pixel no bounce, as it has no albedo to estimate.
 //
 // Push block (ao_common.hlsli AoPush), the fields of these passes:
 //   pass 0   slots.x the colour plane's bindless slot, slots.y its host samples, sizes.xy this image's
-//            size, sizes.zw the colour plane's size (the picture), shape.x the cap (luma), flags: low
+//            size, sizes.zw the colour plane's size (the picture), shape.x the cap (luma), shape.y where a
+//            source of light starts (luma), flags: low
 //   pass 1   slots.z the level below's slot, sizes.xy this level's size, sizes.zw the level below's
 //   pass 2   slots.z the image shown, sizes.xy the colour target's size, flags: bits 0-7 the view (1 the
 //            image's rgb as it is, 2 the image's yzw (the bounce), 3 the image's x as a grey, 4 the
@@ -37,6 +41,7 @@
 //            times 0.3 so that 1.0 reads below the tone map's white; the gain multiplies that)
 
 #include "ao_common.hlsli"
+#include "ssgi_common.hlsli"
 
 #ifndef AO_COLOR_PASS
 #define AO_COLOR_PASS 0
@@ -56,8 +61,8 @@ static const float kViewScale = 0.3f;
 
 #if AO_COLOR_PASS == 0
 
-// The sample `s` of the pixel `p`, finite, non-negative, and not brighter than the cap; w is 1 when the cap
-// took something from it.
+// The sample `s` of the pixel `p`, finite, non-negative, its luma through the soft clip at the cap (never over
+// it); w is how much of a source of light it is, 0 to 1 (its own luma against where a source starts).
 float4 TakeColour(int2 p, uint s) {
 #if AO_COLOR_MS
   float3 colour = g_textures_ms[g_push.slots.x].Load(p, s).rgb;
@@ -67,7 +72,8 @@ float4 TakeColour(int2 p, uint s) {
   colour = min(max(colour, 0.0f), kColourMax);  // max(NaN, 0) is 0
   const float luma = dot(colour, kLuma);
   const float cap = max(g_push.shape.x, 1e-3f);
-  return luma > cap ? float4(colour * (cap / luma), 1.0f) : float4(colour, 0.0f);
+  const float3 carried = luma > 1e-6f ? colour * (SsgiSoftClip(luma, cap) / luma) : colour;
+  return float4(carried, SsgiSourceShare(luma, g_push.shape.y));
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {

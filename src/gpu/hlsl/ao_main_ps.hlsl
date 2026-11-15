@@ -44,12 +44,28 @@
 // Push fields of this variant (the others as above): slots.x, slots.y, slots2.w the bindless slots of
 // the colour chain's levels 0, 1, 2 (RGBA16F; the plain pass leaves them unused), shape.z the
 // thickness in world units (0 = solid), shape.w the weight of the facing test (0 = a sample's surface
-// is assumed to face the pixel; 1 = the full test).
+// is assumed to face the pixel; 1 = the full test), extra.w the reach of the far ring in world units
+// (0 = none), flags bits 26-28 its steps a side of each slice (0 = none).
+//
+// THE FAR RING (the bounce light's reach): the samples above find what blocks the pixel within the
+// occlusion's radius, 1 to 3 m. A shaded street gets its light from the sunlit road and the walls across it,
+// 4 to 10 m away, so each slice goes on with a few more samples from the near samples' end out to the reach,
+// from the coarser levels of the chains (1 and 2: the ring is the far part of the picture, and the coarse
+// levels keep its texture reads in the cache). They are the same AoGiSample, with the horizon's falloff taken
+// at the reach (full to 38% of it, none at it, so a sample falls out of the bounce smoothly instead of
+// popping), and they add light only into the sectors the near samples left open (the mask carries on from
+// theirs, so a far wall behind a near one counts once). They never change the visibility: that is counted
+// from the near samples' mask alone (occupied_near), so the occlusion looks as it did. ssgi_light.h has the
+// same maths in C++.
 
 #include "ao_common.hlsli"
 
 #ifndef AO_GI
 #define AO_GI 0
+#endif
+
+#if AO_GI
+#include "ssgi_common.hlsli"
 #endif
 
 static const float kPi = 3.14159265358979f;
@@ -224,6 +240,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
   const float min_offset = kMinOffsetPixels / radius_px;
 
+  // The far ring: from where the near samples end to the reach, if it goes meaningfully farther.
+  const float far_reach = max(g_push.extra.w, 0.0f);
+  const uint far_steps = (g_push.slots2.z >> 26) & 0x7u;
+  const float near_end_px = radius_px * (1.0f + min_offset);
+  const float far_px = min(far_reach * pixels_per_unit, kSsgiFarMaxRadiusShare * size.y);
+  const bool far_ring = far_steps > 0u && far_px > near_end_px * kSsgiFarMinGrowth + kSsgiFarMinExtraPx;
+  const float far_falloff_mul = -1.0f / (falloff_ratio * max(far_reach, 1e-3f));
+
   float visibility = 0.0f;
   float3 bounce = float3(0.0f, 0.0f, 0.0f);
   for (uint slice = 0u; slice < slices; ++slice) {
@@ -261,11 +285,30 @@ float4 main(float4 position : SV_Position) : SV_Target {
                  falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
                  light);
     }
+    // The far ring: more samples of this slice, out to the reach, into the sectors still open. The mask
+    // the visibility is counted from is the near samples' (occupied_near).
+    const uint occupied_near = occupied;
+    if (far_ring) {
+      for (uint s = 0u; s < far_steps; ++s) {
+        const float step_noise = frac(noise.y + float(slice + (steps + s) * slices) * 0.6180339887f);
+        float share = (float(s) + step_noise) / float(far_steps);
+        share *= share;
+        const float length_px = lerp(near_end_px, far_px, share);
+        const float2 offset = dir_px * length_px;
+        const uint level = uint(clamp(log2(max(length_px, 1.0f)) - 3.0f, 1.0f, 2.0f));
+        AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, far_falloff_mul,
+                   falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
+                   light);
+        AoGiSample(centre - offset, level, -dir_px, -1.0f, low1, pc, view_vec, axis, far_falloff_mul,
+                   falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight, occupied,
+                   light);
+      }
+    }
     // The slice's share of the picture: the arc's measure times the projected normal's length, as the
     // plain pass weighs it. The open sectors are the visibility, the radiance of the closed ones the
     // bounce.
     const float weight = projected_len * total;
-    visibility += weight * float(kSectors - countbits(occupied)) * (1.0f / float(kSectors));
+    visibility += weight * float(kSectors - countbits(occupied_near)) * (1.0f / float(kSectors));
     bounce += weight * light;
   }
   visibility = saturate(visibility / float(slices));
