@@ -77,6 +77,8 @@ const Row kTable[] = {
      "AUTO (OFF)"},
     {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near", "AUTO (OFF)",
      "AUTO (NEAR)", "AUTO (NEAR)"},
+    {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
+     "AUTO (HIGH)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.

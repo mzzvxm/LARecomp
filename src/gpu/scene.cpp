@@ -1819,6 +1819,9 @@ void Scene::NoteMenuWorld() {
   if (world == menu_world::World::kNone && shafts_ && shafts_->wants_draws()) {
     world = shafts_->FrameWorld();
   }
+  if (world == menu_world::World::kNone && car_refl_ && car_refl_->wants_draws()) {
+    world = car_refl_->FrameWorld();
+  }
   if (!menu_world_.Observe(world)) {
     return;
   }
@@ -1858,11 +1861,13 @@ void Scene::NoteMenuWorld() {
   if (shafts_) {
     shafts = shafts_->LevelName();
   }
+  const std::string car_refl = car_refl_ ? car_refl_->Level() : "off";
   REXLOG_INFO("[gpu] world: {}: drawn with {}; effects: {}", menu_world::Name(world), drawn,
               menu_world::EffectsText(world, {{"ambient occlusion", occlusion},
                                               {"contact shadows", contact},
                                               {"bounce light", bounce},
-                                              {"sun shafts", shafts}}));
+                                              {"sun shafts", shafts},
+                                              {"car self-reflections", car_refl}}));
 }
 
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,

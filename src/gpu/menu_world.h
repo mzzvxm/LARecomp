@@ -33,12 +33,15 @@
 //                        and, where the sky is drawn, the sun shafts. The garage's light is the garage's own
 //                        sun (a lamp-like light), the gates the effects already have (its height, the
 //                        wetness) decide what the contact shadows do there; no sky is drawn in the garage, so
-//                        the shafts record nothing there.
+//                        the shafts record nothing there. The car self-reflections (car_selfrefl.h) run in both:
+//                        the car in the garage is the one the effect is for, the history is the previous frame's
+//                        picture under the camera that orbits it, and the car is taken as still.
 //   map                  the occlusion and the contact shadows stay as before (they run, the map's own
 //                        numbers make them sub-pixel: the occlusion's radius is 3 m and the contact ray 0.6 m
 //                        of a city seen from 9 km), and the bounce light and the shafts are NOT run: their
 //                        reach (a few metres of the surface, a ray toward a sun the map does not show) is
-//                        below a pixel from that height and costs several passes.
+//                        below a pixel from that height and costs several passes. Nor the car self-reflections:
+//                        a car is a few pixels there, and the history pass is a full-screen pass.
 // The side views (the sun's cascades, the environment map, the road reflection) are identities of their
 // own that the game draws in every one of these worlds, so their resolution settings apply there as they
 // do in play; the shadow filter changes the lit shaders and so applies wherever they draw.
@@ -121,6 +124,7 @@ struct Rules {
   bool contact = false;
   bool bounce = false;
   bool shafts = false;
+  bool car_refl = false;  // the car self-reflections' history pass and the paint's ray (car_selfrefl.h)
 };
 
 constexpr Rules RulesFor(World world) {
@@ -128,9 +132,9 @@ constexpr Rules RulesFor(World world) {
     case World::kPlay:
     case World::kPause:
     case World::kGarage:
-      return {true, true, true, true};
+      return {true, true, true, true, true};
     case World::kMap:
-      return {true, true, false, false};
+      return {true, true, false, false, false};
     case World::kNone: break;
   }
   return {};
@@ -181,18 +185,18 @@ struct EffectLevel {
 
 // "ambient occlusion high, contact shadows high, bounce light low, sun shafts default" for the effects that are
 // on in `world`; those on in the settings that the world leaves out come after a semicolon; nothing on says so.
-// The order of `effects` is the order of the text; the names are the four of RulesFor (occlusion, contact,
-// bounce, shafts) in that order.
+// The order of `effects` is the order of the text; the names are the five of RulesFor (occlusion, contact,
+// bounce, shafts, car self-reflections) in that order.
 inline std::string EffectsText(World world, std::initializer_list<EffectLevel> effects) {
   const Rules rules = RulesFor(world);
-  const bool allowed[4] = {rules.occlusion, rules.contact, rules.bounce, rules.shafts};
+  const bool allowed[5] = {rules.occlusion, rules.contact, rules.bounce, rules.shafts, rules.car_refl};
   std::string running;
   std::string left_out;
   size_t index = 0;
   for (const EffectLevel& effect : effects) {
     const bool on = !effect.level.empty() && effect.level != "off";
     if (on) {
-      const bool left = index < 4 && !allowed[index];
+      const bool left = index < 5 && !allowed[index];
       std::string& into = left ? left_out : running;
       if (!into.empty()) {
         into += ", ";

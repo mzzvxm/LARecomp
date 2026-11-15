@@ -64,8 +64,9 @@ enum class Effect : uint8_t {
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
+  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, low, high (car_selfrefl.h: low is the specular occlusion, high adds the reflection)
 };
-inline constexpr int kEffectCount = 8;
+inline constexpr int kEffectCount = 9;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -84,6 +85,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
     // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
     {"mcla_gpu_traffic_shadows", "off", "near", "near"},
+    // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
+    // an RTX 5080 is +0.17 ms for low (the specular occlusion) and +0.26 ms for high (the occlusion and the reflection of the
+    // car's own colour), a full-screen history pass and a short ray on the car's pixels (G8B cost runs, perf/out/G8B.txt, with the
+    // prototype that this setting finished); an integrated GPU does without.
+    {"mcla_gpu_car_selfrefl", "off", "low", "high"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

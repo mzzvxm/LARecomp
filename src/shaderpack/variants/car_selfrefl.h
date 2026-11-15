@@ -28,7 +28,8 @@
 //   float4 g_CarReflA        x mode (0: the game's paint, 1: occlusion, 2: occlusion and self-reflection), y ray length (m),
 //                            z thickness (m), w strength
 //   float4 g_CarReflB        x steps, y debug view, z colour gain (the history's units to the paint's), w noise frame
-//   uint4  g_CarReflC        x the history image's bindless slot, y a linear clamp sampler's slot
+//   uint4  g_CarReflC        x the history image's bindless slot, y a linear clamp sampler's slot (not read since version 2: the
+//                            image is read as points)
 // With the mode 0 the helper returns the game's colour untouched, so a draw that has no history yet (the first frames, a
 // pause view, a camera cut) is the game's own paint.
 //
@@ -52,7 +53,7 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_selfrefl_version).
-inline constexpr uint32_t kCarSelfReflVariantVersion = 1;
+inline constexpr uint32_t kCarSelfReflVariantVersion = 2;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint", 0x439B193A3F675533ull};

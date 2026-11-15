@@ -48,7 +48,7 @@ const char* ClassWord(GpuClass cls) {
 }
 
 Saved Make(GpuClass cls, bool known, const char* ao, const char* contact, const char* shafts, const char* bounce,
-           const char* filter, bool bloom) {
+           const char* filter, bool bloom, const char* car_refl = "off") {
   Saved saved;
   saved.cls = cls;
   saved.class_known = known;
@@ -57,6 +57,7 @@ Saved Make(GpuClass cls, bool known, const char* ao, const char* contact, const 
   saved.shafts = shafts;
   saved.bounce = bounce;
   saved.filter = filter;
+  saved.car_refl = car_refl;
   saved.bloom = bloom;
   return saved;
 }
@@ -76,9 +77,10 @@ void TestTable() {
       {Effect::kSunShafts, "shafts", "mcla_gpu_sun_shafts", "SUN SHAFTS"},
       {Effect::kAmbientOcclusion, "occlusion", "mcla_gpu_ao", "AMBIENT OCCLUSION"},
       {Effect::kShadowFilter, "filter", "mcla_gpu_shadow_filter", "SHADOW FILTER"},
+      {Effect::kCarSelfRefl, "selfrefl", "mcla_gpu_car_selfrefl", "SELF-REFLECTIONS"},
       {Effect::kBloomFix, "bloom", "mcla_gpu_bloom_scale", "BLOOM FIX"},
   };
-  Check(kEffectCount == 6, "six effects");
+  Check(kEffectCount == 7, "seven effects");
   for (const Want& w : want) {
     const std::string name = w.choice;
     CheckEq(std::string(Info(w.effect).choice), w.choice, name + ": choice");
@@ -86,13 +88,13 @@ void TestTable() {
     CheckEq(std::string(Info(w.effect).label), w.label, name + ": label");
     Check(ParseEffect(w.choice) == w.effect, name + ": the choice parses to the effect");
     Check(EffectOfCvar(w.cvar) == w.effect, name + ": the cvar maps back to the effect");
-    // The label is capitals and spaces (the game's own face), and short enough for the pause row: "COMPARE KEY: "
-    // is 13 characters and a page takes 41.
+    // The label is capitals, spaces and a hyphen (the game's own face has it: ANTI-LAG), and short enough for the
+    // pause row: "COMPARE KEY: " is 13 characters and a page takes 41.
     bool plain = true;
     for (const char ch : std::string(Info(w.effect).label)) {
-      plain = plain && ((ch >= 'A' && ch <= 'Z') || ch == ' ');
+      plain = plain && ((ch >= 'A' && ch <= 'Z') || ch == ' ' || ch == '-');
     }
-    Check(plain, name + ": the label is capitals and spaces");
+    Check(plain, name + ": the label is capitals, spaces and a hyphen");
     Check(Info(w.effect).label.size() <= 17, name + ": the label fits the pause row");
     // A string setting has a text to be forced on with, the switch has none.
     Check((w.effect == Effect::kBloomFix) == Info(w.effect).on_text.empty(), name + ": on_text only for the switch");
@@ -107,6 +109,7 @@ void TestTable() {
   CheckEq(std::string(gc::CvarName(gc::Effect::kSunShafts)), std::string(Info(Effect::kSunShafts).cvar), "shafts cvar agrees with gpu_class.h");
   CheckEq(std::string(gc::CvarName(gc::Effect::kSsgi)), std::string(Info(Effect::kBounceLight).cvar), "bounce cvar agrees with gpu_class.h");
   CheckEq(std::string(gc::CvarName(gc::Effect::kShadowFilter)), std::string(Info(Effect::kShadowFilter).cvar), "filter cvar agrees with gpu_class.h");
+  CheckEq(std::string(gc::CvarName(gc::Effect::kCarSelfRefl)), std::string(Info(Effect::kCarSelfRefl).cvar), "car self-reflections cvar agrees with gpu_class.h");
 }
 
 // ---- the flip --------------------------------------------------------------------------------------------
@@ -186,6 +189,14 @@ void TestStanding() {
           "filter " + c + ": pcss is on (the variant)");
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "SOFT", true)).on,
           "filter " + c + ": SOFT");
+    // The car self-reflections: auto is the class's cell (off on Low, low on Mid, high on High), the player's own value
+    // otherwise, an unknown text is off; nothing else is needed for them, so a press is never blocked.
+    for (const char* text : {"auto", "off", "low", "high", "HIGH", "hgih", ""}) {
+      const std::string word = text;
+      const bool on = word == "auto" ? auto_on : (word == "low" || word == "high" || word == "HIGH");
+      const Standing car = StandingOf(Effect::kCarSelfRefl, Make(cls, true, "off", "off", "off", "off", "game", true, text));
+      Check(car.on == on && !car.blocked, "car self-reflections " + c + " '" + word + "'");
+    }
     // The bloom fix is the switch.
     Check(StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", true)).on, "bloom on");
     Check(!StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", false)).on, "bloom off");
@@ -255,9 +266,9 @@ void TestPress() {
       for (const bool saved_on : {true, false}) {
         // Settings that make the effect on, or off, whatever it is.
         // (the occlusion is what the bounce light needs, so it stays on unless the occlusion is the effect)
-        const Saved saved = saved_on ? Make(cls, true, "high", "high", "high", "high", "soft", true)
+        const Saved saved = saved_on ? Make(cls, true, "high", "high", "high", "high", "soft", true, "high")
                                      : Make(cls, true, effect == Effect::kAmbientOcclusion ? "off" : "high", "off", "off", "off",
-                                            "game", false);
+                                            "game", false, "off");
         const std::string name = std::string(Info(effect).choice) + (saved_on ? " saved on " : " saved off ") + ClassWord(cls);
         Check(StandingOf(effect, saved).on == saved_on, name + ": the settings are what the test says");
         const Press first = PressOf(effect, Force::kNone, saved);
@@ -293,6 +304,8 @@ void TestLabel() {
   CheckEq(LabelText(Effect::kAmbientOcclusion, false, false), "AMBIENT OCCLUSION: OFF", "occlusion off");
   CheckEq(LabelText(Effect::kShadowFilter, true, false), "SHADOW FILTER: ON", "shadow filter on");
   CheckEq(LabelText(Effect::kBloomFix, false, false), "BLOOM FIX: OFF", "bloom fix off");
+  CheckEq(LabelText(Effect::kCarSelfRefl, false, false), "SELF-REFLECTIONS: OFF", "car self-reflections off");
+  CheckEq(LabelText(Effect::kCarSelfRefl, true, false), "SELF-REFLECTIONS: ON", "car self-reflections on");
   CheckEq(LabelText(Effect::kBounceLight, false, true), "BOUNCE LIGHT NEEDS AMBIENT OCCLUSION", "blocked bounce light");
   CheckEq(LabelText(Effect::kNone, true, false), "", "no effect, no label");
   // The two parts the panel draws.

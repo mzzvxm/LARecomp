@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- car self-reflections (package G8b, a test prototype: debug-only cvars, off by default)
+// MCLA GPU renderer -- car self-reflections (package G8b/G8c): a graphics setting, live, with an `auto`
 // ===========================================================================
 // The player's car paint (xCarPaintCustomizable::PS_CarPaint) reflects the world through two environment reads and nothing of
 // the car itself: no wing in the trunk lid, no mirror in the door (feature-parity/G8A-CAR-SELFREFL.md). This is the host
@@ -8,21 +8,35 @@
 // view vector through an image of the PREVIOUS frame (the car is drawn before the world, so it cannot see the current
 // frame's depth), and this keeps that image and the numbers that take a point of this frame into it.
 //
-//   mcla_gpu_car_selfrefl_test   0 off (the default: nothing is selected, the game's paint draws, bit for bit)
-//                                1 specular occlusion: the reflection is darkened where the ray passes just behind a
-//                                  part of the car
-//                                2 the same, and the car's own colour of the last frame is reflected there
+//   mcla_gpu_car_selfrefl        auto | off | low | high, a graphics setting like the contact shadows (the pause menu's CAR
+//                                SELF-REFLECTIONS row on GRAPHICS QUALITY, live, saved): low is the specular occlusion (the
+//                                reflection is darkened where the ray passes just behind a part of the car), high does that
+//                                and reflects the car's own colour there. `auto` is the class's cell (gpu_class.h): off on
+//                                Low, low on Mid, high on High. host_plan.h has the rule that the precache and the draws share.
+//   mcla_gpu_car_selfrefl_test   a debug-only override: 0 follows the setting (the default), 1 forces low, 2 forces high,
+//                                whatever the setting says (the G8b chain's runs and the old command lines use it).
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
 //                                found, 3 the baked vertex AO, 4 the state of the trace (colours in the variant's text)
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
+// With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
+// Selected()), and no history is made. The compare key (F1, effect_compare.h) flips the setting like the others.
+//
+// WHERE IT RUNS (menu_world.h): in the game view, in the pause menu's and the race pause's world and in the garage (the 4x view
+// of the pause identities, which the host draws once for its three tiles, so the history at the first resolve is the whole
+// picture); not in the map (the camera 9 km up sees no car to speak of: RulesFor(kMap).car_refl). The history is made from the
+// camera of the frame before it, of the same kind of view, and a frame after a change of kind (the pause menu opening, the map)
+// has none. In the pause view the vehicles are taken as still: the game's per-vehicle slots of a 4x frame are not trusted
+// (temporal_menu.h UseGameVehicleMotion, fix/garage-view 11062cb2: the IDs are handed out in draw order across the three tiles,
+// a slot may hold another car's matrix), and a car in the garage or under the pause menu does not move by itself.
 //
 // THE HISTORY: at the game's mid-scene depth copy (into 078B0000: the ambient occlusion's trigger, ao.h), after the AO's
-// own apply, one pass reads the main view's colour and depth and stencil planes and writes an RGBA16F image at the
-// picture's size: rgb the scene colour (the mean of the host samples, in the target's units: the shaders' output times
-// 2^exp_bias), a the view-space distance of the pixels whose stencil ID says a vehicle (1 to 23; sample 0), 0 elsewhere
-// (hlsl/car_history_ps.hlsl). That image is what the NEXT frame's paint draws read: it is the only copy of the frame's
+// own apply, one pass reads the main view's stencil plane and, for the pixels whose stencil ID says a vehicle (1 to 23;
+// sample 0), its depth and colour planes, and writes an RGBA16F image (the render size, or half of it: see below): a the
+// view-space distance of a vehicle's pixel, rgb its scene colour (the mean of the host samples, in the target's units: the
+// shaders' output times 2^exp_bias), all 0 elsewhere (hlsl/car_history_ps.hlsl). That image is what the NEXT frame's paint
+// draws read, as points: it is the only copy of the frame's
 // colour there is at that time (the game's own end-of-scene colour copy, 07FE0, is not alive at the car's first draw: the
-// census of G8A found it in 0 of 600 frames, its depth copy in 600 of 600). The image exists only while the test cvar is
+// census of G8A found it in 0 of 600 frames, its depth copy in 600 of 600). The image exists only while the setting is
 // on (it is given back after 2 s without it).
 //
 // THE NUMBERS: the history's own camera (the view-projection of the frame it was made in, read from the game's motion blur
@@ -32,16 +46,33 @@
 // history frame's clip space. The variant also tests that the shaded point finds itself in the history at the distance it
 // has now; where it does not (a cut, a wrong guess of the motion, an occluder) the effect fades out.
 //
+// The moving car (play view): the vehicle's motion of the last anchor is repeated for this frame (a constant velocity guess, as
+// the occlusion's history does), looked up by the stencil ID of the paint's own draw. The IDs are handed out in draw order each
+// frame, so a car that changes its place in the order between two frames gets another car's motion for one frame; the variant's
+// self-test (the point must be found in the history at its own distance) then fades the effect out for that frame instead of
+// smearing it. A car with no usable slot (placed this frame) is taken as still, which at speed fails the same test.
+//
 // The depth is linearised with the previous frame's lens (the trigger comes before this frame's anchor, as the occlusion's
 // does); a lens that changed by more than 5% between the two frames (the pause view's field of view, a sweep) leaves no
-// history for the next frame. The play view only: the pause menu's and the map's world (4x samples) has none.
+// history for the next frame.
 //
-// COST (estimates, nothing here was run): the history pass is one full-screen pass reading the 2x multisampled colour, depth
-// and stencil planes (0.1 to 0.2 ms at 4K on an RTX 5080), the ray is 12 steps of one RGBA16F load each on the car's pixels
-// (about 7% of the picture in the K shots, 15% close behind it: 0.05 to 0.15 ms), the image 8 bytes a pixel (66 MB at 3x, 16 MB
-// at 1080p). All of it only while the test cvar is on.
+// WHAT IT COSTS WHEN IT CAN BE LEFT OUT: no history pass and no image while the setting is off (the image goes back after 2 s),
+// and none in a frame whose own draws had no paint of the variant (no car on the screen: the pass runs at the end of the
+// frame's opaque draws, after the car's, and its image is for the next frame's paint); the image goes back after 2 s without a
+// car as well. The pass itself reads the stencil of every pixel and the depth and the colour of a vehicle's pixels only, into an
+// image that is half the render size for the low setting and from 2560 pixels across (a quarter of the memory: 15.8 MiB
+// against 63.3 MiB at 3840x2160; car_selfrefl_rules.h HistoryDivisor, the debug cvar mcla_gpu_car_selfrefl_history).
 //
-// CHECK: nothing here was built or run; the pictures and the log say:
+// START AND SWITCH: the history pass has two pipelines (plain and multisampled source). They are made ahead on the host
+// builder thread where the setting is on at the start, and in the background where it is switched on later (HostPrecache::
+// AddLive): the effect is not drawn until they are made (a frame never waits for a compile), as the sun shafts' are.
+//
+// COST (measured, G8B cost runs, RTX 5080, 3840x2160, K-DAY): +0.17 ms for low and +0.26 ms for high, against the effect off:
+// the history pass is one full-screen pass reading the 2x multisampled colour, depth and stencil planes, the ray is 12 steps of
+// one RGBA16F load each on the car's pixels (about 7% of the picture in the K shots, 15% close behind it), the image 8 bytes a
+// pixel (66 MB at 3x, 16 MB at 1080p). All of it only while the setting is on.
+//
+// CHECK: the pictures and the log say:
 //   1. units: the history colour times 2^-exp_bias (the main target's bias is 4, gInvColorExpBias.x = 1/16) is taken to be the
 //      paint's own units, the ones its environment reads are in. If the reflected car is too dark or bright against the
 //      paint, mcla_gpu_car_selfrefl_gain moves it and view 2 shows the colour alone.
@@ -50,10 +81,12 @@
 //      all red if they are not, and view 3 shows the baked AO.
 //   3. the game's c8-c11 as a world to clip matrix whose w is the distance AoLinearDepth gives (the rules test checks the
 //      arithmetic on a projection of that shape, not on the game's).
-//   4. the paint draws have no alpha test or alpha to coverage (the census of G8A: variant 0, a2m 0), else they keep the
-//      game's shader; and the stencil ID of the draw (4 ID + {0, 1}) is the ID the history's stencil holds for the same car.
-//   5. the 720-byte shared block as a root constant buffer (the shadow filter's 624 works), the history image's layout
-//      (SHADER_READ after DrawInto) when the next frame's paint draws read it, and the main depth target's stencil plane view.
+//   4. the paint draws have no alpha test or alpha to coverage (the census of G8A: variant 0, a2m 0, and the G8B cost runs drew
+//      14 paint draws a frame through the variant), else they keep the game's shader; and the stencil ID of the draw
+//      (4 ID + {0, 1}) is the ID the history's stencil holds for the same car.
+//   5. the garage and the pause menu: that the paint there is the same shader (439B...), that the history of a 4x frame is whole
+//      at the first resolve, that the camera's anchor is there (the log's `world:` line names the world and the effect), and that
+//      the picture is steady under an orbiting camera (a still car, motion taken as none).
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are made ahead on the host
 // builder thread (host_precache.h).
@@ -70,7 +103,9 @@
 #include "constants.h"
 #include "draw_state.h"
 #include "edram.h"
+#include "host_plan.h"
 #include "host_passes.h"
+#include "menu_world.h"
 #include "records.h"
 #include "resolve.h"
 #include "temporal_camera.h"
@@ -89,8 +124,9 @@ class CarSelfRefl {
   // address and then there is no history, never a wrong picture.
   static constexpr uint32_t kTriggerDestination = 0x078B0000;
 
-  // True while mcla_gpu_car_selfrefl_test asks for the variant: Pipelines::ChoosePackedVariant asks it per draw, so a
-  // change shows at the next frame. Reads the cvar only.
+  // True while the effect is on (the setting or the test override, and the history pass's pipelines made): the frame's own
+  // answer, latched at BeginFrame, so every draw of a frame picks the same shader. Pipelines::ChoosePackedVariant asks it
+  // per draw of the car paint; a change of the setting shows at the next frame. Any thread.
   static bool Selected();
 
   CarSelfRefl() = default;
@@ -98,13 +134,14 @@ class CarSelfRefl {
   CarSelfRefl(const CarSelfRefl&) = delete;
   CarSelfRefl& operator=(const CarSelfRefl&) = delete;
 
-  // Makes the shaders and lists the pipelines with the host precache (before the Renderer starts it). Never fails the
-  // renderer: without them the variant draws as the game's paint (mode 0 constants).
+  // Makes the shaders and lists the pipelines with the host precache (before the Renderer starts it) where the setting is on at
+  // the start (host_plan.h); where it is off nothing is made until it is switched on. Never fails the renderer: without them
+  // the variant draws as the game's paint (mode 0 constants).
   void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
 
-  // The Scene opened a frame's first list: reads the cvars.
+  // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return mode_ != Mode::kOff; }
@@ -127,6 +164,11 @@ class CarSelfRefl {
   // every frame, which its history averages out).
   void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
 
+  // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "low" or
+  // "high"), for the scene's one line per change of world.
+  menu_world::World FrameWorld() const;
+  const char* Level() const;
+
   // The video memory the image holds now.
   uint64_t HeldBytes() const;
 
@@ -147,7 +189,12 @@ class CarSelfRefl {
   bool RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   plume::RenderPipeline* Pipeline(uint32_t pass);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t pass);
-  void ListPrecache();
+  // The shaders, made where the setting is on at the start or when it is first switched on. False: they could not be made.
+  bool MakeShaders();
+  // Lists the pipelines with the start's precache (the setting is on), or makes them in the background (it was off at the
+  // start and is on now); the second says the mode off for the frames until every pipeline is made.
+  void ListPrecache(const std::string& note);
+  void HoldUntilBuilt(Mode* mode);
   void ReleaseImage();
   void Census();
 
@@ -161,22 +208,29 @@ class CarSelfRefl {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool trigger_seen_ = false;
-  bool play_view_ = false;
-  bool pause_view_ = false;
+  bool play_view_ = false;   // the frame's main view draws were the game view's (2 guest samples)
+  bool pause_view_ = false;  // ... the pause menu's, the garage's or the map's (4 guest samples); never both in a usable frame
   uint32_t stencil_ids_ = 0;      // the vehicle IDs the main view's draws wrote before the anchor
+  uint32_t frame_paint_draws_ = 0;  // draws of the paint through the variant so far this frame (the car is on the screen)
   bool history_pending_ = false;  // the pass was recorded this frame; the anchor says whose camera it goes with
 
-  // The camera of the last anchor (the previous frame's, for this frame's trigger) and the lens the history was linearised with.
+  // The camera of the last anchor (the previous frame's, for this frame's trigger), the kind of view it was of, and the lens
+  // the history was linearised with.
   temporal::Camera previous_;
+  bool previous_pause_ = false;
   bool have_previous_ = false;
   uint64_t previous_frame_ = 0;
   temporal::Camera lens_used_;
+  // The world the frame's trigger was in (menu_world.h): by the previous frame's camera of the same kind of view.
+  menu_world::World trigger_world_ = menu_world::World::kNone;
 
-  // The history: made at the trigger of frame `history_frame_`, valid for the draws of the frame after it.
+  // The history: made at the trigger of frame `history_frame_`, valid for the draws of the frame after it, which are of the
+  // same kind of view (`history_pause_`).
   bool history_valid_ = false;
   uint64_t history_frame_ = 0;
+  bool history_pause_ = false;
   temporal::Camera history_camera_;
-  // The vehicles' own motion of the history frame's anchor, repeated for the next frame.
+  // The vehicles' own motion of the history frame's anchor, repeated for the next frame (the play view's only).
   temporal::VehicleMotion motion_;
   uint64_t motion_frame_ = 0;
 
@@ -184,7 +238,10 @@ class CarSelfRefl {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
-  bool ready_ = false;  // the shaders exist
+  bool ready_ = false;            // the shaders exist
+  bool shaders_failed_ = false;   // they could not be made: not tried again
+  bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)
+  bool built_ = false;            // ... and every one is made or has failed
   std::array<std::unique_ptr<plume::RenderShader>, kPassCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kPassCount> pipelines_;
   std::array<bool, kPassCount> pipeline_failed_{};
@@ -195,15 +252,24 @@ class CarSelfRefl {
   bool no_stencil_logged_ = false;
   bool failed_logged_ = false;
   bool bias_logged_ = false;
+  bool first_paint_logged_ = false;
+  bool pause_paint_logged_ = false;
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
   uint64_t triggers_ = 0;
   uint64_t no_camera_ = 0;
   uint64_t lens_changed_ = 0;
+  uint64_t world_skipped_ = 0;  // triggers in a world the effect does not run in (the map)
+  uint64_t skipped_no_car_ = 0;  // triggers of a frame with no draw of the paint variant: no history pass
   uint64_t paint_draws_ = 0;
   uint64_t paint_with_history_ = 0;
   uint64_t paint_no_id_ = 0;
   uint64_t paint_motion_ = 0;
+  uint64_t paint_pause_ = 0;  // paint draws with a history in the pause view's worlds (the car taken as still)
+  // The totals at the last census line, for the interval's own numbers.
+  uint64_t census_paint_ = 0;
+  uint64_t census_with_history_ = 0;
+  uint64_t census_pause_ = 0;
 };
 
 }  // namespace mcla::gpu

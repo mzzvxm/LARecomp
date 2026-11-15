@@ -186,3 +186,14 @@ add_executable(larecomp_glow_soft_test EXCLUDE_FROM_ALL
     variants/glow_soft.cpp)
 target_compile_features(larecomp_glow_soft_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_glow_soft_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The rule that a pixel shader is in one shader variant only (variant_overlap.h), and the car paint's case (the car self-reflection
+# variant edits it, the shadow filter's leaves it out), need no compiler, renderer or game files either:
+#   cmake --build <dir> --target larecomp_variant_overlap_test, then run src/shaderpack/larecomp_variant_overlap_test
+#   [<folder of translated HLSL>] (exit 0 = passed; variants/variant_overlap_test.cpp).
+add_executable(larecomp_variant_overlap_test EXCLUDE_FROM_ALL
+    variants/variant_overlap_test.cpp
+    variants/car_selfrefl.cpp
+    variants/shadow_filter.cpp)
+target_compile_features(larecomp_variant_overlap_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_variant_overlap_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
