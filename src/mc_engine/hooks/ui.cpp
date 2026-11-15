@@ -274,19 +274,17 @@ static std::atomic<uint32_t> g_platform_var_ea{0};
 // Last value written, so the tick only touches guest memory on a real change.
 static std::atomic<int> g_platform_applied{-1};
 
-// button_prompts = auto: 1 while a Sony controller is attached. -1 until the first check, which is
-// made on first use (the UI manager asks before the first frame tick); the tick re-checks every 2 s.
-static std::atomic<int> g_sony_attached{-1};
-
+// button_prompts = auto: 1 while a Sony controller is attached. The answer is the device watcher's
+// (device_watch.h: the OS says when a controller comes or goes, and this reads an atomic), so there
+// is nothing to poll and nothing to cache here; it reads Xbox until the watcher's first list of
+// devices has landed, a few milliseconds after the app's setup, long before the UI manager asks.
+// CHECK: that the list is always there by the time Hook_PlatformVarInit runs (the log line
+// "[devwatch] initial list" comes before "[buttons] mcRegistry 'platform'"); if it is not, the tick
+// below flips the glyphs on the next frame.
 static int WantedPlatformValue() {
     std::string mode = REXCVAR_GET(button_prompts);
     if (mode == "auto") {
-        int sony = g_sony_attached.load(std::memory_order_relaxed);
-        if (sony < 0) {
-            sony = mcla::ui::PlayStationControllerPresent() ? 1 : 0;
-            g_sony_attached.store(sony, std::memory_order_relaxed);
-        }
-        return sony;
+        return mcla::ui::PlayStationControllerPresent() ? 1 : 0;
     }
     return mode == "playstation" ? 1 : 0;
 }
@@ -310,20 +308,11 @@ static void WritePlatformVar(uint32_t entry, int value) {
 }
 
 // Called once per frame from Patch_DeltaTimePre so the cvar can be flipped live
-// from the F4 menu. Movies already on screen keep the glyphs they resolved at
-// their own frame 1; anything opened after this picks up the new set.
+// from the F4 menu, and so a controller plugged in or out (button_prompts = auto) is noticed:
+// the device watcher keeps that answer current, this only compares it with what was applied.
+// Movies already on screen keep the glyphs they resolved at their own frame 1; anything opened
+// after this picks up the new set.
 void TickButtonPrompts() {
-    // auto: notice a controller plugged in or out (every 2 s: the check walks every HID device).
-    static auto next_check = std::chrono::steady_clock::now();
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= next_check) {
-        next_check = now + std::chrono::seconds(2);
-        if (REXCVAR_GET(button_prompts) == "auto") {
-            g_sony_attached.store(mcla::ui::PlayStationControllerPresent() ? 1 : 0,
-                                  std::memory_order_relaxed);
-        }
-    }
-
     const uint32_t entry = g_platform_var_ea.load(std::memory_order_relaxed);
     if (!entry) return;
 

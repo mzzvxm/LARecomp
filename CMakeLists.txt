@@ -184,6 +184,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
     src/mc_engine/adaptive_triggers.cpp
+    src/mc_engine/device_watch.cpp
     src/mc_engine/impulse_triggers.cpp
     src/mc_engine/impulse_wgi.cpp
     src/mc_engine/wheel_slip.cpp
@@ -407,6 +408,15 @@ target_include_directories(larecomp_state_log_test PRIVATE src/mc_engine/cinemat
 find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_state_log_test PRIVATE Threads::Threads)
+endif()
+# The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
+# (src/mc_engine/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
+#   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).
+add_executable(larecomp_device_watch_test EXCLUDE_FROM_ALL
+    src/mc_engine/device_watch_test.cpp)
+target_include_directories(larecomp_device_watch_test PRIVATE src/mc_engine)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_device_watch_test PRIVATE Threads::Threads)
 endif()
 
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
@@ -715,7 +725,7 @@ else()
         )
         if(MINGW)
             # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
-            # guest_profiler.cpp, adaptive_triggers.cpp, identity_store.cpp, identity_ui.cpp),
+            # guest_profiler.cpp, adaptive_triggers.cpp, device_watch.cpp, identity_store.cpp, identity_ui.cpp),
             # which Clang for MinGW does not turn into a link request, and what MSVC's
             # default libraries cover (the ones llvm-mingw's driver does not: winmm for
             # timeBeginPeriod, dxguid for the DirectInput GUID_* of the wheel code, ntdll).
@@ -724,6 +734,7 @@ else()
                 PRIVATE
                 dbghelp
                 setupapi
+                cfgmgr32
                 hid
                 shlwapi
                 crypt32

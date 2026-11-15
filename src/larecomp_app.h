@@ -52,6 +52,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
 #include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/device_watch.h"
 #include "mc_engine/impulse_triggers.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
@@ -713,6 +714,7 @@ class LarecompApp : public rex::ReXApp {
     MclaWaitForSaves();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
+    larecomp::devwatch::Stop();      // no more device notifications
     larecomp::impulse::Shutdown();   // the Xbox triggers back to still
     mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
 #if defined(LARECOMP_HAS_GPU)
@@ -755,6 +757,7 @@ class LarecompApp : public rex::ReXApp {
     larecomp::WaitForBootBuild();
     LogAudioDropoutSummary();
     larecomp::triggers::Shutdown();
+    larecomp::devwatch::Stop();
     larecomp::impulse::Shutdown();
     mcla::display::Shutdown();
 #if defined(LARECOMP_HAS_GPU)
@@ -1119,6 +1122,9 @@ class LarecompApp : public rex::ReXApp {
     ApplyGpuFlags();
     DumpEffectiveConfig();
     MCLA_StartInputProbe();
+    // Which controllers are plugged in: the OS tells us (no scanning). The first list is taken on a
+    // thread of its own, so nothing waits for it.
+    larecomp::devwatch::Start();
 
     // The guest GPU can only be installed here. ReXApp::Run calls
     // SetupPresentation (rex_app.cpp:117) BEFORE ConstructRuntime (:159), and
