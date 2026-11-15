@@ -26,7 +26,9 @@
 // What a frame needs, and what it does when it cannot have it (counted, logged once per reason,
 // and the frame keeps stage 2's picture: the scene at paper white, nothing is ever black):
 //   - the variant pack and its pipelines (a missing one is built in the background: the first
-//     frames after a start may lack the HDR scene, as a draw waits for its pipeline);
+//     frames after a start may lack the HDR scene, as a draw waits for its pipeline; a glow draw
+//     (below) whose pipeline is still being made is only left out of that frame's scene, counted
+//     and not logged: the next start finds its pipeline in the cache file);
 //   - the tone map recognised: the pixel shader with an HDR variant, drawn with one of the vertex
 //     shaders the variant was built for, into a single-sampled R8G8B8A8 target, blending off, writing
 //     RGB, no alpha test, no depth or stencil test that could reject, its scissor and viewport
@@ -208,7 +210,8 @@ class HdrToneMap : public SceneImageSource {
   void Duplicated(Action action);
   // The second draw could not be made or recorded: for the tone map nothing starts (`waiting`: its
   // pipeline is being made in the background, counted and not logged); after it, a draw that only
-  // adds light (`adds_light`) is left out of the float scene and any other ends it.
+  // adds light (`adds_light`) is left out of the float scene (logged once when it could not be made,
+  // only counted while its pipeline is being made: `waiting`) and any other ends it.
   void Failed(Action action, Cause cause, bool waiting, bool adds_light);
   // The colour clear of the UI target `key` (before it is recorded): ends the float scene.
   void OnColorClear(const EdramKey& key);
@@ -277,7 +280,8 @@ class HdrToneMap : public SceneImageSource {
   struct Stats {
     uint64_t tone_maps = 0;     // tone map draws drawn again
     uint64_t after = 0;         // later draws drawn again
-    uint64_t skipped_glows = 0; // later draws that only add light, left out
+    uint64_t skipped_glows = 0; // later draws that only add light, left out (could not be made)
+    uint64_t waited_glows = 0;  // ... left out while their pipeline was being made
     uint64_t ready = 0;         // frames whose float scene reached the marker
     uint64_t captured = 0;      // ... and was taken by a frame's layers
     uint64_t waiting = 0;       // a tone map left out while its pipeline is being made
