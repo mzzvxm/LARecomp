@@ -113,6 +113,9 @@ class ShaderStore {
   // The player's car paint with its environment reads occluded by, or replaced with, the car's own previous frame
   // (car_selfrefl.h: its 112 bytes of constants follow the shared block; a test prototype).
   static constexpr uint32_t kCarSelfReflVariant = larecomp::shaderpack::kVariantCarSelfRefl;
+  // The auto-exposure's sample pass (PSSampleAverageLuminance) with its nine taps spread over the screen area
+  // they cover at 1x, at a render scale above 1 (shaderpack/variants/luminance_scale.h).
+  static constexpr uint32_t kLuminanceVariant = larecomp::shaderpack::kVariantLuminanceScale;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

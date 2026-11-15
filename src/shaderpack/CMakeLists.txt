@@ -106,6 +106,7 @@ add_library(larecomp_shaderpack STATIC
     variants/shadow_filter.cpp
     variants/glow_soft.cpp
     variants/car_selfrefl.cpp
+    variants/luminance_scale.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -197,3 +198,11 @@ add_executable(larecomp_variant_overlap_test EXCLUDE_FROM_ALL
     variants/shadow_filter.cpp)
 target_compile_features(larecomp_variant_overlap_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_overlap_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The same for the luminance scale variant (variants/luminance_scale_test.cpp): cmake --build <dir> --target
+# larecomp_luminance_scale_test, then run it [<translated PSSampleAverageLuminance.hlsl> [<folder for the result>]].
+add_executable(larecomp_luminance_scale_test EXCLUDE_FROM_ALL
+    variants/luminance_scale_test.cpp
+    variants/luminance_scale.cpp)
+target_compile_features(larecomp_luminance_scale_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_luminance_scale_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

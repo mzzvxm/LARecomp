@@ -106,6 +106,16 @@ REXCVAR_DEFINE_STRING(
     "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).")
     .debug_only()
     .allowed({"game", "soft"})
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_luminance_scale_fix, true, "MCLA/GPU",
+    "Fix: the game's auto-exposure (how bright the picture is made, which adapts over time) measures the "
+    "same part of the screen at render scales above 1x as at 1x. The game averages the brightness of the "
+    "frame from a small set of taps a fixed number of pixels apart; at 2x or 3x the same taps cover a "
+    "half or a third of the area they covered at 1x (28% of the picture at 3x), so a small bright light "
+    "(a lamp, a lit window, a tail light) moving in and out of one of them can make the brightness pump "
+    "or flicker, most at night. This makes each tap average the pixels it stands for. At a render scale "
+    "of 1x the picture is the same either way. Off: the game's own taps. Live.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
@@ -142,10 +152,12 @@ bool GlowSoftSelected() {
 // mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
 // car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), the sun shadow
 // collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart; auto resolved for the
-// GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), and
-// the car paint's self-reflection (a debug-only prototype); each is read at each draw so a change of the setting
-// shows at the next frame. At `game` the game's own shaders draw and the picture stays the game's (the environment
-// map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one of them at most.
+// GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), the car
+// paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h) and the auto-exposure's sample pass
+// mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); each is read
+// at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw and the picture stays
+// the game's (the environment map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one
+// of them at most.
 uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   // (the compare key's flip, effect_compare.h, can force the bloom fix either way for a moment; the setting is not changed)
   if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 &&
@@ -168,6 +180,9 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   // (variant_pack.cpp), because only the first of them here would ever draw.
   if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
     return ShaderStore::kCarSelfReflVariant;
+  }
+  if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && REXCVAR_GET(mcla_gpu_luminance_scale_fix)) {
+    return ShaderStore::kLuminanceVariant;
   }
   return 0;
 }

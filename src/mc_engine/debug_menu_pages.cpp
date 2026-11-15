@@ -139,6 +139,9 @@ const ItemDef kDebugFixesItems[] = {
     // The glow of lights keeps its size above a render scale of 1x: the bloom's Gaussian taps follow the
     // scale. The renderer reads the cvar at each draw, so the row is live.
     NativeOnly(Bool("PM_RxDbgBloomScale", "mcla_gpu_bloom_scale", "BLOOM SIZE FIX: ")),
+    // The auto-exposure measures the same screen area above a render scale of 1x as at 1x (its sample pass's
+    // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
+    NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

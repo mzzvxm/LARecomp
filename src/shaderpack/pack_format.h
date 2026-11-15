@@ -125,7 +125,10 @@ inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians:
 inline constexpr uint32_t kVariantEnvMap = 4;       // the car reflections' environment map: its mip level pass and its 64x32 reduction at the map's scale
 inline constexpr uint32_t kVariantShadowFilter = 5;  // the sun shadow collector's lookup: soft Vogel taps (16 bytes of constants)
 inline constexpr uint32_t kVariantGlowSoft = 6;    // the glow sprites' visibility: a share of 24 depth taps, not one compare
-inline constexpr uint32_t kVariantCarSelfRefl = 7;   // the player's car paint: its environment reads occluded and blended with the car's own previous frame (112 bytes of constants; a test prototype, G8b)
-inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
+inline constexpr uint32_t kVariantCarSelfRefl = 7;   // the player's car paint: its environment reads occluded and blended with the car's own previous frame (112 bytes of constants; G8b)
+// The auto-exposure's sample pass at a render scale. Ids 6 and 7 are taken (the glow sprites' soft visibility, the player's car
+// paint reflecting itself), so this one is 8 and the table has 16 ids.
+inline constexpr uint32_t kVariantLuminanceScale = 8;
+inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

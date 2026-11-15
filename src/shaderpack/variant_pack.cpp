@@ -35,6 +35,7 @@
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/hdr_scene.h"
+#include "shaderpack/variants/luminance_scale.h"
 #include "shaderpack/variants/shadow_filter.h"
 
 namespace larecomp::shaderpack {
@@ -564,6 +565,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeShadowFilterVariant());
   variants.push_back(MakeGlowSoftVariant());
   variants.push_back(MakeCarSelfReflVariant());
+  variants.push_back(MakeLuminanceScaleVariant());
   return variants;
 }
 

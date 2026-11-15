@@ -40,7 +40,7 @@
 // their blobs one copy in the file.
 //
 // The variants of this build: variants/hdr_scene.h (when the HDR curve is embedded, CMakeLists.txt),
-// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h and variants/car_selfrefl.h. A package that adds one writes
+// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h, variants/car_selfrefl.h and variants/luminance_scale.h. A package that adds one writes
 // variants/<name>.{h,cpp} with a function that returns its VariantDef and adds it to BuiltInVariants() in
 // variant_pack.cpp.
 //
