@@ -27,6 +27,13 @@
 // XamInputGetState wrapper, wheel/wheel_fake.cpp) and from a pool thread of the device watcher (the
 // start-up guess). No scan, no syscall and no allocation on a reader's path.
 //
+// A controller that dies in the player's hands: the SDK's NOP stand-in keeps user 0 connected, so the game would
+// never notice. When the pad that made the last controller input is removed from the SDK's list while a pad is
+// the active device and the game is being driven (no wheel), the game is told "not connected" for user 0 for ten
+// polls (InputActivityScope and PadLossCaps below), which makes it open its pause menu (KBM P0c); then the
+// stand-in answers again, so the keyboard and a returning pad work as usual. Nothing happens when the keyboard
+// and mouse are the active device, at the title, in menus or loads, or when the pad that left was not in use.
+//
 // The rules (thresholds in input_state_core.h, KBM-DESIGN.md 2.2): a pad button going down, a trigger
 // rising past 30, a stick crossing its dead zone or moving by more than 2000 counts; a key going down
 // (not a repeat, not key-up, not a lone Shift / Ctrl / Alt / Win, a lock key, Pause, Print Screen or
@@ -67,19 +74,30 @@ void Tick();
 // about to read (the SDK's, the player's dead zones, a wheel, the test harness's pad) before the free
 // camera clears it. `result` is the wrapper's r3: 0 = a pad answered. Also notices that the SDK's list
 // of devices changed (one counter compared per call).
+//
+// It is also the one place that answers "not connected": when the controller in the player's hands was
+// removed while the game is driven (the rule is PadLossRule in input_state_core.h), the destructor clears
+// the state and sets `result` to ERROR_DEVICE_NOT_CONNECTED (0x48F) for the next few polls of user 0, so
+// that the game opens its pause menu; then the SDK's stand-in answers again. The FreecamPadScope after it
+// sees the failed call and leaves the state alone.
 class InputActivityScope {
  public:
-  InputActivityScope(const uint8_t* base, uint32_t user, uint32_t state, const uint64_t& result)
+  InputActivityScope(uint8_t* base, uint32_t user, uint32_t state, uint64_t& result)
       : base_(base), user_(user), state_(state), result_(result) {}
   ~InputActivityScope();
   InputActivityScope(const InputActivityScope&) = delete;
   InputActivityScope& operator=(const InputActivityScope&) = delete;
 
  private:
-  [[maybe_unused]] const uint8_t* base_;  // unused in the XEO3 stub, where the destructor does nothing
+  [[maybe_unused]] uint8_t* base_;  // unused in the XEO3 stub, where the destructor does nothing
   [[maybe_unused]] uint32_t user_;
   [[maybe_unused]] uint32_t state_;
-  [[maybe_unused]] const uint64_t& result_;
+  [[maybe_unused]] uint64_t& result_;
 };
+
+// The XamInputGetCapabilities wrapper (wheel/wheel_fake.cpp), right after the SDK answered: while the
+// "not connected" window above is open, user 0's capabilities are cleared and `r3` is 0x48F too (the
+// game asks for both). Does nothing otherwise. `caps` is the guest address of the structure.
+void PadLossCaps(uint8_t* base, uint32_t user, uint32_t caps, uint64_t& r3);
 
 }  // namespace larecomp::input

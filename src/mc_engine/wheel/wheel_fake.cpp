@@ -253,6 +253,7 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
     const uint32_t user = ctx.r3.u32;
     const uint32_t caps = ctx.r5.u32;
     __imp__rex_sub_8275CB70(ctx, base);
+    larecomp::input::PadLossCaps(base, user, caps, ctx.r3.u64);  // the controller in use was removed: "not connected" for a few polls (input_state.h)
     if (!WheelOn() || !IsWheelUser(user) || caps == 0) return;
 
     // Whatever the SDK answered, user 0 now has a wheel: success, gamepad type, wheel subtype,
