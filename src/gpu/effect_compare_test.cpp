@@ -175,7 +175,7 @@ void TestStanding() {
           "shafts " + c + ": an unknown text counts as auto");
     Check(!StandingOf(Effect::kContactShadows, Make(cls, true, "high", "hgih", "off", "off", "game", true)).on,
           "contact " + c + ": an unknown text is off");
-    // The shadow filter: auto is the class's cell (game on Low, soft above), game, soft and pcss (which is soft).
+    // The shadow filter: auto is the class's cell (game on Low, soft above), game, soft and pcss (the variant: on).
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "auto", true)).on == auto_on,
           "filter " + c + ": auto");
     Check(!StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "game", true)).on,
@@ -183,7 +183,7 @@ void TestStanding() {
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "soft", true)).on,
           "filter " + c + ": soft");
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "pcss", true)).on,
-          "filter " + c + ": pcss is soft");
+          "filter " + c + ": pcss is on (the variant)");
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "SOFT", true)).on,
           "filter " + c + ": SOFT");
     // The bloom fix is the switch.

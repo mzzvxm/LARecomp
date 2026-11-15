@@ -141,8 +141,8 @@ bool GlowSoftSelected() {
 // HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
 // mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
 // car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), the sun shadow
-// collector's lookup mcla_gpu_shadow_filter (soft, or pcss, which is soft for now; auto resolved for the GPU
-// class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), and
+// collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart; auto resolved for the
+// GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), and
 // the car paint's self-reflection (a debug-only prototype); each is read at each draw so a change of the setting
 // shows at the next frame. At `game` the game's own shaders draw and the picture stays the game's (the environment
 // map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one of them at most.
@@ -156,7 +156,7 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
       side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
     return ShaderStore::kEnvVariant;
   }
-  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::SoftSelected()) {
+  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::VariantSelected()) {
     return ShaderStore::kShadowFilterVariant;
   }
   if ((ps.variants & (1u << ShaderStore::kGlowVariant)) != 0 && GlowSoftSelected()) {
