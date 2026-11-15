@@ -70,6 +70,8 @@ set(LARECOMP_SOURCES
     src/main.cpp
     src/spdlog_console.cpp
     src/crash_handler.cpp
+    # The named object a running game holds, so the launcher can tell the game runs without listing processes.
+    src/game_marker.cpp
 
     src/mc_engine/threading.cpp
     src/mc_engine/fma_fast.cpp
@@ -409,6 +411,13 @@ find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_state_log_test PRIVATE Threads::Threads)
 endif()
+# The game-running marker's names (src/game_marker_core.h: the key of a program path, the Windows mutex and the Linux lock file) have a check
+# that needs no game. The launcher computes the same names, with the same expected values (Os\GameMarkerName.cs and its tests):
+#   cmake --build <build dir> --target larecomp_game_marker_test, then run <build dir>/larecomp_game_marker_test (exit 0 = passed).
+add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
+    src/game_marker_test.cpp)
+target_include_directories(larecomp_game_marker_test PRIVATE src)
+
 # The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
 # (src/mc_engine/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
 #   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).
