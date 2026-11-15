@@ -200,9 +200,10 @@ void TestStanding() {
     // The bloom fix is the switch.
     Check(StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", true)).on, "bloom on");
     Check(!StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", false)).on, "bloom off");
-    // The bounce light: off on every class for `auto` (gpu_class.h), by hand low or high; it needs the occlusion.
-    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", "auto", "game", true)).on,
-          "bounce " + c + ": auto is off");
+    // The bounce light: `auto` is low on High only (gpu_class.h), by hand low or high; it needs the occlusion.
+    Check(StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", "auto", "game", true)).on ==
+              (cls == GpuClass::kHigh),
+          "bounce " + c + ": auto is low on High, off elsewhere");
     for (const char* text : {"low", "high"}) {
       const Standing with_ao = StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", text, "game", true));
       Check(with_ao.on && !with_ao.blocked, "bounce " + c + " " + text + " with the occlusion");

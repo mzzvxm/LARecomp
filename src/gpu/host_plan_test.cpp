@@ -49,14 +49,14 @@ const char* const kClassNames[] = {"low", "mid", "high"};
 
 // What `auto` stands for, written out again (the design's table, section 9): off/low/high, in class order. The
 // sun shafts are not here: their setting is a strength, not a level (CheckShafts below). The bounce light's is
-// off on every class until its cost is measured (owner, 2026-11-13).
+// low on High only (owner, 2026-11-14: about 0.75 ms at 4K on an RTX 5080), off on Mid and Low.
 struct AutoRow {
   Pass pass;
   const char* cells[3];
 };
 const AutoRow kAuto[] = {
     {Pass::kContact, {"off", "low", "high"}},
-    {Pass::kBounce, {"off", "off", "off"}},
+    {Pass::kBounce, {"off", "off", "low"}},
     // the car self-reflections: off on Low, low (the specular occlusion) on Mid, high (and the reflection) on High
     {Pass::kCarRefl, {"off", "low", "high"}},
     // the ambient occlusion: off on Low, low on Mid, high on High (gpu_class.h: AO-DESIGN.md section 5)
@@ -211,11 +211,11 @@ void CheckPlans() {
       // The defaults of a fresh install (every setting auto: the occlusion follows the class too).
       {"auto", "auto", "auto", "auto", GpuClass::kLow, "-----", "fresh install, Low: nothing is on"},
       {"auto", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "fresh install, Mid: occlusion, contact shadows, shafts"},
-      {"auto", "auto", "auto", "auto", GpuClass::kHigh, "OCS--", "fresh install, High: the bounce light is off on every class"},
+      {"auto", "auto", "auto", "auto", GpuClass::kHigh, "OCSB-", "fresh install, High: all four (the bounce light's auto is low on High)"},
       // An older larecomp.toml holds high for the occlusion: kept as it is on every class.
       {"high", "auto", "auto", "auto", GpuClass::kLow, "O----", "defaults, Low: only the occlusion"},
       {"high", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "defaults, Mid: occlusion, contact shadows, shafts"},
-      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCS--", "defaults, High: the bounce light is off on every class"},
+      {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCSB-", "defaults, High: all four (the bounce light's auto is low on High)"},
       // The occlusion off: nothing of it, and no bounce light (it needs the occlusion's images).
       {"off", "auto", "auto", "auto", GpuClass::kHigh, "-CS--", "occlusion off, High: contact and shafts stay, bounce light cannot"},
       {"off", "auto", "auto", "auto", GpuClass::kLow, "-----", "occlusion off, Low: nothing"},
@@ -233,7 +233,8 @@ void CheckPlans() {
       {"high", "auto", "auto", "high", GpuClass::kHigh, "OCSB-", "bounce light high on High"},
       {"low", "off", "off", "low", GpuClass::kLow, "O--B-", "bounce light low with the occlusion low on Low"},
       {"off", "auto", "auto", "high", GpuClass::kHigh, "-CS--", "bounce light high with the occlusion off: held off"},
-      {"high", "auto", "auto", "low", GpuClass::kHigh, "OCSB-", "bounce light low on High: the player's own (auto is off)"},
+      {"high", "auto", "auto", "low", GpuClass::kHigh, "OCSB-", "bounce light low on High: the player's own, as auto"},
+      {"high", "auto", "auto", "off", GpuClass::kHigh, "OCS--", "bounce light off on High: the player's own"},
       // Words that are not values.
       {"auto", "junk", "junk", "junk", GpuClass::kHigh, "O-S--", "junk: occlusion auto (high on High), contact off, shafts as auto (High), bounce off"},
       {"junk", "auto", "auto", "auto", GpuClass::kHigh, "-CS--", "junk for the occlusion: off, the rest as auto"},
@@ -253,8 +254,8 @@ void CheckPlans() {
         "plan: Mid's levels are low, low, low, off");
   const Plan high = Decide(GpuClass::kHigh, true, "high", "auto", "auto", "auto");
   Check(high.of(Pass::kContact).level == Level::kHigh && high.of(Pass::kShafts).level == Level::kHigh &&
-            high.of(Pass::kBounce).level == Level::kOff,
-        "plan: High's levels are high, high, off (the bounce light is off on every class)");
+            high.of(Pass::kBounce).level == Level::kLow,
+        "plan: High's levels are high, high, low");
   const Plan high_low = Decide(GpuClass::kHigh, true, "high", "auto", "auto", "low");
   Check(high_low.of(Pass::kBounce).level == Level::kLow && !high_low.of(Pass::kBounce).automatic &&
             !high_low.of(Pass::kBounce).held,
@@ -338,7 +339,7 @@ void CheckDescribe() {
           "contact shadows off (not a value of the setting: off)", "Describe: a word that is off");
   CheckEq(std::string(PassName(Pass::kBounce)), "bounce light", "PassName(bounce)");
   CheckEq(Describe(Pass::kBounce, Resolve(Pass::kBounce, GpuClass::kHigh, true, "auto"), GpuClass::kHigh),
-          "bounce light off (auto on the high class)", "Describe: the bounce light's auto is off on High");
+          "bounce light low (auto on the high class)", "Describe: the bounce light's auto is low on High");
   CheckEq(Describe(Pass::kBounce, Resolve(Pass::kBounce, GpuClass::kHigh, true, "low"), GpuClass::kHigh),
           "bounce light low (set)", "Describe: the bounce light set to low");
   CheckEq(Describe(Pass::kBounce,

@@ -81,8 +81,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
     {"mcla_gpu_contact_shadows", "off", "low", "high"},
     {"mcla_gpu_sun_shafts", "off", "default", "default"},  // a strength, not a quality: DEFAULT where the GPU is not integrated
-    // Off on every class until the bounce light's cost is measured (owner, 2026-11-13); low and high stay a choice.
-    {"mcla_gpu_ssgi", "off", "off", "off"},
+    // Bounce light: low on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
+    // low costs about 0.75 ms and high about 1.1 ms at 4K on an RTX 5080. It was off on every class until
+    // that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to low on High, off on Mid
+    // and Low. This branch waits for the owner's look of the low level.
+    {"mcla_gpu_ssgi", "off", "off", "low"},
     // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
     // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
     {"mcla_gpu_traffic_shadows", "off", "near", "near"},
