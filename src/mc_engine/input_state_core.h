@@ -12,6 +12,7 @@
 //   MotionFilter   mouse motion events -> "that was a deliberate move" (>= 8 px within 200 ms, two events)
 //   IsActivityKey  which keys count
 //   ActiveInputCore  the device, the pad family, the setting and the generation; the cross rules; hot-plug
+//   PadLossRule    the controller in the player's hands was removed: when the game is told "not connected" so that it pauses
 //
 
 #include <array>
@@ -527,6 +528,133 @@ class ActiveInputCore {
   uint8_t pad_mask_ = 0;  // bit 0 an Xbox-family pad is connected, bit 1 a PlayStation one
   PadFilter pad_;
   MotionFilter motion_;
+};
+
+// ---- losing the controller in use ------------------------------------------------------------------------
+//
+// The SDK's NOP stand-in keeps user 0 connected whatever happens, so the game never sees "not connected" and a
+// pad that dies in the player's hands (battery, cable, Bluetooth) would leave the car driving on its own at
+// rest. A native PC game pauses then, and the keyboard works as usual. The game's own reaction to "not
+// connected" for user 0 is exactly that (KBM P0c: its pause menu, on the first poll, held until START), so the
+// exe tells it so for a short while and then lets the stand-in answer again:
+//
+//   * the pad that made the last counted pad input is remembered by the SDK's handle (NoteActivePad);
+//   * when the SDK's list of controllers no longer holds it (OnList), and the pad was the active device, and the
+//     game is being driven, and no wheel is in use: the window opens (Verdict::Open);
+//   * for the next kPadLossPolls XamInputGetState polls of user 0 (and the XamInputGetCapabilities calls in
+//     between) the guest is told "not connected"; the window also ends after kPadLossMaxMs (OnStatePoll);
+//   * no window when the keyboard and mouse are the active device, when the game is not driven (the title, the
+//     menus, a load, a paused game: nothing there pauses on a lost pad, and the keyboard works), or when the pad
+//     that left was not the one in the player's hands (nothing is remembered about the others).
+//
+// Pure: the facts it needs (the active device, "driving", "a wheel") are arguments. Every call takes the mutex
+// (a pad poll, a device list change).
+inline constexpr int kPadLossPolls = 10;
+inline constexpr int64_t kPadLossMaxMs = 1500;
+
+enum class LossVerdict : uint8_t {
+  None,            // the pad in the player's hands is still listed, or none is remembered: nothing happened
+  Open,            // the game is told "not connected" from the next poll on
+  KeyboardActive,  // the controller in use left, but the keyboard and mouse are the active device
+  Wheel,           // ... but a steering wheel is in use
+  NotDriving,      // ... but the game is not being driven (title, menus, loading, paused): nothing to pause
+};
+
+inline const char* LossVerdictText(LossVerdict v) {
+  switch (v) {
+    case LossVerdict::Open: return "the game is told \"not connected\" so that it pauses";
+    case LossVerdict::KeyboardActive: return "ignored: the keyboard and mouse are the active device";
+    case LossVerdict::Wheel: return "ignored: a wheel is in use";
+    case LossVerdict::NotDriving: return "ignored: the game is not being driven (title, menu, loading or paused)";
+    case LossVerdict::None: break;
+  }
+  return "nothing to do";
+}
+
+enum class LossAnswer : uint8_t {
+  Connected,         // the window is not open: the real answer stands
+  NotConnected,      // tell the game "not connected" for this poll
+  NotConnectedLast,  // the same, and this was the last poll of the window
+};
+
+class PadLossRule {
+ public:
+  // A controller made counted input; `id` is the SDK's handle of the pad (never 0). 0 = not known (a harness pad,
+  // a wheel, a synthetic device): the pad remembered stays what it was.
+  void NoteActivePad(uint64_t id) {
+    if (id == 0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    active_pad_ = id;
+  }
+
+  // The pad remembered (0 = none).
+  uint64_t ActivePad() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_pad_;
+  }
+
+  // The SDK's list of controllers (synthetic devices left out) changed: `ids` are their handles. `device` is the
+  // active device BEFORE the list is applied to the state machine (which moves it off a removed pad).
+  LossVerdict OnList(const uint64_t* ids, size_t count, InputDevice device, bool driving, bool wheel, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_pad_ == 0) return LossVerdict::None;
+    for (size_t i = 0; i < count; ++i) {
+      if (ids[i] == active_pad_) return LossVerdict::None;
+    }
+    active_pad_ = 0;  // gone for good: handles are never reused, a pad that comes back is a new one
+    return Decide(device, driving, wheel, now);
+  }
+
+  // The same decision without a list: the pad in the player's hands is gone (the test cvar input_test_pad_loss,
+  // which has no real pad to unplug). The pad need not be remembered.
+  LossVerdict OnPadLost(InputDevice device, bool driving, bool wheel, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    active_pad_ = 0;
+    return Decide(device, driving, wheel, now);
+  }
+
+  // One XamInputGetState poll of user 0: is the game to be told "not connected"? Counts the poll; the window
+  // ends with the last of its polls or when it is older than kPadLossMaxMs.
+  LossAnswer OnStatePoll(int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (polls_left_ <= 0) return LossAnswer::Connected;
+    if (now - opened_ms_ > kPadLossMaxMs) {
+      polls_left_ = 0;
+      return LossAnswer::Connected;
+    }
+    --polls_left_;
+    ++answered_;
+    return polls_left_ == 0 ? LossAnswer::NotConnectedLast : LossAnswer::NotConnected;
+  }
+
+  // XamInputGetCapabilities for user 0: true while the window is open (it does not count the call).
+  bool CapsHidden() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return polls_left_ > 0;
+  }
+
+  // How many polls the last window answered (for the log line that closes it).
+  int Answered() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return answered_;
+  }
+
+ private:
+  LossVerdict Decide(InputDevice device, bool driving, bool wheel, int64_t now) {
+    if (device != InputDevice::Pad) return LossVerdict::KeyboardActive;
+    if (wheel) return LossVerdict::Wheel;
+    if (!driving) return LossVerdict::NotDriving;
+    polls_left_ = kPadLossPolls;
+    answered_ = 0;
+    opened_ms_ = now;
+    return LossVerdict::Open;
+  }
+
+  mutable std::mutex mutex_;
+  uint64_t active_pad_ = 0;
+  int polls_left_ = 0;
+  int answered_ = 0;
+  int64_t opened_ms_ = 0;
 };
 
 }  // namespace larecomp::input

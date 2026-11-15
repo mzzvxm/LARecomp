@@ -20,6 +20,9 @@
 //   [input] switch device D (was E) glyphs G because C; generation N   the device changed
 //   [input] glyphs device D glyphs G (was H) because C; generation N    only the glyph family / strip / setting changed
 //   [input] ev ...                                        with input_log: every event the rules looked at and what they decided
+//   [input] pad lost: ...                                 the controller in the player's hands was removed: the game is told "not connected" for a few polls so
+//                                                         that it pauses, or why not (keyboard active, not driving, wheel); PadLossRule in input_state_core.h
+//   [input] pad loss over: ...                            the window ended; the SDK's stand-in answers again
 
 #include "input_state.h"
 #include "input_state_core.h"
@@ -30,6 +33,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -42,14 +46,23 @@
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
 
+#include "adaptive_triggers.h"
 #include "device_watch.h"
 #include "logging.h"
 #include "ui/pad_vendor.h"
+#include "wheel/wheel_input.h"
 
 REXCVAR_DEFINE_BOOL(input_log, false, "MCLA/Input",
     "Log every key, mouse and controller event that the active-device rules looked at and what they "
     "decided (counted, or why it was ignored), at most 4000 lines. The switches themselves are always "
     "logged.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(input_test_pad_loss, false, "MCLA/Input",
+    "Test only: set to true to act as if the controller in the player's hands had just been unplugged: the "
+    "same rule as a real removal (only while a pad is the active device and the game is driven; the pad "
+    "need not be real). The next pad poll takes it; set it to false and true again for another.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -141,16 +154,37 @@ rex::input::InputSystem* Isys() {
 // The family of the pad that made the last real input, as the SDK knows it: 1 PlayStation, 0 any other
 // pad (Xbox; Switch, Steam Deck and generic pads draw as Xbox, v1), -1 when there is none or it is a
 // synthetic device (the SDK's NOP stand-in, which only an idle state is ever read from, so it is never the
-// active device anyway). Valid on the thread that polls the pad.
-int PadFamilyFromSdk(rex::input::InputSystem* isys) {
+// active device anyway). `id` (when given) gets that pad's SDK handle, left alone when the answer is -1.
+// Valid on the thread that polls the pad.
+int PadFamilyFromSdk(rex::input::InputSystem* isys, uint64_t* id = nullptr) {
   if (!isys) return -1;
   const rex::input::DeviceInfo* d = isys->ActiveDevice(0);
   if (!d || d->synthetic) return -1;
+  if (id) *id = static_cast<uint64_t>(d->id);
   return d->pad_kind == rex::input::PadKind::kPlayStation ? 1 : 0;
 }
 #else
-int PadFamilyFromSdk(rex::input::InputSystem*) { return -1; }
+int PadFamilyFromSdk(rex::input::InputSystem*, uint64_t* = nullptr) { return -1; }
 #endif
+
+// The rule of the pause for a lost controller (input_state_core.h). Never destroyed, like the state machine.
+PadLossRule& Loss() {
+  static PadLossRule* rule = new PadLossRule();
+  return *rule;
+}
+
+// The facts the rule is given when a controller leaves.
+bool DrivingNow() { return larecomp::triggers::IsDriving(); }
+bool WheelNow() { return larecomp::wheel::WheelPresent(); }
+
+void LogLoss(LossVerdict v) {
+  if (v == LossVerdict::None) return;
+  MC_INFO("[input] pad lost: the controller in the player's hands was removed; {}{}", LossVerdictText(v),
+          v == LossVerdict::Open ? std::string(" (for the next ") + std::to_string(kPadLossPolls) + " polls of user 0)" : std::string());
+}
+
+// input_test_pad_loss was set to true: the next pad poll acts as if the controller in the player's hands had been removed.
+std::atomic<bool> g_test_loss{false};
 
 std::atomic<bool> g_list_known{false};
 std::atomic<uint32_t> g_list_gen{0};
@@ -165,21 +199,28 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   const bool dirty = g_watch_dirty.load(std::memory_order_relaxed) && g_watch_dirty.exchange(false, std::memory_order_relaxed);
   if (g_list_known.load(std::memory_order_acquire) && gen == g_list_gen.load(std::memory_order_relaxed) && !dirty) return;
   std::array<GlyphFamily, 16> pads{};
+  std::array<uint64_t, 16> ids{};
   size_t count = 0;
   size_t synthetic = 0;  // the SDK's NOP stand-in (always there) and, with mnk_mode, its keyboard-and-mouse pad: not controllers
   std::string names;
   for (const rex::input::DeviceInfo& d : isys->Devices()) {
     if (d.synthetic) ++synthetic;
     if (d.synthetic || count >= pads.size()) continue;
+    ids[count] = static_cast<uint64_t>(d.id);
     pads[count++] = d.pad_kind == rex::input::PadKind::kPlayStation ? GlyphFamily::PlayStation : GlyphFamily::Xbox;
     names += (names.empty() ? "" : ", ");
     names += d.name.empty() ? "?" : d.name;
   }
   g_list_gen.store(gen, std::memory_order_relaxed);
   g_list_known.store(true, std::memory_order_release);
+  // The pause for a lost controller is decided first: it needs the device as it was before the removal (the state machine moves it off
+  // a removed pad). The list is applied to the state machine right after.
+  const InputDevice device_before = Core().Get().device;
+  const LossVerdict loss = Loss().OnList(ids.data(), count, device_before, DrivingNow(), WheelNow(), now);
   const Change ch = Core().OnDevices(pads.data(), count, now);
   MC_INFO("[input] devices: {} controller(s){}{}; {} synthetic; SDK generation {}; the watcher says Sony pad {}", count, count ? ": " : "", names,
           synthetic, gen, mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
+  LogLoss(loss);
   Apply(ch);
 #else
   (void)isys;
@@ -211,6 +252,9 @@ void Init() {
     ApplyPromptSetting(REXCVAR_GET(button_prompts), /*notify=*/false);
     rex::cvar::RegisterChangeCallback("button_prompts",
         [](std::string_view, std::string_view value) { ApplyPromptSetting(value); });
+    rex::cvar::RegisterChangeCallback("input_test_pad_loss", [](std::string_view, std::string_view value) {
+      if (value == "true" || value == "1") g_test_loss.store(true, std::memory_order_relaxed);
+    });
     larecomp::devwatch::AddChangeListener(&OnWatcherChanged, nullptr);
     g_ready.store(true, std::memory_order_release);
   });
@@ -324,8 +368,8 @@ void Tick() {
           window->HasFocus() ? "yes" : "no", DeviceName(s.device), FamilyName(s.Family()), s.generation);
 }
 
-// The XamInputGetState wrapper has run: the SDK's list is looked at (one counter), and for user 0 the state
-// the game is about to read is tested for activity.
+// The XamInputGetState wrapper has run: the SDK's list is looked at (one counter), the game is told "not connected" while a lost
+// controller's window is open, and for user 0 the state the game is about to read is tested for activity.
 InputActivityScope::~InputActivityScope() {
   Init();
   rex::input::InputSystem* isys = Isys();
@@ -333,6 +377,22 @@ InputActivityScope::~InputActivityScope() {
   if (isys) CheckDevices(isys, now);
   const uint32_t u = user_ & 0xFF;
   if ((u != 0 && u != 0xFF) || !base_ || state_ == 0) return;
+
+  // The test cvar: the same decision as a real removal, without a pad to unplug.
+  if (g_test_loss.load(std::memory_order_relaxed) && g_test_loss.exchange(false, std::memory_order_relaxed)) {
+    LogLoss(Loss().OnPadLost(Core().Get().device, DrivingNow(), WheelNow(), now));
+  }
+  // The controller in the player's hands was removed while the game is driven: "not connected" for a few polls, so the game pauses. The
+  // state is cleared too (the harness's pad and anything else that filled it), like the probe of KBM P0c did.
+  const LossAnswer answer = Loss().OnStatePoll(now);
+  if (answer != LossAnswer::Connected) {
+    std::memset(base_ + state_, 0, 16);  // X_INPUT_STATE: the packet number and a gamepad at rest
+    result_ = 0x48F;                     // ERROR_DEVICE_NOT_CONNECTED
+    if (answer == LossAnswer::NotConnectedLast) {
+      MC_INFO("[input] pad loss over: the game was told \"not connected\" for {} polls of user 0; the stand-in answers again, the keyboard and a returning pad work as usual",
+              Loss().Answered());
+    }
+  }
   if ((result_ & 0xFFFFFFFFull) != 0) {  // no pad answered: the next one is compared with a pad at rest
     Core().OnPadGone();
     return;
@@ -347,12 +407,23 @@ InputActivityScope::~InputActivityScope() {
   s.ly = static_cast<int16_t>(BigU16(p + 10));
   s.rx = static_cast<int16_t>(BigU16(p + 12));
   s.ry = static_cast<int16_t>(BigU16(p + 14));
-  const Change ch = Core().OnPadFrame(s, [isys] { return PadFamilyFromSdk(isys); }, now);
+  uint64_t pad_id = 0;
+  const Change ch = Core().OnPadFrame(s, [isys, &pad_id] { return PadFamilyFromSdk(isys, &pad_id); }, now);
+  if (pad_id != 0) Loss().NoteActivePad(pad_id);  // the pad in the player's hands: what a later removal is compared with
   if (ch.looked != Cause::None && VerboseOpen()) {
     MC_INFO("[input] ev pad {} buttons=0x{:04X} lt={} rt={} l=({},{}) r=({},{}) -> {}", CauseText(ch.looked), unsigned(s.buttons),
             unsigned(s.lt), unsigned(s.rt), int(s.lx), int(s.ly), int(s.rx), int(s.ry), ch.note);
   }
   Apply(ch);
+}
+
+// The XamInputGetCapabilities wrapper has run: while the window of a lost controller is open the game is told "not connected" here too.
+void PadLossCaps(uint8_t* base, uint32_t user, uint32_t caps, uint64_t& r3) {
+  const uint32_t u = user & 0xFF;
+  if (!base || caps == 0 || (u != 0 && u != 0xFF)) return;
+  if (!Loss().CapsHidden()) return;
+  std::memset(base + caps, 0, 20);  // X_INPUT_CAPABILITIES
+  r3 = 0x48F;                       // ERROR_DEVICE_NOT_CONNECTED
 }
 
 }  // namespace larecomp::input
@@ -368,6 +439,7 @@ uint32_t Generation() { return 0; }
 bool AddInputListener(InputListener, void*) { return false; }
 void Tick() {}
 InputActivityScope::~InputActivityScope() {}
+void PadLossCaps(uint8_t*, uint32_t, uint32_t, uint64_t&) {}
 
 }  // namespace larecomp::input
 
