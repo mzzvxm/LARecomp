@@ -22,7 +22,14 @@
 //     layers hold (NaN, infinity, negative);
 //   * the texels read are the same: the gap clamp of the image path (compose reads at max(position,
 //     gap), the present at clamp(at, 0, limit)) and of the layers (clamp(at, gap, limit)) agree at
-//     every position, the edges and the neighbours past them included.
+//     every position, the edges and the neighbours past them included;
+//   * the HUD fade (ui_fade.h, the trailer toolkit) goes into the same sum for both paths: at 1 the
+//     plain sum to the bit, at 0 the scene alone, in between the compose pass's own expression
+//     (ui x fade + scene x (1 - coverage x fade)), and a fading HUD gives the same colour through
+//     the image and in the present, to the same float16 rounding as without a fade; a pause view's
+//     frame is shown at 1 (ShownUiAlpha). Given the shaders' folder (src/gpu/hlsl) the file also
+//     checks that both shaders hand `ui_alpha` to ComposeLayers and that the present's push ends
+//     with it (64 bytes, HostPasses::kPushConstantBytes).
 
 #include <algorithm>
 #include <array>
@@ -30,7 +37,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <regex>
+#include <sstream>
 #include <string>
 
 // The HLSL intrinsics the scalar half of hdr_compose.hlsli uses.
@@ -44,8 +54,14 @@ inline float clamp(float x, float lo, float hi) {
   return std::min(std::max(x, lo), hi);
 }
 #include "hlsl/hdr_compose.hlsli"
+#include "ui_fade.h"
 
 namespace {
+
+// The sum without a fade: a fade of 1.
+float ComposeCode(float scene, float ui, float coverage) {
+  return ::ComposeCode(scene, ui, coverage, 1.0f);
+}
 
 int g_checks = 0;
 int g_failed = 0;
@@ -121,11 +137,13 @@ float Ramp(const Table& t, int c, float color, Codes mode) {
 
 // What the display shows for a texel: the older path reads the float16 image of the sum, the new one
 // takes the sum from the layers in the same pass.
-float Today(const Table& t, int c, float scene, float ui, float coverage, Codes mode) {
-  return Ramp(t, c, RoundToHalf(ComposeCode(scene, ui, coverage)), mode);
+float Today(const Table& t, int c, float scene, float ui, float coverage, Codes mode,
+            float fade = 1.0f) {
+  return Ramp(t, c, RoundToHalf(::ComposeCode(scene, ui, coverage, fade)), mode);
 }
-float Inline(const Table& t, int c, float scene, float ui, float coverage, Codes mode) {
-  return Ramp(t, c, ComposeCode(scene, ui, coverage), mode);
+float Inline(const Table& t, int c, float scene, float ui, float coverage, Codes mode,
+             float fade = 1.0f) {
+  return Ramp(t, c, ::ComposeCode(scene, ui, coverage, fade), mode);
 }
 
 // ---- the sum ----------------------------------------------------------------------------------
@@ -274,13 +292,185 @@ void CheckGap() {
   Check(same, "the layers' texel read is the same through the image and in place, gap and edges included");
 }
 
+// ---- the HUD fade --------------------------------------------------------------------------------
+// The compose pass's own expression from before the sum was one function (frame_layers_ps.hlsl, the
+// trailer toolkit's version): the premultiplied layer scaled by the fade, then the finite, [0, 65504] rule.
+float ComposePassWithFade(float scene, float ui, float coverage, float fade) {
+  const float f = std::min(std::max(fade, 0.0f), 1.0f);
+  const float code = ui * f + scene * (1.0f - coverage * f);
+  const std::uint32_t bits = asuint(code) & 0x7FFFFFFFu;
+  return (bits <= 0x7F800000u) ? std::min(std::max(code, 0.0f), 65504.0f) : 0.0f;
+}
+
+constexpr float kFades[] = {0.0f, 0.1f, 0.25f, 0.5f, 0.75f, 0.9f, 1.0f};
+
+void CheckFadeSum() {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  // The shared sum with a fade is the compose pass's expression, bit for bit, over the 8-bit blends.
+  bool pass_same = true, one_same = true, zero_same = true;
+  for (int s = 0; s < 256; s += 5) {
+    for (int a = 0; a < 256; ++a) {
+      for (int w = 0; w <= a; w += 3) {
+        const float scene = float(s) / 255.0f, ui = float(w) / 255.0f, cov = float(a) / 255.0f;
+        for (float fade : kFades) {
+          pass_same &= ::ComposeCode(scene, ui, cov, fade) == ComposePassWithFade(scene, ui, cov, fade);
+        }
+        // 1: the plain sum of before the fade existed; 0: the scene alone, whatever the UI holds.
+        one_same &= ::ComposeCode(scene, ui, cov, 1.0f) ==
+                    std::min(std::max(ui + scene * (1.0f - cov), 0.0f), 65504.0f);
+        zero_same &= ::ComposeCode(scene, ui, cov, 0.0f) == ::ComposeCode(scene, 0.0f, 0.0f, 1.0f);
+      }
+    }
+  }
+  Check(pass_same, "the shared sum with a fade is the compose pass's expression, bit for bit, over the 8-bit blends");
+  Check(one_same, "a fade of 1 is the plain sum to the bit");
+  Check(zero_same, "a fade of 0 is the scene alone, whatever the UI layer holds");
+  // The float scene (above 1) too.
+  bool float_zero = true;
+  for (int k = 0; k < 6000; k += 7) {
+    const float scene = RoundToHalf(float(k) * 0.0035f);
+    float_zero &= ::ComposeCode(scene, 0.4f, 0.9f, 0.0f) == scene;
+  }
+  Check(float_zero, "a fade of 0 keeps the float scene's light above 1 whole");
+  // Out of range: clamped, as the shaders' saturate is.
+  Check(::ComposeCode(0.2f, 0.5f, 1.0f, 2.0f) == ::ComposeCode(0.2f, 0.5f, 1.0f, 1.0f), "a fade above 1 is 1");
+  Check(::ComposeCode(0.2f, 0.5f, 1.0f, -1.0f) == ::ComposeCode(0.2f, 0.5f, 1.0f, 0.0f), "a fade below 0 is 0");
+  bool finite = true;
+  for (float fade : {nan, inf, -inf, 0.5f}) {
+    for (float s : {0.0f, 1.0f, 4.0f, nan, inf}) {
+      for (float u : {0.0f, 0.5f, nan, -1.0f}) {
+        const float code = ::ComposeCode(s, u, 0.5f, fade);
+        finite &= std::isfinite(code) && code >= 0.0f && code <= 65504.0f;
+      }
+    }
+  }
+  Check(finite, "whatever the fade holds (NaN, infinity) the code is finite in [0, 65504]");
+  // In between it is a straight move from the scene to the game's frame: a covering UI over a scene.
+  const float scene = 0.2f, ui = 0.5f;
+  Check(std::fabs(::ComposeCode(scene, ui, 1.0f, 0.5f) - 0.35f) < 1e-6f, "half a fade over a covering UI: halfway");
+  Check(std::fabs(::ComposeCode(scene, ui, 1.0f, 0.25f) - 0.275f) < 1e-6f, "a quarter of a fade over a covering UI");
+  Check(std::fabs(::ComposeCode(scene, ui, 0.5f, 0.5f) - (0.25f + 0.2f * 0.75f)) < 1e-6f,
+        "half a fade over a half covering UI: the layer's colour and coverage both halved");
+  // The frame of a pause view (the pause menu, the DEBUG menu, the race pause, the map) is shown whole.
+  Check(mcla::gpu::ShownUiAlpha(true, 0.3f) == 1.0f, "a pause view's frame is shown at 1 whatever the fade is");
+  Check(mcla::gpu::ShownUiAlpha(false, 0.3f) == 0.3f, "a play frame is shown at the fade's alpha");
+  Check(::ComposeCode(0.2f, 0.5f, 0.7f, mcla::gpu::ShownUiAlpha(true, 0.0f)) == ::ComposeCode(0.2f, 0.5f, 0.7f, 1.0f),
+        "a pause view's sum at a fade of 0 is the game's frame");
+}
+
+// A fading HUD looks the same with the compose in the present on and off: the display's colour through
+// the float16 image (the older path, with the fade) against the layers summed in place (with the same
+// fade), within the float16 rounding as without a fade (CheckColour).
+void CheckFadeColour() {
+  const Table table = MakeTable();
+  for (int c = 0; c < 3; ++c) {
+    const float step = MaxStep(table, c);
+    for (float fade : kFades) {
+      // The 8-bit scene.
+      long exact_total = 0, exact_differ = 0;
+      float worst = 0.0f;
+      for (int s = 0; s < 256; s += 5) {
+        for (int a = 0; a < 256; a += 3) {
+          for (int w = 0; w <= a; w += 7) {
+            const float scene = float(s) / 255.0f, ui = float(w) / 255.0f, cov = float(a) / 255.0f;
+            const float code = ::ComposeCode(scene, ui, cov, fade);
+            const float d = std::fabs(Today(table, c, scene, ui, cov, Codes::kExtended, fade) -
+                                      Inline(table, c, scene, ui, cov, Codes::kExtended, fade));
+            worst = std::max(worst, d);
+            if (RoundToHalf(code) == code) {
+              ++exact_total;
+              exact_differ += d != 0.0f;
+            }
+          }
+        }
+      }
+      const std::string where = "8-bit scene, channel " + std::to_string(c) + ", fade " + std::to_string(fade);
+      Check(exact_differ == 0, where + ": a sum exact in float16 gives the same colour in both paths (" +
+                                   std::to_string(exact_differ) + " of " + std::to_string(exact_total) + " differ)");
+      Check(worst <= step * 1.0001f, where + ": the paths differ by at most one step of the table");
+      // The float scene: the float16 rounding of the sum through the table, as without a fade; a
+      // fade of 0 leaves the scene alone, which a float16 scene stores exactly, so the paths agree to the bit.
+      float worst_ratio = 0.0f;
+      long zero_differ = 0;
+      for (int k = 0; k < 6000; k += 5) {
+        const float fscene = RoundToHalf(float(k) * 0.0035f + 0.0001f * float(k % 7));
+        for (int a = 0; a < 256; a += 51) {
+          for (int w = 0; w <= a; w += 51) {
+            const float ui = float(w) / 255.0f, cov = float(a) / 255.0f;
+            const float code = ::ComposeCode(fscene, ui, cov, fade);
+            const float d = std::fabs(Today(table, c, fscene, ui, cov, Codes::kInterpolated, fade) -
+                                      Inline(table, c, fscene, ui, cov, Codes::kInterpolated, fade));
+            const float bound = (code * 255.0f) * (1.0f / 2048.0f) * step + 1e-6f;
+            worst_ratio = std::max(worst_ratio, d / bound);
+            if (fade == 0.0f) {
+              zero_differ += d != 0.0f;
+            }
+          }
+        }
+      }
+      Check(worst_ratio <= 1.0f, "float scene, channel " + std::to_string(c) + ", fade " + std::to_string(fade) +
+                                     ": the paths differ by at most the float16 rounding of the sum through the table (worst " +
+                                     std::to_string(worst_ratio) + " of the bound)");
+      if (fade == 0.0f) {
+        Check(zero_differ == 0, "float scene, channel " + std::to_string(c) +
+                                    ", fade 0: the UI is gone and a float16 scene comes out the same to the bit in both paths");
+      }
+    }
+  }
+}
+
+// ---- the shaders' text ----------------------------------------------------------------------------
+std::string ReadFile(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+
+// Given src/gpu/hlsl: both shaders that sum the layers hand the fade to ComposeLayers, the shared
+// function takes it, and the present's push ends with it (16 four-byte members = 64 bytes, as the C++
+// Push in present.h and HostPasses::kPushConstantBytes).
+void CheckShaderText(const std::string& dir) {
+  const std::string present = ReadFile(dir + "/present_ps.hlsl");
+  const std::string layers = ReadFile(dir + "/frame_layers_ps.hlsl");
+  const std::string shared = ReadFile(dir + "/hdr_compose.hlsli");
+  Check(!present.empty() && !layers.empty() && !shared.empty(), "the three shader files are read from " + dir);
+  Check(shared.find("float3 ComposeLayers(float3 scene, float4 ui, float fade)") != std::string::npos,
+        "ComposeLayers takes the fade");
+  Check(present.find("ComposeLayers(texel, g_textures[g_push.ui].Load(where), g_push.ui_alpha)") != std::string::npos,
+        "the present hands its push's ui_alpha to ComposeLayers");
+  Check(layers.find("ComposeLayers(underlay.rgb, ui, g_push.ui_alpha)") != std::string::npos,
+        "the compose pass hands its push's ui_alpha to ComposeLayers");
+  const size_t open = present.find("struct PresentPush {");
+  const size_t close = open == std::string::npos ? open : present.find("};", open);
+  Check(open != std::string::npos && close != std::string::npos, "PresentPush is found");
+  if (open != std::string::npos && close != std::string::npos) {
+    const std::string body = present.substr(open, close - open);
+    const std::regex member(R"((?:^|\n)\s*(uint|float)\s+(\w+)\s*;)");
+    std::string last;
+    int count = 0;
+    for (std::sregex_iterator it(body.begin(), body.end(), member), end; it != end; ++it) {
+      ++count;
+      last = (*it)[2].str();
+    }
+    Check(count == 16 && last == "ui_alpha", "PresentPush is 16 four-byte members (64 bytes) and ends with ui_alpha (" +
+                                                 std::to_string(count) + " members, last " + last + ")");
+  }
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   std::printf("hdr compose in the present\n");
   CheckSum();
   CheckColour();
   CheckGap();
+  CheckFadeSum();
+  CheckFadeColour();
+  if (argc > 1) {
+    CheckShaderText(argv[1]);
+  }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

@@ -109,6 +109,10 @@ bool HdrScene::Select(const TextureKey& front, uint32_t width, uint32_t height, 
   out->scene = frame.hudless;
   out->float_scene = false;
   out->stale = false;
+  // The HUD fade: a pause view's frame shows its UI whole (FrameLayers::UiAlphaFor). Both ways of
+  // summing the layers take this one value, so a fading HUD looks the same with the compose in the
+  // present on and off.
+  out->ui_alpha = layers_->UiAlphaFor(frame);
   if (frame.scene && scene_source_) {
     if (frame.scene_epoch == scene_source_->SceneEpoch() && frame.scene->texture &&
         frame.scene->width >= width && frame.scene->height >= height) {
@@ -147,8 +151,7 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const Layers& layers, uin
   const FrameLayers::Frame& frame = layers.frame;
   const uint32_t view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_hdr_layers_view), 0, 5));
   const bool kept = image_.texture && image_.width == width && image_.height == height;
-  // The HUD fade: a pause view's frame shows its UI whole (FrameLayers::UiAlphaFor).
-  const float ui_alpha = layers_->UiAlphaFor(frame);
+  const float ui_alpha = layers.ui_alpha;  // the HUD fade Select chose for this frame
   if (kept && composed_generation_ == frame.generation && composed_view_ == view &&
       composed_alpha_ == ui_alpha) {
     ++stats_.reused;

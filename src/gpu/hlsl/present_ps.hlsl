@@ -27,6 +27,8 @@
 // float image HdrScene::Compose makes (hdr_scene.h; hdr_compose.hlsli): `source` is the scene, `ui`
 // the UI layer, and `gap` clamps both. Used by the passes that read the layers 1:1 (this one at 1:1,
 // FSR1's and the scaled present's table pass); a scaled present of four texels a pixel keeps the image.
+// The HUD fade (ui_fade.h) comes in the push as `ui_alpha`, the same factor the compose pass gets, so
+// a fading HUD looks the same with the compose in the present on and off.
 //
 // `dither_lsb` (push constant): one code of the back buffer, for the passes that write it (the
 // present itself and the stretch): the picture gets output_dither.hlsli's dither in the
@@ -58,6 +60,7 @@ struct PresentPush {
   uint gap;            // the source's first columns and rows that hold no picture: read at `gap`
   float dither_lsb;    // one code of the back buffer in its encoding (1/255, HDR10 1/1023); 0: none
   uint ui;             // kComposeLayers only: the UI layer's slot; `source` is then the scene
+  float ui_alpha;      // kComposeLayers only: the HUD fade (ui_fade.h), the UI layer's share of the frame, 0..1; 1 is no fade
 };
 
 #ifdef __spirv__
@@ -125,7 +128,7 @@ float3 Texel(int2 at) {
   return texel;
 #else
   if ((g_push.hdr_flags & kComposeLayers) != 0u) {
-    texel = ComposeLayers(texel, g_textures[g_push.ui].Load(where));
+    texel = ComposeLayers(texel, g_textures[g_push.ui].Load(where), g_push.ui_alpha);
   }
   return Ramp(texel);
 #endif

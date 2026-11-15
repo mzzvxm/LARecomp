@@ -107,7 +107,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Premultiplied "over", as the game blends the UI: no clamp, so what the scene holds above 1
   // is kept; the UI's own part never exceeds its coverage. Made finite and non-negative for the
   // display's table (hdr_compose.hlsli, which the present's inline compose uses as well).
-  return float4(ComposeLayers(underlay.rgb, ui), 1.0f);
+  // The HUD fade scales the premultiplied layer's colour and coverage by the same factor, ui_alpha
+  // (the present's inline compose gets it in its own push: the same sum with the fade on or off).
+  return float4(ComposeLayers(underlay.rgb, ui, g_push.ui_alpha), 1.0f);
 #else
   return underlay;
 #endif

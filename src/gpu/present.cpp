@@ -423,6 +423,7 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   interpolated_ = false;
   layers_inline_ = false;
   layers_ui_slot_ = 0;
+  layers_ui_alpha_ = 1.0f;
   HdrScene::Layers layers;
   if (hdr_scene_ == nullptr || !hdr_scene_->Select(fetch.key, source_width_, source_height_,
                                                     &layers)) {
@@ -440,6 +441,7 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
     source_gap_ = layers.gap();
     layers_inline_ = true;
     layers_ui_slot_ = layers.ui_slot();
+    layers_ui_alpha_ = layers.ui_alpha;  // the HUD fade: the same factor the compose pass would get
     PrepareRoute(list, width, height);
     route_done = true;
     // The present at 1:1 reads one texel a pixel: the sum in place. FSR1's and the scaled present's
@@ -452,6 +454,7 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
     }
     layers_inline_ = false;
     layers_ui_slot_ = 0;
+    layers_ui_alpha_ = 1.0f;
     source_gap_ = 0;
   }
   if (hdr_scene_->Compose(list, layers, source_width_, source_height_)) {
@@ -485,6 +488,7 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
   interpolated_ = interpolated;
   layers_inline_ = false;  // an image of the sum (Frame generation's), not the layers
   layers_ui_slot_ = 0;
+  layers_ui_alpha_ = 1.0f;
   quiet_route_ = true;
   PrepareRoute(list, width, height);
   quiet_route_ = false;
@@ -532,6 +536,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.hdr_flags = CodeFlags();
   push.gap = source_gap_;
   push.ui = LayersUi();
+  push.ui_alpha = LayersAlpha();
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -667,6 +672,9 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_knee = hdr_levels_.knee;
   push.hdr_flags = hdr_levels_.flags | CodeFlags();
   push.gap = gap;
+  // The layers' slot and the HUD fade go in before the split: its two draws send the same push.
+  push.ui = LayersUi();
+  push.ui_alpha = LayersAlpha();
   // The before/after split (split.h, mcla_gpu_split): the dither only left of it. Off (the default), or a pass with no dither: the one draw.
   if (dither_lsb > 0.0f) {
     if (const std::optional<double> cut = split::PositionFor(split::kEffectDither)) {
@@ -675,7 +683,6 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
     }
   }
   push.dither_lsb = dither_lsb;
-  push.ui = LayersUi();
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -750,6 +757,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.hdr_flags = CodeFlags();
     push.gap = source_gap_;
     push.ui = LayersUi();
+    push.ui_alpha = LayersAlpha();
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {

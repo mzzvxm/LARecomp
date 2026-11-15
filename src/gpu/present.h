@@ -259,8 +259,11 @@ class PresentPass {
     float dither_lsb;
     // kHdrFlagComposeLayers only: the UI layer's slot (`source` is then the scene). 0 otherwise.
     uint32_t ui;
+    // kHdrFlagComposeLayers only: the HUD fade (ui_fade.h), the UI layer's share of the frame, 0..1,
+    // the factor the compose pass gets as its ui_alpha. 1 otherwise (no fade).
+    float ui_alpha;
   };
-  static_assert(sizeof(Push) == 60 && sizeof(Push) <= HostPasses::kPushConstantBytes);
+  static_assert(sizeof(Push) == 64 && sizeof(Push) <= HostPasses::kPushConstantBytes);
 
   // FSR1 (M6c.1).
   struct EasuPush {  // hlsl/fsr_easu_ps.hlsl
@@ -378,6 +381,7 @@ class PresentPass {
   // (kHdrFlagComposeLayers): source_slot_ is the scene, layers_ui_slot_ the UI layer.
   bool layers_inline_ = false;
   uint32_t layers_ui_slot_ = 0;
+  float layers_ui_alpha_ = 1.0f;  // ... and the HUD fade of that frame (HdrScene::Layers::ui_alpha)
   // hdr.h kHdrFlagExtendedCodes / kHdrFlagInterpolatedCodes / kHdrFlagComposeLayers for the image
   // Prepare bound.
   uint32_t CodeFlags() const {
@@ -387,6 +391,8 @@ class PresentPass {
   }
   // Push::ui of a pass that reads source_slot_.
   uint32_t LayersUi() const { return layers_inline_ ? layers_ui_slot_ : 0u; }
+  // Push::ui_alpha of a pass that reads source_slot_.
+  float LayersAlpha() const { return layers_inline_ ? layers_ui_alpha_ : 1.0f; }
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;

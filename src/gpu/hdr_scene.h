@@ -34,7 +34,10 @@
 // The HUD fade (ui_fade.h) scales the UI's colour and coverage by FrameLayers::UiAlphaFor(frame) in
 // the compose, so an SDR present composes the layers too while the alpha is below 1 (Renderer::
 // ApplyUiFade makes it so). The composed image is made again when that alpha changes, also for an
-// idle present. The debug views of mcla_gpu_hdr_layers_view do not apply it.
+// idle present. The debug views of mcla_gpu_hdr_layers_view do not apply it. With the compose in the
+// present the same alpha goes in the present's push (PresentPass Push::ui_alpha, Layers::ui_alpha) and
+// into the same sum (hdr_compose.hlsli ComposeCode's `fade`), so the picture is the same with
+// mcla_gpu_hdr_compose_in_present on and off.
 //
 // The first host column and row at a render scale (FrameLayers::Frame::gap) are not in the picture
 // the layers keep: the compose reads them from the next ones, as the guest's resolve does for the
@@ -85,6 +88,7 @@ class HdrScene {
     const HostImage* scene = nullptr;  // the float scene while the source has it, else the underlay
     bool float_scene = false;          // `scene` is the float one
     bool stale = false;                // the frame had a float scene that was gone by the present
+    float ui_alpha = 1.0f;             // the HUD fade for this frame (FrameLayers::UiAlphaFor): the image's compose and the present's own sum both take it
     uint32_t scene_slot() const { return scene->slot; }
     uint32_t ui_slot() const { return frame.ui->slot; }
     uint32_t gap() const { return frame.gap; }
