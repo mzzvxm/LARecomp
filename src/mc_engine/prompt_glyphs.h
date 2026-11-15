@@ -41,8 +41,8 @@ enum class Slot : uint8_t { A, B, X, Y, LB, RB, LT, RT, Start, Back, Phone };
 constexpr int kSlotCount = 11;
 
 // What a slot's glyph sits on, as a luma (0..255): the prompt bars of the menus, the garage, the pop-ups and the map are dark; the Sidekick phone's bar is light grey. It is the surface the
-// original's ink is read against (prompt_art.h, the tone of the rule): the phone's thin DARK ring is dark on light, so what replaces it is line art in the same dark ink; everything else is
-// light on dark. Measured on the first run's pictures (perf\out\KBM-P4\P4-phone.png: the bar around the phone's glyph is 147 - 160; the pause / garage / pop-up bars 10 - 30).
+// original's marks are read against (prompt_art.h, the ink of the rule): the phone's bitmap is a light disc with a dark rim and a dark arrow that the movie draws darkened, so its marks are far
+// darker than the bar and what replaces it is line art in the bitmap's own ink colours and alpha; every other glyph is light on a dark bar and keeps its own tones. Measured on the first run's pictures (perf\out\KBM-P4\P4-phone.png: the bar around the phone's glyph is 147 - 160; the pause / garage / pop-up bars 10 - 30).
 constexpr double kDarkBackdrop = 24.0;
 constexpr double kPhoneBackdrop = 155.0;
 

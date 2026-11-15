@@ -4,25 +4,28 @@
 // compressor (keyboard_native.cpp decodes the pictures into a Bitmap, calls FitArt and compresses what comes back); the unit test is prompt_glyphs_test.cpp.
 //
 // THE RULE (owner, 2026-11-15, after the first P4 run: the PlayStation Create button and the TAB cap filled the whole 64x64 bitmap of the Sidekick phone's accept glyph, spilled past the
-// ring they replace, and the PlayStation one was light grey on the phone's light grey bar; only the Xbox original, a thin dark ring with a dark arrow and a clear margin, looked right):
+// ring they replace, and were nearly invisible on the phone's light bar; only the Xbox original, a thin dark ring with a dark arrow and a clear margin, looked right):
 //
-//   MEASURE  the glyph being replaced, once, when its art is built: the box of its ink (the pixels whose alpha is above kInkAlpha), the ink's colour and luma, and the width of its stroke.
+//   MEASURE  the glyph being replaced, once, when its art is built: the box of its ink (the pixels whose alpha is above kInkAlpha) and its ink colours AS ENCODED IN ITS BITMAP: the colour of its
+//            dark band (the pixels no lighter than the middle of its luma range: a ring, an outline), the colour of its marks (the darkest quarter: an arrow, a letter), the alpha its strokes
+//            reach, and the width of its stroke.
 //   FIT      every replacement goes into THAT box, keeping its own aspect ratio, centred in it: the original's margin is the margin of the box. Nothing is ever drawn outside the box
 //            (the check, CheckFit: the replacement's own ink box lies inside the original's plus kBoxSlack pixel, the slack being the soft edge of a scaled picture).
-//   TONE     the replacement is drawn in the original's tonal scheme. The scheme is read off the original's ink against what the glyph sits on (a per-slot luma, prompt_glyphs.h
-//            SlotInfo::backdrop): ink that is clearly darker than its surface (kToneGap) is DARK ON LIGHT and gets Look::Line, any other (every glyph on the dark prompt bars: the balls,
-//            the tabs, the discs) is LIGHT ON DARK and keeps the replacement's own tones (Look::Solid: a white cap, a white tab, the game's own PlayStation faces). A Look::Line
-//            replacement is line art in the original's ink colour, on transparent, with the original's stroke weight:
+//   INK      where the original's marks are clearly darker than the surface it sits on (kToneGap; prompt_glyphs.h SlotInfo::backdrop: only the Sidekick phone's light bar), the replacement is
+//            LINE ART whose pixels take the ORIGINAL's ink colours and alpha, transparent elsewhere, so that whatever transform the movie applies when it draws the bitmap (the phone darkens it,
+//            which is why its light grey disc with a dark rim and a dark arrow shows as a thin dark ring on the bar) darkens the replacement exactly as it darkens the ring: the strokes in the
+//            dark band's colour, the symbol or key name in the marks' colour, at the original's stroke weight:
 //              PlayStation (Shape::Pictogram)  a ring on the original's box + the picture's silhouette (the Create button) fitted inside it, like the original's ring and arrow
 //              Keyboard (Shape::Cap)           the key cap's dark lines, i.e. its outline and its key name, scaled into the box; the outline thickened to the original's stroke weight, the
 //                                              name left as drawn (a long name such as SPACE already has a narrow font in its cap picture: it is scaled to fit with the cap)
+//            Every other glyph (the balls, tabs and discs on the dark prompt bars) is Look::Solid: the replacement keeps its own tones (a white cap, a white tab, the game's own PlayStation
+//            faces), which is what passed; only its footprint is the original's.
 //   MEASURE ONCE  the original's Ink is taken when the dictionary (or the Sidekick glyph) is found and kept with the texture; FitArt runs when the art is built (WarmArt), never on a repaint.
 //
 // Numbers (CheckFit, logged by keyboard_native.cpp as `[prompts] fit ...` and read back by perf\scripts\kbm\kbm_p4_report.py): the replacement's ink box within the original's + kBoxSlack
-// pixel; the mean ink contrast (alpha-weighted mean |luma - backdrop| over the ink pixels, InkContrast) within kContrastTolerance (20%) of the original's. The contrast rule is what a Look::Line
-// replacement is built to meet (it takes the original's ink colour), and it is checked there. A Look::Solid one is light on dark like its original but not of the same brightness (a white key cap
-// against a green ball: 190 against 81 on a backdrop of 24) and the pictures that look right today must not be dulled to match, so for those the check is the tonal SIDE (both lighter than the
-// backdrop) and the two numbers are only logged.
+// pixel; and, for line art, its ink COLOUR (the alpha-weighted mean of its ink pixels) within kColourTolerance levels per channel of the original's dark-band colour and its alpha (the level
+// its strokes reach) within kAlphaTolerance of the original's: the replacement is encoded like the original, not judged by a guess about brightness. A Look::Solid one is checked for the
+// tonal SIDE of the backdrop (a white key cap against a green ball is brighter by design and the pictures that look right today must not be dulled to match); its numbers are only logged.
 //
 
 #include <algorithm>
@@ -37,11 +40,14 @@ namespace larecomp::prompts {
 
 constexpr int kInkAlpha = 32;                  // an ink pixel: alpha above this (of 255); the same for the original and the replacement
 constexpr int kRunFloor = 8;                   // StrokeWidth: a stroke goes on while alpha stays above this (the soft edge of a stroke)
-constexpr double kToneGap = 25.0;              // ink this much darker than its backdrop is dark on light
+constexpr double kToneGap = 40.0;              // marks this much darker than the surface they sit on make a glyph line art (the phone's arrow 69 on a bar of 155; a dark bar is 24: nothing is 40 darker)
+constexpr double kDarkBand = 0.5;              // the dark band: ink pixels no lighter than this fraction of the luma range above the darkest (a ring, an outline)
+constexpr double kMarkBand = 0.25;             // the marks: the darkest quarter of that range (an arrow, a letter)
+constexpr double kColourTolerance = 20.0;      // CheckFit, line art: levels per channel between the replacement's ink colour and the original's dark band colour
+constexpr double kAlphaTolerance = 16.0;       // CheckFit, line art: levels between the alpha the replacement's strokes reach and the original's
 constexpr double kSymbolFraction = 0.70;       // a PlayStation symbol inside its ring: this much of the ring's inner width
 constexpr int kSuperSample = 4;                // line art is built at 4x and scaled down (soft, even edges)
 constexpr int kBoxSlack = 1;                   // CheckFit: pixels of soft edge the replacement may be outside the original's box
-constexpr double kContrastTolerance = 0.20;    // CheckFit: a Look::Line replacement's contrast within 20% of the original's
 constexpr double kMinStroke = 1.2;             // the stroke of a ring made for a thin or unreadable original (pixels)
 constexpr double kBandOfStroke = 1.5;          // Shape::Cap: the cap's outline band is this many strokes wide (what is thickened; the name inside is not)
 
@@ -82,20 +88,26 @@ inline bool BoxWithin(const InkBox& inner, const InkBox& outer, int slack) {
 }
 
 // The width of the strokes of a picture of line art, in pixels: over the rows in the middle fifth of the box, the alpha-weighted length of the first run of ink from the box's left edge
-// (a ring's left side, a key cap's left border), and of those rows the median. 0 when there is no such run. A solid picture gives its whole width (the caller clamps).
-inline double StrokeWidth(const Bitmap& b, const InkBox& box, int threshold = kInkAlpha) {
+// (a ring's left side, a key cap's left border), and of those rows the median. Only pixels no lighter than `max_luma` count (the original's dark band: the rim of a light disc is a stroke, the
+// disc inside it is not). `alpha_unit` is the alpha a fully covered pixel has (a stroke of alpha 200 is as wide as one of 255). 0 when there is no such run. A solid picture gives its whole width (the caller clamps).
+inline double StrokeWidth(const Bitmap& b, const InkBox& box, int threshold = kInkAlpha, double max_luma = 1e9, double alpha_unit = 255.0) {
   if (b.empty() || !box.valid() || box.x0 < 0 || box.y0 < 0 || box.x1 >= int(b.width) || box.y1 >= int(b.height)) return 0.0;
+  const auto pixel = [&](int x, int y) { return &b.rgba[(size_t(y) * b.width + size_t(x)) * 4]; };
+  const auto dark = [&](int x, int y) {
+    const uint8_t* p = pixel(x, y);
+    return Luma(p[0], p[1], p[2]) <= max_luma;
+  };
   const int h = box.height();
   const int ya = box.y0 + (h * 2) / 5;
   const int yb = box.y0 + (h * 3) / 5;
   std::vector<double> runs;
   for (int y = ya; y <= yb; ++y) {
     int x = box.x0;
-    while (x <= box.x1 && AlphaAt(b, x, y) <= threshold) ++x;
+    while (x <= box.x1 && !(AlphaAt(b, x, y) > threshold && dark(x, y))) ++x;
     if (x > box.x1) continue;
     double sum = 0.0;
-    while (x <= box.x1 && AlphaAt(b, x, y) > kRunFloor) {
-      sum += double(AlphaAt(b, x, y)) / 255.0;
+    while (x <= box.x1 && AlphaAt(b, x, y) > kRunFloor && dark(x, y)) {
+      sum += double(AlphaAt(b, x, y)) / alpha_unit;
       ++x;
     }
     runs.push_back(sum);
@@ -109,10 +121,15 @@ struct Ink {
   InkBox box;
   uint32_t pixels = 0;      // ink pixels
   double solidity = 0.0;    // pixels / box area (a ring is about a third, a disc about four fifths)
-  double rgb[3] = {0.0, 0.0, 0.0};  // alpha-weighted mean colour of the ink pixels
-  double luma = 0.0;        // the luma of that colour (0..255)
-  double stroke = 0.0;      // StrokeWidth
-  double contrast = 0.0;    // InkContrast against the slot's backdrop; set by MeasureOriginal (MeasureInk does not know the backdrop)
+  double rgb[3] = {0.0, 0.0, 0.0};       // alpha-weighted mean colour of all the ink pixels
+  double luma = 0.0;                     // the luma of that colour (0..255)
+  double line_rgb[3] = {0.0, 0.0, 0.0};  // alpha-weighted mean colour of the dark band (kDarkBand): the colour of the strokes, as the bitmap holds it
+  double mark_rgb[3] = {0.0, 0.0, 0.0};  // ... of the marks (kMarkBand), the darkest ink: an arrow, a letter
+  double mark_luma = 0.0;                // the luma of the marks' colour
+  double line_alpha = 0.0;               // the highest alpha of a dark band pixel: the level its strokes reach
+  double peak_alpha = 0.0;               // the highest alpha of any ink pixel
+  double stroke = 0.0;                   // StrokeWidth of the dark band
+  double contrast = 0.0;                 // InkContrast against the slot's backdrop; set by MeasureOriginal (MeasureInk does not know the backdrop)
   bool valid() const { return box.valid(); }
 };
 
@@ -121,6 +138,8 @@ inline Ink MeasureInk(const Bitmap& b, int threshold = kInkAlpha) {
   if (b.empty()) return ink;
   int x0 = int(b.width), y0 = int(b.height), x1 = -1, y1 = -1;
   double wsum = 0.0, sum[3] = {0.0, 0.0, 0.0};
+  double lo = 1e9, hi = -1e9;
+  int peak = 0;
   uint32_t n = 0;
   for (int y = 0; y < int(b.height); ++y) {
     for (int x = 0; x < int(b.width); ++x) {
@@ -133,16 +152,45 @@ inline Ink MeasureInk(const Bitmap& b, int threshold = kInkAlpha) {
       const double w = double(p[3]) / 255.0;
       wsum += w;
       for (int c = 0; c < 3; ++c) sum[c] += w * double(p[c]);
+      const double l = Luma(p[0], p[1], p[2]);
+      lo = std::min(lo, l);
+      hi = std::max(hi, l);
+      peak = std::max(peak, int(p[3]));
       ++n;
     }
   }
   if (n == 0) return ink;
+  const double dark_limit = lo + kDarkBand * (hi - lo) + 1e-6, mark_limit = lo + kMarkBand * (hi - lo) + 1e-6;
+  double dsum[3] = {0.0, 0.0, 0.0}, msum[3] = {0.0, 0.0, 0.0}, dw = 0.0, mw = 0.0;
+  int dpeak = 0;
+  for (int y = y0; y <= y1; ++y) {
+    for (int x = x0; x <= x1; ++x) {
+      const uint8_t* p = &b.rgba[(size_t(y) * b.width + size_t(x)) * 4];
+      if (p[3] <= threshold) continue;
+      const double l = Luma(p[0], p[1], p[2]);
+      if (l > dark_limit) continue;
+      const double w = double(p[3]) / 255.0;
+      dw += w;
+      dpeak = std::max(dpeak, int(p[3]));
+      for (int c = 0; c < 3; ++c) dsum[c] += w * double(p[c]);
+      if (l > mark_limit) continue;
+      mw += w;
+      for (int c = 0; c < 3; ++c) msum[c] += w * double(p[c]);
+    }
+  }
   ink.box = {x0, y0, x1, y1};
   ink.pixels = n;
   ink.solidity = double(n) / (double(x1 - x0 + 1) * double(y1 - y0 + 1));
-  for (int c = 0; c < 3; ++c) ink.rgb[c] = sum[c] / wsum;
+  for (int c = 0; c < 3; ++c) {
+    ink.rgb[c] = sum[c] / wsum;
+    ink.line_rgb[c] = dsum[c] / dw;  // the darkest pixel is in both bands: dw, mw > 0
+    ink.mark_rgb[c] = msum[c] / mw;
+  }
   ink.luma = Luma(ink.rgb[0], ink.rgb[1], ink.rgb[2]);
-  ink.stroke = StrokeWidth(b, ink.box, threshold);
+  ink.mark_luma = Luma(ink.mark_rgb[0], ink.mark_rgb[1], ink.mark_rgb[2]);
+  ink.line_alpha = double(dpeak);
+  ink.peak_alpha = double(peak);
+  ink.stroke = StrokeWidth(b, ink.box, threshold, dark_limit, std::max(1.0, double(dpeak)));
   return ink;
 }
 
@@ -167,8 +215,9 @@ inline Ink MeasureOriginal(const Bitmap& b, double backdrop) {
   return ink;
 }
 
-// Dark ink on a lighter surface (the phone's thin dark ring), as opposed to light ink on a dark surface (the prompt bars of every menu).
-inline bool IsDarkOnLight(const Ink& original, double backdrop) { return original.valid() && original.luma + kToneGap <= backdrop; }
+// Marks that stand out dark against the surface (the phone's arrow and rim on its light bar), as opposed to the glyphs of the dark prompt bars, whose marks are never kToneGap darker than a
+// bar of 24. Read off the marks, not the mean ink: the phone's bitmap is a light disc (231) with a dark rim (107) and a dark arrow (69), and its mean says "light".
+inline bool IsDarkOnLight(const Ink& original, double backdrop) { return original.valid() && original.mark_luma + kToneGap <= backdrop; }
 
 // ---- fitting ----------------------------------------------------------------------------------------------------------------------------------------
 
@@ -261,16 +310,24 @@ inline void Blit(Bitmap& dst, const Bitmap& src, int ox, int oy) {
   }
 }
 
-// Alpha only: dst's alpha becomes src's over dst's (the two layers of one colour: Tint comes after).
-inline void AlphaOver(Bitmap& dst, const Bitmap& src, int ox, int oy) {
+// src over dst at (ox, oy), straight alpha, colour and alpha both (the symbol of a ring has its own colour).
+inline void Over(Bitmap& dst, const Bitmap& src, int ox, int oy) {
   for (int y = 0; y < int(src.height); ++y) {
     for (int x = 0; x < int(src.width); ++x) {
       const int X = ox + x, Y = oy + y;
       if (X < 0 || Y < 0 || X >= int(dst.width) || Y >= int(dst.height)) continue;
-      const double sa = double(AlphaAt(src, x, y)) / 255.0, da = double(AlphaAt(dst, X, Y)) / 255.0;
-      dst.rgba[(size_t(Y) * dst.width + size_t(X)) * 4 + 3] = uint8_t(std::lround(255.0 * (sa + da * (1.0 - sa))));
+      const uint8_t* s = &src.rgba[(size_t(y) * src.width + size_t(x)) * 4];
+      uint8_t* d = &dst.rgba[(size_t(Y) * dst.width + size_t(X)) * 4];
+      const double sa = double(s[3]) / 255.0, da = double(d[3]) / 255.0, oa = sa + da * (1.0 - sa);
+      if (oa > 0.0)
+        for (size_t c = 0; c < 3; ++c) d[c] = uint8_t(std::clamp(std::lround((double(s[c]) * sa + double(d[c]) * da * (1.0 - sa)) / oa), 0L, 255L));
+      d[3] = uint8_t(std::clamp(std::lround(255.0 * oa), 0L, 255L));
     }
   }
+}
+
+inline void ScaleAlpha(Bitmap& b, double factor) {
+  for (size_t i = 0; i < size_t(b.width) * b.height; ++i) b.rgba[i * 4 + 3] = uint8_t(std::clamp(std::lround(double(b.rgba[i * 4 + 3]) * factor), 0L, 255L));
 }
 
 // Every pixel's colour = rgb (alpha untouched): line art is one colour, and a transparent pixel next to ink carries it too (a block compressor reads their colours as well).
@@ -399,17 +456,20 @@ inline Fitted FitArt(const Bitmap& src, Shape shape, const Ink& original, double
     return out;
   }
 
-  // dark on light: line art in the original's colour with the original's stroke weight
+  // marks darker than the surface: line art in the original's own ink colours and alpha, at the original's stroke weight, transparent elsewhere
   out.look = Look::Line;
   const double stroke = std::clamp(original.stroke, kMinStroke, std::max(kMinStroke, double(std::min(tw, th)) / 6.0));
   out.stroke = stroke;
   if (shape == Shape::Pictogram) {
     DrawRing(canvas, target, stroke);
+    Tint(canvas, original.line_rgb);  // the ring: the colour of the original's rim
     const int side = std::max(1, int(std::floor(kSymbolFraction * (double(std::min(tw, th)) - 2.0 * stroke) + 1e-6)));
     Bitmap symbol = cropped;  // its silhouette (alpha) is the symbol
     for (size_t i = 0; i < size_t(symbol.width) * symbol.height; ++i) symbol.rgba[i * 4 + 0] = symbol.rgba[i * 4 + 1] = symbol.rgba[i * 4 + 2] = 0;
     const Size d = FitSize(symbol.width, symbol.height, side, side);
-    AlphaOver(canvas, Resample(symbol, uint32_t(d.w), uint32_t(d.h)), target.x0 + (tw - d.w) / 2, target.y0 + (th - d.h) / 2);
+    Bitmap placed = Resample(symbol, uint32_t(d.w), uint32_t(d.h));
+    Tint(placed, original.mark_rgb);  // the symbol: the colour of the original's arrow
+    Over(canvas, placed, target.x0 + (tw - d.w) / 2, target.y0 + (th - d.h) / 2);
   } else {
     const Bitmap mask = DarknessMask(cropped);
     const double source_stroke = StrokeWidth(mask, {0, 0, int(mask.width) - 1, int(mask.height) - 1});
@@ -429,11 +489,13 @@ inline Fitted FitArt(const Bitmap& src, Shape shape, const Ink& original, double
     Blit(frame_ss, Resample(frame, uint32_t(d.w) * kSuperSample, uint32_t(d.h) * kSuperSample), pad * kSuperSample, pad * kSuperSample);
     Blit(text_ss, Resample(text, uint32_t(d.w) * kSuperSample, uint32_t(d.h) * kSuperSample), pad * kSuperSample, pad * kSuperSample);
     frame_ss = DilateAlpha(frame_ss, int(std::lround(add / 2.0 * kSuperSample)));
-    for (size_t i = 0; i < size_t(bw) * bh; ++i) frame_ss.rgba[i * 4 + 3] = std::max(frame_ss.rgba[i * 4 + 3], text_ss.rgba[i * 4 + 3]);
+    Tint(frame_ss, original.line_rgb);  // the outline: the colour of the original's rim
+    Tint(text_ss, original.mark_rgb);   // the key name: the colour of the original's arrow
+    Over(frame_ss, text_ss, 0, 0);
     const Bitmap lines = Resample(frame_ss, uint32_t(d.w + 2 * pad), uint32_t(d.h + 2 * pad));
     Blit(canvas, lines, target.x0 + (tw - int(lines.width)) / 2, target.y0 + (th - int(lines.height)) / 2);
   }
-  Tint(canvas, original.rgb);
+  if (original.line_alpha < 250.0) ScaleAlpha(canvas, original.line_alpha / 255.0);  // the alpha level the original's strokes reach
   out.bitmap = std::move(canvas);
   return out;
 }
@@ -444,9 +506,13 @@ struct FitCheck {
   Look look = Look::Solid;
   InkBox original_box, box;
   double original_luma = 0.0, luma = 0.0;
-  double original_contrast = 0.0, contrast = 0.0;
-  bool box_ok = false;       // the replacement's ink box within the original's + kBoxSlack
-  bool tone_ok = false;      // Look::Line: on the original's side of the backdrop and its contrast within kContrastTolerance of the original's; Look::Solid: on the original's side of the backdrop
+  double original_contrast = 0.0, contrast = 0.0;  // against the backdrop (logged for every surface; judged by nothing)
+  double original_rgb[3] = {0.0, 0.0, 0.0};        // the original's dark band colour
+  double rgb[3] = {0.0, 0.0, 0.0};                 // the replacement's ink colour (alpha-weighted mean)
+  double colour_diff = 0.0;                        // the largest channel difference between the two
+  double original_alpha = 0.0, alpha = 0.0;        // the alpha level the strokes reach
+  bool box_ok = false;   // the replacement's ink box within the original's + kBoxSlack
+  bool tone_ok = false;  // Look::Line: ink colour within kColourTolerance levels of the original's and alpha within kAlphaTolerance; Look::Solid: on the original's side of the backdrop
   bool ok() const { return box_ok && tone_ok; }
   double ratio() const { return original_contrast > 0.0 ? contrast / original_contrast : 0.0; }
 };
@@ -461,12 +527,18 @@ inline FitCheck CheckFit(const Ink& original, const Bitmap& art, double backdrop
   c.luma = ink.luma;
   c.original_contrast = original.contrast > 0.0 ? original.contrast : std::fabs(original.luma - backdrop);
   c.contrast = InkContrast(art, backdrop);
+  for (int i = 0; i < 3; ++i) {
+    c.original_rgb[i] = original.line_rgb[i];
+    c.rgb[i] = ink.rgb[i];
+    c.colour_diff = std::max(c.colour_diff, std::fabs(ink.rgb[i] - original.line_rgb[i]));
+  }
+  c.original_alpha = original.line_alpha;
+  c.alpha = ink.peak_alpha;
   c.box_ok = !original.valid() || BoxWithin(ink.box, original.box, kBoxSlack);
   if (!original.valid() || !ink.valid()) {
     c.tone_ok = ink.valid();
   } else if (c.look == Look::Line) {
-    // the same side of the backdrop as the original (dark on light), and the same contrast within the tolerance
-    c.tone_ok = (ink.luma < backdrop) == (original.luma < backdrop) && c.original_contrast > 0.0 && std::fabs(c.contrast / c.original_contrast - 1.0) <= kContrastTolerance;
+    c.tone_ok = c.colour_diff <= kColourTolerance && std::fabs(c.alpha - c.original_alpha) <= kAlphaTolerance;
   } else {
     c.tone_ok = (ink.luma > backdrop) == (original.luma > backdrop);
   }

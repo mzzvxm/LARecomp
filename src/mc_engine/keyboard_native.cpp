@@ -1146,11 +1146,13 @@ double BackdropOf(const GlyphTarget& g) {
     return g.pslot >= 0 ? larecomp::prompts::Info(static_cast<larecomp::prompts::Slot>(g.pslot)).backdrop : larecomp::prompts::kDarkBackdrop;
 }
 
-// "box 12,10..50,47 luma 66 stroke 2.6" for the log.
+// "ink box 12,14..51,48 luma 181 line 107,107,107 mark 68,69,68 alpha 255 stroke 3.0" for the log: the box, the mean luma, the colour of the dark band (the strokes), the colour of the marks and the alpha the
+// strokes reach, as the bitmap holds them, and the width of the stroke.
 std::string DescribeInk(const larecomp::prompts::Ink& ink) {
     if (!ink.valid()) return "no ink";
-    char text[96];
-    std::snprintf(text, sizeof(text), "ink box %d,%d..%d,%d luma %.0f stroke %.1f", ink.box.x0, ink.box.y0, ink.box.x1, ink.box.y1, ink.luma, ink.stroke);
+    char text[192];
+    std::snprintf(text, sizeof(text), "ink box %d,%d..%d,%d luma %.0f line %.0f,%.0f,%.0f mark %.0f,%.0f,%.0f alpha %.0f stroke %.1f", ink.box.x0, ink.box.y0, ink.box.x1, ink.box.y1, ink.luma, ink.line_rgb[0],
+                  ink.line_rgb[1], ink.line_rgb[2], ink.mark_rgb[0], ink.mark_rgb[1], ink.mark_rgb[2], ink.line_alpha, ink.stroke);
     return text;
 }
 
@@ -1374,12 +1376,15 @@ larecomp::prompts::Bitmap SourceBitmap(const larecomp::prompts::Art& art, uint32
 }
 
 // One line per surface built (once, with the art): the numbers of the fitting rule's check (prompt_art.h CheckFit), read back by perf\scripts\kbm\kbm_p4_report.py:
-// the replacement's ink box against the original's, both lumas, both mean contrasts against what the glyph sits on, and the verdict.
+// the replacement's ink box against the original's, both lumas, the replacement's ink colour and alpha against the original's dark band colour and alpha, both mean contrasts against what the
+// glyph sits on, and the verdict.
 void LogFit(const std::string& tex_name, const larecomp::prompts::Art& art, const GlyphTexture& t, const larecomp::prompts::Bitmap& fitted) {
     const larecomp::prompts::FitCheck c = larecomp::prompts::CheckFit(t.ink, fitted, t.backdrop);
-    MC_INFO("[prompts] fit slot={} tex={} art={} look={} orig_box={},{},{},{} box={},{},{},{} orig_luma={:.0f} luma={:.0f} orig_contrast={:.0f} contrast={:.0f} backdrop={:.0f} stroke={:.1f} ok={}", t.label,
-            tex_name, larecomp::prompts::Describe(art), c.look == larecomp::prompts::Look::Line ? "line" : "solid", c.original_box.x0, c.original_box.y0, c.original_box.x1, c.original_box.y1, c.box.x0,
-            c.box.y0, c.box.x1, c.box.y1, c.original_luma, c.luma, c.original_contrast, c.contrast, t.backdrop, t.ink.stroke, c.ok() ? 1 : 0);
+    MC_INFO("[prompts] fit slot={} tex={} art={} look={} orig_box={},{},{},{} box={},{},{},{} orig_luma={:.0f} luma={:.0f} orig_ink={:.0f},{:.0f},{:.0f} ink={:.0f},{:.0f},{:.0f} orig_alpha={:.0f} alpha={:.0f} "
+            "orig_contrast={:.0f} contrast={:.0f} backdrop={:.0f} stroke={:.1f} ok={}",
+            t.label, tex_name, larecomp::prompts::Describe(art), c.look == larecomp::prompts::Look::Line ? "line" : "solid", c.original_box.x0, c.original_box.y0, c.original_box.x1, c.original_box.y1,
+            c.box.x0, c.box.y0, c.box.x1, c.box.y1, c.original_luma, c.luma, c.original_rgb[0], c.original_rgb[1], c.original_rgb[2], c.rgb[0], c.rgb[1], c.rgb[2], c.original_alpha, c.alpha, c.original_contrast,
+            c.contrast, t.backdrop, t.ink.stroke, c.ok() ? 1 : 0);
 }
 
 // The tiled, swapped bytes (what the guest holds) of `art` for the texture `tex_name`: the source picture fitted into the ink of what that texture shows today and drawn in its tonal
