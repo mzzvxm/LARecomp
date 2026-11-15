@@ -23,6 +23,17 @@
 // THE PLAYER'S CAR (E4, e4-changecar): LocalOptions_GetVehicleProfile(slot) and Racer_ChangeCarByConfig(player, config) dress it
 // live; the profile it wore before comes back through the same calls when the scene ends.
 //
+// A PATH (package M4c): `car <id> path <route> [speed <x>] [mode brain|kinematic]` on a car that is ready, and `car <id> stop`.
+//   kinematic   the car is put on the route at every update with Racer_Teleport(racer, position, heading, speed): the place is a function
+//               of the path clock (the scene's time as the game's time scale makes it), the heading is the route's and the speed is the
+//               route's speed, so the wheels and the body have the velocity of the drive. PathDrive::PollTeleport hands out the call; the
+//               game side makes one for each car that is due, every update (they are not the one-call-an-update spawn steps).
+//   brain       the game's own cruising AI (sub_82744AE0, the traffic driver): BrainFactory_CreateBrainCruising, SetSpeed, SetDestSpeed,
+//               SetLooping(false), AppendDest for each destination (at most 48), then BrainCruising_DriveToNearestRail, the call that takes the
+//               brain out of its idle state (E4 never made it: after Create / SetSpeed / AppendDest the brain's state stays 0, which holds the brake
+//               and no throttle; HasReachedGoal is `state == 6`). The brain drives the lanes of the traffic network, not the exact polyline.
+//               The brain is deleted (BrainFactory_DeleteBrain) before the car's opponent is.
+//
 
 #include <cstdint>
 #include <deque>
@@ -32,6 +43,7 @@
 
 #include "car_registry.h"
 #include "car_verbs.h"
+#include "path_follow.h"
 
 namespace mc::cinematic {
 
@@ -54,6 +66,16 @@ enum class Native : uint8_t {
     kGetPosition,          // Racer_GetPosition(racer, vec) -> vector slot
     kDeleteOpponent,       // OpponentManager_DeleteOpponent(opp)
     kChangeCarByConfig,    // Racer_ChangeCarByConfig(racer, config*)
+    // a path in brain mode (M4c)
+    kCreateBrain,          // BrainFactory_CreateBrainCruising(racer) -> brain*
+    kBrainSetSpeed,        // BrainCruising_SetSpeed(brain, float m/s)
+    kBrainSetDestSpeed,    // BrainCruising_SetDestSpeed(brain, float m/s)
+    kBrainSetLooping,      // BrainCruising_SetLooping(brain, bool)
+    kBrainAppendDest,      // BrainCruising_AppendDest(brain, vec)
+    kBrainDrive,           // BrainCruising_DriveToNearestRail(brain): the go
+    kBrainReached,         // BrainCruising_HasReachedGoal(brain) -> bool
+    kBrainStop,            // BrainCruising_RemoveFromTraffic(brain): back to idle, brake held
+    kDeleteBrain,          // BrainFactory_DeleteBrain(racer)
 };
 const char* NativeName(Native native);
 
@@ -64,8 +86,10 @@ struct Call {
     uint32_t ptr = 0;     // a name or a config the call passes
     int32_t index = 0;    // a car table or garage index
     std::string text;     // a vehicle name (kLookupCar)
-    double position[3] = {};
+    double position[3] = {};      // a place (the loader, Racer_Teleport), or a destination (kBrainAppendDest)
     double heading_native = 0.0;  // the angle Racer_Teleport and the loader take (NativeHeadingDeg)
+    double speed = 0.0;           // kTeleport: the car's speed along its nose after it is put there (m/s); the brain's speed natives: the value
+    uint32_t brain = 0;           // the brain natives: the brain (racer is the car it drives)
 };
 
 struct Outcome {
@@ -89,7 +113,16 @@ struct CarTiming {
     int64_t delete_hold_ms = 1500;      // a finished spawn is not deleted before this
     int64_t delete_settle_ms = 600;     // E4: the manager is clean 0.25 s after the delete
     int64_t dress_settle_ms = 3000;     // the dressed player's car finishes streaming its parts a few seconds after the change (E4)
+    int64_t brain_gap_ms = 100;         // between two natives of a brain program (E4 waited 10 updates between them)
+    int64_t reached_poll_ms = 500;      // between two reads of HasReachedGoal
+    double path_log_s = 0.5;            // path time between two progress lines of a path
 };
+
+// The update counter the registry's poses are stamped with (CarEntry::pose_frame). A pose read this many updates ago or fewer is the car's now; an older one is
+// the last good read of a car whose matrix cannot be read any more (the path code must not take it for where the car is). kNoFrame: the caller does not track
+// updates, every pose counts as fresh (the unit tests that feed one pose and step the clock).
+constexpr uint64_t kNoFrame = ~0ull;
+constexpr uint64_t kPoseFreshUpdates = 3;
 
 // ---------------------------------------------------------------------------------------------------------------- a spawn
 
@@ -191,6 +224,112 @@ class Dresser {
     std::vector<CarEvent> events_;
 };
 
+// ---------------------------------------------------------------------------------------------------------------- a path
+
+// What the brain of a car says about itself, read from the game's memory by the game side: the state byte at brain+1708 and the
+// index of the destination it heads for at brain+1656 (E4's brain object; CHECK: read from sub_82746340, not seen in a game).
+const char* BrainStateName(int state);
+
+// One car's path: the route, the speed, which way it is driven, and what is left to do. Pure; the Director owns one per scene car.
+class PathDrive {
+  public:
+    explicit PathDrive(const CarTiming& timing = {}) : timing_(timing) {}
+
+    // `car <id> path` came due, on a car that exists. `clock` is the path clock now: path time 0 is this moment (the car may not be ready
+    // yet: it is then put where the route is at the clock when it is). False with `why` when the route cannot be driven.
+    bool Start(const CarCommand& cmd, const Route& route, double clock, std::string* why);
+    // `car <id> stop` came due.
+    void Stop(double clock);
+
+    bool Active() const { return active_; }  // a path was started and is not over
+    PathMode mode() const { return mode_; }
+    const PathSampler& sampler() const { return sampler_; }
+    bool BrainStarted() const { return brain_ != 0 || brain_ever_; }  // a brain was made for this car: a second path is refused
+
+    // ---- kinematic: one Racer_Teleport per update while the path runs
+    struct Teleport {
+        double position[3] = {};
+        double heading_native = 0.0;
+        double speed = 0.0;
+        double along = 0.0;  // metres along the route
+        bool first = false;  // the first put of the car on the route (a jump is expected)
+        bool last = false;   // the last one: the car stands there from now on (speed 0)
+    };
+    // `pose` is the car as read this update (null: not read yet, or not read for `unread` updates: 0 when it never was). True when a teleport is due.
+    bool PollTeleport(double clock, const CarPose* pose, Teleport* out, uint64_t unread = 0);
+    void ReportTeleport(bool called);
+
+    // ---- brain: the program of natives, one at a time
+    Call PollBrain(int64_t now_ms, uint32_t racer, double y_ref);
+    void ReportBrain(const Outcome& outcome);
+    bool NeedsBrainDelete() const { return brain_ != 0 && !brain_gone_; }
+    Call PollBrainDelete(int64_t now_ms, uint32_t racer);
+    void ReportBrainDelete(const Outcome& outcome);
+    uint32_t brain() const { return brain_; }
+    bool BrainRunning() const { return mode_ == PathMode::kBrain && brain_ != 0 && !brain_gone_ && stage_ >= BStage::kRunning; }
+    // The host read the brain's state byte and destination index (and the car's pose): a progress line every path_log_s, and when the state changes.
+    // `pose` null: the matrix has not been read for `unread` updates (the line says so: a stale pose is not where the car is).
+    void NoteBrain(double clock, int state, int dest_index, const CarPose* pose, uint64_t unread = 0);
+
+    struct Stats {
+        uint64_t teleports = 0;
+        uint64_t refused = 0;  // teleports the game side could not make
+        uint64_t samples = 0;  // updates with a pose to compare (not the first)
+        uint64_t unread = 0;   // updates (after the first put) with no fresh pose: nothing to compare, the car is put on the route all the same
+        uint64_t unread_max = 0;  // ... the longest the matrix was unread, in updates
+        double sum_off = 0.0;  // metres the car was from the route's place at the clock, summed
+        double max_off = 0.0;
+        double max_heading_off = 0.0;
+        double brain_max_off = 0.0;  // brain: farthest from the route
+        double brain_best_s = 0.0;   // brain: farthest along the route (by the nearest point)
+        int brain_states_seen = 0;   // a bit per state 0..7
+        uint64_t brain_samples = 0;
+    };
+    const Stats& stats() const { return stats_; }
+    std::vector<CarEvent> TakeEvents();
+
+  private:
+    enum class BStage : uint8_t { kIdle, kCreate, kSetSpeed, kSetDestSpeed, kSetLooping, kAppend, kDrive, kRunning, kStopping, kDone };
+    void Event(bool warning, std::string text);
+    void Summary(const char* why);
+    void Fail(const std::string& why);
+
+    CarTiming timing_;
+    std::string id_;
+    std::string route_name_;
+    PathMode mode_ = PathMode::kKinematic;
+    PathSampler sampler_;
+    SpeedSpec speed_;
+    bool active_ = false;
+    double start_clock_ = 0.0;
+    double stop_tau_ = 0.0;
+    bool stopping_ = false;
+    // kinematic
+    bool teleported_ = false;
+    bool teleport_last_ = false;  // the teleport handed out last is the last one of the path
+    double last_clock_ = -1e300;
+    double next_log_tau_ = 0.0;
+    double hold_y_ = 0.0;
+    bool have_hold_y_ = false;
+    // brain
+    BStage stage_ = BStage::kIdle;
+    std::vector<PathSample> dests_;
+    size_t next_dest_ = 0;
+    double y_ref_ = 0.0;
+    uint32_t brain_ = 0;
+    bool brain_ever_ = false;
+    bool brain_gone_ = false;
+    bool waiting_ = false;
+    bool stop_wanted_ = false;
+    int64_t not_before_ = 0;
+    int64_t now_ = 0;
+    int last_state_ = -1;
+    double next_brain_log_ = 0.0;
+    bool reached_ = false;
+    Stats stats_;
+    std::vector<CarEvent> events_;
+};
+
 // ---------------------------------------------------------------------------------------------------------------- everything
 
 // What the scene asked for, the registry, the machines: one native call an update at most.
@@ -202,8 +341,9 @@ class Director {
         bool ok = true;
         std::string message;  // for the log: what was done, or why not
     };
-    // A scene's car statement due now.
-    Applied Apply(const CarCommand& cmd);
+    // A scene's car statement due now. `clock` is the path clock (the scene's time as the game's time scale makes it, in seconds) and `route`
+    // the parsed file of a `path` statement (null for the other verbs).
+    Applied Apply(const CarCommand& cmd, double clock = 0.0, const Route* route = nullptr);
     // The scene begins: the player is in the registry.
     void BeginScene();
     // The scene ends (or is replaced): every car it spawned is to go, the player's car is to come back.
@@ -224,6 +364,25 @@ class Director {
 
     // The game side found the racer gone from the opponent manager (the world was rebuilt): nothing more is called on it.
     void MarkLost(uint32_t racer);
+
+    // ---- paths (M4c). The kinematic cars are put on their routes every update, not one a poll: the game side asks for all that are due
+    // (after the poll's own call, if any) and makes each call.
+    struct TeleportDue {
+        std::string car;
+        uint32_t racer = 0;
+        PathDrive::Teleport teleport;
+    };
+    // `frame`: the update counter the poses were stamped with (the game side's); a pose older than kPoseFreshUpdates is not passed to the path.
+    void PollTeleports(double clock, std::vector<TeleportDue>* out, uint64_t frame = kNoFrame);
+    void ReportTeleport(const std::string& car, bool called);
+    // The cars whose brain runs: the game side reads each one's state and destination index and hands them to NoteBrain.
+    struct BrainReader {
+        std::string id;
+        uint32_t brain = 0;
+    };
+    std::vector<BrainReader> BrainReaders() const;
+    void NoteBrain(const std::string& id, double clock, int state, int dest_index, uint64_t frame = kNoFrame);
+    const PathDrive* PathOf(const std::string& id) const;
 
     // The racers that have an entity to read a pose from, with their ids.
     struct Reader {
@@ -248,9 +407,10 @@ class Director {
     struct SceneCar {
         std::string id;
         Spawner spawner;
+        PathDrive path;
         bool ended = false;  // its scene is over: it is no longer reachable by id
         bool was_ready = false;
-        explicit SceneCar(const CarTiming& t) : spawner(t) {}
+        explicit SceneCar(const CarTiming& t) : spawner(t), path(t) {}
     };
     SceneCar* FindLive(const std::string& id);
     void Collect(SceneCar& car);
@@ -262,6 +422,8 @@ class Director {
     bool scene_on_ = false;
     // Which machine the call handed out last came from.
     SceneCar* pending_car_ = nullptr;
+    SceneCar* pending_path_car_ = nullptr;
+    bool pending_path_delete_ = false;
     bool pending_dresser_ = false;
     std::vector<CarEvent> events_;
     int spawned_ = 0;

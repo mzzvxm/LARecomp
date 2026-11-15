@@ -126,7 +126,7 @@ uint32_t GuestPutString(const char* text) {
     return at;
 }
 
-NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args) {
+NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, bool flush_log) {
     NativeResult res;
     uint8_t* base = Membase();
     if (!base || args.size() > kMaxArgs) return res;
@@ -144,7 +144,7 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args) 
     uint32_t i = 0;
     for (const uint32_t a : args) Put32(base, g_block.args + 4 * i++, a);
 
-    rex::FlushLogging();  // a line written before the call is on disk if the call takes the game down
+    if (flush_log) rex::FlushLogging();  // a line written before the call is on disk if the call takes the game down
     const auto t0 = std::chrono::steady_clock::now();
     rex::ppc::GuestToHostFunction<void>(fn, g_block.ctx);
     const auto t1 = std::chrono::steady_clock::now();
@@ -166,7 +166,7 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args) 
 #include "native_call.h"
 
 namespace mc::cinematic {
-NativeResult CallNative(uint32_t, std::initializer_list<uint32_t>) {
+NativeResult CallNative(uint32_t, std::initializer_list<uint32_t>, bool) {
     return {};
 }
 uint32_t GuestPutVec(float, float, float, float) {

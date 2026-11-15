@@ -5,8 +5,8 @@
 //   <build dir>/larecomp_cars_test
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
-//   clang++ -std=c++23 -Wall -Wextra src/mc_engine/cinematic/cars_test.cpp \
-//       src/mc_engine/cinematic/car_registry.cpp src/mc_engine/cinematic/car_spawn.cpp -o cars_test.exe
+//   clang++ -std=c++23 -Wall -Wextra src/mc_engine/cinematic/cars_test.cpp src/mc_engine/cinematic/car_registry.cpp \
+//       src/mc_engine/cinematic/car_spawn.cpp src/mc_engine/cinematic/path_follow.cpp -o cars_test.exe
 
 #include <algorithm>
 #include <cmath>
@@ -117,8 +117,8 @@ void TestVerbs() {
         Check(P("Player profile 0").status == CarParse::kOk, "Player (any case) profile 0");
     }
     // other packages' verbs pass
-    Check(P("p1 path route sunset.route speed 1.0").status == CarParse::kOtherVerb, "a path is another package's");
-    Check(P("p1 speed 3").status == CarParse::kOtherVerb, "speed is another package's");
+    Check(P("p1 speed 3").status == CarParse::kOtherVerb, "speed is not a car verb (it is an option of path): it passes the parser");
+    Check(P("p1 fly").status == CarParse::kOtherVerb, "a verb nobody here knows passes");
     Check(P("player follow route a.route").status == CarParse::kOtherVerb, "a player verb nobody here knows passes");
 
     CheckError("p1", "car <id>");
@@ -150,6 +150,61 @@ void TestVerbs() {
     CheckError("player profile x", "car player profile <N>");
     CheckError("player profile 1 2", "car player profile <N>");
     CheckError("p1 profile 3", "only the player's car");
+}
+
+void TestPathVerbs() {
+    {
+        const Parsed p = P("a path street.route");
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kPath && p.cmd.id == "a" && p.cmd.route == "street.route", "path: verb, id, route");
+        Check(p.cmd.mode == PathMode::kKinematic, "the default mode is kinematic");
+        Check(p.cmd.speed.kind == SpeedKind::kFile, "the default speed is the route's own");
+    }
+    {
+        const Parsed p = P("b PATH routes/lane-b.route SPEED 14 MODE Brain");
+        Check(p.status == CarParse::kOk && p.cmd.route == "routes/lane-b.route", "a route in a folder; the words in any case");
+        Check(p.cmd.speed.kind == SpeedKind::kMetersPerSecond && p.cmd.speed.value == 14.0, "speed 14 m/s");
+        Check(p.cmd.mode == PathMode::kBrain, "mode brain");
+    }
+    {
+        const Parsed p = P("b path a.route mode kinematic speed x1.5");
+        Check(p.status == CarParse::kOk && p.cmd.mode == PathMode::kKinematic && p.cmd.speed.kind == SpeedKind::kScale && p.cmd.speed.value == 1.5, "options in the other order; a factor");
+        Check(P("b path a.route speed 2x").cmd.speed.value == 2.0, "2x is a factor too");
+        Check(P("b path dir\\sub\\a.route").status == CarParse::kOk, "a backslash path");
+    }
+    {
+        const Parsed p = P("a stop");
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kStop && p.cmd.id == "a", "stop");
+    }
+    CheckError("a path", "path needs a route file");
+    CheckError("a path ../secret.route", "not a route file name");
+    CheckError("a path a/../../b.route", "not a route file name");
+    CheckError("a path /abs/x.route", "not a route file name");
+    CheckError("a path \\abs\\x.route", "not a route file name");
+    CheckError("a path C:x.route", "not a route file name");
+    CheckError("a path a;b.route", "not a route file name");
+    CheckError("a path ./a.route", "not a route file name");
+    CheckError("a path a.route speed", "speed needs metres a second");
+    CheckError("a path a.route speed fast", "speed needs metres a second");
+    CheckError("a path a.route speed 200", "from 0.5 to 120 metres a second");
+    CheckError("a path a.route speed 0.1", "from 0.5 to 120 metres a second");
+    CheckError("a path a.route speed x50", "a speed factor from 0.05 to 10");
+    CheckError("a path a.route speed 5 speed 6", "a second 'speed'");
+    CheckError("a path a.route mode", "mode needs brain or kinematic");
+    CheckError("a path a.route mode flying", "brain (the game's own AI drives) or kinematic");
+    CheckError("a path a.route mode brain mode brain", "a second 'mode'");
+    CheckError("a path a.route colour red", "path: unknown option 'colour'");
+    CheckError("player path a.route", "'player' is the player's own car");
+    CheckError("player stop", "'player' is the player's own car");
+    CheckError("a stop now", "takes nothing");
+
+    Check(car_verbs_detail::IsRoutePath("a.route") && car_verbs_detail::IsRoutePath("routes/x y.route") && car_verbs_detail::IsRoutePath("m4c-a_1.route"), "route names that are fine");
+    Check(!car_verbs_detail::IsRoutePath("") && !car_verbs_detail::IsRoutePath("..") && !car_verbs_detail::IsRoutePath("a//..//b") &&
+              !car_verbs_detail::IsRoutePath(std::string(121, 'a')),
+          "route names that are not");
+    Check(car_verbs_detail::IsRoutePath(std::string(120, 'a')), "120 characters are fine");
+    CarCommand c = P("a path r.route speed x2 mode brain").cmd;
+    Check(DescribeCarCommand(c) == "a path r.route at x2 of the route's speeds (brain)", "describe a path: " + DescribeCarCommand(c));
+    Check(DescribeCarCommand(P("a stop").cmd) == "a stop", "describe stop");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- headings and poses
@@ -194,6 +249,34 @@ void TestPoses() {
     MatrixForNativeHeading(10.0, pos, m);
     m[14] = INFINITY;
     Check(!PoseFromMatrix(m, &pose), "a matrix with an infinity is no car's");
+    // The w words are not the game's to keep: Racer_Teleport leaves the position row's from the stack (M4c's first run: a car whose matrix "does not read")
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    m[3] = NAN;
+    m[7] = INFINITY;
+    m[11] = -INFINITY;
+    m[15] = NAN;
+    Check(PoseFromMatrix(m, &pose), "NaN and infinite w words are no reason to refuse a car's matrix");
+    CheckNum(pose.heading, 62.0, "...and the pose is right", 1e-4);
+    CheckNum(pose.position[0], 900.0, "...the position too");
+    Check(MatrixHasBadW(m) && MatrixFault(m).empty(), "the w words are named, the matrix has no fault");
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    Check(!MatrixHasBadW(m), "clean w words are not named");
+    m[13] = NAN;
+    Check(MatrixFault(m).find("word 13 (position y)") != std::string::npos, "a NaN in the position says which word: " + MatrixFault(m));
+    MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+    m[8] = m[9] = m[10] = 0.0f;
+    Check(MatrixFault(m).find("back row") != std::string::npos, "a flat back row says so: " + MatrixFault(m));
+    Check(!MatrixFault(bad).empty(), "an all-zero matrix has a fault");
+    {  // the registry keeps the words clean for the camera
+        CarRegistry reg;
+        reg.Add("p1", false);
+        MatrixForNativeHeading(NativeHeadingDeg(62.0), pos, m);
+        m[3] = NAN;
+        m[15] = NAN;
+        Check(reg.UpdatePose("p1", m, 3), "a matrix with a NaN w word is stored");
+        float out[16];
+        Check(reg.Matrix("p1", out) && out[3] == 0.0f && out[7] == 0.0f && out[11] == 0.0f && out[15] == 1.0f && out[12] == 900.0f, "...with clean w words");
+    }
 }
 
 void TestRegistry() {
@@ -235,6 +318,11 @@ struct FakeGame {
     std::vector<uint32_t> added_nodes;
     std::vector<uint32_t> deleted_nodes;
     uint32_t last_config = 0;
+    uint32_t next_brain = 0xBF5A2D40;
+    bool no_brain = false;       // CreateBrain gives 0
+    int reached_after = 1 << 30;  // HasReachedGoal says yes from this many reads
+    int reached_reads = 0;
+    std::vector<uint32_t> brains_deleted;
 
     Outcome Run(const Call& c, int64_t now) {
         Outcome o;
@@ -273,6 +361,16 @@ struct FakeGame {
                 o.ret_written = false;
                 break;
             case Native::kChangeCarByConfig: last_config = c.ptr; o.ret_written = false; break;
+            case Native::kCreateBrain:
+                if (no_brain) {
+                    o.ret = 0;
+                } else {
+                    o.ret = next_brain;
+                    next_brain += 0x6B0;
+                }
+                break;
+            case Native::kBrainReached: o.ret = ++reached_reads >= reached_after ? 1u : 0u; break;
+            case Native::kDeleteBrain: brains_deleted.push_back(c.racer); o.ret_written = false; break;
             default: o.ret_written = false; break;
         }
         return o;
@@ -650,6 +748,512 @@ void TestPlayerDress() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------- paths
+
+Route RouteOf(const std::string& text) {
+    Route r;
+    std::string e;
+    if (!ParseRoute(text, &r, &e)) std::printf("  (route did not parse: %s)\n", e.c_str());
+    return r;
+}
+
+CarCommand PathCmd(const std::string& id, const std::string& route, PathMode mode = PathMode::kKinematic, SpeedSpec speed = {}) {
+    CarCommand c;
+    c.id = id;
+    c.verb = CarVerb::kPath;
+    c.route = route;
+    c.mode = mode;
+    c.speed = speed;
+    return c;
+}
+CarCommand StopCmd(const std::string& id) {
+    CarCommand c;
+    c.id = id;
+    c.verb = CarVerb::kStop;
+    return c;
+}
+
+// The pose the glue would read from the car's entity: a car at (x, y, z) with the scene heading h.
+void FeedPose(Director& dir, const std::string& id, double x, double y, double z, double heading, uint64_t frame) {
+    const double pos[3] = {x, y, z};
+    float m[16];
+    MatrixForNativeHeading(NativeHeadingDeg(heading), pos, m);
+    dir.registry().UpdatePose(id, m, frame);
+}
+
+// A ready car "p1" (spawned the usual way), the registry given a pose for it. Returns the fake time at which it was ready.
+int64_t ReadyCar(Director& dir, FakeGame& game, const std::string& id, double x, double y, double z, double heading) {
+    dir.BeginScene();
+    dir.Apply(Spawn(id, "vp_lam_murcielago_06", x, z, heading));
+    const int64_t t = Drive(dir, game, 0, 9000);
+    FeedPose(dir, id, x, y, z, heading, 1);
+    return t;
+}
+
+struct KinematicRun {
+    std::vector<Director::TeleportDue> puts;
+    std::vector<double> clocks;
+};
+
+// Steps the path clock from `clock0` in `dt` steps for `steps` updates the way the game side does: read the pose, ask for the teleports, make them (the pretend
+// game puts the car where it was told and lets a step of physics move it along its heading at its speed).
+KinematicRun StepKinematic(Director& dir, const std::string& id, double clock0, double dt, int steps, double y_after_physics, bool refuse = false) {
+    KinematicRun run;
+    for (int i = 0; i < steps; ++i) {
+        const double clock = clock0 + i * dt;
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(clock, &due);
+        for (const Director::TeleportDue& d : due) {
+            run.puts.push_back(d);
+            run.clocks.push_back(clock);
+            dir.ReportTeleport(d.car, !refuse);
+            // physics: a step of the car's own velocity along its nose
+            const double h = NormalizeDegrees(d.teleport.heading_native - 180.0) * 3.14159265358979323846 / 180.0;
+            FeedPose(dir, d.car, d.teleport.position[0] + std::sin(h) * d.teleport.speed * dt, y_after_physics, d.teleport.position[2] + std::cos(h) * d.teleport.speed * dt,
+                     NormalizeDegrees(d.teleport.heading_native - 180.0), static_cast<uint64_t>(i + 2));
+        }
+        dir.Poll(static_cast<int64_t>(clock * 1000.0) + 20000, 0xBF33C450u);  // the director's own poll goes on beside (no call is due)
+        (void)id;
+    }
+    return run;
+}
+
+void TestPathKinematic() {
+    const Route straight = RouteOf("100,200,10\n100,300,10\n");  // 100 m along +Z at 10 m/s: 10 s
+    {
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        const Director::Applied ap = dir.Apply(PathCmd("a", "street.route"), 3.0, &straight);
+        Check(ap.ok, "a path on a ready car: " + ap.message);
+        Check(dir.PathOf("a") && dir.PathOf("a")->Active(), "the path is on");
+        Check(HasEvent(dir, "path a starts (kinematic): route street.route, 2 points, 100.0 m, 10.0 s at the route's own speeds"), "the start line");
+
+        const size_t calls_before = game.calls.size();
+        KinematicRun run = StepKinematic(dir, "a", 3.0, 1.0 / 30.0, 400, 17.55);
+        Check(game.calls.size() == calls_before, "the kinematic teleports are not natives of the director's poll (no call went through it)");
+        Check(!run.puts.empty() && run.puts.front().teleport.first, "the first put is the first");
+        CheckNum(run.puts.front().teleport.position[0], 100.0, "the car is put on the route's first point: x");
+        CheckNum(run.puts.front().teleport.position[2], 200.0, "... z");
+        CheckNum(run.puts.front().teleport.position[1], 17.5, "no heights in the route: the car's own height (from its pose)");
+        CheckNum(run.puts.front().teleport.heading_native, 180.0, "heading: route along +Z is scene 0, native 180");
+        CheckNum(run.puts.front().teleport.speed, 10.0, "the speed of the route's point");
+        CheckNum(run.puts.front().teleport.along, 0.0, "along 0");
+        // the car is on the route at the path clock
+        bool on_clock = true;
+        bool no_backwards = true;
+        double prev_along = -1.0;
+        for (size_t i = 0; i < run.puts.size(); ++i) {
+            const double tau = run.clocks[i] - 3.0;
+            const double want_z = 200.0 + std::min(100.0, 10.0 * tau);
+            if (std::fabs(run.puts[i].teleport.position[2] - want_z) > 1e-6) on_clock = false;
+            if (run.puts[i].teleport.along + 1e-9 < prev_along) no_backwards = false;
+            prev_along = run.puts[i].teleport.along;
+        }
+        Check(on_clock, "every put is where the route is at the path clock (10 m/s from clock 3)");
+        Check(no_backwards, "never backwards");
+        Check(run.puts.back().teleport.last && run.puts.back().teleport.speed == 0.0, "the last put has speed 0");
+        CheckNum(run.puts.back().teleport.position[2], 300.0, "the car ends on the last point");
+        const size_t n_last = static_cast<size_t>(std::count_if(run.puts.begin(), run.puts.end(), [](const Director::TeleportDue& d) { return d.teleport.last; }));
+        Check(n_last == 1, "one last put");
+        Check(!dir.PathOf("a")->Active(), "the path is over after its last put");
+        Check(run.puts.size() == 301 || run.puts.size() == 302, "a put at every update until the time is up (300 updates and the end): " + std::to_string(run.puts.size()));
+        Check(dir.PathOf("a")->stats().teleports == run.puts.size() && dir.PathOf("a")->stats().refused == 0, "the counts");
+        Check(dir.PathOf("a")->stats().max_off < 0.05, "the car (moved on by physics) stays on the route's place to within 5 cm: " + std::to_string(dir.PathOf("a")->stats().max_off));
+        Check(HasEvent(dir, "path a finished: the car stands at the last point"), "the summary line");
+        // no more puts once it is over
+        KinematicRun more = StepKinematic(dir, "a", 20.0, 1.0 / 30.0, 30, 17.5);
+        Check(more.puts.empty(), "nothing is put after the path is over");
+    }
+    {  // the progress lines: one every half second of path time, from the pose and the route
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+        StepKinematic(dir, "a", 0.0, 1.0 / 30.0, 120, 17.5);
+        int lines = 0;
+        bool format_ok = true;
+        for (const CarEvent& e : dir.TakeEvents()) {
+            if (e.text.rfind("path a t=", 0) != 0) continue;
+            ++lines;
+            if (e.text.find("route (") == std::string::npos || e.text.find(", car (") == std::string::npos || e.text.find(" off ") == std::string::npos ||
+                e.text.find("ahead") == std::string::npos) {
+                format_ok = false;
+            }
+        }
+        Check(lines >= 7 && lines <= 9, "about one line every 0.5 s for 4 s: " + std::to_string(lines));
+        Check(format_ok, "a progress line says the route's place, the car's and how far off");
+    }
+    {  // a car that is not ready when the key comes due is put where the route is by then
+        Director dir;
+        FakeGame game;
+        dir.BeginScene();
+        dir.Apply(Spawn("a", "vp_lam_murcielago_06", 100.0, 200.0, 0.0));
+        Check(dir.Apply(PathCmd("a", "street.route"), 1.0, &straight).ok, "a path key on a car that is still being made");
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(2.0, &due);
+        Check(due.empty(), "no put while the car is being made");
+        Drive(dir, game, 0, 9000);
+        FeedPose(dir, "a", 100.0, 17.5, 200.0, 0.0, 1);
+        dir.PollTeleports(6.0, &due);
+        Check(due.size() == 1 && due[0].teleport.first, "ready: the first put");
+        CheckNum(due[0].teleport.along, 50.0, "five seconds into the route: 50 m (the path clock started at the key)", 1e-6);
+        CheckNum(due[0].teleport.position[2], 250.0, "z 250");
+    }
+    {  // the route's own heights are used, and a speed of the scene's own
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 0.0, 10.0, 0.0, 90.0);
+        const Route hills = RouteOf("0,0,10,10\n50,0,10,12\n100,0,10,15\n");
+        dir.Apply(PathCmd("a", "hill.route", PathMode::kKinematic, {SpeedKind::kMetersPerSecond, 20.0}), 0.0, &hills);
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(1.0, &due);
+        Check(due.size() == 1, "one put");
+        CheckNum(due[0].teleport.along, 20.0, "20 m/s: 20 m after a second");
+        CheckNum(due[0].teleport.position[1], 10.8, "the route's height at 20 m (10 + 2 * 0.4)", 1e-9);
+        CheckNum(due[0].teleport.heading_native, 270.0, "along +X is scene 90, native 270");
+        CheckNum(due[0].teleport.speed, 20.0, "speed 20");
+    }
+    {  // the clock stands still: no second put at the same clock
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(0.0, &due);
+        Check(due.size() == 1, "the first put at clock 0");
+        dir.ReportTeleport("a", true);
+        due.clear();
+        dir.PollTeleports(0.0, &due);
+        Check(due.empty(), "a clock that has not moved gives no put");
+        dir.PollTeleports(0.016, &due);
+        Check(due.size() == 1, "...and the next one does");
+    }
+    {  // stop: the car is put where it was, with speed 0, and the path is over
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+        StepKinematic(dir, "a", 0.0, 1.0 / 30.0, 90, 17.5);  // 3 s: 30 m
+        const Director::Applied st = dir.Apply(StopCmd("a"), 3.0);
+        Check(st.ok, "stop a running path");
+        KinematicRun run = StepKinematic(dir, "a", 3.0, 1.0 / 30.0, 30, 17.5);
+        Check(run.puts.size() == 1 && run.puts[0].teleport.last && run.puts[0].teleport.speed == 0.0, "one last put with speed 0");
+        CheckNum(run.puts[0].teleport.position[2], 230.0, "...at the place of the stop (30 m along)", 1e-6);
+        Check(!dir.PathOf("a")->Active(), "the path is over");
+        Check(HasEvent(dir, "path a stopped"), "the summary says stopped");
+        const Director::Applied again = dir.Apply(StopCmd("a"), 4.0);
+        Check(!again.ok && again.message.find("has no path running") != std::string::npos, "a second stop says there is nothing to stop");
+        // a path again after the stop (kinematic can start again)
+        Check(dir.Apply(PathCmd("a", "street.route"), 5.0, &straight).ok, "a new path after a stop");
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(5.5, &due);
+        Check(due.size() == 1 && std::fabs(due[0].teleport.along - 5.0) < 1e-9, "the new path starts from the route's start at its own clock");
+    }
+    {  // errors of the verbs
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        Director::Applied r = dir.Apply(PathCmd("nobody", "x.route"), 0.0, &straight);
+        Check(!r.ok && r.message.find("does not exist") != std::string::npos, "a path for a car that does not exist");
+        r = dir.Apply(PathCmd("a", "x.route"), 0.0, nullptr);
+        Check(!r.ok && r.message.find("was not read") != std::string::npos, "a path whose route was not read");
+        r = dir.Apply(StopCmd("nobody"), 0.0);
+        Check(!r.ok && r.message.find("does not exist") != std::string::npos, "stop on a car that does not exist");
+        r = dir.Apply(StopCmd("a"), 0.0);
+        Check(!r.ok && r.message.find("has no path running") != std::string::npos, "stop on a car without a path");
+        const Route tiny = RouteOf("0,0\n0,0.5\n");
+        r = dir.Apply(PathCmd("a", "tiny.route"), 0.0, &tiny);
+        Check(!r.ok && r.message.find("at least 1 m") != std::string::npos, "a route under a metre: " + r.message);
+        Check(!dir.PathOf("a")->Active(), "a refused path is no path");
+    }
+    {  // the game refuses a teleport: the path fails, the car stays, nothing more is asked
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+        KinematicRun run = StepKinematic(dir, "a", 0.0, 1.0 / 30.0, 30, 17.5, true);
+        Check(run.puts.size() == 1, "one try, then it stops");
+        Check(!dir.PathOf("a")->Active() && dir.PathOf("a")->stats().refused == 1, "the path failed");
+        Check(HasEvent(dir, "path a failed: Racer_Teleport could not be called", true), "a warning that says why");
+    }
+    {  // the scene ends: no put on a car that is going
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+        StepKinematic(dir, "a", 0.0, 1.0 / 30.0, 10, 17.5);
+        dir.EndScene();
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(1.0, &due);
+        Check(due.empty(), "no put on an ended car");
+        Drive(dir, game, 30000, 40000);
+        Check(game.deleted_nodes.size() == 1 && game.N("BrainFactory_DeleteBrain") == 0, "the car is deleted, with no brain call (it never had one)");
+    }
+    {  // two cars at once: both put at every update (the director's one-call-an-update rule is for the spawn steps)
+        Director dir;
+        FakeGame game;
+        dir.BeginScene();
+        dir.Apply(Spawn("a", "vp_lam_murcielago_06", 100.0, 200.0, 0.0));
+        dir.Apply(Spawn("b", "vp_aud_r8_08", 103.0, 300.0, 180.0));
+        Drive(dir, game, 0, 15000);
+        FeedPose(dir, "a", 100.0, 17.5, 200.0, 0.0, 1);
+        FeedPose(dir, "b", 103.0, 17.5, 300.0, 180.0, 1);
+        const Route back = RouteOf("103,300,8\n103,200,8\n");
+        dir.Apply(PathCmd("a", "a.route"), 0.0, &straight);
+        dir.Apply(PathCmd("b", "b.route"), 0.0, &back);
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(0.0, &due);
+        Check(due.size() == 2 && due[0].car == "a" && due[1].car == "b", "both cars are due in one update");
+        Check(due[0].racer != due[1].racer && due[0].racer != 0, "each on its own racer");
+        CheckNum(due[1].teleport.heading_native, 0.0, "b drives along -Z: scene 180, native 0");
+    }
+}
+
+// A car whose matrix stops being read (M4c's first run): the registry keeps its last pose, and the path must not take that for where the car is.
+void TestPathStalePose() {
+    const Route straight = RouteOf("100,200,10\n100,300,10\n");
+    Director dir;
+    FakeGame game;
+    ReadyCar(dir, game, "a", 100.0, 17.5, 200.0, 0.0);
+    dir.Apply(PathCmd("a", "street.route"), 0.0, &straight);
+    std::string text;
+    double last_y = 0.0;
+    uint64_t frame = 2;
+    for (int i = 0; i < 120; ++i, ++frame) {  // two seconds at 60 Hz; the matrix is read for the first 30 updates only
+        const double clock = i / 60.0;
+        if (i < 30) FeedPose(dir, "a", 100.0, 17.5 - 0.001 * i, 200.0 + 10.0 * clock, 0.0, frame);
+        std::vector<Director::TeleportDue> due;
+        dir.PollTeleports(clock, &due, frame);
+        for (const Director::TeleportDue& d : due) {
+            last_y = d.teleport.position[1];
+            dir.ReportTeleport(d.car, true);
+        }
+        for (const CarEvent& e : dir.TakeEvents()) text += e.text + "\n";
+    }
+    const PathDrive::Stats st = dir.PathOf("a")->stats();  // a copy: the path goes on below
+    Check(st.teleports == 120, "a put at every update all the same: " + std::to_string(st.teleports));
+    Check(st.samples >= 30 && st.samples <= 34, "poses compared only while they were fresh (read 30 updates, taken for 3 more): " + std::to_string(st.samples));
+    Check(st.max_off < 0.6, "the stale pose gave no distance from the route (3 updates of lag at 10 m/s is the most a fresh one has): " + std::to_string(st.max_off));
+    Check(st.unread >= 80 && st.unread <= 90 && st.unread_max >= 85, "the unread updates are counted: " + std::to_string(st.unread) + " / " + std::to_string(st.unread_max));
+    CheckNum(last_y, 17.5 - 0.001 * 29, "the height of the last fresh pose is kept", 1e-6);
+    Check(text.find("the car's matrix has not been read for") != std::string::npos && text.find("no pose to compare") != std::string::npos, "a progress line says the matrix is not read");
+    // ... and the pose is back: compared again from there on
+    FeedPose(dir, "a", 100.0, 17.4, 200.0 + 10.0 * 2.0, 0.0, frame);
+    std::vector<Director::TeleportDue> due;
+    dir.PollTeleports(2.0 + 1.0 / 60.0, &due, frame);
+    Check(dir.PathOf("a")->stats().samples == st.samples + 1, "a fresh pose is compared again");
+    dir.ReportTeleport("a", true);
+    dir.Apply(StopCmd("a"), 2.2);
+    due.clear();
+    dir.PollTeleports(2.3, &due, frame);
+    for (const Director::TeleportDue& d : due) dir.ReportTeleport(d.car, true);
+    Check(HasEvent(dir, "update(s) had no fresh pose to compare"), "the summary says how many updates had no pose");
+    {  // the same for the brain: the state line says the pose is stale, and no distance from the route is made of it
+        const Route lane = RouteOf("100,200,8\n100,300,8\n");
+        Director b;
+        FakeGame game2;
+        ReadyCar(b, game2, "b", 100.0, 17.5, 200.0, 0.0);
+        b.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        int64_t t = 20000;
+        for (int i = 0; i < 400; ++i, t += 16) {  // the program: one native at a time, then the polls of HasReachedGoal
+            const Director::Next n = b.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) b.Report(game2.Run(n.call, t));
+        }
+        b.NoteBrain("b", 6.0, 1, 0, 10);  // the pose was read at update 1 (ReadyCar): 9 updates ago at update 10
+        const PathDrive::Stats& bs = b.PathOf("b")->stats();
+        Check(bs.brain_samples == 1 && bs.brain_max_off == 0.0 && bs.brain_best_s == 0.0, "a stale pose is not measured against the route");
+        std::string bt;
+        for (const CarEvent& e : b.TakeEvents()) bt += e.text + "\n";
+        Check(bt.find("brain state 1") != std::string::npos && bt.find("has not been read for 9 updates") != std::string::npos, "the state line says the matrix is unread: " + bt);
+    }
+}
+
+void TestPathBrain() {
+    const Route lane = RouteOf("100,200,8\n100,300,8\n");  // 100 m: 12 destinations at 8 m spacing
+    {
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        game.reached_after = 3;
+        const size_t before = game.calls.size();
+        const Director::Applied ap = dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 2.0, &lane);
+        Check(ap.ok, "a brain path: " + ap.message);
+        Check(HasEvent(dir, "path b starts (brain): route lane.route, 2 points, 100.0 m, 12.5 s at the route's own speeds (8.0 m/s on average); 12 destinations"),
+              "the start line says how many destinations the AI gets");
+        int double_issue = 0;
+        int64_t t = 20000;
+        std::vector<int64_t> stamps;
+        for (int i = 0; i < 400; ++i, t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) {
+                Director::Next again = dir.Poll(t, 0xBF33C450u);
+                if (again.call.native != Native::kNone) ++double_issue;
+                stamps.push_back(t);
+                dir.Report(game.Run(n.call, t));
+            }
+        }
+        Check(double_issue == 0, "one native at a time");
+        std::vector<std::string> want = {"BrainFactory_CreateBrainCruising", "BrainCruising_SetSpeed", "BrainCruising_SetDestSpeed", "BrainCruising_SetLooping"};
+        for (int i = 0; i < 12; ++i) want.push_back("BrainCruising_AppendDest");
+        want.push_back("BrainCruising_DriveToNearestRail");
+        const std::vector<std::string> got = Seq(game, before);
+        Check(got.size() >= want.size() + 3 && std::vector<std::string>(got.begin(), got.begin() + static_cast<std::ptrdiff_t>(want.size())) == want,
+              "the program: create, speed, destination speed, looping off, 12 destinations, the go");
+        // the go is followed by polls of HasReachedGoal until the brain says yes, and then nothing
+        const std::vector<std::string> tail(got.begin() + static_cast<std::ptrdiff_t>(want.size()), got.end());
+        Check(tail.size() == 3 && tail[0] == "BrainCruising_HasReachedGoal" && tail[2] == "BrainCruising_HasReachedGoal", "HasReachedGoal is read until it says yes (3 reads), then nothing");
+        Check(!dir.PathOf("b")->Active(), "the path is over once the goal is reached");
+        Check(HasEvent(dir, "path b finished: the brain reports its goal reached"), "the summary line");
+        // arguments
+        uint32_t brain = 0;
+        double last_z = 0.0;
+        double prev_z = 0.0;
+        bool increasing = true;
+        for (const Call& c : game.detail) {
+            switch (c.native) {
+                case Native::kCreateBrain: Check(c.racer == 0xBDAE19B0u, "the brain is made for the car's racer"); break;
+                case Native::kBrainSetSpeed:
+                case Native::kBrainSetDestSpeed:
+                    CheckNum(c.speed, 8.0, "the brain's speed is the route's mean speed");
+                    brain = c.brain;
+                    break;
+                case Native::kBrainSetLooping: Check(c.index == 0, "looping off"); break;
+                case Native::kBrainAppendDest:
+                    Check(c.brain == brain && brain == 0xBF5A2D40u, "destinations go to the brain");
+                    CheckNum(c.position[0], 100.0, "dest x");
+                    CheckNum(c.position[1], 17.5, "dest y: the car's own height (the route has none)");
+                    if (c.position[2] <= prev_z) increasing = false;
+                    prev_z = c.position[2];
+                    last_z = c.position[2];
+                    break;
+                case Native::kBrainDrive: Check(c.brain == 0xBF5A2D40u && c.racer == 0xBDAE19B0u, "the go is on the brain"); break;
+                default: break;
+            }
+        }
+        Check(increasing, "the destinations run along the route");
+        CheckNum(last_z, 300.0, "the last destination is the route's end");
+        // the pace: at least 100 ms between two natives of the program
+        bool paced = true;
+        for (size_t i = 1; i < stamps.size() && i < 17; ++i) {
+            if (stamps[i] - stamps[i - 1] < 100) paced = false;
+        }
+        Check(paced, "100 ms between the natives of the program");
+        // the car's end: the brain goes first
+        const size_t b2 = game.calls.size();
+        dir.EndScene();
+        Drive(dir, game, t, t + 8000);
+        const std::vector<std::string> end = Seq(game, b2);
+        Check(end.size() == 2 && end[0] == "BrainFactory_DeleteBrain" && end[1] == "OpponentManager_DeleteOpponent", "the end: the brain is deleted, then the opponent");
+        Check(game.brains_deleted.size() == 1 && game.brains_deleted[0] == 0xBDAE19B0u, "BrainFactory_DeleteBrain gets the car's racer");
+        Check(!dir.Active(), "nothing left to do");
+    }
+    {  // a heights route gives the destinations their own heights
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 0.0, 10.0, 0.0, 90.0);
+        const Route hills = RouteOf("0,0,8,10\n80,0,8,18\n");
+        dir.Apply(PathCmd("b", "h.route", PathMode::kBrain, {SpeedKind::kMetersPerSecond, 12.0}), 0.0, &hills);
+        Drive(dir, game, 20000, 24000);
+        double top = 0.0;
+        for (const Call& c : game.detail) {
+            if (c.native == Native::kBrainAppendDest) top = c.position[1];
+            if (c.native == Native::kBrainSetSpeed) CheckNum(c.speed, 12.0, "a speed of 12 m/s is the brain's speed");
+        }
+        CheckNum(top, 18.0, "the last destination has the route's last height");
+        Check(game.N("BrainCruising_AppendDest") == 10, "80 m at 8 m: 10 destinations");
+    }
+    {  // stop: the brain goes back to idle; a second path is refused
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        Drive(dir, game, 20000, 23000);
+        Check(game.N("BrainCruising_DriveToNearestRail") == 1, "the go was made");
+        Check(dir.Apply(StopCmd("b"), 1.0).ok, "stop");
+        const size_t before = game.calls.size();
+        Drive(dir, game, 23016, 24000);
+        const std::vector<std::string> got = Seq(game, before);
+        Check(!got.empty() && got.back() == "BrainCruising_RemoveFromTraffic", "the brain is taken off the lanes (idle, brake held)");
+        Check(std::count(got.begin(), got.end(), "BrainCruising_RemoveFromTraffic") == 1, "once");
+        Check(!dir.PathOf("b")->Active() && HasEvent(dir, "path b stopped: the brain is back to idle"), "the path is over");
+        const Director::Applied again = dir.Apply(PathCmd("b", "lane.route"), 2.0, &lane);
+        Check(!again.ok && again.message.find("already has a brain") != std::string::npos, "a car takes one brain path: " + again.message);
+        Check(dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 2.0, &lane).ok == false, "...in either mode");
+        dir.EndScene();
+        const size_t b3 = game.calls.size();
+        Drive(dir, game, 24016, 32000);
+        Check(Seq(game, b3) == std::vector<std::string>({"BrainFactory_DeleteBrain", "OpponentManager_DeleteOpponent"}), "the brain still goes before the opponent");
+    }
+    {  // stop before the brain exists: nothing is called
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        const size_t before = game.calls.size();
+        dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        dir.Apply(StopCmd("b"), 0.0);
+        Drive(dir, game, 20000, 22000);
+        Check(game.calls.size() == before, "stopped before the first native: no brain is made");
+        Check(HasEvent(dir, "stopped before the brain was made"), "and the log says so");
+    }
+    {  // the game gives no brain
+        Director dir;
+        FakeGame game;
+        game.no_brain = true;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        const size_t before = game.calls.size();
+        dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        Drive(dir, game, 20000, 24000);
+        Check(Seq(game, before) == std::vector<std::string>({"BrainFactory_CreateBrainCruising"}), "one try, nothing more");
+        Check(HasEvent(dir, "path b failed: BrainFactory_CreateBrainCruising gave no brain", true), "a warning");
+        dir.EndScene();
+        const size_t b2 = game.calls.size();
+        Drive(dir, game, 24016, 32000);
+        Check(Seq(game, b2) == std::vector<std::string>({"OpponentManager_DeleteOpponent"}), "no brain to delete: the opponent only");
+    }
+    {  // a native that cannot be called
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        game.uncallable = true;
+        Drive(dir, game, 20000, 22000);
+        Check(!dir.PathOf("b")->Active(), "the path failed");
+        Check(HasEvent(dir, "could not be called", true), "with a warning");
+    }
+    {  // what the brain says about itself: lines, states, how far along and how far off
+        Director dir;
+        FakeGame game;
+        ReadyCar(dir, game, "b", 100.0, 17.5, 200.0, 0.0);
+        dir.Apply(PathCmd("b", "lane.route", PathMode::kBrain), 0.0, &lane);
+        Drive(dir, game, 20000, 24000);
+        dir.TakeEvents();
+        Check(dir.BrainReaders().size() == 1 && dir.BrainReaders()[0].id == "b" && dir.BrainReaders()[0].brain == 0xBF5A2D40u, "the running brain is read by the glue");
+        FeedPose(dir, "b", 101.5, 17.5, 230.0, 0.0, 5);
+        dir.NoteBrain("b", 1.0, 5, 0);
+        bool saw = false;
+        for (const CarEvent& e : dir.TakeEvents()) {
+            if (e.text.find("brain state 5 (on the lanes) dest 0/12") != std::string::npos && e.text.find("nearest route point 30.0 of 100.0 m, 1.50 m off") != std::string::npos) saw = true;
+        }
+        Check(saw, "the first read is a line with the state, the destination and the car against the route");
+        dir.NoteBrain("b", 1.1, 5, 0);
+        Check(dir.TakeEvents().empty(), "the same state a moment later: no line (one every half second)");
+        dir.NoteBrain("b", 1.2, 4, 1);
+        bool changed = false;
+        for (const CarEvent& e : dir.TakeEvents()) {
+            if (e.text.find("brain state 4") != std::string::npos && e.text.find("state was 5") != std::string::npos && e.warning) changed = true;
+        }
+        Check(changed, "a change to state 4 (no lane) is a warning line");
+        FeedPose(dir, "b", 100.0, 17.5, 260.0, 0.0, 6);
+        dir.NoteBrain("b", 2.0, 5, 2);
+        const PathDrive::Stats& st = dir.PathOf("b")->stats();
+        Check((st.brain_states_seen & (1 << 5)) && (st.brain_states_seen & (1 << 4)), "the states seen are counted");
+        CheckNum(st.brain_best_s, 60.0, "the farthest along");
+        CheckNum(st.brain_max_off, 1.5, "the farthest off");
+        Check(std::string(BrainStateName(0)).find("idle") != std::string::npos && std::string(BrainStateName(6)).find("goal") != std::string::npos, "state names");
+    }
+}
+
 void TestLost() {
     Director dir;
     FakeGame game;
@@ -708,6 +1312,7 @@ void TestDeleteIsNotLost() {
 
 int main() {
     TestVerbs();
+    TestPathVerbs();
     TestPoses();
     TestRegistry();
     TestSpawnByModel();
@@ -717,6 +1322,9 @@ int main() {
     TestEndMidSpawn();
     TestOneCallAnUpdate();
     TestPlayerDress();
+    TestPathKinematic();
+    TestPathStalePose();
+    TestPathBrain();
     TestLost();
     TestDeleteIsNotLost();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);

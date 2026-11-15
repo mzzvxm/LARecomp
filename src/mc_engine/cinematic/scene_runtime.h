@@ -34,7 +34,8 @@ bool SceneDone();
 double SceneTime();
 
 // The armed scene's file, as it was looked up (a full path when one was found), and its name from the `scene` line; empty when none is armed or
-// the file has not been read. A take copies the file into its folder (capture_mode.cpp, M2b).
+// the file has not been read. A take copies the file into its folder (capture_mode.cpp, M2b). A file a scene names (a car's route) is looked for
+// beside it. Game thread only (the appliers' begin / apply / end).
 std::string SceneFilePath();
 std::string SceneName();
 

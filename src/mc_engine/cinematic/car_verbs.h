@@ -8,14 +8,20 @@
 //   car <id> spawn profile <N> at <x,y,z> [heading <deg>]  a car from garage slot N of the player's save, dressed as the owner left it
 //   car <id> delete                                        the car goes (every car a scene spawned goes when it ends)
 //   car player profile <N>                                 the player's own car becomes garage slot N (the old one comes back at the end)
+//   car <id> path <route file> [speed <x>] [mode brain|kinematic]   the car drives a route (work package M4c; path_follow.h has the file)
+//   car <id> stop                                          the car stops where it is (a path ends; the car stays)
 //
 // `at` takes x,y,z as one word or as three; the position is a world position (x east, z south, y up). `heading` is where the
 // nose points, in degrees, as the camera's yaw: 0 along +Z, 90 along +X (the game's own Racer_Teleport angle is this plus 180:
 // NativeHeadingDeg). Garage slots count from 0. `garage:N` and `slot:N` mean `profile N`; `despawn` means `delete`. The id is
 // what the camera's `car:<id>` names; `player` is the player's own car and takes only `profile`.
 //
-// Other verbs of the car track (a path, a speed: package M4c) are not this file's: ParseCarCommand says kOtherVerb and the
-// scene parser lets them through.
+// `path` names a route file by a relative path (beside the scene file, or in a `routes` folder beside it; no `..`, no drive, no leading
+// slash). `speed` is metres a second (`speed 12`) or a factor of the route's own speeds (`speed x1.5`); without it the route's own
+// speeds are used. `mode kinematic` (the default) puts the car on the route at every update, exactly; `mode brain` hands the route to the
+// game's own AI driver as destinations and leaves the driving to it.
+//
+// Any other verb is not this file's: ParseCarCommand says kOtherVerb and the scene parser lets it through (the runner warns).
 //
 
 #include <cmath>
@@ -25,9 +31,12 @@
 #include <string>
 #include <vector>
 
+#include "path_follow.h"
+
 namespace mc::cinematic {
 
-enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile };
+enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile, kPath, kStop };
+enum class PathMode : uint8_t { kKinematic, kBrain };
 enum class CarSource : uint8_t { kModel, kGarage };  // spawn: a vehicle name, or a garage slot
 
 struct CarCommand {
@@ -39,6 +48,10 @@ struct CarCommand {
     double position[3] = {0.0, 0.0, 0.0};
     double heading = 0.0;  // degrees in [0, 360): the camera's yaw convention
     bool has_heading = false;
+    // path:
+    std::string route;                  // the route file as written
+    SpeedSpec speed;                    // how fast
+    PathMode mode = PathMode::kKinematic;
 };
 
 enum class CarParse : uint8_t { kOk, kOtherVerb, kError };
@@ -193,6 +206,65 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
     return CarParse::kOk;
 }
 
+constexpr size_t kMaxRoutePathChars = 120;
+constexpr const char* kPathUsage = "car <id> path <route file> [speed <x>] [mode brain|kinematic]";
+
+// A route is named by a relative path under the scene's folder: letters, digits and _ - . / \ and blanks, no `..` part, no drive, no leading slash.
+inline bool IsRoutePath(const std::string& s) {
+    if (s.empty() || s.size() > kMaxRoutePathChars) return false;
+    if (s.front() == '/' || s.front() == '\\') return false;
+    for (char c : s) {
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == '/' ||
+                        c == '\\' || c == ' ';
+        if (!ok) return false;
+    }
+    size_t start = 0;
+    while (start <= s.size()) {
+        size_t end = s.find_first_of("/\\", start);
+        if (end == std::string::npos) end = s.size();
+        const std::string part = s.substr(start, end - start);
+        if (part == ".." || part == ".") return false;
+        start = end + 1;
+    }
+    return true;
+}
+
+inline CarParse ParsePath(const std::vector<std::string>& w, CarCommand* out, std::string* error) {
+    out->verb = CarVerb::kPath;
+    if (w.size() < 3) return Fail(error, std::string("path needs a route file: ") + kPathUsage);
+    if (!IsRoutePath(w[2])) {
+        return Fail(error, "'" + w[2] +
+                               "' is not a route file name (a name or a relative path next to the scene file or in its routes folder: letters, digits and "
+                               "_ - . / and blanks; no .. and no drive or leading slash)");
+    }
+    out->route = w[2];
+    bool have_speed = false;
+    bool have_mode = false;
+    size_t i = 3;
+    while (i < w.size()) {
+        const std::string key = Lower(w[i]);
+        if (key == "speed") {
+            if (have_speed) return Fail(error, "path: a second 'speed'");
+            if (i + 1 >= w.size()) return Fail(error, "speed needs metres a second (speed 12) or a factor of the route's own speeds (speed x1.5)");
+            if (!ParseSpeedWord(w[i + 1], &out->speed, error)) return CarParse::kError;
+            have_speed = true;
+            i += 2;
+        } else if (key == "mode") {
+            if (have_mode) return Fail(error, "path: a second 'mode'");
+            if (i + 1 >= w.size()) return Fail(error, "mode needs brain or kinematic");
+            const std::string m = Lower(w[i + 1]);
+            if (m == "brain") out->mode = PathMode::kBrain;
+            else if (m == "kinematic") out->mode = PathMode::kKinematic;
+            else return Fail(error, "mode '" + w[i + 1] + "': brain (the game's own AI drives) or kinematic (the car is put on the route at every update)");
+            have_mode = true;
+            i += 2;
+        } else {
+            return Fail(error, "path: unknown option '" + w[i] + "' (speed, mode)");
+        }
+    }
+    return CarParse::kOk;
+}
+
 }  // namespace car_verbs_detail
 
 // `words` are the words after the `car` statement (the id first). On kError `error` says what is wrong, in the scene parser's
@@ -225,6 +297,16 @@ inline CarParse ParseCarCommand(const std::vector<std::string>& w, CarCommand* o
         out->verb = CarVerb::kProfile;
         return CarParse::kOk;
     }
+    if (verb == "path") {
+        if (player) return Fail(error, "'player' is the player's own car: a path is for the scene's cars (the test harness's `follow` drives the player)");
+        return ParsePath(w, out, error);
+    }
+    if (verb == "stop") {
+        if (player) return Fail(error, "'player' is the player's own car: it cannot be stopped by a scene");
+        if (w.size() != 2) return Fail(error, "car <id> stop takes nothing after it");
+        out->verb = CarVerb::kStop;
+        return CarParse::kOk;
+    }
     return CarParse::kOtherVerb;
 }
 
@@ -236,6 +318,10 @@ inline std::string DescribeCarCommand(const CarCommand& c) {
             return c.id + " delete";
         case CarVerb::kProfile:
             return c.id + " profile " + std::to_string(c.slot);
+        case CarVerb::kStop:
+            return c.id + " stop";
+        case CarVerb::kPath:
+            return c.id + " path " + c.route + " at " + DescribeSpeed(c.speed) + " (" + (c.mode == PathMode::kBrain ? "brain" : "kinematic") + ")";
         case CarVerb::kSpawn:
             break;
     }
