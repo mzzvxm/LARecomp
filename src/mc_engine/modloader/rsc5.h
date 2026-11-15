@@ -644,6 +644,31 @@ size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const floa
 bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
                        const float translation[3], const float rotation[3]);
 
+// Moves the driver of a driver animation pack
+// ($/resources/animation/drv/<player|opponent>/<male|female>/<short>.xapk).
+//
+// Nothing else places the driver in the car: every seated animation carries the
+// skeleton root's translation in the car's own space (the R34's 182 player
+// animations sit at x 0.351, y 0.52, z 0.205 or move around it), and the rest of
+// the body hangs from that root. So adding `delta` to the root translation of
+// every seated animation moves the whole driver, hands and head with it. The
+// facial expression sets keep their root on the car's centre line (x 0: 0, 1.015,
+// 0) and the pan overlay at the origin; a root whose x is within 0.1 m of the
+// centre line is not a seat and is left alone.
+//
+// Pack layout (vtable 0x040C5500, 0x0C065500 on bikes): +8 up to 192 crAnimation
+// pointers, +0x308 their count, +0x30C their names. Static vec3, static float and
+// quantized (value = +24 offset + q * +20 scale) root channels are moved; a root
+// with any other channel kind is counted as unreadable and left as it shipped.
+struct DriverPackShift {
+    uint32_t animations = 0;  // in the pack
+    uint32_t moved = 0;       // seated: their root moved
+    uint32_t kept = 0;        // root on the centre line (expressions, overlays)
+    uint32_t unreadable = 0;  // a root channel kind this does not move
+};
+bool ShiftDriverPack(Rsc5Resource& pack, const float delta[3], std::string& error,
+                     DriverPackShift* stats = nullptr);
+
 // A dial the game turns by playing one of the body drawable's own clips.
 //
 // A car body carries its door, window and gauge animations as named clips

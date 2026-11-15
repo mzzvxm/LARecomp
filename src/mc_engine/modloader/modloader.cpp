@@ -763,6 +763,50 @@ bool ExtractTemplate(const Rpf3Reader& archive, const std::string& archive_path,
     return true;
 }
 
+// Ships the packs of `from`'s driver (the donor's short name, as DriverAnimName
+// gives it) under the short name `to`, the driver moved by `offset`: the four
+// packs of $/resources/animation/drv/<player|opponent>/<male|female>/. A pack
+// the donor does not have is skipped (the game falls back as it would for the
+// donor); any other failure ships nothing, and the caller keeps borrowing the
+// donor's packs by name. Returns how many packs were shipped.
+size_t ShipMovedDriverPacks(const Rpf3Reader& archive, Rpf3Writer& writer, const std::string& from,
+                            const std::string& to, const float offset[3],
+                            const std::string& mod_name, const std::string& car) {
+    struct Built {
+        std::string path;
+        std::vector<uint8_t> file;
+        uint32_t flag = 0, type = 0;
+    };
+    std::vector<Built> built;
+    for (const char* who : {"player", "opponent"}) {
+        for (const char* sex : {"male", "female"}) {
+            const std::string folder = std::string("resources/animation/drv/") + who + "/" + sex + "/";
+            Rpf3Entry entry;
+            if (!archive.Find(folder + from + ".xapk", entry)) continue;
+            Rsc5Resource pack;
+            std::string error;
+            DriverPackShift stats;
+            Built out;
+            if (!ExtractTemplate(archive, folder + from + ".xapk", pack, error) ||
+                !ShiftDriverPack(pack, offset, error, &stats) ||
+                !BuildRsc5File(pack, out.file, out.flag, error)) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: driver_offset: {}{}.xapk: {}", mod_name,
+                                   car, folder, from, error);
+                return 0;
+            }
+            LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {}/{} driver moved by ({} {} {}): {} of {} "
+                              "animation(s) seated, {} left on the centre line, {} unreadable",
+                              mod_name, car, who, sex, offset[0], offset[1], offset[2],
+                              stats.moved, stats.animations, stats.kept, stats.unreadable);
+            out.path = folder + to + ".xapk";
+            out.type = pack.type;
+            built.push_back(std::move(out));
+        }
+    }
+    for (Built& pack : built) writer.Add(pack.path, std::move(pack.file), pack.flag, pack.type);
+    return built.size();
+}
+
 uint8_t* GuestPointer(uint32_t address) {
     auto* runtime = rex::Runtime::instance();
     if (!runtime || !address) return nullptr;
@@ -1646,6 +1690,13 @@ struct VehiclePlan {
     // wheel the game turns on it, on this car's own column. See SetBonePoseByName.
     std::map<std::string, std::array<float, 6>> bone_poses;
 
+    // `driver_offset = dx dy dz`: the driver sits this far from where the donor's
+    // driver sat (metres, car space). The donor's driver animation packs are
+    // shipped again under this car's own name with every seated animation's root
+    // moved, and this car stops borrowing the donor's by name. See ShiftDriverPack.
+    bool driver_offset_set = false;
+    float driver_offset[3] = {0.0f, 0.0f, 0.0f};
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1745,6 +1796,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
 //   bone.str       = tx ty tz rx ry rz      (a body skeleton bone's rest pose)
+//   driver_offset  = dx dy dz   (the driver's animation packs moved, shipped as the car's own)
 //   body_m0          = trunk   (groups written into model 0 of the body; needs a
 //                               rigid frame.body_m0 -- see WriteBodyModel)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
@@ -1823,6 +1875,15 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
                 plan.bone_poses[key.substr(5)] = pose;
             } else {
                 LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'tx ty tz rx ry rz'", key);
+            }
+            continue;
+        }
+        if (lower == "driver_offset") {
+            std::istringstream stream(mapping.groups.front());
+            plan.driver_offset_set = static_cast<bool>(stream >> plan.driver_offset[0] >>
+                                                       plan.driver_offset[1] >> plan.driver_offset[2]);
+            if (!plan.driver_offset_set) {
+                LARECOMP_APP_ERROR("[mods] parts.txt: driver_offset wants 'dx dy dz'");
             }
             continue;
         }
@@ -4236,12 +4297,26 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                 const std::string from = DriverAnimName(vehicle.car);
                 const std::string to =
                     DriverAnimName(plan.driver.empty() ? plan.donor : plan.driver);
-                if (from != to) {
-                    std::lock_guard<std::mutex> lock(g_driver_alias_mutex);
-                    g_driver_alias[from] = to;
+                // A moved driver gets packs of its own, under this car's name, so
+                // nothing is borrowed: the donor's own car keeps its driver.
+                const size_t own_packs =
+                    plan.driver_offset_set && from != to
+                        ? ShipMovedDriverPacks(archive, writer, to, from, plan.driver_offset,
+                                               vehicle.mod_name, vehicle.car)
+                        : 0;
+                built += own_packs;
+                if (own_packs != 0) {
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: driver animations of its own, {} "
+                                      "pack(s) from {} moved", vehicle.mod_name, vehicle.car,
+                                      own_packs, to);
+                } else {
+                    if (from != to) {
+                        std::lock_guard<std::mutex> lock(g_driver_alias_mutex);
+                        g_driver_alias[from] = to;
+                    }
+                    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: driver animations from {}",
+                                      vehicle.mod_name, vehicle.car, to);
                 }
-                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: driver animations from {}",
-                                  vehicle.mod_name, vehicle.car, to);
             }
             continue;
         }

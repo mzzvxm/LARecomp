@@ -4571,6 +4571,136 @@ bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
     return false;
 }
 
+bool ShiftDriverPack(Rsc5Resource& pack, const float delta[3], std::string& error,
+                     DriverPackShift* stats) {
+    constexpr uint32_t kMaxAnimations = 192;
+    constexpr uint32_t kAnimationVtable = 0xFCD75400u;  // crAnimation, as these packs store it
+    constexpr float kSeatX = 0.1f;
+    DriverPackShift counts;
+    Rsc5View view(pack.data, pack.virtual_size);
+    uint32_t count = 0;
+    if (!view.U32(kVirtualBase + 0x308, count) || count == 0 || count > kMaxAnimations) {
+        error = "not a driver animation pack (no animation count at +0x308)";
+        return false;
+    }
+    counts.animations = count;
+
+    // A root channel's address and kind, and where the float(s) to move are.
+    struct RootChannel {
+        uint32_t channel = 0;
+        uint8_t kind = 0;
+    };
+    std::set<uint32_t> moved_floats;  // channels and vec3s can be shared: move each once
+    const auto add = [&](uint32_t address, float by) {
+        if (!moved_floats.insert(address).second) return true;
+        size_t offset = 0;
+        if (!view.Offset(address, 4, offset)) return false;
+        StoreBEFloat(pack.data.data() + offset, LoadBEFloat(pack.data.data() + offset) + by);
+        return true;
+    };
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t anim = 0, vtable = 0, blocks = 0;
+        uint16_t block_count = 0;
+        if (!view.U32(kVirtualBase + 8 + 4 * i, anim) || !view.U32(anim, vtable) ||
+            vtable != kAnimationVtable || !view.U32(anim + 0x14, blocks) ||
+            !view.U16(anim + 0x18, block_count) || block_count > 64) {
+            error = "animation " + std::to_string(i) + " is unreadable";
+            return false;
+        }
+
+        // Every block's root translation, read before anything is written: the
+        // animation is moved whole or not at all.
+        std::vector<std::vector<RootChannel>> roots;
+        bool readable = true;
+        for (uint16_t b = 0; b < block_count && readable; ++b) {
+            uint32_t block = 0, track_array = 0;
+            uint16_t track_count = 0;
+            if (!view.U32(blocks + 4u * b, block) || !view.U32(block + 4, track_array) ||
+                !view.U16(block + 8, track_count) || track_count > 256) {
+                readable = false;
+                break;
+            }
+            for (uint16_t t = 0; t < track_count; ++t) {
+                uint32_t track = 0, id = 0, channel_count = 0;
+                if (!view.U32(track_array + 4u * t, track) || !view.U32(track, id) ||
+                    !view.U32(track + 0x14, channel_count)) {
+                    readable = false;
+                    break;
+                }
+                if ((id >> 24) != 0 || (id & 0xFFFFu) != 0) continue;  // translation of tag 0
+                std::vector<RootChannel> channels;
+                for (uint32_t c = 0; c < channel_count && c < 4; ++c) {
+                    RootChannel root;
+                    if (!view.U32(track + 4 + 4 * c, root.channel) || !view.U8(root.channel + 5, root.kind)) {
+                        readable = false;
+                        break;
+                    }
+                    channels.push_back(root);
+                }
+                const bool vec3 = channels.size() == 1 && channels[0].kind == kChannelStaticVec3;
+                const bool per_axis =
+                    channels.size() == 3 &&
+                    std::all_of(channels.begin(), channels.end(), [](const RootChannel& r) {
+                        return r.kind == kChannelStaticFloat || r.kind == kChannelQuantized;
+                    });
+                if (!vec3 && !per_axis) readable = false;
+                roots.push_back(std::move(channels));
+            }
+        }
+        if (!readable || roots.empty()) {
+            ++counts.unreadable;
+            continue;
+        }
+
+        // Where the first block puts the root across: a seat is off the centre line.
+        float x = 0.0f;
+        const RootChannel& first = roots.front().front();
+        bool have_x = false;
+        if (first.kind == kChannelStaticVec3) {
+            uint32_t value = 0;
+            have_x = view.U32(first.channel + 8, value) && view.Float(value, x);
+        } else {
+            have_x = view.Float(first.channel + (first.kind == kChannelQuantized ? 24 : 8), x);
+        }
+        if (!have_x) {
+            ++counts.unreadable;
+            continue;
+        }
+        if (std::fabs(x) < kSeatX) {
+            ++counts.kept;
+            continue;
+        }
+
+        for (const std::vector<RootChannel>& channels : roots) {
+            if (channels.size() == 1) {
+                uint32_t value = 0;
+                if (!view.U32(channels[0].channel + 8, value) || !add(value, delta[0]) ||
+                    !add(value + 4, delta[1]) || !add(value + 8, delta[2])) {
+                    error = "animation " + std::to_string(i) + ": a root value is out of the pack";
+                    return false;
+                }
+                continue;
+            }
+            for (int axis = 0; axis < 3; ++axis) {
+                const RootChannel& channel = channels[axis];
+                const uint32_t at = channel.channel + (channel.kind == kChannelQuantized ? 24 : 8);
+                if (!add(at, delta[axis])) {
+                    error = "animation " + std::to_string(i) + ": a root channel is out of the pack";
+                    return false;
+                }
+            }
+        }
+        ++counts.moved;
+    }
+    if (stats) *stats = counts;
+    if (counts.moved == 0) {
+        error = "no seated animation in the pack";
+        return false;
+    }
+    return true;
+}
+
 bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& error,
                      std::string* summary) {
     if (resource.type != kTypeBodyDrawable) {
