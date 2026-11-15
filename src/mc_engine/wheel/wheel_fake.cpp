@@ -64,7 +64,6 @@
 #include "../cinematic/freecam_runtime.h"
 #include "../input_state.h"
 #include "../hooks/hooks_internal.h"
-#include "../keyboard_native.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
 #include "wheel_input.h"
@@ -254,7 +253,6 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
     const uint32_t user = ctx.r3.u32;
     const uint32_t caps = ctx.r5.u32;
     __imp__rex_sub_8275CB70(ctx, base);
-    KbmNeutralPadCaps(base, user, caps, ctx.r3.u64);  // no pad ever seen: "connected, at rest" (keyboard_native.cpp)
     if (!WheelOn() || !IsWheelUser(user) || caps == 0) return;
 
     // Whatever the SDK answered, user 0 now has a wheel: success, gamepad type, wheel subtype,
@@ -286,7 +284,6 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     // Constructed after the free camera's scope, so it runs first when this function ends: it sees the state the game is about to read (the active-device rules, input_state.h).
     larecomp::input::InputActivityScope input_activity(base, user, state, ctx.r3.u64);
     __imp__rex_sub_8275CB78(ctx, base);
-    KbmNeutralPadState(base, user, state, ctx.r3.u64);  // no pad ever seen: "connected, at rest" (keyboard_native.cpp)
     const FakeMode mode = CurrentMode();
     if (!IsWheelUser(user) || state == 0 ||
         (mode == FakeMode::kOff && !larecomp::wheel::WheelPresent())) {
