@@ -75,6 +75,52 @@ enum class Context : uint8_t { Menu, Drive };
 // the mapper that answers there is the menu's); on the road they show the driving key. The pad is the same in both.
 inline Context ContextFor(bool game_entered, bool menu_open) { return (game_entered && !menu_open) ? Context::Drive : Context::Menu; }
 
+// "A menu is open" is not one fact in this game. The first P4 run (2026-11-15) showed it: the pause menu is an mcForm on mcMainForm's open-form stack, but the garage's menu, its EXIT
+// question and the full map are not on that stack at all, and the keyboard's prompts there were the driving keys (CAPS for B, S / W for the zoom) while the screens answer to the menu's
+// keys. Three independent facts are read from the game (keyboard_native.cpp UiSignalsOf), and any one of them makes the context the menu's:
+//
+//   form    the open-form stack of mcMainForm is not empty (the pause menu and every list screen made from mcPerspectiveForm: OPTIONS, CONTROLLER ...)
+//   movie   FlashNavigator's current movie is set. The UI statechart's `movie` command (the log's `[flash-cmd] type=3 'NAME'`) selects the movie a screen draws into and stores it at
+//           navigator + 263952 (sub_8221EEC0: the string "NULL" clears it): PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE (the full map) ... and `NULL` again on ENTERNORMAL, the road. The
+//           garage, the EXIT question inside it (the same movie), the map and every other statechart screen are covered by this one, with no list of names to keep up to date. A name
+//           that starts with HUD is the road's own (kHudPrefix) and does not count.
+//   layer   FlashNavigator's FIFO of modal message boxes is not empty (navigator + 263992: a pop-up that takes the input before anything else)
+//
+// Not on the list on purpose: the Sidekick phone. Its message comes over the road and does not stop the driving; its one button is answered through the menu's mapper (the Back /
+// Select key), so its glyph shows kb_ui_select in both contexts (kMenuCvar / kRoadCvar below) and the road's context stays the road's.
+struct UiSignals {
+  bool form = false;
+  bool movie = false;
+  bool layer = false;
+  bool any() const { return form || movie || layer; }
+  bool operator==(const UiSignals& o) const { return form == o.form && movie == o.movie && layer == o.layer; }
+};
+
+inline Context ContextFor(bool game_entered, const UiSignals& ui) { return ContextFor(game_entered, ui.any()); }
+
+// Does the key caps' context have to be painted again? Only the keyboard family has two sets (the menu's and the road's); `painted_menu` = the context they were last painted for.
+inline bool ContextNeedsRepaint(Family family, bool game_entered, const UiSignals& ui, bool painted_menu) {
+  return family == Family::Keyboard && (ContextFor(game_entered, ui) == Context::Menu) != painted_menu;
+}
+
+// A movie name that belongs to the road, not to a screen: HUDMOVIE and the like. FlashNavigator names HUDMOVIE in explicit commands (`type=1 'HUDMOVIE' 'playerlist'`) and the HUD's
+// two movies are HUDMAPMOVIE and the gauge; none of them is a screen the keyboard has to leave the road for.
+inline constexpr std::string_view kHudPrefix = "HUD";
+inline bool IsRoadMovieName(std::string_view name) { return name.size() >= kHudPrefix.size() && name.substr(0, kHudPrefix.size()) == kHudPrefix; }
+
+// The reason text of the log line and of the report: "form", "movie GARAGEMOVIE", "layer" joined by "+", "none" when nothing is open (the road).
+inline std::string DescribeUi(const UiSignals& ui, std::string_view movie_name) {
+  std::string out;
+  auto add = [&](const std::string& part) {
+    if (!out.empty()) out += '+';
+    out += part;
+  };
+  if (ui.form) add("form");
+  if (ui.movie) add(movie_name.empty() ? std::string("movie") : "movie " + std::string(movie_name));
+  if (ui.layer) add("layer");
+  return out.empty() ? std::string("none") : out;
+}
+
 // The cvar that holds the key of a slot's prompt. The menu's table has a key for every slot (the Phone's accept is the Back button, so the phone shows the menu's Back key in
 // both contexts: a Flash movie answers through the menu's mapper). The road's table has one for the buttons that do something on the road; an empty name or an empty value
 // there means "the menu's key".
@@ -135,9 +181,15 @@ inline std::string Describe(const Art& a) {
 // Where the PlayStation art of a slot comes from. `bitmap` = the game's own PlayStation bitmap in the dictionary (null = not identified yet); `file` = the stem of the picture
 // shipped next to the key caps (Kenney's Input Prompts, CC0), used when the bitmap is not named or not in the dictionary. A 64x32 slot reads "<stem>_w.png" (the key caps' rule).
 //
-// CHECK: the four faces are the ones keyboard_native.cpp has always used for the PlayStation cross, circle, square and triangle (iconID 50..53); the shoulders, Start and Back
-// are NOT identified: the dictionary has 3 unlisted 64x64 bitmaps (shared_8, 32, 34) and 4 unlisted 64x32 ones (shared_5, 28, 54, 55) that may be them. The run's glyph dump
-// (prompts_glyph_dump, chain-kbm-p4.ps1) draws them; name the real ones here (or with the debug cvar prompts_ps_map, "LB=shared_8.dds,RB=...") to use the game's own art.
+// WHAT THE GAME HAS AND WHAT IT DOES NOT (KBM-P4 run of 2026-11-15, the dictionary dump drawn on perf\out\KBM-P4\P4-glyphs.png): the game's own PlayStation art is the four faces only
+// (shared_24 cross, 13 circle, 15 square, 36 triangle, 32x32: the ones keyboard_native.cpp has always used for the PlayStation iconIDs 50..53). It has NO PlayStation shoulder, trigger,
+// Start or Back bitmap: the 3 unlisted 64x64 bitmaps (shared_8, 32, 34) and the 4 unlisted 64x32 ones (shared_5, 28, 54, 55) are other UI art (a grey ball, a grey tile, a race flag; a
+// play arrow, two grey buttons, a curved arrow: kUnrelatedBitmaps lists them for the sheet), and the 128x128 ones are the d-pad and the sticks. So the shoulders, Options and Create are
+// the shipped pictures in src\keycaps\ps_*.png, which is the right answer and not a stop-gap: L1 R1 L2 R2 are Kenney's Input Prompts (CC0) cut to the 64x64 slot; Options and Create
+// on the round 64x32 slots are a light disc cut out like the game's own Back / Start discs (shared_31 / 33: the same size, the same grey, the symbol is the window), made by
+// perf\scripts\kbm\make_ps_prompts.py from Kenney's PlayStation 5 "options" (the three bars) and "create" (the button with its rays) pictograms. The debug cvar prompts_ps_map can still
+// point a slot at a dictionary bitmap, to try one without a build.
+inline constexpr std::string_view kUnrelatedBitmaps[] = {"shared_5.dds", "shared_8.dds", "shared_28.dds", "shared_32.dds", "shared_34.dds", "shared_54.dds", "shared_55.dds"};
 struct PsSource {
   Slot slot;
   const char* bitmap;

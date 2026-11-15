@@ -298,13 +298,116 @@ void TestDecodeSurface() {
 
 }  // namespace
 
+// The screens of the first P4 run (2026-11-15), as the three facts the game gives: the pause menu is on the form stack; the garage, its EXIT question and the full map are not, but
+// FlashNavigator's current movie is GARAGEMOVIE / NAVSYSMOVIE; a road pop-up is a layer. The road has none of them, the phone is not one of them.
+UiSignals Ui(bool form, bool movie, bool layer) {
+    UiSignals s;
+    s.form = form;
+    s.movie = movie;
+    s.layer = layer;
+    return s;
+}
+
+void TestUiSignals() {
+    const bool entered = true;
+    // every screen the run visited
+    CHECK(ContextFor(entered, Ui(false, false, false)) == Context::Drive);  // free roam: the HUD, and the phone's message over it
+    CHECK(ContextFor(entered, Ui(true, false, false)) == Context::Menu);   // the pause menu (the run's one right answer)
+    CHECK(ContextFor(entered, Ui(false, true, false)) == Context::Menu);   // the garage menu: GARAGEMOVIE, no form (FAILED in the run)
+    CHECK(ContextFor(entered, Ui(false, true, true)) == Context::Menu);    // the EXIT question in the garage (FAILED in the run)
+    CHECK(ContextFor(entered, Ui(false, true, false)) == Context::Menu);   // the full map: NAVSYSMOVIE (the caps were S W / CAPS / SHIFT / H)
+    CHECK(ContextFor(entered, Ui(false, false, true)) == Context::Menu);   // a pop-up on the road
+    CHECK(ContextFor(entered, Ui(true, true, true)) == Context::Menu);     // all of them
+    // before the game is entered nothing matters: the menu's mapper answers
+    for (int bits = 0; bits < 8; ++bits) CHECK(ContextFor(false, Ui(bits & 1, bits & 2, bits & 4)) == Context::Menu);
+    // the old two-argument form is the same rule
+    CHECK(ContextFor(true, false) == ContextFor(true, Ui(false, false, false)));
+    CHECK(ContextFor(true, true) == ContextFor(true, Ui(true, false, false)));
+    // any() and equality
+    CHECK(!Ui(false, false, false).any());
+    CHECK(Ui(false, false, true).any() && Ui(false, true, false).any() && Ui(true, false, false).any());
+    CHECK(Ui(true, false, true) == Ui(true, false, true));
+    CHECK(!(Ui(true, false, true) == Ui(true, true, true)));
+    // the road's own movies are not screens: the HUD
+    CHECK(IsRoadMovieName("HUDMOVIE"));
+    CHECK(IsRoadMovieName("HUDMAPMOVIE"));
+    CHECK(IsRoadMovieName("HUD"));
+    CHECK(!IsRoadMovieName("GARAGEMOVIE"));
+    CHECK(!IsRoadMovieName("NAVSYSMOVIE"));
+    CHECK(!IsRoadMovieName("PAUSEMOVIE"));
+    CHECK(!IsRoadMovieName("POPUPMOVIE"));
+    CHECK(!IsRoadMovieName("SIDEKICKMOVIE"));  // not a current movie anyway: the phone does not go through the statechart's `movie` command
+    CHECK(!IsRoadMovieName(""));               // an entry the movie map does not know is a screen of unknown name
+    CHECK(!IsRoadMovieName("HU"));
+    // the reason text of the log line
+    CHECK(DescribeUi(Ui(false, false, false), "") == "none");
+    CHECK(DescribeUi(Ui(true, false, false), "") == "form");
+    CHECK(DescribeUi(Ui(false, true, false), "GARAGEMOVIE") == "movie GARAGEMOVIE");
+    CHECK(DescribeUi(Ui(false, true, false), "") == "movie");
+    CHECK(DescribeUi(Ui(false, true, true), "GARAGEMOVIE") == "movie GARAGEMOVIE+layer");
+    CHECK(DescribeUi(Ui(true, true, true), "NAVSYSMOVIE") == "form+movie NAVSYSMOVIE+layer");
+}
+
+// The context follows the game live: the keyboard's caps are repainted exactly when the context turns, and only for the keyboard family. A walk through the run's screens.
+void TestContextFollowsLive() {
+    struct Step {
+        const char* what;
+        Family family;
+        bool entered;
+        UiSignals ui;
+        bool repaint;  // the poll that sees this repaints
+    };
+    bool painted_menu = true;  // the first repaint of a run (the title: the menu's)
+    const Step steps[] = {
+        {"the title, keyboard", Family::Keyboard, false, Ui(false, false, false), false},   // menu context painted already
+        {"in free roam", Family::Keyboard, true, Ui(false, false, false), true},            // the road's keys
+        {"the same poll again", Family::Keyboard, true, Ui(false, false, false), false},
+        {"the pause menu opens", Family::Keyboard, true, Ui(true, false, false), true},
+        {"...a movie too", Family::Keyboard, true, Ui(true, true, false), false},           // still the menu's: nothing to paint
+        {"the pause menu closes", Family::Keyboard, true, Ui(false, false, false), true},
+        {"the map opens", Family::Keyboard, true, Ui(false, true, false), true},
+        {"the map closes", Family::Keyboard, true, Ui(false, false, false), true},
+        {"the garage menu", Family::Keyboard, true, Ui(false, true, false), true},
+        {"the EXIT question over it", Family::Keyboard, true, Ui(false, true, true), false},
+        {"a pad is used: Xbox art", Family::Xbox, true, Ui(false, true, true), false},       // no context for the pad's art
+        {"back on the road with the pad", Family::Xbox, true, Ui(false, false, false), false},
+    };
+    for (const Step& st : steps) {
+        const bool need = ContextNeedsRepaint(st.family, st.entered, st.ui, painted_menu);
+        if (need != st.repaint) std::printf("  context step '%s': repaint %d, wanted %d\n", st.what, need ? 1 : 0, st.repaint ? 1 : 0);
+        CHECK(need == st.repaint);
+        // the real code repaints (and records the context) whenever the family or the context needs it; here only a context repaint is modelled
+        if (need) painted_menu = (ContextFor(st.entered, st.ui) == Context::Menu);
+    }
+    // the repaint that a change of family makes records the context too (RepaintPrompts): so a key after the pad's stretch does not need a second one
+    painted_menu = (ContextFor(true, Ui(false, false, false)) == Context::Menu);  // the repaint for the family change, on the road
+    CHECK(!ContextNeedsRepaint(Family::Keyboard, true, Ui(false, false, false), painted_menu));
+    // the pad's families never repaint for a context
+    CHECK(!ContextNeedsRepaint(Family::Xbox, true, Ui(true, true, true), false));
+    CHECK(!ContextNeedsRepaint(Family::PlayStation, true, Ui(false, false, false), true));
+    CHECK(!ContextNeedsRepaint(Family::PlayStation, true, Ui(true, false, false), false));
+    // the keys each screen gets: the map's zoom is PageUp / PageDown and its exit Escape, not S / W / CAPS (what the run painted); the garage's back is Escape
+    const Art map_lt = For(Family::Keyboard, ContextFor(true, Ui(false, true, false)), Slot::LT);
+    CHECK((map_lt == Art{ArtKind::KeyCap, "PageUp"}));
+    const Art map_b = For(Family::Keyboard, ContextFor(true, Ui(false, true, false)), Slot::B);
+    CHECK((map_b == Art{ArtKind::KeyCap, "Escape"}));
+    const Art road_b = For(Family::Keyboard, ContextFor(true, Ui(false, false, false)), Slot::B);
+    CHECK((road_b == Art{ArtKind::KeyCap, "CapsLock"}));
+    // the phone: the same cap on the road and in a menu (the Back / Select key: it answers through the menu's mapper)
+    CHECK((For(Family::Keyboard, Context::Drive, Slot::Phone) == For(Family::Keyboard, Context::Menu, Slot::Phone)));
+    CHECK((For(Family::Keyboard, Context::Drive, Slot::Phone) == Art{ArtKind::KeyCap, "Tab"}));
+}
+
+
 int main() {
     TestSlotTables();
     TestContext();
+    TestUiSignals();
     TestKeyCvars();
     TestPickKey();
     TestXbox();
     TestKeyboardContexts();
+    TestContextFollowsLive();
     TestPlayStation();
     TestPsOverride();
     TestArtIdentity();

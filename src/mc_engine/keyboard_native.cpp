@@ -1459,7 +1459,63 @@ larecomp::prompts::Family EffectiveFamily() {
     return f;
 }
 
-bool MenuContext(const uint8_t* b) { return larecomp::prompts::ContextFor(g_game_entered, MenuOpen(b)) == larecomp::prompts::Context::Menu; }
+// ── which screen the game is on: the menu's keys or the road's (prompt_glyphs.h, UiSignals) ──
+// The first P4 run: the pause menu is on mcMainForm's open-form stack (MenuOpen), the garage, its EXIT question and the full map are not, and the key caps there were the driving keys.
+// Two more facts of FlashNavigator (mcUIManager +52) are read; each is one load.
+constexpr uint32_t kNavCurrentMovie = 263952;  // the movie entry the statechart's `movie` command selected (flash-cmd type 3, sub_8221EEC0); 0 after 'NULL'
+constexpr uint32_t kNavLayerCount = 263992;    // modal message boxes in its FIFO (hooks/photo_album.cpp kNavLayerCount: the three-entry layer queue, count 0..3)
+
+// The name an entry is filed under in mcUIManager's movie map, "" when it is not in it (the same walk as FindMovie, the other way round).
+std::string MovieNameOf(const uint8_t* b, uint32_t entry) {
+    const uint32_t mgr = ReadGuestU32(b, kUiManagerPtr);
+    if (!HeapPtr(mgr)) return {};
+    const uint32_t buckets = ReadGuestU32(b, mgr + 60);
+    const uint32_t count = (uint32_t(b[mgr + 64]) << 8) | b[mgr + 65];
+    if (!HeapPtr(buckets) || count > 4096) return {};
+    for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t node = ReadGuestU32(b, buckets + 4 * i), guard = 0; node && guard < 256; node = ReadGuestU32(b, node + 12), ++guard) {
+            const uint32_t key = ReadGuestU32(b, node);
+            if (key < 0x10000u || key >= 0xE0000000u) continue;
+            const uint32_t holder = ReadGuestU32(b, node + 8);
+            if (!HeapPtr(holder) || ReadGuestU32(b, holder) != entry) continue;
+            const char* name = reinterpret_cast<const char*>(b + key);
+            size_t n = 0;
+            while (n < 48 && name[n]) ++n;
+            return std::string(name, n);
+        }
+    }
+    return {};
+}
+
+uint32_t g_ui_movie_entry = 0;   // the current movie of the last poll, and its name (looked up when it changes only)
+std::string g_ui_movie_name;
+larecomp::prompts::UiSignals g_ui_signals;  // what the last poll saw (PollPrompts)
+std::string g_ui_prev_name;                 // the movie name that went with it (for the 'was' of the log line)
+
+larecomp::prompts::UiSignals UiSignalsOf(const uint8_t* b) {
+    larecomp::prompts::UiSignals s;
+    s.form = MenuOpen(b);
+    const uint32_t ui = ReadGuestU32(b, kUiManagerPtr);
+    const uint32_t nav = HeapPtr(ui) ? ReadGuestU32(b, ui + kUiNavigatorOff) : 0;
+    uint32_t entry = 0;
+    if (HeapPtr(nav)) {
+        entry = ReadGuestU32(b, nav + kNavCurrentMovie);
+        const uint32_t layers = ReadGuestU32(b, nav + kNavLayerCount);
+        s.layer = layers != 0 && layers <= 3;
+    }
+    if (!HeapPtr(entry)) entry = 0;
+    if (entry != g_ui_movie_entry) {
+        g_ui_movie_entry = entry;
+        g_ui_movie_name = entry ? MovieNameOf(b, entry) : std::string();
+    }
+    s.movie = entry != 0 && !larecomp::prompts::IsRoadMovieName(g_ui_movie_name);
+    return s;
+}
+
+// The menu's keys while a screen is up and before the game is entered; the road's otherwise. Uses what the last poll saw (PollPrompts reads it once per poll, before anything asks).
+bool MenuContext() { return larecomp::prompts::ContextFor(g_game_entered, g_ui_signals) == larecomp::prompts::Context::Menu; }
+
+std::string UiReason() { return g_game_entered ? larecomp::prompts::DescribeUi(g_ui_signals, g_ui_movie_name) : std::string("game not entered"); }
 
 // Builds every picture the families may need, once the dictionary is found (while the game is still loading): a key cap is a PNG decoded, scaled, compressed and tiled, and the
 // PlayStation faces are read back from the game's bitmaps and compressed again; doing that on the first key press would be a hitch in the middle of a race. After this a repaint is
@@ -1499,7 +1555,7 @@ void RepaintPrompts(uint8_t* b) {
     using namespace larecomp::prompts;
     const auto t0 = std::chrono::steady_clock::now();
     const Family family = EffectiveFamily();
-    const bool menu = MenuContext(b);
+    const bool menu = MenuContext();
     const Context ctx = menu ? Context::Menu : Context::Drive;
     g_prompts_menu = menu;
     int changed = 0;
@@ -1514,8 +1570,10 @@ void RepaintPrompts(uint8_t* b) {
     ++g_prompts_repaints;
     const long us = static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
     static const char* const kFamilyName[] = {"Xbox", "PlayStation", "Keyboard"};
-    MC_INFO("[prompts] glyphs -> {}{}: {} bitmaps changed in {} us (repaint {}, input generation {})", kFamilyName[static_cast<int>(family)],
-            family == Family::Keyboard ? (menu ? " (menu keys)" : " (driving keys)") : "", changed, us, g_prompts_repaints, larecomp::input::Generation());
+    std::string keys;  // " (menu keys; movie GARAGEMOVIE)", " (driving keys)": which keys the caps are, and the screen facts that made it so
+    if (family == Family::Keyboard) keys = menu ? " (menu keys; " + UiReason() + ")" : " (driving keys)";
+    MC_INFO("[prompts] glyphs -> {}{}: {} bitmaps changed in {} us (repaint {}, input generation {})", kFamilyName[static_cast<int>(family)], keys, changed, us, g_prompts_repaints,
+            larecomp::input::Generation());
     if (!ps_art.empty()) MC_INFO("[prompts] PlayStation art: {}", ps_art);
 }
 
@@ -1547,8 +1605,16 @@ void PollPrompts(uint8_t* b) {
             g_prompts_dirty.store(true, std::memory_order_relaxed);
         }
     }
-    // The key caps depend on the menu / road context, but only while the keyboard is the family in use.
-    if (larecomp::input::ActiveGlyphFamily() == larecomp::prompts::Family::Keyboard && MenuContext(b) != g_prompts_menu) g_prompts_dirty.store(true, std::memory_order_relaxed);
+    // Which screen the game is on: three loads of FlashNavigator and the form stack. A change is one log line (the screens the first run did not know are found from it), and, while the
+    // keyboard is the family in use, a repaint when it turns the keys from the road's into the menu's or back.
+    const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    if (!(ui == g_ui_signals) || (ui.movie && g_ui_movie_name != g_ui_prev_name)) {
+        const std::string was = larecomp::prompts::DescribeUi(g_ui_signals, g_ui_prev_name);
+        g_ui_signals = ui;
+        g_ui_prev_name = g_ui_movie_name;
+        MC_INFO("[prompts] screen -> {} (was {}): the keys are {}", larecomp::prompts::DescribeUi(ui, g_ui_movie_name), was, MenuContext() ? "the menu's" : "the road's");
+    }
+    if (larecomp::prompts::ContextNeedsRepaint(larecomp::input::ActiveGlyphFamily(), g_game_entered, g_ui_signals, g_prompts_menu)) g_prompts_dirty.store(true, std::memory_order_relaxed);
     if (g_prompts_dirty.exchange(false, std::memory_order_relaxed)) RepaintPrompts(b);
 }
 
