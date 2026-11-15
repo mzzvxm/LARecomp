@@ -10,7 +10,10 @@
 //   blend (INV_DEST_ALPHA, ONE) on colour and alpha, which makes the target UI + underlay x (1 -
 //   coverage) -- what the game's own draws left there, so its resolves and readbacks see its frame.
 // LAYERS_COMPOSE = 1 (hdr_compose_ps): the same sum, for the HDR present, into an
-//   R16G16B16A16_FLOAT image: the scene and the UI in the game's code values with nothing clamped
+//   R16G16B16A16_FLOAT image (only when the present cannot take the sum itself: present_ps.hlsl
+//   reads the two layers in place, kComposeLayers; this pass stays for the debug views, for a
+//   present that is scaled, and for mcla_gpu_hdr_compose_in_present off): the scene and the UI in
+//   the game's code values with nothing clamped
 //   (the scene may be above 1 here: HDR stage 3's float scene, hdr_tonemap.h, is read in place of the
 //   underlay when the frame has one; the UI stays under it). With a debug view
 //   (mcla_gpu_hdr_layers_view) the pass shows one layer instead. The first `gap` columns and rows
@@ -26,6 +29,7 @@
 // All of them draw 1:1 from the image's origin: the pixel the shader sees is the texel it reads.
 
 #include "host_pass_common.hlsli"
+#include "hdr_compose.hlsli"
 
 #if defined(LAYERS_RESOLVE) && LAYERS_RESOLVE
 
@@ -98,14 +102,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(saturate(abs(underlay.rgb - reference) * 16.0f), 1.0f);
   }
   // Premultiplied "over", as the game blends the UI: no clamp, so what the scene holds above 1
-  // is kept; the UI's own part never exceeds its coverage. The display's table is indexed by what
-  // this writes, so it is made finite and non-negative here: a NaN a float16 draw left in the float
-  // scene is none, and 65504 is the most a float16 holds.
-  const float3 code = ui.rgb + underlay.rgb * (1.0f - ui.a);
-  const uint3 bits = asuint(code) & 0x7FFFFFFFu;
-  return float4((bits.x <= 0x7F800000u) ? clamp(code.x, 0.0f, 65504.0f) : 0.0f,
-                (bits.y <= 0x7F800000u) ? clamp(code.y, 0.0f, 65504.0f) : 0.0f,
-                (bits.z <= 0x7F800000u) ? clamp(code.z, 0.0f, 65504.0f) : 0.0f, 1.0f);
+  // is kept; the UI's own part never exceeds its coverage. Made finite and non-negative for the
+  // display's table (hdr_compose.hlsli, which the present's inline compose uses as well).
+  return float4(ComposeLayers(underlay.rgb, ui), 1.0f);
 #else
   return underlay;
 #endif

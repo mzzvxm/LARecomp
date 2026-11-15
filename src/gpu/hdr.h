@@ -61,6 +61,10 @@ inline constexpr uint32_t kHdrFlagExtendedCodes = 1u << 2;
 // underlay): the table is read between its entries (linearly, and past the last one along its last
 // step) instead of at the nearest of the 256, since the scene is not made of 8-bit values.
 inline constexpr uint32_t kHdrFlagInterpolatedCodes = 1u << 3;
+// With kHdrFlagExtendedCodes, the present's own push constants: the source is the frame layers' scene
+// and `ui` their UI layer, and each texel is their sum (hlsl/hdr_compose.hlsli) before the table, in
+// place of the float image of the sum (mcla_gpu_hdr_compose_in_present, hdr_scene.h).
+inline constexpr uint32_t kHdrFlagComposeLayers = 1u << 4;
 
 namespace hdr {
 

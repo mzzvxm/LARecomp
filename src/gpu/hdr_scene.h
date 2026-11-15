@@ -10,6 +10,14 @@
 // would read the front buffer, with the display's gamma table extended above 1 (present_ps.hlsl,
 // flag kHdrFlagExtendedCodes). FSR1's passes read it too, in float16.
 //
+// Compose in the present (mcla_gpu_hdr_compose_in_present, on by default): the present's passes that
+// read the frame 1:1 take that sum themselves from the two layers (hlsl/hdr_compose.hlsli, flag
+// kHdrFlagComposeLayers), so the float image, its pass and its memory (63 MiB at 4K) are not
+// needed; Select chooses the layers, the present asks for the image (Compose) only when it must:
+// a scaled bilinear present reads four texels a pixel, and a debug view or the cvar off wants the
+// image as before. An idle present reads the layers again: no guest frame is open then, so the
+// layers are what the last present showed (Renderer::OnIdle).
+//
 // A frame whose scene is the 8-bit one (stage 2: stage 3 not available, or it could not make the
 // frame's float scene, hdr_tonemap.h) gives the front buffer's picture (to the rounding of the 8-bit
 // blends, see frame_layers.h). A frame that has a float scene (Frame::scene: the tone map's light
@@ -29,7 +37,8 @@
 //
 // Memory: the float image (R16G16B16A16_FLOAT) at the front buffer's size: 7.4 MB at 1x and
 // 66 MB at 3x, made on the first composed frame and released after as many presents without
-// layers as FrameLayers waits.
+// layers (or presents that took the sum themselves) as FrameLayers waits. With the compose in the
+// present it is made only by a scaled bilinear present or a debug view.
 //
 // Threading: render thread only, after Initialize.
 // ===========================================================================
@@ -65,11 +74,29 @@ class HdrScene {
   // the next composition starts afresh. The pipeline stays for the next time.
   void Release();
 
-  // Outside a render pass, once per present: when the guest frame last presented has layers and
-  // `front` (the front buffer's texture key) is their picture at `width` x `height` host pixels,
-  // composes their top left corner of that size into the float image (once per frame: an idle
-  // present reuses it) and returns true; slot() names the image. False: show the front buffer.
-  bool Compose(plume::RenderCommandList* list, const TextureKey& front, uint32_t width,
+  // The layers of the frame to show and the scene under the UI, as Select chose them.
+  struct Layers {
+    FrameLayers::Frame frame;
+    const HostImage* scene = nullptr;  // the float scene while the source has it, else the underlay
+    bool float_scene = false;          // `scene` is the float one
+    bool stale = false;                // the frame had a float scene that was gone by the present
+    uint32_t scene_slot() const { return scene->slot; }
+    uint32_t ui_slot() const { return frame.ui->slot; }
+    uint32_t gap() const { return frame.gap; }
+  };
+  // Once per present: when the guest frame last presented has layers and `front` (the front
+  // buffer's texture key) is their picture at `width` x `height` host pixels, says which layers
+  // to show and returns true. False: show the front buffer.
+  bool Select(const TextureKey& front, uint32_t width, uint32_t height, Layers* out);
+  // The present may take the sum of the layers itself: mcla_gpu_hdr_compose_in_present is on and no
+  // debug view (mcla_gpu_hdr_layers_view) is.
+  bool ComposeInPresent() const;
+  // The present took the sum itself (counted; a float image that stayed unused for long is released).
+  void NoteInline(const Layers& layers);
+  // Outside a render pass: composes the selected layers' top left corner of `width` x `height`
+  // into the float image (once per frame: an idle present reuses it) and returns true; slot()
+  // names the image. False: the image could not be made, show the front buffer.
+  bool Compose(plume::RenderCommandList* list, const Layers& layers, uint32_t width,
                uint32_t height);
   // The composed image's bindless slot.
   uint32_t slot() const { return image_.slot; }
@@ -105,8 +132,11 @@ class HdrScene {
   uint32_t composed_view_ = 0;
   bool float_scene_ = false;       // the image holds the frame's float scene
   uint32_t idle_presents_ = 0;     // presents in a row without layers
+  uint32_t inline_presents_ = 0;   // presents in a row that took the sum themselves (with an image held)
 
   struct Stats {
+    uint64_t inlined = 0;         // presents that took the sum of the layers themselves
+    uint64_t inlined_float = 0;   // ... of them with the float scene
     uint64_t composed = 0;
     uint64_t composed_float = 0;  // ... of them with the float scene (stage 3)
     uint64_t stale_scene = 0;     // a frame's float scene that was gone by the present
