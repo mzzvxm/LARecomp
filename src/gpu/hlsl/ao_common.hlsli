@@ -80,7 +80,7 @@ ConstantBuffer<AoPush> g_push : register(b0, space4);
 
 // flags: bits 0-7 debug view (0 none), 8-11 slices, 12-15 steps, 16 low (half resolution), 17-19
 // the denoise radius, 20 and 21 the temporal pass's (ao_temporal_ps.hlsl), 22-24 the apply pass's
-// (ao_apply_ps.hlsl), 25 the denoise pass's contact shadow mode (AoContactFilter).
+// (ao_apply_ps.hlsl), 25 the contact shadows' filter (AoContactFilter).
 uint AoView() { return g_push.slots2.z & 0xFFu; }
 uint AoSlices() { return (g_push.slots2.z >> 8) & 0xFu; }
 uint AoSteps() { return (g_push.slots2.z >> 12) & 0xFu; }
@@ -93,8 +93,10 @@ float AoBlurSigma(int radius) {
   return radius >= 4 ? 2.2f : (radius == 3 ? 1.8f : (radius == 2 ? 1.4f : 0.9f));
 }
 int AoWideRadius() { return min(max(AoDenoiseRadius(), 1) + 1, 4); }
-// The denoise pass cleans the contact shadows' visibility instead of the occlusion's: one 3x3 pass
-// whose weights also fall with the difference of the visibility (AoBilateralEdge).
+// The contact shadows' visibility is filtered by the pass that has this flag: the denoise pass cleans it
+// instead of the occlusion's (one 3x3 pass whose weights also fall with the difference of the visibility,
+// AoBilateralEdge), or, with mcla_gpu_contact_shadows_fast, the apply pass does it over the march's own
+// image (AoBilateralEdgeFolded) and the denoise pass does not run.
 bool AoContactFilter() { return (g_push.slots2.z & (1u << 25)) != 0u; }
 
 // What the depth chain holds for the sky and for anything the linearisation cannot place. Also
@@ -215,6 +217,48 @@ float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, fl
       }
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
       const float tq = AoLoadLinear(depth_slot, q);
+      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
+      const float off_plane = dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = exp(-0.5f * off_plane * off_plane);
+      const float w_space =
+          exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
+      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
+      sum += value * w;
+      weights += w;
+    }
+  }
+  return sum / weights;
+}
+
+// AoBilateralEdge for a caller that has the four neighbours' linear depths already (the apply pass reads them
+// for its normal): `cross_depth` is (left, right, top, bottom), each at the position clamped into the image as
+// the caller's own read does, and `isize` the visibility image's size (the depth image's: the same). The same
+// weights in the same order: keep the two in step. The plane test needs the other four neighbours' depths,
+// which are read from `depth_slot` here.
+float AoBilateralEdgeFolded(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
+                            float3 normal, float4 cross_depth) {
+  const float2 size = float2(isize);
+  const float footprint = 2.0f * g_push.lens.y / size.y * tc;
+  const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
+  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  float sum = centre;
+  float weights = 1.0f;
+  [unroll] for (int dy = -1; dy <= 1; ++dy) {
+    [unroll] for (int dx = -1; dx <= 1; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      float tq;
+      if (dy == 0) {
+        tq = dx < 0 ? cross_depth.x : cross_depth.y;
+      } else if (dx == 0) {
+        tq = dy < 0 ? cross_depth.z : cross_depth.w;
+      } else {
+        tq = AoLoadLinear(depth_slot, q);
+      }
       const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
       const float off_plane = dot(normal, pq - pc) / plane_sigma;
       const float w_depth = exp(-0.5f * off_plane * off_plane);

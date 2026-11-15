@@ -25,7 +25,10 @@
 //
 //   contact_factor 1 - sun_share * strength * (1 - cs) * fade: the contact shadows darken only the
 //                  sun's share of the light, so they cannot darken what the game already shadows
-//     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is;
+//     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is; with
+//                    mcla_gpu_contact_shadows_fast (flag bit 25, AoContactFilter, only at the picture's size) the image
+//                    is the march's own and this pass does the filter (AoBilateralEdgeFolded: the same 3x3 weights),
+//                    where the contact shadows can change the factor at all, so the filter pass and its target are gone;
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
@@ -74,7 +77,7 @@
 // (RGBA16F, at the passes' size: the a-trous filter's output), slots2.y the colour chain's level 0 (RGBA16F: rgb
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
 // of 0.04, bits 26-31 the cap in units of 0.25 (the ceiling and, in the colour chain, the radiance cap); bit 25 is
-// the denoise pass's contact filter flag and is not read here.
+// the contact filter flag (above: the apply does the contact filter itself), the same in both compilations.
 // The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on.
 // Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
@@ -98,6 +101,9 @@
 #endif
 
 static const float kViewScale = 0.3f;
+// The folded contact filter (AoContactFilter in this pass) is not run where the contact shadows change the factor
+// by less than this (the filter keeps cs between 0 and 1, so the factor moves by at most the weight).
+static const float kFoldedFilterSkip = 0.002f;
 
 bool AoTermOn() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 bool ContactOn() { return (g_push.slots2.z & (1u << 23)) != 0u; }
@@ -240,7 +246,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float sun_share = 0.0f;
   float contact_factor = 1.0f;
   if (contact_on) {
-    cs = VisibilityAt(g_push.slots2.x, pixel, tc);
     if (MaskOn()) {
       const float2 uv = (float2(pixel) + 0.5f) / size;
       sun_vis = saturate(g_push.shape.x *
@@ -250,7 +255,24 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float sun_lit = sun * sun_vis;
     sun_share = (ambient + sun_lit) > 1e-6f ? sun_lit / (ambient + sun_lit) : 0.0f;
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
-    contact_factor = 1.0f - saturate(g_push.extra.w * sun_share * (1.0f - cs) * contact_fade);
+    const float contact_weight = g_push.extra.w * sun_share * contact_fade;
+    if (!AoContactFilter()) {
+      cs = VisibilityAt(g_push.slots2.x, pixel, tc);
+    } else if (view != 0u || contact_weight > kFoldedFilterSkip) {
+      // mcla_gpu_contact_shadows_fast: slots2.x is the march's own image, and the filter the denoise pass would
+      // have made of it is done here, with the depths read above for the normal (the passes' size is the
+      // picture's: the flag is only set then). A pixel the contact shadows cannot darken (the game's own
+      // shadow there, the surface turned from the sun, past the fade) skips it: its factor is 1 - weight *
+      // (1 - cs), under kFoldedFilterSkip of a change.
+      // KEEP IN STEP with ao_contact_ps.hlsl (THE SKIP UNDER THE GAME'S OWN SHADOW): the march returns 1 for a pixel
+      // whose 3x3 neighbourhood has every mask texel at 0 (the weight bound strength * Ls * vis / (La + Ls * vis) under
+      // half of kFoldedFilterSkip), which is exact only because a pixel with weight <= kFoldedFilterSkip never reads the
+      // image. Change the weight (sun_share, the fade, the mask's sample position or gain) or this test and that bound
+      // changes with it (contact_trace.h MaskCannotLight).
+      cs = AoBilateralEdgeFolded(g_push.slots2.x, g_push.slots.w, pixel, int2(g_push.sizes.zw), tc, pc, normal,
+                                 float4(tl, tr, tt, tb));
+    }
+    contact_factor = 1.0f - saturate(contact_weight * (1.0f - cs));
   }
   const float factor = ao_factor * contact_factor;
 
