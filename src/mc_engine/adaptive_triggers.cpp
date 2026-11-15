@@ -36,10 +36,20 @@
 // has taken over (SDL shows Steam's virtual pad with the real pad's ids). A refused write says so
 // in the log and the triggers stay as they are. The Steam Deck's own controls are not a DualSense.
 //
-// No thread of its own and nothing registered with Windows: the work is done by a per-frame
-// tick on the game's thread, every 50 ms, and writes only when something changed (a vibration
-// at most every 100 ms). The pads are looked for every few seconds while no car is driven (a
-// scan is a few milliseconds), so a pad plugged in during a race is picked up at the next menu.
+// Threads. The game's thread does the per-frame tick, every 50 ms: it works out what the triggers
+// should be (spring, brake, vibration, or slack) and does nothing else. Nothing that touches a
+// device runs on it: no scan, no open, no write.
+//   Windows: the tick hands the wish to a worker thread through a latest-wins mailbox
+//     (trigger_mailbox.h), and the worker opens and closes the pads and writes the reports
+//     (overlapped I/O, waiting up to 50 ms for a pad that is slow to answer: the wait is the
+//     worker's own). It is started when the device watcher (device_watch.h) first says a DualSense
+//     is plugged in, so a player without one has no extra thread. Which pads exist comes from the
+//     watcher's arrival and removal notifications, not from a scan: the worker is woken when the
+//     list of DualSense interfaces changes. A write happens only when something changed (a
+//     vibration at most every 100 ms), and the newest wish always wins over an older one the
+//     worker had not got to yet.
+//   Elsewhere: the tick writes (SDL's HIDAPI driver queues the report on its own thread) and looks
+//     for pads when the watcher says SDL added or removed a joystick, not on a timer.
 // An effect stays in the pad until the next report, so the triggers are let go when both
 // settings are off, when the car is not driven, when the window is not in front, and from
 // Shutdown(). While a load stops the tick they stay as they were.
@@ -57,11 +67,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
-#include <cwctype>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -72,10 +83,8 @@
 #endif
 #include <Windows.h>
 #include <winternl.h>  // NTSTATUS, which hidpi.h uses
-#include <setupapi.h>
 #include <hidsdi.h>
 #include <hidpi.h>
-#pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "hid.lib")
 #else
 #include <SDL3/SDL.h>
@@ -84,8 +93,11 @@
 #include "trigger_sdl.h"
 #endif
 
+#include "device_watch.h"
+#include "device_watch_core.h"
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
+#include "trigger_mailbox.h"
 #include "wheel_slip.h"
 
 REXCVAR_DEFINE_BOOL(trigger_resistance, true, "MCLA/Input",
@@ -122,7 +134,6 @@ using Clock = std::chrono::steady_clock;
 // The HUD updates every frame while a car is driven; this long without one is "not driving".
 constexpr int64_t kHudFreshMs = 300;
 constexpr int64_t kTickMs = 50;
-constexpr int64_t kScanMs = 5000;
 // A vibration changes its strength at most this often, and holds its last strength this long
 // after the slip it follows has gone, so a slip that comes and goes does not make it flicker.
 constexpr int64_t kVibrationStepMs = 100;
@@ -307,6 +318,7 @@ struct Pad {
 #if defined(_WIN32)
     std::wstring path;
     HANDLE handle = INVALID_HANDLE_VALUE;
+    HANDLE event = nullptr;  // completion event of this pad's writes, made once and kept for as long as the pad is open
     bool bluetooth = false;
     size_t report_size = 0;  // what Windows wants written: the report padded to this
 #else
@@ -319,63 +331,70 @@ struct Pad {
     int64_t written_ms = 0;  // when
 };
 
-std::mutex g_mutex;  // the tick (game thread) against Shutdown (the window's thread)
-std::vector<Pad> g_pads;
-int64_t g_last_tick_ms = 0;
-int64_t g_next_scan_ms = 0;
+// Writes refused in a row after which no more pads are opened (the pads already open keep working).
+constexpr int kGiveUpAfter = 5;
+
+// Windows: touched by the effect worker only. Elsewhere: by the game's thread, under g_mutex.
 int g_failures = 0;
 int g_logged = 0;
-bool g_shut_down = false;
-bool g_migrated = false;
-VibrationState g_r2_vibration;
+
+std::atomic<bool> g_shut_down{false};
+int64_t g_last_tick_ms = 0;  // game thread
+bool g_migrated = false;     // game thread
+VibrationState g_r2_vibration;  // game thread
 VibrationState g_l2_vibration;
 
 #if defined(_WIN32)
-// Paths of the connected DualSenses: the HID interfaces whose path names Sony's vendor id and the
-// DualSense or DualSense Edge product id. Nothing is opened here.
-std::vector<std::wstring> FindPads() {
-    std::vector<std::wstring> found;
-    GUID hid;
-    HidD_GetHidGuid(&hid);
-    HDEVINFO set = SetupDiGetClassDevsW(&hid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (set == INVALID_HANDLE_VALUE) return found;
-    SP_DEVICE_INTERFACE_DATA item = {};
-    item.cbSize = sizeof(item);
-    for (DWORD i = 0; SetupDiEnumDeviceInterfaces(set, nullptr, &hid, i, &item); ++i) {
-        DWORD size = 0;
-        SetupDiGetDeviceInterfaceDetailW(set, &item, nullptr, 0, &size, nullptr);
-        if (size == 0) continue;
-        std::vector<uint8_t> raw(size);
-        auto* detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(raw.data());
-        detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
-        if (!SetupDiGetDeviceInterfaceDetailW(set, &item, detail, size, nullptr, nullptr)) continue;
-        std::wstring path = detail->DevicePath;
-        for (wchar_t& c : path) c = wchar_t(std::towlower(c));
-        if (path.find(L"054c") != std::wstring::npos &&
-            (path.find(L"0ce6") != std::wstring::npos || path.find(L"0df2") != std::wstring::npos)) {
-            found.push_back(path);
-        }
-    }
-    SetupDiDestroyDeviceInfoList(set);
-    return found;
-}
-
 void ClosePad(Pad& pad) {
     if (pad.handle != INVALID_HANDLE_VALUE) CloseHandle(pad.handle);
     pad.handle = INVALID_HANDLE_VALUE;
+    if (pad.event) CloseHandle(pad.event);
+    pad.event = nullptr;
 }
 
-// Sends the report for the given state to the pad; false if Windows refused it.
+// Opens one DualSense interface for effect writes (the worker's thread: opening a HID device and
+// asking for its report size are calls that can take a while). False if it could not be opened.
+bool OpenPad(const std::wstring& path, Pad& pad) {
+    pad.path = path;
+    pad.handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                             OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    if (pad.handle == INVALID_HANDLE_VALUE) {
+        if (g_logged++ < 8) LARECOMP_APP_WARN("[Triggers] could not open the DualSense (error {})", GetLastError());
+        return false;
+    }
+    pad.event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!pad.event) {
+        if (g_logged++ < 8) LARECOMP_APP_WARN("[Triggers] could not make an event for the DualSense (error {})", GetLastError());
+        ClosePad(pad);
+        return false;
+    }
+    PHIDP_PREPARSED_DATA preparsed = nullptr;
+    HIDP_CAPS caps = {};
+    if (HidD_GetPreparsedData(pad.handle, &preparsed)) {
+        HidP_GetCaps(preparsed, &caps);
+        HidD_FreePreparsedData(preparsed);
+    }
+    pad.report_size = caps.OutputReportByteLength;
+    // The Bluetooth interface is named for the HID service ({0000...}); its report is 78 bytes.
+    pad.bluetooth = larecomp::devwatch::ClassifyLink(path).bluetooth || pad.report_size >= 78;
+    LARECOMP_APP_INFO("[Triggers] DualSense found ({}, reports of {} bytes)",
+                      pad.bluetooth ? "Bluetooth" : "USB", pad.report_size);
+    return true;
+}
+
+// Sends the report for the given state to the pad; false if Windows refused it. Waits for the pad
+// (up to 50 ms): only ever called on the worker's thread.
 bool Send(Pad& pad, const Effect& r2, const Effect& l2) {
     uint8_t report[78];
     const size_t size = BuildReport(pad.bluetooth, r2, l2, report);
     std::vector<uint8_t> buffer(std::max(pad.report_size, size), 0);
     std::memcpy(buffer.data(), report, size);
     OVERLAPPED overlapped = {};
-    overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    overlapped.hEvent = pad.event;
+    ResetEvent(pad.event);
     bool ok = WriteFile(pad.handle, buffer.data(), DWORD(buffer.size()), nullptr, &overlapped) != 0;
     if (!ok && GetLastError() == ERROR_IO_PENDING) {
-        // A pad that does not answer in 50 ms is left alone: it costs one dropped frame, not a stall.
+        // A pad that does not answer in 50 ms is left alone: it costs one dropped report, not a stall.
         DWORD written = 0;
         if (WaitForSingleObject(overlapped.hEvent, 50) == WAIT_OBJECT_0) {
             ok = GetOverlappedResult(pad.handle, &overlapped, &written, FALSE) != 0;
@@ -384,7 +403,6 @@ bool Send(Pad& pad, const Effect& r2, const Effect& l2) {
             GetOverlappedResult(pad.handle, &overlapped, &written, TRUE);
         }
     }
-    CloseHandle(overlapped.hEvent);
     return ok;
 }
 #else
@@ -402,14 +420,16 @@ void ClosePad(Pad& pad) {
 }
 
 // Sends the effect state for the given triggers to the pad through SDL; false if SDL refused it.
+// SDL's HIDAPI driver queues the report for its own rumble thread and returns, so this does not wait
+// for the pad. CHECK: never run against a DualSense on Linux.
 bool Send(Pad& pad, const Effect& r2, const Effect& l2) {
     uint8_t state[47];
     BuildState(r2, l2, state);
     if (SDL_SendGamepadEffect(pad.gamepad, state, int(sizeof(state)))) return true;
     // CHECK: never run against a DualSense on Linux. "not supported" here means SDL has the pad
     // through the kernel's evdev driver (no access to /dev/hidraw*) or as Steam Input's virtual pad,
-    // not through its HIDAPI driver. The caller drops the pad, and the scan finds it again; after 5
-    // refusals the effects give up.
+    // not through its HIDAPI driver. The caller drops the pad, and a later look finds it again; after
+    // 5 refusals the effects give up.
     if (g_logged++ < 8) {
         LARECOMP_APP_WARN("[Triggers] SDL would not send the effect to the DualSense: {}. SDL can only do "
                           "that with the pad open through its HIDAPI driver (/dev/hidraw*, which the "
@@ -455,11 +475,212 @@ void ReadOldSetting() {
     rex::cvar::SetFlagByName("adaptive_triggers", "true");
 }
 
-#if !defined(_WIN32)
+// What the tick wants the triggers to be, worked out from the settings, the car and the window.
+// `vibrating` says one of the effects is a vibration (written at most every kVibrationStepMs).
+struct Wish {
+    bool enabled = false;  // at least one of the two settings is on; false = let the triggers go and give the pads back
+    bool vibrating = false;
+    Effect r2 = Off();
+    Effect l2 = Off();
+    bool operator==(const Wish& o) const {
+        return enabled == o.enabled && vibrating == o.vibrating && r2 == o.r2 && l2 == o.l2;
+    }
+    bool operator!=(const Wish& o) const { return !(*this == o); }
+};
+
+// Reads the settings and the game and works out the wish. Game thread, every kTickMs.
+Wish WorkOutWish(int64_t now) {
+    Wish wish;
+    const bool resistance = REXCVAR_GET(trigger_resistance);
+    const bool vibration = REXCVAR_GET(trigger_vibration);
+    if (!resistance && !vibration) return wish;
+    wish.enabled = true;
+    const bool driving = Driving();
+    const bool engaged = driving && WindowInFront();
+    if (engaged) {
+        if (resistance) {
+            wish.r2 = Slope(1, 9, 1, REXCVAR_GET(trigger_throttle));
+            wish.l2 = Slope(2, 8, 2, REXCVAR_GET(trigger_brake));
+        }
+        if (vibration) {
+            // A trigger holds one effect: the vibration replaces the spring or the brake while
+            // there is slip.
+            const larecomp::slip::Amounts slip = larecomp::slip::Current();
+            if (const int strength = VibrationStrength(g_r2_vibration, slip.wheelspin, now)) {
+                wish.r2 = Vibration(1, strength, 30);
+                wish.vibrating = true;
+            }
+            if (const int strength = VibrationStrength(g_l2_vibration, slip.lockup, now)) {
+                wish.l2 = Vibration(1, strength, 25);
+                wish.vibrating = true;
+            }
+        }
+    } else {
+        g_r2_vibration = {};
+        g_l2_vibration = {};
+    }
+    return wish;
+}
+
+#if defined(_WIN32)
+
+// --- The effect worker (Windows) -------------------------------------------------------------
+// CHECK: never run against a DualSense from this code. Opening the interface, the report size, the
+// report bytes (BuildReport is unchanged) and the overlapped write with its 50 ms wait are the old
+// code moved to the worker's thread; what is new is the mailbox, the pacing decision (DecideWrite,
+// tested) and the retry after a refused open or write.
+
+// A pad that would not open is tried again after this, a write that was refused after that.
+constexpr int64_t kOpenRetryMs = 2000;
+constexpr int64_t kWriteRetryMs = 5000;
+// Shutdown waits this long for the worker to let the triggers go (a write waits up to 50 ms a pad).
+constexpr int kShutdownWaitMs = 600;
+
+struct Worker {
+    larecomp::triggers::LatestMailbox<Wish> mailbox;  // game thread -> worker, latest wins
+    std::atomic<bool> started{false};
+    std::mutex mutex;  // guards thread and done, and the start against Shutdown
+    std::condition_variable done_cv;
+    bool done = false;
+    std::thread* thread = nullptr;
+};
+
+Worker& W() {
+    // Never destroyed: the worker may still be running when the statics go (a process that ends
+    // through exit() without Shutdown), and must not find its mailbox gone.
+    static Worker* worker = new Worker();
+    return *worker;
+}
+
+Wish g_posted;  // game thread: the last wish handed to the worker
+
+// Opens the pads of DualSenses that appeared and closes the ones that went, from the watcher's
+// list (worker's thread). A pad that would not open is tried again a little later, a few times.
+void SyncPads(std::vector<Pad>& pads, larecomp::devwatch::RetryBackoff& retry, int64_t now) {
+    const std::vector<std::wstring> present = larecomp::devwatch::DualSensePaths();
+    retry.Retain(present);
+    for (size_t i = 0; i < pads.size();) {
+        if (std::find(present.begin(), present.end(), pads[i].path) == present.end()) {
+            ClosePad(pads[i]);
+            pads.erase(pads.begin() + long(i));
+        } else {
+            ++i;
+        }
+    }
+    if (g_failures >= kGiveUpAfter) return;
+    for (const std::wstring& path : present) {
+        if (std::any_of(pads.begin(), pads.end(), [&](const Pad& p) { return p.path == path; })) continue;
+        if (!retry.Allowed(path, now)) continue;
+        Pad pad;
+        if (OpenPad(path, pad)) {
+            retry.Clear(path);
+            pads.push_back(std::move(pad));
+        } else {
+            retry.Failed(path, now, kOpenRetryMs);
+        }
+    }
+}
+
+void WorkerMain() {
+    Worker& worker = W();
+    std::vector<Pad> pads;
+    larecomp::devwatch::RetryBackoff retry(kGiveUpAfter);
+    Wish wish;
+    uint32_t seen_generation = 0xFFFFFFFFu;  // the watcher's list as it was when the pads were last synced
+    int64_t wake_at_ms = -1;                 // a paced write or a retry is due then (-1: nothing waits)
+    for (;;) {
+        std::chrono::milliseconds timeout{-1};
+        if (wake_at_ms >= 0) timeout = std::chrono::milliseconds(std::max<int64_t>(0, wake_at_ms - NowMs()));
+        const auto wake = worker.mailbox.Wait(wish, timeout);
+        if (wake.closed) break;
+        const int64_t now = NowMs();
+        wake_at_ms = -1;
+        const auto wake_by = [&](int64_t at) {
+            if (at >= 0 && (wake_at_ms < 0 || at < wake_at_ms)) wake_at_ms = at;
+        };
+
+        if (!wish.enabled) {
+            // Both settings off (or the first wish has not come): let go of what was set and give
+            // the pads back. They are opened again when the settings come on.
+            for (Pad& pad : pads) {
+                Release(pad);
+                ClosePad(pad);
+            }
+            pads.clear();
+            retry.ClearAll();
+            seen_generation = 0xFFFFFFFFu;
+            continue;
+        }
+
+        const uint32_t generation = larecomp::devwatch::Generation();
+        if (generation != seen_generation || retry.NextDueMs(now) == 0) {
+            seen_generation = generation;
+            SyncPads(pads, retry, now);
+        }
+        if (g_failures < kGiveUpAfter) {
+            const int64_t retry_in = retry.NextDueMs(now);
+            if (retry_in >= 0) wake_by(now + std::max<int64_t>(retry_in, 1));
+        }
+
+        for (size_t i = 0; i < pads.size();) {
+            Pad& pad = pads[i];
+            const larecomp::triggers::WriteDecision decision = larecomp::triggers::DecideWrite(
+                pad.sent, pad.r2 == wish.r2 && pad.l2 == wish.l2, wish.vibrating, pad.written_ms, now, kVibrationStepMs);
+            if (decision.action == larecomp::triggers::WriteAction::kLater) wake_by(now + decision.wait_ms);
+            if (decision.action == larecomp::triggers::WriteAction::kNow && !Write(pad, wish.r2, wish.l2)) {
+                // Refused: the pad is gone or not ours to write to. It is opened again a little
+                // later, unless the watcher says it left (then its entry goes with the pad).
+                retry.Failed(pad.path, now, kWriteRetryMs);
+                ClosePad(pad);
+                pads.erase(pads.begin() + long(i));
+                if (++g_failures >= kGiveUpAfter) {
+                    LARECOMP_APP_WARN("[Triggers] writing to the DualSense failed {} times; giving up", kGiveUpAfter);
+                }
+                continue;
+            }
+            ++i;
+        }
+    }
+    // Closed (Shutdown): the triggers back to slack, the pads back to Windows.
+    for (Pad& pad : pads) {
+        Release(pad);
+        ClosePad(pad);
+    }
+    {
+        std::lock_guard<std::mutex> lock(worker.mutex);
+        worker.done = true;
+    }
+    worker.done_cv.notify_all();
+}
+
+// The watcher's call when a controller came or went (a pool thread of the OS): wake the worker so it
+// looks at the list of DualSenses. Nothing else happens here.
+void OnDevicesChanged(void*) { W().mailbox.Wake(); }
+
+// Game thread. The worker starts once the watcher has seen a DualSense and lives until Shutdown.
+void StartWorker() {
+    Worker& worker = W();
+    std::lock_guard<std::mutex> lock(worker.mutex);
+    if (worker.started.load(std::memory_order_relaxed) || g_shut_down.load(std::memory_order_relaxed)) return;
+    larecomp::devwatch::AddChangeListener(&OnDevicesChanged, nullptr);
+    worker.thread = new std::thread(WorkerMain);
+    worker.started.store(true, std::memory_order_release);
+    LARECOMP_APP_INFO("[Triggers] a DualSense is plugged in: the effect worker starts");
+}
+
+#else  // !_WIN32
+
+constexpr int64_t kScanMs = 5000;  // a dropped pad is looked for again after this
+
+std::mutex g_mutex;  // the tick (game thread) against Shutdown (the window's thread)
+std::vector<Pad> g_pads;
+uint32_t g_seen_generation = 0xFFFFFFFFu;  // the watcher's generation when SDL's list was last read
+int64_t g_rescan_ms = 0;                   // a pad was dropped: look again after this (0 = no)
+
 // Opens the DualSenses that appeared and closes the ones that went. SDL's own list of pads is
 // current without any call here: the SDK's driver pumps SDL's events, which updates the joysticks.
 void Scan() {
-    if (g_failures >= 5) return;
+    if (g_failures >= kGiveUpAfter) return;
     if (!larecomp::trigger_sdl::GamepadLayerUp()) return;
     std::vector<SDL_JoystickID> present;
     int count = 0;
@@ -496,44 +717,8 @@ void Scan() {
         }
     }
 }
-#else
-// Opens the pads that appeared and closes the ones that went.
-void Scan() {
-    if (g_failures >= 5) return;
-    const std::vector<std::wstring> present = FindPads();
-    for (const std::wstring& path : present) {
-        if (std::any_of(g_pads.begin(), g_pads.end(), [&](const Pad& p) { return p.path == path; })) continue;
-        Pad pad;
-        pad.path = path;
-        pad.handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-        if (pad.handle == INVALID_HANDLE_VALUE) {
-            if (g_logged++ < 8) LARECOMP_APP_WARN("[Triggers] could not open the DualSense (error {})", GetLastError());
-            continue;
-        }
-        PHIDP_PREPARSED_DATA preparsed = nullptr;
-        HIDP_CAPS caps = {};
-        if (HidD_GetPreparsedData(pad.handle, &preparsed)) {
-            HidP_GetCaps(preparsed, &caps);
-            HidD_FreePreparsedData(preparsed);
-        }
-        pad.report_size = caps.OutputReportByteLength;
-        // The Bluetooth interface is named for the HID service ({0000...}); its report is 78 bytes.
-        pad.bluetooth = path.find(L"#{0000") != std::wstring::npos || pad.report_size >= 78;
-        LARECOMP_APP_INFO("[Triggers] DualSense found ({}, reports of {} bytes)",
-                          pad.bluetooth ? "Bluetooth" : "USB", pad.report_size);
-        g_pads.push_back(std::move(pad));
-    }
-    for (size_t i = 0; i < g_pads.size();) {
-        if (std::find(present.begin(), present.end(), g_pads[i].path) == present.end()) {
-            ClosePad(g_pads[i]);
-            g_pads.erase(g_pads.begin() + long(i));
-        } else {
-            ++i;
-        }
-    }
-}
-#endif
+
+#endif  // _WIN32
 
 }  // namespace
 
@@ -544,78 +729,90 @@ void Tick() {
     const int64_t now = NowMs();
     if (now - g_last_tick_ms < kTickMs) return;
     g_last_tick_ms = now;
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_shut_down) return;
+    if (g_shut_down.load(std::memory_order_acquire)) return;
     ReadOldSetting();
-    const bool resistance = REXCVAR_GET(trigger_resistance);
-    const bool vibration = REXCVAR_GET(trigger_vibration);
-    if (!resistance && !vibration) {
+#if defined(_WIN32)
+    Worker& worker = W();
+    if (!worker.started.load(std::memory_order_acquire)) {
+        // No worker until the watcher has seen a DualSense: a player without one pays one atomic read.
+        if (larecomp::devwatch::DualSenseCount() == 0) return;
+        if (!REXCVAR_GET(trigger_resistance) && !REXCVAR_GET(trigger_vibration)) return;
+        StartWorker();
+        if (!worker.started.load(std::memory_order_acquire)) return;
+        g_posted = Wish();  // the first wish always goes
+    }
+    const Wish wish = WorkOutWish(now);
+    if (wish != g_posted) {
+        g_posted = wish;
+        worker.mailbox.Post(wish);
+    }
+#else
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_shut_down.load(std::memory_order_relaxed)) return;
+    const Wish wish = WorkOutWish(now);
+    if (!wish.enabled) {
         // Both off: let go of what was set and give the pads back.
         for (Pad& pad : g_pads) {
             Release(pad);
             ClosePad(pad);
         }
         g_pads.clear();
-        g_next_scan_ms = 0;
+        g_seen_generation = 0xFFFFFFFFu;  // look again when they come on
         return;
     }
-    const bool driving = Driving();
-    if (!driving && now >= g_next_scan_ms) {
-        g_next_scan_ms = now + kScanMs;
+    // SDL added or removed a joystick since the list was last read (the watcher's generation), or a
+    // dropped pad is due another try: nothing else makes this look. Only while no car is driven.
+    const uint32_t generation = larecomp::devwatch::Generation();
+    if (!Driving() && (generation != g_seen_generation || (g_rescan_ms != 0 && now >= g_rescan_ms))) {
+        g_seen_generation = generation;
+        g_rescan_ms = 0;
         Scan();
-    }
-    const bool engaged = driving && WindowInFront();
-    Effect r2 = Off();
-    Effect l2 = Off();
-    bool vibrating = false;
-    if (engaged) {
-        if (resistance) {
-            r2 = Slope(1, 9, 1, REXCVAR_GET(trigger_throttle));
-            l2 = Slope(2, 8, 2, REXCVAR_GET(trigger_brake));
-        }
-        if (vibration) {
-            // A trigger holds one effect: the vibration replaces the spring or the brake while
-            // there is slip.
-            const larecomp::slip::Amounts slip = larecomp::slip::Current();
-            if (const int strength = VibrationStrength(g_r2_vibration, slip.wheelspin, now)) {
-                r2 = Vibration(1, strength, 30);
-                vibrating = true;
-            }
-            if (const int strength = VibrationStrength(g_l2_vibration, slip.lockup, now)) {
-                l2 = Vibration(1, strength, 25);
-                vibrating = true;
-            }
-        }
-    } else {
-        g_r2_vibration = {};
-        g_l2_vibration = {};
     }
     for (size_t i = 0; i < g_pads.size();) {
         Pad& pad = g_pads[i];
-        const bool changed = !pad.sent || pad.r2 != r2 || pad.l2 != l2;
-        // A vibration's strength follows the slip at most every kVibrationStepMs; ending it, or
-        // any other change, is not held back.
-        const bool paced = vibrating && pad.sent && now - pad.written_ms < kVibrationStepMs;
-        if (changed && !paced && !Write(pad, r2, l2)) {
-            // Refused: the pad is gone or not ours to write to. It is looked for again at the next scan.
+        const WriteDecision decision =
+            DecideWrite(pad.sent, pad.r2 == wish.r2 && pad.l2 == wish.l2, wish.vibrating, pad.written_ms, now, kVibrationStepMs);
+        if (decision.action == WriteAction::kNow && !Write(pad, wish.r2, wish.l2)) {
+            // Refused: the pad is gone or not ours to write to. It is looked for again after kScanMs.
             ClosePad(pad);
             g_pads.erase(g_pads.begin() + long(i));
-            if (++g_failures >= 5) LARECOMP_APP_WARN("[Triggers] writing to the DualSense failed 5 times; giving up");
+            g_rescan_ms = now + kScanMs;
+            if (++g_failures >= kGiveUpAfter) {
+                LARECOMP_APP_WARN("[Triggers] writing to the DualSense failed {} times; giving up", kGiveUpAfter);
+            }
             continue;
         }
         ++i;
     }
+#endif
 }
 
 void Shutdown() {
+    if (g_shut_down.exchange(true, std::memory_order_acq_rel)) return;
+#if defined(_WIN32)
+    Worker& worker = W();
+    std::unique_lock<std::mutex> lock(worker.mutex);
+    if (!worker.started.load(std::memory_order_acquire)) return;
+    worker.mailbox.Close();
+    // The worker lets the triggers go and closes the pads (a write can wait up to 50 ms for a slow
+    // pad); this waits for it, but not for ever: the process ends either way.
+    if (worker.done_cv.wait_for(lock, std::chrono::milliseconds(kShutdownWaitMs), [&] { return worker.done; })) {
+        worker.thread->join();
+        delete worker.thread;
+        worker.thread = nullptr;
+    } else {
+        LARECOMP_APP_WARN("[Triggers] the effect worker did not finish in {} ms; the triggers may stay as they are",
+                          kShutdownWaitMs);
+        worker.thread->detach();
+    }
+#else
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (g_shut_down) return;
-    g_shut_down = true;
     for (Pad& pad : g_pads) {
         Release(pad);
         ClosePad(pad);
     }
     g_pads.clear();
+#endif
 }
 
 bool IsDriving() { return Driving(); }
