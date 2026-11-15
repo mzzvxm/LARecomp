@@ -92,6 +92,8 @@ constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
 constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
+constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
+constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
 #endif
 
 // The shapes aspect_ratio allows (":" is not allowed in a name).
@@ -186,6 +188,11 @@ const ItemDef kDebugRenderingItems[] = {
                    kAoFadeEndVals, Len(kAoFadeEndVals), "%g")),
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
+    // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
+    // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
+    // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.
+    NativeOnly(Str("PM_RxDbgGlowVis",    "mcla_gpu_glow_visibility", "GLOW VISIBILITY: ",
+                   kGlowVisibilityVals, kGlowVisibilityNames, Len(kGlowVisibilityVals))),
     // The upscalers' A/B levers (a shimmer on fine detail at a low base resolution): the extra texture
     // detail bias, the masks, and MSAA under the upscaler.
     NativeOnly(Dbl("PM_RxDbgUpMipBias",  "mcla_gpu_scene_extra_bias", "UPSCALER MIP BIAS: ",

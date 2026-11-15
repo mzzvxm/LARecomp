@@ -124,7 +124,7 @@ inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued abo
 inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
 inline constexpr uint32_t kVariantEnvMap = 4;       // the car reflections' environment map: its mip level pass and its 64x32 reduction at the map's scale
 inline constexpr uint32_t kVariantShadowFilter = 5;  // the sun shadow collector's lookup: soft Vogel taps (16 bytes of constants)
-// 6 is the soft glow's (another branch).
+inline constexpr uint32_t kVariantGlowSoft = 6;    // the glow sprites' visibility: a share of 24 depth taps, not one compare
 inline constexpr uint32_t kVariantCarSelfRefl = 7;   // the player's car paint: its environment reads occluded and blended with the car's own previous frame (112 bytes of constants; a test prototype, G8b)
 inline constexpr uint32_t kVariantSlots = 8;       // ids 0..7 (ShaderStore keeps one table per id)
 

@@ -104,6 +104,7 @@ add_library(larecomp_shaderpack STATIC
     variants/bloom_gauss.cpp
     variants/env_map.cpp
     variants/shadow_filter.cpp
+    variants/glow_soft.cpp
     variants/car_selfrefl.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
@@ -176,3 +177,12 @@ add_executable(larecomp_car_selfrefl_test EXCLUDE_FROM_ALL
     variants/car_selfrefl.cpp)
 target_compile_features(larecomp_car_selfrefl_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_car_selfrefl_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The glow variant's text transform has a check that needs no compiler, renderer or game files:
+#   cmake --build <dir> --target larecomp_glow_soft_test, then run src/shaderpack/larecomp_glow_soft_test
+#   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/glow_soft_test.cpp).
+add_executable(larecomp_glow_soft_test EXCLUDE_FROM_ALL
+    variants/glow_soft_test.cpp
+    variants/glow_soft.cpp)
+target_compile_features(larecomp_glow_soft_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_glow_soft_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
