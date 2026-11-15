@@ -20,8 +20,12 @@
 //
 // WHAT: five passes into images of their own, then one into the main view's colour target:
 //   depth    the linear view-space distance, R32_FLOAT, at the AO's size (the render size, or half of
-//            it at LOW), and two coarser levels, R16_FLOAT
-//   main     the GTAO visibility (R16_FLOAT), its noise changing every frame
+//            it at LOW), and two coarser levels, R16_FLOAT; the lowest bit of each level-0 depth says
+//            whether the pixel is a vehicle (the stencil IDs 1 to 23)
+//   main     the GTAO visibility (R16_FLOAT), its noise changing every frame; what a car blocks of the
+//            sky light reaches a share of the radius on the road (mcla_gpu_ao_car_reach), not all of
+//            it, so the road does not get a halo round every car, and the sum over the slices is
+//            divided by what it is for a surface nothing blocks (an open road is 1, not 0.9)
 //   denoise  a depth-aware 3x3 blur of it (R16_FLOAT): once when the occlusion has a history of its
 //            own, twice when it has none; never left out
 //   temporal the accumulation over frames: this frame's visibility averaged with the last frame's,
@@ -657,6 +661,9 @@ class AmbientOcclusion {
     float radius = 3.0f;
     float power = 3.6f;
     float direct = 0.375f;
+    // How far a vehicle's samples reach on a pixel that is not a vehicle, as a share of the radius
+    // (mcla_gpu_ao_car_reach; 0 or 1: all of it).
+    float car_reach = 0.4f;
   };
   void UpdateLook();
 
@@ -895,6 +902,7 @@ class AmbientOcclusion {
   bool bounce_built_ = false;     // ... of the bounce light
   Look look_;
   uint32_t look_logged_index_ = ~0u;
+  float car_reach_logged_ = -1.0f;
   HostImage depth_[3];  // the linear depth chain: the AO's size, then 1/2 and 1/4 of it
   HostImage raw_;       // the main pass's visibility
   HostImage denoised_;  // the denoise's

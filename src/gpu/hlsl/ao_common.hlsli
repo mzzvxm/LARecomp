@@ -33,7 +33,8 @@ struct AoPush {
   // x: the depth plane's bindless slot (the EDRAM depth target: Texture2DMS in space1 when
   //    AO_DEPTH_MS, else Texture2D in space0)
   // y: the host sample that is the guest's sample 0
-  // z, w: the images this pass reads (slot of src0, src1)
+  // z, w: the images this pass reads (slot of src0, src1); the depth pass reads the depth target's
+  // stencil plane (the vehicles' IDs) in z, 0xFFFFFFFF for none
   uint4 slots;
   // x: slot of src2; y: the frame number the noise is shifted by; z: flags (below); w: reserved
   uint4 slots2;
@@ -51,8 +52,11 @@ struct AoPush {
   // xyz: the direction to the sun in view space (unit length; zero when unknown); w: the ambient
   // light's luma
   float4 light;
-  // x: the sun light's luma; y: the distance fade's end; z: how far the ambient share moves towards
-  // 1 (the intensity's direct share: the occlusion also darkens the sun-lit part); w: reserved
+  // x: the sun light's luma (the main pass has no use for it and takes in its place how far a vehicle's
+  // samples reach on the world as a share of the radius: 0, or 1 or more, is no limit, a car blocks the
+  // sky light like anything else); y: the distance fade's end; z: how far the ambient share moves towards
+  // 1 (the intensity's direct share: the occlusion also darkens the sun-lit part); w: reserved (the bounce
+  // light's main pass takes the far ring's reach in it)
   float4 extra;
   // The temporal pass (ao_temporal_ps) has no use for the light, the shape or the depth rows: it
   // takes lin, shape and light as the three rows of the 3x4 matrix that moves a point of this
@@ -119,6 +123,19 @@ float3 AoViewPos(float2 centre, float2 size, float t) {
 // A linear depth image (R32_FLOAT or R16_FLOAT, bindless slot `slot`) at `p`.
 float AoLoadLinear(uint slot, int2 p) {
   return g_textures[slot].Load(int3(p, 0)).x;
+}
+
+// WHICH PIXELS ARE VEHICLES. The depth pass (ao_depth_ps) writes one more bit into each level-0 depth: the
+// lowest bit of the float, 1 for a pixel that the depth target's stencil plane gives a vehicle ID (1 to 23, as
+// ao_temporal_ps's AoVehicleId) and 0 for anything else. That is one unit in the last place of a 32 bit float
+// (a relative 1.2e-7 of the depth, far below anything that reads it), so every pass that reads the depth chain
+// reads it as before; the main pass reads the bit (ao_main_ps: a car's reach on the road). The coarser levels
+// (16 bit floats) do not keep it: a sample's flag is read from level 0 at the sample's own pixel.
+bool AoIsVehicle(float level0_depth) {
+  return (asuint(level0_depth) & 1u) != 0u;
+}
+float AoSetVehicleBit(float depth, bool vehicle) {
+  return asfloat((asuint(depth) & ~1u) | (vehicle ? 1u : 0u));
 }
 
 // The view-space normal from the linear depth image `slot` of size `size` at pixel `p`, whose
