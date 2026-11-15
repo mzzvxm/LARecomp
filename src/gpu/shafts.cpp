@@ -509,10 +509,10 @@ void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks
     return;
   }
   if (match.samples == temporal::kPauseSamples) {
-    pause_view_ = true;  // the pause menu's, the race pause's and the map's world: not handled
-    return;
+    pause_view_ = true;  // the pause menu's, the race pause's, the garage's and the map's world (menu_world.h)
+  } else {
+    play_view_ = true;
   }
-  play_view_ = true;
   if (anchor_seen_ || composite_seen_ || !match.color) {
     return;
   }
@@ -562,18 +562,16 @@ void SunShafts::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks
 
 void SunShafts::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
-  // The play view's camera only; a frame with draws of both kinds or of neither gives none, and the
-  // frame after it has none to use.
+  lens_step_valid_ = false;
+  // The camera of the frame's kind of view (the play view's or the pause/map world's, kept apart as in
+  // ao.cpp: the lenses differ); a frame with draws of both kinds or of neither gives none, and the frame
+  // after it has none to use.
   if (play_view_ == pause_view_) {
     have_previous_ = false;
     vs_pose_trusted_ = false;
     return;
   }
-  if (pause_view_) {
-    have_previous_ = false;
-    vs_pose_trusted_ = false;
-    return;
-  }
+  const bool pause = pause_view_;
   const uint8_t* ps = banks.ps.data();
   // The fetch size the camera test compares c62 against is c62 itself, as ao.cpp: a frame size that
   // is not the main view's is caught by the first point's rectangle.
@@ -591,9 +589,21 @@ void SunShafts::OnAnchor(const ConstantBanks::Banks& banks) {
     vs_pose_trusted_ = false;
     return;
   }
+  // The lens the previous frame's camera gave the trigger against this frame's own, for the pause/map
+  // view's rule that its lens must have been steady (the trigger works with the previous frame's lens).
+  const bool same_kind = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
+  if (same_kind) {
+    const auto rel = [](double a, double b) {
+      return std::fabs(a - b) / std::max(1e-30, std::fabs(b));
+    };
+    lens_step_ = std::max({rel(camera.fov_y, previous_.fov_y), rel(camera.aspect, previous_.aspect),
+                           rel(camera.near_plane, previous_.near_plane),
+                           rel(camera.far_plane, previous_.far_plane)});
+    lens_step_valid_ = std::isfinite(lens_step_);
+  }
   // Whether the vertex constants of this frame's draws held this frame's view inverse: trusted once
   // they did in a frame the camera moved in, dropped as soon as they differ.
-  if (have_previous_ && previous_frame_ + 1 == frame_ && vs_view_inverse_draws_ != 0) {
+  if (same_kind && vs_view_inverse_draws_ != 0) {
     temporal::Mat4 vertex;
     for (int r = 0; r < 4; ++r) {
       for (int c = 0; c < 4; ++c) {
@@ -611,6 +621,7 @@ void SunShafts::OnAnchor(const ConstantBanks::Banks& banks) {
     vs_pose_trusted_ = false;
   }
   previous_ = camera;
+  previous_pause_ = pause;
   have_previous_ = true;
   previous_frame_ = frame_;
 }
@@ -841,7 +852,9 @@ bool SunShafts::IsFirstPoint(const ResolveRecord& record,
   if (!summary.depth_copy || !summary.source || first_point_seen_) {
     return false;
   }
-  if (!temporal::IsPlaySamples(temporal::MainDepthSamples(summary.source_key))) {
+  const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
+  const bool pause = samples == temporal::kPauseSamples;
+  if (!temporal::IsPlaySamples(samples) && !pause) {
     return false;
   }
   if ((record.flags & kEventInsideEndTiling) || summary.clears_depth ||
@@ -851,6 +864,13 @@ bool SunShafts::IsFirstPoint(const ResolveRecord& record,
   uint32_t width = 0;
   uint32_t height = 0;
   PictureSize(summary, &width, &height);
+  if (pause) {
+    // The 4x view's three tiles come in an order nobody has looked at: any rectangle inside the picture,
+    // whose destination is the whole picture (ao.cpp Judge says the same for the occlusion's trigger).
+    return menu_world::PauseFirstPointGeometry(summary.x0, summary.y0, summary.x1, summary.y1, width,
+                                               height, summary.source->width, summary.source->height,
+                                               EdramTargets::kHeightAlignment);
+  }
   return summary.x0 == 0 && summary.y0 == 0 && summary.x1 > summary.x0 &&
          summary.y1 > summary.y0 && uint32_t(summary.x1) <= width && uint32_t(summary.y1) <= height;
 }
@@ -873,8 +893,21 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   first_point_seen_ = true;
   ++triggers_;
   outcome_ = Outcome::kNoCamera;
-  if (!have_previous_ || previous_frame_ + 1 != frame_) {
+  const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
+  // The previous frame's camera, of the same kind of view; a pause/map view's also needs a lens that has
+  // been steady (its second frame, the pause camera's swing and the map's zoom have none).
+  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause ||
+      (pause && !menu_world::LensSteady(lens_step_valid_, lens_step_))) {
     ++skipped_no_camera_;
+    return false;
+  }
+  // The world of the frame by that camera, and whether it has shafts: the pause menu's world and the garage
+  // when a sky draw of the frame told where the sun is, the map never.
+  trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&previous_),
+                                                menu_world::GarageLighting())
+                         : menu_world::World::kPlay;
+  if (!menu_world::ShaftsRun(trigger_world_, sky_draws_ != 0)) {
+    outcome_ = Outcome::kWorld;
     return false;
   }
   outcome_ = Outcome::kNoLight;
@@ -937,7 +970,11 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   pending_ = plan;
   pending_.valid = true;  // the shafts are still to be added
   outcome_ = Outcome::kSkyOnly;
-  anchor_ = policy_.Choose(REXCVAR_GET(mcla_gpu_sun_shafts_early));
+  // The menu worlds add the shafts here, at the first point, always: their end-of-scene copy (three tiles) was
+  // never looked at, and what they teach must not reach the play view's policy (EndSkyFrame).
+  anchor_ = trigger_world_ != menu_world::World::kPlay
+                ? shafts_anchor::Anchor::kMidScene
+                : policy_.Choose(REXCVAR_GET(mcla_gpu_sun_shafts_early));
   if (anchor_ == shafts_anchor::Anchor::kMidScene) {
     // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene
     // that gives no copy of the main colour at the second point. The copy is still watched there.
@@ -1159,6 +1196,21 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
                 plan.view != 0 ? "a debug view" : "added to the colour",
                 shafts_anchor::AnchorName(anchor_));
   }
+  if (trigger_world_ != menu_world::World::kPlay) {
+    // A menu world's run is not the play view's (its own count, not the anchor policy's).
+    ++runs_world_;
+    if (!first_world_run_logged_) {
+      first_world_run_logged_ = true;
+      REXLOG_INFO("[gpu] shafts: the first sun shafts pass in the {}: {} at {}x{}, {} steps, {} host "
+                  "samples, the sun at ({:.2f}, {:.2f}) of the picture (from {}), added at {} (the "
+                  "world has a sky drawn, a steady lens and the same settings as the game view)",
+                  menu_world::Name(trigger_world_), ModeName(mode_), plan.render[0], plan.render[1],
+                  plan.steps, plan.host_samples, plan.sun_uv[0], plan.sun_uv[1],
+                  plan.sun_from_sky ? "the sky's sun constant" : "the light's direction",
+                  shafts_anchor::AnchorName(anchor_));
+    }
+    return true;
+  }
   ++runs_;
   if (anchor_ == shafts_anchor::Anchor::kEndOfScene) {
     ++runs_end_;
@@ -1218,6 +1270,8 @@ const char* SunShafts::OutcomeName(Outcome outcome) {
     case Outcome::kNoLight: return "no usable light constants in the main view's draws";
     case Outcome::kGated:
       return "the sun gives no shafts now (its height, the weather or its place): nothing recorded";
+    case Outcome::kWorld:
+      return "the world has none (the map, or no sky drawn in an interior): nothing recorded";
     case Outcome::kTooSmall: return "the picture is smaller than the passes are worth";
     case Outcome::kNotRecorded:
       return "a pipeline or an image could not be made (see the errors above)";
@@ -1231,7 +1285,14 @@ const char* SunShafts::OutcomeName(Outcome outcome) {
 
 void SunShafts::EndSkyFrame() {
   // A frame in which the sky was taken is over: what became of its shafts teaches the policy where to
-  // add them, and the interval's tally.
+  // add them, and the interval's tally. The menu worlds' frames add at the first point whatever the policy says
+  // and teach it nothing.
+  if (trigger_world_ != menu_world::World::kPlay) {
+    if (!composited_) {
+      ++lost_;
+    }
+    return;
+  }
   if (!copy_seen_ && missing_copy_logged_ < kMissingCopyLogs) {
     ++missing_copy_logged_;
     LogMissingCopy();
@@ -1287,6 +1348,21 @@ void SunShafts::LogInterval() {
               policy_.fallbacks(), policy_.returns(), runs_ + lost_, runs_end_, runs_mid_, lost_);
 }
 
+menu_world::World SunShafts::FrameWorld() const {
+  if (play_view_ == pause_view_) {
+    return menu_world::World::kNone;  // no main view in the frame, or both kinds
+  }
+  if (play_view_) {
+    return menu_world::World::kPlay;
+  }
+  return menu_world::Classify(true, menu_world::LensOf(have_previous_ && previous_pause_ ? &previous_ : nullptr),
+                              menu_world::GarageLighting());
+}
+
+std::string SunShafts::Level() const {
+  return ModeName(mode_);
+}
+
 void SunShafts::OnPresent() {
   if (level_ != Level::kOff) {
     if (sky_taken_) {
@@ -1331,6 +1407,7 @@ void SunShafts::OnPresent() {
   pending_ = Pending{};
   sun_ = Sun{};
   sky_draws_ = 0;
+  trigger_world_ = menu_world::World::kNone;
   outcome_ = Outcome::kNoTrigger;
   recorded_this_frame_ = false;
   sky_taken_ = false;
