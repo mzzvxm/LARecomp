@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "traffic_shadow.h"
+#include "traffic_shadow_gates.h"
 
 using namespace mcla::gpu;
 using namespace mcla::gpu::traffic_shadow;
@@ -123,6 +124,248 @@ void Candidates() {
   Check(std::fabs(Distance(eye, at) - 5.0f) < 1e-6f, "the distance is the Euclidean one (3-4-5)");
   const float nan_at[3] = {std::nanf(""), 0.0f, 0.0f};
   Check(!std::isfinite(Distance(eye, nan_at)), "a NaN position gives a distance that is not finite (the hook skips it)");
+}
+
+// --- the vehicles' reject bits ---------------------------------------------------------------------------------------
+
+void VehicleRejects() {
+  VehicleFlags ok;
+  ok.side_views = 1;
+  ok.visible = 1;
+  ok.enabled = 1;
+  Check(VehicleRejectBits(ok) == 0 && Eligible(ok), "an eligible vehicle has no reject bit");
+  VehicleFlags f = ok;
+  f.side_views = 0;
+  Check(VehicleRejectBits(f) == kRejectSideViews, "+593 clear: its own bit");
+  f = ok;
+  f.hidden = 1;
+  Check(VehicleRejectBits(f) == kRejectHidden, "+6478: its own bit");
+  f = ok;
+  f.disabled = 1;
+  Check(VehicleRejectBits(f) == kRejectDisabled, "+6467: its own bit");
+  f = ok;
+  f.ghost = 1;
+  Check(VehicleRejectBits(f) == kRejectGhost, "+123: its own bit");
+  f = ok;
+  f.visible = 0;
+  Check(VehicleRejectBits(f) == kRejectNotVisible, "+116: its own bit");
+  f = ok;
+  f.enabled = 0;
+  Check(VehicleRejectBits(f) == kRejectNotEnabled, "+120: its own bit");
+  f = ok;
+  f.hidden = 1;
+  f.visible = 0;
+  Check(VehicleRejectBits(f) == (kRejectHidden | kRejectNotVisible), "two flags: two bits");
+  // The bits agree with Eligible() for every combination of the six flags (casts_in_game aside: the hook has returned before).
+  bool agree = true;
+  for (int mask = 0; mask < 64; ++mask) {
+    VehicleFlags g;
+    g.side_views = (mask & 1) ? 0 : 1;
+    g.hidden = (mask & 2) ? 1 : 0;
+    g.disabled = (mask & 4) ? 1 : 0;
+    g.ghost = (mask & 8) ? 1 : 0;
+    g.visible = (mask & 16) ? 0 : 1;
+    g.enabled = (mask & 32) ? 0 : 1;
+    agree = agree && ((VehicleRejectBits(g) == 0) == Eligible(g)) && ((VehicleRejectBits(g) == 0) == (mask == 0));
+  }
+  Check(agree, "reject bits and Eligible() agree on all 64 combinations");
+}
+
+// --- the traffic's route: the ambient client's mask, its item draw ----------------------------------------------------
+
+void AmbientClientMask() {
+  Check(kCascadeMask == 0x1E0u, "the four cascade phases as a mask");
+  const uint32_t stock = 0x01118002u;  // mcAmbientCarRenderClass's mask as the game builds it (the mirror bit on)
+  for (uint32_t phase : kCascadePhases) {
+    Check((stock & phase) == 0, Num("the stock mask has no cascade (phase %.0f)", phase));
+    Check(WidenedClientMask(stock, phase, true) == (stock | phase), Num("on: the phase is added (%.0f)", phase));
+    Check((WidenedClientMask(stock, phase, true) & phase) == phase, "the loop's `mask & phase` is then non-zero");
+    Check(WidenedClientMask(stock, phase, false) == stock, "off: the mask is the game's");
+  }
+  // Only the cascades: the collector, the colour pass, the rain phase and the others keep the game's mask.
+  for (uint32_t phase : {0x1u, 0x2u, 0x4u, 0x8u, 0x10u, 0x200u, 0x400u, 0x1000u, 0x2000u, 0x4000u, 0x8000u, 0x10000u, 0x100000u, 0x1000000u}) {
+    Check(WidenedClientMask(stock, phase, true) == stock, Num("a phase that is no cascade changes nothing (%.0f)", phase));
+  }
+  // Each phase is widened on its own: the mask the next iteration sees is the game's again.
+  const uint32_t one = WidenedClientMask(stock, 0x20u, true);
+  Check((one & 0x40u) == 0 && (one & 0x80u) == 0 && (one & 0x100u) == 0, "widening for one cascade leaves the others out");
+  Check(kAmbientClientVtable == 0x820D8C0Cu && kAmbientBodyPhase == 0x8000u, "the guest constants of the traffic client");
+  Check(CascadeIndex(kAmbientBodyPhase) == 0, "the body phase the draw is told is no cascade (the hook is not re-entered on it)");
+}
+
+AmbientFlags GoodItem() {
+  AmbientFlags f;
+  f.enabled = 1;
+  f.car_flags = 0x40;
+  f.model_count = 3;
+  f.lod = 0;
+  f.item_flags = 0x80;
+  f.visible = 4;
+  return f;
+}
+
+void AmbientItems() {
+  AmbientFlags f = GoodItem();
+  Check(AmbientRejectBits(f) == 0 && AmbientEligible(f), "a traffic car the draw would draw is eligible");
+  f = GoodItem();
+  f.enabled = 0;
+  Check(AmbientRejectBits(f) == kAmbientRejectEnabled, "item +36 zero");
+  f = GoodItem();
+  f.car_flags = 0x60;
+  Check(AmbientRejectBits(f) == kAmbientRejectCarFlags, "car +500 with 0x20 (a child): turned away");
+  f.car_flags = 0xC0;
+  Check(AmbientRejectBits(f) == kAmbientRejectCarFlags, "car +500 with 0x80: turned away");
+  f.car_flags = 0x00;
+  Check(AmbientRejectBits(f) == kAmbientRejectCarFlags, "car +500 without 0x40: turned away");
+  f.car_flags = 0x44;
+  Check(AmbientRejectBits(f) == 0, "other car +500 bits do not matter");
+  f = GoodItem();
+  f.model_count = 2;
+  Check(AmbientRejectBits(f) == kAmbientRejectModels, "fewer than 3 models");
+  f.model_count = -1;
+  Check(AmbientRejectBits(f) == kAmbientRejectModels, "no model block (-1): the same bit");
+  f = GoodItem();
+  f.visible = 0;
+  Check(AmbientRejectBits(f) == kAmbientRejectNotVisible, "not seen by the main view");
+  f.visible = 0xFB;
+  Check(AmbientRejectBits(f) == kAmbientRejectNotVisible, "only bit 4 of the visible byte counts");
+  f.visible = 5;
+  Check(AmbientRejectBits(f) == 0, "bit 4 with others set: seen");
+  f = GoodItem();
+  f.lod = -1;
+  Check(AmbientRejectBits(f) == kAmbientRejectLod, "a negative LOD is not drawn");
+  f.item_flags = 0xA0;
+  Check(AmbientRejectBits(f) == 0, "item +556 bit 0x20 skips the LOD test, as the draw does");
+  f = GoodItem();
+  f.item_flags = 0x00;
+  Check(AmbientRejectBits(f) == kAmbientRejectNoBody, "no 0x80 in item +556: nothing to draw");
+  f = GoodItem();
+  f.enabled = 0;
+  f.visible = 0;
+  f.lod = -2;
+  Check(AmbientRejectBits(f) == (kAmbientRejectEnabled | kAmbientRejectNotVisible | kAmbientRejectLod), "several tests: several bits");
+}
+
+void AmbientPosition() {
+  // The render thread's matrix: ((buffer + 4) rotated left by 6) & ~63 from the car; the update thread's at +128.
+  Check(AmbientMatrixOffset(true, 0) == 256u && AmbientMatrixOffset(true, 1) == 320u, "the render thread's copies are 256 and 320");
+  Check(AmbientMatrixOffset(true, 2) == 384u && AmbientMatrixOffset(true, 3) == 448u, "buffers 2 and 3 are 64 bytes apart too");
+  Check(AmbientMatrixOffset(false, 0) == 128u && AmbientMatrixOffset(false, 1) == 128u, "the update thread's is at +128 whatever the buffer");
+  Check(AmbientBufferValid(0) && AmbientBufferValid(1) && AmbientBufferValid(3), "buffer indices 0 to 3");
+  Check(!AmbientBufferValid(4) && !AmbientBufferValid(0xFFFFFFFFu) && !AmbientBufferValid(0x82000000u), "anything else is not a buffer index");
+  Check(kAmbientTranslation == 48u, "the translation row of a Matrix44 is at +48");
+
+  const float good[3] = {100.0f, 2.0f, -50.0f};
+  Check(PlausiblePosition(good), "a position");
+  const float nan_p[3] = {0.0f, std::nanf(""), 0.0f};
+  Check(!PlausiblePosition(nan_p), "NaN is not");
+  const float inf_p[3] = {0.0f, 0.0f, std::numeric_limits<float>::infinity()};
+  Check(!PlausiblePosition(inf_p), "infinity is not");
+  const float far_p[3] = {2.0e6f, 0.0f, 0.0f};
+  Check(!PlausiblePosition(far_p), "two million metres is not");
+  const float edge_p[3] = {-9.0e5f, 0.0f, 0.0f};
+  Check(PlausiblePosition(edge_p), "under a million metres is");
+}
+
+// The traffic route's census: items of the traffic client and vehicles of the car-model client go through one
+// Selector, nearest first, and each car casts or not by the same cutoff.
+void MixedCensus() {
+  Selector selector;
+  const Limits limits = LimitsFor(Mode::kNear, 0.0, 0, 0);  // 4 cars within 40 m
+  const uint32_t racer = 0x70000100u;
+  const uint32_t traffic[6] = {0x80000010u, 0x80000020u, 0x80000030u, 0x80000040u, 0x80000050u, 0x80000060u};
+  const float distance[6] = {5.0f, 9.0f, 12.0f, 15.0f, 20.0f, 30.0f};
+  // Frame 1 is the census: everybody asked in the first cascade, nobody known yet (cutoff = the radius).
+  bool cast_first[7];
+  cast_first[0] = selector.Decide(racer, 0x20u, 7.0f, limits);
+  for (int i = 0; i < 6; ++i) cast_first[i + 1] = selector.Decide(traffic[i], 0x20u, distance[i], limits);
+  bool all = true;
+  for (bool c : cast_first) all = all && c;
+  Check(all, "the first frame casts every car within the radius (no cutoff yet)");
+  for (uint32_t phase : {0x40u, 0x80u, 0x100u}) {
+    selector.Decide(racer, phase, 7.0f, limits);
+    for (int i = 0; i < 6; ++i) selector.Decide(traffic[i], phase, distance[i], limits);
+  }
+  // Frame 2: the cutoff is between the 4th (12 m) and the 5th (15 m) nearest of the 7 (5, 7, 9, 12, 15, 20, 30), 13.5 m.
+  Check(selector.Decide(racer, 0x20u, 7.0f, limits), "frame 2: the racer at 7 m (second nearest) casts");
+  Check(selector.Decide(traffic[0], 0x20u, 5.0f, limits), "frame 2: traffic at 5 m casts");
+  Check(selector.Decide(traffic[1], 0x20u, 9.0f, limits), "frame 2: traffic at 9 m (third nearest) casts");
+  Check(selector.Decide(traffic[2], 0x20u, 12.0f, limits), "frame 2: traffic at 12 m (fourth nearest) casts");
+  Check(!selector.Decide(traffic[3], 0x20u, 15.0f, limits), "frame 2: traffic at 15 m (fifth) does not");
+  Check(!selector.Decide(traffic[5], 0x20u, 30.0f, limits), "frame 2: traffic at 30 m does not");
+  Check(selector.last().candidates == 7, "the census counted all seven cars of the first frame");
+}
+
+// --- the gate counters ----------------------------------------------------------------------------------------------
+
+void ValueCountsAndGates() {
+  ValueCounts values;
+  Check(values.Text() == "{}", "no value: {}");
+  values.Add(0x10);
+  values.Add(0x200);
+  values.Add(0x10);
+  values.Add(0x10);
+  Check(values.Text() == "{0x10 x3, 0x200 x1}", "values in the order first seen, with their counts: " + values.Text());
+  values.Add(0xFFFFFFFFu);
+  Check(values.Text().find("0xFFFFFFFF x1") != std::string::npos, "the largest value is kept apart from an empty slot");
+  values.Add(0);
+  Check(values.Text().find("0x0 x1") != std::string::npos, "the value 0 is a value too");
+  ValueCounts many;
+  for (uint32_t v = 1; v <= ValueCounts::kSlots + 5; ++v) many.Add(v);
+  Check(many.Text().find("other x5") != std::string::npos, "more distinct values than slots: the rest is counted as other (" + many.Text() + ")");
+  size_t first_slots = 0;
+  for (uint32_t v = 1; v <= ValueCounts::kSlots; ++v) {
+    char key[32];
+    std::snprintf(key, sizeof(key), "0x%X x1", v);
+    if (many.Text().find(key) != std::string::npos) ++first_slots;
+  }
+  Check(first_slots == ValueCounts::kSlots, "the first kSlots values each have a slot");
+
+  Gates gates;
+  Check(gates.Get(CarGate::kCalls) == 0 && gates.Get(AmbientGate::kLeafCalls) == 0 && gates.Calls() == 0, "a fresh set is all zero");
+  for (int i = 0; i < 5; ++i) gates.Add(CarGate::kCalls);
+  gates.Add(CarGate::kGameCaster);
+  gates.Add(CarGate::kGameCaster);
+  gates.Add(AmbientGate::kLeafCalls);
+  gates.Add(AmbientGate::kLeafCascade);
+  gates.Add(AmbientGate::kRemapped);
+  Check(gates.Get(CarGate::kCalls) == 5 && gates.Get(CarGate::kGameCaster) == 2, "car counters count");
+  Check(gates.Get(AmbientGate::kLeafCalls) == 1 && gates.Get(AmbientGate::kRemapped) == 1 && gates.Get(AmbientGate::kDecided) == 0,
+        "ambient counters count and stay apart from the car's");
+  Check(gates.BumpCalls() == 1 && gates.BumpCalls() == 2 && gates.Calls() == 2, "the schedule's call counter");
+  gates.car_phases().Add(0x10);
+  gates.car_phases().Add(0x10);
+  gates.leaf_phases().Add(0x10000);
+  gates.Add(CarGate::kOtherPhase);
+  gates.Add(CarGate::kOtherPhase);
+
+  const std::string line = gates.Line("near");
+  Check(line.rfind("[traffic-shadows] gates: mode near; ", 0) == 0, "the line starts with the tag, `gates:` and the mode: " + line);
+  Check(line.find('\n') == std::string::npos, "one line");
+  Check(line.find("calls 5, r11 set (the game's own caster) 2, phase rejected 2 r28 {0x10 x2}") != std::string::npos,
+        "the car-model hook's first tests: " + line);
+  Check(line.find("other phases {0x10000 x1}") != std::string::npos, "the item draw's other phases: " + line);
+  Check(line.find("reached Decide 0, cast 0; traffic route") != std::string::npos, "the car route ends, the traffic route starts: " + line);
+  Check(line.find("item draw calls 1 (cascade 1, other phases") != std::string::npos, "the item draw's calls: " + line);
+  Check(line.find("cast 1") != std::string::npos, "the traffic route's casts: " + line);
+  for (const char* part : {"mode off", "no memory", "vehicle ptr", "ineligible", "+593 clear", "+6478 set", "+6467 set", "+123 set", "+116 zero", "+120 zero",
+                           "entity ptr", "camera ptr", "distance not finite", "reached Decide", "phase loop", "mask widened", "item ptr", "car ptr", "buffer",
+                           "+36 zero", "car +500", "models<3", "not visible", "LOD<0", "no body", "position"}) {
+    Check(line.find(part) != std::string::npos, std::string("the line names `") + part + "`");
+  }
+}
+
+void LogScheduleRules() {
+  LogSchedule schedule;
+  const int64_t s = 1'000'000'000;
+  Check(!schedule.Due(0, 0) && !schedule.Due(1999, 5 * s), "no line before 2000 calls, however late");
+  Check(schedule.Due(2000, 6 * s), "the first line at the 2000th call");
+  Check(!schedule.Due(2001, 6 * s + 1) && !schedule.Due(50000, 20 * s), "none within 30 s of it");
+  Check(schedule.Due(50001, 36 * s), "the next one 30 s after the first");
+  Check(!schedule.Due(60000, 40 * s) && !schedule.Due(60001, 65 * s), "and none until 30 s after that (66 s)");
+  Check(schedule.Due(60002, 66 * s), "the third at +30 s");
+  LogSchedule late;
+  Check(late.Due(9000, 100 * s) && !late.Due(9001, 101 * s), "the first line is not waiting for a time, only for the calls");
 }
 
 // --- the cutoff ----------------------------------------------------------------------------------------------------
@@ -340,6 +583,13 @@ int main() {
   Phases();
   LimitsOfTheModes();
   Candidates();
+  VehicleRejects();
+  AmbientClientMask();
+  AmbientItems();
+  AmbientPosition();
+  MixedCensus();
+  ValueCountsAndGates();
+  LogScheduleRules();
   Cutoff();
   CensusOverFrames();
   CascadeLimit();
