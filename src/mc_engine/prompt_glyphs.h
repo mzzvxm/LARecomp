@@ -18,6 +18,10 @@
 // Slots are the Xbox bitmaps (keyboard_native.cpp kGlyphs lists the dictionary names of each, and the sizes): the movies hold separate copies
 // of a glyph, so one slot is one or two dictionary textures.
 //
+// WHAT IS PAINTED, AND WHERE IN THE BITMAP: not the picture's own size. Every replacement is fitted into the ink box of the glyph it replaces and drawn in that glyph's tonal scheme (the
+// rule, its numbers and its check: prompt_art.h), so a PlayStation or keyboard glyph takes the place of the Xbox one and no more, and on the Sidekick phone's light bar it is dark line art
+// like the Xbox ring and arrow.
+//
 
 #include <array>
 #include <cstdint>
@@ -27,6 +31,7 @@
 #include <vector>
 
 #include "input_state.h"
+#include "prompt_art.h"
 
 namespace larecomp::prompts {
 
@@ -35,17 +40,24 @@ using Family = larecomp::input::GlyphFamily;
 enum class Slot : uint8_t { A, B, X, Y, LB, RB, LT, RT, Start, Back, Phone };
 constexpr int kSlotCount = 11;
 
+// What a slot's glyph sits on, as a luma (0..255): the prompt bars of the menus, the garage, the pop-ups and the map are dark; the Sidekick phone's bar is light grey. It is the surface the
+// original's ink is read against (prompt_art.h, the tone of the rule): the phone's thin DARK ring is dark on light, so what replaces it is line art in the same dark ink; everything else is
+// light on dark. Measured on the first run's pictures (perf\out\KBM-P4\P4-phone.png: the bar around the phone's glyph is 147 - 160; the pause / garage / pop-up bars 10 - 30).
+constexpr double kDarkBackdrop = 24.0;
+constexpr double kPhoneBackdrop = 155.0;
+
 struct SlotInfo {
   Slot slot;
   const char* name;
   uint32_t width;   // of the bitmap the movies draw it from
   uint32_t height;
+  double backdrop;  // the luma of what it sits on
 };
 
 inline constexpr SlotInfo kSlots[kSlotCount] = {
-    {Slot::A, "A", 64, 64},      {Slot::B, "B", 64, 64},       {Slot::X, "X", 64, 64},         {Slot::Y, "Y", 64, 64},
-    {Slot::LB, "LB", 64, 64},    {Slot::RB, "RB", 64, 64},     {Slot::LT, "LT", 64, 64},       {Slot::RT, "RT", 64, 64},
-    {Slot::Start, "Start", 64, 32}, {Slot::Back, "Back", 64, 32}, {Slot::Phone, "Phone", 64, 64},
+    {Slot::A, "A", 64, 64, kDarkBackdrop},      {Slot::B, "B", 64, 64, kDarkBackdrop},       {Slot::X, "X", 64, 64, kDarkBackdrop},         {Slot::Y, "Y", 64, 64, kDarkBackdrop},
+    {Slot::LB, "LB", 64, 64, kDarkBackdrop},    {Slot::RB, "RB", 64, 64, kDarkBackdrop},     {Slot::LT, "LT", 64, 64, kDarkBackdrop},       {Slot::RT, "RT", 64, 64, kDarkBackdrop},
+    {Slot::Start, "Start", 64, 32, kDarkBackdrop}, {Slot::Back, "Back", 64, 32, kDarkBackdrop}, {Slot::Phone, "Phone", 64, 64, kPhoneBackdrop},
 };
 
 inline const SlotInfo& Info(Slot s) { return kSlots[size_t(s)]; }
@@ -181,6 +193,10 @@ inline std::string Describe(const Art& a) {
   }
   return "?";
 }
+
+// What the source picture of an art is, for the fitting rule (prompt_art.h): a key cap is an opaque cap with dark lines; a shipped picture or one of the game's own bitmaps is a shape
+// cut out of transparency. (Original is never fitted: it is put back as it was.)
+inline Shape ShapeOf(ArtKind kind) { return kind == ArtKind::KeyCap ? Shape::Cap : Shape::Pictogram; }
 
 // Where the PlayStation art of a slot comes from. `bitmap` = the game's own PlayStation bitmap in the dictionary (null = not identified yet); `file` = the stem of the picture
 // shipped next to the key caps (Kenney's Input Prompts, CC0), used when the bitmap is not named or not in the dictionary. A 64x32 slot reads "<stem>_w.png" (the key caps' rule).

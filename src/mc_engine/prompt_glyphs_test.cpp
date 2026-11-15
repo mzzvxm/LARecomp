@@ -1,8 +1,10 @@
-// A check of the pure part of the live button prompts (prompt_glyphs.h): the slot tables, the menu / road context, which art each glyph family puts in each
-// slot, the PlayStation sources and their override, and the reading back of the game's own DXT5 bitmaps. Needs no game.
+// A check of the pure part of the live button prompts (prompt_glyphs.h, prompt_art.h): the slot tables, the menu / road context, which art each glyph family puts in each
+// slot, the PlayStation sources and their override, the reading back of the game's own DXT5 bitmaps, and the rule that fits a replacement into the ink of the glyph it
+// replaces (ink box measuring, aspect fit, the tonal scheme, the numeric check). Needs no game.
 //   cmake --build <dir> --target larecomp_prompt_glyphs_test, then run it (exit 0 = passed).
 // Or by hand: clang++ -std=c++20 -I src/mc_engine src/mc_engine/prompt_glyphs_test.cpp -o prompt_glyphs_test
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -400,6 +402,293 @@ void TestContextFollowsLive() {
 }
 
 
+// ---- prompt_art.h: the rule that fits a replacement into the ink of the glyph it replaces -----------------------------------------------------------------
+
+void FillRect(Bitmap& b, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t bl, uint8_t a) {
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            uint8_t* p = &b.rgba[(size_t(y) * b.width + size_t(x)) * 4];
+            p[0] = r;
+            p[1] = g;
+            p[2] = bl;
+            p[3] = a;
+        }
+    }
+}
+
+bool Near(double a, double b, double tolerance) { return std::fabs(a - b) <= tolerance; }
+
+constexpr double kPhoneLight = 155.0;  // the Sidekick phone's bar (prompt_glyphs.h kPhoneBackdrop)
+constexpr double kDark = 24.0;         // the prompt bars of the menus
+
+// The phone's own accept glyph as the first run's picture shows it: a thin dark ring (2.6 px) with a dark arrow, on transparent, in a clear margin (box 13..50 of 64).
+Bitmap PhoneOriginal() {
+    Bitmap b = MakeBitmap(64, 64);
+    DrawRing(b, InkBox{13, 13, 50, 50}, 2.6);
+    FillRect(b, 27, 27, 34, 36, 0, 0, 0, 255);
+    const double ink[3] = {66.0, 66.0, 66.0};
+    Tint(b, ink);
+    return b;
+}
+
+// The shipped Create picture: a white pill, tall (12 x 36 of 24 x 44), on transparent.
+Bitmap Pill() {
+    Bitmap b = MakeBitmap(24, 44);
+    FillRect(b, 6, 4, 17, 39, 255, 255, 255, 255);
+    return b;
+}
+
+// A key cap picture: an opaque white cap (60 x 52 at 2..61, 6..57 of 64 x 64) with a 2 px black border and a black block for the key name.
+Bitmap CapPicture() {
+    Bitmap b = MakeBitmap(64, 64);
+    FillRect(b, 2, 6, 61, 57, 0, 0, 0, 255);
+    FillRect(b, 4, 8, 59, 55, 255, 255, 255, 255);
+    FillRect(b, 22, 26, 40, 36, 0, 0, 0, 255);
+    return b;
+}
+
+void TestInkMeasure() {
+    Bitmap b = MakeBitmap(20, 10);
+    CHECK(!MeasureInk(b).valid());  // nothing drawn: no ink, no box
+    CHECK(!MeasureInk(Bitmap{}).valid());
+    FillRect(b, 3, 2, 12, 7, 200, 100, 50, 255);
+    Ink ink = MeasureInk(b);
+    CHECK(ink.valid());
+    CHECK((ink.box == InkBox{3, 2, 12, 7}));
+    CHECK(ink.box.width() == 10 && ink.box.height() == 6 && ink.pixels == 60);
+    CHECK(Near(ink.solidity, 1.0, 1e-9));
+    CHECK(Near(ink.rgb[0], 200, 1e-6) && Near(ink.rgb[1], 100, 1e-6) && Near(ink.rgb[2], 50, 1e-6));
+    CHECK(Near(ink.luma, 0.299 * 200 + 0.587 * 100 + 0.114 * 50, 1e-6));
+    // the threshold: alpha 32 is not ink, 33 is (the soft edge of a scaled picture stays out of the box, the body does not)
+    Bitmap edge = MakeBitmap(10, 10);
+    FillRect(edge, 4, 4, 4, 4, 255, 255, 255, 32);
+    CHECK(!MeasureInk(edge).valid());
+    FillRect(edge, 4, 4, 4, 4, 255, 255, 255, 33);
+    CHECK(MeasureInk(edge).valid());
+    // the colour is weighted by alpha: a solid red pixel and a faint (85 / 255) blue one
+    Bitmap two = MakeBitmap(4, 1);
+    FillRect(two, 0, 0, 0, 0, 255, 0, 0, 255);
+    FillRect(two, 3, 0, 3, 0, 0, 0, 255, 85);
+    const Ink tw = MeasureInk(two);
+    CHECK((tw.box == InkBox{0, 0, 3, 0}));
+    CHECK(Near(tw.rgb[0], 255.0 * 1.0 / (1.0 + 1.0 / 3.0), 1e-6) && Near(tw.rgb[2], 255.0 * (1.0 / 3.0) / (1.0 + 1.0 / 3.0), 1e-6));
+    // a hole inside the box lowers the solidity (a ring is about a third of its box)
+    const Ink ring = MeasureInk(PhoneOriginal());
+    CHECK((ring.box == InkBox{13, 13, 50, 50}));
+    CHECK(ring.solidity > 0.2 && ring.solidity < 0.45);
+    CHECK(Near(ring.luma, 66.0, 0.01));
+    // the contrast against a backdrop: dark ink on the phone's light bar, light ink on a dark one; |luma - backdrop|, alpha weighted
+    CHECK(Near(InkContrast(PhoneOriginal(), kPhoneLight), 155.0 - 66.0, 0.01));
+    Bitmap white = MakeBitmap(8, 8);
+    FillRect(white, 0, 0, 7, 7, 255, 255, 255, 255);
+    CHECK(Near(InkContrast(white, kDark), 255.0 - 24.0, 0.01));
+    CHECK(Near(InkContrast(MakeBitmap(8, 8), kDark), 0.0, 1e-9));
+    CHECK(Near(MeasureOriginal(white, kDark).contrast, 231.0, 0.01));
+}
+
+void TestBoxWithin() {
+    const InkBox outer{13, 13, 50, 50};
+    CHECK(BoxWithin(InkBox{13, 13, 50, 50}, outer, 0));
+    CHECK(BoxWithin(InkBox{14, 20, 40, 50}, outer, 0));
+    CHECK(!BoxWithin(InkBox{12, 13, 50, 50}, outer, 0));
+    CHECK(BoxWithin(InkBox{12, 12, 51, 51}, outer, 1));  // the slack of one pixel on every side
+    CHECK(!BoxWithin(InkBox{11, 13, 50, 50}, outer, 1));
+    CHECK(!BoxWithin(InkBox{15, 1, 47, 62}, outer, 1));  // the first run's PlayStation Create button: the whole bitmap
+    CHECK(!BoxWithin(InkBox{}, outer, 1) && !BoxWithin(outer, InkBox{}, 1));  // no ink on either side is no answer
+}
+
+void TestFitSize() {
+    CHECK(FitSize(30, 30, 61, 61).w == 61 && FitSize(30, 30, 61, 61).h == 61);  // a 32x32 face into the 61 pixel ink box of a ball: exact, not 60 for a float's sake
+    const Size tall = FitSize(20, 40, 32, 32);
+    CHECK(tall.w == 16 && tall.h == 32);  // the aspect is kept: the tall side decides
+    const Size wide = FitSize(60, 52, 38, 38);
+    CHECK(wide.w == 38 && wide.h == 32);  // a TAB cap in the phone's ring box: rounded down, never over
+    const Size thin = FitSize(100, 1, 10, 10);
+    CHECK(thin.w == 10 && thin.h == 1);  // at least one pixel
+    CHECK(FitSize(0, 5, 10, 10).w == 0 && FitSize(5, 5, 0, 10).h == 0);
+    for (int sw = 3; sw < 90; sw += 7) {
+        for (int sh = 2; sh < 90; sh += 11) {
+            const Size r = FitSize(sw, sh, 38, 29);
+            CHECK(r.w >= 1 && r.w <= 38 && r.h >= 1 && r.h <= 29);  // never over the box
+            CHECK(r.w == 38 || r.h == 29 || r.w == 1 || r.h == 1);   // and it fills one of the box's sides
+        }
+    }
+}
+
+void TestResample() {
+    Bitmap block = MakeBitmap(8, 8);
+    FillRect(block, 0, 0, 7, 7, 10, 120, 240, 255);
+    const Bitmap small = Resample(block, 4, 4);
+    CHECK(small.width == 4 && small.height == 4);
+    bool same = true;
+    for (size_t i = 0; i < 16; ++i) same = same && small.rgba[i * 4 + 0] == 10 && small.rgba[i * 4 + 1] == 120 && small.rgba[i * 4 + 2] == 240 && small.rgba[i * 4 + 3] == 255;
+    CHECK(same);  // a flat picture stays flat
+    const Bitmap big = Resample(Resample(block, 2, 2), 8, 8);
+    CHECK(big.rgba[(3 * 8 + 3) * 4 + 0] == 10 && big.rgba[(3 * 8 + 3) * 4 + 3] == 255);
+    // a transparent half does not tint the edge: red on the left, nothing (colour 0) on the right
+    Bitmap half = MakeBitmap(4, 1);
+    FillRect(half, 0, 0, 1, 0, 255, 0, 0, 255);
+    const Bitmap h2 = Resample(half, 2, 1);
+    CHECK(h2.rgba[0] == 255 && h2.rgba[3] == 255);  // the left pixel
+    CHECK(h2.rgba[7] == 0);                          // the right one is empty
+    Bitmap three = MakeBitmap(3, 1);
+    FillRect(three, 0, 0, 0, 0, 255, 0, 0, 255);
+    const Bitmap t1 = Resample(three, 1, 1);
+    CHECK(t1.rgba[0] == 255 && t1.rgba[1] == 0 && t1.rgba[3] == 85);  // a third of it is red: alpha a third, colour still red
+    CHECK(Resample(Bitmap{}, 4, 4).empty() && Resample(block, 0, 4).empty());
+}
+
+void TestStrokeWidth() {
+    Bitmap ring = MakeBitmap(64, 64);
+    DrawRing(ring, InkBox{10, 10, 53, 53}, 3.0);
+    CHECK(Near(StrokeWidth(ring, InkBox{10, 10, 53, 53}), 3.0, 0.35));
+    Bitmap thin = MakeBitmap(64, 64);
+    DrawRing(thin, InkBox{10, 10, 53, 53}, 1.5);
+    CHECK(Near(StrokeWidth(thin, InkBox{10, 10, 53, 53}), 1.5, 0.35));
+    CHECK(Near(MeasureInk(PhoneOriginal()).stroke, 2.6, 0.4));  // the arrow in the middle does not count: the first run from the left is the ring's
+    Bitmap rect = MakeBitmap(20, 10);
+    FillRect(rect, 3, 2, 12, 7, 255, 255, 255, 255);
+    CHECK(Near(StrokeWidth(rect, InkBox{3, 2, 12, 7}), 10.0, 1e-9));  // a solid picture gives its width: the caller clamps it
+    CHECK(StrokeWidth(MakeBitmap(8, 8), InkBox{0, 0, 7, 7}) == 0.0);
+    CHECK(StrokeWidth(rect, InkBox{}) == 0.0 && StrokeWidth(rect, InkBox{0, 0, 99, 99}) == 0.0);
+}
+
+void TestDrawRingAndDilate() {
+    Bitmap canvas = MakeBitmap(64, 64);
+    DrawRing(canvas, InkBox{13, 13, 50, 50}, 2.6);
+    const Ink ink = MeasureInk(canvas);
+    CHECK((ink.box == InkBox{13, 13, 50, 50}));  // the outer edge touches the box and stays in it
+    CHECK(AlphaAt(canvas, 32, 32) == 0);         // hollow
+    CHECK(AlphaAt(canvas, 13, 32) > 200);        // the left side of the ring
+    Bitmap dot = MakeBitmap(9, 9);
+    FillRect(dot, 4, 4, 4, 4, 0, 0, 0, 255);
+    const Bitmap grown = DilateAlpha(dot, 2);
+    CHECK(AlphaAt(grown, 4, 4) == 255 && AlphaAt(grown, 6, 4) == 255 && AlphaAt(grown, 4, 2) == 255);
+    CHECK(AlphaAt(grown, 7, 4) == 0 && AlphaAt(grown, 0, 0) == 0);
+    CHECK(DilateAlpha(dot, 0).rgba == dot.rgba);
+    // the outline band of a silhouette: after erosions only the inside is left
+    Bitmap sq = MakeBitmap(10, 10);
+    FillRect(sq, 1, 1, 8, 8, 255, 255, 255, 255);
+    const std::vector<uint8_t> inner = InnerOfSilhouette(sq, 2);
+    CHECK(inner[size_t(1) * 10 + 1] == 0 && inner[size_t(2) * 10 + 2] == 0);  // the two outermost rings are gone
+    CHECK(inner[size_t(3) * 10 + 3] == 1 && inner[size_t(5) * 10 + 5] == 1);
+    CHECK(InnerOfSilhouette(sq, 0)[size_t(1) * 10 + 1] == 1);
+}
+
+void TestFitSolid() {
+    // a light-on-dark original (a tab on a dark prompt bar): the replacement keeps its own tones and goes into the original's box, centred, keeping its aspect
+    Bitmap light = MakeBitmap(64, 64);
+    FillRect(light, 10, 8, 41, 39, 200, 200, 200, 255);
+    const Ink orig = MeasureOriginal(light, kDark);
+    CHECK(!IsDarkOnLight(orig, kDark));
+    Bitmap src = MakeBitmap(24, 44);
+    FillRect(src, 2, 2, 21, 41, 255, 255, 255, 255);  // 20 x 40 of ink in a transparent margin
+    const Fitted f = FitArt(src, Shape::Pictogram, orig, kDark, 64, 64);
+    CHECK(f.look == Look::Solid && f.bitmap.width == 64 && f.bitmap.height == 64);
+    const Ink got = MeasureInk(f.bitmap);
+    CHECK((got.box == InkBox{18, 8, 33, 39}));  // 16 x 32: the tall side fills the box's height, centred across its width
+    CHECK(Near(got.luma, 255.0, 0.01));          // its own tones
+    const FitCheck check = CheckFit(orig, f.bitmap, kDark);
+    CHECK(check.look == Look::Solid && check.box_ok && check.tone_ok && check.ok());
+    // a picture much bigger than the bitmap still ends inside the box
+    Bitmap huge = MakeBitmap(128, 128);
+    FillRect(huge, 0, 0, 127, 127, 255, 255, 255, 255);
+    CHECK((MeasureInk(FitArt(huge, Shape::Cap, orig, kDark, 64, 64).bitmap).box == InkBox{10, 8, 41, 39}));
+    // a small one is brought up to the box (the game's 32 x 32 faces fill the 64 x 64 slot)
+    Bitmap face = MakeBitmap(32, 32);
+    FillRect(face, 1, 1, 30, 30, 90, 90, 120, 255);
+    Bitmap ball = MakeBitmap(64, 64);
+    FillRect(ball, 1, 1, 61, 61, 60, 160, 20, 255);
+    const Ink ball_ink = MeasureOriginal(ball, kDark);
+    CHECK((MeasureInk(FitArt(face, Shape::Pictogram, ball_ink, kDark, 64, 64).bitmap).box == InkBox{1, 1, 61, 61}));
+    // no ink in the original (nothing to measure): the whole canvas is the box
+    CHECK((MeasureInk(FitArt(src, Shape::Pictogram, Ink{}, kDark, 64, 64).bitmap).box == InkBox{16, 0, 47, 63}));  // 20 x 40 fitted into 64 x 64 is 32 x 64
+    // a source without ink gives nothing
+    CHECK(FitArt(MakeBitmap(8, 8), Shape::Cap, orig, kDark, 64, 64).bitmap.empty());
+    // the transparent surround carries the art's colour, not black (a block compressor and the GPU's filter read it)
+    CHECK(f.bitmap.rgba[3] == 0 && f.bitmap.rgba[0] == 255 && f.bitmap.rgba[1] == 255);
+}
+
+void TestFitLineOnThePhone() {
+    const Bitmap original = PhoneOriginal();
+    const Ink orig = MeasureOriginal(original, kPhoneLight);
+    CHECK(IsDarkOnLight(orig, kPhoneLight));  // the phone's ring is dark on its light bar
+    CHECK(!IsDarkOnLight(orig, kDark));       // the same ink on a dark bar would not be
+
+    // PlayStation: a ring on the original's box with the Create picture inside, dark, the original's stroke weight
+    const Fitted ps = FitArt(Pill(), Shape::Pictogram, orig, kPhoneLight, 64, 64);
+    CHECK(ps.look == Look::Line && ps.bitmap.width == 64 && ps.bitmap.height == 64);
+    const Ink ps_ink = MeasureInk(ps.bitmap);
+    CHECK((ps_ink.box == InkBox{13, 13, 50, 50}));  // the ring IS the box: the symbol is inside it
+    CHECK(Near(ps_ink.luma, 66.0, 0.5));             // the original's ink colour: dark, on transparent
+    CHECK(Near(ps_ink.stroke, orig.stroke, 0.5));    // the ring's own weight
+    CHECK(AlphaAt(ps.bitmap, 32, 22) > 200 && AlphaAt(ps.bitmap, 32, 32) > 200);  // the symbol sits in the middle of the ring (the pill's body)
+    CHECK(AlphaAt(ps.bitmap, 20, 32) < 40);                                       // and the ring's hollow is open around it
+    const FitCheck c1 = CheckFit(orig, ps.bitmap, kPhoneLight);
+    CHECK(c1.look == Look::Line && c1.box_ok && c1.tone_ok && c1.ok());
+    CHECK(Near(c1.ratio(), 1.0, 0.05));  // the same ink colour on the same bar: the same contrast
+
+    // keyboard: the cap's outline and its name, dark, at the ring's size, the outline at the ring's weight
+    const Fitted kb = FitArt(CapPicture(), Shape::Cap, orig, kPhoneLight, 64, 64);
+    CHECK(kb.look == Look::Line);
+    const Ink kb_ink = MeasureInk(kb.bitmap);
+    CHECK(BoxWithin(kb_ink.box, orig.box, kBoxSlack));
+    CHECK(kb_ink.box.width() >= 36 && kb_ink.box.height() >= 30 && kb_ink.box.height() < kb_ink.box.width());  // the 60 x 52 cap keeps its aspect in the 38 x 38 box
+    CHECK(Near(kb_ink.luma, 66.0, 0.5));
+    CHECK(Near(kb_ink.stroke, orig.stroke, 0.7));  // the border is as heavy as the ring (the source's own border is 2 px, thickened)
+    CHECK(AlphaAt(kb.bitmap, 32, 31) > 200);       // the key name block is in the middle
+    CHECK(AlphaAt(kb.bitmap, 20, 22) < 40);        // the cap's face is open (transparent): outline and name only
+    const FitCheck c2 = CheckFit(orig, kb.bitmap, kPhoneLight);
+    CHECK(c2.look == Look::Line && c2.box_ok && c2.tone_ok && c2.ok());
+    CHECK(Near(c2.ratio(), 1.0, 0.05));
+}
+
+void TestCheckFitCatchesTheFirstRun() {
+    const Ink orig = MeasureOriginal(PhoneOriginal(), kPhoneLight);
+    // the first run's PlayStation Create button: a white pill over the whole bitmap (box 15..47 x 1..62), light on the light bar
+    Bitmap first_ps = MakeBitmap(64, 64);
+    FillRect(first_ps, 15, 1, 47, 62, 255, 255, 255, 255);
+    const FitCheck bad = CheckFit(orig, first_ps, kPhoneLight);
+    CHECK(bad.look == Look::Line && !bad.box_ok && !bad.tone_ok && !bad.ok());  // it spills out of the ring's box and is on the wrong side of the bar
+    // the first run's TAB cap: opaque, 60 pixels wide, a light face
+    const FitCheck cap = CheckFit(orig, CapPicture(), kPhoneLight);
+    CHECK(!cap.box_ok && !cap.ok());
+    // inside the box but a fainter ring: contrast 45 against 89, off by far more than 20%
+    Bitmap faint = PhoneOriginal();
+    const double grey[3] = {110.0, 110.0, 110.0};
+    Tint(faint, grey);
+    const FitCheck f = CheckFit(orig, faint, kPhoneLight);
+    CHECK(f.box_ok && !f.tone_ok);
+    Bitmap near_enough = PhoneOriginal();
+    const double almost[3] = {75.0, 75.0, 75.0};
+    Tint(near_enough, almost);
+    CHECK(CheckFit(orig, near_enough, kPhoneLight).ok());  // 80 against 89: within 20%
+    // a solid glyph on a dark bar: only the box and the side of the backdrop are checked, the brightness is free (a white cap on a green ball)
+    Bitmap ball = MakeBitmap(64, 64);
+    FillRect(ball, 1, 1, 61, 61, 60, 160, 20, 255);
+    const Ink ball_ink = MeasureOriginal(ball, kDark);
+    Bitmap cap_white = MakeBitmap(64, 64);
+    FillRect(cap_white, 3, 3, 60, 60, 255, 255, 255, 255);
+    const FitCheck solid = CheckFit(ball_ink, cap_white, kDark);
+    CHECK(solid.look == Look::Solid && solid.box_ok && solid.tone_ok && solid.ok());
+    CHECK(solid.ratio() > 1.2);  // not within 20%, and not asked to be
+    Bitmap one_over = MakeBitmap(64, 64);
+    FillRect(one_over, 0, 0, 62, 62, 255, 255, 255, 255);
+    CHECK(CheckFit(ball_ink, one_over, kDark).box_ok);  // box 0..62 against 1..61: the one pixel of slack
+    Bitmap two_over = MakeBitmap(64, 64);
+    FillRect(two_over, 0, 0, 63, 63, 255, 255, 255, 255);
+    CHECK(!CheckFit(ball_ink, two_over, kDark).box_ok);  // box 0..63: two pixels over on the far side
+}
+
+void TestSlotBackdrops() {
+    for (int i = 0; i < kSlotCount; ++i) {
+        if (Slot(i) == Slot::Phone) continue;
+        CHECK(kSlots[i].backdrop == kDarkBackdrop);  // every prompt bar is dark
+    }
+    CHECK(Info(Slot::Phone).backdrop == kPhoneBackdrop && kPhoneBackdrop > 100.0 && kDarkBackdrop < 50.0);
+    CHECK(ShapeOf(ArtKind::KeyCap) == Shape::Cap && ShapeOf(ArtKind::File) == Shape::Pictogram && ShapeOf(ArtKind::GameBitmap) == Shape::Pictogram);
+}
+
 int main() {
     TestSlotTables();
     TestContext();
@@ -415,6 +704,16 @@ int main() {
     TestDecodeFlatBlocks();
     TestDecodeIndices();
     TestDecodeSurface();
+    TestInkMeasure();
+    TestBoxWithin();
+    TestFitSize();
+    TestResample();
+    TestStrokeWidth();
+    TestDrawRingAndDilate();
+    TestFitSolid();
+    TestFitLineOnThePhone();
+    TestCheckFitCatchesTheFirstRun();
+    TestSlotBackdrops();
     std::printf("prompt_glyphs_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
