@@ -96,6 +96,18 @@ add_library(larecomp_gpu OBJECT
 # The occlusion's reach round vehicles and its slice sum, with the C++ twin of its main pass (ao_halo.h) likewise:
 #   cmake --build <dir> --target larecomp_ao_halo_test, then run src/gpu/larecomp_ao_halo_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_ao_halo_test EXCLUDE_FROM_ALL ao_halo_test.cpp)
+# The occlusion's blur radius that follows the picture's size, its wide blur, the noise sequence and the history weight (ao_stable.h; given
+# the src/gpu folder it also checks that the shaders' and ao.cpp's constants are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ao_stable_test, then run src/gpu/larecomp_ao_stable_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_ao_stable_test EXCLUDE_FROM_ALL ao_stable_test.cpp)
+# The bounce light's clip box and a-trous passes (ssgi_stable.h; given the src/gpu folder it also checks that the shaders' and ao.cpp's
+# constants are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ssgi_stable_test, then run src/gpu/larecomp_ssgi_stable_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_ssgi_stable_test EXCLUDE_FROM_ALL ssgi_stable_test.cpp)
+# How steady the occlusion and the bounce light are, the first version against ao_stable.h and ssgi_stable.h, on the C++ twin of their passes
+# (ao_stable_twin.h: a still camera over a road, a wall and a car at 3840x2160 and 1280x720; about half a minute) likewise:
+#   cmake --build <dir> --target larecomp_ao_stable_noise_test, then run src/gpu/larecomp_ao_stable_noise_test [--print].
+add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)

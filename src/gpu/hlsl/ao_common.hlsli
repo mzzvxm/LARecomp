@@ -86,6 +86,13 @@ uint AoSlices() { return (g_push.slots2.z >> 8) & 0xFu; }
 uint AoSteps() { return (g_push.slots2.z >> 12) & 0xFu; }
 bool AoLow() { return (g_push.slots2.z & (1u << 16)) != 0u; }
 int AoDenoiseRadius() { return int((g_push.slots2.z >> 17) & 0x7u); }
+// The blur's spatial sigma in pixels and the wide blur's radius (the pixels that have no history): ao_stable.h. The radius follows
+// the occlusion image's height (1 up to 1.5 times 720 lines, 2 up to 2.5 times, 3 above: ao.cpp FillPush), so that the blur reaches
+// as far in the picture at 4K as it does at 720p; the wide blur is one wider (2 at 720p, as it was).
+float AoBlurSigma(int radius) {
+  return radius >= 4 ? 2.2f : (radius == 3 ? 1.8f : (radius == 2 ? 1.4f : 0.9f));
+}
+int AoWideRadius() { return min(max(AoDenoiseRadius(), 1) + 1, 4); }
 // The denoise pass cleans the contact shadows' visibility instead of the occlusion's: one 3x3 pass
 // whose weights also fall with the difference of the visibility (AoBilateralEdge).
 bool AoContactFilter() { return (g_push.slots2.z & (1u << 25)) != 0u; }
@@ -166,6 +173,21 @@ float AoNoise(float2 p) {
   return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
 }
 
+// The frame's shift of the main pass's noise, from slots2.y (ao_stable.h DecodeShift): the phase m (0 to 12) of a lattice of 13 frames,
+// (m / 13, (8 m mod 13) / 13), when bit 30 is set: 13 evenly spaced rotations and step offsets that any 13 consecutive frames visit
+// once each (the history of 12 frames averages all but one of them); else the first version's frame number and the additive
+// recurrence of the R2 sequence (1/g and 1/g^2 of the plastic number g), which leaves gaps of 0.23 of the rotation in 12 frames
+// (mcla_gpu_ao_stable false). The frame number wraps at 1024, small enough for the product to keep its fraction in a float.
+static const uint kAoNoiseLatticeFlag = 1u << 30;
+float2 AoNoiseShift() {
+  const uint code = g_push.slots2.y;
+  if ((code & kAoNoiseLatticeFlag) != 0u) {
+    const uint m = code & 0xFFFu;
+    return float2(float(m), float((m * 8u) % 13u)) * (1.0f / 13.0f);
+  }
+  return float(code & 1023u) * float2(0.75487766624669f, 0.56984029099806f);
+}
+
 // The contact shadows' filter (the denoise pass with flag bit 25): the 3x3 bilateral of AoBilateral
 // with a third weight, the difference of the visibility from the pixel's own, so a neighbour that
 // differs by more than a few tenths is not averaged in. The noise of the ray's start goes (it is a
@@ -221,7 +243,7 @@ float AoBilateral(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float 
   const float2 size = float2(isize);
   // How far from the plane a neighbour may be and still be this surface: a share of the distance.
   const float plane_sigma = 0.012f * tc + 0.02f;
-  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
+  const float spatial_sigma = AoBlurSigma(radius);
   float sum = 0.0f;
   float weights = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {
@@ -248,7 +270,7 @@ float4 AoBilateral4(uint src_slot, uint depth_slot, int2 pixel, int2 isize, floa
                     float3 normal, int radius) {
   const float2 size = float2(isize);
   const float plane_sigma = 0.012f * tc + 0.02f;
-  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
+  const float spatial_sigma = AoBlurSigma(radius);
   float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   float weights = 0.0f;
   for (int dy = -radius; dy <= radius; ++dy) {

@@ -18,6 +18,7 @@
 #include <rex/logging.h>
 
 #include "ao_halo.h"
+#include "ao_stable.h"
 #include "contact_trace.h"
 #include "descriptors.h"
 #include "device.h"
@@ -30,6 +31,7 @@
 #include "pass_timing.h"
 #include "ssgi_level.h"
 #include "ssgi_light.h"
+#include "ssgi_stable.h"
 #include "texture_bytes.h"
 #include "traffic_shadow.h"
 
@@ -92,6 +94,17 @@ REXCVAR_DEFINE_INT32(
     "(a car's), fewer is noisier. 1: no averaging (two blur passes on every frame instead). Live.")
     .debug_only()
     .range(1, 64)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_ao_stable, true, "MCLA/GPU",
+    "Diagnostic: the occlusion's noise stays as small in a big picture as in a small one: its blur reaches "
+    "as far in the picture at 4K (7x7 pixels) as it does at 720 lines (3x3), the wide blur of the pixels "
+    "that have no history follows, and the noise's shift from frame to frame is a lattice of 13 frames that "
+    "any 12 consecutive frames cover evenly. The bounce light's a-trous filter has more iterations in a "
+    "bigger picture and its history is clipped to a wider box. False: the first version's 3x3 blur and 5x5 "
+    "wide blur at every size, its additive recurrence, its 2 a-trous iterations and its clip of 1.25 "
+    "deviations, for comparing. Live.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_contact_shadows, "auto", "MCLA/GPU",
@@ -326,19 +339,22 @@ REXCVAR_DEFINE_INT32(
     .range(2, 64)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_history_clamp, 1.25, "MCLA/GPU",
+    mcla_gpu_ssgi_test_history_clamp, 2.0, "MCLA/GPU",
     "Diagnostic: how far the bounce's history may be from this frame's 3x3 neighbourhood of the bounce, in "
-    "standard deviations of that neighbourhood (and never under 5% of its mean): the history is cut to that "
-    "box. Narrow follows a changed light at once and keeps more noise; wide keeps the history longer and "
-    "leaves a ghost of a car that went by. Live.")
+    "standard deviations of that neighbourhood (never under 5% of its mean, and 15% of the history's own value "
+    "wider on each side): the history is cut to that box. Narrow follows a changed light at once and keeps more "
+    "noise (the first version, 1.25 with no share of the history, made the accumulated bounce 2.5 to 3.5 times as "
+    "noisy); wide keeps the history longer and leaves a ghost of a car that went by. Live.")
     .debug_only()
     .range(0.25, 8.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ssgi_test_atrous, 2, "MCLA/GPU",
     "Diagnostic: the iterations of the a-trous filter that takes the noise out of the bounce light after the "
-    "history, 0 to 3 (0: none; each iteration reaches twice as far: 5x5, 9x9, 17x17 pixels, and stops at "
-    "depth edges and corners). The history itself is never filtered. Live.")
+    "history, for a picture of 720 lines, 0 to 3 (0: none; each iteration reaches twice as far: 5x5, 9x9, 17x17 "
+    "pixels, and stops at depth edges and corners). A bigger picture gets one more for each doubling of its "
+    "height (3 at 1080 and 1440 lines, 4 at 2160, at most 5), so the filter reaches as much of the picture; "
+    "mcla_gpu_ao_stable false keeps this number at every size. The history itself is never filtered. Live.")
     .debug_only()
     .range(0, 3)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -1888,6 +1904,16 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                 scratch ? ", visibility R16_FLOAT x2" : "",
                 plan.occlusion && !plan.gi.on ? ", history R16G16_FLOAT x2" : "",
                 double(HeldBytes()) / (1024.0 * 1024.0));
+    if (plan.occlusion) {
+      const int radius = REXCVAR_GET(mcla_gpu_ao_stable) ? ao_stable::DenoiseRadius(plan.ao[1]) : 1;
+      REXLOG_INFO("[gpu] ao: the blur is {0}x{0} pixels and the wide blur of the pixels that have no history {1}x{1} "
+                  "at {2} lines ({3}: it reaches {4:.2f} of what it does at 720 lines; ao_stable.h, "
+                  "mcla_gpu_ao_stable)",
+                  2 * radius + 1, 2 * ao_stable::WideRadius(radius) + 1, plan.ao[1],
+                  radius == 1 && !REXCVAR_GET(mcla_gpu_ao_stable) ? "the first version's, at every size"
+                                                                  : "follows the image's height",
+                  double(radius) * double(ao_stable::kReferenceHeight) / double(std::max(plan.ao[1], 1u)));
+    }
   }
   return ok;
 }
@@ -1973,8 +1999,11 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   const bool low = plan.low;
   const uint32_t slices = ao_low ? 2 : 3;
   const uint32_t steps = ao_low ? 2 : 3;
-  // The noise changes every frame (hlsl/ao_main_ps.hlsl); the denoise is a 3x3 each time.
-  const uint32_t denoise_radius = 1;
+  // The noise changes every frame (hlsl/ao_main_ps.hlsl). The denoise's radius follows the image's height, so that
+  // the blur reaches as far in the picture at 4K as at 720 lines (ao_stable.h: 1, 2 or 3); the first version's
+  // 3x3 at every size is mcla_gpu_ao_stable false.
+  const uint32_t denoise_radius =
+      REXCVAR_GET(mcla_gpu_ao_stable) ? uint32_t(ao_stable::DenoiseRadius(plan.ao[1])) : 1u;
   push->slots2[1] = uint32_t(frame_ & 1023);
   push->slots2[2] = plan.view | (slices << 8) | (steps << 12) | ((low ? 1u : 0u) << 16) |
                     (denoise_radius << 17);
@@ -2347,6 +2376,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
+  // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
+  // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
+  if (plan.gi.on && REXCVAR_GET(mcla_gpu_ao_stable)) {
+    plan.gi.atrous = uint32_t(ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1]));
+  }
 
   // The depth plane is read as a texture by every pass and by the apply (after the resolve it is
   // already there: the call records a barrier only when it is elsewhere).
@@ -2399,6 +2433,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // How far a car's samples reach on the road, as a share of the radius (extra.x, the sun's luma that the apply
     // reads and this pass does not; extra.w is the bounce light's far reach, set below).
     push.extra[0] = look_.car_reach;
+    // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
+    // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
+    push.slots2[1] = ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable));
     // The bounce light test's main pass is the same pass as a visibility bitmask: it reads the colour
     // chain too (slots.x, slots.y, slots2.w; the plain pass leaves them alone), the thickness and the
     // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the
@@ -2476,6 +2513,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       push.lens[2] =
           use.on ? float(1.0 - 1.0 / double(std::min(use.age + 2, plan.gi.history))) : 0.0f;
       push.lens[3] = plan.gi.clamp_width;
+      push.slots2[2] |= (ssgi_stable::ClipHistoryCode(plan.gi.clip_history) << ssgi_stable::kClipHistoryShift) &
+                        ssgi_stable::kClipHistoryMask;
     }
     push.slots2[2] |= use.on ? kHistoryFlag : 0u;
     push.slots2[3] = summary.stencil_slot;
@@ -2673,11 +2712,13 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   "the four channels, an accumulation over frames (RGBA16F history, the last frame's depth "
                   "in an R32_FLOAT image of its own; the same camera motion, vehicle rows and tests as the "
                   "occlusion's history; the bounce over {} frames at most, its history clipped to {:.2f} "
-                  "deviations of this frame's 3x3 neighbourhood) and {} a-trous iteration(s) of the "
-                  "history's copy (the picture's bounce comes from it; the history is never filtered). "
+                  "deviations of this frame's 3x3 neighbourhood, {:.0f}% of its own value wider on each side) "
+                  "and {} a-trous iteration(s) of the history's copy at {} lines (the picture's bounce comes from "
+                  "it; the history is never filtered; ssgi_stable.h, mcla_gpu_ao_stable). "
                   "The occlusion's own RG16F history is not made while the test is on; the visibility "
                   "comes from the x channel of the new history (reported once)",
-                  plan.gi.history, plan.gi.clamp_width, plan.gi.atrous);
+                  plan.gi.history, plan.gi.clamp_width, 100.0 * double(plan.gi.clip_history), plan.gi.atrous,
+                  plan.ao[1]);
     }
     if (plan.gi.apply && !gi_apply_logged_) {
       gi_apply_logged_ = true;
@@ -3120,7 +3161,12 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   g.view_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view_gain), 0.1, 16.0));
   g.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view), 0, 9));
   g.history = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history), 2, 64));
-  g.clamp_width = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0));
+  // The clip box of the bounce's history: the setting's width and a share of the history's own value, or the first
+  // version's 1.25 deviations alone (ssgi_stable.h).
+  const bool stable = REXCVAR_GET(mcla_gpu_ao_stable);
+  g.clamp_width = stable ? float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0))
+                         : ssgi_stable::kFirstClipWidth;
+  g.clip_history = stable ? ssgi_stable::kClipHistoryShare : ssgi_stable::kFirstClipHistoryShare;
   g.atrous = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_atrous), 0, 3));
   if (g.view != 0) {
     plan->view = 0;  // instead of the other debug views: they are of the plain passes

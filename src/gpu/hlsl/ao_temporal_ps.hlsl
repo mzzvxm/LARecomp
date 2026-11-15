@@ -29,7 +29,8 @@
 //   frames it has and then an exponential average;
 //   gives a pixel with little or no confidence (an edge that just came into view, a pixel of a
 //   vehicle whose motion is not known) the wide blur in place of its own value, a 5x5 of the already
-//   denoised image: the second denoise pass, only where there is no history to lean on. A frame with
+//   denoised image (one radius wider than the denoise pass's, AoWideRadius: ao_stable.h): the second denoise
+//   pass, only where there is no history to lean on. A frame with
 //   no history at all (a cut, the first frame, the pause view switching, a new size) had its two
 //   denoise passes already and passes through.
 //
@@ -54,10 +55,16 @@
 //   neighbour, so it averages over more frames: ao.cpp mcla_gpu_ssgi_test_history);
 //   its own clamp: the history of the bounce is clipped to a box round the weighted mean of this frame's
 //   3x3 neighbourhood (the neighbours that are on the pixel's plane), a width of lens.w standard
-//   deviations of that neighbourhood and never less than kBounceBoxFloor of its mean (the variance clip of
-//   a temporal anti-aliasing filter, a colour at a time: a car that went by and changed the light on a wall
-//   shows as a ghost only until the history is clipped to the new light);
-//   the same wide blur in place of this frame's value where the history does not hold.
+//   deviations of that neighbourhood, never less than kBounceBoxFloor of its mean, plus a share of the history's
+//   own value on each side (AoClipHistoryShare) (the variance clip of a temporal anti-aliasing filter, a colour
+//   at a time: a car that went by and changed the light on a wall shows as a ghost only until the history is
+//   clipped to the new light). The box was 1.25 deviations of the BLURRED neighbourhood, whose nine values are
+//   alike and whose mean moves with the frame's noise, so it missed the true value in most frames and the clip
+//   pulled the history to the frame's value every time: the accumulated bounce was 2.5 to 3.5 times as noisy as
+//   without it. Now 2 deviations and 15% of the history: the noise of no clip, and a light that changed is
+//   followed to 90% in about 10 frames (ssgi_stable.h has the numbers);
+//   the same wide blur (AoWideRadius: one wider than the denoise's, which follows the picture's size: ao_stable.h) in
+//   place of this frame's value where the history does not hold.
 // Push fields (those of the plain pass but for): slots.z the image of this frame's denoised result (RGBA16F),
 // slots2.y the slot of the depth history (R32_FLOAT, the depth image of the last frame), lens.z the weight
 // the bounce's history keeps and lens.w the clip's width. Output: RGBA16F, the next frame's history (the
@@ -119,8 +126,11 @@ uint AoVehicleId(int2 pixel) {
 
 #if AO_GI
 
-// The least half width of the bounce's clip box, as a share of the neighbourhood's mean.
+// The least half width of the bounce's clip box, as a share of the neighbourhood's mean (ssgi_stable.h kClipFloorShare), and how
+// much of the history's own value the box adds on each side: the push block's flags, bits 26-29 in units of 0.05
+// (ssgi_stable.h ClipHistoryCode; 0.15 in the shader's default, 0 for the first version's box).
 static const float kBounceBoxFloor = 0.05f;
+float AoClipHistoryShare() { return float((g_push.slots2.z >> 26) & 0xFu) * 0.05f; }
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -223,14 +233,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   m1 /= wsum;
   const float3 spread = sqrt(max(m2 / wsum - m1 * m1, 0.0f));
-  const float3 half_box = g_push.lens.w * spread + kBounceBoxFloor * m1;
+  const float3 half_box = g_push.lens.w * spread + kBounceBoxFloor * m1 + AoClipHistoryShare() * history.yzw;
   history.x = clamp(history.x, lo - kClampMargin, hi + kClampMargin);
   history.yzw = clamp(history.yzw, max(m1 - half_box, 0.0f), m1 + half_box);
 
   // Where the history does not hold, the wide blur of this frame instead of its own value.
   float4 fresh = current;
   if (confidence < 1.0f) {
-    const float4 wide = AoBilateral4(current_slot, depth_slot, pixel, isize, tc, pc, normal, 2);
+    const float4 wide = AoBilateral4(current_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);
   }
   float4 result;
@@ -338,7 +348,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Where the history does not hold, the wide blur of this frame instead of its own value.
   float fresh = current;
   if (confidence < 1.0f) {
-    const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, 2);
+    const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);
   }
   const float result = lerp(fresh, history, confidence * g_push.extra.w);

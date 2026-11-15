@@ -29,10 +29,12 @@
 // full radius as before.
 //
 // The pixel's own noise is interleaved gradient noise (a fixed spatial pattern) plus a shift that
-// changes every frame by the additive recurrence of the R2 sequence, so the two noise values of one
+// changes every frame through a lattice of 13 frames (ao_stable.h, AoNoiseShift: the Fibonacci lattice, 13 evenly
+// spaced rotations and step offsets, all visited by any 13 consecutive frames; the first version's additive
+// recurrence of the R2 sequence left gaps of 0.23 of the rotation in 12 frames), so the two noise values of one
 // pixel over successive frames cover the square evenly, whatever the camera does: what the
 // occlusion's own accumulation over frames (ao_temporal_ps) integrates, and what the denoise
-// takes out of any one frame (g_push.slots2.y = the frame number).
+// takes out of any one frame (g_push.slots2.y = the frame's phase, ao_stable.h NoiseCode).
 
 //
 // SCREEN-SPACE GLOBAL ILLUMINATION (G7a; compiled a second time as ao_main_gi_ps with AO_GI=1, the
@@ -271,8 +273,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
   const float2 noise_at = float2(pixel);
   const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
-  const float frame = float(g_push.slots2.y & 1023u);
-  const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
+  const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
 
   // The far ring: from where the near samples end to the reach, if it goes meaningfully farther.
@@ -417,10 +418,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
   const float2 noise_at = float2(pixel);
   const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
-  // R2 (Roberts): the increments are 1/g and 1/g^2 of the plastic number g; the frame number wraps
-  // at 1024, small enough for the product to keep its fraction in a float.
-  const float frame = float(g_push.slots2.y & 1023u);
-  const float2 noise = frac(spatial + frame * float2(0.75487766624669f, 0.56984029099806f));
+  // The frame's shift: a lattice of 13 frames (ao_common.hlsli AoNoiseShift, ao_stable.h).
+  const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
 
   float visibility = 0.0f;
