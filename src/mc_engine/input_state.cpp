@@ -15,7 +15,7 @@
 //
 // Log lines (info level), read by perf\scripts\kbm\kbm_p2_report.py:
 //   [input] state machine ready: ...                      once, when the window listener is attached
-//   [input] devices: N controller(s) [...]; ...           when the SDK's list (or the watcher's Sony flag) changed
+//   [input] devices: N controller(s) [...]; S synthetic; ... when the SDK's list (or the watcher's Sony flag) changed (S > 0: mnk_mode)
 //   [input] switch device D (was E) glyphs G because C; generation N   the device changed
 //   [input] glyphs device D glyphs G (was H) because C; generation N    only the glyph family / strip / setting changed
 //   [input] ev ...                                        with input_log: every event the rules looked at and what they decided
@@ -163,8 +163,10 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   if (g_list_known.load(std::memory_order_acquire) && gen == g_list_gen.load(std::memory_order_relaxed) && !dirty) return;
   std::array<GlyphFamily, 16> pads{};
   size_t count = 0;
+  size_t synthetic = 0;  // the keyboard-and-mouse pad of mnk_mode, the NOP stand-in: not controllers
   std::string names;
   for (const rex::input::DeviceInfo& d : isys->Devices()) {
+    if (d.synthetic) ++synthetic;
     if (d.synthetic || count >= pads.size()) continue;
     pads[count++] = d.pad_kind == rex::input::PadKind::kPlayStation ? GlyphFamily::PlayStation : GlyphFamily::Xbox;
     names += (names.empty() ? "" : ", ");
@@ -173,8 +175,8 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   g_list_gen.store(gen, std::memory_order_relaxed);
   g_list_known.store(true, std::memory_order_release);
   const Change ch = Core().OnDevices(pads.data(), count, now);
-  MC_INFO("[input] devices: {} controller(s){}{}; SDK generation {}; the watcher says Sony pad {}", count, count ? ": " : "", names, gen,
-          mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
+  MC_INFO("[input] devices: {} controller(s){}{}; {} synthetic; SDK generation {}; the watcher says Sony pad {}", count, count ? ": " : "", names,
+          synthetic, gen, mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
   Apply(ch);
 #else
   (void)isys;
