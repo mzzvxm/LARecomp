@@ -669,6 +669,14 @@ struct DriverPackShift {
 bool ShiftDriverPack(Rsc5Resource& pack, const float delta[3], std::string& error,
                      DriverPackShift* stats = nullptr);
 
+// The body skeleton bone a part drawable hangs from (its +0x34), and that bone's
+// rest pose in car space: translation and the skeleton's Euler angles (Rz * Ry *
+// Rx, the convention of frame.<slot>), composed down the parent chain. Lets a
+// part authored in car space be written in its bone's frame on any car.
+bool PartAttachBone(const Rsc5Resource& part, uint32_t& bone_index);
+bool BoneRestPose(const Rsc5Resource& body, uint32_t bone_index, float translation[3],
+                  float rotation[3], std::string* name = nullptr);
+
 // Switches parts on in a player car's manifest (the unpacked .xspm, type 19).
 //
 // sub_823723C8, the only reader of `#spm`, opens `<slot><i>_lod_<l>` for the 55

@@ -1711,6 +1711,17 @@ struct VehiclePlan {
     // cloned .xspm (EnableManifestParts) and the garage lists it by its index.
     std::map<std::string, std::string> part_template;
 
+    // `extend = 1`: add parts to a car the game ships, under its own name (the
+    // vehicle folder is named after it). The car is its own donor: every file of
+    // it is copied as shipped -- body, packs, textures, tune, manifest -- and only
+    // the slots this parts.txt lists are built, new variants included
+    // (`template.`). Nothing is renamed and no texture is written, so the car
+    // looks as it did; a new part draws with the car's own shaders. Parts are
+    // authored in the car's space: each is written in the frame of the bone its
+    // slot hangs from, read off the car's skeleton, unless a frame. line says
+    // otherwise.
+    bool extend = false;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1810,6 +1821,8 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
 //   template.bumper_f5 = bumper_f4    (a variant the car lacks, built on that file; indices 0..9)
+//   extend         = 1          (add to the game's own car the folder is named after:
+//                                nothing else is rebuilt, parts come in car space)
 //   bone.str       = tx ty tz rx ry rz      (a body skeleton bone's rest pose)
 //   driver_offset  = dx dy dz   (the driver's animation packs moved, shipped as the car's own)
 //   body_m0          = trunk   (groups written into model 0 of the body; needs a
@@ -1903,6 +1916,10 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower.rfind("template.", 0) == 0) {
             plan.part_template[key.substr(9)] = mapping.groups.front();
+            continue;
+        }
+        if (lower == "extend") {
+            plan.extend = mapping.groups.front() != "0";
             continue;
         }
         if (lower == "driver_offset") {
@@ -3010,9 +3027,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     // has three: BumpSpecAlpha, CarLight and LicensePlate. A modifiable car has
     // fifteen or more, with real InteriorTrim slots for the cabin.
     std::vector<PackMaterial> pack_materials;
+    // A car extended in place keeps every picture it has: its packs are shared by
+    // the parts it already draws, and an atlas written for a new part would
+    // replace the texture under the old ones.
     const bool want_car_textures =
-        REXCVAR_GET(model_mods_car_textures) && !plan.verbatim && !mesh.images.empty() &&
-        ReadPackMaterials(pack, pack_materials);
+        REXCVAR_GET(model_mods_car_textures) && !plan.verbatim && !plan.extend &&
+        !mesh.images.empty() && ReadPackMaterials(pack, pack_materials);
     // CarLight still gets an atlas, but not as a colour map -- it has none. The
     // texture PackMaterialDiffuse picks for it is the lens NORMAL map (+16,
     // purple facets; the Impala's other CarLight binds swatch_flatnormal there)
@@ -3113,7 +3133,8 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             }
         }
     }
-    if (!plan.verbatim && (body_mesh.vertices.empty() || body_mesh.indices.size() < 3)) {
+    if (!plan.verbatim && !plan.extend &&
+        (body_mesh.vertices.empty() || body_mesh.indices.size() < 3)) {
         LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the 'body' line names no geometry in the model",
                            vehicle.mod_name, car);
         return 0;
@@ -3157,7 +3178,8 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
 
     std::vector<uint8_t> body_lod0_file;
     uint32_t body_lod0_flag = 0, body_lod0_type = 0;
-    for (int lod = 0; lod < 3 && !plan.verbatim; ++lod) {
+    // An extended car keeps its own body: its LODs are copied below as shipped.
+    for (int lod = 0; lod < 3 && !plan.verbatim && !plan.extend; ++lod) {
         const std::string name = "body_lod_" + std::to_string(lod) + ".xrsc";
         Rsc5Resource resource;
         if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) {
@@ -3591,11 +3613,60 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     // 1731 vertices against the body's three thousand-odd -- and the ceiling is
     // a plain multiple of what the donor shipped, so a replacement may be a good
     // deal heavier than the original and still nothing like a body.
+    // The bone frame each part is written in: the parts.txt's frame. lines, and
+    // on an extended car one for every other listed slot, read off the car's own
+    // skeleton -- the bone the slot's file hangs from (its +0x34), its rest pose
+    // composed down the parent chain -- so a part authored in the car's space
+    // lands on any car without measuring a bone by hand. A slot hanging from the
+    // root (cabin, seats, lamps on most cars) gets the identity: car space.
+    std::map<std::string, VehiclePlan::SlotFrame> frames = plan.frames;
+    if (plan.extend) {
+        Rsc5Resource own_body;
+        std::string body_error;
+        if (!ExtractTemplate(archive, donor_dir + "/body_lod_0.xrsc", own_body, body_error)) {
+            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot read the car's skeleton ({}); parts "
+                               "without a frame. line are centred on their slot instead",
+                               vehicle.mod_name, car, body_error);
+        } else {
+            for (const PartMapping& mapping : plan.slots) {
+                if (mapping.groups.empty() || frames.count(mapping.slot) ||
+                    mapping.slot == "body" || mapping.slot == kVehicleBodySlot) {
+                    continue;
+                }
+                Rsc5Resource first;
+                std::string part_error;
+                uint32_t bone = 0;
+                VehiclePlan::SlotFrame frame;
+                std::string bone_name;
+                if (!ExtractTemplate(archive,
+                                     donor_dir + "/" + TemplateSlot(plan, mapping.slot) + "_lod_0.xrsc",
+                                     first, part_error) ||
+                    !PartAttachBone(first, bone) ||
+                    !BoneRestPose(own_body, bone, frame.t, frame.r, &bone_name)) {
+                    continue;
+                }
+                frame.rigid = true;
+                frames[mapping.slot] = frame;
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} hangs from bone {} ({}) at ({:.4f} {:.4f} "
+                                  "{:.4f}), rotation ({:.4f} {:.4f} {:.4f})", vehicle.mod_name, car,
+                                  mapping.slot, bone, bone_name, frame.t[0], frame.t[1], frame.t[2],
+                                  frame.r[0], frame.r[1], frame.r[2]);
+            }
+        }
+    }
+
     for (const PartMapping& mapping : plan.slots) {
         if (plan.verbatim || mapping.slot == "body" || mapping.groups.empty()) continue;
         if (mapping.slot == kVehicleBodySlot) continue;
         // Written into the body above, not a file of the donor's.
-        if (BodyModelSlot(mapping.slot) >= 0) continue;
+        if (BodyModelSlot(mapping.slot) >= 0) {
+            if (plan.extend) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} is a model of the body, which an "
+                                   "extended car keeps as shipped -- left out",
+                                   vehicle.mod_name, car, mapping.slot);
+            }
+            continue;
+        }
 
         // A NODE another slot line names belongs to that slot, even when this
         // one asks for its material. interior0 takes MAT_1 and MAT_6 by
@@ -3720,13 +3791,13 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // z -1.41..0.00 -- it hangs forward off a hinge bone, so its box
             // touches zero instead of straddling it, and read as car space the
             // hood's whole shell was thrown away as bone-local.
-            const auto frame = plan.frames.find(mapping.slot);
-            const bool own_space = frame != plan.frames.end() ||
+            const auto frame = frames.find(mapping.slot);
+            const bool own_space = frame != frames.end() ||
                                    (slot_min[0] < 0.0f && slot_max[0] > 0.0f &&
                                     slot_min[1] < 0.0f && slot_max[1] > 0.0f &&
                                     slot_min[2] < 0.0f && slot_max[2] > 0.0f);
             Mesh placed = source;
-            if (frame != plan.frames.end()) {
+            if (frame != frames.end()) {
                 PlaceInBoneFrame(placed, frame->second);
                 if (lod == 0) {
                     float pmin[3], pmax[3];
@@ -3902,7 +3973,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 license != plan.licenses.end()) {
                 std::string plate_error;
                 Mesh quad = LicenseQuad(license->second);
-                if (frame == plan.frames.end() || !frame->second.rigid) {
+                if (frame == frames.end() || !frame->second.rigid) {
                     plate_error = "the slot needs a rigid frame for car-space corners to land on";
                 } else {
                     PlaceInBoneFrame(quad, frame->second);
@@ -3954,7 +4025,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // takes the part's move into its bone's space, so a rigid frame.
             if (const auto exhaust = plan.exhausts.find(mapping.slot);
                 exhaust != plan.exhausts.end() && filled != 0) {
-                if (frame == plan.frames.end() || !frame->second.rigid) {
+                if (frame == frames.end() || !frame->second.rigid) {
                     LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} exhaust: the slot needs a rigid "
                                        "frame", vehicle.mod_name, car, name);
                 } else {
@@ -4365,7 +4436,29 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
         // A parts.txt naming a donor is not asking for a car to be replaced. It
         // is asking for one to exist, built out of a car that already does --
         // a different job with a different shape, so it takes its own path.
-        const VehiclePlan plan = ReadVehiclePlan(mappings);
+        VehiclePlan plan = ReadVehiclePlan(mappings);
+        // A car extended in place is its own donor (see VehiclePlan::extend).
+        if (plan.extend) {
+            if (!plan.donor.empty() && plan.donor != vehicle.car) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: extend adds to the car the folder is "
+                                   "named after; the 'donor = {}' line is ignored",
+                                   vehicle.mod_name, vehicle.car, plan.donor);
+            }
+            plan.donor = vehicle.car;
+            // What only a rebuilt body or a renamed car carries does nothing here:
+            // bones, dials and the plate live in the body, which is copied as
+            // shipped, and moved driver packs ship under a name of the car's own.
+            std::string ignored;
+            if (!plan.bone_poses.empty()) ignored += " bone.";
+            if (!plan.dials.empty()) ignored += " dial.";
+            if (plan.plate[0] != 0.0f || plan.plate[1] != 0.0f || plan.plate[2] != 0.0f) ignored += " plate";
+            if (plan.driver_offset_set) ignored += " driver_offset";
+            if (!ignored.empty()) {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: an extended car keeps its body and its "
+                                   "name, so these lines do nothing:{}",
+                                   vehicle.mod_name, vehicle.car, ignored);
+            }
+        }
 
         Mesh mesh;
         if (!plan.verbatim) {

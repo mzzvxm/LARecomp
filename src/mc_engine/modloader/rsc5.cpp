@@ -4571,6 +4571,75 @@ bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
     return false;
 }
 
+bool PartAttachBone(const Rsc5Resource& part, uint32_t& bone_index) {
+    if (part.data.size() < 0x38) return false;
+    bone_index = LoadBE32(&part.data[0x34]);
+    return bone_index < 1024;
+}
+
+bool BoneRestPose(const Rsc5Resource& body, uint32_t bone_index, float translation[3],
+                  float rotation[3], std::string* name) {
+    // Rsc5View only reads here; it takes a mutable buffer for the writers that share it.
+    Rsc5View view(const_cast<std::vector<uint8_t>&>(body.data), body.virtual_size);
+    DrawableLayout drawable;
+    uint32_t skeleton = 0, bones = 0;
+    uint16_t count = 0;
+    if (!ResolveDrawable(view, body.type, drawable) ||
+        !view.U32(drawable.drawable + drawable.skeleton_field, skeleton) || skeleton == 0 ||
+        !view.U32(skeleton, bones) || bones == 0 || !view.U16(skeleton + 20, count) ||
+        bone_index >= count) {
+        return false;
+    }
+    // Column-vector rotation R = Rz * Ry * Rx (the transpose of EulerRows' rows).
+    auto matrix = [](const float e[3], float m[3][3]) {
+        float rows[3][3];
+        EulerRows(e, rows);
+        for (int r = 0; r < 3; ++r)
+            for (int c = 0; c < 3; ++c) m[r][c] = rows[c][r];
+    };
+    float gr[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, gt[3] = {0, 0, 0};
+    // Walk up from the bone, collecting the chain; then compose root first.
+    std::vector<uint32_t> chain;
+    uint32_t record = bones + 224u * bone_index;
+    for (int guard = 0; guard < 64 && record != 0; ++guard) {
+        chain.push_back(record);
+        uint32_t parent = 0;
+        if (!view.U32(record + 16, parent)) return false;
+        record = parent;
+    }
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        float lt[3], le[3], lr[3][3];
+        for (int i = 0; i < 3; ++i) {
+            if (!view.Float(*it + 32 + i * 4, lt[i]) || !view.Float(*it + 48 + i * 4, le[i])) return false;
+        }
+        matrix(le, lr);
+        float nt[3], nr[3][3];
+        for (int r = 0; r < 3; ++r) {
+            nt[r] = gt[r] + gr[r][0] * lt[0] + gr[r][1] * lt[1] + gr[r][2] * lt[2];
+            for (int c = 0; c < 3; ++c) nr[r][c] = gr[r][0] * lr[0][c] + gr[r][1] * lr[1][c] + gr[r][2] * lr[2][c];
+        }
+        std::memcpy(gt, nt, sizeof gt);
+        std::memcpy(gr, nr, sizeof gr);
+    }
+    // Back to Euler for R = Rz * Ry * Rx: R[2][0] = -sin y.
+    const float sy = std::clamp(-gr[2][0], -1.0f, 1.0f);
+    rotation[1] = std::asin(sy);
+    if (std::fabs(sy) < 0.9999f) {
+        rotation[0] = std::atan2(gr[2][1], gr[2][2]);
+        rotation[2] = std::atan2(gr[1][0], gr[0][0]);
+    } else {
+        rotation[0] = std::atan2(-gr[1][2], gr[1][1]);
+        rotation[2] = 0.0f;
+    }
+    std::memcpy(translation, gt, sizeof gt);
+    if (name) {
+        uint32_t name_at = 0;
+        name->clear();
+        if (view.U32(bones + 224u * bone_index, name_at)) view.String(name_at, *name);
+    }
+    return true;
+}
+
 bool EnableManifestParts(std::vector<uint8_t>& data, const std::vector<ManifestPart>& parts,
                          std::string& error) {
     constexpr uint32_t kSlots = 55;
