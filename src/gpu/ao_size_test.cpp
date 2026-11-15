@@ -56,35 +56,35 @@ bool Has(const std::string& text, const std::string& needle) { return text.find(
 // A frame's inputs for a named configuration at a render size.
 struct Config {
   const char* name;
-  bool occlusion, occlusion_high;
-  bool contact, contact_high;
-  bool bounce, bounce_high, bounce_half;
+  bool occlusion, occlusion_ultra;
+  bool contact, contact_ultra;
+  bool bounce, bounce_ultra, bounce_half;
 };
 
 const Config kConfigs[] = {
-    {"AO high", true, true, false, false, false, false, false},
-    {"AO high + contact high (the High class today)", true, true, true, true, false, false, false},
-    {"AO high + contact low (the Mid class today)", true, true, true, false, false, false, false},
-    {"AO low", true, false, false, false, false, false, false},
-    {"AO low + contact low (every image half size already)", true, false, true, false, false, false, false},
-    {"AO low + contact high", true, false, true, true, false, false, false},
-    {"AO high + bounce low", true, true, false, false, true, false, false},
-    {"AO high + bounce high", true, true, false, false, true, true, false},
-    {"AO high + contact high + bounce low", true, true, true, true, true, false, false},
-    {"AO high + bounce low, mcla_gpu_ssgi_low 1 (half size by the old setting)", true, true, false, false, true, false, true},
-    {"contact high alone", false, false, true, true, false, false, false},
-    {"contact low alone", false, false, true, false, false, false, false},
+    {"AO ultra", true, true, false, false, false, false, false},
+    {"AO ultra + contact ultra (the High class today)", true, true, true, true, false, false, false},
+    {"AO ultra + contact high (the Mid class today)", true, true, true, false, false, false, false},
+    {"AO high", true, false, false, false, false, false, false},
+    {"AO high + contact high (every image half size already)", true, false, true, false, false, false, false},
+    {"AO high + contact ultra", true, false, true, true, false, false, false},
+    {"AO ultra + bounce high", true, true, false, false, true, false, false},
+    {"AO ultra + bounce ultra", true, true, false, false, true, true, false},
+    {"AO ultra + contact ultra + bounce high", true, true, true, true, true, false, false},
+    {"AO ultra + bounce high, mcla_gpu_ssgi_low 1 (half size by the old setting)", true, true, false, false, true, false, true},
+    {"contact ultra alone", false, false, true, true, false, false, false},
+    {"contact high alone", false, false, true, false, false, false, false},
 };
 
 as::Inputs InputsOf(const Config& c, uint32_t height, bool half_ao = true, bool half_bounce = true) {
   as::Inputs in;
   in.render_height = height;
   in.occlusion = c.occlusion;
-  in.occlusion_high = c.occlusion_high;
+  in.occlusion_ultra = c.occlusion_ultra;
   in.contact = c.contact;
-  in.contact_high = c.contact_high;
+  in.contact_ultra = c.contact_ultra;
   in.bounce = c.bounce;
-  in.bounce_high = c.bounce_high;
+  in.bounce_ultra = c.bounce_ultra;
   in.bounce_half = c.bounce_half;
   in.half_above_ao = half_ao;
   in.half_above_bounce = half_bounce;
@@ -110,9 +110,9 @@ as::Frame FrameOf(const Config& c, uint32_t width, uint32_t height, bool contact
 void CheckRule() {
   // The old rule, written out again.
   const auto legacy = [](const Config& c) {
-    const bool contact_high = c.contact && c.contact_high;
-    bool low = !(c.occlusion && c.occlusion_high) && !contact_high && !(c.bounce && c.bounce_high);
-    if (c.bounce && c.bounce_half && !contact_high) {
+    const bool contact_ultra = c.contact && c.contact_ultra;
+    bool low = !(c.occlusion && c.occlusion_ultra) && !contact_ultra && !(c.bounce && c.bounce_ultra);
+    if (c.bounce && c.bounce_half && !contact_ultra) {
       low = true;
     }
     return low;
@@ -135,51 +135,51 @@ void CheckRule() {
   // The threshold: 1080 is not above, 1081 is (the render height: an upscaler's render size, a window with a render scale).
   {
     const Config& ao = kConfigs[0];
-    Check(!as::Decide(InputsOf(ao, 1080)).low, "AO high at 1080 lines is traced at the picture's size");
-    Check(as::Decide(InputsOf(ao, 1081)).low, "AO high at 1081 lines is traced at half the picture's size");
-    Check(as::Decide(InputsOf(ao, 1200)).low, "AO high at 1200 lines (1920x1200) is half size");
+    Check(!as::Decide(InputsOf(ao, 1080)).low, "AO ultra at 1080 lines is traced at the picture's size");
+    Check(as::Decide(InputsOf(ao, 1081)).low, "AO ultra at 1081 lines is traced at half the picture's size");
+    Check(as::Decide(InputsOf(ao, 1200)).low, "AO ultra at 1200 lines (1920x1200) is half size");
     Check(as::Decide(InputsOf(ao, 1440)).by_height && as::Decide(InputsOf(ao, 2160)).by_height, "1440p and 4K are half by the height rule");
   }
   // The occlusion has to be on for the rule to act (the contact shadows alone keep their own rule).
   {
     const Config& contact_only = kConfigs[10];
     const as::Choice c = as::Decide(InputsOf(contact_only, 2160));
-    Check(!c.low && !c.by_height && !c.contact_full, "contact high alone at 4K: full size, no split");
-    const Config& contact_low_only = kConfigs[11];
-    const as::Choice l = as::Decide(InputsOf(contact_low_only, 2160));
-    Check(l.low && l.legacy_low && !l.by_height && !l.contact_full, "contact low alone at 4K: the old half size, no split");
+    Check(!c.low && !c.by_height && !c.contact_full, "contact ultra alone at 4K: full size, no split");
+    const Config& contact_high_only = kConfigs[11];
+    const as::Choice l = as::Decide(InputsOf(contact_high_only, 2160));
+    Check(l.low && l.legacy_low && !l.by_height && !l.contact_full, "contact high alone at 4K: the old half size, no split");
   }
   // The split: above 1080 lines with the contact shadows on, they keep the size they had (the picture's size where the occlusion's
-  // being high or the contact on high pinned it, half where the old rule made everything half).
+  // being ultra or the contact on ultra pinned it, half where the old rule made everything half).
   {
     const as::Choice c = as::Decide(InputsOf(kConfigs[1], 2160));
-    Check(c.low && c.by_height && c.contact_full, "AO high + contact high at 4K: the occlusion half, the contact shadows full");
+    Check(c.low && c.by_height && c.contact_full, "AO ultra + contact ultra at 4K: the occlusion half, the contact shadows full");
     const as::Choice m = as::Decide(InputsOf(kConfigs[2], 2160));
-    Check(m.low && m.by_height && m.contact_full, "AO high + contact low at 4K: the occlusion half, the contact shadows at the size they had (full)");
-    const as::Choice both_low = as::Decide(InputsOf(kConfigs[4], 2160));
-    Check(both_low.low && both_low.legacy_low && !both_low.by_height && !both_low.contact_full,
-          "AO low + contact low at 4K: everything half already, nothing changes");
-    const as::Choice low_high = as::Decide(InputsOf(kConfigs[5], 2160));
-    Check(low_high.low && low_high.by_height && low_high.contact_full, "AO low + contact high at 4K: the contact pinned it full, now only the contact is");
+    Check(m.low && m.by_height && m.contact_full, "AO ultra + contact high at 4K: the occlusion half, the contact shadows at the size they had (full)");
+    const as::Choice both_high = as::Decide(InputsOf(kConfigs[4], 2160));
+    Check(both_high.low && both_high.legacy_low && !both_high.by_height && !both_high.contact_full,
+          "AO high + contact high at 4K: everything half already, nothing changes");
+    const as::Choice high_ultra = as::Decide(InputsOf(kConfigs[5], 2160));
+    Check(high_ultra.low && high_ultra.by_height && high_ultra.contact_full, "AO high + contact ultra at 4K: the contact pinned it full, now only the contact is");
     const as::Choice no_contact = as::Decide(InputsOf(kConfigs[0], 2160));
     Check(no_contact.low && !no_contact.contact_full, "no contact shadows: nothing to keep at full size");
   }
   // The bounce light: its own cvar decides when it is on (its images give the occlusion's visibility too).
   {
-    const as::Choice high = as::Decide(InputsOf(kConfigs[7], 2160));
-    Check(high.low && high.by_height && !high.contact_full, "AO high + bounce high at 4K: half size by the height rule (it was pinned full)");
-    Check(!as::Decide(InputsOf(kConfigs[7], 2160, true, false)).low, "bounce high at 4K with mcla_gpu_ssgi_half false: full size, whatever mcla_gpu_ao_half_above_1080 says");
-    Check(as::Decide(InputsOf(kConfigs[7], 2160, false, true)).low, "bounce high at 4K with only mcla_gpu_ssgi_half true: half size (the bounce's cvar decides)");
-    const as::Choice low = as::Decide(InputsOf(kConfigs[6], 2160));
-    Check(low.low && low.by_height, "AO high + bounce low at 4K (the default mcla_gpu_ssgi_low 0: it was full size): half size now");
+    const as::Choice ultra = as::Decide(InputsOf(kConfigs[7], 2160));
+    Check(ultra.low && ultra.by_height && !ultra.contact_full, "AO ultra + bounce ultra at 4K: half size by the height rule (it was pinned full)");
+    Check(!as::Decide(InputsOf(kConfigs[7], 2160, true, false)).low, "bounce ultra at 4K with mcla_gpu_ssgi_half false: full size, whatever mcla_gpu_ao_half_above_1080 says");
+    Check(as::Decide(InputsOf(kConfigs[7], 2160, false, true)).low, "bounce ultra at 4K with only mcla_gpu_ssgi_half true: half size (the bounce's cvar decides)");
+    const as::Choice high = as::Decide(InputsOf(kConfigs[6], 2160));
+    Check(high.low && high.by_height, "AO ultra + bounce high at 4K (the default mcla_gpu_ssgi_low 0: it was full size): half size now");
     const as::Choice old_half = as::Decide(InputsOf(kConfigs[9], 2160));
-    Check(old_half.low && old_half.legacy_low && !old_half.by_height, "bounce low with mcla_gpu_ssgi_low 1: half size by the old setting, not by the height (the colour chain keeps all samples)");
+    Check(old_half.low && old_half.legacy_low && !old_half.by_height, "bounce high with mcla_gpu_ssgi_low 1: half size by the old setting, not by the height (the colour chain keeps all samples)");
     const as::Choice with_contact = as::Decide(InputsOf(kConfigs[8], 2160));
-    Check(with_contact.low && with_contact.contact_full, "bounce low + contact high at 4K: the bounce half, the contact shadows full");
+    Check(with_contact.low && with_contact.contact_full, "bounce high + contact ultra at 4K: the bounce half, the contact shadows full");
   }
   // The AO's cvar alone does not move a bounce frame, and the bounce's does not move a frame without the bounce.
-  Check(as::Decide(InputsOf(kConfigs[0], 2160, true, false)).low, "AO high at 4K: mcla_gpu_ssgi_half does not matter without the bounce light");
-  Check(!as::Decide(InputsOf(kConfigs[0], 2160, false, true)).low, "AO high at 4K: mcla_gpu_ao_half_above_1080 false is today's");
+  Check(as::Decide(InputsOf(kConfigs[0], 2160, true, false)).low, "AO ultra at 4K: mcla_gpu_ssgi_half does not matter without the bounce light");
+  Check(!as::Decide(InputsOf(kConfigs[0], 2160, false, true)).low, "AO ultra at 4K: mcla_gpu_ao_half_above_1080 false is today's");
 }
 
 void CheckSizes() {
@@ -205,7 +205,7 @@ void CheckSizes() {
   as::Choice old_low;
   old_low.low = old_low.legacy_low = true;
   const as::Sizes ol = as::SizesOf(r4k, old_low);
-  Check(ol.ao[0] == 1920 && ol.contact[0] == 1920, "the old rule's low: the contact images are half with the rest");
+  Check(ol.ao[0] == 1920 && ol.contact[0] == 1920, "the old rule's half size: the contact images are half with the rest");
   // Odd sizes (an upscaler's render size): the half image rounds up, as ao.cpp always did, and covers the picture.
   const uint32_t odd[2] = {1921, 1081};
   const as::Sizes so = as::SizesOf(odd, half);
@@ -296,7 +296,7 @@ void CheckHalfDepth() {
 
 void CheckMemory() {
   const double mib = 1024.0 * 1024.0;
-  // The measured state (WEAKGPU.txt, COMPAT-AUDIT.md): AO high alone, full size, 3840x2160 = 131.5 MiB; its low (half size) 32.9 MiB.
+  // The measured state (WEAKGPU.txt, COMPAT-AUDIT.md): AO ultra alone, full size, 3840x2160 = 131.5 MiB; at half size 32.9 MiB.
   {
     const as::Frame f = FrameOf(kConfigs[0], 3840, 2160);
     as::Frame legacy = f;
@@ -304,8 +304,8 @@ void CheckMemory() {
     legacy.choice.by_height = false;
     const double before = as::BytesBefore(f).Total() / mib;
     const double after = as::Bytes(f).Total() / mib;
-    Check(Near(before, 131.5, 0.1), "AO high at 4K before: 131.5 MiB (the measured 131.5)");
-    Check(Near(after, 32.9, 0.1), "AO high at 4K now: 32.9 MiB (the measured low's 32.9)");
+    Check(Near(before, 131.5, 0.1), "AO ultra at 4K before: 131.5 MiB (the measured 131.5)");
+    Check(Near(after, 32.9, 0.1), "AO ultra at 4K now: 32.9 MiB (the measured half size's 32.9)");
     Check(Near(as::Bytes(legacy).Total() / mib, 131.5, 0.1), "the model with the old size gives the measured 131.5 MiB too");
   }
   // 1440p
@@ -313,7 +313,7 @@ void CheckMemory() {
     const as::Frame f = FrameOf(kConfigs[0], 2560, 1440);
     const double before = as::BytesBefore(f).Total() / mib;
     const double after = as::Bytes(f).Total() / mib;
-    Check(after < 0.3 * before && after > 0.2 * before, "AO high at 1440p: a quarter of the memory (a little over: the levels' rounding)");
+    Check(after < 0.3 * before && after > 0.2 * before, "AO ultra at 1440p: a quarter of the memory (a little over: the levels' rounding)");
   }
   // 1080p: nothing changes without the bounce light.
   for (const Config& c : kConfigs) {
@@ -328,7 +328,7 @@ void CheckMemory() {
               after.contact == 0,
           std::string(c.name) + " at 1080p: the traced images are the same sizes (only the unused scratch images may go)");
   }
-  // The split's own images: 4K, AO high + contact high with the filter in the apply: depth R32 + visibility R16 at the picture's size.
+  // The split's own images: 4K, AO ultra + contact ultra with the filter in the apply: depth R32 + visibility R16 at the picture's size.
   {
     const as::Frame f = FrameOf(kConfigs[1], 3840, 2160);
     const as::Held after = as::Bytes(f);
@@ -337,7 +337,7 @@ void CheckMemory() {
     const as::Frame slow = FrameOf(kConfigs[1], 3840, 2160, /*contact_fast=*/false);
     Check(Near(as::Bytes(slow).contact / mib, 31.64 + 15.82 + 15.82, 0.05), "... and a filter pass image more without mcla_gpu_contact_shadows_fast");
     Check(as::Bytes(f).Total() < as::BytesBefore(f).Total() && as::Bytes(slow).Total() < as::BytesBefore(slow).Total(),
-          "AO high + contact high at 4K holds less than before, with and without the cheaper contact path");
+          "AO ultra + contact ultra at 4K holds less than before, with and without the cheaper contact path");
   }
   // Never more memory than before, at any size above 1080 lines, for any configuration and either contact path.
   for (const Config& c : kConfigs) {
@@ -365,12 +365,12 @@ void CheckMemory() {
   {
     as::Frame f = FrameOf(kConfigs[8], 3840, 2160);
     const as::Held h = as::Bytes(f);
-    Check(h.scratch == 0 && h.contact > 0, "bounce + contact high at 4K: the contact shadows have their own images, the scratch pair is not held");
+    Check(h.scratch == 0 && h.contact > 0, "bounce + contact ultra at 4K: the contact shadows have their own images, the scratch pair is not held");
     // contact alone: the pair's second image is the filter pass's, which the apply does instead.
     const as::Frame c = FrameOf(kConfigs[10], 3840, 2160);
     Check(as::Bytes(c).Total() == as::BytesBefore(c).Total() - as::ImageBytes(3840, 2160, as::kBytesR16),
-          "contact high alone at 4K: the filter pass's image is not held any more (16 MiB), nothing else changes");
-    Check(as::Bytes(c).scratch == as::ImageBytes(3840, 2160, as::kBytesR16), "contact high alone at 4K (the filter in the apply): one scratch image, the march's, not two");
+          "contact ultra alone at 4K: the filter pass's image is not held any more (16 MiB), nothing else changes");
+    Check(as::Bytes(c).scratch == as::ImageBytes(3840, 2160, as::kBytesR16), "contact ultra alone at 4K (the filter in the apply): one scratch image, the march's, not two");
   }
 }
 

@@ -54,32 +54,33 @@
 namespace mcla::gpu::ao_fast {
 
 // ---------------------------------------------------------------------------
-// the compile-time counts of the main pass's variants (ao.cpp FillPush: the occlusion's quality picks 3 slices of 3 steps, or 2 of
-// 2; the bounce light's quality picks the same and the far ring's steps a side)
+// the compile-time counts of the main pass's variants (ao.cpp FillPush: the occlusion's quality picks 3 slices of 3 steps (ultra),
+// or 2 of 2 (high); the bounce light's quality picks the same and the far ring's steps a side)
 // ---------------------------------------------------------------------------
 
-inline constexpr uint32_t kHighSlices = 3;
-inline constexpr uint32_t kHighSteps = 3;
-inline constexpr uint32_t kLowSlices = 2;
-inline constexpr uint32_t kLowSteps = 2;
-inline constexpr uint32_t kHighFarSteps = ssgi_light::kFarStepsHigh;  // 2
-inline constexpr uint32_t kLowFarSteps = ssgi_light::kFarStepsLow;    // 1
+inline constexpr uint32_t kUltraSlices = 3;
+inline constexpr uint32_t kUltraSteps = 3;
+inline constexpr uint32_t kHighSlices = 2;
+inline constexpr uint32_t kHighSteps = 2;
+inline constexpr uint32_t kUltraFarSteps = ssgi_light::kFarStepsUltra;  // 2
+inline constexpr uint32_t kHighFarSteps = ssgi_light::kFarStepsHigh;    // 1
 
 // The variant a frame draws: the counts compiled in, or none that fits (the generic compilation, which reads them).
-enum class Counts : uint8_t { kGeneric, kHigh, kLow };
+enum class Counts : uint8_t { kGeneric, kUltra, kHigh };
 
-// The plain pass: `low` is the occlusion's own quality (FillPush's ao_low with the bounce light off).
-inline constexpr Counts PlainCounts(bool low) {
-  return low ? Counts::kLow : Counts::kHigh;
+// The plain pass: `fewer` is the occlusion's own quality being high, the cheaper one of 2 slices and 2 steps (FillPush's ao_fewer
+// with the bounce light off).
+inline constexpr Counts PlainCounts(bool fewer) {
+  return fewer ? Counts::kHigh : Counts::kUltra;
 }
-// The bitmask pass: `fewer` is the bounce light's own quality (2 slices and 2 steps), `far_steps` what the push block says
+// The bitmask pass: `fewer` is the bounce light's own quality being high (2 slices and 2 steps), `far_steps` what the push block says
 // (0 when there is no ring, or a debug override).
 inline constexpr Counts GiCounts(bool fewer, uint32_t far_steps) {
-  if (!fewer && far_steps == kHighFarSteps) {
-    return Counts::kHigh;
+  if (!fewer && far_steps == kUltraFarSteps) {
+    return Counts::kUltra;
   }
-  if (fewer && far_steps == kLowFarSteps) {
-    return Counts::kLow;
+  if (fewer && far_steps == kHighFarSteps) {
+    return Counts::kHigh;
   }
   return Counts::kGeneric;
 }

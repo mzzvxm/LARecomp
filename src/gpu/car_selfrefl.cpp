@@ -31,16 +31,16 @@ REXCVAR_DEFINE_STRING(
     "in a wheel arch, and it also shows the car's own colour in the reflection. on is the one level; off leaves the game's "
     "paint as it is. auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, or the "
     "iGPU of a desktop CPU). Costs the graphics card a little while it is on (about 0.1 ms a frame at 4K on an RTX 5080). "
-    "low and high are values of an older version (a darkening only, and the darkening with the colour: both cost the same) "
-    "and mean on. It works in the game, behind the pause menu and in the garage, not on the map. Live.")
-    .allowed({"auto", "off", "on", "low", "high"})
+    "It works in the game, behind the pause menu and in the garage, not on the map. Live.")
+    .allowed({"auto", "off", "on"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_test, 0, "MCLA/GPU",
     "Diagnostic: forces the car self-reflections (mcla_gpu_car_selfrefl) to a level whatever the setting says, for a test "
     "or a comparison. 0: follow the setting (the default). 1: the specular occlusion alone, the reflection is darkened where "
     "a short ray along it passes just behind a part of the car (the setting has no such level: it costs the same as 2). "
-    "2: high, the same, and the car's own colour of the previous frame is reflected there. Needs the shader pack's "
+    "2: the full effect, the same, and the car's own colour of the previous frame is reflected there (what the setting on does). "
+    "Needs the shader pack's "
     "car_selfrefl variant and the motion blur draw's camera. Live.")
     .debug_only()
     .range(0, 2)
@@ -122,8 +122,8 @@ float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
 const char* ModeName(CarSelfRefl::Mode mode) {
   switch (mode) {
     case CarSelfRefl::Mode::kOff: return "off";
-    case CarSelfRefl::Mode::kOcclusion: return "low (specular occlusion)";
-    case CarSelfRefl::Mode::kReflection: return "high (occlusion and reflection)";
+    case CarSelfRefl::Mode::kOcclusion: return "specular occlusion only (the test level)";
+    case CarSelfRefl::Mode::kReflection: return "on (occlusion and reflection)";
   }
   return "?";
 }
@@ -131,13 +131,13 @@ const char* ModeName(CarSelfRefl::Mode mode) {
 // ---------------------------------------------------------------------------
 // the setting
 // ---------------------------------------------------------------------------
-// mcla_gpu_car_selfrefl with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High; an old
-// `low` or `high` is read as on by host_plan.h Resolve, so only the debug override below reaches the occlusion-only mode), read
+// mcla_gpu_car_selfrefl with `auto` resolved for this graphics card (gpu_class.h: off on Low, on on Mid and High; a word that is
+// no value counts as `auto` in host_plan.h Resolve, so only the debug override below reaches the occlusion-only mode), read
 // through LiveText (the pause menu's thread writes the cvar's string while this one reads it; the compare key's flip is in it).
 // The same rule the precache uses (host_plan.h), so the draws and the start's list cannot disagree about what is on.
 static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(car_selfrefl::Mode::kOff) &&
-              uint8_t(host_plan::Level::kLow) == uint8_t(car_selfrefl::Mode::kOcclusion) &&
-              uint8_t(host_plan::Level::kHigh) == uint8_t(car_selfrefl::Mode::kReflection));
+              uint8_t(host_plan::Level::kHigh) == uint8_t(car_selfrefl::Mode::kOcclusion) &&
+              uint8_t(host_plan::Level::kUltra) == uint8_t(car_selfrefl::Mode::kReflection));
 
 LiveText& Setting() {
   static LiveText text("mcla_gpu_car_selfrefl");
@@ -676,8 +676,8 @@ menu_world::World CarSelfRefl::FrameWorld() const {
 const char* CarSelfRefl::Level() const {
   switch (mode_) {
     case Mode::kOff: return "off";
-    case Mode::kOcclusion: return "low";
-    case Mode::kReflection: return "high";
+    case Mode::kOcclusion: return "occlusion";
+    case Mode::kReflection: return "on";
   }
   return "off";
 }

@@ -183,7 +183,7 @@ struct EffectLevel {
   std::string level;
 };
 
-// "ambient occlusion high, contact shadows high, bounce light low, sun shafts default" for the effects that are
+// "ambient occlusion ultra, contact shadows ultra, bounce light high, sun shafts default" for the effects that are
 // on in `world`; those on in the settings that the world leaves out come after a semicolon; nothing on says so.
 // The order of `effects` is the order of the text; the names are the five of RulesFor (occlusion, contact,
 // bounce, shafts, car self-reflections) in that order.

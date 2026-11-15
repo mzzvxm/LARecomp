@@ -68,10 +68,10 @@ void CheckRadius() {
   Check(bounded && monotone, "the radius stays between 1 and 3 and never falls as the height grows");
 
   // What it buys: the blur's reach in the pixels of a 720 line picture. At 720 lines it is 1 (as it was); a picture of 540 lines and
-  // up keeps it between 0.5 and 1.4, where the first version's 3x3 reached 1 at 720 lines and 0.33 at 2160. (360 lines, the low
+  // up keeps it between 0.5 and 1.4, where the first version's 3x3 reached 1 at 720 lines and 0.33 at 2160. (360 lines, the high
   // quality's image of a 720 line picture: 2, unchanged.)
   Check(std::fabs(ReachIn720Pixels(720) - 1.0) < 1e-9, "at 720 lines the blur reaches what it did");
-  Check(std::fabs(ReachIn720Pixels(360) - 2.0) < 1e-9, "at 360 lines (the low quality's image) the blur is the first version's");
+  Check(std::fabs(ReachIn720Pixels(360) - 2.0) < 1e-9, "at 360 lines (the high quality's image) the blur is the first version's");
   double lo = 1e9, hi = 0.0;
   for (uint32_t h = 540; h <= 4320; h += 3) {
     const double reach = ReachIn720Pixels(h);

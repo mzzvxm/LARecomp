@@ -40,15 +40,15 @@ REXCVAR_DEFINE_STRING(
     mcla_gpu_ao, "auto", "MCLA/GPU",
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
-    "constants say how much of a surface's light is which). off, low (half resolution, 2 slices), "
-    "high (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
-    "low on a discrete one with less than 5.5 GiB of video memory, high on the rest. The pause menu "
-    "and the launcher show low as HIGH and high as ULTRA (nothing is called low there); the values "
-    "stay as they are here, so a value an older larecomp.toml holds (off, low, high) keeps its quality. "
-    "Costs graphics card time, high more than low. "
+    "constants say how much of a surface's light is which). off, high (half resolution, 2 slices), "
+    "ultra (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
+    "high on a discrete one with less than 5.5 GiB of video memory, ultra on the rest. The pause menu "
+    "and the launcher show the same words. A value that is none of these (the low of an older "
+    "larecomp.toml) is ignored and the setting runs as auto. "
+    "Costs graphics card time, ultra more than high. "
     "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
     "Live.")
-    .allowed({"auto", "off", "low", "high"})
+    .allowed({"auto", "off", "high", "ultra"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao_intensity, "default", "MCLA/GPU",
@@ -128,14 +128,14 @@ REXCVAR_DEFINE_BOOL(
     "and 1080 for 4K, and the apply pass's depth-aware upsample puts the result back; 1080 lines and below are as "
     "they were. The occlusion's own 18 samples a pixel make a signal that has no more detail than that, so the picture "
     "is the same to within a thin edge and the passes cost a quarter. The contact shadows keep the picture's size "
-    "(their own depth and images). False: every size at the size the quality says (the render size on high). With "
+    "(their own depth and images). False: every size at the size the quality says (the render size on ultra). With "
     "the bounce light on, mcla_gpu_ssgi_half decides instead (the bounce light's images give the visibility too). "
     "Live; the first frame after the change makes the images again.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_ssgi_half, true, "MCLA/GPU",
-    "Diagnostic: above 1080 lines of render height the bounce light (every quality, low and high) runs at half the "
+    "Diagnostic: above 1080 lines of render height the bounce light (every quality, high and ultra) runs at half the "
     "picture's size, like mcla_gpu_ao_half_above_1080 does the occlusion, and its colour chain takes one of the "
     "colour target's MSAA samples a pixel (the four pixels of a 2x2 block give the texel) instead of all of them: the "
     "bounce light is the lowest frequency signal of the picture (it gathers 5 to 16 metres and is filtered over up to "
@@ -150,15 +150,15 @@ REXCVAR_DEFINE_STRING(
     "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
     "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
     "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
-    "They are left out at night and in rain. off, low (8 steps), high (16 steps) or auto (the "
-    "default): off on an integrated graphics card, low on a discrete one with less than 5.5 GiB of "
-    "video memory, high on the rest. The pause menu and the launcher show low as HIGH and high as "
-    "ULTRA (nothing is called low there); the values stay as they are here, so an older larecomp.toml "
-    "keeps its quality. They are worked out at the size the game is drawn at, so a "
-    "higher render scale gives sharper shadows (only low, with the ambient occlusion not on high, "
-    "works at half that size). Costs graphics card time, high more than low. Also drawn behind the "
+    "They are left out at night and in rain. off, high (8 steps), ultra (16 steps) or auto (the "
+    "default): off on an integrated graphics card, high on a discrete one with less than 5.5 GiB of "
+    "video memory, ultra on the rest. The pause menu and the launcher show the same words. A value "
+    "that is none of these (the low of an older larecomp.toml) is ignored and the setting runs as "
+    "auto. They are worked out at the size the game is drawn at, so a "
+    "higher render scale gives sharper shadows (only high, with the ambient occlusion not on ultra, "
+    "works at half that size). Costs graphics card time, ultra more than high. Also drawn behind the "
     "pause menu and on the map. Live.")
-    .allowed({"auto", "off", "low", "high"})
+    .allowed({"auto", "off", "high", "ultra"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_length, 0.6, "MCLA/GPU",
@@ -209,7 +209,7 @@ REXCVAR_DEFINE_BOOL(
     "they were). The march takes fewer steps where its ray covers few pixels on the screen (far "
     "pixels, a smaller picture; the squared spacing is kept), and the 3x3 filter that keeps shadow "
     "edges is done inside the apply pass, which saves a pass and a full size image write (only where "
-    "the contact passes run at the picture's size: high, or the occlusion on high). With that, and in a "
+    "the contact passes run at the picture's size: ultra, or the occlusion on ultra). With that, and in a "
     "frame that has the game's sun shadow mask, the march is also left out where the game's own shadow "
     "covers a pixel and its neighbours (the apply cannot use the result there: exactly the same picture). "
     "The picture is the same to within a shadow edge moving by a pixel. Live.")
@@ -250,13 +250,13 @@ REXCVAR_DEFINE_STRING(
     "the walls beside it, found from the picture, so a red wall tints the pavement by it and a street "
     "lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient "
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
-    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
-    "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
+    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps "
+    "each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the "
     "default): off on every graphics card for now, until its cost is measured. The pause menu and the "
-    "launcher show low as HIGH and high as ULTRA (nothing is called low there); the values stay as they "
-    "are here, so an older larecomp.toml keeps its quality. Costs graphics card time, "
-    "high more than low. Also drawn behind the pause menu and in the garage, not on the map. Live.")
-    .allowed({"auto", "off", "low", "high"})
+    "launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is "
+    "ignored and the setting runs as auto. Costs graphics card time, "
+    "ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.")
+    .allowed({"auto", "off", "high", "ultra"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ssgi_intensity, "default", "MCLA/GPU",
@@ -295,7 +295,7 @@ REXCVAR_DEFINE_DOUBLE(
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ssgi_far_steps, -1, "MCLA/GPU",
     "Diagnostic: the far ring's samples on each side of each direction, 0 to 7 (0: no ring). -1: by the bounce "
-    "light's quality (2 at high, 1 at low). Live.")
+    "light's quality (2 at ultra, 1 at high). Live.")
     .debug_only()
     .range(-1, 7)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -311,8 +311,8 @@ REXCVAR_DEFINE_DOUBLE(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ssgi_low, 0, "MCLA/GPU",
-    "Diagnostic: what the bounce light's low does (mcla_gpu_ssgi low or auto that comes to low) to be cheaper "
-    "than high: 0 fewer directions (2 slices and 2 steps each instead of 3 and 3) at the occlusion's own "
+    "Diagnostic: what the bounce light's high does (mcla_gpu_ssgi high or auto that comes to high) to be cheaper "
+    "than ultra: 0 fewer directions (2 slices and 2 steps each instead of 3 and 3) at the occlusion's own "
     "size, 1 half the picture's size (the occlusion's slices and steps) even where the occlusion is high, 2 "
     "both. The same samples give the occlusion's visibility, so 1 and 2 also make the occlusion's own "
     "picture half resolution while the bounce light is on. Live.")
@@ -651,8 +651,8 @@ std::string RefusalNames(uint32_t refused) {
 const char* ModeName(AmbientOcclusion::Mode mode) {
   switch (mode) {
     case AmbientOcclusion::Mode::kOff: return "off";
-    case AmbientOcclusion::Mode::kLow: return "low";
     case AmbientOcclusion::Mode::kHigh: return "high";
+    case AmbientOcclusion::Mode::kUltra: return "ultra";
   }
   return "?";
 }
@@ -689,8 +689,8 @@ ssgi_level::Level ReadSsgiLevel() {
 
 // The levels of host_plan.h are the owners' Modes, in the same order.
 static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(AmbientOcclusion::Mode::kOff) &&
-              uint8_t(host_plan::Level::kLow) == uint8_t(AmbientOcclusion::Mode::kLow) &&
-              uint8_t(host_plan::Level::kHigh) == uint8_t(AmbientOcclusion::Mode::kHigh));
+              uint8_t(host_plan::Level::kHigh) == uint8_t(AmbientOcclusion::Mode::kHigh) &&
+              uint8_t(host_plan::Level::kUltra) == uint8_t(AmbientOcclusion::Mode::kUltra));
 AmbientOcclusion::Mode ToMode(host_plan::Level level) {
   return AmbientOcclusion::Mode(uint8_t(level));
 }
@@ -698,7 +698,7 @@ host_plan::Level ToLevel(AmbientOcclusion::Mode mode) {
   return host_plan::Level(uint8_t(mode));
 }
 
-// mcla_gpu_ao: auto (the class's cell), off, low or high (anything else is off). host_plan.h has the rule, which the precache
+// mcla_gpu_ao: auto (the class's cell), off, high or ultra (anything else counts as auto). host_plan.h has the rule, which the precache
 // uses too.
 host_plan::Choice AoChoice() {
   return host_plan::Resolve(host_plan::Pass::kOcclusion, gpu_class::Current(), true, AoSetting().Get());
@@ -724,7 +724,7 @@ AmbientOcclusion::Mode ReadContactMode() {
   return ToMode(ContactChoice().level);
 }
 
-// mcla_gpu_ssgi with the auto value resolved for this GPU (gpu_class.h, host_plan.h): off, low or high. Its
+// mcla_gpu_ssgi with the auto value resolved for this GPU (gpu_class.h, host_plan.h): off, high or ultra. Its
 // `auto` is off until the class is known (and off on every class for now). That the occlusion is on is
 // asked where it is used (host_plan::Decide holds it off for the precache, BeginFrame for the draws).
 host_plan::Choice BounceChoice() {
@@ -810,14 +810,14 @@ uint32_t AmbientOcclusion::GiViewVariant(uint32_t host_samples) {
   return kVGiView + log2_samples;
 }
 
-uint32_t AmbientOcclusion::MainVariant(bool low) {
-  return ao_fast::PlainCounts(low) == ao_fast::Counts::kLow ? kVMain2 : kVMain3;
+uint32_t AmbientOcclusion::MainVariant(bool fewer) {
+  return ao_fast::PlainCounts(fewer) == ao_fast::Counts::kHigh ? kVMain2 : kVMain3;
 }
 
 uint32_t AmbientOcclusion::MainGiVariant(bool fewer, uint32_t far_steps, bool fast_math) {
   switch (ao_fast::GiCounts(fewer, far_steps)) {
-    case ao_fast::Counts::kHigh: return fast_math ? kVMainGi3 : kVMainGi3Exact;
-    case ao_fast::Counts::kLow: return fast_math ? kVMainGi2 : kVMainGi2Exact;
+    case ao_fast::Counts::kUltra: return fast_math ? kVMainGi3 : kVMainGi3Exact;
+    case ao_fast::Counts::kHigh: return fast_math ? kVMainGi2 : kVMainGi2Exact;
     default: return kVMainGi;  // a ring of another number of steps (the debug override): the pass that reads the counts
   }
 }
@@ -1877,7 +1877,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     if (!plan.probe) {
       return false;
     }
-    plan.mode = Mode::kLow;  // the cheaper size is enough for a statistic
+    plan.mode = Mode::kHigh;  // the cheaper size is enough for a statistic
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
@@ -1952,17 +1952,17 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     return false;
   }
   // The size of the passes (ao_size.h). The old rule: half the picture's size when nothing that is on asks for the whole of it (the
-  // bounce light's high does, as the occlusion's and the contact shadows'). The new one, above 1080 lines of render height: the
+  // bounce light's ultra does, as the occlusion's and the contact shadows'). The new one, above 1080 lines of render height: the
   // occlusion's and the bounce light's images are traced at half size at every quality, and the contact shadows keep the size they had.
   {
     ao_size::Inputs in;
     in.render_height = plan.render[1];
     in.occlusion = plan.occlusion;
-    in.occlusion_high = plan.mode == Mode::kHigh;
+    in.occlusion_ultra = plan.mode == Mode::kUltra;
     in.contact = contact;
-    in.contact_high = contact && plan.contact.mode == Mode::kHigh;
+    in.contact_ultra = contact && plan.contact.mode == Mode::kUltra;
     in.bounce = plan.gi.on;
-    in.bounce_high = plan.gi.on && plan.gi.mode == Mode::kHigh;
+    in.bounce_ultra = plan.gi.on && plan.gi.mode == Mode::kUltra;
     in.bounce_half = plan.gi.on && plan.gi.half;
     in.half_above_ao = REXCVAR_GET(mcla_gpu_ao_half_above_1080);
     in.half_above_bounce = plan.gi.half_above;
@@ -2113,8 +2113,8 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
       if (!plan.gi.on) {
         // The cost model (ao_size.h Cost): the 5080's measured passes at 3840x2160 scaled by the pixels and the taps; the half size
         // numbers are not measured.
-        const uint32_t taps = plan.mode == Mode::kLow ? ao_fast::kLowSlices * ao_fast::kLowSteps
-                                                       : ao_fast::kHighSlices * ao_fast::kHighSteps;
+        const uint32_t taps = plan.mode == Mode::kHigh ? ao_fast::kHighSlices * ao_fast::kHighSteps
+                                                       : ao_fast::kUltraSlices * ao_fast::kUltraSteps;
         ao_size::Choice before = plan.SizeChoice();
         before.low = plan.low && !plan.by_height;
         before.contact_full = false;
@@ -2214,11 +2214,11 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // The occlusion's own quality picks the slices and steps; the images are at half the picture's size
   // (the flag the shaders read) when nothing that is on asks for more (Plan::low).
   // (the bounce light's own quality when it runs: its main pass is the occlusion's)
-  const bool ao_low = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kLow;
+  const bool ao_fewer = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kHigh;
   const bool low = plan.low;
   // (the counts the main pass's pipelines have compiled in: ao_fast.h, MainVariant and MainGiVariant pick the one that fits)
-  const uint32_t slices = ao_low ? ao_fast::kLowSlices : ao_fast::kHighSlices;
-  const uint32_t steps = ao_low ? ao_fast::kLowSteps : ao_fast::kHighSteps;
+  const uint32_t slices = ao_fewer ? ao_fast::kHighSlices : ao_fast::kUltraSlices;
+  const uint32_t steps = ao_fewer ? ao_fast::kHighSteps : ao_fast::kUltraSteps;
   // The noise changes every frame (hlsl/ao_main_ps.hlsl). The denoise's radius follows the image's height, so that
   // the blur reaches as far in the picture at 4K as at 720 lines (ao_stable.h: 1, 2 or 3); the first version's
   // 3x3 at every size is mcla_gpu_ao_stable false.
@@ -2541,7 +2541,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plume::RenderPipeline* contact_pipeline = nullptr;
   if (plan.occlusion) {
     // The plain pass with the occlusion's own counts compiled in (also the frame whose bounce light cannot run, below).
-    main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kLow));
+    main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kHigh));
     temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
   }
   if (plan.apply) {
@@ -3256,7 +3256,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.length = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_length), 0.1, 3.0) *
                    contact_trace::LengthGrow(elevation));
   c.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_thickness), 0.05, 3.0));
-  c.steps = contact_mode_ == Mode::kLow ? contact_trace::kStepsLow : contact_trace::kStepsHigh;
+  c.steps = contact_mode_ == Mode::kHigh ? contact_trace::kStepsHigh : contact_trace::kStepsUltra;
   c.end_fade_start = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_fade),
                                       double(contact_trace::kFadeStartMin),
                                       double(contact_trace::kFadeStartMax)));
@@ -3578,8 +3578,8 @@ void AmbientOcclusion::ProcessContactStat(uint64_t frame, uint64_t generation, u
   (void)tile_counted;
   (void)tile_all_skipped;
   const double shadowed = not_far != 0 ? double(skipped) / double(not_far) : 0.0;
-  const contact_trace::Cost plain = contact_trace::CostModel(width, height, contact_trace::kStepsHigh, 1, true);
-  const contact_trace::Cost fast = contact_trace::CostModelFast(width, height, contact_trace::kStepsHigh, true, shadowed);
+  const contact_trace::Cost plain = contact_trace::CostModel(width, height, contact_trace::kStepsUltra, 1, true);
+  const contact_trace::Cost fast = contact_trace::CostModelFast(width, height, contact_trace::kStepsUltra, true, shadowed);
   REXLOG_INFO("[gpu] contact skip statistics of frame {}: the model's march at this share skipped ({:.1f}% of the pixels that are not sky): {:.3f} ms + the block "
               "pass {:.3f} ms against the plain march's {:.3f} ms (the model of contact_trace.h, an RTX 5080 at 3840x2160 scales with the pixels; not measured)",
               frame, 100.0 * shadowed, fast.march_ms, fast.block_ms, plain.march_ms);
@@ -3619,12 +3619,12 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   }
   g.test = gi_test_;
   g.mode = gi_test_ ? plan->mode : gi_mode_;
-  // What the quality means: the debug override is the occlusion's own (as it was); the setting's high is 3 and
-  // 3 at the picture's size and its low is cheaper by fewer directions, by half the size, or both
-  // (mcla_gpu_ssgi_low).
+  // What the quality means: the debug override is the occlusion's own (as it was); the setting's ultra is 3 and
+  // 3 at the picture's size and its high is cheaper by fewer directions, by half the size, or both
+  // (mcla_gpu_ssgi_low, named for the level that was called low).
   const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
-  g.fewer = gi_test_ ? plan->mode == Mode::kLow : (g.mode == Mode::kLow && low_how != 1);
-  g.half = !gi_test_ && g.mode == Mode::kLow && low_how >= 1;
+  g.fewer = gi_test_ ? plan->mode == Mode::kHigh : (g.mode == Mode::kHigh && low_how != 1);
+  g.half = !gi_test_ && g.mode == Mode::kHigh && low_how >= 1;
   g.half_above = REXCVAR_GET(mcla_gpu_ssgi_half);  // above 1080 lines, every quality (ao_size.h)
   // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
   // is set (ssgi_level.h).

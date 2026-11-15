@@ -69,9 +69,9 @@ const Row kTable[] = {
      "AUTO (GAME)", "AUTO (HIGH)"},
     {Effect::kReflectionResolution, "mcla_gpu_reflection_resolution", "game", "high", "high",
      "AUTO (GAME)", "AUTO (HIGH)", "AUTO (HIGH)"},
-    // The cells are STORED words; the labels are what the player sees (ShownWord: nothing is called low, so the stored low is
-    // HIGH and the stored high is ULTRA for the contact shadows, the bounce light and the ambient occlusion).
-    {Effect::kContactShadows, "mcla_gpu_contact_shadows", "off", "low", "high", "AUTO (OFF)",
+    // The cells are the words of the settings, which are the words the player sees (nothing is called low: the contact shadows,
+    // the bounce light and the ambient occlusion are off / high / ultra).
+    {Effect::kContactShadows, "mcla_gpu_contact_shadows", "off", "high", "ultra", "AUTO (OFF)",
      "AUTO (HIGH)", "AUTO (ULTRA)"},
     {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "default", "default", "AUTO (OFF)",
      "AUTO (DEFAULT)", "AUTO (DEFAULT)"},
@@ -79,12 +79,12 @@ const Row kTable[] = {
      "AUTO (OFF)"},
     {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near", "AUTO (OFF)",
      "AUTO (NEAR)", "AUTO (NEAR)"},
-    // The car self-reflections have one level, `on` (low and high cost the same: perf/out/FXCOST-B6.txt, owner 2026-11-14).
+    // The car self-reflections have one level, `on` (the older low and high cost the same: perf/out/FXCOST-B6.txt, owner 2026-11-14).
     {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)",
      "AUTO (ON)"},
-    // Ambient occlusion (AO-DESIGN.md section 5: high is about 3 ms at 1080p on a GTX 1050-class card,
-    // low about 1 ms; nothing on shared memory).
-    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "low", "high", "AUTO (OFF)", "AUTO (HIGH)",
+    // Ambient occlusion (AO-DESIGN.md section 5: ultra is about 3 ms at 1080p on a GTX 1050-class card,
+    // high about 1 ms; nothing on shared memory).
+    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)",
      "AUTO (ULTRA)"},
 };
 
@@ -122,13 +122,13 @@ void CheckTable() {
   }
 }
 
-// Ambient occlusion's `auto` (mcla_gpu_ao): off on shared memory, low on a small discrete card, high on
-// the rest; a value an older larecomp.toml holds (off, low, high) is the player's and is kept in every class.
+// Ambient occlusion's `auto` (mcla_gpu_ao): off on shared memory, high on a small discrete card, ultra on
+// the rest; a value the player holds (off, high, ultra) is kept in every class.
 void CheckAmbientOcclusion() {
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "low", "high"};
-  const char* const own[] = {"off", "low", "high"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "low" ? 1 : 2; };
+  const char* const want[] = {"off", "high", "ultra"};
+  const char* const own[] = {"off", "high", "ultra"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
   int last = -1;
   for (int k = 0; k < 3; ++k) {
     const GpuClass c = classes[k];
@@ -152,27 +152,20 @@ void CheckLabels() {
   CheckEq(Upper("a1-z"), "A1-Z", "Upper keeps what is not a letter");
 }
 
-// What a player sees for a stored value (ShownWord): nothing is called low. The ambient occlusion, the contact shadows and the
-// bounce light keep the stored words off / low / high and show them as OFF / HIGH / ULTRA; the car self-reflections' one level is
-// ON (the old low and high too); every other setting's words are shown as they are stored.
-void CheckShownWords() {
+// The stored word is the shown word: nothing in the graphics settings is called low (owner, 2026-11-14). The ambient occlusion, the
+// contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on; every cell of the table is one of the
+// words its setting allows, and no cell and no label of an `auto` says low.
+void CheckWords() {
   for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi}) {
     const std::string name(CvarName(effect));
-    CheckEq(std::string(ShownWord(effect, "off")), "off", name + ": off is shown as off");
-    CheckEq(std::string(ShownWord(effect, "low")), "high", name + ": the stored low is shown as high");
-    CheckEq(std::string(ShownWord(effect, "high")), "ultra", name + ": the stored high is shown as ultra");
-    CheckEq(std::string(ShownWord(effect, "auto")), "auto", name + ": auto is shown as auto");
-  }
-  for (const char* stored : {"on", "low", "high"}) {
-    CheckEq(std::string(ShownWord(Effect::kCarSelfRefl, stored)), "on", std::string("car self-reflections: ") + stored + " is shown as on");
-  }
-  CheckEq(std::string(ShownWord(Effect::kCarSelfRefl, "off")), "off", "car self-reflections: off is shown as off");
-  // The other settings keep their words (the side views' high is HIGH already, the shafts, the filter and the traffic shadows have none of these).
-  for (const Effect effect : {Effect::kShadowFilter, Effect::kShadowResolution, Effect::kEnvResolution, Effect::kReflectionResolution,
-                              Effect::kSunShafts, Effect::kTrafficShadows}) {
-    for (const char* stored : {"off", "game", "low", "high", "ultra", "soft", "default", "near"}) {
-      CheckEq(std::string(ShownWord(effect, stored)), stored, std::string(CvarName(effect)) + ": '" + stored + "' is shown as stored");
+    for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+      const std::string cell(Cell(effect, c));
+      Check(cell == "off" || cell == "high" || cell == "ultra", name + " on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, high or ultra");
     }
+  }
+  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    const std::string cell(Cell(Effect::kCarSelfRefl, c));
+    Check(cell == "off" || cell == "on", "car self-reflections on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off or on");
   }
   // No label of an `auto` says low, in any class.
   for (int i = 0; i < kEffectCount; ++i) {
@@ -648,7 +641,7 @@ int main() {
   CheckSunShaftSteps();
   CheckAmbientOcclusion();
   CheckLabels();
-  CheckShownWords();
+  CheckWords();
   CheckNames();
   CheckClassify();
   CheckNormalize();

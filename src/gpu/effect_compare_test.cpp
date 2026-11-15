@@ -151,33 +151,38 @@ void TestState() {
 void TestStanding() {
   for (const GpuClass cls : kClasses) {
     const std::string c = ClassWord(cls);
-    // The occlusion: off, low, high; no `auto`; anything else is off.
-    for (const char* text : {"off", "low", "high", "garbage", ""}) {
-      const bool on = std::string(text) == "low" || std::string(text) == "high";
-      const Standing s = StandingOf(Effect::kAmbientOcclusion, Make(cls, true, text, "auto", "auto", "auto", "auto", true));
-      Check(s.on == on && !s.blocked, "occlusion '" + std::string(text) + "' on " + c);
-    }
-    // The contact shadows and the sun shafts: `auto` is the class's cell (gpu_class.h): off, low, high.
     const bool auto_on = cls != GpuClass::kLow;
+    // The occlusion: off, high, ultra; `auto` and anything else (the low of an older larecomp.toml) is the class's cell: off on Low.
+    for (const char* text : {"off", "high", "ultra", "auto", "garbage", "", "low"}) {
+      const std::string word = text;
+      const bool on = word == "high" || word == "ultra" || ((word == "auto" || word == "garbage" || word == "" || word == "low") && auto_on);
+      const Standing s = StandingOf(Effect::kAmbientOcclusion, Make(cls, true, text, "auto", "auto", "auto", "auto", true));
+      Check(s.on == on && !s.blocked, "occlusion '" + word + "' on " + c);
+    }
+    // The contact shadows and the sun shafts: `auto` is the class's cell (gpu_class.h): off, high, ultra.
     for (const Effect effect : {Effect::kContactShadows, Effect::kSunShafts}) {
       const std::string name = std::string(Info(effect).choice) + " " + c;
       auto with = [&](const char* text) {
         return effect == Effect::kContactShadows
-                   ? Make(cls, true, "high", text, "off", "off", "game", true)
-                   : Make(cls, true, "high", "off", text, "off", "game", true);
+                   ? Make(cls, true, "ultra", text, "off", "off", "game", true)
+                   : Make(cls, true, "ultra", "off", text, "off", "game", true);
       };
       Check(StandingOf(effect, with("auto")).on == auto_on, name + ": auto");
       Check(StandingOf(effect, with("off")).on == false, name + ": off");
-      Check(StandingOf(effect, with("low")).on == true, name + ": low");
-      Check(StandingOf(effect, with("high")).on == true, name + ": high");
-      Check(StandingOf(effect, with("HIGH")).on == true, name + ": capitals are read as lower case");
+      // (the sun shafts' strengths are named, shafts_level.h; high and ultra are the contact shadows' levels, and the old low and
+      // high of the shafts are read as default)
+      Check(StandingOf(effect, with(effect == Effect::kContactShadows ? "high" : "default")).on == true, name + ": a level");
+      Check(StandingOf(effect, with(effect == Effect::kContactShadows ? "ultra" : "strong")).on == true, name + ": another level");
+      Check(StandingOf(effect, with(effect == Effect::kContactShadows ? "ULTRA" : "STRONG")).on == true, name + ": capitals are read as lower case");
       Check(!StandingOf(effect, with("auto")).blocked, name + ": never blocked");
     }
-    // The shafts read a text they do not know as `auto`; the contact shadows as off.
-    Check(StandingOf(Effect::kSunShafts, Make(cls, true, "high", "off", "hgih", "off", "game", true)).on == auto_on,
+    // The shafts and the contact shadows read a text they do not know as `auto`.
+    Check(StandingOf(Effect::kSunShafts, Make(cls, true, "ultra", "off", "hgih", "off", "game", true)).on == auto_on,
           "shafts " + c + ": an unknown text counts as auto");
-    Check(!StandingOf(Effect::kContactShadows, Make(cls, true, "high", "hgih", "off", "off", "game", true)).on,
-          "contact " + c + ": an unknown text is off");
+    Check(StandingOf(Effect::kContactShadows, Make(cls, true, "ultra", "hgih", "off", "off", "game", true)).on == auto_on,
+          "contact " + c + ": an unknown text counts as auto");
+    Check(StandingOf(Effect::kContactShadows, Make(cls, true, "ultra", "low", "off", "off", "game", true)).on == auto_on,
+          "contact " + c + ": the low of an older larecomp.toml counts as auto");
     // The shadow filter: auto is the class's cell (game on Low, soft above), game, soft and pcss (the variant: on).
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "auto", true)).on == auto_on,
           "filter " + c + ": auto");
@@ -190,27 +195,27 @@ void TestStanding() {
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "SOFT", true)).on,
           "filter " + c + ": SOFT");
     // The car self-reflections: auto is the class's cell (off on Low, on on Mid and High), the player's own value
-    // otherwise (the old low and high are read as on), an unknown text is off; nothing else is needed for them, so a press
-    // is never blocked.
+    // otherwise, an unknown text (the older low and high are no values any more) counts as auto; nothing else is needed for them,
+    // so a press is never blocked.
     for (const char* text : {"auto", "off", "on", "ON", "low", "high", "HIGH", "hgih", ""}) {
       const std::string word = text;
-      const bool on = word == "auto" ? auto_on : (word == "on" || word == "ON" || word == "low" || word == "high" || word == "HIGH");
+      const bool on = (word == "on" || word == "ON") ? true : word == "off" ? false : auto_on;
       const Standing car = StandingOf(Effect::kCarSelfRefl, Make(cls, true, "off", "off", "off", "off", "game", true, text));
       Check(car.on == on && !car.blocked, "car self-reflections " + c + " '" + word + "'");
     }
     // The bloom fix is the switch.
     Check(StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", true)).on, "bloom on");
     Check(!StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", false)).on, "bloom off");
-    // The bounce light: off on every class for `auto` (gpu_class.h), by hand low or high; it needs the occlusion.
-    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", "auto", "game", true)).on,
+    // The bounce light: off on every class for `auto` (gpu_class.h), by hand high or ultra; it needs the occlusion.
+    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", "auto", "game", true)).on,
           "bounce " + c + ": auto is off");
-    for (const char* text : {"low", "high"}) {
-      const Standing with_ao = StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", text, "game", true));
+    for (const char* text : {"high", "ultra"}) {
+      const Standing with_ao = StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", text, "game", true));
       Check(with_ao.on && !with_ao.blocked, "bounce " + c + " " + text + " with the occlusion");
       const Standing without = StandingOf(Effect::kBounceLight, Make(cls, true, "off", "off", "off", text, "game", true));
       Check(!without.on && without.blocked, "bounce " + c + " " + text + " without the occlusion is held and blocked");
     }
-    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "high", "off", "off", "off", "game", true)).on,
+    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", "off", "game", true)).on,
           "bounce " + c + ": off");
     const Standing none = StandingOf(Effect::kBounceLight, Make(cls, true, "off", "off", "off", "off", "game", true));
     Check(!none.on && none.blocked, "bounce " + c + ": off with the occlusion off is blocked too");
@@ -222,9 +227,9 @@ void TestStanding() {
         "filter: game on an unknown class");
   Check(StandingOf(Effect::kShadowFilter, Make(GpuClass::kHigh, false, "off", "off", "off", "off", "soft", true)).on,
         "filter: soft on an unknown class");
-  Check(!StandingOf(Effect::kBounceLight, Make(GpuClass::kHigh, false, "high", "off", "off", "auto", "game", true)).on,
+  Check(!StandingOf(Effect::kBounceLight, Make(GpuClass::kHigh, false, "ultra", "off", "off", "auto", "game", true)).on,
         "bounce: auto on an unknown class is off");
-  Check(!StandingOf(Effect::kNone, Make(GpuClass::kHigh, true, "high", "high", "high", "high", "soft", true)).on,
+  Check(!StandingOf(Effect::kNone, Make(GpuClass::kHigh, true, "ultra", "ultra", "default", "ultra", "soft", true)).on,
         "no effect is never on");
 }
 
@@ -267,8 +272,8 @@ void TestPress() {
       for (const bool saved_on : {true, false}) {
         // Settings that make the effect on, or off, whatever it is.
         // (the occlusion is what the bounce light needs, so it stays on unless the occlusion is the effect)
-        const Saved saved = saved_on ? Make(cls, true, "high", "high", "high", "high", "soft", true, "high")
-                                     : Make(cls, true, effect == Effect::kAmbientOcclusion ? "off" : "high", "off", "off", "off",
+        const Saved saved = saved_on ? Make(cls, true, "ultra", "ultra", "default", "ultra", "soft", true, "on")
+                                     : Make(cls, true, effect == Effect::kAmbientOcclusion ? "off" : "ultra", "off", "off", "off",
                                             "game", false, "off");
         const std::string name = std::string(Info(effect).choice) + (saved_on ? " saved on " : " saved off ") + ClassWord(cls);
         Check(StandingOf(effect, saved).on == saved_on, name + ": the settings are what the test says");
@@ -284,13 +289,13 @@ void TestPress() {
       }
     }
     // The bounce light with the occlusion off: nothing to show, the flip is left as it was.
-    const Saved held = Make(cls, true, "off", "off", "off", "high", "game", true);
+    const Saved held = Make(cls, true, "off", "off", "off", "ultra", "game", true);
     const Press blocked = PressOf(Effect::kBounceLight, Force::kNone, held);
     Check(blocked.blocked && blocked.force == Force::kNone && !blocked.shown_on, std::string("bounce blocked while the occlusion is off ") + ClassWord(cls));
     const Press kept = PressOf(Effect::kBounceLight, Force::kOn, held);
     Check(kept.blocked && kept.force == Force::kOn, "a blocked press leaves the flip as it was");
     // The occlusion itself is never blocked, also with the bounce light on.
-    const Press ao = PressOf(Effect::kAmbientOcclusion, Force::kNone, Make(cls, true, "high", "off", "off", "high", "game", true));
+    const Press ao = PressOf(Effect::kAmbientOcclusion, Force::kNone, Make(cls, true, "ultra", "off", "off", "ultra", "game", true));
     Check(!ao.blocked && ao.force == Force::kOff, "the occlusion flips off");
   }
 }

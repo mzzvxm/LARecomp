@@ -12,7 +12,7 @@
 //
 // Why the first version was soft (owner, 2026-11-13: "look way too soft right now"). It was not the
 // size of the images: at render scale 3 the passes already ran at 3840x2160 (the first-frame line
-// "images 3840x2160 for a 3840x2160 picture"), and at the high setting they run at the render size at
+// "images 3840x2160 for a 3840x2160 picture"), and at the ultra setting they run at the render size at
 // every scale. It was the look of the trace, which was tuned at 1280x720 and kept in world units:
 //   1. the ray's end fade 1 - along^2 made every shadow a gradient (darkest at its caster, a quarter
 //      lighter half way along the ray, 44% at three quarters): EndFade holds full darkness over the
@@ -54,9 +54,9 @@ inline constexpr double kLengthMaxScale = 3.0;
 inline constexpr float kDefaultFadeStart = 0.6f;
 inline constexpr float kFadeStartMin = 0.2f;
 inline constexpr float kFadeStartMax = 0.98f;
-// The steps at the low and the high setting.
-inline constexpr uint32_t kStepsLow = 8;
-inline constexpr uint32_t kStepsHigh = 16;
+// The steps at the high and the ultra setting.
+inline constexpr uint32_t kStepsHigh = 8;
+inline constexpr uint32_t kStepsUltra = 16;
 
 inline double LengthGrow(double elevation_degrees) {
   const double pi = 3.14159265358979323846;
@@ -150,7 +150,7 @@ inline constexpr float kFoldedFilterSkip = 0.002f;
 inline constexpr double kMeasuredMegapixels = 3840.0 * 2160.0 / 1e6;
 inline constexpr double kMeasuredMarchMs = 0.232;
 inline constexpr double kMeasuredFilterPassMs = 0.2705 / 2.0;
-inline constexpr double kMsPerMegaStep = kMeasuredMarchMs / (kMeasuredMegapixels * double(kStepsHigh));
+inline constexpr double kMsPerMegaStep = kMeasuredMarchMs / (kMeasuredMegapixels * double(kStepsUltra));
 inline constexpr double kMsPerMegapixelPass = kMeasuredFilterPassMs / kMeasuredMegapixels;
 // The new march does a little more arithmetic per step (the footprint tolerance, the squared step) and
 // no more loads; the march is bound by its depth reads. CHECK: not measured, assumed from the extra ALU.
@@ -528,7 +528,7 @@ struct Trace {
   float length = 0.6f;    // m
   float thickness = 0.3f; // m
   float fade_start = kDefaultFadeStart;
-  uint32_t steps = kStepsHigh;
+  uint32_t steps = kStepsUltra;
   float adapt_pixels = 0.0f;   // the adaptive step count's end gap in pixels (AdaptiveSteps); 0: every step, as before
   uint32_t adapt_min_steps = kAdaptMinSteps;
   mutable uint32_t steps_used = 0;  // out: the number of steps the last March took (0: it returned before the loop)

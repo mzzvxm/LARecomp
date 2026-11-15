@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- the bounce light's strength levels
 // ===========================================================================
 // The player's row BOUNCE LIGHT STRENGTH (mcla_gpu_ssgi_intensity) is how strong the bounce light looks; the row
-// BOUNCE LIGHT (mcla_gpu_ssgi: off, low, high, auto) is still how finely it is drawn and whether it runs at all.
+// BOUNCE LIGHT (mcla_gpu_ssgi: off, high, ultra, auto) is still how finely it is drawn and whether it runs at all.
 // A level is four numbers (ssgi_light.h says what each does):
 //   strength  the gain on the bounce (1 = all that the surroundings send back, by the picture's own colours)
 //   limit     the most the bounce may add to a pixel, in multiples of the pixel's own colour (a guard, not the look)

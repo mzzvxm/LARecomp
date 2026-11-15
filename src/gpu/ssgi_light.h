@@ -63,8 +63,8 @@ inline constexpr float kVehicleStrengthMax = 0.8f;  // ... and never more than t
 inline constexpr float kFarMaxRadiusShare = 0.4f;  // the ring never reaches farther than this share of the image's height
 inline constexpr float kFarMinGrowth = 1.25f;      // the ring exists where it reaches this much farther than the near samples ...
 inline constexpr float kFarMinExtraPx = 2.0f;      // ... and at least this many pixels farther
-inline constexpr uint32_t kFarStepsHigh = 2;       // ring steps a side of each slice at the bounce light's high
-inline constexpr uint32_t kFarStepsLow = 1;        // ... at low
+inline constexpr uint32_t kFarStepsUltra = 2;      // ring steps a side of each slice at the bounce light's ultra
+inline constexpr uint32_t kFarStepsHigh = 1;        // ... at high
 inline constexpr uint32_t kFarStepsMax = 7;        // what the push block's three bits hold
 
 // How the apply pass receives its numbers in the push block's flags (ao_apply_ps.hlsl): the gain limit in bits
@@ -181,14 +181,14 @@ inline uint32_t FarLevel(float length_px) {
   return uint32_t(level);
 }
 
-inline uint32_t FarSteps(bool high, int forced, float reach) {
+inline uint32_t FarSteps(bool ultra, int forced, float reach) {
   if (!(reach > 0.0f)) {
     return 0;
   }
   if (forced >= 0) {
     return std::min(uint32_t(forced), kFarStepsMax);
   }
-  return high ? kFarStepsHigh : kFarStepsLow;
+  return ultra ? kFarStepsUltra : kFarStepsHigh;
 }
 
 // The push block's codes of the limit and the cap, and back.

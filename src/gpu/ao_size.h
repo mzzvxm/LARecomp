@@ -14,13 +14,14 @@
 // up to 30 pixels), so it follows the same rule.
 //
 // THE TWO SIZES. Before, one flag (Plan::low) made every image of the frame half size, and the contact shadows pinned it to the picture's
-// size whenever they were on `high` (the owner asked for sharp contact shadows: their march reads the full size depth). Now the
+// size whenever they were on `ultra` (the owner asked for sharp contact shadows: their march reads the full size depth). Now the
 // occlusion's and the bounce light's images (the trace) can be half size while the contact shadows keep exactly the size they had: the
 // depth pass then also writes a full size linear depth for the contact march and the apply's contact filter (the `contact_full` choice).
 //
-// THE OLD RULE (legacy_low) is kept: the passes are at half size when nothing that is on asks for the whole of it (the occlusion on high,
-// the contact shadows on high, the bounce light on high), and always at half size for the bounce light's low with mcla_gpu_ssgi_low 1 or 2
-// (unless the contact shadows are on high). The new rule only adds to it, above 1080 lines.
+// THE OLD RULE (legacy_low) is kept: the passes are at half size when nothing that is on asks for the whole of it (the occlusion on ultra,
+// the contact shadows on ultra, the bounce light on ultra), and always at half size for the bounce light's high with mcla_gpu_ssgi_low 1 or 2
+// (unless the contact shadows are on ultra). The new rule only adds to it, above 1080 lines. (`low` in this file's names is the images being
+// at low resolution, half size: a size, not a quality level; the quality levels are high and ultra.)
 // ===========================================================================
 
 #include <algorithm>
@@ -38,12 +39,12 @@ constexpr uint32_t Half(uint32_t n) { return (n + 1) / 2; }
 struct Inputs {
   uint32_t render_height = 0;    // the main view's height in host pixels (the render size, an upscaler's render size)
   bool occlusion = false;        // the occlusion's term is computed (mcla_gpu_ao is not off)
-  bool occlusion_high = false;
+  bool occlusion_ultra = false;
   bool contact = false;          // the contact shadows run this frame
-  bool contact_high = false;
+  bool contact_ultra = false;
   bool bounce = false;           // the bounce light runs this frame (its images are the traced ones)
-  bool bounce_high = false;
-  bool bounce_half = false;      // mcla_gpu_ssgi_low 1 or 2 at the bounce light's low: half size by the old setting
+  bool bounce_ultra = false;
+  bool bounce_half = false;      // mcla_gpu_ssgi_low 1 or 2 at the bounce light's high: half size by the old setting
   bool half_above_ao = true;     // mcla_gpu_ao_half_above_1080
   bool half_above_bounce = true; // mcla_gpu_ssgi_half
 };
@@ -57,10 +58,10 @@ struct Choice {
 
 constexpr Choice Decide(const Inputs& in) {
   Choice c;
-  const bool contact_high = in.contact && in.contact_high;
-  c.legacy_low = !(in.occlusion && in.occlusion_high) && !contact_high && !(in.bounce && in.bounce_high);
-  if (in.bounce && in.bounce_half && !contact_high) {
-    c.legacy_low = true;  // the bounce light's low at half the size, whatever the occlusion's own quality
+  const bool contact_ultra = in.contact && in.contact_ultra;
+  c.legacy_low = !(in.occlusion && in.occlusion_ultra) && !contact_ultra && !(in.bounce && in.bounce_ultra);
+  if (in.bounce && in.bounce_half && !contact_ultra) {
+    c.legacy_low = true;  // the bounce light's high at half the size, whatever the occlusion's own quality
   }
   // With the bounce light on its images give the occlusion's visibility too, so its setting decides.
   const bool enabled = in.occlusion && (in.bounce ? in.half_above_bounce : in.half_above_ao);
@@ -257,7 +258,7 @@ struct AoCost {
   double Total() const { return main_ms + denoise_ms + temporal_ms + depth_ms + apply_ms; }
 };
 
-// `taps`: slices x steps of the main pass (9 at high, 4 at low); `radius`: the blur's radius for the traced height (ao_stable.h).
+// `taps`: slices x steps of the main pass (9 at ultra, 4 at high); `radius`: the blur's radius for the traced height (ao_stable.h).
 // `extra_depth`: the contact shadows' own full size depth pass is also made.
 constexpr AoCost Cost(const Sizes& s, const uint32_t render[2], uint32_t taps, uint32_t radius, bool extra_depth) {
   AoCost c;

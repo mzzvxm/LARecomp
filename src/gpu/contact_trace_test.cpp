@@ -133,7 +133,7 @@ void RayLengthRule() {
 }
 
 void StepsAndFade() {
-  for (uint32_t steps : {kStepsLow, kStepsHigh}) {
+  for (uint32_t steps : {kStepsHigh, kStepsUltra}) {
     for (float noise : {0.0f, 0.5f, 0.999f}) {
       bool increasing = Along(0, noise, steps) >= 0.0f;
       for (uint32_t i = 1; i < steps; ++i) {
@@ -198,23 +198,23 @@ void FilterWeights() {
 }
 
 void CostRule() {
-  const Cost old4k = CostModel(3840, 2160, kStepsHigh, 2, false);
-  const Cost new4k = CostModel(3840, 2160, kStepsHigh, 1, true);
+  const Cost old4k = CostModel(3840, 2160, kStepsUltra, 2, false);
+  const Cost new4k = CostModel(3840, 2160, kStepsUltra, 1, true);
   Check(std::fabs(old4k.march_ms - 0.232) < 0.002 && std::fabs(old4k.filter_ms - 0.2705) < 0.002,
         Num("the model gives back the measured 0.232 + 0.271 ms (%.3f + %.3f)", old4k.march_ms, old4k.filter_ms));
   Check(new4k.total_ms < old4k.total_ms,
         Num("the new total (%.3f ms) is under the old (%.3f ms) at 3840x2160", new4k.total_ms, old4k.total_ms));
   Check(new4k.total_ms < 0.45, "the new contact shadows cost under 0.45 ms at 3840x2160 on the RTX 5080 (model)");
-  const Cost hd = CostModel(1920, 1080, kStepsHigh, 1, true);
+  const Cost hd = CostModel(1920, 1080, kStepsUltra, 1, true);
   Check(std::fabs(hd.total_ms * 4.0 - new4k.total_ms) < 1e-9, "the cost scales with the pixels");
-  const Cost low = CostModel(1280, 720, kStepsLow, 1, true);
-  Check(low.total_ms < 0.05, Num("the low setting at 1280x720 is %.3f ms (model)", low.total_ms));
+  const Cost high_setting = CostModel(1280, 720, kStepsHigh, 1, true);
+  Check(high_setting.total_ms < 0.05, Num("the high setting at 1280x720 is %.3f ms (model)", high_setting.total_ms));
   Check(CostModel(3840, 2160, 8, 1, true).march_ms * 2.0 - new4k.march_ms < 1e-9, "the march scales with the steps");
 
   // The cheaper contact shadows (mcla_gpu_contact_shadows_fast): the adaptive steps and the filter inside the apply.
-  const Cost fast4k = CostModelFast(3840, 2160, kStepsHigh, true);
-  const Cost fast1080 = CostModelFast(1920, 1080, kStepsHigh, true);
-  const Cost plain1080 = CostModel(1920, 1080, kStepsHigh, 1, true);
+  const Cost fast4k = CostModelFast(3840, 2160, kStepsUltra, true);
+  const Cost fast1080 = CostModelFast(1920, 1080, kStepsUltra, true);
+  const Cost plain1080 = CostModel(1920, 1080, kStepsUltra, 1, true);
   std::printf("cost model (RTX 5080, not measured): 3840x2160 plain %.3f ms (march %.3f + filter %.3f), fast %.3f ms (march %.3f + filter %.3f); "
               "1920x1080 plain %.3f ms, fast %.3f ms\n",
               new4k.total_ms, new4k.march_ms, new4k.filter_ms, fast4k.total_ms, fast4k.march_ms, fast4k.filter_ms, plain1080.total_ms,
@@ -223,9 +223,9 @@ void CostRule() {
   Check(fast4k.filter_ms < 0.2 * new4k.filter_ms && fast4k.filter_ms > 0.08 * new4k.filter_ms, "the filter inside the apply costs about 12% of its own pass (PLAY4: the apply rose 0.013 ms, the pass was 0.107)");
   Check(fast4k.march_ms <= new4k.march_ms && fast4k.march_ms > 0.95 * new4k.march_ms,
         "at 3840x2160 the adaptive march keeps nearly all its steps (rays are long on the screen)");
-  Check(CostModelFast(1280, 720, kStepsHigh, true).march_ms / CostModel(1280, 720, kStepsHigh, 1, true).march_ms < 0.97,
+  Check(CostModelFast(1280, 720, kStepsUltra, true).march_ms / CostModel(1280, 720, kStepsUltra, 1, true).march_ms < 0.97,
         "at 1280x720 the adaptive march is cheaper in the model");
-  Check(CostModelFast(1920, 1080, kStepsHigh, false).filter_ms == plain1080.filter_ms, "not folded (half size): one filter pass as before");
+  Check(CostModelFast(1920, 1080, kStepsUltra, false).filter_ms == plain1080.filter_ms, "not folded (half size): one filter pass as before");
   Check(std::fabs(fast1080.total_ms * 4.0 - fast4k.total_ms) < 0.05 * fast4k.total_ms, "the cheaper path's cost scales with the pixels (the share of steps moves it a little)");
   Check(AdaptiveStepShare(500) == kAdaptShare720 && AdaptiveStepShare(4000) == 1.0 && AdaptiveStepShare(kAdaptMaxHeight + 1) == 1.0 &&
             AdaptiveStepShare(900) > kAdaptShare720 && AdaptiveStepShare(900) < kAdaptShare1080 && AdaptiveStepShare(kAdaptMaxHeight) == kAdaptShare1080,
@@ -247,14 +247,14 @@ void AdaptiveStepRule() {
   Check(AdaptiveSteps(32.0f, 16, 8.0f) == 8 && AdaptiveSteps(64.0f, 16, 8.0f) == 16 && AdaptiveSteps(1000.0f, 16, 8.0f) == 16,
         "a 32 pixel ray takes 8 steps (a gap of 8 pixels at the end), a 64 pixel one or longer all 16");
   Check(AdaptiveSteps(64.0f, 8, 8.0f) == 8 && AdaptiveSteps(20.0f, 8, 8.0f) == 5 && AdaptiveSteps(10.0f, 3, 8.0f) == 3,
-        "never more than the setting's steps (the low setting's 8), and a setting below the floor keeps its own");
+        "never more than the setting's steps (the high setting's 8), and a setting below the floor keeps its own");
   bool ok = true;
   uint32_t last = 0;
   for (float length = 0.0f; length <= 200.0f; length += 0.25f) {
-    const uint32_t n = AdaptiveSteps(length, kStepsHigh, kAdaptEndPixels);
-    ok = ok && n >= last && n >= kAdaptMinSteps && n <= kStepsHigh;
+    const uint32_t n = AdaptiveSteps(length, kStepsUltra, kAdaptEndPixels);
+    ok = ok && n >= last && n >= kAdaptMinSteps && n <= kStepsUltra;
     // The gap between the last two steps, 2 L / n pixels, is the end gap or less unless every step is already taken.
-    ok = ok && (n == kStepsHigh || 2.0f * length / float(n) <= kAdaptEndPixels + 1e-4f);
+    ok = ok && (n == kStepsUltra || 2.0f * length / float(n) <= kAdaptEndPixels + 1e-4f);
     last = n;
   }
   Check(ok, "the count grows with the ray's length, stays within the floor and the setting's, and keeps the end gap");
@@ -273,11 +273,11 @@ void AdaptiveStepRule() {
   bool far_ok = true;
   for (float z = 3.0f; z <= 80.0f; z += 1.0f) {
     const float len = RayPixelLength(c720, {0.0f, -1.5f, z}, {0.5f, -1.5f + 0.5f, z});
-    const uint32_t n = AdaptiveSteps(len, kStepsHigh, kAdaptEndPixels);
+    const uint32_t n = AdaptiveSteps(len, kStepsUltra, kAdaptEndPixels);
     far_ok = far_ok && n <= previous;
     previous = n;
   }
-  Check(far_ok && previous < kStepsHigh, "a 0.7 m ray takes fewer steps the farther it is (720p) and fewer than 16 at 80 m");
+  Check(far_ok && previous < kStepsUltra, "a 0.7 m ray takes fewer steps the farther it is (720p) and fewer than 16 at 80 m");
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ void PlanesNeverShadowThemselves() {
       auto depth = [&](int x, int y) { return s.Depth(x, y); };
       for (double elevation : {5.0, 10.0, 20.0, 35.0, 60.0, 85.0}) {
         for (double azimuth = 0.0; azimuth < 360.0; azimuth += 45.0) {
-          for (uint32_t steps : {kStepsLow, kStepsHigh}) {
+          for (uint32_t steps : {kStepsHigh, kStepsUltra}) {
             for (float noise : {0.0f, 0.37f, 0.99f}) {
               for (float length : {0.6f, 1.24f, 3.7f}) {
                 Trace t;
@@ -885,7 +885,7 @@ void CompareAdaptive(const DepthImage& im, int stride, AdaptTally* t) {
       full.camera = cam;
       full.to_sun = Sun(elevation, azimuth);
       full.length = float(0.6 * LengthGrow(elevation));
-      full.steps = kStepsHigh;
+      full.steps = kStepsUltra;
       Trace adaptive = full;
       adaptive.adapt_pixels = kAdaptEndPixels;
       for (int y = 1; y < cam.height - 1; y += stride) {
@@ -962,14 +962,14 @@ void AdaptiveStepsMatchTheFullMarch() {
       Check(t.over / n <= kOverTolerance, row + Num(": %.4f%% of the pixels change by more than 0.2 (within 0.3%%)", 100.0 * t.over / n));
       Check(t.unexplained / n <= kUnexplainedTolerance,
             row + Num(": %.4f%% change by more than 0.2 without an edge moving (within 0.03%%)", 100.0 * t.unexplained / n));
-      Check(t.min_used >= double(kAdaptMinSteps) && t.max_used <= double(kStepsHigh), row + ": the step count stays between the floor and the setting's");
+      Check(t.min_used >= double(kAdaptMinSteps) && t.max_used <= double(kStepsUltra), row + ": the step count stays between the floor and the setting's");
       if (std::string(ns.name) == "ground") {
         Check(t.visibility_min > 0.999 && t.sad == 0.0, row + ": the open ground stays open and the two marches agree exactly");
       }
       all_steps[si] += t.steps;
       all_marched[si] += t.marched;
       if (std::string(ns.name) == "street") {
-        street_share[si] = t.steps / n / double(kStepsHigh);
+        street_share[si] = t.steps / n / double(kStepsUltra);
       }
     }
   }
@@ -1008,7 +1008,7 @@ void AdaptiveStepsMatchTheFullMarch() {
       full.noise = off.noise = PixelNoise(x, y);
       const float a = March(full, depth, x, y);
       const float b = March(off, depth, x, y);
-      same = same && a == b && (off.steps_used == 0 || off.steps_used == kStepsHigh);
+      same = same && a == b && (off.steps_used == 0 || off.steps_used == kStepsUltra);
     }
   }
   Check(same, "an end gap of 0 (the lever off) is the full march exactly, 16 steps");
@@ -1656,17 +1656,17 @@ void StreetMix() {
 
 // The cost model with the shadowed share (the skip under the game's own shadow).
 void SkipCost() {
-  const Cost plain = CostModel(3840, 2160, kStepsHigh, 1, true);
-  const Cost none = CostModelFast(3840, 2160, kStepsHigh, true);
-  const Cost lit = CostModelFast(3840, 2160, kStepsHigh, true, 0.0);
-  const Cost third = CostModelFast(3840, 2160, kStepsHigh, true, 0.3);
-  const Cost half = CostModelFast(3840, 2160, kStepsHigh, true, 0.5);
-  const Cost all = CostModelFast(3840, 2160, kStepsHigh, true, 1.0);
+  const Cost plain = CostModel(3840, 2160, kStepsUltra, 1, true);
+  const Cost none = CostModelFast(3840, 2160, kStepsUltra, true);
+  const Cost lit = CostModelFast(3840, 2160, kStepsUltra, true, 0.0);
+  const Cost third = CostModelFast(3840, 2160, kStepsUltra, true, 0.3);
+  const Cost half = CostModelFast(3840, 2160, kStepsUltra, true, 0.5);
+  const Cost all = CostModelFast(3840, 2160, kStepsUltra, true, 1.0);
   std::printf("cost model with the skip (RTX 5080, 3840x2160, not measured; the plain march %.3f ms): no mask %.3f ms (march %.3f + filter %.3f); mask, 0%% in shade %.3f (march %.3f + block pass %.3f); "
               "30%% %.3f (march %.3f, %.0f%% of the pixels skipped); 50%% %.3f (march %.3f, %.0f%% skipped); 100%% %.3f (march %.3f)\n",
               plain.march_ms, none.total_ms, none.march_ms, none.filter_ms, lit.total_ms, lit.march_ms, lit.block_ms, third.total_ms, third.march_ms,
               100.0 * third.skipped_share, half.total_ms, half.march_ms, 100.0 * half.skipped_share, all.total_ms, all.march_ms);
-  Check(none.skipped_share == 0.0 && none.total_ms == CostModelFast(3840, 2160, kStepsHigh, true, -1.0).total_ms, "no mask (the default): the model as before");
+  Check(none.skipped_share == 0.0 && none.total_ms == CostModelFast(3840, 2160, kStepsUltra, true, -1.0).total_ms, "no mask (the default): the model as before");
   Check(none.march_ms == plain.march_ms, "at 2160p without the mask the march is the plain march exactly (the adaptive count is off there)");
   Check(lit.march_ms > plain.march_ms && lit.march_ms < 1.015 * plain.march_ms,
         Num("a frame with the mask and no shade pays the 17 instructions of the test only: the march %.2f%% more", 100.0 * (lit.march_ms / plain.march_ms - 1.0)));
@@ -1676,14 +1676,14 @@ void SkipCost() {
   // The first version's skip test in the same model (its instructions: 92 on a pixel in the sun, 356 on a pixel in shade at the 2160p mask's size,
   // the adaptive count on): worse than the plain march at the street's mix, with and without shade.
   {
-    const double plain_instr = AverageInstructions(2160, kStepsHigh, false, 0.0, false);
+    const double plain_instr = AverageInstructions(2160, kStepsUltra, false, 0.0, false);
     const auto first = [&](double shade) {
       const double skipped = shade * kSkipCatch2160;
       const double march_first = kInstrMarchFixed + 16.0 * kInstrStep + kInstrAdaptive;
       return kMixFar * kInstrFar + (kMixBack + kMixMarch) * skipped * kInstrSkippedFirst +
              (1.0 - skipped) * (kMixBack * (kInstrBack + kInstrTestLitFirst) + kMixMarch * (march_first + kInstrTestLitFirst));
     };
-    const auto second = [&](double shade) { return AverageInstructions(2160, kStepsHigh, true, shade * kSkipCatch2160, true); };
+    const auto second = [&](double shade) { return AverageInstructions(2160, kStepsUltra, true, shade * kSkipCatch2160, true); };
     std::printf("instructions a pixel of the street executes against the plain march, at 2160p (first version of the test, this one): "
                 "0%% shade %+.1f%% %+.1f%%, 30%% %+.1f%% %+.1f%%, 50%% %+.1f%% %+.1f%%\n",
                 100.0 * (first(0.0) / plain_instr - 1.0), 100.0 * (second(0.0) / plain_instr - 1.0), 100.0 * (first(0.3) / plain_instr - 1.0),
@@ -1693,7 +1693,7 @@ void SkipCost() {
     Check(first(0.0) > plain_instr * 1.05 && first(0.0) < plain_instr * 1.12, "the first version's test, with nothing skipped, costs the street 5% to 12% more than the plain march (PLAY4: +7.4%)");
     Check(second(0.0) < plain_instr * 1.015 && second(0.3) < plain_instr * 0.9 && second(0.5) < plain_instr * 0.8, "this version costs under 1.5% more with no shade and 10% / 20% less with 30% / 50% of it in shade");
   }
-  Check(CostModelFast(1920, 1080, kStepsHigh, false, 0.5).total_ms == CostModelFast(1920, 1080, kStepsHigh, false).total_ms,
+  Check(CostModelFast(1920, 1080, kStepsUltra, false, 0.5).total_ms == CostModelFast(1920, 1080, kStepsUltra, false).total_ms,
         "at half size (the filter pass stays) the skip is not used and the model ignores the share");
   Check(SkipCatch(500) == kSkipCatch720 && SkipCatch(4000) == kSkipCatch2160 && SkipCatch(900) >= kSkipCatch720 && SkipCatch(900) <= kSkipCatch1080,
         "the catch is flat outside 720 to 2160 lines and in between inside");
