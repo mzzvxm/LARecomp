@@ -275,13 +275,6 @@ struct Verdict {
   std::string why;  // one phrase for the log line
 };
 
-// Whether the GPU draws in memory the CPU also uses (a software adapter, UMA, an integrated GPU): the
-// reason for kLow that is about memory. Its budget is system memory, so the render scale cap (scale_cap.h)
-// leaves it alone.
-constexpr bool SharesMemory(const AdapterFacts& facts) {
-  return facts.software || facts.uma || facts.integrated;
-}
-
 inline Verdict Classify(const AdapterFacts& facts) {
   if (facts.software) {
     return {GpuClass::kLow, "a software or virtual adapter"};
@@ -320,12 +313,6 @@ GpuClass Current();
 // setting whose `auto` is not the same on every class acts as on the weakest while this is false, so
 // that a player is never given the strong class's cost before it is known. Any thread, cheap.
 bool Known();
-
-// What Initialize found, whatever mcla_gpu_class says (it forces only the class of the effects): whether
-// the GPU shares memory with the CPU (SharesMemory) and its dedicated video memory in bytes. False and 0
-// until Initialize has run. Any thread, cheap.
-bool SharesSystemMemory();
-uint64_t DedicatedBytes();
 
 // ResolveFor / AutoLabelFor for Current(). Any thread.
 std::string Resolve(Effect effect, std::string_view user_value);
