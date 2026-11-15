@@ -2,6 +2,10 @@ project_name = "larecomp"
 file_path = "assets/default.xex"
 out_directory_path = "generated"
 
+# Windows: the 0xE0000000 view is mapped at its exact 4 KB offset, so no guest memory access needs the
+# +0x1000 test (LAR-RXSDK perf/exact-e0-view; -26% instructions in the generated code, -10% frame time on 4 cores).
+exact_e0_view = true
+
 [functions]
 0x8244FEC0 = { name = "mc_Sleep", size = 0x8 }
 0x8244FE58 = { name = "mc_ResumeThread", size = 0x3C }
