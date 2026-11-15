@@ -84,6 +84,32 @@ void CheckRadius() {
   Check(lo >= 0.5 - 1e-9 && hi <= 1.4 + 1e-9, Num("the reach stays between 0.5 and 1.4 (got %.3f to %.3f)", lo, hi));
   Check(ReachIn720Pixels(2160) > 2.9 * (double(kReferenceHeight) / 2160.0), "at 4K the blur reaches three times what the first version's 3x3 did");
 
+  // The occlusion traced at half the picture's size above 1080 lines (ao_size.h, mcla_gpu_ao_half_above_1080): the radius is the traced
+  // image's (ao.cpp FillPush takes it from plan.ao[1]), so the blur reaches what the picture's height says either way.
+  {
+    const struct {
+      uint32_t picture;  // the render height
+      int full_radius;   // the blur of the image at the picture's own size
+      int half_radius;   // ... of the half size image
+    } kHalf[] = {{1200, 2, 1}, {1440, 2, 1}, {1620, 2, 1}, {2160, 3, 2}, {2880, 3, 2}};
+    for (const auto& row : kHalf) {
+      const uint32_t half = (row.picture + 1) / 2;
+      Check(DenoiseRadius(row.picture) == row.full_radius && DenoiseRadius(half) == row.half_radius,
+            Num("a picture of %.0f lines: the blur is ", double(row.picture)) + Num("%.0f at the picture's size and ", double(row.full_radius)) +
+                Num("%.0f traced at half size", double(row.half_radius)) + Num(" (got %.0f)", double(DenoiseRadius(half))));
+      if (g_print) {
+        std::printf("a picture of %u lines: blur %dx%d (reach %.2f of the 720 line picture's pixel) at full size, %dx%d (reach %.2f) traced at %u lines\n",
+                    row.picture, 2 * DenoiseRadius(row.picture) + 1, 2 * DenoiseRadius(row.picture) + 1, ReachIn720Pixels(row.picture),
+                    2 * DenoiseRadius(half) + 1, 2 * DenoiseRadius(half) + 1, ReachIn720Pixels(half), half);
+      }
+    }
+    // 1440p traced at 720 lines has exactly the reach of the 1440p image's own blur; 4K's is a third wider (5x5 of 1080 lines against 7x7 of 2160).
+    Check(std::fabs(ReachIn720Pixels(720) - ReachIn720Pixels(1440)) < 1e-9, "1440p: traced at half size the blur reaches what it did at full size");
+    Check(std::fabs(ReachIn720Pixels(1080) / ReachIn720Pixels(2160) - 4.0 / 3.0) < 1e-9, "4K: traced at 1080 lines the blur reaches a third more than at 2160");
+    // The wide blur (the pixels that have no history) follows: 7x7 at 1080 lines, 5x5 at 720.
+    Check(WideRadius(DenoiseRadius(1080)) == 3 && WideRadius(DenoiseRadius(720)) == 2, "the wide blur of the half size images: 7x7 (4K) and 5x5 (1440p)");
+  }
+
   // The wide blur: 2 at 720 lines (the first version's constant), one wider than the blur, never over kMaxWideRadius.
   Check(WideRadius(1) == 2 && WideRadius(2) == 3 && WideRadius(3) == 4, "the wide blur is one wider than the blur");
   Check(WideRadius(4) == kMaxWideRadius && WideRadius(0) == 2 && WideRadius(7) == kMaxWideRadius, "the wide blur is never over 4 and never under 2");

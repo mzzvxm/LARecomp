@@ -29,6 +29,9 @@
 //                    mcla_gpu_contact_shadows_fast (flag bit 25, AoContactFilter, only at the picture's size) the image
 //                    is the march's own and this pass does the filter (AoBilateralEdgeFolded: the same 3x3 weights),
 //                    where the contact shadows can change the factor at all, so the filter pass and its target are gone;
+//                    above 1080 lines the occlusion's image is half size (ao_size.h) while the contact shadows' stays at the
+//                    picture's: flag bit 21 (AoContactFull), the image is read as it is and its filter's depth is the full
+//                    size one (the high 16 bits of slots2.y);
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
@@ -108,6 +111,14 @@ static const float kFoldedFilterSkip = 0.002f;
 bool AoTermOn() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 bool ContactOn() { return (g_push.slots2.z & (1u << 23)) != 0u; }
 bool MaskOn() { return (g_push.slots2.z & (1u << 24)) != 0u; }
+// The occlusion's (and the bounce light's) images are half size (AoLow) while the contact shadows' image is at the picture's size (flags
+// bit 21, ao.cpp kApplyContactFullFlag; Plan::SplitContact): it is read as it is, no upsample, and its filter's depth is the full size
+// linear depth whose slot is in the high 16 bits of slots2.y (the low 16 are the bounce light's colour chain slot). Without the flag the
+// contact image is at the passes' size and its depth is slots.w, as before.
+bool AoContactFull() { return (g_push.slots2.z & (1u << 21)) != 0u; }
+uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : g_push.slots.w; }
+int2 ContactImageSize() { return AoContactFull() ? int2(g_push.sizes.xy) : int2(g_push.sizes.zw); }
+uint ColourSlot() { return g_push.slots2.y & 0xFFFFu; }
 #if AO_GI
 // The most the bounce factor may be, in multiples of the pixel's own colour: flags bits 8-15 in units of 0.04 (the
 // apply has no use for the slices and steps the main pass keeps there). The cap multiple of the ceiling: bits 26-31 in
@@ -209,7 +220,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float4 gi_image;
   float4 gi_colour;
   float gi_vehicle;
-  GiAt(g_push.slots.z, g_push.slots2.y, pixel, tc, gi_image, gi_colour, gi_vehicle);
+  GiAt(g_push.slots.z, ColourSlot(), pixel, tc, gi_image, gi_colour, gi_vehicle);
   const float ao = gi_image.x;
 #else
   const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc) : 1.0f;
@@ -257,7 +268,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
     const float contact_weight = g_push.extra.w * sun_share * contact_fade;
     if (!AoContactFilter()) {
-      cs = VisibilityAt(g_push.slots2.x, pixel, tc);
+      cs = AoContactFull() ? g_textures[g_push.slots2.x].Load(int3(pixel, 0)).x : VisibilityAt(g_push.slots2.x, pixel, tc);
     } else if (view != 0u || contact_weight > kFoldedFilterSkip) {
       // mcla_gpu_contact_shadows_fast: slots2.x is the march's own image, and the filter the denoise pass would
       // have made of it is done here, with the depths read above for the normal (the passes' size is the
@@ -269,7 +280,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // half of kFoldedFilterSkip), which is exact only because a pixel with weight <= kFoldedFilterSkip never reads the
       // image. Change the weight (sun_share, the fade, the mask's sample position or gain) or this test and that bound
       // changes with it (contact_trace.h MaskCannotLight).
-      cs = AoBilateralEdgeFolded(g_push.slots2.x, g_push.slots.w, pixel, int2(g_push.sizes.zw), tc, pc, normal,
+      cs = AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }
     contact_factor = 1.0f - saturate(contact_weight * (1.0f - cs));

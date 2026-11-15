@@ -58,11 +58,13 @@
 // contact_trace.h ("the ground under a vehicle"), with a standalone check of the twin of this code.
 //
 // Push block (ao_common.hlsli AoPush), this pass's fields:
-//   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit
+//   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit; slots.x, the statistics picture only: the mask's slot
 //   slots2.y   the frame number (the noise's shift); 0 while no temporal upscaler runs
-//   slots2.z   flags: bit 24 the skip under the game's own shadow (THE SKIP below; the other bits are not read here)
-//   slots2.w   the mask's bindless slot for the skip
-//   sizes      the image's size twice (this pass's target and the depth image are the same size)
+//   slots2.z   flags: bit 24 the skip under the game's own shadow (THE SKIP below); bit 27 a draw that is not the march: the skip's
+//              block pass, or with bit 26 the statistics picture (THE SKIP below); the other bits are not read here
+//   slots2.w   for the skip only: the block image's bindless slot (the block pass: the mask's)
+//   sizes.zw   the image's size (this pass's target and the depth image are the same size); sizes.xy, for the skip only:
+//              the mask's size over the image's size over kSkipBlock, per axis
 //   lens.xy    tan of the half field of view; lens.z the ray's length in world units, lens.w the
 //              thickness (the farthest a surface may be in front of a step and still hide it)
 //   shape.x    the share of the ray over which the shadow stays full before it fades out (0.6)
@@ -76,34 +78,58 @@
 //   extra.w    the distance in metres from the camera within which the game draws cars into the sun shadow
 //              map (TRAFFIC SHADOWS, traffic_shadow.h; 0: it does not): the under-a-vehicle term leaves out
 //              a car whose shell is nearer than that, which has its own shadow, and keeps the farther ones
-//   shape.w, extra.x, extra.z, light.w   for the skip only: the strength, the sun's luma, the mask gain, the ambient's luma
+//   shape.w, extra.x, extra.z   for the skip only: the block pass's limit, and one over the block image's (the block pass: the
+//                               mask's) width and height
 //
 // THE ADAPTIVE STEP COUNT (mcla_gpu_contact_shadows_fast; shape.z, contact_trace.h AdaptiveSteps). The steps are the
 // squared spacing of the setting's count n, so the last two are 2 L / n pixels apart for a ray of L pixels on the
 // screen. A ray that is short on the screen (a far pixel, a small picture) reads the same pixels again and again: the
 // count is ceil(2 L / shape.z), between kAdaptMinSteps and the setting's (shape.z 8: never a coarser end than the full
 // march has on a 64 pixel ray; contact_trace.h has the numbers and the check). L is the ray's start and end projected
-// into the depth image (an end behind the near plane: every step). At 3840x2160 nearly every ray is long enough
-// to keep all its steps.
+// into the depth image (an end behind the near plane: every step). The host leaves it off (shape.z 0) above
+// kAdaptMaxHeight lines of picture, where nearly every ray is long enough to keep all its steps (at 3840x2160 15.84 of 16)
+// and the count's arithmetic (38 instructions a pixel, half a step's 79) costs more than the steps it saves.
 //
 // THE SKIP UNDER THE GAME'S OWN SHADOW (mcla_gpu_contact_shadows_fast; contact_trace.h "the skip under the game's own
 // shadow" has the proof and the check). The apply pass uses the march's image only where the contact shadows can darken: the
 // weight strength * sun_share * fade is 0 where the game's sun shadow mask is 0, and the 3x3 filter the apply does over this
 // image reads a pixel's 8 neighbours only where that weight is above its own threshold. So a pixel returns 1 at once when
 // every mask texel that the apply's bilinear sample can reach for the pixel or any of its 8 neighbours is at most `limit`,
-// the largest stored value at which the weight is still under kSkipWeight (SkipLimit: from the frame's ambient and sun
-// lumas, the strength and the gain; for an 8-bit mask that is 0, apart from a very dim sun against the ambient). Exact: the
-// factor of every pixel is the same as without the skip, to the bit.
-//   flags bit 24 (kSkipFlag)   the skip is on (the host sets it only with the filter inside the apply, a mask in the frame
-//                              and no debug picture); slots2.w the mask's bindless slot (the apply's: R of the 8-bit
-//                              image, sampled at (pixel + 0.5) / size with the bilinear clamp sampler);
-//   extra.z                    the gain that turns the stored value into the sun's visibility (the apply's shape.x);
-//   shape.w                    the strength (the apply's extra.w);
-//   light.w, extra.x           the ambient's and the sun's luma, as the apply has them.
+// the largest stored value at which the weight is still under kSkipWeight (SkipLimit, made by the host from the frame's
+// ambient and sun lumas, the strength and the gain; for an 8-bit mask that is 0, apart from a very dim sun against the
+// ambient). Exact: the factor of every pixel is the same as without the skip, to the bit; and a test that skips fewer
+// pixels than that is exact too, which is what lets the test be cheap.
+// THE TEST'S COST. The march is bound by its arithmetic (1633 DXIL instructions a pixel that marches 16 steps, 161 for one that
+// faces away from the sun), not by its depth reads, so the test is few instructions, and the first of them decides for the
+// pixels in the sun. The host makes the limit, the scales and the reciprocals (no GetDimensions, no division here), and a
+// BLOCK PASS (this shader, flag bit 27, at 1/4 of the mask's size: a small draw) makes an image of 4 x 4 texel blocks of
+// the mask: 1 where any texel of the block is above the limit. The range of one pixel's footprint is at most 5 texels a side
+// where the mask is the picture's size, so it touches 1 or 2 blocks a side: (1) the block the pixel's own centre falls in is
+// part of it, so a 1 there ends the test with one load; only a pixel whose centre block is 0 goes on to (2) one gather of
+// the 2 x 2 blocks from the first block of the range (more, one gather for each 2 blocks a side, for a mask wider than
+// the picture), the first 1 ends the test. A pixel within a few texels of the sun is marched that the exact range would
+// skip: fewer pixels skipped is exact too. The first version made the limit, the sizes' ratio and the range from the mask's
+// GetDimensions in about 90 instructions for every pixel and read up to 25 texels one by one.
+//   flags bit 24 (kSkipFlag)   the skip is on (the host sets it only with the filter inside the apply, a mask in the frame,
+//                              a limit that is proven (SkipLimit >= 0), a mask not much larger than the picture and no
+//                              debug picture); slots2.w the block image's bindless slot (R16_FLOAT, 0 or 1);
+//   sizes.xy                   the mask's size over the image's size over 4, per axis (the host's float division);
+//   extra.x, extra.z           one over the block image's width and height (the gather's coordinates).
+//   flags bit 27 (kSideFlag)  this draw is the block pass (alone), into the block image: slots2.w the mask's bindless slot (R of the
+//                              8-bit image), shape.w the limit (contact_trace.h SkipLimit), extra.x, extra.z one over the mask's
+//                              width and height.
+//
+// THE SKIP STATISTICS (mcla_gpu_contact_skip_stat, flag bit 26 kStatFlag together with bit 27; ao.cpp RecordContactStat). A second pass of this shader into
+// a scratch image on a few frames, which does the march's early parts (the sky test, the skip, the normal, the facing test: SkipStat)
+// and writes what the pixel did in place of its visibility: -1 skipped, 2 the sky or past the contact fade, v (0 to 1) a pixel that
+// marches and 3 + v one that faces away from the sun, v the stored mask value at the pixel's own centre texel (the host's
+// histogram of v shows whether the game's shade stores 0, which the skip needs). Push: slots.x the mask's bindless slot, the rest as
+// the march's. The host counts the picture on the CPU. A pass of its own, so the march pays nothing for it.
 //
 // The constants below are contact_trace.h's: change them there first.
 
 #include "ao_common.hlsli"
+#include "host_pass_samplers.hlsli"
 
 // The depth tolerance, as a floor in metres plus footprints (the world size of one pixel of the
 // depth image where the step is): a step counts as hidden once the surface at its pixel is nearer
@@ -129,12 +155,21 @@ static const float kNearZ = 0.05f;
 // The fewest steps the adaptive count goes down to (as a float: contact_trace.h's test compares the constant).
 static const float kAdaptMinSteps = 4.0f;
 // The skip under the game's own shadow: the weight below which the apply's contact term is left out (half the apply's
-// kFoldedFilterSkip), the margin added to the mask texel range (the sampler's fixed-point coordinates), the widest span
-// of texels tested (a mask much larger than the image: no skip), and the flag.
+// kFoldedFilterSkip: the host's SkipLimit uses it), the margin added to the mask texel range (the sampler's fixed-point
+// coordinates), the widest span of texels the host allows (a mask much larger than the image: no skip), and the flags.
 static const float kSkipWeight = 0.001f;
 static const float kSkipTexelMargin = 0.015625f;
 static const float kSkipMaxTexels = 8.0f;
 static const uint kSkipFlag = 1u << 24;
+static const uint kStatFlag = 1u << 26;
+// What a pixel writes in the statistics picture (contact_trace.h kStat*).
+static const float kStatSkipped = -1.0f;
+static const float kStatFar = 2.0f;
+static const float kStatMarch = 0.0f;
+static const float kStatBack = 3.0f;
+static const uint kSideFlag = 1u << 27;
+// The block pass's block: texels a side (contact_trace.h kSkipBlock).
+static const float kSkipBlock = 4.0f;
 
 // The ground under a vehicle (header comment). Three steps up the column above the pixel, at these
 // shares of kUnderHeight times a jitter of kUnderJitterLow + kUnderJitterSpan noise; a step counts when
@@ -203,43 +238,44 @@ float Under(uint depth_slot, float tc, float3 pc, float3 normal, float2 size, in
   return hit * upness * strength;
 }
 
-// The largest stored mask value at which the apply's weight is surely under kSkipWeight (contact_trace.h SkipLimit); a
-// value above it forbids the skip, and -1 (inputs the bound is not proven for, NaN) is never skipped.
-float SkipLimit() {
-  const float ambient = g_push.light.w;
-  const float sun = g_push.extra.x;
-  const float gain = g_push.extra.z;
-  const float strength = g_push.shape.w;
-  if (!(ambient >= 0.0f) || !(sun > 0.0f) || !(gain > 0.0f) || !(strength > kSkipWeight)) {
-    return -1.0f;
-  }
-  // strength * sun v / (ambient + sun v) <= kSkipWeight  <=>  sun v <= kSkipWeight * ambient / (strength - kSkipWeight)
-  const float visible = (kSkipWeight * ambient) / ((strength - kSkipWeight) * sun);
-  return visible >= 1.0f ? 3.0e38f : visible / gain;
+// The skip's block pass: the block image's texel is 1 where any of the 4 x 4 mask texels at it (clamped into the mask) is above
+// the limit, else 0. Four gathers, at the corners between the block's 2 x 2 groups: a texel's coordinate c, in texels, is the
+// corner between texels c - 1 and c, and the clamp to edge repeats the mask's border where a block hangs over it.
+float4 SkipBlocks(float2 position) {
+  const uint slot = g_push.slots2.w;
+  const float2 inv_mask = float2(g_push.extra.x, g_push.extra.z);
+  const float2 corner = floor(position) * kSkipBlock + 1.0f;
+  const float4 a = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], corner * inv_mask);
+  const float4 b = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], (corner + float2(2.0f, 0.0f)) * inv_mask);
+  const float4 c = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], (corner + float2(0.0f, 2.0f)) * inv_mask);
+  const float4 d = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], (corner + float2(2.0f, 2.0f)) * inv_mask);
+  const float4 peak = max(max(a, b), max(c, d));
+  return float4(max(max(peak.x, peak.y), max(peak.z, peak.w)) > g_push.shape.w ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 // True when the apply cannot use this pixel's result: every texel of the mask that the bilinear samples of the pixel and of
-// its 8 neighbours reach is at most the limit (contact_trace.h MaskCannotLight, SkipTexelRange).
-bool MaskCannotLight(int2 pixel, float2 size) {
-  const float limit = SkipLimit();
-  if (!(limit >= 0.0f)) {
-    return false;
-  }
+// its 8 neighbours reach is at most the limit, or at least every texel of the blocks that hold them is (contact_trace.h
+// SkipTexelRange; MaskCannotLightBlocks is this function's twin). `position` is SV_Position: the pixel's centre, (pixel + 0.5).
+bool MaskCannotLight(float2 position) {
   const uint slot = g_push.slots2.w;
-  uint mask_w, mask_h, mask_levels;
-  g_textures[slot].GetDimensions(0, mask_w, mask_h, mask_levels);
-  const float2 scale = float2(mask_w, mask_h) / size;
-  const float2 lo = (float2(pixel) - 0.5f) * scale - 0.5f - kSkipTexelMargin;
-  const float2 hi = (float2(pixel) + 1.5f) * scale - 0.5f + kSkipTexelMargin;
-  const int2 last = int2(mask_w, mask_h) - 1;
-  const int2 first = clamp(int2(floor(lo)), int2(0, 0), last);
-  const int2 end = clamp(int2(floor(hi)) + 1, int2(0, 0), last);
-  if (float(end.x - first.x) >= kSkipMaxTexels || float(end.y - first.y) >= kSkipMaxTexels) {
+  const float2 scale = g_push.sizes.xy;  // mask texels per pixel over kSkipBlock: block images' texels per pixel
+  // (1) The block the pixel's own centre falls in is inside the range below: a 1 there, and the pixel is marched.
+  if (g_textures[slot].Load(int3(int2(position * scale), 0)).x > 0.5f) {
     return false;
   }
-  [loop] for (int y = first.y; y <= end.y; ++y) {
-    [loop] for (int x = first.x; x <= end.x; ++x) {
-      if (g_textures[slot].Load(int3(x, y, 0)).x > limit) {
+  // (2) The range of texels, first to end (SkipTexelRange: (pixel - 0.5) s - 0.5 - margin to (pixel + 1.5) s - 0.5 + margin, the floor
+  // of the low end to the floor of the high end + 1, s the mask's texels a pixel), in blocks: over kSkipBlock, the floor of the low
+  // end to the floor of (high end + 1). Groups of 2 x 2 blocks from the first on; the sampler is clamp to edge, so a group at or
+  // past the image's border repeats its border blocks (the mask's texels there are covered by the border blocks).
+  const float2 lo = (position - 1.0f) * scale - (0.5f + kSkipTexelMargin) * (1.0f / kSkipBlock);
+  const float2 first = floor(lo);
+  const float2 end = floor(lo + (2.0f * scale + (2.0f * kSkipTexelMargin + 1.0f) * (1.0f / kSkipBlock)));
+  const float2 inv_block = float2(g_push.extra.x, g_push.extra.z);
+  [loop] for (float y = first.y; y <= end.y; y += 2.0f) {
+    [loop] for (float x = first.x; x <= end.x; x += 2.0f) {
+      // (x + 1, y + 1) blocks in is the corner between the group's four blocks: the gather returns x, x + 1 by y, y + 1.
+      const float4 group = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], (float2(x, y) + 1.0f) * inv_block);
+      if (any(group > 0.5f)) {
         return false;
       }
     }
@@ -247,17 +283,44 @@ bool MaskCannotLight(int2 pixel, float2 size) {
   return true;
 }
 
+// The statistics picture of one pixel (THE SKIP STATISTICS above): the march's early parts, no steps.
+float4 SkipStat(float2 position) {
+  const int2 pixel = int2(position);
+  const float2 size = g_push.sizes.zw;
+  const uint depth_slot = g_push.slots.z;
+  const float tc = AoLoadLinear(depth_slot, pixel);
+  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
+    return float4(kStatFar, 0.0f, 0.0f, 0.0f);
+  }
+  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(position)) {
+    return float4(kStatSkipped, 0.0f, 0.0f, 0.0f);
+  }
+  const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
+  float3 normal = AoNormalFromImage(depth_slot, pixel, int2(size), tc, pc);
+  if (dot(normal, pc) > 0.0f) {
+    normal = -normal;
+  }
+  const float3 to_sun = g_push.light.xyz;
+  const float facing = dot(normal, to_sun);
+  const float stored = g_textures[g_push.slots.x].Load(int3(int2(position * (g_push.sizes.xy * kSkipBlock)), 0)).x;
+  return float4(((facing <= 0.0f || dot(to_sun, to_sun) < 0.5f) ? kStatBack : kStatMarch) + stored, 0.0f, 0.0f, 0.0f);
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
   const float2 size = g_push.sizes.zw;
   const int2 isize = int2(size);
   const uint depth_slot = g_push.slots.z;
+  const uint flags = g_push.slots2.z;
+  if ((flags & kSideFlag) != 0u) {
+    return (flags & kStatFlag) != 0u ? SkipStat(position.xy) : SkipBlocks(position.xy);
+  }
   const float tc = AoLoadLinear(depth_slot, pixel);
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   // Under the game's own shadow the apply cannot use the result (THE SKIP above): before the normal's four reads.
-  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(pixel, size)) {
+  if ((flags & kSkipFlag) != 0u && MaskCannotLight(position.xy)) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);

@@ -109,19 +109,39 @@ float3 AoHistoryPos(float2 centre, float2 size, float t, float2 tan_half) {
 
 // The vehicle (stencil ID 1 to 23) the depth target's stencil plane says the pixel `pixel` (of this
 // image) shows; 0 for the world and for anything else (no stencil plane, the UI's IDs of 24 and up).
-// At half resolution (AoLow) the pixel stands for the 2x2 block whose first sample this is.
-uint AoVehicleId(int2 pixel) {
+// At half resolution (AoLow) the pixel stands for a 2x2 block of the depth plane, and the depth pass (ao_depth_ps) took the depth of the
+// one of its four samples nearest to the block's mean and marked the pixel a vehicle (the depth's lowest bit, `depth`) by THAT sample's
+// stencil. The vehicle is then the first of the block's four samples that is one, and none where the mark says the pixel is not a
+// vehicle: the old rule read the block's first sample, which on a silhouette (a car against the road) could be the other surface, so
+// the pixel was followed with the car's motion on the road's depth or the world's on the car's.
+uint AoVehicleId(int2 pixel, float depth) {
   const uint slot = g_push.slots2.w;
   if (slot == kNoSlot) {
     return 0u;
   }
-  const int2 p = AoLow() ? pixel * 2 : pixel;
+  if (!AoLow()) {
 #if AO_DEPTH_MS
-  const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y)) >> 2;
+    const uint id = StencilOf(g_utextures_ms[slot].Load(pixel, g_push.slots.y)) >> 2;
 #else
-  const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
+    const uint id = StencilOf(g_utextures[slot].Load(int3(pixel, 0))) >> 2;
 #endif
-  return (id >= kFirstVehicleId && id <= kLastVehicleId) ? id : 0u;
+    return (id >= kFirstVehicleId && id <= kLastVehicleId) ? id : 0u;
+  }
+  if (!AoIsVehicle(depth)) {
+    return 0u;
+  }
+  for (int k = 0; k < 4; ++k) {
+    const int2 p = pixel * 2 + int2(k & 1, k >> 1);
+#if AO_DEPTH_MS
+    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y)) >> 2;
+#else
+    const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
+#endif
+    if (id >= kFirstVehicleId && id <= kLastVehicleId) {
+      return id;
+    }
+  }
+  return 0u;
 }
 
 #if AO_GI
@@ -155,7 +175,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion, as in the plain pass.
   bool no_history = false;
-  const uint vehicle = AoVehicleId(pixel);
+  const uint vehicle = AoVehicleId(pixel, tc);
   if (vehicle != 0u && !AoVehiclesAsWorld()) {
     no_history = true;
     const uint table = g_push.slots.x;
@@ -216,16 +236,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 m1 = float3(0.0f, 0.0f, 0.0f);
   float3 m2 = float3(0.0f, 0.0f, 0.0f);
   float wsum = 0.0f;
-  const float plane_sigma = kPlaneShare * tc + kPlaneFloor;
+  const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
+  const float2 clip_scale = 2.0f / size;
   for (int dy = -1; dy <= 1; ++dy) {
     for (int dx = -1; dx <= 1; ++dx) {
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
       const float4 v = g_textures[current_slot].Load(int3(q, 0));
       lo = min(lo, v.x);
       hi = max(hi, v.x);
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, AoLoadLinear(depth_slot, q));
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w = exp(-0.5f * off_plane * off_plane);
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, AoLoadLinear(depth_slot, q));
+      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      const float w = exp2(kAoNegHalfLog2e * off_plane * off_plane);
       m1 += v.yzw * w;
       m2 += v.yzw * v.yzw * w;
       wsum += w;
@@ -279,7 +300,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // camera's motion and the vehicle's, texel 3 holds 1 in x when the row is usable). No usable row: no
   // history for the pixel.
   bool no_history = false;
-  const uint vehicle = AoVehicleId(pixel);
+  const uint vehicle = AoVehicleId(pixel, tc);
   if (vehicle != 0u && !AoVehiclesAsWorld()) {
     no_history = true;
     const uint table = g_push.slots.x;

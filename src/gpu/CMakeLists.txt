@@ -104,10 +104,20 @@ add_executable(larecomp_ao_stable_test EXCLUDE_FROM_ALL ao_stable_test.cpp)
 # constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ssgi_stable_test, then run src/gpu/larecomp_ssgi_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_ssgi_stable_test EXCLUDE_FROM_ALL ssgi_stable_test.cpp)
+# The cheaper forms of the occlusion's and the bounce light's shader maths (ao_fast.h: the polynomial acos and its error in sectors, the
+# blur's one exponential, the variants' counts; on the twins of the passes the cheaper arithmetic against before; given the src/gpu folder
+# it also checks that the shaders', CMake's and ao.cpp's constants are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ao_fast_test, then run src/gpu/larecomp_ao_fast_test <src/gpu dir> [--print].
+add_executable(larecomp_ao_fast_test EXCLUDE_FROM_ALL ao_fast_test.cpp)
 # How steady the occlusion and the bounce light are, the first version against ao_stable.h and ssgi_stable.h, on the C++ twin of their passes
 # (ao_stable_twin.h: a still camera over a road, a wall and a car at 3840x2160 and 1280x720; about half a minute) likewise:
 #   cmake --build <dir> --target larecomp_ao_stable_noise_test, then run src/gpu/larecomp_ao_stable_noise_test [--print].
 add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_test.cpp)
+# The size of the occlusion's and the bounce light's images (ao_size.h: half the picture's size above 1080 lines of render height, the
+# contact shadows keeping their own size, the memory each frame holds and the cost model; given the src/gpu folder it also checks that the
+# shaders' and ao.cpp's flags and cvars are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ao_size_test, then run src/gpu/larecomp_ao_size_test <src/gpu dir> [--print].
+add_executable(larecomp_ao_size_test EXCLUDE_FROM_ALL ao_size_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
@@ -434,6 +444,11 @@ larecomp_gpu_host_shader(ao_depth_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_depth_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_mip_ps ps_6_0)
 larecomp_gpu_host_shader(ao_main_ps ps_6_0)
+# The same visibility pass with the slices and steps compiled in (ao_fast.h: 3 slices of 3 steps at high, 2 of 2 at low): the loops over
+# the steps unroll and what is a function of the counts folds. ao_main_ps is the compilation that reads the counts from the push block,
+# kept for a count that no variant has.
+larecomp_gpu_host_shader(ao_main_3x3_ps ps_6_0 SOURCE ao_main_ps DEFINES AO_SLICES=3 AO_STEPS=3)
+larecomp_gpu_host_shader(ao_main_2x2_ps ps_6_0 SOURCE ao_main_ps DEFINES AO_SLICES=2 AO_STEPS=2)
 larecomp_gpu_host_shader(ao_denoise_ps ps_6_0)
 larecomp_gpu_host_shader(ao_temporal_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_temporal_ms_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_DEPTH_MS=1)
@@ -445,6 +460,17 @@ larecomp_gpu_host_shader(ao_contact_ps ps_6_0)
 # place of the GTAO horizons (a second compilation of the occlusion's main pass), the scene colour's chain
 # (level 0 from a plain or a multisampled colour plane, a coarser level) and the debug picture of it.
 larecomp_gpu_host_shader(ao_main_gi_ps ps_6_0 SOURCE ao_main_ps DEFINES AO_GI=1)
+# The bitmask pass with the counts compiled in, the far ring's steps a side too (3x3 with 2, 2x2 with 1): with the polynomial acos of
+# the sectors (AO_FAST_ACOS, mcla_gpu_ao_fast_math true) and, for mcla_gpu_ao_fast_math false, with the hardware's. ao_main_gi_ps stays
+# for a ring that has another number of steps (the debug override) and is the exact one.
+larecomp_gpu_host_shader(ao_main_gi_3x3_far2_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=3 AO_STEPS=3 AO_FAR_STEPS=2 AO_FAST_ACOS=1)
+larecomp_gpu_host_shader(ao_main_gi_2x2_far1_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=2 AO_STEPS=2 AO_FAR_STEPS=1 AO_FAST_ACOS=1)
+larecomp_gpu_host_shader(ao_main_gi_3x3_far2_exact_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=3 AO_STEPS=3 AO_FAR_STEPS=2)
+larecomp_gpu_host_shader(ao_main_gi_2x2_far1_exact_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=2 AO_STEPS=2 AO_FAR_STEPS=1)
 larecomp_gpu_host_shader(ao_color_ps ps_6_0 DEFINES AO_COLOR_PASS=0 AO_COLOR_MS=0)
 larecomp_gpu_host_shader(ao_color_ms_ps ps_6_0 SOURCE ao_color_ps DEFINES AO_COLOR_PASS=0 AO_COLOR_MS=1)
 larecomp_gpu_host_shader(ao_color_mip_ps ps_6_0 SOURCE ao_color_ps DEFINES AO_COLOR_PASS=1)

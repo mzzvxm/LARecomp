@@ -21,6 +21,7 @@
 #include <functional>
 #include <vector>
 
+#include "ao_fast.h"
 #include "ao_halo.h"
 #include "ao_stable.h"
 #include "ssgi_light.h"
@@ -171,6 +172,12 @@ struct GiParams {
   // The frame's shift of the noise: 0 the additive recurrence of the R2 sequence (the first version), 13 the Fibonacci
   // lattice (n/13, 8n/13) (ao_stable.h NoiseShift).
   int noise_lattice = 0;
+  // The shader's cheaper forms of the same arithmetic (ao_fast.h, "THE SAME WORK"): the reciprocal of the image's size and of
+  // the distance in place of divisions, the surface's tangents as -sin n and sin n, the sample's level from comparing its length
+  // in pixels with 16 and 32. False: the forms of before (what every other test of the twin uses).
+  bool lossless = false;
+  // The polynomial acos of the sectors (ao_fast.h AcosFast; hlsl AO_FAST_ACOS) in place of the exact one.
+  bool fast_acos = false;
 };
 
 struct GiOut {
@@ -182,37 +189,52 @@ inline int ClampLevel(float level_f, int lo, int hi) {
   return int(std::min(std::max(level_f, float(lo)), float(hi)));
 }
 
-// One sample of one side of a slice (AoGiSample).
+// Where the signed angle `theta` falls in the slice's 32 sectors, 0 to 1 (AoSectorPos), with the arc's numbers of the slice.
+inline float SectorPos(float theta, float n, float sin_n, float cos_n, float g_end, float inv_total) {
+  const float t = n + std::clamp(theta - n, -ao_halo::kHalfPi, ao_halo::kHalfPi);
+  const float g = (cos_n - std::cos(2.0f * t - n) + 2.0f * t * sin_n) * 0.25f;
+  const float below = t < 0.0f ? g_end - g : g_end + g;
+  return Saturate(below * inv_total);
+}
+
+// One sample of one side of a slice (AoGiSample). `lossless` and `fast_acos` as GiParams.
 inline void GiSample(const Chains& c, float px, float py, int level, float ax, float ay, float side, float low, V3 pc,
                      V3 view_vec, V3 axis, float falloff_mul, float falloff_add, float n, float sin_n, float cos_n,
                      float g_end, float inv_total, float thickness, float facing_weight, bool limit_vehicles,
-                     float vehicle_mul, float vehicle_add, uint32_t* occupied, Rgb* light) {
+                     float vehicle_mul, float vehicle_add, uint32_t* occupied, Rgb* light, bool lossless = false,
+                     bool fast_acos = false) {
   if (!(px >= 0.0f && py >= 0.0f && px < float(c.width) && py < float(c.height))) {
     return;
   }
+  // AoViewPosInv: the centre times 2 / size (the clip space's scale, made once for the pass) where AoViewPos divides by the size.
+  const float scale_x = 2.0f / float(c.width), scale_y = 2.0f / float(c.height);
+  const auto view_pos = [&](float cx, float cy, float t) {
+    if (!lossless) {
+      return ViewPosOf(c, cx, cy, t);
+    }
+    return V3{(cx * scale_x - 1.0f) * c.tan_x * t, (1.0f - cy * scale_y) * c.tan_y * t, t};
+  };
+  const auto angle_of = [&](float cosine) {
+    return fast_acos ? ao_fast::AcosFast(cosine) : ao_fast::AcosExact(cosine);
+  };
   const int ix = int(std::floor(px)), iy = int(std::floor(py));
   const float td = ChainDepthAt(c, level, ix >> level, iy >> level);
-  const V3 sp = ViewPosOf(c, float(ix) + 0.5f, float(iy) + 0.5f, td);
+  const V3 sp = view_pos(float(ix) + 0.5f, float(iy) + 0.5f, td);
   const V3 delta = sp - pc;
   const float dist = Length(delta);
   float w = Saturate(dist * falloff_mul + falloff_add);
   if (limit_vehicles && w > 0.0f && c.vehicle[size_t(iy) * size_t(c.width) + size_t(ix)] != 0) {
     w = std::min(w, Saturate(dist * vehicle_mul + vehicle_add));
   }
-  const V3 dir = delta * (1.0f / std::max(dist, 1e-6f));
+  const float inv_dist = 1.0f / std::max(dist, 1e-6f);
+  const V3 dir = delta * inv_dist;
   const float cos_front = std::max(low + (Dot(dir, view_vec) - low) * w, low);
-  auto sector_pos = [&](float theta) {
-    const float t = n + std::clamp(theta - n, -ao_halo::kHalfPi, ao_halo::kHalfPi);
-    const float g = (cos_n - std::cos(2.0f * t - n) + 2.0f * t * sin_n) * 0.25f;
-    const float below = t < 0.0f ? g_end - g : g_end + g;
-    return Saturate(below * inv_total);
-  };
-  const float u_front = sector_pos(side * std::acos(std::clamp(cos_front, -1.0f, 1.0f)));
+  const float u_front = SectorPos(side * angle_of(cos_front), n, sin_n, cos_n, g_end, inv_total);
   float u_back = side > 0.0f ? 1.0f : 0.0f;
   if (thickness > 0.0f) {
     const V3 behind = delta + sp * (thickness / std::max(Length(sp), 1e-6f));
     const float cos_back = std::max(low + (Dot(Normalize(behind), view_vec) - low) * w, low);
-    u_back = sector_pos(side * std::acos(std::clamp(cos_back, -1.0f, 1.0f)));
+    u_back = SectorPos(side * angle_of(cos_back), n, sin_n, cos_n, g_end, inv_total);
   }
   const float lo = std::min(u_front, u_back), hi = std::max(u_front, u_back);
   const uint32_t start = uint32_t(lo * 32.0f + 0.5f);
@@ -236,7 +258,7 @@ inline void GiSample(const Chains& c, float px, float py, int level, float ax, f
     const float p2x = px + ax * float(1 << level), p2y = py + ay * float(1 << level);
     const int i2x = int(std::floor(p2x)), i2y = int(std::floor(p2y));
     const float t2 = ChainDepthAt(c, level, i2x >> level, i2y >> level);
-    const V3 tangent = ViewPosOf(c, float(i2x) + 0.5f, float(i2y) + 0.5f, t2) - sp;
+    const V3 tangent = view_pos(float(i2x) + 0.5f, float(i2y) + 0.5f, t2) - sp;
     if (t2 < ao_halo::kSky * 0.5f && Dot(tangent, tangent) > 1e-10f) {
       V3 normal_s = Cross(tangent, axis);
       const float length_n = Length(normal_s);
@@ -321,9 +343,11 @@ inline GiOut GiMain(const Chains& c, const GiParams& g, int px, int py, int fram
     const float sign_n = dd > 0.0f ? 1.0f : (dd < 0.0f ? -1.0f : 0.0f);
     const float cos_n = Saturate(Dot(projected, view_vec) / std::max(projected_len, 1e-6f));
     const float n = sign_n * std::acos(cos_n);
-    const float low0 = std::cos(n + ao_halo::kHalfPi);
-    const float low1 = std::cos(n - ao_halo::kHalfPi);
     const float sin_n = std::sin(n);
+    // The surface's tangent on each side: the cosine of n plus or minus a quarter turn (minus and plus the sine of n, the form of
+    // the shader's cheaper compilation).
+    const float low0 = g.lossless ? -sin_n : std::cos(n + ao_halo::kHalfPi);
+    const float low1 = g.lossless ? sin_n : std::cos(n - ao_halo::kHalfPi);
     const float total = cos_n + n * sin_n;
     const float inv_total = 1.0f / std::max(total, 1e-3f);
     const float g_end = (2.0f * cos_n + (2.0f * n - ao_halo::kPi) * sin_n) * 0.25f;
@@ -335,14 +359,21 @@ inline GiOut GiMain(const Chains& c, const GiParams& g, int px, int py, int fram
       float share = (float(s) + step_noise) / float(steps);
       share = share * share + min_offset;
       const float ox = dpx * share * radius_px, oy = dpy * share * radius_px;
-      const float level_f = std::clamp(std::log2(std::max(std::hypot(ox, oy), 1.0f)) - 3.0f + float(g.level_bias), 0.0f, 2.0f);
-      const int level = int(level_f);
+      int level;
+      if (g.lossless && g.level_bias == 0) {
+        // dir is a unit vector: the offset's length is the share of the radius; level 0 under 16 pixels, 1 under 32, 2 from there.
+        const float length_px = share * radius_px;
+        level = (length_px >= 16.0f ? 1 : 0) + (length_px >= 32.0f ? 1 : 0);
+      } else {
+        const float level_f = std::clamp(std::log2(std::max(std::hypot(ox, oy), 1.0f)) - 3.0f + float(g.level_bias), 0.0f, 2.0f);
+        level = int(level_f);
+      }
       GiSample(c, float(px) + 0.5f + ox, float(py) + 0.5f + oy, level, dpx, dpy, 1.0f, low0, pc, view_vec, axis,
                falloff_mul, falloff_add, n, sin_n, cos_n, g_end, inv_total, g.thickness, g.facing_weight,
-               limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light);
+               limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light, g.lossless, g.fast_acos);
       GiSample(c, float(px) + 0.5f - ox, float(py) + 0.5f - oy, level, -dpx, -dpy, -1.0f, low1, pc, view_vec, axis,
                falloff_mul, falloff_add, n, sin_n, cos_n, g_end, inv_total, g.thickness, g.facing_weight,
-               limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light);
+               limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light, g.lossless, g.fast_acos);
     }
     const uint32_t occupied_near = occupied;
     if (far_ring) {
@@ -352,13 +383,15 @@ inline GiOut GiMain(const Chains& c, const GiParams& g, int px, int py, int fram
         share *= share;
         const float length_px = near_end_px + (far_px - near_end_px) * share;
         const float ox = dpx * length_px, oy = dpy * length_px;
-        const int level = ClampLevel(std::log2(std::max(length_px, 1.0f)) - 3.0f + float(g.level_bias), 1, 2);
+        const int level = g.lossless && g.level_bias == 0
+                              ? (length_px >= 32.0f ? 2 : 1)
+                              : ClampLevel(std::log2(std::max(length_px, 1.0f)) - 3.0f + float(g.level_bias), 1, 2);
         GiSample(c, float(px) + 0.5f + ox, float(py) + 0.5f + oy, level, dpx, dpy, 1.0f, low0, pc, view_vec, axis,
                  far_falloff_mul, falloff_add, n, sin_n, cos_n, g_end, inv_total, g.thickness, g.facing_weight,
-                 limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light);
+                 limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light, g.lossless, g.fast_acos);
         GiSample(c, float(px) + 0.5f - ox, float(py) + 0.5f - oy, level, -dpx, -dpy, -1.0f, low1, pc, view_vec, axis,
                  far_falloff_mul, falloff_add, n, sin_n, cos_n, g_end, inv_total, g.thickness, g.facing_weight,
-                 limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light);
+                 limit_vehicles, vehicle_mul, vehicle_add, &occupied, &light, g.lossless, g.fast_acos);
       }
     }
     const float weight = projected_len * total;

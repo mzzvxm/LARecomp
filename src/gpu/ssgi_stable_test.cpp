@@ -120,6 +120,17 @@ void CheckAtrous() {
   }
   Check(lo >= 4.2, Num("from 720 lines up the filter reaches at least 4.2 pixels of a 720 line picture (got %.2f)", lo));
   Check(double(AtrousReachPixels(AtrousIterations(2, 2160))) * double(kReferenceHeight) / 2160.0 > 2.9 * 2.0, "at 4K it reaches three times what the first version's two passes did");
+  // The bounce light traced at half the picture's size above 1080 lines (ao_size.h, mcla_gpu_ssgi_half): the passes follow the traced image's
+  // height (ao.cpp takes it from plan.ao[1]), and what they reach as a share of the PICTURE stays within 30% of the full size image's.
+  for (const uint32_t picture : {1200u, 1440u, 1620u, 2160u, 2880u}) {
+    const uint32_t half = (picture + 1) / 2;
+    const double full_share = double(AtrousReachPixels(AtrousIterations(2, picture))) / double(picture);
+    const double half_share = double(AtrousReachPixels(AtrousIterations(2, half))) / double(half);
+    Check(half_share / full_share >= 0.7 && half_share / full_share <= 1.3,
+          Num("a picture of %.0f lines: the bounce's a-trous reach traced at half size is within 30% of the full size image's", double(picture)) +
+              Num(" (%.3f against ", half_share) + Num("%.3f of the height)", full_share));
+  }
+  Check(AtrousIterations(2, 1080) == 3 && AtrousIterations(2, 720) == 2, "4K traced at 1080 lines runs 3 passes, 1440p traced at 720 runs 2 (4 and 3 at full size)");
 }
 
 // ---------------------------------------------------------------------------

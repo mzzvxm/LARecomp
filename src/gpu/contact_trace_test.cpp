@@ -220,16 +220,18 @@ void CostRule() {
               new4k.total_ms, new4k.march_ms, new4k.filter_ms, fast4k.total_ms, fast4k.march_ms, fast4k.filter_ms, plain1080.total_ms,
               fast1080.total_ms);
   Check(fast4k.total_ms < new4k.total_ms && fast1080.total_ms < plain1080.total_ms, "the cheaper path costs less than the plain one in the model");
-  Check(fast4k.filter_ms < 0.6 * new4k.filter_ms && fast4k.filter_ms > 0.5 * new4k.filter_ms, "the filter inside the apply costs about 55% of its own pass");
+  Check(fast4k.filter_ms < 0.2 * new4k.filter_ms && fast4k.filter_ms > 0.08 * new4k.filter_ms, "the filter inside the apply costs about 12% of its own pass (PLAY4: the apply rose 0.013 ms, the pass was 0.107)");
   Check(fast4k.march_ms <= new4k.march_ms && fast4k.march_ms > 0.95 * new4k.march_ms,
         "at 3840x2160 the adaptive march keeps nearly all its steps (rays are long on the screen)");
   Check(CostModelFast(1280, 720, kStepsHigh, true).march_ms / CostModel(1280, 720, kStepsHigh, 1, true).march_ms < 0.97,
         "at 1280x720 the adaptive march is cheaper in the model");
   Check(CostModelFast(1920, 1080, kStepsHigh, false).filter_ms == plain1080.filter_ms, "not folded (half size): one filter pass as before");
   Check(std::fabs(fast1080.total_ms * 4.0 - fast4k.total_ms) < 0.05 * fast4k.total_ms, "the cheaper path's cost scales with the pixels (the share of steps moves it a little)");
-  Check(AdaptiveStepShare(500) == kAdaptShare720 && AdaptiveStepShare(4000) == kAdaptShare2160 &&
-            AdaptiveStepShare(900) > kAdaptShare720 && AdaptiveStepShare(900) < kAdaptShare1080,
-        "the model's step share is flat outside 720 to 2160 lines and in between inside");
+  Check(AdaptiveStepShare(500) == kAdaptShare720 && AdaptiveStepShare(4000) == 1.0 && AdaptiveStepShare(kAdaptMaxHeight + 1) == 1.0 &&
+            AdaptiveStepShare(900) > kAdaptShare720 && AdaptiveStepShare(900) < kAdaptShare1080 && AdaptiveStepShare(kAdaptMaxHeight) == kAdaptShare1080,
+        "the model's step share is flat below 720 lines, in between up to 1080, and 1 (the count is not used) above");
+  Check(AdaptiveOnAt(720) && AdaptiveOnAt(1080) && !AdaptiveOnAt(1081) && !AdaptiveOnAt(1440) && !AdaptiveOnAt(2160),
+        "the adaptive count is used up to 1080 lines of picture and not above");
 }
 
 // ---------------------------------------------------------------------------
@@ -937,12 +939,12 @@ void AdaptiveStepsMatchTheFullMarch() {
     int height;
     int stride;
   };
-  const Size sizes[] = {{720, 7}, {1080, 9}, {2160, 13}};
-  double street_share[3] = {};
-  double all_steps[3] = {}, all_marched[3] = {};
-  for (size_t si = 0; si < 3; ++si) {
+  const Size sizes[] = {{720, 7}, {1080, 9}, {2160, 13}, {1440, 11}};
+  double street_share[4] = {};
+  double all_steps[4] = {}, all_marched[4] = {};
+  for (size_t si = 0; si < 4; ++si) {
     for (const NamedScene& ns : scenes) {
-      if (sizes[si].height == 2160 && !ns.wide) {
+      if (sizes[si].height >= 1440 && !ns.wide) {
         continue;
       }
       Scene s;
@@ -979,6 +981,14 @@ void AdaptiveStepsMatchTheFullMarch() {
             std::fabs(street_share[2] - kAdaptShare2160) < 0.015,
         Num("the model's step shares (%.2f, %.2f, %.2f) are the street's average", kAdaptShare720, kAdaptShare1080, kAdaptShare2160));
   Check(all_steps[2] / all_marched[2] > 15.5, "at 2160p the rays are long on the screen: nearly all 16 steps stay");
+  // Why the count is used up to 1080 lines and not above (kAdaptMaxHeight): its 38 instructions against a step's 79 want more than half a step
+  // saved on average.
+  std::printf("adaptive march: steps saved of 16 (all scenes): 720p %.2f, 1080p %.2f, 1440p %.2f, 2160p %.2f; the count costs %.2f of a step\n",
+              16.0 - all_steps[0] / all_marched[0], 16.0 - all_steps[1] / all_marched[1], 16.0 - all_steps[3] / all_marched[3],
+              16.0 - all_steps[2] / all_marched[2], kInstrAdaptive / kInstrStep);
+  Check(16.0 - all_steps[1] / all_marched[1] > kInstrAdaptive / kInstrStep * 2.0 && 16.0 - all_steps[3] / all_marched[3] < kInstrAdaptive / kInstrStep * 1.5 &&
+            16.0 - all_steps[2] / all_marched[2] < kInstrAdaptive / kInstrStep,
+        "the count saves over twice what it costs up to 1080 lines and about what it costs (1.5 times at most) from 1440 up, less at 2160: kAdaptMaxHeight");
 
   // With the lever off (an end gap of 0) the march is the full march, step for step.
   Scene s;
@@ -1068,8 +1078,9 @@ void FilterInTheApply() {
 // the skip under the game's own shadow: the twin of the march's skip against the twin of the apply
 // ---------------------------------------------------------------------------
 
-// The game's sun shadow mask as the resolve product holds it: 1280x720 8-bit, the stored value 0 in a shadow and up to 0.5
-// (128/255) in the sun (the apply's gain 2 turns it into a visibility of 1).
+// The game's sun shadow mask as the resolve product holds it: 8-bit, the picture's size (the resolve is made at the render scale: a
+// 3840x2160 mask at 3x; the check also runs the old assumption of a 1280x720 mask at every picture size), the stored value 0 in a shadow
+// and up to 0.5 (128/255) in the sun (the apply's gain 2 turns it into a visibility of 1).
 struct MaskImage {
   int w = 1280, h = 720;
   std::vector<uint8_t> v;
@@ -1096,8 +1107,10 @@ uint32_t Hash2(uint32_t a, uint32_t b) {
   h ^= h >> 12;
   return h;
 }
-MaskImage MakeMask(MaskKind kind) {
+MaskImage MakeMask(MaskKind kind, int width = 1280, int height = 720) {
   MaskImage m;
+  m.w = width;
+  m.h = height;
   m.v.assign(size_t(m.w) * size_t(m.h), 0);
   const uint8_t lit = 128;  // 0.5: the sun
   for (int y = 0; y < m.h; ++y) {
@@ -1111,10 +1124,16 @@ MaskImage MakeMask(MaskKind kind) {
           s = uint8_t(std::lround(ramp * float(lit)));
           break;
         }
-        case MaskKind::kStripe: s = (x >= 510 && x <= 514) ? lit : 0; break;  // a 5 texel stripe of sun in the shade
-        case MaskKind::kSpecks:  // single lit texels in the shade
-          s = ((x == 700 && y == 400) || (x == 100 && y == 600) || (x == 1000 && y == 200) || (x == 640 && y == 360)) ? lit : 0;
+        case MaskKind::kStripe: {  // a 5 texel stripe of sun in the shade
+          const int at = int(0.3984f * float(m.w));
+          s = (x >= at && x <= at + 4) ? lit : 0;
           break;
+        }
+        case MaskKind::kSpecks: {  // single lit texels in the shade
+          const auto at = [&](float fx, float fy) { return x == int(fx * float(m.w)) && y == int(fy * float(m.h)); };
+          s = (at(0.5469f, 0.5556f) || at(0.0781f, 0.8333f) || at(0.7813f, 0.2778f) || at(0.5f, 0.5f)) ? lit : 0;
+          break;
+        }
         case MaskKind::kBlocks: s = (Hash2(uint32_t(x / 40), uint32_t(y / 30)) % 100u) < 40u ? 0 : lit; break;  // 40% in shade, ragged
         case MaskKind::kFloor: s = u >= 0.5f ? lit : 2; break;  // the shade stores 2/255, not 0
         case MaskKind::kAllLit: s = lit; break;
@@ -1260,6 +1279,10 @@ struct SkipResult {
   long marched = 0;                 // pixels whose march runs its loop (whole picture)
   long shadowed = 0;                // ... of them, in the game's shadow: the mask is 0 at the pixel's own sample
   long skipped = 0;                 // ... the skip leaves out
+  long reference_skipped = 0;       // ... the exact range (the reference, texel by texel) would leave out
+  long beyond_reference = 0;        // ... the test skips that the reference does not: must be none (the blocks hold the range)
+  long fetches = 0;                 // texture fetches the test made over the marching pixels (1 in the sun)
+  long shaded_fetches = 0;          // ... over the pixels in the game's shadow
   long tile_saved = 0;              // ... in whole 8 x 4 tiles in which every marching pixel is skipped (what a warp saves)
   long compared = 0;                // pixels whose factor was computed with and without the skip (a neighbour skipped with a value other than 1)
   long differing = 0;               // ... whose factors differ in any bit
@@ -1278,9 +1301,29 @@ SkipResult RunSkip(SkipFrame& f, const MaskImage& mask, const ApplyConfig& a, in
   const float limit = SkipLimit(a.ambient, a.sun, a.strength, a.gain);
   const size_t n = f.im.d.size();
   std::vector<uint8_t> skip(n, 0);
+  // reach 1 is the shader's test (the block pass's image and the block test), whose result is checked against the reference range; reach
+  // 0 is the control, the pixel's own footprint with the reference's loop.
+  const SkipBlockImage blocks = MakeSkipBlocks(mask_at, mask.w, mask.h, limit);
   for (int y = 0; y < cam.height; ++y) {
     for (int x = 0; x < cam.width; ++x) {
-      if (f.Would(x, y) && MaskCannotLight(mask_at, mask.w, mask.h, cam.width, cam.height, x, y, limit, reach)) {
+      if (!f.Would(x, y)) {
+        continue;
+      }
+      bool skipped = false;
+      if (reach == 1) {
+        SkipTestCost cost;
+        skipped = limit >= 0.0f && MaskCannotLightBlocks(blocks, mask.w, mask.h, cam.width, cam.height, x, y, &cost);
+        const bool reference = MaskCannotLight(mask_at, mask.w, mask.h, cam.width, cam.height, x, y, limit, 1);
+        r.fetches += cost.fetches;
+        r.reference_skipped += reference ? 1 : 0;
+        r.beyond_reference += (skipped && !reference) ? 1 : 0;
+        if (SampleMask(mask, (float(x) + 0.5f) / float(cam.width), (float(y) + 0.5f) / float(cam.height), 0) == 0.0f) {
+          r.shaded_fetches += cost.fetches;
+        }
+      } else {
+        skipped = MaskCannotLight(mask_at, mask.w, mask.h, cam.width, cam.height, x, y, limit, reach);
+      }
+      if (skipped) {
         skip[size_t(y) * size_t(cam.width) + size_t(x)] = 1;
       }
     }
@@ -1404,13 +1447,17 @@ void SkipRules() {
   Check(last == 1279, "and at the far edge");
 
   // The switch.
-  Check(MaskSkipOn(true, true, true, false, 0.5f), "the skip is on with the lever, the filter in the apply, a mask and no debug picture");
-  Check(!MaskSkipOn(false, true, true, false, 0.5f) && !MaskSkipOn(true, false, true, false, 0.5f) && !MaskSkipOn(true, true, false, false, 0.5f) &&
-            !MaskSkipOn(true, true, true, true, 0.5f) && !MaskSkipOn(true, true, true, false, 0.0f),
-        "and off with the lever off, at half size, in a frame without the mask (6 h, 18 h, rain), on a debug picture or without strength");
+  Check(MaskSkipOn(true, true, true, false, 0.0f, true), "the skip is on with the lever, the filter in the apply, a mask, a limit that is proven and no debug picture");
+  Check(!MaskSkipOn(false, true, true, false, 0.0f, true) && !MaskSkipOn(true, false, true, false, 0.0f, true) && !MaskSkipOn(true, true, false, false, 0.0f, true) &&
+            !MaskSkipOn(true, true, true, true, 0.0f, true) && !MaskSkipOn(true, true, true, false, -1.0f, true) && !MaskSkipOn(true, true, true, false, 0.0f, false),
+        "and off with the lever off, at half size, in a frame without the mask (6 h, 18 h, rain), on a debug picture, with a limit that is not proven (no strength) or a mask too large");
+  Check(SkipScaleOk(1280, 720, 1280, 720) && SkipScaleOk(3840, 2160, 3840, 2160) && SkipScaleOk(1280, 720, 3840, 2160) && SkipScaleOk(1280, 720, 640, 360) &&
+            !SkipScaleOk(3840, 2160, 1280, 720) && !SkipScaleOk(0, 720, 1280, 720) && SkipScaleOk(3000, 2160, 1280, 1080) && !SkipScaleOk(3200, 720, 1280, 720),
+        "the skip is used for a mask up to 2.4 times the picture's size either way and not for a larger one");
 
   // A frame without the mask skips nothing, and a lever that is off skips nothing: the shader reads the flag.
-  Check(kSkipFlag == (1u << 24), "the skip's flag is bit 24");
+  Check(kSkipFlag == (1u << 24) && kStatFlag == (1u << 26) && kSideFlag == (1u << 27) && (kSkipFlag & kStatFlag) == 0 && (kStatFlag & kSideFlag) == 0,
+        "the skip's flag is bit 24, the statistics' 26 and the block pass's 27");
   const auto no_mask = [](int, int) { return 0.0f; };
   Check(!MaskCannotLight(no_mask, 1280, 720, 1280, 720, 100, 100, -1.0f), "a limit of -1 (not provable) skips nothing even over a mask of zeros");
 }
@@ -1437,14 +1484,16 @@ void SkipUnderTheGamesShadow() {
     std::printf("  skip under the game's shadow, %4dp (compared over %d x %d pixels of %d x %d):\n", sizes[si].height, f.x1 - f.x0, f.y1 - f.y0,
                 f.cam.width, f.cam.height);
     for (MaskKind kind : kinds) {
-      const MaskImage mask = MakeMask(kind);
+      const MaskImage mask = MakeMask(kind, f.cam.width, f.cam.height);
       const SkipResult r = RunSkip(f, mask, usual, 0, 1);
       const double marched = std::max<double>(double(r.marched), 1.0);
-      std::printf("    %-15s marched %8ld: in the game's shade %5.1f%%, skipped %5.1f%% (%5.1f%% of the shade), whole 8x4 tiles %5.1f%%; "
-                  "compared %7ld with a skipped pixel in reach, differing %ld, filtering beside a skipped one %ld\n",
+      std::printf("    %-15s marched %8ld: in the game's shade %5.1f%%, skipped %5.1f%% (%5.1f%% of the shade; the exact range %5.1f%%), whole 8x4 tiles %5.1f%%; "
+                  "test fetches %.2f a pixel (%.2f in shade); compared %7ld with a skipped pixel in reach, differing %ld, filtering beside a skipped one %ld\n",
                   MaskName(kind), r.marched, 100.0 * double(r.shadowed) / marched, 100.0 * double(r.skipped) / marched,
-                  100.0 * double(r.skipped) / std::max<double>(double(r.shadowed), 1.0), 100.0 * double(r.tile_saved) / marched, r.compared,
+                  100.0 * double(r.skipped) / std::max<double>(double(r.shadowed), 1.0), 100.0 * double(r.reference_skipped) / std::max<double>(double(r.shadowed), 1.0),
+                  100.0 * double(r.tile_saved) / marched, double(r.fetches) / marched, double(r.shaded_fetches) / std::max<double>(double(r.shadowed), 1.0), r.compared,
                   r.differing, r.filtered_next_to_skipped);
+      Check(r.beyond_reference == 0, std::string(MaskName(kind)) + Num(" at %.0fp", double(sizes[si].height)) + Num(": the test skips nothing the exact range would not (%.0f)", double(r.beyond_reference)));
       const std::string row = std::string(MaskName(kind)) + Num(" at %.0fp", double(sizes[si].height));
       Check(r.marched > 100000, row + " has pixels to march");
       Check(r.differing == 0 && r.picture_differing == 0,
@@ -1467,9 +1516,24 @@ void SkipUnderTheGamesShadow() {
         catch_count[si] += 1;
       }
     }
+    // A mask at another scale than the picture's (the first version of the check had a 1280x720 mask at every size): a third of the picture's
+    // size at 2160p, two thirds at 1080p.
+    if (sizes[si].height > 720) {
+      for (MaskKind kind : {MaskKind::kHalf, MaskKind::kDiagonal, MaskKind::kBlocks, MaskKind::kStripe, MaskKind::kSpecks}) {
+        const MaskImage mask = MakeMask(kind, 1280, 720);
+        const SkipResult r = RunSkip(f, mask, usual, 0, 1);
+        const std::string row = std::string(MaskName(kind)) + Num(", a 1280x720 mask at %.0fp", double(sizes[si].height));
+        std::printf("    1280x720 mask, %-15s skipped %5.1f%% of the shade (the exact range %5.1f%%), test fetches %.2f a pixel; compared %ld, differing %ld\n",
+                    MaskName(kind), 100.0 * double(r.skipped) / std::max<double>(double(r.shadowed), 1.0),
+                    100.0 * double(r.reference_skipped) / std::max<double>(double(r.shadowed), 1.0), double(r.fetches) / std::max<double>(double(r.marched), 1.0),
+                    r.compared, r.differing);
+        Check(r.differing == 0 && r.picture_differing == 0 && r.filtered_next_to_skipped == 0 && r.beyond_reference == 0,
+              row + Num(": exact (%.0f of %.0f differ)", double(r.differing), double(r.compared)));
+      }
+    }
     // The control: the pixel's own footprint only (no dilation by the filter's neighbours) is NOT exact, so the check has teeth.
     for (MaskKind kind : {MaskKind::kHalf, MaskKind::kDiagonal, MaskKind::kBlocks}) {
-      const MaskImage mask = MakeMask(kind);
+      const MaskImage mask = MakeMask(kind, f.cam.width, f.cam.height);
       const SkipResult r = RunSkip(f, mask, usual, 0, 0);
       control_violations += r.filtered_next_to_skipped;
       control_differing += r.differing;
@@ -1478,7 +1542,7 @@ void SkipUnderTheGamesShadow() {
     }
     // The other light (a limit above 1/255: the shade at 2/255 is skipped now, and still nothing changes) and the sampler's two roundings.
     for (MaskKind kind : {MaskKind::kFloor, MaskKind::kDiagonal, MaskKind::kBlocks}) {
-      const MaskImage mask = MakeMask(kind);
+      const MaskImage mask = MakeMask(kind, f.cam.width, f.cam.height);
       const SkipResult r = RunSkip(f, mask, bright_ambient, 0, 1);
       std::printf("    dim sun in a bright ambient, %-15s: skipped %5.1f%% of %ld, compared %ld, differing %ld, filtering beside a skipped one %ld\n",
                   MaskName(kind), 100.0 * double(r.skipped) / std::max<double>(double(r.marched), 1.0), r.marched, r.compared, r.differing,
@@ -1492,7 +1556,7 @@ void SkipUnderTheGamesShadow() {
     if (sizes[si].height <= 1080) {
       for (int quant : {1, 2}) {
         for (MaskKind kind : {MaskKind::kDiagonal, MaskKind::kBlocks, MaskKind::kHalf}) {
-          const MaskImage mask = MakeMask(kind);
+          const MaskImage mask = MakeMask(kind, f.cam.width, f.cam.height);
           const SkipResult r = RunSkip(f, mask, usual, quant, 1);
           const std::string row = std::string(MaskName(kind)) + Num(" at %.0fp", double(sizes[si].height)) + (quant == 1 ? ", sampler truncating" : ", sampler rounding");
           Check(r.differing == 0 && r.filtered_next_to_skipped == 0,
@@ -1512,25 +1576,128 @@ void SkipUnderTheGamesShadow() {
   }
 }
 
+// The blocks hold the range: for a lattice of pixels at several picture and mask sizes, a lone block that contains a texel of the reference
+// range (the corners and the centre of it) is never skipped past: the test returns false (marched) for that block alone being 1.
+void SkipBlocksHoldTheRange() {
+  struct Case {
+    int image_w, image_h, mask_w, mask_h;
+  };
+  const Case cases[] = {{3840, 2160, 3840, 2160}, {2560, 1440, 2560, 1440}, {1920, 1080, 1920, 1080}, {1280, 720, 1280, 720}, {1920, 1080, 1280, 720},
+                        {3840, 2160, 1280, 720},  {1280, 720, 1920, 1080}, {640, 360, 1280, 720},     {1000, 700, 2400, 1680}, {1366, 768, 1366, 768}};
+  long tested = 0, missed = 0, skipped_all_zero = 0, not_skipped_all_zero = 0;
+  for (const Case& c : cases) {
+    SkipBlockImage zero;
+    zero.w = SkipBlockCount(c.mask_w);
+    zero.h = SkipBlockCount(c.mask_h);
+    zero.bit.assign(size_t(zero.w) * size_t(zero.h), 0);
+    const int stride_x = std::max(c.image_w / 220, 1), stride_y = std::max(c.image_h / 150, 1);
+    for (int y = 0; y < c.image_h; y += (y < 4 || y > c.image_h - 6) ? 1 : stride_y) {
+      for (int x = 0; x < c.image_w; x += (x < 4 || x > c.image_w - 6) ? 1 : stride_x) {
+        // All blocks 0: skipped (the test says the footprint is in shade), whatever the pixel.
+        const bool all_zero_skipped = MaskCannotLightBlocks(zero, c.mask_w, c.mask_h, c.image_w, c.image_h, x, y);
+        skipped_all_zero += all_zero_skipped ? 1 : 0;
+        not_skipped_all_zero += all_zero_skipped ? 0 : 1;
+        int x0, x1, y0, y1;
+        SkipTexelRange(x, c.image_w, c.mask_w, &x0, &x1);
+        SkipTexelRange(y, c.image_h, c.mask_h, &y0, &y1);
+        const int texels[][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y1}, {(x0 + x1) / 2, (y0 + y1) / 2}, {x0, (y0 + y1) / 2}, {x1, (y0 + y1) / 2}};
+        for (const auto& tx : texels) {
+          SkipBlockImage one = zero;
+          one.bit[size_t(tx[1] / int(kSkipBlock)) * size_t(one.w) + size_t(tx[0] / int(kSkipBlock))] = 1;
+          ++tested;
+          missed += MaskCannotLightBlocks(one, c.mask_w, c.mask_h, c.image_w, c.image_h, x, y) ? 1 : 0;
+        }
+      }
+    }
+  }
+  Check(tested > 100000 && missed == 0, Num("a lone block that holds a texel of the pixel's range stops the skip, at 10 picture and mask sizes (%.0f of %.0f missed)", double(missed), double(tested)));
+  Check(not_skipped_all_zero == 0 && skipped_all_zero > 100000, Num("with every block 0 every pixel is skipped (%.0f not)", double(not_skipped_all_zero)));
+  // The block pass's own image: a block is 1 where any of its 4 x 4 texels (clamped into the mask) is above the limit.
+  MaskImage m;
+  m.w = 10;
+  m.h = 7;
+  m.v.assign(size_t(m.w) * size_t(m.h), 0);
+  m.v[size_t(6) * size_t(m.w) + 9] = 100;  // the last texel: block (2, 1) of a 3 x 2 image
+  const SkipBlockImage image = MakeSkipBlocks([&](int tx, int ty) { return m.At(tx, ty); }, m.w, m.h, 0.0f);
+  Check(image.w == 3 && image.h == 2 && image.bit.size() == 6 && image.At(2, 1) == 1 && image.At(0, 0) == 0 && image.At(1, 0) == 0 && image.At(2, 0) == 0 &&
+            image.At(0, 1) == 0 && image.At(1, 1) == 0,
+        "the block image of a 10 x 7 mask is 3 x 2 and holds the lone texel in its last block");
+  Check(MakeSkipBlocks([&](int tx, int ty) { return m.At(tx, ty); }, m.w, m.h, 0.4f).At(2, 1) == 0 &&
+            MakeSkipBlocks([&](int tx, int ty) { return m.At(tx, ty); }, m.w, m.h, 0.39f).At(2, 1) == 1,
+        "a texel at the limit does not make its block 1 (above it does)");
+}
+
+// The class shares of the street at 720p, 1080p and 2160p that the cost model uses (the sky or past 80 m, turned from the sun, marching).
+void StreetMix() {
+  for (int height : {720, 1080, 2160}) {
+    SkipFrame f = MakeSkipFrame(height, false);
+    long far_n = 0, back = 0, march = 0;
+    const auto depth = [&](int a, int b) { return f.im.At(a, b); };
+    for (int y = 0; y < f.cam.height; ++y) {
+      for (int x = 0; x < f.cam.width; ++x) {
+        const float tc = depth(x, y);
+        if (tc >= f.trace.sky * 0.5f || tc >= f.trace.max_distance) {
+          ++far_n;
+        } else if (f.Would(x, y)) {
+          ++march;
+        } else {
+          ++back;
+        }
+      }
+    }
+    const double n = double(f.im.d.size());
+    std::printf("street mix at %dp: far %.3f, turned from the sun %.3f, marching %.3f of all pixels\n", height, double(far_n) / n, double(back) / n, double(march) / n);
+    if (height == 2160) {
+      Check(std::fabs(double(far_n) / n - kMixFar) < 0.03 && std::fabs(double(back) / n - kMixBack) < 0.03 && std::fabs(double(march) / n - kMixMarch) < 0.03,
+            Num("the model's mix (far %.2f, back %.2f, march %.2f) is the street's at 2160p", kMixFar, kMixBack, kMixMarch));
+    }
+  }
+}
+
 // The cost model with the shadowed share (the skip under the game's own shadow).
 void SkipCost() {
+  const Cost plain = CostModel(3840, 2160, kStepsHigh, 1, true);
   const Cost none = CostModelFast(3840, 2160, kStepsHigh, true);
   const Cost lit = CostModelFast(3840, 2160, kStepsHigh, true, 0.0);
   const Cost third = CostModelFast(3840, 2160, kStepsHigh, true, 0.3);
   const Cost half = CostModelFast(3840, 2160, kStepsHigh, true, 0.5);
   const Cost all = CostModelFast(3840, 2160, kStepsHigh, true, 1.0);
-  std::printf("cost model with the skip (RTX 5080, 3840x2160, not measured): no mask %.3f ms (march %.3f + filter %.3f); mask, 0%% in shade %.3f; 30%% %.3f (march %.3f + filter %.3f, "
-              "%.0f%% of the marched pixels skipped); 50%% %.3f (march %.3f + filter %.3f, %.0f%% skipped); 100%% %.3f\n",
-              none.total_ms, none.march_ms, none.filter_ms, lit.total_ms, third.total_ms, third.march_ms, third.filter_ms, 100.0 * third.skipped_share,
-              half.total_ms, half.march_ms, half.filter_ms, 100.0 * half.skipped_share, all.total_ms);
+  std::printf("cost model with the skip (RTX 5080, 3840x2160, not measured; the plain march %.3f ms): no mask %.3f ms (march %.3f + filter %.3f); mask, 0%% in shade %.3f (march %.3f + block pass %.3f); "
+              "30%% %.3f (march %.3f, %.0f%% of the pixels skipped); 50%% %.3f (march %.3f, %.0f%% skipped); 100%% %.3f (march %.3f)\n",
+              plain.march_ms, none.total_ms, none.march_ms, none.filter_ms, lit.total_ms, lit.march_ms, lit.block_ms, third.total_ms, third.march_ms,
+              100.0 * third.skipped_share, half.total_ms, half.march_ms, 100.0 * half.skipped_share, all.total_ms, all.march_ms);
   Check(none.skipped_share == 0.0 && none.total_ms == CostModelFast(3840, 2160, kStepsHigh, true, -1.0).total_ms, "no mask (the default): the model as before");
-  Check(lit.total_ms > none.total_ms && lit.total_ms < 1.05 * none.total_ms, "a frame with the mask and no shade pays the mask test only (under 5% more)");
-  Check(third.total_ms < none.total_ms && half.total_ms < third.total_ms && all.total_ms < half.total_ms, "the more of the picture in the game's shade, the cheaper");
-  Check(half.march_ms < 0.65 * none.march_ms, "with half the marched pixels in shade the march costs under two thirds");
+  Check(none.march_ms == plain.march_ms, "at 2160p without the mask the march is the plain march exactly (the adaptive count is off there)");
+  Check(lit.march_ms > plain.march_ms && lit.march_ms < 1.015 * plain.march_ms,
+        Num("a frame with the mask and no shade pays the 17 instructions of the test only: the march %.2f%% more", 100.0 * (lit.march_ms / plain.march_ms - 1.0)));
+  Check(third.march_ms < plain.march_ms && half.march_ms < third.march_ms && all.march_ms < half.march_ms, "the more of the picture in the game's shade, the cheaper");
+  Check(third.march_ms < 0.9 * plain.march_ms && half.march_ms < 0.8 * plain.march_ms, "with 30% of the pixels in shade the march is under 90% of the plain one's, with half under 80%");
+  Check(third.total_ms < plain.total_ms && lit.total_ms - lit.march_ms - lit.block_ms < 0.2 * plain.total_ms, "the filter in the apply and the block pass are small");
+  // The first version's skip test in the same model (its instructions: 92 on a pixel in the sun, 356 on a pixel in shade at the 2160p mask's size,
+  // the adaptive count on): worse than the plain march at the street's mix, with and without shade.
+  {
+    const double plain_instr = AverageInstructions(2160, kStepsHigh, false, 0.0, false);
+    const auto first = [&](double shade) {
+      const double skipped = shade * kSkipCatch2160;
+      const double march_first = kInstrMarchFixed + 16.0 * kInstrStep + kInstrAdaptive;
+      return kMixFar * kInstrFar + (kMixBack + kMixMarch) * skipped * kInstrSkippedFirst +
+             (1.0 - skipped) * (kMixBack * (kInstrBack + kInstrTestLitFirst) + kMixMarch * (march_first + kInstrTestLitFirst));
+    };
+    const auto second = [&](double shade) { return AverageInstructions(2160, kStepsHigh, true, shade * kSkipCatch2160, true); };
+    std::printf("instructions a pixel of the street executes against the plain march, at 2160p (first version of the test, this one): "
+                "0%% shade %+.1f%% %+.1f%%, 30%% %+.1f%% %+.1f%%, 50%% %+.1f%% %+.1f%%\n",
+                100.0 * (first(0.0) / plain_instr - 1.0), 100.0 * (second(0.0) / plain_instr - 1.0), 100.0 * (first(0.3) / plain_instr - 1.0),
+                100.0 * (second(0.3) / plain_instr - 1.0), 100.0 * (first(0.5) / plain_instr - 1.0), 100.0 * (second(0.5) / plain_instr - 1.0));
+    // PLAY4 measured the first version at +7.4% (0.306 against 0.285 ms) in a view that looked half in shade: the model gives +9% for a skip that
+    // fires on nothing (the shade not stored as 0?), and a gain for a skip that fires on 30% of the pixels; the statistics line says which it was.
+    Check(first(0.0) > plain_instr * 1.05 && first(0.0) < plain_instr * 1.12, "the first version's test, with nothing skipped, costs the street 5% to 12% more than the plain march (PLAY4: +7.4%)");
+    Check(second(0.0) < plain_instr * 1.015 && second(0.3) < plain_instr * 0.9 && second(0.5) < plain_instr * 0.8, "this version costs under 1.5% more with no shade and 10% / 20% less with 30% / 50% of it in shade");
+  }
   Check(CostModelFast(1920, 1080, kStepsHigh, false, 0.5).total_ms == CostModelFast(1920, 1080, kStepsHigh, false).total_ms,
         "at half size (the filter pass stays) the skip is not used and the model ignores the share");
-  Check(SkipCatch(500) == kSkipCatch720 && SkipCatch(4000) == kSkipCatch2160 && SkipCatch(900) > kSkipCatch720 && SkipCatch(900) < kSkipCatch1080,
+  Check(SkipCatch(500) == kSkipCatch720 && SkipCatch(4000) == kSkipCatch2160 && SkipCatch(900) >= kSkipCatch720 && SkipCatch(900) <= kSkipCatch1080,
         "the catch is flat outside 720 to 2160 lines and in between inside");
+  Check(std::fabs(kMixFar + kMixBack + kMixMarch - 1.0) < 1e-9, "the street's class shares add up to 1");
 }
 
 // The shaders repeat the header's constants as `static const float kName = value;`: read them and compare.
@@ -1582,7 +1749,7 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kUnderUpHigh", kUnderUpHigh},     {&contact, "kUnderCastBand", kUnderCastBand},
       {&contact, "kAdaptMinSteps", double(kAdaptMinSteps)}, {&apply, "kFoldedFilterSkip", kFoldedFilterSkip},
       {&contact, "kSkipWeight", kSkipWeight},       {&contact, "kSkipTexelMargin", kSkipTexelMargin},
-      {&contact, "kSkipMaxTexels", kSkipMaxTexels},
+      {&contact, "kSkipMaxTexels", kSkipMaxTexels},  {&contact, "kSkipBlock", kSkipBlock},
   };
   for (const Row& r : rows) {
     double got = 0.0;
@@ -1590,14 +1757,21 @@ void ShaderConstantsMatch(const std::string& dir) {
     Check(found && std::fabs(got - r.want) < 1e-9 * std::max(1.0, std::fabs(r.want)) + 1e-7,
           std::string("the shader's ") + r.name + " is the header's" + (found ? "" : " (not found)"));
   }
-  // The skip's flag is an integer constant: bit 24, in the shader and in the header.
-  Check(contact.find("static const uint kSkipFlag = 1u << 24;") != std::string::npos && kSkipFlag == (1u << 24),
-        "the shader's skip flag is the header's (bit 24)");
-  // The shader's skip is the twin's, line for line where it matters: the texel range and the limit.
-  Check(contact.find("(float2(pixel) - 0.5f) * scale - 0.5f - kSkipTexelMargin") != std::string::npos &&
-            contact.find("(float2(pixel) + 1.5f) * scale - 0.5f + kSkipTexelMargin") != std::string::npos &&
-            contact.find("(kSkipWeight * ambient) / ((strength - kSkipWeight) * sun)") != std::string::npos,
-        "the shader's skip range and limit are written as the twin's");
+  // The flags are integer constants: bits 24, 26 and 27, in the shader and in the header.
+  Check(contact.find("static const uint kSkipFlag = 1u << 24;") != std::string::npos && kSkipFlag == (1u << 24) &&
+            contact.find("static const uint kStatFlag = 1u << 26;") != std::string::npos && kStatFlag == (1u << 26) &&
+            contact.find("static const uint kSideFlag = 1u << 27;") != std::string::npos && kSideFlag == (1u << 27),
+        "the shader's skip, statistics and block pass flags are the header's (bits 24, 26, 27)");
+  // The shader's skip is the twin's, line for line where it matters: the block of the centre, the range in blocks, the groups.
+  Check(contact.find("g_textures[slot].Load(int3(int2(position * scale), 0)).x > 0.5f") != std::string::npos &&
+            contact.find("const float2 lo = (position - 1.0f) * scale - (0.5f + kSkipTexelMargin) * (1.0f / kSkipBlock);") != std::string::npos &&
+            contact.find("const float2 end = floor(lo + (2.0f * scale + (2.0f * kSkipTexelMargin + 1.0f) * (1.0f / kSkipBlock)));") != std::string::npos &&
+            contact.find("for (float y = first.y; y <= end.y; y += 2.0f)") != std::string::npos &&
+            contact.find("(float2(x, y) + 1.0f) * inv_block") != std::string::npos && contact.find("if (any(group > 0.5f))") != std::string::npos,
+        "the shader's skip test is written as the twin's (MaskCannotLightBlocks)");
+  Check(contact.find("const float2 corner = floor(position) * kSkipBlock + 1.0f;") != std::string::npos &&
+            contact.find("(corner + float2(2.0f, 2.0f)) * inv_mask") != std::string::npos && contact.find("> g_push.shape.w ? 1.0f : 0.0f") != std::string::npos,
+        "the shader's block pass is the twin's (four gathers at the corners of a 4 x 4 block, above the limit: 1)");
 }
 
 }  // namespace
@@ -1622,6 +1796,8 @@ int main(int argc, char** argv) {
   AdaptiveStepsMatchTheFullMarch();
   FilterInTheApply();
   SkipRules();
+  SkipBlocksHoldTheRange();
+  StreetMix();
   SkipCost();
   SkipUnderTheGamesShadow();
   if (argc > 1) {

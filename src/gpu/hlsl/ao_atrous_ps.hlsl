@@ -41,7 +41,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float4 centre = g_textures[source_slot].Load(int3(pixel, 0));
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
   const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
-  const float plane_sigma = kPlaneShare * tc + kPlaneFloor;
+  // The plane weight's reciprocal and the image's, made once for the pass: a division in each of the 24 taps otherwise.
+  const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
+  const float2 clip_scale = 2.0f / size;
   float3 sum = centre.yzw * (kTap[0] * kTap[0]);
   float weights = kTap[0] * kTap[0];
   [unroll] for (int dy = -2; dy <= 2; ++dy) {
@@ -57,9 +59,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
       if (tq >= kAoSky * 0.5f) {
         continue;
       }
-      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
-      const float off_plane = dot(normal, pq - pc) / plane_sigma;
-      const float w = kTap[abs(dx)] * kTap[abs(dy)] * exp(-0.5f * off_plane * off_plane);
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
+      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      const float w = kTap[abs(dx)] * kTap[abs(dy)] * exp2(kAoNegHalfLog2e * off_plane * off_plane);
       sum += g_textures[source_slot].Load(int3(q, 0)).yzw * w;
       weights += w;
     }
