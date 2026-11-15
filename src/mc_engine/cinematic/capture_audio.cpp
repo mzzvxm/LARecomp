@@ -10,8 +10,15 @@
 // the frame, so the mixer runs at most queue-length frames ahead of the speakers (8 frames = 42.7 ms; audio_maxqframes, 4 to 64) and
 // its output is not tied to the update that asked for a sound.
 //
-// WHAT THE DRIVER DOES. audio_output.h puts CaptureOutputDriver in front of the real output. Outside a take it passes every frame to the
-// real output and nothing else changes. In a take (Arm .. Finish):
+// WHEN THE DRIVER IS THERE. Not from the start of the game: audio_output.h makes the real output alone (the game's audio is exactly as it
+// is without the toolkit, no wrapper, no log line), and Begin puts CaptureOutputDriver in front of the real output of the first render
+// client only when a take that records sound starts (mcla_capture_audio on; with it off nothing is installed). The swap is one pointer
+// of the SDK's client table written under the SDK's global critical region (the lock AudioSystem::SubmitFrame, UnregisterClient and the
+// worker's client lookup hold; audio_output.h OutputWithFallback::InstallCapture), so the audio worker, which calls SubmitFrame under that
+// lock for every mixer frame, sees the real output or the wrapper, never half, and no frame is lost or doubled. The state the take then
+// starts from (frames queued in the real output, credits out) is the one the drain below already handles at any moment.
+//
+// WHAT THE DRIVER DOES. Outside a take it passes every frame to the real output and nothing else changes. In a take (Arm .. Finish):
 //   - Arm: from now on frames go to the take's queue, not to the real output. The credits are taken out of the semaphore (the mixer
 //     cannot run any more) and so are the ones the real output still gives back as it plays out what it had queued, until every credit
 //     of the SDK's queue is in hand (credits drained + frames the mixer made meanwhile = the queue length). What the mixer made ahead of
@@ -39,7 +46,8 @@
 // the CSV has the pointer and the position per frame so that a run with a camera away from the car decides it.
 //
 // CHECK (the first run; nothing here has run):
-//   1. That one client is the mixer (the log says which client index was made capture-capable; a second client is only passed through).
+//   1. That the first render client is the mixer (the log says which client index the driver was put in front of, once, as the first take
+//      with sound starts; the host wraps the first client only, any other client is left alone).
 //   2. That the drain at Arm ends with "drained + arrived = queue length" (the [cap] audio: take armed line), not on its time-outs.
 //   3. That a sound the update asked for is in the mixer frames of that very step (a guest thread other than the game's could handle sound
 //      commands on its own clock): the horn's onset must sit at a constant offset from its press, and equal intervals between presses
@@ -83,8 +91,9 @@
 
 REXCVAR_DEFINE_BOOL(mcla_capture_audio, true, "MCLA/Cinematic",
     "TRAILER TOOLKIT capture mode: during a take the game's audio output is replaced by one that mixes exactly one video frame of sound "
-    "per frame and writes it to audio.wav in the take's folder; the real device is given back when the take ends. Off: the real output plays during the "
-    "take, in real time, and no WAV is made. Read when a take starts.")
+    "per frame and writes it to audio.wav in the take's folder; the real device is given back when the take ends. The capture driver is put in "
+    "front of the audio output when such a take starts, not before (a game with no take has the stock output). Off: nothing is installed, the "
+    "real output plays during the take, in real time, and no WAV is made. Read when a take starts.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload)
     .debug_only();
 REXCVAR_DEFINE_BOOL(mcla_capture_audio_surround, false, "MCLA/Cinematic",
@@ -158,15 +167,18 @@ Summary g_last;
 class CaptureOutputDriver final : public rex::audio::AudioDriver {
   public:
     CaptureOutputDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
-        : AudioDriver(memory), sem_(frame_semaphore), real_(real) {
+        : AudioDriver(memory), sem_(frame_semaphore), real_(real), index_(index) {
+        // Made inside the SDK's global critical region (the host's InstallCapture): nothing is logged here, Begin says it once the lock is
+        // given back.
         CaptureOutputDriver* none = nullptr;
         if (g_driver.compare_exchange_strong(none, this, std::memory_order_acq_rel)) {
             primary_ = true;
-            LARECOMP_APP_INFO("[cap] audio: client {} is the capture driver's: a take will take its mixer over (real output behind it)", index);
-        } else {
-            LARECOMP_APP_WARN("[cap] audio: client {} is a second render client of the game: its frames pass through, takes use the first", index);
         }
+        // (a second one is not made by the host, which wraps the first render client only; it would pass its frames through and takes
+        // would use the first)
     }
+
+    size_t Index() const { return index_; }
 
     ~CaptureOutputDriver() override {
         if (primary_) {
@@ -544,6 +556,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
 
     rex::thread::Semaphore* sem_;
     rex::audio::AudioDriver* real_;
+    size_t index_ = 0;  // the SDK's client
     bool primary_ = false;
 
     // the mixer's side (the audio worker's thread writes, the game thread reads)
@@ -594,8 +607,23 @@ void NoteListener(uint32_t pos, const uint8_t* base) {
 
 // ---------------------------------------------------------------------------------------------------------------- the interface
 
+namespace {
+// The audio system that can install the driver (audio_output.h); the mutex keeps it alive for the length of an InstallCapture call.
+std::mutex g_host_mutex;
+DriverHost* g_host = nullptr;
+}  // namespace
+
+void SetHost(DriverHost* host) {
+    std::lock_guard<std::mutex> lock(g_host_mutex);
+    g_host = host;
+}
+
 rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
     return new CaptureOutputDriver(memory, frame_semaphore, real, index);
+}
+
+bool IsCaptureDriver(const rex::audio::AudioDriver* driver) {
+    return dynamic_cast<const CaptureOutputDriver*>(driver) != nullptr;
 }
 
 rex::audio::AudioDriver* Unwrap(rex::audio::AudioDriver* driver) {
@@ -608,11 +636,27 @@ rex::audio::AudioDriver* Unwrap(rex::audio::AudioDriver* driver) {
 
 bool Begin(double fps, const std::string& wav_path, const std::string& csv_path, uint64_t first_update) {
     g_last = Summary{};
-    if (!REXCVAR_GET(mcla_capture_audio)) {
-        LARECOMP_APP_INFO("[cap] audio: mcla_capture_audio is off: the real output plays during the take and no WAV is made");
-        return false;
-    }
     CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire);
+    switch (PlanDriver(REXCVAR_GET(mcla_capture_audio), d != nullptr)) {
+        case DriverPlan::kNone:
+            LARECOMP_APP_INFO("[cap] audio: mcla_capture_audio is off: the real output plays during the take and no WAV is made");
+            return false;
+        case DriverPlan::kInstallThenArm: {
+            // the first take with sound: the driver goes in front of the real output now (and not before: the game's audio is the stock one until here)
+            bool installed = false;
+            {
+                std::lock_guard<std::mutex> lock(g_host_mutex);
+                installed = g_host && g_host->InstallCapture();
+            }
+            if (installed) d = g_driver.load(std::memory_order_acquire);
+            if (d) {
+                LARECOMP_APP_INFO("[cap] audio: client {} is the capture driver's: installed in front of the real output as the take starts; the take takes its mixer over", d->Index());
+            }
+            break;
+        }
+        case DriverPlan::kArm:
+            break;
+    }
     if (!d) {
         LARECOMP_APP_WARN("[cap] audio: no capture driver (the game's audio system is not the one audio_output.h makes, or it has no render client yet): the take has no sound");
         return false;

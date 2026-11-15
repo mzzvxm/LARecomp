@@ -9,9 +9,12 @@
 // hardware's rate, so the guest keeps its timing. --mcla_audio_output=null
 // forces it.
 //
-// Either output sits behind the capture driver (cinematic/capture_audio.h): it
-// passes every frame on untouched, and only while a capture-mode take runs does
-// it take the mixer over to write the take's sound.
+// The outputs are the game's audio exactly as they are without the trailer
+// toolkit: nothing sits in front of them. Only when a capture-mode take that
+// records sound starts (cinematic/capture_audio.h, mcla_capture_audio) is the
+// capture driver put in front of the first render client's output, by
+// InstallCapture below; it passes every frame on untouched outside the take and
+// takes the mixer over during it to write the take's sound.
 
 #include <chrono>
 #include <condition_variable>
@@ -93,27 +96,52 @@ class NullOutputDriver final : public rex::audio::AudioDriver {
   std::thread clock_;  // last: it reads the members above
 };
 
-class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem {
+class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
+                                 public mc::cinematic::capture_audio::DriverHost {
  public:
-  using SDLAudioSystem::SDLAudioSystem;
+  explicit OutputWithFallback(rex::runtime::FunctionDispatcher* function_dispatcher)
+      : SDLAudioSystem(function_dispatcher) {
+    mc::cinematic::capture_audio::SetHost(this);  // only a pointer: nothing is installed until a take asks
+  }
+
+  ~OutputWithFallback() override { mc::cinematic::capture_audio::SetHost(nullptr); }
 
   rex::X_STATUS CreateDriver(size_t index, rex::thread::Semaphore* semaphore,
                              rex::audio::AudioDriver** out_driver) override {
     if (REXCVAR_GET(mcla_audio_output) != "null") {
-      rex::audio::AudioDriver* device = nullptr;
-      if (SDLAudioSystem::CreateDriver(index, semaphore, &device) == X_STATUS_SUCCESS) {
-        *out_driver = mc::cinematic::capture_audio::WrapDriver(memory_, semaphore, device, index);
+      if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {
         return X_STATUS_SUCCESS;
       }
       REXLOG_WARN("[audio] no output device could be opened; continuing without sound");
     }
-    *out_driver = mc::cinematic::capture_audio::WrapDriver(
-        memory_, semaphore, new NullOutputDriver(memory_, semaphore), index);
+    *out_driver = new NullOutputDriver(memory_, semaphore);
     return X_STATUS_SUCCESS;
   }
 
+  // The first take that records sound (capture_audio.cpp Begin): the capture driver goes in front of the real output of the first render
+  // client. One swap of that client's driver pointer under the SDK's global critical region: AudioSystem::SubmitFrame (the mixer's frames,
+  // called by the audio worker's guest callback), UnregisterClient and Restore all use the driver under it, and the worker's client
+  // lookup takes it too, so the worker sees the real output or the wrapper and never a half-made swap; the frame in flight finishes on
+  // the real output first. Game thread; nothing is held but that lock, and only for the swap (the wrapper's own mutex is not taken).
+  bool InstallCapture() override {
+    auto global_lock = global_critical_region_.Acquire();
+    for (size_t i = 0; i < kMaximumClientCount; ++i) {
+      if (clients_[i].in_use && clients_[i].driver &&
+          mc::cinematic::capture_audio::IsCaptureDriver(clients_[i].driver)) {
+        return true;  // already there
+      }
+    }
+    for (size_t i = 0; i < kMaximumClientCount; ++i) {
+      if (!clients_[i].in_use || !clients_[i].driver) continue;
+      clients_[i].driver = mc::cinematic::capture_audio::WrapDriver(
+          memory_, client_semaphores_[i].get(), clients_[i].driver, i);
+      return true;
+    }
+    return false;  // the game has no render client yet
+  }
+
   void DestroyDriver(rex::audio::AudioDriver* driver) override {
-    driver = mc::cinematic::capture_audio::Unwrap(driver);  // the output behind the capture driver
+    driver = mc::cinematic::capture_audio::Unwrap(driver);  // the output behind the capture driver, when one was put in front
     if (auto* null_driver = dynamic_cast<NullOutputDriver*>(driver)) {
       delete null_driver;
     } else {

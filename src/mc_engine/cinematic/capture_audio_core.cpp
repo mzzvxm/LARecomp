@@ -10,6 +10,13 @@
 
 namespace mc::cinematic::capture_audio {
 
+// ---------------------------------------------------------------------------------------------------------------- the driver's install
+
+DriverPlan PlanDriver(bool take_records_sound, bool driver_installed) {
+    if (!take_records_sound) return DriverPlan::kNone;
+    return driver_installed ? DriverPlan::kArm : DriverPlan::kInstallThenArm;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 
 uint64_t SamplesThrough(uint64_t video_frames, double fps) {

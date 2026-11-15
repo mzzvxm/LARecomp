@@ -154,8 +154,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_mode.cpp
 
-    # Trailer toolkit M2c: the take's sound. The capture driver sits in front of the game's audio output (audio_output.h) and only acts during a take;
-    # the sample books and the WAV file are in capture_audio_core.
+    # Trailer toolkit M2c: the take's sound. The capture driver is put in front of the game's audio output (audio_output.h) only when a take that
+    # records sound starts (nothing is installed before, so the game's audio is the stock one); the sample books and the WAV file are in capture_audio_core.
     src/mc_engine/cinematic/capture_audio_core.cpp
     src/mc_engine/cinematic/capture_audio.cpp
 

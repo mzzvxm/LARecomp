@@ -35,6 +35,19 @@ namespace mc::cinematic::capture_audio {
 inline constexpr uint32_t kRate = 48000;       // the game's mixer output rate
 inline constexpr uint32_t kMixerFrame = 256;   // samples per channel in one frame of the mixer (5.333 ms)
 
+// ---------------------------------------------------------------------------------------------------------------- the driver's install
+
+// What a take's start does about the capture driver (capture_audio.cpp Begin). The driver is NOT in the game's audio path from the start of
+// the game: audio_output.h makes the real output alone, exactly as the game without the toolkit has it, and the driver is put in front of
+// the first render client only when a take that records sound starts (a take with mcla_capture_audio off never installs it). A game that
+// never runs a take, or runs one without sound, has no wrapper in the path, no thread, no log line of the driver.
+enum class DriverPlan {
+    kNone,             // the take records no sound: nothing is installed, nothing touched, the real output keeps playing
+    kArm,              // the take records sound and the driver is there already: arm it
+    kInstallThenArm,   // the take records sound, no driver yet: put it in front of the output (the host's InstallCapture), then arm it
+};
+DriverPlan PlanDriver(bool take_records_sound, bool driver_installed);
+
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 
 // The samples the first `video_frames` frames own at `fps` (> 0): round(video_frames * 48000 / fps), computed from the product
