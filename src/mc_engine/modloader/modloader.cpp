@@ -1697,6 +1697,15 @@ struct VehiclePlan {
     bool driver_offset_set = false;
     float driver_offset[3] = {0.0f, 0.0f, 0.0f};
 
+    // `template.<slot><i> = <slot><j>`: a part variant the donor never had, built
+    // from the donor's variant j of the same family (its file is the mould: page
+    // layout, shaders, bone) and shipped as `<slot><i>_lod_<l>`. The loader asks
+    // for indices 0..9 of every slot and keeps the drawables in a [55][10][3]
+    // table (sub_82371A38), so a donor with five bumpers is not a five-bumper
+    // ceiling: the manifest byte of each new variant is switched on in the
+    // cloned .xspm (EnableManifestParts) and the garage lists it by its index.
+    std::map<std::string, std::string> part_template;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1795,6 +1804,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
+//   template.bumper_f5 = bumper_f4    (a variant the car lacks, built on that file; indices 0..9)
 //   bone.str       = tx ty tz rx ry rz      (a body skeleton bone's rest pose)
 //   driver_offset  = dx dy dz   (the driver's animation packs moved, shipped as the car's own)
 //   body_m0          = trunk   (groups written into model 0 of the body; needs a
@@ -1876,6 +1886,10 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
             } else {
                 LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'tx ty tz rx ry rz'", key);
             }
+            continue;
+        }
+        if (lower.rfind("template.", 0) == 0) {
+            plan.part_template[key.substr(9)] = mapping.groups.front();
             continue;
         }
         if (lower == "driver_offset") {
@@ -2432,6 +2446,27 @@ std::map<uint32_t, std::string> CarFolderNames(const std::string& car) {
         }
     }
     return out;
+}
+
+// "<slot><index>" (bumper_f5, occluder_0) -> the slot's place in kCarSlots and
+// the index. The index is one digit: the loader asks for 0..9.
+bool SplitPartName(const std::string& name, int& slot, int& index) {
+    if (name.size() < 2 || !std::isdigit(static_cast<unsigned char>(name.back()))) return false;
+    const std::string family = name.substr(0, name.size() - 1);
+    for (int s = 0; s < static_cast<int>(std::size(kCarSlots)); ++s) {
+        if (family == kCarSlots[s]) {
+            slot = s;
+            index = name.back() - '0';
+            return true;
+        }
+    }
+    return false;
+}
+
+// The donor file a slot is built from: its own, unless `template.` names another.
+std::string TemplateSlot(const VehiclePlan& plan, const std::string& slot) {
+    const auto it = plan.part_template.find(slot);
+    return it != plan.part_template.end() ? it->second : slot;
 }
 
 // The quad a licence plate is drawn on, from its corners as seen from outside:
@@ -3582,10 +3617,12 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         // CarPaintCustomizable -- so the set of shaders that have geometry is
         // read off THIS slot rather than off the body.
         std::vector<uint32_t> part_drawn;
+        // A variant the donor lacks is moulded on the one `template.` names.
+        const std::string mould = TemplateSlot(plan, mapping.slot);
         {
             Rsc5Resource first;
             std::string part_error;
-            if (ExtractTemplate(archive, donor_dir + "/" + mapping.slot + "_lod_0.xrsc", first,
+            if (ExtractTemplate(archive, donor_dir + "/" + mould + "_lod_0.xrsc", first,
                                 part_error)) {
                 ShaderVertexStrides(first, part_drawn);
             }
@@ -3606,7 +3643,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // A part need not have every LOD -- the donor's own hood has no LOD
             // two -- so a missing template is the file simply not existing
             // rather than a failure.
-            if (!ExtractTemplate(archive, donor_dir + "/" + name, resource, error)) continue;
+            if (!ExtractTemplate(archive,
+                                 donor_dir + "/" + mould + "_lod_" + std::to_string(lod) + ".xrsc",
+                                 resource, error)) {
+                continue;
+            }
 
             // Same as the body: LOD 1 is LOD 0 again. For interior0 this is not
             // only quality -- the donor's interior0_lod_1 draws no paint, so the
@@ -4051,6 +4092,26 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         const bool is_pack = !atlas_of.empty() && REXCVAR_GET(model_mods_car_pack_write) &&
                              !name.empty() &&
                              (name == donor + ".xtl" || name == donor + ".xtp");
+        // The manifest, when the mod adds variants the donor never had: each
+        // LOD built for them is switched on, or the loader never asks for it.
+        std::vector<ManifestPart> new_parts;
+        if (!name.empty() && name == donor + ".xspm") {
+            for (const auto& [slot_name, mould] : plan.part_template) {
+                int slot = 0, index = 0;
+                if (!SplitPartName(slot_name, slot, index)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: template.{}: not a part name",
+                                       vehicle.mod_name, car, slot_name);
+                    continue;
+                }
+                for (int lod = 0; lod < 3; ++lod) {
+                    const std::string file = slot_name + "_lod_" + std::to_string(lod) + ".xrsc";
+                    if (std::find(built.begin(), built.end(), file) != built.end()) {
+                        new_parts.push_back(ManifestPart{slot, index, lod});
+                    }
+                }
+            }
+        }
+        const bool is_manifest = !new_parts.empty();
         // A slot the mod ships empty: the manifest still promises it, so the
         // resource has to load, and it simply draws nothing.
         bool silence = false;
@@ -4087,7 +4148,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             continue;
         }
 
-        if (is_tune || is_pack) {
+        if (is_tune || is_pack || is_manifest) {
             Rsc5Resource resource;
             size_t payload_offset = 0, payload_size = 0;
             if (!ParseRsc5Header(raw, resource, payload_offset, payload_size, error)) {
@@ -4100,6 +4161,26 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             if (!LzxDecompress(raw.data() + payload_offset, payload_size, resource.data, total)) {
                 LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: cannot unpack {}", vehicle.mod_name,
                                    car, target);
+                continue;
+            }
+
+            if (is_manifest) {
+                if (!EnableManifestParts(resource.data, new_parts, error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       target, error);
+                    continue;
+                }
+                std::vector<uint8_t> file;
+                uint32_t flag = 0;
+                if (!BuildRsc5File(resource, file, flag, error)) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {}: {}", vehicle.mod_name, car,
+                                       target, error);
+                    continue;
+                }
+                LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} lists {} new part file(s)",
+                                  vehicle.mod_name, car, target, new_parts.size());
+                writer.Add(car_dir + "/" + target, std::move(file), flag, resource.type);
+                ++written;
                 continue;
             }
 

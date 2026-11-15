@@ -4571,6 +4571,46 @@ bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
     return false;
 }
 
+bool EnableManifestParts(std::vector<uint8_t>& data, const std::vector<ManifestPart>& parts,
+                         std::string& error) {
+    constexpr uint32_t kSlots = 55;
+    auto u32 = [&](size_t at) -> uint32_t {
+        return (uint32_t(data[at]) << 24) | (uint32_t(data[at + 1]) << 16) |
+               (uint32_t(data[at + 2]) << 8) | uint32_t(data[at + 3]);
+    };
+    auto u16 = [&](size_t at) -> uint32_t { return (uint32_t(data[at]) << 8) | data[at + 1]; };
+    char text[160];
+    if (data.size() < 16) {
+        error = "manifest too small";
+        return false;
+    }
+    const size_t table = u32(8) & 0x0FFFFFFFu;
+    if (u16(12) != kSlots || table + 24 * kSlots > data.size()) {
+        std::snprintf(text, sizeof(text), "manifest slot table: %u records at 0x%zx", u16(12), table);
+        error = text;
+        return false;
+    }
+    for (const ManifestPart& part : parts) {
+        if (part.slot < 0 || part.slot >= static_cast<int>(kSlots) || part.index < 0 ||
+            part.index > 9 || part.lod < 0 || part.lod > 2) {
+            std::snprintf(text, sizeof(text), "part %d/%d/%d out of range", part.slot, part.index,
+                          part.lod);
+            error = text;
+            return false;
+        }
+        const size_t record = table + 24 * static_cast<size_t>(part.slot);
+        const uint32_t pointer = u32(record + 16);
+        const size_t present = pointer & 0x0FFFFFFFu;
+        if (pointer == 0 || u16(record + 20) != 30 || present + 30 > data.size()) {
+            std::snprintf(text, sizeof(text), "slot %d: no 30-byte presence array", part.slot);
+            error = text;
+            return false;
+        }
+        data[present + 3 * part.index + part.lod] = 1;
+    }
+    return true;
+}
+
 bool ShiftDriverPack(Rsc5Resource& pack, const float delta[3], std::string& error,
                      DriverPackShift* stats) {
     constexpr uint32_t kMaxAnimations = 192;

@@ -669,6 +669,22 @@ struct DriverPackShift {
 bool ShiftDriverPack(Rsc5Resource& pack, const float delta[3], std::string& error,
                      DriverPackShift* stats = nullptr);
 
+// Switches parts on in a player car's manifest (the unpacked .xspm, type 19).
+//
+// sub_823723C8, the only reader of `#spm`, opens `<slot><i>_lod_<l>` for the 55
+// slots x 10 indices x 3 LODs only where the manifest's byte says so. +8 points
+// at 55 slot records of 24 bytes (+12 their count), and a record's third
+// atArray (+16 pointer, +20 count) holds 30 bytes, one per index * 3 + lod; the
+// two arrays before it are names for the build tools that nothing reads. Each
+// part is {slot (in the loader's table order), index 0..9, lod 0..2}.
+struct ManifestPart {
+    int slot = 0;
+    int index = 0;
+    int lod = 0;
+};
+bool EnableManifestParts(std::vector<uint8_t>& data, const std::vector<ManifestPart>& parts,
+                         std::string& error);
+
 // A dial the game turns by playing one of the body drawable's own clips.
 //
 // A car body carries its door, window and gauge animations as named clips
