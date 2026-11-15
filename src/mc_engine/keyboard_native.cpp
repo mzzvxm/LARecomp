@@ -1655,6 +1655,11 @@ void PollPrompts(uint8_t* b) {
     if ((++g_glyph_tick & 0x1F) == 0) {
         if (ScanDictionary(b) && !g_sidekick_ok && ScanSidekick(b)) g_prompts_dirty.store(true, std::memory_order_relaxed);
     }
+    // Which screen the game is on: three loads of FlashNavigator and the form stack. Read before the dictionary check below, because mouse look asks about the screen too
+    // (MenuScreenUp / PhoneScreenUp) and must not depend on the glyph art being found.
+    const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    g_screen_menu.store(larecomp::prompts::ContextFor(g_game_entered, ui) == larecomp::prompts::Context::Menu, std::memory_order_relaxed);
+    g_screen_phone.store(g_ui_movie_name.compare(0, 8, "SIDEKICK") == 0, std::memory_order_relaxed);
     if (g_glyph_tex.empty()) return;  // no dictionary yet: stays dirty
     if (!g_art_warm) WarmArt(b);
 
@@ -1671,17 +1676,14 @@ void PollPrompts(uint8_t* b) {
             g_prompts_dirty.store(true, std::memory_order_relaxed);
         }
     }
-    // Which screen the game is on: three loads of FlashNavigator and the form stack. A change is one log line (the screens the first run did not know are found from it), and, while the
-    // keyboard is the family in use, a repaint when it turns the keys from the road's into the menu's or back.
-    const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    // A change of the screen is one log line (the screens the first run did not know are found from it), and, while the keyboard is the family in use, a repaint when it turns the keys
+    // from the road's into the menu's or back.
     if (!(ui == g_ui_signals) || (ui.movie && g_ui_movie_name != g_ui_prev_name)) {
         const std::string was = larecomp::prompts::DescribeUi(g_ui_signals, g_ui_prev_name);
         g_ui_signals = ui;
         g_ui_prev_name = g_ui_movie_name;
         MC_INFO("[prompts] screen -> {} (was {}): the keys are {}", larecomp::prompts::DescribeUi(ui, g_ui_movie_name), was, MenuContext() ? "the menu's" : "the road's");
     }
-    g_screen_menu.store(MenuContext(), std::memory_order_relaxed);
-    g_screen_phone.store(g_ui_movie_name.compare(0, 8, "SIDEKICK") == 0, std::memory_order_relaxed);
     if (larecomp::prompts::ContextNeedsRepaint(larecomp::input::ActiveGlyphFamily(), g_game_entered, g_ui_signals, g_prompts_menu)) g_prompts_dirty.store(true, std::memory_order_relaxed);
     if (g_prompts_dirty.exchange(false, std::memory_order_relaxed)) RepaintPrompts(b);
 }
@@ -1937,7 +1939,7 @@ void UpdateSteerRamp(const larecomp::kbm::KeySnapshot& keys) {
     const float dt = std::chrono::duration<float>(now - last).count();
     last = now;
 
-    const bool road = REXCVAR_GET(kb_steer_ramp) && g_game_entered && !MenuContext();
+    const bool road = REXCVAR_GET(kb_steer_ramp) && !g_screen_menu.load(std::memory_order_relaxed);  // g_screen_menu: a menu screen is up or the game is not entered (PollPrompts, this poll)
     int dir = 0;
     if (road) {
         RefreshSteerKeys();
