@@ -1,10 +1,12 @@
 #include "rpf3.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <map>
 
 #include "aes256.h"
@@ -245,6 +247,45 @@ bool Rpf3Reader::ReadPlainFile(const Rpf3Entry& entry, std::vector<uint8_t>& out
 void Rpf3Writer::Add(std::string path, std::vector<uint8_t> data, uint32_t flag,
                      uint32_t resource_type) {
     files_.push_back(PendingFile{std::move(path), std::move(data), flag, resource_type, false, 0});
+}
+
+namespace {
+bool SamePath(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        char x = a[i] == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(a[i])));
+        char y = b[i] == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(b[i])));
+        if (x != y) return false;
+    }
+    return true;
+}
+}  // namespace
+
+bool Rpf3Writer::Read(std::string_view path, std::vector<uint8_t>& out) const {
+    for (auto it = files_.rbegin(); it != files_.rend(); ++it) {
+        if (it->hashed || !SamePath(it->path, path)) continue;
+        if (!it->on_disk()) {
+            out = it->data;
+            return true;
+        }
+        std::ifstream in(it->source, std::ios::binary);
+        if (!in) return false;
+        out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        return out.size() == it->source_size;
+    }
+    return false;
+}
+
+bool Rpf3Writer::Replace(std::string_view path, std::vector<uint8_t> data, uint32_t flag) {
+    for (auto it = files_.rbegin(); it != files_.rend(); ++it) {
+        if (it->hashed || !SamePath(it->path, path)) continue;
+        it->data = std::move(data);
+        it->flag = flag;
+        it->source.clear();      // a file that was copied from disk is held in memory from now on
+        it->source_size = 0;
+        return true;
+    }
+    return false;
 }
 
 void Rpf3Writer::AddHashed(std::string path, uint32_t name_hash, std::vector<uint8_t> data,

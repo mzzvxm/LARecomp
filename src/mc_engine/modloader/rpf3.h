@@ -163,6 +163,15 @@ class Rpf3Writer {
     bool empty() const { return files_.empty(); }
     size_t size() const { return files_.size(); }
 
+    // The payload already added under `path` (compared without regard to case),
+    // read from memory or from the file it will be copied from. Lets a later pass
+    // amend a file an earlier one shipped -- a car's Parts.gtun from files/, which
+    // goes in from disk, that garage. lines add to. False when there is none.
+    bool Read(std::string_view path, std::vector<uint8_t>& out) const;
+    // Replaces that payload and its flag; an entry copied from disk is held in
+    // memory from then on. False when there is nothing to replace.
+    bool Replace(std::string_view path, std::vector<uint8_t> data, uint32_t flag);
+
  private:
     uint64_t Fingerprint() const;
 

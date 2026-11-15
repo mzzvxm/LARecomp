@@ -1722,6 +1722,14 @@ struct VehiclePlan {
     // otherwise.
     bool extend = false;
 
+    // `garage.<section> = key brand price variant`: a line added to the car's own
+    // Parts.gtun (tune/garage/<car>_Parts.gtun) under <!-- section --> -- how a
+    // new variant gets into the garage list. key is a string-table key (the
+    // game's own bumper_f_1.. say "1 OF 4"; a mod's own names go in its
+    // ui/mc4stringtable_000N.strtbl), brand the manufacturer logo (0 none, 52
+    // stock), variant the slot index the line selects.
+    std::map<std::string, std::vector<std::array<std::string, 4>>> garage_lines;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1823,6 +1831,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   template.bumper_f5 = bumper_f4    (a variant the car lacks, built on that file; indices 0..9)
 //   extend         = 1          (add to the game's own car the folder is named after:
 //                                nothing else is rebuilt, parts come in car space)
+//   garage.bumper_front = my_key 0 1450 5   (a line in the car's Parts.gtun: key brand price variant)
 //   bone.str       = tx ty tz rx ry rz      (a body skeleton bone's rest pose)
 //   driver_offset  = dx dy dz   (the driver's animation packs moved, shipped as the car's own)
 //   body_m0          = trunk   (groups written into model 0 of the body; needs a
@@ -1920,6 +1929,16 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower == "extend") {
             plan.extend = mapping.groups.front() != "0";
+            continue;
+        }
+        if (lower.rfind("garage.", 0) == 0) {
+            std::array<std::string, 4> line;
+            std::istringstream stream(mapping.groups.front());
+            if (stream >> line[0] >> line[1] >> line[2] >> line[3]) {
+                plan.garage_lines[key.substr(7)].push_back(line);
+            } else {
+                LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'key brand price variant'", key);
+            }
             continue;
         }
         if (lower == "driver_offset") {
@@ -4407,6 +4426,82 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     return written;
 }
 
+// Adds a car's garage lines (VehiclePlan::garage_lines) to its Parts.gtun.
+//
+// The file is sections of "<!-- name -->", an entry count, and four lines an
+// entry (string key, brand, price, variant). Each new line goes after the
+// section's last entry and the count is raised; a section the car lacks is
+// appended. The text amended is the one a mod already shipped under files/ if
+// there is one, else the car's own from the archive, else its donor's.
+bool ReadArchiveText(const Rpf3Reader& archive, std::string_view path, std::string& out);
+
+size_t ShipGarageLines(const Rpf3Reader& archive, Rpf3Writer& writer, const VehicleMod& vehicle,
+                       const VehiclePlan& plan) {
+    if (plan.garage_lines.empty()) return 0;
+    const std::string path = "tune/garage/" + vehicle.car + "_Parts.gtun";
+    std::string text;
+    std::vector<uint8_t> shipped_bytes;
+    const bool shipped = writer.Read(path, shipped_bytes);
+    if (shipped) {
+        text.assign(shipped_bytes.begin(), shipped_bytes.end());
+    } else if (!ReadArchiveText(archive, path, text) &&
+               !ReadArchiveText(archive, "tune/garage/" + plan.donor + "_Parts.gtun", text)) {
+        LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: no {} to add garage lines to", vehicle.mod_name,
+                           vehicle.car, path);
+        return 0;
+    }
+    const std::string newline = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+    std::vector<std::string> lines;
+    for (size_t at = 0; at <= text.size();) {
+        const size_t end = text.find('\n', at);
+        std::string line = text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        lines.push_back(std::move(line));
+        if (end == std::string::npos) break;
+        at = end + 1;
+    }
+    auto trimmed = [](const std::string& s) {
+        const size_t a = s.find_first_not_of(" \t"), b = s.find_last_not_of(" \t");
+        return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+    };
+    size_t added = 0;
+    for (const auto& [section, entries] : plan.garage_lines) {
+        const std::string header = "<!-- " + section + " -->";
+        size_t at = 0;
+        while (at < lines.size() && trimmed(lines[at]) != header) ++at;
+        std::vector<std::string> fresh;
+        for (const auto& entry : entries) fresh.insert(fresh.end(), entry.begin(), entry.end());
+        if (at == lines.size()) {
+            if (!lines.empty() && !trimmed(lines.back()).empty()) lines.push_back("");
+            lines.push_back(header);
+            lines.push_back(std::to_string(entries.size()));
+            lines.insert(lines.end(), fresh.begin(), fresh.end());
+            lines.push_back("");
+            added += entries.size();
+            continue;
+        }
+        size_t count_at = at + 1;
+        while (count_at < lines.size() && trimmed(lines[count_at]).empty()) ++count_at;
+        if (count_at == lines.size()) continue;
+        const int count = std::atoi(trimmed(lines[count_at]).c_str());
+        size_t after = count_at + 1;
+        for (int seen = 0; after < lines.size() && seen < count * 4; ++after) {
+            if (!trimmed(lines[after]).empty()) ++seen;
+        }
+        lines[count_at] = std::to_string(count + static_cast<int>(entries.size()));
+        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(after), fresh.begin(), fresh.end());
+        added += entries.size();
+    }
+    std::string out;
+    for (size_t i = 0; i < lines.size(); ++i) out += lines[i] + (i + 1 < lines.size() ? newline : "");
+    std::vector<uint8_t> bytes(out.begin(), out.end());
+    const uint32_t flag = static_cast<uint32_t>(bytes.size());
+    if (!writer.Replace(path, bytes, flag)) writer.Add(path, std::move(bytes), flag, 0);
+    LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} garage line(s) added to {} ({})", vehicle.mod_name,
+                      vehicle.car, added, path, shipped ? "the mod's own file" : "the game's file");
+    return 1;
+}
+
 // Builds every car part replacement into `writer`, and reports how many landed.
 size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reader& archive,
                         const std::filesystem::path& cache_dir, bool passthrough,
@@ -4490,6 +4585,7 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
             const size_t car_files =
                 BuildDonorCar(vehicle, plan, std::move(mesh), archive, writer);
             built += car_files;
+            if (car_files != 0) built += ShipGarageLines(archive, writer, vehicle, plan);
             if (car_files != 0) {
                 const std::string from = DriverAnimName(vehicle.car);
                 const std::string to =
