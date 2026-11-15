@@ -95,7 +95,10 @@ struct EdramKey {
   // The layer: 0 for every identity but one case (EdramTargets::DepthLayer): the main view's depth
   // at 1x samples (a game made without MSAA) or at 4x (behind the pause menu and on the map), which
   // the game's UI phase may draw with too, is two host targets (the scene's, layer 0, and the UI's,
-  // layer 1) while the scene is drawn at another scale than the UI.
+  // layer 1) while the scene is drawn at another scale than the UI. And a depth identity that a
+  // side view class owns (side_views.h) but another pass of the game uses through a surface of
+  // another size is a third host target, layer 2 (side_views::kForeignUseLayer: the night shadow's
+  // pass shares the car reflections' depth).
   uint8_t reserved = 0;
   bool operator==(const EdramKey& o) const {
     return base_tiles == o.base_tiles && pitch == o.pitch && depth == o.depth &&
@@ -434,7 +437,12 @@ class EdramTargets {
   // 1 (the UI's, an image of the screen: made at its scale). `color0`: the use's colour 0 or null.
   // CHECK: that the pause view's UI pass uses the 4x depth key (then it is the layer 1 target the
   // "made at" lines list) and nothing in it reads what the world left in that depth.
-  uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0);
+  // `size_bits`: the declared size of the surface the use binds it through (SizeBits, 0 when it is
+  // not known). A depth that names a side view class's identity but is declared another size is
+  // another pass's use of the same tiles (side_views::ForeignUse, ONE IDENTITY, TWO USES): layer
+  // side_views::kForeignUseLayer, a host target of its own, so that its colour and depth are one
+  // scale. Every place that makes the depth key of a use passes the size it classifies by.
+  uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0, uint32_t size_bits = 0);
   // The frame's scene phase: open from a guest frame's start, closed by the anchor draw and by the
   // composite marker (Scene), reopened by the guest's present. Moving it changes what a depth-only
   // use means, so what was memoized from the targets is dropped.

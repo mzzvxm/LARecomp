@@ -161,14 +161,17 @@ EdramKey DepthEdramKey(const XenosState& s) {
 }
 
 // The depth identity of a draw that has `color_count` colour targets, with its layer (the scene's
-// or the UI's: EdramTargets::DepthLayer).
-EdramKey DrawDepthKey(EdramTargets& edram, const XenosState& s, uint32_t color_count) {
+// or the UI's, or another pass's use of a side view's depth: EdramTargets::DepthLayer).
+// `size_bits`: the declared size of the surface the draw's targets are bound through
+// (DrawRecord::target_size_bits, PreparedDraw::target_size_bits).
+EdramKey DrawDepthKey(EdramTargets& edram, const XenosState& s, uint32_t color_count,
+                      uint32_t size_bits) {
   EdramKey key = DepthEdramKey(s);
   if (color_count != 0) {
     const EdramKey color0 = ColorEdramKey(s, 0);
-    key.reserved = edram.DepthLayer(key, &color0);
+    key.reserved = edram.DepthLayer(key, &color0, size_bits);
   } else {
-    key.reserved = edram.DepthLayer(key, nullptr);
+    key.reserved = edram.DepthLayer(key, nullptr, size_bits);
   }
   return key;
 }
@@ -341,7 +344,7 @@ Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key
     first.base_tiles = uint16_t(s.depth_base_tiles);
     first.depth = 1;
     first.format = uint8_t(s.depth_format);
-    first.reserved = edram.DepthLayer(first, nullptr);
+    first.reserved = edram.DepthLayer(first, nullptr, size_bits);
   } else {
     *host_samples = first.samples;
     return Scale{};
@@ -1093,7 +1096,7 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
     return;
   }
   const EdramKey color = ColorEdramKey(d.state, 0);
-  const EdramKey depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+  const EdramKey depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
   const temporal::MainMatch match = temporal::MatchMainView(&color, &depth);
   if (!match || !temporal::IsPlaySamples(match.samples)) {
     return;  // another view's draw: not counted
@@ -1138,7 +1141,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   // The game's depth, as the draw just used it (Record moved it to DEPTH_WRITE): the second draw tests
   // against it and writes none (the pipeline's key), so what the game's draw left in it stays.
   const EdramTargets::Target* depth =
-      edram_->Find(DrawDepthKey(*edram_, d.state, d.key.color_count));
+      edram_->Find(DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits));
   if (!depth || !depth->texture || depth->layout != plume::RenderTextureLayout::DEPTH_WRITE) {
     masks.Skipped(UpscalerMasks::Skip::kNoDepth);
     return;
@@ -1338,6 +1341,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
                            PreparedDraw& d, bool* no_effect, NoEffect* no_effect_reason,
                            std::string* detail) {
   const DrawRecord& r = view.record();
+  d.target_size_bits = r.target_size_bits;
   if (r.flags & kDrawVsUnreadable) return Skip::kVsUnreadable;
   if (r.flags & kDrawPsUnreadable) return Skip::kPsUnreadable;
   if (r.flags & (kDrawDeclUnreadable | kDrawDeclTooLong)) return Skip::kDeclUnreadable;
@@ -1779,8 +1783,9 @@ bool Scene::MaySkipForPipeline(const void* context) {
     any = true;
   }
   if (d.key.depth_format != 0) {
-    if (!scene.edram_->DrawnEveryFrame(DrawDepthKey(*scene.edram_, s, d.key.color_count),
-                                       scene.frame_serial_, kPipelineSkipFrames)) {
+    if (!scene.edram_->DrawnEveryFrame(
+            DrawDepthKey(*scene.edram_, s, d.key.color_count, d.target_size_bits),
+            scene.frame_serial_, kPipelineSkipFrames)) {
       return false;
     }
     any = true;
@@ -1794,7 +1799,8 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
     edram_->NoteDrawn(ColorEdramKey(s, i), frame_serial_);
   }
   if (d.key.depth_format != 0) {
-    edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count), frame_serial_);
+    edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count, d.target_size_bits),
+                      frame_serial_);
   }
 }
 
@@ -1870,7 +1876,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
     depth0 = &depth;
   }
   AmbientOcclusion::MainDraw draw;
@@ -1907,7 +1913,7 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
     f.color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count);
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
     f.depth = &depth;
   }
   if (temporal_->OnDraw(f, shared)) {
@@ -2384,7 +2390,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const bool has_depth = d.key.depth_format != 0;
   EdramKey depth_key;
   if (has_depth) {
-    depth_key = DrawDepthKey(*edram_, s, d.key.color_count);
+    depth_key = DrawDepthKey(*edram_, s, d.key.color_count, r.target_size_bits);
   }
   // The last draw's targets, while nothing they rest on changed (M6a.3).
   const TargetsMemo& memo = targets_memo_;
@@ -2821,7 +2827,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     first_key.depth = 1;
     first_key.format = uint8_t(first_info.depth_format);
     // A clear of the depth alone: the scene's or the UI's (EdramTargets::DepthLayer).
-    first_key.reserved = edram_->DepthLayer(first_key, nullptr);
+    first_key.reserved = edram_->DepthLayer(first_key, nullptr, declared_size);
   }
   const Scale clear_scale = edram_->ScaleOf(first_key, declared_size);
   // Growth copies sit outside a render pass.
@@ -2899,7 +2905,8 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     key.format = uint8_t(depth_info.depth_format);
     key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
     // With RT0 bound its colour says whose depth this is; without, the frame's phase does.
-    key.reserved = edram_->DepthLayer(key, sized_surface == 0 ? &first_key : nullptr);
+    key.reserved =
+        edram_->DepthLayer(key, sized_surface == 0 ? &first_key : nullptr, declared_size);
     if (ao_ && ao_->wants_draws() && (flags & 0x10u) != 0) {
       ao_->OnDepthClear(key, record.z);
     }

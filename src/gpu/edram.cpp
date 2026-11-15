@@ -189,7 +189,15 @@ Scale EdramTargets::ScaleForUse(const EdramKey& key, uint32_t size_bits) {
   return ScaleForDeclared(size_bits);
 }
 
-uint8_t EdramTargets::DepthLayer(const EdramKey& depth, const EdramKey* color0) {
+uint8_t EdramTargets::DepthLayer(const EdramKey& depth, const EdramKey* color0,
+                                 uint32_t size_bits) {
+  // Another pass's use of a side view class's depth (the night shadow's pass binds the car
+  // reflections' depth through a surface of another size): a host target of its own, at the scale of
+  // that pass's colour. Decided by the declared size alone, so that a clear, a depth-only draw and
+  // the draws with a colour all find the same target, whichever of the two passes is drawn first.
+  if (depth.depth != 0 && side_views::IsForeignUse(depth, size_bits)) {
+    return side_views::kForeignUseLayer;
+  }
   // Only the main depth at the samples a UI pass also draws with shares its key with another phase of
   // the frame: 1x (a game made without MSAA: the UI's own 1x depth is the same key) and 4x (the pause
   // view's UI pass, which draws into a 4x k_8_8_8_8 colour target and may use the world's 4x depth).
@@ -356,8 +364,11 @@ void EdramTargets::CheckDeclaredScale(Target& target, uint32_t size_bits) {
 std::string DescribeEdramKey(const EdramKey& k) {
   const format::Mapping m = k.depth ? format::DepthTargetFormat(k.format)
                                     : format::ColorTargetFormat(k.format);
+  const char* layer = k.reserved == side_views::kForeignUseLayer ? " (another pass's use of it)"
+                      : k.reserved                               ? " (the UI's layer)"
+                                                                 : "";
   return std::format("{} {}@{} pitch {} {}x{}", k.depth ? "depth" : "colour", m.guest_name,
-                     k.base_tiles, k.pitch, k.samples, k.reserved ? " (the UI's layer)" : "");
+                     k.base_tiles, k.pitch, k.samples, layer);
 }
 
 void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],

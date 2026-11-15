@@ -46,6 +46,15 @@ SideView Classify(const EdramKey& key, uint32_t size_bits) {
   return SideView::kNone;
 }
 
+bool IsForeignUse(const EdramKey& key, uint32_t size_bits) {
+  if (size_bits == 0) {
+    return false;  // no size to tell the uses apart by: the class's
+  }
+  EdramKey identity = key;
+  identity.reserved = 0;  // the rules match the layer 0 identity only
+  return ForeignUse(Classify(identity, 0), Classify(identity, size_bits), size_bits);
+}
+
 const SideViewRule& RuleOf(SideView view) {
   return Rule(view);
 }

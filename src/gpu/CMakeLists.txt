@@ -164,6 +164,10 @@ add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.c
 add_executable(larecomp_upscaler_load_policy_test EXCLUDE_FROM_ALL upscaler_load_policy_test.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Threads)
+# The rule that gives another pass's use of a side view's EDRAM identity (the night shadow's, which binds the car
+# reflections' depth through a surface of another size) a target of its own (side_views.h):
+#   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
+add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

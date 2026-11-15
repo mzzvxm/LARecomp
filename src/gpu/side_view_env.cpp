@@ -29,6 +29,13 @@
 // resolve averages a colour source's samples). At 1x it keeps the guest's four and the game's shaders: `game`
 // is the game's own picture.
 //
+// The depth is not the class's alone: the night shadow's pass (dusk and night, colour k_8_8_8_8 at tile 832, pitch
+// 520, 4 samples, declared 512x512, resolved into a 512x512 k_8 texture) draws with the very same depth identity.
+// Matches asks for 512x256 whenever the size is known, so that pass's use is a FOREIGN USE (side_views.h, ONE
+// IDENTITY, TWO USES): EdramTargets::DepthLayer gives it layer 2, a host depth of its own at the guest's size, and
+// its colour and depth are one scale (before, the depth was 2x and the colour 1x: every draw of the pass was left
+// out, "targets of different resolution scales"). Whatever Matches accepts here must stay what DepthLayer asks.
+//
 // CHECK (nothing here was built or run; D3D12 and Vulkan, debug layer / validation on, K-DAY with the
 // camera on the car and K-DRIVE):
 //  1. The log at the first env draw has the two "[gpu] edram: ... made at 2x (the car reflections side
