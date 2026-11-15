@@ -19,6 +19,18 @@ static const float kSsgiFarMaxRadiusShare = 0.4f;
 static const float kSsgiFarMinGrowth = 1.25f;
 static const float kSsgiFarMinExtraPx = 2.0f;
 
+// A car's own pixels take less of the bounce (ssgi_light.h VehicleStrength has the reasons): its strength is this share of
+// the level's, never over kSsgiVehicleStrengthMax.
+static const float kSsgiVehicleShare = 0.35f;
+static const float kSsgiVehicleStrengthMax = 0.8f;
+
+// The strength a pixel gets: the level's on the world, the car's on a vehicle (`vehicle` 0 to 1: the share of the
+// pixel's depth neighbourhood that is a vehicle, so a silhouette fades from one to the other).
+float SsgiStrengthFor(float strength, float vehicle) {
+  const float on_car = min(strength * kSsgiVehicleShare, kSsgiVehicleStrengthMax);
+  return lerp(strength, on_car, saturate(vehicle));
+}
+
 // x up to kSsgiKnee * limit unchanged, then bending to `limit`: continuous, never over it, never decreasing. A limit
 // of 0 or less gives 0.
 float SsgiSoftClip(float x, float limit) {

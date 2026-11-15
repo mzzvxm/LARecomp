@@ -52,6 +52,11 @@
 //                and nothing gets whiter than the sun-lit white of the frame. A pixel at or over the ceiling gets nothing.
 //                (The bounce was kept to half of the pixel's own colour before: a shaded pixel, where the bounce matters
 //                most, gained nothing. ssgi_light.h has the whole story and the same maths in C++.)
+//                A VEHICLE's pixel (the depth pass's mark, the share of the pixel's neighbourhood that has it) takes
+//                a smaller strength (ssgi_common.hlsli SsgiStrengthFor): its colour is mostly the paint's gloss, the
+//                reflection of the sky and the floor, not a diffuse albedo, so colour / T over-reads its albedo, and the
+//                low parts of a car (skirts, lower doors, tyres, the underside) are what the bright floor lights most:
+//                at the full strength a black car glowed (owner, the garage, 2026-11-13).
 //
 // The scene colour is albedo * (T + point lights) + specular and the game's ambient stands for "the average
 // surroundings": the multiply by lerp(1, V, share) took the blocked part of the ambient away, the bounce gives
@@ -141,11 +146,14 @@ float VisibilityAt(uint slot, int2 pixel, float tc) {
 #if AO_GI
 // The image of the visibility and the bounce (`gi_slot`) and the colour chain's level 0 (`colour_slot`) at the
 // pixel of the picture: as they are, or, from the half resolution ones, one bilinear upsample whose weights fall
-// with the difference of linear depth (VisibilityAt's), the two images by the same weights.
-void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, out float4 colour) {
+// with the difference of linear depth (VisibilityAt's), the two images by the same weights. `vehicle` is the share
+// of the same neighbourhood that the depth pass marked as a vehicle (the depth image's lowest bit), 0 to 1.
+void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, out float4 colour,
+          out float vehicle) {
   if (!AoLow()) {
     gi = g_textures[gi_slot].Load(int3(pixel, 0));
     colour = g_textures[colour_slot].Load(int3(pixel, 0));
+    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
     return;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -154,6 +162,7 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
   const float2 f = q - float2(q0);
   float4 gi_sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
   float4 colour_sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float vehicle_sum = 0.0f;
   float weights = 0.0f;
   for (int j = 0; j < 2; ++j) {
     for (int i = 0; i < 2; ++i) {
@@ -164,11 +173,13 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       gi_sum += g_textures[gi_slot].Load(int3(c, 0)) * w;
       colour_sum += g_textures[colour_slot].Load(int3(c, 0)) * w;
+      vehicle_sum += (AoIsVehicle(td) ? 1.0f : 0.0f) * w;
       weights += w;
     }
   }
   gi = gi_sum / max(weights, 1e-8f);
   colour = colour_sum / max(weights, 1e-8f);
+  vehicle = vehicle_sum / max(weights, 1e-8f);
 }
 #endif
 
@@ -191,7 +202,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // From the image of the bounce light too (the pass is only used with the occlusion on).
   float4 gi_image;
   float4 gi_colour;
-  GiAt(g_push.slots.z, g_push.slots2.y, pixel, tc, gi_image, gi_colour);
+  float gi_vehicle;
+  GiAt(g_push.slots.z, g_push.slots2.y, pixel, tc, gi_image, gi_colour, gi_vehicle);
   const float ao = gi_image.x;
 #else
   const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc) : 1.0f;
@@ -259,7 +271,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
   const float luma_c = dot(gi_colour.rgb, kLuma);
   const float surface = 1.0f - saturate(gi_colour.a);
-  float3 bounce = (g_push.shape.y * fade * surface / max(light_t, luma_c)) * gi_image.yzw;
+  const float gi_strength = SsgiStrengthFor(g_push.shape.y, gi_vehicle);
+  float3 bounce = (gi_strength * fade * surface / max(light_t, luma_c)) * gi_image.yzw;
   // The gain limit: the largest channel through the soft clip, the hue kept.
   const float bounce_peak = max(max(bounce.x, bounce.y), bounce.z);
   if (bounce_peak > 0.0f) {

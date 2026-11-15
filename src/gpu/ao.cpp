@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -3020,8 +3021,27 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   if (!gi_active_ || !plan->occlusion || !plan->apply || !menu_world::RulesFor(trigger_world_).bounce) {
     return;
   }
+  // The albedo estimate divides a pixel's colour by the light the game's constants say fell on it: with no light
+  // constants at all (no lit draw before the trigger) that light reads as nothing, every pixel's albedo as 1, and the
+  // bounce would add the surroundings' colour to every pixel whatever its own. No light, no bounce this frame.
+  LightRaw known_light;
+  uint32_t known_light_draws = 0;
+  if (!PickLight(&known_light, &known_light_draws)) {
+    return;
+  }
   GiPlan& g = plan->gi;
   g.on = true;
+  // What the albedo estimate divides by, once for each world the bounce light first runs in (the garage's lamps are the
+  // question: if its ambient and sun are near nothing the estimate reads every pixel as bright, and this line says so).
+  if (const size_t world_index = size_t(trigger_world_); world_index < std::size(gi_light_logged_) && !gi_light_logged_[world_index]) {
+    gi_light_logged_[world_index] = true;
+    float ambient[3], sun[3], dir[3];
+    DecodeLight(known_light, ambient, sun, dir);
+    REXLOG_INFO("[gpu] ssgi: the light the bounce light divides by in the {}: ambient {:.3g}, sun {:.3g} (PS c26 and c39 lumas, "
+                "the commonest of {} draws' values; T = ambient + sun x N.L x the sun's shadow mask, so a pixel brighter than "
+                "that is taken as a surface of albedo 1 or a light); logged once for each world",
+                menu_world::Name(trigger_world_), Luma(ambient), Luma(sun), known_light_draws);
+  }
   g.test = gi_test_;
   g.mode = gi_test_ ? plan->mode : gi_mode_;
   // What the quality means: the debug override is the occlusion's own (as it was); the setting's high is 3 and

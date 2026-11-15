@@ -191,6 +191,7 @@
 #include "temporal_backend.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
+#include "temporal_menu.h"
 #include "temporal_mv.h"
 #include "upscaler_math.h"
 #include "viewport.h"
@@ -503,6 +504,10 @@ class TemporalSystem {
   static Mode ModeOf(const FrameState& frame);
   void NoteMode(Mode mode, const FrameState& frame);
   void Report();
+  // The game's per-vehicle slots in a pause view frame, which are not used there (temporal_menu.h): counted, and how far a
+  // vehicle's own motion in them is (a still car under an orbiting camera must be the identity: 0 and 0 degrees), so a run
+  // says whether they could have been trusted. Called for an accepted anchor of the pause view.
+  void ProbePauseSlots(const uint8_t* ps_bank, uint32_t stencil_ids);
   void ResetRun();
 
   bool enabled_ = false;
@@ -533,6 +538,23 @@ class TemporalSystem {
   // upscaler are left alone.
   uint32_t pause_misses_ = 0;
   bool pause_disarmed_ = false;
+  // Frames in a row whose history restarted for a reason of their own: while they last the jitter is held at zero
+  // (temporal_menu.h), so a world the upscaler cannot accumulate does not shake. jitter_hold_lines_ limits its log.
+  temporal::JitterHold jitter_hold_;
+  uint32_t jitter_hold_lines_ = 0;
+  struct PauseSlotCounts {
+    uint64_t frames = 0;     // accepted pause view anchors
+    uint64_t with_ids = 0;   // ... that had vehicle IDs written before them
+    uint64_t asked = 0;      // IDs asked, usable (sane and rigid), not sane, not rigid, anchors with no usable world matrix
+    uint64_t taken = 0;
+    uint64_t not_sane = 0;
+    uint64_t not_rigid = 0;
+    uint64_t no_world = 0;
+    uint64_t moving = 0;     // usable rows whose own motion is over 5 cm or 1 degree (a still car's is 0)
+    double max_move = 0.0;   // the largest own motion of a usable row, world units
+    double max_turn = 0.0;   // ... and the largest turn, degrees
+  };
+  PauseSlotCounts pause_slots_;
 
   // Step 1b: the passes and what they keep (temporal_mv.h), and what the anchor told them.
   TemporalMotion motion_;
