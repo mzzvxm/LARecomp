@@ -109,6 +109,10 @@ add_executable(larecomp_shafts_level_test EXCLUDE_FROM_ALL shafts_level_test.cpp
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
+# The contact shadows' trace rules and the C++ twin of their march (contact_trace.h: the depth tolerance in pixel footprints, the
+# ray's fade and steps, the filter weights, the cost model) likewise:
+#   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
+add_executable(larecomp_contact_trace_test EXCLUDE_FROM_ALL contact_trace_test.cpp)
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)

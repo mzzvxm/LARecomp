@@ -25,7 +25,7 @@
 //
 //   contact_factor 1 - sun_share * strength * (1 - cs) * fade: the contact shadows darken only the
 //                  sun's share of the light, so they cannot darken what the game already shadows
-//     cs             the contact visibility (ao_contact_ps, two bilateral passes), upsampled as ao is;
+//     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is;
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
@@ -62,8 +62,9 @@
 // Push fields of this variant (the apply's others as above): slots.z the image of the visibility and the bounce
 // (RGBA16F, at the passes' size: the a-trous filter's output), slots2.y the colour chain's level 0 (RGBA16F: rgb
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
-// of 0.02, bit 25 the bounce term. The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or
-// not the contact shadows are on. Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
+// of 0.02 (bit 25 is the denoise pass's contact filter flag and is not read here).
+// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on.
+// Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
 // share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
 // own (grey 0.5: none; unscaled).
