@@ -505,6 +505,7 @@ private:
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         // As the mod browser does: no pad left claimed once the window is gone.
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+        ReleaseBrowserGamepad();
     }
 
     id::Status status_;

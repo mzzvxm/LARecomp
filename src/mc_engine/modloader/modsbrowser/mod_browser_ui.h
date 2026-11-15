@@ -27,8 +27,13 @@ void ModBrowserOpen();
 // True while the window is open.
 bool ModBrowserCapturesInput();
 
-// The pad, read through XInput and handed to ImGui's navigation; *b_pressed
-// is true on the frame B goes down. Shared with the server browser.
+// The pads (ui/gamepad.h: XInput for Xbox pads, SDL for the others), handed to
+// ImGui's navigation; *b_pressed is true on the frame B goes down. Shared with
+// the server browser.
 bool FeedBrowserGamepad(ImGuiIO& io, bool* b_pressed);
+
+// The window that fed the pads closed: let them go (a window that is still
+// open reads them again on its next frame).
+void ReleaseBrowserGamepad();
 
 }  // namespace larecomp
