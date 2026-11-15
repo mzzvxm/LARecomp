@@ -236,8 +236,9 @@ class TemporalSystem {
     kResetTime = 1u << 3,        // more than kMaxGapMs since the previous anchor
     kResetNoPrevious = 1u << 4,  // the world's previous matrix (c69) is not usable
     kResetView = 1u << 5,        // the view changed: the frame before was of the other kind (or none)
+    kResetRequest = 1u << 6,     // the game asked for a cut at this frame (cut_request.h, the scene camera)
   };
-  static constexpr uint32_t kResetReasons = 6;
+  static constexpr uint32_t kResetReasons = 7;
   // What the anchor test said of the frame.
   enum class AnchorStatus : uint8_t {
     kNotSeen,         // the frame has no anchor draw (or the system did not see it prepared)
@@ -315,6 +316,7 @@ class TemporalSystem {
     AnchorStatus anchor_status = AnchorStatus::kNotSeen;
     temporal::Camera camera;
     uint32_t reset = 0;           // ResetBit: this frame starts the history again
+    bool cut_requested = false;   // NoteRequestedCut: the game asked for a cut at this frame
     temporal::Cut cut;            // the cut test against the frame before (when there was one)
     float frame_time_ms = 1000.0f / 60.0f;  // between this anchor and the one before, 1 to 100
     uint32_t guest_size[2] = {};   // c62: the frame in guest pixels
@@ -355,6 +357,13 @@ class TemporalSystem {
   // True while an upscaler was chosen and able to run at the start of the frame being recorded (or
   // frame generation asked for the vectors, below): the Scene's hooks do nothing otherwise.
   bool active() const { return enabled_; }
+  // The Scene, at the anchor draw and before NoteTemporal: the game asked for a cut at this frame (cut_request.h), so the frame's
+  // history starts again whatever the cut rule says of the camera. For this frame only.
+  void NoteRequestedCut() {
+    if (enabled_ && frame_open_) {
+      frame_.cut_requested = true;
+    }
+  }
 
   // Frame generation (frame_generation.h) wants each frame's depth and motion vectors, camera and cut
   // state with or without an upscaler. While true and no upscaler runs, the system is on for them
@@ -521,7 +530,7 @@ class TemporalSystem {
   double last_step_[3] = {};
   bool last_step_known_ = false;
   Scale last_scale_ = Scale::None();
-  Clock::time_point last_anchor_time_{};
+  double last_anchor_ms_ = 0.0;  // the scene clock's (mc::cinematic::SceneClockNowMs) time of the last accepted anchor
   uint32_t jitter_index_ = 0;  // advances in frames whose anchor was accepted
   uint32_t misses_ = 0;
   bool disarmed_ = false;

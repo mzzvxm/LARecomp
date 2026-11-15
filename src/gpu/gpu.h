@@ -201,6 +201,10 @@ void SetPresentObserver(PresentObserver observer);
 // `qpc`, and the render thread holds the swap chain's present until then (after
 // the frame's GPU work is submitted and the guest released). 0 = when ready.
 void SetNextPresentTarget(int64_t qpc);
+// Capture mode (trailer toolkit M2a): the same mailbox for a tag the present record carries to the render thread
+// (mc_engine/cinematic/capture_mode.h: the update the frame shows, and whether it is a frame of the capture take; the hand-over of the
+// frame stamped it). Guest render thread, inside D3DDevice_Swap before OnGuestSwap. 0 = none.
+void SetNextPresentTag(uint64_t tag);
 // Whether presents are held to their targets: the renderer runs (Startup
 // succeeded) without mcla_gpu_vsync and without frame generation, on Windows.
 // Any thread.
@@ -294,6 +298,22 @@ bool HdrOutputActive();
 // the display the window is on, else 200 and 1000.
 float HdrAutoPaperWhiteNits();
 float HdrAutoPeakNits();
+
+// --- the HUD fade (ui_fade.h) ------------------------------------------------------------------
+// The picture shows the 3D scene plus the game's UI layer times an alpha that the debug-only cvar
+// mcla_cin_hud_alpha holds (mc_engine/cinematic/hud.h writes it for a scene). The renderer follows
+// it at each frame boundary. All three are for any thread and need no renderer: before one is up,
+// or with another renderer, they only store.
+// The next change of the alpha takes `seconds` (0 or less, or NaN: at once) instead of being
+// instant. Asked once, used once: by the first change the renderer sees afterwards.
+void SetUiAlphaFade(float seconds);
+// Keep the UI split ready at alpha 1 (the layers run and the present composes them, which costs
+// about 0.4 ms at 3x), so that the first frame below 1 does not pay for making the layers' pipeline
+// and images. Without it the layers start at the frame boundary where the alpha first drops.
+void ArmUiLayer(bool armed);
+// The alpha the present shows the game's UI at now, as the renderer last applied it (1: the game's
+// own frame; also 1 while the layers cannot be made).
+float UiAlpha();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
 // stops the render thread (with a deadline), drains the GPU and releases every

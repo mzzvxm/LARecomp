@@ -34,6 +34,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../camera_trace.h"
+#include "../cinematic/capture_mode.h"
 #include "../guest_profiler.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -250,7 +251,7 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
     // frame_pacing: the renderer holds the frame to its planned time instead,
     // which keeps the FPS limit too.
     const bool paced = mc::pacing::Active();
-    if (timed && REXCVAR_GET(pace_at_swap) && !paced) {
+    if (timed && REXCVAR_GET(pace_at_swap) && !paced && !mc::cinematic::FixedStepActive()) {
         // A game frame: held to the FPS limit here instead of before its update.
         // Bound to the first thread that presents one, the render thread.
         static const std::thread::id owner = std::this_thread::get_id();
@@ -264,6 +265,8 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
     // through the engine timer itself, and a swap it has no pass for is not marked.
     mcla::gpu::latency::OnGuestSwap();
 #endif
+    // Capture mode: gives the frame's present record the stamp its hand-over made (the update it shows, whether it is the take's).
+    mc::cinematic::CaptureOnSwap();
     HoldUntimedSwap(timed);
     mc::pacing::OnGuestSwap(timed);
     mc::camtrace::OnGuestSwap(timed);
@@ -576,6 +579,9 @@ void MCLAFrameStart() {
     if (now - last_start_us < 100) {
         return;
     }
+    // Capture mode: counts the update; starts a take that was asked for; during a take waits until the frames handed over have been
+    // read back. Two atomic loads and a cvar read when nothing asks.
+    mc::cinematic::CaptureGate();
     mcla::gpu::latency::OnFrameStart();
     // After the driver's wait.
     last_start_us = static_cast<uint64_t>(
@@ -608,14 +614,22 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // the cap it last worked out.
     static const std::thread::id owner = std::this_thread::get_id();
     const bool game_thread = std::this_thread::get_id() == owner;
+    // Capture mode (cinematic/capture_mode.h): a take, or the fixed-step setting, gives every update exactly this step in the game's own
+    // ticks, whatever the frame took. 0: none, and the rest is as it always was.
+    const uint64_t fixed_step = game_thread ? mc::cinematic::FixedStepTicks() : 0;
     uint64_t cap;
-    if (game_thread) {
+    if (game_thread && fixed_step == 0) {
+        // (Under a fixed step the measured delta is the time a slow capture took, not a frame time: it stays out of the cap's history,
+        // so the first frames after a take are capped as they were before it.)
         cap = StepCapForFrame(r8.u64);
     } else {
         cap = g_step_cap_ticks.load(std::memory_order_relaxed);
         if (cap == 0) cap = static_cast<uint64_t>(kStepCapCeilingMs * GuestTicksPerMs());
     }
-    if (r8.u64 > cap) {
+    if (fixed_step != 0) {
+        // The step cap and frame pacing's plan are out of the way: this update is exactly this long.
+        r8.u64 = fixed_step;
+    } else if (r8.u64 > cap) {
         if (game_thread) LogCappedStep(r8.u64, cap);
         r8.u64 = cap;
     }
@@ -627,7 +641,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
     // With pace_at_swap the limiter waits at the swap instead (Patch_60FPS_Byte).
-    if (!REXCVAR_GET(pace_at_swap) && !mc::pacing::Active() && game_thread) {
+    if (!REXCVAR_GET(pace_at_swap) && !mc::pacing::Active() && game_thread && fixed_step == 0) {
         EnforceFrameLimit();
     }
     g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap

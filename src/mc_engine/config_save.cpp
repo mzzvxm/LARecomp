@@ -183,6 +183,22 @@ bool AtStartupValue(const std::string& name, const std::string& value) {
   return it != StartupValues().end() && it->second == value;
 }
 
+// The cvars a scene holds right now (SetCvarForScene): the value each had before the scene took it and where that value came from.
+struct SceneHold {
+  std::string value;
+  rex::cvar::Source source = rex::cvar::Source::kDefault;
+};
+std::mutex g_scene_mutex;
+std::unordered_map<std::string, SceneHold>& SceneHolds() {
+  static std::unordered_map<std::string, SceneHold> holds;
+  return holds;
+}
+
+std::unordered_map<std::string, SceneHold> SceneHoldsNow() {
+  std::lock_guard<std::mutex> lock(g_scene_mutex);
+  return SceneHolds();
+}
+
 // Adds the edit for `name`, or replaces the one already there.
 void Put(Edits& edits, const std::string& name, std::optional<std::string> value,
          bool update_only) {
@@ -234,6 +250,56 @@ bool IsAtStartupValue(std::string_view name) {
   return AtStartupValue(std::string(name), rex::cvar::GetFlagByName(name));
 }
 
+bool SetCvarForScene(std::string_view name, std::string_view value) {
+  const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+  if (!info) {
+    return false;
+  }
+  const std::string key(name);
+  // The hold goes in before the value changes, so a save on another thread never sees the scene's value unheld.
+  bool first = false;
+  {
+    SceneHold before{rex::cvar::GetFlagByName(name), info->source};
+    std::lock_guard<std::mutex> lock(g_scene_mutex);
+    first = SceneHolds().try_emplace(key, std::move(before)).second;  // a second `set` of the same cvar keeps the first hold
+  }
+  if (!rex::cvar::SetFlagByName(name, value)) {
+    if (first) {
+      std::lock_guard<std::mutex> lock(g_scene_mutex);
+      SceneHolds().erase(key);
+    }
+    return false;
+  }
+  return true;
+}
+
+bool RestoreCvarForScene(std::string_view name) {
+  const std::string key(name);
+  SceneHold hold;
+  {
+    std::lock_guard<std::mutex> lock(g_scene_mutex);
+    const auto it = SceneHolds().find(key);
+    if (it == SceneHolds().end()) {
+      return false;
+    }
+    hold = it->second;
+  }
+  // Still held while it is put back, so a save in between writes the old value, not the scene's.
+  const bool ok = rex::cvar::SetFlagByName(name, hold.value);
+  if (ok && hold.source != rex::cvar::Source::kRuntime) {
+    // SetFlagByName made the source "run time"; the SDK has no call that sets it back, but the registry entry is plain data.
+    for (rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
+      if (entry.name == name) {
+        entry.source = hold.source;
+        break;
+      }
+    }
+  }
+  std::lock_guard<std::mutex> lock(g_scene_mutex);
+  SceneHolds().erase(key);
+  return ok;
+}
+
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
   Edits edits;
   // Only cvars whose last writer was SetFlagByName: a menu, the settings panel,
@@ -247,23 +313,33 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // its line in the file, if any, is not touched: debug settings last one session, and a
   // tester's hand-written line keeps its value. That covers the DEBUG menu, the settings panel
   // and the console with no per-cvar call. (`held`, below, is not affected.)
+  // A cvar a scene holds (the trailer toolkit's `set` key) is judged by what it was before the scene took it: the scene's value is not
+  // the player's choice, so it is never written, and a value the player had changed earlier is written as the player left it.
+  const std::unordered_map<std::string, SceneHold> scene_holds = SceneHoldsNow();
   for (const std::string& name : rex::cvar::ListFlags()) {
     const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-    if (!info || info->type == rex::cvar::FlagType::Command) {
+    if (!info) {
       continue;
     }
-    if (IsSessionOnly(name)) {
+    const auto hold = scene_holds.find(name);
+    CvarSaveFacts facts;
+    facts.is_command = info->type == rex::cvar::FlagType::Command;
+    facts.session_only = IsSessionOnly(name);
+    facts.changed_this_session = info->source == rex::cvar::Source::kRuntime;
+    facts.debug_only = info->is_debug_only;
+    facts.held_by_scene = hold != scene_holds.end();
+    facts.changed_before_scene = facts.held_by_scene && hold->second.source == rex::cvar::Source::kRuntime;
+    const CvarSaveAction action = DecideCvarSave(facts);
+    if (action == CvarSaveAction::kSkip) {
+      continue;
+    }
+    if (action == CvarSaveAction::kPutDefault) {
       // Not the live value, whatever set it: only a line the file has is put back to the default.
       Put(edits, name, CvarTomlValue(name, info->default_value), true);
       continue;
     }
-    if (info->source != rex::cvar::Source::kRuntime) {
-      continue;
-    }
-    if (info->is_debug_only) {
-      continue;
-    }
-    const std::string value = info->getter();
+    const std::string value =
+        action == CvarSaveAction::kWriteBeforeScene ? hold->second.value : info->getter();
     const bool unchanged = value == info->default_value || AtStartupValue(name, value);
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }

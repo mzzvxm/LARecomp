@@ -79,6 +79,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../camera_trace.h"
+#include "../cinematic/capture_mode.h"
 #include "../logging.h"
 
 #if defined(LARECOMP_HAS_GPU)
@@ -167,6 +168,8 @@ int32_t FpsLimit() {
 
 bool Wanted() {
 #if defined(LARECOMP_HAS_GPU)
+    // Capture mode: a fixed step sets the time step itself; nothing waits for a planned time.
+    if (mc::cinematic::FixedStepActive()) return false;
     return REXCVAR_GET(frame_pacing) != 0 && REXCVAR_GET(real_frame_delta) &&
            mcla::gpu::SchedulesPresents();
 #else
@@ -364,6 +367,9 @@ extern "C" REX_FUNC(rex_sub_821BDA90) {
 // update that just ran next.
 extern "C" REX_FUNC(rex_sub_82305B38) {
     g_render_target.store(g_update_target, std::memory_order_release);
+    // Capture mode: the frame is stamped with the update that just ran, and whether it belongs to the take, here, where the render thread is
+    // idle: the swap that follows takes the stamp, so a frame's identity cannot be late or early whatever the threads do.
+    mc::cinematic::CaptureOnHandOver();
     __imp__rex_sub_82305B38(ctx, base);
 }
 
