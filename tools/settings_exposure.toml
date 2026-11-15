@@ -17,7 +17,6 @@ debug_table_pattern = "^kDebug"
 [[exception]]
 why = "keyboard rebinding: the F4 panel is the only place to rebind a key and the launcher has no key picker"
 names = [
-  "keyboard_native",
   "kb_ui_accept", "kb_ui_back", "kb_ui_x", "kb_ui_y",
   "kb_ui_lb", "kb_ui_rb", "kb_ui_lt", "kb_ui_rt",
   "kb_ui_up", "kb_ui_down", "kb_ui_left", "kb_ui_right",

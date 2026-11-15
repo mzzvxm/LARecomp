@@ -69,10 +69,18 @@ bool IsKeybindCategory(const std::string& category) {
   return CategoryIsPathOrChild(category, "Input/Keybinds");
 }
 
+// The SDK's keyboard-and-mouse emulation (mnk_mode, mnk_mouse, mnk_sensitivity and the keybind_* keys that turn keys into pad buttons) is retired as
+// a player path: it is forced off at start and the native keyboard (the kb_* settings) is always on, so none of them is offered here.
+bool IsRetiredMnk(const rex::cvar::FlagEntry& entry) {
+  return entry.name == "mnk_mode" || entry.name == "mnk_mouse" || entry.name == "mnk_sensitivity" ||
+         CategoryIsPathOrChild(entry.category, "Input/Keybinds/Controller");
+}
+
 // Every cvar is listed, for every player, whether or not the debug menu is unlocked: this panel
 // (F4) is a function-key menu, not the pause menu, and only the pause menu is cleaned up. The
 // SDK's settings_hide_inactive_backend_cvars decides the backend part of this.
 bool ShouldShow(const rex::cvar::FlagEntry& entry) {
+  if (IsRetiredMnk(entry)) return false;
   if (rex::cvar::GetFlagByName("settings_hide_inactive_backend_cvars") == "false") {
     return true;
   }
@@ -499,10 +507,6 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   void KeybindRow(std::vector<rex::cvar::FlagEntry>& registry, rex::cvar::FlagEntry& entry,
                   const rex::ui::SettingsStyle& style) {
     const std::string current = entry.getter();
-    // Controller binds only matter in mouse-and-keyboard mode.
-    const bool inactive = entry.category == "Input/Keybinds/Controller" &&
-                          rex::cvar::GetFlagByName("mnk_mode") != "true";
-    if (inactive) ImGui::BeginDisabled();
 
     NameCell(entry, entry.description.empty() ? entry.name : entry.description, style);
     if (!current.empty()) {
@@ -541,7 +545,6 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     if (ImGui::Button("RESET##v", ImVec2(reset_w, 0.0f))) {
       rex::cvar::SetFlagByName(entry.name, entry.default_value);
     }
-    if (inactive) ImGui::EndDisabled();
   }
 
   void Capture(const rex::cvar::FlagEntry& entry) {

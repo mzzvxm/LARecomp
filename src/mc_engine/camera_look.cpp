@@ -391,10 +391,8 @@ LookTune& TuneFor(uint32_t owner) {
 // can turn all the way round cannot be driven from an absolute position, and
 // recentering is what keeps the pointer from walking off the window.
 //
-// Deliberately independent of mnk_mode. That maps the mouse onto the right
-// stick, which on this camera means the digital pan actions -- the very thing
-// being replaced -- so the two must not both be live. See the note in
-// TickCameraLook.
+// Independent of the SDK's mnk_mode, which is retired and forced off (it mapped the
+// mouse onto the right stick, i.e. the digital pan actions this replaces).
 
 #if defined(_WIN32)
 bool g_captured = false;
@@ -568,18 +566,6 @@ void TickCameraLook() {
     }
 
     bool want = REXCVAR_GET(cam_freelook);
-
-    // mnk_mode routes the mouse into the right stick, which on this camera is
-    // the digital pan actions -- exactly what free look replaces. Running both
-    // means every mouse movement both steers the view and fires a pan step, so
-    // the two fight. Free look wins and says so once.
-    if (want && rex::cvar::GetFlagByName("mnk_mouse") == "true") {
-        static std::atomic<bool> told{false};
-        if (!told.exchange(true))
-            MC_WARN("[cam-look] cam_freelook and mnk_mouse both drive the view "
-                    "-- mnk_mouse feeds the mouse to the right stick, which is "
-                    "the pan actions this replaces. Turn mnk_mouse off.");
-    }
 
     if (!g_have_tune.load(std::memory_order_relaxed)) {
         if (want) {
