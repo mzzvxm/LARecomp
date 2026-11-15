@@ -1620,6 +1620,13 @@ struct VehiclePlan {
     // the side that has no pipe -- the game always emits at both bones a bumper
     // carries, and a donor with twin pipes would smoke on both sides.
     std::set<std::string> exhaust_single;
+    // `locator.<slot>.<prefix> = x y z`: every bone of that part named
+    // <prefix><digits> moves to this car-space point, x mirrored by the side the
+    // bone is on (hl_low_0 left, hl_low_1 right), each keeping its rotation.
+    // Lamp parts carry their light sources as such bones -- hl_low_/hl_hi_/fog_
+    // in a headlight, brake_ in a taillight, amber_ in a front bumper on the R34
+    // -- and the halo and the beam start there, not at the lamp's geometry.
+    std::map<std::string, std::vector<std::pair<std::string, std::array<float, 3>>>> locators;
     // Donor part slots whose lamps are sampled for lamp indices -- see
     // MeshOffset::extra_bands. `lamp_from = headlight0, taillight0`.
     std::vector<std::string> lamp_from;
@@ -1906,6 +1913,19 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
                 }
             } else {
                 LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'x y z [single]'", key);
+            }
+            continue;
+        }
+        if (lower.rfind("locator.", 0) == 0) {
+            const std::string rest = key.substr(8);
+            const size_t dot = rest.find('.');
+            std::array<float, 3> at{};
+            std::istringstream stream(mapping.groups.front());
+            if (dot == std::string::npos || dot == 0 || dot + 1 >= rest.size() ||
+                !(stream >> at[0] >> at[1] >> at[2])) {
+                LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'locator.<slot>.<bone prefix> = x y z'", key);
+            } else {
+                plan.locators[rest.substr(0, dot)].emplace_back(rest.substr(dot + 1), at);
             }
             continue;
         }
@@ -4088,6 +4108,43 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                            "smoke bones (extPrimary/extSecondary or "
                                            "exst_primary_/exst_secondary_)", vehicle.mod_name,
                                            car, name, moved);
+                    }
+                }
+            }
+
+            // The part's light-source bones moved onto this car's lamps
+            // (VehiclePlan::locators): car space, through the slot's frame for
+            // a part authored in its bone's space.
+            if (const auto lights = plan.locators.find(mapping.slot);
+                lights != plan.locators.end() && filled != 0) {
+                const bool framed = frame != frames.end() && frame->second.rigid;
+                if (own_space && !framed) {
+                    LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} locators: the slot is in its bone's "
+                                       "space and needs a rigid frame", vehicle.mod_name, car, name);
+                } else {
+                    for (const auto& [prefix, point] : lights->second) {
+                        Mesh points;
+                        for (const float side : {-1.0f, 1.0f}) {
+                            MeshVertex vertex;
+                            vertex.px = side * std::fabs(point[0]);
+                            vertex.py = point[1];
+                            vertex.pz = point[2];
+                            points.vertices.push_back(vertex);
+                        }
+                        if (framed) PlaceInBoneFrame(points, frame->second);
+                        const float left[3] = {points.vertices[0].px, points.vertices[0].py,
+                                               points.vertices[0].pz};
+                        const float right[3] = {points.vertices[1].px, points.vertices[1].py,
+                                                points.vertices[1].pz};
+                        const size_t moved = SetMirroredBonePose(resource, prefix, left, right);
+                        if (moved == 0) {
+                            LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} locator {}: no bone of "
+                                               "that name", vehicle.mod_name, car, name, prefix);
+                        } else if (lod == 0) {
+                            LARECOMP_APP_INFO("[mods]   {} locator {}* -> {} bone(s) at +-{:.3f} {:.3f} "
+                                              "{:.3f} (in the part's space)", name, prefix, moved,
+                                              std::fabs(right[0]), right[1], right[2]);
+                        }
                     }
                 }
             }

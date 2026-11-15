@@ -4369,6 +4369,43 @@ size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const floa
     return set;
 }
 
+size_t SetMirroredBonePose(Rsc5Resource& resource, const std::string& prefix, const float left[3],
+                           const float right[3]) {
+    std::vector<uint8_t>& data = resource.data;
+    const size_t end = std::min<size_t>(resource.virtual_size, data.size());
+    if (prefix.empty() || end < 64) return 0;
+    size_t set = 0;
+    for (size_t at = 0; at + prefix.size() + 2 <= end; ++at) {
+        if (std::memcmp(&data[at], prefix.data(), prefix.size()) != 0) continue;
+        size_t tail = at + prefix.size();
+        if (tail >= end || !std::isdigit(data[tail])) continue;
+        while (tail < end && std::isdigit(data[tail])) ++tail;
+        if (tail >= end || data[tail] != 0) continue;
+        const uint32_t name = kVirtualBase + static_cast<uint32_t>(at);
+        for (size_t rec = 0; rec + 64 <= end; rec += 4) {
+            if (LoadBE32(&data[rec]) != name) continue;
+            const uint32_t parent = LoadBE32(&data[rec + 16]);
+            if ((parent & 0xF0000000u) != kVirtualBase || (parent - kVirtualBase) >= end) continue;
+            float old_t[3], old_r[3];
+            bool plausible = true;
+            for (int i = 0; i < 3; ++i) {
+                old_t[i] = LoadBEFloat(&data[rec + 32 + i * 4]);
+                old_r[i] = LoadBEFloat(&data[rec + 48 + i * 4]);
+                plausible &= std::isfinite(old_t[i]) && std::fabs(old_t[i]) < 50.0f &&
+                             std::isfinite(old_r[i]);
+            }
+            // Found by value below: a bone at the origin would match every zero
+            // triple of the file (see SetBonePoseByName), so it is left alone.
+            if (!plausible || (old_t[0] == 0.0f && old_t[1] == 0.0f && old_t[2] == 0.0f)) continue;
+            RewriteBoneRecord(data, end, rec, old_t[0] < 0.0f ? left : right, old_r);
+            ++set;
+            break;
+        }
+        at = tail;
+    }
+    return set;
+}
+
 namespace {
 
 // What a clip block's channels are, by the byte at +5 of each (the vtable at +0

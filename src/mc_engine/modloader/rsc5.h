@@ -637,6 +637,14 @@ bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float ma
 size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const float translation[3],
                    const float rotation[3]);
 
+// The same for a pair of mirrored locators (hl_low_0 / hl_low_1, brake_0 /
+// brake_1, amber_0 / amber_1): a bone whose current x is negative goes to
+// `left`, any other to `right`, and each keeps its own rotation. Returns how
+// many were set. Lamp parts place their light sources this way (the halo and
+// the beam start at these bones, not at the lamp's geometry).
+size_t SetMirroredBonePose(Rsc5Resource& resource, const std::string& prefix, const float left[3],
+                           const float right[3]);
+
 // The same for the one bone of a vehicle body's skeleton named exactly `name`
 // (`str`, the R34's steering wheel bone): whatever hangs from it -- a part slot
 // attached to it, the turn the game gives it -- moves with it. Returns whether
