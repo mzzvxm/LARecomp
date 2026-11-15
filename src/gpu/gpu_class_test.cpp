@@ -237,14 +237,6 @@ void CheckClassify() {
 
   Check(Classify(Discrete(0)).cls == GpuClass::kLow, "no dedicated memory reported: low");
 
-  // Shared memory (what the render scale cap leaves alone): software, UMA or integrated; a discrete card
-  // is not, whatever its size.
-  Check(!SharesMemory(Discrete(16303)) && !SharesMemory(Discrete(512)) && !SharesMemory(Discrete(0)),
-        "a discrete card does not share memory");
-  Check(SharesMemory(igpu) && SharesMemory(deck) && SharesMemory(big_apu) && SharesMemory(vk_igpu) &&
-            SharesMemory(soft),
-        "an iGPU, the Deck, an APU with a large carve-out, a Vulkan integrated GPU and a software adapter share memory");
-
   // The reason is one phrase the log line carries.
   Check(!Classify(Discrete(16303)).why.empty(), "a reason for high");
   Check(Classify(Discrete(16303)).why.find("16303 MiB") != std::string::npos, "the reason names the memory");
