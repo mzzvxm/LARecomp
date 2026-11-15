@@ -215,12 +215,13 @@ std::string PassTiming::TakeSummary() {
     text += std::format(" | {} more {:.3f} ms", order.size() - kReportedLabels,
                         double(rest) / double(frames_) / 1e6);
     // The resolve memory's labels among them, which compares
-    // between runs however small they get, and the host post's (the scene's anti-aliasing, FSR1).
+    // between runs however small they get, the host post's (the scene's anti-aliasing, FSR1) and the
+    // occlusion's and the bounce light test's passes (ao.cpp: "ao ..." and "ssgi ...").
     std::string memory;
     for (size_t i = kReportedLabels; i < order.size(); ++i) {
       const std::string& name = names_[order[i]];
       if (name.starts_with("resolve memory") || name.starts_with("aa ") ||
-          name.starts_with("fsr1 ")) {
+          name.starts_with("fsr1 ") || name.starts_with("ao ") || name.starts_with("ssgi ")) {
         memory += std::format("{}{} {:.3f} ms", memory.empty() ? "" : ", ", names_[order[i]],
                               double(label_ns_[order[i]]) / double(frames_) / 1e6);
       }

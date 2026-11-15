@@ -22,6 +22,13 @@
 #define AO_DEPTH_MS 0
 #endif
 
+// The screen-space global illumination test's compilations of the denoise, the accumulation and the main
+// pass (-D AO_GI=1: ao_denoise_ps, ao_temporal_ps, ao_main_ps): four channels (visibility, bounce r, g, b)
+// in place of one. Without it every pass compiles to what it was before the test existed.
+#ifndef AO_GI
+#define AO_GI 0
+#endif
+
 struct AoPush {
   // x: the depth plane's bindless slot (the EDRAM depth target: Texture2DMS in space1 when
   //    AO_DEPTH_MS, else Texture2D in space0)
@@ -55,7 +62,10 @@ struct AoPush {
   // RGBA32F image of 4 x 24 texels, a row an ID: the same three rows for that vehicle, with the
   // camera's motion and the vehicle's own in one; texel 3 holds 1 in x for a usable row; 0xFFFFFFFF
   // none), flags bit 20 as "there is a history" and flags bit 21 as "vehicles move like the world"
-  // (the pause and map view).
+  // (the pause and map view). The bounce light test's compilation (AO_GI) of that pass also takes
+  // slots2.y as the slot of the depth history (R32_FLOAT), lens.z as the weight the bounce's history
+  // keeps and lens.w as the width of its clip. The a-trous pass (ao_atrous_ps) takes slots2.x as its step
+  // in pixels.
 };
 
 #ifdef __spirv__
@@ -166,5 +176,33 @@ float AoBilateral(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float 
   }
   return sum / max(weights, 1e-8f);
 }
+
+#if AO_GI
+// AoBilateral over the four channels of the image `src_slot` (RGBA16F: the visibility and the bounce
+// light): the same weights, the same radius, each channel the weighted mean. Used by the test's denoise
+// pass and by its accumulation pass for the pixels that have no history.
+float4 AoBilateral4(uint src_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
+                    float3 normal, int radius) {
+  const float2 size = float2(isize);
+  const float plane_sigma = 0.012f * tc + 0.02f;
+  const float spatial_sigma = radius >= 2 ? 1.4f : 0.9f;
+  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+  float weights = 0.0f;
+  for (int dy = -radius; dy <= radius; ++dy) {
+    for (int dx = -radius; dx <= radius; ++dx) {
+      const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      const float tq = AoLoadLinear(depth_slot, q);
+      const float3 pq = AoViewPos(float2(q) + 0.5f, size, tq);
+      const float off_plane = dot(normal, pq - pc) / plane_sigma;
+      const float w_depth = exp(-0.5f * off_plane * off_plane);
+      const float w_space = exp(-0.5f * float(dx * dx + dy * dy) / (spatial_sigma * spatial_sigma));
+      const float w = w_depth * w_space;
+      sum += g_textures[src_slot].Load(int3(q, 0)) * w;
+      weights += w;
+    }
+  }
+  return sum / max(weights, 1e-8f);
+}
+#endif  // AO_GI
 
 #endif  // MCLA_GPU_AO_COMMON_HLSLI

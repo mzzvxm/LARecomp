@@ -9,8 +9,33 @@
 // most of it out of any one frame, and the accumulation over frames (ao_temporal_ps) the rest. It
 // runs once while there is a history to accumulate into, twice (the second reading the first's
 // output) when there is none, and never not at all.
+//
+// Compiled with AO_GI=1 (ao_denoise_gi_ps, the bounce light test of ao.h) it is the same blur over the four
+// channels of an RGBA16F image, the visibility in x and the bounce light in yzw, with the same weights
+// for all four: the bounce is one more thing the noise of the main pass spoils, and the blur is what takes
+// the worst of it out of one frame before the accumulation over frames and the a-trous filter
+// (ao_atrous_ps) do the rest.
 
 #include "ao_common.hlsli"
+
+#if AO_GI
+
+float4 main(float4 position : SV_Position) : SV_Target {
+  const int2 pixel = int2(position.xy);
+  const float2 size = g_push.sizes.zw;
+  const int2 isize = int2(size);
+  const uint source_slot = g_push.slots.z;
+  const uint depth_slot = g_push.slots.w;
+  const float tc = AoLoadLinear(depth_slot, pixel);
+  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);
+  }
+  const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
+  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  return AoBilateral4(source_slot, depth_slot, pixel, isize, tc, pc, normal, AoDenoiseRadius());
+}
+
+#else  // !AO_GI
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -28,3 +53,5 @@ float4 main(float4 position : SV_Position) : SV_Target {
       AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoDenoiseRadius());
   return float4(result, 0.0f, 0.0f, 0.0f);
 }
+
+#endif  // AO_GI

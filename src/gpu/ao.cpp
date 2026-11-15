@@ -126,6 +126,151 @@ REXCVAR_DEFINE_INT32(
     .debug_only()
     .range(0, 4)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(
+    mcla_gpu_ssgi, "auto", "MCLA/GPU",
+    "Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and "
+    "the walls beside it, found from the picture, so a red wall tints the pavement by it and a street "
+    "lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient "
+    "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
+    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
+    "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
+    "default): off on every graphics card for now, until its cost is measured. Costs graphics card time, "
+    "high more than low. Not drawn behind the pause menu or on the map. Live.")
+    .allowed({"auto", "off", "low", "high"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_strength, 0.75, "MCLA/GPU",
+    "Diagnostic: how much of the bounce light the picture gets, 0 to 2 (1: all that the surroundings "
+    "send back by the picture's own colours; 0 runs the passes and adds nothing). Live.")
+    .debug_only()
+    .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_radius, 1.0, "MCLA/GPU",
+    "Diagnostic: how far the bounce light looks, as a multiple of the ambient occlusion's radius "
+    "(mcla_gpu_ao_intensity); the same samples give the occlusion's visibility, so a change moves "
+    "that too. 1: the occlusion's own. Live.")
+    .debug_only()
+    .range(0.5, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_clamp, 0.5, "MCLA/GPU",
+    "Diagnostic: the most the bounce light may add to a pixel, as a share of that pixel's own colour "
+    "(its largest channel; the hue stays), 0.05 to 4: a bright lamp's pool or a neon sign beside a wall "
+    "cannot light it white. (What a sample of the scene may carry into the bounce is "
+    "mcla_gpu_ssgi_test_clamp.) Live.")
+    .debug_only()
+    .range(0.05, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_low, 0, "MCLA/GPU",
+    "Diagnostic: what the bounce light's low does (mcla_gpu_ssgi low or auto that comes to low) to be cheaper "
+    "than high: 0 fewer directions (2 slices and 2 steps each instead of 3 and 3) at the occlusion's own "
+    "size, 1 half the picture's size (the occlusion's slices and steps) even where the occlusion is high, 2 "
+    "both. The same samples give the occlusion's visibility, so 1 and 2 also make the occlusion's own "
+    "picture half resolution while the bounce light is on. Live.")
+    .debug_only()
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_view, 0, "MCLA/GPU",
+    "Diagnostic: shows a stage of the bounce light's apply as a picture instead of applying it (only "
+    "while the bounce light is on, and instead of the occlusion's and the contact shadows' views; the "
+    "test's own views come first): 1 the factor the picture is multiplied by, in colour (the "
+    "occlusion's plus the bounce), 2 the bounce each pixel gets (four times as bright as the others), "
+    "3 the albedo estimate (the colour over the light the game's constants say fell on it, up to 1), "
+    "4 that light, 5 how much of the colour is a surface (black: a source of light, which gets no "
+    "bounce), 6 the change of the picture against the game's own (grey: none; lighter: brighter; "
+    "darker). Shown at 0.3 of the value, except 6. 0: off. Live.")
+    .debug_only()
+    .range(0, 6)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_ssgi_test, false, "MCLA/GPU",
+    "Diagnostic: the debug override of the bounce light (mcla_gpu_ssgi): forces its passes on, at the "
+    "occlusion's own quality and whatever mcla_gpu_ssgi says (only while mcla_gpu_ao is not off). The "
+    "scene colour at the occlusion's trigger is kept in a chain of images and the occlusion's main "
+    "pass becomes a visibility bitmask that also finds what colour the blockers of each pixel's sky "
+    "light are, then accumulated over frames and filtered. The occlusion's own look stays (its "
+    "visibility now comes from the bitmask); the bounce is added to the picture as the setting adds it "
+    "(mcla_gpu_ssgi_strength 0: not added), or shown by mcla_gpu_ssgi_test_view. Costs about as much "
+    "as the occlusion again. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_test_thickness, 0.0, "MCLA/GPU",
+    "Diagnostic: how thick the surfaces the bitmask finds are assumed to be, in the game's world units "
+    "(about metres): a sample blocks the directions between its front and its back, the back being "
+    "this far behind the front along the view ray. 0: solid, a sample blocks everything below its "
+    "horizon (the occlusion's own horizon search, to within 1/32). Live.")
+    .debug_only()
+    .range(0.0, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_test_clamp, 2.0, "MCLA/GPU",
+    "Diagnostic: the brightest radiance a sample of the scene colour may carry into the bounce, as a "
+    "multiple of the frame's ambient plus sun light (never under 0.5): a street lamp, neon or the sun's "
+    "disc is a source, not a surface that bounces light, and would light its whole neighbourhood "
+    "white. Live.")
+    .debug_only()
+    .range(0.25, 16.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_test_facing, 1.0, "MCLA/GPU",
+    "Diagnostic: how much a sample's surface must face the pixel to light it, 0 to 1: 0 takes every "
+    "surface to face the pixel, 1 weighs each by the slope of its depth along the slice (a roof seen "
+    "from the ground, a wall seen from behind: nothing). Costs one more depth read per lit sector. "
+    "Live.")
+    .debug_only()
+    .range(0.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_test_view, 0, "MCLA/GPU",
+    "Diagnostic: shows a stage of the bounce light test as a picture instead of the scene colour "
+    "(only while mcla_gpu_ssgi_test is on, and instead of the other debug views): 1 the bounce light "
+    "the main pass found (one frame, noisy), 2 the scene colour chain's level 0 (the colour the "
+    "blockers are taken from: averaged over the samples, capped), 3 its level 1, 4 its level 2, 5 the "
+    "bounce light cleaned by a 5x5 mean, 6 the visibility the bitmask found (one frame, noisy: the "
+    "occlusion's own view 2 shows it after the denoise and the history), 7 the bounce light after the "
+    "accumulation over frames (the history), 8 the bounce light after the a-trous filter too (what the "
+    "picture's bounce will be made of), 9 how much of the history each pixel kept (white: all it can, "
+    "black: none, so it is new, a vehicle whose own motion is not known, or has no history yet). Shown at "
+    "0.3 of its value times mcla_gpu_ssgi_test_view_gain (view 9 at full white). 0: off. Live.")
+    .debug_only()
+    .range(0, 9)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_test_view_gain, 1.0, "MCLA/GPU",
+    "Diagnostic: the brightness of mcla_gpu_ssgi_test_view's picture, 0.1 to 16 times. Live.")
+    .debug_only()
+    .range(0.1, 16.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_test_history, 16, "MCLA/GPU",
+    "Diagnostic: how many frames the bounce light test averages the bounce over, 2 to 64 (the "
+    "occlusion's own visibility keeps mcla_gpu_ao_history). The bounce is found again in the last frame "
+    "by the camera's and the vehicles' motion and kept only where it is the same surface; more frames is "
+    "smoother and slower to follow a light that changed, fewer is noisier. Live.")
+    .debug_only()
+    .range(2, 64)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ssgi_test_history_clamp, 1.25, "MCLA/GPU",
+    "Diagnostic: how far the bounce's history may be from this frame's 3x3 neighbourhood of the bounce, in "
+    "standard deviations of that neighbourhood (and never under 5% of its mean): the history is cut to that "
+    "box. Narrow follows a changed light at once and keeps more noise; wide keeps the history longer and "
+    "leaves a ghost of a car that went by. Live.")
+    .debug_only()
+    .range(0.25, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_ssgi_test_atrous, 2, "MCLA/GPU",
+    "Diagnostic: the iterations of the a-trous filter that takes the noise out of the bounce light after the "
+    "history, 0 to 3 (0: none; each iteration reaches twice as far: 5x5, 9x9, 17x17 pixels, and stops at "
+    "depth edges and corners). The history itself is never filtered. Live.")
+    .debug_only()
+    .range(0, 3)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_ao_census, 0, "MCLA/GPU",
     "Diagnostic: every Nth guest frame (and the first three frames with the main view), one block "
@@ -192,6 +337,16 @@ constexpr float kSkyDistance = 60000.0f;
 constexpr uint32_t kApplyOcclusionFlag = 1u << 22;
 constexpr uint32_t kApplyContactFlag = 1u << 23;
 constexpr uint32_t kApplyMaskFlag = 1u << 24;
+// The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): its limit rides in flags bits 8-15 (the slices'
+// and steps' place, which the apply does not read) in units of kGiLimitUnit, and its debug views are 16 to
+// 21 (mcla_gpu_ssgi_view 1 to 6).
+constexpr uint32_t kGiLimitShift = 8;
+constexpr uint32_t kGiLimitMask = 0xFFu << kGiLimitShift;
+constexpr float kGiLimitUnit = 0.02f;
+constexpr uint32_t kGiApplyViewBase = 15;
+// The frames the bounce light's images are kept after the last frame that used them: a pause spell (the
+// pause menu's and the map's world runs the plain occlusion) does not make them again.
+constexpr uint32_t kGiReleaseAfterFrames = 600;
 // The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
 // are 1 to 6).
 constexpr uint32_t kContactViewBase = 7;
@@ -219,6 +374,22 @@ constexpr float kContactFadeEnd = 80.0f;
 // The steps of the ray at low and at high.
 constexpr uint32_t kContactStepsLow = 8;
 constexpr uint32_t kContactStepsHigh = 16;
+
+// The SSGI test (hlsl/ao_color_ps.hlsl, the bitmask pass of hlsl/ao_main_ps.hlsl): the images are RGBA16F
+// (the colour chain's three, and the main pass's visibility + bounce); a sample's radiance is capped at
+// a multiple of the frame's ambient + sun and never under this, so that a night's dim constants
+// (ambient 0.05) do not cap a lamp's pool to nothing.
+constexpr plume::RenderFormat kGiFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
+constexpr float kGiCapFloor = 0.5f;
+// The debug pictures of mcla_gpu_ssgi_test_view, as the colour view pass numbers them (ao_color_ps.hlsl
+// pass 2): the image's rgb, its yzw, its x, its yzw cleaned by a 5x5 mean.
+constexpr uint32_t kGiViewRgb = 1;
+constexpr uint32_t kGiViewBounce = 2;
+constexpr uint32_t kGiViewGrey = 3;
+constexpr uint32_t kGiViewBounceMean = 4;
+// What the colour view pass multiplies a debug picture by (ao_color_ps.hlsl kViewScale): a view that is
+// a weight asks for it back so that 1 is white.
+constexpr float kGiViewScale = 0.3f;
 
 float Smoothstep(double edge0, double edge1, double x) {
   const double t = std::clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
@@ -330,6 +501,11 @@ LiveText& ContactSetting() {
   return text;
 }
 
+LiveText& SsgiSetting() {
+  static LiveText text("mcla_gpu_ssgi");
+  return text;
+}
+
 // The levels of host_plan.h are the owners' Modes, in the same order.
 static_assert(uint8_t(host_plan::Level::kOff) == uint8_t(AmbientOcclusion::Mode::kOff) &&
               uint8_t(host_plan::Level::kLow) == uint8_t(AmbientOcclusion::Mode::kLow) &&
@@ -365,6 +541,18 @@ host_plan::Choice ContactChoice() {
 
 AmbientOcclusion::Mode ReadContactMode() {
   return ToMode(ContactChoice().level);
+}
+
+// mcla_gpu_ssgi with the auto value resolved for this GPU (gpu_class.h, host_plan.h): off, low or high. Its
+// `auto` is off until the class is known (and off on every class for now). That the occlusion is on is
+// asked where it is used (host_plan::Decide holds it off for the precache, BeginFrame for the draws).
+host_plan::Choice BounceChoice() {
+  return host_plan::Resolve(host_plan::Pass::kBounce, gpu_class::Current(), gpu_class::Known(),
+                            SsgiSetting().Get());
+}
+
+AmbientOcclusion::Mode ReadSsgiMode() {
+  return ToMode(BounceChoice().level);
 }
 
 // A binary16 as a float.
@@ -431,6 +619,16 @@ uint32_t AmbientOcclusion::ApplyVariant(bool debug, uint32_t host_samples) {
   return kVApplyBase + (debug ? 4u : 0u) + log2_samples;
 }
 
+uint32_t AmbientOcclusion::GiApplyVariant(bool debug, uint32_t host_samples) {
+  const uint32_t log2_samples = std::min(uint32_t(std::countr_zero(std::max(host_samples, 1u))), 3u);
+  return kVApplyGiBase + (debug ? 4u : 0u) + log2_samples;
+}
+
+uint32_t AmbientOcclusion::GiViewVariant(uint32_t host_samples) {
+  const uint32_t log2_samples = std::min(uint32_t(std::countr_zero(std::max(host_samples, 1u))), 3u);
+  return kVGiView + log2_samples;
+}
+
 std::string AmbientOcclusion::VariantName(uint32_t variant) {
   switch (variant) {
     case kVDepth: return "ao depth";
@@ -442,7 +640,22 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVTemporalMs: return "ao temporal (multisampled)";
     case kVVehicleTable: return "ao vehicle table";
     case kVContact: return "ao contact shadows";
+    case kVMainGi: return "ssgi visibility bitmask";
+    case kVColor: return "ssgi colour";
+    case kVColorMs: return "ssgi colour (multisampled)";
+    case kVColorMip: return "ssgi colour level";
+    case kVDenoiseGi: return "ssgi denoise";
+    case kVTemporalGi: return "ssgi temporal";
+    case kVTemporalGiMs: return "ssgi temporal (multisampled)";
+    case kVAtrous: return "ssgi a-trous";
     default: break;
+  }
+  if (variant >= kVGiView && variant < kVGiView + 4) {
+    return std::format("ssgi view {}x", 1u << (variant - kVGiView));
+  }
+  if (variant >= kVApplyGiBase) {
+    const uint32_t gi_index = variant - kVApplyGiBase;
+    return std::format("ssgi {} {}x", (gi_index & 4) ? "apply view" : "apply", 1u << (gi_index & 3));
   }
   const uint32_t index = variant - kVApplyBase;
   return std::format("ao {} {}x", (index & 4) ? "view" : "apply", 1u << (index & 3));
@@ -474,15 +687,20 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   // The contact march's shader (and, in ListPrecache, its pipeline) is made only where the contact shadows
   // are on at the start (not on the Low class, where `auto` is off): where they are off it would be
   // compile work and memory for nothing. A live switch to on makes the shader then (EnsureContactShader)
-  // and its pipeline in the background (HoldUntilBuilt).
+  // and its pipeline in the background (HoldUntilBuilt). The bounce light's shaders (the passes after
+  // kCorePassCount) the same way: made below where it is on at the start (it is off on every class for
+  // now), else when it is switched on (EnsureGiShaders).
   const host_plan::Choice occlusion_at_start = AoChoice();
   const host_plan::Choice contact_at_start_choice = ContactChoice();
+  host_plan::Choice bounce_at_start_choice =
+      host_plan::HoldBounce(BounceChoice(), occlusion_at_start.level);  // it needs the occlusion's images
   const bool contact_at_start = contact_at_start_choice.level != host_plan::Level::kOff;
   contact_shader_failed_ = false;
   listed_.fill(false);
   occlusion_built_ = false;
   contact_built_ = false;
-  for (uint32_t i = 0; i < kPassCount && ok; ++i) {
+  bounce_built_ = false;
+  for (uint32_t i = 0; i < kCorePassCount && ok; ++i) {
     if (i == kPassContact && !contact_at_start) {
       continue;
     }
@@ -509,7 +727,39 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
                  "no history this session (the wide blur)");
   }
   ready_ = true;
-  ListPrecache(occlusion_at_start, contact_at_start_choice);
+  if (bounce_at_start_choice.level != host_plan::Level::kOff && !EnsureGiShaders()) {
+    bounce_at_start_choice.level = host_plan::Level::kOff;  // EnsureGiShaders said why
+  }
+  ListPrecache(occlusion_at_start, contact_at_start_choice, bounce_at_start_choice);
+}
+
+bool AmbientOcclusion::EnsureGiShaders() {
+  if (gi_ready_) {
+    return true;
+  }
+  if (!ready_ || gi_shaders_failed_) {
+    return false;
+  }
+  // The bounce light's shaders (and the debug override's) are made where the bounce light is on at the
+  // start, or the first time it is asked for after (a session without it holds the occlusion's alone); a
+  // failure takes the bounce light only.
+  bool ok = true;
+  for (uint32_t i = kCorePassCount; i < kPassCount && ok; ++i) {
+    const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
+    shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
+    ok = shaders_[i] != nullptr;
+  }
+  if (!ok) {
+    for (uint32_t i = kCorePassCount; i < kPassCount; ++i) {
+      shaders_[i].reset();
+    }
+    gi_shaders_failed_ = true;
+    REXLOG_ERROR("[gpu] ao: a shader of the bounce light could not be made: no bounce light this "
+                 "session (the occlusion is not affected)");
+    return false;
+  }
+  gi_ready_ = true;
+  return true;
 }
 
 void AmbientOcclusion::Shutdown() {
@@ -530,8 +780,19 @@ void AmbientOcclusion::Shutdown() {
     image = HostImage{};
   }
   weight_ = HostImage{};
+  for (HostImage& image : colour_) {
+    image = HostImage{};
+  }
+  gi_ = HostImage{};
+  gi_dn_ = HostImage{};
+  for (HostImage& image : gi_hist_) {
+    image = HostImage{};
+  }
+  depth_prev_ = HostImage{};
+  gi_weight_ = HostImage{};
   vehicle_table_ = HostImage{};
   history_valid_ = false;
+  history_gi_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
   }
@@ -541,6 +802,8 @@ void AmbientOcclusion::Shutdown() {
   vehicle_table_shader_.reset();
   layout_.reset();
   ready_ = false;
+  gi_ready_ = false;
+  gi_shaders_failed_ = false;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -593,17 +856,37 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   if (needs.occlusion && vehicle_table_shader_) {
     variants.push_back(kVVehicleTable);
   }
+  // The bounce light's own passes (the colour chain, the visibility bitmask, its denoise, history and
+  // a-trous filter, and the apply with the bounce), only where their shaders were made (EnsureGiShaders:
+  // at the start where it is on then, or when it is switched on). The occlusion's plain passes above stay
+  // needed with it: the pause menu's and the map's world, and a frame that cannot have the bounce light,
+  // run the plain occlusion. The debug override's pictures (kVGiView) are never listed.
+  if (needs.bounce && gi_ready_) {
+    for (const uint32_t variant : {uint32_t(kVMainGi), uint32_t(kVColor), uint32_t(kVColorMs),
+                                   uint32_t(kVColorMip), uint32_t(kVDenoiseGi), uint32_t(kVTemporalGi),
+                                   uint32_t(kVTemporalGiMs), uint32_t(kVAtrous),
+                                   GiApplyVariant(false, 1), GiApplyVariant(false, 2),
+                                   GiApplyVariant(false, 4)}) {
+      variants.push_back(variant);
+    }
+    if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
+      variants.push_back(GiApplyVariant(false, 8));
+    }
+  }
   return variants;
 }
 
 void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
-                                    const host_plan::Choice& contact) {
+                                    const host_plan::Choice& contact,
+                                    const host_plan::Choice& bounce) {
   HostPrecache& precache = passes_->precache();
   const gpu_class::GpuClass cls = gpu_class::Current();
-  // What the settings in force at the start use: the occlusion's own groups, and what the contact
-  // shadows add (they share the depth, denoise and apply passes). The census (a debug log) runs the
-  // depth passes with both off. A pass that is off lists nothing: it is not compiled for nothing, and
-  // a switch to on makes its pipelines in the background (HoldUntilBuilt).
+  // What the settings in force at the start use: the occlusion's own groups, what the contact
+  // shadows add (they share the depth, denoise and apply passes) and what the bounce light adds (its
+  // own passes: it is off on every class for now, so a start lists none of them unless the player
+  // switched it on). The census (a debug log) runs the depth passes with everything off. A pass that is
+  // off lists nothing: it is not compiled for nothing, and a switch to on makes its pipelines in the
+  // background (HoldUntilBuilt).
   const bool census = REXCVAR_GET(mcla_gpu_ao_census) != 0;
   const auto list = [&](const host_plan::AmbientNeeds& needs) {
     uint32_t added = 0;
@@ -616,10 +899,14 @@ void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
     }
     return added;
   };
-  const uint32_t for_occlusion = list(host_plan::Ambient(occlusion.level, host_plan::Level::kOff, census));
-  const uint32_t for_contact = list(host_plan::Ambient(occlusion.level, contact.level, census));
+  using host_plan::Level;
+  const uint32_t for_occlusion = list(host_plan::Ambient(occlusion.level, Level::kOff, Level::kOff, census));
+  const uint32_t for_contact = list(host_plan::Ambient(occlusion.level, contact.level, Level::kOff, census));
+  const uint32_t for_bounce =
+      list(host_plan::Ambient(occlusion.level, contact.level, bounce.level, census));
   precache.Note(host_plan::Describe(host_plan::Pass::kOcclusion, occlusion, cls), for_occlusion);
   precache.Note(host_plan::Describe(host_plan::Pass::kContact, contact, cls), for_contact);
+  precache.Note(host_plan::Describe(host_plan::Pass::kBounce, bounce, cls), for_bounce);
 }
 
 std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t variant) {
@@ -641,6 +928,14 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVContact: return make(kPassContact, plume::RenderFormat::R16_FLOAT, copy, 1);
+    case kVMainGi: return make(kPassMainGi, kGiFormat, copy, 1);
+    case kVColor: return make(kPassColor, kGiFormat, copy, 1);
+    case kVColorMs: return make(kPassColorMs, kGiFormat, copy, 1);
+    case kVColorMip: return make(kPassColorMip, kGiFormat, copy, 1);
+    case kVDenoiseGi: return make(kPassDenoiseGi, kGiFormat, copy, 1);
+    case kVTemporalGi: return make(kPassTemporalGi, kGiFormat, copy, 1);
+    case kVTemporalGiMs: return make(kPassTemporalGiMs, kGiFormat, copy, 1);
+    case kVAtrous: return make(kPassAtrous, kGiFormat, copy, 1);
     case kVVehicleTable:
       // The host pass layout (the row's 48 bytes of push constants), as the temporal system's own table.
       return vehicle_table_shader_ ? passes_->CreatePipeline(*vehicle_table_shader_,
@@ -648,10 +943,20 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
                                    : nullptr;
     default: break;
   }
+  if (variant >= kVGiView && variant < kVGiView + 4) {
+    // The test's debug picture: into the scene colour with the target's sample count, the rgb replaced
+    // (the pass writes one colour for every sample of a pixel).
+    plume::RenderBlendDesc view = copy;
+    view.renderTargetWriteMask = kWriteRgb;
+    return make(kPassColorView, plume::RenderFormat::R16G16B16A16_FLOAT, view,
+                1u << (variant - kVGiView));
+  }
   // The apply pass: into the scene colour (float16 RGBA) with the target's sample count. The
   // multiply is dst.rgb * src.rgb (the shader writes the factor); a debug view replaces the rgb.
-  // Alpha is never written.
-  const uint32_t index = variant - kVApplyBase;
+  // Alpha is never written. The bounce light's apply (G7c) is the same pipeline with its own shader:
+  // the factor is then one a colour channel, and may be above 1 (the target is a float one).
+  const bool gi_apply = variant >= kVApplyGiBase;
+  const uint32_t index = variant - (gi_apply ? kVApplyGiBase : kVApplyBase);
   const bool debug = (index & 4) != 0;
   const uint32_t samples = 1u << (index & 3);
   plume::RenderBlendDesc blend = copy;
@@ -665,6 +970,10 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
   }
   blend.renderTargetWriteMask = kWriteRgb;
+  if (gi_apply) {
+    return make(samples > 1 ? kPassApplyGiMs : kPassApplyGi,
+                plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples);
+  }
   return make(samples > 1 ? kPassApplyMs : kPassApply,
               plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples);
 }
@@ -703,36 +1012,56 @@ bool AmbientOcclusion::VariantsReady(const std::vector<uint32_t>& variants) cons
   return true;
 }
 
-void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact) {
+void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* bounce) {
   const bool want_occlusion = *occlusion != Mode::kOff;
   bool want_contact = *contact != Mode::kOff;
-  if ((!want_occlusion || occlusion_built_) && (!want_contact || contact_built_)) {
+  // The bounce light reads the occlusion's images: it is not asked for while the occlusion is off.
+  bool want_bounce = want_occlusion && *bounce != Mode::kOff;
+  if ((!want_occlusion || occlusion_built_) && (!want_contact || contact_built_) &&
+      (!want_bounce || bounce_built_)) {
     return;  // nothing is on, or everything that is on has its pipelines
   }
   if (want_contact && !EnsureContactShader()) {
     *contact = Mode::kOff;  // EnsureContactShader said why
     want_contact = false;
-    if (!want_occlusion) {
-      return;
-    }
+  }
+  if (want_bounce && !EnsureGiShaders()) {
+    *bounce = Mode::kOff;  // EnsureGiShaders said why
+    want_bounce = false;
+  }
+  if (!want_occlusion && !want_contact) {
+    return;
   }
   using host_plan::Level;
   const Level occlusion_level = want_occlusion ? ToLevel(*occlusion) : Level::kOff;
   const Level contact_level = want_contact ? ToLevel(*contact) : Level::kOff;
+  const Level bounce_level = want_bounce ? ToLevel(*bounce) : Level::kOff;
   const bool census = census_every_ != 0;
   // What the start did not list: made on a worker of their own, in the order VariantsFor gives.
   std::vector<HostPrecache::Item> fresh;
-  for (const uint32_t variant : VariantsFor(host_plan::Ambient(occlusion_level, contact_level, census))) {
-    if (!listed_[variant]) {
+  for (const uint32_t variant :
+       VariantsFor(host_plan::Ambient(occlusion_level, contact_level, bounce_level, census))) {
+    if (!listed_[variant] && !pipelines_[variant]) {  // (a debug view's pipeline may be made already)
       listed_[variant] = true;
       fresh.push_back({HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant),
                        VariantName(variant), [this, variant] { return MakePipeline(variant); }});
     }
   }
   if (!fresh.empty()) {
-    const char* what = want_occlusion && want_contact ? "ambient occlusion and contact shadows"
-                       : want_occlusion               ? "ambient occlusion"
-                                                      : "contact shadows";
+    // Named by what is still being made: an effect whose pipelines are done is not "switched on" again.
+    std::string what;
+    const auto name = [&what](bool pending, const char* effect) {
+      if (pending) {
+        what += what.empty() ? "" : ", ";
+        what += effect;
+      }
+    };
+    name(want_occlusion && !occlusion_built_, "ambient occlusion");
+    name(want_contact && !contact_built_, "contact shadows");
+    name(want_bounce && !bounce_built_, "bounce light");
+    if (what.empty()) {
+      what = "a graphics effect";  // a pass an earlier switch did not list (the census's, say)
+    }
     const uint32_t count = passes_->precache().AddLive(what, std::move(fresh));
     REXLOG_INFO("[gpu] ao: {} switched on after the start: {} pipelines are made in the background "
                 "first, and it is drawn from the frame they are done",
@@ -740,16 +1069,27 @@ void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact) {
   }
   // Not drawn until every pipeline of the effect is made: a frame never waits for a compile.
   if (want_occlusion) {
-    occlusion_built_ =
-        VariantsReady(VariantsFor(host_plan::Ambient(occlusion_level, Level::kOff, false)));
+    occlusion_built_ = VariantsReady(
+        VariantsFor(host_plan::Ambient(occlusion_level, Level::kOff, Level::kOff, false)));
     if (!occlusion_built_) {
       *occlusion = Mode::kOff;
     }
   }
   if (want_contact) {
-    contact_built_ = VariantsReady(VariantsFor(host_plan::Ambient(Level::kOff, contact_level, false)));
+    contact_built_ = VariantsReady(
+        VariantsFor(host_plan::Ambient(Level::kOff, contact_level, Level::kOff, false)));
     if (!contact_built_) {
       *contact = Mode::kOff;
+    }
+  }
+  if (want_bounce) {
+    // The bounce light's own passes (the occlusion's are the occlusion's own check above: it is drawn only
+    // where the occlusion is).
+    host_plan::AmbientNeeds own;
+    own.bounce = true;
+    bounce_built_ = VariantsReady(VariantsFor(own));
+    if (!bounce_built_ || !occlusion_built_) {
+      *bounce = Mode::kOff;
     }
   }
 }
@@ -771,9 +1111,10 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
       [&] { return MakePipeline(variant); });
   if (!pipelines_[variant]) {
     pipeline_failed_[variant] = true;
-    REXLOG_ERROR("[gpu] ao: the pipeline '{}' could not be made: no ambient occlusion this "
-                 "session in that configuration",
-                 VariantName(variant));
+    REXLOG_ERROR("[gpu] ao: the pipeline '{}' could not be made: no {} this session in that "
+                 "configuration",
+                 VariantName(variant),
+                 variant >= kVMainGi ? "bounce light" : "ambient occlusion");
   }
   return pipelines_[variant].get();
 }
@@ -798,11 +1139,33 @@ void AmbientOcclusion::BeginFrame() {
     REXLOG_INFO("[gpu] contact shadows {}{} (mcla_gpu_contact_shadows {}, live)", ModeName(contact),
                 setting == "auto" ? " (auto on this GPU)" : "", setting);
   }
+  // The bounce light: the setting (its auto value resolved for this GPU) or the debug override
+  // mcla_gpu_ssgi_test. It needs the occlusion's own images and passes (PlanGi says so again per frame).
+  Mode gi_mode = ReadSsgiMode();
+  if (!ready_) {
+    gi_mode = Mode::kOff;  // the passes could not be made (Initialize said so)
+  }
+  if (uint32_t(gi_mode) != last_gi_logged_) {
+    last_gi_logged_ = uint32_t(gi_mode);
+    const std::string setting = Lower(SsgiSetting().Get());
+    REXLOG_INFO("[gpu] ssgi: bounce light {}{} (mcla_gpu_ssgi {}, live; it needs mcla_gpu_ao on)",
+                ModeName(gi_mode), setting == "auto" ? " (auto on this GPU)" : "", setting);
+  }
   // The pipelines of what is on are made (listed at the start, or in the background since the switch);
   // until then that effect is drawn as off.
-  HoldUntilBuilt(&mode, &contact);
+  HoldUntilBuilt(&mode, &contact, &gi_mode);
   mode_ = mode;
   contact_mode_ = contact;
+  gi_mode_ = gi_mode;
+  const bool test = REXCVAR_GET(mcla_gpu_ssgi_test);
+  gi_active_ = (test || gi_mode_ != Mode::kOff) && mode_ != Mode::kOff && EnsureGiShaders();
+  const bool gi_test = test && gi_active_;
+  if (gi_test != gi_test_) {
+    gi_test_ = gi_test;
+    REXLOG_INFO("[gpu] ssgi: the bounce light test is {} (mcla_gpu_ssgi_test, live; it needs "
+                "mcla_gpu_ao on)",
+                gi_test ? "on" : "off");
+  }
 }
 
 uint64_t AmbientOcclusion::HeldBytes() const {
@@ -821,6 +1184,16 @@ uint64_t AmbientOcclusion::HeldBytes() const {
     add(image);
   }
   add(weight_);
+  for (const HostImage& image : colour_) {
+    add(image);
+  }
+  add(gi_);
+  add(gi_dn_);
+  for (const HostImage& image : gi_hist_) {
+    add(image);
+  }
+  add(depth_prev_);
+  add(gi_weight_);
   add(vehicle_table_);
   return bytes;
 }
@@ -838,6 +1211,7 @@ void AmbientOcclusion::ReleaseImages() {
     passes_->ReleaseImage(image);
   }
   passes_->ReleaseImage(weight_);
+  ReleaseGiImages();
   passes_->ReleaseImage(vehicle_table_);
   history_valid_ = false;
   history_cut_ = false;
@@ -1175,8 +1549,8 @@ bool AmbientOcclusion::IsLaterTile(const ResolveCache::Summary& summary) const {
 
 bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                                  plume::RenderCommandList* list, bool upscaler_running) {
-  if (contact_mode_ != Mode::kOff) {
-    NoteMaskResolve(record);
+  if (contact_mode_ != Mode::kOff || gi_active_) {
+    NoteMaskResolve(record);  // the bounce light reads the sun's shadow mask too (the albedo estimate)
   }
   if (!summary.depth_copy) {
     ++other_resolves_;
@@ -1256,9 +1630,6 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.mode = Mode::kLow;  // the cheaper size is enough for a statistic
     plan.apply = false;
   }
-  // The passes run at half the picture's size when nothing that is on asks for the whole of it.
-  plan.low = !(plan.occlusion && plan.mode == Mode::kHigh) &&
-             !(contact && plan.contact.mode == Mode::kHigh);
   plan.upscaler = upscaler_running;
   plan.view = plan.occlusion ? uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 6)) : 0u;
   if (contact) {
@@ -1266,6 +1637,15 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     if (contact_view != 0) {
       plan.view = kContactViewBase + contact_view;  // instead of the occlusion's
     }
+  }
+  PlanGi(&plan);
+  // The passes run at half the picture's size when nothing that is on asks for the whole of it (the bounce
+  // light's high does, as the occlusion's).
+  plan.low = !(plan.occlusion && plan.mode == Mode::kHigh) &&
+             !(contact && plan.contact.mode == Mode::kHigh) &&
+             !(plan.gi.on && plan.gi.mode == Mode::kHigh);
+  if (plan.gi.on && plan.gi.half && !(contact && plan.contact.mode == Mode::kHigh)) {
+    plan.low = true;  // the bounce light's low at half the size, whatever the occlusion's own quality
   }
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
@@ -1368,7 +1748,9 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
          passes_->EnsureImage(denoised_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
                               "ao denoised visibility");
   }
-  if (ok && plan.occlusion) {
+  // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
+  // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
+  if (ok && plan.occlusion && !plan.gi.on) {
     ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
@@ -1386,7 +1768,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
     history_cut_ = false;
   }
   // The picture of debug view 6, made only while that view is shown.
-  if (ok && plan.occlusion && plan.view == 6u) {
+  if (ok && plan.occlusion && !plan.gi.on && plan.view == 6u) {
     ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
                               "ao history weight");
   } else if (weight_.texture) {
@@ -1402,7 +1784,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                 plan.ao[0], plan.ao[1], plan.render[0], plan.render[1], what,
                 levels ? " with two coarser levels" : "",
                 scratch ? ", visibility R16_FLOAT x2" : "",
-                plan.occlusion ? ", history R16G16_FLOAT x2" : "",
+                plan.occlusion && !plan.gi.on ? ", history R16G16_FLOAT x2" : "",
                 double(HeldBytes()) / (1024.0 * 1024.0));
   }
   return ok;
@@ -1471,7 +1853,8 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   push->slots[1] = summary.host_sample;
   // The occlusion's own quality picks the slices and steps; the images are at half the picture's size
   // (the flag the shaders read) when nothing that is on asks for more (Plan::low).
-  const bool ao_low = plan.mode == Mode::kLow;
+  // (the bounce light's own quality when it runs: its main pass is the occlusion's)
+  const bool ao_low = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kLow;
   const bool low = plan.low;
   const uint32_t slices = ao_low ? 2 : 3;
   const uint32_t steps = ao_low ? 2 : 3;
@@ -1485,7 +1868,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // down -z): tan of the half field of view from its x and y scales, the depth rows for the
   // linearisation (t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored depth).
   const temporal::Mat4& p = previous_.projection;
-  const float radius = look_.radius;
+  const float radius = look_.radius * (plan.gi.on ? plan.gi.radius : 1.0f);
   const float fade_end = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_fade_end), 20.0, 1000.0));
   push->lens[0] = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
   push->lens[1] = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
@@ -1536,6 +1919,7 @@ const char* AmbientOcclusion::HistoryWhyName(HistoryWhy why) {
     case HistoryWhy::kGap: return "not the frame after the one that made it";
     case HistoryWhy::kView: return "the other kind of view (play against pause/map)";
     case HistoryWhy::kSize: return "another image size";
+    case HistoryWhy::kKind: return "the history of the other kind (the bounce light test switched)";
     case HistoryWhy::kCut: return "a cut of the camera";
     case HistoryWhy::kCap: return "mcla_gpu_ao_history is 1";
     case HistoryWhy::kCount: break;
@@ -1607,6 +1991,8 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) c
     use.why = HistoryWhy::kView;
   } else if (history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]) {
     use.why = HistoryWhy::kSize;
+  } else if (history_gi_ != plan.gi.on) {
+    use.why = HistoryWhy::kKind;
   } else {
     bool cut = false;
     if (!FrameMotion(&use.motion, &use.pose, &cut)) {
@@ -1773,7 +2159,9 @@ void AmbientOcclusion::LogVehicleSummary() {
 }
 
 bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
-                           const Plan& plan) {
+                           const Plan& requested) {
+  // The frame's plan, which the SSGI test may take its part out of (PrepareGi).
+  Plan plan = requested;
   EdramTargets::Target& depth_target = *summary.source;
   const bool ms = depth_target.host_samples > 1;
   // Everything that can fail before anything is recorded. The coarser depth levels are the
@@ -1810,6 +2198,34 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     return false;
   }
+  // The bounce light test: its pipelines, the main view's colour target and its images. A frame
+  // that cannot have it is the plain occlusion; with the test off its images go back.
+  EdramTargets::Target* gi_colour = nullptr;
+  uint32_t gi_colour_slot = kNoSlot;
+  if (plan.gi.on) {
+    if (PrepareGi(summary, list, plan, &gi_colour, &gi_colour_slot)) {
+      gi_idle_frames_ = 0;
+      // The test has a history of its own: the occlusion's is given back (made again if the test goes).
+      for (HostImage& image : history_) {
+        if (image.texture) {
+          passes_->ReleaseImage(image);
+        }
+      }
+      if (weight_.texture) {
+        passes_->ReleaseImage(weight_);
+      }
+    } else {
+      // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
+      plan.gi = GiPlan{};
+      if (!EnsureImages(plan)) {
+        return false;
+      }
+    }
+  } else if (++gi_idle_frames_ >= kGiReleaseAfterFrames) {
+    // A frame without the bounce light (the pause menu's world, a setting turned off): its images are kept
+    // for a while, so that a pause spell does not make them again.
+    ReleaseGiImages();
+  }
   LightRaw light;
   uint32_t with_it = 0;
   const bool have_light = PickLight(&light, &with_it);
@@ -1843,34 +2259,77 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[3] = float(plan.level[0][1]);
     DrawPass(list, depth_[2], mip_pipeline, push);
   }
+  if (plan.gi.on) {
+    RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
+  }
 
   // The visibility image the apply pass reads for the occlusion's term (the depth image stands in
   // while the term is off: the apply pass does not read it then).
   uint32_t ao_slot = depth_[0].slot;
+  // The test's images the debug views show: the bounce's history, and the bounce after the a-trous
+  // filter (the history itself when there is no filtering).
+  HostImage* gi_history = nullptr;
+  HostImage* gi_bounce = nullptr;
   if (plan.occlusion) {
     // The visibility from the chain.
-    pass_timing_->Mark(list, "ao visibility");
+    pass_timing_->Mark(list, plan.gi.on ? "ssgi visibility" : "ao visibility");
     push = base;
     push.slots[2] = depth_[0].slot;
     push.slots[3] = depth_[1].slot;
     push.slots2[0] = depth_[2].slot;
     push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
     push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
-    DrawPass(list, raw_, main_pipeline, push);
+    // The bounce light test's main pass is the same pass as a visibility bitmask: it reads the colour
+    // chain too (slots.x, slots.y, slots2.w; the plain pass leaves them alone), the thickness and the
+    // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the
+    // first denoise pass below reads in place of raw_.
+    HostImage* main_out = &raw_;
+    if (plan.gi.on) {
+      Push gi_push = push;
+      gi_push.slots[0] = colour_[0].slot;
+      gi_push.slots[1] = colour_[1].slot;
+      gi_push.slots2[3] = colour_[2].slot;
+      gi_push.shape[2] = plan.gi.thickness;
+      gi_push.shape[3] = plan.gi.facing;
+      DrawPass(list, gi_, Pipeline(kVMainGi), gi_push);
+      main_out = &gi_;
+    } else {
+      DrawPass(list, raw_, main_pipeline, push);
+    }
     // The history this frame can lean on, and the camera's motion into it.
     const HistoryUse use = ChooseHistory(plan);
     NoteHistory(use);
+    // The history's two images take turns as the one this frame reads and the one it writes: the
+    // test's (RGBA16F) or the occlusion's (RG16F).
+    const uint32_t out_index = 1 - history_index_;
+    HostImage* history_pair = plan.gi.on ? gi_hist_ : history_;
+    HostImage& history_in = history_pair[history_index_];
+    HostImage& history_out = history_pair[out_index];
     // The denoise: once with a history to average into, twice (the second pass back into the first
     // one's input image) without. It is never left out, whatever the quality or the upscaler.
-    pass_timing_->Mark(list, "ao denoise");
-    push.slots[2] = raw_.slot;
+    pass_timing_->Mark(list, plan.gi.on ? "ssgi denoise" : "ao denoise");
+    push.slots[2] = main_out->slot;
     push.slots[3] = depth_[0].slot;
-    DrawPass(list, denoised_, denoise_pipeline, push);
-    HostImage* visibility = &denoised_;
-    if (!use.on) {
-      push.slots[2] = denoised_.slot;
-      DrawPass(list, raw_, denoise_pipeline, push);
-      visibility = &raw_;
+    HostImage* visibility = nullptr;
+    if (plan.gi.on) {
+      // The same blur over the four channels. The test's second pass (a frame with no history) goes into
+      // the history's idle image: nothing reads it this frame before the accumulation writes the other.
+      plume::RenderPipeline* denoise_gi = Pipeline(kVDenoiseGi);
+      DrawPass(list, gi_dn_, denoise_gi, push);
+      visibility = &gi_dn_;
+      if (!use.on) {
+        push.slots[2] = gi_dn_.slot;
+        DrawPass(list, history_in, denoise_gi, push);
+        visibility = &history_in;
+      }
+    } else {
+      DrawPass(list, denoised_, denoise_pipeline, push);
+      visibility = &denoised_;
+      if (!use.on) {
+        push.slots[2] = denoised_.slot;
+        DrawPass(list, raw_, denoise_pipeline, push);
+        visibility = &raw_;
+      }
     }
     // The accumulation over frames: this frame's visibility with the history's into the other
     // history image, which is the next frame's history and what the apply reads.
@@ -1879,15 +2338,21 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // depth target (Texture2D<uint4> / Texture2DMS<uint4>) in the depth target's SHADER_READ
     // layout. The census line "history:" counts the frames that used a history against the resets
     // and where the camera's motion came from.
-    pass_timing_->Mark(list, "ao temporal");
-    const uint32_t out_index = 1 - history_index_;
-    HostImage& history_in = history_[history_index_];
-    HostImage& history_out = history_[out_index];
+    pass_timing_->Mark(list, plan.gi.on ? "ssgi temporal" : "ao temporal");
     push = base;
     push.slots[2] = visibility->slot;
     push.slots[3] = depth_[0].slot;
     // Without a history the slot is any readable image: the shader does not read it.
     push.slots2[0] = use.on ? history_in.slot : depth_[0].slot;
+    if (plan.gi.on) {
+      // The test's accumulation: the last frame's depth is the image the depth pass wrote then (slots2.y
+      // carried the frame number, which this pass does not read), the weight the bounce's history keeps
+      // (its own number of frames) and the width of its clip.
+      push.slots2[1] = use.on ? depth_prev_.slot : depth_[0].slot;
+      push.lens[2] =
+          use.on ? float(1.0 - 1.0 / double(std::min(use.age + 2, plan.gi.history))) : 0.0f;
+      push.lens[3] = plan.gi.clamp_width;
+    }
     push.slots2[2] |= use.on ? kHistoryFlag : 0u;
     push.slots2[3] = summary.stencil_slot;
     // The vehicles' rows: the vehicle table is drawn first (the list is outside any pass here), and the
@@ -1943,11 +2408,43 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // Debug view 6 shows how much history each pixel kept: the pass runs once more into an image of
     // its own, so that the history that goes on to the next frame is the normal one whatever the
     // view.
-    if (plan.view == 6u) {
-      DrawPass(list, weight_, temporal_pipeline, push);
+    // The test's weight picture is also what its debug view 9 shows.
+    plume::RenderPipeline* accumulate =
+        plan.gi.on ? Pipeline(ms ? kVTemporalGiMs : kVTemporalGi) : temporal_pipeline;
+    HostImage& weight_image = plan.gi.on ? gi_weight_ : weight_;
+    if (plan.view == 6u || (plan.gi.on && plan.gi.view == 9u)) {
+      push.slots2[2] = (push.slots2[2] & ~0xFFu) | 6u;
+      DrawPass(list, weight_image, accumulate, push);
     }
     push.slots2[2] &= ~0xFFu;  // the frame's own run writes no debug picture
-    DrawPass(list, history_out, temporal_pipeline, push);
+    DrawPass(list, history_out, accumulate, push);
+    if (plan.gi.on) {
+      // The a-trous filter of the bounce over the history, into the two images nothing needs now (the
+      // denoised image and the history's idle one), each iteration reading the last one's output: the
+      // history itself is never filtered.
+      gi_history = &history_out;
+      gi_bounce = &history_out;
+      if (plan.gi.atrous != 0) {
+        pass_timing_->Mark(list, "ssgi a-trous");
+        plume::RenderPipeline* atrous = Pipeline(kVAtrous);
+        HostImage* scratch[2] = {&gi_dn_, &history_in};
+        for (uint32_t i = 0; i < plan.gi.atrous; ++i) {
+          Push filter = base;
+          filter.slots2[2] &= ~0xFFu;
+          filter.slots[2] = gi_bounce->slot;
+          filter.slots[3] = depth_[0].slot;
+          filter.slots2[0] = 1u << i;  // the taps' distance in pixels
+          filter.sizes[0] = filter.sizes[2] = float(plan.ao[0]);
+          filter.sizes[1] = filter.sizes[3] = float(plan.ao[1]);
+          HostImage& target = *scratch[i & 1];
+          DrawPass(list, target, atrous, filter);
+          gi_bounce = &target;
+        }
+      }
+      if (use.on) {
+        ++gi_history_runs_;
+      }
+    }
     history_index_ = out_index;
     history_valid_ = true;
     history_cut_ = false;
@@ -1957,8 +2454,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     history_size_[1] = plan.ao[1];
     history_tan_[0] = base.lens[0];
     history_tan_[1] = base.lens[1];
-    history_age_ = use.on ? std::min(use.age + 1, use.cap) : 0u;
-    ao_slot = (plan.view == 6u ? weight_ : history_out).slot;
+    // The test's bounce averages over more frames than the visibility does: its age runs on to its cap.
+    history_age_ =
+        use.on ? std::min(use.age + 1, plan.gi.on ? std::max(use.cap, plan.gi.history) : use.cap)
+               : 0u;
+    history_gi_ = plan.gi.on;
+    ao_slot = (plan.view == 6u ? weight_image : history_out).slot;
   }
   // The contact shadows: their march and its denoise, into the two scratch images the occlusion has
   // finished with.
@@ -1969,6 +2470,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (contact_slot != kNoSlot) {
       mask_slot = FindMaskSlot();
     }
+  }
+  if (mask_slot == kNoSlot && plan.gi.apply) {
+    mask_slot = FindMaskSlot();  // the bounce light's albedo estimate takes the sun's shadow into account
   }
   const bool contact_applied = contact_slot != kNoSlot;
   bool applied = false;
@@ -1990,8 +2494,79 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.lens[3] = plan.contact.fade_end;
     push.shape[0] = plan.contact.mask_gain;
     push.extra[3] = plan.contact.strength;
+    if (plan.gi.apply && gi_bounce) {
+      // The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): the filtered image holds the visibility
+      // (x, as the history kept it) and the bounce, the colour chain's level 0 the pixel's own colour (and
+      // whether it is a source of light); the strength rides in shape.y, the limit in the flags' bits 8-15.
+      push.slots[2] = gi_bounce->slot;
+      push.slots2[1] = colour_[0].slot;
+      push.shape[1] = plan.gi.strength;
+      push.slots2[2] = (push.slots2[2] & ~kGiLimitMask) |
+                       ((uint32_t(std::lround(plan.gi.limit / kGiLimitUnit)) << kGiLimitShift) &
+                        kGiLimitMask);
+      if (plan.gi.apply_view != 0) {
+        push.slots2[2] = (push.slots2[2] & ~0xFFu) | (kGiApplyViewBase + plan.gi.apply_view);
+      }
+    }
+    if (plan.gi.on && plan.gi.view != 0) {
+      // The test's debug picture in place of the apply: an image of the test over the colour target
+      // (hlsl/ao_color_ps.hlsl pass 2): 1 the bounce, 2-4 the chain's levels, 5 the bounce cleaned,
+      // 6 the visibility.
+      const uint32_t v = plan.gi.view;
+      const HostImage& shown = (v >= 2 && v <= 4) ? colour_[v - 2]
+                               : v == 7           ? *gi_history
+                               : v == 8           ? *gi_bounce
+                               : v == 9           ? gi_weight_
+                                                  : gi_;
+      push = base;
+      push.slots[2] = shown.slot;
+      push.sizes[0] = float(plan.render[0]);
+      push.sizes[1] = float(plan.render[1]);
+      push.sizes[2] = float(shown.width);
+      push.sizes[3] = float(shown.height);
+      push.slots2[2] = (v == 1 || v == 7 || v == 8) ? kGiViewBounce
+                       : v == 5                      ? kGiViewBounceMean
+                       : (v == 6 || v == 9)          ? kGiViewGrey
+                                                     : kGiViewRgb;
+      // The weight is shown at full white for 1 (the other pictures at 0.3 of their value).
+      push.shape[0] = plan.gi.view_gain * (v == 9 ? 1.0f / kGiViewScale : 1.0f);
+    }
     applied = RecordApply(list, summary, plan, push);
     applied_this_frame_ = applied;
+  }
+  if (plan.gi.on) {
+    if (gi_runs_ == 0) {
+      REXLOG_INFO("[gpu] ssgi: the first frame of the bounce light test: the colour chain {}x{} and "
+                  "two coarser levels (RGBA16F) from the {}-sample main colour target, the "
+                  "visibility bitmask in place of the GTAO horizons ({}), thickness {:.2f} ({}), a "
+                  "sample's radiance capped at {:.2f} x (ambient + sun) and at least {:.2f}, facing "
+                  "weight {:.2f}, debug view {}, {:.1f} MiB held by all the occlusion's images",
+                  plan.ao[0], plan.ao[1], depth_target.host_samples, ModeName(plan.mode),
+                  plan.gi.thickness, plan.gi.thickness > 0.0f ? "a slab" : "a solid", plan.gi.cap,
+                  kGiCapFloor, plan.gi.facing, plan.gi.view, double(HeldBytes()) / (1024.0 * 1024.0));
+      REXLOG_INFO("[gpu] ssgi: the bounce has its own history and denoise: the occlusion's 3x3 blur over "
+                  "the four channels, an accumulation over frames (RGBA16F history, the last frame's depth "
+                  "in an R32_FLOAT image of its own; the same camera motion, vehicle rows and tests as the "
+                  "occlusion's history; the bounce over {} frames at most, its history clipped to {:.2f} "
+                  "deviations of this frame's 3x3 neighbourhood) and {} a-trous iteration(s) of the "
+                  "history's copy (the picture's bounce comes from it; the history is never filtered). "
+                  "The occlusion's own RG16F history is not made while the test is on; the visibility "
+                  "comes from the x channel of the new history (reported once)",
+                  plan.gi.history, plan.gi.clamp_width, plan.gi.atrous);
+    }
+    if (plan.gi.apply && !gi_apply_logged_) {
+      gi_apply_logged_ = true;
+      REXLOG_INFO("[gpu] ssgi: the bounce light is added to the picture ({} from {}): {} slices and {} steps "
+                  "at {}x{} for the {}x{} picture, strength {:.2f}, at most {:.2f} of a pixel's own colour, "
+                  "search radius x{:.2f} of the occlusion's; the sun's shadow mask {} (without it the "
+                  "albedo estimate takes the sun as unshadowed); the pause menu's and the map's world "
+                  "runs the plain occlusion",
+                  ModeName(plan.gi.mode), plan.gi.test ? "the debug override mcla_gpu_ssgi_test" : "mcla_gpu_ssgi",
+                  plan.gi.fewer ? 2 : 3, plan.gi.fewer ? 2 : 3, plan.ao[0],
+                  plan.ao[1], plan.render[0], plan.render[1], plan.gi.strength, plan.gi.limit,
+                  plan.gi.radius, mask_slot != kNoSlot ? "found" : "not found in this frame");
+    }
+    ++gi_runs_;
   }
   if (contact_applied) {
     contact_mask_ = mask_slot != kNoSlot;
@@ -2009,6 +2584,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   }
   if (plan.probe) {
     RecordProbe(list, plan);
+  }
+  if (plan.gi.on) {
+    // The depth image of this frame is the next frame's depth history: the two trade places now that
+    // nothing of this frame reads depth_[0] again (the next frame's depth pass writes the other).
+    std::swap(depth_[0], depth_prev_);
   }
   ran_this_frame_ = true;
   if (plan.occlusion && applied) {
@@ -2064,7 +2644,13 @@ bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
     }
     return false;
   }
-  plume::RenderPipeline* pipeline = Pipeline(ApplyVariant(plan.view != 0, depth.host_samples));
+  uint32_t variant = ApplyVariant(plan.view != 0, depth.host_samples);
+  if (plan.gi.on && plan.gi.view != 0) {
+    variant = GiViewVariant(depth.host_samples);
+  } else if (plan.gi.apply) {
+    variant = GiApplyVariant(plan.gi.apply_view != 0, depth.host_samples);
+  }
+  plume::RenderPipeline* pipeline = Pipeline(variant);
   if (!pipeline) {
     return false;
   }
@@ -2084,7 +2670,7 @@ bool AmbientOcclusion::RecordApply(plume::RenderCommandList* list,
   if (!framebuffer) {
     return false;
   }
-  pass_timing_->Mark(list, "ao apply");
+  pass_timing_->Mark(list, plan.gi.apply ? "ssgi apply" : "ao apply");
   list->setFramebuffer(framebuffer);
   const plume::RenderViewport viewport{0.0f, 0.0f, float(plan.render[0]), float(plan.render[1])};
   list->setViewports(&viewport, 1);
@@ -2282,6 +2868,196 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.slots[2] = denoised_.slot;
   DrawPass(list, raw_, denoise, push);
   return raw_.slot;
+}
+
+// ---------------------------------------------------------------------------
+// the bounce light test (screen-space global illumination, first step)
+// ---------------------------------------------------------------------------
+
+void AmbientOcclusion::PlanGi(Plan* plan) {
+  plan->gi = GiPlan{};
+  // Not in the pause menu's and the map's world (the 4x view): the plain occlusion runs there.
+  if (!gi_active_ || !plan->occlusion || !plan->apply || trigger_pause_) {
+    return;
+  }
+  GiPlan& g = plan->gi;
+  g.on = true;
+  g.test = gi_test_;
+  g.mode = gi_test_ ? plan->mode : gi_mode_;
+  // What the quality means: the debug override is the occlusion's own (as it was); the setting's high is 3 and
+  // 3 at the picture's size and its low is cheaper by fewer directions, by half the size, or both
+  // (mcla_gpu_ssgi_low).
+  const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
+  g.fewer = gi_test_ ? plan->mode == Mode::kLow : (g.mode == Mode::kLow && low_how != 1);
+  g.half = !gi_test_ && g.mode == Mode::kLow && low_how >= 1;
+  g.strength = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_strength), 0.0, 2.0));
+  g.limit = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_clamp), 0.05, 4.0));
+  g.radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_radius), 0.5, 3.0));
+  g.apply_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_view), 0, 6));
+  g.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_thickness), 0.0, 4.0));
+  g.cap = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_clamp), 0.25, 16.0));
+  g.facing = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_facing), 0.0, 1.0));
+  g.view_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view_gain), 0.1, 16.0));
+  g.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view), 0, 9));
+  g.history = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history), 2, 64));
+  g.clamp_width = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0));
+  g.atrous = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_atrous), 0, 3));
+  if (g.view != 0) {
+    plan->view = 0;  // instead of the other debug views: they are of the plain passes
+    g.apply_view = 0;  // the test's own pictures come first
+  } else if (g.apply_view != 0) {
+    plan->view = 0;
+  }
+  // The apply with the bounce: always (the visibility comes from the same image), except where the
+  // occlusion's or the contact shadows' debug view asks for the plain apply, or the test shows a picture
+  // of its own; a strength of 0 is the test as it was (the plain apply, the bitmask's visibility).
+  g.apply = g.view == 0 && (g.apply_view != 0 || (g.strength > 0.0f && plan->view == 0));
+}
+
+bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
+                                 plume::RenderCommandList* list, const Plan& plan,
+                                 EdramTargets::Target** colour, uint32_t* colour_slot) {
+  EdramTargets::Target& depth = *summary.source;
+  // The main view's colour: the identity of the draws that wrote the depth, at the same samples and
+  // scale (RecordApply finds it the same way).
+  EdramKey key;
+  key.base_tiles = temporal::kMainColorBase;
+  key.pitch = temporal::kMainPitch;
+  key.depth = 0;
+  key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
+  key.samples = summary.source_key.samples;
+  std::string why;
+  const EdramTargets::Target* found = edram_->Find(key);
+  EdramTargets::Target* target = nullptr;
+  uint32_t slot = kNoSlot;
+  if (!found || !found->texture) {
+    why = std::format("the main view's colour target {} {}", DescribeEdramKey(key),
+                      !found ? "does not exist" : "has no texture");
+  } else if (found->host_samples != depth.host_samples || found->scale != depth.scale) {
+    why = std::format("the main view's colour target {} differs from the depth (samples {} against "
+                      "{}, scale {}x against {}x)",
+                      DescribeEdramKey(key), found->host_samples, depth.host_samples, found->scale,
+                      depth.scale);
+  } else {
+    bool unset = false;
+    uint32_t stencil = 0;
+    target = edram_->Get(key, found->height, found->scale, 0, list, &unset);
+    if (!target || !edram_->SampleSlots(*target, &slot, &stencil)) {
+      why = "the main view's colour target could not be read as a texture";
+    }
+  }
+  if (why.empty()) {
+    // The pipelines (made here on first use: the test's are never listed ahead) and the images.
+    const bool ms = depth.host_samples > 1;
+    plume::RenderPipeline* main = Pipeline(kVMainGi);
+    plume::RenderPipeline* level0 = Pipeline(ms ? kVColorMs : kVColor);
+    plume::RenderPipeline* mip = Pipeline(kVColorMip);
+    plume::RenderPipeline* view = plan.gi.view != 0 ? Pipeline(GiViewVariant(depth.host_samples)) : mip;
+    plume::RenderPipeline* denoise = Pipeline(kVDenoiseGi);
+    plume::RenderPipeline* temporal = Pipeline(ms ? kVTemporalGiMs : kVTemporalGi);
+    plume::RenderPipeline* atrous = plan.gi.atrous != 0 ? Pipeline(kVAtrous) : mip;
+    plume::RenderPipeline* apply =
+        plan.gi.apply ? Pipeline(GiApplyVariant(plan.gi.apply_view != 0, depth.host_samples)) : mip;
+    if (!main || !level0 || !mip || !view || !denoise || !temporal || !atrous || !apply) {
+      why = "a pipeline of the test could not be made";
+    } else if (!EnsureGiImages(plan)) {
+      why = "an image of the test could not be made";
+    }
+  }
+  if (!why.empty()) {
+    if (!gi_failed_logged_) {
+      gi_failed_logged_ = true;
+      REXLOG_ERROR("[gpu] ssgi: no bounce light test in the frames that cannot have it (the occlusion "
+                   "runs as usual): {} (reported once)",
+                   why);
+    }
+    return false;
+  }
+  *colour = target;
+  *colour_slot = slot;
+  return true;
+}
+
+bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
+  bool ok =
+      passes_->EnsureImage(colour_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi colour") &&
+      passes_->EnsureImage(colour_[1], plan.level[0][0], plan.level[0][1], kGiFormat,
+                           "ssgi colour 1/2") &&
+      passes_->EnsureImage(colour_[2], plan.level[1][0], plan.level[1][1], kGiFormat,
+                           "ssgi colour 1/4") &&
+      passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce") &&
+      passes_->EnsureImage(gi_dn_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi denoised") &&
+      passes_->EnsureImage(gi_hist_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 0") &&
+      passes_->EnsureImage(gi_hist_[1], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 1") &&
+      passes_->EnsureImage(depth_prev_, plan.ao[0], plan.ao[1], plume::RenderFormat::R32_FLOAT,
+                           "ssgi depth history");
+  // The picture of the history weight (debug view 9, or the occlusion's own view 6 while the test runs),
+  // made only while one of them is shown.
+  if (ok && (plan.gi.view == 9u || plan.view == 6u)) {
+    ok = passes_->EnsureImage(gi_weight_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi history weight");
+  } else if (gi_weight_.texture) {
+    passes_->ReleaseImage(gi_weight_);
+  }
+  return ok;
+}
+
+void AmbientOcclusion::ReleaseGiImages() {
+  if (!passes_) {
+    return;
+  }
+  for (HostImage& image : colour_) {
+    if (image.texture) {
+      passes_->ReleaseImage(image);
+    }
+  }
+  for (HostImage* image : {&gi_, &gi_dn_, &gi_hist_[0], &gi_hist_[1], &depth_prev_, &gi_weight_}) {
+    if (image->texture) {
+      passes_->ReleaseImage(*image);
+    }
+  }
+  // A history of the test's kind goes with its images (a plain history is made again when it is asked for).
+  if (history_gi_) {
+    history_valid_ = false;
+    history_gi_ = false;
+  }
+}
+
+void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const Plan& plan,
+                                         const Push& base, EdramTargets::Target& colour,
+                                         uint32_t colour_slot) {
+  // The colour target is read as a texture: after the opaque draws it is in its write layout; the
+  // apply pass (or the game's next draw) moves it back.
+  edram_->Transition(list, colour, plume::RenderTextureLayout::SHADER_READ);
+  pass_timing_->Mark(list, "ssgi colour chain");
+  const bool ms = colour.host_samples > 1;
+  // Level 0: the colour target's mean over the pixels and samples a texel covers, each sample capped at
+  // a multiple of the frame's ambient + sun (ao_color_ps.hlsl).
+  Push push = base;
+  push.slots2[2] &= ~0xFFu;  // no debug view
+  push.slots[0] = colour_slot;
+  push.slots[1] = colour.host_samples;
+  push.sizes[0] = float(plan.ao[0]);
+  push.sizes[1] = float(plan.ao[1]);
+  push.sizes[2] = float(plan.render[0]);
+  push.sizes[3] = float(plan.render[1]);
+  push.shape[0] = std::max(plan.gi.cap * (base.light[3] + base.extra[0]), kGiCapFloor);
+  DrawPass(list, colour_[0], Pipeline(ms ? kVColorMs : kVColor), push);
+  // The coarser levels, one pass each, as the depth chain's.
+  plume::RenderPipeline* mip = Pipeline(kVColorMip);
+  push = base;
+  push.slots2[2] &= ~0xFFu;
+  push.slots[2] = colour_[0].slot;
+  push.sizes[0] = float(plan.level[0][0]);
+  push.sizes[1] = float(plan.level[0][1]);
+  push.sizes[2] = float(plan.ao[0]);
+  push.sizes[3] = float(plan.ao[1]);
+  DrawPass(list, colour_[1], mip, push);
+  push.slots[2] = colour_[1].slot;
+  push.sizes[0] = float(plan.level[1][0]);
+  push.sizes[1] = float(plan.level[1][1]);
+  push.sizes[2] = float(plan.level[0][0]);
+  push.sizes[3] = float(plan.level[0][1]);
+  DrawPass(list, colour_[2], mip, push);
 }
 
 // ---------------------------------------------------------------------------
@@ -2636,7 +3412,7 @@ void AmbientOcclusion::Census() {
   }
   REXLOG_INFO("{}   trigger: {}", kPrefix, TriggerText());
   REXLOG_INFO("{}   history: this frame's trigger {}{}; frames that used a history {}, did not: first {}, "
-              "gap {}, view {}, size {}, cut {}, cap {}; motion from the vertex constants {}, the "
+              "gap {}, view {}, size {}, kind {}, cut {}, cap {}; motion from the vertex constants {}, the "
               "last step {}, standing still {}; the vertex constants {} as the frame's camera",
               kPrefix,
               history_why_ == HistoryWhy::kUsed
@@ -2645,7 +3421,8 @@ void AmbientOcclusion::Census() {
               ran_this_frame_ ? "" : " (no passes recorded this frame)", history_used_,
               history_resets_[size_t(HistoryWhy::kFirst)], history_resets_[size_t(HistoryWhy::kGap)],
               history_resets_[size_t(HistoryWhy::kView)], history_resets_[size_t(HistoryWhy::kSize)],
-              history_resets_[size_t(HistoryWhy::kCut)], history_resets_[size_t(HistoryWhy::kCap)],
+              history_resets_[size_t(HistoryWhy::kKind)], history_resets_[size_t(HistoryWhy::kCut)],
+              history_resets_[size_t(HistoryWhy::kCap)],
               pose_frames_[size_t(Pose::kVertexBank)], pose_frames_[size_t(Pose::kPredicted)],
               pose_frames_[size_t(Pose::kStill)],
               vs_pose_trusted_ ? "are trusted" : "are not trusted yet");
@@ -2675,6 +3452,16 @@ void AmbientOcclusion::Census() {
                 contact_gate_wet_, contact_strength_,
                 mask_frame_ == frame_ ? "came" : "did not come", contact_mask_frames_,
                 contact_no_mask_frames_, contact_runs_);
+  }
+  if (gi_active_ || gi_runs_ != 0) {
+    REXLOG_INFO("{}   bounce light: {} (mcla_gpu_ssgi), the test {} (mcla_gpu_ssgi_test), frames recorded "
+                "so far {}, {} of them with a history to lean on ({} frames at most, clip {:.2f} "
+                "deviations, {} a-trous iterations); images held {:.1f} MiB",
+                kPrefix, ModeName(gi_mode_), gi_test_ ? "on" : "off", gi_runs_, gi_history_runs_,
+                uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history), 2, 64)),
+                std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0),
+                uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_atrous), 0, 3)),
+                double(HeldBytes()) / (1024.0 * 1024.0));
   }
 }
 
