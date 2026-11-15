@@ -1031,12 +1031,16 @@ struct GlyphTexture {
     uint32_t width = 0, height = 0;
     std::vector<uint8_t> original;     // what the game shipped (w/4 * h/4 blocks of 16 bytes, linear order, still byte-swapped as the guest holds them), to put back and to copy from
     larecomp::prompts::Art art;        // what is on it now (Original = the shipped art)
+    std::string label;                 // the slot it is a glyph of ("A", "Phone", "Slot0"), for the log
+    double backdrop = larecomp::prompts::kDarkBackdrop;  // the luma of what it sits on (prompt_glyphs.h SlotInfo::backdrop)
+    larecomp::prompts::Ink ink;        // the ink of the shipped art (box, colour, stroke, contrast), measured once when the texture is found (MeasureTexture): what a replacement is fitted into
 };
 std::unordered_map<std::string, GlyphTexture> g_glyph_tex;  // by "shared_N.dds"
 uint32_t g_glyph_dict = 0;
 uint32_t g_dict_vals = 0, g_dict_count = 0;  // the dictionary's texture table, for the lookups by name
-std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "key@WxH" / "game:name@WxH" -> tiled bytes
+std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "<art>@<texture>" (e.g. "key:Tab@sidekick:106") -> tiled bytes of the art fitted for that texture
 uint32_t g_glyph_tick = 0;
+bool g_art_warm = false;  // the art of the glyph families has been built (WarmArt); a new texture (the Sidekick's glyph) makes it false again, and WarmArt builds what is missing
 
 // Something that decides what the glyphs show changed (the device, the family, a binding, the menu, a new dictionary): the next input poll paints. Set from any thread (the
 // input state's listener runs on the UI thread, the pad poll's thread, a pool thread); read and cleared by the poll, on the game thread.
@@ -1095,38 +1099,18 @@ bool CapExists(const std::string& key, uint32_t width, uint32_t height) {
     return ReadCapBytes(key, width, height, nullptr);
 }
 
-// Reads the key cap into a width x height RGBA image; empty when it is not there.
-mc::modloader::Image LoadKeycap(const std::string& key, uint32_t width, uint32_t height) {
-    mc::modloader::Image out;
+// Reads the key cap (or shipped picture) at its own size, the picture the fitting rule works from (prompt_art.h); empty when it is not there.
+larecomp::prompts::Bitmap LoadCapBitmap(const std::string& key, uint32_t width, uint32_t height) {
+    larecomp::prompts::Bitmap out;
     std::vector<uint8_t> bytes;
     if (!ReadCapBytes(key, width, height, &bytes)) return out;
     int w = 0, h = 0;
     std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
     if (rgba.empty() || w <= 0 || h <= 0) return out;
-    mc::modloader::Image src;
-    src.rgba = std::move(rgba);
-    src.width = static_cast<uint32_t>(w);
-    src.height = static_cast<uint32_t>(h);
-    if (src.width == width && src.height == height) return src;
-    mc::modloader::ResizeImage(src, width, height, out);
+    out.width = static_cast<uint32_t>(w);
+    out.height = static_cast<uint32_t>(h);
+    out.rgba = std::move(rgba);
     return out;
-}
-
-// The tiled, swapped bytes of a key cap, cached. An unknown key falls back to the
-// blank cap; an empty result means not even that exists.
-const std::vector<uint8_t>& TiledCap(const std::string& key, uint32_t width, uint32_t height) {
-    const std::string id = key + "@" + std::to_string(width) + "x" + std::to_string(height);
-    auto it = g_cap_cache.find(id);
-    if (it != g_cap_cache.end()) return it->second;
-    mc::modloader::Image img = LoadKeycap(key, width, height);
-    if (img.empty()) img = LoadKeycap("blank", width, height);
-    std::vector<uint8_t> tiled;
-    if (!img.empty()) {
-        std::vector<uint8_t> linear;
-        mc::modloader::CompressBlocks(img, mc::modloader::BlockFormat::kBc3, linear);
-        mc::modloader::TileXbox360(linear, width, height, mc::modloader::BlockFormat::kBc3, tiled);
-    }
-    return g_cap_cache.emplace(id, std::move(tiled)).first->second;
 }
 
 // A small texture's blocks are NOT a contiguous 8 KB: the surface is tiled into a 128-wide
@@ -1144,6 +1128,33 @@ void ForEachBlock(uint32_t width, uint32_t height, Fn&& fn) {
             fn(index++, mcla::native_gfx::TiledOffset2D(x, y, wb, 16));
 }
 
+
+// What the texture shows today, measured once from the copy of the shipped blocks: the box of its ink, its colour, its stroke weight and its contrast against what it sits on. This is
+// what every replacement is fitted into (prompt_art.h); the measuring is here, when the texture is found while the game loads, and never on a repaint.
+void MeasureTexture(GlyphTexture& t, const std::string& label, double backdrop) {
+    t.label = label;
+    t.backdrop = backdrop;
+    larecomp::prompts::Bitmap shipped;
+    shipped.width = t.width;
+    shipped.height = t.height;
+    shipped.rgba = larecomp::prompts::DecodeBc3GuestSurface(t.original, t.width, t.height);
+    t.ink = larecomp::prompts::MeasureOriginal(shipped, backdrop);
+}
+
+// The luma of what a glyph target sits on: its slot's (prompt_glyphs.h), the dark prompt bar for the spare Custom Controls slots.
+double BackdropOf(const GlyphTarget& g) {
+    return g.pslot >= 0 ? larecomp::prompts::Info(static_cast<larecomp::prompts::Slot>(g.pslot)).backdrop : larecomp::prompts::kDarkBackdrop;
+}
+
+// "ink box 12,14..51,48 luma 181 line 107,107,107 mark 68,69,68 alpha 255 stroke 3.0" for the log: the box, the mean luma, the colour of the dark band (the strokes), the colour of the marks and the alpha the
+// strokes reach, as the bitmap holds them, and the width of the stroke.
+std::string DescribeInk(const larecomp::prompts::Ink& ink) {
+    if (!ink.valid()) return "no ink";
+    char text[192];
+    std::snprintf(text, sizeof(text), "ink box %d,%d..%d,%d luma %.0f line %.0f,%.0f,%.0f mark %.0f,%.0f,%.0f alpha %.0f stroke %.1f", ink.box.x0, ink.box.y0, ink.box.x1, ink.box.y1, ink.luma, ink.line_rgb[0],
+                  ink.line_rgb[1], ink.line_rgb[2], ink.mark_rgb[0], ink.mark_rgb[1], ink.mark_rgb[2], ink.line_alpha, ink.stroke);
+    return text;
+}
 
 // The Sidekick's own embedded Back glyph. The movie is resolved by name in the UI manager's
 // movie map (+60) like everywhere else; character 106 of its swfFILE is a bitmap whose +12 is a
@@ -1200,9 +1211,19 @@ bool ScanSidekick(uint8_t* b) {
     ForEachBlock(w, h, [&](uint32_t i, uint32_t off) {
         std::memcpy(t.original.data() + size_t(i) * 16, b + base + off, 16);
     });
+    MeasureTexture(t, "Phone", larecomp::prompts::Info(larecomp::prompts::Slot::Phone).backdrop);
+    // The first P4 run could not say what this glyph looks like (it is not in the dictionary): the dump writes it with the others, for the glyph sheet.
+    if (const std::string dump = REXCVAR_GET(prompts_glyph_dump); !dump.empty()) {
+        const std::vector<uint8_t> rgba = larecomp::prompts::DecodeBc3GuestSurface(t.original, w, h);
+        std::error_code ec;
+        std::filesystem::create_directories(dump, ec);
+        std::ofstream raw(std::filesystem::path(dump) / ("sidekick_106_" + std::to_string(w) + "x" + std::to_string(h) + ".rgba"), std::ios::binary);
+        raw.write(reinterpret_cast<const char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()));
+    }
+    MC_INFO("[kbnative] sidekick accept glyph @0x{:08X}, {}", base, DescribeInk(t.ink));
     g_glyph_tex["sidekick:106"] = std::move(t);
     g_sidekick_ok = true;
-    MC_INFO("[kbnative] sidekick accept glyph @0x{:08X}", base);
+    g_art_warm = false;  // its art (fitted into this ink) is built by the next poll's WarmArt, not on the first repaint
     return true;
 }
 
@@ -1271,8 +1292,6 @@ void DumpDictionary(const uint8_t* b, const std::string& dir) {
     MC_INFO("[prompts] dictionary dumped: {} bitmaps as raw RGBA in {}", written, dir);
 }
 
-bool g_art_warm = false;  // the art of the glyph families has been built once (WarmArt)
-
 // Finds the shared_latin dictionary's textures by name and checks each really is a
 // DXT5 tiled/endian-1 surface of the size expected before it is ever written, and
 // that it has the block layout the writer assumes.
@@ -1309,7 +1328,8 @@ bool ScanDictionary(uint8_t* b) {
             t.width = d.w;
             t.height = d.h;
             t.original = ReadBlocks(b, d.base, d.w, d.h);
-            MC_INFO("[kbnative] {} base 0x{:08X} {}x{}", tex_name, d.base, d.w, d.h);
+            MeasureTexture(t, g.label, BackdropOf(g));
+            MC_INFO("[kbnative] {} base 0x{:08X} {}x{}, {}", tex_name, d.base, d.w, d.h, DescribeInk(t.ink));
             g_glyph_tex[tex_name] = std::move(t);
         }
     }
@@ -1332,56 +1352,62 @@ bool HaveBitmap(const uint8_t* b, const std::string& name) {
     t.width = d.w;
     t.height = d.h;
     t.original = ReadBlocks(b, d.base, d.w, d.h);
+    MeasureTexture(t, name, larecomp::prompts::kDarkBackdrop);
     g_glyph_tex[name] = std::move(t);
     return true;
 }
 
-// `src` scaled to fit inside width x height, keeping its shape, centred on a transparent canvas: the 32x32 PlayStation faces fill a 64x64 slot, a 64x32 bitmap in a 64x64 slot is not stretched.
-mc::modloader::Image FitCentered(const mc::modloader::Image& src, uint32_t width, uint32_t height) {
-    if (src.width == width && src.height == height) return src;
-    const double scale = std::min(double(width) / double(src.width), double(height) / double(src.height));
-    const uint32_t fw = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(double(src.width) * scale)));
-    const uint32_t fh = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(double(src.height) * scale)));
-    mc::modloader::Image scaled;
-    mc::modloader::ResizeImage(src, std::min(fw, width), std::min(fh, height), scaled);
-    if (scaled.width == width && scaled.height == height) return scaled;
-    mc::modloader::Image out;
-    out.width = width;
-    out.height = height;
-    out.rgba.assign(size_t(width) * height * 4, 0);
-    const uint32_t ox = (width - scaled.width) / 2, oy = (height - scaled.height) / 2;
-    for (uint32_t y = 0; y < scaled.height; ++y)
-        std::memcpy(out.rgba.data() + (size_t(oy + y) * width + ox) * 4, scaled.rgba.data() + size_t(y) * scaled.width * 4, size_t(scaled.width) * 4);
-    return out;
+// The picture an art is made from, at its own size: a key cap or a shipped picture of the folder (an unknown key gets the blank cap), or one of the game's own bitmaps read back from the
+// originals kept at the scan (never the live pixels). Empty when it cannot be made.
+larecomp::prompts::Bitmap SourceBitmap(const larecomp::prompts::Art& art, uint32_t width, uint32_t height) {
+    using larecomp::prompts::ArtKind;
+    if (art.kind == ArtKind::GameBitmap) {
+        larecomp::prompts::Bitmap out;
+        const auto it = g_glyph_tex.find(art.id);
+        if (it == g_glyph_tex.end()) return out;
+        out.width = it->second.width;
+        out.height = it->second.height;
+        out.rgba = larecomp::prompts::DecodeBc3GuestSurface(it->second.original, it->second.width, it->second.height);
+        return out;
+    }
+    larecomp::prompts::Bitmap cap = LoadCapBitmap(art.id, width, height);
+    if (cap.empty() && art.kind == ArtKind::KeyCap) cap = LoadCapBitmap("blank", width, height);
+    return cap;
 }
 
-// The tiled, swapped bytes of one of the game's own bitmaps (read back from the originals kept at the scan, decoded, scaled, compressed again), cached like a key cap.
-const std::vector<uint8_t>& TiledFromBitmap(const std::string& name, uint32_t width, uint32_t height) {
-    const std::string id = "game:" + name + "@" + std::to_string(width) + "x" + std::to_string(height);
+// One line per surface built (once, with the art): the numbers of the fitting rule's check (prompt_art.h CheckFit), read back by perf\scripts\kbm\kbm_p4_report.py:
+// the replacement's ink box against the original's, both lumas, the replacement's ink colour and alpha against the original's dark band colour and alpha, both mean contrasts against what the
+// glyph sits on, and the verdict.
+void LogFit(const std::string& tex_name, const larecomp::prompts::Art& art, const GlyphTexture& t, const larecomp::prompts::Bitmap& fitted) {
+    const larecomp::prompts::FitCheck c = larecomp::prompts::CheckFit(t.ink, fitted, t.backdrop);
+    MC_INFO("[prompts] fit slot={} tex={} art={} look={} orig_box={},{},{},{} box={},{},{},{} orig_luma={:.0f} luma={:.0f} orig_ink={:.0f},{:.0f},{:.0f} ink={:.0f},{:.0f},{:.0f} orig_alpha={:.0f} alpha={:.0f} "
+            "orig_contrast={:.0f} contrast={:.0f} backdrop={:.0f} stroke={:.1f} ok={}",
+            t.label, tex_name, larecomp::prompts::Describe(art), c.look == larecomp::prompts::Look::Line ? "line" : "solid", c.original_box.x0, c.original_box.y0, c.original_box.x1, c.original_box.y1,
+            c.box.x0, c.box.y0, c.box.x1, c.box.y1, c.original_luma, c.luma, c.original_rgb[0], c.original_rgb[1], c.original_rgb[2], c.rgb[0], c.rgb[1], c.rgb[2], c.original_alpha, c.alpha, c.original_contrast,
+            c.contrast, t.backdrop, t.ink.stroke, c.ok() ? 1 : 0);
+}
+
+// The tiled, swapped bytes (what the guest holds) of `art` for the texture `tex_name`: the source picture fitted into the ink of what that texture shows today and drawn in its tonal
+// scheme (prompt_art.h FitArt), compressed and tiled, cached. Empty when the art cannot be made. Built when the art is warmed (WarmArt, while the game loads) and, for a key that was not
+// warmed (a binding the Custom Controls screen shows), the first time it is painted.
+const std::vector<uint8_t>& TiledArt(const larecomp::prompts::Art& art, const std::string& tex_name, const GlyphTexture& t) {
+    const std::string id = larecomp::prompts::Describe(art) + "@" + tex_name;
     auto it = g_cap_cache.find(id);
     if (it != g_cap_cache.end()) return it->second;
     std::vector<uint8_t> tiled;
-    const auto src_it = g_glyph_tex.find(name);
-    if (src_it != g_glyph_tex.end()) {
-        const GlyphTexture& s = src_it->second;
-        mc::modloader::Image src;
-        src.rgba = larecomp::prompts::DecodeBc3GuestSurface(s.original, s.width, s.height);
-        src.width = s.width;
-        src.height = s.height;
-        if (!src.empty()) {
-            const mc::modloader::Image fitted = FitCentered(src, width, height);
-            std::vector<uint8_t> linear;
-            mc::modloader::CompressBlocks(fitted, mc::modloader::BlockFormat::kBc3, linear);
-            mc::modloader::TileXbox360(linear, width, height, mc::modloader::BlockFormat::kBc3, tiled);
-        }
+    const larecomp::prompts::Bitmap source = SourceBitmap(art, t.width, t.height);
+    larecomp::prompts::Fitted fitted = larecomp::prompts::FitArt(source, larecomp::prompts::ShapeOf(art.kind), t.ink, t.backdrop, t.width, t.height);
+    if (!fitted.bitmap.empty()) {
+        LogFit(tex_name, art, t, fitted.bitmap);
+        mc::modloader::Image img;
+        img.width = fitted.bitmap.width;
+        img.height = fitted.bitmap.height;
+        img.rgba = std::move(fitted.bitmap.rgba);
+        std::vector<uint8_t> linear;
+        mc::modloader::CompressBlocks(img, mc::modloader::BlockFormat::kBc3, linear);
+        mc::modloader::TileXbox360(linear, t.width, t.height, mc::modloader::BlockFormat::kBc3, tiled);
     }
     return g_cap_cache.emplace(id, std::move(tiled)).first->second;
-}
-
-// The bytes (tiled and swapped, what the guest holds) of an art for a width x height surface; empty when the art cannot be made. A file is a picture of the key cap folder.
-const std::vector<uint8_t>& ArtBytes(const larecomp::prompts::Art& art, uint32_t width, uint32_t height) {
-    if (art.kind == larecomp::prompts::ArtKind::GameBitmap) return TiledFromBitmap(art.id, width, height);
-    return TiledCap(art.id, width, height);
 }
 
 // Puts `art` on a dictionary texture; true when its pixels changed. Only the blocks of the picture itself are written, at the offsets the GPU reads them from.
@@ -1395,7 +1421,7 @@ bool PaintGlyph(uint8_t* b, const char* tex_name, const larecomp::prompts::Art& 
             std::memcpy(b + t.base + off, t.original.data() + size_t(i) * 16, 16);
         });
     } else {
-        const std::vector<uint8_t>& cap = ArtBytes(art, t.width, t.height);
+        const std::vector<uint8_t>& cap = TiledArt(art, tex_name, t);
         if (cap.empty()) return false;
         bool ok = true;
         ForEachBlock(t.width, t.height, [&](uint32_t, uint32_t off) { ok = ok && off + 16 <= cap.size(); });
@@ -1529,7 +1555,11 @@ void WarmArt(const uint8_t* b) {
         for (const GlyphTarget& g : kGlyphs) {
             if (g.pslot < 0) continue;
             const Art a = DecideFor(b, g, f, c);
-            if (a.kind != ArtKind::Original) ArtBytes(a, g.width, g.height);
+            if (a.kind == ArtKind::Original) continue;
+            for (const char* tex_name : g.textures) {
+                const auto it = g_glyph_tex.find(tex_name);
+                if (it != g_glyph_tex.end()) TiledArt(a, tex_name, it->second);  // the Sidekick's glyph is not there yet when the dictionary is found: ScanSidekick asks for another pass
+            }
         }
     };
     warm(Family::Keyboard, Context::Menu);
