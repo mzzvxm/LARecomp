@@ -1678,11 +1678,11 @@ const ItemDef kControllerItems[] = {
 // Everything that trades image quality for framerate, in one place.
 //
 // The developer switches that used to be here are not rows of the normal menus any more
-// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, FOLIAGE, SINGLE TILE, FENCE SPIN YIELD,
-// BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's PERFORMANCE page
-// (debug_menu_pages.cpp). CHEAP CAR SHADOW, TREE IMPOSTORS and SCREEN BLUR are read once at start, so
-// they are launch arguments (--perf_fast_vehicle_shadows, --perf_no_impostors,
-// --perf_no_fullscreen_blur) and rows of the launcher's Advanced tab. CITY AMBIENT CULLING
+// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, CHEAP CAR SHADOW, FOLIAGE, SINGLE TILE,
+// FENCE SPIN YIELD, BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's
+// PERFORMANCE page (debug_menu_pages.cpp). TREE IMPOSTORS and SCREEN BLUR are read once at start, so
+// they are launch arguments (--perf_no_impostors, --perf_no_fullscreen_blur) and rows of the
+// launcher's Advanced tab. CITY AMBIENT CULLING
 // (enable_ambient_tuning), the master switch over TRAFFIC RANGE, PEDESTRIANS and PARKED CARS, is no
 // row either: those three stand alone and 400M / 1X / 1X is the stock game (the cvar stays, so an
 // old larecomp.toml that turns it off still acts).
@@ -2343,8 +2343,13 @@ const ItemDef kExtrasHubItems[] = {
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
          " (NEXT HOST)"),
+    // The car is moved once per session, when it first appears at Hollywood's door (map_warp.cpp
+    // TickStartGarage), so a change shows the next time the game is started. NEXT START and not
+    // RESTART, as ORIGINAL INTRO SPEED: nothing needs the game started again now, so the "restart
+    // now?" prompt (RowSaysRestart) must not offer it. Width: "START GARAGE (NEXT START)" 25 with
+    // "SOUTH CENTRAL" 13.
     Str ("PM_RxStartGarage", "start_garage", "START GARAGE: ",
-         kStartGarageVals, kStartGarageNames, 4, " (RESTART)"),
+         kStartGarageVals, kStartGarageNames, 4, " (NEXT START)"),
 };
 #if defined(LARECOMP_HAS_GPU)
 // Texture mods on the Plume renderer. The two modder actions (DUMP SCENE TEXTURES, RELOAD TEXTURE

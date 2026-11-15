@@ -62,7 +62,7 @@ Press Start or Escape and open the **SETTINGS** tab. Buttons, and what each hold
 
 Not in these menus: RENDERER and GRAPHICS API (the launcher's Troubleshooting section sets them; `--graphics_backend=auto|d3d12|vulkan` works on the command line, and the renderer is four cvars the launcher writes together), and the developer switches (below).
 
-**DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (cheap car shadow, tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
+**DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
 
 **Function keys.** They work for everyone, with or without the debug menu: **F2** dumps the textures of the next frame (Plume renderer), **F3** shows the telemetry card, **F4** opens the settings panel, **F9** warps the car to a mod's warp point and back, **F10** writes a raw trace of the next frame (Plume renderer), **F11** captures the next frame with RenderDoc. Only the pause menu is cleaned up; these keys are as they always were.
 
