@@ -14,6 +14,7 @@ add_library(larecomp_gpu OBJECT
     backend.cpp
     buffer_heap.cpp
     capture.cpp
+    car_selfrefl.cpp
     constants.cpp
     cycles.cpp
     descriptors.cpp
@@ -134,6 +135,9 @@ add_executable(larecomp_menu_world_test EXCLUDE_FROM_ALL menu_world_test.cpp)
 # the history restarts in every frame) and where temporal.cpp applies them:
 #   cmake --build <dir> --target larecomp_temporal_menu_test, then run src/gpu/larecomp_temporal_menu_test <src/gpu dir>.
 add_executable(larecomp_temporal_menu_test EXCLUDE_FROM_ALL temporal_menu_test.cpp)
+# The car self-reflection's rules (car_selfrefl_rules.h: the modes, the matrix, the constants, the depth linearisation) likewise:
+#   cmake --build <dir> --target larecomp_car_selfrefl_rules_test, then run src/gpu/larecomp_car_selfrefl_rules_test.
+add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_rules_test.cpp)
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
@@ -428,6 +432,10 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The car self-reflection history (car_selfrefl.h): the main view's colour and the car's depth into one image, read by the
+# next frame's car paint variant.
+larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
+larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

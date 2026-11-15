@@ -108,6 +108,9 @@ class ShaderStore {
   static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
   static constexpr uint32_t kEnvVariant = larecomp::shaderpack::kVariantEnvMap;
   static constexpr uint32_t kShadowFilterVariant = larecomp::shaderpack::kVariantShadowFilter;
+  // The player's car paint with its environment reads occluded by, or replaced with, the car's own previous frame
+  // (car_selfrefl.h: its 112 bytes of constants follow the shared block; a test prototype).
+  static constexpr uint32_t kCarSelfReflVariant = larecomp::shaderpack::kVariantCarSelfRefl;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

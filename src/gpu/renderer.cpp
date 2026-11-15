@@ -258,6 +258,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
+    car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -274,6 +275,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
     scene_.SetSunShafts(&shafts_);
+    scene_.SetCarSelfRefl(&car_refl_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -332,6 +334,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     temporal_.Shutdown();
     ao_.Shutdown();
     shafts_.Shutdown();
+    car_refl_.Shutdown();
     flicker_probe_.Shutdown();
     hdr_tone_.Shutdown();
     hdr_scene_.Shutdown();
@@ -497,6 +500,7 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   shafts_.Shutdown();
+  car_refl_.Shutdown();
   flicker_probe_.Shutdown();
   hdr_tone_.Shutdown();
   hdr_scene_.Shutdown();
@@ -1644,6 +1648,8 @@ void Renderer::ReportFrameStats() {
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
+                           (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
+                                                       : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())

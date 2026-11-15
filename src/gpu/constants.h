@@ -97,6 +97,12 @@ inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
 // shadow_filter::ShadowFilterConstants (Scene::UploadShadowFilterConstants).
 inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants);
 
+// The car self-reflection variant (car_selfrefl.h, shaders.h kCarSelfReflVariant; a test prototype, G8b) reads 112 bytes
+// at the same place, in every draw of the player's car paint: g_CarReflM0..M3 at byte 608, g_CarReflA at 672, g_CarReflB
+// at 688 and g_CarReflC at 704 (shaderpack/variants/car_selfrefl.h), the draw uploads SharedConstants followed by
+// car_selfrefl::CarSelfReflConstants (Scene::UploadCarSelfReflConstants).
+inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {

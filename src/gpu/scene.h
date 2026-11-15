@@ -87,6 +87,7 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class CarSelfRefl;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -124,6 +125,9 @@ class Scene {
   // the mid-scene depth resolve (the sky) and before the end-of-scene copy of the colour (the light).
   // Null: none.
   void SetSunShafts(SunShafts* shafts) { shafts_ = shafts; }
+  // The car self-reflection prototype (car_selfrefl.h): told of the main view's draws, the camera and the mid-scene depth
+  // copy, and asked for the constants of the car paint variant's draws. Null: none (the variant then draws as the game's).
+  void SetCarSelfRefl(CarSelfRefl* car_refl) { car_refl_ = car_refl; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -334,6 +338,9 @@ class Scene {
   // constants (shadow_filter.h): the draw's own copy of them and the block, in one span that replaces
   // `shared_constants`; the last one is kept for the next draw when neither changed.
   bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
+  // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
+  bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
@@ -389,6 +396,7 @@ class Scene {
   AmbientOcclusion* ao_ = nullptr;
   SunShafts* shafts_ = nullptr;
   menu_world::Announcer menu_world_;  // the one line per change of world
+  CarSelfRefl* car_refl_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
