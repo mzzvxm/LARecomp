@@ -10,10 +10,17 @@
 // Device::Open next to the "[gpu] ... uma=" line) and logged with the reason:
 //   kLow   a GPU that shares memory with the CPU (D3D12's UMA flag; Vulkan's integrated type): the
 //          integrated GPU of a desktop CPU, the APU of a handheld such as the Steam Deck, and a
-//          software or virtual adapter. Nothing heavy runs there.
-//   kMid   a discrete GPU with less dedicated memory than kMidBelowBytes (about 6 GiB).
+//          software or virtual adapter. Nothing heavy runs there. One named exception: AMD's Strix
+//          Halo integrated GPUs (Radeon 8060S, 8050S, 8040S) are kMid (kIntegratedMidTable below).
+//   kMid   a discrete GPU with less dedicated memory than kMidBelowBytes (about 6 GiB), or one whose
+//          name is in the speed table (kSpeedTable below) as a family at most this fast: GTX 10xx
+//          (the 1080 and 1080 Ti too) and 16xx, RX 4xx/5xx, Vega, Arc A3xx and the like, whatever
+//          their memory.
 //   kHigh  everything else.
-// mcla_gpu_class (auto | low | mid | high, debug only, live) forces a class for tests.
+// The table can also put a very slow discrete card (GT 1030, RX 550) in kLow; it never raises a class.
+// The log line says which rule chose: "by adapter type", "by memory" or "by name: GTX 1060 -> mid".
+// mcla_gpu_class (auto | low | mid | high, debug only, live) forces a class for tests; it wins over all
+// of the above.
 //
 // The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
 // table of GFX-UPGRADES-DESIGN.md section 9). An effect's package keeps its own cvar and its own
@@ -39,6 +46,8 @@
 // from the measured cost of its package, and the owner tunes the threshold (design question 1).
 // ===========================================================================
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -231,44 +240,315 @@ inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
   return AutoLabelOf(CityLodScaleText(CityLodAutoFor(known, c)));
 }
 
+// --- speed: the table of GPU names ---------------------------------------------------------------
+// The memory rule below cannot see speed (perf\COMPAT-AUDIT.md F4, GFX-COST-AUDIT.md section 14 and R2):
+// `kHigh` is any discrete card with 5.5 GiB or more, so an 8 GB RX 580, a GTX 1070 or a 6 GB GTX 1660
+// Ti would get the RTX 5080's `auto` row (contact shadows high, sun shafts high, ambient occlusion
+// high). kSpeedTable is a short list of GPU families, matched on the adapter's name, that CAPS the
+// class. The rules of the table:
+//   * It only lowers a class (a name never raises one), and only where the name is known. A GPU the
+//     table does not know keeps the memory rule, so a card missed stays as it is today (the safe
+//     failure) and a future GPU needs no entry.
+//   * A row applies only to its own vendor (the PCI vendor id Plume reports: 0x10DE NVIDIA, 0x1002
+//     AMD, 0x8086 Intel). Plume gives the vendor and not the PCI device id, so the model is read from
+//     the name; names vary ("NVIDIA GeForce GTX 1060 6GB", "Radeon RX 580 Series", "AMD Radeon RX 580
+//     Series (RADV POLARIS10)", "Intel(R) Arc(TM) A380 Graphics"), so the match is on a normalised
+//     copy of the name (NormalizeName) and on the model number after a series word ("gtx", "rx", "a").
+//   * Integrated GPUs and APUs are never reached by this table: UMA, the integrated type and the
+//     software names decide Low before it (Classify). Their names are not listed, on purpose: "AMD
+//     Radeon Graphics" is also what Mesa prints for a new discrete card it has no name for. The one
+//     exception is its own table below (kIntegratedMidTable), read only for an integrated GPU.
+//   * The tiers are rough public 1080p averages (TechPowerUp's and Tom's Hardware's reviews, pcbuildhelper's
+//     index and a FurMark chart were looked at in 2026-11), taken against an RTX 2060 as 100: a card that is
+//     the RTX 2060's speed or more keeps its memory class. The low end of High is therefore the RTX 2060 (also the RX 5600 XT and
+//     RX 6600, about 105 to 120; Vega 64, about 100 to 105; an Arc A580 about 110). The GTX 1080 and 1080 Ti are
+//     the exception to the paper speed (about 100 and 125): Pascal does worse than that on this renderer's
+//     compute-heavy effects (the owner's call, 2026-11-14), so they are capped at Mid with the rest of the GTX 10 series.
+//     Mid is about 55 to 95 (GTX 1060 6 GB about 65, RX 580 about 70, GTX 1660 Super and RTX 3050
+//     about 85, GTX 1070 about 80, RX 5500 XT about 70, RX 6500 XT about 60, Arc A380 about 45).
+//     Low is about 35 and under, near the Steam Deck's 1.6 TFLOPs and under the GTX 1050 (GT 1030,
+//     MX150 to MX350, RX 550). The numbers are rounded and partly from memory of those sources, so a row is
+//     a judgement of the generation, not a measurement of this game; the owner sets the cut-offs.
+// The class decides the players' default look, so a row here is the owner's call: the table is data,
+// each row carries its reason, and gpu_class_test.cpp checks every row and the names around the cut-offs.
+
+struct SpeedRow {
+  uint32_t vendor;          // PCI vendor id the row applies to
+  std::string_view word;    // a whole word (or words) the normalised name must contain; "" = none
+  std::string_view series;  // the word that precedes the model number ("gtx", "rx"); "" = no number rule
+  unsigned lo, hi;          // the model number after `series`, inclusive
+  GpuClass cap;             // the highest class the family is allowed (kLow or kMid)
+  std::string_view family;  // for the log line
+};
+
+inline constexpr uint32_t kVendorAmd = 0x1002;
+inline constexpr uint32_t kVendorNvidia = 0x10DE;
+inline constexpr uint32_t kVendorIntel = 0x8086;
+
+// A card is capped by the LOWEST cap of the rows its name matches, so rows may overlap (RX 550 is in
+// the Polaris row and in the RX 540/550 row). Every row has an example in gpu_class_test.cpp.
+inline constexpr SpeedRow kSpeedTable[] = {
+    // --- NVIDIA ---
+    // GeForce GT (GT 710 to GT 1030) and the lower MX laptop chips (MX110 to MX350, a GT 1030 under another
+    // name): about 0.5 to 1 TFLOPs on a 64-bit bus, at best half a GTX 1050 and in the Steam Deck's (Low)
+    // range. Their 2 or 4 GB would already be Mid; this says Low.
+    {kVendorNvidia, "", "gt", 0, 99999, GpuClass::kLow, "GeForce GT"},
+    {kVendorNvidia, "", "mx", 100, 399, GpuClass::kLow, "GeForce MX 1xx to 3xx"},
+    // MX450 to MX570 (about GTX 1050 to 1650 Max-Q speed): Mid. They have 2 GB, so Mid by memory too; the row
+    // keeps one that reports more from being High.
+    {kVendorNvidia, "", "mx", 400, 999, GpuClass::kMid, "GeForce MX 4xx and up"},
+    // GTX 4xx to 1080 Ti (Fermi, Kepler, Maxwell, Pascal): a GTX 1060 6 GB is about 65 and a GTX 1070 about
+    // 80 against an RTX 2060 at 100, and these chips have no ray tracing or mesh shaders. The GTX 1080 (about
+    // 100) and 1080 Ti (about 125) are at or above the RTX 2060 on paper, but Pascal does worse than its paper
+    // speed on this renderer's compute-heavy effects, so they are Mid too (the owner's call, 2026-11-14): the
+    // cut-off is 1099, which is the end of the GTX 10 series (both cards read as 1080 after "gtx").
+    {kVendorNvidia, "", "gtx", 0, 1099, GpuClass::kMid, "GTX 4xx to 1080 Ti (Maxwell, Pascal)"},
+    // GTX 1650 to 1660 Ti (Turing without RT cores): a 1660 Ti is about 90, a 1650 about 55: under the
+    // RTX 2060 and without the RT/tensor units, so Mid.
+    {kVendorNvidia, "", "gtx", 1600, 1699, GpuClass::kMid, "GTX 16xx (Turing without RT)"},
+    // RTX 2050 and RTX 3050 (desktop 6 and 8 GB, laptop): about 60 to 85, the speed of a GTX 1660 Super,
+    // which is capped above. The rest of RTX 20 and up (2060 and over, RX 5700 and over) is not listed.
+    {kVendorNvidia, "", "rtx", 2050, 2050, GpuClass::kMid, "RTX 2050"},
+    {kVendorNvidia, "", "rtx", 3050, 3050, GpuClass::kMid, "RTX 3050"},
+
+    // --- AMD ---
+    // RX 540 and RX 550 (Polaris 12, 1.2 TFLOPs, 64-bit or 128-bit): the same class as a GT 1030: Low.
+    {kVendorAmd, "", "rx", 540, 559, GpuClass::kLow, "RX 540 and RX 550"},
+    // RX 460 to RX 590 (Polaris): an RX 580 is about 70 against an RTX 2060 at 100, an 8 GB card with the
+    // GTX 1060's speed, so Mid, not High. Includes the RX 560 and the rebadges (RX 590 GME).
+    {kVendorAmd, "", "rx", 400, 599, GpuClass::kMid, "RX 4xx and 5xx (Polaris)"},
+    // Vega 56 and 64 (Vega 10) and Vega Frontier: about 90 and 100. The name does not always carry the
+    // number (RADV: "AMD Radeon RX Vega"), so any Vega is Mid; Vega 64 is the one card this puts a notch low.
+    // Vega inside an APU (Vega 3 to 11) is integrated and Low before this row.
+    {kVendorAmd, "vega", "", 0, 0, GpuClass::kMid, "Vega"},
+    // RX 5300 and RX 5500 (RDNA 1, 4 or 8 GB): an RX 5500 XT is about 70, the speed of an RX 580. The RX 5600
+    // (about 105) and RX 5700 (about 120 to 135) are the RDNA 1 cards that stay on the memory rule.
+    {kVendorAmd, "", "rx", 5300, 5599, GpuClass::kMid, "RX 5300 and RX 5500 (RDNA 1)"},
+    // RX 6300 to RX 6500 XT (Navi 24, 4 GB, an 8 GB variant exists): an RX 6500 XT is about 60 and only a
+    // 64-bit bus. The RX 6600 (about 120) and up stay on the memory rule.
+    {kVendorAmd, "", "rx", 6300, 6599, GpuClass::kMid, "RX 6300 to RX 6500 XT (Navi 24)"},
+    // Radeon R9 (GCN 1 to 3: R9 290, 380, 390 with 4 and 8 GB, Fury): GTX 970-980 speed, at best.
+    {kVendorAmd, "r9", "", 0, 0, GpuClass::kMid, "Radeon R9"},
+
+    // --- Intel ---
+    // Arc A310 to A380 and the A3xxM laptop chips (about 25 to 45): an A380 has 6 GB, so the memory rule
+    // alone would call it High. Arc A580 and A750 (about 110 to 140), A770 and the B-series are not listed.
+    {kVendorIntel, "arc", "a", 300, 399, GpuClass::kMid, "Arc A3xx"},
+    // Intel's integrated graphics (UHD, HD Graphics, Iris): UMA already says Low; this is the name as a
+    // second check, because these names are never a discrete card.
+    {kVendorIntel, "uhd", "", 0, 0, GpuClass::kLow, "Intel UHD Graphics"},
+    {kVendorIntel, "hd graphics", "", 0, 0, GpuClass::kLow, "Intel HD Graphics"},
+    {kVendorIntel, "iris", "", 0, 0, GpuClass::kLow, "Intel Iris"},
+};
+inline constexpr int kSpeedRows = static_cast<int>(sizeof(kSpeedTable) / sizeof(kSpeedTable[0]));
+
+// The one exception to "every integrated GPU is Low": GPUs that share memory with the CPU but are
+// about a discrete card's speed. Read by Classify only for an integrated or UMA adapter (never a
+// software one), and it can only say Mid: it is matched like kSpeedTable's rows (vendor-gated, on the
+// normalised name), so a name not in it keeps Low. Add a name only for an integrated GPU that is
+// measured or documented at a discrete mid-range card's speed; every other integrated GPU stays
+// Low (the 2-CU RDNA 2 of the Ryzen 7000/9000 desktop chips, Radeon 780M / 880M / 890M, Intel
+// Arc 140V and the like are on the Steam Deck's side of the line, not this one).
+inline constexpr SpeedRow kIntegratedMidTable[] = {
+    // AMD Strix Halo (Ryzen AI Max): 40, 32 and 16 compute units of RDNA 3.5 on a wide memory bus, about an
+    // RTX 4060's speed (Radeon 8060S 40 CUs, 8050S 32 CUs, 8040S 16 CUs). Windows names the GPU "AMD
+    // Radeon(TM) 8060S Graphics"; Mesa's RADV may print only "AMD Radeon Graphics (RADV GFX1151)", so the
+    // chip's own name (gfx1151: every Strix Halo part) is a row too.
+    {kVendorAmd, "8060s", "", 0, 0, GpuClass::kMid, "Radeon 8060S (Strix Halo)"},
+    {kVendorAmd, "8050s", "", 0, 0, GpuClass::kMid, "Radeon 8050S (Strix Halo)"},
+    {kVendorAmd, "8040s", "", 0, 0, GpuClass::kMid, "Radeon 8040S (Strix Halo)"},
+    {kVendorAmd, "gfx1151", "", 0, 0, GpuClass::kMid, "Strix Halo (RADV GFX1151)"},
+};
+inline constexpr int kIntegratedMidRows =
+    static_cast<int>(sizeof(kIntegratedMidTable) / sizeof(kIntegratedMidTable[0]));
+
+// The name as the table reads it: lower case, "(R)" and "(TM)" dropped, everything that is not a letter or
+// a digit one space ("NVIDIA GeForce GTX 1060 6GB" -> "nvidia geforce gtx 1060 6gb"; "Intel(R) Arc(TM) A380
+// Graphics" -> "intel arc a380 graphics"; "AMD Radeon RX 580 Series (RADV POLARIS10)" -> "amd radeon rx 580
+// series radv polaris10").
+inline std::string NormalizeName(std::string_view name) {
+  const auto at = [&](std::size_t i, std::string_view mark) {
+    if (i + mark.size() > name.size()) {
+      return false;
+    }
+    for (std::size_t k = 0; k < mark.size(); ++k) {
+      const char c = name[i + k];
+      if ((c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c) != mark[k]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::string out;
+  bool gap = false;  // a separator is pending: written before the next letter or digit
+  for (std::size_t i = 0; i < name.size();) {
+    if (at(i, "(tm)")) {
+      i += 4;
+      continue;
+    }
+    if (at(i, "(r)")) {
+      i += 3;
+      continue;
+    }
+    char c = name[i++];
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+      if (gap && !out.empty()) {
+        out += ' ';
+      }
+      gap = false;
+      out += c;
+    } else {
+      gap = true;  // a space, a dash, a bracket, a byte of a symbol such as the (R) sign
+    }
+  }
+  return out;
+}
+
+// What a row found in a name.
+struct SpeedMatch {
+  int row = -1;      // index into kSpeedTable; -1 = no row applies
+  std::string text;  // what matched, upper case: "GTX 1060", "VEGA", "A380" (for the log line)
+};
+
+namespace speed_detail {
+
+// Whether `word` occurs in `norm` as whole words.
+inline bool HasWord(std::string_view norm, std::string_view word) {
+  if (word.empty()) {
+    return true;
+  }
+  const std::string haystack = " " + std::string(norm) + " ";
+  const std::string needle = " " + std::string(word) + " ";
+  return haystack.find(needle) != std::string::npos;
+}
+
+// The leading digits of `text` as a number (0 and false when there are none or they are over 5).
+inline bool LeadingNumber(std::string_view text, unsigned* out) {
+  unsigned value = 0;
+  std::size_t n = 0;
+  while (n < text.size() && text[n] >= '0' && text[n] <= '9' && n < 6) {
+    value = value * 10 + static_cast<unsigned>(text[n] - '0');
+    ++n;
+  }
+  if (n == 0 || n > 5) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+// The first model number that follows the word `series` in `norm`: "gtx 1060" and "gtx1060" give 1060, and
+// "1060m" or "5600xt" the digits before the letters. The word must start a word ("gtx" is not found in
+// "xgtx"), and a longer word is not the series ("gt" is not "gtx").
+inline bool SeriesNumber(std::string_view norm, std::string_view series, unsigned* number) {
+  std::size_t pos = 0;
+  while (pos < norm.size()) {
+    std::size_t end = norm.find(' ', pos);
+    if (end == std::string_view::npos) {
+      end = norm.size();
+    }
+    const std::string_view token = norm.substr(pos, end - pos);
+    if (token.substr(0, series.size()) == series) {
+      const std::string_view rest = token.substr(series.size());
+      if (rest.empty()) {
+        if (end < norm.size()) {  // "gtx" "1060": the number is the next word
+          const std::size_t next_end = std::min(norm.find(' ', end + 1), norm.size());
+          if (LeadingNumber(norm.substr(end + 1, next_end - end - 1), number)) {
+            return true;
+          }
+        }
+      } else if (rest[0] >= '0' && rest[0] <= '9' && LeadingNumber(rest, number)) {
+        return true;  // "gtx1060"
+      }
+    }
+    pos = end + 1;
+  }
+  return false;
+}
+
+}  // namespace speed_detail
+
+// The row of `rows` with the LOWEST cap that fits this adapter (the first one on a tie), or row -1. The
+// row is an index into `rows`.
+inline SpeedMatch MatchRows(const SpeedRow* rows, int count, uint32_t vendor, std::string_view name) {
+  SpeedMatch best;
+  if (name.empty()) {
+    return best;
+  }
+  const std::string norm = NormalizeName(name);
+  for (int i = 0; i < count; ++i) {
+    const SpeedRow& row = rows[i];
+    if (row.vendor != vendor || !speed_detail::HasWord(norm, row.word)) {
+      continue;
+    }
+    std::string text;
+    if (!row.series.empty()) {
+      unsigned number = 0;
+      if (!speed_detail::SeriesNumber(norm, row.series, &number) || number < row.lo || number > row.hi) {
+        continue;
+      }
+      // "GTX 1060", "RX 580", but "A380": a one-letter series is written without a space
+      text = std::string(row.series) + (row.series.size() > 1 ? " " : "") + std::to_string(number);
+    } else {
+      text = std::string(row.word);
+    }
+    if (best.row >= 0 && row.cap >= rows[best.row].cap) {
+      continue;
+    }
+    best.row = i;
+    best.text = Upper(text);
+  }
+  return best;
+}
+
+// The row of kSpeedTable that caps this adapter, or row -1.
+inline SpeedMatch MatchSpeedTable(uint32_t vendor, std::string_view name) {
+  return MatchRows(kSpeedTable, kSpeedRows, vendor, name);
+}
+
+// The row of kIntegratedMidTable that names this integrated GPU, or row -1.
+inline SpeedMatch MatchIntegratedMid(uint32_t vendor, std::string_view name) {
+  return MatchRows(kIntegratedMidTable, kIntegratedMidRows, vendor, name);
+}
+
 // What the class rule looks at, as plain values (gpu_class.cpp fills it from the device).
 //
-// What it cannot see: speed (perf\COMPAT-AUDIT.md F4). `kHigh` is any discrete card with 5.5 GiB or
-// more, so an 8 GB RX 580, a GTX 1070 or a GTX 1660 Ti get the RTX 5080's `auto` row (contact shadows high,
-// sun shafts high, ambient occlusion high). The cues that could tell them apart, with the risk of each:
-//   1. No ray tracing hardware (caps.raytracing false) caps a discrete card at kMid. It is a generation
-//      cue with no table: DXR/ray tracing exist on NVIDIA from Turing (RTX 20), AMD from RDNA 2 (RX 6000),
-//      Intel Arc; not on GTX 10/16, Polaris, Vega, RDNA 1 (RX 5700 XT, which is fast: it would be put one
-//      class too low). Risk: a driver or a backend that reports false on a card that has it (the RTX 5080
-//      on Vulkan through Streamline, or a Vulkan driver that does not list the extension) would drop a fast
-//      card to Mid, so the flag is first only logged ("[gpu] class: ... ray tracing yes/no" on both
-//      backends of the test PC's two cards), and the rule is changed once those lines are read.
-//   2. A table of device names or PCI ids of the weak generations (GTX 9xx/10xx/16xx, RX 4xx/5xx, Vega 56/64,
-//      Arc A3xx): exact, but a list somebody keeps (OEM names vary: "Radeon RX 580 Series", "RX 590 GME";
-//      a card missed stays kHigh, as now, so the failure is safe), and its sources (pci-ids.ucw.cz, the
-//      vendors' product pages) were not available when this was written: it needs them read, not recalled.
-//   3. A timing probe at the start (a fixed full-screen pass timed with timestamp queries, about 30 ms):
-//      measures the real speed with no list, but the clocks of an idle card are low at the start (it would
-//      read a fast card as slow), the first run of a pipeline includes the driver's compile, the class could
-//      change from one start to the next, and the thresholds need the logs of weak cards (BACKLOG O1) that
-//      nobody has sent yet.
-// The proposal is 1 with 2 as the exception list, after the first logs; nothing of it is in the rule yet.
-// CHECK: which generations report ray tracing is from memory of the vendors' lines, not from a log; the
-// "[gpu] class:" line of a run on each card and backend of the test PC is the first evidence.
+// The cues that tell a fast discrete card from a slow one of the same memory, and why only the table is in
+// the rule (the others stay as notes; perf\COMPAT-AUDIT.md F4):
+//   * No ray tracing hardware (caps.raytracing false) would cap a card at kMid: a generation cue with no
+//     table, but a driver that reports false on a card that has it would drop a fast card, and RDNA 1 (the
+//     fast RX 5700 XT) has none. The flag is only logged ("[gpu] class: ... ray tracing yes/no").
+//   * A timing probe at the start would measure the real speed, but an idle card's clocks are low, the first
+//     use of a pipeline includes the driver's compile, the class could change from start to start, and the
+//     thresholds need the logs of weak cards (BACKLOG O1) that nobody has sent yet.
 struct AdapterFacts {
   bool uma = false;         // the GPU shares memory with the CPU (D3D12 UMA; Vulkan integrated with host-visible local memory)
   bool integrated = false;  // the backend names the device type integrated (Vulkan; D3D12 never says)
   bool software = false;    // a virtual or CPU device, or a software rasteriser by name
   uint64_t dedicated_bytes = 0;  // dedicated video memory (the largest device-local heap on Vulkan)
   // Whether the backend reports ray tracing (D3D12 DXR tier 1.0 or more; Vulkan's ray tracing pipeline
-  // and acceleration structures). The class rule does not use it: it is in the "[gpu] class:" line as
-  // the evidence for the speed cue proposed below.
+  // and acceleration structures). The class rule does not use it: it is in the "[gpu] class:" line.
   bool raytracing = false;
+  // The adapter's description as the API gives it, and its PCI vendor id (Plume's RenderDeviceVendor):
+  // what the speed table reads. Empty and 0 when unknown, which leaves the memory rule alone.
+  std::string_view name;
+  uint32_t vendor_id = 0;
+};
+
+// Which rule chose the class, for the log line.
+enum class Rule : uint8_t {
+  kAdapterType,  // software, UMA, integrated, or no dedicated memory: nothing heavy runs
+  kMemory,       // the dedicated video memory (a discrete card), no table row lowered it
+  kName,         // the speed table lowered the class the memory rule gave, or a named integrated GPU is Mid
 };
 
 struct Verdict {
   GpuClass cls = GpuClass::kHigh;
-  std::string why;  // one phrase for the log line
+  std::string why;  // one phrase for the log line: starts with "by adapter type:", "by memory:" or "by name:"
+  Rule rule = Rule::kMemory;
 };
 
 // Whether the GPU draws in memory the CPU also uses (a software adapter, UMA, an integrated GPU): the
@@ -280,23 +560,50 @@ constexpr bool SharesMemory(const AdapterFacts& facts) {
 
 inline Verdict Classify(const AdapterFacts& facts) {
   if (facts.software) {
-    return {GpuClass::kLow, "a software or virtual adapter"};
+    return {GpuClass::kLow, "by adapter type: a software or virtual adapter", Rule::kAdapterType};
   }
-  if (facts.uma) {
-    return {GpuClass::kLow, "UMA: the GPU shares memory with the CPU (an integrated GPU or an APU)"};
-  }
-  if (facts.integrated) {
-    return {GpuClass::kLow, "the graphics API calls it an integrated GPU"};
+  if (facts.uma || facts.integrated) {
+    // Shared memory is Low, except the few named integrated GPUs that are as fast as a mid-range card
+    // (kIntegratedMidTable: AMD's Strix Halo, about an RTX 4060). Every other integrated GPU stays Low.
+    const SpeedMatch fast = MatchIntegratedMid(facts.vendor_id, facts.name);
+    if (fast.row >= 0) {
+      const SpeedRow& row = kIntegratedMidTable[fast.row];
+      return {row.cap,
+              "by name: " + fast.text + " -> " + std::string(ClassName(row.cap)) + " (" + std::string(row.family) +
+                  "; shares memory with the CPU like any integrated GPU, which would be low, but is about a mid-range card's speed)",
+              Rule::kName};
+    }
+    if (facts.uma) {
+      return {GpuClass::kLow, "by adapter type: UMA, the GPU shares memory with the CPU (an integrated GPU or an APU)",
+              Rule::kAdapterType};
+    }
+    return {GpuClass::kLow, "by adapter type: the graphics API calls it an integrated GPU", Rule::kAdapterType};
   }
   if (facts.dedicated_bytes == 0) {
-    return {GpuClass::kLow, "no dedicated video memory is reported"};
+    return {GpuClass::kLow, "by adapter type: no dedicated video memory is reported", Rule::kAdapterType};
   }
   const std::string have = std::to_string(facts.dedicated_bytes >> 20) + " MiB of dedicated memory";
   const std::string limit = std::to_string(kMidBelowBytes >> 20) + " MiB";
+  Verdict by_memory;
   if (facts.dedicated_bytes < kMidBelowBytes) {
-    return {GpuClass::kMid, "discrete GPU with " + have + ", below " + limit};
+    by_memory = {GpuClass::kMid, "by memory: discrete GPU with " + have + ", below " + limit, Rule::kMemory};
+  } else {
+    by_memory = {GpuClass::kHigh, "by memory: discrete GPU with " + have + ", at least " + limit, Rule::kMemory};
   }
-  return {GpuClass::kHigh, "discrete GPU with " + have + ", at least " + limit};
+
+  // The speed table caps the class the memory gave; it never raises it.
+  const SpeedMatch match = MatchSpeedTable(facts.vendor_id, facts.name);
+  if (match.row < 0) {
+    return by_memory;
+  }
+  const SpeedRow& row = kSpeedTable[match.row];
+  if (row.cap >= by_memory.cls) {
+    return by_memory;  // the memory already says as little (or less): the name changes nothing
+  }
+  return {row.cap,
+          "by name: " + match.text + " -> " + std::string(ClassName(row.cap)) + " (" + std::string(row.family) +
+              "; the memory alone says " + std::string(ClassName(by_memory.cls)) + ": " + have + ")",
+          Rule::kName};
 }
 
 // --- this process's class (gpu_class.cpp) ------------------------------------------------------
