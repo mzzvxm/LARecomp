@@ -46,8 +46,19 @@
 // The apply pass (ao_apply_ps) puts it on the picture: only on the sun's share of the light, so it
 // cannot darken what the game already shadows (the game's mask says that) or the ambient.
 //
+// THE GROUND UNDER A VEHICLE (the shadow starts as `Under` before the march). The game's sun shadow
+// map holds the player's car only, so the ground under a traffic car is as lit as an open road, and the
+// ray above finds the car only within `thickness` of itself: a pixel seen through the gap under a car
+// has the car's rear face in front of it by up to the car's length, "far in front", which the thickness
+// rule discards on purpose (it is meant for a wall that only overlaps the ray on the screen). A car is a
+// solid, so for a vehicle pixel (the depth pass's vehicle bit) the rule is different: looking up the
+// column above a horizontal surface (the world's up, push lin.xyz) three steps to kUnderHeight, a step
+// that falls on a vehicle's pixel and lies behind its shell by more than the tolerance and less than
+// kUnderReach is inside the car, and the ground there is in its shadow. The story and the numbers are in
+// contact_trace.h ("the ground under a vehicle"), with a standalone check of the twin of this code.
+//
 // Push block (ao_common.hlsli AoPush), this pass's fields:
-//   slots.z    the linear depth image (bindless slot)
+//   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit
 //   slots2.y   the frame number (the noise's shift); 0 while no temporal upscaler runs
 //   sizes      the image's size twice (this pass's target and the depth image are the same size)
 //   lens.xy    tan of the half field of view; lens.z the ray's length in world units, lens.w the
@@ -56,6 +67,12 @@
 //   shape.y    the number of steps
 //   light.xyz  the direction to the sun in view space (x right, y up, z forward; unit length)
 //   extra.y    the distance beyond which nothing is computed (the caller's contact fade end)
+//   lin.xyz    the world's up in view space (unit length; zero: no under-a-vehicle term), lin.w how
+//              strongly that term shadows (0 to 1; 0: off, the pass is as it was)
+//              (the contact pass does not read the depth rows lin otherwise holds)
+//   extra.w    the distance in metres from the camera within which the game draws cars into the sun shadow
+//              map (TRAFFIC SHADOWS, traffic_shadow.h; 0: it does not): the under-a-vehicle term leaves out
+//              a car whose shell is nearer than that, which has its own shadow, and keeps the farther ones
 //
 // The constants below are contact_trace.h's: change them there first.
 
@@ -82,6 +99,73 @@ static const float kSunFacingHigh = 0.15f;
 static const float kFadeStartMax = 0.98f;
 // A step nearer to the camera than this is not looked up (behind the lens).
 static const float kNearZ = 0.05f;
+
+// The ground under a vehicle (header comment). Three steps up the column above the pixel, at these
+// shares of kUnderHeight times a jitter of kUnderJitterLow + kUnderJitterSpan noise; a step counts when
+// the pixel it falls on is a vehicle's and the step is behind its shell by more than kUnderEpsFloor +
+// kUnderEpsPixels footprints (fully so at twice that) and less than kUnderReach (then fading out over a
+// quarter of it). The surface must be horizontal: its normal against the world's up from kUnderUpLow to
+// kUnderUpHigh.
+static const float kUnderHeight = 0.9f;
+static const float kUnderStep0 = 1.0f;
+static const float kUnderStep1 = 0.6f;
+static const float kUnderStep2 = 0.35f;
+static const float kUnderJitterLow = 0.85f;
+static const float kUnderJitterSpan = 0.3f;
+static const float kUnderReach = 6.0f;
+static const float kUnderEpsFloor = 0.05f;
+static const float kUnderEpsPixels = 3.0f;
+static const float kUnderUpLow = 0.75f;
+static const float kUnderUpHigh = 0.9f;
+// A car that casts into the sun shadow map (extra.w) is left out of the term by its shell's distance from
+// the camera, fading in over this many metres either side of that distance (contact_trace.h).
+static const float kUnderCastBand = 3.0f;
+
+// How much of the ground under a vehicle this pixel is, 0 to 1 (contact_trace.h UnderVehicle). `tc` is the
+// pixel's own level-0 depth (with the vehicle bit), `pc` its view position, `normal` its view-space normal
+// facing the camera, `size` and `isize` the depth image's size.
+float Under(uint depth_slot, float tc, float3 pc, float3 normal, float2 size, int2 isize,
+            float footprint_unit, float noise) {
+  const float3 up = g_push.lin.xyz;
+  const float strength = saturate(g_push.lin.w);
+  const float cast_distance = g_push.extra.w;
+  if (!(strength > 0.0f) || dot(up, up) < 0.5f || AoIsVehicle(tc)) {
+    return 0.0f;
+  }
+  const float upness = smoothstep(kUnderUpLow, kUnderUpHigh, dot(normal, up));
+  if (!(upness > 0.0f)) {
+    return 0.0f;
+  }
+  const float jitter = kUnderJitterLow + kUnderJitterSpan * noise;
+  float hit = 0.0f;
+  [unroll] for (int k = 0; k < 3; ++k) {
+    const float share = k == 0 ? kUnderStep0 : (k == 1 ? kUnderStep1 : kUnderStep2);
+    const float3 p = pc + up * (kUnderHeight * share * jitter);
+    if (p.z <= kNearZ) {
+      continue;
+    }
+    const float2 uv = float2(0.5f + 0.5f * p.x / (p.z * g_push.lens.x),
+                             0.5f - 0.5f * p.y / (p.z * g_push.lens.y));
+    if (any(uv < 0.0f) || any(uv >= 1.0f)) {
+      continue;
+    }
+    const float td = AoLoadLinear(depth_slot, min(int2(uv * size), isize - 1));
+    if (AoIsVehicle(td)) {
+      const float eps = kUnderEpsFloor + kUnderEpsPixels * footprint_unit * p.z;
+      const float dz = p.z - td;
+      float weight = saturate((dz - eps) / eps) *
+                     (1.0f - saturate((dz - kUnderReach) / (0.25f * kUnderReach)));
+      if (cast_distance > 0.0f) {
+        // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+        const float2 slope = p.xy / p.z;
+        const float shell = td * sqrt(1.0f + dot(slope, slope));
+        weight *= smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell);
+      }
+      hit = max(hit, weight);
+    }
+  }
+  return hit * upness * strength;
+}
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 pixel = int2(position.xy);
@@ -119,8 +203,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float noise = frac(AoNoise(float2(pixel)) + frame * 0.75487766624669f);
 
   const float3 start = pc + normal * (kLiftFloor + kLiftPixels * footprint_unit * tc);
-  float shadow = 0.0f;
+  // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
+  float shadow = Under(depth_slot, tc, pc, normal, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
+    if (shadow >= 0.99f) {
+      break;
+    }
     // The distance along the ray grows as the square of the step number: fine near the contact.
     const float t = (float(i) + noise) * inv_steps;
     const float along = t * t;

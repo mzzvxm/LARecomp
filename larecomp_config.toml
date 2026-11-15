@@ -25390,6 +25390,20 @@ name = "Patch_RearViewCullBits"
 registers = ["r3"]
 after_instruction = false
 
+# 0x8236066C: the `cmplwi cr6,r11,0` after `lbz r11,594(r30)` in mcCarModel's draw (sub_82360518),
+# on the way to the sun shadow phases (0x20 0x40 0x80 0x100 the cascades, 0x1000 the collector).
+# +594 is set by the vehicle constructor for the player's car only, so the game draws no other car
+# into the sun shadow map and the ground under traffic is lit. The hook runs before the compare with
+# r11 = the byte, r13 = the thread's guest context, r28 = the phase, r30 = the vehicle: for a car
+# the game leaves out and the TRAFFIC SHADOWS setting picks (the nearest few, within a distance) in
+# a cascade phase it raises r11 to 1, and the draw goes on into sub_8235FA90 as for the player's car.
+# Nothing is written into the vehicle. traffic_shadow.cpp, gpu/traffic_shadow.h.
+[[midasm_hook]]
+address = 0x8236066C
+name = "Patch_TrafficCascadeGate"
+registers = ["r11", "r13", "r28", "r30"]
+after_instruction = false
+
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
 #
 # sub_8230D988 hunts for the next impostor to refresh with two nested loops that

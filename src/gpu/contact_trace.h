@@ -33,6 +33,7 @@
 // ===========================================================================
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 
@@ -216,6 +217,100 @@ Vec3 NormalFromDepth(const Camera& c, DepthAt&& depth_at, int x, int y, float tc
   return len > 1e-20f ? n * (1.0f / len) : Vec3{0.0f, 0.0f, -1.0f};
 }
 
+// ---------------------------------------------------------------------------
+// the ground under a vehicle
+// ---------------------------------------------------------------------------
+//
+// Owner, 2026-11-13: the ground under TRAFFIC cars is bright and, with the contact shadows on, only the
+// wheels and the underside's edges darken. Why [I: from the recompiled guest code, not seen in a run; CHECK
+// in a drive]: the game's sun shadow map holds the player's car and no other. Vehicle::Draw (guest
+// 0x82360518) draws a vehicle into the cascade phases only when its byte +594 is set, and the vehicle's
+// constructor (0x8235AF90) sets that byte when its sixth argument is 0 (the same case registers the vehicle
+// as the game's one "own" vehicle, the global at 0x8288DDF8): a traffic car casts no sun shadow and the
+// ground under it is as lit as an open road. The materials do have the cascade technique (every xAmbient*
+// car group has a VS_ShadowDepthLocal), so it is the draw's gate that leaves them out, not the data and not
+// the host (nothing in the renderer filters the cascade draws). What traffic has is the game's soft quad
+// decal (xAmbientOcclusionShadows PS_CalcShadowsQuad, one a car, a darkening of the colour after the world
+// is drawn); the player's car has that and four wheel patches (PS_CalcShadowsSingle) as well as its cascade
+// shadow.
+//
+// The contact march finds a car only within `thickness` (0.3 m) of its ray: a ground pixel seen through
+// the gap under a car has the car's rear face in front of it by up to the car's length, so every ray that
+// starts under the middle of the car ends at a surface "far in front" of it, which hides nothing by design
+// (a wall in front of a ray only overlaps it on the screen). Only the strip along the edges and the wheels
+// are within reach: the owner's patchy picture.
+//
+// For a vehicle that rule is wrong: the surface in front is a car, a solid, and a point behind its visible
+// shell by less than the car's length is inside it. So a ground pixel looks UP the column above it (the
+// world's up, in view space: UpInView) a little way (kUnderHeight): when the pixel a step falls on is a
+// vehicle's (the depth pass's vehicle bit) and the step is behind that shell by more than a tolerance and
+// less than kUnderReach, the ground is under the car. Under a car the sun is blocked, as by its own shadow,
+// so the pixel gets the full contact shadow: the sun's share of the light goes, the ambient stays. That is
+// what the cascade gives the player's car; the apply multiplies by the sun's share AFTER the game's mask,
+// so where the game already shadows the ground (the player's car) the term adds nothing and that car's
+// picture is unchanged. It does not add the decal's extra darkening: the ground under a traffic car is a
+// shadow (ambient only, then the occlusion's own darkening), not a decal's black.
+//
+// What it does not do, by construction: ground in front of a car (the step is nearer than the shell:
+// dz < 0), ground beside it (the column is outside the shell's pixels), ground beyond it (hidden by the
+// car or above its roof line, the column goes away from it), a surface that is not roughly horizontal
+// (kUnderUpLow), a vehicle's own pixel, anything that is not a vehicle (a table: the contact march's own
+// job). Three steps up the column, jittered by the pixel's noise, heights as shares of kUnderHeight.
+inline constexpr float kUnderHeight = 0.9f;       // m: how far up the column the steps reach
+inline constexpr float kUnderStep0 = 1.0f;        // the heights of the three steps, shares of kUnderHeight
+inline constexpr float kUnderStep1 = 0.6f;
+inline constexpr float kUnderStep2 = 0.35f;
+inline constexpr float kUnderJitterLow = 0.85f;   // the steps' heights are multiplied by 0.85 + 0.3 noise
+inline constexpr float kUnderJitterSpan = 0.3f;
+inline constexpr float kUnderReach = 6.0f;        // m: how far behind a vehicle's shell a step is still inside it
+inline constexpr float kUnderEpsFloor = 0.05f;    // m: the shell must be nearer than the step by this ...
+inline constexpr float kUnderEpsPixels = 3.0f;    // ... plus this many footprints (and is fully so at twice that)
+inline constexpr float kUnderUpLow = 0.75f;       // the surface's normal against the world's up: none below this ...
+inline constexpr float kUnderUpHigh = 0.9f;       // ... all from this
+// A car the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) has its shadow already: the
+// term leaves it out. The hook's distance is to the car's origin (its middle) and the shell the step lands on is
+// up to a car's half length nearer or farther, so the term fades in over twice this many metres around that distance.
+inline constexpr float kUnderCastBand = 3.0f;
+
+inline float UnderStep(int k) { return k == 0 ? kUnderStep0 : (k == 1 ? kUnderStep1 : kUnderStep2); }
+
+// The world's up in this renderer's view space (x right, y up, z forward), from the game's view matrix
+// `m` (row vectors, v' = v M, the camera looking down -z; the upper 3x3's row 1 is the world's Y in view
+// space): the same arrangement as the sun's direction (ao.cpp FillPush). Zero when the matrix is not usable.
+template <class Matrix>
+inline Vec3 UpInView(const Matrix& m) {
+  const double x = m[1][0], y = m[1][1], z = -m[1][2];
+  const double length = std::sqrt(x * x + y * y + z * z);
+  if (!std::isfinite(length) || length < 1e-6) {
+    return {};
+  }
+  return {float(x / length), float(y / length), float(z / length)};
+}
+
+// The vehicle bit of a level-0 depth (the lowest bit of the float, ao_common.hlsli AoIsVehicle).
+inline bool DepthIsVehicle(float level0_depth) { return (std::bit_cast<uint32_t>(level0_depth) & 1u) != 0u; }
+inline float DepthWithVehicleBit(float depth, bool vehicle) {
+  return std::bit_cast<float>((std::bit_cast<uint32_t>(depth) & ~1u) | (vehicle ? 1u : 0u));
+}
+inline float UnderTolerance(float footprint) { return kUnderEpsFloor + kUnderEpsPixels * footprint; }
+// The weight of a step whose pixel is a vehicle's: dz is the step's distance minus the shell's (> 0: the
+// shell is nearer to the camera). 0 up to the tolerance, 1 from twice it to kUnderReach, then fading out
+// over a quarter of the reach.
+inline float UnderHitWeight(float dz, float footprint) {
+  const float eps = UnderTolerance(footprint);
+  return Saturate((dz - eps) / eps) * (1.0f - Saturate((dz - kUnderReach) / (0.25f * kUnderReach)));
+}
+// How horizontal a surface is: its normal (facing the camera) against the world's up.
+inline float UnderUpness(float normal_dot_up) { return Smoothstep(kUnderUpLow, kUnderUpHigh, normal_dot_up); }
+// How much of the term a car whose shell is `shell_distance` metres from the camera keeps, when the game draws the
+// cars within `cast_distance` of the camera into the sun shadow map (0: none does, the term is as it was).
+inline float UnderCastWeight(float shell_distance, float cast_distance) {
+  if (!(cast_distance > 0.0f)) {
+    return 1.0f;
+  }
+  return Smoothstep(cast_distance - kUnderCastBand, cast_distance + kUnderCastBand, shell_distance);
+}
+
 struct Trace {
   Camera camera;
   Vec3 to_sun;            // unit, view space
@@ -227,7 +322,55 @@ struct Trace {
   float sky = 60000.0f;   // depth values at or above sky * 0.5 are the sky
   float max_distance = 80.0f;
   bool classic = false;   // the first version's march (equal steps, bias and ramp 2 cm + 0.4% of z, 1 - along^2)
+  Vec3 up;                // the world's up in view space (UpInView); zero: no ground-under-a-vehicle term
+  float under = 0.0f;     // how strongly the ground under a vehicle is shadowed, 0 (off) to 1
+  float cast_distance = 0.0f;  // cars within this many metres of the camera cast into the sun shadow map: the term leaves them out (0: none)
+  mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
 };
+
+// The ground-under-a-vehicle term of the pixel (x, y), 0 to 1 (the shader's Under): `normal` is the pixel's
+// view-space normal (facing the camera), `pc` its position, `tc` its depth (with the vehicle bit).
+// depth_at(x, y) is the level-0 depth with the vehicle bit.
+template <class DepthAt>
+float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 normal) {
+  if (!(t.under > 0.0f) || Dot(t.up, t.up) < 0.5f || DepthIsVehicle(tc)) {
+    return 0.0f;
+  }
+  const float upness = UnderUpness(Dot(normal, t.up));
+  if (!(upness > 0.0f)) {
+    return 0.0f;
+  }
+  const Camera& cam = t.camera;
+  const float footprint_unit = FootprintUnit(cam.tan_y, float(cam.height));
+  const float jitter = kUnderJitterLow + kUnderJitterSpan * t.noise;
+  float hit = 0.0f;
+  for (int k = 0; k < 3; ++k) {
+    const Vec3 p = pc + t.up * (kUnderHeight * UnderStep(k) * jitter);
+    if (p.z <= kNearZ) {
+      continue;
+    }
+    const float u = 0.5f + 0.5f * p.x / (p.z * cam.tan_x);
+    const float v = 0.5f - 0.5f * p.y / (p.z * cam.tan_y);
+    if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) {
+      continue;
+    }
+    const int qx = std::min(int(u * float(cam.width)), cam.width - 1);
+    const int qy = std::min(int(v * float(cam.height)), cam.height - 1);
+    ++t.under_loads;
+    const float td = depth_at(qx, qy);
+    if (!DepthIsVehicle(td)) {
+      continue;
+    }
+    float weight = UnderHitWeight(p.z - td, footprint_unit * p.z);
+    if (t.cast_distance > 0.0f) {
+      // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+      const float sx = p.x / p.z, sy = p.y / p.z;
+      weight *= UnderCastWeight(td * std::sqrt(1.0f + sx * sx + sy * sy), t.cast_distance);
+    }
+    hit = std::max(hit, weight);
+  }
+  return hit * upness * Saturate(t.under);
+}
 
 // The contact visibility of the pixel (x, y), 1 open to 0 hidden: what one invocation of the shader
 // writes (with `classic`, what the first version's did). depth_at(x, y) is the linear depth image.
@@ -251,8 +394,12 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const float lift = t.classic ? 0.015f + 0.003f * tc : RayLift(footprint_unit * tc);
   const Vec3 start = pc + normal * lift;
   const float thickness = std::max(t.thickness, 1e-3f);
-  float shadow = 0.0f;
+  // The ground under a vehicle starts the shadow (0 when the term is off or the pixel is not that).
+  float shadow = t.classic ? 0.0f : UnderVehicle(t, depth_at, tc, pc, normal);
   for (uint32_t i = 0; i < t.steps; ++i) {
+    if (shadow >= 0.99f) {
+      break;
+    }
     const float along = t.classic ? (float(i) + t.noise) / float(t.steps) : Along(i, t.noise, t.steps);
     const Vec3 p = start + t.to_sun * (along * t.length);
     if (p.z <= kNearZ) {

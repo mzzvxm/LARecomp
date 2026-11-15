@@ -543,6 +543,7 @@ class AmbientOcclusion {
     float fade_start = 40.0f;      // the distance fade, world units
     float fade_end = 80.0f;
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
+    float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
