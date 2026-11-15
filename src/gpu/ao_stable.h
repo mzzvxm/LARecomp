@@ -76,7 +76,7 @@ inline constexpr int kMaxWideRadius = 4;  // 9x9, 81 taps, only for the pixels t
 
 // The radius of the blur of an occlusion image `ao_height` lines high: the ratio to 720 lines, rounded to a whole pixel,
 // 1 to kMaxRadius. 540 (half of 1080p), 720: 1; 1080, 1440: 2; 2160 and over: 3. (The occlusion image is the picture's
-// size, or half of it at the low quality; `ao_height` is the image's.)
+// size, or half of it at the high quality; `ao_height` is the image's.)
 inline int DenoiseRadius(uint32_t ao_height) {
   const double ratio = double(ao_height) / double(kReferenceHeight);
   return std::clamp(int(std::lround(ratio)), kMinRadius, kMaxRadius);

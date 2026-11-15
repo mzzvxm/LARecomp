@@ -90,6 +90,10 @@ The player's compare key (`bind_mcla_compare`, F1 until it is rebound in F4; the
 
 Two settings are debug-only or hidden from the row. `mcla_compare_effect=bloom` (F4 or the command line; the row stops at the six graphics upgrades, because the bloom size fix is a fix and has no player row) makes the key flick the bloom size fix, the same A/B as the debug menu's BLOOM SIZE FIX row, without changing the setting. `mcla_compare_label_seconds` (debug-only, live, 0.5 to 30, default 1.5) is how long the label stays up; a test run that takes a picture a second after the press sets it higher.
 
+## The words of the graphics settings
+
+The stored word of a graphics setting is the word the pause menu and the launcher show, and nothing is called low. `mcla_gpu_ao`, `mcla_gpu_contact_shadows` and `mcla_gpu_ssgi` take `auto`, `off`, `high` or `ultra`; `mcla_gpu_car_selfrefl` takes `auto`, `off` or `on`. The GPU class (`mcla_gpu_class`) keeps `low`, `mid` and `high`. There is no migration: a word that is no longer a value (the `low` of an older `larecomp.toml`, or the self-reflections' old `high`) is refused by the SDK when it reads the file (`'low' not in allowed values` in the log), so the setting runs as `auto`, and `[settings] larecomp.toml has mcla_gpu_ao = 'low', which is no longer a value of the setting` says so once at the start; the next settings save rewrites that line to `"auto"`. The SDK does not check a value from the command line or the environment, so `--mcla_gpu_ao=low` reaches the renderer as it is, and the renderer counts any word that is no value as `auto` (`src/gpu/host_plan.h`, `not a value of the setting: taken as auto` in the `[gpu] host pipelines` line). The debug cvar `mcla_gpu_ssgi_low` keeps its name (it is the bounce light's half-size choice, 0 to 2, for the HIGH level).
+
 ## Launch arguments for restart-only diagnostics
 
 A debug setting that the game reads only at start cannot be a row: a change would not take effect, and it could not be saved for the next start. These are launch arguments:

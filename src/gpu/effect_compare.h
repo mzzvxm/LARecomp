@@ -50,15 +50,15 @@ struct EffectInfo {
   std::string_view on_text;  // the text a string setting is read as while the flip forces it on; "" for a switch
 };
 
-// `on_text` is `high` for the graphics upgrades, which every owner reads as its strongest level (`on` for the car
+// `on_text` is `ultra` for the graphics upgrades, which every owner reads as its strongest level (`on` for the car
 // self-reflections, whose one level it is), `default` for
 // the sun shafts (their setting is a strength, shafts_level.h: the forced-on shafts are at the default
 // strength; the old `high` would read as that too, but as a legacy value), and `soft` for the shadow filter.
 inline constexpr EffectInfo kEffects[kEffectCount] = {
-    {"bounce", "mcla_gpu_ssgi", "BOUNCE LIGHT", "high"},
-    {"contact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS", "high"},
+    {"bounce", "mcla_gpu_ssgi", "BOUNCE LIGHT", "ultra"},
+    {"contact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS", "ultra"},
     {"shafts", "mcla_gpu_sun_shafts", "SUN SHAFTS", "default"},
-    {"occlusion", "mcla_gpu_ao", "AMBIENT OCCLUSION", "high"},
+    {"occlusion", "mcla_gpu_ao", "AMBIENT OCCLUSION", "ultra"},
     {"filter", "mcla_gpu_shadow_filter", "SHADOW FILTER", "soft"},
     {"selfrefl", "mcla_gpu_car_selfrefl", "SELF-REFLECTIONS", "on"},
     {"bloom", "mcla_gpu_bloom_scale", "BLOOM FIX", ""},

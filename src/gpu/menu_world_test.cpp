@@ -153,43 +153,43 @@ void Text() {
     return EffectsText(World::kPause, {{"ambient occlusion", ao}, {"contact shadows", contact},
                                        {"bounce light", gi}, {"sun shafts", shafts}});
   };
-  Check(all("high", "high", "low", "default") ==
-            "ambient occlusion high, contact shadows high, bounce light low, sun shafts default (where the sky is drawn)",
-        "the pause world lists what is on, the shafts with their sky note: " + all("high", "high", "low", "default"));
+  Check(all("ultra", "ultra", "high", "default") ==
+            "ambient occlusion ultra, contact shadows ultra, bounce light high, sun shafts default (where the sky is drawn)",
+        "the pause world lists what is on, the shafts with their sky note: " + all("ultra", "ultra", "high", "default"));
   Check(all("off", "off", "off", "off") == "no effect is on", "nothing on says so");
-  Check(all("high", "", "off", "off") == "ambient occlusion high", "an empty level and 'off' are off");
+  Check(all("ultra", "", "off", "off") == "ambient occlusion ultra", "an empty level and 'off' are off");
 
-  const std::string play = EffectsText(World::kPlay, {{"ambient occlusion", "high"}, {"contact shadows", "off"},
-                                                       {"bounce light", "high"}, {"sun shafts", "strong"}});
-  Check(play == "ambient occlusion high, bounce light high, sun shafts strong",
+  const std::string play = EffectsText(World::kPlay, {{"ambient occlusion", "ultra"}, {"contact shadows", "off"},
+                                                       {"bounce light", "ultra"}, {"sun shafts", "strong"}});
+  Check(play == "ambient occlusion ultra, bounce light ultra, sun shafts strong",
         "the game view has no sky note on the shafts: " + play);
 
-  const std::string map = EffectsText(World::kMap, {{"ambient occlusion", "high"}, {"contact shadows", "low"},
-                                                     {"bounce light", "high"}, {"sun shafts", "default"}});
-  Check(map == "ambient occlusion high, contact shadows low; left out here: bounce light high, sun shafts default",
+  const std::string map = EffectsText(World::kMap, {{"ambient occlusion", "ultra"}, {"contact shadows", "high"},
+                                                     {"bounce light", "ultra"}, {"sun shafts", "default"}});
+  Check(map == "ambient occlusion ultra, contact shadows high; left out here: bounce light ultra, sun shafts default",
         "the map lists what it left out: " + map);
   const std::string map_only_off = EffectsText(World::kMap, {{"ambient occlusion", "off"}, {"contact shadows", "off"},
                                                               {"bounce light", "off"}, {"sun shafts", "off"}});
   Check(map_only_off == "no effect is on", "nothing on in the map says so");
   const std::string map_left = EffectsText(World::kMap, {{"ambient occlusion", "off"}, {"contact shadows", "off"},
-                                                          {"bounce light", "low"}, {"sun shafts", "off"}});
-  Check(map_left == "no effect is on; left out here: bounce light low", "only the left-out ones on: " + map_left);
+                                                          {"bounce light", "high"}, {"sun shafts", "off"}});
+  Check(map_left == "no effect is on; left out here: bounce light high", "only the left-out ones on: " + map_left);
 
   // The car self-reflections are the fifth effect: they run in the game view, the pause world and the garage, and are left
   // out in the map.
-  const std::string car_play = EffectsText(World::kPlay, {{"ambient occlusion", "high"}, {"contact shadows", "off"},
+  const std::string car_play = EffectsText(World::kPlay, {{"ambient occlusion", "ultra"}, {"contact shadows", "off"},
                                                            {"bounce light", "off"}, {"sun shafts", "off"},
-                                                           {"car self-reflections", "high"}});
-  Check(car_play == "ambient occlusion high, car self-reflections high", "the game view lists them: " + car_play);
-  const std::string car_garage = EffectsText(World::kGarage, {{"ambient occlusion", "high"}, {"contact shadows", "high"},
-                                                               {"bounce light", "off"}, {"sun shafts", "high"},
-                                                               {"car self-reflections", "low"}});
-  Check(car_garage == "ambient occlusion high, contact shadows high, sun shafts high (where the sky is drawn), car self-reflections low",
+                                                           {"car self-reflections", "on"}});
+  Check(car_play == "ambient occlusion ultra, car self-reflections on", "the game view lists them: " + car_play);
+  const std::string car_garage = EffectsText(World::kGarage, {{"ambient occlusion", "ultra"}, {"contact shadows", "ultra"},
+                                                               {"bounce light", "off"}, {"sun shafts", "strong"},
+                                                               {"car self-reflections", "on"}});
+  Check(car_garage == "ambient occlusion ultra, contact shadows ultra, sun shafts strong (where the sky is drawn), car self-reflections on",
         "the garage lists them, with no sky note of their own: " + car_garage);
-  const std::string car_map = EffectsText(World::kMap, {{"ambient occlusion", "high"}, {"contact shadows", "high"},
+  const std::string car_map = EffectsText(World::kMap, {{"ambient occlusion", "ultra"}, {"contact shadows", "ultra"},
                                                          {"bounce light", "off"}, {"sun shafts", "off"},
-                                                         {"car self-reflections", "high"}});
-  Check(car_map == "ambient occlusion high, contact shadows high; left out here: car self-reflections high",
+                                                         {"car self-reflections", "on"}});
+  Check(car_map == "ambient occlusion ultra, contact shadows ultra; left out here: car self-reflections on",
         "the map leaves them out: " + car_map);
   const std::string car_off = EffectsText(World::kPause, {{"ambient occlusion", "off"}, {"contact shadows", "off"},
                                                            {"bounce light", "off"}, {"sun shafts", "off"},

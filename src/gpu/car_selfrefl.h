@@ -12,12 +12,11 @@
 //                                SELF-REFLECTIONS row on GRAPHICS QUALITY, live, saved): on darkens the reflection where the
 //                                ray passes just behind a part of the car (the specular occlusion) and reflects the car's own
 //                                colour there. `auto` is the class's cell (gpu_class.h): off on Low, on on Mid and High.
-//                                The old `low` (the occlusion alone) and `high` are still accepted and mean on: low cost the same
-//                                as high (perf/out/FXCOST-B6.txt, owner decision 2026-11-14), and nothing in the graphics
-//                                settings is called low. host_plan.h has the rule that the precache and the draws share, and the
-//                                aliases.
+//                                The setting has one level (the older low, the occlusion alone, cost the same as the full effect:
+//                                perf/out/FXCOST-B6.txt, owner decision 2026-11-14), and a word that is no value counts as `auto`.
+//                                host_plan.h has the rule that the precache and the draws share.
 //   mcla_gpu_car_selfrefl_test   a debug-only override: 0 follows the setting (the default), 1 forces the occlusion-only mode
-//                                (no setting reaches it any more), 2 forces high, whatever the setting says (the G8b chain's runs
+//                                (no setting reaches it any more), 2 forces the full effect, whatever the setting says (the G8b chain's runs
 //                                and the old command lines use it).
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
 //                                found, 3 the baked vertex AO, 4 the state of the trace (colours in the variant's text)
@@ -72,7 +71,7 @@
 // AddLive): the effect is not drawn until they are made (a frame never waits for a compile), as the sun shafts' are.
 //
 // COST (the final measurement, perf/out/FXCOST-B6.txt, RTX 5080, 3840x2160, K-DAY): +0.107 ms for the occlusion alone and +0.095 ms
-// for high (both drew about 8400 paint draws per 600 frames), against the effect off, so the setting has no low level. The first
+// for the full effect (both drew about 8400 paint draws per 600 frames), against the effect off, so the setting has one level. The first
 // prototype's runs (G8B, perf/out/G8B.txt) were +0.17 ms and +0.26 ms; the numbers below are from that prototype:
 // the history pass is one full-screen pass reading the 2x multisampled colour, depth and stencil planes, the ray is 12 steps of
 // one RGBA16F load each on the car's pixels (about 7% of the picture in the K shots, 15% close behind it), the image 8 bytes a
@@ -170,8 +169,8 @@ class CarSelfRefl {
   // every frame, which its history averages out).
   void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
 
-  // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "low" or
-  // "high"), for the scene's one line per change of world.
+  // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "on", or
+  // "occlusion" for the debug test level), for the scene's one line per change of world.
   menu_world::World FrameWorld() const;
   const char* Level() const;
 

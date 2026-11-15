@@ -501,14 +501,14 @@ void TestTwinPlain() {
 
 void TestVariantChoice() {
   using ao_fast::Counts;
-  Check(ao_fast::PlainCounts(false) == Counts::kHigh && ao_fast::PlainCounts(true) == Counts::kLow, "the plain pass: high is 3x3, low is 2x2");
-  Check(ao_fast::GiCounts(false, 2) == Counts::kHigh, "the bitmask pass: high quality with 2 ring steps is the 3x3 variant");
-  Check(ao_fast::GiCounts(true, 1) == Counts::kLow, "the bitmask pass: the fewer quality with 1 ring step is the 2x2 variant");
+  Check(ao_fast::PlainCounts(false) == Counts::kUltra && ao_fast::PlainCounts(true) == Counts::kHigh, "the plain pass: ultra is 3x3, high is 2x2");
+  Check(ao_fast::GiCounts(false, 2) == Counts::kUltra, "the bitmask pass: ultra quality with 2 ring steps is the 3x3 variant");
+  Check(ao_fast::GiCounts(true, 1) == Counts::kHigh, "the bitmask pass: the fewer (high) quality with 1 ring step is the 2x2 variant");
   Check(ao_fast::GiCounts(false, 0) == Counts::kGeneric && ao_fast::GiCounts(true, 0) == Counts::kGeneric, "no ring: the generic compilation");
   Check(ao_fast::GiCounts(false, 1) == Counts::kGeneric && ao_fast::GiCounts(true, 2) == Counts::kGeneric && ao_fast::GiCounts(false, 7) == Counts::kGeneric,
         "a ring's steps that no variant has (the debug override): the generic compilation");
-  Check(ao_fast::kHighSlices == 3 && ao_fast::kHighSteps == 3 && ao_fast::kLowSlices == 2 && ao_fast::kLowSteps == 2, "the qualities' counts are 3x3 and 2x2");
-  Check(ao_fast::kHighFarSteps == 2 && ao_fast::kLowFarSteps == 1, "the ring's steps are 2 and 1");
+  Check(ao_fast::kUltraSlices == 3 && ao_fast::kUltraSteps == 3 && ao_fast::kHighSlices == 2 && ao_fast::kHighSteps == 2, "the qualities' counts are 3x3 and 2x2");
+  Check(ao_fast::kUltraFarSteps == 2 && ao_fast::kHighFarSteps == 1, "the ring's steps are 2 and 1");
 }
 
 // "larecomp_gpu_host_shader(<stem> ps_6_0 SOURCE <source> DEFINES A=1 B=2)" -> the defines of the stem, or false
@@ -589,12 +589,12 @@ void TestFiles(const std::string& gpu_dir) {
     bool gi, fast;
   };
   const Variant variants[] = {
-      {"ao_main_3x3_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, 0, false, false},
-      {"ao_main_2x2_ps", ao_fast::kLowSlices, ao_fast::kLowSteps, 0, false, false},
-      {"ao_main_gi_3x3_far2_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, ao_fast::kHighFarSteps, true, true},
-      {"ao_main_gi_2x2_far1_ps", ao_fast::kLowSlices, ao_fast::kLowSteps, ao_fast::kLowFarSteps, true, true},
-      {"ao_main_gi_3x3_far2_exact_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, ao_fast::kHighFarSteps, true, false},
-      {"ao_main_gi_2x2_far1_exact_ps", ao_fast::kLowSlices, ao_fast::kLowSteps, ao_fast::kLowFarSteps, true, false},
+      {"ao_main_3x3_ps", ao_fast::kUltraSlices, ao_fast::kUltraSteps, 0, false, false},
+      {"ao_main_2x2_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, 0, false, false},
+      {"ao_main_gi_3x3_far2_ps", ao_fast::kUltraSlices, ao_fast::kUltraSteps, ao_fast::kUltraFarSteps, true, true},
+      {"ao_main_gi_2x2_far1_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, ao_fast::kHighFarSteps, true, true},
+      {"ao_main_gi_3x3_far2_exact_ps", ao_fast::kUltraSlices, ao_fast::kUltraSteps, ao_fast::kUltraFarSteps, true, false},
+      {"ao_main_gi_2x2_far1_exact_ps", ao_fast::kHighSlices, ao_fast::kHighSteps, ao_fast::kHighFarSteps, true, false},
   };
   for (const Variant& v : variants) {
     std::string source;
@@ -616,7 +616,7 @@ void TestFiles(const std::string& gpu_dir) {
     Check(Has(host_shaders, std::string("MCLA_GPU_HOST_SHADER_BLOB(") + v.stem + ")"), std::string(v.stem) + ": host_shaders.h hands the blob out");
   }
   // ao.cpp sends the counts the variants have compiled in
-  Check(Has(ao_cpp, "ao_low ? ao_fast::kLowSlices : ao_fast::kHighSlices") && Has(ao_cpp, "ao_low ? ao_fast::kLowSteps : ao_fast::kHighSteps"),
+  Check(Has(ao_cpp, "ao_fewer ? ao_fast::kHighSlices : ao_fast::kUltraSlices") && Has(ao_cpp, "ao_fewer ? ao_fast::kHighSteps : ao_fast::kUltraSteps"),
         "ao.cpp: FillPush sends the slices and steps of ao_fast.h");
   Check(Has(ao_cpp, "ao_fast::PlainCounts(") && Has(ao_cpp, "ao_fast::GiCounts("), "ao.cpp: the pipelines are picked with ao_fast.h's rule");
   Check(Has(ao_cpp, "mcla_gpu_ao_fast_math"), "ao.cpp: the cvar mcla_gpu_ao_fast_math exists");

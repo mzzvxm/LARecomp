@@ -192,7 +192,7 @@ void FarRingChecks() {
   Check(FarLevel(10.0f) == 1 && FarLevel(24.0f) == 1 && FarLevel(33.0f) == 2 && FarLevel(500.0f) == 2,
         "ring samples read level 1 (to 32 px) or 2 (from 32 px), never level 0");
   // steps by quality
-  Check(FarSteps(true, -1, 6.0f) == kFarStepsHigh && FarSteps(false, -1, 6.0f) == kFarStepsLow, "ring steps: 2 at high, 1 at low");
+  Check(FarSteps(true, -1, 6.0f) == kFarStepsUltra && FarSteps(false, -1, 6.0f) == kFarStepsHigh, "ring steps: 2 at ultra, 1 at high");
   Check(FarSteps(true, -1, 0.0f) == 0 && FarSteps(true, 4, 0.0f) == 0, "no reach, no ring, whatever the steps");
   Check(FarSteps(true, 0, 6.0f) == 0 && FarSteps(false, 4, 6.0f) == 4 && FarSteps(true, 99, 6.0f) == kFarStepsMax,
         "forced ring steps: 0 is none, more is kept to what the push block holds");
