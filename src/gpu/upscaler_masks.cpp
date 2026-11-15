@@ -219,7 +219,8 @@ void UpscalerMasks::VariantKey(const PipelineKey& key, PipelineKey* out) {
   }
   out->depth &= ~2u;
   out->stencil_masks &= ~0xFF00u;
-  out->sample_count = 1;
+  // The sample count stays the draw's own: the coverage image has the samples of the game's depth
+  // (Target), 1 under an upscaler and the player's level with mcla_gpu_msaa_with_upscaler.
 }
 
 void UpscalerMasks::Initialize(HostPasses& passes, PassTiming& pass_timing) {
@@ -243,6 +244,11 @@ void UpscalerMasks::Shutdown() {
   }
   pipeline_.reset();
   shader_.reset();
+  pipeline_ms_.reset();
+  shader_ms_.reset();
+  for (uint32_t& samples : logged_samples_) {
+    samples = 0;
+  }
   passes_ = nullptr;
   pass_timing_ = nullptr;
   initialized_ = false;
@@ -277,7 +283,7 @@ uint64_t UpscalerMasks::HeldBytes() const {
   for (const LayerState& l : layers_) {
     for (const HostImage* image : {&l.coverage, &l.mask}) {
       if (image->texture) {
-        bytes += TextureBytes(image->width, image->height, 1, image->format);
+        bytes += TextureBytes(image->width, image->height, 1, image->format, image->samples);
       }
     }
   }
@@ -295,18 +301,31 @@ void UpscalerMasks::BeginFrame() {
   }
 }
 
-HostImage* UpscalerMasks::Target(Layer layer, uint32_t width, uint32_t height, bool* clear) {
+HostImage* UpscalerMasks::Target(Layer layer, uint32_t width, uint32_t height, uint32_t samples,
+                                 bool* clear) {
   *clear = false;
-  if (!initialized_ || failed_ || width == 0 || height == 0) {
+  if (!initialized_ || failed_ || width == 0 || height == 0 || samples == 0) {
     return nullptr;
   }
   LayerState& l = layers_[size_t(layer)];
   const char* name =
       layer == Layer::kReactive ? "reactive mask coverage" : "transparency mask coverage";
-  if (!passes_->EnsureImage(l.coverage, width, height, kCoverageFormat, name)) {
+  if (!passes_->EnsureImage(l.coverage, width, height, kCoverageFormat, name,
+                            plume::RenderTextureFlag::RENDER_TARGET, samples)) {
     ++stats_.image_failures;
     DropFramebuffer(l);
     return nullptr;
+  }
+  stats_.last_samples = samples;
+  if (logged_samples_[size_t(layer)] != samples) {
+    // Once for each change (a lever turned, the level changed): which kind of coverage a run had.
+    logged_samples_[size_t(layer)] = samples;
+    REXLOG_INFO("{} the {} coverage image is {}x{} with {} sample{}{}", kPrefix,
+                layer == Layer::kReactive ? "reactive" : "transparency", width, height, samples,
+                samples == 1 ? "" : "s",
+                samples == 1 ? ""
+                             : " (the main view's depth has them, mcla_gpu_msaa_with_upscaler): the "
+                               "mask is the mean of the samples' masks");
   }
   // A new image (its first use) is cleared, and the framebuffer kept for the old one is not its own.
   // The frame's first second draw clears too; the flag stays up until a draw has gone in (Drawn()).
@@ -348,23 +367,26 @@ plume::RenderFramebuffer* UpscalerMasks::DepthFramebuffer(Layer layer,
   return l.depth_framebuffer.get();
 }
 
-bool UpscalerMasks::Prepare() {
-  if (pipeline_) {
+bool UpscalerMasks::Prepare(bool multisampled) {
+  std::unique_ptr<plume::RenderShader>& shader = multisampled ? shader_ms_ : shader_;
+  std::unique_ptr<plume::RenderPipeline>& pipeline = multisampled ? pipeline_ms_ : pipeline_;
+  if (pipeline) {
     return true;
   }
   if (failed_ || !initialized_) {
     return false;
   }
-  const HostShaderBlob blob = UpscalerMasksPixelShader();
-  shader_ = passes_->CreateShader(blob.data, blob.size, blob.name);
-  if (shader_) {
-    pipeline_ = passes_->CreatePipeline(*shader_, kMaskFormat, "upscaler mask");
+  const HostShaderBlob blob = multisampled ? UpscalerMasksMsPixelShader() : UpscalerMasksPixelShader();
+  shader = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (shader) {
+    pipeline = passes_->CreatePipeline(*shader, kMaskFormat,
+                                       multisampled ? "upscaler mask (multisampled)" : "upscaler mask");
   }
-  if (!pipeline_) {
+  if (!pipeline) {
     failed_ = true;
-    shader_.reset();
-    REXLOG_ERROR("{} the pass could not be made (shader or pipeline): no masks this session",
-                 kPrefix);
+    shader.reset();
+    REXLOG_ERROR("{} the {}pass could not be made (shader or pipeline): no masks this session",
+                 kPrefix, multisampled ? "multisampled " : "");
     return false;
   }
   return true;
@@ -401,7 +423,10 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
       continue;
     }
     const char* name = i == size_t(Layer::kReactive) ? "reactive mask" : "transparency mask";
-    if (!Prepare() ||
+    // The coverage image has the samples of the game's depth (Target): the mask pass takes the mean of
+    // its samples' masks when it has several. The all-ones diagnostic reads nothing.
+    const uint32_t samples = ones ? 1u : std::max<uint32_t>(l.coverage.samples, 1u);
+    if (!Prepare(samples > 1) ||
         !passes_->EnsureImage(l.mask, render_width, render_height, kMaskFormat, name)) {
       ++stats_.image_failures;
       continue;
@@ -409,6 +434,7 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
     MaskPush push{};
     push.gain = i == size_t(Layer::kReactive) ? kReactiveGain : kTransparencyGain;
     push.color_gain = kAddedLightGain;
+    push.samples = samples;
     if (ones) {
       push.mode = 1;
       ++stats_.forced[i];
@@ -423,9 +449,11 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
       push.coverage = l.coverage.slot;
     }
     pass_timing_->Mark(list, name);
-    passes_->DrawInto(list, l.mask, pipeline_.get(), &push, sizeof(push));
+    passes_->DrawInto(list, l.mask, samples > 1 ? pipeline_ms_.get() : pipeline_.get(), &push,
+                      sizeof(push));
     l.mask_valid = true;
     ++stats_.resolved[i];
+    stats_.resolved_ms[i] += samples > 1 ? 1 : 0;
     any = true;
   }
   return any;
@@ -450,20 +478,52 @@ std::string UpscalerMasks::Summary() const {
   return std::format(
       "upscaler masks: draws recorded again {} ({} shadow decals, {} particles, {} light volumes, {} "
       "glass; {:.1f} a frame over the {} frames that had any, at most {} in a frame), masks made: "
-      "reactive {} of {} frames with draws, transparency {} of {}{}; left out: {} not blended, {} no "
-      "depth target, {} size or samples, {} no image, {} pipeline pending; {} frames whose image was "
-      "not the render size, {} image failures",
+      "reactive {} of {} frames with draws, transparency {} of {}{}{}; left out: {} not blended, {} no "
+      "depth target, {} size or sample count, {} multisampled view with mcla_gpu_msaa_with_upscaler "
+      "off, {} no image, {} pipeline pending; {} frames whose image was not the render size, {} image "
+      "failures",
       drawn, d[size_t(Kind::kShadowDecal)], d[size_t(Kind::kParticle)],
       d[size_t(Kind::kLightVolume)], d[size_t(Kind::kGlass)],
       frames_any ? double(drawn) / double(frames_any) : 0.0, frames_any,
       std::max(stats_.max_in_frame, frame_drawn_), stats_.resolved[0] - stats_.forced[0],
       stats_.frames[0], stats_.resolved[1] - stats_.forced[1], stats_.frames[1],
+      stats_.resolved_ms[0] + stats_.resolved_ms[1] != 0
+          ? std::format(" (from multisampled coverage: reactive {}, transparency {}; last {} samples)",
+                        stats_.resolved_ms[0], stats_.resolved_ms[1], stats_.last_samples)
+          : std::string(),
       forced != 0 ? std::format(" (all-ones diagnostic: {} and {} frames)", stats_.forced[0],
                                 stats_.forced[1])
                   : std::string(),
       s[size_t(Skip::kNotBlended)], s[size_t(Skip::kNoDepth)], s[size_t(Skip::kSizeOrSamples)],
-      s[size_t(Skip::kNoImage)], s[size_t(Skip::kPipelinePending)], stats_.size_mismatch,
-      stats_.image_failures);
+      s[size_t(Skip::kMultisampled)], s[size_t(Skip::kNoImage)], s[size_t(Skip::kPipelinePending)],
+      stats_.size_mismatch, stats_.image_failures);
+}
+
+std::string UpscalerMasks::StateText(bool enabled) const {
+  if (!enabled) {
+    return "masks OFF (mcla_gpu_upscaler_masks): none are made, the upscaler trusts its history "
+           "everywhere";
+  }
+  const uint64_t left_out = stats_.skipped[size_t(Skip::kMultisampled)];
+  const uint64_t ms = stats_.resolved_ms[0] + stats_.resolved_ms[1];
+  std::string coverage;
+  if (stats_.last_samples == 0) {
+    coverage = "no second draw yet";
+  } else if (stats_.last_samples == 1) {
+    coverage = "coverage of 1 sample";
+  } else {
+    coverage = std::format("coverage of {} samples (mcla_gpu_msaa_with_upscaler), {} masks made "
+                           "from the samples' mean",
+                           stats_.last_samples, ms);
+  }
+  return std::format(
+      "masks on: reactive {} of {} frames with draws, transparency {} of {}, {}{}", stats_.resolved[0],
+      stats_.frames[0], stats_.resolved[1], stats_.frames[1], coverage,
+      left_out != 0
+          ? std::format("; {} draws left out because the view was multisampled with "
+                        "mcla_gpu_msaa_with_upscaler off",
+                        left_out)
+          : std::string());
 }
 
 }  // namespace mcla::gpu

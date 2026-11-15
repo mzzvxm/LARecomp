@@ -47,6 +47,7 @@ struct HostImage {
   uint32_t slot = 0xFFFFFFFFu;
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t samples = 1;  // 2, 4 or 8 for a multisampled colour target (EnsureImage), else 1
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET;
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
@@ -131,10 +132,14 @@ class HostPasses {
   // made (logged with `name`; the image is left empty). `flags` other than the
   // default make an image a compute pass writes (a temporal upscaler's output:
   // plume::RenderTextureFlag::STORAGE | UNORDERED_ACCESS): with no RENDER_TARGET
-  // in them it has no framebuffer and DrawInto must not be used on it.
+  // in them it has no framebuffer and DrawInto must not be used on it. `samples` above 1 (a render
+  // target with the default flags only) makes it multisampled, for second draws that test a
+  // multisampled depth (upscaler_masks.h): its slot is read as a Texture2DMS (host_pass_common.hlsli
+  // space 1), and DrawInto must not be used on it either.
   bool EnsureImage(HostImage& image, uint32_t width, uint32_t height, plume::RenderFormat format,
                    const char* name,
-                   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET);
+                   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET,
+                   uint32_t samples = 1);
   // Its slot back to the heap and its objects to the FrameRing.
   void ReleaseImage(HostImage& image);
   // A framebuffer of `color` (the one colour target) with `depth` attached beside it, which a pass over

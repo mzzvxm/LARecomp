@@ -3,6 +3,10 @@
 
 #include "host_passes.h"
 
+#include <algorithm>
+#include <format>
+#include <string>
+
 #include <rex/logging.h>
 
 #include "descriptors.h"
@@ -142,15 +146,18 @@ void HostPasses::Bind(plume::RenderCommandList* list) const {
 
 bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
                              plume::RenderFormat format, const char* name,
-                             plume::RenderTextureFlags flags) {
+                             plume::RenderTextureFlags flags, uint32_t samples) {
+  samples = std::max<uint32_t>(samples, 1);
   if (image.texture && image.width == width && image.height == height && image.format == format &&
-      image.flags == flags) {
+      image.flags == flags && image.samples == samples) {
     return true;
   }
   ReleaseImage(image);
   const bool render_target = (flags & plume::RenderTextureFlag::RENDER_TARGET) != 0;
-  image.texture = device_->CreateTexture(
-      plume::RenderTextureDesc::Texture2D(width, height, 1, format, flags), name);
+  plume::RenderTextureDesc desc =
+      plume::RenderTextureDesc::Texture2D(width, height, 1, format, flags);
+  desc.multisampling.sampleCount = plume::RenderSampleCounts(samples);
+  image.texture = device_->CreateTexture(desc, name);
   if (image.texture) {
     plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
     view.mipLevels = 1;
@@ -169,7 +176,8 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
     // Asked again by the next frame while the cause lasts: the first 8 are logged.
     if (image_failures_logged_ < 8) {
       ++image_failures_logged_;
-      REXLOG_ERROR("[gpu] {}: the {}x{} image could not be made", name, width, height);
+      REXLOG_ERROR("[gpu] {}: the {}x{}{} image could not be made", name, width, height,
+                   samples > 1 ? std::format(" {} sample", samples) : std::string());
     }
     ReleaseImage(image);
     return false;
@@ -178,6 +186,7 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
   image.height = height;
   image.format = format;
   image.flags = flags;
+  image.samples = samples;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }
@@ -195,7 +204,7 @@ void HostPasses::ReleaseImage(HostImage& image) {
     frames_->Retire(std::move(image.view));
   }
   if (image.texture) {
-    device_->NoteReleased(TextureBytes(image.width, image.height, 1, image.format));
+    device_->NoteReleased(TextureBytes(image.width, image.height, 1, image.format, image.samples));
     frames_->Retire(std::move(image.texture));
   }
   image = HostImage{};

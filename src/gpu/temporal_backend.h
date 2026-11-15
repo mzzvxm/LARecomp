@@ -157,12 +157,20 @@ struct BackendRequest {
   UpscaleMode mode = UpscaleMode::kNativeAa;
   uint32_t render_size[2] = {};
   uint32_t output_size[2] = {};
+  // FSR only (mcla_gpu_fsr_debug_view, debug): the context is made with FidelityFX's debug
+  // visualization on and its dispatches draw the runtime's own views into the output. Part of the
+  // request, so that a change of the setting makes another context (UpscalerDebugView).
+  bool debug_view = false;
   bool operator==(const BackendRequest& o) const {
     return upscaler == o.upscaler && mode == o.mode && render_size[0] == o.render_size[0] &&
            render_size[1] == o.render_size[1] && output_size[0] == o.output_size[0] &&
-           output_size[1] == o.output_size[1];
+           output_size[1] == o.output_size[1] && debug_view == o.debug_view;
   }
 };
+
+// Whether a context for `upscaler` is wanted with FidelityFX's debug visualization (the cvar
+// mcla_gpu_fsr_debug_view, read now): true only for FSR 3.1 and FSR 4, false for DLSS and Off.
+bool UpscalerDebugView(Upscaler upscaler);
 
 // Whether a runtime takes a mode at an output size. DLSS gives each mode one render size for an
 // output size (Ultra Performance exactly, the others a range around it) and the scene is drawn at a

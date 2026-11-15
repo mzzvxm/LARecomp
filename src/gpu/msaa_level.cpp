@@ -18,7 +18,9 @@ REXCVAR_DEFINE_BOOL(
     "While FSR or DLSS draws the scene, keep the MSAA level of mcla_gpu_msaa (2, 4 or 8 samples) "
     "instead of 1 sample. The upscaler then gets a scene whose edges and alpha tested foliage are "
     "already smoothed by the sample coverage, and has less aliasing to average over its jitter; it "
-    "costs the multisampled scene at the render size. For A/B. Live (read at start too).")
+    "costs the multisampled scene at the render size. The upscaler's masks (mcla_gpu_upscaler_masks) "
+    "are not affected: they are drawn into coverage images with the same samples and averaged, so "
+    "the two switches are independent. For A/B. Live (read at start too).")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

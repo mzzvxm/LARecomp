@@ -194,6 +194,13 @@ const ItemDef kDebugRenderingItems[] = {
                    kMipBiasVals, Len(kMipBiasVals), "%g")),
     NativeOnly(Bool("PM_RxDbgUpMasks",   "mcla_gpu_upscaler_masks", "UPSCALER MASKS: ")),
     NativeOnly(Bool("PM_RxDbgUpMsaa",    "mcla_gpu_msaa_with_upscaler", "MSAA WITH UPSCALER: ")),
+    // The static-scene flicker levers (FSR's own tuning constants, mcla_gpu_fsr_velocity_factor and the two
+    // after it, are cvars only): no jitter at all, FSR's own debug views, and the post chain on the
+    // upscaled picture at the output's size.
+    NativeOnly(Bool("PM_RxDbgUpZeroJit", "mcla_gpu_upscaler_zero_jitter", "UPSCALER NO JITTER: ")),
+    NativeOnly(Bool("PM_RxDbgFsrView",   "mcla_gpu_fsr_debug_view", "FSR DEBUG VIEW: ")),
+    NativeOnly(Bool("PM_RxDbgPostOut",   "mcla_gpu_upscaler_post_reads_output",
+                    "POST CHAIN ON UPSCALED: ")),
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),

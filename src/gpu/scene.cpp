@@ -28,6 +28,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "gpu.h"
 #include "layout.h"
 #include "mc_engine/ultrawide.h"
 #include "native_gfx/vertex_declaration.h"
@@ -1051,16 +1052,34 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
     masks.Skipped(UpscalerMasks::Skip::kNotBlended);
     return;
   }
-  if (d.viewport.viewport.width + 0.5f < float(d.scale.Edge(temporal::kMainPitch)) ||
-      d.key.sample_count != 1) {
+  if (d.viewport.viewport.width + 0.5f < float(d.scale.Edge(temporal::kMainPitch))) {
     masks.Skipped(UpscalerMasks::Skip::kSizeOrSamples);
     return;
   }
+  // The samples of the view: 1 under an upscaler, and the player's level with
+  // mcla_gpu_msaa_with_upscaler, when the second draw is into a coverage image with as many samples
+  // as the game's depth (upscaler_masks.h). A multisampled view with the lever off is a few frames of
+  // a level or path change (msaa_level.h): left out, counted apart, as before.
+  switch (upscaler_mask_plan::ForView(d.key.sample_count, MsaaKeptUnderUpscaler())) {
+    case upscaler_mask_plan::Verdict::kDraw:
+      break;
+    case upscaler_mask_plan::Verdict::kMultisampled:
+      masks.Skipped(UpscalerMasks::Skip::kMultisampled);
+      return;
+    case upscaler_mask_plan::Verdict::kBadSamples:
+      masks.Skipped(UpscalerMasks::Skip::kSizeOrSamples);
+      return;
+  }
   PipelineKey variant;
   UpscalerMasks::VariantKey(d.key, &variant);
-  // Not a pipeline of the host MSAA level's (a level change does not remake it): one sample.
+  // With the lever on the pipeline follows the host MSAA level like the game's own (a level change
+  // makes the copies at the new count in the background, so the masks are not missing for the frames
+  // after a change of the MSAA row); off, it is not a level's pipeline (no copies are made for the
+  // frames of a path change): 1 sample.
   PipelineInputs variant_inputs = inputs;
-  variant_inputs.msaa_guest_samples = 0;
+  if (!MsaaKeptUnderUpscaler()) {
+    variant_inputs.msaa_guest_samples = 0;
+  }
   // A pipeline nobody made yet is built in the background: the second draw waits for it (the frame
   // has less of a mask), the game's own draw does not. Not while a capture runs (sync_builds.h).
   const Deferral deferral{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kUpscalerMask};
@@ -1091,13 +1110,15 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
     masks.Skipped(UpscalerMasks::Skip::kNoDepth);
     return;
   }
-  if (depth->host_samples != 1 || depth->scale.Edge(depth->width) < width ||
-      depth->scale.Edge(depth->height) < height) {
+  // The coverage image takes the samples of the game's depth, which are the draw's own (the pipeline
+  // was made at them): a framebuffer has one count for all its attachments.
+  if (!upscaler_mask_plan::FramebufferAgrees(depth->host_samples, d.key.sample_count) ||
+      depth->scale.Edge(depth->width) < width || depth->scale.Edge(depth->height) < height) {
     masks.Skipped(UpscalerMasks::Skip::kSizeOrSamples);
     return;
   }
   bool clear = false;
-  HostImage* image = masks.Target(layer, width, height, &clear);
+  HostImage* image = masks.Target(layer, width, height, depth->host_samples, &clear);
   plume::RenderFramebuffer* framebuffer =
       image ? masks.DepthFramebuffer(layer, depth->texture.get(), depth->generation) : nullptr;
   if (!framebuffer) {
