@@ -145,6 +145,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
     src/mc_engine/input_state.cpp
+    src/mc_engine/mouse_look.cpp
     src/mc_engine/camera_look.cpp
     src/mc_engine/camera_trace.cpp
     src/mc_engine/display_menu.cpp
@@ -477,6 +478,15 @@ target_include_directories(larecomp_kbm_input_test PRIVATE src/mc_engine)
 find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_kbm_input_test PRIVATE Threads::Threads)
+endif()
+# Mouse look and keyboard steering's pure part (src/mc_engine/mouse_look_core.h, header only: the raw delta sum, the relative-mode gate, the look angles and their return behind
+# the car, the steering ramp, the sensitivity rule) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_mouse_look_test, then run <build dir>/larecomp_mouse_look_test (exit 0 = passed).
+add_executable(larecomp_mouse_look_test EXCLUDE_FROM_ALL
+    src/mc_engine/mouse_look_test.cpp)
+target_include_directories(larecomp_mouse_look_test PRIVATE src/mc_engine)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_mouse_look_test PRIVATE Threads::Threads)
 endif()
 # The live button prompts' pure part (src/mc_engine/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
 # their override, the reading back of the game's DXT5 bitmaps) has a check that needs no game:

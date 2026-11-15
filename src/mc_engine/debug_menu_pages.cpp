@@ -143,6 +143,8 @@ const ItemDef kDebugFixesItems[] = {
     // Button prompts follow the device in use on every screen (hooks/ui.cpp, keyboard_native.cpp): the glyph bitmaps are painted, the movies' platform flag stays on Xbox. Off = the
     // older way (the flag shows the PlayStation set; screens already open keep their glyphs until reopened; only the key caps are painted).
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
+    // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
+    Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),

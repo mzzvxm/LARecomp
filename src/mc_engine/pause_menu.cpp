@@ -2570,7 +2570,7 @@ const MenuDef kMenus[] = {
      "RxGpuHdrMenu",
      kGpuHdrItems, int(sizeof(kGpuHdrItems) / sizeof(kGpuHdrItems[0]))},
 #endif
-    {"PM_RxTabCam", "CAMERA", "Chase camera, FOV, rear view, free look.",
+    {"PM_RxTabCam", "CAMERA", "Chase camera, FOV, rear view, mouse look.",
      "RxCamMenu",
      kCamHubItems, int(sizeof(kCamHubItems) / sizeof(kCamHubItems[0]))},
     {"PM_RxTabCamChase", "CHASE CAMERA", "Smoothing and shake of the chase camera.",
@@ -2584,7 +2584,7 @@ const MenuDef kMenus[] = {
      kCamRearItems, int(sizeof(kCamRearItems) / sizeof(kCamRearItems[0]))},
     // The free-look rows come from camera_look.cpp, next to the code that reads
     // them.
-    {"PM_RxTabCamLook", "LOOK AROUND", "Free look with the right stick.",
+    {"PM_RxTabCamLook", "LOOK AROUND", "Looking around with the mouse.",
      "RxCamLookMenu",
      nullptr, 0,
      CameraLookMenuItems},

@@ -3,6 +3,7 @@
 #include "input_state.h"
 #include "logging.h"
 #include "map_mouse.h"
+#include "mouse_look.h"
 #include "ui/settings.h"
 
 #include <atomic>
@@ -24,7 +25,6 @@ REXCVAR_DEFINE_BOOL(hide_mouse_pointer, true, "MCLA/Input",
     "focus brings it back, and it stays while the mouse is over an overlay.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DECLARE(bool, cam_freelook);
 REXCVAR_DECLARE(bool, mnk_mode);
 
 namespace {
@@ -102,9 +102,10 @@ void TickCursorHide() {
         return;
     }
     // The full map hides the pointer while the mouse drives it (map_mouse_hide_cursor)
-    // and mouse look hides and recentres it. Both own it while they are up; so does
-    // anything else that left the window on kHidden.
-    if (MapMouseHidesCursor() || REXCVAR_GET(cam_freelook)) return;
+    // and mouse look hides and locks it (relative mouse mode, mouse_look.h: only while
+    // it is actually on, that is, while the keyboard and mouse are in use on the road).
+    // Both own it while they are up; so does anything else that left the window on kHidden.
+    if (MapMouseHidesCursor() || larecomp::mouselook::Engaged()) return;
     if (!ours && mode != Visibility::kVisible) return;
 
     static Clock::time_point last_activity = Clock::now();
