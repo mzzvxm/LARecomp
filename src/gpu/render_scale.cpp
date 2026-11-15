@@ -274,7 +274,7 @@ RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_
           ? ChooseUpscalerOutputScale(asked, fsr, preset, window_width, window_height)
           : ChooseRenderScale(asked, fsr, preset, window_width, window_height),
       /*start=*/true);
-  // A lowered scale is published like one that could not be made: the menu says "TOO BIG (NN%)".
+  // A lowered scale is published like one that could not be made: the menu says "LIMITED (NN%)".
   PublishRenderScaleStatus(c.scale, c.capped ? c.uncapped : Scale::None());
   switch (c.source) {
     case RenderScaleChoice::Source::kAsked:

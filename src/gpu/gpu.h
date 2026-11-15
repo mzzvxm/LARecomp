@@ -284,7 +284,7 @@ RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset);
 RenderScaleChoice WantedRenderScale();
 // Any thread: the scale the renderer's images of the screen are made at now, and the one the settings
 // ask for that could not be made for want of video memory (render_scale.h RenderScaleStatus). The
-// pause menu's RENDER RES row says so beside the value.
+// pause menu's RENDER SCALE row says "LIMITED (NN%)" for it, NN being the share that runs.
 RenderScaleStatus GetRenderScaleStatus();
 
 // Any thread: the window's swap chain is HDR10 (hdr.h). False before the renderer is up and when

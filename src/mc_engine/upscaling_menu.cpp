@@ -146,7 +146,7 @@ std::string ModeLabel(Upscaler upscaler, UpscaleMode mode, bool not_available) {
 // FSR 3.1, FSR 4 or DLSS: the five modes, the saved one current. A mode DLSS cannot take at the output
 // size (gpu.h UpscalerAvailability::dlss_modes_refused) says "(N/A)" in place of its share: picking
 // it saves the choice and the mode that runs goes on, as the render scale keeps the one that runs
-// when it says "TOO BIG". A saved text that is no mode of the list (native_aa for DLSS, which the
+// when it says "LIMITED". A saved text that is no mode of the list (native_aa for DLSS, which the
 // renderer takes for DLAA) is the first mode.
 List TemporalList(Upscaler upscaler) {
     List list;
@@ -181,7 +181,7 @@ int ShareOf(const RenderScaleChoice& c) {
 // same scale are one entry (1080p: 100%, 150%, 200%; 1440p: 100%, 150%; 4K: 100%). The saved scale
 // when it is none of them (0.5X, a number set in larecomp.toml: 1 is 67% in a 1080p window) is an
 // entry of its own in its place, as long as it is the setting. A scale the video memory
-// could not hold says "TOO BIG (NN%)" with the share that does run.
+// could not hold says "LIMITED (NN%)" with the share that does run.
 List OffList() {
     constexpr const char* kCvar = "mcla_gpu_resolution_scale";
     List list;
@@ -191,13 +191,13 @@ List OffList() {
     const mcla::gpu::RenderScaleStatus status = mcla::gpu::GetRenderScaleStatus();
     const double max_scale = double(mcla::gpu::kMaxRenderScale.value());
 
-    // "TOO BIG (150%)": only the entry that asks for the scale that could not be made is relabelled.
+    // "LIMITED (150%)": only the entry that asks for the scale that could not be made is relabelled.
     const auto label = [&](const RenderScaleChoice& c, int share) -> std::string {
         if (!status.blocked.none() && !status.running.none() && c.scale == status.blocked) {
             const int kept = status.running == screen.scale
                                  ? 100
                                  : int(std::lround(100.0 * double(status.running.value()) / screen.screen));
-            return "TOO BIG (" + Percent(kept) + ")";
+            return "LIMITED (" + Percent(kept) + ")";
         }
         return Percent(share);
     };
@@ -529,7 +529,7 @@ void SharpnessSet(int i, CvarWriter write) {
 //               "DLAA (100%)" 11, "QUALITY (67%)" 13, "BALANCED (59%)" 14, "PERFORMANCE (50%)" 17,
 //               "ULTRA PERF. (33%)" 17, "ULTRA QUAL. (77%)" 17; DLSS's (N/A) forms have the same length
 //               as their share ("PERFORMANCE (N/A)" 17, "ULTRA PERF. (N/A)" 17); RENDER SCALE: "100%"
-//               to "300%" 4, an entry of the setting's own "CUSTOM (300%)" 13 at the most, "TOO BIG
+//               to "300%" 4, an entry of the setting's own "CUSTOM (300%)" 13 at the most, "LIMITED
 //               (300%)" 14.
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.

@@ -142,7 +142,7 @@
 //     one is armed).
 //   - If the targets cannot be made at the new scale (a 3x render scale is 4K: it can fail on a card
 //     with little memory; so can an upscaler's output in a large window) nothing changes, it is
-//     logged, the pause menu's RENDER SCALE row says "TOO BIG" (gpu.h GetRenderScaleStatus) and the
+//     logged, the pause menu's RENDER SCALE row says "LIMITED" (gpu.h GetRenderScaleStatus) and the
 //     change is asked again after a few seconds, then less often (a failed creation also asks the
 //     video memory budget to release what is idle).
 //   - DLSS takes one render size per mode for an output size, and the scene is drawn on the scale grid
