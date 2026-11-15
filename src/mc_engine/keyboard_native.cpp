@@ -232,7 +232,6 @@ bool HeapPtr(uint32_t ea) { return ea >= 0x40000000u && ea < 0xE0000000u; }
 // larecomp::kbm::KeyLatch on the UI thread, and the input poll reads it once per frame. That is the same on Windows, Linux and the
 // Steam Deck, and a key tapped between two polls still reaches the game (kbm_input.h).
 larecomp::kbm::KeyLatch g_keys;
-larecomp::kbm::NeutralPadRule g_neutral_pad;
 
 // The mouse is over one of the ImGui overlays (F4, the browsers): a click or a wheel turn there is not the game's.
 bool MouseOverOverlay() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse; }
@@ -1552,71 +1551,6 @@ void Hook_KeyboardFeed() {
     }
 }
 
-// ── the neutral pad ─────────────────────────────────────────────────────
-// With no pad the game would open its pause menu on its own (KBM-P0 P0c). The wrappers of XamInputGetCapabilities and XamInputGetState
-// (wheel/wheel_fake.cpp) call these right after the SDK answered; r3 is the SDK's result (0 = a pad is connected). The rule is in
-// kbm_input.h (NeutralPadRule): no pad ever seen = a neutral pad is "connected"; a pad that was here and is gone = the game is told, so it
-// pauses; the first key or mouse button after that takes the keyboard over and the neutral pad comes back.
-namespace {
-
-bool PadUserZero(uint32_t user) {
-    const uint32_t u = user & 0xFF;  // 0xFF = "any user", pinned to 0 by the kernel
-    return u == 0 || u == 0xFF;
-}
-
-void PutBe16(uint8_t* at, uint16_t value) {
-    at[0] = static_cast<uint8_t>(value >> 8);
-    at[1] = static_cast<uint8_t>(value);
-}
-
-// True when the guest is to be told "a neutral pad is connected" for this call. Also writes the changes of state to the log.
-bool NeutralPadNow(bool sdk_connected) {
-    using larecomp::kbm::PadAnswer;
-    using larecomp::kbm::PadSeen;
-    const PadAnswer answer = g_neutral_pad.Decide(sdk_connected, g_keys.PressCount());
-    const PadSeen state = g_neutral_pad.State();
-    static std::atomic<int> last{-1};
-    static std::atomic<bool> told_neutral{false};
-    const int before = last.exchange(static_cast<int>(state), std::memory_order_relaxed);
-    if (before != static_cast<int>(state)) {
-        if (state == PadSeen::kHere) {
-            MC_INFO("[kbnative] a pad is connected: the SDK's answer stands");
-        } else if (state == PadSeen::kGone) {
-            MC_INFO("[kbnative] the pad is gone: the game is told (it pauses); the first key or mouse button takes the keyboard over");
-        } else if (before == static_cast<int>(PadSeen::kGone)) {
-            MC_INFO("[kbnative] a key or mouse button after the pad was lost: the keyboard is the player's, the game is told a neutral pad is connected");
-        }
-    }
-    if (answer == PadAnswer::kNeutral && !told_neutral.exchange(true, std::memory_order_relaxed) && before != static_cast<int>(PadSeen::kGone)) {
-        MC_INFO("[kbnative] no pad is connected: the game is told a neutral pad is, so it never pauses for a missing controller");
-    }
-    return answer == PadAnswer::kNeutral;
-}
-
-}  // namespace
-
-void KbmNeutralPadCaps(uint8_t* base, uint32_t user, uint32_t caps, uint64_t& r3) {
-    if (!base || caps == 0 || !PadUserZero(user) || !REXCVAR_GET(keyboard_native)) return;
-    if (!NeutralPadNow(static_cast<uint32_t>(r3) == 0)) return;
-    // What the SDK's own driver says for a pad (sdl_input_driver.cpp UpdateXCapabilities): type 1 gamepad, subtype 1 gamepad, no flags,
-    // the masks of the buttons, triggers and sticks, both motors.
-    std::memset(base + caps, 0, 20);
-    base[caps + 0] = 1;
-    base[caps + 1] = 1;
-    PutBe16(base + caps + 4, 0xF3FF);
-    base[caps + 6] = 0xFF;
-    base[caps + 7] = 0xFF;
-    for (uint32_t at : {8u, 10u, 12u, 14u, 16u, 18u}) PutBe16(base + caps + at, 0xFFFF);
-    r3 = 0;
-}
-
-void KbmNeutralPadState(uint8_t* base, uint32_t user, uint32_t state, uint64_t& r3) {
-    if (!base || state == 0 || !PadUserZero(user) || !REXCVAR_GET(keyboard_native)) return;
-    if (!NeutralPadNow(static_cast<uint32_t>(r3) == 0)) return;
-    std::memset(base + state, 0, 16);  // X_INPUT_STATE: packet number and a gamepad at rest
-    r3 = 0;
-}
-
 // sub_822A4B80(controller): "SHIFT_UP and SHIFT_DOWN are both bound", read from the control map
 // of the controller's pad as entries 4 and 5 of {u32 type, u32 key}. The game tests only the TYPE
 // word, because a type of 0 never occurred on a bound action in its own maps; a keyboard (or
@@ -1640,7 +1574,5 @@ void Hook_ControlMapRebuilt(PPCRegister&) {}
 void Hook_PadBitsFinalize(PPCRegister&) {}
 bool Hook_ControlCaptureKey(PPCRegister&, PPCRegister&) { return false; }
 bool Hook_ControlLabel(PPCRegister&, PPCRegister&, PPCRegister&) { return false; }
-void KbmNeutralPadCaps(uint8_t*, uint32_t, uint32_t, uint64_t&) {}
-void KbmNeutralPadState(uint8_t*, uint32_t, uint32_t, uint64_t&) {}
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

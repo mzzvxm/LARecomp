@@ -1,4 +1,4 @@
-// A check of the event latch, the mouse keys and the neutral pad rule (kbm_input.h) that needs no game.
+// A check of the event latch and the mouse keys (kbm_input.h) that needs no game.
 //   cmake --build <dir> --target larecomp_kbm_input_test, then run it (exit 0 = passed).
 // Or by hand: clang++ -std=c++20 -I src/mc_engine src/mc_engine/kbm_input_test.cpp -o kbm_input_test
 
@@ -83,18 +83,15 @@ void TestTapBetweenPolls() {
 void TestRepeatIsHeldButNotAPress() {
     KeyLatch k;
     k.Down(kW, false);
-    CHECK(k.PressCount() == 1);
     (void)k.Poll();
     k.Down(kW, true);  // auto-repeat
     k.Down(kW, true);
-    CHECK(k.PressCount() == 1);
     CHECK(k.Held(kW));
     // a repeat brings back a key that ReleaseAll let go of (an overlay swallowed its key-up)
     k.ReleaseAll();
     CHECK(!k.Poll().Any());
     k.Down(kW, true);
     CHECK(k.Poll().Test(kW));
-    CHECK(k.PressCount() == 1);
     // but a repeat alone is not a tap: let go, nothing is left in the latch
     k.Up(kW);
     CHECK(!k.Poll().Any());
@@ -119,7 +116,6 @@ void TestWheelPulse() {
     CHECK(s.Test(kKeyWheelUp) && s.Test(kKeyWheelDown));
     CHECK(!k.Held(kKeyWheelUp));
     CHECK(!k.Poll().Any());  // exactly one poll
-    CHECK(k.PressCount() == 2);
 }
 
 void TestBounds() {
@@ -131,7 +127,6 @@ void TestBounds() {
     k.Up(0);
     k.Pulse(255);
     CHECK(!k.Poll().Any());
-    CHECK(k.PressCount() == 0);
     k.Down(254, false);
     CHECK(k.Poll().Test(254));
     CHECK(!KeySnapshot{}.Test(0) && !KeySnapshot{}.Test(300) && !KeySnapshot{}.Test(-1));
@@ -171,7 +166,6 @@ void TestNoTapIsLostAcrossThreads() {
     consumer.join();
     CHECK(rises.load() == kTaps);
     CHECK(falls.load() == kTaps);
-    CHECK(k.PressCount() == uint32_t(kTaps));
 }
 
 // ---- the mouse keys ----
@@ -213,114 +207,6 @@ void TestMouseKeyNames() {
     CHECK(FindMouseKeyByName("") == nullptr && FindMouseKeyByName("LMB ") == nullptr && FindMouseKeyByName("Mouse") == nullptr);
 }
 
-// ---- the neutral pad ----
-
-// A keyboard player: no pad ever, the SDK says "not connected" all the time. The guest is told "connected" always, however many keys.
-void TestKeyboardOnlyNeverPauses() {
-    NeutralPadRule r;
-    CHECK(r.State() == PadSeen::kNever);
-    for (uint32_t presses = 0; presses < 50; ++presses) {
-        CHECK(r.Decide(false, presses) == PadAnswer::kNeutral);
-        CHECK(r.Decide(false, presses) == PadAnswer::kNeutral);  // caps and state ask in turn
-    }
-    CHECK(r.State() == PadSeen::kNever);
-}
-
-// A pad is here: the SDK's answer stands, so the neutral pad never mixes with a real one.
-void TestRealPadStands() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 0) == PadAnswer::kSdk);
-    CHECK(r.State() == PadSeen::kHere);
-    CHECK(r.Decide(true, 7) == PadAnswer::kSdk);
-}
-
-// The pad was here and is gone: the game is told the truth (it pauses), and goes on being told while the player does not touch the keyboard.
-void TestUnplugIsReported() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 5) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 5) == PadAnswer::kSdk);  // the unplug: not connected, as it is
-    CHECK(r.State() == PadSeen::kGone);
-    for (int i = 0; i < 100; ++i) CHECK(r.Decide(false, 5) == PadAnswer::kSdk);  // frames go by, no key
-    CHECK(r.State() == PadSeen::kGone);
-}
-
-// Keys held down before the unplug, or a pad tap, are not "a key since": only a press after the unplug takes the keyboard over.
-void TestKeyAfterUnplugTakesOver() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 12) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 12) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 12) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 13) == PadAnswer::kNeutral);  // Enter on CONTINUE
-    CHECK(r.State() == PadSeen::kNever);
-    CHECK(r.Decide(false, 13) == PadAnswer::kNeutral);  // and it stays
-    CHECK(r.Decide(false, 14) == PadAnswer::kNeutral);
-}
-
-// Presses made BEFORE the pad was lost are the baseline, including a wrapped counter.
-void TestBaselineIsTheLossMoment() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 0xFFFFFFFEu) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 0xFFFFFFFEu) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 0xFFFFFFFFu) == PadAnswer::kNeutral);
-    NeutralPadRule w;
-    CHECK(w.Decide(true, 0xFFFFFFFFu) == PadAnswer::kSdk);
-    CHECK(w.Decide(false, 0xFFFFFFFFu) == PadAnswer::kSdk);
-    CHECK(w.Decide(false, 0u) == PadAnswer::kNeutral);  // wrapped: still different
-}
-
-// After the keyboard took over, a pad that comes back is the SDK's again, and losing it again is a new pause.
-void TestPadComesBackAndGoesAgain() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 0) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 0) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 1) == PadAnswer::kNeutral);
-    CHECK(r.Decide(true, 1) == PadAnswer::kSdk);
-    CHECK(r.State() == PadSeen::kHere);
-    CHECK(r.Decide(false, 1) == PadAnswer::kSdk);  // lost again: told again
-    CHECK(r.State() == PadSeen::kGone);
-    CHECK(r.Decide(false, 1) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 2) == PadAnswer::kNeutral);
-}
-
-// The pad is back before any key: the pause the unplug caused ends the way it would without the rule.
-void TestPadReturnsBeforeAnyKey() {
-    NeutralPadRule r;
-    CHECK(r.Decide(true, 3) == PadAnswer::kSdk);
-    CHECK(r.Decide(false, 3) == PadAnswer::kSdk);
-    CHECK(r.Decide(true, 3) == PadAnswer::kSdk);
-    CHECK(r.State() == PadSeen::kHere);
-    CHECK(r.Decide(false, 3) == PadAnswer::kSdk);
-    CHECK(r.State() == PadSeen::kGone);
-}
-
-// Caps and state both ask every frame with the same inputs: asking twice, in either order, gives the same answer.
-void TestAskingTwiceIsTheSame() {
-    NeutralPadRule a, b;
-    const bool script[][2] = {{true, false}, {false, false}, {false, true}, {false, false}, {true, false}, {false, false}, {false, true}};
-    uint32_t presses = 0;
-    for (const auto& step : script) {
-        if (step[1]) ++presses;
-        const PadAnswer a1 = a.Decide(step[0], presses);
-        const PadAnswer a2 = a.Decide(step[0], presses);
-        const PadAnswer b1 = b.Decide(step[0], presses);
-        CHECK(a1 == a2);
-        CHECK(a1 == b1);
-    }
-}
-
-// The latch and the rule together: a key tapped in the pause menu after an unplug.
-void TestLatchAndRule() {
-    KeyLatch k;
-    NeutralPadRule r;
-    CHECK(r.Decide(true, k.PressCount()) == PadAnswer::kSdk);
-    k.Down(kShift, false);  // held before the unplug (the player was boosting)
-    CHECK(r.Decide(false, k.PressCount()) == PadAnswer::kSdk);
-    k.Down(kShift, true);  // auto-repeat of that key: not a press
-    CHECK(r.Decide(false, k.PressCount()) == PadAnswer::kSdk);
-    k.Pulse(kKeyWheelDown);  // a mouse wheel notch is
-    CHECK(r.Decide(false, k.PressCount()) == PadAnswer::kNeutral);
-}
-
 }  // namespace
 
 int main() {
@@ -334,15 +220,6 @@ int main() {
     TestNoTapIsLostAcrossThreads();
     TestMouseKeyTable();
     TestMouseKeyNames();
-    TestKeyboardOnlyNeverPauses();
-    TestRealPadStands();
-    TestUnplugIsReported();
-    TestKeyAfterUnplugTakesOver();
-    TestBaselineIsTheLossMoment();
-    TestPadComesBackAndGoesAgain();
-    TestPadReturnsBeforeAnyKey();
-    TestAskingTwiceIsTheSame();
-    TestLatchAndRule();
     std::printf("kbm_input_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

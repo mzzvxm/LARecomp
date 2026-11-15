@@ -1,6 +1,6 @@
 #pragma once
-// The pure parts of the always-on native keyboard (keyboard_native.cpp) and of the neutral pad: no SDK, no guest memory, no
-// window, so larecomp_kbm_input_test (kbm_input_test.cpp) can run them without the game.
+// The pure parts of the always-on native keyboard (keyboard_native.cpp): no SDK, no guest memory, no window, so
+// larecomp_kbm_input_test (kbm_input_test.cpp) can run them without the game.
 //
 //  KeyLatch        the keys and the mouse as one table of 256 ids, fed by WINDOW EVENTS (key down / key up, mouse button, wheel) on the UI
 //                  thread and read once per input poll on the game thread. Nothing is polled from the OS: no GetAsyncKeyState, no focus
@@ -8,14 +8,16 @@
 //                  is not lost: it is held for exactly one poll (the "pressed since the last poll" latch). Idea of the audit INPUT-EVENTS-AUDIT.md item 2.
 //  mouse keys      the five mouse buttons and the two wheel directions as keys with scancodes of their own, so the game's own Options >
 //                  Controller > Customize can bind them and kb_ui_* / kb_drive_* can name them (LMB, RMB, MMB, MB4, MB5, WheelUp, WheelDown).
-//  NeutralPadRule  what user 0's pad is answered while the SDK says "not connected" (the rule is written down below).
 //
-// KeyLatch is lock free (a few atomics); NeutralPadRule takes a mutex (two calls a frame).
+// KeyLatch is lock free (a few atomics).
+//
+// There is no "neutral pad" here: with no controller the game still sees user 0 connected and at rest, because the SDK's own NOP
+// stand-in ("None", rex::input::nop::NopInputDriver, always the last driver of CreateDefaultInputSystem, assigned to user 0 by
+// SharedAssignment, idle state, caps of a gamepad) answers for it. Nothing in LARecomp has to fake a pad for a keyboard player.
 
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <mutex>
 #include <string_view>
 
 namespace larecomp::kbm {
@@ -122,7 +124,6 @@ public:
         const size_t w = Word(id);
         if (!repeat) {
             tapped_[w].fetch_or(mask, std::memory_order_acq_rel);
-            presses_.fetch_add(1, std::memory_order_acq_rel);
         }
         held_[w].fetch_or(mask, std::memory_order_acq_rel);
     }
@@ -134,7 +135,6 @@ public:
     void Pulse(int id) {
         if (!Valid(id)) return;
         tapped_[Word(id)].fetch_or(Mask(id), std::memory_order_acq_rel);
-        presses_.fetch_add(1, std::memory_order_acq_rel);
     }
     // The window lost the focus, or an overlay took the keyboard: nothing is down, nothing is waiting. (A key still held on the keyboard
     // comes back with its next auto-repeat.)
@@ -159,9 +159,6 @@ public:
 
     // ---- any thread ----
     bool Held(int id) const { return Valid(id) && (held_[Word(id)].load(std::memory_order_acquire) & Mask(id)) != 0; }
-    // How many times a key or button went down (auto-repeat excluded) and the wheel turned, since the start. The neutral pad rule watches it
-    // to see "the player pressed something".
-    uint32_t PressCount() const { return presses_.load(std::memory_order_acquire); }
 
 private:
     static bool Valid(int id) { return id > 0 && id < kKeyIdCount - 1; }
@@ -170,73 +167,6 @@ private:
 
     std::array<std::atomic<uint64_t>, 4> held_{};
     std::array<std::atomic<uint64_t>, 4> tapped_{};
-    std::atomic<uint32_t> presses_{0};
-};
-
-// ---------------------------------------------------------------------------------------------------------------------------
-// The neutral pad
-//
-// The game opens its pause menu on its own when user 0's pad stops answering (KBM-P0 P0c: in a race, with the pad "not connected" for
-// 10 s, the plain pause menu appears at once, no message, and stays; the title waits at PRESS START). A player who has only a keyboard
-// would meet that all the time, so the guest is told that a pad is connected and at rest. The rule, in full:
-//
-//   * the SDK answers "connected": that answer stands, and a pad has been seen.
-//   * the SDK answers "not connected" and NO pad has been seen since the start (or since the player took the keyboard over, below):
-//     the guest is told "connected, neutral": nothing pauses, the keys play.
-//   * the SDK answers "not connected" and a pad WAS here (it was unplugged, ran flat, lost its Bluetooth): the guest is told the truth, so the
-//     game pauses as it does in other PC games and the player sees why.
-//   * from then on, the first key or mouse button the player presses (a Down or a wheel notch, not an auto-repeat) is the player choosing
-//     the keyboard: the neutral pad takes the place of the lost one, the game sees a pad again and the Enter that picks CONTINUE
-//     resumes it. If a real pad comes back, it stands again, and losing it again is a new pause.
-//
-// Which key counts is the caller's: it passes KeyLatch::PressCount(), and the rule only compares it with the count at the moment the pad
-// was lost. Guest users other than 0 and the wheel are not the rule's business.
-// ---------------------------------------------------------------------------------------------------------------------------
-enum class PadAnswer {
-    kSdk,      // the SDK's own answer (connected, or the truth: not connected)
-    kNeutral,  // "connected, gamepad, nothing pressed"
-};
-
-enum class PadSeen {
-    kNever,  // no pad since the start: a keyboard player
-    kHere,   // a pad is connected
-    kGone,   // a pad was here and is not: the game has been told
-};
-
-class NeutralPadRule {
-public:
-    PadAnswer Decide(bool sdk_connected, uint32_t key_presses) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (sdk_connected) {
-            seen_ = PadSeen::kHere;
-            return PadAnswer::kSdk;
-        }
-        switch (seen_) {
-            case PadSeen::kNever:
-                return PadAnswer::kNeutral;
-            case PadSeen::kHere:
-                seen_ = PadSeen::kGone;
-                lost_at_ = key_presses;
-                return PadAnswer::kSdk;
-            case PadSeen::kGone:
-                if (key_presses != lost_at_) {
-                    seen_ = PadSeen::kNever;  // the player took the keyboard over
-                    return PadAnswer::kNeutral;
-                }
-                return PadAnswer::kSdk;
-        }
-        return PadAnswer::kSdk;
-    }
-
-    PadSeen State() const {
-        std::lock_guard<std::mutex> lock(mutex_);
-        return seen_;
-    }
-
-private:
-    mutable std::mutex mutex_;
-    PadSeen seen_ = PadSeen::kNever;
-    uint32_t lost_at_ = 0;
 };
 
 }  // namespace larecomp::kbm
