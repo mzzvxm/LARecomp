@@ -50,16 +50,16 @@ names = ["adaptive_triggers"]
 [[launcher_row]]
 why = "A.2 KEEP rows with no pause-menu row"
 names = [
-  "camera_shake_scale", "rearview_cars",
-  "map_mouse", "map_mouse_zoom", "map_mouse_hide_cursor", "map_mouse_magnet",
-  "trigger_throttle", "trigger_brake", "mcla_controller_toast",
+  "mcla_controller_toast",
   "custom_music_announce", "custom_music_announce_seconds", "custom_music_cue_gain_db",
   "larecomp_discord_rpc", "larecomp_discord_rpc_language",
-  "mcla_gpu_adapter", "skip_intro", "unlock_ride_height", "unlock_wheel_fit",
+  "mcla_gpu_adapter", "unlock_ride_height", "unlock_wheel_fit",
   "profile_auto_select", "model_mods",
   "wheel_mode", "wheel_ffb", "wheel_ffb_strength", "wheel_ffb_boost", "wheel_ffb_centering", "wheel_ffb_sign",
   "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
 ]
+# SX-G7 gave the pause menu rows for camera_shake_scale, rearview_cars, map_mouse, map_mouse_zoom, map_mouse_hide_cursor,
+# map_mouse_magnet, trigger_throttle, trigger_brake and skip_intro, so they left this list: they are rows of both surfaces now.
 
 # No [[pending]] list: SX-G5 took every DEBUG and REMOVE row out of the normal pause-menu tables, so a `.debug_only()` cvar that a
 # normal row names fails the check outright. (A row that names a key that is not a cvar, like the old RENDERER row, would be a

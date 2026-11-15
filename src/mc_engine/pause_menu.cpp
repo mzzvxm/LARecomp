@@ -11,6 +11,7 @@
 #include "effect_compare.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
+#include "pause_parity_rows.h"
 #include "upscaling_menu.h"
 #include "logging.h"
 #include "modloader/modloader.h"
@@ -1416,6 +1417,10 @@ constexpr double kStickDeadzoneVals[] = {0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0}
 
 constexpr double kImpulseStrengthVals[] = {25.0, 50.0, 75.0, 100.0};
 
+// DUALSENSE THROTTLE / BRAKE STRENGTH: 1 (LIGHT), 2 ... 7, 8 (FIRM) (pause_parity_rows.h).
+constexpr RowDynamics kTriggerStrengthDynamics = {
+    .value_label = mcla_menu::parity::TriggerStrengthLabel};
+
 #if defined(LARECOMP_HAS_GPU)
 // ── HDR ────────────────────────────────────────────────────────────────
 //
@@ -1609,6 +1614,12 @@ const ItemDef kRecompItems[] = {
     // edge, and flipping the row then leaving the page does not offer "restart now?".
     Bool("PM_RxIntroSpeed",  "intro_original_speed",     "ORIGINAL INTRO SPEED: ", false,
          " (NEXT START)"),
+    // The launcher's Skip Intro Videos (hooks/ui.cpp, kRequiresRestart: the legal screens and the
+    // logos have played before this menu can be opened). NEXT START as the row above, for the same
+    // reason: nothing needs the game started again now, so no "restart now?" prompt. Width: "SKIP
+    // INTRO VIDEOS (NEXT START)" 30, under ORIGINAL INTRO SPEED's 33.
+    Bool("PM_RxSkipIntro",   "skip_intro",               "SKIP INTRO VIDEOS: ", false,
+         " (NEXT START)"),
 };
 
 // CONTROLLER: everything about the pad, in three runs: the game's vibration, the trigger effects
@@ -1617,12 +1628,12 @@ const ItemDef kRecompItems[] = {
 // plugging one in, and every row is read live by the code it belongs to, so it takes hold when a pad
 // appears. A row for a pad that is not the one in use does nothing to the others (DUALSENSE rows
 // touch a DualSense only, XBOX rows an Xbox One or Series pad only).
-// Width ("Page width" above ItemRowLabel): the widest labels are "XBOX TRIGGER STRENGTH" and
-// "RIGHT STICK DEAD ZONE" (21), the widest value "PLAYSTATION" (11, BUTTON LAYOUT): 32 together, under
-// the 41 a page can take; no row has a suffix.
+// Width ("Page width" above ItemRowLabel): the widest label is "DUALSENSE THROTTLE STRENGTH" (27), then
+// "DUALSENSE BRAKE STRENGTH" (24), "XBOX TRIGGER STRENGTH" and "RIGHT STICK DEAD ZONE" (21); the widest
+// value "PLAYSTATION" (11, BUTTON LAYOUT): 38 together, under the 41 a page can take; no row has a suffix.
 // CHECK: on the SETTINGS tab, CONTROLLER is a new button between GAMEPLAY and INTERFACE (7 buttons
 // with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
-// off the bottom of the tab's panel, and A opens a page of 8 rows in the order above with the line
+// off the bottom of the tab's panel, and A opens a page of 10 rows in the order above with the line
 // "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
 // two rows (HIDE MOUSE POINTER, ORIGINAL INTRO SPEED); INTERFACE > UI has the three colour rows and
 // SPEED UNITS, the colour swatches still lined up with their rows.
@@ -1636,6 +1647,19 @@ const ItemDef kControllerItems[] = {
     Bool("PM_RxTrigResist",  "trigger_resistance",       "DUALSENSE RESISTANCE: "),
     // Live. A DualSense only: R2 vibrates while the wheels spin, L2 while the brakes lock them.
     Bool("PM_RxTrigVibrate", "trigger_vibration",        "DUALSENSE VIBRATION: "),
+    // Live (adaptive_triggers.cpp reads both at every use). A DualSense only: how firm R2 and L2
+    // are at the end of their travel, 1 (LIGHT) to 8 (FIRM); they matter while RESISTANCE is on and
+    // are not greyed with it, as XBOX TRIGGER STRENGTH is not greyed with XBOX TRIGGER RUMBLE.
+    // The launcher's DualSense Throttle / Brake Strength: same cvars, same steps. Width:
+    // "DUALSENSE THROTTLE STRENGTH" 27 with "PLAYSTATION" 11 is 38 of 41.
+    WithDynamics(Dbl("PM_RxTrigThrottle", "trigger_throttle", "DUALSENSE THROTTLE STRENGTH: ",
+                     mcla_menu::parity::kTriggerStrengthSteps,
+                     mcla_menu::parity::kTriggerStrengthStepCount, "%.0f"),
+                 &kTriggerStrengthDynamics),
+    WithDynamics(Dbl("PM_RxTrigBrake",    "trigger_brake",    "DUALSENSE BRAKE STRENGTH: ",
+                     mcla_menu::parity::kTriggerStrengthSteps,
+                     mcla_menu::parity::kTriggerStrengthStepCount, "%.0f"),
+                 &kTriggerStrengthDynamics),
     // Live. Xbox One and Series pads: the same slip, in the trigger motors.
     Bool("PM_RxImpulse",     "impulse_triggers",         "XBOX TRIGGER RUMBLE: "),
     Dbl ("PM_RxImpulseStr",  "impulse_trigger_strength", "XBOX TRIGGER STRENGTH: ",
@@ -2102,6 +2126,11 @@ const ItemDef kCamHubItems[] = {
 
 const ItemDef kCamChaseItems[] = {
     Dbl ("PM_RxSmoothFactor", "chase_cam_smoothing_factor", "CAM SMOOTH FACTOR: ", kCamSmoothVals, 7, "%.1fX"),
+    // Live (hooks/camera.cpp reads it at every shake). The launcher's Camera Shake: OFF, 0.3X to 3.0X,
+    // 0.6X is the default, 1.0X the console's full shake (pause_parity_rows.h).
+    Dbl ("PM_RxCamShake",     "camera_shake_scale", "CAMERA SHAKE: ", mcla_menu::parity::kCameraShakeSteps,
+         mcla_menu::parity::kCameraShakeStepCount, mcla_menu::parity::kCameraShakeFormat, "",
+         mcla_menu::parity::kCameraShakeZeroLabel),
 };
 
 const ItemDef kCamFovItems[] = {
@@ -2110,12 +2139,27 @@ const ItemDef kCamFovItems[] = {
 };
 
 // The rear view mirror the retail game shipped switched off (rear_view.cpp).
-// All three are live.
+// All four are live.
 const ItemDef kCamRearItems[] = {
     Bool("PM_RxRearView",     "rearview",          "REAR VIEW: "),
     Str ("PM_RxRearViewPos",  "rearview_position", "REAR VIEW POS: ",
          kRearViewPosVals, kRearViewPosNames, 6),
     Bool("PM_RxRearViewFrm",  "rearview_frame",    "REAR VIEW FRAME: "),
+    // The launcher's Cars in Rear View: the racers' cars in the mirror, which the retail game leaves
+    // out. It draws nothing while REAR VIEW is off; like REAR VIEW POS and FRAME above it is not
+    // greyed with it (a grey reason would not fit the page: "CARS IN REAR VIEW (NO MIRROR)" 29 with
+    // "MIDDLE FOOTER" 13 is 42 of 41).
+    Bool("PM_RxRearViewCars", "rearview_cars",     "CARS IN REAR VIEW: "),
+};
+
+// The full map's mouse (map_mouse.cpp), the launcher's Full map section: four live switches.
+// MAGNET is off by default (the map's cursor magnet feels sticky under a mouse; a stick keeps its pull
+// either way). Width: "HIDE POINTER ON MAP" 19 with ON / OFF 3.
+const ItemDef kMapMouseItems[] = {
+    Bool("PM_RxMapMouse",     "map_mouse",             "MAP MOUSE: "),
+    Bool("PM_RxMapMouseZoom", "map_mouse_zoom",        "MAP MOUSE ZOOM: "),
+    Bool("PM_RxMapMouseHide", "map_mouse_hide_cursor", "HIDE POINTER ON MAP: "),
+    Bool("PM_RxMapMouseMag",  "map_mouse_magnet",      "MAP CURSOR MAGNET: "),
 };
 
 const ItemDef kTodItems[] = {
@@ -2262,6 +2306,8 @@ const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubTod",    "TIME OF DAY",     "RxTodMenu"),
     Submenu("PM_RxSubCarbon", "CARBON FIBER",    "RxCarbonMenu"),
     Submenu("PM_RxSubDiff",   "DIFFICULTY",      "RxDiffMenu"),
+    // Last, so the rows above keep their places (a tour counts its D-pad presses from the top).
+    Submenu("PM_RxSubMap",    "MAP MOUSE",       "RxMapMouseMenu"),
 };
 // The AI: one percent for the difficulty, then the rubberband taken apart so
 // each half can be moved alone. Every row is live. (The on/off switch that
@@ -2427,7 +2473,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabGfx", "GRAPHICS", "Display, quality, performance, textures.",
      "RxGfxMenu",
      kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
-    {"PM_RxTabGame", "GAMEPLAY", "Camera, time of day and cars.",
+    {"PM_RxTabGame", "GAMEPLAY", "Camera, map, time of day and cars.",
      "RxGameMenu",
      kGameHubItems, int(sizeof(kGameHubItems) / sizeof(kGameHubItems[0]))},
     // The line is 40 characters, as long as the longest the form takes (the QUIT line is 41).
@@ -2482,13 +2528,13 @@ const MenuDef kMenus[] = {
     {"PM_RxTabCam", "CAMERA", "Chase camera, FOV, rear view, free look.",
      "RxCamMenu",
      kCamHubItems, int(sizeof(kCamHubItems) / sizeof(kCamHubItems[0]))},
-    {"PM_RxTabCamChase", "CHASE CAMERA", "Smoothing of the chase camera.",
+    {"PM_RxTabCamChase", "CHASE CAMERA", "Smoothing and shake of the chase camera.",
      "RxCamChaseMenu",
      kCamChaseItems, int(sizeof(kCamChaseItems) / sizeof(kCamChaseItems[0]))},
     {"PM_RxTabCamFov", "FOV", "Field of view, cockpit and chase.",
      "RxCamFovMenu",
      kCamFovItems, int(sizeof(kCamFovItems) / sizeof(kCamFovItems[0]))},
-    {"PM_RxTabCamRear", "REAR VIEW", "The rear view mirror.",
+    {"PM_RxTabCamRear", "REAR VIEW", "The rear view mirror and the cars in it.",
      "RxCamRearMenu",
      kCamRearItems, int(sizeof(kCamRearItems) / sizeof(kCamRearItems[0]))},
     // The free-look rows come from camera_look.cpp, next to the code that reads
@@ -2500,6 +2546,9 @@ const MenuDef kMenus[] = {
     {"PM_RxTabDiff", "DIFFICULTY", "AI difficulty and rubberband.",
      "RxDiffMenu",
      kDiffItems, int(sizeof(kDiffItems) / sizeof(kDiffItems[0]))},
+    {"PM_RxTabMap", "MAP MOUSE", "Mouse control of the full map.",
+     "RxMapMouseMenu",
+     kMapMouseItems, int(sizeof(kMapMouseItems) / sizeof(kMapMouseItems[0]))},
     {"PM_RxTabTod", "TIME OF DAY", "Time of day, clock and weather.",
      "RxTodMenu",
      kTodItems, int(sizeof(kTodItems) / sizeof(kTodItems[0]))},
