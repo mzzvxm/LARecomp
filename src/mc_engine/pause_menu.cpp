@@ -8,6 +8,7 @@
 #include "debug_menu.h"
 #include "debug_menu_pages.h"
 #include "display_menu.h"
+#include "effect_compare.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "upscaling_menu.h"
@@ -49,6 +50,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/effect_compare.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
@@ -1834,6 +1836,28 @@ std::string CarReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
+// Compare key (mcla_compare_effect, mc_engine/effect_compare.h, live): which effect the key flips off and on to
+// see what it does, with the key's own name in the row's label ("COMPARE KEY (F1)" and the effect as its value).
+// The first five effects of gpu/effect_compare.h, in its order; the bloom size fix is a fix and has no row (F4 or
+// the command line set it). A flip is never saved, and it ends when the row is changed. Width: the label is "COMPARE
+// KEY" (11) and " (F1)" (5), the longest value "AMBIENT OCCLUSION" (17): 33 together, under the 41 a page can
+// take; a key whose name is longer than six characters is left out of the label, which keeps it under 41 whatever
+// the key.
+constexpr const char* kCompareVals[]  = {"bounce", "contact", "shafts", "occlusion", "filter"};
+constexpr const char* kCompareNames[] = {"BOUNCE LIGHT", "CONTACT SHADOWS", "SUN SHAFTS", "AMBIENT OCCLUSION",
+                                         "SHADOW FILTER"};
+static_assert(sizeof(kCompareVals) / sizeof(kCompareVals[0]) == 5 &&
+                  sizeof(kCompareNames) / sizeof(kCompareNames[0]) == 5 &&
+                  std::string_view(kCompareVals[4]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kShadowFilter).choice &&
+                  std::string_view(kCompareNames[3]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kAmbientOcclusion).label,
+              "the COMPARE KEY row lists the first five effects of gpu/effect_compare.h in its order");
+const char* CompareSuffix() {
+    static thread_local std::string text;
+    const std::string key = mcla::compare::KeyLabel();
+    text = key.size() <= 6 ? " (" + key + ")" : std::string();
+    return text.c_str();
+}
+constexpr RowDynamics kCompareDynamics = {.suffix = CompareSuffix};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1883,11 +1907,13 @@ const ItemDef kPictureItems[] = {
 // first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS), then light (SUN SHAFTS, BOUNCE LIGHT), then
 // reflections (ROAD REFLECTIONS, then CAR REFLECTIONS). The ids and the cvars are the rows' own as they
 // were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT OCCLUSION is off (it
-// is made from the occlusion's passes).
+// is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
+// effect above that the compare key flicks off and on (see kCompareVals).
 // Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
 // ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
-// ItemRowLabel); no row has a suffix. 7 rows of the 24 a page can hold. SUN SHAFTS has the longest value,
-// "AUTO (DEFAULT)" (14), with its 10-character label: 24 together.
+// ItemRowLabel); COMPARE KEY is the one row with a suffix, its key's name (33 at most, see kCompareVals).
+// 8 rows of the 24 a page can hold. SUN SHAFTS has the longest value, "AUTO (DEFAULT)" (14), with its 10-character
+// label: 24 together.
 const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
@@ -1910,6 +1936,10 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
                                 "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kCarReflectionDynamics)),
+    // The key that flicks one of the effects above off and on to see what it does (not saved).
+    NativeOnly(WithDynamics(Str("PM_RxGpuCompare", "mcla_compare_effect", "COMPARE KEY: ",
+                                kCompareVals, kCompareNames, 5),
+                            &kCompareDynamics)),
 };
 #endif
 
@@ -2754,10 +2784,11 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
 // 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 7 ("DEFAULT").
-// The GRAPHICS QUALITY page (kGfxQualityItems, 7 rows, no suffixes): labels at most 16 ("ROAD REFLECTIONS"),
+// The GRAPHICS QUALITY page (kGfxQualityItems, 8 rows, one suffix): labels at most 16 ("ROAD REFLECTIONS"),
 // then "CONTACT SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "BOUNCE LIGHT" 12,
 // "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), and SUN SHAFTS' "AUTO (DEFAULT)" 14:
-// 27 together at most.
+// 27 together at most. The 8th row, COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most
+// (20, under 23), its values at most 17 ("AMBIENT OCCLUSION", under 18): 37 together, under 41.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
