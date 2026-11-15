@@ -148,7 +148,7 @@ void LogSummary(const char* what, const std::wstring* link, const DeviceTable& t
 // If they can, the removal and the arrival of one link (a re-plug within microseconds) could be
 // applied in the other order; the next change of that device corrects it. No test makes it happen.
 // CHECK: never run against a DualSense (the PC this was written on has none): perf/scripts/chain-dshitch.ps1
-// says what its run can and cannot show, and tools/device_watch_probe/ is the live test.
+// says what its run can and cannot show, and perf/scripts/dshitch/device_watch_probe.cpp is the live test.
 DWORD CALLBACK OnNotification(HCMNOTIFICATION, PVOID, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA data, DWORD size) {
     if (!data || data->FilterType != CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE) return ERROR_SUCCESS;
     if (action != CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL && action != CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL) {
