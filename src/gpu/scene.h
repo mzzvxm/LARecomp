@@ -160,8 +160,8 @@ class Scene {
   // (mc_engine/ultrawide.h, IsUiMessage), in order with the draws around it. Either the bracket of
   // the UI pass's world icons, 3D movies drawn with the (widened) camera's own projection
   // (NoteWorldIcons): their draws are not squeezed. Or the bracket of one piece of the HUD
-  // (NoteUiPiece): its draws are moved toward the left or the right screen edge, all by the same
-  // amount, by the setting hud_width (UiShiftOf). Render thread.
+  // (NoteUiPiece): its draws are moved toward the left or the right screen edge (the top or the bottom one
+  // in a tall picture), all by the same amount, by the setting hud_width (UiShiftOf). Render thread.
   void OnUiMessage(uint32_t bucket);
 
   // A guest present: the frame boundary of the statistics.
@@ -235,8 +235,12 @@ class Scene {
     // Set by Record, for the second draw.
     plume::RenderRect scissor;
     // Ultrawide: the draw is UI and is drawn squeezed sideways around the centre of the screen by
-    // this factor (UiSqueezeOf); 1: as the game has it.
+    // this factor (UiSqueezeOf); 1: as the game has it. In a TALL picture (ui_vertical) the squeeze, the
+    // scissor's and the shift below are along y, about the middle of the screen's height.
     float ui_squeeze = 1.0f;
+    bool ui_vertical = false;
+    // The screen's height in guest pixels (the squeeze's extent when it is vertical).
+    uint32_t ui_screen_height = 0;
     // Ultrawide: the factor the draw's scissor is squeezed by: ui_squeeze for the flat UI, and for a 3D
     // object of the UI (drawn whole, ui_squeeze 1) the UI's own, so that it is clipped to the middle 16:9
     // as the rest of the UI is (UiSqueezeOf).
@@ -245,7 +249,8 @@ class Scene {
     // (UiSqueezeOf).
     bool ui_hidden = false;
     // Ultrawide: and then moved sideways by this share of the screen's width, to the right when
-    // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge.
+    // positive (UiShiftOf): the draw is one of a HUD piece that hud_width moves toward a screen edge. Vertical:
+    // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
   };
@@ -371,7 +376,9 @@ class Scene {
   // t * (1 - k) / 2, for the squeeze k and t = hud_width / 100: the shift that puts the piece's edge
   // as far from the screen's edge as on a 16:9 screen when t is 1 (the squeeze took 1 - k of the
   // screen's width, half of it on each side).
-  // The Sidekick phone (UiSqueezeOf marks its draws) moves as a left piece of the HUD does.
+  // In a TALL picture the squeeze and the shift are along the screen's height: a top piece moves by
+  // -t * (1 - k) / 2 of it, a bottom piece by t * (1 - k) / 2 (positive is downwards).
+  // The Sidekick phone (UiSqueezeOf marks its draws) moves as a left (bottom) piece of the HUD does.
   float UiShiftOf(float squeeze);
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -552,11 +559,16 @@ class Scene {
   // Inside the guest's draw of the world icons (OnUiMessage): drawn as the game has them.
   bool ui_world_ = false;
   // Inside the guest's draw of one piece of the HUD (OnUiMessage): -1 anchored to the left edge, 1 to the
-  // right edge, 0 not inside one.
+  // right edge, 0 not inside one. The same for a tall picture's top (-1) and bottom (1) edge.
   int ui_piece_side_ = 0;
-  // The piece is one that always sits at its edge (kUiEdgeLeft / kUiEdgeRight): moved fully, whatever
-  // hud_width is.
+  int ui_piece_vert_ = 0;
+  // The piece is one that always sits at its edge (kUiEdgeLeft / kUiEdgeRight / kUiEdgeBottom): moved
+  // fully, whatever hud_width is.
   bool ui_piece_at_edge_ = false;
+  // The picture is tall: the draw UiSqueezeOf has just looked at is squeezed along y (the screen's height,
+  // in guest pixels, is ui_screen_height_).
+  bool ui_vertical_ = false;
+  uint32_t ui_screen_height_ = 0;
   // The draw UiSqueezeOf has just looked at is one of the Sidekick phone's (UiShiftOf moves it with
   // hud_width), and the last UI 3D draw was one of the phone's meshes (its screen quad follows them).
   bool ui_phone_draw_ = false;

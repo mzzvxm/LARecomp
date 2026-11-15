@@ -1385,6 +1385,9 @@ constexpr const char* kButtonLayoutVals[]  = {"auto", "xbox", "playstation", "ke
 constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KEYBOARD"};
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
+// ASPECT RATIO: ":" is not allowed in a name, so the shapes read 16X9 as RESOLUTION reads 2560X1440.
+constexpr const char* kAspectVals[]  = {"auto", "16:9", "16:10", "21:9", "32:9"};
+constexpr const char* kAspectNames[] = {"AUTO", "16X9", "16X10", "21X9", "32X9"};
 // DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
 // the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
 constexpr double kAiDiffVals[]     = {-1.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
@@ -1489,7 +1492,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // ANISOTROPIC (9 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
 // disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
 // leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
-// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
+// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR, DISPLAY
 // GAMMA, FPS LIMIT, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
 // ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
 // mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
@@ -1540,16 +1543,16 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // (MenuItemCount).
 //
 // The page is three runs of rows, in this order (the last two come from VideoExtraRows):
-//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, HDR, DISPLAY
-//      GAMMA, FPS LIMIT, SMOOTH UI);
+//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR,
+//      DISPLAY GAMMA, FPS LIMIT, SMOOTH UI);
 //   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
 //      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering and
 //      occlusion that used to sit on the RENDERER page or came after it);
 //   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 18 rows (the native renderer on an RTX 50 series card, which has the frame generation
-// multiplier row: 7 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
+// At most 19 rows (the native renderer on an RTX 50 series card, which has the frame generation
+// multiplier row: 8 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
 // kMaxRowsPerMenu (24) is refused whole. The graphics upgrades that came after the occlusion (SHADOW
-// DETAIL, SHADOW FILTER, CONTACT SHADOWS, SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, ROAD REFLECTIONS) are the GRAPHICS QUALITY
+// DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, ROAD REFLECTIONS) are the GRAPHICS QUALITY
 // page's (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it
 // had 22 rows of 24 and the next two graphics packages would not have fitted.
 // CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
@@ -1569,6 +1572,12 @@ const ItemDef kVideoItems[] = {
     WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
                  &mcla_menu::kResolutionDynamics),
 #if defined(LARECOMP_HAS_GPU)
+    // ASPECT RATIO: the shape of the picture in the window (mc_engine/frame_fit.h, ultrawide.h). AUTO fills
+    // the window at any shape (a wider one shows more at the sides, a taller one more above and below);
+    // 16X9, 16X10, 21X9 and 32X9 keep that shape and leave pure black bars where the window is not that
+    // shape. Live, NATIVE only (the Xenia renderer's present always fills the window, 16:9 at least).
+    // Width: "ASPECT RATIO: " 14 and "16X10" 5.
+    NativeOnly(Str("PM_RxAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames, 5)),
     // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
     // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
     // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
@@ -2200,8 +2209,9 @@ void InitThemePalette() {
 // keeps the whole HUD in the middle 16:9, WIDER (50) moves the pieces halfway out, FULL (100) puts each
 // piece as far from its edge as on a 16:9 screen. Live, NATIVE only (the renderer moves the pieces).
 // Another value set by hand in larecomp.toml (60) gets an entry of its own, shown as its number
-// (value_label). Grey with "(ULTRAWIDE ONLY)" while the picture is 16:9 or narrower, where the setting
-// moves nothing. Width: "HUD WIDTH (ULTRAWIDE ONLY)" 26 (grey: no value), "HUD WIDTH" 9 with
+// (value_label). Grey with "(16X9: NO EFFECT)" while the picture is the game's own 16:9, where the setting
+// moves nothing (a wider picture moves the pieces to the sides, a taller one to the top and the bottom).
+// Width: "HUD WIDTH (16X9: NO EFFECT)" 27 (grey: no value), "HUD WIDTH" 9 with
 // "CENTERED" 8.
 constexpr double kHudWidthVals[] = {0, 50, 100};
 std::string HudWidthLabel(double v) {
@@ -2213,7 +2223,7 @@ std::string HudWidthLabel(double v) {
     return buf;
 }
 bool HudWidthEnabled() { return mc::ultrawide::Active(); }
-const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (ULTRAWIDE ONLY)"; }
+const char* HudWidthSuffix() { return HudWidthEnabled() ? "" : " (16X9: NO EFFECT)"; }
 constexpr RowDynamics kHudWidthDynamics = {.value_label = HudWidthLabel,
                                            .enabled = HudWidthEnabled,
                                            .suffix = HudWidthSuffix};
@@ -2520,7 +2530,7 @@ const MenuDef kMenus[] = {
     {"PM_RxDbgTabPerf", "PERFORMANCE", "Pacing and speed switches for testing.",
      "RxDbgPerfMenu",
      nullptr, 0, mcla_menu::DebugPerformanceRows, false, nullptr, true},
-    {"PM_RxDbgTabRend", "RENDERING", "Renderer views and logs, aspect ratio.",
+    {"PM_RxDbgTabRend", "RENDERING", "Renderer views and logs.",
      "RxDbgRendMenu",
      nullptr, 0, mcla_menu::DebugRenderingRows, false, nullptr, true},
     {"PM_RxDbgTabCam", "CAMERA", "Free camera and camera tests.",

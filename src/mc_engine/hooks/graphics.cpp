@@ -61,15 +61,20 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 0.0, "MCLA/LOD",
     .range(0.0, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// "auto" is the window's own shape (mc_engine/ultrawide.h): wider than 16:9 widens the view and keeps
-// the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out). The others pick a shape
-// whatever the window is (the picture then has black bars where the window is not that shape); 16:10
-// is the same as 16:9.
+// "auto" is the window's own shape, whatever it is (mc_engine/ultrawide.h): wider than 16:9 widens the
+// view and keeps the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out); taller than
+// 16:9 (16:10 such as 1920x1200 or the Steam Deck's 1280x800, 4:3, 5:4, a portrait window) keeps the
+// game's width and shows more above and below, the HUD again 16:9 in the middle. The others pick a shape
+// whatever the window is: the picture lies in the largest frame of that shape in the window, centred,
+// with pure black bars where the window is not that shape (mc_engine/frame_fit.h). Live: the pause
+// menu's DISPLAY > ASPECT RATIO and the launcher write it while the game runs. The Xenia renderer
+// always follows the window, and keeps 16:9 with bars in a window taller than that.
 REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
-    "Aspect ratio of the picture: auto follows the window (21:9, 32:9 and other wide windows get a "
-    "wider view; the HUD stays 16:9 in the middle), or 16:9, 21:9, 32:9.")
+    "Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, "
+    "a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, "
+    "16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is "
+    "narrower than that shape and at the sides where it is wider.")
     .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
-    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the
@@ -151,14 +156,45 @@ static bool GetAspectRatio(double& out_val) {
 }
 
 
-bool Patch_AspectRatio_82233EB4(PPCRegister& f0) {
-    return GetAspectRatio(f0.f64);
+// The ortho viewport sub_82233E18 makes for the rear-view mirror: its width is f30 (the height, 720 as a
+// float) times the aspect ratio (`fmuls f31,f30,f0` at 0x82233EB8), so a wide picture makes it wider and the
+// squeeze of the picture squeezes the mirror with it (Hor+). In a TALL picture the width must stay the game's
+// 16:9 one and the HEIGHT grow, which is the same thing turned round: f30 (read after this, as the ortho's
+// height) is given 16:9 over the aspect ratio times its value and f0 the aspect ratio, so that f30 * f0 is the
+// game's width. A no-op at 16:9 and in a wide picture.
+// CHECK: that this ortho viewport is the mirror's (its picture in a wide one), and that the mirror keeps its
+// shape and its place in a 1920x1200 and a 1440x1080 picture (ultrawide.h item 9).
+bool Patch_AspectRatio_82233EB4(PPCRegister& f0, PPCRegister& f30) {
+    if (!GetAspectRatio(f0.f64)) {
+        return false;
+    }
+    if (mc::ultrawide::Tall()) {
+        f30.f64 = double(float(f30.f64 * mc::ultrawide::VertPlusScale()));
+    }
+    return true;
 }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) {
     return GetAspectRatio(f10.f64);
 }
-bool Patch_AspectRatio_822E5E68(PPCRegister& f12) {
-    return GetAspectRatio(f12.f64);
+// sub_822E5E10 (the camera builder: f30 = the vertical field of view in degrees, f12 the aspect ratio before
+// its blend): the one place the game's cameras get their perspective. A wide picture keeps the vertical field
+// of view (Hor+: the aspect ratio alone widens the view). A TALL one keeps the game's HORIZONTAL field of view
+// and grows the vertical one (Vert+, mc::frame::VertPlusFov): f30 is rewritten before it goes to
+// grcViewport::Perspective (`fmr f1,f30` at 0x822E5E94), so the projection, the frustum the game culls with and
+// everything read from the viewport's stored angle (+696) follow. The blend applies to the aspect ratio only,
+// so the angle does not depend on it. Patch_FOVScale (the player's FOV setting) has run before: the setting
+// scales the 16:9 angle and Vert+ keeps that horizontal one.
+// CHECK: that every camera the game's own 16:9 aspect constant reaches is built here (the hooks of
+// 0x82233EB4, 0x82214BB8 and 0x8223E5E0 load it for an ortho viewport and ratios, not a perspective), and that
+// the explicit-aspect path (a negative f4) is only used by cameras that are not the picture's.
+bool Patch_AspectRatio_822E5E68(PPCRegister& f12, PPCRegister& f30) {
+    if (!GetAspectRatio(f12.f64)) {
+        return false;
+    }
+    if (mc::ultrawide::Tall()) {
+        f30.f64 = double(float(mc::ultrawide::CameraFov(f30.f64)));
+    }
+    return true;
 }
 bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
     return GetAspectRatio(f13.f64);

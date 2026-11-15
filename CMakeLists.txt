@@ -632,6 +632,9 @@ else()
         endif()
     endif()
 
+    # The frame maths of the ASPECT RATIO setting (src/mc_engine/frame_fit.h) has a check that needs no game:
+    # cmake --build <dir> --target larecomp_frame_fit_test, then run it (exit 0 = passed).
+    add_executable(larecomp_frame_fit_test EXCLUDE_FROM_ALL src/mc_engine/frame_fit_test.cpp)
     # The FULLSCREEN RESOLUTION list's rules (mc_engine/display_sizes.h) have a check that needs no
     # display, no SDK and no GPU: cmake --build <dir> --target larecomp_display_sizes_test, then run
     # larecomp_display_sizes_test (exit 0 = passed).

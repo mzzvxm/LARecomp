@@ -96,10 +96,6 @@ constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
 #endif
 
-// The shapes aspect_ratio allows (":" is not allowed in a name).
-constexpr const char* kAspectVals[]  = {"auto", "16:9", "16:10", "21:9", "32:9"};
-constexpr const char* kAspectNames[] = {"AUTO", "16X9", "16X10", "21X9", "32X9"};
-
 // ── The tables ─────────────────────────────────────────────────────────
 //
 // Every cvar named here is tagged .debug_only() and live. tools/check_settings_exposure.py reads these
@@ -212,8 +208,6 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ",
                     false, " (ON NEXT USE)")),
 #endif
-    Str("PM_RxDbgAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames,
-        Len(kAspectVals)),
     // The SDK's vsync on the Xenia renderer: it sets the guest's vblank interval (the game then paces
     // to it, about 30 % slower) but does not stop tearing, and the start-up flags set it again at every
     // start; a test switch, not a player setting.

@@ -20,6 +20,10 @@
 //
 // "The screen" is the window's 16:9 area, the game's screen letterboxed in it
 // the way the present fits it; its scale is that area over the game's screen.
+// The "window" here is the picture's FRAME in the real window (the ASPECT RATIO
+// setting, mc_engine/frame_fit.h; the window itself while the setting follows
+// it): the callers pass the frame's size, so a 21:9 frame in a 16:9 window is
+// measured as the 1920x810 it is and the upscalers' sizes follow it.
 // A preset divides it by AMD's ratio of output to render per axis (FSR1's
 // four, and FSR 2's ultra performance). Every choice ends on the grid of
 // Scale, from kMinRenderScale to kMaxRenderScale.

@@ -11,29 +11,48 @@
 // the same factor around the centre of the screen: they come out 16:9-correct, in the middle
 // (gpu/scene.cpp, UiSqueeze). A frame with no 3D scene in it (a movie, a loading screen, a menu on
 // a flat background) is not squeezed or stretched at all: the present shows it 16:9 in the middle
-// of the window with black on both sides, as it always did (gpu/present.h, display aspect). The
-// setting `hud_width` moves the corner pieces of the driving HUD out of that middle block toward the
-// screen edges (the last section of this file).
+// of the frame (the window, when the setting is AUTO) with black on both sides, as it always did
+// (gpu/present.h, display aspect). The setting `hud_width` moves the corner pieces of the driving HUD
+// out of that middle block toward the screen edges (the last section of this file).
+//
+// A TALL picture (a window narrower than 16:9: 16:10 such as 1920x1200 and the Steam Deck's 1280x800, 4:3,
+// 5:4, even a portrait one) is the same thing turned round (owner decision 2026-11-13: AUTO fills the window
+// at any shape). The game's HORIZONTAL field of view stays what its 16:9 picture has and the vertical one
+// grows ("Vert+", mc::frame::VertPlusFov): the camera's vertical angle is rewritten where the game builds
+// its perspective (the hook of sub_822E5E10, graphics.cpp), the 3D picture is drawn into the same 1280x720
+// image stretched sideways, and the present squeezes that image into the frame, which undoes it. What the
+// game draws on top (the HUD and every Flash menu) is squeezed VERTICALLY about the middle of the image by
+// the same factor (gpu/scene.cpp, UiSqueezeOf), so it comes out 16:9-shaped and centred, with the 3D picture
+// alone above and below it; hud_width moves the corner pieces to the frame's top and bottom edges as it
+// moves them to the sides of a wide one. The Xenia renderer keeps the game's 16:9 with bars in a taller window.
 //
 // CHECK: that the four camera hooks and the constant at 0x8201E7EC are every place the game takes its
 // 3D aspect ratio from (the rear-view mirror, garage, showroom, map and photo cameras especially); a
 // camera that keeps 16:9 shows its picture stretched.
 //
-// The aspect ratio is the window's: it follows the window as it is resized, goes fullscreen or
-// changes monitor, with nothing to set. It is never below 16:9 (a taller window keeps 16:9 and the
-// black bars above and below) and never above 32:9 (a wider window has black bars at the sides).
-// The setting `aspect_ratio` (hooks/graphics.cpp) is "auto" unless the player picks one.
+// The aspect ratio is the setting `aspect_ratio` (hooks/graphics.cpp, the pause menu's DISPLAY > ASPECT
+// RATIO) and the window's size. AUTO is the window's own shape: it follows the window as it is resized,
+// goes fullscreen or changes monitor, with nothing to set, between 9:16 and 32:9 (a window beyond that has
+// black bars: above and below a taller one, at the sides of a wider one). 16:9, 16:10, 21:9 (64:27,
+// a 2560x1080 monitor's shape) and 32:9 are those shapes whatever the window is: a ratio wider than the
+// window has black bars above and below it, a narrower one at the sides. The picture lies in the FRAME,
+// the largest rectangle of that aspect ratio in the window, centred (frame_fit.h); the cameras, the
+// UI's squeeze, the present's viewport, the render scale and the upscalers' sizes and the map's mouse
+// all follow the frame, and the bars hold nothing of the game. A change of the setting or of the
+// window applies at once (Recompute): no restart.
 //
 // Threading: every function can be called from any thread.
 //
 
 #include <cstdint>
 
+#include "frame_fit.h"
+
 namespace mc::ultrawide {
 
 // The game's own picture and the widest one built (a 32:9 monitor, 5120x1440 or 3840x1080).
-inline constexpr double kBaseAspect = 16.0 / 9.0;
-inline constexpr double kMaxAspect = 32.0 / 9.0;
+inline constexpr double kBaseAspect = mc::frame::kAspect16x9;
+inline constexpr double kMaxAspect = mc::frame::kAspect32x9;
 
 // The window's size in pixels: from the app on every size change (UI thread), once the window
 // exists. 0 in either is ignored (a minimised window keeps the last size).
@@ -43,12 +62,32 @@ void SetWindowSize(uint32_t width, uint32_t height);
 // kMaxAspect; kBaseAspect when there is nothing to widen.
 double DisplayAspect();
 
-// DisplayAspect() is wider than 16:9.
-inline bool Active() { return DisplayAspect() > kBaseAspect * 1.001; }
+// DisplayAspect() is wider than 16:9 (the view widens: Hor+), or taller (the view heightens: Vert+).
+inline bool Wide() { return mc::frame::IsWide(DisplayAspect()); }
+inline bool Tall() { return mc::frame::IsTall(DisplayAspect()); }
+// The picture is not the game's own 16:9, either way: the cameras, the UI's squeeze and the present follow it.
+inline bool Active() { return Wide() || Tall(); }
 
-// What fraction of the screen's width the UI keeps (16:9 over the aspect ratio): 1 when Active() is
-// false, 3/4 at 21:9 (2560x1080 is 0.75; 3440x1440 is 0.744), 1/2 at 32:9.
+// What fraction of the screen's width the UI keeps (16:9 over the aspect ratio): 1 when the picture is not
+// wide, 3/4 at 21:9 (2560x1080 is 0.75; 3440x1440 is 0.744), 1/2 at 32:9.
 double UiWidthFraction();
+// What fraction of the screen's height the UI keeps (the aspect ratio over 16:9): 1 when the picture is not
+// tall, 0.9 at 16:10, 3/4 at 4:3.
+double UiHeightFraction();
+
+// The vertical field of view (degrees) the game's camera is given for the picture in force: the game's own
+// while the picture is not tall, the Vert+ one (mc::frame::VertPlusFov) when it is.
+double CameraFov(double fov_degrees);
+// The factor the screen's vertical extent of an orthographic viewport the game sizes with the aspect ratio
+// (the rear-view mirror's) is given: 1 unless the picture is tall, then 16:9 over the aspect ratio.
+double VertPlusScale();
+
+// The frame of the picture in a window of this size (physical pixels), for the setting as it is now:
+// where the picture lies and what the bars leave (frame_fit.h). Any window size, not only the app's own:
+// the renderer measures its swap chain, the map's mouse the window. Empty for a window with no size.
+mc::frame::Rect FrameFor(uint32_t window_width, uint32_t window_height);
+// The same for the window the app last told (SetWindowSize); empty before it.
+mc::frame::Rect FrameRect();
 
 // From InitHooks, once, before any guest code: reads the setting, follows its changes while the
 // game runs and writes the aspect ratio into the constant the game's cameras load it from (guest
@@ -74,12 +113,17 @@ void Init();
 //
 // CHECK: both are from reading the guest code only; see ULTRAWIDE-TEST.md items 6 and 8.
 
-// Half the width of the stage the game's Flash movies are laid out on (the game's screen is 1280).
+// Half the width and the height of the stage the game's Flash movies are laid out on (the game's screen is
+// 1280x720).
 inline constexpr float kStageHalfWidth = 640.0f;
+inline constexpr float kStageHalfHeight = 360.0f;
 
 // A Flash stage x the game worked out from the widened camera, as the game must be given it so
-// that the squeezed UI draws the clip where the 3D point is (the same x when the picture is 16:9).
+// that the squeezed UI draws the clip where the 3D point is (the same x when the picture is not wide).
 float MarkerStageX(float stage_x);
+// The same for y in a TALL picture: the UI is squeezed vertically about the middle (y = 360), the game
+// worked y out as 360 - 360 * ndc_y from the Vert+ camera, so it is given 360 + (y - 360) / k.
+float MarkerStageY(float stage_y);
 
 // The values of a composite record's bucket that mean "the draws that follow, until the end value,
 // are world icons" to the renderer (Renderer::kComposite): a side channel on the guest-to-render
@@ -125,7 +169,13 @@ void NoteWorldIcons(bool begin);
 // vertical field of view in radians) times the distance, which is 3.6 % wider than the exact
 // aspect * tan(half field of view) at 16:9 and drifts away from it as the aspect ratio grows (25 % at
 // 32:9). The value returned keeps the box as wide, against the picture, as the game has it at 16:9.
+// In a TALL picture the width stays the game's and the height grows with the camera's (MapVisibleHalfFov):
+// the value returned is the one that keeps `aspect * half field of view` the game's own.
 double MapVisibleAspect();
+// The half vertical field of view (radians) sub_826206B0 loads at 0x82620708, which the ground's depth is
+// worked from (tan(tilt +- half)): 12.5 degrees = 0.218166 while the picture is not tall, the Vert+ camera's
+// half angle when it is, so that the cursor's box covers the taller picture.
+double MapVisibleHalfFov();
 
 // --- cutscene cameras ------------------------------------------------------------------------------
 //
@@ -134,8 +184,13 @@ double MapVisibleAspect();
 // by the viewport's aspect ratio (0x822C04E8, `fdivs f12,f28,f1`). The viewport's aspect ratio is the
 // widened one, so the vertical angle would shrink and the picture would zoom into the middle. The hook
 // Patch_CutsceneFovAspect_822C04E8 (ultrawide.cpp) gives the division kBaseAspect while the picture is
-// wider than 16:9: the vertical angle is the 16:9 one and the sides show more, as in gameplay. The
-// gameplay cameras do not go through that division.
+// not 16:9: the vertical angle is the 16:9 one and the sides show more, as in gameplay (in a tall picture
+// the same angle then goes through the Vert+ rewrite like any other camera's: the width of the game's shot,
+// more above and below). The gameplay cameras do not go through that division.
+// Does the game letterbox its cutscenes itself? Nothing in this code or the guest paths read draws bars
+// for them (the engine's cutscenes are full-screen 16:9 pictures, movies are flat frames the present
+// places in the middle of the frame with their own bars): if a cutscene does draw bars as Flash, they are
+// squeezed with the rest of the UI. CHECK: the cutscene pictures of the chain (aspect.tour CUTSCENE=1).
 // CHECK: from the generated code only; ULTRAWIDE-TEST.md, item 13.
 
 // --- the HUD's corner pieces (the setting hud_width) --------------------------------------------------
@@ -199,7 +254,13 @@ double MapVisibleAspect();
 // Not moved: the GPS arrow in the HUD (a 3D arrow in a viewport of its own, not a clip's draw).
 // The log lists the pieces found (ULTRAWIDE-TEST.md, item 14).
 
-// hud_width / 100 while the aspect ratio is wider than 16:9 (Active()); 0 otherwise.
+// hud_width / 100 while the picture is not 16:9 (Active()); 0 otherwise.
+//
+// In a TALL picture the pieces move the other way: each is anchored to the top or the bottom edge of the
+// frame instead of the left or the right one (its own corner of the game's 16:9 layout, from the clip's
+// place on the stage: the minimap, the speedometer and its info strip at the bottom, the lap and time boxes,
+// the race position and the player list at the top), by the same t = hud_width / 100 of what the squeeze
+// left free above or below the 16:9 block, (1 - k) / 2 of the frame's height for k = UiHeightFraction().
 double HudWidthFraction();
 
 // More messages on the composite record's side channel (see kUiWorldBegin): the draws that follow, until
@@ -211,6 +272,11 @@ inline constexpr uint32_t kUiPieceEnd = 0x7F000005u;
 // screen's prompt bar, "PRESS START"): moved as a piece is at hud_width 100. Closed by kUiPieceEnd.
 inline constexpr uint32_t kUiEdgeLeft = 0x7F000006u;
 inline constexpr uint32_t kUiEdgeRight = 0x7F000007u;
+// The same three for a TALL picture: the piece is anchored to the top or the bottom edge, and the prompt bar
+// sits at the bottom edge. Closed by kUiPieceEnd too.
+inline constexpr uint32_t kUiPieceTop = 0x7F000008u;
+inline constexpr uint32_t kUiPieceBottom = 0x7F000009u;
+inline constexpr uint32_t kUiEdgeBottom = 0x7F00000Au;
 
 // Whether a composite record's bucket is one of this side channel's messages (not a real bucket: those are
 // single bits).
@@ -218,9 +284,10 @@ inline bool IsUiMessage(uint32_t bucket) { return (bucket & 0xFF000000u) == 0x7F
 
 // Around the guest's draw of one instance of the Flash player (the guest render thread): `begin` at the
 // entry of sub_825FB348 with the instance (r3), the end at its exit with the same instance (r30). Sends the
-// renderer kUiPieceLeft / kUiPieceRight / kUiPieceEnd when the instance is a piece and hud_width is above 0,
-// and kUiEdgeRight for the title screen's prompt bar (PROMPTMOVIE's `screen` until the game is entered: NoteGameEntered);
-// a no-op otherwise (the picture is not wider than 16:9, the Xenia renderer).
+// renderer kUiPieceLeft / kUiPieceRight (kUiPieceTop / kUiPieceBottom in a tall picture) / kUiPieceEnd when the
+// instance is a piece and hud_width is above 0, and kUiEdgeRight (kUiEdgeBottom) for the title screen's prompt bar
+// (PROMPTMOVIE's `screen` until the game is entered: NoteGameEntered); a no-op otherwise (the picture is 16:9,
+// the Xenia renderer).
 void NoteUiPiece(uint32_t instance, bool begin);
 
 // The player's control map has been built (keyboard_native.cpp, the return of sub_822A4DE8): the game proper

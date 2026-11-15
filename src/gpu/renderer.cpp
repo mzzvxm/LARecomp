@@ -240,7 +240,9 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                     kAssumedScreenWidth, kAssumedScreenHeight);
       }
     }
-    render_scale_ = ChooseStartRenderScale(width, height);
+    // The picture's frame in the window (ASPECT RATIO): "the screen" the scale measures is its 16:9 area.
+    const mc::frame::Rect frame = mc::ultrawide::FrameFor(width, height);
+    render_scale_ = ChooseStartRenderScale(frame.w, frame.h);
     PublishWindowSize(width, height);
     edram_.Initialize(device_, frames_, heap_, render_scale_);
     // mcla_gpu_edram_capture: the detector asks for a RenderDoc capture.
@@ -1140,10 +1142,16 @@ void Renderer::UpdateDisplayAspect() {
   // CHECK: that every frame that shows a 3D picture has the marker (title, garage, showroom, map,
   // photo mode, the rear-view mirror inside play): one that has none is shown 16:9 with its picture
   // still squeezed.
-  // At 16:9 (or narrower) nothing is asked: the fit is the front buffer's own, to the pixel.
+  // At 16:9 nothing is asked: the fit is the front buffer's own, to the pixel. A taller picture (16:10, 4:3,
+  // a portrait window: Vert+, mc_engine/ultrawide.h) is asked for the same way as a wider one: the guest drew
+  // it stretched sideways into the 16:9 image and the present squeezes it into the frame.
   present_.SetDisplayAspect(scene_.last_frame_had_scene() && mc::ultrawide::Active()
                                 ? mc::ultrawide::DisplayAspect()
                                 : 0.0);
+  // The frame the picture lies in (the ASPECT RATIO setting, mc_engine/frame_fit.h): the window itself
+  // while the setting follows it, a smaller one in the middle with black around it for a shape the
+  // window is not. A 3D picture fills the frame, any other keeps its own shape inside it.
+  present_.SetFrameAspect(mc::ultrawide::DisplayAspect());
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
@@ -2160,14 +2168,22 @@ void RequestTextureReload() {
   }
 }
 
-RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
+// The size the render scale is measured against: the picture's frame in the swap chain's size, for the
+// ASPECT RATIO as it is now (so a change of the setting moves the scale at the next frame boundary, as a
+// change of the window does). The window itself while the setting follows it; 0 before a size is published.
+static mc::frame::Rect FrameOfPublishedWindow() {
   const uint64_t size = g_window_size.load(std::memory_order_relaxed);
-  return ChooseRenderScale(asked, fsr, preset, uint32_t(size >> 32), uint32_t(size));
+  return mc::ultrawide::FrameFor(uint32_t(size >> 32), uint32_t(size));
+}
+
+RenderScaleChoice PreviewRenderScale(double asked, bool fsr, FsrPreset preset) {
+  const mc::frame::Rect frame = FrameOfPublishedWindow();
+  return ChooseRenderScale(asked, fsr, preset, frame.w, frame.h);
 }
 
 RenderScaleChoice WantedRenderScale() {
-  const uint64_t size = g_window_size.load(std::memory_order_relaxed);
-  return ChooseWantedRenderScale(uint32_t(size >> 32), uint32_t(size));
+  const mc::frame::Rect frame = FrameOfPublishedWindow();
+  return ChooseWantedRenderScale(frame.w, frame.h);
 }
 
 void SetShaderPackFolder(const std::filesystem::path& folder) {

@@ -421,7 +421,8 @@ void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fet
 // that hud_width moves toward an edge; 0 for the rest of the UI). The draw's NDC is
 // x_ndc = oPos.x * scale + offset * w; the same map on NDC is k * x_ndc + (1 - k) * u + 2 * shift *
 // screen / viewport, u being where the screen's centre is in the draw's own NDC (the draw's host
-// viewport need not be the whole screen).
+// viewport need not be the whole screen). mc::frame::SqueezeCentreNdc / SqueezeMoveNdc / SqueezeNdc are
+// that arithmetic, checked by frame_fit_test.cpp.
 // CHECK: that the epilogue's NDC is linear in the viewport's pixels as ComputeViewport makes it, for
 // the screen-space draws with clipping disabled too (the squeeze is checked on the HUD only).
 void SqueezeSharedX(SharedConstants& shared, const plume::RenderViewport& viewport,
@@ -429,11 +430,25 @@ void SqueezeSharedX(SharedConstants& shared, const plume::RenderViewport& viewpo
   if (!(viewport.width > 0.0f)) {
     return;
   }
-  const float centre = 0.5f * float(screen_width);
-  const float u = 2.0f * (centre - (viewport.x + 0.5f * viewport.width)) / viewport.width;
-  const float move = 2.0f * shift * float(screen_width) / viewport.width;
+  const float u = mc::frame::SqueezeCentreNdc(float(screen_width), viewport.x, viewport.width, false);
+  const float move = mc::frame::SqueezeMoveNdc(shift, float(screen_width), viewport.width, false);
   shared.pos_scale[0] *= k;
-  shared.pos_offset[0] = shared.pos_offset[0] * k + (1.0f - k) * u + move;
+  shared.pos_offset[0] = mc::frame::SqueezeNdc(shared.pos_offset[0], k, u, move);
+}
+
+// The same along y, for a TALL picture: the draw's y is squeezed about the middle of the screen's height by k
+// and moved `shift` of the screen's height further, downwards when positive. ComputeViewport negates y (the
+// guest's pixels grow downwards, Direct3D's NDC upwards), so the centre and the move take the other sign
+// (the `flipped` of the helpers).
+void SqueezeSharedY(SharedConstants& shared, const plume::RenderViewport& viewport,
+                    uint32_t screen_height, float k, float shift) {
+  if (!(viewport.height > 0.0f)) {
+    return;
+  }
+  const float u = mc::frame::SqueezeCentreNdc(float(screen_height), viewport.y, viewport.height, true);
+  const float move = mc::frame::SqueezeMoveNdc(shift, float(screen_height), viewport.height, true);
+  shared.pos_scale[1] *= k;
+  shared.pos_offset[1] = mc::frame::SqueezeNdc(shared.pos_offset[1], k, u, move);
 }
 
 // The same map on the scissor, outwards to whole pixels: what the guest clips its UI to stays where
@@ -448,6 +463,20 @@ plume::RenderRect SqueezeScissorX(const plume::RenderRect& rect, uint32_t screen
       std::clamp(int32_t(std::floor(centre + (double(rect.left) - centre) * k + move)), 0, width);
   out.right =
       std::clamp(int32_t(std::ceil(centre + (double(rect.right) - centre) * k + move)), 0, width);
+  return out;
+}
+
+// The same along y (a tall picture): the rows of the scissor, outwards to whole pixels.
+plume::RenderRect SqueezeScissorY(const plume::RenderRect& rect, uint32_t screen_height, float k,
+                                  float shift) {
+  const double centre = 0.5 * double(screen_height);
+  const double move = double(shift) * double(screen_height);
+  const int32_t height = int32_t(screen_height);
+  plume::RenderRect out = rect;
+  out.top =
+      std::clamp(int32_t(std::floor(centre + (double(rect.top) - centre) * k + move)), 0, height);
+  out.bottom =
+      std::clamp(int32_t(std::ceil(centre + (double(rect.bottom) - centre) * k + move)), 0, height);
   return out;
 }
 
@@ -516,6 +545,8 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   *clip = 1.0f;
   ui_phone_draw_ = false;
   ui_hide_draw_ = false;
+  // The picture's shape (mc_engine/ultrawide.h): a wide one squeezes the UI sideways, a tall one vertically.
+  ui_vertical_ = mc::ultrawide::Tall();
   if (!ui_phase_) {
     return 1.0f;
   }
@@ -550,7 +581,7 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   if (ui_world_) {
     return 1.0f;
   }
-  const double fraction = mc::ultrawide::UiWidthFraction();
+  const double fraction = ui_vertical_ ? mc::ultrawide::UiHeightFraction() : mc::ultrawide::UiWidthFraction();
   if (!(fraction < 0.999)) {
     return 1.0f;
   }
@@ -560,6 +591,7 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
       state.surface_pitch != screen_width) {
     return 1.0f;
   }
+  ui_screen_height_ = screen_height;
   if (key.color_count != 0) {
     const ColorTargetState& color = state.color[0];
     if (!color.bound || (color.format != xe::ColorRenderTargetFormat::k_8_8_8_8 &&
@@ -605,6 +637,8 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   // not written) is not clipped: it belongs to the whole wide picture.
   // CHECK: a 2D element drawn from a vertex buffer would be stretched now; the log names the first ones.
   //
+  // (In a tall picture every "middle 16:9" of this function is the middle band of the screen's height, the
+  // squeeze and the clip are along y, and the phone is a bottom piece.)
   // The Sidekick phone is a left piece of the HUD: hud_width moves it toward the screen's left edge as it
   // moves the minimap, whose corner it pops up over at 16:9 (the owner, 2026-11-12; the sliver of it the game
   // leaves in the picture while paused is not drawn at all, above). Its draws, in the order a
@@ -663,8 +697,21 @@ void Scene::OnUiMessage(uint32_t bucket) {
       ui_piece_side_ = 1;
       ui_piece_at_edge_ = true;
       break;
+    case mc::ultrawide::kUiPieceTop:
+      ui_piece_vert_ = -1;
+      ui_piece_at_edge_ = false;
+      break;
+    case mc::ultrawide::kUiPieceBottom:
+      ui_piece_vert_ = 1;
+      ui_piece_at_edge_ = false;
+      break;
+    case mc::ultrawide::kUiEdgeBottom:
+      ui_piece_vert_ = 1;
+      ui_piece_at_edge_ = true;
+      break;
     case mc::ultrawide::kUiPieceEnd:
       ui_piece_side_ = 0;
+      ui_piece_vert_ = 0;
       ui_piece_at_edge_ = false;
       break;
     default:
@@ -675,20 +722,25 @@ void Scene::OnUiMessage(uint32_t bucket) {
 float Scene::UiShiftOf(float squeeze) {
   if (ui_phone_draw_) {
     // The Sidekick phone (UiSqueezeOf): a left piece of the HUD, moved by hud_width as the minimap is (at
-    // 16:9 it pops up over the minimap's corner).
+    // 16:9 it pops up over the minimap's corner; in a tall picture the minimap is a bottom piece and so is it).
     ui_phone_draw_ = false;
     const float t_phone = float(mc::ultrawide::HudWidthFraction());
-    return squeeze < 1.0f ? -t_phone * (1.0f - squeeze) * 0.5f : 0.0f;
+    if (!(squeeze < 1.0f)) {
+      return 0.0f;
+    }
+    return (ui_vertical_ ? t_phone : -t_phone) * (1.0f - squeeze) * 0.5f;
   }
   // CHECK: that every draw of a HUD piece is one UiSqueezeOf squeezes (blended, into the screen's image,
   // or a depth-only mask): one it leaves whole stays where the guest drew it and the piece tears.
-  if (ui_piece_side_ == 0 || !(squeeze < 1.0f)) {
+  const int side = ui_vertical_ ? ui_piece_vert_ : ui_piece_side_;
+  if (side == 0 || !(squeeze < 1.0f)) {
     return 0.0f;
   }
-  // t is 0 while the picture is not wider than 16:9, which UiSqueezeOf has already seen as a squeeze of 1.
-  // A clip that always sits at its edge (kUiEdgeLeft / kUiEdgeRight) moves as a piece does at t = 1.
+  // t is 0 while the picture is 16:9, which UiSqueezeOf has already seen as a squeeze of 1.
+  // A clip that always sits at its edge (kUiEdgeLeft / kUiEdgeRight / kUiEdgeBottom) moves as a piece does at
+  // t = 1.
   const float t = ui_piece_at_edge_ ? 1.0f : float(mc::ultrawide::HudWidthFraction());
-  return float(ui_piece_side_) * t * (1.0f - squeeze) * 0.5f;
+  return float(side) * t * (1.0f - squeeze) * 0.5f;
 }
 
 void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& samplers,
@@ -1615,10 +1667,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // memo above, which keeps the game's own position.
   d.ui_squeeze = UiSqueezeOf(view, s, d.key, d.input_layout, d.primitive.conversion, &d.ui_clip);
   d.ui_hidden = ui_hide_draw_;
+  d.ui_vertical = ui_vertical_;
+  d.ui_screen_height = ui_screen_height_;
   d.ui_shift = UiShiftOf(d.ui_clip);
   if (d.ui_squeeze < 1.0f || d.ui_shift != 0.0f) {
-    SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
-                   d.ui_shift);
+    if (d.ui_vertical) {
+      SqueezeSharedY(shared, d.viewport.viewport, scale.Edge(d.ui_screen_height), d.ui_squeeze,
+                     d.ui_shift);
+    } else {
+      SqueezeSharedX(shared, d.viewport.viewport, scale.Edge(s.surface_pitch), d.ui_squeeze,
+                     d.ui_shift);
+    }
   }
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
@@ -2540,10 +2599,13 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   }
   plume::RenderRect scissor = ComputeScissor(s, target_height, target_scale);
   if (d.ui_clip < 1.0f) {
-    scissor = SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_clip, d.ui_shift);
+    scissor = d.ui_vertical
+                  ? SqueezeScissorY(scissor, target_scale.Edge(d.ui_screen_height), d.ui_clip, d.ui_shift)
+                  : SqueezeScissorX(scissor, target_scale.Edge(pitch), d.ui_clip, d.ui_shift);
   }
   if (d.ui_hidden) {
     scissor.right = scissor.left;  // an empty scissor: the draw puts nothing on the screen (UiSqueezeOf)
+    scissor.bottom = scissor.top;
   }
   d.scissor = scissor;
   if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
@@ -2963,6 +3025,7 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   ui_phase_ = true;
   ui_world_ = false;
   ui_piece_side_ = 0;
+  ui_piece_vert_ = 0;
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
@@ -3083,6 +3146,7 @@ void Scene::OnPresent() {
   ui_phase_ = false;
   ui_world_ = false;
   ui_piece_side_ = 0;
+  ui_piece_vert_ = 0;
   if (layers_) {
     layers_->OnGuestPresent();
   }

@@ -1,6 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "map_mouse.h"
 #include "logging.h"
+#include "ultrawide.h"
 
 #include <atomic>
 #include <cmath>
@@ -446,6 +447,12 @@ bool UnprojectToMapPlane(uint32_t screen, int32_t mx, int32_t my,
     float tan_half = std::tan(float(REXCVAR_GET(map_mouse_fov)) *
                               3.14159265358979f / 360.0f);
     float aspect = float(width) / float(height);
+    // In a TALL picture (aspect ratio under 16:9) the game's cameras keep their horizontal field of view and
+    // grow the vertical one (Vert+, mc_engine/frame_fit.h VertPlusFov: tan(half') = tan(half) * (16/9) / aspect),
+    // the map camera's among them; `aspect` is the frame's. 1 for a picture that is not tall.
+    // CHECK: the pointer sits under the cursor at the top and bottom of the full map in a 1920x1200 and a
+    // 1440x1080 window (the map's camera angle is map_mouse_fov's, as before).
+    tan_half *= float(mc::frame::VertPlusTan(double(aspect)));
 
     Vec3 dir = Normalize(fwd + right * (ndc_x * tan_half * aspect) +
                          up * (ndc_y * tan_half));
@@ -747,6 +754,18 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
     uint64_t packed = g_mouse_xy.load(std::memory_order_relaxed);
     int32_t mx = int32_t(uint32_t(packed >> 32));
     int32_t my = int32_t(uint32_t(packed & 0xFFFFFFFFu));
+
+    // The map is drawn in the picture's FRAME, which is the window unless the ASPECT RATIO setting leaves
+    // black bars or the window is a shape the picture cannot fill (mc_engine/frame_fit.h): the pointer is
+    // taken in the frame's own pixels, and the unprojection below measures the frame, whose shape is the map
+    // camera's aspect ratio. A pointer in a bar is held at the frame's nearest edge (the cursor cannot leave
+    // the picture).
+    const mc::frame::Rect frame = mc::ultrawide::FrameFor(width, height);
+    if (!frame.empty()) {
+        mc::frame::MapToFrame(frame, mx, my, &mx, &my);
+        width = frame.w;
+        height = frame.h;
+    }
 
     // Last input wins. sub_8262A688 writes both stick pairs after this hook
     // runs, so these are last frame's values -- which is the right question:
