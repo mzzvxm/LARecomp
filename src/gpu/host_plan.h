@@ -22,6 +22,8 @@
 //             and apply passes; the bounce light adds passes of its own)
 //
 // What each setting's text can be, and what anything else means, is kept as each owner had it:
+//   (the stored words low and high of the occlusion, the contact shadows and the bounce light are what players see as HIGH and
+//   ULTRA: gpu_class.h ShownWord; this file and the logs keep the stored words)
 //   occlusion  mcla_gpu_ao            auto, off, low, high; anything else is off
 //   contact    mcla_gpu_contact_shadows   auto, off, low, high; anything else is off
 //   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, stronger, strongest (a strength, shafts_level.h);
@@ -30,7 +32,10 @@
 //   bounce     mcla_gpu_ssgi          auto, off, low, high; anything else is off; `auto` is off until the
 //                                     class is known (and off on every class for now: gpu_class.h);
 //                                     needs the occlusion on (it reads its images)
-//   car refl   mcla_gpu_car_selfrefl  auto, off, low, high; anything else is off (car_selfrefl.h)
+//   car refl   mcla_gpu_car_selfrefl  auto, off, on; the old low and high are read as on (one level: low and high cost the
+//                                     same, owner decision 2026-11-14, perf/out/FXCOST-B6.txt); anything else is off
+//                                     (car_selfrefl.h). The plan's level is off or high: Level::kLow is never what this setting
+//                                     comes to, only the debug cvar mcla_gpu_car_selfrefl_test reaches the occlusion-only mode
 // ===========================================================================
 
 #include <cstdint>
@@ -78,7 +83,7 @@ struct Choice {
   // old value (low, high) read as default. `level` is then off for a strength of off, else the ray quality the
   // class gives (low on Mid and Low, high on High), so `level != kOff` still says whether the pass is on.
   shafts_level::Level strength = shafts_level::Level::kOff;
-  bool legacy = false;
+  bool legacy = false;  // also the car self-reflections' old `low` and `high`, read as on
 };
 
 // The graphics upgrade whose `auto` cell the pass reads (the occlusion's is the last cell of the class table: off on Low, low on
@@ -139,7 +144,14 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
   if (choice.automatic && pass == Pass::kBounce && !class_known) {
     return choice;  // off
   }
-  const std::string resolved = gpu_class::ResolveFor(cls, EffectOf(pass), text);
+  std::string resolved = gpu_class::ResolveFor(cls, EffectOf(pass), text);
+  if (pass == Pass::kCarRefl && (resolved == "on" || resolved == "low" || resolved == "high")) {
+    // The car self-reflections have one level, `on` (the plan's high). The old low (the specular occlusion alone) cost the
+    // same as high, so the setting dropped it, and the old high is the level that stayed: both are read as on. The debug cvar
+    // mcla_gpu_car_selfrefl_test still reaches the occlusion-only mode.
+    choice.legacy = resolved != "on";
+    resolved = "high";
+  }
   if (!ParseLevel(resolved, &choice.level)) {
     choice.unknown = true;
     choice.level = Level::kOff;
@@ -184,10 +196,18 @@ inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view o
 inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass cls) {
   std::string text(PassName(pass));
   text += ' ';
-  text += pass == Pass::kShafts ? shafts_level::Name(choice.strength) : LevelName(choice.level);
+  if (pass == Pass::kShafts) {
+    text += shafts_level::Name(choice.strength);
+  } else if (pass == Pass::kCarRefl && choice.level == Level::kHigh) {
+    text += "on";  // the one level of the setting (the stored word is `on`; the plan's level is high)
+  } else {
+    text += LevelName(choice.level);
+  }
   text += " (";
   if (choice.held) {
     text += "needs the ambient occlusion, which is off";
+  } else if (choice.legacy && pass == Pass::kCarRefl) {
+    text += "an old value of the setting (low or high): read as on";
   } else if (choice.legacy) {
     text += "an old value of the setting (low or high): read as default";
   } else if (choice.unknown && choice.automatic) {

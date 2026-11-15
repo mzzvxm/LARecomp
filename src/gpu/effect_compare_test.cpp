@@ -189,11 +189,12 @@ void TestStanding() {
           "filter " + c + ": pcss is on (the variant)");
     Check(StandingOf(Effect::kShadowFilter, Make(cls, true, "off", "off", "off", "off", "SOFT", true)).on,
           "filter " + c + ": SOFT");
-    // The car self-reflections: auto is the class's cell (off on Low, low on Mid, high on High), the player's own value
-    // otherwise, an unknown text is off; nothing else is needed for them, so a press is never blocked.
-    for (const char* text : {"auto", "off", "low", "high", "HIGH", "hgih", ""}) {
+    // The car self-reflections: auto is the class's cell (off on Low, on on Mid and High), the player's own value
+    // otherwise (the old low and high are read as on), an unknown text is off; nothing else is needed for them, so a press
+    // is never blocked.
+    for (const char* text : {"auto", "off", "on", "ON", "low", "high", "HIGH", "hgih", ""}) {
       const std::string word = text;
-      const bool on = word == "auto" ? auto_on : (word == "low" || word == "high" || word == "HIGH");
+      const bool on = word == "auto" ? auto_on : (word == "on" || word == "ON" || word == "low" || word == "high" || word == "HIGH");
       const Standing car = StandingOf(Effect::kCarSelfRefl, Make(cls, true, "off", "off", "off", "off", "game", true, text));
       Check(car.on == on && !car.blocked, "car self-reflections " + c + " '" + word + "'");
     }
