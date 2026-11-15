@@ -1,6 +1,8 @@
 // Check of the traffic cars' sun shadow rules (traffic_shadow.h): the setting's words and the `auto` cell per GPU
 // class, the cascade phases, the limits of each mode, which vehicles are candidates, the cutoff that picks the nearest
-// cars, the census over a frame's phases, and the cutoff the renderer is told. A program of its own: it needs no renderer,
+// cars, the census over a frame's phases, the cutoff the renderer is told, and (the second run's findings) the main
+// viewport the distances are measured from, the check of a distance against the item's own view depth, the distance
+// bands and the three log lines. A program of its own: it needs no renderer,
 // no ReXGlue and no GPU, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_traffic_shadow_test     (src/gpu/CMakeLists.txt)
@@ -189,7 +191,10 @@ void AmbientClientMask() {
   // Each phase is widened on its own: the mask the next iteration sees is the game's again.
   const uint32_t one = WidenedClientMask(stock, 0x20u, true);
   Check((one & 0x40u) == 0 && (one & 0x80u) == 0 && (one & 0x100u) == 0, "widening for one cascade leaves the others out");
-  Check(kAmbientClientVtable == 0x820D8C0Cu && kAmbientBodyPhase == 0x8000u, "the guest constants of the traffic client");
+  Check(kAmbientClientVtable == 0x820D8C0Cu && kAmbientBodyPhase == 0x100000u, "the guest constants of the traffic client");
+  Check(kAmbientBodyPhase != 0x8000u && kAmbientBodyPhase != 0x10000u && kAmbientBodyPhase != 0x1000000u,
+        "the body phase is not the lights' (0x8000), the LOD update's (0x10000) or the mirror's (0x1000000)");
+  Check((0x01118002u & kAmbientBodyPhase) != 0, "the body phase is one the stock mask has (the item draw knows it)");
   Check(CascadeIndex(kAmbientBodyPhase) == 0, "the body phase the draw is told is no cascade (the hook is not re-entered on it)");
 }
 
@@ -199,14 +204,12 @@ AmbientFlags GoodItem() {
   f.car_flags = 0x40;
   f.model_count = 3;
   f.lod = 0;
-  f.item_flags = 0x80;
-  f.visible = 4;
   return f;
 }
 
 void AmbientItems() {
   AmbientFlags f = GoodItem();
-  Check(AmbientRejectBits(f) == 0 && AmbientEligible(f), "a traffic car the draw would draw is eligible");
+  Check(AmbientRejectBits(f) == 0 && AmbientEligible(f), "a traffic car the body phase would draw is eligible");
   f = GoodItem();
   f.enabled = 0;
   Check(AmbientRejectBits(f) == kAmbientRejectEnabled, "item +36 zero");
@@ -225,25 +228,87 @@ void AmbientItems() {
   f.model_count = -1;
   Check(AmbientRejectBits(f) == kAmbientRejectModels, "no model block (-1): the same bit");
   f = GoodItem();
-  f.visible = 0;
-  Check(AmbientRejectBits(f) == kAmbientRejectNotVisible, "not seen by the main view");
-  f.visible = 0xFB;
-  Check(AmbientRejectBits(f) == kAmbientRejectNotVisible, "only bit 4 of the visible byte counts");
-  f.visible = 5;
-  Check(AmbientRejectBits(f) == 0, "bit 4 with others set: seen");
-  f = GoodItem();
   f.lod = -1;
-  Check(AmbientRejectBits(f) == kAmbientRejectLod, "a negative LOD is not drawn");
-  f.item_flags = 0xA0;
-  Check(AmbientRejectBits(f) == 0, "item +556 bit 0x20 skips the LOD test, as the draw does");
+  Check(AmbientRejectBits(f) == kAmbientRejectLod, "a negative LOD (outside the main view) is not drawn");
+  f.lod = -2147483647 - 1;
+  Check(AmbientRejectBits(f) == kAmbientRejectLod, "the most negative LOD: the same bit");
+  // The body phase (0x100000) has no near-car exemption (the lights' phase 0x8000 has one) and does not look at the visible
+  // byte (+557 + buffer, bit 4 = lights): only the LOD, the item and the car decide.
   f = GoodItem();
-  f.item_flags = 0x00;
-  Check(AmbientRejectBits(f) == kAmbientRejectNoBody, "no 0x80 in item +556: nothing to draw");
+  f.lod = 1;
+  Check(AmbientRejectBits(f) == 0, "LOD 1 is drawn");
+  f.lod = 2;
+  Check(AmbientRejectBits(f) == kAmbientRejectLodCoarse, "LOD 2, the coarsest: the body phase returns for it");
+  f.lod = int32_t(kAmbientCoarsestLod);
+  Check(AmbientRejectBits(f) == kAmbientRejectLodCoarse, "the coarsest LOD constant is 2");
+  f.lod = 3;
+  Check(AmbientRejectBits(f) == 0, "a LOD above 2 does not exist in the game; the draw's own test is `== 2`, so it passes");
   f = GoodItem();
   f.enabled = 0;
-  f.visible = 0;
   f.lod = -2;
-  Check(AmbientRejectBits(f) == (kAmbientRejectEnabled | kAmbientRejectNotVisible | kAmbientRejectLod), "several tests: several bits");
+  f.model_count = 0;
+  Check(AmbientRejectBits(f) == (kAmbientRejectEnabled | kAmbientRejectModels | kAmbientRejectLod), "several tests: several bits");
+  // Every combination of the three plain flags and the LOD classes: the bits and AmbientEligible() agree.
+  bool agree = true;
+  for (int mask = 0; mask < 32; ++mask) {
+    AmbientFlags g = GoodItem();
+    g.enabled = (mask & 1) ? 0 : 1;
+    g.car_flags = (mask & 2) ? 0x00 : 0x40;
+    g.model_count = (mask & 4) ? 2 : 3;
+    g.lod = (mask & 8) ? -1 : ((mask & 16) ? 2 : 0);
+    agree = agree && ((AmbientRejectBits(g) == 0) == AmbientEligible(g)) && ((AmbientRejectBits(g) == 0) == (mask == 0));
+  }
+  Check(agree, "reject bits and AmbientEligible() agree on 32 combinations");
+}
+
+// The viewports the distances are measured from (the second run: the current viewport is the cascade's own in a cascade).
+void ViewportsAndEyes() {
+  Check(kRendererGlobal == 0x8287E064u && kRendererMainViewports == 180u && kCurrentViewportGlobal == 0x82839704u && kViewportEye == 112u,
+        "the guest constants of the viewports");
+  Check(MainViewportSlot(0) == 180u && MainViewportSlot(1) == 184u && MainViewportSlot(3) == 192u,
+        "the main viewport of render buffer b is the pointer at renderer + 180 + 4 b ((b + 45) * 4, as sub_827902F0 reads it)");
+  Check(kAmbientBufferGlobal == 0x827E5640u, "the render buffer's global is the one the item draw and sub_82794EE8 read");
+  Check(kRendererGlobal != kCurrentViewportGlobal, "the renderer and the current viewport are different globals");
+  // The distance of the same car from the two eyes: the main viewport's eye near it, the cascade's far.
+  const float car[3] = {100.0f, 0.0f, 50.0f};
+  const float main_eye[3] = {110.0f, 1.5f, 52.0f};
+  const float cascade_eye[3] = {60.0f, 95.0f, -20.0f};
+  Check(Distance(main_eye, car) < kNearRadius, Num("from the main viewport's eye the car is within the near radius (%.1f m)", double(Distance(main_eye, car))));
+  Check(Distance(cascade_eye, car) > 100.0f, Num("from the cascade's eye it is beyond 100 m (%.1f m): the first version's census saw nothing nearer", double(Distance(cascade_eye, car))));
+}
+
+// The census's cross-check: the distance against the item's own depth + radius (item +32).
+void DepthCheck() {
+  // A car 30 m straight ahead, radius 2: the item's +32 is 32.
+  Check(CheckAgainstDepth(30.0f, 32.0f, 2.0f) == DepthVerdict::kConsistent, "straight ahead: distance = depth");
+  // The same car 20 degrees off the axis: the distance is longer by 1 / cos(20) = 1.064.
+  Check(CheckAgainstDepth(30.0f / 0.9397f, 32.0f, 2.0f) == DepthVerdict::kConsistent, "20 degrees off the axis: a little longer than the depth");
+  Check(CheckAgainstDepth(30.0f * 1.9f, 32.0f, 2.0f) == DepthVerdict::kConsistent, "at the edge of a very wide view: under twice the depth");
+  // The first version's case: the cascade's eye (100 m away) for a car 30 m ahead of the main one.
+  Check(CheckAgainstDepth(100.0f, 32.0f, 2.0f) == DepthVerdict::kFarBeyondView, "a distance of 100 m for a depth of 30 m: the eye is wrong");
+  Check(CheckAgainstDepth(225.0f, 52.0f, 2.0f) == DepthVerdict::kFarBeyondView, "225 m for a depth of 50 m: the eye is wrong");
+  // Closer than the depth is impossible for a car in the frustum.
+  Check(CheckAgainstDepth(10.0f, 32.0f, 2.0f) == DepthVerdict::kCloserThanDepth, "10 m for a depth of 30 m: the position is wrong");
+  Check(CheckAgainstDepth(29.5f, 32.0f, 2.0f) == DepthVerdict::kConsistent, "within a metre under the depth (the frame between the two reads)");
+  // No usable depth.
+  Check(CheckAgainstDepth(30.0f, std::nanf(""), 2.0f) == DepthVerdict::kUnknown, "a NaN depth");
+  Check(CheckAgainstDepth(std::nanf(""), 32.0f, 2.0f) == DepthVerdict::kUnknown, "a NaN distance");
+  Check(CheckAgainstDepth(30.0f, 32.0f, std::numeric_limits<float>::infinity()) == DepthVerdict::kUnknown, "an infinite radius");
+  Check(CheckAgainstDepth(30.0f, 1.0f, 2.0f) == DepthVerdict::kUnknown, "a car at or behind the eye's plane (depth below zero): no band");
+  Check(CheckAgainstDepth(30.0f, 5.0f, 5.0f) == DepthVerdict::kUnknown, "depth exactly zero: no band");
+  Check(std::string(DepthVerdictName(DepthVerdict::kConsistent)) == "consistent" && std::string(DepthVerdictName(DepthVerdict::kUnknown)) == "unknown",
+        "the verdicts have names");
+}
+
+void Bands() {
+  Check(DistanceBand(0.0f) == 0 && DistanceBand(19.9f) == 0, "under 20 m: band 0");
+  Check(DistanceBand(20.0f) == 1 && DistanceBand(39.9f) == 1, "20 to 40 m: band 1 (the near radius ends here)");
+  Check(DistanceBand(40.0f) == 2 && DistanceBand(79.9f) == 2, "40 to 80 m: band 2");
+  Check(DistanceBand(80.0f) == 3 && DistanceBand(159.9f) == 3, "80 to 160 m: band 3");
+  Check(DistanceBand(160.0f) == 4 && DistanceBand(1.0e6f) == 4, "160 m and more: band 4");
+  Check(DistanceBand(std::nanf("")) == kDistanceBands - 1 && DistanceBand(-3.0f) == kDistanceBands - 1, "NaN and negative: the far band");
+  Check(kNearRadius == 40.0f, "band 1 ends at the near radius");
+  for (int b = 0; b < kDistanceBands; ++b) Check(std::string(DistanceBandName(b)).size() >= 4, "every band has a name");
 }
 
 void AmbientPosition() {
@@ -329,6 +394,11 @@ void ValueCountsAndGates() {
   gates.Add(AmbientGate::kLeafCalls);
   gates.Add(AmbientGate::kLeafCascade);
   gates.Add(AmbientGate::kRemapped);
+  gates.Add(AmbientGate::kEyeMain);
+  gates.Add(AmbientGate::kEyeMain);
+  gates.Add(AmbientGate::kEyeFallback);
+  gates.Add(AmbientGate::kLodCoarse);
+  gates.Add(CarGate::kEyeMain);
   Check(gates.Get(CarGate::kCalls) == 5 && gates.Get(CarGate::kGameCaster) == 2, "car counters count");
   Check(gates.Get(AmbientGate::kLeafCalls) == 1 && gates.Get(AmbientGate::kRemapped) == 1 && gates.Get(AmbientGate::kDecided) == 0,
         "ambient counters count and stay apart from the car's");
@@ -350,22 +420,94 @@ void ValueCountsAndGates() {
   Check(line.find("cast 1") != std::string::npos, "the traffic route's casts: " + line);
   for (const char* part : {"mode off", "no memory", "vehicle ptr", "ineligible", "+593 clear", "+6478 set", "+6467 set", "+123 set", "+116 zero", "+120 zero",
                            "entity ptr", "camera ptr", "distance not finite", "reached Decide", "phase loop", "mask widened", "item ptr", "car ptr", "buffer",
-                           "+36 zero", "car +500", "models<3", "not visible", "LOD<0", "no body", "position"}) {
+                           "+36 zero", "car +500", "models<3", "LOD<0", "LOD 2", "position", "eye main viewport", "current viewport", "renderer ptr",
+                           "viewport ptr"}) {
     Check(line.find(part) != std::string::npos, std::string("the line names `") + part + "`");
   }
+  Check(line.find("not visible") == std::string::npos && line.find("no body") == std::string::npos,
+        "the visible byte and the lights' body flag are no longer tests of the body phase, so they are not named");
+  Check(line.find("eye main viewport 2 / current viewport 1") != std::string::npos, "the traffic route's eye counters: " + line);
+  Check(line.find("eye main viewport 1 / current viewport 0") != std::string::npos, "the car route's eye counters: " + line);
+  Check(line.find("LOD 2 1]") != std::string::npos, "the coarsest-LOD counter: " + line);
+}
+
+// The window line: deltas since the last one; the census line: the eyes and the bands.
+void WindowAndCensusLines() {
+  Gates gates;
+  for (int i = 0; i < 10; ++i) gates.Add(AmbientGate::kLeafCascade);
+  for (int i = 0; i < 4; ++i) gates.Add(AmbientGate::kIneligible);
+  for (int i = 0; i < 3; ++i) gates.Add(AmbientGate::kLod);
+  gates.Add(AmbientGate::kLodCoarse);
+  for (int i = 0; i < 6; ++i) {
+    gates.Add(AmbientGate::kDecided);
+    gates.Add(AmbientGate::kEyeMain);
+  }
+  gates.Add(AmbientGate::kRemapped);
+  for (int i = 0; i < 5; ++i) gates.Add(AmbientGate::kDepthConsistent);
+  gates.Add(AmbientGate::kDepthFar);
+  const std::string w1 = gates.WindowLine();
+  Check(w1.rfind("[traffic-shadows] window: ", 0) == 0 && w1.find('\n') == std::string::npos, "the window line: tag, one line: " + w1);
+  Check(w1.find("item draws in cascades 10, turned away 4 [+36 zero 0, car +500 0, models<3 0, LOD<0 3, LOD 2 1], reached Decide 6, cast 1") != std::string::npos,
+        "the first window counts from the start: " + w1);
+  Check(w1.find("eye main viewport 6 / current viewport 0") != std::string::npos, "... with the eye counters: " + w1);
+  Check(w1.find("consistent 5, closer than the depth 0, beyond the view 1, unknown 0") != std::string::npos, "... and the depth check: " + w1);
+  // More traffic: the next window shows only the new counts.
+  for (int i = 0; i < 7; ++i) gates.Add(AmbientGate::kLeafCascade);
+  gates.Add(AmbientGate::kDecided);
+  gates.Add(AmbientGate::kRemapped);
+  gates.Add(AmbientGate::kRemapped);
+  const std::string w2 = gates.WindowLine();
+  Check(w2.find("item draws in cascades 7, turned away 0 [+36 zero 0, car +500 0, models<3 0, LOD<0 0, LOD 2 0], reached Decide 1, cast 2") != std::string::npos,
+        "the second window counts what is new: " + w2);
+  const std::string w3 = gates.WindowLine();
+  Check(w3.find("item draws in cascades 0, turned away 0") != std::string::npos && w3.find("reached Decide 0, cast 0") != std::string::npos,
+        "a window with nothing new is all zero: " + w3);
+  Check(gates.Get(AmbientGate::kLeafCascade) == 17, "the windows do not reset the totals");
+
+  // The census line.
+  Gates census;
+  std::string c0 = census.CensusLine();
+  Check(c0.rfind("[traffic-shadows] census: no eye seen yet", 0) == 0 && c0.find('\n') == std::string::npos, "no eye yet: " + c0);
+  Check(c0.find("<20 m [candidates 0, LOD<0 0, LOD 2 0, other 0]") != std::string::npos && c0.find(">=160 m [candidates 0") != std::string::npos,
+        "every band is named, all zero: " + c0);
+  const float main_eye[3] = {110.0f, 1.5f, 52.0f};
+  const float cascade_eye[3] = {110.0f, 101.5f, 52.0f};
+  census.NoteEyes(0x82F10000u, main_eye, 0x82F20000u, cascade_eye);
+  census.AddBand(BandKind::kCandidate, 12.0f);
+  census.AddBand(BandKind::kCandidate, 35.0f);
+  census.AddBand(BandKind::kCandidate, 35.5f);
+  census.AddBand(BandKind::kLodOutside, 15.0f);
+  census.AddBand(BandKind::kLodCoarse, 200.0f);
+  census.AddBand(BandKind::kOther, 90.0f);
+  const EyeSnapshot e = census.Eyes();
+  Check(e.valid && e.main_viewport == 0x82F10000u && e.current_viewport == 0x82F20000u && e.main_eye[1] == 1.5f && e.current_eye[1] == 101.5f,
+        "the eyes are stored and read back exactly");
+  const std::string c1 = census.CensusLine();
+  Check(c1.find("main viewport 0x82F10000, current viewport 0x82F20000") != std::string::npos, "the viewports' addresses: " + c1);
+  Check(c1.find("eye of the main viewport 110.0 1.5 52.0, of the current viewport 110.0 101.5 52.0, 100.0 m apart") != std::string::npos, "the eyes and their separation: " + c1);
+  Check(c1.find("<20 m [candidates 1, LOD<0 1, LOD 2 0, other 0]") != std::string::npos, "band <20 m: " + c1);
+  Check(c1.find("<40 m [candidates 2, LOD<0 0, LOD 2 0, other 0]") != std::string::npos, "band <40 m: " + c1);
+  Check(c1.find("<80 m [candidates 0, LOD<0 0, LOD 2 0, other 0]") != std::string::npos, "band <80 m: " + c1);
+  Check(c1.find("<160 m [candidates 0, LOD<0 0, LOD 2 0, other 1]") != std::string::npos, "band <160 m: " + c1);
+  Check(c1.find(">=160 m [candidates 0, LOD<0 0, LOD 2 1, other 0]") != std::string::npos, "band >=160 m: " + c1);
+  Check(census.Band(BandKind::kCandidate, 1) == 2 && census.Band(BandKind::kOther, 3) == 1, "the band counters can be read");
+  Check(std::string(BandKindName(BandKind::kCandidate)) == "candidates" && std::string(BandKindName(BandKind::kLodOutside)) == "LOD<0", "the kinds have names");
 }
 
 void LogScheduleRules() {
   LogSchedule schedule;
   const int64_t s = 1'000'000'000;
   Check(!schedule.Due(0, 0) && !schedule.Due(1999, 5 * s), "no line before 2000 calls, however late");
-  Check(schedule.Due(2000, 6 * s), "the first line at the 2000th call");
-  Check(!schedule.Due(2001, 6 * s + 1) && !schedule.Due(50000, 20 * s), "none within 30 s of it");
-  Check(schedule.Due(50001, 36 * s), "the next one 30 s after the first");
-  Check(!schedule.Due(60000, 40 * s) && !schedule.Due(60001, 65 * s), "and none until 30 s after that (66 s)");
-  Check(schedule.Due(60002, 66 * s), "the third at +30 s");
+  Check(!schedule.Due(2000, 6 * s), "the 2000th call only starts the first line's delay (the world's first half second has no LODs yet)");
+  Check(!schedule.Due(2300, 10 * s) && !schedule.Due(9000, 25 * s), "no line within 20 s of that");
+  Check(schedule.Due(9500, 26 * s), "the first line 20 s after it");
+  Check(!schedule.Due(9501, 26 * s + 1) && !schedule.Due(50000, 50 * s), "none within 30 s of the first");
+  Check(schedule.Due(50001, 56 * s), "the next one 30 s after the first");
+  Check(!schedule.Due(60000, 60 * s) && !schedule.Due(60001, 85 * s), "and none until 30 s after that (86 s)");
+  Check(schedule.Due(60002, 86 * s), "the third at +30 s");
   LogSchedule late;
-  Check(late.Due(9000, 100 * s) && !late.Due(9001, 101 * s), "the first line is not waiting for a time, only for the calls");
+  Check(!late.Due(9000, 100 * s) && !late.Due(9001, 110 * s) && late.Due(9002, 120 * s), "the delay counts from the first time the calls were enough, not from the start of the clock");
+  Check(LogSchedule::kFirstDelayNs > 10 * s, "the delay is long enough for the world to settle");
 }
 
 // --- the cutoff ----------------------------------------------------------------------------------------------------
@@ -586,9 +728,13 @@ int main() {
   VehicleRejects();
   AmbientClientMask();
   AmbientItems();
+  ViewportsAndEyes();
+  DepthCheck();
+  Bands();
   AmbientPosition();
   MixedCensus();
   ValueCountsAndGates();
+  WindowAndCensusLines();
   LogScheduleRules();
   Cutoff();
   CensusOverFrames();

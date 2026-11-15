@@ -22,6 +22,23 @@
 // car and the RACERS' cars only; traffic has its own renderer client and item draw, see "the traffic's own
 // route" below. The hook at 0x8236066C stays for the opponents of a race.
 //
+// CORRECTION 2 (the second run, 2026-11-13: the traffic route was reached, 20 to 58 cars a frame passed every test, but
+// the nearest was always 97 to 270 m away and none cast; the first `gates:` line, which showed every item with a negative
+// LOD, was printed 0.6 s after the world's first frame and says nothing about the steady state). Two findings, both read
+// from the recompiled code (see "the traffic's own route"):
+//   - the distance was measured from the wrong eye: [0x82839704] is the CURRENT viewport, which the game swaps for every
+//     view it renders (sub_8217C658 = SetCurrentViewport, called around each sun cascade by sub_823083F8 and put back at the
+//     end of sub_823115E8), so in a cascade phase +112 is the cascade's own eye, about 100 m (and at the start 220 to
+//     270 m) from the cars. The main view's viewport is [[0x8287E064] + 180 + 4 * buffer] (the game's own lookup in
+//     sub_827902F0 and the one sub_823115E8 restores): both routes now measure from its eye.
+//   - the phase the draw was told, 0x8000, is the car's LIGHTS (sub_82790B08 -> sub_8237AC90 loops over the car's light
+//     points and submits their glows, AddGlow among them, with a per-light slot history), not its body: it would have
+//     added glows four times a frame and drawn no shadow caster. The body is drawn by the 0x10000 / 0x100000 branch
+//     (model vtbl+28, sub_827914B8, which reads the renderer's current phase [[0x8287E064]+356] and takes its plain path
+//     for a phase that is neither: in a cascade). 0x10000 also recomputes the LOD and makes the car's own shadow decal;
+//     0x100000 does neither, so the draw is told 0x100000, which returns for LOD 2 and for a negative LOD (no exemption)
+//     and does not look at the visible byte.
+//
 // What the hook does (hooks/traffic_shadow.cpp, 0x8236066C): for a vehicle that the game would leave out
 // of a cascade (r11 = 0 where the player's car has 1) it answers 1, when the car is one this file picks.
 // Nothing is written into the vehicle, so the +594 readers elsewhere (the vehicle update, the colour
@@ -191,16 +208,47 @@ constexpr uint32_t VehicleRejectBits(const VehicleFlags& f) {
 //
 // The route: the phase loop's mask test is widened by the cascade phase for this one client (nothing is written
 // into the client), and the item draw is told the phase is kAmbientBodyPhase for the cars this file picks. That
-// phase's branch of the item draw is the plain body draw (sub_82790B08 -> sub_8237AC90([item+528], 0, flag), the
-// routine the vehicle's own cascade path ends in too), with the technique the renderer's current phase picks:
-// every ambient car shader group has the cascade technique (VS_ShadowDepthLocal, from the shader pack's report).
-// The item draw's own tests still decide whether the car is drawn (visible byte, LOD, body): AmbientRejectBits
-// repeats them so that a car it would not draw does not take a place.
+// phase's branch of the item draw is the body draw (the model's vtbl+28, sub_827914B8, with the item's own LOD and
+// the per-buffer data [[item+24] + (buffer+2)*4]); the model's draw reads the renderer's current phase
+// ([[0x8287E064]+356], the cascade's own), so it takes the plain path with the technique the cascade picks (every
+// ambient car shader group has the cascade technique, VS_ShadowDepthLocal, from the shader pack's report). The branch
+// is the game's own colour-pass draw minus what the LOD phase (0x10000) adds, and what it overwrites it overwrites the
+// same way in the car's own pass later in the frame [I: read from the code, never seen running]: the state pushes it
+// makes (sub_8217FED0 / sub_8217F768, ids 20 24 23 25) are popped by the branch itself (sub_82491668), item +512..+520
+// are set to 0.0, +576 (the object's lighting, sub_822F57A0) is recomputed and +40 is restamped from a global
+// ([0x827D7500+44]) every draw. The hook saves and restores nothing because it changes r4 (a register) only.
+//
+// The LOD and the other fields the draw tests are kept by the item, not by a phase: item +28 (LOD) and +556 bit 0x20
+// (near) by the LOD update sub_827932D8 (item vtbl+44; sub_82793360 calls it in phase 0x10000 for the main view and in
+// 0x1000000 for the mirror, so a cascade sees the last frame's: the cascades come before 0x10000 in the loop), item
+// +32 = the view depth + radius that update got from the main viewport's frustum test (sub_8217C1D8; a negative LOD
+// is "outside the frustum", the occlusion query said no, or deeper than 500 m), +556 bit 0x80 (the lights object at
+// +528 exists; built in the item's update sub_82792E00 through sub_82792A28), +557 + buffer (bit 4: lights, by
+// sub_826E6D90 in the car's update sub_826E8EC8; it gates the phases 0x2 and 0x8000 only and is NOT tested here).
+// AmbientRejectBits repeats the body phase's own tests so that a car the draw would not draw does not take a place.
+//
+// Where a cascade measures from: the game keeps the viewport it is rendering in [0x82839704] (the CURRENT viewport; the
+// sun cascades swap their own in), and the main view's one for the render buffer at [renderer + 180 + 4 * buffer]
+// (renderer = [0x8287E064], buffer = [0x827E5640]); a viewport's +112 is its eye (three floats), as sub_82793360 and
+// sub_827914B8 read it. In a cascade the census measures from the main viewport's eye, and compares it with the item's
+// own view depth (+32) to say whether the position source is right.
+
+inline constexpr uint32_t kRendererGlobal = 0x8287E064u;           // [guest] u32: the renderer object (rear_view.cpp's kRendererPtr)
+inline constexpr uint32_t kRendererMainViewports = 180u;            // [guest] renderer + this + 4 * buffer: the main viewport of the render buffer
+inline constexpr uint32_t kCurrentViewportGlobal = 0x82839704u;     // [guest] u32: the viewport being rendered in
+inline constexpr uint32_t kViewportEye = 112u;                      // [guest] a viewport's eye: three floats
+
+constexpr uint32_t MainViewportSlot(uint32_t buffer) { return kRendererMainViewports + 4u * buffer; }
 
 inline constexpr uint32_t kCascadeMask = 0x20u | 0x40u | 0x80u | 0x100u;
 inline constexpr uint32_t kAmbientClientVtable = 0x820D8C0Cu;  // the client's object: [client] == this
-inline constexpr uint32_t kAmbientBodyPhase = 0x8000u;          // [guest] the item draw's depth-style body branch
-inline constexpr uint32_t kAmbientBufferGlobal = 0x827E5640u;   // [guest] u32: which copy of the item's state the render thread reads
+// [guest] The branch of the item draw that draws the car's body without side effects: sub_82793360 with r4 = 0x100000
+// returns for LOD 2 and a negative LOD, checks the item and the car, makes the shader-variable pushes it pops again, sets
+// the object's lighting and calls the model's draw (vtbl+28). 0x8000 (the first version) is the lights, 0x10000 recomputes
+// the LOD and creates the shadow decal, 0x1000000 is the mirror's and recomputes the LOD for the mirror.
+inline constexpr uint32_t kAmbientBodyPhase = 0x100000u;
+inline constexpr uint32_t kAmbientCoarsestLod = 2;               // [guest] the body phase returns for this LOD
+inline constexpr uint32_t kAmbientBufferGlobal = 0x827E5640u;    // [guest] u32: the render buffer: which copy of the item's state the render thread reads
 
 // The phase loop's mask test for the traffic client: its own mask, plus the phase when it is a cascade and the
 // setting is on.
@@ -208,35 +256,87 @@ constexpr uint32_t WidenedClientMask(uint32_t mask, uint32_t phase, bool on) {
   return (on && CascadeIndex(phase) != 0) ? (mask | phase) : mask;
 }
 
-// What the item draw reads of an item (offsets in hooks/traffic_shadow.cpp), for the tests it makes in the
-// body branch (the visible byte is +557 plus the buffer index: the update and render threads' copies).
+// What the item draw reads of an item (offsets in hooks/traffic_shadow.cpp) for the tests the body phase makes before
+// the model's draw.
 struct AmbientFlags {
   uint8_t enabled = 0;       // item +36: 0 = the draw returns
   uint8_t car_flags = 0;     // [item+16] +500: bit 0x40 must be set, bit 0x20 (a child) and bit 0x80 clear
   int32_t model_count = 0;   // [[item+24]+32]: the draw wants at least 3
-  int32_t lod = 0;           // item +28: a negative LOD is not drawn (unless item_flags has 0x20)
-  uint8_t item_flags = 0;    // item +556: 0x20 skips the LOD test, 0x80 = there is a body to draw
-  uint8_t visible = 0;       // item +557 + buffer: bit 4 = seen by the main view
+  int32_t lod = 0;           // item +28: negative = outside the main view (or too far), 2 = the coarsest: neither is drawn
 };
 
 enum AmbientReject : uint32_t {
   kAmbientRejectEnabled = 1u << 0,
   kAmbientRejectCarFlags = 1u << 1,
   kAmbientRejectModels = 1u << 2,
-  kAmbientRejectNotVisible = 1u << 3,
-  kAmbientRejectLod = 1u << 4,
-  kAmbientRejectNoBody = 1u << 5,
+  kAmbientRejectLod = 1u << 3,        // negative
+  kAmbientRejectLodCoarse = 1u << 4,  // the coarsest: the body phase returns for it
 };
 
 constexpr uint32_t AmbientRejectBits(const AmbientFlags& f) {
   const bool car_ok = (f.car_flags & 0x40u) != 0 && (f.car_flags & 0x20u) == 0 && (f.car_flags & 0x80u) == 0;
   return (f.enabled == 0 ? kAmbientRejectEnabled : 0u) | (car_ok ? 0u : kAmbientRejectCarFlags) |
-         (f.model_count < 3 ? kAmbientRejectModels : 0u) | ((f.visible & 4u) == 0 ? kAmbientRejectNotVisible : 0u) |
-         (((f.item_flags & 0x20u) == 0 && f.lod < 0) ? kAmbientRejectLod : 0u) |
-         ((f.item_flags & 0x80u) == 0 ? kAmbientRejectNoBody : 0u);
+         (f.model_count < 3 ? kAmbientRejectModels : 0u) | (f.lod < 0 ? kAmbientRejectLod : 0u) |
+         (f.lod == int32_t(kAmbientCoarsestLod) ? kAmbientRejectLodCoarse : 0u);
 }
 
 constexpr bool AmbientEligible(const AmbientFlags& f) { return AmbientRejectBits(f) == 0; }
+
+// The item's own measure of the same thing, against ours [I: that plane 0 of the frustum test is the near plane, so that
+// item +32 is the depth along the view axis plus the car's radius; the game compares it with 500 m and with the model's
+// LOD distances, so it is a depth, but which plane is read from the vector code only]. A car in the main view's
+// frustum is at least its depth from the eye and, in any field of view the game has, at most about twice that
+// (a 120 degree view: 1 / cos 60); an eye or a position that is wrong shows as a distance outside that band.
+enum class DepthVerdict : uint8_t {
+  kUnknown,           // no usable depth (not finite, or the car is behind the near plane)
+  kConsistent,        // the distance is the depth of a car in the view, within the band
+  kCloserThanDepth,   // the distance is shorter than the depth: the eye or the position is wrong
+  kFarBeyondView,     // the distance is much longer than the depth allows: the eye or the position is wrong
+};
+
+constexpr const char* DepthVerdictName(DepthVerdict v) {
+  switch (v) {
+    case DepthVerdict::kConsistent: return "consistent";
+    case DepthVerdict::kCloserThanDepth: return "closer than the depth";
+    case DepthVerdict::kFarBeyondView: return "beyond the view";
+    default: return "unknown";
+  }
+}
+
+inline DepthVerdict CheckAgainstDepth(float distance, float depth_plus_radius, float radius) {
+  if (!std::isfinite(distance) || !std::isfinite(depth_plus_radius) || !std::isfinite(radius)) {
+    return DepthVerdict::kUnknown;
+  }
+  const float depth = depth_plus_radius - std::max(radius, 0.0f);  // the centre's depth along the view axis
+  if (!(depth > 0.5f)) {
+    return DepthVerdict::kUnknown;  // at or behind the eye's plane: no band to compare with
+  }
+  if (distance + 1.0f < depth) {
+    return DepthVerdict::kCloserThanDepth;
+  }
+  if (distance > 2.5f * depth + 2.0f * std::max(radius, 0.0f) + 5.0f) {
+    return DepthVerdict::kFarBeyondView;
+  }
+  return DepthVerdict::kConsistent;
+}
+
+// The distance bands of the census (metres from the main viewport's eye): <20, <40 (the `near` radius), <80, <160, more.
+inline constexpr int kDistanceBands = 5;
+constexpr int DistanceBand(float distance) {
+  if (!(distance >= 0.0f)) {
+    return kDistanceBands - 1;  // NaN and negative: counted with the far ones
+  }
+  return distance < 20.0f ? 0 : distance < 40.0f ? 1 : distance < 80.0f ? 2 : distance < 160.0f ? 3 : 4;
+}
+constexpr const char* DistanceBandName(int band) {
+  switch (band) {
+    case 0: return "<20 m";
+    case 1: return "<40 m";
+    case 2: return "<80 m";
+    case 3: return "<160 m";
+    default: return ">=160 m";
+  }
+}
 
 // The car's world matrix, as sub_82794EE8 finds it for a car that is not a child: on the render thread (the
 // thread flag [[r13]+72] set) at ((buffer + 4) rotated left by 6) & ~63 from the car, else at +128; its

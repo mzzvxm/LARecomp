@@ -25439,10 +25439,14 @@ after_instruction = false
 
 # 0x82793360: the entry of sub_82793360, the item draw of mcAmbientCarRenderClass (r3 = the item, r4 = the
 # phase; vtbl+8 of the item). It knows the phases 0x2 4 8 0x8000 0x10000 0x100000 0x1000000 and returns
-# without drawing in any other, the cascades included. For a car the TRAFFIC SHADOWS setting picks (the
-# nearest few, by the car's world position from sub_82794EE8's matrix) the hook makes r4 the phase 0x8000,
-# the branch that draws the body (sub_82790B08 -> sub_8237AC90) with the renderer's current phase's
-# technique (VS_ShadowDepthLocal on every ambient car shader group). traffic_shadow.cpp.
+# without drawing in any other, the cascades included. 0x2 and 0x8000 are the car's LIGHTS (reflected, and
+# the glows: sub_82790B08 -> sub_8237AC90 calls AddGlow), 0x10000 and 0x100000 draw the body (the model's
+# vtbl+28, which reads the renderer's current phase [[0x8287E064]+356]); 0x10000 also recomputes the LOD
+# and makes the shadow decal, 0x100000 does neither. For a car the TRAFFIC SHADOWS setting picks (the
+# nearest few, by the car's world position from sub_82794EE8's matrix and the MAIN viewport's eye, not the
+# current viewport's, which in a cascade is the cascade's own) the hook makes r4 the phase 0x100000, so the
+# body is drawn with the cascade's technique (VS_ShadowDepthLocal on every ambient car shader group).
+# Only r4 changes. traffic_shadow.cpp.
 [[midasm_hook]]
 address = 0x82793360
 name = "Patch_AmbientCascadeDraw"
