@@ -346,6 +346,13 @@ DlssFrameGeneration::Change DlssFrameGeneration::Poll() {
   }
   const dlss::FrameGenerationFacts facts = dlss::GetFrameGenerationFacts();
   const bool setting = SettingIsDlss();
+  if (setting && Candidate() && !facts.queried) {
+    // Streamline starts in the background (its warm-up) only once something says it may be needed: this
+    // is that, and it runs only where frame generation can (an RTX 40 or 50 series card on D3D12; the
+    // Vulkan device is made through Streamline at the start or not at all). The answer to the support
+    // question, which the setting waits for, comes from that start.
+    NoteUpscalerInterest("DLSS frame generation is chosen");
+  }
   const bool can_run = Candidate() && facts.queried && facts.supported && !failed_ &&
                        dlss::reflex::Available() &&
                        !(vulkan_ && (dlss::VulkanInstanceProcAddr() == nullptr || !facts.asked));

@@ -430,6 +430,11 @@ void UpscalerSet(int i, CvarWriter write) {
 // again before leaving drops it (the setting is back where it started).
 const char* UpscalerRowSuffix() {
     const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
+    // The row is on screen: a switch to DLSS may come, so the renderer may start Streamline in the
+    // background now (gpu.h NoteUpscalerInterest; a cheap atomic read after the first call).
+    // CHECK: this is called when the DISPLAY page's rows are drawn, not on every pause (the log line
+    // "[gpu] upscalers: the UPSCALING row is on screen" says when it first ran).
+    mcla::gpu::NoteUpscalerInterest("the UPSCALING row is on screen");
     if (DlssWaitsForRestart()) return " (RESTART)";
     return a.switching ? " (APPLYING)" : "";
 }

@@ -302,6 +302,11 @@ std::unique_ptr<TemporalBackend> MakeFfxBackend();
 // (LARECOMP_HAS_DLSS, cmake/FetchStreamline.cmake).
 std::unique_ptr<TemporalBackend> MakeDlssBackend();
 
+// mcla_gpu_upscaler_lazy_load (debug, read at the start; upscaler_load_policy.h): the runtimes load
+// when first needed. False: the old behaviour (FidelityFX at every start, the DLSS warm-up five
+// seconds after the first draw).
+bool UpscalerLazyLoad();
+
 // --- what the app's menu asks (gpu.h GetUpscalerAvailability) -----------------------------------
 // The backends publish what can run (at the end of their probes and when something fails), the
 // temporal system what is running.

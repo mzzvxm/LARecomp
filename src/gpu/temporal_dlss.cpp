@@ -1213,10 +1213,18 @@ void DlssBackend::Probe(Device& device, FrameRing& frames) {
     settle(BackendState::kUnavailable, "this is not an RTX card", false, false, false);
     return;
   }
-  REXLOG_INFO("{} listed: '{}' is an RTX card and the files are there; Streamline starts in the "
-              "background a few seconds after the game first draws (the warm-up), or at once "
-              "when DLSS is chosen before that",
-              kPrefix, i.gpu_name);
+  if (UpscalerLazyLoad()) {
+    REXLOG_INFO("{} listed: '{}' is an RTX card and the files are there; Streamline is not loaded "
+                "now: its warm-up starts in the background once the pause menu shows the UPSCALING "
+                "row or DLSS frame generation is chosen, and DLSS chosen starts it at once "
+                "(mcla_gpu_upscaler_lazy_load)",
+                kPrefix, i.gpu_name);
+  } else {
+    REXLOG_INFO("{} listed: '{}' is an RTX card and the files are there; Streamline starts in the "
+                "background a few seconds after the game first draws (the warm-up), or at once "
+                "when DLSS is chosen before that",
+                kPrefix, i.gpu_name);
+  }
   {
     // D3D12 starts Streamline on the worker (slInit and NGX: about 10 s), so the pre-warm's first
     // step is its start (PrewarmNext). Armed before the answer is published.

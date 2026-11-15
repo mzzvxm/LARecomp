@@ -14,6 +14,21 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "upscaler_load_policy.h"
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_upscaler_lazy_load, true, "MCLA/GPU",
+    "Debug (A/B): load the upscalers' libraries only when they are needed. On (the default): "
+    "AMD's FidelityFX runtime (amd_fidelityfx_upscaler_*.dll, 35 to 55 MiB) is opened when an FSR "
+    "is first used, not at every start (an AMD graphics card still asks it at the start, because "
+    "only the runtime can say whether FSR 4 is offered), and NVIDIA's Streamline and DLSS (D3D12 on "
+    "an RTX card) start their background warm-up only once the pause menu's UPSCALING row has been "
+    "shown or DLSS frame generation is chosen, not five seconds after every start; DLSS and FSR "
+    "chosen at the start load at the start as always. Off: the old behaviour, FidelityFX opened by "
+    "every start and the DLSS warm-up five seconds after the game first draws. Read at the start.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 REXCVAR_DEFINE_STRING(
     mcla_gpu_upscaler, "off", "MCLA/GPU",
     "Upscaling of the 3D scene: off, fsr31 (AMD FSR 3.1), fsr4 (AMD FSR 4, only where the "
@@ -234,6 +249,31 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.kept = Upscaler(g_kept.load(std::memory_order_relaxed) & 3u);
   a.switching = g_switching.load(std::memory_order_relaxed);
   return a;
+}
+
+namespace {
+upscaler_load::Interest g_interest;
+}  // namespace
+
+bool UpscalerLazyLoad() {
+  return REXCVAR_GET(mcla_gpu_upscaler_lazy_load);
+}
+
+void NoteUpscalerInterest(const char* why) {
+  if (g_interest.Noted()) {
+    return;  // the common case: the pause menu asks on every draw of its row
+  }
+  if (g_interest.Note()) {
+    REXLOG_INFO("[gpu] upscalers: {}: the DLSS warm-up (Streamline's start and one feature per mode, "
+                "in the background; D3D12 on an RTX card only) is allowed to begin{}",
+                why ? why : "interest noted",
+                UpscalerLazyLoad() ? "" : " (mcla_gpu_upscaler_lazy_load is off: it began without "
+                                          "waiting for this)");
+  }
+}
+
+bool UpscalerInterestNoted() {
+  return g_interest.Noted();
 }
 
 namespace {

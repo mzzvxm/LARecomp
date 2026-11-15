@@ -15,6 +15,11 @@
 // already there (CHECK: that this is how the loader finds it; the alternative is the loader's own
 // search, which would also look in the exe's folder).
 //
+// Lazy load (upscaler_load_policy.h, mcla_gpu_upscaler_lazy_load): on a GPU that is not an AMD one,
+// with no FSR chosen at the start, the probe checks only the files and the device, lists FSR 3.1 and
+// opens neither DLL; the first Request or Prepare for an FSR starts the worker, which then does the
+// probe below. FSR 4 cannot be offered there. An AMD GPU and an FSR saved at the start probe at once.
+//
 // Probe (worker thread): load both, ask the runtime which upscaler versions it offers for this
 // device (ffxQueryDescGetVersions), tell the 3.1 provider from the 4.x one by version number, and
 // for a 4.x one make a small context to see that its provider really loads (AMD's API falls back to
