@@ -20,7 +20,7 @@
 //
 // WHAT: five passes into images of their own, then one into the main view's colour target:
 //   depth    the linear view-space distance, R32_FLOAT, at the AO's size (the render size, or half of
-//            it at LOW), and two coarser levels, R16_FLOAT; the lowest bit of each level-0 depth says
+//            it where Plan::low says half size), and two coarser levels, R16_FLOAT; the lowest bit of each level-0 depth says
 //            whether the pixel is a vehicle (the stencil IDs 1 to 23)
 //   main     the GTAO visibility (R16_FLOAT), its noise changing every frame; what a car blocks of the
 //            sky light reaches a share of the radius on the road (mcla_gpu_ao_car_reach), not all of
@@ -92,8 +92,8 @@
 // same trigger, with the same camera and light constants as the occlusion, and applied in the same
 // apply pass (hlsl/ao_apply_ps.hlsl), so they work with the occlusion off, and the occlusion with
 // them off. A ray toward the sun is marched in view space over the linear depth over a short length
-// (0.6 m, longer when the sun is low: 0.7 / tan(elevation), 1 to 3 times; 8 steps at low, 16 at
-// high, closely spaced near the contact and wider apart toward the ray's end), the result is cleaned
+// (0.6 m, longer when the sun is low: 0.7 / tan(elevation), 1 to 3 times; 8 steps at high, 16 at
+// ultra, closely spaced near the contact and wider apart toward the ray's end), the result is cleaned
 // by one pass of the occlusion's denoise shader in its contact mode (a 3x3 bilateral whose weights
 // also fall with the difference of the visibility, so noise goes and edges stay; the contact term has
 // no history of its own: the noise rotates every frame while a temporal upscaler runs and averages
@@ -115,7 +115,7 @@
 // made. The pause menu's world, the garage and the map get them as the occlusion does.
 // SHARPNESS (contact_trace.h has the rules and the reasons, contact_trace_test.cpp checks them): the
 // images are the render size at every render scale (a scale of 3 traces 3840x2160 pixels; only the
-// low setting with the occlusion not on high works at half of it, and the occlusion's own images being
+// high setting with the occlusion not on ultra works at half of it, and the occlusion's own images being
 // traced at half size above 1080 lines leaves the contact shadows' at the render size: see "THE SIZE OF
 // THE PASSES" below), so what made the first version
 // soft was the look of its trace, set at 1280x720 in world units: a ray-end fade that lightened the
@@ -172,7 +172,7 @@
 // pass marked it (ao_temporal_ps.hlsl AoVehicleId). The half size depth takes the MEAN of a 2x2 block where its four samples are one
 // surface and the sample nearest to the mean across an edge (ao_depth_ps.hlsl): the old rule's corner sample put every surface seen at a
 // grazing angle half a pixel off its centre and the occlusion came out 0.04 darker on a road and a wall. The contact shadows keep the size
-// they had (the render size where the occlusion on high or they on high pinned it): the depth pass is then drawn twice, the second time at
+// they had (the render size where the occlusion on ultra or they on ultra pinned it): the depth pass is then drawn twice, the second time at
 // the picture's size into depth_full_ (Plan::SplitContact) for their march and the apply's filter, and they have their own images
 // (contact_raw_, contact_dn_) because the occlusion's scratch images are half size. The visibility passes' two scratch images are only held
 // where something reads them (the plain occlusion, the contact march and its filter pass). The bounce light's colour chain takes ONE MSAA
@@ -265,17 +265,17 @@
 // (a lamp's pool, headlights) is held to an albedo of 1, a source of light (the chain's alpha: neon, a
 // glint, the sun's disc) gets nothing, and so does everything on the map (the 4x view seen from 9 km runs the
 // plain occlusion: the bounce's few metres are under a pixel there; menu_world.h). The pause menu's world and the
-// garage have the bounce light as the game view does. The setting's low is the main pass with 2 slices and 2 steps (the
-// occlusion's low), at half the picture's size where nothing else asks for the whole of it (the occlusion
-// low); high is 3 and 3 at the picture's size. `auto` is gpu_class.h's table (off on Low and Mid, low on High).
-// The cost of a low that leaves the occlusion at full size is a guess (about the design's high at 4K, the
+// garage have the bounce light as the game view does. The setting's high is the main pass with 2 slices and 2 steps (the
+// occlusion's high), at half the picture's size where nothing else asks for the whole of it (the occlusion
+// high); ultra is 3 and 3 at the picture's size. `auto` is gpu_class.h's table (off on every class for now).
+// The cost of a high that leaves the occlusion at full size is a guess (about the design's ultra at 4K, the
 // history, denoise and a-trous passes being four channels at that size): mcla_gpu_ssgi_low 1 (half size) and
 // 2 (both) are the cheaper ones to be measured, at the price of the occlusion's own picture being half size
 // too while the bounce light is on (the same samples give both).
 // With the setting off and the test off every pass, push block and image is the plain occlusion's, to the bit.
 // The images go back 10 seconds after the last frame that used them (a pause spell does not make them again).
 // CHECK: (none of this could be run) (1) the pictures of GFX-UPGRADES-DESIGN.md 8.3 (night with lamp pools and
-// neon beside walls and car sides, sunlit asphalt beside a car, a coloured wall) off, low and high at the same
+// neon beside walls and car sides, sunlit asphalt beside a car, a coloured wall) off, high and ultra at the same
 // frame: colour spill, no brighter picture on average (mcla_gpu_ssgi_view 21 against the plain occlusion's
 // pixels), flat ground unchanged, the same in the pause menu's world and the garage, nothing on the map; (2) the
 // albedo estimate (view 18) is the surface's
@@ -296,13 +296,13 @@
 //             shadow gets lighter and nothing gets whiter than the sun-lit white of the frame. The per-pixel limit
 //             is a soft guard of several times the pixel's own colour (2 to 10) against the noise of a dark pixel.
 //   reach     a second ring of samples in each slice from the near samples' end out to the level's reach (5 to 16 m),
-//             1 or 2 steps a side (low, high) from the coarser levels of the chains, with the horizon falloff at the
+//             1 or 2 steps a side (high, ultra) from the coarser levels of the chains, with the horizon falloff at the
 //             reach. The ring only adds light, into the sectors the near samples left open: the visibility is
 //             counted from the near mask alone, so the occlusion looks as it did.
 //   levels    mcla_gpu_ssgi_intensity (light, default, strong, stronger, strongest; the pause menu's BOUNCE LIGHT
 //             STRENGTH row, live) is a set of strength, limit, reach and cap; the debug cvars mcla_gpu_ssgi_strength /
 //             _clamp / _reach / _test_clamp / _far_steps each replace one number (-1: the level's).
-// Cost: the ring adds 2 samples a side of each slice at high (3 slices: 12 more to the 18) and 1 at low, from
+// Cost: the ring adds 2 samples a side of each slice at ultra (3 slices: 12 more to the 18) and 1 at high, from
 // coarse levels; the colour chain and the apply a few ALU. CHECK: measure the bounce light's passes (the "ssgi
 // visibility" label) against the third step's at the same frame; judge the pictures of every level at dawn, noon,
 // dusk and night (chain-ssgistrong.ps1): a sunlit road's light in the shade of a wall, a coloured wall's colour on
@@ -312,16 +312,16 @@
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
 //
-// Settings: mcla_gpu_ao (auto, off, low, high; live; the pause menu's AMBIENT OCCLUSION row; auto is off
-// on an integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h),
-// mcla_gpu_contact_shadows (auto, off, low, high; live; the CONTACT SHADOWS row; auto is off on an
-// integrated GPU, low on a discrete one with under 5.5 GiB, high on the rest; gpu_class.h) with the tuning cvars
+// Settings: mcla_gpu_ao (auto, off, high, ultra; live; the pause menu's AMBIENT OCCLUSION row; auto is off
+// on an integrated GPU, high on a discrete one with under 5.5 GiB, ultra on the rest; gpu_class.h),
+// mcla_gpu_contact_shadows (auto, off, high, ultra; live; the CONTACT SHADOWS row; auto is off on an
+// integrated GPU, high on a discrete one with under 5.5 GiB, ultra on the rest; gpu_class.h) with the tuning cvars
 // mcla_gpu_contact_shadows_length / _strength / _thickness / _fade / _mask_gain / _view / _fast, and
 // mcla_gpu_ao_intensity (light, default, strong, max; live; the AO INTENSITY row, grey while the
 // occlusion is off). An intensity is four numbers: strength, radius (in the game's world units,
 // about metres), power (the visibility's exponent) and direct (how much the sun-lit part is
 // darkened too). Also mcla_gpu_ao_history (the frames averaged), _fade_end, _view (the debug
-// views) and _census (a diagnostic log). Bounce light: mcla_gpu_ssgi (auto, off, low, high; live; the pause
+// views) and _census (a diagnostic log). Bounce light: mcla_gpu_ssgi (auto, off, high, ultra; live; the pause
 // menu's BOUNCE LIGHT row, grey while the occlusion is off) and mcla_gpu_ssgi_intensity (light, default, strong,
 // stronger, strongest; live; the BOUNCE LIGHT STRENGTH row, grey while the bounce light is off) with the tuning
 // cvars mcla_gpu_ssgi_strength / _radius / _clamp / _reach / _far_steps / _view (debug-only). The SSGI test, the debug override that forces the passes on at the
@@ -369,7 +369,7 @@ class PassTiming;
 
 class AmbientOcclusion {
  public:
-  enum class Mode : uint8_t { kOff, kLow, kHigh };
+  enum class Mode : uint8_t { kOff, kHigh, kUltra };
 
   // The destination of the game's mid-scene depth resolve in the retail build (k_24_8_FLOAT,
   // 1280x720, the product the soft particles and the fog quad read), as the other identities of
@@ -559,10 +559,11 @@ class AmbientOcclusion {
   static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiViewVariant(uint32_t host_samples);
   static std::string VariantName(uint32_t variant);
-  // The visibility pass's pipeline for the counts a frame draws (ao_fast.h): `low` is the occlusion's own quality (the plain pass),
-  // `fewer` the bounce light's with `far_steps` the ring's steps a side the push block says. The bitmask's reads
+  // The visibility pass's pipeline for the counts a frame draws (ao_fast.h): `fewer` is the occlusion's own quality being high, 2
+  // slices and 2 steps (the plain pass), and for MainGiVariant the bounce light's with `far_steps` the ring's steps a side the push
+  // block says. The bitmask's reads
   // mcla_gpu_ao_fast_math (live): the polynomial acos or the hardware's; a count that no variant has is kVMainGi.
-  static uint32_t MainVariant(bool low);
+  static uint32_t MainVariant(bool fewer);
   static uint32_t MainGiVariant(bool fewer, uint32_t far_steps, bool fast_math);
 
   // The light constants of a draw, as the raw big-endian dwords of the registers: PS c26.xyz (the
@@ -652,9 +653,9 @@ class AmbientOcclusion {
                                    // doubling of the image's height (ssgi_stable.h AtrousIterations)
     // The third step (G7c): the bounce in the picture.
     bool test = false;             // mcla_gpu_ssgi_test forced it (the debug override: the occlusion's own quality)
-    Mode mode = Mode::kHigh;       // the setting's quality (high: 3 slices and 3 steps at the picture's size)
-    bool fewer = false;            // the main pass takes 2 slices and 2 steps (the occlusion's low)
-    bool half = false;             // the passes run at half the picture's size even where the occlusion is high (mcla_gpu_ssgi_low 1 / 2)
+    Mode mode = Mode::kUltra;      // the setting's quality (ultra: 3 slices and 3 steps at the picture's size)
+    bool fewer = false;            // the main pass takes 2 slices and 2 steps (the occlusion's high)
+    bool half = false;             // the passes run at half the picture's size even where the occlusion is ultra (mcla_gpu_ssgi_low 1 / 2)
     bool half_above = true;        // mcla_gpu_ssgi_half: half size above 1080 lines at every quality (ao_size.h), and then one MSAA sample
                                    // in the colour chain (Plan::OneSampleColour)
     bool apply = false;            // the apply pass with the bounce runs (else the plain apply reads the visibility)
@@ -673,11 +674,11 @@ class AmbientOcclusion {
     uint32_t FarStepsSent() const;
   };
   struct Plan {
-    Mode mode = Mode::kHigh;       // the occlusion's own quality (slices, steps)
+    Mode mode = Mode::kUltra;      // the occlusion's own quality (slices, steps)
     bool probe = false;            // read the coarsest level back for the census
     bool apply = true;             // the apply pass runs (false: the census's probe only)
     bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
-    bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace)
+    bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace; a size, not a quality level)
     bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
     bool contact_full = false;     // the contact shadows keep the picture's size (their own depth and images) while `low`
     bool upscaler = false;

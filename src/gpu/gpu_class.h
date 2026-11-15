@@ -37,7 +37,8 @@
 //
 // The cells are a first guess from the costs in the design file; the main session corrects a cell
 // from the measured cost of its package, and the owner tunes the threshold (design question 1).
-// The cells hold STORED words (what a larecomp.toml or a command line says); ShownWord below is what the player sees for them.
+// The cells hold the words a larecomp.toml, a command line and the pause menu all use: no graphics setting has a level called low
+// (owner, 2026-11-14), so two quality levels are high / ultra, three are medium / high / ultra and one is on.
 // ===========================================================================
 
 #include <cstdint>
@@ -61,12 +62,12 @@ enum class Effect : uint8_t {
   kShadowResolution,      // mcla_gpu_shadow_resolution  auto, game, high, ultra
   kEnvResolution,         // mcla_gpu_env_resolution     auto, game, high, ultra
   kReflectionResolution,  // mcla_gpu_reflection_resolution  auto, game, high, ultra
-  kContactShadows,        // mcla_gpu_contact_shadows    auto, off, low, high
+  kContactShadows,        // mcla_gpu_contact_shadows    auto, off, high, ultra
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
-  kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
+  kSsgi,                  // mcla_gpu_ssgi               auto, off, high, ultra
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
-  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h; the old low and high are read as on)
-  kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, low, high
+  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h)
+  kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, high, ultra
 };
 inline constexpr int kEffectCount = 10;
 
@@ -80,26 +81,26 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     {"mcla_gpu_shadow_resolution", "game", "high", "high"},
     {"mcla_gpu_env_resolution", "game", "game", "high"},
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},
-    {"mcla_gpu_contact_shadows", "off", "low", "high"},
+    {"mcla_gpu_contact_shadows", "off", "high", "ultra"},
     {"mcla_gpu_sun_shafts", "off", "default", "default"},  // a strength, not a quality: DEFAULT where the GPU is not integrated
-    // Bounce light: low on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
-    // low costs about 0.75 ms and high about 1.1 ms at 4K on an RTX 5080. It was off on every class until
-    // that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to low on High, off on Mid
-    // and Low. This branch waits for the owner's look of the low level.
-    {"mcla_gpu_ssgi", "off", "off", "low"},
+    // Bounce light: high on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
+    // high (the one that was called low) costs about 0.75 ms and ultra about 1.1 ms at 4K on an RTX 5080. It was off on every
+    // class until that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to high on High, off on Mid
+    // and Low. This branch waits for the owner's look of the high level.
+    {"mcla_gpu_ssgi", "off", "off", "high"},
     // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
     // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
     {"mcla_gpu_traffic_shadows", "off", "near", "near"},
     // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
     // an RTX 5080 is about 0.1 ms a frame (final cost runs, perf/out/FXCOST-B6.txt: +0.107 ms for the specular occlusion alone,
-    // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on` (an
-    // old low or high is read as on), and every discrete card gets it; an integrated GPU does without.
+    // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on`, and
+    // every discrete card gets it; an integrated GPU does without.
     {"mcla_gpu_car_selfrefl", "off", "on", "on"},
-    // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for high at 720p on
-    // the RTX 5080, estimated 1.0 ms at 4K there): high is about 3 ms at 1080p on a GTX 1050-class
-    // card (Mid), low about 1 ms, so Mid gets low and keeps a frame at 60 FPS; the Low class (shared
+    // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for ultra at 720p on
+    // the RTX 5080, estimated 1.0 ms at 4K there): ultra is about 3 ms at 1080p on a GTX 1050-class
+    // card (Mid), high about 1 ms, so Mid gets high and keeps a frame at 60 FPS; the Low class (shared
     // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
-    {"mcla_gpu_ao", "off", "low", "high"},
+    {"mcla_gpu_ao", "off", "high", "ultra"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
@@ -190,27 +191,11 @@ constexpr uint32_t SunShaftSteps(GpuClass c) {
   return c == GpuClass::kHigh ? kSunShaftStepsHigh : kSunShaftStepsMid;
 }
 
-// The word a player sees for a STORED value of an effect (the menu rows, the launcher, the player documents; the log lines and the
-// debug cvars keep the stored words). Nothing in the graphics settings is called low (owner, 2026-11-14): the ambient occlusion, the
-// contact shadows and the bounce light keep their stored words off / low / high (an existing larecomp.toml or command line keeps
-// its quality, and `high` would otherwise change its meaning) and show them as HIGH and ULTRA; the car self-reflections have one
-// level, stored `on` (the old low and high read as on) and shown ON. Every other value is shown as it is stored.
-constexpr std::string_view ShownWord(Effect effect, std::string_view stored) {
-  switch (effect) {
-    case Effect::kContactShadows:
-    case Effect::kSsgi:
-    case Effect::kAmbientOcclusion:
-      return stored == "low" ? std::string_view("high") : stored == "high" ? std::string_view("ultra") : stored;
-    case Effect::kCarSelfRefl:
-      return (stored == "low" || stored == "high") ? std::string_view("on") : stored;
-    default:
-      return stored;
-  }
-}
-
-// "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value as the player sees it, in capitals.
+// "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value in capitals. The stored word is the word the player sees
+// (no graphics setting has a level called low: the ambient occlusion, the contact shadows and the bounce light are off / high / ultra,
+// the car self-reflections off / on), so the cell is shown as it is.
 inline std::string AutoLabelFor(GpuClass c, Effect effect) {
-  return AutoLabelOf(ShownWord(effect, Cell(effect, c)));
+  return AutoLabelOf(Cell(effect, c));
 }
 
 // --- the city LOD scale -------------------------------------------------------------------------
@@ -256,8 +241,8 @@ inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
 // What the class rule looks at, as plain values (gpu_class.cpp fills it from the device).
 //
 // What it cannot see: speed (perf\COMPAT-AUDIT.md F4). `kHigh` is any discrete card with 5.5 GiB or
-// more, so an 8 GB RX 580, a GTX 1070 or a GTX 1660 Ti get the RTX 5080's `auto` row (contact shadows high,
-// sun shafts high, ambient occlusion high). The cues that could tell them apart, with the risk of each:
+// more, so an 8 GB RX 580, a GTX 1070 or a GTX 1660 Ti get the RTX 5080's `auto` row (contact shadows ultra,
+// sun shafts default, ambient occlusion ultra). The cues that could tell them apart, with the risk of each:
 //   1. No ray tracing hardware (caps.raytracing false) caps a discrete card at kMid. It is a generation
 //      cue with no table: DXR/ray tracing exist on NVIDIA from Turing (RTX 20), AMD from RDNA 2 (RX 6000),
 //      Intel Arc; not on GTX 10/16, Polaris, Vega, RDNA 1 (RX 5700 XT, which is fast: it would be put one

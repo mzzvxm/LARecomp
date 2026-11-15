@@ -154,7 +154,7 @@ def selftest():
         lines = [f"{stamp(0)} [info] [core] [t1] [gpu] pipelines: 1743 records and 91 layouts in C:\\x\\assets\\mcla_pipelines.bin: "
                  "1167 new here (0 dropped: a shader the pack does not have; 652 static depth biases zeroed)",
                  f"{stamp(0)} [info] [core] [t1] [gpu] host pipelines at start: 38 listed, made ahead on one builder thread; by the "
-                 "settings: ambient occlusion high (set): 11; contact shadows low (auto on the mid class): 1; sun shafts default "
+                 "settings: ambient occlusion ultra (set): 11; contact shadows high (auto on the mid class): 1; sun shafts default "
                  "(auto on the mid class): 6; the other 20 are the resolve conversions' and the decode's, which every start uses",
                  f"{stamp(2)} [info] [core] [t1] [gpu] host pipelines: 'shafts add 8x' made on the render thread (not listed, 31.5 ms)",
                  f"{stamp(0)} [info] [core] [t1] [gpu] pipelines: precaching 1167 pipelines (310 of them copies at other sample "

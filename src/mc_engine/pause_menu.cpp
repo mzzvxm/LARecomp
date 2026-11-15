@@ -1756,10 +1756,10 @@ const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
 // Ambient occlusion (gpu/ao.h, live): AUTO (the default), off, half resolution, full resolution. AUTO
 // says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
 // discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Nothing in the graphics settings is called
-// low (owner, 2026-11-14): the stored values stay off / low / high (a larecomp.toml or a command line keeps its quality) and
-// the row shows low as HIGH and high as ULTRA (gpu_class.h ShownWord). The row is "AMBIENT OCCLUSION"
+// low (owner, 2026-11-14): the stored values are the shown words, off / high / ultra (a larecomp.toml that still says
+// low is ignored and the row is AUTO). The row is "AMBIENT OCCLUSION"
 // (17 characters) with a value of at most 12 ("AUTO (ULTRA)"), 29 together, under the page's 40.
-const char* const kNativeAoVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeAoVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string AoLabel(int i) {
     switch (i) {
@@ -1777,7 +1777,7 @@ const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
 bool AoOn() {
     const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kAmbientOcclusion,
                                                            CvarGet("mcla_gpu_ao"));
-    return mode == "low" || mode == "high";
+    return mode == "high" || mode == "ultra";
 }
 constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // Shadow filter (mcla_gpu_shadow_filter, gpu/shadow_filter.h, live): how the sun's shadows are smoothed, the
@@ -1801,9 +1801,9 @@ std::string ShadowFilterLabel(int i) {
 constexpr RowDynamics kShadowFilterDynamics = {.str_label = ShadowFilterLabel};
 // Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
 // and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on
-// a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / low / high, shown OFF / HIGH /
+// a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / high / ultra, shown OFF / HIGH /
 // ULTRA, as the ambient occlusion's. The row is "CONTACT SHADOWS" (15 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeContactVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeContactVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeContactNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string ContactLabel(int i) {
     switch (i) {
@@ -1846,10 +1846,10 @@ constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
 // stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
 // until its cost is measured (gpu/gpu_class.h); or OFF, HIGH (a coarser search) or ULTRA (the full one): the stored values
-// off / low / high, shown as the ambient occlusion's are. It
+// are off / high / ultra, as the ambient occlusion's are. It
 // is made from the ambient occlusion's own passes, so the row is grey while the occlusion is off, as AO
 // INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeSsgiVals[]  = {"auto", "off", "low", "high"};
+const char* const kNativeSsgiVals[]  = {"auto", "off", "high", "ultra"};
 const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string SsgiLabel(int i) {
     switch (i) {
@@ -1871,7 +1871,7 @@ bool SsgiOn() {
     if (!AoOn()) return false;
     const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kSsgi,
                                                            CvarGet("mcla_gpu_ssgi"));
-    return mode == "low" || mode == "high";
+    return mode == "high" || mode == "ultra";
 }
 constexpr RowDynamics kSsgiLevelDynamics = {.enabled = SsgiOn};
 // Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
@@ -1920,8 +1920,8 @@ std::string CarReflectionLabel(int i) {
 constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live): the player's car paint reflects its own body, the wing
 // in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One level, ON (the stored
-// word is `on`; the old low and high, which cost the same, are read as on by the renderer, and a row on one of them shows AUTO
-// until it is stepped, as the sun shafts' row does for the old low and high). AUTO picks by the graphics card and says what it
+// word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and the
+// row shows AUTO). AUTO picks by the graphics card and says what it
 // comes to ("AUTO (ON)"): OFF on an integrated GPU, ON on a discrete one (gpu/gpu_class.h). It works in the game, behind the pause
 // menu and in the garage, not on the map. The label is "CAR SELF-REFLECTIONS" (20 characters, the page's widest with COMPARE KEY
 // (NUMPAD)) with a value of at most 10 ("AUTO (OFF)").
@@ -3888,7 +3888,37 @@ void PauseMenuRestartGame() {
     });
 }
 
+// The graphics settings whose stored words changed (owner, 2026-11-14: the stored word is the shown word, nothing is called low):
+// the ambient occlusion, the contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on. No
+// older value is read as a new one. A larecomp.toml from before still says "low" (or "high" for the self-reflections): the SDK
+// refuses a toml value outside the setting's list when it reads the file (cvar.cpp ValidateConstraints, "not in allowed values"),
+// so the setting runs at its default, auto, but the line stays in the file, because a save writes only what the player changed.
+// Writing the cvar once with its own default, as the language setting does in InitLanguageSetting, makes the next save rewrite
+// that line to "auto". A value from the command line or the environment is not checked by the SDK: the renderer takes a word
+// that is no value as auto (gpu/host_plan.h), and the file is left alone (only a cvar the toml alone set is touched here).
+static void ResetDeadGraphicsWords() {
+    static const char* const kNames[] = {"mcla_gpu_ao", "mcla_gpu_contact_shadows", "mcla_gpu_ssgi",
+                                         "mcla_gpu_car_selfrefl"};
+    for (const char* name : kNames) {
+        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+        if (!info || info->source != rex::cvar::Source::kDefault || !info->constraints.HasAllowedValues())
+            continue;
+        std::string saved = TomlLineValue(ConfigPath(), name);
+        // The toml's own quotes are not part of the value.
+        if (saved.size() >= 2 && (saved.front() == '"' || saved.front() == '\x27') &&
+            saved.back() == saved.front())
+            saved = saved.substr(1, saved.size() - 2);
+        const auto& allowed = info->constraints.allowed_values;
+        if (saved.empty() || std::find(allowed.begin(), allowed.end(), saved) != allowed.end())
+            continue;
+        MC_WARN("[settings] larecomp.toml has {} = '{}', which is no longer a value of the setting; "
+                "using {} (the next settings save rewrites the line)", name, saved, info->default_value);
+        rex::cvar::SetFlagByName(name, info->default_value);
+    }
+}
+
 void InitPauseMenuHooks() {
+    ResetDeadGraphicsWords();
     rex::cvar::RegisterChangeCallback(
         "language", [](std::string_view, std::string_view) {
             const int idx = ResolveLanguageIndex();

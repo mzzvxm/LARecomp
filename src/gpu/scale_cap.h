@@ -17,8 +17,8 @@
 //     647 of them are made once and given back after a minute idle, but they are there while a screen
 //     draws the world at 4x, so they count);
 //   - resolve products 45 / 147 / 312 MiB = 11 + 34 s^2;
-//   - ambient occlusion at high 35 / 61 / 138 MiB at 1080p / 1440p / 4K = 15.3 s^2, sun shafts 0.9 s^2
-//     (counted at high: the sum is the largest the defaults can come to);
+//   - ambient occlusion at ultra 35 / 61 / 138 MiB at 1080p / 1440p / 4K = 15.3 s^2, sun shafts 0.9 s^2
+//     (counted at ultra: the sum is the largest the defaults can come to);
 //   - the rest does not follow the scale: textures about 50, the resolve memory pool 44 to 64, geometry
 //     pages 48 to 96, the swap chain 20, the driver and the pipelines about 130, the shadow and reflection
 //     maps about 60, D3D12's 4 MiB blocks: about 450 MiB with the 42 and 11 above.

@@ -91,8 +91,8 @@ inline void HistoryMatrix(const temporal::Mat4& view_projection, const temporal:
 
 // How much smaller than the render size the history image is, in each direction: 1 the picture's size, 2 half of it. The
 // reflection of the car's own body is blurred by the paint's own noise, so the image is made at half size where that costs
-// the look nothing the eye can see and the memory and the bandwidth are a quarter: for the low setting (the specular
-// occlusion only: a darkening, no colour) at any size, and for every setting at 2560 pixels across and more (the render
+// the look nothing the eye can see and the memory and the bandwidth are a quarter: for the occlusion-only test level (the
+// specular occlusion only: a darkening, no colour) at any size, and for the full effect at 2560 pixels across and more (the render
 // scale 2 of the game's 1280 and up, where the car's silhouette is wider than the image's texel by far). `forced` is the debug
 // override mcla_gpu_car_selfrefl_history: 0 the rule, 1 the full size, 2 half. The image holds the vehicle's distance and
 // colour only (see hlsl/car_history_ps.hlsl): at half size one texel stands for the 2x2 block's lower right pixel.
