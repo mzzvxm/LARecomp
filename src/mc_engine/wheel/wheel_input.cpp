@@ -1661,8 +1661,11 @@ void WheelThread() {
             }
             ffb::Tick(in);
         }
-        // 250 Hz with a wheel to read; with none, only the once-a-second scan has anything to do.
-        std::this_thread::sleep_for(std::chrono::milliseconds(sh.have_dev || sh.virtual_js ? 4 : 50));
+        // 250 Hz with a wheel to read; with none, only the once-a-second scan has anything to do, so the
+        // thread wakes once a second (it used to wake 20 times a second for every player, wheel or not). A
+        // wheel plugged in is found by that scan, as before; a setting changed in the menu waits at most a
+        // second to be noticed.
+        std::this_thread::sleep_for(std::chrono::milliseconds(sh.have_dev || sh.virtual_js ? 4 : 1000));
     }
 }
 
