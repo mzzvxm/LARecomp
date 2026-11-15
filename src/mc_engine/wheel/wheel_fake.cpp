@@ -62,6 +62,7 @@
 #endif
 
 #include "../cinematic/freecam_runtime.h"
+#include "../input_state.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
@@ -280,6 +281,8 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t state = ctx.r4.u32;
     // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
     mc::cinematic::FreecamPadScope freecam_pad(base, user, state, ctx.r3.u64);
+    // Constructed after the free camera's scope, so it runs first when this function ends: it sees the state the game is about to read (the active-device rules, input_state.h).
+    larecomp::input::InputActivityScope input_activity(base, user, state, ctx.r3.u64);
     __imp__rex_sub_8275CB78(ctx, base);
     const FakeMode mode = CurrentMode();
     if (!IsWheelUser(user) || state == 0 ||

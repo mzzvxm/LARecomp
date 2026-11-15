@@ -1,0 +1,83 @@
+#pragma once
+//
+// Which input device the player is using: a controller, or the keyboard and mouse. The one answer the
+// rest of the exe codes against (KBM-DESIGN.md, phase P2). Last input wins, with hysteresis; hot-plug
+// comes from events; nothing here polls.
+//
+// This header is the stable part. Phases P3 (the native keyboard), P4 (live button prompts), P5 (mouse
+// look, the pointer) and P7 (the ImGui dialogs, the controller toast) are written against exactly these
+// declarations: keep them as they are, add to them rather than change them.
+//
+//   ActiveInput()        the device that produced the last real input. Before any input: Pad when a
+//                        controller is connected, else KeyboardMouse.
+//   ActiveGlyphFamily()  the button glyphs the prompts should show now: the controller's family while a
+//                        controller is in use, Keyboard while the keyboard and mouse are, with the
+//                        button_prompts setting (xbox, playstation, keyboard) as an override of both.
+//                        Switch, Steam Deck and generic controllers give Xbox (v1, owner decision).
+//   PromptStrip()        additive: the strip of the game's own art the movies' `platform` flag picks,
+//                        Xbox or PlayStation, never Keyboard. It follows the last controller used (or the
+//                        forced setting) and does NOT flip when the keyboard takes over, so the key caps
+//                        P4 paints go over the strip that was on screen.
+//   Generation()         moves whenever the device, the family, the strip or the setting changed (24 bits,
+//                        wraps). A consumer that repaints compares this with the value it painted for.
+//   AddInputListener()   a call on every change, with the state already updated.
+//
+// Threads: every reader is an atomic load and safe from any thread, the game thread included. The state
+// is written from the UI thread (keys, mouse, focus), from the thread that polls the pad (the game's
+// XamInputGetState wrapper, wheel/wheel_fake.cpp) and from a pool thread of the device watcher (the
+// start-up guess). No scan, no syscall and no allocation on a reader's path.
+//
+// The rules (thresholds in input_state_core.h, KBM-DESIGN.md 2.2): a pad button going down, a trigger
+// rising past 30, a stick crossing its dead zone or moving by more than 2000 counts; a key going down
+// (not a repeat, not key-up, not a lone Shift / Ctrl / Alt / Win, a lock key, Pause, Print Screen or
+// F1-F12), a mouse button going down and a wheel notch count at once; mouse motion counts only after at
+// least 8 px of travel within 200 ms in two events, not within 1 s of a controller's last input, not
+// within 250 ms of a switch, not in the first 300 ms after the window got focus.
+//
+
+#include <cstdint>
+
+namespace larecomp::input {
+
+enum class InputDevice : uint8_t { Pad = 0, KeyboardMouse = 1 };
+
+enum class GlyphFamily : uint8_t { Xbox = 0, PlayStation = 1, Keyboard = 2 };
+
+InputDevice ActiveInput();
+GlyphFamily ActiveGlyphFamily();
+GlyphFamily PromptStrip();
+uint32_t Generation();
+
+// Called on every change (device, family, strip or the button_prompts setting), on the thread that
+// noticed it (the UI thread for keys and mouse, the thread that polls the pad, a pool thread for the
+// start-up guess), with the state already updated. Keep it cheap (set a flag, bump a counter) and read
+// the answers with the functions above. For the life of the process; at most 8. Returns false when the
+// table is full. Do not call this from inside a listener.
+using InputListener = void (*)(void* arg);
+bool AddInputListener(InputListener fn, void* arg);
+
+// Per game frame (hooks.cpp, Patch_DeltaTimePre): attaches the window listener on the first frame the
+// window exists, nothing else. Not for other phases.
+void Tick();
+
+// On the stack of the XamInputGetState wrapper (wheel/wheel_fake.cpp), constructed right after the
+// FreecamPadScope so that it runs first when the wrapper returns: it sees the pad state the game is
+// about to read (the SDK's, the player's dead zones, a wheel, the test harness's pad) before the free
+// camera clears it. `result` is the wrapper's r3: 0 = a pad answered. Also notices that the SDK's list
+// of devices changed (one counter compared per call).
+class InputActivityScope {
+ public:
+  InputActivityScope(const uint8_t* base, uint32_t user, uint32_t state, const uint64_t& result)
+      : base_(base), user_(user), state_(state), result_(result) {}
+  ~InputActivityScope();
+  InputActivityScope(const InputActivityScope&) = delete;
+  InputActivityScope& operator=(const InputActivityScope&) = delete;
+
+ private:
+  [[maybe_unused]] const uint8_t* base_;  // unused in the XEO3 stub, where the destructor does nothing
+  [[maybe_unused]] uint32_t user_;
+  [[maybe_unused]] uint32_t state_;
+  [[maybe_unused]] const uint64_t& result_;
+};
+
+}  // namespace larecomp::input
