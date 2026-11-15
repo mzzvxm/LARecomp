@@ -5,7 +5,7 @@
 // The render scale that follows the window (mcla_gpu_resolution_scale = 0, the default) is 1.5x in a 1080p
 // window, 2x in 1440p and 3x in 4K, and it used to be made with no look at the video memory: a 4K display
 // on a card with 2 to 3 GB failed to make some targets ("could not make ...") and drew the scene partly
-// (perf\COMPAT-AUDIT.md F2). Only a live change to a bigger scale had a "too big" answer. This is the
+// (perf\COMPAT-AUDIT.md F2). Only a live change to a bigger scale had a "limited" answer. This is the
 // look, as pure arithmetic with nothing of Plume or ReXGlue (scale_cap_test.cpp builds on its own);
 // render_scale.cpp reads the card and calls Apply at the start and whenever the window's size changes.
 //
@@ -42,7 +42,7 @@
 // kept as chosen with a warning line; a temporal upscaler's output is not checked (the scene is drawn at
 // a share of it, which this model does not know).
 //
-// With a scale that is capped the pause menu's RENDER SCALE row says "TOO BIG (NN%)" with the share that
+// With a scale that is capped the pause menu's RENDER SCALE row says "LIMITED (NN%)" with the share that
 // runs, as for a live change that failed (temporal.cpp publishes the scale the window asked for as
 // blocked).
 // ===========================================================================
