@@ -441,6 +441,15 @@ target_include_directories(larecomp_path_test PRIVATE src/mc_engine/cinematic)
 add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
     src/mc_engine/config_save_test.cpp)
 target_include_directories(larecomp_config_save_test PRIVATE src/mc_engine)
+# The always-on keyboard's event latch, the mouse keys and the neutral pad rule (src/mc_engine/kbm_input.h, header only) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_kbm_input_test, then run <build dir>/larecomp_kbm_input_test (exit 0 = passed).
+add_executable(larecomp_kbm_input_test EXCLUDE_FROM_ALL
+    src/mc_engine/kbm_input_test.cpp)
+target_include_directories(larecomp_kbm_input_test PRIVATE src/mc_engine)
+find_package(Threads)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_kbm_input_test PRIVATE Threads::Threads)
+endif()
 # The free camera's flight, the pad, the recorder's chords and the raw track file (src/mc_engine/cinematic/freecam.h):
 #   cmake --build <build dir> --target larecomp_freecam_test, then run <build dir>/larecomp_freecam_test (exit 0 = passed).
 add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
