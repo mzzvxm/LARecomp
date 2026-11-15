@@ -44,19 +44,22 @@ REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
-    "On-screen button glyphs. auto = the glyphs of the controller you used last: "
-    "PlayStation glyphs for a Sony controller, Xbox glyphs for any other, picked from "
-    "what you press and from controllers being plugged in or out. "
-    "xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
-    "cross/circle/square/triangle + L1/R1/L2/R2. Both sets already ship inside "
-    "the game's own UI movies and texture dictionary, so this only flips the "
-    "'platform' flag their ActionScript reads - no asset is swapped or reloaded. "
-    "Menus already on screen keep their old glyphs until reopened, and the boot "
-    "legal screen switches to its PS3 text page.\n"
-    "keyboard = key caps. The movies have no third glyph strip, so this stays on "
-    "platform 0 and keyboard_native.cpp paints a key cap over the pixels of the "
-    "Xbox A/B/X/Y/LB/RB/LT/RT bitmaps (the key bound to that menu button, kb_ui_*).")
+    "On-screen button glyphs. auto = the glyphs of what you used last, on every screen at once: "
+    "PlayStation glyphs after a Sony controller, Xbox glyphs after any other, key caps after the "
+    "keyboard or the mouse (the menu's keys while a menu is open, the driving keys on the road). "
+    "xbox = A/B/X/Y + LB/RB/LT/RT, playstation = cross/circle/square/triangle + L1/R1/L2/R2, "
+    "keyboard = key caps, whatever you use. Every set is drawn into the same button bitmaps "
+    "(keyboard_native.cpp), so a change reaches a screen that is already open on the next frame; "
+    "the UI movies' own 'platform' flag stays on Xbox (see prompts_live).")
     .allowed({"auto", "xbox", "playstation", "keyboard"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(prompts_live, true, "MCLA/UI",
+    "Button prompts follow the device in use on screens that are already open (the garage, a pop-up, the pause menu). The UI movies are told they run on an Xbox, "
+    "and the PlayStation set and the key caps are painted over the Xbox button bitmaps; a screen picks a changed 'platform' flag only when it is built again, "
+    "so the flag cannot do this alone (KBM-P0). Off = the older way: the flag shows the PlayStation set, screens already open keep their glyphs until reopened, "
+    "and only the keyboard's key caps are painted. A debug switch.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
@@ -275,22 +278,18 @@ static std::atomic<uint32_t> g_platform_var_ea{0};
 // Last value written, so the tick only touches guest memory on a real change.
 static std::atomic<int> g_platform_applied{-1};
 
-// The strip of the game's own art the movies use: 1 = PlayStation, 0 = Xbox. The answer is the
-// active-device state machine's (input_state.h): with button_prompts = auto the strip of the controller
-// used last (a Sony controller: PlayStation; any other: Xbox), the forced strip for xbox and
-// playstation, Xbox for keyboard (the key caps are painted over that strip, keyboard_native.cpp). It
-// does NOT flip when the keyboard and mouse take over: the strip stays that of the last controller. Until
-// the SDK's first list of devices has landed and something was used, it is the device watcher's guess
-// (device_watch.h: a Sony pad is plugged in). An atomic read: nothing to poll or cache here, cheap enough
-// for the AVM hook below, which asks on every action buffer.
-// CHECK: that the first answer is right by the time Hook_PlatformVarInit runs (the log lines "[devwatch]
-// initial list" and "[input] devices" come before "[buttons] mcRegistry 'platform'"); if not, the tick
-// below flips the glyphs on the next frame.
+// The value of the movies' platform flag: 1 = PlayStation, 0 = Xbox. With prompts_live (the default) it is always 0: every movie draws the Xbox button bitmaps and
+// keyboard_native.cpp paints the glyph family in use into them (PlayStation, key caps, or the originals), because a flag change does not reach a prompt that is
+// already on screen and a painted bitmap does (KBM-P0 E1). That also keeps the boot legal screen on its normal text page for a PlayStation pad. With prompts_live off
+// it is the older rule, the active-device state machine's strip (input_state.h): the strip of the controller used last, which does NOT flip when the keyboard and mouse
+// take over. An atomic read either way: cheap enough for the AVM hook below, which asks on every action buffer.
 static int WantedPlatformValue() {
+    if (REXCVAR_GET(prompts_live)) return 0;
     return larecomp::input::PromptStrip() == larecomp::input::GlyphFamily::PlayStation ? 1 : 0;
 }
 
-bool ButtonPromptsArePlayStation() { return WantedPlatformValue() == 1; }
+// The glyph set in use is the PlayStation one (the pause menu's old button-layout row asks).
+bool ButtonPromptsArePlayStation() { return larecomp::input::ActiveGlyphFamily() == larecomp::input::GlyphFamily::PlayStation; }
 
 // +88 (0x58) is the int mcVariant::asInt returns for type 3, +92 (0x5C) the
 // plain "%d" char buffer sub_823DC018 formatted into for the string readers.
@@ -308,12 +307,10 @@ static void WritePlatformVar(uint32_t entry, int value) {
     base[entry + 93] = 0;
 }
 
-// Called once per frame from Patch_DeltaTimePre so the cvar can be flipped live
-// from the F4 menu, and so the controller in use (button_prompts = auto) is noticed: the active-device
-// state machine keeps that answer current, this only compares it with what was applied.
-// Movies already on screen keep the glyphs they resolved at their own frame 1 (KBM P0, E1: the garage
-// menu and a popup did not change when the flag did, painted key caps did); anything opened after
-// this picks up the new set.
+// Called once per frame from Patch_DeltaTimePre so prompts_live can be flipped live from the debug menu: the flag only moves when that setting does (it is 0 otherwise), and
+// with it off the active-device state machine keeps the controller in use current and this only compares it with what was applied.
+// Movies already on screen keep the glyphs they resolved at their own frame 1 (KBM P0, E1: the garage menu and a popup did not change when the flag did); anything opened after
+// this picks up the new set. That is why prompts_live does not use the flag for the PlayStation set.
 void TickButtonPrompts() {
     const uint32_t entry = g_platform_var_ea.load(std::memory_order_relaxed);
     if (!entry) return;
@@ -355,7 +352,7 @@ bool Patch_PlatformPush(PPCRegister& r5) {
     return true;
 }
 
-// Live switching.
+// Live switching of the flag (only with prompts_live off: otherwise the flag stays 0, every movie already has 0, and nothing needs pushing).
 //
 // Every UI movie reads `platform` exactly once, on its own frame 1:
 //
@@ -387,6 +384,8 @@ struct SwfPlatformCtx {
 constexpr int kMaxSwfCtx = 16;
 static SwfPlatformCtx g_swf_ctx[kMaxSwfCtx];
 static int g_swf_ctx_count = 0;
+// A value other than 0 was pushed at some time (prompts_live was off): until then a movie that has not been pushed to still holds the 0 the registry gave it.
+static bool g_swf_pushed_nonzero = false;
 
 static uint32_t CallGuestFn3(uint32_t fn_addr, uint32_t a0, uint32_t a1, uint32_t a2) {
     auto* rt = rex::Runtime::instance();
@@ -401,6 +400,7 @@ void Hook_SwfContextEnter(PPCRegister& r3) {
     if (!ctx || !g_platform_var_ea.load(std::memory_order_relaxed)) return;
 
     const int want = WantedPlatformValue();
+    if (want == 0 && !g_swf_pushed_nonzero) return;  // the normal case: nothing to do on every action buffer
 
     int slot = -1;
     for (int i = 0; i < g_swf_ctx_count; ++i) {
@@ -418,6 +418,7 @@ void Hook_SwfContextEnter(PPCRegister& r3) {
 
     CallGuestFn3(kSwfSetVarIntFn, ctx, kStrPlatform, uint32_t(want));
     g_swf_ctx[slot].value = want;
+    if (want != 0) g_swf_pushed_nonzero = true;
 }
 
 // ── UI movie pacing ──────────────────────────────────────────────────────

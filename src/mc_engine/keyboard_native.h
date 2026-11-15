@@ -51,12 +51,13 @@
 //
 // ── Glyphs ──────────────────────────────────────────────────────────────
 //
-// button_prompts = keyboard keeps platform = 0 (a third strip would need 49 more
-// frames in every movie) and instead paints a key cap over the pixels of the
-// Xbox A/B/X/Y/LB/RB/LT/RT bitmaps in shared_latin.xtd. The movies carry
-// separate copies of each glyph (prompt.xsf uses shared_49/41/1/48/37, pause and
-// popup shared_2/10/12/43/18) so all of them are written. The originals are
-// kept and put back when the mode changes.
+// The prompts follow the device in use, live, on every screen (KBM-DESIGN.md P4; the pure part is prompt_glyphs.h). The movies' platform flag is pinned to Xbox (hooks/ui.cpp,
+// prompts_live) and the glyph family in use (input_state.h: Xbox, PlayStation, Keyboard) is painted into the Xbox A/B/X/Y/LB/RB/LT/RT/Start/Back bitmaps of shared_latin.xtd and the
+// Sidekick phone's embedded accept glyph: the originals for Xbox, the PlayStation set (the game's own PlayStation bitmaps, scaled up; the shoulders from the pictures shipped next to
+// the key caps until the game's own are identified), or key caps (the menu's keys while a menu is open, the driving keys on the road). The movies carry separate copies of each
+// glyph (prompt.xsf uses shared_49/41/1/48/37, pause and popup shared_2/10/12/43/18) so all of them are written. The originals are kept and put back for the Xbox set.
+// A repaint happens on a change only (PollPrompts: the input state's listener sets a flag; a menu opening or closing with the keyboard in use, a binding, a new dictionary), on the
+// game thread, from the input poll; the art is built once when the dictionary is found (WarmArt).
 
 #include <cstdint>
 

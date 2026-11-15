@@ -478,6 +478,12 @@ find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_kbm_input_test PRIVATE Threads::Threads)
 endif()
+# The live button prompts' pure part (src/mc_engine/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
+# their override, the reading back of the game's DXT5 bitmaps) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_prompt_glyphs_test, then run <build dir>/larecomp_prompt_glyphs_test (exit 0 = passed).
+add_executable(larecomp_prompt_glyphs_test EXCLUDE_FROM_ALL
+    src/mc_engine/prompt_glyphs_test.cpp)
+target_include_directories(larecomp_prompt_glyphs_test PRIVATE src/mc_engine)
 # The free camera's flight, the pad, the recorder's chords and the raw track file (src/mc_engine/cinematic/freecam.h):
 #   cmake --build <build dir> --target larecomp_freecam_test, then run <build dir>/larecomp_freecam_test (exit 0 = passed).
 add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL

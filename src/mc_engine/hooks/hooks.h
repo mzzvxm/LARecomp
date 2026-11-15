@@ -77,9 +77,10 @@ void Patch_SpeedLimitUnits(PPCRegister& r8);
 // flag. Hook_PlatformVarInit captures the registry entry as mcUIManager builds
 // it, Patch_PlatformPush feeds the per-movie push in sub_821F8038, and
 // TickButtonPrompts (called from Patch_DeltaTimePre) applies live cvar changes.
+// With prompts_live (the default) the flag stays 0 (Xbox) and keyboard_native.cpp paints
+// the glyph family in use into the Xbox bitmaps, which reaches screens already open.
 void TickButtonPrompts();
-// The glyph strip in use: button_prompts = playstation, or auto while the controller used last is a Sony one
-// (input_state.h).
+// The glyph set in use is the PlayStation one: button_prompts = playstation, or auto while a Sony controller was used last (input_state.h).
 bool ButtonPromptsArePlayStation();
 void Hook_PlatformVarInit(PPCRegister& r27);
 bool Patch_PlatformPush(PPCRegister& r5);
