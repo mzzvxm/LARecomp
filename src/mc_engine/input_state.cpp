@@ -15,7 +15,8 @@
 //
 // Log lines (info level), read by perf\scripts\kbm\kbm_p2_report.py:
 //   [input] state machine ready: ...                      once, when the window listener is attached
-//   [input] devices: N controller(s) [...]; S synthetic; ... when the SDK's list (or the watcher's Sony flag) changed (S > 0: mnk_mode)
+//   [input] devices: N controller(s) [...]; S synthetic; ... when the SDK's list (or the watcher's Sony flag) changed. S is 1 on every run: the SDK's NOP
+//                                                         stand-in ("None": user 0 is always connected, at rest, never the active device); 2 = mnk_mode is on too
 //   [input] switch device D (was E) glyphs G because C; generation N   the device changed
 //   [input] glyphs device D glyphs G (was H) because C; generation N    only the glyph family / strip / setting changed
 //   [input] ev ...                                        with input_log: every event the rules looked at and what they decided
@@ -138,8 +139,9 @@ rex::input::InputSystem* Isys() {
 
 #ifndef LARECOMP_NO_SDK_DEVICE_INFO
 // The family of the pad that made the last real input, as the SDK knows it: 1 PlayStation, 0 any other
-// pad (Xbox; Switch, Steam Deck and generic pads draw as Xbox, v1), -1 when there is none or it is the
-// synthetic keyboard-and-mouse pad. Valid on the thread that polls the pad.
+// pad (Xbox; Switch, Steam Deck and generic pads draw as Xbox, v1), -1 when there is none or it is a
+// synthetic device (the SDK's NOP stand-in, which only an idle state is ever read from, so it is never the
+// active device anyway). Valid on the thread that polls the pad.
 int PadFamilyFromSdk(rex::input::InputSystem* isys) {
   if (!isys) return -1;
   const rex::input::DeviceInfo* d = isys->ActiveDevice(0);
@@ -164,7 +166,7 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   if (g_list_known.load(std::memory_order_acquire) && gen == g_list_gen.load(std::memory_order_relaxed) && !dirty) return;
   std::array<GlyphFamily, 16> pads{};
   size_t count = 0;
-  size_t synthetic = 0;  // the keyboard-and-mouse pad of mnk_mode, the NOP stand-in: not controllers
+  size_t synthetic = 0;  // the SDK's NOP stand-in (always there) and, with mnk_mode, its keyboard-and-mouse pad: not controllers
   std::string names;
   for (const rex::input::DeviceInfo& d : isys->Devices()) {
     if (d.synthetic) ++synthetic;
