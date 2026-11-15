@@ -81,9 +81,9 @@ inline Context ContextFor(bool game_entered, bool menu_open) { return (game_ente
 //
 //   form    the open-form stack of mcMainForm is not empty (the pause menu and every list screen made from mcPerspectiveForm: OPTIONS, CONTROLLER ...)
 //   movie   FlashNavigator's current movie is set. The UI statechart's `movie` command (the log's `[flash-cmd] type=3 'NAME'`) selects the movie a screen draws into and stores it at
-//           navigator + 263952 (sub_8221EEC0: the string "NULL" clears it): PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE (the full map) ... and `NULL` again on ENTERNORMAL, the road. The
-//           garage, the EXIT question inside it (the same movie), the map and every other statechart screen are covered by this one, with no list of names to keep up to date. A name
-//           that starts with HUD is the road's own (kHudPrefix) and does not count.
+//           navigator + 263952 (sub_8221EEC0: the name "NULL" clears it, any other name is looked up in the movie map): PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE (the full map) ... and
+//           `NULL` again on ENTERNORMAL, the road. The garage, the EXIT question inside it (the same movie), the map and every other statechart screen are covered by this one, with no
+//           list of names to keep up to date. A name that starts with HUD or SIDEKICK is the road's own (kRoadMoviePrefixes) and does not count.
 //   layer   FlashNavigator's FIFO of modal message boxes is not empty (navigator + 263992: a pop-up that takes the input before anything else)
 //
 // Not on the list on purpose: the Sidekick phone. Its message comes over the road and does not stop the driving; its one button is answered through the menu's mapper (the Back /
@@ -103,10 +103,14 @@ inline bool ContextNeedsRepaint(Family family, bool game_entered, const UiSignal
   return family == Family::Keyboard && (ContextFor(game_entered, ui) == Context::Menu) != painted_menu;
 }
 
-// A movie name that belongs to the road, not to a screen: HUDMOVIE and the like. FlashNavigator names HUDMOVIE in explicit commands (`type=1 'HUDMOVIE' 'playerlist'`) and the HUD's
-// two movies are HUDMAPMOVIE and the gauge; none of them is a screen the keyboard has to leave the road for.
-inline constexpr std::string_view kHudPrefix = "HUD";
-inline bool IsRoadMovieName(std::string_view name) { return name.size() >= kHudPrefix.size() && name.substr(0, kHudPrefix.size()) == kHudPrefix; }
+// A movie name that belongs to the road, not to a screen: HUDMOVIE and the like (FlashNavigator names HUDMOVIE in explicit commands, `type=1 'HUDMOVIE' 'playerlist'`; the HUD's two
+// movies are HUDMAPMOVIE and the gauge) and the Sidekick phone, whose message comes over the road. None of them is a screen the keyboard has to leave the road for.
+inline constexpr std::string_view kRoadMoviePrefixes[] = {"HUD", "SIDEKICK"};
+inline bool IsRoadMovieName(std::string_view name) {
+  for (std::string_view prefix : kRoadMoviePrefixes)
+    if (name.size() >= prefix.size() && name.substr(0, prefix.size()) == prefix) return true;
+  return false;
+}
 
 // The reason text of the log line and of the report: "form", "movie GARAGEMOVIE", "layer" joined by "+", "none" when nothing is open (the road).
 inline std::string DescribeUi(const UiSignals& ui, std::string_view movie_name) {

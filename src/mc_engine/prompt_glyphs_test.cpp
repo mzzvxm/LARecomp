@@ -336,7 +336,8 @@ void TestUiSignals() {
     CHECK(!IsRoadMovieName("NAVSYSMOVIE"));
     CHECK(!IsRoadMovieName("PAUSEMOVIE"));
     CHECK(!IsRoadMovieName("POPUPMOVIE"));
-    CHECK(!IsRoadMovieName("SIDEKICKMOVIE"));  // not a current movie anyway: the phone does not go through the statechart's `movie` command
+    CHECK(IsRoadMovieName("SIDEKICKMOVIE"));   // the phone's message comes over the road (if the statechart ever selects it, it is not a screen)
+    CHECK(!IsRoadMovieName("PROMPTMOVIE"));    // the prompt bar is drawn over every screen: not listed, so a statechart screen that selects it still counts
     CHECK(!IsRoadMovieName(""));               // an entry the movie map does not know is a screen of unknown name
     CHECK(!IsRoadMovieName("HU"));
     // the reason text of the log line
