@@ -39,7 +39,9 @@
 // mcla_gpu_msaa_with_upscaler (debug, for A/B) lets the player's level stand under an upscaler: the
 // scene then reaches it with the coverage of its edges and of the alpha to mask foliage averaged by
 // the game's resolve (the guest's resolve is the MSAA resolve), so the jitter has less aliasing to
-// average out. It costs the multisampled scene at the render size.
+// average out. It costs the multisampled scene at the render size. The upscaler's masks stay on
+// (mcla_gpu_upscaler_masks is its own switch): their second draws go into coverage images with the
+// level's samples and the mask pass averages them (upscaler_masks.h).
 //
 // Render thread.
 // ===========================================================================

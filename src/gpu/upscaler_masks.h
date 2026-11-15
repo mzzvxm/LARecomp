@@ -23,6 +23,20 @@
 // constants, so the same jitter, and the pixel shader's alpha or colour is what is left. At the anchor
 // Resolve() turns each image into its R8 mask (upscaler_masks_ps.hlsl).
 //
+// The samples. Under an upscaler the host's MSAA level is 1 and the coverage images have one sample.
+// With mcla_gpu_msaa_with_upscaler on the game's depth has the player's level (2, 4 or 8 samples), and a
+// framebuffer takes one sample count for all its attachments, so the second draws then draw into a
+// coverage image with the depth's count (the same pipeline but its sample count) and Resolve() makes the
+// mask from the mean of the samples' masks (upscaler_masks_ms_ps, the same shader with a loop). That is
+// exact: the mask is the share of the pixel's samples the layer covers, as the colour the upscaler gets
+// is the guest resolve's mean of the same samples, so MSAA and the masks are independent switches (the
+// two levers of the shimmer tests). The alternatives were worse: reading only sample 0 gives an aliased
+// mask next to an anti-aliased colour, and the game's resolved depth, the one the upscaler is given, does
+// not exist until the anchor, after the draws that need it. It costs the coverage images' memory times
+// the sample count (4 bytes a pixel and sample, up to two layers). With the lever off a multisampled
+// view (the few frames of a level or path change) gets no second draws, counted as "multisampled" in
+// Summary(). The decisions and the pass's arithmetic are in upscaler_mask_plan.h, with a test.
+//
 // The draws are told by shader identity (LARecomp's own, native_gfx/shader_identity.h: FNV-1a 64 of
 // the vfetch-normalised microcode). The renderer has no table of shader names, so the identities were
 // read off the shipped shader containers by the pack builder's own walk (tools/build_shader_pack_v8.py
@@ -49,6 +63,7 @@
 #include <plume_render_interface.h>
 
 #include "host_passes.h"
+#include "upscaler_mask_plan.h"
 
 namespace mcla::gpu {
 
@@ -87,10 +102,11 @@ class UpscalerMasks {
   static Layer LayerOf(Kind kind) {
     return kind == Kind::kGlass ? Layer::kTransparency : Layer::kReactive;
   }
-  // The key of the second draw: the game's, written into one RGBA8 target of one sample with the
-  // game's depth and stencil state and neither written, only the coverage written, and nothing else
-  // changed: the blend is the coverage's (an alpha blend leaves its opacity in alpha, the union of the
-  // layers; an additive blend, or a premultiplied one, its colour added in rgb).
+  // The key of the second draw: the game's, written into one RGBA8 target of the draw's own sample
+  // count (1 under an upscaler, the player's level with mcla_gpu_msaa_with_upscaler) with the game's
+  // depth and stencil state and neither written, only the coverage written, and nothing else changed:
+  // the blend is the coverage's (an alpha blend leaves its opacity in alpha, the union of the layers;
+  // an additive blend, or a premultiplied one, its colour added in rgb).
   static void VariantKey(const PipelineKey& key, PipelineKey* out);
 
   void Initialize(HostPasses& passes, PassTiming& pass_timing);
@@ -104,16 +120,21 @@ class UpscalerMasks {
   // The Scene's frame boundary: nothing is drawn yet in the new frame.
   void BeginFrame();
 
-  // Why a draw that was a candidate left no coverage (counted, for the summary).
-  enum class Skip : uint8_t { kNotBlended, kNoDepth, kSizeOrSamples, kNoImage, kPipelinePending, kCount };
+  // Why a draw that was a candidate left no coverage (counted, for the summary). kMultisampled: the main
+  // view had samples and mcla_gpu_msaa_with_upscaler is off (the frames of a level or path change);
+  // kSizeOrSamples: the draw's size was not the render size, or its depth's samples not its own.
+  enum class Skip : uint8_t {
+    kNotBlended, kNoDepth, kSizeOrSamples, kNoImage, kPipelinePending, kMultisampled, kCount
+  };
   void Skipped(Skip why) { ++stats_.skipped[size_t(why)]; }
 
-  // A second draw is about to be recorded, for a main view of `width` x `height` host pixels: the
-  // image of `layer` to draw into (null when it cannot be made, counted). `*clear` is true for the
+  // A second draw is about to be recorded, for a main view of `width` x `height` host pixels drawn with
+  // `samples` samples: the image of `layer` to draw into, with that many samples (null when it cannot
+  // be made, counted). `*clear` is true for the
   // layer's first draw of a frame: the caller binds the image's own framebuffer and clears it. The
   // caller moves the image to COLOR_WRITE itself, outside a render pass (HostImage::layout), draws with
   // DepthFramebuffer(), and calls Drawn() once the draw is in.
-  HostImage* Target(Layer layer, uint32_t width, uint32_t height, bool* clear);
+  HostImage* Target(Layer layer, uint32_t width, uint32_t height, uint32_t samples, bool* clear);
   // The framebuffer of `layer`'s image with the game's depth `depth` beside it (the depth target's
   // texture, and `generation` of the texture it is, EdramTargets::Target::generation). Kept until the
   // image or the depth is another one. Null when it cannot be made (logged).
@@ -141,14 +162,23 @@ class UpscalerMasks {
   // For the summary: the draws recorded again by family, the most in one frame, the frames with a mask.
   std::string Summary() const;
 
+  // For the temporal upscaler's log line: what the masks did, so a test knows what ran. `enabled` is
+  // mcla_gpu_upscaler_masks. Off: says so. On: the masks made against the frames that drew into them,
+  // the sample count of the coverage images last used and in how many frames the masks came from a
+  // multisampled one, and the draws left out because the view was multisampled with
+  // mcla_gpu_msaa_with_upscaler off.
+  std::string StateText(bool enabled) const;
+
  private:
   struct MaskPush {  // hlsl/upscaler_masks_ps.hlsl
     uint32_t coverage;
     float gain;
     float color_gain;
     uint32_t mode;
+    uint32_t samples;  // the multisampled shader only: the coverage image's sample count
+    uint32_t reserved[3];
   };
-  static_assert(sizeof(MaskPush) == 16);
+  static_assert(sizeof(MaskPush) == 32);
 
   struct LayerState {
     HostImage coverage;  // RGBA8: the second draws' coverage, cleared at the layer's first draw of a frame
@@ -167,7 +197,9 @@ class UpscalerMasks {
     uint64_t drawn[kKindCount] = {};   // second draws recorded, by kind
     uint64_t frames[kLayerCount] = {};     // frames with at least one, by layer
     uint64_t resolved[kLayerCount] = {};   // masks made, by layer
+    uint64_t resolved_ms[kLayerCount] = {};  // ... of them from a multisampled coverage image
     uint64_t forced[kLayerCount] = {};     // ... of them all ones (the diagnostic)
+    uint32_t last_samples = 0;             // the sample count of the coverage images last drawn into
     uint64_t skipped[size_t(Skip::kCount)] = {};
     uint64_t size_mismatch = 0;        // frames whose image was not the render size
     uint64_t image_failures = 0;
@@ -175,7 +207,8 @@ class UpscalerMasks {
     uint64_t frames_any = 0;           // frames with at least one second draw (any layer)
   };
 
-  bool Prepare();
+  // The mask pass's pipeline for a coverage image of one sample, or of several (the other shader).
+  bool Prepare(bool multisampled);
   void DropFramebuffer(LayerState& layer);
 
   HostPasses* passes_ = nullptr;
@@ -184,6 +217,9 @@ class UpscalerMasks {
   bool failed_ = false;
   std::unique_ptr<plume::RenderShader> shader_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;
+  std::unique_ptr<plume::RenderShader> shader_ms_;
+  std::unique_ptr<plume::RenderPipeline> pipeline_ms_;
+  uint32_t logged_samples_[kLayerCount] = {};  // the count of each layer's last "coverage image" line
   LayerState layers_[kLayerCount];
   uint64_t frame_drawn_ = 0;  // second draws in the frame being recorded
   Stats stats_;

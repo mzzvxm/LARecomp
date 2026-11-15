@@ -84,7 +84,24 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_fsr_debug_view, false, "MCLA/GPU",
+    "Test lever (FSR 3.1 and FSR 4 only): the upscaler's context is made with AMD's debug "
+    "visualization (it holds more video memory) and every dispatch asks it to draw its own views "
+    "into the picture it makes: the motion vectors it received and how much it trusts its history "
+    "(its reactive, disocclusion and blend factor views, as its version has them; in FSR 4 the "
+    "bright purple is a pixel whose history it does not trust). Everything the game does "
+    "afterwards (bloom, tone map) reads that picture, overlay included. A change makes a new "
+    "context: about half a second of plain frames. For A/B. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
+
+bool UpscalerDebugView(Upscaler upscaler) {
+  return (upscaler == Upscaler::kFsr31 || upscaler == Upscaler::kFsr4) &&
+         REXCVAR_GET(mcla_gpu_fsr_debug_view);
+}
 
 namespace {
 
