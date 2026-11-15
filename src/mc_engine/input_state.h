@@ -52,7 +52,9 @@ uint32_t Generation();
 // noticed it (the UI thread for keys and mouse, the thread that polls the pad, a pool thread for the
 // start-up guess), with the state already updated. Keep it cheap (set a flag, bump a counter) and read
 // the answers with the functions above. For the life of the process; at most 8. Returns false when the
-// table is full. Do not call this from inside a listener.
+// table is full. Do not call this from inside a listener. The state's first set-up (the start-up guess and
+// the button_prompts setting, at the first read of any answer) is not announced: read the answers once
+// after registering.
 using InputListener = void (*)(void* arg);
 bool AddInputListener(InputListener fn, void* arg);
 

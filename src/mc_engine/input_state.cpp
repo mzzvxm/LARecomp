@@ -104,8 +104,9 @@ void NotifyListeners() {
   for (int i = 0; i < count; ++i) table.slots[size_t(i)].fn(table.slots[size_t(i)].arg);
 }
 
-// A change of the state: one log line, then the listeners.
-void Apply(const Change& ch) {
+// A change of the state: one log line, then the listeners (not while the state is first set up in Init(): nothing has seen it yet,
+// and a listener that reads the state from there would wait for Init() to end).
+void Apply(const Change& ch, bool notify = true) {
   if (!ch.changed) return;
   const Snapshot& a = ch.after;
   const Snapshot& b = ch.before;
@@ -116,7 +117,7 @@ void Apply(const Change& ch) {
     MC_INFO("[input] glyphs device {} glyphs {} (was {}) strip {} because {}; generation {}", DeviceName(a.device),
             FamilyName(a.Family()), FamilyName(b.Family()), FamilyName(a.PromptStrip()), CauseText(ch.cause), a.generation);
   }
-  NotifyListeners();
+  if (notify) NotifyListeners();
 }
 
 // ---- the verbose log -----------------------------------------------------------------------------------
@@ -192,8 +193,8 @@ void OnWatcherChanged(void*) {
   Apply(Core().Seed(mcla::ui::PlayStationControllerPresent() ? GlyphFamily::PlayStation : GlyphFamily::Xbox));
 }
 
-void ApplyPromptSetting(std::string_view text) {
-  Apply(Core().SetOverride(ParsePromptOverride(text)));
+void ApplyPromptSetting(std::string_view text, bool notify = true) {
+  Apply(Core().SetOverride(ParsePromptOverride(text)), notify);
 }
 
 std::once_flag g_once;
@@ -204,8 +205,8 @@ std::atomic<bool> g_ready{false};
 void Init() {
   if (g_ready.load(std::memory_order_acquire)) return;
   std::call_once(g_once, [] {
-    Apply(Core().Seed(mcla::ui::PlayStationControllerPresent() ? GlyphFamily::PlayStation : GlyphFamily::Xbox));
-    ApplyPromptSetting(REXCVAR_GET(button_prompts));
+    Apply(Core().Seed(mcla::ui::PlayStationControllerPresent() ? GlyphFamily::PlayStation : GlyphFamily::Xbox), /*notify=*/false);
+    ApplyPromptSetting(REXCVAR_GET(button_prompts), /*notify=*/false);
     rex::cvar::RegisterChangeCallback("button_prompts",
         [](std::string_view, std::string_view value) { ApplyPromptSetting(value); });
     larecomp::devwatch::AddChangeListener(&OnWatcherChanged, nullptr);
