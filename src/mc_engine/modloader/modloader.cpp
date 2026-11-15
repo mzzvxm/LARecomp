@@ -1615,6 +1615,11 @@ struct VehiclePlan {
     // all given the same half turn about y, so one exh_pipe part, written in a
     // `frame.exh_pipe<N>` with that turn, fits them all.
     std::map<std::string, std::array<float, 3>> exhausts;
+    // `exhaust.<slot> = x y z single`: a car with ONE tail pipe. Both smoke bones
+    // go to that one point (x as given, not mirrored), so no smoke comes out of
+    // the side that has no pipe -- the game always emits at both bones a bumper
+    // carries, and a donor with twin pipes would smoke on both sides.
+    std::set<std::string> exhaust_single;
     // Donor part slots whose lamps are sampled for lamp indices -- see
     // MeshOffset::extra_bands. `lamp_from = headlight0, taillight0`.
     std::vector<std::string> lamp_from;
@@ -1871,7 +1876,15 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         if (lower.rfind("exhaust.", 0) == 0) {
             std::array<float, 3> at{};
             std::istringstream stream(mapping.groups.front());
-            if (stream >> at[0] >> at[1] >> at[2]) plan.exhausts[key.substr(8)] = at;
+            if (stream >> at[0] >> at[1] >> at[2]) {
+                plan.exhausts[key.substr(8)] = at;
+                std::string word;
+                if (stream >> word && (word == "single" || word == "SINGLE")) {
+                    plan.exhaust_single.insert(key.substr(8));
+                }
+            } else {
+                LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'x y z [single]'", key);
+            }
             continue;
         }
         if (lower.rfind("band.", 0) == 0) {
@@ -3945,10 +3958,11 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                     LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} exhaust: the slot needs a rigid "
                                        "frame", vehicle.mod_name, car, name);
                 } else {
+                    const bool single = plan.exhaust_single.count(mapping.slot) != 0;
                     Mesh pipes;
                     for (const float side : {-1.0f, 1.0f}) {
                         MeshVertex vertex;
-                        vertex.px = side * std::fabs(exhaust->second[0]);
+                        vertex.px = single ? exhaust->second[0] : side * std::fabs(exhaust->second[0]);
                         vertex.py = exhaust->second[1];
                         vertex.pz = exhaust->second[2];
                         pipes.vertices.push_back(vertex);
@@ -3964,16 +3978,25 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                            pipes.vertices[0].pz};
                     const float right[3] = {pipes.vertices[1].px, pipes.vertices[1].py,
                                             pipes.vertices[1].pz};
-                    const size_t moved = SetBonePose(resource, "extPrimary", left, rotation) +
-                                         SetBonePose(resource, "extSecondary", right, rotation);
-                    if (lod == 0) {
-                        LARECOMP_APP_INFO("[mods]   {} exhaust bones moved: {} (left pipe at "
-                                          "{:.3f} {:.3f} {:.3f} in the bone's space)",
-                                          name, moved, left[0], left[1], left[2]);
+                    // The bones' names differ by car: the Impala's bumpers carry
+                    // extPrimary<i>/extSecondary<i>, the R34's exst_primary_<i>/
+                    // exst_secondary_<i> (its stock bumper_r0 only the primary).
+                    size_t moved = SetBonePose(resource, "extPrimary", left, rotation) +
+                                   SetBonePose(resource, "extSecondary", right, rotation);
+                    if (moved == 0) {
+                        moved = SetBonePose(resource, "exst_primary_", left, rotation) +
+                                SetBonePose(resource, "exst_secondary_", right, rotation);
                     }
-                    if (moved != 2) {
+                    if (lod == 0) {
+                        LARECOMP_APP_INFO("[mods]   {} exhaust bones moved: {} ({} pipe at "
+                                          "{:.3f} {:.3f} {:.3f} in the bone's space)",
+                                          name, moved, single ? "the one" : "left", left[0],
+                                          left[1], left[2]);
+                    }
+                    if (moved == 0 || (!single && moved != 2)) {
                         LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: {} exhaust: found {} of the 2 "
-                                           "extPrimary/extSecondary bones", vehicle.mod_name,
+                                           "smoke bones (extPrimary/extSecondary or "
+                                           "exst_primary_/exst_secondary_)", vehicle.mod_name,
                                            car, name, moved);
                     }
                 }
