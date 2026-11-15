@@ -749,6 +749,204 @@ void TestGeneration() {
     CHECK(((0xFFFFFFu + 1u) & 0xFFFFFFu) == 0u);
 }
 
+// ---- the pause for a lost controller (PadLossRule) --------------------------------------------------------
+
+constexpr uint64_t kPadA = 11;
+constexpr uint64_t kPadB = 12;
+constexpr uint64_t kPadC = 13;
+
+// Runs the polls of a window until the real answer is back: how many said "not connected", and whether one flagged itself the last.
+int RunWindow(PadLossRule& r, int64_t t0, int64_t step_ms, bool* last_flagged = nullptr) {
+    int told = 0;
+    for (int i = 0; i < 40; ++i) {
+        const LossAnswer a = r.OnStatePoll(t0 + int64_t(i) * step_ms);
+        if (a == LossAnswer::Connected) break;
+        ++told;
+        if (a == LossAnswer::NotConnectedLast && last_flagged) *last_flagged = true;
+    }
+    return told;
+}
+
+void TestPadLossOpensAWindow() {
+    PadLossRule r;
+    CHECK(r.OnStatePoll(0) == LossAnswer::Connected);  // nothing open at the start: the real answer stands
+    CHECK(!r.CapsHidden());
+    r.NoteActivePad(kPadA);
+    CHECK(r.ActivePad() == kPadA);
+    // The pad was in the player's hands, the game is driven: the list no longer holds it.
+    CHECK(r.OnList(nullptr, 0, InputDevice::Pad, /*driving=*/true, /*wheel=*/false, 1000) == LossVerdict::Open);
+    CHECK(r.ActivePad() == 0);  // gone for good
+    CHECK(r.CapsHidden());      // the capabilities call is told as well, and does not count
+    CHECK(r.CapsHidden());
+    bool last = false;
+    CHECK(RunWindow(r, 1005, 5, &last) == kPadLossPolls);  // a few polls, then the stand-in answers again
+    CHECK(last);
+    CHECK(r.Answered() == kPadLossPolls);
+    CHECK(!r.CapsHidden());
+    CHECK(r.OnStatePoll(1100) == LossAnswer::Connected);
+    // The last poll of the window is the one that says so.
+    PadLossRule q;
+    q.NoteActivePad(kPadA);
+    q.OnList(nullptr, 0, InputDevice::Pad, true, false, 0);
+    for (int i = 0; i < kPadLossPolls - 1; ++i) CHECK(q.OnStatePoll(i) == LossAnswer::NotConnected);
+    CHECK(q.OnStatePoll(kPadLossPolls) == LossAnswer::NotConnectedLast);
+    CHECK(q.OnStatePoll(kPadLossPolls + 1) == LossAnswer::Connected);
+}
+
+void TestPadLossOnlyForTheActivePad() {
+    // Nothing remembered (boot, the title before any input, a harness pad, a wheel): a list that shrinks is nothing.
+    PadLossRule r;
+    CHECK(r.OnList(nullptr, 0, InputDevice::Pad, true, false, 0) == LossVerdict::None);
+    CHECK(!r.CapsHidden() && r.OnStatePoll(1) == LossAnswer::Connected);
+    r.NoteActivePad(0);  // "not known" changes nothing
+    CHECK(r.ActivePad() == 0);
+    CHECK(r.OnList(nullptr, 0, InputDevice::Pad, true, false, 2) == LossVerdict::None);
+
+    // Two pads, A in the player's hands: B going away is not the pad in use.
+    PadLossRule two;
+    two.NoteActivePad(kPadA);
+    const uint64_t only_a[] = {kPadA};
+    CHECK(two.OnList(only_a, 1, InputDevice::Pad, true, false, 10) == LossVerdict::None);
+    CHECK(!two.CapsHidden());
+    CHECK(two.ActivePad() == kPadA);  // still remembered
+    // The player picks up B; now A leaves: nothing; then B leaves: the window opens.
+    two.NoteActivePad(kPadB);
+    const uint64_t only_b[] = {kPadB};
+    CHECK(two.OnList(only_b, 1, InputDevice::Pad, true, false, 20) == LossVerdict::None);
+    CHECK(two.OnList(nullptr, 0, InputDevice::Pad, true, false, 30) == LossVerdict::Open);
+    // A list change that finds nothing remembered (a device came or went for another reason) never reopens it.
+    CHECK(RunWindow(two, 31, 5) == kPadLossPolls);
+    CHECK(two.OnList(nullptr, 0, InputDevice::Pad, true, false, 500) == LossVerdict::None);
+    CHECK(!two.CapsHidden());
+}
+
+void TestPadLossAnotherPadRemainsStillPauses() {
+    // The pad in the player's hands left, another one is plugged in and idle: the game still pauses (the player was holding the first
+    // one); the other pad works as soon as the pause is dealt with.
+    PadLossRule r;
+    r.NoteActivePad(kPadA);
+    const uint64_t only_b[] = {kPadB};
+    CHECK(r.OnList(only_b, 1, InputDevice::Pad, true, false, 0) == LossVerdict::Open);
+}
+
+void TestPadLossNotOnTheKeyboard() {
+    PadLossRule r;
+    r.NoteActivePad(kPadA);
+    // The keyboard and mouse took over after the pad was last used: its removal is not the player's problem.
+    CHECK(r.OnList(nullptr, 0, InputDevice::KeyboardMouse, true, false, 0) == LossVerdict::KeyboardActive);
+    CHECK(!r.CapsHidden() && r.OnStatePoll(1) == LossAnswer::Connected);
+    CHECK(r.ActivePad() == 0);
+    // The pad comes back as a new one and is used again: the rule is armed again.
+    r.NoteActivePad(kPadC);
+    CHECK(r.OnList(nullptr, 0, InputDevice::Pad, true, false, 10) == LossVerdict::Open);
+}
+
+void TestPadLossOnlyWhileDriving() {
+    // The title, a menu, the garage, a load, the pause menu itself: the game is not driven, nothing to pause.
+    PadLossRule r;
+    r.NoteActivePad(kPadA);
+    CHECK(r.OnList(nullptr, 0, InputDevice::Pad, /*driving=*/false, false, 0) == LossVerdict::NotDriving);
+    CHECK(!r.CapsHidden() && r.OnStatePoll(1) == LossAnswer::Connected);
+    CHECK(r.ActivePad() == 0);  // not asked again at the next list change
+    // A wheel in the player's hands: no pause for a pad on the side.
+    PadLossRule w;
+    w.NoteActivePad(kPadA);
+    CHECK(w.OnList(nullptr, 0, InputDevice::Pad, true, /*wheel=*/true, 0) == LossVerdict::Wheel);
+    CHECK(!w.CapsHidden());
+    // The keyboard is named first when both apply (the order of the reasons in the log).
+    PadLossRule k;
+    k.NoteActivePad(kPadA);
+    CHECK(k.OnList(nullptr, 0, InputDevice::KeyboardMouse, false, true, 0) == LossVerdict::KeyboardActive);
+}
+
+void TestPadLossWindowIsBounded() {
+    // In game polls: all of them, and no more.
+    PadLossRule r;
+    r.NoteActivePad(kPadA);
+    r.OnList(nullptr, 0, InputDevice::Pad, true, false, 0);
+    CHECK(RunWindow(r, 0, 1) == kPadLossPolls);
+    // In time: a window older than kPadLossMaxMs ends at its next poll, whatever is left of it.
+    PadLossRule t;
+    t.NoteActivePad(kPadA);
+    t.OnList(nullptr, 0, InputDevice::Pad, true, false, 5000);
+    CHECK(t.OnStatePoll(5001) == LossAnswer::NotConnected);
+    CHECK(t.OnStatePoll(5000 + kPadLossMaxMs) == LossAnswer::NotConnected);   // right at the limit: still in
+    CHECK(t.OnStatePoll(5000 + kPadLossMaxMs + 1) == LossAnswer::Connected);  // past it: over
+    CHECK(!t.CapsHidden());
+    CHECK(t.OnStatePoll(5000 + kPadLossMaxMs + 2) == LossAnswer::Connected);
+    // A game that stopped polling for a long time and then polls gets the real answer at once.
+    PadLossRule s;
+    s.NoteActivePad(kPadA);
+    s.OnList(nullptr, 0, InputDevice::Pad, true, false, 0);
+    CHECK(s.OnStatePoll(60'000) == LossAnswer::Connected);
+    CHECK(!s.CapsHidden());
+}
+
+void TestPadLossTestHook() {
+    // OnPadLost is the decision without a list (the debug cvar input_test_pad_loss): no pad needs to be remembered.
+    PadLossRule r;
+    CHECK(r.OnPadLost(InputDevice::KeyboardMouse, true, false, 0) == LossVerdict::KeyboardActive);
+    CHECK(r.OnPadLost(InputDevice::Pad, false, false, 0) == LossVerdict::NotDriving);
+    CHECK(r.OnPadLost(InputDevice::Pad, true, true, 0) == LossVerdict::Wheel);
+    CHECK(!r.CapsHidden());
+    CHECK(r.OnPadLost(InputDevice::Pad, true, false, 100) == LossVerdict::Open);
+    CHECK(r.CapsHidden());
+    CHECK(RunWindow(r, 101, 5) == kPadLossPolls);
+    // Called again while a window is open, it starts a new one.
+    CHECK(r.OnPadLost(InputDevice::Pad, true, false, 200) == LossVerdict::Open);
+    CHECK(r.OnStatePoll(201) == LossAnswer::NotConnected);
+    CHECK(r.OnPadLost(InputDevice::Pad, true, false, 202) == LossVerdict::Open);
+    CHECK(RunWindow(r, 203, 5) == kPadLossPolls && r.Answered() == kPadLossPolls);
+}
+
+// The rule next to the state machine, the way input_state.cpp drives them: the verdict is asked BEFORE the list is applied to the core
+// (which moves the device off a removed pad), with the device as it was.
+void TestPadLossWithTheStateMachine() {
+    ActiveInputCore c;
+    PadLossRule r;
+    const GlyphFamily pads[] = {GlyphFamily::Xbox};
+    const uint64_t ids[] = {kPadA};
+    r.OnList(ids, 1, c.Get().device, true, false, 0);
+    c.OnDevices(pads, 1, 0);
+    c.OnFocus(true, 0, /*initial=*/true);
+    CHECK(c.Get().device == InputDevice::Pad);  // before any input the device follows the pad list...
+    CHECK(r.ActivePad() == 0);                  // ...but nothing was used yet: no pad is "in the player's hands"
+
+    // The pad is used: the state machine counts it (the SDK says which pad), the rule remembers it.
+    uint64_t seen = 0;
+    c.OnPadFrame(Buttons(kA), [&] { seen = kPadA; return 0; }, 100);
+    r.NoteActivePad(seen);
+    CHECK(r.ActivePad() == kPadA);
+
+    // The pad is removed while the player drives: the rule is asked first, then the state machine moves to the keyboard.
+    const InputDevice before = c.Get().device;
+    CHECK(r.OnList(nullptr, 0, before, true, false, 5000) == LossVerdict::Open);
+    const Change ch = c.OnDevices(nullptr, 0, 5000);
+    CHECK(ch.changed && ch.cause == Cause::PadRemoved && c.Get().device == InputDevice::KeyboardMouse);
+    // The game pauses; the keyboard works; nothing asks for a second pause.
+    CHECK(RunWindow(r, 5001, 5) == kPadLossPolls);
+    CHECK(r.OnList(nullptr, 0, c.Get().device, true, false, 6000) == LossVerdict::None);
+    // The pad returns (a new handle) and is used: the device goes back to the pad, and its removal pauses again.
+    const uint64_t new_ids[] = {kPadC};
+    r.OnList(new_ids, 1, c.Get().device, true, false, 7000);
+    c.OnDevices(pads, 1, 7000);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse);  // a pad that arrives changes nothing until it is used
+    c.OnPadFrame(Buttons(kB), [&] { seen = kPadC; return 0; }, 8000);
+    r.NoteActivePad(seen);
+    CHECK(c.Get().device == InputDevice::Pad);
+    CHECK(r.OnList(nullptr, 0, c.Get().device, true, false, 9000) == LossVerdict::Open);
+
+    // The keyboard first, then the pad dies: no pause.
+    PadLossRule k;
+    ActiveInputCore kc;
+    OneXboxPad(kc);
+    kc.OnPadFrame(Buttons(kA), kXboxPad, 100);
+    k.NoteActivePad(kPadA);
+    kc.OnKeyDown(0x41, false, 3000);
+    CHECK(kc.Get().device == InputDevice::KeyboardMouse);
+    CHECK(k.OnList(nullptr, 0, kc.Get().device, true, false, 4000) == LossVerdict::KeyboardActive);
+}
+
 }  // namespace
 
 int main() {
@@ -771,6 +969,14 @@ int main() {
     TestFamilyFollowsThePadInUse();
     TestPromptSetting();
     TestGeneration();
+    TestPadLossOpensAWindow();
+    TestPadLossOnlyForTheActivePad();
+    TestPadLossAnotherPadRemainsStillPauses();
+    TestPadLossNotOnTheKeyboard();
+    TestPadLossOnlyWhileDriving();
+    TestPadLossWindowIsBounded();
+    TestPadLossTestHook();
+    TestPadLossWithTheStateMachine();
     std::printf("input_state_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
