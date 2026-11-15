@@ -73,6 +73,16 @@ std::vector<uint8_t> LzxEncodeStored(const uint8_t* data, size_t size) {
         chunk.insert(chunk.end(), data + offset, data + offset + block_size);
         if (chunk.size() & 1) chunk.push_back(0);
 
+        // A frame shorter than 32768 says how much it holds: 0xFF and its output
+        // size come before the chunk length. Without them the decoder takes it
+        // for a whole frame and wants 32768 bytes out of it -- the native decoder
+        // (hooks/lzx_stream.h) then fails the frame and the resource never
+        // finishes loading (a 16384-byte .xspm, 15/11: black screen at boot).
+        if (block_size < kChunkOutput) {
+            stream.push_back(0xFF);
+            stream.push_back(static_cast<uint8_t>(block_size >> 8));
+            stream.push_back(static_cast<uint8_t>(block_size & 0xFF));
+        }
         // Chunk length is a 16-bit field; a stored 32 KB block plus its header
         // is comfortably inside it.
         stream.push_back(static_cast<uint8_t>(chunk.size() >> 8));
