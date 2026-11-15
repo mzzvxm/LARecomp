@@ -138,6 +138,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/menu_camera.cpp
     src/mc_engine/map_mouse.cpp
     src/mc_engine/cursor_hide.cpp
+    src/mc_engine/input_state.cpp
     src/mc_engine/camera_look.cpp
     src/mc_engine/camera_trace.cpp
     src/mc_engine/display_menu.cpp
@@ -417,6 +418,16 @@ add_executable(larecomp_device_watch_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_device_watch_test PRIVATE src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_device_watch_test PRIVATE Threads::Threads)
+endif()
+
+# The active-device state machine (src/mc_engine/input_state_core.h: pad / mouse / key filters, the last-input-wins rules, hot-plug, the
+# generation) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_input_state_test, then run <build dir>/larecomp_input_state_test (exit 0 = passed).
+add_executable(larecomp_input_state_test EXCLUDE_FROM_ALL
+    src/mc_engine/input_state_test.cpp)
+target_include_directories(larecomp_input_state_test PRIVATE src/mc_engine)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_input_state_test PRIVATE Threads::Threads)
 endif()
 
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:

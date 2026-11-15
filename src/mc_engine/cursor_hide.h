@@ -2,9 +2,11 @@
 //
 // Mouse pointer auto-hide during play.
 //
-// The pointer goes at once when a pad is used and after about 3 seconds without
-// mouse movement, and comes back on mouse movement, a click, the wheel or when
-// the window loses focus. It is blanked over the game window only (SDL does not
+// The pointer goes at once when the active device is a controller (input_state.h:
+// the one that produced the last real input) and after about 3 seconds without
+// mouse movement while the keyboard and mouse are, and comes back when the mouse
+// moves on purpose, a click or the wheel switches the device back, or when the
+// window loses focus. It is blanked over the game window only (SDL does not
 // touch the title bar or other windows), and it stays while the mouse is over
 // an ImGui overlay such as the F4 panel.
 //

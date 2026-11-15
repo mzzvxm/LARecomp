@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "cursor_hide.h"
+#include "input_state.h"
 #include "logging.h"
 #include "map_mouse.h"
 #include "ui/settings.h"
@@ -7,7 +8,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 
 #include "imgui.h"
 #include <rex/cvar.h>
@@ -33,9 +33,6 @@ using Clock = std::chrono::steady_clock;
 using Visibility = rex::ui::Window::CursorVisibility;
 
 constexpr auto kIdleBeforeHide = std::chrono::milliseconds(3000);
-// A bit over a third of the stick's travel, so drift does not count as use.
-constexpr int kStickPast = 12000;
-constexpr int kTriggerPast = 30;
 
 // Bumped on the UI thread by every mouse move, click and wheel turn.
 std::atomic<uint64_t> g_mouse_seq{0};
@@ -54,23 +51,6 @@ class PointerListener final : public rex::ui::WindowInputListener {
 };
 
 PointerListener g_listener;
-
-// Any real pad (the keyboard has its own native path and is not looked at):
-// a button, a trigger or a stick well past the dead zone.
-bool PadInUse(rex::input::InputSystem* isys) {
-    rex::input::X_INPUT_STATE st{};
-    if (isys->GetState(0, &st) != 0) return false;
-    const uint16_t buttons = st.gamepad.buttons;
-    if (buttons != 0) return true;
-    if (st.gamepad.left_trigger >= kTriggerPast || st.gamepad.right_trigger >= kTriggerPast)
-        return true;
-    const int16_t axes[4] = {st.gamepad.thumb_lx, st.gamepad.thumb_ly, st.gamepad.thumb_rx,
-                             st.gamepad.thumb_ry};
-    for (int16_t a : axes) {
-        if (std::abs(int(a)) >= kStickPast) return true;
-    }
-    return false;
-}
 
 // Cursor visibility has to be applied on the UI thread, as in map_mouse.cpp.
 // Hides only if nobody else holds the window's cursor, and shows again only
@@ -129,8 +109,6 @@ void TickCursorHide() {
 
     static Clock::time_point last_activity = Clock::now();
     static uint64_t last_seq = 0;
-    static bool pad_hid = false;  // a pad was used after the last mouse activity
-    static bool pad_was_in_use = false;
     static bool was_focused = true;
 
     const auto now = Clock::now();
@@ -141,23 +119,23 @@ void TickCursorHide() {
     // as long as it is open, wherever the mouse is.
     const bool over_overlay = mcla::ui::SettingsOpen() ||
                               (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse);
+    // Which device the player uses comes from the shared state machine (input_state.h: last input
+    // wins, with hysteresis; a pad frame, a key or a deliberate mouse move switches it), not from
+    // reading the pad here. A controller in use hides the pointer at once and keeps it hidden: a bump
+    // of the mouse that the rules call jitter changes neither the device nor the pointer. With the
+    // keyboard and mouse in use the pointer shows while the mouse moves and hides after 3 s still.
+    const bool pad_active = larecomp::input::ActiveInput() == larecomp::input::InputDevice::Pad;
     const uint64_t seq = g_mouse_seq.load(std::memory_order_relaxed);
-    if (seq != last_seq || focused != was_focused || over_overlay) {
-        last_seq = seq;
-        was_focused = focused;
+    if (over_overlay || (!pad_active && (seq != last_seq || focused != was_focused))) {
         last_activity = now;
-        pad_hid = false;
     }
-    // On the rising edge only: a stick held while the mouse is nudged would
-    // otherwise hide the pointer again on the next frame.
-    const bool pad_in_use = PadInUse(isys);
-    if (pad_in_use && !pad_was_in_use) pad_hid = true;
-    pad_was_in_use = pad_in_use;
+    last_seq = seq;
+    was_focused = focused;
 
     // The map keeps the pointer visible when the option to hide it there is off.
     const bool want_hidden = REXCVAR_GET(hide_mouse_pointer) && focused && !over_overlay &&
                              !MapMouseWantsPointer() &&
-                             (pad_hid || now - last_activity >= kIdleBeforeHide);
+                             (pad_active || now - last_activity >= kIdleBeforeHide);
     if (want_hidden != ours) Post(window, want_hidden);
 }
 

@@ -14,6 +14,7 @@
 #include "discord_rpc/discord_rpc.h"
 #include "../adaptive_triggers.h"
 #include "../impulse_triggers.h"
+#include "../input_state.h"
 #include "../camera_look.h"
 #include "../camera_trace.h"
 #include "../cinematic/cars.h"
@@ -156,7 +157,8 @@ void Patch_DeltaTimePre() {
     TickVinylReadbackWindow();  // runs every frame regardless of real_frame_delta
     TickGlobalReadback();       // closes the vinyl / photo readback window once both are done
     TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
-    TickButtonPrompts();        // picks up a live button_prompts change
+    larecomp::input::Tick();    // active device (controller / keyboard and mouse): attaches the window listener on the first frame
+    TickButtonPrompts();        // picks up a live button_prompts change and the controller family in use
     TickCustomMusic();          // custom radio: volume + end-of-track advance
     TickHudUnits();             // hud_speed_units: mph -> km/h, live
     TickCutsceneGallery();      // cutscene replay: close the menu, start the script

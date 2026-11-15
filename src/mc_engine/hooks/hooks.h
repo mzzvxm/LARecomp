@@ -75,7 +75,8 @@ void Patch_SpeedLimitUnits(PPCRegister& r8);
 // it, Patch_PlatformPush feeds the per-movie push in sub_821F8038, and
 // TickButtonPrompts (called from Patch_DeltaTimePre) applies live cvar changes.
 void TickButtonPrompts();
-// The glyph set in use: button_prompts = playstation, or auto with a Sony controller attached.
+// The glyph strip in use: button_prompts = playstation, or auto while the controller used last is a Sony one
+// (input_state.h).
 bool ButtonPromptsArePlayStation();
 void Hook_PlatformVarInit(PPCRegister& r27);
 bool Patch_PlatformPush(PPCRegister& r5);

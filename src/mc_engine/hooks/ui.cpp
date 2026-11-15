@@ -23,7 +23,7 @@
 #include "../cinematic/capture_mode.h"
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
-#include "../ui/pad_vendor.h"
+#include "../input_state.h"
 
 REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
 
@@ -44,9 +44,10 @@ REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
-    "On-screen button glyphs. auto = PlayStation glyphs while a Sony controller is "
-    "attached, Xbox glyphs otherwise (checked every 2 seconds, so plugging one in is "
-    "noticed). xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
+    "On-screen button glyphs. auto = the glyphs of the controller you used last: "
+    "PlayStation glyphs for a Sony controller, Xbox glyphs for any other, picked from "
+    "what you press and from controllers being plugged in or out. "
+    "xbox = A/B/X/Y + LB/RB/LT/RT, playstation = "
     "cross/circle/square/triangle + L1/R1/L2/R2. Both sets already ship inside "
     "the game's own UI movies and texture dictionary, so this only flips the "
     "'platform' flag their ActionScript reads - no asset is swapped or reloaded. "
@@ -274,19 +275,19 @@ static std::atomic<uint32_t> g_platform_var_ea{0};
 // Last value written, so the tick only touches guest memory on a real change.
 static std::atomic<int> g_platform_applied{-1};
 
-// button_prompts = auto: 1 while a Sony controller is attached. The answer is the device watcher's
-// (device_watch.h: the OS says when a controller comes or goes, and this reads an atomic), so there
-// is nothing to poll and nothing to cache here; it reads Xbox until the watcher's first list of
-// devices has landed, a few milliseconds after the app's setup, long before the UI manager asks.
-// CHECK: that the list is always there by the time Hook_PlatformVarInit runs (the log line
-// "[devwatch] initial list" comes before "[buttons] mcRegistry 'platform'"); if it is not, the tick
+// The strip of the game's own art the movies use: 1 = PlayStation, 0 = Xbox. The answer is the
+// active-device state machine's (input_state.h): with button_prompts = auto the strip of the controller
+// used last (a Sony controller: PlayStation; any other: Xbox), the forced strip for xbox and
+// playstation, Xbox for keyboard (the key caps are painted over that strip, keyboard_native.cpp). It
+// does NOT flip when the keyboard and mouse take over: the strip stays that of the last controller. Until
+// the SDK's first list of devices has landed and something was used, it is the device watcher's guess
+// (device_watch.h: a Sony pad is plugged in). An atomic read: nothing to poll or cache here, cheap enough
+// for the AVM hook below, which asks on every action buffer.
+// CHECK: that the first answer is right by the time Hook_PlatformVarInit runs (the log lines "[devwatch]
+// initial list" and "[input] devices" come before "[buttons] mcRegistry 'platform'"); if not, the tick
 // below flips the glyphs on the next frame.
 static int WantedPlatformValue() {
-    std::string mode = REXCVAR_GET(button_prompts);
-    if (mode == "auto") {
-        return mcla::ui::PlayStationControllerPresent() ? 1 : 0;
-    }
-    return mode == "playstation" ? 1 : 0;
+    return larecomp::input::PromptStrip() == larecomp::input::GlyphFamily::PlayStation ? 1 : 0;
 }
 
 bool ButtonPromptsArePlayStation() { return WantedPlatformValue() == 1; }
@@ -308,10 +309,11 @@ static void WritePlatformVar(uint32_t entry, int value) {
 }
 
 // Called once per frame from Patch_DeltaTimePre so the cvar can be flipped live
-// from the F4 menu, and so a controller plugged in or out (button_prompts = auto) is noticed:
-// the device watcher keeps that answer current, this only compares it with what was applied.
-// Movies already on screen keep the glyphs they resolved at their own frame 1; anything opened
-// after this picks up the new set.
+// from the F4 menu, and so the controller in use (button_prompts = auto) is noticed: the active-device
+// state machine keeps that answer current, this only compares it with what was applied.
+// Movies already on screen keep the glyphs they resolved at their own frame 1 (KBM P0, E1: the garage
+// menu and a popup did not change when the flag did, painted key caps did); anything opened after
+// this picks up the new set.
 void TickButtonPrompts() {
     const uint32_t entry = g_platform_var_ea.load(std::memory_order_relaxed);
     if (!entry) return;
@@ -365,7 +367,10 @@ bool Patch_PlatformPush(PPCRegister& r5) {
 // takes effect on a fresh boot. What the frame code actually evaluates on every
 // render, though, is `_global.platform` itself (`icon.gotoAndStop(iconID +
 // platform * 49)` reads the member each time), so writing that variable in a
-// live movie switches the glyphs immediately.
+// live movie was expected to switch the glyphs immediately. Measured (KBM P0, E1): it
+// does not on a screen that is already up (the garage menu and a popup showed 0.00%
+// change when the flag moved, against a clear change when key caps were painted); the
+// push keeps the movies that run afterwards right.
 //
 // sub_825EE970 is the AVM's "run this action buffer" entry: it parks its
 // argument in dword_828FF970 for the duration, which makes r3 a context that is
