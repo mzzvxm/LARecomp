@@ -79,6 +79,10 @@ const Row kTable[] = {
      "AUTO (NEAR)", "AUTO (NEAR)"},
     {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
      "AUTO (HIGH)"},
+    // Ambient occlusion (AO-DESIGN.md section 5: high is about 3 ms at 1080p on a GTX 1050-class card,
+    // low about 1 ms; nothing on shared memory).
+    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "low", "high", "AUTO (OFF)", "AUTO (LOW)",
+     "AUTO (HIGH)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -112,6 +116,30 @@ void CheckTable() {
         CheckEq(ResolveFor(c, row.effect, own), own, cell + ": Resolve('" + own + "') is unchanged");
       }
     }
+  }
+}
+
+// Ambient occlusion's `auto` (mcla_gpu_ao): off on shared memory, low on a small discrete card, high on
+// the rest; a value an older larecomp.toml holds (off, low, high) is the player's and is kept in every class.
+void CheckAmbientOcclusion() {
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const char* const want[] = {"off", "low", "high"};
+  const char* const own[] = {"off", "low", "high"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "low" ? 1 : 2; };
+  int last = -1;
+  for (int k = 0; k < 3; ++k) {
+    const GpuClass c = classes[k];
+    const std::string at = "ambient occlusion on " + std::string(ClassName(c));
+    CheckEq(ResolveFor(c, Effect::kAmbientOcclusion, "auto"), want[k], at + ": auto");
+    for (const char* v : own) {
+      CheckEq(ResolveFor(c, Effect::kAmbientOcclusion, v), v, at + ": the saved '" + v + "' is kept");
+    }
+    // The classes only go up, and the look it gives (the base of the contact shadows' apply pass) is never
+    // below the contact shadows' own cell.
+    const int now = rank(Cell(Effect::kAmbientOcclusion, c));
+    Check(now >= last, at + ": not below the class under it");
+    last = now;
+    Check(now >= rank(Cell(Effect::kContactShadows, c)), at + ": not below the contact shadows' cell");
   }
 }
 
@@ -180,6 +208,14 @@ void CheckClassify() {
   Check(Classify(soft).cls == GpuClass::kLow, "software adapter: low");
 
   Check(Classify(Discrete(0)).cls == GpuClass::kLow, "no dedicated memory reported: low");
+
+  // Shared memory (what the render scale cap leaves alone): software, UMA or integrated; a discrete card
+  // is not, whatever its size.
+  Check(!SharesMemory(Discrete(16303)) && !SharesMemory(Discrete(512)) && !SharesMemory(Discrete(0)),
+        "a discrete card does not share memory");
+  Check(SharesMemory(igpu) && SharesMemory(deck) && SharesMemory(big_apu) && SharesMemory(vk_igpu) &&
+            SharesMemory(soft),
+        "an iGPU, the Deck, an APU with a large carve-out, a Vulkan integrated GPU and a software adapter share memory");
 
   // The reason is one phrase the log line carries.
   Check(!Classify(Discrete(16303)).why.empty(), "a reason for high");
@@ -251,6 +287,7 @@ void CheckSunShaftSteps() {
 int main() {
   CheckTable();
   CheckSunShaftSteps();
+  CheckAmbientOcclusion();
   CheckLabels();
   CheckNames();
   CheckClassify();

@@ -659,6 +659,10 @@ void TemporalSystem::ReadRenderScale() {
   if (upscaling) {
     choice = ChooseUpscalerOutputScale(choice.asked, choice.fsr, choice.preset, choice.window_width,
                                        choice.window_height);
+  } else {
+    // The screen's scale is lowered to what the card's video memory holds (scale_cap.h): the images of
+    // the screen then move to it like to any other scale, and the menu hears of it (UpdatePath).
+    choice = CapToVideoMemory(choice);
   }
   if (choice.invalid && !render_invalid_logged_) {
     render_invalid_logged_ = true;
@@ -742,7 +746,11 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
     to_output = render_wanted_;
   }
   if (to_output == output_now) {
-    PublishRenderScaleStatus(output_now, Scale::None());  // nothing is asked that could not be made
+    // Nothing is asked that could not be made, but a screen's scale that the card's video memory cannot
+    // hold (scale_cap.h) was lowered to what runs: the menu says "TOO BIG (NN%)" about the scale the
+    // window asked for, as it does for a live change that failed.
+    const bool lowered = render_choice_.capped && render_choice_.scale == output_now;
+    PublishRenderScaleStatus(output_now, lowered ? render_choice_.uncapped : Scale::None());
   }
   // DLSS takes only some render sizes per mode at an output size (temporal.h "Changing the path"):
   // the backend is told the sizes this path is made for, so that it finds out which modes cannot run

@@ -36,14 +36,16 @@
 #include "traffic_shadow.h"
 
 REXCVAR_DEFINE_STRING(
-    mcla_gpu_ao, "high", "MCLA/GPU",
+    mcla_gpu_ao, "auto", "MCLA/GPU",
     "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
-    "constants say how much of a surface's light is which). off, low (half resolution, 2 slices) "
-    "or high (full resolution, 3 slices; the default). Costs graphics card time, high more than "
-    "low. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
+    "constants say how much of a surface's light is which). off, low (half resolution, 2 slices), "
+    "high (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
+    "low on a discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics "
+    "card time, high more than low. A value an older larecomp.toml holds (off, low, high) is kept as "
+    "it is. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
     "Live.")
-    .allowed({"off", "low", "high"})
+    .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao_intensity, "default", "MCLA/GPU",
@@ -638,7 +640,7 @@ host_plan::Level ToLevel(AmbientOcclusion::Mode mode) {
   return host_plan::Level(uint8_t(mode));
 }
 
-// mcla_gpu_ao: off, low or high (anything else is off). host_plan.h has the rule, which the precache
+// mcla_gpu_ao: auto (the class's cell), off, low or high (anything else is off). host_plan.h has the rule, which the precache
 // uses too.
 host_plan::Choice AoChoice() {
   return host_plan::Resolve(host_plan::Pass::kOcclusion, gpu_class::Current(), true, AoSetting().Get());
@@ -1248,7 +1250,9 @@ void AmbientOcclusion::BeginFrame() {
   }
   if (uint32_t(mode) != last_mode_logged_) {
     last_mode_logged_ = uint32_t(mode);
-    REXLOG_INFO("[gpu] ao: ambient occlusion {} (mcla_gpu_ao, live)", ModeName(mode));
+    const std::string setting = Lower(AoSetting().Get());
+    REXLOG_INFO("[gpu] ao: ambient occlusion {}{} (mcla_gpu_ao {}, live)", ModeName(mode),
+                setting == "auto" ? " (auto on this GPU)" : "", setting);
   }
   Mode contact = ReadContactMode();
   if (!ready_ || !resolve_) {

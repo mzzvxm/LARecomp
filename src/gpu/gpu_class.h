@@ -65,8 +65,9 @@ enum class Effect : uint8_t {
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
   kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, low, high (car_selfrefl.h: low is the specular occlusion, high adds the reflection)
+  kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, low, high
 };
-inline constexpr int kEffectCount = 9;
+inline constexpr int kEffectCount = 10;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -90,6 +91,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // car's own colour), a full-screen history pass and a short ray on the car's pixels (G8B cost runs, perf/out/G8B.txt, with the
     // prototype that this setting finished); an integrated GPU does without.
     {"mcla_gpu_car_selfrefl", "off", "low", "high"},
+    // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for high at 720p on
+    // the RTX 5080, estimated 1.0 ms at 4K there): high is about 3 ms at 1080p on a GTX 1050-class
+    // card (Mid), low about 1 ms, so Mid gets low and keeps a frame at 60 FPS; the Low class (shared
+    // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
+    {"mcla_gpu_ao", "off", "low", "high"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
@@ -226,17 +232,51 @@ inline std::string CityLodLabelFor(bool known, GpuClass c, double user_value) {
 }
 
 // What the class rule looks at, as plain values (gpu_class.cpp fills it from the device).
+//
+// What it cannot see: speed (perf\COMPAT-AUDIT.md F4). `kHigh` is any discrete card with 5.5 GiB or
+// more, so an 8 GB RX 580, a GTX 1070 or a GTX 1660 Ti get the RTX 5080's `auto` row (contact shadows high,
+// sun shafts high, ambient occlusion high). The cues that could tell them apart, with the risk of each:
+//   1. No ray tracing hardware (caps.raytracing false) caps a discrete card at kMid. It is a generation
+//      cue with no table: DXR/ray tracing exist on NVIDIA from Turing (RTX 20), AMD from RDNA 2 (RX 6000),
+//      Intel Arc; not on GTX 10/16, Polaris, Vega, RDNA 1 (RX 5700 XT, which is fast: it would be put one
+//      class too low). Risk: a driver or a backend that reports false on a card that has it (the RTX 5080
+//      on Vulkan through Streamline, or a Vulkan driver that does not list the extension) would drop a fast
+//      card to Mid, so the flag is first only logged ("[gpu] class: ... ray tracing yes/no" on both
+//      backends of the test PC's two cards), and the rule is changed once those lines are read.
+//   2. A table of device names or PCI ids of the weak generations (GTX 9xx/10xx/16xx, RX 4xx/5xx, Vega 56/64,
+//      Arc A3xx): exact, but a list somebody keeps (OEM names vary: "Radeon RX 580 Series", "RX 590 GME";
+//      a card missed stays kHigh, as now, so the failure is safe), and its sources (pci-ids.ucw.cz, the
+//      vendors' product pages) were not available when this was written: it needs them read, not recalled.
+//   3. A timing probe at the start (a fixed full-screen pass timed with timestamp queries, about 30 ms):
+//      measures the real speed with no list, but the clocks of an idle card are low at the start (it would
+//      read a fast card as slow), the first run of a pipeline includes the driver's compile, the class could
+//      change from one start to the next, and the thresholds need the logs of weak cards (BACKLOG O1) that
+//      nobody has sent yet.
+// The proposal is 1 with 2 as the exception list, after the first logs; nothing of it is in the rule yet.
+// CHECK: which generations report ray tracing is from memory of the vendors' lines, not from a log; the
+// "[gpu] class:" line of a run on each card and backend of the test PC is the first evidence.
 struct AdapterFacts {
   bool uma = false;         // the GPU shares memory with the CPU (D3D12 UMA; Vulkan integrated with host-visible local memory)
   bool integrated = false;  // the backend names the device type integrated (Vulkan; D3D12 never says)
   bool software = false;    // a virtual or CPU device, or a software rasteriser by name
   uint64_t dedicated_bytes = 0;  // dedicated video memory (the largest device-local heap on Vulkan)
+  // Whether the backend reports ray tracing (D3D12 DXR tier 1.0 or more; Vulkan's ray tracing pipeline
+  // and acceleration structures). The class rule does not use it: it is in the "[gpu] class:" line as
+  // the evidence for the speed cue proposed below.
+  bool raytracing = false;
 };
 
 struct Verdict {
   GpuClass cls = GpuClass::kHigh;
   std::string why;  // one phrase for the log line
 };
+
+// Whether the GPU draws in memory the CPU also uses (a software adapter, UMA, an integrated GPU): the
+// reason for kLow that is about memory. Its budget is system memory, so the render scale cap (scale_cap.h)
+// leaves it alone.
+constexpr bool SharesMemory(const AdapterFacts& facts) {
+  return facts.software || facts.uma || facts.integrated;
+}
 
 inline Verdict Classify(const AdapterFacts& facts) {
   if (facts.software) {
@@ -276,6 +316,12 @@ GpuClass Current();
 // setting whose `auto` is not the same on every class acts as on the weakest while this is false, so
 // that a player is never given the strong class's cost before it is known. Any thread, cheap.
 bool Known();
+
+// What Initialize found, whatever mcla_gpu_class says (it forces only the class of the effects): whether
+// the GPU shares memory with the CPU (SharesMemory) and its dedicated video memory in bytes. False and 0
+// until Initialize has run. Any thread, cheap.
+bool SharesSystemMemory();
+uint64_t DedicatedBytes();
 
 // ResolveFor / AutoLabelFor for Current(). Any thread.
 std::string Resolve(Effect effect, std::string_view user_value);

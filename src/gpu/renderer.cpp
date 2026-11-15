@@ -18,6 +18,7 @@
 
 #include "backend.h"
 #include "gpu.h"
+#include "gpu_class.h"
 #include "guest_capture.h"
 #include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
@@ -25,6 +26,7 @@
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_window.h"
+#include "scale_cap.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
@@ -240,6 +242,16 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
                     kAssumedScreenWidth, kAssumedScreenHeight);
       }
     }
+    // How the render scale that follows the window is weighed against the card's video memory
+    // (scale_cap.h): the OS budget now, the class's facts of the adapter.
+    scale_cap::SetMemoryProbe([this] {
+      scale_cap::Memory memory;
+      const backend::VideoMemory video = device_.QueryVideoMemory();
+      memory.budget = video.budget;
+      memory.dedicated = gpu_class::DedicatedBytes();
+      memory.shared = gpu_class::SharesSystemMemory();
+      return memory;
+    });
     // The picture's frame in the window (ASPECT RATIO): "the screen" the scale measures is its 16:9 area.
     const mc::frame::Rect frame = mc::ultrawide::FrameFor(width, height);
     render_scale_ = ChooseStartRenderScale(frame.w, frame.h);
@@ -326,6 +338,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
+    scale_cap::SetMemoryProbe({});  // reads the device that goes now
     latency::Shutdown();
     capture_.Shutdown();
     occlusion_.Shutdown();
@@ -443,6 +456,7 @@ void Renderer::Shutdown() {
     return;
   }
   initialized_ = false;
+  scale_cap::SetMemoryProbe({});  // the render scale is not weighed against a device that goes
   // 1. No more recording: the render thread finishes the command it is on and
   //    exits; producers and waiters are released. A thread that does not exit
   //    in time may still be inside any component, so nothing is destroyed.

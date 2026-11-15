@@ -56,6 +56,8 @@ const AutoRow kAuto[] = {
     {Pass::kBounce, {"off", "off", "off"}},
     // the car self-reflections: off on Low, low (the specular occlusion) on Mid, high (and the reflection) on High
     {Pass::kCarRefl, {"off", "low", "high"}},
+    // the ambient occlusion: off on Low, low on Mid, high on High (gpu_class.h: AO-DESIGN.md section 5)
+    {Pass::kOcclusion, {"off", "low", "high"}},
 };
 
 Level LevelOf(const std::string& name) {
@@ -65,14 +67,15 @@ Level LevelOf(const std::string& name) {
 }
 
 void CheckOcclusion() {
-  // No `auto`, no class: the same on every class; a word that is not off, low or high is off.
+  // The player's own values: the same on every class; a word that is not auto, off, low or high is off (`auto` follows
+  // the class: CheckAutoPasses).
   const struct {
     const char* text;
     Level want;
     bool unknown;
   } rows[] = {
       {"off", Level::kOff, false},   {"low", Level::kLow, false},   {"high", Level::kHigh, false},
-      {"High", Level::kHigh, false}, {"LOW", Level::kLow, false},   {"auto", Level::kOff, true},
+      {"High", Level::kHigh, false}, {"LOW", Level::kLow, false},
       {"", Level::kOff, true},       {"ultra", Level::kOff, true},  {"hgih", Level::kOff, true},
       {"high ", Level::kOff, true},
   };
@@ -121,6 +124,9 @@ void CheckAutoPasses() {
       const Choice car = Resolve(Pass::kCarRefl, kClasses[k], true, junk);
       Check(car.level == Level::kOff && car.unknown && !car.automatic,
             "car self-reflections " + where + ": off, unknown");
+      const Choice ao = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
+      Check(ao.level == Level::kOff && ao.unknown && !ao.automatic,
+            "ambient occlusion " + where + ": off, unknown");
     }
   }
   // The bounce light's `auto` waits for the class: off while it is not known, whatever class is guessed.
@@ -199,7 +205,11 @@ struct PlanRow {
 
 void CheckPlans() {
   const PlanRow rows[] = {
-      // The defaults of a fresh install (mcla_gpu_ao high, the others auto).
+      // The defaults of a fresh install (every setting auto: the occlusion follows the class too).
+      {"auto", "auto", "auto", "auto", GpuClass::kLow, "-----", "fresh install, Low: nothing is on"},
+      {"auto", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "fresh install, Mid: occlusion, contact shadows, shafts"},
+      {"auto", "auto", "auto", "auto", GpuClass::kHigh, "OCS--", "fresh install, High: the bounce light is off on every class"},
+      // An older larecomp.toml holds high for the occlusion: kept as it is on every class.
       {"high", "auto", "auto", "auto", GpuClass::kLow, "O----", "defaults, Low: only the occlusion"},
       {"high", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "defaults, Mid: occlusion, contact shadows, shafts"},
       {"high", "auto", "auto", "auto", GpuClass::kHigh, "OCS--", "defaults, High: the bounce light is off on every class"},
@@ -222,7 +232,8 @@ void CheckPlans() {
       {"off", "auto", "auto", "high", GpuClass::kHigh, "-CS--", "bounce light high with the occlusion off: held off"},
       {"high", "auto", "auto", "low", GpuClass::kHigh, "OCSB-", "bounce light low on High: the player's own (auto is off)"},
       // Words that are not values.
-      {"auto", "junk", "junk", "junk", GpuClass::kHigh, "--S--", "junk: occlusion off, contact off, shafts as auto (High), bounce off"},
+      {"auto", "junk", "junk", "junk", GpuClass::kHigh, "O-S--", "junk: occlusion auto (high on High), contact off, shafts as auto (High), bounce off"},
+      {"junk", "auto", "auto", "auto", GpuClass::kHigh, "-CS--", "junk for the occlusion: off, the rest as auto"},
   };
   for (const PlanRow& row : rows) {
     const Plan plan = Decide(row.cls, true, row.ao, row.contact, row.shafts, row.bounce);
@@ -305,6 +316,8 @@ void CheckDescribe() {
           "sun shafts off (auto on the low class)", "Describe: auto on Low");
   CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "high"), GpuClass::kHigh),
           "ambient occlusion high (set)", "Describe: the occlusion's own value");
+  CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kMid, true, "auto"), GpuClass::kMid),
+          "ambient occlusion low (auto on the mid class)", "Describe: the occlusion's auto on Mid");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kMid, true, "auto"), GpuClass::kMid),
           "sun shafts default (auto on the mid class)", "Describe: shafts auto on Mid");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kHigh, true, "strong"), GpuClass::kHigh),

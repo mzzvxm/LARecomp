@@ -20,7 +20,7 @@ REXCVAR_DEFINE_STRING(
     "rest). "
     "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...'. Only "
     "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
-    "detail, contact shadows, sun shafts, bounce light); "
+    "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
     "a choice of the player's own is never changed. Live.")
     .allowed({"auto", "low", "mid", "high"})
     .debug_only()
@@ -34,6 +34,8 @@ constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
 std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
+std::atomic<bool> g_shares_memory{false};
+std::atomic<uint64_t> g_dedicated_bytes{0};
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
@@ -143,14 +145,18 @@ void Initialize(const plume::RenderDeviceDescription& description,
                    description.type == plume::RenderDeviceType::CPU ||
                    IsSoftwareName(description.name);
   facts.dedicated_bytes = description.dedicatedVideoMemory;
+  facts.raytracing = caps.raytracing;
   const Verdict verdict = Classify(facts);
 
   {
     std::lock_guard<std::mutex> lock(g_text_mutex);
     g_detected_why = verdict.why;
-    g_adapter = "'" + description.name + "', " + VendorName(description.vendor);
+    g_adapter = "'" + description.name + "', " + VendorName(description.vendor) +
+                (facts.raytracing ? ", ray tracing yes" : ", ray tracing no");
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
+  g_shares_memory.store(SharesMemory(facts), std::memory_order_relaxed);
+  g_dedicated_bytes.store(facts.dedicated_bytes, std::memory_order_relaxed);
 
   ApplyOverride(REXCVAR_GET(mcla_gpu_class));
   g_known.store(true, std::memory_order_release);
@@ -176,6 +182,14 @@ GpuClass Current() {
 
 bool Known() {
   return g_known.load(std::memory_order_acquire);
+}
+
+bool SharesSystemMemory() {
+  return g_shares_memory.load(std::memory_order_relaxed);
+}
+
+uint64_t DedicatedBytes() {
+  return g_dedicated_bytes.load(std::memory_order_relaxed);
 }
 
 std::string Resolve(Effect effect, std::string_view user_value) {

@@ -22,7 +22,7 @@
 //             and apply passes; the bounce light adds passes of its own)
 //
 // What each setting's text can be, and what anything else means, is kept as each owner had it:
-//   occlusion  mcla_gpu_ao            off, low, high; no `auto`; anything else is off
+//   occlusion  mcla_gpu_ao            auto, off, low, high; anything else is off
 //   contact    mcla_gpu_contact_shadows   auto, off, low, high; anything else is off
 //   shafts     mcla_gpu_sun_shafts    auto, off, light, default, strong, stronger, strongest (a strength, shafts_level.h);
 //                                     the old low and high are read as default; anything else counts as `auto`.
@@ -81,12 +81,11 @@ struct Choice {
   bool legacy = false;
 };
 
-// The graphics upgrade whose `auto` cell the pass reads (the occlusion has none).
-constexpr bool HasAuto(Pass pass) {
-  return pass != Pass::kOcclusion;
-}
+// The graphics upgrade whose `auto` cell the pass reads (the occlusion's is the last cell of the class table: off on Low, low on
+// Mid, high on High).
 constexpr gpu_class::Effect EffectOf(Pass pass) {
   switch (pass) {
+    case Pass::kOcclusion: return gpu_class::Effect::kAmbientOcclusion;
     case Pass::kContact: return gpu_class::Effect::kContactShadows;
     case Pass::kShafts: return gpu_class::Effect::kSunShafts;
     case Pass::kCarRefl: return gpu_class::Effect::kCarSelfRefl;
@@ -136,13 +135,6 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
     return choice;
   }
   const std::string text = Lower(saved);
-  if (!HasAuto(pass)) {
-    choice.unknown = !ParseLevel(text, &choice.level);
-    if (choice.unknown) {
-      choice.level = Level::kOff;
-    }
-    return choice;
-  }
   choice.automatic = text == "auto";
   if (choice.automatic && pass == Pass::kBounce && !class_known) {
     return choice;  // off

@@ -5,12 +5,14 @@
 
 #include <atomic>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <string>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "scale_cap.h"
 #include "temporal_backend.h"
 
 REXCVAR_DEFINE_DOUBLE(
@@ -27,7 +29,10 @@ REXCVAR_DEFINE_DOUBLE(
     "(mcla_gpu_fsr_preset). Live: the images are made again at the new scale at a frame boundary, "
     "once the value has stood for a moment (and, while an upscaler runs, once its context for the "
     "new sizes is ready); a scale the video memory cannot hold is not made: the old one is kept and "
-    "the log says so. The guest keeps seeing its own sizes.")
+    "the log says so. At the default (0) a window whose scale would need more video memory than the "
+    "graphics card's budget allows (a 4K window on a card with 2 to 3 GB) is drawn at the largest "
+    "scale that fits instead, never below 1, at the start and whenever the window changes, and the "
+    "log says so; a scale set here is kept as chosen. The guest keeps seeing its own sizes.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_fsr_preset, "custom", "MCLA/GPU",
@@ -38,6 +43,17 @@ REXCVAR_DEFINE_STRING(
     "mcla_gpu_resolution_scale (by default the screen's, which leaves FSR1 nothing to upscale: pick "
     "a preset). With mcla_gpu_fsr off it is not used, nor while a temporal upscaler "
     "(mcla_gpu_upscaler) runs. Live, like mcla_gpu_resolution_scale.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_scale_cap_budget_mb, 0, "MCLA/GPU",
+    "Diagnostic: pretend the graphics card is a discrete one with this many MiB of video memory budget "
+    "when the render scale that follows the window is checked against it (the cap of "
+    "mcla_gpu_resolution_scale = 0: a window whose scale needs more than 75% of the budget is "
+    "lowered), to see what a small card would get. Only that check reads it; the video memory "
+    "response and everything else use the card's real memory. 0: the real one. Read at the start and "
+    "whenever the window's size changes.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(bool, mcla_gpu_fsr);  // present.cpp
@@ -64,6 +80,9 @@ std::string Window(const RenderScaleChoice& c) {
 
 // The step the wanted scale was brought to, if any: ", limited to 0.5x".
 std::string Adjusted(const RenderScaleChoice& c) {
+  if (c.capped) {
+    return std::format(", capped by the video memory from {}x", c.uncapped);
+  }
   if (c.limited) {
     return std::format(", limited to {}x", c.scale);
   }
@@ -102,11 +121,75 @@ FsrPreset ReadPreset(bool once) {
   return FsrPreset::kCustom;
 }
 
+// The render scale cap (scale_cap.h): what the card says is read through the probe the renderer
+// registers, once per window size (a window that changes is the moment the budget is looked at again;
+// the choice is made at every frame boundary and must not ask the OS every time).
+struct CapState {
+  std::mutex mutex;
+  std::function<scale_cap::Memory()> probe;
+  bool have_memory = false;
+  uint32_t width = 0;  // the window the memory was read for
+  uint32_t height = 0;
+  scale_cap::Memory memory;
+  // What the last line was about (a live change logs only when this changes to or from a lowered scale).
+  scale_cap::Outcome last_outcome = scale_cap::Outcome::kNotChecked;
+  uint32_t last_scale = 0;
+};
+CapState g_cap;
+
+// `start`: the first look, which always logs its verdict; a live look logs only a scale that is lowered
+// or kept against the budget, and the return to one that fits.
+RenderScaleChoice ApplyMemoryCap(RenderScaleChoice c, bool start) {
+  std::lock_guard lock(g_cap.mutex);
+  if (!g_cap.probe) {
+    return c;  // no renderer of ours (the Xenia one): nothing to look at
+  }
+  if (start || !g_cap.have_memory || g_cap.width != c.window_width ||
+      g_cap.height != c.window_height) {
+    g_cap.memory = g_cap.probe();
+    if (const uint32_t pretend = REXCVAR_GET(mcla_gpu_scale_cap_budget_mb)) {
+      g_cap.memory.budget = uint64_t(pretend) * scale_cap::kMiB;
+      g_cap.memory.dedicated = g_cap.memory.budget;
+      g_cap.memory.shared = false;
+    }
+    g_cap.have_memory = true;
+    g_cap.width = c.window_width;
+    g_cap.height = c.window_height;
+  }
+  const scale_cap::Report r = scale_cap::Apply(&c, g_cap.memory);
+  using scale_cap::Outcome;
+  const auto lowered = [](Outcome o) { return o == Outcome::kCapped || o == Outcome::kKept; };
+  const bool changed = r.outcome != g_cap.last_outcome || r.scale.n != g_cap.last_scale;
+  if (start || (changed && (lowered(r.outcome) || lowered(g_cap.last_outcome)))) {
+    const std::string line = scale_cap::Line(c, r);
+    if (r.outcome == Outcome::kKept || (r.outcome == Outcome::kCapped && r.need_scale > r.plan)) {
+      REXLOG_WARN("[gpu] {}", line);
+    } else {
+      REXLOG_INFO("[gpu] {}", line);
+    }
+  }
+  g_cap.last_outcome = r.outcome;
+  g_cap.last_scale = r.scale.n;
+  return c;
+}
+
 }  // namespace
+
+void scale_cap::SetMemoryProbe(std::function<Memory()> probe) {
+  std::lock_guard lock(g_cap.mutex);
+  g_cap.probe = std::move(probe);
+  g_cap.have_memory = false;
+  g_cap.last_outcome = Outcome::kNotChecked;
+  g_cap.last_scale = 0;
+}
 
 RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height) {
   return ChooseRenderScale(REXCVAR_GET(mcla_gpu_resolution_scale), REXCVAR_GET(mcla_gpu_fsr),
                            ReadPreset(/*once=*/true), window_width, window_height);
+}
+
+RenderScaleChoice CapToVideoMemory(RenderScaleChoice choice) {
+  return ApplyMemoryCap(std::move(choice), /*start=*/false);
 }
 
 std::string DescribeRenderScale(const RenderScaleChoice& c) {
@@ -171,9 +254,11 @@ RenderScaleStatus GetRenderScaleStatus() {
 
 // CHECK: not run (written without a build). A start with an upscaler chosen logs "[gpu] render scale 1.5x
 // ...: DLSS is chosen, so the output is the screen's ...: upscaling to the window's 1920x1080" in a
-// 1080p window (one line, before "[gpu] edram: the 3D scene ... is made at 1x"); a start at the new
-// default in a 4K window on a weak GPU makes the images of the screen at 3x (3840x2160) with no
-// fallback (only a live change has the "too big" answer), as a saved 3 did before.
+// 1080p window (one line, before "[gpu] edram: the 3D scene ... is made at 1x"). A start at the default
+// in a 4K window on a card whose budget cannot hold 3x (scale_cap.h; --mcla_gpu_scale_cap_budget_mb=2048
+// pretends one) logs "[gpu] render scale lowered from 3x to ...x: ..." and makes the images of the screen
+// at that scale; with a scale set in mcla_gpu_resolution_scale it logs the warning "... is kept as
+// chosen" and makes the scale asked for.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height) {
   const double asked = REXCVAR_GET(mcla_gpu_resolution_scale);
   const bool fsr = REXCVAR_GET(mcla_gpu_fsr);
@@ -182,11 +267,15 @@ RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_
   // backend ends later), so the choice counts. If it cannot run, the temporal system takes the render
   // scale back to the settings' own at the first frame boundary it can (ReadRenderScale).
   const Upscaler upscaler = ReadUpscalerSettings().upscaler;
-  const RenderScaleChoice c =
+  // The scale against the card's video memory: an automatic scale that does not fit is lowered, the
+  // verdict is logged on its own line (scale_cap.h).
+  const RenderScaleChoice c = ApplyMemoryCap(
       upscaler != Upscaler::kOff
           ? ChooseUpscalerOutputScale(asked, fsr, preset, window_width, window_height)
-          : ChooseRenderScale(asked, fsr, preset, window_width, window_height);
-  PublishRenderScaleStatus(c.scale, Scale::None());
+          : ChooseRenderScale(asked, fsr, preset, window_width, window_height),
+      /*start=*/true);
+  // A lowered scale is published like one that could not be made: the menu says "TOO BIG (NN%)".
+  PublishRenderScaleStatus(c.scale, c.capped ? c.uncapped : Scale::None());
   switch (c.source) {
     case RenderScaleChoice::Source::kAsked:
       if (c.invalid) {

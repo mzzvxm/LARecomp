@@ -168,6 +168,9 @@ target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Thread
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
 add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.cpp)
+# The render scale cap's arithmetic (scale_cap.h: what a scale needs, what a card allows, the largest scale that fits) likewise:
+#   cmake --build <dir> --target larecomp_scale_cap_test, then run src/gpu/larecomp_scale_cap_test.
+add_executable(larecomp_scale_cap_test EXCLUDE_FROM_ALL scale_cap_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

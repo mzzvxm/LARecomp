@@ -18,6 +18,11 @@
 // images of the screen move to the new scale between two frames (edram.h
 // SetScales, temporal.h "Changing the path").
 //
+// The screen's scale (the default) is also weighed against the card's video memory, at the start and
+// whenever the window's size changes: a window whose scale the budget cannot hold (a 4K window on a card
+// with 2 to 3 GB) is drawn at the largest scale that fits, never below 1x (scale_cap.h; ChooseRenderScale
+// itself does not know the card and stays pure, ChooseStartRenderScale and CapToVideoMemory apply it).
+//
 // "The screen" is the window's 16:9 area, the game's screen letterboxed in it
 // the way the present fits it; its scale is that area over the game's screen.
 // The "window" here is the picture's FRAME in the real window (the ASPECT RATIO
@@ -136,10 +141,18 @@ struct RenderScaleChoice {
   bool limited = false;
   // The scale asked for is not one (negative, not a number): 1x.
   bool invalid = false;
+  // `scale` was brought down because the window's scale needs more video memory than the card's
+  // budget allows (scale_cap.h; only for the screen's scale, the default): `uncapped` is the scale the
+  // window asked for. Not set by ChooseRenderScale, which does not know the card.
+  bool capped = false;
+  Scale uncapped = Scale::None();
 
   bool from_window() const { return source != Source::kAsked; }
   // `scale` is not `wanted` (limits aside): the nearest step was taken.
   bool rounded() const {
+    if (capped) {
+      return false;  // `scale` is the cap's step, not the grid's nearest to `wanted`
+    }
     const double limited_to = std::clamp(wanted, double(kMinRenderScale.n) / Scale::kDenominator,
                                          double(kMaxRenderScale.n) / Scale::kDenominator);
     return !invalid && std::abs(double(scale.n) / Scale::kDenominator - limited_to) > 1e-9;
@@ -249,6 +262,12 @@ RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_
 // not know whether a temporal upscaler is on (the temporal system does): while one is, the caller takes
 // ChooseUpscalerOutputScale of the window this choice carries instead.
 RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height);
+// A live choice that is not an upscaler's output, weighed against the video memory (scale_cap.h): the
+// screen's scale that the card's budget cannot hold comes back lowered (capped, with the scale the window
+// asked for in `uncapped`), anything else as it is. The card is read when the window's size is not the one
+// last weighed; a scale that is lowered, kept against the budget or no longer lowered is logged, once.
+// Render thread (temporal.cpp ReadRenderScale, at every frame boundary).
+RenderScaleChoice CapToVideoMemory(RenderScaleChoice choice);
 // What a choice came from and where it landed, for the log of a live change: "mcla_gpu_resolution_scale
 // = 2", "the screen's (mcla_gpu_resolution_scale = 0), the window 2560x1440 (2x)", "FSR1 quality, the
 // window 1920x1080 (1.5x) / 1.5 = 1x", "the output of the upscaler: the screen's, the window 1920x1080
@@ -263,7 +282,9 @@ std::string DescribeUpscalerTarget(Scale output, uint32_t window_width, uint32_t
 struct RenderScaleStatus {
   Scale running = Scale::None();  // the scale the images of the screen are made at; none before the renderer is up
   // The scale the settings ask for but that could not be made (video memory is short): the renderer
-  // keeps `running` and tries again; none while nothing is waiting for that.
+  // keeps `running` and tries again; none while nothing is waiting for that. Also the screen's scale
+  // that scale_cap.h lowered because the card's budget cannot hold it (`running` is the lowered one;
+  // nothing is tried again: it is weighed again when the window changes).
   Scale blocked = Scale::None();
 };
 // Written by the temporal system (render thread).
