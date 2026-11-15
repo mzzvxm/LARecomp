@@ -27,7 +27,8 @@
 // src/gpu/hlsl/hdr_tonemap_shoulder.hlsli of the HDR feature; it is not part of this code. CMake
 // embeds it into the library when the file exists (src/shaderpack/CMakeLists.txt, cache variable
 // LARECOMP_HDR_HLSLI), so the pack always matches the curve of the build that wrote it and the stamp
-// carries its hash (variants_hdr_scene_input). A build without the file has no HDR variant and the
+// carries its hash (variants_hdr_scene_input; of the text with LF line ends, so a checkout with CRLF files
+// gives the same value as one with LF files). A build without the file has no HDR variant and the
 // renderer stays at HDR stage 2 (which it allows).
 // ===========================================================================
 

@@ -143,7 +143,12 @@ VariantDef MakeHdrSceneVariantFromText(std::string_view hlsli_text) {
   def.id = kVariantHdrScene;
   def.name = "hdr_scene";
   def.version = kHdrSceneVariantVersion;
-  def.input_xxh3 = Xxh3(hlsli_text);
+  // The fingerprint is of the curve as the transform reads it (TransformToneMapHlsl: CRLF and lone CR are LF), not of
+  // the file's bytes. CMake embeds the file as the tree has it, so a Windows tree with CRLF files (git autocrlf) and a
+  // tree with LF files (a worktree, Linux) would give the pack tool and the game different values for the same curve,
+  // and the game would find a tool-made stamp stale and rebuild the variant pack. For an LF file the value is the same
+  // as before, so stamps made from LF trees stay valid.
+  def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text));
   def.pixel_shaders = {kPixelTarget};
   def.vertex_shaders.assign(std::begin(kVertexTargets), std::end(kVertexTargets));
   def.transform = [curve = std::string(hlsli_text)](const VariantShader&, std::string_view hlsl) {
