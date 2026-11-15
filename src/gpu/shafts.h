@@ -35,9 +35,11 @@
 //
 // WHAT: per frame, when it is on and the sun is where shafts show (below):
 //   sky     the half-size image of max(luma(colour) - threshold, 0) where the depth is the far plane
-//   blur    each texel marches (32 steps LOW, 64 HIGH) toward the sun's image position, adding up the
-//           sky image with a decay; rays blocked by anything that is not sky stay dark
-//   add     the blurred image times the sun's colour times the strength, added to the scene colour
+//   blur    each texel marches (32 steps on the Mid class, 64 on High: gpu_class.h SunShaftSteps) toward the
+//           sun's image position, adding up the sky image with a decay; rays blocked by anything that is
+//           not sky stay dark
+//   add     the blurred image times the sun's colour times the strength (the level's multiplier, below),
+//           added to the scene colour
 //           (ONE, ONE on every sample of the multisampled target, the alpha untouched)
 // Nothing is recorded, and nothing costs, in a frame where the sun gives no shafts.
 //
@@ -68,9 +70,12 @@
 // view (the pause view has no frame-to-frame camera here, and a lens that is sweeping is worse than
 // none).
 //
-// Settings: mcla_gpu_sun_shafts (auto, off, low, high; live; the pause menu's SUN SHAFTS row; `auto`
-// is gpu_class.h's) and the tuning cvars _intensity, _density, _threshold, _sky_depth, _view
-// (debug views), _early and _census, all debug-only.
+// Settings: mcla_gpu_sun_shafts (auto, off, light, default, strong, stronger, strongest: how strong the shafts are,
+// x1 to x5 of the built-in strength, off being the game's own picture; the old low and high are read as
+// default; live; the pause menu's SUN SHAFTS row; `auto` is gpu_class.h's: DEFAULT on Mid and High, OFF on
+// Low; shafts_level.h has the rule) and the tuning cvars _intensity (a fine multiplier on top of the level),
+// _steps (the ray steps, which the class chooses), _density, _threshold, _sky_depth, _view (debug views),
+// _early and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
 // made ahead on the host builder thread (host_precache.h) when the setting in force at the start uses
@@ -93,6 +98,7 @@
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
+#include "shafts_level.h"
 #include "shafts_sun.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
@@ -103,7 +109,8 @@ class PassTiming;
 
 class SunShafts {
  public:
-  enum class Mode : uint8_t { kOff, kLow, kHigh };
+  // How strong the shafts are (the setting; shafts_level.h): off, light, default, strong, stronger, strongest.
+  using Level = shafts_level::Level;
 
   // The destination of the game's mid-scene depth copy in the retail build, the ambient occlusion's
   // trigger too (ao.h kTriggerDestination): another build gives another address and then there are
@@ -124,7 +131,7 @@ class SunShafts {
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
   // True while the draw hooks have anything to do.
-  bool wants_draws() const { return mode_ != Mode::kOff; }
+  bool wants_draws() const { return level_ != Level::kOff; }
 
   // A prepared draw of the main view (play or pause/map, temporal_identities.h MatchMainView), with
   // the draw's own banks and its shaders' identities (the sky's draws tell where the sun is).
@@ -199,6 +206,7 @@ class SunShafts {
     bool sun_from_sky = false;     // the sun's place came from the sky's constant (else the light's)
     float tint[3] = {};            // the light's colour times its strength
     uint32_t steps = 0;
+    Level level = Level::kOff;     // the strength it was planned at
     float density = 0.9f;
     float decay = 0.96f;
     float noise_shift = 0.0f;
@@ -285,11 +293,11 @@ class SunShafts {
   void ListPrecache(const host_plan::Choice& choice);
   // Every frame while the shafts are on: lists the pipelines on a worker when the start did not (the
   // setting was switched on since), and turns the shafts off for this frame until they are all made.
-  void HoldUntilBuilt(Mode* mode);
+  void HoldUntilBuilt(Level* level);
   void Census();
 
   // Settings, read at the frame's start.
-  Mode mode_ = Mode::kOff;
+  Level level_ = Level::kOff;
   uint32_t census_every_ = 0;
   uint32_t off_frames_ = 0;
 
@@ -379,7 +387,7 @@ class SunShafts {
   // The anchor policy (shafts_anchor.h), the interval's tally and what the log has said once.
   shafts_anchor::Policy policy_;
   shafts_anchor::Tally interval_;
-  uint32_t last_mode_logged_ = ~0u;
+  uint32_t last_level_logged_ = ~0u;
   uint32_t missing_copy_logged_ = 0;
   bool first_run_logged_ = false;
   uint32_t census_frames_logged_ = 0;
