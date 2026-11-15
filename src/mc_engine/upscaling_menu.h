@@ -45,7 +45,7 @@
 // (at 1440p the list is 100% and 150%, at 4K it is 100% only). Values of the cvars that the lists do
 // not offer (0.5X, a larecomp.toml number, FSR 1's "custom" and "ultra_performance") stay as they are
 // and show as an entry of their own while the setting holds them, in order; stepping off one drops
-// it. A scale the video memory cannot hold says "TOO BIG (NN%)" for the share that does run.
+// it. A scale the video memory cannot hold says "LIMITED (NN%)" for the share that does run.
 //
 // A mode picked while the game runs is live: the scene is drawn at the new size from a frame
 // boundary, once the upscaler has made what it needs for it (the old one works until then: about

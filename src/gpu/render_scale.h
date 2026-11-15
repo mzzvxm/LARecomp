@@ -284,7 +284,8 @@ struct RenderScaleStatus {
   // The scale the settings ask for but that could not be made (video memory is short): the renderer
   // keeps `running` and tries again; none while nothing is waiting for that. Also the screen's scale
   // that scale_cap.h lowered because the card's budget cannot hold it (`running` is the lowered one;
-  // nothing is tried again: it is weighed again when the window changes).
+  // nothing is tried again: it is weighed again when the window changes). The pause menu's RENDER
+  // SCALE row says "LIMITED (NN%)" for the entry that asks for it.
   Scale blocked = Scale::None();
 };
 // Written by the temporal system (render thread).

@@ -589,7 +589,7 @@ UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes&
   }
   // The mode the settings ask for cannot run at this output. The DLSS mode that runs goes on if it
   // still can (a pick in the menu of a mode that cannot run changes nothing, as RENDER SCALE keeps the
-  // scale that runs when a larger one is too big); a start or an output change that left nothing
+  // scale that runs when a larger one is limited); a start or an output change that left nothing
   // running takes the nearest mode that can, toward higher quality first.
   UpscaleMode use = wanted;
   bool kept = false;
@@ -777,7 +777,7 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   }
   if (to_output == output_now) {
     // Nothing is asked that could not be made, but a screen's scale that the card's video memory cannot
-    // hold (scale_cap.h) was lowered to what runs: the menu says "TOO BIG (NN%)" about the scale the
+    // hold (scale_cap.h) was lowered to what runs: the menu says "LIMITED (NN%)" about the scale the
     // window asked for, as it does for a live change that failed.
     const bool lowered = render_choice_.capped && render_choice_.scale == output_now;
     PublishRenderScaleStatus(output_now, lowered ? render_choice_.uncapped : Scale::None());
@@ -808,7 +808,7 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   // while the path's context is, and the level changes once the path has settled (msaa_level.h).
   next_ = to;
   // The wait after a change that could not be made belongs to that change: another one (a smaller
-  // scale picked after "too big", another mode) is tried at once.
+  // scale picked after "limited", another mode) is tried at once.
   const uint64_t change_key = (uint64_t(1) << 63) | uint64_t(to) | uint64_t(to_mode) << 8 |
                               uint64_t(to_output.n) << 16;
   if (change_key != retry_key_) {
@@ -947,7 +947,7 @@ bool TemporalSystem::SwitchPath(plume::RenderCommandList* list, Upscaler to, Ups
                                           : kSwitchRetry;
     retry_after_ = began + retry_delay_;
     if (output != output_before) {
-      PublishRenderScaleStatus(output_before, output);  // the menu says the scale is too big
+      PublishRenderScaleStatus(output_before, output);  // the menu says the scale is limited
     }
     if (!switch_failure_logged_) {
       switch_failure_logged_ = true;
