@@ -57,8 +57,8 @@ struct AutoRow {
 const AutoRow kAuto[] = {
     {Pass::kContact, {"off", "low", "high"}},
     {Pass::kBounce, {"off", "off", "off"}},
-    // the car self-reflections: off on Low, low (the specular occlusion) on Mid, high (and the reflection) on High
-    {Pass::kCarRefl, {"off", "low", "high"}},
+    // (the car self-reflections are not here: their one level is `on`, which the plan reads as its high, and the old low and high are
+    // read as on, so they have a check of their own, CheckCarRefl)
     // the ambient occlusion: off on Low, low on Mid, high on High (gpu_class.h: AO-DESIGN.md section 5)
     {Pass::kOcclusion, {"off", "low", "high"}},
 };
@@ -125,8 +125,10 @@ void CheckAutoPasses() {
       Check(bounce.level == Level::kOff && bounce.unknown && !bounce.automatic,
             "bounce light " + where + ": off, unknown");
       const Choice car = Resolve(Pass::kCarRefl, kClasses[k], true, junk);
-      Check(car.level == Level::kOff && car.unknown && !car.automatic,
-            "car self-reflections " + where + ": off, unknown");
+      const bool car_value = std::string(junk) == "on";  // `on` is the car self-reflections' own level
+      Check(car_value ? (car.level == Level::kHigh && !car.unknown && !car.automatic)
+                      : (car.level == Level::kOff && car.unknown && !car.automatic),
+            "car self-reflections " + where + (car_value ? ": on, a value" : ": off, unknown"));
       const Choice ao = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
       Check(ao.level == Level::kOff && ao.unknown && !ao.automatic,
             "ambient occlusion " + where + ": off, unknown");
@@ -145,7 +147,7 @@ void CheckAutoPasses() {
           "sun shafts auto does not wait for the class");
     Check(Resolve(Pass::kContact, kClasses[k], false, "auto").level == LevelOf(kAuto[0].cells[k]),
           "contact shadows auto does not wait for the class");
-    Check(Resolve(Pass::kCarRefl, kClasses[k], false, "auto").level == LevelOf(kAuto[2].cells[k]),
+    Check(Resolve(Pass::kCarRefl, kClasses[k], false, "auto").level == (k == 0 ? Level::kOff : Level::kHigh),
           "car self-reflections auto does not wait for the class");
   }
 }
@@ -270,27 +272,37 @@ void CheckPlans() {
 // The car self-reflections in the plan: they stand alone (no other pass is needed for them, and they need none of the
 // occlusion's images), so the plan holds them on wherever the setting says, with the other four as they were.
 void CheckCarRefl() {
+  // One level, `on` (the plan's high): low and high cost the same (perf/out/FXCOST-B6.txt), so the setting dropped low; an old
+  // low or high is read as on and flagged legacy. Level::kLow is never what the setting comes to.
   struct Row {
     const char* car;
     GpuClass cls;
     Level want;
     bool automatic;
+    bool legacy;
     const char* what;
   };
   const Row rows[] = {
-      {"auto", GpuClass::kLow, Level::kOff, true, "auto on Low: off (an integrated GPU does without)"},
-      {"auto", GpuClass::kMid, Level::kLow, true, "auto on Mid: low (the specular occlusion)"},
-      {"auto", GpuClass::kHigh, Level::kHigh, true, "auto on High: high (the occlusion and the reflection)"},
-      {"off", GpuClass::kHigh, Level::kOff, false, "off on High"},
-      {"low", GpuClass::kLow, Level::kLow, false, "low on Low: the player's own"},
-      {"high", GpuClass::kLow, Level::kHigh, false, "high on Low: the player's own"},
-      {"High", GpuClass::kMid, Level::kHigh, false, "High (capital) on Mid"},
-      {"hgih", GpuClass::kHigh, Level::kOff, false, "a word that is not a value: off"},
+      {"auto", GpuClass::kLow, Level::kOff, true, false, "auto on Low: off (an integrated GPU does without)"},
+      {"auto", GpuClass::kMid, Level::kHigh, true, false, "auto on Mid: on (it was low; the two cost the same)"},
+      {"auto", GpuClass::kHigh, Level::kHigh, true, false, "auto on High: on"},
+      {"AUTO", GpuClass::kMid, Level::kHigh, true, false, "AUTO (capitals) on Mid: on"},
+      {"off", GpuClass::kHigh, Level::kOff, false, false, "off on High"},
+      {"on", GpuClass::kLow, Level::kHigh, false, false, "on on Low: the player's own"},
+      {"ON", GpuClass::kMid, Level::kHigh, false, false, "ON (capitals) on Mid"},
+      {"low", GpuClass::kLow, Level::kHigh, false, true, "low on Low: an old value, read as on"},
+      {"low", GpuClass::kHigh, Level::kHigh, false, true, "low on High: an old value, read as on"},
+      {"LOW", GpuClass::kMid, Level::kHigh, false, true, "LOW (capitals) on Mid: read as on"},
+      {"high", GpuClass::kLow, Level::kHigh, false, true, "high on Low: an old value, read as on"},
+      {"High", GpuClass::kMid, Level::kHigh, false, true, "High (capital) on Mid: read as on"},
+      {"hgih", GpuClass::kHigh, Level::kOff, false, false, "a word that is not a value: off"},
   };
   for (const Row& row : rows) {
     const Plan plan = Decide(row.cls, true, "high", "auto", "auto", "auto", row.car);
     Check(plan.of(Pass::kCarRefl).level == row.want, std::string("car self-reflections ") + row.what + ": level");
+    Check(plan.of(Pass::kCarRefl).level != Level::kLow, std::string("car self-reflections ") + row.what + ": never the low level");
     Check(plan.of(Pass::kCarRefl).automatic == row.automatic, std::string("car self-reflections ") + row.what + ": automatic");
+    Check(plan.of(Pass::kCarRefl).legacy == row.legacy, std::string("car self-reflections ") + row.what + ": legacy");
     // The other four do not change with it.
     const Plan without = Decide(row.cls, true, "high", "auto", "auto", "auto");
     for (const Pass p : {Pass::kOcclusion, Pass::kContact, Pass::kShafts, Pass::kBounce}) {
@@ -305,9 +317,14 @@ void CheckCarRefl() {
         "car self-reflections do not need the ambient occlusion");
   CheckEq(std::string(PassName(Pass::kCarRefl)), "car self-reflections", "PassName(car self-reflections)");
   CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kMid, true, "auto"), GpuClass::kMid),
-          "car self-reflections low (auto on the mid class)", "Describe: car self-reflections, auto on Mid");
+          "car self-reflections on (auto on the mid class)", "Describe: car self-reflections, auto on Mid");
   CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kHigh, true, "off"), GpuClass::kHigh),
           "car self-reflections off (set)", "Describe: car self-reflections set to off");
+  CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kHigh, true, "on"), GpuClass::kHigh),
+          "car self-reflections on (set)", "Describe: car self-reflections set to on");
+  CheckEq(Describe(Pass::kCarRefl, Resolve(Pass::kCarRefl, GpuClass::kMid, true, "low"), GpuClass::kMid),
+          "car self-reflections on (an old value of the setting (low or high): read as on)",
+          "Describe: car self-reflections, an old low");
   CheckEq(std::string(mcla::gpu::gpu_class::CvarName(EffectOf(Pass::kCarRefl))), "mcla_gpu_car_selfrefl",
           "the car self-reflections' pass reads the cvar's own cell of the table");
 }

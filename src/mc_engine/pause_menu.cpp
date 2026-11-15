@@ -1754,17 +1754,19 @@ const ItemDef kPerfLodItems[] = {
 const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
 // Ambient occlusion (gpu/ao.h, live): AUTO (the default), off, half resolution, full resolution. AUTO
-// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, LOW on a
-// discrete one with under 5.5 GiB, HIGH on the rest (gpu/gpu_class.h). The row is "AMBIENT OCCLUSION"
-// (17 characters) with a value of at most 11 ("AUTO (HIGH)"), 28 together, under the page's 40.
+// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
+// discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Nothing in the graphics settings is called
+// low (owner, 2026-11-14): the stored values stay off / low / high (a larecomp.toml or a command line keeps its quality) and
+// the row shows low as HIGH and high as ULTRA (gpu_class.h ShownWord). The row is "AMBIENT OCCLUSION"
+// (17 characters) with a value of at most 12 ("AUTO (ULTRA)"), 29 together, under the page's 40.
 const char* const kNativeAoVals[]  = {"auto", "off", "low", "high"};
-const char* const kNativeAoNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string AoLabel(int i) {
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kAmbientOcclusion);
     case 1:  return "OFF";
-    case 2:  return "LOW";
-    default: return "HIGH";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
     }
 }
 constexpr RowDynamics kAoDynamics = {.str_label = AoLabel};
@@ -1798,17 +1800,17 @@ std::string ShadowFilterLabel(int i) {
 }
 constexpr RowDynamics kShadowFilterDynamics = {.str_label = ShadowFilterLabel};
 // Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
-// and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, LOW on
-// a discrete one with under 5.5 GiB, HIGH on the rest (gpu/gpu_class.h). The row is "CONTACT SHADOWS"
-// (15 characters) with a value of at most 11 ("AUTO (HIGH)").
+// and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on
+// a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / low / high, shown OFF / HIGH /
+// ULTRA, as the ambient occlusion's. The row is "CONTACT SHADOWS" (15 characters) with a value of at most 12 ("AUTO (ULTRA)").
 const char* const kNativeContactVals[]  = {"auto", "off", "low", "high"};
-const char* const kNativeContactNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+const char* const kNativeContactNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string ContactLabel(int i) {
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kContactShadows);
     case 1:  return "OFF";
-    case 2:  return "LOW";
-    default: return "HIGH";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
     }
 }
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
@@ -1843,17 +1845,18 @@ std::string ShaftsLabel(int i) {
 constexpr RowDynamics kShaftsDynamics = {.str_label = ShaftsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
 // stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
-// until its cost is measured (gpu/gpu_class.h); or OFF, LOW (a coarser search) or HIGH (the full one). It
+// until its cost is measured (gpu/gpu_class.h); or OFF, HIGH (a coarser search) or ULTRA (the full one): the stored values
+// off / low / high, shown as the ambient occlusion's are. It
 // is made from the ambient occlusion's own passes, so the row is grey while the occlusion is off, as AO
-// INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 11 ("AUTO (HIGH)").
+// INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 12 ("AUTO (ULTRA)").
 const char* const kNativeSsgiVals[]  = {"auto", "off", "low", "high"};
-const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 std::string SsgiLabel(int i) {
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kSsgi);
     case 1:  return "OFF";
-    case 2:  return "LOW";
-    default: return "HIGH";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
     }
 }
 constexpr RowDynamics kSsgiDynamics = {.str_label = SsgiLabel, .enabled = AoOn};
@@ -1916,19 +1919,19 @@ std::string CarReflectionLabel(int i) {
 }
 constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live): the player's car paint reflects its own body, the wing
-// in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. AUTO picks by the graphics
-// card and says what it comes to ("AUTO (HIGH)"): OFF on an integrated GPU, LOW on a discrete one with under 5.5 GiB, HIGH on the
-// rest (gpu/gpu_class.h); or OFF, LOW (the reflection darkened where the body shades it) or HIGH (that, and the car's own colour
-// in the reflection). It works in the game, behind the pause menu and in the garage, not on the map. The label is "CAR
-// SELF-REFLECTIONS" (20 characters, the page's widest with COMPARE KEY (NUMPAD)) with a value of at most 11 ("AUTO (HIGH)").
-const char* const kNativeCarSelfReflVals[]  = {"auto", "off", "low", "high"};
-const char* const kNativeCarSelfReflNames[] = {"AUTO", "OFF", "LOW", "HIGH"};
+// in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One level, ON (the stored
+// word is `on`; the old low and high, which cost the same, are read as on by the renderer, and a row on one of them shows AUTO
+// until it is stepped, as the sun shafts' row does for the old low and high). AUTO picks by the graphics card and says what it
+// comes to ("AUTO (ON)"): OFF on an integrated GPU, ON on a discrete one (gpu/gpu_class.h). It works in the game, behind the pause
+// menu and in the garage, not on the map. The label is "CAR SELF-REFLECTIONS" (20 characters, the page's widest with COMPARE KEY
+// (NUMPAD)) with a value of at most 10 ("AUTO (OFF)").
+const char* const kNativeCarSelfReflVals[]  = {"auto", "off", "on"};
+const char* const kNativeCarSelfReflNames[] = {"AUTO", "OFF", "ON"};
 std::string CarSelfReflLabel(int i) {
     switch (i) {
     case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kCarSelfRefl);
     case 1:  return "OFF";
-    case 2:  return "LOW";
-    default: return "HIGH";
+    default: return "ON";
     }
 }
 constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel};
@@ -1973,7 +1976,7 @@ const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "
 // kGfxQualityItems below.)
 // One ANISOTROPIC row per renderer (the same name and place), MSAA on both
 // (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
-// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "AUTO (HIGH)" (11, the
+// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "AUTO (ULTRA)" (12, the
 // ambient occlusion row's), both under the page's widest ("Page width").
 const ItemDef kPictureItems[] = {
 #if defined(LARECOMP_HAS_GPU)
@@ -2009,8 +2012,8 @@ const ItemDef kPictureItems[] = {
 // the cvars are the rows' own as they were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT
 // OCCLUSION is off (it is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
 // effect above that the compare key flicks off and on (see kCompareVals).
-// Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (HIGH)" (11), 27 together
-// ("AUTO (ULTRA)" does not happen: AUTO is game or high), under the 41 a page can take ("Page width" above
+// Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (ULTRA)" (12: the contact shadows' and the
+// bounce light's AUTO on a strong card), 28 together, under the 41 a page can take ("Page width" above
 // ItemRowLabel); COMPARE KEY is the one row with a suffix, its key's name (33 at most, see kCompareVals).
 // 11 rows of the 24 a page can hold. SUN SHAFTS has the longest value, "AUTO (DEFAULT)" (14), with its 10-character
 // label: 24 together. BOUNCE LIGHT STRENGTH (21) with STRONGEST (9) is the widest pair of a setting at 30.
@@ -2035,7 +2038,7 @@ const ItemDef kGfxQualityItems[] = {
                                 "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kCarReflectionDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
-                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 4),
+                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 3),
                             &kCarSelfReflDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
                                 kNativeShaftsVals, kNativeShaftsNames, 7),
@@ -2924,12 +2927,12 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // it goes in, in each state a suffix can be in; the upscaling rows' states are
 // counted in upscaling_menu.cpp, the display rows' in display_menu.h.
 // DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 11 ("AUTO (HIGH)", the
+// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 12 ("AUTO (ULTRA)", the
 // ambient occlusion row's AUTO; the others' longest is "DEFAULT", 7).
 // The GRAPHICS QUALITY page (kGfxQualityItems, 11 rows, one suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"),
 // then "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CONTACT SHADOWS", "TRAFFIC SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and
-// "SHADOW FILTER" 13, "BOUNCE LIGHT" 12, "SUN SHAFTS" 10; values at most 11 ("AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), SUN SHAFTS'
-// "AUTO (DEFAULT)" 14 and BOUNCE LIGHT STRENGTH's "STRONGEST" 9: 31 together for CAR SELF-REFLECTIONS, 30 for BOUNCE LIGHT
+// "SHADOW FILTER" 13, "BOUNCE LIGHT" 12, "SUN SHAFTS" 10; values at most 12 ("AUTO (ULTRA)", "AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), SUN SHAFTS'
+// "AUTO (DEFAULT)" 14 and BOUNCE LIGHT STRENGTH's "STRONGEST" 9: 30 together for CAR SELF-REFLECTIONS ("AUTO (OFF)" 10), 30 for BOUNCE LIGHT
 // STRENGTH. The last row, COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most (20, under 23),
 // its values at most 17 ("AMBIENT OCCLUSION", under 18). The page's widest label (21) and widest value (17) come
 // to 38, under 41.

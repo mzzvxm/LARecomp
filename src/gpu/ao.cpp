@@ -42,9 +42,11 @@ REXCVAR_DEFINE_STRING(
     "from the picture's depth, only on the sky light and not on the sun's (the game's own "
     "constants say how much of a surface's light is which). off, low (half resolution, 2 slices), "
     "high (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
-    "low on a discrete one with less than 5.5 GiB of video memory, high on the rest. Costs graphics "
-    "card time, high more than low. A value an older larecomp.toml holds (off, low, high) is kept as "
-    "it is. Also drawn behind the pause menu and on the map, so a change made there shows at once. "
+    "low on a discrete one with less than 5.5 GiB of video memory, high on the rest. The pause menu "
+    "and the launcher show low as HIGH and high as ULTRA (nothing is called low there); the values "
+    "stay as they are here, so a value an older larecomp.toml holds (off, low, high) keeps its quality. "
+    "Costs graphics card time, high more than low. "
+    "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
     "Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -150,7 +152,9 @@ REXCVAR_DEFINE_STRING(
     "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
     "They are left out at night and in rain. off, low (8 steps), high (16 steps) or auto (the "
     "default): off on an integrated graphics card, low on a discrete one with less than 5.5 GiB of "
-    "video memory, high on the rest. They are worked out at the size the game is drawn at, so a "
+    "video memory, high on the rest. The pause menu and the launcher show low as HIGH and high as "
+    "ULTRA (nothing is called low there); the values stay as they are here, so an older larecomp.toml "
+    "keeps its quality. They are worked out at the size the game is drawn at, so a "
     "higher render scale gives sharper shadows (only low, with the ambient occlusion not on high, "
     "works at half that size). Costs graphics card time, high more than low. Also drawn behind the "
     "pause menu and on the map. Live.")
@@ -248,7 +252,9 @@ REXCVAR_DEFINE_STRING(
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
     "was. Needs ambient occlusion (mcla_gpu_ao) on. off, low (a coarser search: 2 directions and 2 steps "
     "each; half resolution where the occlusion is low too), high (3 and 3 at full resolution) or auto (the "
-    "default): off on every graphics card for now, until its cost is measured. Costs graphics card time, "
+    "default): off on every graphics card for now, until its cost is measured. The pause menu and the "
+    "launcher show low as HIGH and high as ULTRA (nothing is called low there); the values stay as they "
+    "are here, so an older larecomp.toml keeps its quality. Costs graphics card time, "
     "high more than low. Also drawn behind the pause menu and in the garage, not on the map. Live.")
     .allowed({"auto", "off", "low", "high"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
