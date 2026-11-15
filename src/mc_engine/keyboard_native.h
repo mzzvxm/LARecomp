@@ -86,11 +86,3 @@ bool Hook_ControlCaptureKey(PPCRegister& r11, PPCRegister& r28);
 // a keyboard binding gets a key cap glyph, or its name. Returning true jumps to the
 // function own `blr` at 0x82679BD4 with r3 = the label string.
 bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
-
-// The neutral pad (the rule is NeutralPadRule in kbm_input.h). The wrappers of XamInputGetCapabilities (sub_8275CB70) and XamInputGetState
-// (sub_8275CB78) in wheel/wheel_fake.cpp call these right after the SDK answered, with r3 = the SDK's result (0 = connected): with no pad ever
-// seen the guest is told "connected, gamepad, at rest" (r3 = 0, the structure written), so the game never opens its pause menu for a missing
-// controller; a pad that was here and is gone is reported as it is (the game pauses) until the first key or mouse button. User 0 only. Do
-// nothing with keyboard_native off.
-void KbmNeutralPadCaps(uint8_t* base, uint32_t user, uint32_t caps, uint64_t& r3);
-void KbmNeutralPadState(uint8_t* base, uint32_t user, uint32_t state, uint64_t& r3);
