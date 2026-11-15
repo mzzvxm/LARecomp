@@ -1375,7 +1375,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
 
 void TemporalSystem::ResetRun() {
   ran_last_ = false;
-  last_step_known_ = false;
+  last_cut_motion_.Clear();
   pending_ready_ = false;
   jitter_index_ = 0;
   misses_ = 0;
@@ -1550,7 +1550,7 @@ void TemporalSystem::StartRun(temporal::View view) {
   run_view_ = view;
   ran_last_ = false;
   jitter_hold_.Clear();  // what the other view's frames did says nothing of this one's
-  last_step_known_ = false;
+  last_cut_motion_.Clear();
   last_dispatch_frame_ = ~uint64_t(0);
   scene_colors_ = {};
   post_unserved_run_ = 0;
@@ -1767,14 +1767,22 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
         last_output_size_[1] != fr.output_size[1]) {
       reset |= kResetSize;
     }
-    // CHECK: how often this fires on the map's zoom and pan and on the pause camera's swing (the
-    // summary's "camera cuts" for the pause/map view, and the cut lines of "history starts again"):
-    // the rule's 25 units are about 8 pixels at the map's height, so a quick pan may restart the
-    // history more than it needs to (the vectors are exact for a camera move over a still world).
-    cut = temporal::TestCut(camera, last_camera_, last_step_known_ ? last_step_ : nullptr);
+    // The rule (temporal_camera.h) judges a step against the steps before it and against the lens:
+    // the floor of a jump follows the near plane (about 900 m at the map's, about 9 m in play), a
+    // turn's follows the field of view, and a lens change must beat 15%. Each cut logs its reason at
+    // debug level (below), the first of them at info with the history restart.
+    // CHECK: how often this fires on the map's zoom and pan, the garage turntable, the cutscenes'
+    // shot changes and the pause camera's swing (the summary's "camera cuts" per view, and the cut
+    // lines of "history starts again"; the debug lines say which clause and by how much).
+    cut = temporal::TestCut(camera, last_camera_, last_cut_motion_);
     fr.cut = cut;
     if (cut.fires) {
       reset |= kResetCut;
+      REXLOG_DEBUG("{} cut in frame {} ({}): {} (camera at {:.1f}, {:.1f}, {:.1f}, field of view "
+                   "{:.2f} deg; near {:.2f})",
+                   kPrefix, fr.frame, temporal::ViewName(fr.view), temporal::CutReason(cut),
+                   camera.position[0], camera.position[1], camera.position[2],
+                   camera.fov_y * 180.0 / kPi, camera.near_plane);
     }
   }
   if (!camera.previous_valid) {
@@ -1809,22 +1817,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
     REXLOG_INFO("{} history starts again in frame {} ({}): {}{} (camera at {:.1f}, {:.1f}, {:.1f}, "
                 "field of view {:.2f} deg){}",
                 kPrefix, fr.frame, temporal::ViewName(fr.view), ResetText(reset),
-                (reset & kResetCut)
-                    ? std::format(" ({}{}{}: moved {:.1f}, {:.1f} away from the {:.1f} the step "
-                                  "before predicts (allowed {:.1f}); turn cosine {:.4f}; field of "
-                                  "view changed {:.1f}%)",
-                                  cut.by_distance ? "distance" : "",
-                                  cut.by_turn ? (cut.by_distance ? " + turn" : "turn") : "",
-                                  cut.by_fov ? (cut.by_distance || cut.by_turn ? " + field of view"
-                                                                               : "field of view")
-                                             : "",
-                                  cut.distance, cut.deviation,
-                                  last_step_known_ ? std::sqrt(last_step_[0] * last_step_[0] +
-                                                               last_step_[1] * last_step_[1] +
-                                                               last_step_[2] * last_step_[2])
-                                                   : 0.0,
-                                  cut.tolerance, cut.cosine, 100.0 * cut.fov_change)
-                    : std::string(),
+                (reset & kResetCut) ? std::format(" ({})", temporal::CutReason(cut)) : std::string(),
                 camera.position[0], camera.position[1], camera.position[2],
                 camera.fov_y * 180.0 / kPi,
                 reset_lines_ == kMaxResetLines ? " (the last of these lines; the summaries count)"
@@ -1980,12 +1973,11 @@ void TemporalSystem::EndFrame() {
 
   // The run for the next frame. The camera's step first: it needs the camera of the frame before.
   if (ran && ran_last_ && !(fr.reset & kResetTime)) {
-    for (int i = 0; i < 3; ++i) {
-      last_step_[i] = fr.camera.position[i] - last_camera_.position[i];
-    }
-    last_step_known_ = true;
+    // The step's measures from the cut test of this frame; a cut clears them (a cut's step is no
+    // motion to repeat).
+    last_cut_motion_.Accept(fr.cut);
   } else {
-    last_step_known_ = false;
+    last_cut_motion_.Clear();
   }
   ran_last_ = ran;
   if (ran) {

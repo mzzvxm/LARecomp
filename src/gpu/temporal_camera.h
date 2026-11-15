@@ -17,23 +17,60 @@
 // ===========================================================================
 
 #include <cstdint>
+#include <string>
 
 #include "temporal_math.h"
 
 namespace mcla::gpu::temporal {
 
-// The camera cut rule (F4-DESIGN.md 2.5, the fork's, made velocity-aware): the camera jumped, turned
-// more than 30 degrees (the cosine of the angle between the forward vectors below 0.866), or the
-// vertical field of view changed by more than 5%.
+// The camera cut rule (F4-DESIGN.md 2.5, the fork's, made speed- and scale-aware): the camera jumped,
+// turned too far, or changed its lens too fast, each time judged against what the camera was doing
+// in the steps before and against how much of the picture a step is worth.
 //
-// A jump is a step of more than 25 units that the step before does not predict: the game's opening
-// fly-in moves the camera 28 units a frame growing to 100 and more, smoothly (the first form of
-// the rule, "moved more than 25 units", fired on every frame of it), while a teleport (the map
-// warp, 1,600 units) is one step nothing predicted. The prediction is the previous step; the
-// allowed difference is 25 units plus half the previous step.
-inline constexpr double kCutDistance = 25.0;
-inline constexpr double kCutSpeedTolerance = 0.5;
-inline constexpr double kCutCosine = 0.866;
+// WHY A RULE ON THE CAMERA ALONE. The motion vectors are exact for any camera move over a still world
+// (they come from this renderer's own camera history), so history only has to start again where the
+// pictures stop being the same view: a teleport, a shot change, a camera handed over. The frame has
+// no cheap measure of how much the new picture shares with the old one, so the rule estimates it
+// from the poses, and each clause names the number it compares:
+//
+//   JUMP   a step longer than any of the last two and farther than they explain. Explained is "as
+//          far as one of the last two steps" (two, because the pause camera and some cutscenes
+//          step every second frame: 0, d, 0, d). Allowed: a floor plus the larger of the steps
+//          that were not cuts (a step may be twice the recent one: frame times jitter). The floor
+//          is the distance that shifts a quarter of the frame's height at a scene distance
+//          (kCutShift, kCutDepth): at least kCutDepth, or the lens' near plane when that is
+//          larger (the map camera's near plane is about 8,000 and the floor about 900 m, where
+//          the drive's 0.2 gives about 9 m at a 25 degree field of view). The lens is the frame
+//          before's: the one the vectors are measured against.
+//   TURN   the same for the full rotation (axes, so a roll counts). Floor: 0.6 of the horizontal
+//          field of view, between 15 and 30 degrees (30 was the whole rule).
+//   LENS   the same for the vertical field of view, floor 15% (5% before: the pause camera's zoom
+//          starts with 9% and the camera's return after a race with 10% steps).
+//
+// A jump or turn that follows the camera's own steps is not a cut: the game's opening fly-in moves
+// the camera 28 units a frame growing to 100 and more, smoothly (the first form of the rule,
+// "moved more than 25 units", fired on every frame of it), while a teleport (the map warp, 1,600
+// units) is one step nothing predicted. The step of a cut widens nothing (CutMotion::Accept): a
+// second, different cut right after it is judged as if the camera had stood still.
+//
+// What was measured (ports/run: the drive's camera traces cam-*/cam.csv and cm2-*/camera.csv, the
+// lens and cut lines of um-race-dlss-before, um-hint-fsr, t1-on-race): the drive's largest step
+// away from the previous one, outside the teleport, is 2.9 m (a frame-time hitch); the camera that
+// settles after the teleport takes steps of 4.7 m, 3.0 m, 1.8 m; a cutscene's shot changes move
+// 9 to 14 m with 47 to 173 degrees of turn; the pause camera opens with a 9% and 6% lens step and
+// the camera leaves a race with 10, 9, 7 and 6% steps; at the end of the opening fly-in a 65 ms
+// stall makes the camera's step 3.6 times the one before (129 m after 36), and the steps after it
+// follow the frames' lengths (14, 33, 52 m): only the stall's own step is a jump, not the ones
+// that come after it.
+inline constexpr double kCutShift = 0.25;          // JUMP floor: this fraction of the frame's height
+inline constexpr double kCutDepth = 80.0;          // ... at least this scene distance (metres)
+inline constexpr double kCutSpeedTolerance = 1.0;  // allowed on top of the floor: this much of the recent step
+inline constexpr double kCutTurnFraction = 0.6;    // TURN floor: this fraction of the horizontal field of view
+inline constexpr double kCutTurnMin = 15.0 * 3.14159265358979323846 / 180.0;
+inline constexpr double kCutTurnMax = 30.0 * 3.14159265358979323846 / 180.0;
+inline constexpr double kCutFovFloor = 0.15;       // LENS floor: relative change of the vertical field of view
+// The old 5% lens limit, still the one the occlusion (ao.cpp) holds a pause/map view back for until
+// its lens is steady; the cut rule's own floor is kCutFovFloor.
 inline constexpr double kCutFov = 0.05;
 
 struct Camera {
@@ -79,22 +116,60 @@ const char* RejectName(Reject reject);
 Reject ExtractCamera(const uint8_t* ps_bank, uint32_t fetch_width, uint32_t fetch_height,
                      uint64_t frame, Camera* out);
 
-// The cut rule between two consecutive frames' cameras. `previous_step` is the position change of
-// the step before (three doubles), or null when it is not known (the first step of a run): the
-// camera is then predicted to stand still.
+struct Cut;
+
+// What the camera did in the steps before the one being judged: the last two position steps, turns
+// and lens changes, newest first. The caller keeps one between frames (the temporal system's run,
+// the occlusion's history) and feeds it TestCut, then Accept with the result.
+struct CutMotion {
+  int steps = 0;               // how many of the entries below are known: 0, 1 or 2
+  double step[2][3] = {};      // position now minus position before
+  double turn[2] = {};         // radians, the full rotation between the frames
+  double fov[2] = {};          // relative change of the vertical field of view (absolute value)
+  bool cut[2] = {};            // the step was itself a cut
+
+  void Clear() { *this = CutMotion{}; }
+  // After a frame, with the result of its test. The step is remembered, a cut's too, but a cut's
+  // step only explains a repeat of itself (a camera that goes on moving that way, every second
+  // frame or not): it does not widen what the next step is allowed, so a different cut right
+  // after a cut is still a cut. (A camera that takes the same 1,600 m step twice is a fast pan.)
+  void Accept(const Cut& result);
+};
+
+// The cut rule between two consecutive frames' cameras. Each clause reports what it measured, the
+// floor it needs to pass and what the steps before explain, so the log can say why (CutReason).
 struct Cut {
   bool fires = false;
   bool by_distance = false;  // the clauses that fired (a cut may have several)
   bool by_turn = false;
   bool by_fov = false;
+  // The jump clause. All in the game's units (metres).
   double distance = 0.0;     // units the position moved (this step)
-  double deviation = 0.0;    // units this step is away from the predicted one
-  double tolerance = 0.0;    // what the deviation may be
-  double cosine = 1.0;       // between the forward vectors
-  double fov_change = 0.0;   // relative
+  double deviation = 0.0;    // units this step is away from the nearest predicted one
+  double predicted = 0.0;    // length of that prediction (an earlier step; 0: the camera stood still)
+  double floor = 0.0;        // the least a jump has to be, from the lens (kCutShift, kCutDepth)
+  double tolerance = 0.0;    // what the deviation may be: floor + the larger recent step
   double step[3] = {};       // position now minus position before
+  // The turn clause, radians.
+  double turn = 0.0;         // the full rotation (a roll counts); the forward vectors alone when the axes are unknown
+  double turn_deviation = 0.0;
+  double turn_floor = 0.0;
+  double turn_tolerance = 0.0;
+  double cosine = 1.0;       // between the forward vectors (the old measure, kept for the logs)
+  // The lens clause, relative.
+  double fov_change = 0.0;
+  double fov_deviation = 0.0;
+  double fov_floor = 0.0;
+  double fov_tolerance = 0.0;
 };
+Cut TestCut(const Camera& now, const Camera& before, const CutMotion& motion);
+// The earlier form: only the position change of the step before is known (three doubles), or null
+// when it is not (the first step of a run: the camera is then predicted to stand still). The
+// turn and the lens have no memory, so they are judged from their floors alone.
 Cut TestCut(const Camera& now, const Camera& before, const double* previous_step);
+
+// One line of why a cut fired (the clauses that did, with the numbers), for the log.
+std::string CutReason(const Cut& cut);
 
 // Guest clip space to guest pixels as the game's c69 block applies it (the census, CHECK 3): row
 // vectors, x_pix = w/2 x + w/2 clip_w, y_pix = h/2 clip_w - h/2 y, depth and w columns kept.

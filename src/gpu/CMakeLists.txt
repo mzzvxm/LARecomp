@@ -75,6 +75,7 @@ add_library(larecomp_gpu OBJECT
     temporal.cpp
     temporal_backend.cpp
     temporal_camera.cpp
+    temporal_cut.cpp
     temporal_mv.cpp
     texture_decode.cpp
     texture_decode_pool.cpp
@@ -138,6 +139,11 @@ add_executable(larecomp_temporal_menu_test EXCLUDE_FROM_ALL temporal_menu_test.c
 # The car self-reflection's rules (car_selfrefl_rules.h: the modes, the matrix, the constants, the depth linearisation) likewise:
 #   cmake --build <dir> --target larecomp_car_selfrefl_rules_test, then run src/gpu/larecomp_car_selfrefl_rules_test.
 add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_rules_test.cpp)
+# The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
+# sequences recorded from the game's logs and made up:
+#   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
+#   (exit 0 = passed; with a camera trace csv as the argument it also reports the cuts in that trace).
+add_executable(larecomp_camera_cut_test EXCLUDE_FROM_ALL camera_cut_test.cpp temporal_cut.cpp)
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
