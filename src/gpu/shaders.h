@@ -39,19 +39,24 @@
 // compiled, because the variants differ in their outputs, which a
 // specialization constant cannot change.
 //
-// HDR scene variants (stage 3 of the HDR output, hdr_tonemap.h): a second, optional file next to
-// the pack (in the folder the main pack came from, folder()), mcla_shaders_hdr.v1.pack, built from
-// the same HLSL tree (the layout is in shaderpack/pack_format.h; the builder is src/shaderpack's
-// hdr_variant step, tools/build_hdr_variants.py for development: neither is part of the game's
-// content, they work on the game's translated shaders). It carries, for the pixel shaders the HDR output draws again into a float image (the
-// game's tone map), a third blob per backend -- the shader with its curve and its encode changed
-// for values above white -- keyed by the same identity, together with the identity of the vertex
-// shaders it is drawn with. A pipeline key names it with ps_variant kHdrVariant. The pack is not
-// the main one's contract: the SharedConstants block stays 608 bytes and the variant reads 16
-// bytes after it that only the variant draws upload (constants.h HdrSceneConstants). A missing,
-// malformed or foreign file leaves the HDR output at stage 2 (the scene at paper white). The
-// renderer loads it right after the main pack is attached (LoadHdrVariants), and has_hdr_variants()
-// says it is usable: one atomic flag, set last (release) and read first (acquire), as attached().
+// Pixel shader variants: a second, optional file next to the pack (in the folder the main pack came
+// from, folder()), mcla_shaders_variants.v2.pack, built from the same HLSL tree (the layout is in
+// shaderpack/pack_format.h; the builder is src/shaderpack's variant step, variant_pack.h: it works on the
+// game's translated shaders, none of it is part of the game's content). It carries, for pixel shaders the
+// renderer can draw with another version of their text, a blob per backend of that version, keyed by the
+// same identity and a variant id: the HDR scene's tone map (kHdrVariant, hdr_tonemap.h: its curve and its
+// encode changed for values above white, with the identity of the vertex shaders it is drawn with) and the
+// bloom's Gaussians at a render scale (kBloomVariant, pipelines.cpp), the environment map's level pass and
+// reduction at the map's scale (kEnvVariant, pipelines.cpp) and the sun shadow collector's soft lookup
+// (kShadowFilterVariant, pipelines.cpp, shadow_filter.h). A pipeline key names one with
+// ps_variant. The pack is not the main one's contract: the SharedConstants block stays 608 bytes and a
+// variant with constants of its own reads them after it (the HDR tone map: constants.h
+// HdrSceneConstants; the shadow filter: shadow_filter.h ShadowFilterConstants; uploaded only by the
+// draw that uses it). A missing, malformed or foreign file leaves
+// every draw with the game's own shader: the HDR output at stage 2 (the scene at paper white), the bloom
+// at the guest's taps. The renderer loads it right after the main pack is attached (LoadVariants), and
+// has_variants() / has_hdr_variants() say it is usable: one atomic flag, set last (release) and read
+// first (acquire), as attached().
 //
 // Threading: Find and GetShader from any thread once attached (the pipeline
 // precache's workers call GetShader), and Find is safe before: it checks one
@@ -87,13 +92,22 @@ class ShaderStore {
   // The file layout and its constants are shared with the pack writer: shaderpack/pack_format.h.
   static constexpr const char* kPackFileName = larecomp::shaderpack::kPackFileName;
   static constexpr uint32_t kPackVersion = larecomp::shaderpack::kPackVersion;
-  // The HDR scene variants (above): file, format version, and the contract of its constants block
-  // (1: SharedConstants, then float4 {knee, highlights, peak, 0} at byte 608).
-  static constexpr const char* kHdrPackFileName = larecomp::shaderpack::kHdrPackFileName;
-  static constexpr uint32_t kHdrPackVersion = larecomp::shaderpack::kHdrPackVersion;
-  static constexpr uint32_t kHdrContract = larecomp::shaderpack::kHdrContract;
-  // PipelineKey::ps_variant of a pixel shader's HDR scene variant (0 and 1 are the spec variants).
-  static constexpr uint32_t kHdrVariant = 2;
+  // The variant pack (above): file, format version, and the contract of its constants block (1:
+  // SharedConstants, then for the HDR tone map float4 {knee, highlights, peak, 0} at byte 608).
+  static constexpr const char* kVariantPackFileName = larecomp::shaderpack::kVariantPackFileName;
+  static constexpr uint32_t kVariantPackVersion = larecomp::shaderpack::kVariantPackVersion;
+  static constexpr uint32_t kVariantContract = larecomp::shaderpack::kVariantContract;
+  // PipelineKey::ps_variant: 0 and 1 are the spec variants of the main pack (the shader entry's blobs),
+  // the ids from kFirstPackedVariant are the variant pack's, up to kVariantSlots - 1.
+  static constexpr uint32_t kFirstPackedVariant = larecomp::shaderpack::kFirstPackedVariant;
+  static constexpr uint32_t kVariantSlots = larecomp::shaderpack::kVariantSlots;
+  // A pixel shader's HDR scene variant, the bloom's Gaussians at a render scale, the environment map's mip
+  // level pass and 64x32 reduction at the map's scale, and the sun shadow collector's soft lookup
+  // (shadow_filter.h: its 16 bytes of constants follow the shared block).
+  static constexpr uint32_t kHdrVariant = larecomp::shaderpack::kVariantHdrScene;
+  static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
+  static constexpr uint32_t kEnvVariant = larecomp::shaderpack::kVariantEnvMap;
+  static constexpr uint32_t kShadowFilterVariant = larecomp::shaderpack::kVariantShadowFilter;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -131,17 +145,21 @@ class ShaderStore {
     uint32_t texture_fetch_mask = 0;  // bit i: a texture instruction reads fetch constant i
     Blob dxil[2];   // variant 0 (no spec bit) / variant 1 (spec_mask)
     Blob spirv[2];  // the same variants
-    // A pixel shader that has an HDR scene variant (LoadHdrVariants), else false.
+    // The variant pack's variants this pixel shader has (LoadVariants): bit n is set when the pack has one
+    // with id n (kHdrVariant, kBloomVariant...); 0 for the shaders that have none.
+    uint32_t variants = 0;
+    // Whether it has the HDR scene variant (bit kHdrVariant of `variants`).
     bool hdr_variant = false;
   };
 
-  // What the HDR pack says of one shader.
-  static constexpr uint32_t kHdrVertexShaders = larecomp::shaderpack::kHdrVertexShaders;
-  struct HdrVariant {
+  // What the variant pack says of one shader's variant.
+  static constexpr uint32_t kVariantVertexShaders = larecomp::shaderpack::kVariantVertexShaders;
+  struct Variant {
     uint64_t ps_key = 0;
+    uint32_t variant = 0;
     // The vertex shaders the variant is drawn with (the ones whose outputs it reads: 0 = none).
-    uint64_t vs_keys[kHdrVertexShaders] = {};
-    uint32_t flags = 0;
+    uint64_t vs_keys[kVariantVertexShaders] = {};
+    uint32_t reserved = 0;
     Blob dxil;
     Blob spirv;
     bool DrawnWith(uint64_t vs_key) const {
@@ -153,6 +171,7 @@ class ShaderStore {
       return false;
     }
   };
+  using HdrVariant = Variant;
 
   struct VertexElement {
     uint32_t address = 0;  // vfetch instruction address in the microcode
@@ -218,28 +237,32 @@ class ShaderStore {
   uint64_t pending_lookups() const { return pending_lookups_.load(std::memory_order_relaxed); }
   uint32_t entry_count() const { return attached() ? uint32_t(entries_.size()) : 0u; }
   const std::filesystem::path& path() const { return path_; }
-  // The folder the attached pack came from (the HDR variant pack is read from there too).
+  // The folder the attached pack came from (the variant pack is read from there too).
   const std::filesystem::path& folder() const { return folder_; }
   const Stats& stats() const { return stats_; }
 
   // Null for an identity the pack does not have, and while pending (counted, pending_lookups).
   const Entry* Find(uint64_t identity) const;
-  // Opens the optional HDR pack beside the main one (in folder()). False when there is none or it
-  // is not usable, with the reason in `why` (the caller logs it: absent is normal without HDR).
-  // Marks the entries it has a variant for (Entry::hdr_variant). Once, right after Attach and
-  // before the pipeline records are read; the guest has not drawn yet (the lifecycle thread).
-  bool LoadHdrVariants(std::string* why);
-  // Any thread: the variants are loaded and usable (set last by LoadHdrVariants, so FindHdrVariant
-  // and Entry::hdr_variant are in place for whoever sees true).
-  bool has_hdr_variants() const { return hdr_ready_.load(std::memory_order_acquire); }
-  const std::filesystem::path& hdr_path() const { return hdr_path_; }
-  // The variant of pixel shader `identity`, null when it has none.
-  const HdrVariant* FindHdrVariant(uint64_t identity) const;
+  // Opens the optional variant pack beside the main one (in folder()). False when there is none or it
+  // is not usable, with the reason in `why` (the caller logs it: absent is normal for a build that made
+  // no variants). Marks the entries it has variants for (Entry::variants, hdr_variant). Once, right after
+  // Attach and before the pipeline records are read; the guest has not drawn yet (the lifecycle thread).
+  bool LoadVariants(std::string* why);
+  // Any thread: the variants are loaded and usable (set last by LoadVariants, so FindVariant and
+  // Entry::variants are in place for whoever sees true).
+  bool has_variants() const { return variants_ready_.load(std::memory_order_acquire); }
+  // The variants are loaded and the pack has the HDR scene variant.
+  bool has_hdr_variants() const { return has_variants() && hdr_variant_count_ != 0; }
+  const std::filesystem::path& variants_path() const { return variants_path_; }
+  // The variant `variant` (kHdrVariant, kBloomVariant...) of pixel shader `identity`, null when it has none.
+  const Variant* FindVariant(uint64_t identity, uint32_t variant) const;
+  // The HDR scene variant of pixel shader `identity`, null when it has none.
+  const HdrVariant* FindHdrVariant(uint64_t identity) const { return FindVariant(identity, kHdrVariant); }
   // Appends the vertex shader's elements to `out` (cleared first).
   void GetVertexElements(const Entry& entry, std::vector<VertexElement>& out) const;
-  // The shader for `entry` with spec `variant` (0, or 1 = spec_mask applied, or kHdrVariant for
-  // the HDR scene variant of a pixel shader that has one), created on first use. Null with the
-  // reason in `result` otherwise.
+  // The shader for `entry` with spec `variant` (0, or 1 = spec_mask applied, or a variant pack id,
+  // kHdrVariant, kBloomVariant..., for a pixel shader that has that variant), created on first use. Null
+  // with the reason in `result` otherwise.
   plume::RenderShader* GetShader(const Entry& entry, uint32_t variant, ShaderResult* result);
 
  private:
@@ -260,11 +283,12 @@ class ShaderStore {
   std::filesystem::path folder_;  // its folder
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;
-  std::unordered_map<uint64_t, Slot> slots_[3];  // per variant (2: HDR scene), by identity
-  std::atomic<bool> hdr_ready_{false};  // set last by LoadHdrVariants
-  std::filesystem::path hdr_path_;
-  std::unique_ptr<rex::memory::MappedMemory> hdr_file_;
-  std::unordered_map<uint64_t, HdrVariant> hdr_variants_;
+  std::unordered_map<uint64_t, Slot> slots_[kVariantSlots];  // per variant id, by identity
+  std::atomic<bool> variants_ready_{false};  // set last by LoadVariants
+  uint32_t hdr_variant_count_ = 0;           // the pack's HDR scene variants (written before variants_ready_)
+  std::filesystem::path variants_path_;
+  std::unique_ptr<rex::memory::MappedMemory> variants_file_;
+  std::unordered_map<uint64_t, Variant> variants_[kVariantSlots];  // per variant id, by pixel shader identity
   Stats stats_;
 };
 

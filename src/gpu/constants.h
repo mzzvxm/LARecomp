@@ -73,11 +73,15 @@ static_assert(offsetof(SharedConstants, pos_scale) == 560);
 static_assert(offsetof(SharedConstants, pos_offset) == 576);
 static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 
+// A variant of the variant pack (shaders.h) that needs constants of its own reads them after the
+// SharedConstants block, and only the draw that uses the variant uploads them (SharedConstants
+// followed by its block); every other draw, and the main pack's contract (v7 and v8, 608 bytes), is
+// as it was. Contract 1 of the variant pack. The bloom's Gaussians (kBloomVariant) have none: they
+// read g_InvResolutionScale, which is in the block above.
+//
 // The HDR scene variant of the game's tone map (hdr_tonemap.h, shaders.h kHdrVariant) reads 16 bytes
-// after the SharedConstants block: the pack builder (tools/build_hdr_variants.py) declares them in
-// the variant's HLSL as `float4 g_HdrScene` at byte 608 (c38 of the block). Only the draw that
-// uses the variant uploads them (SharedConstants followed by this); every other draw, and the
-// main pack's contract (v7 and v8, 608 bytes), is as it was. Contract 1 of the HDR pack.
+// after it: src/shaderpack/variants/hdr_scene.h declares them in the variant's HLSL as `float4
+// g_HdrScene` at byte 608 (c38 of the block).
 struct HdrSceneConstants {
   float knee;        // where the HDR curve leaves the game's, in the game's linear units (1 = its white)
   float highlights;  // the slope above the knee, times the game curve's (mcla_gpu_hdr_highlights)
@@ -86,6 +90,12 @@ struct HdrSceneConstants {
 };
 static_assert(sizeof(HdrSceneConstants) == 16);
 inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
+
+// The shadow filter variant (shadow_filter.h, shaders.h kShadowFilterVariant) reads its 16 bytes at the
+// same place: `float4 g_ShadowFilter` at byte 608 (c38 of the block), in the draws that use it (every
+// draw of the sun shadow collector whose shader has the variant), which upload SharedConstants followed by
+// shadow_filter::ShadowFilterConstants (Scene::UploadShadowFilterConstants).
+inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants);
 
 class ConstantBanks {
  public:

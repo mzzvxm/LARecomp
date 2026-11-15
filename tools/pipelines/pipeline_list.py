@@ -3,7 +3,7 @@
   python pipeline_list.py info FILE...
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
   python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] FILE...
-  python pipeline_list.py check --pack mcla_shaders.v8.pack [--hdr-pack mcla_shaders_hdr.v1.pack] FILE...
+  python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v2.pack] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py selftest
 
@@ -35,8 +35,9 @@ pipelines at 4, 8 or 1 samples.
 
 check --pack: records whose vertex or pixel shader the pack does not have (the game drops them at load:
 "N dropped: a shader the pack does not have"), a spec variant on a shader with no spec mask, and with
---hdr-pack the HDR scene variants (ps_variant 2) whose pixel shader has no entry in the HDR pack. The exit
-status is 1 when a record has no shader or an HDR variant has no entry.
+--variant-pack the variants of the variant pack (ps_variant 2 and up: the HDR scene's tone map, the bloom's
+Gaussians, the shadow collector's soft lookup) whose pixel shader has no entry for that variant in it. The
+exit status is 1 when a record has no shader or a variant has no entry.
 
 reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
 depth bias is not compared), in the FILEs' order, the rest after them in their old order. Use it
@@ -65,13 +66,15 @@ VS_VARIANT_AT, PS_VARIANT_AT = 16, 20
 SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
-HDR_VARIANT = 2  # ShaderStore::kHdrVariant
+FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
+VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians", 4: "environment map", 5: "shadow filter"}  # ShaderStore::kHdrVariant, kBloomVariant, kEnvVariant, kShadowFilterVariant
 
 # The shader pack (src/shaderpack/pack_format.h): "MSPK", version, count, formats, 16 reserved; entries of 88
-# bytes (key u64, stage u8, spec_mask u8, ...). The HDR pack: "MSHV", version, count, ...; entries of 80 bytes,
-# the pixel shader's key first.
+# bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 80
+# bytes, the pixel shader's key first, the variant id (u32) at byte 40.
 PACK_MAGIC, PACK_VERSION, PACK_HEADER, PACK_ENTRY = b"MSPK", 8, 32, 88
-HDR_PACK_MAGIC, HDR_PACK_VERSION, HDR_PACK_HEADER, HDR_PACK_ENTRY = b"MSHV", 1, 32, 80
+VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY = b"MSHV", 2, 32, 80
+VARIANT_AT = 40
 
 
 class Bad(Exception):
@@ -147,11 +150,15 @@ def info(paths):
         keys = [k for k, _ in records]
         biased = sum(1 for k in keys if k[DEPTH_BIAS_AT:DEPTH_BIAS_AT + 8] != b"\0" * 8)
         depth_only = sum(1 for k in keys if k[PS_AT:PS_AT + 8] == b"\0" * 8)
-        hdr = sum(1 for k in keys if u32(k, PS_VARIANT_AT) == HDR_VARIANT)
+        packed = {}
+        for k in keys:
+            if u32(k, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
+                packed[u32(k, PS_VARIANT_AT)] = packed.get(u32(k, PS_VARIANT_AT), 0) + 1
+        variants = ", ".join(f"{VARIANT_NAMES.get(v, 'variant ' + str(v))} {n}" for v, n in sorted(packed.items())) or "none"
         print(f"{p}: {backend}, {len(records)} records, {len(layouts)} layouts, "
               f"{depth_only} depth only, {biased} with a static depth bias")
         print(f"    {len({without_bias(k) for k in keys})} distinct without the bias (what a device with the "
-              f"dynamic bias keeps); by sample count {fmt_counts(by_samples(keys))}; {hdr} HDR scene variants")
+              f"dynamic bias keeps); by sample count {fmt_counts(by_samples(keys))}; shader variants: {variants}")
 
 
 class Collector:
@@ -255,7 +262,7 @@ def reorder(base, firsts, out):
 
 
 def read_pack(path, magic, version, header, entry):
-    """The shader keys of a pack: key -> the spec mask (main pack) or None (HDR pack)."""
+    """The shader keys of a pack: key -> the spec mask (main pack), or (variant, key) pairs (variant pack)."""
     data = open(path, "rb").read()
     if len(data) < header or data[:4] != magic:
         raise Bad(f"{path}: not a shader pack ({magic.decode()})")
@@ -268,18 +275,22 @@ def read_pack(path, magic, version, header, entry):
     for i in range(count):
         at = header + i * entry
         (key,) = struct.unpack_from("<Q", data, at)
-        keys[key] = data[at + 9] if magic == PACK_MAGIC else None
+        if magic == PACK_MAGIC:
+            keys[key] = data[at + 9]
+        else:
+            keys[(struct.unpack_from("<I", data, at + VARIANT_AT)[0], key)] = None
     return keys
 
 
-def check(pack, hdr_pack, paths):
+def check(pack, variant_pack, paths):
     shaders = read_pack(pack, PACK_MAGIC, PACK_VERSION, PACK_HEADER, PACK_ENTRY)
-    hdr = read_pack(hdr_pack, HDR_PACK_MAGIC, HDR_PACK_VERSION, HDR_PACK_HEADER, HDR_PACK_ENTRY) if hdr_pack else None
-    print(f"{pack}: {len(shaders)} shaders" + (f"; {hdr_pack}: {len(hdr)} HDR variants" if hdr is not None else ""))
+    packed = (read_pack(variant_pack, VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER,
+                        VARIANT_PACK_ENTRY) if variant_pack else None)
+    print(f"{pack}: {len(shaders)} shaders" + (f"; {variant_pack}: {len(packed)} variants" if packed is not None else ""))
     bad = False
     for p in paths:
         _, _, records = read_list(p)
-        no_vs = no_ps = no_spec = hdr_total = hdr_missing = 0
+        no_vs = no_ps = no_spec = variant_total = variant_missing = 0
         for key, _ in records:
             vs, ps = struct.unpack_from("<2Q", key, 0)
             if vs not in shaders:
@@ -290,15 +301,15 @@ def check(pack, hdr_pack, paths):
                 no_ps += 1
             elif ps != 0 and u32(key, PS_VARIANT_AT) == 1 and shaders[ps] == 0:
                 no_spec += 1
-            if u32(key, PS_VARIANT_AT) == HDR_VARIANT:
-                hdr_total += 1
-                if hdr is not None and ps not in hdr:
-                    hdr_missing += 1
-        tail = (f", {hdr_missing} without an entry in the HDR pack" if hdr is not None
-                else (" (give --hdr-pack to check them)" if hdr_total else ""))
+            if u32(key, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
+                variant_total += 1
+                if packed is not None and (u32(key, PS_VARIANT_AT), ps) not in packed:
+                    variant_missing += 1
+        tail = (f", {variant_missing} without an entry in the variant pack" if packed is not None
+                else (" (give --variant-pack to check them)" if variant_total else ""))
         print(f"{p}: {len(records)} records; no vertex shader {no_vs}, no pixel shader {no_ps}, "
-              f"a spec variant without a spec mask {no_spec}; {hdr_total} HDR scene variants{tail}")
-        bad |= bool(no_vs or no_ps or hdr_missing)
+              f"a spec variant without a spec mask {no_spec}; {variant_total} shader variants{tail}")
+        bad |= bool(no_vs or no_ps or variant_missing)
     return 1 if bad else 0
 
 
@@ -319,11 +330,15 @@ def _layout(h):
 
 
 def _pack(path, magic, version, entries, entry_size):
+    """Main pack entries are (key, spec mask); variant pack entries are (key, variant id)."""
     blob = bytearray(magic + struct.pack("<3I", version, len(entries), 1) + bytes(16))
     for key, spec in entries:
         e = bytearray(entry_size)
         struct.pack_into("<Q", e, 0, key)
-        e[8], e[9] = ord("p"), spec
+        if magic == PACK_MAGIC:
+            e[8], e[9] = ord("p"), spec
+        else:
+            struct.pack_into("<I", e, VARIANT_AT, spec)
         blob += e
     with open(path, "wb") as f:
         f.write(blob)
@@ -394,15 +409,16 @@ def selftest():
         _, text = _quiet(info, [path("base.bin")])
         expect("3 records" in text and "2:2 4:1" in text, f"info says the sample counts ({text.strip()})")
 
-        # check against a pack and an HDR pack
+        # check against a pack and a variant pack (a shader 2 has the HDR scene variant 2, a shader 5 the bloom's 3)
         _pack(path("pack"), PACK_MAGIC, PACK_VERSION, [(n, 0) for n in range(1, 9)], PACK_ENTRY)
-        _pack(path("hdr"), HDR_PACK_MAGIC, HDR_PACK_VERSION, [(2, 0)], HDR_PACK_ENTRY)
+        _pack(path("variants"), VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, [(2, 2), (5, 3)], VARIANT_PACK_ENTRY)
         write("chk.bin", [(_key(1, 2), 0), (_key(1, 99), 0), (_key(77, 2), 0), (_key(1, 2, ps_variant=1), 0),
-                          (_key(3, 4, ps_variant=2), 0)], [_layout(10)])
-        status, text = _quiet(check, path("pack"), path("hdr"), [path("chk.bin")])
+                          (_key(3, 4, ps_variant=2), 0), (_key(3, 5, ps_variant=3), 0),
+                          (_key(3, 2, ps_variant=3), 0)], [_layout(10)])
+        status, text = _quiet(check, path("pack"), path("variants"), [path("chk.bin")])
         expect(status == 1, "check fails when a shader is missing")
-        expect("no vertex shader 1, no pixel shader 1, a spec variant without a spec mask 1; 1 HDR scene variants, "
-               "1 without" in text, f"check counts ({text.splitlines()[-1]})")
+        expect("no vertex shader 1, no pixel shader 1, a spec variant without a spec mask 1; 3 shader variants, "
+               "2 without" in text, f"check counts ({text.splitlines()[-1]})")
         write("ok.bin", [(_key(1, 2), 0), (_key(3, 4), 0)], [_layout(10)])
         expect(_quiet(check, path("pack"), "", [path("ok.bin")])[0] == 0, "check passes a list whose shaders are all there")
 
@@ -432,7 +448,7 @@ def main():
     ad.add_argument("files", nargs="+")
     ck = sub.add_parser("check")
     ck.add_argument("--pack", required=True)
-    ck.add_argument("--hdr-pack", default="")
+    ck.add_argument("--variant-pack", "--hdr-pack", dest="variant_pack", default="")
     ck.add_argument("files", nargs="+")
     r = sub.add_parser("reorder")
     r.add_argument("-o", "--out", required=True)
@@ -448,7 +464,7 @@ def main():
         elif a.cmd == "add":
             add(a.base, a.files, a.out, a.skip_level_copies)
         elif a.cmd == "check":
-            sys.exit(check(a.pack, a.hdr_pack, a.files))
+            sys.exit(check(a.pack, a.variant_pack, a.files))
         elif a.cmd == "selftest":
             sys.exit(selftest())
         else:

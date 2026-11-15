@@ -565,6 +565,7 @@ class TextureCache {
     uint64_t lookups = 0;  // Bind2D calls (the Scene's memo misses)
     uint64_t product_hits = 0;
     uint64_t product_reduced = 0;  // ... bound through a copy reduced to the reader's scale
+    uint64_t product_own_scale = 0;  // ... of a side view, bound as it is for another scale's reader
     uint64_t memory_hits = 0;
     uint64_t created = 0;
     uint64_t uploads = 0;

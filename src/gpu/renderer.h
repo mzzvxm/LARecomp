@@ -84,6 +84,7 @@
 #include "samplers.h"
 #include "scene.h"
 #include "shaders.h"
+#include "shafts.h"
 #include "swap_chain.h"
 #include "temporal.h"
 #include "textures.h"
@@ -245,9 +246,10 @@ class Renderer final : public RenderThread::Executor {
   // first time and wires them in. `layers_ok`: the frame layers run. False (logged) when they
   // cannot, with the layers off: the HDR output then shows the front buffer (stage 1).
   bool SetUpHdrScene(bool layers_ok);
-  // Loads the HDR variant pack beside the main pack when it is not loaded yet (a no-op without a
-  // main pack or once loaded; logs when there is none).
-  void LoadHdrVariants();
+  // Loads the shader variant pack (the HDR scene's tone map, the bloom's Gaussians at a render scale)
+  // beside the main pack when it is not loaded yet (a no-op without a main pack or once loaded; logs
+  // when there is none).
+  void LoadShaderVariants();
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
@@ -264,6 +266,7 @@ class Renderer final : public RenderThread::Executor {
   FrameValidator validator_;  // render thread; reads shaders_; on with mcla_gpu_validate
   TemporalSystem temporal_;   // render thread; the temporal upscalers' groundwork (temporal.h)
   AmbientOcclusion ao_;       // render thread; screen-space ambient occlusion (ao.h)
+  SunShafts shafts_;          // render thread; screen-space sun shafts (shafts.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

@@ -42,8 +42,18 @@
 // render to (B5G5R5A1, an optional render target in Vulkan) stays with its
 // owner: a pipeline made for a format nobody used would log a failure.
 //
-// Threading: Add, Start and Stop on the lifecycle thread (Stop also from the
-// owners' Shutdown, after the render thread has stopped); Acquire on the render
+// The graphics settings' passes (ambient occlusion, contact shadows, sun shafts) are listed only
+// when the settings in force at the start use them (host_plan.h says which), and each owner says
+// what it listed and why with Note: Start writes one log line with the count and the words of every
+// note. A pass whose setting is switched on later lists its pipelines with AddLive, which makes them
+// on a worker thread of their own while the game runs; the owner draws without the pass until Ready
+// says every pipeline is made (a frame never waits for a compile), as perf/boot-lazy-pipelines does
+// for the anti-aliasing and FSR1 pipelines with its BackgroundBuild. Acquire still serves what is
+// made, takes nothing from a pipeline that is being made, and a pipeline the render thread has to
+// make itself (listed but not begun, or not listed) is logged as it happens.
+//
+// Threading: Add, Note, Start and Stop on the lifecycle thread (Stop also from the
+// owners' Shutdown, after the render thread has stopped); Acquire, AddLive and Ready on the render
 // thread. A listed function runs on the builder thread, or on the render
 // thread for a claimed entry, never both; what it reads must exist before Add
 // and until Stop. Creating pipelines from a second thread is what the guest
@@ -80,6 +90,7 @@ class HostPrecache {
     kResolveDecode = 3,  // ResolveMemory::DecodePipeline: format
     kResolveFused = 4,   // ResolveMemory::FusedPipeline: fractional << 9 | msaa << 8 | format
     kAmbientOcclusion = 5,  // AmbientOcclusion: its pass and variant (ao.h Variant)
+    kSunShafts = 6,         // SunShafts: its pass and variant (shafts.h Variant)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;
@@ -91,15 +102,35 @@ class HostPrecache {
   HostPrecache& operator=(const HostPrecache&) = delete;
 
   // Lists a pipeline to make, after the entries listed so far. `key` is unique
-  // (a repeat is ignored). Before Start.
-  void Add(uint64_t key, std::string name, Make make);
+  // (a repeat is ignored). Before Start. True when it was listed.
+  bool Add(uint64_t key, std::string name, Make make);
+  // Says, for the start's log line, what a setting-driven owner listed: `text` names the pass, its
+  // level and why (host_plan.h Describe), `listed` is how many pipelines it added (0: none, made in the
+  // background if the setting is switched on). Before Start.
+  void Note(std::string text, uint32_t listed);
   // Starts the builder on what is listed (nothing is started for an empty
-  // list). Once.
+  // list) and writes the line that says what was listed and why. Once.
   void Start();
   // Ends the builder (a build under way finishes), logs the summary, and drops
   // the list and the pipelines nobody took: the GPU must be idle. Safe to call
   // again, and with nothing listed.
   void Stop();
+
+  // One pipeline of a late list.
+  struct Item {
+    uint64_t key = 0;
+    std::string name;
+    Make make;
+  };
+  // A pass whose setting was off at the start and is on now: lists its pipelines (the keys not listed
+  // before; a repeat is ignored) and starts a worker thread of their own that makes them in the order
+  // given, below normal priority on Windows. Returns how many were new (0: nothing started). The render
+  // thread, after Start or without one; the owner has made what the functions read before the call.
+  uint32_t AddLive(std::string pass, std::vector<Item> items);
+  // True when no worker is making or about to make `key` any more: it is made (Acquire takes it with no
+  // wait), failed (Acquire says null and Device logged why), or already taken; also true for a key nobody
+  // listed. False while it waits in the list or is being made. Render thread.
+  bool Ready(uint64_t key) const;
 
   // The pipeline for `key` (see the note at the top), null when it failed.
   // `name` and `make_unlisted` serve a key nobody listed (or one already given
@@ -119,11 +150,31 @@ class HostPrecache {
     bool used = false;      // render thread
   };
 
+  enum class Built : uint8_t { kMade, kFailed, kClaimed };
+  // Makes one entry unless the render thread claimed it first. Builder threads.
+  Built BuildEntry(Entry& entry);
   void Run();
+  // The worker of one AddLive.
+  void RunLive(const std::string& pass, const std::vector<Entry*>& list,
+               std::chrono::steady_clock::time_point began);
+  // Logs a pipeline the render thread had to make (the first kRenderLogMax).
+  void NoteRenderThread(const std::string& name, const char* why, uint64_t ns);
   void Summarize();
 
+  struct Noted {
+    std::string text;
+    uint32_t listed = 0;
+  };
+  static constexpr uint32_t kRenderLogMax = 32;
+
   std::vector<std::unique_ptr<Entry>> entries_;
-  std::unordered_map<uint64_t, Entry*> by_key_;  // built before Start, then only read
+  std::vector<Noted> notes_;
+  // The late lists' entries and workers (AddLive): render thread; joined in Stop. entries_ is read by
+  // the builder while they are added, so they have a vector of their own.
+  std::vector<std::unique_ptr<Entry>> live_entries_;
+  std::vector<std::thread> live_builders_;
+  // Built before Start by Add, then touched only by the render thread (Acquire, AddLive, Ready).
+  std::unordered_map<uint64_t, Entry*> by_key_;
   std::thread builder_;
   std::atomic<bool> stop_{false};
   std::mutex mutex_;
@@ -148,6 +199,7 @@ class HostPrecache {
   };
   Stats stats_;
   bool raised_ = false;
+  uint32_t render_logged_ = 0;
   std::vector<std::string> unlisted_names_;
 };
 

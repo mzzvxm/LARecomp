@@ -72,6 +72,7 @@
 #include "thread_load.h"
 #include "records.h"
 #include "shaders.h"
+#include "shadow_filter.h"
 #include "topology.h"
 #include "upload.h"
 #include "upscaler_masks.h"
@@ -84,6 +85,7 @@ class BindlessHeap;
 class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
+class SunShafts;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -117,6 +119,10 @@ class Scene {
   // The screen-space ambient occlusion (ao.h): told of the main view's draws, the camera, the
   // depth clears and the resolves, and run at the mid-scene depth resolve. Null: none.
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
+  // The sun shafts (shafts.h): told of the main view's draws, the camera and the resolves, and run at
+  // the mid-scene depth resolve (the sky) and before the end-of-scene copy of the colour (the light).
+  // Null: none.
+  void SetSunShafts(SunShafts* shafts) { shafts_ = shafts; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -323,9 +329,15 @@ class Scene {
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the shadow filter variant (ShaderStore::kShadowFilterVariant) reads 16 bytes after the shared
+  // constants (shadow_filter.h): the draw's own copy of them and the block, in one span that replaces
+  // `shared_constants`; the last one is kept for the next draw when neither changed.
+  bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
-  // The ambient occlusion: a prepared draw, before it is recorded (only main view draws are told).
-  void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d);
+  // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
+  // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
+  void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
+                            uint64_t vs_identity, uint64_t ps_identity);
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
@@ -370,6 +382,7 @@ class Scene {
   GuestOcclusion* occlusion_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
+  SunShafts* shafts_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
@@ -393,6 +406,9 @@ class Scene {
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
+  SharedConstants last_shadow_shared_{};
+  shadow_filter::ShadowFilterConstants last_shadow_block_{};
+  UploadSpan last_shadow_span_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).
   struct ListState {

@@ -36,6 +36,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "shafts.h"
 #include "temporal.h"
 #include "textures.h"
 #include "thread_load.h"
@@ -826,6 +827,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ao_) {
     ao_->BeginFrame();
   }
+  if (shafts_) {
+    shafts_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -837,6 +841,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
+  last_shadow_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
@@ -859,6 +864,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   list_ = nullptr;
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
+  last_shadow_span_ = UploadSpan{};
   draws_since_flush_ = 0;
 }
 
@@ -1222,6 +1228,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (ao_ && ao_->wants_draws()) {
       ao_->OnAnchor(banks);  // this frame's camera: the next frame's occlusion uses its lens
     }
+    if (shafts_ && shafts_->wants_draws()) {
+      shafts_->OnAnchor(banks);  // ... and the next frame's sun shafts place the sun by it
+    }
   }
 
   if (!list) {
@@ -1238,8 +1247,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       CountSkip(skip, r, detail);
     } else {
       ++window_.prepared;
-      if (ao_ && ao_->wants_draws()) {
-        NoteAmbientOcclusion(banks, d);
+      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws())) {
+        NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1626,6 +1635,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (!UploadConstants(r.device, banks, shared, d)) {
     return Skip::kUpload;
   }
+  // The sun shadow collector's soft lookup reads 16 bytes after the shared constants.
+  if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
+    return Skip::kUpload;
+  }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
     // The tone map's second draw reads 16 bytes after the shared constants: its own copy of them.
     const UploadSpan span = upload_->Allocate(
@@ -1644,7 +1657,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kUpload);
 
   ++window_.conversions[size_t(d.primitive.conversion)];
-  if (d.key.ps_variant) {
+  if (d.key.ps_variant == 1) {  // the alpha test / alpha to coverage variant (2 and up are the variant pack's)
     ++window_.alpha_coverage_draws;
     if (ComputeAlphaTest(s).discard) ++window_.alpha_test_draws;
   }
@@ -1719,7 +1732,8 @@ bool Scene::UpscalerRunning() const {
          temporal_->frame().upscaler != Upscaler::kOff;
 }
 
-void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d) {
+void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
+                                 uint64_t vs_identity, uint64_t ps_identity) {
   EdramKey color;
   EdramKey depth;
   const EdramKey* color0 = nullptr;
@@ -1739,7 +1753,12 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
   draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
-  ao_->OnMainDraw(draw, banks);
+  if (ao_ && ao_->wants_draws()) {
+    ao_->OnMainDraw(draw, banks);
+  }
+  if (shafts_ && shafts_->wants_draws()) {
+    shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
+  }
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -1987,6 +2006,40 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   d.vs_constants = u.vs;
   d.ps_constants = u.ps;
   d.shared_constants = last_shared_span_;
+  return true;
+}
+
+bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kShadowFilterConstantsOffset == sizeof(SharedConstants));
+  // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
+  // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
+  // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
+  // their products are at (a member that could not be made at the setting's scale lowers the whole class,
+  // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
+  shadow_filter::SetAtlasRadiusScale(
+      shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
+  // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
+  // averages it out); without one the pattern stays where it is.
+  const shadow_filter::ShadowFilterConstants block =
+      shadow_filter::CurrentConstants(UpscalerRunning(), frame_serial_);
+  if (last_shadow_span_ && std::memcmp(&last_shadow_shared_, &shared, sizeof(shared)) == 0 &&
+      std::memcmp(&last_shadow_block_, &block, sizeof(block)) == 0) {
+    d.shared_constants = last_shadow_span_;
+    return true;
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kShadowFilterConstantsOffset + sizeof(shadow_filter::ShadowFilterConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kShadowFilterConstantsOffset, &block, sizeof(block));
+  last_shadow_shared_ = shared;
+  last_shadow_block_ = block;
+  last_shadow_span_ = span;
+  ++window_.shared_uploads;
+  window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
+  d.shared_constants = span;
   return true;
 }
 
@@ -2750,6 +2803,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
+  if (shafts_ && shafts_->wants_draws()) {
+    // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
+    // before the copy reads it.
+    shafts_->BeforeResolve(record, list);
+  }
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
@@ -2759,6 +2817,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw.
     ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (shafts_ && shafts_->wants_draws()) {
+    // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
+    // targets: the reset below forgets them too).
+    shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -2808,6 +2871,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   edram_->SetScenePhase(false);
   if (ao_) {
     ao_->OnComposite();
+  }
+  if (shafts_) {
+    shafts_->OnComposite();
   }
   if (temporal_) {
     temporal_->OnComposite();
@@ -2928,6 +2994,9 @@ void Scene::OnPresent() {
   edram_->SetScenePhase(true);  // the next frame's scene
   if (ao_) {
     ao_->OnPresent();
+  }
+  if (shafts_) {
+    shafts_->OnPresent();
   }
   if (temporal_) {
     temporal_->EndFrame();

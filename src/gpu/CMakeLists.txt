@@ -63,6 +63,12 @@ add_library(larecomp_gpu OBJECT
     samplers.cpp
     scene.cpp
     shaders.cpp
+    shadow_filter.cpp
+    shafts.cpp
+    side_view_env.cpp
+    side_view_reflection.cpp
+    side_view_shadow.cpp
+    side_views.cpp
     stream.cpp
     swap_chain.cpp
     temporal.cpp
@@ -88,6 +94,18 @@ add_library(larecomp_gpu OBJECT
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+# The sun shadow filter's rules (shadow_filter.h: the choice, the taps, the constants) likewise:
+#   cmake --build <dir> --target larecomp_shadow_filter_rules_test, then run src/gpu/larecomp_shadow_filter_rules_test.
+add_executable(larecomp_shadow_filter_rules_test EXCLUDE_FROM_ALL shadow_filter_test.cpp)
+# Where the sun shafts are added and when they fall back (shafts_anchor.h) likewise:
+#   cmake --build <dir> --target larecomp_shafts_anchor_test, then run src/gpu/larecomp_shafts_anchor_test.
+add_executable(larecomp_shafts_anchor_test EXCLUDE_FROM_ALL shafts_anchor_test.cpp)
+# Where the sun is in the picture (shafts_sun.h: the sky's sun constant against the light, the placement and the fades) likewise:
+#   cmake --build <dir> --target larecomp_shafts_sun_test, then run src/gpu/larecomp_shafts_sun_test.
+add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
+# Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
+#   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
+add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
 # The upscalers' pure arithmetic (upscaler_math.h: the jitter sequence, its length at a ratio, the scene's mip bias) has a check that needs
 # no renderer: cmake --build <dir> --target larecomp_upscaler_math_test, then run src/gpu/larecomp_upscaler_math_test (exit 0 = passed).
 add_executable(larecomp_upscaler_math_test EXCLUDE_FROM_ALL upscaler_math_test.cpp)
@@ -355,6 +373,14 @@ larecomp_gpu_host_shader(ao_temporal_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_temporal_ms_ps ps_6_0 SOURCE ao_temporal_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_apply_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_apply_ms_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_DEPTH_MS=1)
+# The contact shadows' ray march over the occlusion's linear depth (ao.h).
+larecomp_gpu_host_shader(ao_contact_ps ps_6_0)
+# The sun shafts' passes (shafts.h): the sky's brightness from the main view's depth and colour planes
+# (plain or multisampled), the radial blur toward the sun, the light added to the scene colour.
+larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
+larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
+larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
+larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs
