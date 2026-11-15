@@ -1640,6 +1640,12 @@ struct VehiclePlan {
     // carries model 4, tach_rotator model 5) whose rigid frame is this pose.
     std::vector<DialClip> dials;
 
+    // `bone.<name> = tx ty tz rx ry rz`: the rest pose of one bone of the body's
+    // skeleton, in every LOD (car space, Euler radians). Whatever hangs from the
+    // bone follows it -- `bone.str` puts the R34's steering wheel bone, and the
+    // wheel the game turns on it, on this car's own column. See SetBonePoseByName.
+    std::map<std::string, std::array<float, 6>> bone_poses;
+
     // Where the donor's licence plate has to move to land on this car's rear.
     // Metres, in the car's own space: x is lateral, y up, z back.
     float plate[3] = {0.0f, 0.0f, 0.0f};
@@ -1738,6 +1744,7 @@ void PlaceInBoneFrame(Mesh& mesh, const VehiclePlan::SlotFrame& frame) {
 //   frame.steer_whl0 = -0.428 0.847 -0.376 -0.2928 0 0 1.10  (bone rest pose [scale])
 //   frame.bumper_f0  = 0 0.404 -2.137 0 0 0 rigid           (a body panel: no centring)
 //   license.body     = TLx TLy TLz TRx .. BRz               (a game plate, 4 corners)
+//   bone.str       = tx ty tz rx ry rz      (a body skeleton bone's rest pose)
 //   body_m0          = trunk   (groups written into model 0 of the body; needs a
 //                               rigid frame.body_m0 -- see WriteBodyModel)
 //   tune.cFrontBumperMovement = NoMovement                   (see ApplyTuneOverrides)
@@ -1807,6 +1814,16 @@ VehiclePlan ReadVehiclePlan(const std::vector<PartMapping>& mappings) {
         }
         if (lower.rfind("band.", 0) == 0) {
             plan.bands[key.substr(5)] = std::strtof(mapping.groups.front().c_str(), nullptr);
+            continue;
+        }
+        if (lower.rfind("bone.", 0) == 0) {
+            std::array<float, 6> pose{};
+            std::istringstream stream(mapping.groups.front());
+            if (stream >> pose[0] >> pose[1] >> pose[2] >> pose[3] >> pose[4] >> pose[5]) {
+                plan.bone_poses[key.substr(5)] = pose;
+            } else {
+                LARECOMP_APP_ERROR("[mods] parts.txt: {} wants 'tx ty tz rx ry rz'", key);
+            }
             continue;
         }
         if (lower.rfind("dial.", 0) == 0) {
@@ -3391,6 +3408,23 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             } else {
                 LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} dial.{}: {}",
                                    vehicle.mod_name, car, lod, dial.clip, dial_error);
+            }
+        }
+
+        // Bones moved to this car's own places (the steering wheel's column).
+        for (const auto& [bone, pose] : plan.bone_poses) {
+            const float translation[3] = {pose[0], pose[1], pose[2]};
+            const float rotation[3] = {pose[3], pose[4], pose[5]};
+            if (SetBonePoseByName(resource, bone, translation, rotation)) {
+                if (lod == 0) {
+                    LARECOMP_APP_INFO("[mods]   bone {} to ({} {} {}), rotation ({} {} {})", bone,
+                                      pose[0], pose[1], pose[2], pose[3], pose[4], pose[5]);
+                }
+            } else {
+                LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: body_lod_{} bone.{}: the body has no "
+                                   "bone of that name, or it is a bone at the origin whose matrix "
+                                   "copies are not laid out where they are read (left as shipped)",
+                                   vehicle.mod_name, car, lod, bone);
             }
         }
 

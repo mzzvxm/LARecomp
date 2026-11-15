@@ -4478,6 +4478,99 @@ bool SetBonePoseByTag(Rsc5Resource& resource, uint32_t skeleton, uint16_t tag,
 
 }  // namespace
 
+bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
+                       const float translation[3], const float rotation[3]) {
+    if (name.empty()) return false;
+    Rsc5View view(resource.data, resource.virtual_size);
+    DrawableLayout drawable;
+    uint32_t skeleton = 0, bones = 0;
+    uint16_t count = 0;
+    if (!ResolveDrawable(view, resource.type, drawable) ||
+        !view.U32(drawable.drawable + drawable.skeleton_field, skeleton) || skeleton == 0 ||
+        !view.U32(skeleton, bones) || bones == 0 || !view.U16(skeleton + 20, count)) {
+        return false;
+    }
+    const size_t end = std::min<size_t>(resource.virtual_size, resource.data.size());
+    for (uint16_t b = 0; b < count; ++b) {
+        const uint32_t record = bones + 224u * b;
+        uint32_t name_at = 0;
+        std::string bone;
+        if (!view.U32(record, name_at) || !view.String(name_at, bone)) return false;
+        if (bone != name) continue;
+        const size_t rec = record & 0x0FFFFFFFu;
+        if (rec + 112 > end) return false;
+        // translation x y z at +32 and Euler x y z at +48 (the w lanes at +44/+60 are not zero)
+        auto zero_pose = [&](size_t r) {
+            for (int i = 0; i < 3; ++i) {
+                if (LoadBEFloat(&resource.data[r + 32 + i * 4]) != 0.0f ||
+                    LoadBEFloat(&resource.data[r + 48 + i * 4]) != 0.0f) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const bool at_origin = zero_pose(rec);
+        if (!at_origin) {
+            RewriteBoneRecord(resource.data, end, rec, translation, rotation);
+            return true;
+        }
+        // A bone at the origin with no rotation (the R34's `seats`/`seats_pass`)
+        // cannot be found by value: every aligned zero triple of the file would
+        // match, null pointers among them, and the game's relocation then stops
+        // on "Invalid fixup" (15/11: 7360 words rewritten in body_lod_0). Its
+        // copies are written by index instead -- the record (+32, +48, +96), the
+        // 80-byte entries right after the records (rotation rows, translation at
+        // +48), and the local and global matrices at skeleton +0x10 (64 bytes a
+        // bone, the globals after the locals). Measured on vp_nsn_skyline_99's
+        // hd, axl_0, speedo, tach, ebrake and str. The global equals the local
+        // only under a root at the origin, so any other parent is refused.
+        uint32_t parent = 0, matrices = 0;
+        if (!view.U32(record + 16, parent) || !view.U32(skeleton + 0x10, matrices) || matrices == 0) {
+            return false;
+        }
+        const size_t parent_rec = parent & 0x0FFFFFFFu;
+        if (parent != 0) {
+            if (parent_rec + 64 > end || !zero_pose(parent_rec)) return false;
+        }
+        float rows[3][3];
+        EulerRows(rotation, rows);
+        // Each copy must hold what the record says -- identity rows, zero
+        // translation -- before it is written; a skeleton laid out otherwise
+        // (the R34's body_lod_1 is) is refused rather than written blind.
+        auto identity = [&](size_t entry) {
+            if (entry + 64 > end) return false;
+            for (int r = 0; r < 3; ++r)
+                for (int i = 0; i < 3; ++i) {
+                    const float v = LoadBEFloat(&resource.data[entry + r * 16 + i * 4]);
+                    if (std::fabs(v - (r == i ? 1.0f : 0.0f)) > 1e-5f) return false;
+                }
+            for (int i = 0; i < 3; ++i) {
+                if (LoadBEFloat(&resource.data[entry + 48 + i * 4]) != 0.0f) return false;
+            }
+            return true;
+        };
+        auto put = [&](size_t entry) {
+            for (int r = 0; r < 3; ++r)
+                for (int i = 0; i < 3; ++i) StoreBEFloat(&resource.data[entry + r * 16 + i * 4], rows[r][i]);
+            for (int i = 0; i < 3; ++i) StoreBEFloat(&resource.data[entry + 48 + i * 4], translation[i]);
+        };
+        const size_t after_records = (bones & 0x0FFFFFFFu) + 224u * count;
+        const size_t locals = matrices & 0x0FFFFFFFu;
+        const size_t copies[3] = {after_records + 80u * b, locals + 64u * b, locals + 64u * (count + b)};
+        for (size_t entry : copies) {
+            if (!identity(entry)) return false;
+        }
+        for (size_t entry : copies) put(entry);
+        for (int i = 0; i < 3; ++i) {
+            StoreBEFloat(&resource.data[rec + 32 + i * 4], translation[i]);
+            StoreBEFloat(&resource.data[rec + 48 + i * 4], rotation[i]);
+            StoreBEFloat(&resource.data[rec + 96 + i * 4], translation[i]);
+        }
+        return true;
+    }
+    return false;
+}
+
 bool RewriteDialClip(Rsc5Resource& resource, const DialClip& dial, std::string& error,
                      std::string* summary) {
     if (resource.type != kTypeBodyDrawable) {

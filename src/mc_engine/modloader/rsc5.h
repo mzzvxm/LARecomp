@@ -637,6 +637,13 @@ bool ReadDrawableBounds(const Rsc5Resource& resource, float min_out[3], float ma
 size_t SetBonePose(Rsc5Resource& resource, const std::string& prefix, const float translation[3],
                    const float rotation[3]);
 
+// The same for the one bone of a vehicle body's skeleton named exactly `name`
+// (`str`, the R34's steering wheel bone): whatever hangs from it -- a part slot
+// attached to it, the turn the game gives it -- moves with it. Returns whether
+// the bone was found.
+bool SetBonePoseByName(Rsc5Resource& resource, const std::string& name,
+                       const float translation[3], const float rotation[3]);
+
 // A dial the game turns by playing one of the body drawable's own clips.
 //
 // A car body carries its door, window and gauge animations as named clips
