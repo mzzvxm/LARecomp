@@ -37,6 +37,7 @@
 //
 // The cells are a first guess from the costs in the design file; the main session corrects a cell
 // from the measured cost of its package, and the owner tunes the threshold (design question 1).
+// The cells hold STORED words (what a larecomp.toml or a command line says); ShownWord below is what the player sees for them.
 // ===========================================================================
 
 #include <cstdint>
@@ -64,7 +65,7 @@ enum class Effect : uint8_t {
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
   kSsgi,                  // mcla_gpu_ssgi               auto, off, low, high
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
-  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, low, high (car_selfrefl.h: low is the specular occlusion, high adds the reflection)
+  kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h; the old low and high are read as on)
   kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, low, high
 };
 inline constexpr int kEffectCount = 10;
@@ -87,10 +88,10 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
     {"mcla_gpu_traffic_shadows", "off", "near", "near"},
     // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
-    // an RTX 5080 is +0.17 ms for low (the specular occlusion) and +0.26 ms for high (the occlusion and the reflection of the
-    // car's own colour), a full-screen history pass and a short ray on the car's pixels (G8B cost runs, perf/out/G8B.txt, with the
-    // prototype that this setting finished); an integrated GPU does without.
-    {"mcla_gpu_car_selfrefl", "off", "low", "high"},
+    // an RTX 5080 is about 0.1 ms a frame (final cost runs, perf/out/FXCOST-B6.txt: +0.107 ms for the specular occlusion alone,
+    // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on` (an
+    // old low or high is read as on), and every discrete card gets it; an integrated GPU does without.
+    {"mcla_gpu_car_selfrefl", "off", "on", "on"},
     // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for high at 720p on
     // the RTX 5080, estimated 1.0 ms at 4K there): high is about 3 ms at 1080p on a GTX 1050-class
     // card (Mid), low about 1 ms, so Mid gets low and keeps a frame at 60 FPS; the Low class (shared
@@ -186,9 +187,27 @@ constexpr uint32_t SunShaftSteps(GpuClass c) {
   return c == GpuClass::kHigh ? kSunShaftStepsHigh : kSunShaftStepsMid;
 }
 
-// "AUTO (HIGH)": the pause row's label for `auto`, with the cell's value in capitals.
+// The word a player sees for a STORED value of an effect (the menu rows, the launcher, the player documents; the log lines and the
+// debug cvars keep the stored words). Nothing in the graphics settings is called low (owner, 2026-11-14): the ambient occlusion, the
+// contact shadows and the bounce light keep their stored words off / low / high (an existing larecomp.toml or command line keeps
+// its quality, and `high` would otherwise change its meaning) and show them as HIGH and ULTRA; the car self-reflections have one
+// level, stored `on` (the old low and high read as on) and shown ON. Every other value is shown as it is stored.
+constexpr std::string_view ShownWord(Effect effect, std::string_view stored) {
+  switch (effect) {
+    case Effect::kContactShadows:
+    case Effect::kSsgi:
+    case Effect::kAmbientOcclusion:
+      return stored == "low" ? std::string_view("high") : stored == "high" ? std::string_view("ultra") : stored;
+    case Effect::kCarSelfRefl:
+      return (stored == "low" || stored == "high") ? std::string_view("on") : stored;
+    default:
+      return stored;
+  }
+}
+
+// "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value as the player sees it, in capitals.
 inline std::string AutoLabelFor(GpuClass c, Effect effect) {
-  return AutoLabelOf(Cell(effect, c));
+  return AutoLabelOf(ShownWord(effect, Cell(effect, c)));
 }
 
 // --- the city LOD scale -------------------------------------------------------------------------
