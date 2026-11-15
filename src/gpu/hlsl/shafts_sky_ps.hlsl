@@ -1,10 +1,13 @@
 // MCLA GPU renderer -- sun shafts, pass 1: the sky's brightness (shafts.h).
 //
 // Run at the game's mid-scene depth copy, when the scene's opaque draws are all in the colour
-// target and the fog, the particles and the post chain are not. One texel of the image (half the
-// picture's size, R16_FLOAT) is the mean of the 2x2 pixels it covers, and for each of those the
-// mean over the host samples of the target (a multisampled scene: Texture2DMS, every sample its own
-// depth and colour, so an edge between the sky and a roof is as smooth as the picture's):
+// target and the fog, the particles and the post chain are not. One texel of the image (R16_FLOAT,
+// half the picture's size, or less when the cap is on: shafts_image.h) is the mean of four pixels
+// of the picture, a 2x2 block when the image is half the picture, else the same four taps spread over
+// the texel's footprint (g_push.tint.xy: the pixels one texel spans, 2 for the half size; a sparse
+// sample of a smooth image), and for each of those the mean over the host samples of the target (a
+// multisampled scene: Texture2DMS, every sample its own depth and colour, so an edge between the sky
+// and a roof is as smooth as the picture's):
 //
 //   sky ? clamp(luma(colour) - threshold, 0, limit) : 0
 //
@@ -40,7 +43,10 @@ float SampleShine(int2 p, uint s) {
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {
-  const int2 base = int2(position.xy) * 2;
+  // The texel's tap k of an axis is at the quarter (k = 0) and three quarters (k = 1) of its footprint
+  // (shafts_image.h SkyTap): with footprint 2 the pixels 2 * texel and 2 * texel + 1, the old 2x2 block.
+  const float2 texel = floor(position.xy);
+  const float2 footprint = g_push.tint.xy;
   const int2 last = int2(g_push.sizes.zw) - 1;
 #if SHAFTS_MS
   const uint samples = max(g_push.slots.z, 1u);
@@ -50,7 +56,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float sum = 0.0f;
   [unroll] for (int j = 0; j < 2; ++j) {
     [unroll] for (int i = 0; i < 2; ++i) {
-      const int2 p = min(base + int2(i, j), last);
+      const int2 p = min(int2(floor((texel + float2(0.25f + 0.5f * float(i), 0.25f + 0.5f * float(j))) * footprint)), last);
       [loop] for (uint s = 0u; s < samples; ++s) {
         sum += SampleShine(p, s);
       }

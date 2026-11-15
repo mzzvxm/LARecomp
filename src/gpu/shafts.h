@@ -11,8 +11,8 @@
 // WHERE (the frame, see AO-DESIGN.md 2.1 and GFX-UPGRADES-DESIGN.md 6B.1): two points of the main view.
 //   1. the game's mid-scene depth copy (phase 0x02000000, into 078B0000: the ambient occlusion's
 //      point, ao.h): every opaque draw is in the colour target, the fog, particles and the post chain
-//      are not. Here the sky's brightness is taken from the colour and the depth (one half-size image,
-//      hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
+//      are not. Here the sky's brightness is taken from the colour and the depth (one image of half the
+//      picture's size, capped at a 960x540 box: shafts_image.h; hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
 //      point is in every frame of the play view whatever the hour, the weather, the render scale or
 //      the upscaler (the main view's depth is copied there in all of them), and whether the sun gives
 //      shafts is decided by the sun alone (below): a noon, a night or a rain takes no sky and says
@@ -34,7 +34,8 @@
 // when it comes back. mcla_gpu_sun_shafts_early forces the first point (to compare the two).
 //
 // WHAT: per frame, when it is on and the sun is where shafts show (below):
-//   sky     the half-size image of max(luma(colour) - threshold, 0) where the depth is the far plane
+//   sky     the image (half the picture, at most the 960x540 box: shafts_image.h) of max(luma(colour) -
+//           threshold, 0) where the depth is the far plane
 //   blur    each texel marches (32 steps on the Mid class, 64 on High: gpu_class.h SunShaftSteps) toward the
 //           sun's image position, adding up the sky image with a decay; rays blocked by anything that is
 //           not sky stay dark
@@ -78,7 +79,8 @@
 // default; live; the pause menu's SUN SHAFTS row; `auto` is gpu_class.h's: DEFAULT on Mid and High, OFF on
 // Low; shafts_level.h has the rule) and the tuning cvars _intensity (a fine multiplier on top of the level),
 // _steps (the ray steps, which the class chooses), _density, _threshold, _sky_depth, _view (debug views),
-// _early and _census, all debug-only.
+// _early, _cap (false: the images are half the picture's size at any size, as before the cap; true by default)
+// and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
 // made ahead on the host builder thread (host_precache.h) when the setting in force at the start uses
@@ -102,6 +104,7 @@
 #include "records.h"
 #include "resolve.h"
 #include "shafts_anchor.h"
+#include "shafts_image.h"
 #include "shafts_level.h"
 #include "shafts_sun.h"
 #include "temporal_camera.h"
@@ -210,7 +213,8 @@ class SunShafts {
     EdramKey colour;               // the main colour's identity of the frame
     uint32_t host_samples = 0;
     uint32_t render[2] = {};       // the picture in host pixels
-    uint32_t image[2] = {};        // the sky and shaft images' size
+    uint32_t image[2] = {};        // the sky and shaft images' size (shafts_image.h: half the picture, capped)
+    float footprint[2] = {2.0f, 2.0f};  // the picture's pixels one texel of the sky image spans
     float sun_uv[2] = {};
     bool sun_from_sky = false;     // the sun's place came from the sky's constant (else the light's)
     float tint[3] = {};            // the light's colour times its strength
@@ -396,7 +400,7 @@ class SunShafts {
   std::array<bool, kVariantCount> pipeline_failed_{};
   bool listed_ = false;  // the pipelines are with the host precache (at the start, or since the switch)
   bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
-  HostImage sky_;    // R16_FLOAT, half the picture: the sky's brightness
+  HostImage sky_;    // R16_FLOAT, half the picture (capped, shafts_image.h): the sky's brightness
   HostImage shaft_;  // R16_FLOAT, the same size: the blurred image
   uint32_t unused_frames_ = 0;       // frames since a pass was recorded, for giving the images back
   uint32_t images_made_for_[2] = {};

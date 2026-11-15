@@ -88,6 +88,15 @@ REXCVAR_DEFINE_BOOL(
     "mid-scene point by themselves when no such copy comes. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_sun_shafts_cap, true, "MCLA/GPU",
+    "Diagnostic: caps the sun shafts' two working images at 960x540 (the size they are at 1080p, a quarter "
+    "of their old size at 4K, the same shape as the picture; a picture whose half size is under that is "
+    "untouched). The shafts are a smooth, blurred light, so the picture is the same to within the ray "
+    "noise being coarser; it saves a good part of the passes' time at 1440p and 4K while the shafts "
+    "show. False: the images are half the picture's size, as they were. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_sun_shafts_census, 0, "MCLA/GPU",
     "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log "
@@ -938,8 +947,14 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
     outcome_ = Outcome::kTooSmall;
     return false;
   }
-  plan.image[0] = (plan.render[0] + 1) / 2;
-  plan.image[1] = (plan.render[1] + 1) / 2;
+  // The working images: half the picture, capped at a 960x540 box (shafts_image.h; the cvar is read every frame, so
+  // a switch re-makes the images at the next sun frame). The sky pass spreads its four taps over a texel's footprint.
+  const shafts_image::Size image =
+      shafts_image::ImageSize(plan.render[0], plan.render[1], REXCVAR_GET(mcla_gpu_sun_shafts_cap));
+  plan.image[0] = image.width;
+  plan.image[1] = image.height;
+  plan.footprint[0] = shafts_image::Footprint(plan.render[0], plan.image[0]);
+  plan.footprint[1] = shafts_image::Footprint(plan.render[1], plan.image[1]);
   plan.host_samples = summary.source->host_samples;
   // The main colour's identity beside the depth's, at the same samples (ao.cpp RecordApply).
   plan.colour.base_tiles = temporal::kMainColorBase;
@@ -1037,6 +1052,8 @@ bool SunShafts::RecordSky(const ResolveCache::Summary& summary, plume::RenderCom
   push.sizes[3] = float(plan.render[1]);
   push.sun[0] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_sky_depth), 0.0, 0.01));
   push.sun[1] = kShineLimit;
+  push.tint[0] = plan.footprint[0];
+  push.tint[1] = plan.footprint[1];
   push.tint[3] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_threshold), 0.0, 4.0));
   pass_timing_->Mark(list, "shafts sky");
   passes_->DrawInto(list, sky_, sky, &push, sizeof(push));

@@ -34,7 +34,11 @@ constexpr std::string_view kHelper = R"HLSL(// LARecomp variant bloom_gauss (src
 // S times larger (g_InvResolutionScale is 1 / S), so the same offsets would reach 1 / S as far on the screen.
 // A tap is the area average over the S texels it stood for: its offset times S, as ceil(S) bilinear taps
 // S / ceil(S) texels apart (the finer image has detail one tap would skip: a dotted comb round a small light),
-// each with 1 / ceil(S) of the weight. At S = 1 it is the game's own call, unchanged.
+// each with 1 / ceil(S) of the weight. At S = 1 it is the game's own call, unchanged. At S = 3 (4K) the three
+// sub-taps are exactly one texel apart, so together they weigh four texels (1 - f, 1, 1, f) / 3 (f the position's
+// fraction along the axis) and two bilinear fetches give that same sum: one over the first two texels with the
+// weight (2 - f) / 3 and one over the last two with (1 + f) / 3 (at f = 0 a fetch between two texels and a fetch
+// on the third). Not for a texture the game reads with its gamma bit: the curve is not linear.
 float4 GaussTap(float2 axis, uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
 {
     float scale = 1.0 / dot(axis, g_InvResolutionScale);
@@ -46,6 +50,13 @@ float4 GaussTap(float2 axis, uint resourceDescriptorIndex, uint samplerDescripto
     if (count == 1)
     {
         return tfetch2D(resourceDescriptorIndex, samplerDescriptorIndex, texCoord, offset * scale);
+    }
+    if (count == 3 && abs(scale - 3.0) < 0.001 && (resourceDescriptorIndex & TFETCH_GAMMA_BIT) == 0)
+    {
+        float phase = dot(axis, getWeights2D(resourceDescriptorIndex, samplerDescriptorIndex, texCoord, offset * scale));
+        float4 first = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex, texCoord, offset * scale + axis * (1.0 / (2.0 - phase) - phase - 1.0), 0.0);
+        float4 second = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex, texCoord, offset * scale + axis * (phase / (1.0 + phase) - phase + 1.0), 0.0);
+        return first * ((2.0 - phase) * (1.0 / 3.0)) + second * ((1.0 + phase) * (1.0 / 3.0));
     }
     float spacing = scale / float(count);
     float4 sum = 0.0;

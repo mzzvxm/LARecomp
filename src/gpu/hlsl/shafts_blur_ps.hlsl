@@ -16,6 +16,10 @@
 //            so a bright sky that fills the picture lights the sun's surroundings, not the whole
 //            screen
 //
+// Everything here is in UV (0 to 1 of the image) except the radial weight, which is in image heights, so
+// the rays have the same length and look at any image size: the image is half the picture's or capped at
+// a 960x540 box (shafts_image.h), and only the noise below is as coarse as the texels.
+//
 // The start of the ray is shifted by interleaved gradient noise (Jimenez 2014) so that the steps do
 // not show as bands; the noise is a fixed pattern, plus a shift by the golden ratio each frame while
 // a temporal upscaler runs (the host sends 0 otherwise), which the upscaler averages.

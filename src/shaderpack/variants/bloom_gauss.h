@@ -25,6 +25,14 @@
 // At S = 1 (within 1%) the helper makes the game's own call with the game's own offset, so the picture is
 // the game's, bit for bit; at S < 1 (n = 1) the tap is the game's with its offset times S (the console's
 // size at a render scale below 1).
+// At S = 3 (4K; within 0.001, and for a texture without the gamma bit) the three sub-taps are exactly one
+// texel apart, and together they weigh four texels (1 - f, 1, 1, f) / 3 along the axis (f the fraction of the
+// tap's position: frac(position in texels - 0.5)). Two bilinear fetches give the same weighted sum, for every f
+// and at the image edge under the sampler's clamp (the identity is on the clamped texel values):
+//     first   over texels i-1, i    at i - 1 + 1 / (2 - f)    weight (2 - f) / 3
+//     second  over texels i+1, i+2  at i + 1 + f / (1 + f)    weight (1 + f) / 3     (i = floor(position - 0.5))
+// so 18 fetches per axis instead of 27 (bloom_gauss_test.cpp proves it on a model of the sampler at S = 2 and 3;
+// S = 2 is two sub-taps and stays two fetches). Other scales keep their n sub-taps.
 //
 // The helper uses tfetch2D (implicit LOD) for those single taps and tfetch2DLod (level 0, the image has one
 // level) for the sub-taps, so that no gradient operation sits in a loop. No extra constants:
@@ -48,7 +56,9 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
 // variants_bloom_gauss_version).
-inline constexpr uint32_t kBloomGaussVariantVersion = 1;
+//   1  the Gaussians' taps as ceil(S) sub-taps
+//   2  at S = 3 the three sub-taps as two bilinear fetches (the same sum)
+inline constexpr uint32_t kBloomGaussVariantVersion = 2;
 
 // The Gaussians' identities on the retail game (the runtime's own: FNV-1a 64 of the microcode; the
 // "hash" column of the shader report is another number).
