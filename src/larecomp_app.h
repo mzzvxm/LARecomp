@@ -16,6 +16,7 @@
 #include "larecomp_log.h"
 #include "crash_handler.h"
 #include "cpu_level.h"
+#include "game_marker.h"
 #include "achievement_metadata.h"
 #include "mc_engine/hooks/hooks.h"
 #include "native_gfx/nocp/nocp_app.h"
@@ -110,6 +111,10 @@ class LarecompApp : public rex::ReXApp {
               std::string_view name,
               rex::PPCImageInfo ppc_info)
       : rex::ReXApp(ctx, name, ppc_info) {
+    // First of all: the named object that says a game is running (game_marker.h). The launcher checks it instead of
+    // listing processes. Before the restart wait on purpose: a restarted game holds it beside the old one, so the
+    // launcher never sees a gap.
+    larecomp::marker::Create();
     // Started by RESTART GAME: wait for the old process to be gone before this one opens its log,
     // reads the settings or touches the saves (restart.h).
     mcla::WaitForRestartedGame();
@@ -118,6 +123,7 @@ class LarecompApp : public rex::ReXApp {
     // The CPU level this build was compiled for (CMake LARECOMP_CPU_LEVEL) and what this CPU has.
     LARECOMP_APP_INFO("[cpu] built for {}; CPU: {}", larecomp::cpu::BuiltLevel(),
                       larecomp::cpu::DescribeFeatures());
+    LARECOMP_APP_INFO("[marker] {}", larecomp::marker::Describe());
     InstallCrashLogger();
     if (auto* w = window()) {
       w->SetTitle("Midnight Club Los Angeles - by @mzzvxm");
