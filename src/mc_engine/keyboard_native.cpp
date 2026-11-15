@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -33,9 +35,11 @@
 
 #include "imgui.h"
 #include "hooks/hooks_internal.h"
+#include "input_state.h"
 #include "kbm_input.h"
 #include "logging.h"
 #include "modloader/texture.h"
+#include "prompt_glyphs.h"
 #include "native_gfx/guest/texture_format.h"
 #include "online/server_browser/browser_ui.h"
 
@@ -109,10 +113,10 @@ REXCVAR_DEFINE_STRING(kb_drive_handbrake, "Space", "MCLA/Input/Keyboard - drivin
 REXCVAR_DEFINE_STRING(kb_drive_weight, "CapsLock", "MCLA/Input/Keyboard - driving",
     "Driving: weight transfer, the 'turn in' of the pad's B")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// "Shift,X": the prompt for the pad's X is painted with the key of the MENU's X button (kb_ui_x = X, GlyphKeyFor), and one bitmap serves the
-// menu and the road. With X also bound to nitro, the key that prompt shows does what the pad's X does on the road (KBM-DESIGN 1.3 item 8).
+// "Shift,X": X stays on nitro as well as Shift (a pad habit). It used to be needed so that the prompt for the pad's X, painted with the menu's X key, did what the pad's X
+// does on the road (KBM-DESIGN 1.3 item 8); the prompts now show the driving key on the road (prompt_glyphs.h, Context), so the first key with a cap, Shift, is what shows there.
 REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift,X", "MCLA/Input/Keyboard - driving",
-    "Driving: nitro (the pad's X). X is here too so the X prompt shows a key that works on the road.")
+    "Driving: nitro (the pad's X). On the road the X prompt shows the first of these keys that has a cap.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_headlights, "H", "MCLA/Input/Keyboard - driving",
     "Driving: headlights (the pad's Y)").lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -176,8 +180,21 @@ REXCVAR_DEFINE_STRING(extra_button_r5, "", "MCLA/Input/Extra buttons",
     "Host key(s) that the pad's R5 button sends. See extra_button_l4.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// button_prompts is owned by hooks/ui.cpp (platform flag); this only reads it.
+// button_prompts and prompts_live are owned by hooks/ui.cpp (the platform flag); the glyph family itself comes from the input state (input_state.h, which folds button_prompts in).
 REXCVAR_DECLARE(std::string, button_prompts);
+REXCVAR_DECLARE(bool, prompts_live);
+
+REXCVAR_DEFINE_STRING(prompts_ps_map, "", "MCLA/Input",
+    "Debug: which dictionary bitmaps hold the game's own PlayStation shoulder, Start and Back buttons, as SLOT=shared_N.dds pairs separated by commas "
+    "(slots A B X Y LB RB LT RT Start Back Phone), e.g. \"LB=shared_8.dds,RB=shared_32.dds\". A slot with no entry here or in the built-in table (prompt_glyphs.h) "
+    "gets the shipped picture (src/keycaps/ps_*.png). Used to try candidates without a build.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(prompts_glyph_dump, "", "MCLA/Input",
+    "Debug: a folder; when the UI's texture dictionary is first found, every small DXT5 bitmap in it is written there as raw RGBA (<name>_<w>x<h>.rgba, plus index.txt), "
+    "to see which bitmap is which glyph. Empty = off. Read once at start.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -378,6 +395,8 @@ void LoadActionIds(const uint8_t* b) {
 // every user compares the number it last applied with it (one atomic load a frame; before, each frame built the strings of all 36 cvars and
 // compared them).
 std::atomic<uint32_t> g_bindings_gen{1};
+// The settings that only decide what the prompts draw (not what a key does): their own number, so that changing one does not rebuild the mappers.
+std::atomic<uint32_t> g_prompt_settings_gen{1};
 
 void WatchBindings() {
     static const char* const kNames[] = {
@@ -388,14 +407,19 @@ void WatchBindings() {
         "kb_drive_lookback", "kb_drive_map", "kb_drive_talk", "kb_drive_shift_up", "kb_drive_shift_down", "kb_drive_pause",
         "kb_drive_popup_select", "kb_drive_popup_back",
         "extra_button_l4", "extra_button_l5", "extra_button_r4", "extra_button_r5",
-        "keycaps_dir", "button_prompts",
+        "keycaps_dir",
     };
+    static const char* const kPromptNames[] = {"prompts_live", "prompts_ps_map"};  // button_prompts is the input state's own: its generation moves with it (input_state.h)
     static std::once_flag once;
     std::call_once(once, [] {
         // The callbacks run inside the cvar registry's lock: they only bump the number.
         for (const char* name : kNames)
             rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
                 g_bindings_gen.fetch_add(1, std::memory_order_relaxed);
+            });
+        for (const char* name : kPromptNames)
+            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+                g_prompt_settings_gen.fetch_add(1, std::memory_order_relaxed);
             });
     });
 }
@@ -404,6 +428,11 @@ void WatchBindings() {
 uint32_t BindingsGen() {
     WatchBindings();
     return g_bindings_gen.load(std::memory_order_relaxed);
+}
+
+uint32_t PromptSettingsGen() {
+    WatchBindings();
+    return g_prompt_settings_gen.load(std::memory_order_relaxed);
 }
 
 struct DriveBinding {
@@ -956,42 +985,44 @@ void UpdateCameraJump(uint8_t* b, const larecomp::kbm::KeySnapshot& snap) {
 }
 
 // ── glyphs ──────────────────────────────────────────────────────────────
-// One entry per UI button whose bitmap(s) carry the Xbox glyph. A glyph can appear in
-// several movies under different shared_N, so every copy is written. The round
-// Start and Back glyphs are 64x32 bitmaps; the face and shoulder buttons are 64x64.
+// Live button prompts (KBM-DESIGN.md P4; the pure part, with the reasons, is prompt_glyphs.h). Every movie draws its buttons from the Xbox bitmaps of shared_latin.xtd: the
+// movies' platform flag is pinned to Xbox (hooks/ui.cpp, prompts_live), because a flag change does not reach a prompt that is already on screen (KBM-P0 E1) and a write into
+// these bitmaps does (the texture cache is write-watched: the next draw uploads them again). What the bitmaps hold is the glyph family's art: the originals (Xbox), the PlayStation
+// set, or key caps (the menu's keys while a menu is open, the driving keys on the road).
+//
+// One entry per button; a glyph can appear in several movies under different shared_N, so every copy is written. The round Start and Back glyphs are 64x32 bitmaps; the face and
+// shoulder buttons are 64x64.
 struct GlyphTarget {
     const char* label;
-    std::string& (*cvar)();   // null for a spare slot (see below)
     uint32_t width, height;
     std::vector<const char*> textures;
     int icon = 0;             // iconID the rows of the game use for this glyph (1-based frame)
     int slot = -1;            // spare slot number, -1 = a menu button's own glyph
+    int pslot = -1;           // larecomp::prompts::Slot of a menu button's glyph, -1 = a spare slot
 };
+constexpr int P(larecomp::prompts::Slot s) { return static_cast<int>(s); }
 const GlyphTarget kGlyphs[] = {
-    {"A", &FLAGS_kb_ui_accept_storage_, 64, 64, {"shared_2.dds", "shared_49.dds"}, 1},
-    {"B", &FLAGS_kb_ui_back_storage_, 64, 64, {"shared_45.dds"}, 2},
-    {"X", &FLAGS_kb_ui_x_storage_, 64, 64, {"shared_4.dds"}, 3},
-    {"Y", &FLAGS_kb_ui_y_storage_, 64, 64, {"shared_42.dds"}, 4},
-    {"LB", &FLAGS_kb_ui_lb_storage_, 64, 64, {"shared_10.dds", "shared_41.dds"}, 5},
-    {"RB", &FLAGS_kb_ui_rb_storage_, 64, 64, {"shared_1.dds", "shared_12.dds"}, 6},
-    {"LT", &FLAGS_kb_ui_lt_storage_, 64, 64, {"shared_43.dds", "shared_48.dds"}, 7},
-    {"RT", &FLAGS_kb_ui_rt_storage_, 64, 64, {"shared_18.dds", "shared_37.dds"}, 8},
+    {"A", 64, 64, {"shared_2.dds", "shared_49.dds"}, 1, -1, P(larecomp::prompts::Slot::A)},
+    {"B", 64, 64, {"shared_45.dds"}, 2, -1, P(larecomp::prompts::Slot::B)},
+    {"X", 64, 64, {"shared_4.dds"}, 3, -1, P(larecomp::prompts::Slot::X)},
+    {"Y", 64, 64, {"shared_42.dds"}, 4, -1, P(larecomp::prompts::Slot::Y)},
+    {"LB", 64, 64, {"shared_10.dds", "shared_41.dds"}, 5, -1, P(larecomp::prompts::Slot::LB)},
+    {"RB", 64, 64, {"shared_1.dds", "shared_12.dds"}, 6, -1, P(larecomp::prompts::Slot::RB)},
+    {"LT", 64, 64, {"shared_43.dds", "shared_48.dds"}, 7, -1, P(larecomp::prompts::Slot::LT)},
+    {"RT", 64, 64, {"shared_18.dds", "shared_37.dds"}, 8, -1, P(larecomp::prompts::Slot::RT)},
     // iconID 9 = Start (prompt.xsf: shared_47, pause/popup: shared_33), 10 = Back (31 / 38).
-    {"Start", &FLAGS_kb_ui_start_storage_, 64, 32, {"shared_47.dds", "shared_33.dds"}, 9},
-    {"Back", &FLAGS_kb_ui_select_storage_, 64, 32, {"shared_31.dds", "shared_38.dds"}, 10},
-    // Four spare glyphs for the Custom Controls screen: the PlayStation cross, circle, square
-    // and triangle (iconID 50..53, 32x32). With button_prompts = keyboard platform stays 0 and
-    // nothing shows them, so they are free to carry the cap of whichever other key a row is
-    // bound to: the screen draws a binding as "iconID" text, so a key with no glyph of its
-    // own gets one of these.
-    // The Sidekick phone (calls to a race) draws its own "accept" button: a gray 64x64 Back glyph
-    // embedded in sidekick.xsf (character 106, the same texture is character 646), not one of
-    // the shared dictionary's. The phone accepts with the Back button, so it shows that key.
-    {"Phone", &FLAGS_kb_ui_select_storage_, 64, 64, {"sidekick:106"}, 0},
-    {"Slot0", nullptr, 32, 32, {"shared_24.dds"}, 50, 0},
-    {"Slot1", nullptr, 32, 32, {"shared_13.dds"}, 51, 1},
-    {"Slot2", nullptr, 32, 32, {"shared_15.dds"}, 52, 2},
-    {"Slot3", nullptr, 32, 32, {"shared_36.dds"}, 53, 3},
+    {"Start", 64, 32, {"shared_47.dds", "shared_33.dds"}, 9, -1, P(larecomp::prompts::Slot::Start)},
+    {"Back", 64, 32, {"shared_31.dds", "shared_38.dds"}, 10, -1, P(larecomp::prompts::Slot::Back)},
+    // The Sidekick phone (calls to a race) draws its own "accept" button: a gray 64x64 Back glyph embedded in sidekick.xsf (character 106, the same texture is character 646), not
+    // one of the shared dictionary's. The phone accepts with the Back button, so it shows that key.
+    {"Phone", 64, 64, {"sidekick:106"}, 0, -1, P(larecomp::prompts::Slot::Phone)},
+    // Four spare glyphs for the Custom Controls screen: the PlayStation cross, circle, square and triangle (iconID 50..53, 32x32). The platform flag is pinned to 0, so no
+    // movie draws them as a PlayStation button: they are free to carry the cap of whichever other key a row is bound to (the screen draws a binding as "iconID" text, so a key
+    // with no glyph of its own gets one of these). They are also the source of the PlayStation faces: the originals kept below are what is copied, never the live pixels.
+    {"Slot0", 32, 32, {"shared_24.dds"}, 50, 0},
+    {"Slot1", 32, 32, {"shared_13.dds"}, 51, 1},
+    {"Slot2", 32, 32, {"shared_15.dds"}, 52, 2},
+    {"Slot3", 32, 32, {"shared_36.dds"}, 53, 3},
 };
 constexpr int kNumSlots = 4;
 std::string g_slot_key[kNumSlots];  // key name painted on each spare glyph, "" = free
@@ -999,14 +1030,18 @@ std::string g_slot_key[kNumSlots];  // key name painted on each spare glyph, "" 
 struct GlyphTexture {
     uint32_t base = 0;                 // guest address of the pixel data
     uint32_t width = 0, height = 0;
-    std::vector<uint8_t> original;     // what the game shipped, to put back
-    std::string painted;               // key cap currently on it ("" = the original)
+    std::vector<uint8_t> original;     // what the game shipped (w/4 * h/4 blocks of 16 bytes, linear order, still byte-swapped as the guest holds them), to put back and to copy from
+    larecomp::prompts::Art art;        // what is on it now (Original = the shipped art)
 };
 std::unordered_map<std::string, GlyphTexture> g_glyph_tex;  // by "shared_N.dds"
 uint32_t g_glyph_dict = 0;
-std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "key@WxH" -> tiled bytes
-uint64_t g_glyph_sig_applied = 0;  // what the glyphs were last painted for (0 = paint again)
+uint32_t g_dict_vals = 0, g_dict_count = 0;  // the dictionary's texture table, for the lookups by name
+std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "key@WxH" / "game:name@WxH" -> tiled bytes
 uint32_t g_glyph_tick = 0;
+
+// Something that decides what the glyphs show changed (the device, the family, a binding, the menu, a new dictionary): the next input poll paints. Set from any thread (the
+// input state's listener runs on the UI thread, the pad poll's thread, a pool thread); read and cleared by the poll, on the game thread.
+std::atomic<bool> g_prompts_dirty{true};
 
 std::string Lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1172,6 +1207,73 @@ bool ScanSidekick(uint8_t* b) {
     return true;
 }
 
+// A texture of the shared_latin dictionary, as the guest's grcTexture describes it.
+struct DictTexture {
+    std::string name;
+    uint32_t w = 0, h = 0, fmt = 0, endian = 0, base = 0;
+};
+
+bool ReadDictTexture(const uint8_t* b, uint32_t tex, DictTexture* out) {
+    if (!HeapPtr(tex)) return false;
+    const uint32_t name_ptr = ReadGuestU32(b, tex + 0x18);
+    if (!HeapPtr(name_ptr) && name_ptr < 0x82000000u) return false;
+    const char* text = reinterpret_cast<const char*>(b + name_ptr);
+    size_t n = 0;
+    while (n < 31 && text[n]) ++n;
+    out->name.assign(text, n);
+    out->w = (uint32_t(b[tex + 0x20]) << 8) | b[tex + 0x21];
+    out->h = (uint32_t(b[tex + 0x22]) << 8) | b[tex + 0x23];
+    const uint32_t hdr = ReadGuestU32(b, tex + 0x1C);
+    if (!HeapPtr(hdr)) return false;
+    const uint32_t fc1 = ReadGuestU32(b, hdr + 0x20);  // fetch constant dword 1
+    out->fmt = fc1 & 0x3F;
+    out->endian = (fc1 >> 6) & 3;
+    out->base = fc1 & 0xFFFFF000;
+    return true;
+}
+
+// The dictionary's texture of that name (the table is the one ScanDictionary found).
+bool FindDictTexture(const uint8_t* b, const std::string& name, DictTexture* out) {
+    for (uint32_t i = 0; i < g_dict_count; ++i) {
+        DictTexture d;
+        if (!ReadDictTexture(b, ReadGuestU32(b, g_dict_vals + 4 * i), &d) || d.name != name) continue;
+        *out = std::move(d);
+        return true;
+    }
+    return false;
+}
+
+// The blocks of a texture at their tiled offsets, in linear order, still as the guest holds them. A small texture's blocks are NOT a contiguous run (the ForEachBlock note above).
+std::vector<uint8_t> ReadBlocks(const uint8_t* b, uint32_t base, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> blocks(size_t((w / 4) * (h / 4) * 16));
+    ForEachBlock(w, h, [&](uint32_t i, uint32_t off) { std::memcpy(blocks.data() + size_t(i) * 16, b + base + off, 16); });
+    return blocks;
+}
+
+// Writes every small DXT5 texture of the dictionary as raw RGBA (<name>_<w>x<h>.rgba) with an index.txt, to identify the bitmaps nobody has named yet (the PlayStation shoulders: the
+// chain's sheet, perf\scripts\kbm\kbm_p4_sheet.py, draws them). The cvar prompts_glyph_dump names the folder; it is read once, when the dictionary is first scanned.
+void DumpDictionary(const uint8_t* b, const std::string& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    std::ofstream index(std::filesystem::path(dir) / "index.txt");
+    int written = 0;
+    for (uint32_t i = 0; i < g_dict_count; ++i) {
+        DictTexture d;
+        if (!ReadDictTexture(b, ReadGuestU32(b, g_dict_vals + 4 * i), &d)) continue;
+        index << d.name << ' ' << d.w << ' ' << d.h << ' ' << d.fmt << ' ' << d.endian << '\n';
+        if (d.fmt != 20 || d.endian != 1 || !HeapPtr(d.base) || d.w == 0 || d.h == 0 || d.w > 128 || d.h > 128 || (d.w % 4) || (d.h % 4)) continue;
+        const std::vector<uint8_t> rgba = larecomp::prompts::DecodeBc3GuestSurface(ReadBlocks(b, d.base, d.w, d.h), d.w, d.h);
+        std::string stem = d.name;
+        if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".dds") == 0) stem.resize(stem.size() - 4);
+        std::ofstream raw(std::filesystem::path(dir) / (stem + "_" + std::to_string(d.w) + "x" + std::to_string(d.h) + ".rgba"), std::ios::binary);
+        raw.write(reinterpret_cast<const char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()));
+        ++written;
+    }
+    MC_INFO("[prompts] dictionary dumped: {} bitmaps as raw RGBA in {}", written, dir);
+}
+
+bool g_art_warm = false;  // the art of the glyph families has been built once (WarmArt)
+
 // Finds the shared_latin dictionary's textures by name and checks each really is a
 // DXT5 tiled/endian-1 surface of the size expected before it is ever written, and
 // that it has the block layout the writer assumes.
@@ -1187,109 +1289,268 @@ bool ScanDictionary(uint8_t* b) {
     if (!HeapPtr(vals) || count == 0 || count > 512) return false;
 
     g_glyph_tex.clear();
+    g_cap_cache.clear();  // the PlayStation art in it was decoded from the old dictionary
     g_sidekick_ok = false;
+    g_dict_vals = vals;
+    g_dict_count = count;
     for (const GlyphTarget& g : kGlyphs) {
         for (const char* tex_name : g.textures) {
-            for (uint32_t i = 0; i < count; ++i) {
-                const uint32_t tex = ReadGuestU32(b, vals + 4 * i);
-                if (!HeapPtr(tex)) continue;
-                const uint32_t name_ptr = ReadGuestU32(b, tex + 0x18);
-                if (!HeapPtr(name_ptr) && name_ptr < 0x82000000u) continue;
-                if (std::strncmp(reinterpret_cast<const char*>(b + name_ptr), tex_name, 24) != 0) continue;
-                const uint32_t w = (uint32_t(b[tex + 0x20]) << 8) | b[tex + 0x21];
-                const uint32_t h = (uint32_t(b[tex + 0x22]) << 8) | b[tex + 0x23];
-                const uint32_t hdr = ReadGuestU32(b, tex + 0x1C);
-                if (w != g.width || h != g.height || !HeapPtr(hdr)) {
-                    MC_WARN("[kbnative] {} is {}x{} / header 0x{:08X}, expected {}x{}: skipped",
-                            tex_name, w, h, hdr, g.width, g.height);
-                    break;
-                }
-                const uint32_t fc1 = ReadGuestU32(b, hdr + 0x20);  // fetch constant dword 1
-                const uint32_t fmt = fc1 & 0x3F, endian = (fc1 >> 6) & 3;
-                const uint32_t base = fc1 & 0xFFFFF000;
-                if (fmt != 20 || endian != 1 || !HeapPtr(base)) {
-                    MC_WARN("[kbnative] {}: format {} endian {} base 0x{:08X}, expected DXT5/8-in-16: "
-                            "skipped", tex_name, fmt, endian, base);
-                    break;
-                }
-                GlyphTexture t;
-                t.base = base;
-                t.width = w;
-                t.height = h;
-                t.original.resize(size_t((w / 4) * (h / 4) * 16));
-                ForEachBlock(w, h, [&](uint32_t i, uint32_t off) {
-                    std::memcpy(t.original.data() + size_t(i) * 16, b + base + off, 16);
-                });
-                MC_INFO("[kbnative] {} base 0x{:08X} {}x{}", tex_name, base, w, h);
-                g_glyph_tex[tex_name] = std::move(t);
-                break;
+            DictTexture d;
+            if (!FindDictTexture(b, tex_name, &d)) continue;
+            if (d.w != g.width || d.h != g.height) {
+                MC_WARN("[kbnative] {} is {}x{}, expected {}x{}: skipped", tex_name, d.w, d.h, g.width, g.height);
+                continue;
             }
+            if (d.fmt != 20 || d.endian != 1 || !HeapPtr(d.base)) {
+                MC_WARN("[kbnative] {}: format {} endian {} base 0x{:08X}, expected DXT5/8-in-16: skipped", tex_name, d.fmt, d.endian, d.base);
+                continue;
+            }
+            GlyphTexture t;
+            t.base = d.base;
+            t.width = d.w;
+            t.height = d.h;
+            t.original = ReadBlocks(b, d.base, d.w, d.h);
+            MC_INFO("[kbnative] {} base 0x{:08X} {}x{}", tex_name, d.base, d.w, d.h);
+            g_glyph_tex[tex_name] = std::move(t);
         }
     }
     g_glyph_dict = dict;
-    g_glyph_sig_applied = 0;
+    g_art_warm = false;
+    g_prompts_dirty.store(true, std::memory_order_relaxed);
     MC_INFO("[kbnative] glyph dictionary @0x{:08X}: {} textures found", dict, g_glyph_tex.size());
+    const std::string dump = REXCVAR_GET(prompts_glyph_dump);
+    if (!dump.empty()) DumpDictionary(b, dump);
     return !g_glyph_tex.empty();
 }
 
-void PaintGlyph(uint8_t* b, const char* tex_name, const std::string& key) {
+// A dictionary bitmap the PlayStation art may be copied from: one of the glyph textures, or any small DXT5 one the debug cvar prompts_ps_map names (captured on first use).
+bool HaveBitmap(const uint8_t* b, const std::string& name) {
+    if (g_glyph_tex.count(name)) return true;
+    DictTexture d;
+    if (!FindDictTexture(b, name, &d) || d.fmt != 20 || d.endian != 1 || !HeapPtr(d.base) || d.w == 0 || d.h == 0 || d.w > 128 || d.h > 128 || (d.w % 4) || (d.h % 4)) return false;
+    GlyphTexture t;
+    t.base = d.base;
+    t.width = d.w;
+    t.height = d.h;
+    t.original = ReadBlocks(b, d.base, d.w, d.h);
+    g_glyph_tex[name] = std::move(t);
+    return true;
+}
+
+// `src` scaled to fit inside width x height, keeping its shape, centred on a transparent canvas: the 32x32 PlayStation faces fill a 64x64 slot, a 64x32 bitmap in a 64x64 slot is not stretched.
+mc::modloader::Image FitCentered(const mc::modloader::Image& src, uint32_t width, uint32_t height) {
+    if (src.width == width && src.height == height) return src;
+    const double scale = std::min(double(width) / double(src.width), double(height) / double(src.height));
+    const uint32_t fw = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(double(src.width) * scale)));
+    const uint32_t fh = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(double(src.height) * scale)));
+    mc::modloader::Image scaled;
+    mc::modloader::ResizeImage(src, std::min(fw, width), std::min(fh, height), scaled);
+    if (scaled.width == width && scaled.height == height) return scaled;
+    mc::modloader::Image out;
+    out.width = width;
+    out.height = height;
+    out.rgba.assign(size_t(width) * height * 4, 0);
+    const uint32_t ox = (width - scaled.width) / 2, oy = (height - scaled.height) / 2;
+    for (uint32_t y = 0; y < scaled.height; ++y)
+        std::memcpy(out.rgba.data() + (size_t(oy + y) * width + ox) * 4, scaled.rgba.data() + size_t(y) * scaled.width * 4, size_t(scaled.width) * 4);
+    return out;
+}
+
+// The tiled, swapped bytes of one of the game's own bitmaps (read back from the originals kept at the scan, decoded, scaled, compressed again), cached like a key cap.
+const std::vector<uint8_t>& TiledFromBitmap(const std::string& name, uint32_t width, uint32_t height) {
+    const std::string id = "game:" + name + "@" + std::to_string(width) + "x" + std::to_string(height);
+    auto it = g_cap_cache.find(id);
+    if (it != g_cap_cache.end()) return it->second;
+    std::vector<uint8_t> tiled;
+    const auto src_it = g_glyph_tex.find(name);
+    if (src_it != g_glyph_tex.end()) {
+        const GlyphTexture& s = src_it->second;
+        mc::modloader::Image src;
+        src.rgba = larecomp::prompts::DecodeBc3GuestSurface(s.original, s.width, s.height);
+        src.width = s.width;
+        src.height = s.height;
+        if (!src.empty()) {
+            const mc::modloader::Image fitted = FitCentered(src, width, height);
+            std::vector<uint8_t> linear;
+            mc::modloader::CompressBlocks(fitted, mc::modloader::BlockFormat::kBc3, linear);
+            mc::modloader::TileXbox360(linear, width, height, mc::modloader::BlockFormat::kBc3, tiled);
+        }
+    }
+    return g_cap_cache.emplace(id, std::move(tiled)).first->second;
+}
+
+// The bytes (tiled and swapped, what the guest holds) of an art for a width x height surface; empty when the art cannot be made. A file is a picture of the key cap folder.
+const std::vector<uint8_t>& ArtBytes(const larecomp::prompts::Art& art, uint32_t width, uint32_t height) {
+    if (art.kind == larecomp::prompts::ArtKind::GameBitmap) return TiledFromBitmap(art.id, width, height);
+    return TiledCap(art.id, width, height);
+}
+
+// Puts `art` on a dictionary texture; true when its pixels changed. Only the blocks of the picture itself are written, at the offsets the GPU reads them from.
+bool PaintGlyph(uint8_t* b, const char* tex_name, const larecomp::prompts::Art& art) {
     auto it = g_glyph_tex.find(tex_name);
-    if (it == g_glyph_tex.end()) return;
+    if (it == g_glyph_tex.end()) return false;
     GlyphTexture& t = it->second;
-    if (t.painted == key) return;
-    if (key.empty()) {
+    if (t.art == art) return false;
+    if (art.kind == larecomp::prompts::ArtKind::Original) {
         ForEachBlock(t.width, t.height, [&](uint32_t i, uint32_t off) {
             std::memcpy(b + t.base + off, t.original.data() + size_t(i) * 16, 16);
         });
     } else {
-        const std::vector<uint8_t>& cap = TiledCap(key, t.width, t.height);
-        if (cap.empty()) return;
+        const std::vector<uint8_t>& cap = ArtBytes(art, t.width, t.height);
+        if (cap.empty()) return false;
         bool ok = true;
         ForEachBlock(t.width, t.height, [&](uint32_t, uint32_t off) { ok = ok && off + 16 <= cap.size(); });
         if (!ok) {
-            MC_WARN("[kbnative] {}: the tiled key cap is shorter than the surface, left alone", tex_name);
-            return;
+            MC_WARN("[kbnative] {}: the tiled art is shorter than the surface, left alone", tex_name);
+            return false;
         }
         ForEachBlock(t.width, t.height, [&](uint32_t, uint32_t off) {
             std::memcpy(b + t.base + off, cap.data() + off, 16);
         });
     }
-    t.painted = key;
+    t.art = art;
+    return true;
 }
 
-// Which key a glyph shows: the first key of its binding that has a key cap, else
-// the first key (drawn as the blank cap), else nothing (the Xbox art stays).
-std::string GlyphKeyFor(const GlyphTarget& g) {
-    if (!g.cvar) return g.slot >= 0 ? g_slot_key[g.slot] : std::string();
-    const auto keys = ParseKeyList(g.cvar());
-    for (const KeyRef& k : keys) {
-        if (CapExists(k.name, g.width, g.height)) return k.name;
+bool PaintKey(uint8_t* b, const char* tex_name, const std::string& key) {
+    return PaintGlyph(b, tex_name, key.empty() ? larecomp::prompts::Art{} : larecomp::prompts::Art{larecomp::prompts::ArtKind::KeyCap, key});
+}
+
+// ── which art a glyph shows ─────────────────────────────────────────────
+struct KeyCvar {
+    std::string_view name;
+    std::string& (*value)();
+};
+const KeyCvar kKeyCvars[] = {
+    {"kb_ui_accept", &FLAGS_kb_ui_accept_storage_},             {"kb_ui_back", &FLAGS_kb_ui_back_storage_},
+    {"kb_ui_x", &FLAGS_kb_ui_x_storage_},                       {"kb_ui_y", &FLAGS_kb_ui_y_storage_},
+    {"kb_ui_lb", &FLAGS_kb_ui_lb_storage_},                     {"kb_ui_rb", &FLAGS_kb_ui_rb_storage_},
+    {"kb_ui_lt", &FLAGS_kb_ui_lt_storage_},                     {"kb_ui_rt", &FLAGS_kb_ui_rt_storage_},
+    {"kb_ui_start", &FLAGS_kb_ui_start_storage_},               {"kb_ui_select", &FLAGS_kb_ui_select_storage_},
+    {"kb_drive_handbrake", &FLAGS_kb_drive_handbrake_storage_}, {"kb_drive_weight", &FLAGS_kb_drive_weight_storage_},
+    {"kb_drive_nitro", &FLAGS_kb_drive_nitro_storage_},         {"kb_drive_headlights", &FLAGS_kb_drive_headlights_storage_},
+    {"kb_drive_camera", &FLAGS_kb_drive_camera_storage_},       {"kb_drive_brake", &FLAGS_kb_drive_brake_storage_},
+    {"kb_drive_gas", &FLAGS_kb_drive_gas_storage_},             {"kb_drive_pause", &FLAGS_kb_drive_pause_storage_},
+    {"kb_drive_map", &FLAGS_kb_drive_map_storage_},
+};
+
+// The key a binding cvar draws as on a width x height glyph: the first key of its list that has a cap, else the first key (the blank cap), else "" (the art stays).
+std::string KeyOfCvar(std::string_view cvar, uint32_t width, uint32_t height) {
+    for (const KeyCvar& k : kKeyCvars) {
+        if (k.name != cvar) continue;
+        std::vector<std::string> names;
+        for (const KeyRef& key : ParseKeyList(k.value())) names.push_back(key.name);
+        return larecomp::prompts::PickKey(names, [&](const std::string& n) { return CapExists(n, width, height); });
     }
-    return keys.empty() ? std::string() : keys.front().name;
+    return {};
 }
 
-void TickGlyphs(uint8_t* b) {
-    const std::string prompts = REXCVAR_GET(button_prompts);
-    const bool want = prompts == "keyboard";
-    const bool playstation = prompts == "playstation";  // the spare glyphs are real buttons then
-    // The extra pad buttons need the dictionary scanned even with the keyboard art off.
-    if (!want && !ExtrasEnabled() && g_glyph_tex.empty()) return;  // never painted, nothing to restore
-    if (!ScanDictionary(b)) return;
-    if (!g_sidekick_ok && ScanSidekick(b)) g_glyph_sig_applied = 0;
+larecomp::prompts::Art DecideFor(const uint8_t* b, const GlyphTarget& g, larecomp::prompts::Family family, larecomp::prompts::Context ctx) {
+    const auto overrides = larecomp::prompts::ParsePsMap(REXCVAR_GET(prompts_ps_map));
+    return larecomp::prompts::Decide(
+        family, ctx, static_cast<larecomp::prompts::Slot>(g.pslot), overrides, [&](const std::string& name) { return HaveBitmap(b, name); },
+        [&](const std::string& stem) { return CapExists(stem, g.width, g.height); },
+        [&](std::string_view cvar) { return KeyOfCvar(cvar, g.width, g.height); });
+}
 
-    // The layout, and (with key caps) the bindings and the cap folder, which the change callbacks count.
-    const uint64_t sig = (want ? 1ull : 2ull) << 40 | (playstation ? 1ull : 0ull) << 32 | (want ? BindingsGen() : 0u);
-    if (sig == g_glyph_sig_applied) return;
+// The glyph family the pixels follow. With prompts_live off the movies' platform flag shows the PlayStation set (the older way), so the pixels stay the Xbox ones for it.
+larecomp::prompts::Family EffectiveFamily() {
+    const larecomp::prompts::Family f = larecomp::input::ActiveGlyphFamily();
+    if (f == larecomp::prompts::Family::PlayStation && !REXCVAR_GET(prompts_live)) return larecomp::prompts::Family::Xbox;
+    return f;
+}
 
+bool MenuContext(const uint8_t* b) { return larecomp::prompts::ContextFor(g_game_entered, MenuOpen(b)) == larecomp::prompts::Context::Menu; }
+
+// Builds every picture the families may need, once the dictionary is found (while the game is still loading): a key cap is a PNG decoded, scaled, compressed and tiled, and the
+// PlayStation faces are read back from the game's bitmaps and compressed again; doing that on the first key press would be a hitch in the middle of a race. After this a repaint is
+// only copies. About 40 surfaces, a few milliseconds; the line in the log says how many and how long.
+void WarmArt(const uint8_t* b) {
+    using namespace larecomp::prompts;
+    g_art_warm = true;
+    const auto t0 = std::chrono::steady_clock::now();
+    const size_t before = g_cap_cache.size();
+    auto warm = [&](Family f, Context c) {
+        for (const GlyphTarget& g : kGlyphs) {
+            if (g.pslot < 0) continue;
+            const Art a = DecideFor(b, g, f, c);
+            if (a.kind != ArtKind::Original) ArtBytes(a, g.width, g.height);
+        }
+    };
+    warm(Family::Keyboard, Context::Menu);
+    warm(Family::Keyboard, Context::Drive);
+    warm(Family::PlayStation, Context::Menu);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    MC_INFO("[prompts] art ready: {} surfaces built in {:.1f} ms (key caps for the menu and the road, the PlayStation set)", g_cap_cache.size() - before, ms);
+}
+
+uint32_t g_prompts_repaints = 0;
+bool g_prompts_menu = true;         // the context the key caps were last chosen for
+uint32_t g_prompts_bindings = 0;    // the bindings generation they were chosen under
+uint32_t g_prompts_settings = 0;    // ... and the generation of prompts_live / prompts_ps_map
+bool g_prompts_listening = false;   // the input state's listener is registered
+uint32_t g_prompts_generation = 0;  // the input state's generation at the last repaint (only used when the listener could not be registered)
+
+void OnInputChanged(void*) { g_prompts_dirty.store(true, std::memory_order_relaxed); }
+
+// Puts the art of the glyph family in use into every glyph bitmap: the originals, the PlayStation set, or key caps. Only called on a change (the device or the family moved, a
+// binding changed, a menu opened or closed with the keyboard in use, a new dictionary), never per frame. Game thread, from the input poll. The cost is the copy of 18 small
+// textures (about 4096 blocks of 16 bytes, a few tens of microseconds) and the GPU's upload of them on the next draw; the log line has the number.
+void RepaintPrompts(uint8_t* b) {
+    using namespace larecomp::prompts;
+    const auto t0 = std::chrono::steady_clock::now();
+    const Family family = EffectiveFamily();
+    const bool menu = MenuContext(b);
+    const Context ctx = menu ? Context::Menu : Context::Drive;
+    g_prompts_menu = menu;
+    int changed = 0;
+    std::string ps_art;
     for (const GlyphTarget& g : kGlyphs) {
-        // A spare glyph keeps the cap of the key (or extra button) a Custom Controls row
-        // gave it in every layout but PlayStation; the menu glyphs only in the keyboard one.
-        const std::string key = g.slot >= 0 ? (playstation ? std::string() : GlyphKeyFor(g))
-                                            : (want ? GlyphKeyFor(g) : std::string());
-        for (const char* tex_name : g.textures) PaintGlyph(b, tex_name, key);
+        if (g.pslot < 0) continue;  // the spare slots are the Custom Controls screen's
+        const Art art = DecideFor(b, g, family, ctx);
+        for (const char* tex_name : g.textures)
+            if (PaintGlyph(b, tex_name, art)) ++changed;
+        if (family == Family::PlayStation) ps_art += std::string(g.label) + "=" + Describe(art) + " ";
     }
-    g_glyph_sig_applied = sig;
-    MC_INFO("[kbnative] glyphs -> {}", want ? "keyboard key caps" : "original art");
+    ++g_prompts_repaints;
+    const long us = static_cast<long>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
+    static const char* const kFamilyName[] = {"Xbox", "PlayStation", "Keyboard"};
+    MC_INFO("[prompts] glyphs -> {}{}: {} bitmaps changed in {} us (repaint {}, input generation {})", kFamilyName[static_cast<int>(family)],
+            family == Family::Keyboard ? (menu ? " (menu keys)" : " (driving keys)") : "", changed, us, g_prompts_repaints, larecomp::input::Generation());
+    if (!ps_art.empty()) MC_INFO("[prompts] PlayStation art: {}", ps_art);
+}
+
+// Every input poll (Hook_KeyboardFeed): a few relaxed loads, and a repaint when something changed. The slow tick (every 32 polls) only looks for what may not exist yet: the
+// dictionary, the Sidekick phone's embedded glyph.
+void PollPrompts(uint8_t* b) {
+    if (!g_prompts_listening) {
+        // Registered here, on the game thread, once (the input state's first set-up is not announced: the dirty flag is already set).
+        g_prompts_listening = larecomp::input::AddInputListener(&OnInputChanged, nullptr);
+        g_prompts_dirty.store(true, std::memory_order_relaxed);
+        if (!g_prompts_listening) MC_WARN("[prompts] the input state's listener table is full: the generation is compared on every poll instead");
+    }
+    if ((++g_glyph_tick & 0x1F) == 0) {
+        if (ScanDictionary(b) && !g_sidekick_ok && ScanSidekick(b)) g_prompts_dirty.store(true, std::memory_order_relaxed);
+    }
+    if (g_glyph_tex.empty()) return;  // no dictionary yet: stays dirty
+    if (!g_art_warm) WarmArt(b);
+
+    const uint32_t bindings = BindingsGen(), settings = PromptSettingsGen();
+    if (bindings != g_prompts_bindings || settings != g_prompts_settings) {
+        g_prompts_bindings = bindings;
+        g_prompts_settings = settings;
+        g_prompts_dirty.store(true, std::memory_order_relaxed);
+    }
+    if (!g_prompts_listening) {
+        const uint32_t generation = larecomp::input::Generation();
+        if (generation != g_prompts_generation) {
+            g_prompts_generation = generation;
+            g_prompts_dirty.store(true, std::memory_order_relaxed);
+        }
+    }
+    // The key caps depend on the menu / road context, but only while the keyboard is the family in use.
+    if (larecomp::input::ActiveGlyphFamily() == larecomp::prompts::Family::Keyboard && MenuContext(b) != g_prompts_menu) g_prompts_dirty.store(true, std::memory_order_relaxed);
+    if (g_prompts_dirty.exchange(false, std::memory_order_relaxed)) RepaintPrompts(b);
 }
 
 // The old keyboard-and-mouse mode of the SDK (mnk_mode, mnk_mouse) makes every key a pad button; with the native keyboard that is Enter as
@@ -1463,16 +1724,15 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
     if (!block) return false;
     const uint32_t flag = static_cast<uint32_t>(r5.u64);
 
-    const std::string prompts = REXCVAR_GET(button_prompts);
-    // An extra button is drawn with its own art on a spare glyph in any layout but PlayStation
-    // (there the spare glyphs are real PlayStation buttons), else as the text "L4".
-    if (prompts == "keyboard" || (extra && prompts != "playstation")) {
+    // A key (or an extra pad button) is drawn as a cap whichever glyph family is in use: the platform flag is pinned to 0, so the spare glyphs are never a PlayStation button and a pad
+    // player who bound a key sees its cap in the row. The caps of the menu glyphs (the keyboard family) are found first, then a spare glyph.
+    {
         // 1. A menu-button glyph already showing this key.
         for (const GlyphTarget& g : kGlyphs) {
             if (g.slot >= 0 || !g.icon) continue;
             auto it = g_glyph_tex.find(g.textures[0]);
-            if (it == g_glyph_tex.end() || it->second.painted.empty()) continue;
-            if (ScancodeOfName(b, it->second.painted) != key) continue;
+            if (it == g_glyph_tex.end() || it->second.art.kind != larecomp::prompts::ArtKind::KeyCap) continue;
+            if (ScancodeOfName(b, it->second.art.id) != key) continue;
             if (HeapPtr(flag)) b[flag] = 1;
             r3.u64 = block + 8 * g.icon;
             return true;
@@ -1496,7 +1756,7 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
             g_slot_key[i] = name;
             for (const GlyphTarget& g : kGlyphs)
                 if (g.slot == i)
-                    for (const char* tex : g.textures) PaintGlyph(b, tex, name);
+                    for (const char* tex : g.textures) PaintKey(b, tex, name);
             slot = i;
         }
         if (slot >= 0) {
@@ -1522,9 +1782,8 @@ void Hook_KeyboardFeed() {
     uint8_t* b = GuestBase();
     if (!b) return;
 
-    // Glyphs are independent of the native keyboard (a pad player can still ask for
-    // key caps), so they tick on their own, a few times a second.
-    if ((++g_glyph_tick & 0x1F) == 0) TickGlyphs(b);
+    // The glyphs follow the device in use, whether or not the native keyboard is on: a few relaxed loads a poll, and a repaint only when something changed (PollPrompts).
+    PollPrompts(b);
 
     EnsureKeyListener();
     KeepMnkOff();

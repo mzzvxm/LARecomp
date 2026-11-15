@@ -25856,10 +25856,13 @@ name = "Patch_PlatformPush"
 registers = ["r5"]
 jump_address_on_true = 0x821F8164
 
-# Live switching. The UI movies read `platform` once, on their own frame 1, and
-# are never reloaded, so the registry value alone only lands on a fresh boot.
-# What their frame code evaluates every render is _global.platform itself, so
-# writing that variable in a running movie flips the glyphs on the spot.
+# Live switching of the flag (the older way, prompts_live off; with it on the flag stays 0 and
+# keyboard_native.cpp paints the glyph bitmaps instead, because KBM-P0 E1 measured that a
+# movie already on screen does NOT follow a changed flag). The UI movies read `platform`
+# once, on their own frame 1, and are never reloaded, so the registry value alone only
+# lands on a fresh boot. What their frame code evaluates every render is _global.platform
+# itself, so writing that variable in a running movie was expected to flip the glyphs on
+# the spot.
 # sub_825EE970 is the AVM's action-buffer entry — it parks its argument in
 # dword_828FF970 while it runs, which makes r3 a context that is live by
 # definition. Hook sits after the prologue at 0x825EE980, where r3 is still the
