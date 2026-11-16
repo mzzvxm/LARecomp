@@ -23,6 +23,11 @@
 // chain. The picture is made exactly as above, in SDR code values, and its last step is
 // hdr_output.hlsli's HdrFromSdr (or the test pattern) with the levels in the push constants.
 //
+// kComposeLayers (hdr_flags): the HDR frame's two layers composed in place instead of read from the
+// float image HdrScene::Compose makes (hdr_scene.h; hdr_compose.hlsli): `source` is the scene, `ui`
+// the UI layer, and `gap` clamps both. Used by the passes that read the layers 1:1 (this one at 1:1,
+// FSR1's and the scaled present's table pass); a scaled present of four texels a pixel keeps the image.
+//
 // `dither_lsb` (push constant): one code of the back buffer, for the passes that write it (the
 // present itself and the stretch): the picture gets output_dither.hlsli's dither in the
 // back buffer's encoding, after the gamma table or the PQ encode. 0 for the passes that write an
@@ -31,6 +36,7 @@
 // on the HDR test pattern.
 
 #include "host_pass_common.hlsli"
+#include "hdr_compose.hlsli"
 #include "output_dither.hlsli"
 #if PRESENT_HDR
 #include "hdr_output.hlsli"
@@ -51,6 +57,7 @@ struct PresentPush {
   uint hdr_flags;
   uint gap;            // the source's first columns and rows that hold no picture: read at `gap`
   float dither_lsb;    // one code of the back buffer in its encoding (1/255, HDR10 1/1023); 0: none
+  uint ui;             // kComposeLayers only: the UI layer's slot; `source` is then the scene
 };
 
 #ifdef __spirv__
@@ -72,6 +79,13 @@ static const uint kExtendedCodes = 4u;
 // hdr_flags bit 3 (hdr.h kHdrFlagInterpolatedCodes): with the extended codes, the source is the float
 // scene (HDR stage 3), not 8-bit values: the table is read between its entries.
 static const uint kInterpolatedCodes = 8u;
+
+// hdr_flags bit 4 (hdr.h kHdrFlagComposeLayers): `source` is the scene (the float one or the 8-bit
+// underlay) and `ui` the UI layer, both of the frame layers; each texel is their sum
+// (hdr_compose.hlsli, the same as the compose pass writes) before the table, so the float image the
+// compose pass makes is not needed. Goes with the extended codes. Not for PRESENT_NO_RAMP, whose
+// source is an image the table was applied to.
+static const uint kComposeLayers = 16u;
 
 float3 Ramp(float3 color) {
   if ((g_push.hdr_flags & kExtendedCodes) != 0u && (g_push.hdr_flags & kInterpolatedCodes) != 0u) {
@@ -105,10 +119,14 @@ float3 Ramp(float3 color) {
 float3 Texel(int2 at) {
   const int2 limit = int2(g_push.source_width, g_push.source_height) - 1;
   const int2 first = int2(int(g_push.gap), int(g_push.gap));
-  const float3 texel = g_textures[g_push.source].Load(int3(clamp(at, first, limit), 0)).rgb;
+  const int3 where = int3(clamp(at, first, limit), 0);
+  float3 texel = g_textures[g_push.source].Load(where).rgb;
 #if PRESENT_NO_RAMP
   return texel;
 #else
+  if ((g_push.hdr_flags & kComposeLayers) != 0u) {
+    texel = ComposeLayers(texel, g_textures[g_push.ui].Load(where));
+  }
   return Ramp(texel);
 #endif
 }

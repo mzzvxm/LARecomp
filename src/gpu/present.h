@@ -44,9 +44,13 @@
 // values decoded, placed at paper white, rolled off, PQ encoded). The table, EASU and the
 // intermediates stay SDR code values, so the picture is mixed and sharpened as it is in SDR and
 // DISPLAY GAMMA means the same. A guest frame that kept its UI as a layer (frame_layers.h) is read
-// from the float image HdrScene composed (hdr_scene.h) instead of the front buffer: its code values
-// may exceed 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last
-// step (kHdrFlagExtendedCodes); FSR1's passes read that image in float16.
+// from the two layers composed (hdr_scene.h) instead of the front buffer: its code values may exceed
+// 1, so the table is read as before up to 1 and goes on above 1 by the slope of its last step
+// (kHdrFlagExtendedCodes). The pass that first reads the frame at 1:1 -- the present at 1:1, FSR1's
+// table pass, the scaled present's table pass -- takes the sum of the layers itself (the UI over the
+// scene, hlsl/hdr_compose.hlsli; kHdrFlagComposeLayers, mcla_gpu_hdr_compose_in_present), so no float
+// image of it is made; a bilinear present that scales reads four texels a pixel and uses the float
+// image HdrScene::Compose draws (RGBA16F), as does the debug view (mcla_gpu_hdr_layers_view).
 //
 // FSR1's pipelines (the table's intermediate pass, EASU, RCAS into an intermediate and RCAS into
 // the back buffer: four of them) are made at Initialize only when mcla_gpu_fsr is on then. With the
@@ -253,8 +257,10 @@ class PresentPass {
     // One code of the back buffer in its encoding (1/255; HDR10 1/1023): the last pass's dither
     // (hlsl/output_dither.hlsli). 0 for every pass that writes an intermediate.
     float dither_lsb;
+    // kHdrFlagComposeLayers only: the UI layer's slot (`source` is then the scene). 0 otherwise.
+    uint32_t ui;
   };
-  static_assert(sizeof(Push) == 56 && sizeof(Push) <= HostPasses::kPushConstantBytes);
+  static_assert(sizeof(Push) == 60 && sizeof(Push) <= HostPasses::kPushConstantBytes);
 
   // FSR1 (M6c.1).
   struct EasuPush {  // hlsl/fsr_easu_ps.hlsl
@@ -368,11 +374,19 @@ class PresentPass {
   bool extended_ = false;
   // ... and it is the float scene (HDR stage 3): the table is read between its entries.
   bool interpolated_ = false;
-  // hdr.h kHdrFlagExtendedCodes / kHdrFlagInterpolatedCodes for the image Prepare bound.
+  // ... and it is the frame layers themselves, summed by the passes that read them
+  // (kHdrFlagComposeLayers): source_slot_ is the scene, layers_ui_slot_ the UI layer.
+  bool layers_inline_ = false;
+  uint32_t layers_ui_slot_ = 0;
+  // hdr.h kHdrFlagExtendedCodes / kHdrFlagInterpolatedCodes / kHdrFlagComposeLayers for the image
+  // Prepare bound.
   uint32_t CodeFlags() const {
-    return extended_ ? (kHdrFlagExtendedCodes | (interpolated_ ? kHdrFlagInterpolatedCodes : 0u))
+    return extended_ ? (kHdrFlagExtendedCodes | (interpolated_ ? kHdrFlagInterpolatedCodes : 0u) |
+                        (layers_inline_ ? kHdrFlagComposeLayers : 0u))
                      : 0u;
   }
+  // Push::ui of a pass that reads source_slot_.
+  uint32_t LayersUi() const { return layers_inline_ ? layers_ui_slot_ : 0u; }
   Route route_ = Route::kBilinear;
   uint32_t final_ = 0;  // the chain_ entry Draw reads
   float sharpness_ = 1.0f;

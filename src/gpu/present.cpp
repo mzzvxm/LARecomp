@@ -421,14 +421,51 @@ void PresentPass::Prepare(plume::RenderCommandList* list, uint32_t slot, uint32_
   // code values, in float, where the front buffer would be read.
   extended_ = false;
   interpolated_ = false;
-  if (hdr_scene_ != nullptr &&
-      hdr_scene_->Compose(list, fetch.key, source_width_, source_height_)) {
-    source_slot_ = hdr_scene_->slot();
-    extended_ = true;
-    // The float scene (HDR stage 3) reads the table between its entries.
-    interpolated_ = hdr_scene_->scene_is_float();
+  layers_inline_ = false;
+  layers_ui_slot_ = 0;
+  HdrScene::Layers layers;
+  if (hdr_scene_ == nullptr || !hdr_scene_->Select(fetch.key, source_width_, source_height_,
+                                                    &layers)) {
+    PrepareRoute(list, width, height);
+    return;
   }
-  PrepareRoute(list, width, height);
+  const uint32_t front_slot = source_slot_;
+  extended_ = true;
+  // The float scene (HDR stage 3) reads the table between its entries.
+  interpolated_ = layers.float_scene;
+  bool route_done = false;
+  if (hdr_scene_->ComposeInPresent()) {
+    // The passes that read the frame 1:1 add the UI layer to the scene themselves: no float image.
+    source_slot_ = layers.scene_slot();
+    source_gap_ = layers.gap();
+    layers_inline_ = true;
+    layers_ui_slot_ = layers.ui_slot();
+    PrepareRoute(list, width, height);
+    route_done = true;
+    // The present at 1:1 reads one texel a pixel: the sum in place. FSR1's and the scaled present's
+    // table passes were 1:1 as well. A bilinear present that scales (or stretches to the display's
+    // aspect) reads four texels of each pixel: those four sums are dearer than the image, which
+    // is then made after all (the route's own decisions hold: they depend on the sizes only).
+    if (route_ != Route::kBilinear || (fit_.w == source_width_ && fit_.h == source_height_)) {
+      hdr_scene_->NoteInline(layers);
+      return;
+    }
+    layers_inline_ = false;
+    layers_ui_slot_ = 0;
+    source_gap_ = 0;
+  }
+  if (hdr_scene_->Compose(list, layers, source_width_, source_height_)) {
+    source_slot_ = hdr_scene_->slot();
+    interpolated_ = hdr_scene_->scene_is_float();
+  } else {
+    // The image could not be made: the front buffer, as it is without layers.
+    source_slot_ = front_slot;
+    extended_ = false;
+    interpolated_ = false;
+  }
+  if (!route_done) {
+    PrepareRoute(list, width, height);
+  }
 }
 
 void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, uint32_t height,
@@ -446,6 +483,8 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
   source_ready_ = true;
   extended_ = true;
   interpolated_ = interpolated;
+  layers_inline_ = false;  // an image of the sum (Frame generation's), not the layers
+  layers_ui_slot_ = 0;
   quiet_route_ = true;
   PrepareRoute(list, width, height);
   quiet_route_ = false;
@@ -492,6 +531,7 @@ void PresentPass::PrepareRamped(plume::RenderCommandList* list) {
   push.scale_y = 1.0f;
   push.hdr_flags = CodeFlags();
   push.gap = source_gap_;
+  push.ui = LayersUi();
   passes_->DrawInto(list, ramped_, ramped_pipeline_.get(), &push, sizeof(push));
   route_ = Route::kRamped;
   ++stats_.ramped;
@@ -635,6 +675,7 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
     }
   }
   push.dither_lsb = dither_lsb;
+  push.ui = LayersUi();
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
 }
@@ -708,6 +749,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     push.scale_y = 1.0f;
     push.hdr_flags = CodeFlags();
     push.gap = source_gap_;
+    push.ui = LayersUi();
     passes_->DrawInto(list, chain_[0], ramp_pipeline_.get(), &push, sizeof(push));
   }
   for (uint32_t i = 1; i <= passes; ++i) {
