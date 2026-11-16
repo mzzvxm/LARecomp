@@ -108,7 +108,7 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 117 names in 13 groups (the number in brackets is the group's size):
+The list, 118 names in 14 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -148,6 +148,11 @@ The list, 117 names in 13 groups (the number in brackets is the group's size):
 
 **Model mod tuning (all `model_mods_*`; the `model_mods` switch itself has a launcher row)** (38)
 `model_mods_anchor_bones`, `model_mods_bone`, `model_mods_cabin_light`, `model_mods_car_budget`, `model_mods_car_pack_write`, `model_mods_car_scale`, `model_mods_car_space_only`, `model_mods_car_textures`, `model_mods_car_verbatim`, `model_mods_car_yaw`, `model_mods_decimate`, `model_mods_diag`, `model_mods_glass_band`, `model_mods_grow`, `model_mods_grow_probe`, `model_mods_grow_slack`, `model_mods_offset_x`, `model_mods_offset_y`, `model_mods_offset_z`, `model_mods_part_growth`, `model_mods_passthrough`, `model_mods_pitch`, `model_mods_proportions`, `model_mods_rim_autoalign`, `model_mods_rim_inherit_shade`, `model_mods_rim_offset_x`, `model_mods_rim_pitch`, `model_mods_rim_roll`, `model_mods_rim_scale`, `model_mods_rim_shade_occlusion`, `model_mods_rim_yaw`, `model_mods_roll`, `model_mods_scale`, `model_mods_share_images`, `model_mods_submeshes`, `model_mods_textures`, `model_mods_weight_smoothing`, `model_mods_yaw`
+
+**Crash logger test (Linux)** (1)
+`mcla_test_crash`
+
+`mcla_test_crash=MODE[:SECONDS]` makes the game crash on purpose a few seconds after it started, to check the Linux crash logger (needs `--debug_menu`; it is ignored while the menu is locked). Modes: `segv`, `guest` (reads the guest's null page, like the real guest crashes), `stack`, `abort`, `terminate`, `illegal`, `fpe`. The log must end with a `!!! CRASH DETECTED !!!` (or `!!! ABORT DETECTED !!!`) report with a stack trace, and the game must die with the signal's exit status. `ports/scripts/linux/crash-test.sh` runs them all.
 
 ## The game's own developer options
 

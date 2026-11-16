@@ -13,6 +13,15 @@
 #include <filesystem>
 #include <string>
 
+namespace {
+std::string g_log_filename = "logs/larecomp_001.log";
+bool g_log_filename_known = false;
+}  // namespace
+
+const char* LarecompLogFilePath() {
+    return g_log_filename_known ? g_log_filename.c_str() : "";
+}
+
 void InitLarecompLogging() {
     static bool initialized = false;
     if (initialized) {
@@ -24,7 +33,7 @@ void InitLarecompLogging() {
     // Ensure logs directory exists
     std::filesystem::create_directories("logs");
 
-    static std::string log_filename = "logs/larecomp_001.log";
+    std::string& log_filename = g_log_filename;
     if (const char* custom_log = std::getenv("LARECOMP_LOG_FILE"); custom_log && *custom_log) {
         log_filename = custom_log;
     } else {
@@ -49,6 +58,8 @@ void InitLarecompLogging() {
         else if (lvl == "err" || lvl == "error") default_level = spdlog::level::err;
         else if (lvl == "critical" || lvl == "off") default_level = spdlog::level::off;
     }
+
+    g_log_filename_known = true;
 
     rex::LogConfig config;
     config.default_level = default_level;

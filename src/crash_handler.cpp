@@ -255,7 +255,271 @@ std::filesystem::path ExeDir() {
 
 #else
 
+#if defined(__linux__)
+// The Linux crash logger. The machinery (signal handlers on a signal stack, the async-signal-safe
+// report, the ELF symbol lookup) is in crash_report_linux.h and crash_report_util.h, which need
+// nothing of the game or the SDK; this file is the glue: where the log is, how the runtime's own
+// fault handling is chained with, std::terminate, the exit marker and the crash test.
+//
+// How it chains with the runtime. The runtime handles SIGSEGV and SIGILL itself (write watches on
+// guest memory, MMIO): rex::arch::ExceptionHandler keeps a list of callbacks and calls them in the
+// order they were installed until one returns true. Its signal handler never chains and never
+// restores the default action, so a fault no callback takes would run again and fault again for
+// ever. InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the
+// runtime's own callback, so it is reached only for a fault that nothing consumed and then writes
+// the report, restores the default action and returns false (the instruction faults once more and
+// the process dies with the normal status and core dump), and (2) puts a wrapper on SIGSEGV and
+// SIGILL with SA_ONSTACK that calls the runtime's handler first (what makes the signal stack count)
+// and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from the early handlers.
+// A fault the runtime handles never reaches the report.
+
+#include <spdlog/spdlog.h>
+
+#include <rex/cvar.h>
+#include <rex/exception_handler.h>
+#include <rex/platform/seh.h>
+
+#include <chrono>
+#include <csignal>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <thread>
+
+#include "crash_report_linux.h"
+#include "mc_engine/debug_menu.h"
+#include "spdlog_console.h"
+
+extern uint8_t* g_guest_mem;  // main.cpp; set once the runtime's memory exists
+
+REXCVAR_DEFINE_STRING(
+    mcla_test_crash, "", "MCLA/Debug",
+    "Crash test for the Linux crash logger: MODE or MODE:SECONDS (5 seconds by default), a few "
+    "seconds after the game has started. segv writes to address 0x10 on a worker thread; guest "
+    "reads the guest's null page (the runtime logs 'Unhandled guest access violation' first, as for "
+    "a real guest crash); stack runs a worker thread out of stack (it has a signal stack); abort "
+    "calls abort(); terminate throws an exception nobody catches; illegal runs an illegal "
+    "instruction; fpe divides by zero. The log must end with '!!! CRASH DETECTED !!!' (or '!!! "
+    "ABORT DETECTED !!!') and a stack trace, and the game dies with the signal's status. Only works "
+    "with the debug menu unlocked. Linux only.")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
+    .debug_only();
+
+namespace {
+
+namespace lx = larecomp::crash::lx;
+
+void FlushLogs() {
+    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
+        if (logger) logger->flush();
+    });
+}
+
+// A signal handler must never take the log sink's lock (the crashing thread may hold it), so the
+// flush runs on the reporter's helper thread, which the handler waits for at most 300 ms.
+void FlushLogsOnHelperThread() {
+    FlushLogs();
+}
+
+// The SDK's seh_initialize handlers for SIGBUS and SIGFPE belong to the code that asked for SEH
+// protection (nothing in the game does today): leave a fault inside such a region to it.
+bool SehRegionActive(int) {
+    return rex::platform::seh_active();
+}
+
+// Registered after the runtime's own callbacks (see the top of the section): reached only when
+// every one of them declined this fault.
+bool OnUnconsumedFault(rex::arch::Exception* ex, void*) {
+    lx::Fault f;
+    switch (ex->code()) {
+        case rex::arch::Exception::Code::kAccessViolation:
+            f.signo = SIGSEGV;
+            f.has_addr = true;
+            f.addr = ex->fault_address();
+            switch (ex->access_violation_operation()) {
+                case rex::arch::Exception::AccessViolationOperation::kRead:
+                    f.op = 1;
+                    break;
+                case rex::arch::Exception::AccessViolationOperation::kWrite:
+                    f.op = 2;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case rex::arch::Exception::Code::kIllegalInstruction:
+            f.signo = SIGILL;
+            break;
+        default:
+            return false;
+    }
+#if REX_ARCH_AMD64
+    if (const rex::arch::HostThreadContext* c = ex->thread_context()) {
+        f.has_pc = true;
+        f.pc = c->rip;
+        f.has_regs = true;
+        for (int i = 0; i < 16; ++i) f.gpr[i] = c->int_registers[i];
+        f.rflags = c->eflags;
+    }
+#endif
+    lx::ReportUnconsumed(f);
+    return false;  // nobody took it: the instruction runs again and the default action ends the process
+}
+
+// Stack trace for the deaths that carry no signal of their own: std::terminate.
+void OnTerminate() {
+    char detail[512] = {};
+    // An uncaught C++ exception is the usual reason terminate runs; recover its message by
+    // rethrowing inside the handler, which is legal here.
+    if (std::current_exception()) {
+        try {
+            std::rethrow_exception(std::current_exception());
+        } catch (const std::exception& e) {
+            std::snprintf(detail, sizeof(detail), "uncaught std::exception: %s", e.what());
+        } catch (...) {
+            std::snprintf(detail, sizeof(detail), "uncaught non-std exception");
+        }
+    }
+    lx::ReportAbortLike("std::terminate", detail);
+    // abort() raises SIGABRT; the report is written already, the handler only ends the process
+    // with the default action (status 134, core dump).
+    std::abort();
+}
+
+// ---- the crash test (mcla_test_crash) -------------------------------------------------------------
+
+alignas(16) char g_test_altstack[128 * 1024];
+
+[[gnu::noinline]] void TestWriteNull() {
+    volatile int* p = reinterpret_cast<volatile int*>(0x10);
+    *p = 1;
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winfinite-recursion"
+#endif
+[[gnu::noinline]] int TestRecurse(int depth) {
+    volatile char pad[2048];
+    pad[0] = static_cast<char>(depth);
+    return TestRecurse(depth + 1) + pad[0];
+}
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+[[gnu::noinline]] void TestDivide() {
+    volatile int zero = 0;
+    volatile int r = 7 / zero;
+    (void)r;
+}
+
+void RunCrashTest(const std::string& mode) {
+    if (mode == "segv") {
+        TestWriteNull();
+    } else if (mode == "guest") {
+        if (!g_guest_mem) {
+            LARECOMP_CRASH_ERROR("[crash-test] no guest memory yet");
+            return;
+        }
+        volatile uint8_t* p = g_guest_mem + 0x0C;
+        const uint8_t v = *p;
+        LARECOMP_CRASH_ERROR("[crash-test] guest address 0xC was readable (value {}): protect_zero is off?",
+                             static_cast<unsigned>(v));
+    } else if (mode == "stack") {
+        lx::EnableAltStack(g_test_altstack, sizeof(g_test_altstack));
+        TestRecurse(0);
+    } else if (mode == "abort") {
+        std::abort();
+    } else if (mode == "terminate") {
+        throw std::runtime_error("mcla_test_crash=terminate");
+    } else if (mode == "illegal") {
+        __builtin_trap();
+    } else if (mode == "fpe") {
+        TestDivide();
+    } else {
+        LARECOMP_CRASH_ERROR("[crash-test] unknown mode '{}' (segv, guest, stack, abort, terminate, illegal, fpe)",
+                             mode);
+    }
+}
+
+void ArmCrashTest() {
+    std::string spec = REXCVAR_GET(mcla_test_crash);
+    if (spec.empty()) return;
+    // The same gate as everything hidden: the answer was fixed at start, nothing unlocks a running game.
+    if (!larecomp::DebugMenuUnlocked()) {
+        LARECOMP_CRASH_WARN("[crash-test] mcla_test_crash='{}' ignored: the debug menu is locked (--debug_menu)",
+                            spec);
+        return;
+    }
+    std::string mode = spec;
+    int seconds = 5;
+    if (const auto colon = spec.find(':'); colon != std::string::npos) {
+        mode = spec.substr(0, colon);
+        seconds = std::atoi(spec.c_str() + colon + 1);
+        if (seconds < 0) seconds = 0;
+    }
+    LARECOMP_CRASH_WARN("[crash-test] mcla_test_crash: '{}' in {} s on a worker thread; the game will die", mode,
+                        seconds);
+    std::thread([mode, seconds]() {
+        std::this_thread::sleep_for(std::chrono::seconds(seconds));
+        RunCrashTest(mode);
+    }).detach();
+}
+
+}  // namespace
+
+void InstallCrashLogger() {
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+
+    // Where the log sink appends, as an absolute path: the report opens the file again by name.
+    std::string log_path;
+    if (const char* name = LarecompLogFilePath(); name && *name) {
+        std::error_code ec;
+        const auto absolute = std::filesystem::absolute(name, ec);
+        log_path = ec ? std::string(name) : absolute.string();
+    }
+    lx::InstallEarly(log_path.c_str(), lx::LocalUtcOffsetSeconds(), &FlushLogsOnHelperThread);
+    lx::S().skip_signal = &SehRegionActive;
+
+    // The paths that kill the process without a signal of their own reaching the handlers above.
+    std::set_terminate(&OnTerminate);
+
+    // Separates "the process crashed" from "the process exited on purpose": std::_Exit (used by
+    // the shutdown paths) skips this, a normal exit does not, and a crash reaches neither.
+    std::atexit([]() {
+        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+        FlushLogs();
+    });
+}
+
+void InstallCrashLoggerAfterRuntime() {
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+
+    // After the runtime's own callback (MMIOHandler::Install, in Memory::Initialize, which
+    // Runtime::Setup has run by the time OnPostSetup calls this): called in the order installed.
+    rex::arch::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
+    lx::InstallLate();
+    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFilePath());
+
+    ArmCrashTest();
+}
+
+#else  // another POSIX system: no crash logger
+
 void InstallCrashLogger() {}
+void InstallCrashLoggerAfterRuntime() {}
+
+#endif  // __linux__
 
 std::filesystem::path ExeDir() {
     try {
