@@ -233,6 +233,10 @@ VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryVideoMemory(device));
 }
 
+std::string DescribeVideoMemory(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(DescribeVideoMemory(device));
+}
+
 std::string DefaultAdapterName() {
   return MCLA_GPU_ACTIVE(DefaultAdapterName());
 }

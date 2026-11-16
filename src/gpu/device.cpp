@@ -232,6 +232,9 @@ bool Device::Open(const Options& options) {
       vram.budget ? std::to_string(vram.budget >> 20) + " MiB" : std::string("not reported"),
       caps.descriptorIndexing, caps.bufferDeviceAddress, caps.presentWait, caps.gpuUploadHeap,
       caps.uma);
+  // How that budget was made (which heaps or segments, the RAM cap and the floor of a shared-memory
+  // GPU), once: the answer to "is the budget the caches trim against the memory the GPU can use".
+  REXLOG_INFO("[gpu] {}", backend::DescribeVideoMemory(device_.get()));
   // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
   // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
   gpu_class::Initialize(device_->getDescription(), caps);

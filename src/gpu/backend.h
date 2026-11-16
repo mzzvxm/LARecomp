@@ -203,6 +203,11 @@ struct VideoMemory {
   uint64_t budget = 0;
 };
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
+// One plain line for the log, written once when the device opens: how the budget above is made on
+// this adapter (a card with its own memory reads one heap or segment; an adapter that shares memory
+// with the CPU reads all the memory the GPU can reach, held to a share of the RAM and floored; which
+// heaps were counted), uma_budget.h.
+std::string DescribeVideoMemory(plume::RenderDevice* device);
 
 // The device-removed reason, or 0 while the device is alive. Vulkan reports
 // loss per call (VK_ERROR_DEVICE_LOST), which Plume does not surface, so it

@@ -9,6 +9,7 @@
 #include "backend_impl.h"
 
 #include "temporal_dlss.h"
+#include "uma_budget.h"
 
 #include <algorithm>
 #include <cstring>
@@ -349,23 +350,93 @@ std::string DescribeDevice(plume::RenderDevice* device) {
   return std::format("D3D12 {}_{}", (fl >> 12) & 0xF, (fl >> 8) & 0xF);
 }
 
-VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
-  VideoMemory out;
+namespace {
+
+// IDXGIAdapter3 of the device's adapter, or null; the caller releases it.
+IDXGIAdapter3* AdapterOf(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->adapter) {
-    return out;
+    return nullptr;
   }
   IDXGIAdapter3* adapter = nullptr;
   if (FAILED(dev->adapter->QueryInterface(IID_PPV_ARGS(&adapter))) || !adapter) {
+    return nullptr;
+  }
+  return adapter;
+}
+
+// Whether the adapter shares memory with the CPU: Plume's UMA flag (D3D12_FEATURE_ARCHITECTURE1's
+// UMA; D3D12 never fills the device type).
+bool SharesMemory(plume::RenderDevice* device) {
+  return uma_budget::IsSharedMemory(device->getCapabilities().uma, false, false);
+}
+
+uma_budget::Result BudgetOf(plume::RenderDevice* device, const DXGI_QUERY_VIDEO_MEMORY_INFO& local) {
+  if (!SharesMemory(device)) {
+    uma_budget::Result result;
+    result.used = local.CurrentUsage;
+    result.budget = local.Budget;
+    result.raw_budget = local.Budget;
+    result.heaps = local.Budget != 0 ? 1 : 0;
+    result.rule = local.Budget != 0 ? uma_budget::Rule::kBiggestHeap : uma_budget::Rule::kNone;
+    return result;
+  }
+  return uma_budget::Segment(local.CurrentUsage, local.Budget, uma_budget::SystemMemoryBytes());
+}
+
+}  // namespace
+
+VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
+  // The LOCAL segment group is the budget of a card with its own memory. On an adapter that shares
+  // memory with the CPU Microsoft's residency page says UMA adapters have one pool, and LOCAL is that
+  // pool (measured on the 2-CU iGPU: 15648 MiB, the shared memory, not the 485 MiB carve-out), so the
+  // reading is the same segment, held to a share of the RAM and floored (uma_budget.h).
+  VideoMemory out;
+  IDXGIAdapter3* adapter = AdapterOf(device);
+  if (!adapter) {
     return out;
   }
   DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
   if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
-    out.used = info.CurrentUsage;
-    out.budget = info.Budget;
+    const uma_budget::Result result = BudgetOf(device, info);
+    out.used = result.used;
+    out.budget = result.budget;
   }
   adapter->Release();
   return out;
+}
+
+std::string DescribeVideoMemory(plume::RenderDevice* device) {
+  IDXGIAdapter3* adapter = AdapterOf(device);
+  if (!adapter) {
+    return uma_budget::Describe(uma_budget::Result{}, nullptr, 0, 0);
+  }
+  DXGI_QUERY_VIDEO_MEMORY_INFO local = {}, non_local = {};
+  const bool have_local =
+      SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local));
+  const bool have_non_local =
+      SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &non_local));
+  DXGI_ADAPTER_DESC desc = {};
+  const bool have_desc = SUCCEEDED(adapter->GetDesc(&desc));
+  adapter->Release();
+  // What DXGI says about the other pool and the adapter's own figures, so a report from other hardware
+  // shows whether LOCAL was the whole shared memory there too.
+  const auto mib = [](uint64_t bytes) { return std::to_string(bytes / uma_budget::kMiB); };
+  std::string segments = std::string("NON_LOCAL budget ") +
+                         (have_non_local ? mib(non_local.Budget) : std::string("?")) + " MiB";
+  if (have_desc) {
+    segments += ", DXGI dedicated " + mib(desc.DedicatedVideoMemory) + " MiB, shared system " +
+                mib(desc.SharedSystemMemory) + " MiB";
+  }
+  if (!have_local) {
+    return uma_budget::Describe(uma_budget::Result{}, nullptr, 0, 0) + " (" + segments + ")";
+  }
+  const uma_budget::Result result = BudgetOf(device, local);
+  if (result.rule == uma_budget::Rule::kBiggestHeap) {
+    return "video memory budget: the adapter has its own memory: the LOCAL segment, " +
+           mib(result.budget) + " MiB (" + segments + ")";
+  }
+  return uma_budget::Describe(result, nullptr, 0, uma_budget::SystemMemoryBytes(), segments);
 }
 
 int64_t DeviceRemovedReason(plume::RenderDevice* device) {

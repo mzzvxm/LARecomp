@@ -43,6 +43,7 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
+std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
@@ -87,6 +88,7 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
+std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
 int64_t DeviceRemovedReason(plume::RenderDevice* device);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);

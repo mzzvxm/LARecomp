@@ -85,6 +85,7 @@ add_library(larecomp_gpu OBJECT
     thread_load.cpp
     timing.cpp
     topology.cpp
+    uma_budget.cpp
     upload.cpp
     upscaler_masks.cpp
     validation.cpp
@@ -185,6 +186,9 @@ add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.c
 # The upscalers' masks (upscaler_mask_plan.h: which views get second draws and with how many samples, the mask pass as a function) have a
 # check that needs no renderer: cmake --build <dir> --target larecomp_upscaler_masks_test, then run src/gpu/larecomp_upscaler_masks_test.
 add_executable(larecomp_upscaler_masks_test EXCLUDE_FROM_ALL upscaler_masks_test.cpp)
+# The video memory budget of a GPU that shares memory with the CPU (uma_budget.h) has one too:
+#   cmake --build <dir> --target larecomp_uma_budget_test, then run src/gpu/larecomp_uma_budget_test (exit 0 = passed).
+add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)
