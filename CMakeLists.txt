@@ -364,6 +364,12 @@ add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/hud_track_test.cpp
     src/mc_engine/cinematic/hud_track.cpp)
 target_include_directories(larecomp_hud_track_test PRIVATE src/mc_engine/cinematic)
+# The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
+# XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
+add_executable(larecomp_pad_feed_test EXCLUDE_FROM_ALL
+    src/mc_engine/ui/pad_feed_test.cpp)
+target_include_directories(larecomp_pad_feed_test PRIVATE src/mc_engine/ui)
 if(NOT WIN32)
     # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
     # drive it) is Windows-only; Linux renders through Plume. The guest-side

@@ -41,6 +41,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
+#include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 
 REXCVAR_DEFINE_STRING(online_master_server, "26.24.254.19:31003", "MCLA/Multiplayer",
@@ -136,50 +137,22 @@ ImVec4 PingColor(int ms) {
 
 // ------------------------------------------------------------- gamepad ---
 
-#ifdef _WIN32
-struct XPad {
-    WORD buttons;
-    BYTE lt, rt;
-    SHORT lx, ly, rx, ry;
-};
-struct XState {
-    DWORD packet;
-    XPad pad;
-};
-using XInputGetStateFn = DWORD(WINAPI*)(DWORD, XState*);
-
-XInputGetStateFn LoadXInput() {
-    static XInputGetStateFn fn = [] {
-        for (const char* dll : {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"}) {
-            if (HMODULE m = LoadLibraryA(dll))
-                if (auto f = reinterpret_cast<XInputGetStateFn>(GetProcAddress(m, "XInputGetState"))) return f;
-        }
-        return XInputGetStateFn(nullptr);
-    }();
-    return fn;
-}
-#endif
-
 // The pad reaches the game through the SDK's input system, which this window
-// switches off while it is open, so the window reads XInput itself and hands
-// it to ImGui's own gamepad navigation. Returns whether a pad is connected.
+// switches off while it is open, so the window reads the pads itself
+// (ui/gamepad.h: Xbox pads through XInput with a slow retry for empty slots,
+// every other pad through SDL) and hands them to ImGui's own gamepad
+// navigation. Returns whether a pad is connected.
 bool FeedGamepad(ImGuiIO& io, bool* b_pressed) {
     *b_pressed = false;
-#ifdef _WIN32
-    static WORD last_buttons = 0;
-    XInputGetStateFn get = LoadXInput();
-    XState st{};
-    bool connected = false;
-    if (get) {
-        for (DWORD i = 0; i < 4 && !connected; ++i) connected = get(i, &st) == 0;
-    }
-    if (!connected) {
+    static uint16_t last_buttons = 0;
+    const padfeed::PadSample pad = mcla::ui::ReadOverlayPads();
+    if (!pad.connected) {
         last_buttons = 0;
         return false;
     }
-    const WORD b = st.pad.buttons;
+    const uint16_t b = pad.buttons;
     struct Map {
-        WORD bit;
+        uint16_t bit;
         ImGuiKey key;
     };
     static const Map kMap[] = {
@@ -191,25 +164,19 @@ bool FeedGamepad(ImGuiIO& io, bool* b_pressed) {
         {0x4000, ImGuiKey_GamepadFaceLeft},  {0x8000, ImGuiKey_GamepadFaceUp},
     };
     for (const auto& m : kMap) io.AddKeyEvent(m.key, (b & m.bit) != 0);
-    auto stick = [&](ImGuiKey neg, ImGuiKey pos, SHORT v) {
-        const float f = std::clamp(float(v) / 32767.0f, -1.0f, 1.0f);
-        const float dead = 0.25f;
-        const float n = f < -dead ? (-f - dead) / (1.0f - dead) : 0.0f;
-        const float p = f > dead ? (f - dead) / (1.0f - dead) : 0.0f;
-        io.AddKeyAnalogEvent(neg, n > 0.0f, n);
-        io.AddKeyAnalogEvent(pos, p > 0.0f, p);
+    auto stick = [&](ImGuiKey neg_key, ImGuiKey pos_key, float v) {
+        float n = 0.0f, p = 0.0f;
+        padfeed::ApplyDeadZone(v, 0.25f, &n, &p);
+        io.AddKeyAnalogEvent(neg_key, n > 0.0f, n);
+        io.AddKeyAnalogEvent(pos_key, p > 0.0f, p);
     };
-    stick(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, st.pad.lx);
-    stick(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, st.pad.ly);
-    stick(ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight, st.pad.rx);
-    stick(ImGuiKey_GamepadRStickDown, ImGuiKey_GamepadRStickUp, st.pad.ry);
+    stick(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight, pad.lx);
+    stick(ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadLStickUp, pad.ly);
+    stick(ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight, pad.rx);
+    stick(ImGuiKey_GamepadRStickDown, ImGuiKey_GamepadRStickUp, pad.ry);
     *b_pressed = (b & 0x2000) && !(last_buttons & 0x2000);
     last_buttons = b;
     return true;
-#else
-    (void)io;
-    return false;
-#endif
 }
 
 // ------------------------------------------------------------- the room ---
@@ -340,6 +307,7 @@ private:
         auto& io = GetIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+        mcla::ui::ReleaseOverlayPads();
         LARECOMP_APP_INFO("[browser] closed");
     }
 
@@ -995,5 +963,7 @@ bool ServerBrowserCapturesInput() {
 }
 
 bool FeedBrowserGamepad(ImGuiIO& io, bool* b_pressed) { return FeedGamepad(io, b_pressed); }
+
+void ReleaseBrowserGamepad() { mcla::ui::ReleaseOverlayPads(); }
 
 }  // namespace larecomp

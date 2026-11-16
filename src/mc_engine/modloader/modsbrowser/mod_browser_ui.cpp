@@ -281,6 +281,7 @@ private:
         auto& io = GetIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+        ReleaseBrowserGamepad();
     }
 
     // Local folders now; the servers once the server list has come in.
