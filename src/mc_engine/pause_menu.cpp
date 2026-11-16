@@ -1565,7 +1565,8 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
 // drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
 const ItemDef kVideoItems[] = {
     // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
-    // (display_menu.h, display_mode.h). Both are live where the window can do it (Windows).
+    // (display_menu.h, display_mode.h). Both are live (Windows; Linux through SDL, where gamescope
+    // sets the size and the RESOLUTION row is grey).
     WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
                  &mcla_menu::kDisplayModeDynamics),
 #if defined(LARECOMP_HAS_GPU)
