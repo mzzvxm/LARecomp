@@ -834,6 +834,37 @@ class LarecompApp : public rex::ReXApp {
     return true;
   }
 
+  // Linux: where the graphics driver keeps the pipelines it compiled. Plume passes no VkPipelineCache,
+  // so the driver's own disk cache is the only cache there is, and the launcher's setup step
+  // (--precache_pipelines) fills it for the game to find at its first start. Steam gives every
+  // program it starts (a non-Steam shortcut too) a cache folder of its own through
+  // MESA_SHADER_CACHE_DIR and __GL_SHADER_DISK_CACHE_PATH (CHECK: from memory of how Steam sets
+  // them, not seen on a Deck), so a setup run from the desktop would fill one folder and a game
+  // started from Game Mode would read another, and compile everything again. Both runs take their
+  // folder from the same place instead: `driver` in LARecomp's cache folder. A player's own
+  // setting is kept when Steam did not start us (Steam's variables are SteamGameId / SteamAppId).
+  static void PinDriverShaderCache(const std::filesystem::path& cache_root) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    const auto set = [](const char* name, const char* value) {
+      const char* now = std::getenv(name);
+      const bool by_steam = std::getenv("SteamGameId") || std::getenv("SteamAppId");
+      if (now && *now && !by_steam) return;  // the player's own choice
+      setenv(name, value, 1);
+    };
+    std::error_code ec;
+    const std::filesystem::path folder = cache_root / "driver";
+    std::filesystem::create_directories(folder, ec);
+    if (ec) return;  // not writable: the driver keeps its own choice
+    const std::string text = folder.string();
+    set("MESA_SHADER_CACHE_DIR", text.c_str());
+    set("MESA_GLSL_CACHE_DIR", text.c_str());
+    set("__GL_SHADER_DISK_CACHE_PATH", text.c_str());
+    set("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1");
+#else
+    (void)cache_root;
+#endif
+  }
+
   // %LOCALAPPDATA%\larecomp: where the identity key already lives, and a place
   // that protection leaves writable. Empty off Windows or without the variable.
   static std::filesystem::path LocalUserFolder() {
@@ -902,6 +933,7 @@ class LarecompApp : public rex::ReXApp {
     ChooseWritableUserFolder(paths);
     // The shader packs follow a cache folder the player chose; else the renderer's default.
     larecomp::shaderbuild::ConfigurePackFolder(paths.cache_root);
+    PinDriverShaderCache(paths.cache_root);
     const auto root = ExeDir();
 
     // A bare default.xex is not enough to call a directory the game root: the
