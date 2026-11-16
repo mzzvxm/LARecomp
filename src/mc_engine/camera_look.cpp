@@ -3,6 +3,8 @@
 #include "camera_look.h"
 #include "menu_items.h"
 #include "map_mouse.h"
+#include "mouse_look.h"
+#include "mouse_look_core.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "logging.h"
@@ -28,15 +30,24 @@
 #include "imgui.h"
 #endif
 
-REXCVAR_DEFINE_BOOL(cam_freelook, false, "MCLA/Camera",
-    "Free look on the gameplay camera with the mouse. The shipped lookaround "
-    "is four digital pan actions easing towards clamped limits, which is why "
-    "the camera settles on a handful of angles instead of following you. While "
-    "this is on the cursor is captured and the mouse steers the view directly.")
+REXCVAR_DEFINE_BOOL(cam_freelook, true, "MCLA/Camera",
+    "Mouse look on the gameplay camera. The shipped lookaround is four digital pan actions "
+    "easing towards clamped limits, which is why the camera settles on a handful of angles "
+    "instead of following you. With this on, the mouse steers the view directly while you drive "
+    "with the keyboard and mouse: the pointer is hidden and locked (the window's relative mouse "
+    "mode, raw counts from the mouse) and the view eases back behind the car when the mouse "
+    "has been still for a moment. It is active only while the keyboard and mouse are the last "
+    "thing you used, with the car on the road: no menu, map, phone or overlay up, and the window "
+    "in front. A controller's right stick looks around as it always did.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// The sensitivity rule (mouse_look_core.h): radians of view per RAW mouse count. At Windows' default pointer speed one count was one cursor pixel, which is what this
+// used to be measured in, so 0.0035 keeps the same feel at default sensitivity whatever the mouse's DPI is (360 degrees = 1795 counts: 5.7 cm at 800 DPI, 2.8 cm at 1600).
 REXCVAR_DEFINE_DOUBLE(cam_freelook_sens, 0.0035, "MCLA/Camera",
-    "Radians of view movement per pixel of mouse movement.")
+    "Mouse look sensitivity: radians of view movement per count the mouse reports. 0.0035 "
+    "turns the view a full circle for about 6 cm of movement on an 800 DPI mouse and about 3 cm "
+    "on a 1600 DPI one; a mouse with a higher DPI turns further for the same movement, so "
+    "lower this for it.")
     .range(0.0001, 0.05)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -241,6 +252,8 @@ REXCVAR_DEFINE_BOOL(cam_freelook_tune, false, "MCLA/Camera",
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DECLARE(bool, mouse_look_log);  // mouse_look.cpp
+
 REXCVAR_DEFINE_BOOL(cam_freelook_diag, false, "MCLA/Camera",
     "Log the lookaround tune fields as they are found and the angles being "
     "written, once a second.")
@@ -384,73 +397,14 @@ LookTune& TuneFor(uint32_t owner) {
     return g_tunes.back();
 }
 
-// ── Mouse capture ──────────────────────────────────────────────────────
+// ── The mouse ──────────────────────────────────────────────────────────
 //
-// The same shape as the free-fly camera's (hooks/camera.cpp): hide and confine the
-// pointer, recenter it every frame and take the raw pixel delta. A view that
-// can turn all the way round cannot be driven from an absolute position, and
-// recentering is what keeps the pointer from walking off the window.
+// The raw counts come from mouse_look.cpp: the window is put in relative mouse mode while the mouse is the player's (the keyboard and mouse are the active
+// device, a car is on the road, no menu / map / phone / overlay, the window in front), a listener sums every motion event's dx / dy, and the camera tick takes the sum
+// with exchange(0). Nothing is recentred and nothing polls the OS, so it is the same on Windows, Linux and the Steam Deck. This file asks (Want, once a frame from
+// TickCameraLook) and takes (Take, once per camera tick, from UpdateLookAngles); the decision is mouse_look_core.h's Gate.
 //
-// Independent of the SDK's mnk_mode, which is retired and forced off (it mapped the
-// mouse onto the right stick, i.e. the digital pan actions this replaces).
-
-#if defined(_WIN32)
-bool g_captured = false;
-
-bool MouseDelta(bool want, float& out_dx, float& out_dy) {
-    out_dx = 0.0f;
-    out_dy = 0.0f;
-
-    auto* win = rex::Runtime::instance()->display_window();
-    if (!win) return false;
-    HWND hwnd = static_cast<HWND>(win->GetNativeWindowHandle());
-    if (!hwnd) return false;
-
-    // An overlay that wants the mouse gets it. Deterministic from the live
-    // ImGui state rather than a toggle that can drift out of sync with it.
-    if (want && ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)
-        want = false;
-    // Nothing to steer while the window is not the one being typed at.
-    if (want && GetForegroundWindow() != hwnd) want = false;
-
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    POINT center = {(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
-    ClientToScreen(hwnd, &center);
-
-    if (!want) {
-        if (g_captured) {
-            g_captured = false;
-            win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-            win->ReleaseMouse();
-        }
-        return false;
-    }
-
-    if (!g_captured) {
-        g_captured = true;
-        win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-        win->CaptureMouse();
-        // Seed on the centre so the first frame does not carry whatever
-        // distance the pointer happened to be from it.
-        SetCursorPos(center.x, center.y);
-        return true;
-    }
-
-    POINT cur;
-    GetCursorPos(&cur);
-    out_dx = float(cur.x - center.x);
-    out_dy = float(cur.y - center.y);
-    SetCursorPos(center.x, center.y);
-    return true;
-}
-#else
-bool MouseDelta(bool, float& out_dx, float& out_dy) {
-    out_dx = 0.0f;
-    out_dy = 0.0f;
-    return false;
-}
-#endif
+// Independent of the SDK's mnk_mode, which is retired and forced off (it mapped the mouse onto the right stick, i.e. the digital pan actions this replaces).
 
 void SaveOriginals(LookTune& t) {
     if (t.saved_valid) return;
@@ -538,23 +492,14 @@ void TickCameraLook() {
 
     // ── Who owns the pointer ───────────────────────────────────────────
     //
-    // The full map drives an absolute cursor from the same mouse this steers
-    // with. Free look re-centres the pointer every time it reads a delta, so
-    // with the map up the two together read as the cursor being yanked to the
-    // middle of the map -- and the map never sees a clean motion, so it cannot
-    // take the mouse back on its own either.
+    // The full map drives an absolute cursor from the same mouse this steers with, so while it has the pointer mouse look stands down (mouse_look.cpp's gate reads
+    // MapMouseWantsPointer() too: relative mode is let go at once and the map sees the pointer again).
     //
-    // Decided here rather than inside the mouse read because this runs every
-    // frame from Patch_DeltaTimePre, and the camera tick does not: if the map
-    // stops the camera from updating while free look still holds the capture,
-    // the pointer would stay hidden and pinned with nothing left to release it.
+    // Decided here every frame, from Patch_DeltaTimePre, and not in the camera tick: if a menu stops the camera from updating while the mouse is still captured, nothing
+    // would be left to release it. The Tick below runs whether or not mouse look is on, for the same reason.
     bool yield = MapMouseWantsPointer();
     bool was = g_yield_pointer.exchange(yield, std::memory_order_relaxed);
     if (yield) {
-        // Idempotent -- returns the cursor and drops the capture the first time
-        // and does nothing on every frame after.
-        float dx = 0.0f, dy = 0.0f;
-        MouseDelta(false, dx, dy);
         g_look_active.store(false, std::memory_order_relaxed);
         // Behind the diag switch: the map's gate drops and comes back every
         // time something opens over it, so this would otherwise be a running
@@ -564,6 +509,8 @@ void TickCameraLook() {
     } else if (was && REXCVAR_GET(cam_freelook_diag)) {
         MC_INFO("[cam-look] pointer back");
     }
+    if (REXCVAR_GET(cam_freelook) && !yield) larecomp::mouselook::Want(larecomp::mouselook::Client::Look);
+    larecomp::mouselook::Tick();
 
     bool want = REXCVAR_GET(cam_freelook);
 
@@ -841,12 +788,35 @@ void CameraProbeRun() {
 
 namespace {
 
-// Reads the mouse and integrates it into the shared angles. Called from exactly
-// one place, once per camera tick.
+// What the game's own look (the right stick) does when it is let go, read from its tune: the LookaroundDelayTime and the LookaroundDecayRate that
+// cam_freelook_return_delay and cam_freelook_return_rate stand in for. Logged once, the first time the mouse takes the view, so that the defaults (0.35 s, 4 per second)
+// can be set against the shipped numbers. Nothing here writes to the tune (cam_freelook_tune is off), so these are the shipped values.
+void LogShippedLookaround() {
+    static std::atomic<bool> done{false};
+    if (done.exchange(true)) return;
+    std::lock_guard<std::mutex> lock(g_tunes_mutex);
+    int n = 0;
+    for (const auto& t : g_tunes) {
+        if (!t.complete()) continue;
+        MC_INFO("[cam-look] the game's own lookaround (tune 0x{:08X}): delay {:.3f} s, decay rate {:.3f}, approach rate {:.3f}, lerp {:.3f}, limits L {:.3f} R {:.3f} U {:.3f} D {:.3f}; "
+                "the mouse look returns after {:.2f} s at rate {:.2f}",
+                t.owner, ReadGuestFloat(t.delay_time), ReadGuestFloat(t.decay_rate), ReadGuestFloat(t.approach_rate), ReadGuestFloat(t.lerp_factor),
+                ReadGuestFloat(t.limit_left), ReadGuestFloat(t.limit_right), ReadGuestFloat(t.limit_up), ReadGuestFloat(t.limit_down),
+                REXCVAR_GET(cam_freelook_return_delay), REXCVAR_GET(cam_freelook_return_rate));
+        ++n;
+    }
+    if (n == 0) MC_INFO("[cam-look] the game's own lookaround tune has not registered yet; the mouse look returns after {:.2f} s at rate {:.2f}",
+                        REXCVAR_GET(cam_freelook_return_delay), REXCVAR_GET(cam_freelook_return_rate));
+}
+
+// Takes the mouse's raw counts and integrates them into the shared angles (mouse_look_core.h StepLook). Called from exactly one place, once per camera tick.
 void UpdateLookAngles() {
     static std::chrono::steady_clock::time_point last =
         std::chrono::steady_clock::now();
-    static float idle = 0.0f;
+    static larecomp::mouselook::LookState state;
+    static bool was_active = false;
+    static int log_lines = 0;
+    static std::chrono::steady_clock::time_point last_log = last;
 
     auto now = std::chrono::steady_clock::now();
     float dt = std::chrono::duration<float>(now - last).count();
@@ -854,58 +824,33 @@ void UpdateLookAngles() {
     if (!(dt > 0.0f) || dt > 0.5f) dt = 1.0f / 60.0f;
 
     float dx = 0.0f, dy = 0.0f;
-    bool want = REXCVAR_GET(cam_freelook) &&
-                !g_yield_pointer.load(std::memory_order_relaxed);
-    bool active = MouseDelta(want, dx, dy);
+    const bool active = larecomp::mouselook::Take(larecomp::mouselook::Client::Look, dx, dy);
     g_look_active.store(active, std::memory_order_relaxed);
+    if (active && !was_active) LogShippedLookaround();
+    was_active = active;
 
-    float rate = float(REXCVAR_GET(cam_freelook_return_rate));
-    float ease = 1.0f - std::exp(-rate * dt);  // frame-rate independent
+    larecomp::mouselook::LookParams params;
+    params.sens = float(REXCVAR_GET(cam_freelook_sens));
+    params.invert_x = REXCVAR_GET(cam_freelook_invert_x);
+    params.invert_y = REXCVAR_GET(cam_freelook_invert_y);
+    params.return_delay = float(REXCVAR_GET(cam_freelook_return_delay));
+    params.return_rate = float(REXCVAR_GET(cam_freelook_return_rate));
+    params.yaw_limit = float(REXCVAR_GET(cam_freelook_yaw_limit));
+    params.pitch_limit = float(REXCVAR_GET(cam_freelook_pitch_limit));
+    state.yaw = g_yaw;
+    state.pitch = g_pitch;
+    larecomp::mouselook::StepLook(state, active, dx, dy, dt, params);
+    g_yaw = state.yaw;
+    g_pitch = state.pitch;
 
-    if (!active) {
-        // Whatever took the mouse away -- an overlay, lost focus, the feature
-        // being switched off -- should not leave the view parked off to one
-        // side. Ease it back rather than snapping, so it is the same motion
-        // the player sees when they simply stop moving the mouse.
-        g_yaw -= g_yaw * ease;
-        g_pitch -= g_pitch * ease;
-        idle = 0.0f;
-        return;
+    // mouse_look_log: the counts that came in and where the view is, about every tenth of a second while something moves (the chain reads the turn and the return from it).
+    if (REXCVAR_GET(mouse_look_log) && log_lines < 4000 &&
+        (active || g_yaw != 0.0f || g_pitch != 0.0f) &&
+        (std::fabs(dx) + std::fabs(dy) >= 0.5f || std::chrono::duration<float>(now - last_log).count() >= 0.1f)) {
+        last_log = now;
+        ++log_lines;
+        MC_INFO("[mouselook] counts dx={:.1f} dy={:.1f} yaw={:+.4f} pitch={:+.4f} idle={:.2f} engaged={}", dx, dy, g_yaw, g_pitch, state.idle, active ? 1 : 0);
     }
-
-    float sens = float(REXCVAR_GET(cam_freelook_sens));
-    if (REXCVAR_GET(cam_freelook_invert_x)) dx = -dx;
-    if (REXCVAR_GET(cam_freelook_invert_y)) dy = -dy;
-
-    // A pixel or two of pointer jitter is not the player looking around, and
-    // treating it as such is what keeps the recentring from ever starting.
-    bool moving = (std::fabs(dx) + std::fabs(dy)) > 1.5f;
-
-    if (moving) {
-        idle = 0.0f;
-        // Displacement, not a rate: a mouse delta is already per-frame, so
-        // scaling it by dt would make the same movement mean different amounts
-        // at different frame rates.
-        g_yaw += dx * sens;
-        g_pitch += dy * sens;
-    } else {
-        idle += dt;
-        if (idle >= float(REXCVAR_GET(cam_freelook_return_delay))) {
-            g_yaw -= g_yaw * ease;
-            g_pitch -= g_pitch * ease;
-            // Below a twentieth of a degree there is nothing left to see, and
-            // an exponential never quite arrives on its own.
-            if (std::fabs(g_yaw) < 0.001f) g_yaw = 0.0f;
-            if (std::fabs(g_pitch) < 0.001f) g_pitch = 0.0f;
-        }
-    }
-
-    float yaw_limit = float(REXCVAR_GET(cam_freelook_yaw_limit));
-    float pitch_limit = float(REXCVAR_GET(cam_freelook_pitch_limit));
-    if (g_yaw > yaw_limit) g_yaw = yaw_limit;
-    if (g_yaw < -yaw_limit) g_yaw = -yaw_limit;
-    if (g_pitch > pitch_limit) g_pitch = pitch_limit;
-    if (g_pitch < -pitch_limit) g_pitch = -pitch_limit;
 }
 
 // Resolves camsys -> the look object through the cvar-configured offset.
@@ -1576,7 +1521,8 @@ void Hook_CameraStateUpdate(PPCRegister& r31) {
 // menu nobody reads.
 namespace {
 
-// Mouse sensitivity, in radians per pixel. The default is 0.0035.
+// Mouse sensitivity, in radians of view per raw mouse count (mouse_look_core.h: the sensitivity rule). The default is 0.0035: the same feel as the pixel-based look it
+// replaced at Windows' default pointer speed. The values and the stored numbers are the launcher's (SettingsSchema.cs, Cvars.cs), so they stay as they were.
 constexpr double kLookSensVals[] = {0.0015, 0.0025, 0.0035, 0.005, 0.007, 0.01};
 
 // Seconds of a still mouse before the view eases back to centre. 0 means it
@@ -1587,13 +1533,15 @@ constexpr double kLookDelayVals[] = {0.0, 0.15, 0.35, 0.6, 1.0, 2.0};
 // How fast it eases back once it starts, in units of 1/second.
 constexpr double kLookRateVals[] = {1.0, 2.0, 4.0, 8.0, 16.0};
 
+// The mouse look rows (KBM-DESIGN.md phase P5): on / off (on by default, but only while the keyboard and mouse are what you last used), sensitivity, the two inversions, the
+// recentre timing. They are live: the cvars are hot-reload and the look reads them every camera tick.
 constexpr mcla_menu::ItemDef kCameraLookRows[] = {
-    mcla_menu::Bool("PM_RxFreeLook",   "cam_freelook",              "FREE LOOK: "),
-    mcla_menu::Dbl ("PM_RxFlSens",     "cam_freelook_sens",         "LOOK SENS: ",
+    mcla_menu::Bool("PM_RxFreeLook",   "cam_freelook",              "MOUSE LOOK: "),
+    mcla_menu::Dbl ("PM_RxFlSens",     "cam_freelook_sens",         "MOUSE SENS: ",
                     kLookSensVals,
                     int(sizeof(kLookSensVals) / sizeof(kLookSensVals[0])), "%g"),
-    mcla_menu::Bool("PM_RxFlInvX",     "cam_freelook_invert_x",     "INVERT LOOK X: "),
-    mcla_menu::Bool("PM_RxFlInvY",     "cam_freelook_invert_y",     "INVERT LOOK Y: "),
+    mcla_menu::Bool("PM_RxFlInvX",     "cam_freelook_invert_x",     "INVERT MOUSE X: "),
+    mcla_menu::Bool("PM_RxFlInvY",     "cam_freelook_invert_y",     "INVERT MOUSE Y: "),
     mcla_menu::Dbl ("PM_RxFlDelay",    "cam_freelook_return_delay", "RECENTER DELAY: ",
                     kLookDelayVals,
                     int(sizeof(kLookDelayVals) / sizeof(kLookDelayVals[0])),

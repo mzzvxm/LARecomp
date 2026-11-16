@@ -39,9 +39,11 @@
 #include "kbm_input.h"
 #include "logging.h"
 #include "modloader/texture.h"
+#include "mouse_look_core.h"
 #include "prompt_glyphs.h"
 #include "native_gfx/guest/texture_format.h"
 #include "online/server_browser/browser_ui.h"
+#include "wheel/wheel_input.h"
 
 #if defined(_WIN32)
 #include <Windows.h>
@@ -110,13 +112,17 @@ REXCVAR_DEFINE_STRING(kb_drive_brake, "S,Down", "MCLA/Input/Keyboard - driving",
     "Driving: brake / reverse").lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_handbrake, "Space", "MCLA/Input/Keyboard - driving",
     "Driving: handbrake (the pad's A)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_weight, "CapsLock", "MCLA/Input/Keyboard - driving",
-    "Driving: weight transfer, the 'turn in' of the pad's B")
+// The defaults of the road (KBM-DESIGN.md 2.7, phase P5): WASD and the arrows steer, accelerate and brake; Space is the handbrake; Ctrl is the weight transfer (Caps Lock was a
+// lock key that toggles the host's state); Shift, X or the left mouse button is nitro; the right mouse button looks back (the mouse itself looks around: mouse_look.h). None of
+// these is also a menu key that matters on the road: the menu's keys (kb_ui_*) live in the UI mapper, which the road's mapper never sees, and Start (Enter, Esc) is live only while
+// no menu is open. Q and E are the gears here and the tabs (LB, RB) in a menu; Tab is the map's and the GPS's Back button, never a driving key.
+REXCVAR_DEFINE_STRING(kb_drive_weight, "Control", "MCLA/Input/Keyboard - driving",
+    "Driving: weight transfer, the 'turn in' of the pad's B (either Ctrl key)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// "Shift,X": X stays on nitro as well as Shift (a pad habit). It used to be needed so that the prompt for the pad's X, painted with the menu's X key, did what the pad's X
+// "Shift,X,LMB": X stays on nitro as well as Shift (a pad habit). It used to be needed so that the prompt for the pad's X, painted with the menu's X key, did what the pad's X
 // does on the road (KBM-DESIGN 1.3 item 8); the prompts now show the driving key on the road (prompt_glyphs.h, Context), so the first key with a cap, Shift, is what shows there.
-REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift,X", "MCLA/Input/Keyboard - driving",
-    "Driving: nitro (the pad's X). On the road the X prompt shows the first of these keys that has a cap.")
+REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift,X,LMB", "MCLA/Input/Keyboard - driving",
+    "Driving: nitro (the pad's X). On the road the X prompt shows the first of these keys that has a cap. LMB is the left mouse button.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_headlights, "H", "MCLA/Input/Keyboard - driving",
     "Driving: headlights (the pad's Y)").lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -134,8 +140,8 @@ REXCVAR_DEFINE_STRING(kb_drive_camera_views, "4,0,3,2,1", "MCLA/Input/Keyboard -
     "1 cockpit, 2/3/4 the chase views. Default: slot 1 action(4), 2 bumper(0), 3 classic(3), "
     "4 static(2), 5 cockpit(1). Swap numbers here if 3 and 4 turn out the other way round.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_lookback, "R", "MCLA/Input/Keyboard - driving",
-    "Driving: look back").lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(kb_drive_lookback, "R,RMB", "MCLA/Input/Keyboard - driving",
+    "Driving: look back. RMB is the right mouse button.").lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_map, "M", "MCLA/Input/Keyboard - driving", "Driving: map")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_talk, "T", "MCLA/Input/Keyboard - driving", "Driving: talk")
@@ -153,6 +159,26 @@ REXCVAR_DEFINE_STRING(kb_drive_popup_select, "", "MCLA/Input/Keyboard - driving"
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_popup_back, "", "MCLA/Input/Keyboard - driving",
     "Driving: answer a pop-up with B (empty = pad only)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Keyboard steering is not a 0 / 100 % switch: full lock builds up while a key is held and returns to centre when it is let go (mouse_look_core.h StepSteer). The ramp
+// rides the left stick's X axis of the state the game reads (KeySteerScope, XamInputGetState wrapper), so the game steers exactly as it does for a stick pushed that far.
+REXCVAR_DEFINE_DOUBLE(kb_steer_rise, 0.40, "MCLA/Input/Keyboard - driving",
+    "Keyboard steering: seconds from centre to full lock while a steering key is held (a tap is a small correction). Shorter = twitchier, 0.05 is nearly the old on / off steering.")
+    .range(0.05, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(kb_steer_return, 0.25, "MCLA/Input/Keyboard - driving",
+    "Keyboard steering: seconds from full lock back to centre when the steering key is let go, and the time the wheel takes to come through the centre when you steer the other "
+    "way. Shorter = the car straightens up quicker.")
+    .range(0.05, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(kb_steer_ramp, true, "MCLA/Input/Keyboard - driving",
+    "Debug: the steering ramp above. Off = the old key pair, full lock at once and centre at once (it rebuilds the driving mapper).")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(kb_steer_log, false, "MCLA/Input/Keyboard - driving",
+    "Log the steering ramp: one line per input poll while a steering key is held or the wheel is coming back (at most 3000 lines).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_STRING(keycaps_dir, "", "MCLA/Input",
@@ -404,7 +430,7 @@ void WatchBindings() {
         "kb_drive_steer_left", "kb_drive_steer_right", "kb_drive_gas", "kb_drive_brake", "kb_drive_handbrake", "kb_drive_weight",
         "kb_drive_nitro", "kb_drive_headlights", "kb_drive_horn", "kb_drive_camera", "kb_drive_camera_keys", "kb_drive_camera_views",
         "kb_drive_lookback", "kb_drive_map", "kb_drive_talk", "kb_drive_shift_up", "kb_drive_shift_down", "kb_drive_pause",
-        "kb_drive_popup_select", "kb_drive_popup_back",
+        "kb_drive_popup_select", "kb_drive_popup_back", "kb_steer_ramp",
         "extra_button_l4", "extra_button_l5", "extra_button_r4", "extra_button_r5",
         "keycaps_dir",
     };
@@ -497,8 +523,16 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
     };
 
     // Steering: left/right keys at the same position make one axis pair.
+    // With the ramp on (kb_steer_ramp) the steering keys are not mapper entries at all: the input poll ramps them and the XamInputGetState wrapper adds the value to the left stick
+    // (KeySteerScope), so the pad's own entries for the axis stay as they are.
     uint32_t steer_out = 0;
-    if (out_of("STEER_AXIS", steer_out)) {
+    if (REXCVAR_GET(kb_steer_ramp)) {
+        d.steer_pad.clear();
+        d.steer_pad_type.clear();
+        d.steer_keys.clear();
+        d.steer_scancodes.clear();
+        d.steer_active = -2;
+    } else if (out_of("STEER_AXIS", steer_out)) {
         const auto left = ParseKeyList(REXCVAR_GET(kb_drive_steer_left));
         const auto right = ParseKeyList(REXCVAR_GET(kb_drive_steer_right));
         const size_t n = std::min(left.size(), right.size());
@@ -1517,6 +1551,8 @@ uint32_t g_ui_movie_entry = 0;   // the current movie of the last poll, and its 
 std::string g_ui_movie_name;
 larecomp::prompts::UiSignals g_ui_signals;  // what the last poll saw (PollPrompts)
 std::string g_ui_prev_name;                 // the movie name that went with it (for the 'was' of the log line)
+std::atomic<bool> g_screen_menu{true};      // what the last poll made of it, for larecomp::keyboard::MenuScreenUp (mouse look): a menu screen is up, or the game is not entered yet
+std::atomic<bool> g_screen_phone{false};    // ... and the Sidekick phone is the current movie (PhoneScreenUp)
 
 larecomp::prompts::UiSignals UiSignalsOf(const uint8_t* b) {
     larecomp::prompts::UiSignals s;
@@ -1619,6 +1655,11 @@ void PollPrompts(uint8_t* b) {
     if ((++g_glyph_tick & 0x1F) == 0) {
         if (ScanDictionary(b) && !g_sidekick_ok && ScanSidekick(b)) g_prompts_dirty.store(true, std::memory_order_relaxed);
     }
+    // Which screen the game is on: three loads of FlashNavigator and the form stack. Read before the dictionary check below, because mouse look asks about the screen too
+    // (MenuScreenUp / PhoneScreenUp) and must not depend on the glyph art being found.
+    const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    g_screen_menu.store(larecomp::prompts::ContextFor(g_game_entered, ui) == larecomp::prompts::Context::Menu, std::memory_order_relaxed);
+    g_screen_phone.store(g_ui_movie_name.compare(0, 8, "SIDEKICK") == 0, std::memory_order_relaxed);
     if (g_glyph_tex.empty()) return;  // no dictionary yet: stays dirty
     if (!g_art_warm) WarmArt(b);
 
@@ -1635,9 +1676,8 @@ void PollPrompts(uint8_t* b) {
             g_prompts_dirty.store(true, std::memory_order_relaxed);
         }
     }
-    // Which screen the game is on: three loads of FlashNavigator and the form stack. A change is one log line (the screens the first run did not know are found from it), and, while the
-    // keyboard is the family in use, a repaint when it turns the keys from the road's into the menu's or back.
-    const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    // A change of the screen is one log line (the screens the first run did not know are found from it), and, while the keyboard is the family in use, a repaint when it turns the keys
+    // from the road's into the menu's or back.
     if (!(ui == g_ui_signals) || (ui.movie && g_ui_movie_name != g_ui_prev_name)) {
         const std::string was = larecomp::prompts::DescribeUi(g_ui_signals, g_ui_prev_name);
         g_ui_signals = ui;
@@ -1871,6 +1911,59 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
 
 namespace {
 bool g_overlay_had_keys = false;  // an overlay had the keyboard at the last poll
+
+// ── keyboard steering with a ramp (mouse_look_core.h StepSteer) ─────────────────────────────────────────────────────
+// The steering keys are the ones of kb_drive_steer_left / _right (any key of a list counts: A and the left arrow both steer left). Once per input poll the ramp takes a step
+// towards what the keys say; its value, as a stick axis, goes into g_key_steer for the XamInputGetState wrapper (KeySteerScope) to add to the left stick. The ramp is the
+// road's: it is zero while a menu screen is up, before the game is entered, with an overlay on the keyboard and with kb_steer_ramp off.
+std::atomic<int32_t> g_key_steer{0};
+std::vector<uint8_t> g_steer_left_ids, g_steer_right_ids;
+uint32_t g_steer_keys_gen = 0;
+float g_steer_value = 0.0f;
+int g_steer_log_lines = 0;
+
+void RefreshSteerKeys() {
+    const uint32_t gen = BindingsGen();
+    if (gen == g_steer_keys_gen) return;
+    g_steer_keys_gen = gen;
+    g_steer_left_ids.clear();
+    g_steer_right_ids.clear();
+    for (const KeyRef& k : ParseKeyList(REXCVAR_GET(kb_drive_steer_left))) g_steer_left_ids.push_back(k.vk);
+    for (const KeyRef& k : ParseKeyList(REXCVAR_GET(kb_drive_steer_right))) g_steer_right_ids.push_back(k.vk);
+}
+
+void UpdateSteerRamp(const larecomp::kbm::KeySnapshot& keys) {
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point last = Clock::now();
+    const Clock::time_point now = Clock::now();
+    const float dt = std::chrono::duration<float>(now - last).count();
+    last = now;
+
+    const bool road = REXCVAR_GET(kb_steer_ramp) && !g_screen_menu.load(std::memory_order_relaxed);  // g_screen_menu: a menu screen is up or the game is not entered (PollPrompts, this poll)
+    int dir = 0;
+    if (road) {
+        RefreshSteerKeys();
+        bool left = false, right = false;
+        for (uint8_t id : g_steer_left_ids) left = left || keys.Test(id);
+        for (uint8_t id : g_steer_right_ids) right = right || keys.Test(id);
+        dir = larecomp::mouselook::SteerDirection(left, right);
+    }
+    const float before = g_steer_value;
+    if (!road) {
+        g_steer_value = 0.0f;  // a menu opened, the ramp is off: nothing is left over to steer with
+    } else {
+        larecomp::mouselook::SteerParams params;
+        params.rise_s = static_cast<float>(REXCVAR_GET(kb_steer_rise));
+        params.return_s = static_cast<float>(REXCVAR_GET(kb_steer_return));
+        g_steer_value = larecomp::mouselook::StepSteer(g_steer_value, dir, dt, params);
+    }
+    const int16_t axis = larecomp::mouselook::SteerToAxis(g_steer_value);
+    g_key_steer.store(axis, std::memory_order_relaxed);
+    if (REXCVAR_GET(kb_steer_log) && (dir != 0 || before != 0.0f || g_steer_value != 0.0f) && g_steer_log_lines < 3000) {
+        ++g_steer_log_lines;
+        MC_INFO("[kbnative] steer dir={:+d} value={:+.3f} axis={} dt_ms={:.1f}", dir, g_steer_value, int(axis), dt * 1000.0f);
+    }
+}
 }  // namespace
 
 void Hook_KeyboardFeed() {
@@ -1895,16 +1988,43 @@ void Hook_KeyboardFeed() {
     if (keyboard) FeedKeys(b, keys);
     // The pad's extra buttons work with or without the native keyboard.
     FeedExtras(b, keys);
-    if (!keyboard) return;
+    if (!keyboard) {
+        g_steer_value = 0.0f;
+        g_key_steer.store(0, std::memory_order_relaxed);
+        return;
+    }
     EnsureNavKeys(b);
     UpdateNavEntries(b);
     UpdateSteering(b);
+    UpdateSteerRamp(keys);
     UpdateCameraJump(b, keys);
     if (g_drive_gen_applied != 0 && BindingsGen() != g_drive_gen_applied) {
         g_drive_gen_applied = BindingsGen();  // before: the rebuild below refreshes it again
         ReapplyDrive(b);
     }
 }
+
+namespace larecomp::keyboard {
+
+bool MenuScreenUp() { return g_screen_menu.load(std::memory_order_relaxed); }
+bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
+
+// The XamInputGetState wrapper has finished (the SDK's state, the dead zones, the device state machine's look at it): the keyboard's steering goes into the left stick's X axis.
+KeySteerScope::~KeySteerScope() {
+    const int32_t key = g_key_steer.load(std::memory_order_relaxed);
+    if (key == 0 || !base_ || state_ == 0) return;
+    const uint32_t u = user_ & 0xFF;
+    if (u != 0 && u != 0xFF) return;
+    if ((result_ & 0xFFFFFFFFull) != 0) return;  // no pad answered (a lost controller's "not connected", a failed call)
+    if (larecomp::wheel::WheelPresent()) return;  // a wheel owns the axis
+    uint8_t* p = base_ + state_ + 8;              // X_INPUT_STATE: be32 packet, be16 buttons, u8 LT, u8 RT, then be16 LX
+    const int16_t stick = static_cast<int16_t>((uint16_t(p[0]) << 8) | p[1]);
+    const int16_t merged = larecomp::mouselook::MergeAxis(stick, static_cast<int16_t>(key));
+    p[0] = static_cast<uint8_t>(uint16_t(merged) >> 8);
+    p[1] = static_cast<uint8_t>(uint16_t(merged));
+}
+
+}  // namespace larecomp::keyboard
 
 // sub_822A4B80(controller): "SHIFT_UP and SHIFT_DOWN are both bound", read from the control map
 // of the controller's pad as entries 4 and 5 of {u32 type, u32 key}. The game tests only the TYPE
@@ -1923,6 +2043,12 @@ extern "C" REX_FUNC(rex_sub_822A4B80) {
 }
 
 #else  // REXGLUE_HAS_XEO3_TARGET
+
+namespace larecomp::keyboard {
+bool MenuScreenUp() { return true; }
+bool PhoneScreenUp() { return false; }
+KeySteerScope::~KeySteerScope() {}
+}  // namespace larecomp::keyboard
 
 void Hook_KeyboardFeed() {}
 void Hook_ControlMapRebuilt(PPCRegister&) {}

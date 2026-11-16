@@ -35,7 +35,7 @@ const std::map<std::string, std::string> kDefaults = {
     {"kb_ui_accept", "Return,Space"}, {"kb_ui_back", "Escape,Backspace"}, {"kb_ui_x", "X"},       {"kb_ui_y", "Y"},
     {"kb_ui_lb", "Q"},                {"kb_ui_rb", "E"},                  {"kb_ui_lt", "PageUp"}, {"kb_ui_rt", "PageDown"},
     {"kb_ui_start", "Return,Escape"}, {"kb_ui_select", "Tab"},            {"kb_drive_handbrake", "Space"},
-    {"kb_drive_weight", "CapsLock"},  {"kb_drive_nitro", "Shift,X"},      {"kb_drive_headlights", "H"},
+    {"kb_drive_weight", "Control"},   {"kb_drive_nitro", "Shift,X,LMB"},  {"kb_drive_headlights", "H"},
     {"kb_drive_camera", "V"},         {"kb_drive_brake", "S,Down"},       {"kb_drive_gas", "W,Up"},
     {"kb_drive_pause", ""},           {"kb_drive_map", "M"},
 };
@@ -59,7 +59,7 @@ std::string KeyOfDefaults(std::string_view cvar, const std::set<std::string>& ca
     return PickKey(Split(it->second), [&](const std::string& k) { return caps.count(k) != 0; });
 }
 
-const std::set<std::string> kAllCaps = {"Return", "Space", "Escape", "Backspace", "X", "Y", "Q", "E", "PageUp", "PageDown", "Tab", "CapsLock", "Shift", "H", "V", "S", "Down", "W", "Up", "M"};
+const std::set<std::string> kAllCaps = {"Return", "Space", "Escape", "Backspace", "X", "Y", "Q", "E", "PageUp", "PageDown", "Tab", "CapsLock", "Control", "Shift", "H", "V", "S", "Down", "W", "Up", "M"};
 
 Art For(Family f, Context c, Slot s, bool bitmaps = true, bool files = true, const std::set<std::string>& caps = kAllCaps,
         const std::vector<std::pair<Slot, std::string>>& ov = {}) {
@@ -143,8 +143,8 @@ void TestKeyboardContexts() {
     CHECK((For(Family::Keyboard, Context::Menu, Slot::Start) == Art{ArtKind::KeyCap, "Return"}));
     // the road: the driving keys of the buttons that have one, the menu keys of the rest
     CHECK((For(Family::Keyboard, Context::Drive, Slot::A) == Art{ArtKind::KeyCap, "Space"}));
-    CHECK((For(Family::Keyboard, Context::Drive, Slot::B) == Art{ArtKind::KeyCap, "CapsLock"}));
-    CHECK((For(Family::Keyboard, Context::Drive, Slot::X) == Art{ArtKind::KeyCap, "Shift"}));  // "Shift,X": the first with a cap
+    CHECK((For(Family::Keyboard, Context::Drive, Slot::B) == Art{ArtKind::KeyCap, "Control"}));
+    CHECK((For(Family::Keyboard, Context::Drive, Slot::X) == Art{ArtKind::KeyCap, "Shift"}));  // "Shift,X,LMB": the first with a cap (the mouse button has none)
     CHECK((For(Family::Keyboard, Context::Drive, Slot::Y) == Art{ArtKind::KeyCap, "H"}));
     CHECK((For(Family::Keyboard, Context::Drive, Slot::RB) == Art{ArtKind::KeyCap, "V"}));
     CHECK((For(Family::Keyboard, Context::Drive, Slot::LT) == Art{ArtKind::KeyCap, "S"}));
@@ -395,7 +395,7 @@ void TestContextFollowsLive() {
     const Art map_b = For(Family::Keyboard, ContextFor(true, Ui(false, true, false)), Slot::B);
     CHECK((map_b == Art{ArtKind::KeyCap, "Escape"}));
     const Art road_b = For(Family::Keyboard, ContextFor(true, Ui(false, false, false)), Slot::B);
-    CHECK((road_b == Art{ArtKind::KeyCap, "CapsLock"}));
+    CHECK((road_b == Art{ArtKind::KeyCap, "Control"}));
     // the phone: the same cap on the road and in a menu (the Back / Select key: it answers through the menu's mapper)
     CHECK((For(Family::Keyboard, Context::Drive, Slot::Phone) == For(Family::Keyboard, Context::Menu, Slot::Phone)));
     CHECK((For(Family::Keyboard, Context::Drive, Slot::Phone) == Art{ArtKind::KeyCap, "Tab"}));

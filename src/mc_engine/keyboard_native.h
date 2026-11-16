@@ -43,8 +43,10 @@
 // 3. Driving: sub_822A4DE8 rebuilds the player's mapper from the control config
 //    (the xenon_controls*.map tables) and clears it first, so the hook at its
 //    return (Hook_ControlMapRebuilt) adds the keyboard entries after every
-//    rebuild. Here Esc/Enter is PAUSE, Caps Lock the weight transfer (the "B" of
-//    the pad), WASD gas/brake/steer. The pad entries are untouched.
+//    rebuild. Here Esc/Enter is PAUSE, Ctrl the weight transfer (the "B" of
+//    the pad), WASD gas/brake/steer. The pad entries are untouched. The steering keys are
+//    not mapper entries any more: they ramp to full lock and back (kb_steer_rise, kb_steer_return)
+//    and the XamInputGetState wrapper adds the value to the left stick (KeySteerScope below).
 //
 // Menus and driving are different mappers, so the same key can mean different
 // things in each without any context switching or rewriting cvars.
@@ -86,3 +88,33 @@ bool Hook_ControlCaptureKey(PPCRegister& r11, PPCRegister& r28);
 // a keyboard binding gets a key cap glyph, or its name. Returning true jumps to the
 // function own `blr` at 0x82679BD4 with r3 = the label string.
 bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5);
+
+// ── What mouse look and the steering ramp need from the keyboard layer (KBM-DESIGN.md phase P5) ─────────────────────────────────────
+namespace larecomp::keyboard {
+
+// The screen the game is on, as the last input poll saw it (the same facts that choose between the menu's and the road's key caps, prompt_glyphs.h UiSignals). Any thread.
+// MenuScreenUp: a menu screen is up (the pause menu, the garage, a pop-up, the full map's movie, ...) or the game is not entered yet (the title, the sign-in steps).
+// PhoneScreenUp: the Sidekick phone is the current movie (it is the road's, not a menu: the driving keys work with it up).
+bool MenuScreenUp();
+bool PhoneScreenUp();
+
+// Keyboard steering with a ramp (kb_steer_ramp, kb_steer_rise, kb_steer_return; mouse_look_core.h StepSteer): the input poll works out the ramped value of the steering
+// keys (left and right of kb_drive_steer_*, any key of a list counts); this object, on the stack of the XamInputGetState wrapper (wheel/wheel_fake.cpp), puts it into the left
+// stick's X axis of the state the game is about to read when the wrapper returns (the larger magnitude of the key and the stick wins; a wheel, a failed call, user other than 0
+// and a ramp at rest leave the state alone). It must be constructed BEFORE input_state.h's InputActivityScope, so that it runs after it: the ramp is the keyboard, and the
+// device state machine must not count it as a controller's stick.
+class KeySteerScope {
+ public:
+  KeySteerScope(uint8_t* base, uint32_t user, uint32_t state, uint64_t& result) : base_(base), user_(user), state_(state), result_(result) {}
+  ~KeySteerScope();
+  KeySteerScope(const KeySteerScope&) = delete;
+  KeySteerScope& operator=(const KeySteerScope&) = delete;
+
+ private:
+  [[maybe_unused]] uint8_t* base_;
+  [[maybe_unused]] uint32_t user_;
+  [[maybe_unused]] uint32_t state_;
+  [[maybe_unused]] uint64_t& result_;
+};
+
+}  // namespace larecomp::keyboard

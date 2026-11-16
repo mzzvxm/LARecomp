@@ -25,6 +25,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../menu_camera.h"
+#include "../mouse_look.h"
 
 REXCVAR_DEFINE_DOUBLE(fov_1p_scale, 1.0, "MCLA/Camera", "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)")
     .range(0.5, 5.0)
@@ -83,12 +84,12 @@ REXCVAR_DEFINE_DOUBLE(debug_cam_sens, 2.5, "MCLA/Camera",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(debug_cam_mouse, true, "MCLA/Camera",
-    "Free-fly camera: use the mouse to look (captures the cursor while active).")
+    "Free-fly camera: use the mouse to look (the pointer is hidden and locked while it is active).")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(debug_cam_mouse_sens, 0.0025, "MCLA/Camera",
-    "Free-fly mouse look sensitivity (radians per mouse pixel).")
+    "Free-fly mouse look sensitivity (radians per raw mouse count).")
     .range(0.0002, 0.02)
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -100,61 +101,20 @@ static bool g_freecam_seeded = false;
 static float g_freecam_yaw = 0.0f;
 static float g_freecam_pitch = 0.0f;
 
-// Mouse-look for the free-fly camera. Self-contained OS mouse capture (Win32):
-// while active we hide + confine the cursor, recenter it every frame, and feed
-// the raw pixel delta into yaw/pitch as a displacement (no dt scaling — mouse
-// deltas are already per-frame). Independent of mnk_mode, so it does not hijack
-// the pad. Sign matches the right-stick path: mouse right = look right (yaw
-// down), mouse up = look up (pitch down). Caller clamps pitch afterward.
-#if defined(_WIN32)
-static bool g_freecam_mouse_captured = false;
+// Mouse-look for the free-fly camera. The raw counts come from the shared mouse module (mouse_look.h: the window's relative mouse mode, a listener that sums the motion
+// events, the same on Windows, Linux and the Steam Deck; nothing is recentred by hand any more). While this camera asks (every tick it runs), relative mode is on whatever
+// the active device is (it is a tool) as long as the window has the focus and no overlay (F4, the console) wants the mouse, and the gameplay camera's mouse look stands aside.
+// The counts are fed into yaw/pitch as a displacement (no dt scaling: they are already per tick). Independent of mnk_mode, so it does not hijack the pad. Sign matches
+// the right-stick path: mouse right = look right (yaw down), mouse up = look up (pitch down). Caller clamps pitch afterward. debug_cam_mouse is the master on/off.
 static void FreecamMouseUpdate(bool active, float& yaw, float& pitch) {
-    auto* win = rex::Runtime::instance()->display_window();
-    if (!win) return;
-    HWND hwnd = static_cast<HWND>(win->GetNativeWindowHandle());
-    if (!hwnd) return;
-
-    // Release the cursor whenever an ImGui overlay (F4 RexGlue Settings, console,
-    // etc.) wants the mouse, so the menu is usable; recapture once it is closed.
-    // Deterministic from the live overlay state — no key-toggle to drift out of
-    // sync with the menu. debug_cam_mouse is the master on/off.
-    bool menu_open = ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse;
-    bool want = active && REXCVAR_GET(debug_cam_mouse) && !menu_open;
-
-    // Client-area center in screen coordinates (recenter target).
-    RECT rc;
-    GetClientRect(hwnd, &rc);
-    POINT center = {(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
-    ClientToScreen(hwnd, &center);
-
-    if (want && !g_freecam_mouse_captured) {
-        g_freecam_mouse_captured = true;
-        win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-        win->CaptureMouse();
-        SetCursorPos(center.x, center.y);  // seed center, skip first-frame spike
-        return;
-    }
-    if (!want) {
-        if (g_freecam_mouse_captured) {
-            g_freecam_mouse_captured = false;
-            win->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
-            win->ReleaseMouse();
-        }
-        return;
-    }
-
-    POINT cur;
-    GetCursorPos(&cur);
-    int dx = cur.x - center.x;
-    int dy = cur.y - center.y;
-    float s = static_cast<float>(REXCVAR_GET(debug_cam_mouse_sens));
+    if (!active || !REXCVAR_GET(debug_cam_mouse)) return;
+    larecomp::mouselook::Want(larecomp::mouselook::Client::DebugCam);
+    float dx = 0.0f, dy = 0.0f;
+    if (!larecomp::mouselook::Take(larecomp::mouselook::Client::DebugCam, dx, dy)) return;
+    const float s = static_cast<float>(REXCVAR_GET(debug_cam_mouse_sens));
     yaw -= dx * s;
     pitch += dy * s;
-    SetCursorPos(center.x, center.y);
 }
-#else
-static void FreecamMouseUpdate(bool, float&, float&) {}
-#endif
 
 // Normalize an XInput thumbstick axis (int16, -32768..32767, centered at 0) to
 // [-1, 1] with a small radial deadzone. XInput convention: up/right = positive.

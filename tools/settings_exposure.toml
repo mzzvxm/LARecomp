@@ -30,6 +30,10 @@ names = [
 ]
 
 [[exception]]
+why = "keyboard steering feel (KBM-DESIGN.md P5): the ramp's two times are F4-only tunables with documented defaults (0.40 s to full lock, 0.25 s back); the launcher has no row for them. Mouse look itself, its sensitivity and inversions are pause-menu rows (camera_look.cpp) with launcher rows"
+names = ["kb_steer_rise", "kb_steer_return"]
+
+[[exception]]
 why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in F4 for now"
 names = [
   "online_master_server", "server_browser_servers", "server_browser_show_icons",
