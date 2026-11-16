@@ -12,6 +12,7 @@
 #include "present.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -150,12 +151,18 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   if (!easu_shader_ || !rcas_shader_ || !stretch_shader_) {
     return false;
   }
-  ramp_pipeline_ = passes.CreatePipeline(*shader_, kIntermediateFormat, "fsr1 gamma table");
-  easu_pipeline_ = passes.CreatePipeline(*easu_shader_, kIntermediateFormat, "fsr1 easu");
-  rcas_offscreen_pipeline_ =
-      passes.CreatePipeline(*rcas_shader_, kIntermediateFormat, "fsr1 rcas (intermediate)");
-  if (!ramp_pipeline_ || !easu_pipeline_ || !rcas_offscreen_pipeline_) {
-    return false;
+  // Their pipelines are made now only when FSR1 is on now, so that its first frame is as it was
+  // when they were always made here; otherwise the first frame that would use FSR1 has them made
+  // on a worker thread (FsrPipelinesReady).
+  fsr_wanted_ = REXCVAR_GET(mcla_gpu_fsr);
+  if (fsr_wanted_) {
+    ramp_pipeline_ = passes.CreatePipeline(*shader_, kIntermediateFormat, "fsr1 gamma table");
+    easu_pipeline_ = passes.CreatePipeline(*easu_shader_, kIntermediateFormat, "fsr1 easu");
+    rcas_offscreen_pipeline_ =
+        passes.CreatePipeline(*rcas_shader_, kIntermediateFormat, "fsr1 rcas (intermediate)");
+    if (!ramp_pipeline_ || !easu_pipeline_ || !rcas_offscreen_pipeline_) {
+      return false;
+    }
   }
   // The passes that write the back buffer: the HDR10 variants when it is HDR10.
   if (!BuildOutput(target_format, hdr)) {
@@ -202,12 +209,18 @@ bool PresentPass::BuildOutput(plume::RenderFormat target_format, bool hdr) {
   made.pipeline = passes.CreatePipeline(hdr ? *made.hdr_shader : *shader_, target_format,
                                         "present front buffer");
   // The two that write the back buffer besides the present are the HDR10 variants when it is
-  // HDR10; RCAS into an intermediate stays SDR.
-  made.rcas_pipeline = passes.CreatePipeline(hdr ? *made.rcas_hdr_shader : *rcas_shader_,
-                                             target_format, "fsr1 rcas");
+  // HDR10; RCAS into an intermediate stays SDR. RCAS is FSR1's alone: made here only once FSR1 is
+  // wanted (fsr_wanted_), else by its background build (FsrPipelinesReady). Not after that build
+  // failed (fsr_failed_): FSR1 is dead for the session, and a set that lacks its RCAS must not
+  // make the HDR/SDR switch fail for it.
+  const bool want_rcas = fsr_wanted_ && !fsr_failed_;
+  if (want_rcas) {
+    made.rcas_pipeline = passes.CreatePipeline(hdr ? *made.rcas_hdr_shader : *rcas_shader_,
+                                               target_format, "fsr1 rcas");
+  }
   made.stretch_pipeline = passes.CreatePipeline(
       hdr ? *made.stretch_hdr_shader : *stretch_shader_, target_format, "fsr1 stretch");
-  if (!made.pipeline || !made.rcas_pipeline || !made.stretch_pipeline) {
+  if (!made.pipeline || (want_rcas && !made.rcas_pipeline) || !made.stretch_pipeline) {
     return false;
   }
   made.format = target_format;
@@ -228,6 +241,11 @@ void PresentPass::UseOutput(bool hdr) {
 }
 
 void PresentPass::Shutdown() {
+  // The background build's job names the shaders below: it ends first.
+  fsr_build_.Join();
+  fsr_made_ = FsrMade{};
+  fsr_wanted_ = false;
+  fsr_failed_ = false;
   // The GPU is idle and the heap goes later: the slots are not handed back.
   for (HostImage& image : chain_) {
     image = HostImage{};
@@ -639,6 +657,12 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     }
     return;
   }
+  // The pipelines of FSR1 when it was off at start: until the worker has made them, the bilinear
+  // route (the one a frame takes when FSR1 is off).
+  if (!FsrPipelinesReady()) {
+    ++stats_.fsr_pending;
+    return;
+  }
   // The sizes: the source, then each EASU pass at most 2x per axis.
   const uint32_t max_passes =
       std::clamp<uint32_t>(uint32_t(REXCVAR_GET(mcla_gpu_fsr_max_passes)), 1u, kMaxFsrPasses);
@@ -718,6 +742,73 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
   ++stats_.fsr;
 }
 
+bool PresentPass::FsrPipelinesReady() {
+  fsr_wanted_ = true;  // BuildOutput makes the RCAS of a set built from now on
+  if (fsr_build_.Collect()) {
+    AdoptFsrPipelines();
+  }
+  const bool need_shared = !ramp_pipeline_ || !easu_pipeline_ || !rcas_offscreen_pipeline_;
+  const bool need_rcas = !rcas_pipeline_;
+  if (!need_shared && !need_rcas) {
+    return true;
+  }
+  const Output& out = outputs_[hdr_ ? 1 : 0];
+  // Busy, not Running: a job that ended since Collect looked is collected next time, and what it
+  // made (or that it failed) must not be cleared by the staging below before then.
+  if (fsr_failed_ || fsr_build_.Busy() || !out.built) {
+    return false;
+  }
+  // What the worker reads is taken here, on the render thread: the set in use's RCAS shader and
+  // format (a built set is never made again, BuildOutput) and the shaders Initialize made.
+  const plume::RenderShader* rcas_shader = hdr_ ? out.rcas_hdr_shader.get() : rcas_shader_.get();
+  const plume::RenderFormat format = out.format;
+  fsr_made_ = FsrMade{};
+  fsr_made_.shared = need_shared;
+  fsr_made_.rcas_hdr = hdr_;
+  REXLOG_INFO("[gpu] present: FSR1 was off at start: its {} pipeline(s) are made on a worker "
+              "thread, the bilinear present is used until they are",
+              (need_shared ? 3 : 0) + (need_rcas ? 1 : 0));
+  fsr_build_.Start([this, need_shared, need_rcas, rcas_shader, format] {
+    const auto began = std::chrono::steady_clock::now();
+    FsrMade& made = fsr_made_;
+    bool ok = true;
+    if (need_shared) {
+      made.ramp = passes_->CreatePipeline(*shader_, kIntermediateFormat, "fsr1 gamma table");
+      made.easu = passes_->CreatePipeline(*easu_shader_, kIntermediateFormat, "fsr1 easu");
+      made.rcas_offscreen =
+          passes_->CreatePipeline(*rcas_shader_, kIntermediateFormat, "fsr1 rcas (intermediate)");
+      ok = made.ramp && made.easu && made.rcas_offscreen;
+    }
+    if (need_rcas) {
+      made.rcas = passes_->CreatePipeline(*rcas_shader, format, "fsr1 rcas");
+      ok = ok && made.rcas;
+    }
+    made.failed = !ok;
+    made.ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - began)
+                           .count());
+  });
+  return false;
+}
+
+void PresentPass::AdoptFsrPipelines() {
+  FsrMade& made = fsr_made_;
+  if (made.ramp) ramp_pipeline_ = std::move(made.ramp);
+  if (made.easu) easu_pipeline_ = std::move(made.easu);
+  if (made.rcas_offscreen) rcas_offscreen_pipeline_ = std::move(made.rcas_offscreen);
+  if (made.rcas) outputs_[made.rcas_hdr ? 1 : 0].rcas_pipeline = std::move(made.rcas);
+  UseOutput(hdr_);  // the set in use points at its RCAS
+  if (made.failed) {
+    fsr_failed_ = true;
+    REXLOG_ERROR("[gpu] present: FSR1's pipelines could not be made in the background (Device "
+                 "logged why); the bilinear present stays this session");
+  } else {
+    REXLOG_INFO("[gpu] present: the background build made FSR1's pipelines in {:.1f} ms",
+                double(made.ns) / 1.0e6);
+  }
+  made = FsrMade{};
+}
+
 bool PresentPass::EnsureIntermediate(uint32_t index, uint32_t width, uint32_t height) {
   return passes_->EnsureImage(chain_[index], width, height, kIntermediateFormat,
                               "fsr1 intermediate");
@@ -726,10 +817,11 @@ bool PresentPass::EnsureIntermediate(uint32_t index, uint32_t width, uint32_t he
 std::string PresentPass::TakeSummary() {
   std::string text = std::format(
       "present: {} guest presents, {} drawn, front buffer from memory {} (not a resolve "
-      "product), gamma table written {}, FSR1 {} ({} stretched, {} failed), scaled with the "
-      "table first {} ({} failed)",
+      "product), gamma table written {}, FSR1 {} ({} stretched, {} failed, {} before its "
+      "pipelines were made), scaled with the table first {} ({} failed)",
       stats_.guest_presents, stats_.drawn, stats_.from_memory, stats_.ramp_writes, stats_.fsr,
-      stats_.fsr_stretched, stats_.fsr_failed, stats_.ramped, stats_.ramped_failed);
+      stats_.fsr_stretched, stats_.fsr_failed, stats_.fsr_pending, stats_.ramped,
+      stats_.ramped_failed);
   stats_ = Stats{};
   return text;
 }

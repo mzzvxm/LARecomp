@@ -27,6 +27,11 @@
 // A target that is not single-sampled R8G8B8A8_UNORM is left alone: counted,
 // logged once per identity.
 //
+// Pipelines: only the mode that is on at Initialize has its pipelines made there (the copy for both;
+// FXAA's pass; SMAA's three). With the default (off) none are, and the first frame a mode is asked
+// for starts making what it lacks on a worker thread (background_build.h); the frames until it is
+// done are not smoothed. A mode switched to later finds its missing ones the same way.
+//
 // The passes leave the target in COLOR_WRITE and no framebuffer bound; the
 // caller forgets its bindings (they set their own layout, pipeline, viewport
 // and scissor).
@@ -41,6 +46,7 @@
 
 #include <plume_render_interface.h>
 
+#include "background_build.h"
 #include "edram.h"
 #include "host_passes.h"
 
@@ -66,9 +72,12 @@ class PostAa {
   void Shutdown();
 
   // mcla_gpu_aa, read once a frame at the composite record, off included: a
-  // change is logged and the summary names the mode of the last frame read.
+  // change is logged and the summary names the mode of the last frame read. A change also makes
+  // the pipelines that failed to be made in the background be tried again. A mode whose pipelines
+  // failed is returned as kOff until the setting changes.
   Mode FrameMode();
-  // mcla_gpu_aa as it is now, without FrameMode's note (the HDR scene asks at its tone map).
+  // mcla_gpu_aa as it is now, without FrameMode's note (the HDR scene asks at its tone map), with
+  // the same rule for a mode that cannot run (kOff, so it does not hold the HDR scene off).
   Mode CurrentMode() const;
 
   // The composed scene in `target`, `width` x `height` guest pixels from its
@@ -106,6 +115,29 @@ class PostAa {
   // memory or the textures are missing.
   bool UploadLookups(plume::RenderCommandList* list, uint32_t slot);
 
+  // The pipelines, one bit each (the pieces a mode needs, ModePieces).
+  enum Piece : uint32_t { kLuma = 1, kFxaa = 2, kEdges = 4, kWeights = 8, kBlend = 16 };
+  struct Pipelines {
+    std::unique_ptr<plume::RenderPipeline> luma;
+    std::unique_ptr<plume::RenderPipeline> fxaa;
+    std::unique_ptr<plume::RenderPipeline> edges;
+    std::unique_ptr<plume::RenderPipeline> weights;
+    std::unique_ptr<plume::RenderPipeline> blend;
+  };
+  static uint32_t ModePieces(Mode mode);
+  // The pieces `mode` needs that are not made yet.
+  uint32_t Missing(Mode mode) const;
+  // No piece `mode` lacks failed to be made: the mode can run, now or when the build ends.
+  bool Runnable(Mode mode) const;
+  // Makes `pieces` into `into`; the pieces that failed (Device logged why). Lifecycle thread at
+  // Initialize, or the build's worker thread: reads only the shaders and `passes_`.
+  uint32_t MakePieces(uint32_t pieces, Pipelines* into);
+  // Takes the pieces `made` holds into the members.
+  void Adopt(Pipelines& made);
+  // Render thread, from Apply: `mode`'s pipelines are all made. When some are missing, starts
+  // (or waits for) the background build and says no.
+  bool PipelinesReady(Mode mode);
+
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
   UploadRing* upload_ = nullptr;
@@ -123,6 +155,14 @@ class PostAa {
   std::unique_ptr<plume::RenderPipeline> smaa_edges_pipeline_;
   std::unique_ptr<plume::RenderPipeline> smaa_weights_pipeline_;
   std::unique_ptr<plume::RenderPipeline> smaa_blend_pipeline_;
+  // The background build: what the worker made (written by it, taken by Adopt after Collect), the
+  // pieces it was asked for and the ones that failed, and how long it took.
+  BackgroundBuild build_;
+  Pipelines build_made_;
+  uint32_t build_pieces_ = 0;
+  uint32_t build_failed_pieces_ = 0;
+  uint64_t build_ns_ = 0;
+  uint32_t failed_pieces_ = 0;  // not tried again until mcla_gpu_aa changes (FrameMode)
 
   HostImage copy_;     // the scene, and for FXAA its luma in alpha
   HostImage edges_;    // SMAA
@@ -145,6 +185,7 @@ class PostAa {
     uint64_t smaa = 0;
     uint64_t skipped_target = 0;  // not single-sampled R8G8B8A8_UNORM
     uint64_t failed = 0;          // an image, a slot or the lookups could not be had
+    uint64_t pending = 0;         // asked for before the background build made the pipelines
   };
   Stats stats_;
 };

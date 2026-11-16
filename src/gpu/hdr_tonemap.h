@@ -33,7 +33,8 @@
 //     starting at the origin (the float image is where they overlap);
 //   - no anti-aliasing (mcla_gpu_aa fxaa/smaa runs on the 8-bit target at the marker; its luma
 //     passes were written for 8-bit values, so the HDR scene is off while it is on -- unless a
-//     temporal upscaler is on, which holds those two off, DrawFacts::aa_held_off);
+//     temporal upscaler is on, which holds those two off, DrawFacts::aa_held_off; or the mode's
+//     pipelines could not be made in the background, PostAa::CurrentMode: it never runs then);
 //   - every later draw into the target before the marker reproducible: the same target (one
 //     colour output, one sample), blending as the game has it, no depth or stencil test that could
 //     reject. A
