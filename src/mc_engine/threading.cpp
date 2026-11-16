@@ -18,6 +18,9 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
+#elif defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
 #endif
 
 namespace mc {
@@ -66,6 +69,17 @@ unsigned UsableLogicalProcessors() {
         return allowed < active ? allowed : active;
     }
     return active;
+#elif defined(__linux__)
+    // The calling thread's affinity mask (a game started with taskset, or inside a cgroup with a
+    // cpuset, has only those); every online one when the mask can not be read.
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        const int allowed = CPU_COUNT(&set);
+        if (allowed > 0) return unsigned(allowed);
+    }
+    const long online = sysconf(_SC_NPROCESSORS_ONLN);
+    return online > 0 ? unsigned(online) : 0;
 #else
     return 0;
 #endif
@@ -73,7 +87,7 @@ unsigned UsableLogicalProcessors() {
 
 bool FewLogicalProcessors() {
     static const bool few = [] {
-        const unsigned logical = UsableLogicalProcessors();  // 0 off Windows: the waits stay as they are
+        const unsigned logical = UsableLogicalProcessors();  // 0 where it is not counted: the waits stay as they are
         const bool small = logical != 0 && logical <= 5;
         MC_INFO("[threading] {} logical processors: {}", logical,
                 small ? "the spin waits sleep instead" : "the spin waits are unchanged");
@@ -84,7 +98,7 @@ bool FewLogicalProcessors() {
 
 bool FourOrFewerLogicalProcessors() {
     static const bool few = [] {
-        const unsigned logical = UsableLogicalProcessors();  // 0 off Windows: nothing is lowered
+        const unsigned logical = UsableLogicalProcessors();  // 0 where it is not counted: nothing is lowered
         return logical != 0 && logical <= 4;
     }();
     return few;

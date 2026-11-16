@@ -50,6 +50,8 @@
 #include "thread_load.h"
 #include "vram_budget.h"
 
+#include "os/thread_priority.h"
+
 REXCVAR_DEFINE_STRING(
     mcla_gpu_frame_generation, "off", "MCLA/GPU",
     "Frame generation: off, fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or "
@@ -1141,8 +1143,11 @@ void FrameGeneration::WaitUntil(int64_t target_us) {
 }
 
 void FrameGeneration::PacerMain() {
+  // Well ahead of the game's threads: the pacer's wake-ups set the spacing of the frames. On
+  // Linux this is a raise, which needs RLIMIT_NICE or CAP_SYS_NICE and is skipped without
+  // (os/thread_priority.h); frame generation is not offered there yet.
+  larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kHigh);
 #if defined(_WIN32)
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                   TIMER_ALL_ACCESS);
 #endif

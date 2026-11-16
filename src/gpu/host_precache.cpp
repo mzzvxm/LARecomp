@@ -7,6 +7,8 @@
 
 #include <rex/logging.h>
 
+#include "os/thread_priority.h"
+
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -139,10 +141,11 @@ void HostPrecache::Stop() {
 }
 
 void HostPrecache::Run() {
-#if defined(_WIN32)
-  // The guest boots meanwhile, and so do the guest pipelines' workers.
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#endif
+  // The guest boots meanwhile, and so do the guest pipelines' workers. Raisable: Acquire brings
+  // this thread back to normal when a draw waits for the pipeline it is making, which on Linux
+  // needs a lowering that can be undone without privileges (os/thread_priority.h).
+  larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBackground,
+                                       larecomp::os::Lowering::kRaisable);
   for (const auto& entry : entries_) {
     if (stop_.load(std::memory_order_acquire)) {
       return;
@@ -266,12 +269,10 @@ std::unique_ptr<plume::RenderPipeline> HostPrecache::Acquire(uint64_t key,
     {
       std::unique_lock<std::mutex> lock(mutex_);
       if (entry->state.load() == kBuilding) {
-#if defined(_WIN32)
         if (!raised_ && builder_.joinable()) {
           raised_ = true;
-          SetThreadPriority(builder_.native_handle(), THREAD_PRIORITY_NORMAL);
+          larecomp::os::SetThreadIntent(builder_, larecomp::os::ThreadIntent::kNormal);
         }
-#endif
         const Clock::time_point began = Clock::now();
         done_.wait(lock, [&] { return entry->state.load() != kBuilding; });
         ++stats_.waited;

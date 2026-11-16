@@ -6,6 +6,7 @@
 #include <rex/ppc/func.h>
 
 #include "logging.h"
+#include "os/thread_priority.h"
 
 #if defined(_WIN32)
 
@@ -646,7 +647,7 @@ void WriteReport(const char* reason, double window_sec, const std::vector<CpuRow
 
 void SamplerLoop() {
     // Below normal so the sampler never competes with the threads it measures.
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBelowNormal);
 
     // sleep_for is "at least": with the default timer resolution a 1 ms sleep
     // can be 15 ms, and under load it stretches exactly when the interesting

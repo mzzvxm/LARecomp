@@ -8,8 +8,8 @@
 # This directory defines one target, the static library larecomp_shaderpack. It has no dependency
 # on the ReXGlue runtime or on Plume, so larecomp links it and tools/shaderpack_tool builds it on
 # its own. It expects, from whoever links it (larecomp already has them in LARECOMP_SOURCES; the
-# tool compiles them itself): src/mc_engine/modloader/{rpf3,aes256,texture,objmesh}.cpp and
-# src/native_gfx/shader_identity.cpp.
+# tool compiles them itself): src/mc_engine/modloader/{rpf3,aes256,texture,objmesh}.cpp,
+# src/native_gfx/shader_identity.cpp and src/os/thread_priority.cpp.
 #
 # Cache variables:
 #   LARECOMP_XENOSRECOMP_DIR     the LAR-XenosRecomp checkout (default thirdparty/LAR-XenosRecomp;
