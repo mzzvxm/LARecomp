@@ -4,8 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
-#include <map>
-#include <mutex>
+#include <cstring>
 
 #include <rex/cvar.h>
 #include <rex/runtime.h>
@@ -48,6 +47,23 @@
 //   * turns the shop's carbon button (garage action 147) from an on/off
 //     toggle into a cycle through presets, so the extra groups are
 //     reachable in-game without editing anything.
+//   * writes every mask change into the owned car's record in the save as
+//     well as into the live config, so the mask stays with that car.
+//
+// Where the byte lives per car:
+//   The 0x898 byte belongs to a CarConfig (8176 bytes). Every owned car has
+//   its own CarConfig in the LocalOptions save block (0x8288E920 + 1360 +
+//   8176 * index; +1340 owned count, +1344 current index, +254032 dirty), and
+//   the game moves the WHOLE config, carbon included, both ways:
+//     slot -> live   LoadOwnedVehicle sub_826A4718 -> sub_822AAE48 stages a
+//                    copy, sub_822AAA18 copies it into the live config once
+//                    the car has streamed in.
+//     live -> slot   mcGarage::LeaveGarage sub_826AA930, FinishCheckout
+//                    sub_826AA3C0, sub_826A7170, sub_8226D8F8.
+//   The copy is sub_8238EE58 -> sub_823934E8, whose 64-byte block at
+//   reflection +2080..+2143 covers the 55 part variants and CarbonFiberHood
+//   (+2136). A mask set outside the garage would only reach the slot on the
+//   next commit, so the setter writes the slot itself too.
 // ─────────────────────────────────────────────────────────────────────────
 
 REXCVAR_DEFINE_BOOL(carbon_all_parts, true, "MCLA/Patches",
@@ -88,6 +104,18 @@ constexpr uint32_t kReflCarbonMask = 0x858;     // from CustomData + 0x40
 // dword_8288DCF8 — the vehicle the local player is driving. sub_8235D500
 // itself compares a1 against it to tell the hero car from traffic.
 constexpr uint32_t kPlayerVehicle = 0x8288DCF8;
+
+// LocalOptions save block (sub_82387B90 returns this static object).
+constexpr uint32_t kLocalOptions = 0x8288E920;
+constexpr uint32_t kLoOwnedCount = 1340;
+constexpr uint32_t kLoCurrentIndex = 1344;
+constexpr uint32_t kLoCarConfigs = 1360;
+constexpr uint32_t kLoDirty = 254032;
+constexpr uint32_t kCarConfigSize = 8176;
+constexpr int kMaxOwnedCars = 30;
+// CarConfig vehicle name, char[32]. sub_8238AB50 matches owned cars by it.
+constexpr uint32_t kCarConfigName = 8109;
+constexpr uint32_t kCarConfigNameLen = 32;
 
 // Part group bits. Slot indices come from off_827E9608 (55 entries).
 constexpr uint8_t kGrpHood = 0x01;    // hood, hood_wide
@@ -190,41 +218,11 @@ constexpr const char* kPresetNames[kNumPresets] = {
     "+doors", "+bumpers+body", "full carbon",
 };
 
-// CustomData is NOT per car. Measured: it hangs off the player, not off the
-// vehicle — sub_826A5528 reaches the same block through
-// sub_822A3998(player, 0) + 48 + 132 — and swapping cars in the garage leaves
-// the pointer unchanged AND does not reload the carbon byte, so a mask set on
-// one car showed up on the next one.
-//
-// So identity comes from our side: the vehicle's model data (veh->[+20]->[+80],
-// the object the draw loop resolves parts from) is one instance per car model
-// and stable while loaded, which makes a usable key. The table below is the
-// real per-car store; the game's byte is kept in sync underneath it so the
-// save still carries something sane.
+// The live config (CustomData) is one block the player keeps across cars: the
+// pointer does not change on a car swap, the game copies the next car's
+// config into it. The draw loop caches its address for the menus.
 std::atomic<uint32_t> g_player_custom{0};
-std::atomic<uint32_t> g_player_car{0};   // model-data key of the player's car
-
-std::mutex g_car_mask_mutex;
-std::map<uint32_t, uint8_t> g_car_masks;
-
-uint8_t LookupCarMask(uint32_t car, uint8_t fallback, bool* known) {
-    std::lock_guard<std::mutex> lock(g_car_mask_mutex);
-    auto it = g_car_masks.find(car);
-    if (it != g_car_masks.end()) {
-        if (known) *known = true;
-        return it->second;
-    }
-    // First time this car is seen: adopt whatever it already carries, which is
-    // what the save loaded for it.
-    g_car_masks.emplace(car, fallback);
-    if (known) *known = false;
-    return fallback;
-}
-
-void StoreCarMask(uint32_t car, uint8_t mask) {
-    std::lock_guard<std::mutex> lock(g_car_mask_mutex);
-    g_car_masks[car] = mask;
-}
+std::atomic<uint32_t> g_player_car{0};   // model data of the player's car, for the log
 
 uint8_t* GetMembase() {
     auto* rt = rex::Runtime::instance();
@@ -249,6 +247,46 @@ void WriteGuestBE32(uint8_t* base, uint32_t ea, uint32_t v) {
     p[3] = uint8_t(v & 0xFF);
 }
 
+// CarConfig +8100: non-zero when the config belongs to an owned car.
+// LeaveGarage (sub_826AA930) only commits the live config to the slot when it
+// is set; a showroom or test car falls through to "not owned".
+constexpr uint32_t kCarConfigOwned = 8100;
+
+// Copy the mask into the save record of the car the live config belongs to:
+// the current owned slot, and only when that slot really holds the same car.
+// Same condition LeaveGarage uses, plus the name check, because right after a
+// swap the current index already points at the next car while the live config
+// still holds the previous one until it streams in (sub_822AAA18).
+void StoreInOwnedRecord(uint8_t* base, uint32_t custom, uint8_t mask) {
+    if (ReadGuestBE32(base, custom + kCarConfigOwned) == 0) return;
+
+    const int32_t count =
+        static_cast<int32_t>(ReadGuestBE32(base, kLocalOptions + kLoOwnedCount));
+    const int32_t index =
+        static_cast<int32_t>(ReadGuestBE32(base, kLocalOptions + kLoCurrentIndex));
+    if (count <= 0 || count > kMaxOwnedCars || index < 0 || index >= count)
+        return;
+
+    const uint32_t record =
+        kLocalOptions + kLoCarConfigs + kCarConfigSize * uint32_t(index);
+    if (record == custom) return;  // the live config is the record itself
+
+    const char* live_name =
+        reinterpret_cast<const char*>(base + custom + kCarConfigName);
+    const char* slot_name =
+        reinterpret_cast<const char*>(base + record + kCarConfigName);
+    if (std::strncmp(live_name, slot_name, kCarConfigNameLen) != 0) {
+        LARECOMP_APP_INFO("[Carbon] slot {} holds another car, mask left in the live config",
+                          index);
+        return;
+    }
+
+    if (base[record + kCustomCarbonMask] != mask) {
+        base[record + kCustomCarbonMask] = mask;
+        base[kLocalOptions + kLoDirty] = 1;
+    }
+}
+
 // Shared predicate for both draw-loop sites. veh = the vehicle being drawn
 // (r31 in sub_8235D500).
 bool SlotWantsCarbon(uint8_t* base, uint32_t sp, int slot, uint32_t veh) {
@@ -258,33 +296,16 @@ bool SlotWantsCarbon(uint8_t* base, uint32_t sp, int slot, uint32_t veh) {
     const uint32_t custom = ReadGuestBE32(base, sp + kSpCustomData);
     if (!IsPlausibleGuestPtr(custom)) return false;
 
-    // The player's car drives the shared block back to whatever this specific
-    // car is supposed to look like.
+    // Remember the player's live config for the menus. The byte itself is
+    // left alone: the game loads it from the car's own save record.
     if (veh && veh == ReadGuestBE32(base, kPlayerVehicle)) {
         g_player_custom.store(custom, std::memory_order_relaxed);
 
         const uint32_t holder = ReadGuestBE32(base, veh + 20);
         const uint32_t car = holder ? ReadGuestBE32(base, holder + 80) : 0;
-        if (car) {
-            const uint32_t prev =
-                g_player_car.exchange(car, std::memory_order_relaxed);
-            // Only the first car of the session inherits the byte: that one
-            // really was filled from the save. Every car after it would just
-            // be inheriting the previous car's mask out of the shared block,
-            // which is the bug this table exists to kill — those start clean.
-            static bool first_car = true;
-            const uint8_t seed =
-                first_car ? base[custom + kCustomCarbonMask] : 0;
-            first_car = false;
-
-            bool known = false;
-            const uint8_t want = LookupCarMask(car, seed, &known);
-            if (base[custom + kCustomCarbonMask] != want)
-                base[custom + kCustomCarbonMask] = want;
-            if (prev != car) {
-                LARECOMP_APP_INFO("[Carbon] car 0x{:08X} ({}), mask 0x{:02X}",
-                                  car, known ? "known" : "new", want);
-            }
+        if (car && g_player_car.exchange(car, std::memory_order_relaxed) != car) {
+            LARECOMP_APP_INFO("[Carbon] car 0x{:08X}, mask 0x{:02X}", car,
+                              base[custom + kCustomCarbonMask]);
         }
     }
 
@@ -324,10 +345,9 @@ void CarbonSetMask(uint8_t mask) {
     const uint32_t car = g_player_car.load(std::memory_order_relaxed);
     if (!base || !IsPlausibleGuestPtr(custom)) return;
 
-    // The table is what makes this per car; the guest byte is the live value
-    // the renderer and the save both read.
-    if (car) StoreCarMask(car, mask);
+    // Live config for the renderer, owned record for the save.
     base[custom + kCustomCarbonMask] = mask;
+    StoreInOwnedRecord(base, custom, mask);
     LARECOMP_APP_INFO("[Carbon] mask 0x{:02X} on car 0x{:08X}", mask, car);
 }
 
@@ -428,6 +448,7 @@ bool Hook_CarbonToggle(PPCRegister& r11) {
     }
     const int next = (idx + 1) % kNumPresets;
     *field = kPresets[next];
+    StoreInOwnedRecord(base, refl - 0x40, kPresets[next]);
 
     LARECOMP_APP_INFO("[Carbon] preset {} -> 0x{:02X} ({})", next,
                       kPresets[next], kPresetNames[next]);
