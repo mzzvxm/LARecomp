@@ -75,8 +75,9 @@ const Row kTable[] = {
      "AUTO (HIGH)", "AUTO (ULTRA)"},
     {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "default", "default", "AUTO (OFF)",
      "AUTO (DEFAULT)", "AUTO (DEFAULT)"},
-    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)",
-     "AUTO (OFF)"},
+    // Bounce light: high on the High class only (about 0.75 ms at 4K on an RTX 5080), off on Mid and Low.
+    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "high", "AUTO (OFF)", "AUTO (OFF)",
+     "AUTO (HIGH)"},
     {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near", "AUTO (OFF)",
      "AUTO (NEAR)", "AUTO (NEAR)"},
     // The car self-reflections have one level, `on` (the older low and high cost the same: perf/out/FXCOST-B6.txt, owner 2026-11-14).
