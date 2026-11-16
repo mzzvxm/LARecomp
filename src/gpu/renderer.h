@@ -53,6 +53,7 @@
 
 #include "ao.h"
 #include "capture.h"
+#include "capture_readback.h"
 #include "car_selfrefl.h"
 #include "descriptors.h"
 #include "device.h"
@@ -90,6 +91,7 @@
 #include "temporal.h"
 #include "textures.h"
 #include "timing.h"
+#include "ui_fade.h"
 #include "upload.h"
 #include "validation.h"
 #include "vram_budget.h"
@@ -247,6 +249,13 @@ class Renderer final : public RenderThread::Executor {
   // first time and wires them in. `layers_ok`: the frame layers run. False (logged) when they
   // cannot, with the layers off: the HDR output then shows the front buffer (stage 1).
   bool SetUpHdrScene(bool layers_ok);
+  // The HUD fade (ui_fade.h, ui_fade.cpp), at a frame boundary on the render thread, next to
+  // ApplyHdrSetting: follows mcla_cin_hud_alpha (a change moves over the seconds SetUiAlphaFade
+  // left, or at once), asks for the frame layers and has the present compose them while the alpha
+  // is below 1 or the layer is armed (ArmUiLayer), and gives the alpha to the layers' consumers.
+  // At alpha 1 with nothing armed it is a cvar read and a compare. True when what the present shows
+  // changed (the layers went on or off, or the alpha moved), so that an idle present shows it.
+  bool ApplyUiFade();
   // Loads the shader variant pack (the HDR scene's tone map, the bloom's Gaussians at a render scale)
   // beside the main pack when it is not loaded yet (a no-op without a main pack or once loaded; logs
   // when there is none).
@@ -314,6 +323,12 @@ class Renderer final : public RenderThread::Executor {
   // The last HDR10 metadata given to the swap chain (UpdateHdr).
   bool hdr_metadata_sent_ = false;
   plume::RenderHdrMetadata hdr_metadata_;
+  // The HUD fade (ApplyUiFade): the move in progress, the cvar's value last seen, whether this asked
+  // for the frame layers, and whether the present composes them for it (false while they cannot be
+  // made: the picture then stays as the game draws it).
+  UiFadeFollower ui_fade_;
+  bool ui_fade_layers_ = false;
+  bool ui_fade_composing_ = false;
   // Inside ExecutePresent: OpenFrameList then must not switch the output (the back buffer is
   // acquired).
   bool presenting_ = false;
@@ -341,6 +356,10 @@ class Renderer final : public RenderThread::Executor {
   // executing the next frame's records meanwhile; the next present, a rebuild or
   // the shutdown present it first.
   int64_t present_target_ = 0;
+  // Capture mode: the tag of the guest present being executed (gpu.h SetNextPresentTag), 0 = none, and the take's readback
+  // (capture_readback.h).
+  uint64_t present_tag_ = 0;
+  CaptureReadback capture_readback_;
   struct DeferredPresent {
     bool pending = false;
     uint32_t image = 0;

@@ -86,6 +86,11 @@
 // buffer's size and shows that where it shows the front buffer, with the gamma table extended
 // above 1. An idle present repeats the last guest frame's layers.
 //
+// The HUD fade (ui_fade.h) is the third requester: it scales the UI layer's colour and coverage by an
+// alpha in each consumer (the compose, frame generation's composed frame, DLSS frame generation's UI
+// hint), so the picture is the scene plus the UI times the alpha. A pause view's frame is the
+// exception (Frame::pause_view, UiAlphaFor): the player's own menus are never faded.
+//
 // The first host column and row at a render scale (Frame::gap). The layers are images of the
 // guest's target, whose first column and row at a scale no full-screen draw writes (the D3D pixel
 // centre puts the geometry half a guest pixel in); the guest never sees them, its resolves read
@@ -132,6 +137,7 @@
 #include "pipelines.h"
 #include "records.h"
 #include "textures.h"
+#include "ui_fade.h"
 
 namespace mcla::gpu {
 
@@ -158,6 +164,8 @@ class FrameLayers {
     // DLSS frame generation (dlss_frame_generation.h): its own bit, since FSR's one is set and
     // cleared by FSR's every frame.
     kRequesterDlssFrameGeneration = 1u << 2,
+    // The HUD fade (ui_fade.h): the UI layer shown at an alpha below 1, or armed for a fade to come.
+    kRequesterUiFade = 1u << 3,
   };
 
   // What the Scene does for a draw it asked about.
@@ -212,6 +220,10 @@ class FrameLayers {
     uint32_t gap = 0;
     // The texture the UI target was resolved into. IsPictureOf tells whether a front buffer is it.
     TextureKey destination;
+    // The frame is a pause view's: the pause menu (the DEBUG menu is one of its pages), the race
+    // pause or the full map, whose UI target was found after the marker's own (the header's section
+    // on them). UiAlphaFor shows such a frame's UI whole.
+    bool pause_view = false;
 
     bool IsPictureOf(const TextureKey& front) const {
       return valid && front.base_page == destination.base_page &&
@@ -299,6 +311,15 @@ class FrameLayers {
   // Counts a present that could not use the layers it had (the front buffer was not their
   // picture, or reached past them): for the summary.
   void NoteUnusable(bool wrong_picture);
+
+  // The HUD fade (ui_fade.h): how much of the UI layer the consumers show, 0..1; 1 (the default) is
+  // the game's frame. Set on the render thread at a frame boundary (Renderer::ApplyUiFade).
+  void SetUiAlpha(float alpha) { ui_alpha_ = alpha < 0.0f ? 0.0f : (alpha > 1.0f ? 1.0f : alpha); }
+  float ui_alpha() const { return ui_alpha_; }
+  // The alpha a consumer shows `frame`'s UI at: ui_alpha(), except that a pause view's frame (the
+  // pause menu, the DEBUG menu, the race pause, the full map: the player's own menus) shows its UI
+  // whole. What HdrScene::Compose and both frame generations read.
+  float UiAlphaFor(const Frame& frame) const { return ShownUiAlpha(frame.pause_view, ui_alpha_); }
 
   std::string TakeSummary();
 
@@ -436,6 +457,7 @@ class FrameLayers {
   Frame presented_;                      // the last guest present's
   uint64_t generation_ = 0;
   uint32_t idle_frames_ = 0;             // guest presents in a row without layers
+  float ui_alpha_ = 1.0f;                // SetUiAlpha
 
   std::array<bool, size_t(Cause::kCount)> cause_logged_{};
   std::unordered_set<uint64_t> blends_logged_;

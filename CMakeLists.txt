@@ -149,6 +149,37 @@ set(LARECOMP_SOURCES
     src/mc_engine/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
     src/mc_engine/time_of_day.cpp
+
+    # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core), and the take folder (names, memory plan,
+    # host ring, take.json in take_folder). Inert unless a scene's capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
+    src/mc_engine/cinematic/capture_core.cpp
+    src/mc_engine/cinematic/take_folder.cpp
+    src/mc_engine/cinematic/capture_mode.cpp
+
+    # Trailer toolkit M2c: the take's sound. The capture driver is put in front of the game's audio output (audio_output.h) only when a take that
+    # records sound starts (nothing is installed before, so the game's audio is the stock one); the sample books and the WAV file are in capture_audio_core.
+    src/mc_engine/cinematic/capture_audio_core.cpp
+    src/mc_engine/cinematic/capture_audio.cpp
+
+    # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
+    # Inert unless the debug cvar mcla_scene names a scene file.
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/state_log_core.cpp
+    src/mc_engine/cinematic/state_log.cpp
+    src/mc_engine/cinematic/scene_runtime.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/camera_runtime.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/freecam_runtime.cpp
+    src/mc_engine/cinematic/native_call.cpp
+    # ... and the scene's cars: spawn / delete / the player's garage car through the natives, the registry of poses for the camera.
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/path_follow.cpp
+    src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/cars.cpp
+    # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
+    src/mc_engine/cinematic/split_runtime.cpp
+
     src/mc_engine/map_warp.cpp
     src/mc_engine/effect_compare.cpp
     src/mc_engine/real_weather.cpp
@@ -156,12 +187,18 @@ set(LARECOMP_SOURCES
     src/mc_engine/tire_offset.cpp
     src/mc_engine/hud_units.cpp
     src/mc_engine/adaptive_triggers.cpp
+    src/mc_engine/device_watch.cpp
     src/mc_engine/impulse_triggers.cpp
     src/mc_engine/impulse_wgi.cpp
     src/mc_engine/wheel_slip.cpp
     src/mc_engine/cutscene_gallery.cpp
     src/mc_engine/texture_dump.cpp
     src/mc_engine/boot_progress.cpp
+
+    # Trailer toolkit: the game's own UI on and off (the HUD alpha, its scene track). Inert at alpha 1.
+    src/mc_engine/cinematic/hud.cpp
+    src/mc_engine/cinematic/hud_track.cpp
+    src/mc_engine/cinematic/hud_runtime.cpp
 
     # Custom MP3 radio: <exe>/music/*.mp3 injected into mcMusicManager, decoded
     # and played on the host (Media Foundation + XAudio2).
@@ -314,6 +351,12 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/achievements.cpp
     src/mc_engine/ui/kerning.cpp
 )
+# The HUD track's parser and evaluation (src/mc_engine/cinematic/hud_track.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_hud_track_test, then run <build dir>/larecomp_hud_track_test (exit 0 = passed).
+add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/hud_track_test.cpp
+    src/mc_engine/cinematic/hud_track.cpp)
+target_include_directories(larecomp_hud_track_test PRIVATE src/mc_engine/cinematic)
 if(NOT WIN32)
     # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
     # drive it) is Windows-only; Linux renders through Plume. The guest-side
@@ -337,6 +380,95 @@ if(NOT WIN32)
     string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
     include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
 endif()
+# Capture mode's fixed step, tags, frame gate books, take books and scene clock (src/mc_engine/cinematic/capture_core.h) have a check that
+# needs no game:
+#   cmake --build <build dir> --target larecomp_capture_test, then run <build dir>/larecomp_capture_test (exit 0 = passed).
+add_executable(larecomp_capture_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_core_test.cpp
+    src/mc_engine/cinematic/capture_core.cpp)
+target_include_directories(larecomp_capture_test PRIVATE src/mc_engine/cinematic)
+# The take folder's names, memory plan, host ring (real threads), take.json and state log rows (src/mc_engine/cinematic/take_folder.h) have a check that
+# needs no game (give it a file name and it also writes a sample take.json for scene_run.py's reader):
+#   cmake --build <build dir> --target larecomp_take_test, then run <build dir>/larecomp_take_test [sample.json] (exit 0 = passed).
+add_executable(larecomp_take_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/take_folder_test.cpp
+    src/mc_engine/cinematic/take_folder.cpp
+    src/mc_engine/cinematic/capture_core.cpp)
+target_include_directories(larecomp_take_test PRIVATE src/mc_engine/cinematic)
+# A take's sound (src/mc_engine/cinematic/capture_audio_core.h): the samples a number of video frames owns, the mixer frames that cover them, the books of what
+# was released, arrived, given up and written, and the WAV file. A check that needs no game:
+#   cmake --build <build dir> --target larecomp_capture_audio_test, then run <build dir>/larecomp_capture_audio_test (exit 0 = passed).
+add_executable(larecomp_capture_audio_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_audio_test.cpp
+    src/mc_engine/cinematic/capture_audio_core.cpp)
+target_include_directories(larecomp_capture_audio_test PRIVATE src/mc_engine/cinematic)
+# The state log's pure half (src/mc_engine/cinematic/state_log_core.h: the row, the hashes, the file's place, the bounded queue, the writer)
+# has a check that needs no game: cmake --build <build dir> --target larecomp_state_log_test, then run <build dir>/larecomp_state_log_test.
+add_executable(larecomp_state_log_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/state_log_test.cpp
+    src/mc_engine/cinematic/state_log_core.cpp)
+target_include_directories(larecomp_state_log_test PRIVATE src/mc_engine/cinematic)
+find_package(Threads)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_state_log_test PRIVATE Threads::Threads)
+endif()
+# The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
+# (src/mc_engine/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
+#   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).
+add_executable(larecomp_device_watch_test EXCLUDE_FROM_ALL
+    src/mc_engine/device_watch_test.cpp)
+target_include_directories(larecomp_device_watch_test PRIVATE src/mc_engine)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_device_watch_test PRIVATE Threads::Threads)
+endif()
+
+# The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
+add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/scene_test.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+# The camera rig's maths, track parser and evaluator (src/mc_engine/cinematic/camera.h) have one too:
+#   cmake --build <build dir> --target larecomp_camera_test, then run <build dir>/larecomp_camera_test (exit 0 = passed).
+add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/camera_test.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_camera_test PRIVATE src/mc_engine/cinematic)
+# The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements (header only), the registry of poses and the script of native calls, pure) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
+add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/cars_test.cpp
+    src/mc_engine/cinematic/car_registry.cpp
+    src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
+target_include_directories(larecomp_cars_test PRIVATE src/mc_engine/cinematic)
+# A scene car's route (path_follow.h: the file, the speed along it, the heading, the cut into the AI's destinations: pure) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_path_test, then run <build dir>/larecomp_path_test (exit 0 = passed; with route files as arguments it summarises each).
+add_executable(larecomp_path_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/path_follow_test.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
+target_include_directories(larecomp_path_test PRIVATE src/mc_engine/cinematic)
+# What a settings save does with a cvar a scene holds (src/mc_engine/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).
+add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
+    src/mc_engine/config_save_test.cpp)
+target_include_directories(larecomp_config_save_test PRIVATE src/mc_engine)
+# The free camera's flight, the pad, the recorder's chords and the raw track file (src/mc_engine/cinematic/freecam.h):
+#   cmake --build <build dir> --target larecomp_freecam_test, then run <build dir>/larecomp_freecam_test (exit 0 = passed).
+add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/freecam_test.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_freecam_test PRIVATE src/mc_engine/cinematic)
+# The scene's `split` track (the parser's keys and EvaluateSplit) has a check of its own, also without the game:
+#   cmake --build <build dir> --target larecomp_split_track_test, then run <build dir>/larecomp_split_track_test (exit 0 = passed).
+add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/split_track_test.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_split_track_test PRIVATE src/mc_engine/cinematic)
+
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
     # XEO3 Clang fork (this project's compiler cannot produce the calling
@@ -596,7 +728,7 @@ else()
         )
         if(MINGW)
             # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
-            # guest_profiler.cpp, adaptive_triggers.cpp, identity_store.cpp, identity_ui.cpp),
+            # guest_profiler.cpp, adaptive_triggers.cpp, device_watch.cpp, identity_store.cpp, identity_ui.cpp),
             # which Clang for MinGW does not turn into a link request, and what MSVC's
             # default libraries cover (the ones llvm-mingw's driver does not: winmm for
             # timeBeginPeriod, dxguid for the DirectInput GUID_* of the wheel code, ntdll).
@@ -605,6 +737,7 @@ else()
                 PRIVATE
                 dbghelp
                 setupapi
+                cfgmgr32
                 hid
                 shlwapi
                 crypt32

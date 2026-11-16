@@ -338,11 +338,6 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // PackBlend and UnpackBlend (the blend words of a key) are in pipelines.h: the UI layer split reads
 // and changes them (frame_layers.h).
 
-// Whether the draw that missed may be left out for now (Pipelines::Get).
-bool MaySkip(const Deferral* deferral) {
-  return deferral && deferral->may_skip && deferral->may_skip(deferral->context);
-}
-
 // Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
 // how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
 constexpr uint32_t kBootBoostBelow = 8;
@@ -999,6 +994,17 @@ void Pipelines::PushUrgent(Urgent urgent) {
   work_cv_.notify_one();
 }
 
+bool Pipelines::MaySkip(Miss& miss) {
+  const Deferral* deferral = miss.deferral;
+  const bool rule = deferral && deferral->may_skip && deferral->may_skip(deferral->context);
+  // While a capture runs nothing is left out for a build under way (sync_builds.h): the caller
+  // takes the way of a draw that may not be skipped, and the wait is counted.
+  const bool capture = rule && sync_builds::CaptureActive();
+  const sync_builds::Verdict verdict = sync_builds::Decide(capture, rule);
+  miss.held |= verdict.held;
+  return verdict.may_skip;
+}
+
 plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& miss,
                                                 const PipelineInputs& inputs) {
   if (precached_by_key_.empty() || !inputs.input_layout) {
@@ -1026,7 +1032,7 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
     return first->second.get();
   }
   uint8_t state = p.state.load();
-  if ((state == kQueued || state == kBuilding) && MaySkip(miss.deferral)) {
+  if ((state == kQueued || state == kBuilding) && MaySkip(miss)) {
     // The draw may wait for it: a worker makes it, and this one before the
     // rest of the list.
     if (!p.asked) {
@@ -1123,7 +1129,7 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
   Request& r = *found->second;
   uint8_t state = r.state.load();
   if (state == kQueued || state == kBuilding) {
-    if (MaySkip(miss.deferral)) {
+    if (MaySkip(miss)) {
       if (r.low && !r.promoted) {
         // A copy for the coming MSAA level that a draw already needs: a thread takes it next.
         r.promoted = true;
@@ -1219,6 +1225,7 @@ void Pipelines::NotePendingTaken(uint64_t asked_frame) {
 
 void Pipelines::EndFrame() {
   ++frame_;
+  sync_builds::EndFrame();
   if (boot_mode_.load(std::memory_order_relaxed) &&
       std::chrono::steady_clock::now() >= boot_deadline_) {
     EndBootMode("time limit");
@@ -1881,6 +1888,30 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
                                           const Deferral* deferral, bool* pending) {
   Miss miss;
   miss.deferral = deferral;
+  const auto began = std::chrono::steady_clock::now();
+  plume::RenderPipeline* got = ResolveMiss(key, inputs, miss, pending);
+  if (miss.held) {
+    // A capture is running (sync_builds.h): the draw was not left out; what it waited for is counted.
+    NoteSyncWait(key, deferral->kind, began);
+  }
+  return got;
+}
+
+void Pipelines::NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
+                             std::chrono::steady_clock::time_point began) {
+  const uint64_t ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now() - began)
+                                   .count());
+  if (sync_builds::NoteWait(kind, ns)) {
+    REXLOG_INFO("[gpu] capture sync: guest frame {}: {} waited {:.1f} ms for a pipeline (vs "
+                "{:016X}/{} ps {:016X}/{})",
+                frame_, sync_builds::KindName(kind), double(ns) / 1.0e6, key.vs, key.vs_variant,
+                key.ps, key.ps_variant);
+  }
+}
+
+plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs,
+                                              Miss& miss, bool* pending) {
   // A background build asked for earlier, then the precache list's entry.
   if (!requests_.empty()) {
     if (plume::RenderPipeline* requested = TakeRequested(key, miss)) {
@@ -1900,7 +1931,7 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
       return nullptr;
     case Take::kNone:
       // Nobody has it: a worker makes it when the draw may wait for it.
-      if (MaySkip(deferral) && StartRequest(key, inputs)) {
+      if (MaySkip(miss) && StartRequest(key, inputs)) {
         *pending = true;
         return nullptr;
       }

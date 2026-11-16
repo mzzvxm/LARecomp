@@ -97,6 +97,7 @@ struct UiPush {  // hlsl/dlssg_ui_ps.hlsl
   float hdr_knee;
   uint32_t hdr_flags;
   uint32_t gap;  // FrameLayers::Frame::gap: the layer's first columns and rows are read from the next
+  float ui_alpha;  // the HUD fade (FrameLayers::UiAlphaFor, ui_fade.h)
 };
 static_assert(sizeof(UiPush) <= HostPasses::kPushConstantBytes);
 
@@ -816,6 +817,7 @@ bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs
     push.src_width = src_w;
     push.src_height = src_h;
     push.gap = layer.gap;  // the UI layer's, as the scene's above
+    push.ui_alpha = layers_->UiAlphaFor(layer);
     push.origin_x = float(fit_x);
     push.origin_y = float(fit_y);
     push.scale_x = fit_w ? float(src_w) / float(fit_w) : 1.0f;

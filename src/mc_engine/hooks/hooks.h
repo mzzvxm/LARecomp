@@ -193,6 +193,10 @@ void MCLATimeAccumGame(PPCRegister& r3, PPCRegister& f0);
 void MCLAAudioClockAccum(PPCRegister& r9, PPCRegister& r29, PPCRegister& f0);
 void MCLAGameClockCarry(PPCRegister& f0);
 
+// A running scene's time scale (cinematic/scene_runtime.cpp): after the instruction at 0x821BDAB4 in sub_821BDA90, f13 is the scale
+// `lfs f13,84(r3)` loaded; the hook replaces it while a scene's time scale is on and leaves it alone otherwise.
+void MCLATimeScaleOverride(PPCRegister& f13);
+
 // Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
 // thread; logs nothing if the game closed before the counter started.
 void LogAudioDropoutSummary();

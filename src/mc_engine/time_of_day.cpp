@@ -171,6 +171,11 @@ std::atomic<uint32_t> g_mgr{0};
 std::atomic<int> g_shot_hour_milli{-1};
 // Same, for the sky.
 std::atomic<int> g_shot_weather{-1};
+// A running scene's hour and sky (TimeOfDay_SceneHour / Weather_SceneIndex): channels of their own that outrank the menu
+// shot's and every cvar, and that only the scene runner touches. menu_camera.cpp releases the shot's pair on every
+// gameplay frame; a scene sharing that pair never got an hour or a sky into the game.
+std::atomic<int> g_scene_hour_milli{-1};
+std::atomic<int> g_scene_weather{-1};
 
 }  // namespace
 
@@ -184,6 +189,11 @@ int Weather_GetIndex() {
 void Weather_RequestIndex(int index) {
     g_shot_weather.store(index >= 0 && index < 4 ? index : -1,
                          std::memory_order_relaxed);
+}
+
+void Weather_SceneIndex(int index) {
+    g_scene_weather.store(index >= 0 && index < 4 ? index : -1,
+                          std::memory_order_relaxed);
 }
 
 const char* Weather_IndexToName(int index) {
@@ -211,6 +221,11 @@ void TimeOfDay_RequestHour(float hour) {
                             std::memory_order_relaxed);
 }
 
+void TimeOfDay_SceneHour(float hour) {
+    g_scene_hour_milli.store(hour < 0.0f ? -1 : static_cast<int>(hour * 1000.0f),
+                             std::memory_order_relaxed);
+}
+
 // mcLightingManager's per-frame time-of-day update (sub_822F1DB0). r3 = manager.
 //
 // We set the fields and let the original body run: with auto-advance off and no
@@ -234,8 +249,16 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         bool real = (want_weather == "real");
         RealWeather_SetEnabled(real);
 
-        // A shot's sky outranks the cvar, same contract as its hour.
-        int shot_wx = g_shot_weather.load(std::memory_order_relaxed);
+        // A shot's sky outranks the cvar, same contract as its hour; a running
+        // scene's outranks the shot's.
+        const int scene_wx = g_scene_weather.load(std::memory_order_relaxed);
+        int shot_wx = scene_wx >= 0 ? scene_wx : g_shot_weather.load(std::memory_order_relaxed);
+        static bool s_scene_sky = false;
+        if ((scene_wx >= 0) != s_scene_sky) {
+            s_scene_sky = scene_wx >= 0;
+            LARECOMP_APP_INFO("[Weather] a scene {} the sky{}", s_scene_sky ? "sets" : "lets go of",
+                              s_scene_sky ? "" : ": the weather setting again");
+        }
 
         // 'real' waits for the first fetch to land; until then the game keeps
         // its own sky rather than snapping to a placeholder.
@@ -302,9 +325,18 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     static bool s_pinned = false;
     static uint8_t s_saved_auto = 1;
 
-    // A shot's hour outranks everything: it only lasts while the menu camera
-    // keeps renewing it.
-    int shot = g_shot_hour_milli.load(std::memory_order_relaxed);
+    // A shot's hour outranks everything but a running scene's: it only lasts
+    // while the menu camera keeps renewing it. The scene's own request is the
+    // top of the list (and with it on, the hold below is just not consulted:
+    // the cvar and the pinned flag go back to what they were when it lets go).
+    const int scene_hour = g_scene_hour_milli.load(std::memory_order_relaxed);
+    int shot = scene_hour >= 0 ? scene_hour : g_shot_hour_milli.load(std::memory_order_relaxed);
+    static bool s_scene_hour = false;
+    if ((scene_hour >= 0) != s_scene_hour) {
+        s_scene_hour = scene_hour >= 0;
+        LARECOMP_APP_INFO("[TimeOfDay] a scene {} the hour{}", s_scene_hour ? "sets" : "lets go of",
+                          s_scene_hour ? "" : ": the hold, the clock or the day cycle again");
+    }
     bool want_pin = shot >= 0;
     float hour = want_pin ? static_cast<float>(shot) / 1000.0f : 0.0f;
 
@@ -394,8 +426,9 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     WriteF32(base, mgr + kTodCurrent, hour);
     WriteF32(base, mgr + kTodTarget, hour);
 
+    // A scene's ramp moves the hour every frame: its own [scene] lines say where it is.
     static float s_last = -1.0f;
-    if (static_cast<int>(s_last * 60.0f) != static_cast<int>(hour * 60.0f)) {
+    if (scene_hour < 0 && static_cast<int>(s_last * 60.0f) != static_cast<int>(hour * 60.0f)) {
         s_last = hour;
         int h = static_cast<int>(hour);
         int m = static_cast<int>((hour - h) * 60.0f);

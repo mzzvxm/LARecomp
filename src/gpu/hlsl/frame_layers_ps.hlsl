@@ -17,6 +17,8 @@
 //   (frame_layers.h, Frame::gap) hold no picture at a render scale: the game's full-screen draws
 //   never write them, and its own resolve reads them from the first column and row they do write.
 //   The compose does the same for all three images: the texel at or before `gap` is read at `gap`.
+//   The HUD fade (ui_fade.h) scales the UI's colour and coverage by the same factor, ui_alpha: the
+//   layer is premultiplied, so that is the UI at that opacity. At 1 the sum below is the plain one.
 //
 // LAYERS_RESOLVE = 1 (layers_resolve_ps): a multisampled target of the game (the pause menu's and the
 //   map's UI target, drawn at the host's MSAA level) averaged into a single-sampled image: every
@@ -59,6 +61,7 @@ struct LayersPush {
                   // 4 where the float scene is above 1, 5 its difference from the 8-bit scene
   uint reference; // LAYERS_COMPOSE only: the 8-bit underlay's slot (views 4 and 5)
   uint gap;       // LAYERS_COMPOSE only: host columns and rows at the origin that hold no picture
+  float ui_alpha; // LAYERS_COMPOSE only, view 0: the UI layer's share of the frame, 0..1 (the HUD fade)
 };
 
 #ifdef __spirv__
@@ -101,7 +104,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // is kept; the UI's own part never exceeds its coverage. The display's table is indexed by what
   // this writes, so it is made finite and non-negative here: a NaN a float16 draw left in the float
   // scene is none, and 65504 is the most a float16 holds.
-  const float3 code = ui.rgb + underlay.rgb * (1.0f - ui.a);
+  // The HUD fade scales the premultiplied layer's colour and coverage by the same factor.
+  const float fade = saturate(g_push.ui_alpha);
+  const float3 code = ui.rgb * fade + underlay.rgb * (1.0f - ui.a * fade);
   const uint3 bits = asuint(code) & 0x7FFFFFFFu;
   return float4((bits.x <= 0x7F800000u) ? clamp(code.x, 0.0f, 65504.0f) : 0.0f,
                 (bits.y <= 0x7F800000u) ? clamp(code.y, 0.0f, 65504.0f) : 0.0f,

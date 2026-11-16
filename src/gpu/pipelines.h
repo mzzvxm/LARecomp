@@ -80,6 +80,12 @@
 // that failed here. A finished build nobody asks for again is taken at the end
 // of the frame (EndFrame), so it is recorded and persists like any other.
 //
+// While a capture runs (sync_builds.h: the debug cvar mcla_gpu_sync_builds, or capture mode's
+// SetCaptureActive) no draw may be left out: MaySkip says no whatever the Deferral answers, so every
+// lookup above takes the old way for a draw that may not be skipped -- waits for a build under way,
+// makes one nobody has begun here -- and a lookup the Deferral would have left out is timed and counted
+// (sync_builds.h's "[gpu] capture sync" lines). The key's own lookup is unchanged otherwise.
+//
 // Live MSAA level (PrebuildForLevel): a pipeline's sample count is its draw's targets' host
 // samples, which the MSAA level sets for an image of the screen the guest multisamples
 // (EdramTargets::HostSamplesAt). A draw whose targets take the level says so (PipelineInputs::
@@ -140,6 +146,7 @@
 #include "draw_state.h"
 #include "input_layout.h"
 #include "shaders.h"
+#include "sync_builds.h"
 
 namespace mcla::gpu {
 
@@ -226,10 +233,13 @@ enum class KeyResult : uint8_t {
 
 // What Get asks when a pipeline is not there yet: may the draw be left out
 // until a builder thread has made it? A plain function and a context, so that
-// a lookup that hits has nothing to prepare for it.
+// a lookup that hits has nothing to prepare for it. While a capture runs
+// (sync_builds.h) the answer is never used: the lookup waits for the build, and
+// `kind` says which path waited, for the count of waits.
 struct Deferral {
   bool (*may_skip)(const void* context) = nullptr;
   const void* context = nullptr;
+  sync_builds::Kind kind = sync_builds::Kind::kGuestDraw;
 };
 
 class Pipelines {
@@ -456,15 +466,26 @@ class Pipelines {
   struct Miss {
     const Deferral* deferral = nullptr;  // null: the draw may not be skipped
     Take take = Take::kNone;
+    // The draw could have been left out but a capture is running (sync_builds.h): the lookup is
+    // waited out and counted (MaySkip sets it, Resolve counts it).
+    bool held = false;
   };
+  // Whether the draw that missed may be left out for now: the deferral's rule, and no capture
+  // running (a draw the rule would leave out is `miss.held` then).
+  bool MaySkip(Miss& miss);
   // A ready precached pipeline for `key` (moved into pipelines_), or null: none,
   // being made while the draw may wait, being claimed now for the render thread
   // to make, or failed (`miss.take` says which).
   plume::RenderPipeline* TakePrecached(const PipelineKey& key, Miss& miss,
                                        const PipelineInputs& inputs);
-  // Get's slow path: the key is in neither map.
+  // Get's slow path: the key is in neither map. Times a lookup the capture flag held (ResolveMiss).
   plume::RenderPipeline* Resolve(const PipelineKey& key, const PipelineInputs& inputs,
                                  const Deferral* deferral, bool* pending);
+  plume::RenderPipeline* ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs, Miss& miss,
+                                     bool* pending);
+  // Counts a held lookup's wait (sync_builds.h) and logs the first few.
+  void NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
+                    std::chrono::steady_clock::time_point began);
   // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
   void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
 

@@ -10,6 +10,7 @@
 // line for this run only.
 //
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -50,6 +51,53 @@ bool IsAtStartupValue(std::string_view name);
 // ever added. Call it once at startup.
 void NoteSessionOnlyCvar(std::string_view name);
 
+// What a save does with one cvar, as the facts about it and a plain decision (so config_save_test.cpp can check every combination
+// without a game). SaveCvarsToConfig builds the facts from the cvar system and acts on the answer.
+struct CvarSaveFacts {
+  bool is_command = false;            // a command, not a setting
+  bool session_only = false;          // NoteSessionOnlyCvar
+  bool changed_this_session = false;  // its source now is "set at run time" (SetFlagByName): a menu, the panel, the console, a scene
+  bool debug_only = false;            // tagged .debug_only()
+  bool held_by_scene = false;         // a scene holds it right now (SetCvarForScene)
+  bool changed_before_scene = false;  // with held_by_scene: its source was "set at run time" when the scene took it
+};
+
+enum class CvarSaveAction : uint8_t {
+  kSkip,              // not written; a line the file has stays as it is
+  kPutDefault,        // session only: a line the file has is put back to the default, none is added
+  kWriteLive,         // the cvar's live value
+  kWriteBeforeScene,  // the value the cvar had before the scene took it (the player's own change, not the scene's)
+};
+
+// The rule. A cvar a scene holds is judged by what it was before the scene took it: the scene's value is never written, a
+// command-line, environment or file value stays out as it always did, and a value the player had changed earlier is written as
+// the player left it.
+inline CvarSaveAction DecideCvarSave(const CvarSaveFacts& f) {
+  if (f.is_command) {
+    return CvarSaveAction::kSkip;
+  }
+  if (f.session_only) {
+    return CvarSaveAction::kPutDefault;
+  }
+  const bool changed = f.held_by_scene ? f.changed_before_scene : f.changed_this_session;
+  if (!changed || f.debug_only) {
+    return CvarSaveAction::kSkip;
+  }
+  return f.held_by_scene ? CvarSaveAction::kWriteBeforeScene : CvarSaveAction::kWriteLive;
+}
+
+// A scene (the trailer toolkit's `set` key) changes settings for its run and puts them back when it ends. It goes through these two
+// instead of SetFlagByName, so that a save in the middle of the scene does not write the scene's values to larecomp.toml and the
+// end of the scene puts back exactly what was there.
+// SetCvarForScene: SetFlagByName, and the first time a cvar is taken, its value and where that value came from (default, file,
+// environment, command line, run time) are remembered. False when the cvar does not take the value, as SetFlagByName.
+// RestoreCvarForScene: the remembered value is set again (so the cvar's change callback runs) and the cvar's source goes back to
+// what it was, so a value that came from the command line is not a change a later save would write. False when nothing was held, or
+// the old value is not accepted any more.
+// SaveCvarsToConfig leaves a held cvar's value out (DecideCvarSave).
+bool SetCvarForScene(std::string_view name, std::string_view value);
+bool RestoreCvarForScene(std::string_view name);
+
 // Merges into the file what the player changed while the game ran (cvars whose
 // last writer was SetFlagByName), plus `held`. Everything else in the file stays
 // as it is: other lines, comments, keys of cvars this build does not have. Values
@@ -58,8 +106,9 @@ void NoteSessionOnlyCvar(std::string_view name);
 // a line the file already has. A cvar tagged .debug_only() is never written for a
 // change made while the game runs (the DEBUG menu, the settings panel, the console),
 // and a line the file already has for it is left exactly as it is, so a tester's
-// hand-written value stays. `held` is the exception: a value a menu holds for the
-// next launch is written whatever the cvar is. The file is replaced in one step (see
+// hand-written value stays. A cvar a scene holds (SetCvarForScene) counts as what it was
+// before the scene took it: the scene's value is never written. `held` is the exception: a
+// value a menu holds for the next launch is written whatever the cvar is. The file is replaced in one step (see
 // profiles::EditConfig). False, with the file as it was, when it cannot be written.
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held = {});
 

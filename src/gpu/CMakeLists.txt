@@ -15,7 +15,9 @@ add_library(larecomp_gpu OBJECT
     buffer_heap.cpp
     capture.cpp
     car_selfrefl.cpp
+    capture_readback.cpp
     constants.cpp
+    cut_request.cpp
     cycles.cpp
     descriptors.cpp
     device.cpp
@@ -70,8 +72,10 @@ add_library(larecomp_gpu OBJECT
     side_view_reflection.cpp
     side_view_shadow.cpp
     side_views.cpp
+    split.cpp
     stream.cpp
     swap_chain.cpp
+    sync_builds.cpp
     temporal.cpp
     temporal_backend.cpp
     temporal_camera.cpp
@@ -86,6 +90,7 @@ add_library(larecomp_gpu OBJECT
     timing.cpp
     topology.cpp
     uma_budget.cpp
+    ui_fade.cpp
     upload.cpp
     upscaler_masks.cpp
     validation.cpp
@@ -119,6 +124,9 @@ add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_te
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ao_size_test, then run src/gpu/larecomp_ao_size_test <src/gpu dir> [--print].
 add_executable(larecomp_ao_size_test EXCLUDE_FROM_ALL ao_size_test.cpp)
+# The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
+add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
@@ -183,6 +191,15 @@ target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Thread
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
 add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.cpp)
+# The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
+#   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
+add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
+# The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
+add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
+# The before/after split's columns and spans (split.h) have a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_split_test, then run src/gpu/larecomp_split_test (exit 0 = passed).
+add_executable(larecomp_split_test EXCLUDE_FROM_ALL split_test.cpp)
 # The upscalers' masks (upscaler_mask_plan.h: which views get second draws and with how many samples, the mask pass as a function) have a
 # check that needs no renderer: cmake --build <dir> --target larecomp_upscaler_masks_test, then run src/gpu/larecomp_upscaler_masks_test.
 add_executable(larecomp_upscaler_masks_test EXCLUDE_FROM_ALL upscaler_masks_test.cpp)

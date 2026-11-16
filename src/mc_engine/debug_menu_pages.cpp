@@ -77,6 +77,9 @@ constexpr SlotTable kMenuCamSlots = MakeSlotTable();
 constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
 constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
+// Capture mode (the trailer toolkit): frames a second of the fixed step and of a take; 0 is off.
+constexpr double kFixedStepVals[]       = {0.0, 24.0, 30.0, 60.0, 120.0, 240.0};
+constexpr double kCaptureFpsVals[]      = {0.0, 24.0, 30.0, 60.0, 120.0};
 
 #if defined(LARECOMP_HAS_GPU)
 constexpr const char* kAoViewVals[]  = {"0", "1", "2", "3", "4", "5", "6"};
@@ -94,6 +97,8 @@ constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
+// The share of the game's own UI the picture shows (the trailer toolkit's HUD fade); 1 is the game's frame.
+constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 #endif
 
 // ── The tables ─────────────────────────────────────────────────────────
@@ -246,7 +251,7 @@ const ItemDef kDebugCameraItems[] = {
          "%g"),
 };
 
-// TOOLS: the modder's texture tools, the panels, a leftover test button.
+// TOOLS: the modder's texture tools, the panels, a leftover test button, the trailer toolkit's HUD fade.
 const ItemDef kDebugToolsItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Action("PM_RxDbgTexDump",   kActionDumpTextures)),
@@ -255,9 +260,29 @@ const ItemDef kDebugToolsItems[] = {
 #endif
     // The game's own TestMovie button on the pause screen (pause_menu.cpp Hook_EnablePMTeste).
     Bool("PM_RxDbgTestMovie", "show_test_movie", "TEST MOVIE BUTTON: "),
+    // Capture mode (src/mc_engine/cinematic/capture_mode.h): the game steps by exactly 1 / this many frames a second whatever a frame takes
+    // to render (the FPS limit, the step cap and frame pacing stand aside). No take and no frame gate: the world runs fast or slow.
+    Dbl("PM_RxDbgFixedStep", "mcla_fixed_step_fps", "FIXED STEP: ", kFixedStepVals, Len(kFixedStepVals), "%g", "", "OFF"),
+#if defined(LARECOMP_HAS_GPU)
+    // A take: the fixed step at this rate, every frame read back and the game held at the frame gate until it is. It makes a take
+    // folder under mcla_capture_dir (mcla_capture_out names one exactly); the sink is mcla_capture_sink (none until set).
+    // A scene's capture key does the same.
+    NativeOnly(Dbl("PM_RxDbgCapture", "mcla_capture_fps", "CAPTURE FPS: ", kCaptureFpsVals, Len(kCaptureFpsVals), "%g", "", "OFF")),
+#endif
+    // The trailer toolkit's free camera and flight recorder (cinematic/freecam.h): the pad flies the camera and the game gets no pad input
+    // but Start, so close this menu to fly; Back + A on the pad records too. The file name is mcla_freecam_out.
+    Bool("PM_RxDbgFlyCam",    "mcla_freecam",        "TRAILER FREE CAMERA: "),
+    Bool("PM_RxDbgFlyRec",    "mcla_freecam_record", "RECORD FLIGHT: "),
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),
+#if defined(LARECOMP_HAS_GPU)
+    // The game's own UI (HUD, map, phone, prompts, gamertags, world icons) faded in the picture; the
+    // pause menu, this menu and the F3 card are never faded, so the effect shows once the menu is
+    // closed. Applies to the next frame and costs nothing at 1 (src/gpu/ui_fade.h).
+    NativeOnly(Dbl("PM_RxDbgHudAlpha", "mcla_cin_hud_alpha", "HUD ALPHA: ", kHudAlphaVals,
+                   Len(kHudAlphaVals), "%g")),
+#endif
 };
 
 // LOGGING: the log switches that can be flipped while the game runs. The restart-only diagnostics are

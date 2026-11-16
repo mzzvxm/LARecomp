@@ -44,6 +44,8 @@
 // every frame for the same purpose. It sees only that the target was drawn
 // into in each of the last frames; a target made for one picture (car paint,
 // vinyl) is not.
+// While a capture runs (sync_builds.h) the rule only counts: no draw is left out for a pending
+// pipeline, every one waits for it.
 //
 // Statistics: a line every kReportInterval guest frames and at shutdown.
 //
@@ -387,6 +389,12 @@ class Scene {
   // The temporal system: a prepared draw, before its constants are uploaded; may move it.
   void NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
                     const PreparedDraw& d, SharedConstants& shared);
+  // The scene camera's cuts (cut_request.h): the anchor draw's camera is looked up among the cuts the game asked for. A hit tells the
+  // temporal system and the occlusion (their histories start again) and marks the anchor's own draw for NeutralizeAnchorBlur.
+  void NoteAnchorCut(const ConstantBanks::Banks& banks);
+  // The anchor draw of a requested cut: its motion blur's previous-frame matrices (c69 to c164) become this frame's own, in a copy of
+  // the pixel constants that only this draw reads.
+  void NeutralizeAnchorBlur(const ConstantBanks::Banks& banks, PreparedDraw& d);
   void Report(const char* why);
 
   ShaderStore& shaders_;
@@ -486,6 +494,12 @@ class Scene {
   // the set search; the entry is checked as the search checks a way.
   std::array<FetchMemo*, guest::kFetchGroupCount> last_fetch_{};
   uint64_t frame_serial_ = 0;
+  // The scene camera's cut (NoteAnchorCut): this frame's anchor is the frame of a cut the game asked for / that anchor draw has not
+  // had its blur constants made neutral yet.
+  bool anchor_cut_ = false;
+  bool cut_blur_pending_ = false;
+  uint32_t cut_frames_ = 0;
+  uint32_t cut_blur_refused_ = 0;
   // SceneBias's value for the frame it was worked out in.
   uint64_t scene_bias_serial_ = 0;
   int32_t scene_bias_ = 0;

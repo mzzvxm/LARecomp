@@ -28,6 +28,7 @@
 #include "host_shaders.h"
 #include "mc_engine/frame_fit.h"
 #include "pass_timing.h"
+#include "split.h"
 #include "textures.h"
 #include "upload.h"
 
@@ -69,6 +70,34 @@ constexpr plume::RenderFormat kIntermediateFormat = plume::RenderFormat::R16G16B
 // them exactly, so the stretch after it gives the same pixels as the table
 // applied per texel read.
 constexpr plume::RenderFormat kRampedFormat = plume::RenderFormat::R32G32B32A32_FLOAT;
+
+// The before/after split (split.h) for the dither: the draw that writes the picture into the back buffer, in two parts of one scissor each,
+// the left one with the dither's code size and the right one with 0. The dither is a function of the pixel's position alone, so every pixel
+// comes out as it would from one draw with or without the dither, and the pixels are the same ones. `push` is any of the passes' push
+// structs that has a dither_lsb; (x, y, w, h) is the picture's rectangle in the back buffer.
+template <typename PushT>
+void DrawDitherSplit(plume::RenderCommandList* list, PushT& push, uint32_t x, uint32_t y, uint32_t w,
+                     uint32_t h, double position, float dither_lsb) {
+  const split::Spans spans = split::SpansOf(position, w);
+  const uint32_t cut = x + spans.effect;
+  struct Part {
+    uint32_t from;
+    uint32_t to;
+    float lsb;
+  };
+  const Part parts[2] = {{x, cut, dither_lsb}, {cut, x + w, 0.0f}};
+  for (const Part& part : parts) {
+    if (part.to <= part.from) {
+      continue;
+    }
+    const plume::RenderRect scissor(int32_t(part.from), int32_t(y), int32_t(part.to),
+                                    int32_t(y + h));
+    list->setScissors(&scissor, 1);
+    push.dither_lsb = part.lsb;
+    list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+    list->drawInstanced(3, 1, 0, 0);
+  }
+}
 
 }  // namespace
 
@@ -494,9 +523,17 @@ void PresentPass::Draw(plume::RenderCommandList* list, uint32_t width, uint32_t 
     push.hdr_peak = hdr_levels_.peak;
     push.hdr_knee = hdr_levels_.knee;
     push.hdr_flags = hdr_levels_.flags;
-    push.dither_lsb = DitherLsb();
-    list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
-    list->drawInstanced(3, 1, 0, 0);
+    const float dither_lsb = DitherLsb();
+    const std::optional<double> cut = dither_lsb > 0.0f
+                                          ? split::PositionFor(split::kEffectDither)
+                                          : std::optional<double>();
+    if (cut) {
+      DrawDitherSplit(list, push, fit_.x, fit_.y, fit_.w, fit_.h, *cut, dither_lsb);
+    } else {
+      push.dither_lsb = dither_lsb;
+      list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+      list->drawInstanced(3, 1, 0, 0);
+    }
   }
   ++stats_.drawn;
 }
@@ -572,6 +609,13 @@ void PresentPass::RecordFitted(plume::RenderCommandList* list, plume::RenderPipe
   push.hdr_knee = hdr_levels_.knee;
   push.hdr_flags = hdr_levels_.flags | CodeFlags();
   push.gap = gap;
+  // The before/after split (split.h, mcla_gpu_split): the dither only left of it. Off (the default), or a pass with no dither: the one draw.
+  if (dither_lsb > 0.0f) {
+    if (const std::optional<double> cut = split::PositionFor(split::kEffectDither)) {
+      DrawDitherSplit(list, push, fit.x, fit.y, fit.w, fit.h, *cut, dither_lsb);
+      return;
+    }
+  }
   push.dither_lsb = dither_lsb;
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
