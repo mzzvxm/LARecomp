@@ -27688,3 +27688,27 @@ address = 0x826A9EA8
 name = "ShowroomNames_826A9EA8"
 registers = ["r15"]
 after_instruction = true
+
+# DEBUG TEST, live (hooks/road_reflection_cars_test.cpp, cvar mcla_gpu_road_reflection_cars_test, 0 = these do
+# nothing): the game's own car draw in the wet-road reflection phase 0x2. In Vehicle::Draw (sub_82360518, r30 = the
+# vehicle, r28 = the phase) the phase-2 branch (0x82360694) draws the car through sub_8235FB78 with a mirrored
+# camera, but only if vehicle byte +593 and the global byte 0x82908D5D are both non-zero (the global is 0 on the
+# street). The three hooks change registers only. 0x823606A0 is the `lbz r11,593(r30)` (decides per vehicle),
+# 0x823606B4 the `cmplwi cr6,r10,0` after the gate byte was loaded into r10, 0x8236076C the `lfs f0,332(r9)` that
+# reads the mirror plane (hooked after it, f0 = -the player's ground height). None of the three addresses is a
+# branch target, and none carries another hook.
+[[midasm_hook]]
+address = 0x823606A0
+name = "Hook_RoadReflCarsEnter"
+registers = ["r30", "r28", "r13"]
+
+[[midasm_hook]]
+address = 0x823606B4
+name = "Hook_RoadReflCarsGate"
+registers = ["r10"]
+
+[[midasm_hook]]
+address = 0x8236076C
+name = "Hook_RoadReflCarsPlane"
+registers = ["f0"]
+after_instruction = true
