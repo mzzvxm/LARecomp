@@ -12,12 +12,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/input/input_system.h>
 #include <rex/ppc.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -25,8 +27,13 @@
 #include <rex/system/xmemory.h>
 #include <rex/ui/image_decode.h>
 #include <rex/ui/keybinds.h>
+#include <rex/ui/ui_event.h>
+#include <rex/ui/window.h>
+#include <rex/ui/window_listener.h>
 
+#include "imgui.h"
 #include "hooks/hooks_internal.h"
+#include "kbm_input.h"
 #include "logging.h"
 #include "modloader/texture.h"
 #include "native_gfx/guest/texture_format.h"
@@ -36,17 +43,16 @@
 #include <Windows.h>
 #endif
 
-// The SDK's own switch; reading it by name keeps this independent of the SDK's
-// link line. With both on, a key is a pad button AND a native key at once.
-// (Defined in rex input; queried through the registry.)
+// The SDK's own old keyboard-and-mouse mode (mnk_mode, mnk_mouse, keybind_*) is retired as a player path: LARecomp forces it off at
+// start (larecomp_app.h) and Hook_KeyboardFeed puts it back off if anything turns it on later, so a key can never be a pad button AND a
+// native key at once (Enter as Start and accept).
 
-REXCVAR_DEFINE_BOOL(keyboard_native, false, "MCLA/Input",
-    "Native keyboard. Feeds the keyboard straight into the game's own input layer "
-    "(rage ioMapper), which the SDK's keystroke API never filled: menus and driving "
-    "get separate key sets, so Enter can be 'accept' in a menu and Pause on the road "
-    "without ever being both. Turn mnk_mode OFF while this is on -- mnk_mode makes "
-    "keys pad buttons, and Enter would then also be Start. The mouse and the "
-    "analogue sticks are not touched.")
+REXCVAR_DEFINE_BOOL(keyboard_native, true, "MCLA/Input",
+    "Native keyboard, always on. Feeds the keyboard and the mouse buttons straight into the game's own "
+    "input layer (rage ioMapper) from the window's key events: menus and driving get separate key sets, "
+    "so Enter can be 'accept' in a menu and Pause on the road without ever being both. A debug switch "
+    "to tell whether a bug comes from it (off = the keyboard does nothing).")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // ── Menus (the FlashNavigator mapper). Comma separated key names, the same names
@@ -103,8 +109,11 @@ REXCVAR_DEFINE_STRING(kb_drive_handbrake, "Space", "MCLA/Input/Keyboard - drivin
 REXCVAR_DEFINE_STRING(kb_drive_weight, "CapsLock", "MCLA/Input/Keyboard - driving",
     "Driving: weight transfer, the 'turn in' of the pad's B")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift", "MCLA/Input/Keyboard - driving",
-    "Driving: nitro (the pad's X)").lifecycle(rex::cvar::Lifecycle::kHotReload);
+// "Shift,X": the prompt for the pad's X is painted with the key of the MENU's X button (kb_ui_x = X, GlyphKeyFor), and one bitmap serves the
+// menu and the road. With X also bound to nitro, the key that prompt shows does what the pad's X does on the road (KBM-DESIGN 1.3 item 8).
+REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift,X", "MCLA/Input/Keyboard - driving",
+    "Driving: nitro (the pad's X). X is here too so the X prompt shows a key that works on the road.")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_headlights, "H", "MCLA/Input/Keyboard - driving",
     "Driving: headlights (the pad's Y)").lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(kb_drive_horn, "G", "MCLA/Input/Keyboard - driving", "Driving: horn")
@@ -218,19 +227,78 @@ uint8_t* GuestBase() {
 
 bool HeapPtr(uint32_t ea) { return ea >= 0x40000000u && ea < 0xE0000000u; }
 
-#if defined(_WIN32)
-bool WindowFocused() {
-    HWND fg = GetForegroundWindow();
-    if (!fg) return false;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId();
+// ── keys and the mouse: window events -> one latch ──────────────────────
+// Nothing here asks the OS what is pressed (no GetAsyncKeyState, no foreground-window call): the window's key and mouse events fill a
+// larecomp::kbm::KeyLatch on the UI thread, and the input poll reads it once per frame. That is the same on Windows, Linux and the
+// Steam Deck, and a key tapped between two polls still reaches the game (kbm_input.h).
+larecomp::kbm::KeyLatch g_keys;
+
+// The mouse is over one of the ImGui overlays (F4, the browsers): a click or a wheel turn there is not the game's.
+bool MouseOverOverlay() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse; }
+
+// Layer 0 like the pointer's and the map's listeners (cursor_hide.cpp, map_mouse.cpp): it never marks an event handled, and what an
+// overlay or a hotkey (F4 ...) handles first never reaches it.
+class KeyEventListener final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
+public:
+    void OnKeyDown(rex::ui::KeyEvent& e) override { Key(e, true); }
+    void OnKeyUp(rex::ui::KeyEvent& e) override { Key(e, false); }
+    void OnMouseDown(rex::ui::MouseEvent& e) override { Button(e, true); }
+    void OnMouseUp(rex::ui::MouseEvent& e) override { Button(e, false); }
+    void OnMouseWheel(rex::ui::MouseEvent& e) override {
+        const int32_t turn = e.scroll_y();
+        if (turn == 0 || MouseOverOverlay()) return;
+        g_keys.Pulse(turn > 0 ? larecomp::kbm::kKeyWheelUp : larecomp::kbm::kKeyWheelDown);
+    }
+    // Nothing stays down while the window is not the player's: SDL ends a held key's events at the focus loss, and a key released
+    // elsewhere would never be heard.
+    void OnLostFocus(rex::ui::UISetupEvent&) override { g_keys.ReleaseAll(); }
+
+private:
+    static void Key(rex::ui::KeyEvent& e, bool down) {
+        const int id = static_cast<int>(e.virtual_key());
+        if (id <= 0 || id > 254) return;
+        if (down) g_keys.Down(id, e.prev_state());
+        else g_keys.Up(id);
+    }
+    static void Button(rex::ui::MouseEvent& e, bool down) {
+        int id = 0;
+        switch (e.button()) {
+            case rex::ui::MouseEvent::Button::kLeft: id = 0x01; break;
+            case rex::ui::MouseEvent::Button::kRight: id = 0x02; break;
+            case rex::ui::MouseEvent::Button::kMiddle: id = 0x04; break;
+            case rex::ui::MouseEvent::Button::kX1: id = 0x05; break;
+            case rex::ui::MouseEvent::Button::kX2: id = 0x06; break;
+            default: return;
+        }
+        // A click on an overlay is not a game press; its release always lets go.
+        if (down) {
+            if (!MouseOverOverlay()) g_keys.Down(id, false);
+        } else {
+            g_keys.Up(id);
+        }
+    }
+};
+
+KeyEventListener g_key_listener;
+std::atomic<bool> g_listener_posted{false};
+std::atomic<bool> g_listener_attached{false};
+
+// Called from every input poll (game thread): attaches the listener once the window exists. Added on the UI thread, which is the thread that
+// walks the window's listener lists.
+void EnsureKeyListener() {
+    if (g_listener_attached.load(std::memory_order_relaxed)) return;
+    auto* rt = rex::Runtime::instance();
+    auto* isys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+    rex::ui::Window* window = isys ? isys->window() : nullptr;
+    if (!window || g_listener_posted.exchange(true)) return;
+    const bool queued = window->app_context().CallInUIThreadDeferred([window]() {
+        window->AddInputListener(&g_key_listener, 0);
+        window->AddListener(&g_key_listener);
+        g_listener_attached.store(true, std::memory_order_relaxed);
+        MC_INFO("[kbnative] always on (kbm-always-on-v1): keys and the mouse buttons come from the window's events");
+    });
+    if (!queued) g_listener_posted.store(false);
 }
-bool HostKeyDown(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
-#else
-bool WindowFocused() { return false; }
-bool HostKeyDown(int) { return false; }
-#endif
 
 std::string Trim(std::string s) {
     size_t a = 0, b = s.size();
@@ -256,6 +324,11 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
         if (token.empty()) continue;
         const size_t plus = token.rfind('+');
         if (plus != std::string::npos && plus + 1 < token.size()) token = Trim(token.substr(plus + 1));
+        // The mouse buttons and the wheel are keys here (LMB, RMB, MMB, MB4, MB5, WheelUp, WheelDown): their ids are in kbm_input.h.
+        if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByName(token)) {
+            out.push_back({token, static_cast<uint8_t>(mouse->id)});
+            continue;
+        }
         const auto vk = rex::ui::ParseVirtualKey(token);
         if (vk == rex::ui::VirtualKey::kNone) continue;
         const int code = static_cast<int>(vk);
@@ -266,8 +339,12 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
 }
 
 // The pending-key and VK tables hold DirectInput scancodes; 0 = the game has no
-// key for that VK (mouse buttons, media keys).
-uint8_t ScancodeOf(const uint8_t* base, uint8_t vk) { return base[kVkToScancode + vk]; }
+// key for that VK (media keys). The mouse buttons and the wheel have none in the
+// game's table either: they get scancodes of their own (kbm_input.h, 0x80..0x86).
+uint8_t ScancodeOf(const uint8_t* base, uint8_t vk) {
+    if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyById(vk)) return mouse->scancode;
+    return base[kVkToScancode + vk];
+}
 
 // ── mapper access ───────────────────────────────────────────────────────
 // {u32 count; u32 default pad; u32 type[64]; u32 value[64]; u32 output[64]}
@@ -295,20 +372,37 @@ void LoadActionIds(const uint8_t* b) {
     MC_INFO("[kbnative] {} control actions known", g_action_ids.size());
 }
 
-// ── signatures (so the mappers are only rewritten when a binding changed) ──
-std::string UiSignature() {
-    std::string s;
-    for (const std::string* v : {&REXCVAR_GET(kb_ui_accept), &REXCVAR_GET(kb_ui_back),
-                                 &REXCVAR_GET(kb_ui_x), &REXCVAR_GET(kb_ui_y),
-                                 &REXCVAR_GET(kb_ui_lb), &REXCVAR_GET(kb_ui_rb),
-                                 &REXCVAR_GET(kb_ui_lt), &REXCVAR_GET(kb_ui_rt),
-                                 &REXCVAR_GET(kb_ui_up), &REXCVAR_GET(kb_ui_down),
-                                 &REXCVAR_GET(kb_ui_left), &REXCVAR_GET(kb_ui_right),
-                                 &REXCVAR_GET(kb_ui_select), &REXCVAR_GET(kb_ui_start)}) {
-        s += *v;
-        s += '|';
-    }
-    return s;
+// ── did a binding change? ───────────────────────────────────────────────
+// The mappers are only rewritten when a binding changed. The cvars tell: a change callback on each of them bumps one generation number, and
+// every user compares the number it last applied with it (one atomic load a frame; before, each frame built the strings of all 36 cvars and
+// compared them).
+std::atomic<uint32_t> g_bindings_gen{1};
+
+void WatchBindings() {
+    static const char* const kNames[] = {
+        "kb_ui_accept", "kb_ui_back", "kb_ui_x", "kb_ui_y", "kb_ui_lb", "kb_ui_rb", "kb_ui_lt", "kb_ui_rt", "kb_ui_up",
+        "kb_ui_down", "kb_ui_left", "kb_ui_right", "kb_ui_start", "kb_ui_select",
+        "kb_drive_steer_left", "kb_drive_steer_right", "kb_drive_gas", "kb_drive_brake", "kb_drive_handbrake", "kb_drive_weight",
+        "kb_drive_nitro", "kb_drive_headlights", "kb_drive_horn", "kb_drive_camera", "kb_drive_camera_keys", "kb_drive_camera_views",
+        "kb_drive_lookback", "kb_drive_map", "kb_drive_talk", "kb_drive_shift_up", "kb_drive_shift_down", "kb_drive_pause",
+        "kb_drive_popup_select", "kb_drive_popup_back",
+        "extra_button_l4", "extra_button_l5", "extra_button_r4", "extra_button_r5",
+        "keycaps_dir", "button_prompts",
+    };
+    static std::once_flag once;
+    std::call_once(once, [] {
+        // The callbacks run inside the cvar registry's lock: they only bump the number.
+        for (const char* name : kNames)
+            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+                g_bindings_gen.fetch_add(1, std::memory_order_relaxed);
+            });
+    });
+}
+
+// Every reader goes through here, so the callbacks are in place before the first value is read.
+uint32_t BindingsGen() {
+    WatchBindings();
+    return g_bindings_gen.load(std::memory_order_relaxed);
 }
 
 struct DriveBinding {
@@ -334,12 +428,6 @@ const DriveBinding kDriveBindings[] = {
     {"POPUP_BACK", &FLAGS_kb_drive_popup_back_storage_},
 };
 
-std::string DriveSignature() {
-    std::string s = REXCVAR_GET(kb_drive_steer_left) + "|" + REXCVAR_GET(kb_drive_steer_right) + "|";
-    for (const auto& d : kDriveBindings) s += d.cvar() + "|";
-    return s;
-}
-
 // ── driving mapper ──────────────────────────────────────────────────────
 struct DriveStruct {
     uint32_t ea = 0;
@@ -360,7 +448,7 @@ struct DriveStruct {
 };
 constexpr int kMaxDriveStructs = 8;
 DriveStruct g_drive[kMaxDriveStructs];
-std::string g_drive_sig_applied;  // the signature the live mappers carry
+uint32_t g_drive_gen_applied = 0;  // the bindings generation the live driving mappers carry (0 = none built yet)
 // The player's control mapper has been built, i.e. the game proper has started. The title and
 // sign-in screens come before it and need keys the game itself never has.
 bool g_game_entered = false;
@@ -415,7 +503,9 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
         if (!out_of(bind.action, out)) continue;
         for (const KeyRef& k : ParseKeyList(bind.cvar())) {
             const uint8_t sc = ScancodeOf(b, k.vk);
-            if (sc) add(kTypeKey, sc, out);
+            if (!sc) continue;
+            add(kTypeKey, sc, out);
+            if (larecomp::kbm::FindMouseKeyByScancode(sc)) MC_INFO("[kbnative] drive {} <- {} (scancode 0x{:02X})", bind.action, k.name, sc);
         }
     }
     uint32_t cam_out = 0;
@@ -469,7 +559,7 @@ void Hook_ControlMapRebuilt(PPCRegister& r30) {
         MC_INFO("[kbnative] game entered: Start now live only while no menu is open");
     }
     AppendDriveEntries(b, *slot);
-    g_drive_sig_applied = DriveSignature();
+    g_drive_gen_applied = BindingsGen();
 }
 
 namespace {
@@ -492,7 +582,7 @@ const UiBind kUiBinds[] = {
 
 uint32_t g_nav_mapper = 0;
 uint32_t g_nav_count_after = 0;
-std::string g_ui_sig_applied;
+uint32_t g_ui_gen_applied = 0;  // the bindings generation the menu mapper carries (0 = none built yet)
 struct NavKey {
     uint32_t idx;      // entry index in the UI mapper
     uint8_t sc;        // its scancode
@@ -547,6 +637,7 @@ void UpdateNavEntries(uint8_t* b) {
     if (g_nav_mapper == 0 || g_nav_keys.empty()) return;
     const bool open = MenuOpen(b);
     if (open != g_menu_was_open) {
+        MC_INFO("[kbnative] menu {}", open ? "opened" : "closed");  // an edge, a few a minute at most: the tests read it (a pause the game opened by itself shows here)
         // A menu opened or closed: keys held right now (the Esc/Enter that did it) must go
         // up before they can be Start again.
         g_disarmed.clear();
@@ -590,8 +681,8 @@ void EnsureNavKeys(uint8_t* b) {
     const uint32_t count = ReadGuestU32(b, mapper);
     if (count < kNavOriginalCount || count > static_cast<uint32_t>(kMapperCapacity)) return;
 
-    const std::string sig = UiSignature();
-    if (mapper == g_nav_mapper && count == g_nav_count_after && sig == g_ui_sig_applied) return;
+    const uint32_t gen = BindingsGen();
+    if (mapper == g_nav_mapper && count == g_nav_count_after && gen == g_ui_gen_applied) return;
 
     // The constructor's 24 pad entries must still be there before anything is added.
     if (ReadGuestU32(b, mapper + 4 * 2) != 6 ||
@@ -612,12 +703,14 @@ void EnsureNavKeys(uint8_t* b) {
             if (MapperAppend(b, mapper, kTypeKey, sc, out)) {
                 ++added;
                 g_nav_keys.push_back({idx, sc, bind.button == kBtnStart, sc});
+                if (larecomp::kbm::FindMouseKeyByScancode(sc))
+                    MC_INFO("[kbnative] menu button 0x{:X} <- {} (scancode 0x{:02X})", bind.button, k.name, sc);
             }
         }
     }
     g_nav_mapper = mapper;
     g_nav_count_after = ReadGuestU32(b, mapper);
-    g_ui_sig_applied = sig;
+    g_ui_gen_applied = gen;
     MC_INFO("[kbnative] menu mapper @0x{:08X}: {} key entries added (now {})", mapper, added,
             g_nav_count_after);
 }
@@ -684,14 +777,13 @@ std::string ExtraCvar(int i) {
 
 std::vector<uint8_t> g_extra_vks[kNumExtras];  // host keys of each extra button
 bool g_extra_swallow[256] = {};                // host keys taken from the keyboard feed
-std::string g_extra_sig;
+uint32_t g_extra_gen = 0;                      // the bindings generation the lists above were read at
 uint8_t g_extra_prev[kNumExtras] = {};
 
 void RefreshExtras() {
-    std::string sig;
-    for (int i = 0; i < kNumExtras; ++i) sig += ExtraCvar(i) + "|";
-    if (sig == g_extra_sig) return;
-    g_extra_sig = sig;
+    const uint32_t gen = BindingsGen();
+    if (gen == g_extra_gen) return;
+    g_extra_gen = gen;
     std::memset(g_extra_swallow, 0, sizeof(g_extra_swallow));
     for (int i = 0; i < kNumExtras; ++i) {
         g_extra_vks[i].clear();
@@ -717,38 +809,53 @@ int ExtraIndexOfScancode(uint32_t sc) {
 }
 
 // ── key state feed ──────────────────────────────────────────────────────
-uint8_t g_prev_state[256] = {};
-uint8_t g_just_pressed[256] = {};  // scancodes that went down this frame
+uint8_t g_prev_state[256] = {};    // per scancode: down at the last poll
+uint8_t g_just_pressed[256] = {};  // scancodes that went down this poll
+std::vector<uint8_t> g_down_sc;    // the scancodes written as down at the last poll
+std::vector<uint8_t> g_down_next;  // ... and at this one
+std::vector<uint8_t> g_just_list;  // the scancodes g_just_pressed has set
 
-void FeedKeys(uint8_t* b) {
+// The keys of this poll (the latch's held keys plus the ones tapped since the last poll; empty while an overlay has the keyboard) into the game's
+// pending-key table. Only the keys that are down are touched, and the ones that were down a poll ago are let go once.
+void FeedKeys(uint8_t* b, const larecomp::kbm::KeySnapshot& keys) {
     RefreshExtras();
-    // Nothing while the server browser has the keyboard.
-    const bool focused = WindowFocused() && !larecomp::ServerBrowserCapturesInput();
-    uint8_t state[256] = {};
-    uint8_t mapped[256] = {};
-    for (int vk = 1; vk < 255; ++vk) {
-        const uint8_t sc = b[kVkToScancode + vk];
-        if (!sc) continue;
-        mapped[sc] = 1;
-        // A key that an extra pad button sends is that button, not a keyboard key.
-        if (focused && !g_extra_swallow[vk] && HostKeyDown(vk)) state[sc] = 0x80;
+    for (uint8_t sc : g_just_list) g_just_pressed[sc] = 0;
+    g_just_list.clear();
+    g_down_next.clear();
+    bool now[256] = {};
+    keys.ForEach([&](int id) {
+        if (g_extra_swallow[id]) return;  // a key that an extra pad button sends is that button, not a keyboard key
+        const uint8_t sc = ScancodeOf(b, static_cast<uint8_t>(id));
+        if (!sc || now[sc]) return;
+        now[sc] = true;
+        g_down_next.push_back(sc);
+    });
+    for (uint8_t sc : g_down_sc) {
+        if (now[sc]) continue;
+        b[kKeysPending + sc] = 0;
+        if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByScancode(sc))
+            MC_INFO("[kbnative] mouse key {} up", mouse->name);
     }
-    for (int sc = 1; sc < 256; ++sc) {
-        if (mapped[sc]) b[kKeysPending + sc] = state[sc];
-        g_just_pressed[sc] = (state[sc] && !g_prev_state[sc]) ? 1 : 0;
-        g_prev_state[sc] = state[sc];
+    for (uint8_t sc : g_down_next) {
+        b[kKeysPending + sc] = 0x80;
+        if (!g_prev_state[sc]) {
+            g_just_pressed[sc] = 1;
+            g_just_list.push_back(sc);
+            if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByScancode(sc))
+                MC_INFO("[kbnative] mouse key {} down", mouse->name);  // the mouse buttons and the wheel are rare enough to log: a click, a notch
+        }
     }
+    for (uint8_t sc : g_down_sc) g_prev_state[sc] = 0;
+    for (uint8_t sc : g_down_next) g_prev_state[sc] = 1;
+    g_down_sc.swap(g_down_next);
 }
 
-// The extra pad buttons, each as the key state of its own scancode. Runs after FeedKeys
-// (which zeroes g_just_pressed for every scancode) and also with the keyboard switched off.
-void FeedExtras(uint8_t* b) {
+// The extra pad buttons, each as the key state of its own scancode. Also with the keyboard switched off.
+void FeedExtras(uint8_t* b, const larecomp::kbm::KeySnapshot& keys) {
     RefreshExtras();
-    const bool focused = WindowFocused() && !larecomp::ServerBrowserCapturesInput();
     for (int i = 0; i < kNumExtras; ++i) {
         bool down = false;
-        if (focused)
-            for (uint8_t vk : g_extra_vks[i]) down = down || HostKeyDown(vk);
+        for (uint8_t vk : g_extra_vks[i]) down = down || keys.Test(vk);
         const uint8_t sc = kExtraScancode[i];
         if (down != (g_extra_prev[i] != 0))
             MC_INFO("[kbnative] extra button {} {}", kExtraName[i], down ? "down" : "up");
@@ -796,17 +903,23 @@ std::vector<int> ParseIntList(const std::string& s) {
     return out;
 }
 
-void UpdateCameraJump(uint8_t* b) {
+void UpdateCameraJump(uint8_t* b, const larecomp::kbm::KeySnapshot& snap) {
     uint8_t& virt = b[kKeysPending + kVirtualCamKey];
-    const auto keys = ParseKeyList(REXCVAR_GET(kb_drive_camera_keys));
-    const auto views = ParseIntList(REXCVAR_GET(kb_drive_camera_views));
+    // The two lists are read again only when a binding changed.
+    static std::vector<KeyRef> keys;
+    static std::vector<int> views;
+    static uint32_t lists_gen = 0;
+    if (const uint32_t gen = BindingsGen(); gen != lists_gen) {
+        lists_gen = gen;
+        keys = ParseKeyList(REXCVAR_GET(kb_drive_camera_keys));
+        views = ParseIntList(REXCVAR_GET(kb_drive_camera_views));
+    }
     const uint32_t ctl = (g_game_entered && !MenuOpen(b)) ? CameraControl(b) : 0;
 
     // Key edges (host state: these keys have no mapper entry of their own).
     int wanted = -1;
     for (size_t i = 0; i < keys.size() && i < 5; ++i) {
-        const bool down = WindowFocused() && !larecomp::ServerBrowserCapturesInput() &&
-                          HostKeyDown(keys[i].vk);
+        const bool down = snap.Test(keys[i].vk);
         if (down && !g_cam.was_down[i] && i < views.size()) wanted = views[i];
         g_cam.was_down[i] = down;
     }
@@ -891,7 +1004,7 @@ struct GlyphTexture {
 std::unordered_map<std::string, GlyphTexture> g_glyph_tex;  // by "shared_N.dds"
 uint32_t g_glyph_dict = 0;
 std::unordered_map<std::string, std::vector<uint8_t>> g_cap_cache;  // "key@WxH" -> tiled bytes
-std::string g_glyph_sig_applied;
+uint64_t g_glyph_sig_applied = 0;  // what the glyphs were last painted for (0 = paint again)
 uint32_t g_glyph_tick = 0;
 
 std::string Lower(std::string s) {
@@ -1113,7 +1226,7 @@ bool ScanDictionary(uint8_t* b) {
         }
     }
     g_glyph_dict = dict;
-    g_glyph_sig_applied.clear();
+    g_glyph_sig_applied = 0;
     MC_INFO("[kbnative] glyph dictionary @0x{:08X}: {} textures found", dict, g_glyph_tex.size());
     return !g_glyph_tex.empty();
 }
@@ -1161,11 +1274,10 @@ void TickGlyphs(uint8_t* b) {
     // The extra pad buttons need the dictionary scanned even with the keyboard art off.
     if (!want && !ExtrasEnabled() && g_glyph_tex.empty()) return;  // never painted, nothing to restore
     if (!ScanDictionary(b)) return;
-    if (!g_sidekick_ok && ScanSidekick(b)) g_glyph_sig_applied.clear();
+    if (!g_sidekick_ok && ScanSidekick(b)) g_glyph_sig_applied = 0;
 
-    std::string sig = want ? "keyboard|" : "off|";
-    if (playstation) sig += "ps|";
-    if (want) sig += UiSignature() + REXCVAR_GET(keycaps_dir);
+    // The layout, and (with key caps) the bindings and the cap folder, which the change callbacks count.
+    const uint64_t sig = (want ? 1ull : 2ull) << 40 | (playstation ? 1ull : 0ull) << 32 | (want ? BindingsGen() : 0u);
     if (sig == g_glyph_sig_applied) return;
 
     for (const GlyphTarget& g : kGlyphs) {
@@ -1179,7 +1291,29 @@ void TickGlyphs(uint8_t* b) {
     MC_INFO("[kbnative] glyphs -> {}", want ? "keyboard key caps" : "original art");
 }
 
-bool g_warned_mnk = false;
+// The old keyboard-and-mouse mode of the SDK (mnk_mode, mnk_mouse) makes every key a pad button; with the native keyboard that is Enter as
+// Start and accept at once. It is forced off at start (larecomp_app.h); this puts it back if anything turns it on later. The change
+// callback runs inside the cvar registry's lock, where the cvar cannot be set again, so it only leaves a note for the next input poll.
+std::atomic<bool> g_mnk_turned_on{false};
+
+void WatchMnk() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        for (const char* name : {"mnk_mode", "mnk_mouse"})
+            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view value) {
+                if (value != "false" && value != "0") g_mnk_turned_on.store(true, std::memory_order_relaxed);
+            });
+    });
+}
+
+void KeepMnkOff() {
+    WatchMnk();
+    if (!g_mnk_turned_on.exchange(false, std::memory_order_relaxed)) return;
+    rex::cvar::SetFlagByName("mnk_mode", "false");
+    rex::cvar::SetFlagByName("mnk_mouse", "false");
+    MC_WARN("[kbnative] mnk_mode / mnk_mouse were turned on and are put back off: the old keyboard-and-mouse mode is retired "
+            "(its keys would be pad buttons as well as native keys, Enter as Start and accept at once)");
+}
 
 }  // namespace
 
@@ -1197,7 +1331,7 @@ struct PadKey {
     std::vector<uint8_t> scancodes;
 };
 std::vector<PadKey> g_padkeys;
-std::string g_padkeys_sig;
+uint32_t g_padkeys_gen = 0;
 
 void RebuildPadKeys(const uint8_t* b) {
     g_padkeys.clear();
@@ -1220,9 +1354,9 @@ void Hook_PadBitsFinalize(PPCRegister& r31) {
     uint8_t* b = GuestBase();
     const uint32_t pad = static_cast<uint32_t>(r31.u64);
     if (!b || pad != 0x82905388u) return;  // pad 0 only
-    const std::string sig = UiSignature();
-    if (sig != g_padkeys_sig) {
-        g_padkeys_sig = sig;
+    const uint32_t gen = BindingsGen();
+    if (gen != g_padkeys_gen) {
+        g_padkeys_gen = gen;
         RebuildPadKeys(b);
     }
     uint32_t bits = ReadGuestU32(b, pad + 8);
@@ -1298,6 +1432,7 @@ uint32_t LabelBlock(uint8_t* b) {
 // The name of the key a scancode belongs to ("" when none).
 std::string KeyNameOfScancode(const uint8_t* b, uint8_t sc) {
     if (const int e = ExtraIndexOfScancode(sc); e >= 0) return kExtraName[e];
+    if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByScancode(sc)) return mouse->name;
     for (int vk = 1; vk < 255; ++vk) {
         if (b[kVkToScancode + vk] != sc) continue;
         const std::string n = rex::ui::VirtualKeyToString(static_cast<rex::ui::VirtualKey>(vk));
@@ -1349,6 +1484,8 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
             if (!g_slot_key[i].empty()) continue;
             const std::string name = KeyNameOfScancode(b, static_cast<uint8_t>(key));
             if (name.empty()) break;
+            // A mouse button has no key cap yet (they come with the mouse feel work): its name as text beats a blank cap.
+            if (larecomp::kbm::FindMouseKeyByScancode(static_cast<uint8_t>(key)) && !CapExists(name, 32, 32)) break;
             // Not scanned yet (or the dictionary has no such texture): drawing the slot
             // would show the PlayStation button, so the text name below it is.
             bool ready = false;
@@ -1376,6 +1513,10 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
     return true;
 }
 
+namespace {
+bool g_overlay_had_keys = false;  // an overlay had the keyboard at the last poll
+}  // namespace
+
 void Hook_KeyboardFeed() {
     uint8_t* b = GuestBase();
     if (!b) return;
@@ -1384,24 +1525,28 @@ void Hook_KeyboardFeed() {
     // key caps), so they tick on their own, a few times a second.
     if ((++g_glyph_tick & 0x1F) == 0) TickGlyphs(b);
 
+    EnsureKeyListener();
+    KeepMnkOff();
+
+    // The keys of this poll, from the window's events (once a poll: the taps since the last one are used up here). While an overlay has the
+    // keyboard the game gets none, and what the latch held is let go: the overlay may have swallowed the key-up.
+    const bool overlay = larecomp::ServerBrowserCapturesInput();
+    if (overlay && !g_overlay_had_keys) g_keys.ReleaseAll();
+    g_overlay_had_keys = overlay;
+    larecomp::kbm::KeySnapshot keys = g_keys.Poll();
+    if (overlay) keys = {};
+
     const bool keyboard = REXCVAR_GET(keyboard_native);
-    if (keyboard) {
-        if (!g_warned_mnk && REXCVAR_QUERY(bool, mnk_mode)) {
-            g_warned_mnk = true;
-            MC_WARN("[kbnative] mnk_mode is ON: its keys are also pad buttons, so Enter will be "
-                    "Start as well as accept. Turn mnk_mode off for the native keyboard alone.");
-        }
-        FeedKeys(b);
-    }
+    if (keyboard) FeedKeys(b, keys);
     // The pad's extra buttons work with or without the native keyboard.
-    FeedExtras(b);
+    FeedExtras(b, keys);
     if (!keyboard) return;
     EnsureNavKeys(b);
     UpdateNavEntries(b);
     UpdateSteering(b);
-    UpdateCameraJump(b);
-    if (!g_drive_sig_applied.empty() && DriveSignature() != g_drive_sig_applied) {
-        g_drive_sig_applied = DriveSignature();  // before: the rebuild below refreshes it again
+    UpdateCameraJump(b, keys);
+    if (g_drive_gen_applied != 0 && BindingsGen() != g_drive_gen_applied) {
+        g_drive_gen_applied = BindingsGen();  // before: the rebuild below refreshes it again
         ReapplyDrive(b);
     }
 }

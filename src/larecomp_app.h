@@ -484,6 +484,19 @@ class LarecompApp : public rex::ReXApp {
 
     SetFlag("d3d12_allow_variable_refresh_rate_and_tearing", "true");
 
+    // The SDK's keyboard-and-mouse emulation (mnk_mode, mnk_mouse, the keybind_* keys) is retired as a player path: the native keyboard
+    // (mc_engine/keyboard_native.cpp) is always on and gets the keys from the window's events, and with both on a key would be a pad button
+    // AND a native key (Enter as Start and accept at once). Forced off whatever the command line or an old larecomp.toml says; a later
+    // change is put back off by Hook_KeyboardFeed. CHECK: that these run after --mnk_mode=true on the command line (SetFlagByName from the
+    // app outranks the command line, as the other SetFlag lines here rely on).
+    SetFlag("mnk_mode", "false");
+    SetFlag("mnk_mouse", "false");
+    // The native keyboard is always on: a `keyboard_native = false` left in larecomp.toml (it was an off-by-default option, turned on and off
+    // again) does not switch it off. A command line or the debug menu can still, to tell whether a bug is the keyboard's.
+    if (rex::cvar::GetFlagSource("keyboard_native") == rex::cvar::Source::kConfig) {
+        SetFlag("keyboard_native", "true");
+    }
+
     // LARecomp draws its own MCLA controller toast (mc_engine/ui); the SDK's
     // would stack a second, unstyled card next to it.
     SetFlag("controller_toast_enable", "false");

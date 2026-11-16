@@ -20,13 +20,21 @@
 // gamepad flag), so the keyboard layer has always been empty. mnk_mode gets
 // round it by pretending to be a pad, which is why a key there can only ever be
 // a pad button and one key cannot mean "accept" in a menu and something else
-// while driving.
+// while driving. That mode (mnk_mode, mnk_mouse, keybind_*) is retired: LARecomp
+// forces it off, and the native keyboard below is always on.
 //
 // ── What this does ──────────────────────────────────────────────────────
 //
 // 1. Feed (Hook_KeyboardFeed, in sub_82614C70 just before the buffer swap):
-//    writes the host keyboard state into byte_82905738, the pending table the
-//    game's own event loop would have filled.
+//    writes the keys into byte_82905738, the pending table the game's own event
+//    loop would have filled. The keys come from the WINDOW'S EVENTS (key down,
+//    key up, mouse button, wheel; a layer-0 listener on the UI thread fills a
+//    larecomp::kbm::KeyLatch, kbm_input.h), never from the OS: no polling, the
+//    same on Windows, Linux and the Steam Deck, and a key tapped between two
+//    polls still reaches the game. The five mouse buttons and the two wheel
+//    directions are keys too (LMB RMB MMB MB4 MB5 WheelUp WheelDown, scancodes
+//    0x80..0x86), so kb_ui_* / kb_drive_* can name them and Options >
+//    Controller > Customize can bind them. Mouse look is not here.
 // 2. Menus: the UI's mapper (FlashNavigator::fnInputHandler, built once with 24
 //    pad-only entries by sub_8221D560) gets extra type-0 entries pointing at the
 //    SAME output as the button they stand for. Enter is "A" and Esc is "B"
@@ -49,6 +57,8 @@
 // separate copies of each glyph (prompt.xsf uses shared_49/41/1/48/37, pause and
 // popup shared_2/10/12/43/18) so all of them are written. The originals are
 // kept and put back when the mode changes.
+
+#include <cstdint>
 
 #include <rex/ppc.h>
 

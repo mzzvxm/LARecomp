@@ -62,6 +62,7 @@
 #endif
 
 #include "../cinematic/freecam_runtime.h"
+#include "../input_state.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
@@ -252,6 +253,7 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
     const uint32_t user = ctx.r3.u32;
     const uint32_t caps = ctx.r5.u32;
     __imp__rex_sub_8275CB70(ctx, base);
+    larecomp::input::PadLossCaps(base, user, caps, ctx.r3.u64);  // the controller in use was removed: "not connected" for a few polls (input_state.h)
     if (!WheelOn() || !IsWheelUser(user) || caps == 0) return;
 
     // Whatever the SDK answered, user 0 now has a wheel: success, gamepad type, wheel subtype,
@@ -280,6 +282,8 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t state = ctx.r4.u32;
     // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
     mc::cinematic::FreecamPadScope freecam_pad(base, user, state, ctx.r3.u64);
+    // Constructed after the free camera's scope, so it runs first when this function ends: it sees the state the game is about to read (the active-device rules, input_state.h).
+    larecomp::input::InputActivityScope input_activity(base, user, state, ctx.r3.u64);
     __imp__rex_sub_8275CB78(ctx, base);
     const FakeMode mode = CurrentMode();
     if (!IsWheelUser(user) || state == 0 ||
