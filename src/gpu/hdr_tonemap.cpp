@@ -393,6 +393,15 @@ void HdrToneMap::Failed(Action action, Cause cause, bool waiting, bool adds_ligh
     return;
   }
   if (adds_light) {
+    if (waiting) {
+      // Its pipeline is being made in the background (the first frames after a start, or after a
+      // setting changed the key; the cache file has it from the next start): nothing could not be
+      // made, so no log line. The glow is missing from this frame's float scene, the rest stands.
+      // CHECK: that a second start with the cache file kept (mcla_gpu_pipelines_*.bin) counts no
+      // glow here: the runs so far all began with an empty cache.
+      ++stats_.waited_glows;
+      return;
+    }
     // The glow is missing from the float scene; the rest of it stands.
     ++stats_.skipped_glows;
     if (!glow_logged_) {
@@ -487,11 +496,12 @@ std::string HdrToneMap::TakeSummary() {
     }
   }
   std::string text = std::format(
-      "hdr tone map: {} tone maps drawn again, {} later draws, {} glows left out, {} frames reached "
-      "the marker ({} taken by the layers), {} waited for a pipeline | no float scene: {} | "
-      "{:.1f} MiB",
-      stats_.tone_maps, stats_.after, stats_.skipped_glows, stats_.ready, stats_.captured,
-      stats_.waiting, failures.empty() ? "none" : failures,
+      "hdr tone map: {} tone maps drawn again, {} later draws, {} glows left out ({} of them "
+      "while their pipeline was made), {} frames reached the marker ({} taken by the layers), {} "
+      "waited for a pipeline | no float scene: {} | {:.1f} MiB",
+      stats_.tone_maps, stats_.after, stats_.skipped_glows + stats_.waited_glows,
+      stats_.waited_glows, stats_.ready, stats_.captured, stats_.waiting,
+      failures.empty() ? "none" : failures,
       double(HeldBytes()) / double(1u << 20));
   stats_ = Stats{};
   return text;
