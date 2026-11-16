@@ -254,6 +254,10 @@ class Renderer final : public RenderThread::Executor {
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
+  // Once, on the render thread, after the device was found lost (Device::CheckLost logged the reason
+  // and the call that met it, from whichever thread): the renderer's own state at the loss and the
+  // passes recorded for the frames that were in flight (only with mcla_gpu_pass_timing).
+  void ReportDeviceLost();
   // In the present pass, once the last guest memory it reads has been read: lets the
   // guest go on while this thread submits and presents (mcla_gpu_present_release).
   void ReleaseGuest();
@@ -355,6 +359,7 @@ class Renderer final : public RenderThread::Executor {
   uint64_t guest_frames_ = 0;  // kPresent records executed, presented or skipped
   uint64_t idle_presents_ = 0;
   uint64_t skipped_ = 0;
+  bool device_lost_reported_ = false;  // ReportDeviceLost has run
   uint64_t overlay_draws_ = 0;
   // Records executed since the last stats line, by RecordType.
   uint64_t records_[size_t(RecordType::kCount)] = {};

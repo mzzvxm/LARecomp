@@ -118,6 +118,11 @@ plume::RenderCommandList* FrameRing::FlushBatch() {
   const plume::RenderCommandList* lists[] = {current};
   device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, nullptr);
   ++batch_flushes_;
+  // Plume's Vulkan submit prints a failure and returns nothing: the status of the device, asked
+  // right after, is what says this submit was the call that met the loss.
+  if (device_->CheckLost("after batch flush")) {
+    return nullptr;
+  }
   return OpenNextList();
 }
 
@@ -139,7 +144,9 @@ bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_coun
                                         s.fence.get());
   s.submitted = true;
   s.serial = next_serial_++;
-  return true;
+  // As in FlushBatch: a loss met by this very submit. False is the answer the callers already
+  // handle for a loss noticed before it (nothing presented, the slot's fence is never waited).
+  return !device_->CheckLost("after frame submit");
 }
 
 void FrameRing::Abandon() {
@@ -166,7 +173,11 @@ void FrameRing::WaitSlot(Slot& slot) {
   if (!device_->CheckLost("fence wait")) {
     const ScopedGpuWait wait;
     device_->queue()->waitForCommandFence(slot.fence.get());
-    completed_serial_ = std::max(completed_serial_, slot.serial);
+    // A wait that met the loss returned without the work being done (Vulkan: VK_ERROR_DEVICE_LOST,
+    // printed by Plume and otherwise silent): the submissions are not complete.
+    if (!device_->CheckLost("after fence wait")) {
+      completed_serial_ = std::max(completed_serial_, slot.serial);
+    }
   }
   slot.submitted = false;
 }
@@ -221,8 +232,10 @@ void FrameRing::WaitIdle() {
     const ScopedGpuWait wait;
     device_->queue()->waitForCommandFence(idle_fence_.get());
     // Every serial handed out so far belongs to a submission before the idle
-    // one, so all of them are complete.
-    completed_serial_ = next_serial_ - 1;
+    // one, so all of them are complete -- unless the wait met the loss.
+    if (!device_->CheckLost("after idle wait")) {
+      completed_serial_ = next_serial_ - 1;
+    }
   }
   // The slot fences are waited as well, although the idle wait proved them
   // complete: a Plume fence is consumed by its wait. On D3D12 it is an

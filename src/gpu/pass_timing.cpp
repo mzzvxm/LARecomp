@@ -183,6 +183,30 @@ void PassTiming::OnSubmitted(uint32_t slot) {
   }
 }
 
+std::vector<PassTiming::RecordedFrame> PassTiming::RecordedFrames() const {
+  std::vector<RecordedFrame> frames;
+  if (!enabled_) {
+    return frames;
+  }
+  // slot_ is the newest frame (begun last); the slot after it holds the oldest still in flight.
+  for (uint32_t step = 1; step <= kFramesInFlight; ++step) {
+    const uint32_t slot = (slot_ + step) % kFramesInFlight;
+    const bool newest = slot == slot_;
+    if (labels_[slot].empty() || !(pending_[slot] || newest)) {
+      continue;  // never recorded, or read back already: it finished
+    }
+    RecordedFrame frame;
+    frame.slot = slot;
+    frame.open = newest && open_;
+    frame.labels.reserve(labels_[slot].size());
+    for (const uint16_t id : labels_[slot]) {
+      frame.labels.push_back(id < names_.size() ? names_[id] : std::string("?"));
+    }
+    frames.push_back(std::move(frame));
+  }
+  return frames;
+}
+
 std::string PassTiming::TakeSummary() {
   if (!enabled_) {
     return "pass timing off";

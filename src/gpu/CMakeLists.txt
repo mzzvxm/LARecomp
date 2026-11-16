@@ -189,6 +189,9 @@ add_executable(larecomp_upscaler_masks_test EXCLUDE_FROM_ALL upscaler_masks_test
 # The video memory budget of a GPU that shares memory with the CPU (uma_budget.h) has one too:
 #   cmake --build <dir> --target larecomp_uma_budget_test, then run src/gpu/larecomp_uma_budget_test (exit 0 = passed).
 add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
+# So does the text of the device-loss report (device_fault_format.h):
+#   cmake --build <dir> --target larecomp_device_fault_test, then run src/gpu/larecomp_device_fault_test.
+add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)
 
 # The only translation units that see a backend's own objects (backend.h).
 if("D3D12" IN_LIST LARECOMP_GPU_BACKENDS)

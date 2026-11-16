@@ -155,7 +155,12 @@ class Device {
   // True once device loss has been seen. Latched.
   bool IsLost() const { return lost_.load(std::memory_order_acquire); }
   // Asks the backend whether the device is gone; logs and latches the first
-  // time it is. `context` names the operation that noticed. Returns IsLost().
+  // time it is: one line with the reason, the frame and `context` (the call
+  // that noticed: "after frame submit", "swap chain present", ...), and then
+  // what the driver can say about it (backend::DescribeDeviceFault, Vulkan with
+  // VK_EXT_device_fault). Returns IsLost(). Any thread; cheap (D3D12: one COM
+  // call, Vulkan: one status call on a probe fence), so FrameRing asks again
+  // right after each submit and wait, which is what names the failing call.
   bool CheckLost(const char* context);
 
   backend::VideoMemory QueryVideoMemory() const;
@@ -212,6 +217,9 @@ class Device {
   bool debug_layer_ = false;
   bool names_ = false;  // object_names(); set by Open, before any creation or second thread
   std::atomic<bool> lost_{false};
+  // What backend::DeviceRemovedReason polls (Vulkan: a fence that is never
+  // signalled); made after the queue, given back before the device goes.
+  void* loss_probe_ = nullptr;
 };
 
 // The options the renderer's Startup opens the device with: mcla_gpu_adapter, else the GPU "auto"

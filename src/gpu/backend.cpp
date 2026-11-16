@@ -241,8 +241,24 @@ std::string DefaultAdapterName() {
   return MCLA_GPU_ACTIVE(DefaultAdapterName());
 }
 
-int64_t DeviceRemovedReason(plume::RenderDevice* device) {
-  return MCLA_GPU_ACTIVE(DeviceRemovedReason(device));
+void* CreateLossProbe(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(CreateLossProbe(device));
+}
+
+void DestroyLossProbe(plume::RenderDevice* device, void* probe) {
+  MCLA_GPU_ACTIVE(DestroyLossProbe(device, probe));
+}
+
+int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe) {
+  return MCLA_GPU_ACTIVE(DeviceRemovedReason(device, probe));
+}
+
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(DescribeDeviceFault(device));
+}
+
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
+  return MCLA_GPU_ACTIVE(DescribeLossReporting(device, probe));
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {
