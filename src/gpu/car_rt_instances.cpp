@@ -1,0 +1,138 @@
+// MCLA GPU renderer -- the per-frame instance list of the car ray tracing scene. See car_rt_instances.h.
+
+#include "car_rt_instances.h"
+
+#include <algorithm>
+#include <format>
+
+#include <rex/cvar.h>
+#include <rex/logging.h>
+
+#include "gpu_class.h"
+
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_car_rt_cars, -1, "MCLA/GPU",
+    "Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome "
+    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on "
+    "the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built "
+    "once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.")
+    .debug_only()
+    .range(-1, 8)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_rt_cars_radius, 0.0, "MCLA/GPU",
+    "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
+    "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.")
+    .debug_only()
+    .range(0.0, 60.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace mcla::gpu {
+
+namespace rr = car_rt_rules;
+namespace ci = car_rt_instances;
+
+namespace {
+
+constexpr const char* kPrefix = "[car rt]";
+// Frames between two window lines of the log.
+constexpr uint64_t kWindowFrames = 300;
+
+}  // namespace
+
+ci::Limits CarRtInstances::CurrentLimits() const {
+  return ci::LimitsFor(gpu_class::Current(), int(REXCVAR_GET(mcla_gpu_car_rt_cars)), double(REXCVAR_GET(mcla_gpu_car_rt_cars_radius)));
+}
+
+const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::Limits& limits, bool flip_z, bool glass_rule, const FindMesh& find) {
+  list_.Clear();
+  if (list_.items.capacity() < rr::kMaxInstances) {
+    list_.items.reserve(rr::kMaxInstances);
+    list_.rows.reserve(rr::kMaxInstances + ci::kMaxCars);
+  }
+  // The player's car: the body draws whose mesh has a structure (the driver is not in the scene), in the draws' order.
+  for (uint32_t i = 0; i < frame.draws.size() && list_.items.size() < rr::kMaxInstances; ++i) {
+    const car_frame::Draw& draw = frame.draws[i];
+    if (draw.part != car_frame::Part::kBody || draw.mesh_key == 0) {
+      continue;
+    }
+    ci::MeshRef ref;
+    if (!find(draw.mesh_key, &ref)) {
+      ++list_.stats.missing_mesh;
+      continue;
+    }
+    ci::Item item;
+    item.mesh_key = draw.mesh_key;
+    if (!rr::PackInstanceTransform(draw.model_to_world, frame.view, flip_z, item.transform)) {
+      ++list_.stats.bad_matrix;
+      continue;
+    }
+    item.mask = rr::InstanceMask(draw.vs == rr::kTyreVs, draw.after_world, glass_rule);
+    list_.items.push_back(item);
+    list_.rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, i));
+    ++list_.stats.player_instances;
+    if (ref.has_bounds) {
+      ci::GrowBox(&list_.player_box, item.transform, ref);  // (a mesh without a box would add its origin alone: left out)
+    }
+  }
+  // The other cars: the nearest whole cars that fit the instance budget.
+  if (limits.On() && !frame.other_cars.empty()) {
+    ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find);
+  }
+  ci::CountSharing(&list_);
+  return list_;
+}
+
+void CarRtInstances::NoteFrame(uint64_t frame, uint64_t blas_built_total, const ci::Limits& limits) {
+  const ci::ListStats& s = list_.stats;
+  if (!started_) {
+    started_ = true;
+    window_.first_frame = frame;
+    window_.built_at_start = blas_built_total;
+  }
+  Window& w = window_;
+  ++w.frames;
+  w.frames_with_cars += s.cars != 0;
+  w.player_sum += s.player_instances;
+  w.other_sum += s.other_instances;
+  w.chrome_sum += s.other_chrome;
+  w.cars_sum += s.cars;
+  w.missing_sum += s.missing_mesh;
+  w.bad_sum += s.bad_matrix;
+  w.cut_sum += s.cars_cut;
+  w.player_max = std::max(w.player_max, s.player_instances);
+  w.other_max = std::max(w.other_max, s.other_instances);
+  w.chrome_max = std::max(w.chrome_max, s.other_chrome);
+  w.cars_max = std::max(w.cars_max, s.cars);
+  w.distinct_max = std::max(w.distinct_max, s.distinct_meshes);
+  w.shared_max = std::max(w.shared_max, s.shared_meshes);
+
+  if (s.cars != 0 && !first_cars_logged_) {
+    first_cars_logged_ = true;
+    REXLOG_INFO("{} frame {}: the first other cars are in the top level: {} cars, {} instances beside the player's {} (of the others' {} are draws of the chrome's "
+                "shader: their tailpipes, badges and trim, traced for the chrome's occlusion), {} distinct meshes in all of which {} are "
+                "named by more than one instance (one structure each, shared); limits: {}",
+                kPrefix, frame, s.cars, s.other_instances, s.player_instances, s.other_chrome, s.distinct_meshes, s.shared_meshes, ci::Describe(limits));
+  }
+  if (frame < w.first_frame + kWindowFrames) {
+    return;
+  }
+  const double n = double(std::max<uint32_t>(w.frames, 1));
+  if (limits.On() || w.frames_with_cars != 0) {
+    REXLOG_INFO("{} cars, frames {}..{}: {} with a top level, {} of them with other cars; instances a frame: player {:.0f} (at most {}), others {:.0f} (at most {}; chrome draws {:.1f}, at most {}), "
+                "other cars {:.1f} (at most {}); the most distinct meshes {} of which {} shared by several instances; left out per frame: {:.1f} draws "
+                "with no structure yet, {:.2f} with a bad matrix, {:.2f} cars over the instance budget; structures built in the window: {}; other cars' "
+                "meshes read from guest memory: {} ({} triangles), draws held back by the read budget {} and by the memory share {}; limits: {}",
+                kPrefix, w.first_frame, frame, w.frames, w.frames_with_cars, double(w.player_sum) / n, w.player_max, double(w.other_sum) / n, w.other_max,
+                double(w.chrome_sum) / n, w.chrome_max, double(w.cars_sum) / n, w.cars_max, w.distinct_max, w.shared_max, double(w.missing_sum) / n, double(w.bad_sum) / n, double(w.cut_sum) / n,
+                blas_built_total - w.built_at_start, window_work_.meshes_read, window_work_.triangles_read, window_work_.over_stage_budget,
+                window_work_.over_memory, ci::Describe(limits));
+  }
+  window_ = Window{};
+  window_.first_frame = frame;
+  window_.built_at_start = blas_built_total;
+  window_work_ = Work{};
+}
+
+}  // namespace mcla::gpu

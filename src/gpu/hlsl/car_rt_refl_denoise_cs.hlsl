@@ -24,6 +24,10 @@
 #include "car_rt_refl_common.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
+#ifdef __spirv__
+// Vulkan takes the format of a storage image from the shader (DXC would say rgba32f for a float4): the images are R16G16B16A16_FLOAT.
+[[vk::image_format("rgba16f")]]
+#endif
 RWTexture2D<float4> g_output : register(u0, space1);
 
 struct CarRtDenoisePush
@@ -38,7 +42,11 @@ struct CarRtDenoisePush
     float4 tune;
 };
 
+#ifdef __spirv__
+[[vk::push_constant]] ConstantBuffer<CarRtDenoisePush> g_push;
+#else
 ConstantBuffer<CarRtDenoisePush> g_push : register(b0, space2);
+#endif
 
 static const float kMinCode = 0.5;
 static const float kMinWeight = 1.0 / 512.0;

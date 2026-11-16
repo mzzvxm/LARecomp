@@ -37,6 +37,8 @@ void Check(bool ok, const std::string& what) {
 
 bool Near(double a, double b, double tolerance = 1e-9) { return std::fabs(a - b) <= tolerance * std::max(1.0, std::fabs(b)); }
 
+double car_dump_match_metres() { return cd::kPlayerMatchMetres; }
+
 // ---------------------------------------------------------------------------
 // a hand-made vertex shader bank
 // ---------------------------------------------------------------------------
@@ -257,6 +259,42 @@ void TestIdentity() {
     p = at(105.0, 0, 0);
     v = t.OnDraw(1, p.data(), player);
     Check(v.confirmed_now && t.confirmed() == 1, "a draw 5 m from the vehicle is");
+  }
+
+  // A car alongside (another car's ID within 5 m of the vehicle, drawn before the player's): with a previous ID it takes no match beyond 1.5 m.
+  {
+    fr::IdentityTracker t;
+    t.BeginFrame(2);
+    auto p = at(103.5, 0, 0);
+    fr::IdentityTracker::Verdict v = t.OnDraw(1, p.data(), player);
+    Check(!v.improved && !v.confirmed_now && t.confirmed() == 0 && v.standing == Standing::kOther && Near(v.distance, 3.5),
+          "an opponent 3.5 m beside the vehicle, drawn first, does not take the player's place when the frame before had an ID");
+    p = at(100.2, 0, 0);
+    v = t.OnDraw(2, p.data(), player);
+    Check(v.confirmed_now && t.confirmed() == 2 && v.standing == Standing::kConfirmed, "the previous ID's own draw near the vehicle confirms it as ever");
+    p = at(102.0, 0, 0);
+    v = t.OnDraw(1, p.data(), player);
+    Check(v.standing == Standing::kOther && !v.switched && t.confirmed() == 2, "and the opponent stays another car");
+    Check(fr::IdentityTracker::kStrictMatchMetres < car_dump_match_metres() && fr::IdentityTracker::kStrictMatchMetres > 1.0,
+          "the strict match is between a car's own wheels' offset and the 5 m rule");
+  }
+  {
+    // The strict match still takes an ID that is that near (a car on the vehicle: the player's ID changed).
+    fr::IdentityTracker t;
+    t.BeginFrame(2);
+    auto p = at(101.0, 0, 0);
+    const fr::IdentityTracker::Verdict v = t.OnDraw(5, p.data(), player);
+    Check(v.confirmed_now && t.confirmed() == 5, "another ID within 1.5 m of the vehicle is the player's car under a new ID");
+    // Without a previous ID the 5 m rule stands (the first frame).
+    fr::IdentityTracker f;
+    f.BeginFrame(0);
+    auto q = at(103.5, 0, 0);
+    Check(f.OnDraw(1, q.data(), player).confirmed_now, "with no previous ID a draw 3.5 m from the vehicle is a match");
+    // The ID of the previous frame is matched at 5 m even when another ID is nearer than 1.5 m is not required.
+    fr::IdentityTracker g;
+    g.BeginFrame(3);
+    auto r = at(104.5, 0, 0);
+    Check(g.OnDraw(3, r.data(), player).confirmed_now && g.confirmed() == 3, "the previous frame's ID is matched at the 5 m rule (the vehicle's state lags at speed)");
   }
 
   // No player's vehicle, no translation, no usable ID: nothing is confirmed and nothing crashes.
@@ -731,6 +769,11 @@ void TestContentCache() {
   Check(o == Outcome::kChanged && computed == 3 && e.content == 200, "a stamp that moved over other bytes gives another fingerprint");
   get(2, 52, 22, &o);
   Check(o == Outcome::kNew && computed == 4 && cache.size() == 2, "another slot is another entry");
+  // Fresh says whether a Get would hit, without making anything.
+  Check(cache.Fresh(1, 52) && cache.Fresh(2, 52) && !cache.Fresh(1, 53) && !cache.Fresh(3, 52) && computed == 4 && cache.size() == 2,
+        "Fresh: a slot at its stamp is current, a slot at another stamp or a slot never made is not, and nothing is made by asking");
+  get(1, 53, 23, &o);
+  Check(cache.Fresh(1, 53) && !cache.Fresh(1, 52), "after a Get at a new stamp the new stamp is the fresh one");
 
   // Sweeping: an entry not asked for in `keep` frames goes.
   cache.Sweep(30, 100);

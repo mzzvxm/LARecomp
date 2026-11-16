@@ -26,9 +26,11 @@
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_car_rt_check, false, "MCLA/GPU",
     "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
-    "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
+    "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
-    "vehicle pixels the structures cover (the other cars and the driver count as misses) and how far the distances are apart. It "
+    "vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: "
+    "the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in "
+    "the scene by design (the driver is in the player's count and shows as a miss). It "
     "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -36,8 +38,8 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_rt_view, 0, "MCLA/GPU",
     "Debug: shows the car ray tracing check's picture over the scene (only while mcla_gpu_car_rt_check is on): 1 the error of each "
-    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit), 2 the hit's normal as colour (x right, y up, "
-    "z forward, times 0.5 plus 0.5). 0: off. Live.")
+    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit, grey-blue: a car outside the scene by design), "
+    "2 the hit's normal as colour (x right, y up, z forward, times 0.5 plus 0.5). 0: off. Live.")
     .debug_only()
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -54,6 +56,9 @@ REXCVAR_DEFINE_INT32(
 namespace mcla::gpu {
 
 namespace rr = car_rt_rules;
+
+// The check's scope reads as many of the other cars' boxes as the selection keeps.
+static_assert(rr::kScopeMaxOtherBoxes >= car_rt_instances::kMaxCars, "the check's scope reads every kept car's box");
 
 namespace {
 
@@ -101,8 +106,15 @@ double Mib(uint64_t bytes) {
 
 std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
   if (vulkan) {
-    // Extend here when Plume enables VK_KHR_ray_query (RenderDeviceCapabilities::rayQuery) and the SPIR-V of the shaders is built.
-    return "on Vulkan it waits for Plume's VK_KHR_ray_query support, which this build does not use yet";
+    // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
+    // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
+    if (!caps.rayQuery) {
+      return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+    }
+    if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
+      return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
+    }
+    return std::string();
   }
   if (!caps.raytracing || !caps.raytracingStateUpdate) {
     return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
@@ -176,7 +188,7 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
 bool CarRtScene::MakeCheck(HostPasses& passes) {
   const HostShaderBlob blob = CarRtCheckShader();
   if (!blob.data) {
-    REXLOG_INFO("{} the check pass has no shader in this build (Direct3D 12 only): mcla_gpu_car_rt_check does nothing", kPrefix);
+    REXLOG_INFO("{} the check pass has no shader in this build: mcla_gpu_car_rt_check does nothing", kPrefix);
     return false;
   }
   check_set_builder_.begin();
@@ -272,7 +284,8 @@ void CarRtScene::Shutdown() {
 void CarRtScene::Request() {
   requested_ = true;
   if (car_frame_) {
-    car_frame_->Request();
+    // The draws of the player's car and, within the class's limits, of the cars beside it (car_rt_instances_rules.h); the debug cvars are read here.
+    car_frame_->RequestOtherCars(instances_.CurrentLimits());
   }
 }
 
@@ -323,11 +336,62 @@ void CarRtScene::OnPlayerDraw(const car_frame::Draw& draw, const car_frame::Mesh
   if (staged_triangles_ >= rr::kStageTrianglesPerFrame) {
     return;  // the rest next frame: a draw's call is no place for a long read
   }
+  ReadAndStage(key, reader);
+}
+
+// A draw of another car the selection kept (car_rt_instances_rules.h): the same read, within what the other cars may spend in a frame (the triangles
+// read, the share of the video memory the player's own car does not need) and never at the player's expense: the frame's total budget counts them too.
+void CarRtScene::OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_frame::MeshReader& reader) {
+  if (!ready_ || !Wants() || draw.mesh_key == 0) {
+    return;
+  }
+  const uint64_t key = draw.mesh_key;
+  if (const auto it = meshes_.find(key); it != meshes_.end()) {
+    it->second.last_seen = frame_;
+    return;
+  }
+  if (staged_.contains(key)) {
+    return;
+  }
+  if (const auto failed = failed_.find(key); failed != failed_.end()) {
+    if (frame_ < failed->second + rr::kRetryFailedFrames) {
+      return;
+    }
+    failed_.erase(failed);
+  }
+  if (staged_triangles_ >= rr::kStageTrianglesPerFrame) {
+    return;
+  }
+  const car_rt_instances::Limits& limits = car_frame_->other_limits();
+  // Before reading: the draw's own count says about how many triangles the mesh has (a list's third of the indices).
+  const uint64_t hint = draw.indices / 3;
+  if (!car_rt_instances::MayStage(staged_triangles_other_, hint, limits.stage_triangles)) {
+    ++instances_.work().over_stage_budget;  // a later frame: the draw's car appears in parts
+    return;
+  }
+  uint64_t staged_bytes = 0;
+  for (const auto& [staged_key, staged] : staged_) {
+    staged_bytes += uint64_t(staged.positions.size()) / 3 * 24 + uint64_t(staged.indices.size()) * 4 + uint64_t(staged.triangles) * kStructureBytesPerTriangle;
+  }
+  if (!car_rt_instances::OthersMayAdd(resident_bytes_, staged_bytes, car_rt_instances::EstimateMeshBytes(draw.indices, kStructureBytesPerTriangle))) {
+    ++instances_.work().over_memory;  // the other cars' share is used: the least recently seen meshes go first when the cap asks (Evictions)
+    return;
+  }
+  const uint32_t triangles = ReadAndStage(key, reader);
+  if (triangles != 0) {
+    staged_triangles_other_ += triangles;
+    ++instances_.work().meshes_read;
+    instances_.work().triangles_read += triangles;
+  }
+}
+
+// The tail of both listeners: the triangles of an unseen mesh into CPU vectors, cleaned, staged for the trigger.
+uint32_t CarRtScene::ReadAndStage(uint64_t key, const car_frame::MeshReader& reader) {
   Staged staged;
   if (!reader.ReadTriangles(&staged.positions, &staged.indices, &staged.normals)) {
     failed_[key] = frame_;
     ++stats_counts_.read_failed;
-    return;
+    return 0;
   }
   const rr::MeshClean clean = rr::CleanMesh(&staged.positions, &staged.indices, &staged.normals);
   const uint64_t vertices = staged.positions.size() / 3;
@@ -339,11 +403,14 @@ void CarRtScene::OnPlayerDraw(const car_frame::Draw& draw, const car_frame::Mesh
       REXLOG_WARN("{} a mesh was left out: {} vertices, {} triangles ({} of {} triangles dropped as unusable)", kPrefix, vertices,
                   staged.triangles, clean.triangles_dropped, clean.triangles_in);
     }
-    return;
+    return 0;
   }
-  staged_triangles_ += staged.triangles;
+  staged.has_bounds = car_rt_instances::BoundsOf(staged.positions, staged.bounds_min, staged.bounds_max);
+  const uint32_t triangles = staged.triangles;
+  staged_triangles_ += triangles;
   staged_order_.push_back(key);
   staged_.emplace(key, std::move(staged));
+  return triangles;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,13 +445,14 @@ bool CarRtScene::IsTrigger(const ResolveRecord& record, const ResolveCache::Summ
 }
 
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
-                           uint32_t slot, const AmbientOcclusion* ao) {
+                           uint32_t slot) {
   if (!ready_ || !list || slot >= kFramesInFlight || !IsTrigger(record, summary)) {
     return false;
   }
   trigger_seen_ = true;
   ++stats_counts_.triggers;
   view_ = CarRtView{};
+  check_due_ = false;
   if (!Wants()) {
     return false;
   }
@@ -494,32 +562,37 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // after the world in one view and the whole car did in another): the check's log counts the hits by class, mcla_gpu_car_rt_masks 1
   // turns the rule off.
   const bool glass_rule = REXCVAR_GET(mcla_gpu_car_rt_masks) == 0 && rr::GlassRuleInformative(after_world, body_draws);
+  // === RT-CARS BLOCK (reconcile with feat/rt-vulkan): the instance list (car_rt_instances.h) -> the top level's instances. The player's draws and
+  // the other cars' draws whose mesh has a structure come out of `instances_` as items (mesh key, transform in view space, mask) and as the table's
+  // rows (one per item, then one per other car); this block only turns an item into a RenderTopLevelASInstance on the mesh's structure.
+  const car_rt_instances::List& cars = instances_.Build(
+      frame, car_frame_->other_limits(), flip_z, glass_rule, [&](uint64_t key, car_rt_instances::MeshRef* ref) {
+        const auto it = meshes_.find(key);
+        if (it == meshes_.end() || !it->second.structure) {
+          return false;
+        }
+        it->second.last_seen = frame_;  // a mesh of a car in this frame's list is seen (the cap does not take it back)
+        ref->first_index = it->second.first_index;
+        ref->first_vertex = it->second.first_vertex;
+        std::memcpy(ref->bounds_min, it->second.bounds_min, sizeof(ref->bounds_min));
+        std::memcpy(ref->bounds_max, it->second.bounds_max, sizeof(ref->bounds_max));
+        ref->has_bounds = it->second.has_bounds;
+        return true;
+      });
+  stats_counts_.missing_mesh += cars.stats.missing_mesh;
+  stats_counts_.bad_matrix += cars.stats.bad_matrix;
   std::vector<plume::RenderTopLevelASInstance> instances;
-  std::vector<rr::InstanceRow> rows;
-  for (uint32_t i = 0; i < frame.draws.size() && instances.size() < rr::kMaxInstances; ++i) {
-    const car_frame::Draw& draw = frame.draws[i];
-    if (draw.part != car_frame::Part::kBody || draw.mesh_key == 0) {
-      continue;
-    }
-    const auto it = meshes_.find(draw.mesh_key);
-    if (it == meshes_.end() || !it->second.structure) {
-      ++stats_counts_.missing_mesh;
-      continue;
-    }
-    float transform[3][4];
-    if (!rr::PackInstanceTransform(draw.model_to_world, frame.view, flip_z, transform)) {
-      ++stats_counts_.bad_matrix;
-      continue;
-    }
-    const Mesh& m = it->second;
-    const uint32_t mask = rr::InstanceMask(draw.vs == rr::kTyreVs, draw.after_world, glass_rule);
-    const uint32_t index = uint32_t(instances.size());
-    plume::RenderTopLevelASInstance instance(plume::RenderBufferReference(pages_[m.page].buffer.get(), m.structure_offset), index, mask, 0,
+  instances.reserve(cars.items.size());
+  for (uint32_t index = 0; index < cars.items.size(); ++index) {
+    const car_rt_instances::Item& item = cars.items[index];
+    const Mesh& m = meshes_.at(item.mesh_key);
+    plume::RenderTopLevelASInstance instance(plume::RenderBufferReference(pages_[m.page].buffer.get(), m.structure_offset), index, item.mask, 0,
                                              /*cullDisable=*/true, plume::RenderAffineTransform());
-    std::memcpy(instance.transform.m, transform, sizeof(transform));
+    std::memcpy(instance.transform.m, item.transform, sizeof(item.transform));
     instances.push_back(instance);
-    rows.push_back(rr::MakeRow(m.first_index, m.first_vertex, mask, draw.after_world, i));
   }
+  const std::vector<rr::InstanceRow>& rows = cars.rows;  // the instances' rows, then the other cars' records: one table
+  // === END OF THE RT-CARS BLOCK ===
 
   // The top level's own description and the slot's buffers for it (the slot's GPU work is done: the FrameRing waited for it).
   SlotResources& res = slots_[slot];
@@ -529,7 +602,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
   }
   const bool slot_ok = count != 0 ? EnsureSlot(res, slot, tlas_info.accelerationStructureSize, std::max(scratch_needed, tlas_info.scratchSize),
-                                                tlas_info.instancesBufferData.size(), uint64_t(count) * sizeof(rr::InstanceRow))
+                                                tlas_info.instancesBufferData.size(), uint64_t(rows.size()) * sizeof(rr::InstanceRow))
                                   : (scratch_needed == 0 || EnsureSlot(res, slot, 0, scratch_needed, 0, 0));
   bool recorded = !placed.empty();
   if (!slot_ok) {
@@ -583,22 +656,38 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     // The set: written for this slot now (its last use is finished), so a consumer binds it as it is.
     const plume::RenderBufferStructuredView rows_view(sizeof(rr::InstanceRow), 0);
     res.set->setAccelerationStructure(tlas_index_, res.tlas.get());
-    res.set->setBuffer(table_index_, res.table.get(), uint64_t(count) * sizeof(rr::InstanceRow), &rows_view);
+    res.set->setBuffer(table_index_, res.table.get(), uint64_t(rows.size()) * sizeof(rr::InstanceRow), &rows_view);
     res.set->setBuffer(indices_index_, indices_.buffer.get(), 0);
     res.set->setBuffer(normals_index_, normals_.buffer.get(), 0);
     view_.valid = true;
     view_.set = res.set.get();
     view_.instance_count = count;
+    view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
+    view_.box_count = uint32_t(cars.boxes.size());
+    view_.box_row = cars.box_row;
+    view_.player_box = cars.player_box;
+    {
+      const double world_up[3] = {0.0, 1.0, 0.0};
+      car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
+    }
     stats_counts_.frames_with_tlas += 1;
     stats_counts_.instances += count;
     recorded = true;
   }
+  instances_.NoteFrame(frame_, stats_counts_.meshes_built, car_frame_->other_limits());
   LogTotals("");
-  if (REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid) {
-    RecordCheck(list, slot, summary, ao);
-    recorded = true;
-  }
+  // The check reads the occlusion's linear depth, which its passes make after this call: it is recorded by OnAfterOcclusion.
+  check_due_ = REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid;
   return recorded;
+}
+
+bool CarRtScene::OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao) {
+  if (!check_due_ || !ready_ || !list || slot >= kFramesInFlight || !view_.valid) {
+    return false;
+  }
+  check_due_ = false;
+  RecordCheck(list, slot, summary, ao);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -948,6 +1037,9 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     p.mesh.first_index = first_index;
     p.mesh.index_count = index_count;
     p.mesh.last_seen = frame_;
+    std::memcpy(p.mesh.bounds_min, staged.bounds_min, sizeof(p.mesh.bounds_min));
+    std::memcpy(p.mesh.bounds_max, staged.bounds_max, sizeof(p.mesh.bounds_max));
+    p.mesh.has_bounds = staged.has_bounds;
     placed->push_back(std::move(p));
     done.push_back(key);
   }
@@ -961,8 +1053,9 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
                             uint64_t table_bytes) {
   const auto room = [](uint64_t bytes) { return AlignUp(bytes + bytes / 4, 4096); };
   if (tlas_bytes != 0 && s.tlas_bytes < tlas_bytes) {
-    // CHECK: the top level sits at offset 0 of a buffer of its own: Plume's pinned D3D12 descriptor for an acceleration structure uses the
-    // buffer's base address and ignores the structure's offset (fixed on its feat/ray-query 3c81454, not pinned yet).
+    // The top level sits at offset 0 of a buffer of its own: Plume's D3D12 descriptor for an acceleration structure used the buffer's base
+    // address and ignored the structure's offset until its feat/ray-query 3c81454 (pinned with the Vulkan work). Kept at offset 0: on Vulkan
+    // the descriptor names the structure itself, so the offset never mattered there.
 
     const uint64_t bytes = room(tlas_bytes);
     const std::string name = std::format("car rt top level {}", index);
@@ -1073,8 +1166,10 @@ void CarRtScene::OnPresent() {
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
+  check_due_ = false;
   view_ = CarRtView{};
   staged_triangles_ = 0;
+  staged_triangles_other_ = 0;
   ++frame_;
 }
 
@@ -1096,7 +1191,8 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
     ++stats_counts_.check_no_depth;
     if (stats_counts_.check_no_depth == 1) {
       REXLOG_WARN("{} the check needs the ambient occlusion's linear depth image and this frame has none (the occlusion and the contact "
-                  "shadows are off, or their passes did not run); it is asked again every frame", kPrefix);
+                  "shadows are off, or their passes did not run): this frame has no check, and a frame that has the image is checked again; the "
+                  "frames without one so far are counted at the end of every check line (this warning is said once)", kPrefix);
     }
     return;
   }
@@ -1148,6 +1244,20 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.lens[1] = depth.tan_half_fov[1];
   push.lens[2] = kCheckTMin;
   push.lens[3] = kCheckTMax;
+  // The scope: the pixels the scene is meant to hold are those in the player's car's box (its listed instances' transformed mesh boxes, grown by the
+  // margin) or in the box of one of the other cars the top level holds (the table's rows from box_row, two a box, grown by the margin in the shader).
+  CheckScope scope;
+  scope.player_box = view_.player_box.valid;
+  if (scope.player_box) {
+    for (int c = 0; c < 3; ++c) {
+      push.box_min[c] = view_.player_box.min[c] - rr::kScopeBoxMargin;
+      push.box_max[c] = view_.player_box.max[c] + rr::kScopeBoxMargin;
+    }
+  }
+  scope.kept_cars = view_.boxes ? std::min(view_.box_count, rr::kScopeMaxOtherBoxes) : 0u;
+  push.scope[0] = view_.box_row;
+  push.scope[1] = scope.kept_cars;
+  push.scope[2] = scope.player_box ? rr::kScopeFlagPlayerBox : 0u;
   list->setComputePipelineLayout(check_layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(res.check_set.get(), 1);
@@ -1163,8 +1273,8 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
                            kCounterBytes);
     readback_busy_ = true;
     next_readback_ = frame_ + kReadbackEveryFrames;
-    frames_->RetireAction([this, frame = frame_, generation = generation_, instances = view_.instance_count, width, height] {
-      ProcessReadback(frame, generation, instances, width, height);
+    frames_->RetireAction([this, frame = frame_, generation = generation_, instances = view_.instance_count, scope, width, height] {
+      ProcessReadback(frame, generation, instances, scope, width, height);
     });
   }
   if (want_view) {
@@ -1175,7 +1285,7 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   }
 }
 
-void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, uint32_t width, uint32_t height) {
+void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, const CheckScope& scope, uint32_t width, uint32_t height) {
   readback_busy_ = false;
   if (generation != generation_ || !readback_) {
     return;
@@ -1189,17 +1299,31 @@ void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t i
   std::memcpy(words, mapped, sizeof(words));
   readback_->unmap();
   const rr::CheckSummary s = rr::DecodeCheckStats(words);
+  // The line the chain reads (perf/scripts/chain-rtint.ps1): "check of frame N: P vehicle pixels ... X% hit" and "on the other cars' parts" as before, and
+  // since the scope "O vehicle pixels not in the scene by design" and "K other kept cars". P counts only the pixels the scene is meant to hold (the player's
+  // car and the other cars the frame kept); O is the vehicle pixels of the cars outside the selection, counted apart.
+  const std::string no_player_box = scope.player_box ? std::string() : std::string("; the player's car's box was not known (none of its meshes had a box): "
+                                                                                     "every pixel in no other car's box is counted");
   if (s.vehicle == 0) {
-    REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image (no car on the screen), the top level held {} instances", kPrefix,
-                frame, width, height, instances);
+    if (s.outside == 0) {
+      REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image (no car on the screen), the top level held {} instances; check frames "
+                  "without a depth image so far: {}", kPrefix, frame, width, height, instances, stats_counts_.check_no_depth);
+    } else {
+      REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image that the scene is meant to hold ({} vehicle pixels not in the scene by design: "
+                  "cars outside the selection; {} other kept cars), the top level held {} instances{}; check frames without a depth image so far: {}",
+                  kPrefix, frame, width, height, s.outside, scope.kept_cars, instances, no_player_box, stats_counts_.check_no_depth);
+    }
     return;
   }
-  REXLOG_INFO("{} check of frame {}: {} vehicle pixels in the {}x{} depth image, {:.1f}% hit a part of the player's car ({} missed: the other cars, "
-              "the driver, parts not built yet); the hit's distance is off the image's by {:.2f}% on average, {} at the median and {} at the 95th "
-              "percentile, {:.1f}% are within 1%; nearer than the image by over 2%: {:.1f}%, farther: {:.1f}%; hits by class: {} body, {} glass, "
-              "{} tyres; the top level held {} instances",
-              kPrefix, frame, s.vehicle, width, height, s.coverage * 100.0, s.missed, s.mean_error * 100.0, EdgeText(s.p50), EdgeText(s.p95),
-              s.within_1pct * 100.0, s.nearer * 100.0, s.farther * 100.0, s.body, s.glass, s.tyres, instances);
+  REXLOG_INFO("{} check of frame {}: {} vehicle pixels in the {}x{} depth image that the scene is meant to hold ({} of them in the box of {} other kept cars, "
+              "the rest in the player's car's), {:.1f}% hit a part of a car in the scene ({} missed: the driver, parts not built yet); {} vehicle pixels "
+              "not in the scene by design (cars outside the selection: beyond the class's radius or count, or the cars 0 switch); the hit's distance is "
+              "off the image's by {:.2f}% on average, {} at the median and {} at the 95th percentile, {:.1f}% are within 1%; nearer than the image by over "
+              "2%: {:.1f}%, farther: {:.1f}%; hits by class: {} body, {} glass, {} tyres, {} on the other cars' parts; the top level held {} instances{}; "
+              "check frames without a depth image so far: {}",
+              kPrefix, frame, s.vehicle, width, height, s.others, scope.kept_cars, s.coverage * 100.0, s.missed, s.outside, s.mean_error * 100.0,
+              EdgeText(s.p50), EdgeText(s.p95), s.within_1pct * 100.0, s.nearer * 100.0, s.farther * 100.0, s.body, s.glass, s.tyres, s.other,
+              instances, no_player_box, stats_counts_.check_no_depth);
 }
 
 plume::RenderPipeline* CarRtScene::ViewPipeline(uint32_t samples) {

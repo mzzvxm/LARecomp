@@ -21,22 +21,14 @@
 #include "device.h"
 #include "frame.h"
 #include "host_precache.h"
+#include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-// The compute shader's blob: built for D3D12 only (larecomp_gpu_host_shader_rt: cs_6_5 DXIL), the one backend that traces the car.
-#if defined(LARECOMP_GPU_HAS_D3D12)
-#include "car_rt_refl_cs.hlsl.dxil.h"  // CHECK: the name and variable (g_car_rt_refl_cs_dxil) larecomp_gpu_host_shader_rt gives, as the other host shaders'
-#include "car_rt_refl_denoise_cs.hlsl.dxil.h"  // CHECK: likewise g_car_rt_refl_denoise_cs_dxil (larecomp_gpu_host_shader_rt(car_rt_refl_denoise_cs cs_6_0))
-#define MCLA_CAR_RT_REFL_HAS_SHADER 1
-#else
-#define MCLA_CAR_RT_REFL_HAS_SHADER 0
-#endif
-
 REXCVAR_DEFINE_STRING(
     mcla_gpu_car_selfrefl_rt, "auto", "MCLA/GPU",
-    "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of "
+    "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of "
     "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
     "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
     "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "
@@ -67,12 +59,24 @@ REXCVAR_DEFINE_INT32(
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_rt_parts, 7, "MCLA/GPU",
-    "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
-    "driver. 7 (the default): the body, the glass and the tyres. Live.")
+    mcla_gpu_car_selfrefl_rt_parts, 23, "MCLA/GPU",
+    "Diagnostic: the parts the ray traced self-reflection's ray can hit, a sum of: 1 your car's body, 2 its glass, 4 its tyres, 8 its "
+    "driver, 16 the other cars beside it (opponents, traffic, parked cars; mcla_gpu_car_rt_cars says how many are in the scene). 23 (the "
+    "default): the body, the glass, the tyres and the other cars. 7 is your car alone. Live.")
     .debug_only()
-    .range(1, 15)
+    .range(1, 31)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_car_chrome_rt_others, true, "MCLA/GPU",
+    "Diagnostic: where the graphics card can ray trace and the car self-reflection runs, the chrome of the OTHER cars (opponents, traffic: the tailpipes, "
+    "badges and trim) is darkened under their own bodies from their real shape, as your own car's chrome is (mcla_gpu_car_chrome_occlusion): two "
+    "short rays a chrome pixel against the cars in the ray traced scene (mcla_gpu_car_rt_cars), traced where the picture of the frame before shows "
+    "the chrome. Off: their chrome takes the marched version (the picture of the car of the frame before), as before this. Needs "
+    "mcla_gpu_car_chrome_occlusion and the other cars in the scene. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// pipelines.cpp: the chrome variant's own switch (the pass leaves another car's chrome alone where the variant is not drawn).
+REXCVAR_DECLARE(bool, mcla_gpu_car_chrome_occlusion);
 
 namespace mcla::gpu {
 
@@ -117,10 +121,9 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
-  supported_ = scene != nullptr && MCLA_CAR_RT_REFL_HAS_SHADER != 0 &&
-               CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  supported_ = scene != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
   if (!supported_) {
-    passes.precache().Note("ray traced car self-reflections: not on this graphics card or backend (the screen-space version runs)", 0);
+    passes.precache().Note("ray traced car self-reflections: not on this graphics card or driver (the screen-space version runs)", 0);
     return;
   }
   if (!MakeLayoutAndShader(device, passes, *scene)) {
@@ -151,7 +154,6 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
 }
 
 bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene) {
-#if MCLA_CAR_RT_REFL_HAS_SHADER
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   output_builder_.addReadWriteTexture(1);  // u1: the aux image (hit distance, instance, N.V) for the denoise
@@ -172,18 +174,12 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
   if (!layout_) {
     return false;
   }
-  shader_ = passes.CreateShader(g_car_rt_refl_cs_dxil, sizeof(g_car_rt_refl_cs_dxil), "car_rt_refl_cs");
+  const HostShaderBlob blob = CarRtReflShader();
+  shader_ = passes.CreateShader(blob.data, blob.size, blob.name);
   return shader_ != nullptr;
-#else
-  (void)device;
-  (void)passes;
-  (void)scene;
-  return false;
-#endif
 }
 
 bool CarRtRefl::MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes) {
-#if MCLA_CAR_RT_REFL_HAS_SHADER
   denoise_builder_.begin();
   denoise_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   denoise_builder_.end();
@@ -202,13 +198,9 @@ bool CarRtRefl::MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes) {
   if (!denoise_layout_) {
     return false;
   }
-  denoise_shader_ = passes.CreateShader(g_car_rt_refl_denoise_cs_dxil, sizeof(g_car_rt_refl_denoise_cs_dxil), "car_rt_refl_denoise_cs");
+  const HostShaderBlob blob = CarRtReflDenoiseShader();
+  denoise_shader_ = passes.CreateShader(blob.data, blob.size, blob.name);
   return denoise_shader_ != nullptr;
-#else
-  (void)device;
-  (void)passes;
-  return false;
-#endif
 }
 
 void CarRtRefl::Shutdown() {
@@ -373,10 +365,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     }
   }
 
+  // Another car's chrome (car_chrome_rt_rules.h): found by the primary ray too, and its probes traced, where the chrome variant is drawn at all and the switch for
+  // this is on; else the primary ray is the player's body alone, as it was (no instance of the scene has the chrome's bit then that a ray here would take).
+  const bool chrome_others = REXCVAR_GET(mcla_gpu_car_chrome_occlusion) && REXCVAR_GET(mcla_gpu_car_chrome_rt_others);
   Push push = {};
   push.slots[0] = history.slot;
   push.slots[1] = parts;
-  push.slots[2] = car_rt_refl::kPrimaryParts;
+  push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   push.slots[3] = info.pattern_phase & 7u;
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
@@ -390,6 +385,9 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.tune[1] = car_rt_refl::kHiddenWeight;
   push.tune[2] = car_rt_refl::kFadeFrom;
   push.tune[3] = tan_half;
+  push.up[0] = view.up[0];
+  push.up[1] = view.up[1];
+  push.up[2] = view.up[2];
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -454,10 +452,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
-                "parts {}, {} rays over a cone of {} degrees{}",
+                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
-                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "");
+                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
+                chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version");
   }
   return true;
 }

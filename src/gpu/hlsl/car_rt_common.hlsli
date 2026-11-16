@@ -4,7 +4,7 @@
 // Shader Model 6.5 (inline ray queries). The includer defines CAR_RT_SPACE (the register space its pipeline layout gives the
 // set) before including this file.
 //
-// The top level holds one instance per draw of the player's car in the frame's VIEW space (x right, y up, z forward: the linear depth t
+// The top level holds one instance per draw of the player's car (and of the other cars beside it: CAR_RT_MASK_OTHERS) in the frame's VIEW space (x right, y up, z forward: the linear depth t
 // of ao_common.hlsli AoViewPos, so a ray from the origin through a pixel with the direction (ndc.x * tan_x, ndc.y * tan_y, 1) hits at
 // RayT = the view-space z of the hit = the depth image's value). An instance's index (InstanceIndex() and InstanceID() are the same
 // number) is the row of gCarRtInstances that says which mesh it is and how the draw was classed.
@@ -22,6 +22,8 @@
 #define CAR_RT_MASK_GLASS 0x02    // drawn after the world: glass, lights and other translucent parts
 #define CAR_RT_MASK_TYRES 0x04
 #define CAR_RT_MASK_DRIVER 0x08   // skinned (may be absent in a first version)
+#define CAR_RT_MASK_OTHERS 0x10   // another car (an opponent, traffic, a parked car): the reflection's rays hit it, the primary ray never does
+#define CAR_RT_MASK_OTHER_CHROME 0x20  // ... and, in a draw of the chrome's shader (tailpipes, badges, trim), this bit too: the reflection pass's primary ray finds it
 #define CAR_RT_MASK_ALL 0xFF
 #define CAR_RT_FLAG_AFTER_WORLD 0x100  // the draw came after the frame's first world draw
 
@@ -33,7 +35,10 @@
 // The frame's top level, in view space.
 RaytracingAccelerationStructure gCarRtTlas : register(t0, CAR_RT_SPACE_NAME);
 // Per instance (InstanceIndex()): x = its mesh's first index in gCarRtIndices (uint32 units), y = its mesh's first vertex in gCarRtNormals
-// (vertices of 12 bytes), z = the flags word, w = the draw's place in car_frame::Frame::draws.
+// (vertices of 12 bytes), z = the flags word, w = the draw's place in car_frame::Frame::draws; for an instance of another car (mask
+// CAR_RT_MASK_OTHERS) w is instead the ROW of the car's record in this same table (after the instances' rows): see CarRtCar. After the cars'
+// records the table holds two rows for the box of each other car that has an instance, in view space: xyz the minimum, then xyz the maximum, as float
+// bits (car_rt_instances_rules.h List::boxes; the ray traced occlusion reads them, car_rt_ao_cs.hlsl).
 StructuredBuffer<uint4> gCarRtInstances : register(t1, CAR_RT_SPACE_NAME);
 // Every mesh's triangle-list indices (uint32, relative to the mesh's first vertex).
 ByteAddressBuffer gCarRtIndices : register(t2, CAR_RT_SPACE_NAME);
@@ -46,6 +51,21 @@ struct CarRtInstance {
   uint flags;
   uint draw;
 };
+
+// The record of another car (car_rt_instances_rules.h CarRow), in the row an instance of that car names in its w: the car's body centre in the
+// frame's view space and its radius in metres (0: no centre is known: the car has no colour).
+struct CarRtCar {
+  float3 centre;
+  float radius;
+};
+
+CarRtCar CarRtLoadCar(CarRtInstance i) {
+  const uint4 row = gCarRtInstances[i.draw];
+  CarRtCar c;
+  c.centre = asfloat(row.xyz);
+  c.radius = asfloat(row.w);
+  return c;
+}
 
 CarRtInstance CarRtLoadInstance(uint instance_index) {
   const uint4 row = gCarRtInstances[instance_index];
