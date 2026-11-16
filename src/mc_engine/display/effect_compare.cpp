@@ -1,4 +1,7 @@
-// The compare key. See effect_compare.h.
+// The compare keys (F1 flips the selected effect, F12 selects the next one). A developer tool: the whole file is
+// compiled only with LARECOMP_DEV_TOOLS (CMakeLists.txt adds it to the sources then). See effect_compare.h.
+
+#if defined(LARECOMP_DEV_TOOLS)
 
 #include "effect_compare.h"
 
@@ -24,14 +27,15 @@
 
 REXCVAR_DEFINE_STRING(
     mcla_compare_effect, "bounce", "MCLA/GPU",
-    "Which graphics effect the compare key flips off and on, to see what it does: bounce (the bounce light, the "
-    "default), contact (contact shadows), shafts (sun shafts), occlusion (ambient occlusion), filter (the sun "
-    "shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow size fix: it has no row, set it "
-    "here or on the command line). The key is "
-    "F1 until it is rebound in the key bindings of F4 (bind_mcla_compare). Pressing it shows the effect the other "
-    "way than your setting has it, a label at the top of the screen says how, and the next press puts your "
-    "setting back. The flip is never saved, and it is dropped when the setting it flips is changed or this one "
-    "is. Live.")
+    "Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see "
+    "what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion "
+    "(ambient occlusion), filter (the sun shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow "
+    "size fix: the select key does not walk to it, set it here or on the command line). The select key is F12 and the "
+    "compare key F1 until they are rebound in the key bindings of F4 (bind_mcla_compare_next, bind_mcla_compare). F12 "
+    "selects the next effect and shows which one in a label at the top of the screen; F1 shows the selected effect the other "
+    "way than your setting has it, the label says how, and the next press puts your setting back. The flip is never "
+    "saved, and it is dropped when the setting it flips is changed or this one is. Live.")
+    .debug_only()
     .allowed({"bounce", "contact", "shafts", "occlusion", "filter", "selfrefl", "bloom"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -52,6 +56,12 @@ namespace cmp = mcla::gpu::compare;
 
 constexpr char kBindName[] = "bind_mcla_compare";
 constexpr char kDefaultKey[] = "F1";
+constexpr char kNextBindName[] = "bind_mcla_compare_next";
+// F12 is the last of the free function keys: F2 to F11 are taken (the texture dump, the telemetry card, the settings panel, the mod
+// browser, the server browser, the achievements, the online identity, the map warp, the frame trace and the RenderDoc capture), and
+// F1 was already the compare key.
+constexpr char kNextDefaultKey[] = "F12";
+constexpr char kSettingName[] = "mcla_compare_effect";
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
@@ -104,10 +114,10 @@ void OnKey() {
   }
   last_press_ms = now;
 
-  const cmp::Effect effect = cmp::ParseEffect(rex::cvar::GetFlagByName("mcla_compare_effect"));
+  const cmp::Effect effect = cmp::ParseEffect(rex::cvar::GetFlagByName(kSettingName));
   cmp::State& state = cmp::Global();
   if (state.Flipped() != cmp::Effect::kNone && state.Flipped() != effect) {
-    state.Clear();  // the key was set to another effect while one was flipped
+    state.Clear();  // another effect was selected while one was flipped
   }
   const cmp::Press press = cmp::PressOf(effect, state.ForcedFor(effect), ReadSaved());
   if (!press.blocked) {
@@ -119,6 +129,26 @@ void OnKey() {
           : press.force == cmp::Force::kNone ? "back to your setting"
                                               : "for a look",
           std::string(cmp::Info(effect).cvar));
+}
+
+// The select key: the next of the six effects, written into mcla_compare_effect (the one place the selection is kept, so F4 and the
+// command line see it). The write runs the change callback below, which drops a flip that was on and hides the label; the note comes
+// after it. It says what your setting shows of the effect now, which is what F1 flips away from.
+void OnSelectKey() {
+  static int64_t last_press_ms = -1;  // the UI thread's
+  const int64_t now = NowMs();
+  if (!cmp::AcceptPress(now, last_press_ms)) {
+    return;
+  }
+  last_press_ms = now;
+
+  const cmp::Effect next = cmp::NextEffect(cmp::ParseEffect(rex::cvar::GetFlagByName(kSettingName)));
+  rex::cvar::SetFlagByName(kSettingName, cmp::Info(next).choice);
+  const cmp::Standing standing = cmp::StandingOf(next, ReadSaved());
+  Show(cmp::SelectedLabelOf(next, standing.on, standing.blocked));
+  MC_INFO("[compare] selected {} ({}={}; your setting shows it {})", std::string(cmp::Info(next).label), kSettingName,
+          std::string(cmp::Info(next).choice),
+          standing.blocked ? "with nothing to flip: it needs the ambient occlusion" : standing.on ? "on" : "off");
 }
 
 // A setting that was flipped was changed (the pause menu, F4, the console): the flip goes, and with it the label.
@@ -177,8 +207,11 @@ std::unique_ptr<LabelDialog> g_label;
 
 }  // namespace
 
-std::string KeyLabel() {
-  const std::string key = rex::cvar::GetFlagByName(kBindName);
+namespace {
+
+// The key a bind is on, for the log (capitals, digits, space and '+'): the default unless it was rebound.
+std::string KeyLabel(const char* bind, const char* fallback) {
+  const std::string key = rex::cvar::GetFlagByName(bind);
   std::string out;
   for (const char c : key) {
     const unsigned char u = static_cast<unsigned char>(c);
@@ -188,8 +221,10 @@ std::string KeyLabel() {
       out += c;
     }
   }
-  return out.empty() ? std::string(kDefaultKey) : out;
+  return out.empty() ? std::string(fallback) : out;
 }
+
+}  // namespace
 
 void Start(rex::ui::ImGuiDrawer* drawer) {
   if (!drawer || g_label) {
@@ -197,26 +232,32 @@ void Start(rex::ui::ImGuiDrawer* drawer) {
   }
   g_label = std::make_unique<LabelDialog>(drawer);
   rex::ui::RegisterBind(kBindName, kDefaultKey,
-                        "Flick the graphics effect named by COMPARE KEY (GRAPHICS QUALITY) off and on to see the "
+                        "Developer tool: flick the selected graphics effect (mcla_compare_effect) off and on to see the "
                         "difference; the label says what the picture shows. Never saved",
                         [] { OnKey(); });
-  // A flip ends when the setting it flips is changed, and when the key is set to another effect.
+  rex::ui::RegisterBind(kNextBindName, kNextDefaultKey,
+                        "Developer tool: select the next graphics effect for the compare key (bounce light, contact shadows, "
+                        "sun shafts, ambient occlusion, shadow filter, self-reflections); the label says which",
+                        [] { OnSelectKey(); });
+  // A flip ends when the setting it flips is changed, and when another effect is selected.
   for (int i = 0; i < cmp::kEffectCount; ++i) {
     const cmp::Effect effect = static_cast<cmp::Effect>(i);
     rex::cvar::RegisterChangeCallback(cmp::Info(effect).cvar, [effect](std::string_view, std::string_view) {
       OnSettingChanged(effect);
     });
   }
-  rex::cvar::RegisterChangeCallback("mcla_compare_effect", [](std::string_view, std::string_view) {
+  rex::cvar::RegisterChangeCallback(kSettingName, [](std::string_view, std::string_view) {
     if (cmp::Global().Flipped() != cmp::Effect::kNone) {
       cmp::Global().Clear();
       Hide();
     }
   });
-  MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect), the label stays {:.1f} s",
-          KeyLabel(), kBindName,
-          std::string(cmp::Info(cmp::ParseEffect(rex::cvar::GetFlagByName("mcla_compare_effect"))).label),
-          REXCVAR_GET(mcla_compare_label_seconds));
+  MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect); {} ({}) selects the next effect; the label stays {:.1f} s",
+          KeyLabel(kBindName, kDefaultKey), kBindName,
+          std::string(cmp::Info(cmp::ParseEffect(rex::cvar::GetFlagByName(kSettingName))).label),
+          KeyLabel(kNextBindName, kNextDefaultKey), kNextBindName, REXCVAR_GET(mcla_compare_label_seconds));
 }
 
 }  // namespace mcla::compare
+
+#endif  // LARECOMP_DEV_TOOLS

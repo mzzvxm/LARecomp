@@ -8,6 +8,11 @@
 // The expected values are written out here again on purpose, as host_plan_test.cpp does: the setting names
 // and the `auto` table of gpu_class.h are the other side of the check.
 
+// The flip is real only with the developer tools (effect_compare.h): this program checks the real one.
+#ifndef LARECOMP_DEV_TOOLS
+#define LARECOMP_DEV_TOOLS 1
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -331,6 +336,41 @@ void TestLabel() {
 
 // ---- how often, and how the label fades ------------------------------------------------------------------
 
+// The select key: the six effects in order, round to the first; the bloom fix and no effect go on to the first.
+void TestSelect() {
+  const Effect order[] = {Effect::kBounceLight,      Effect::kContactShadows, Effect::kSunShafts,
+                          Effect::kAmbientOcclusion, Effect::kShadowFilter,   Effect::kCarSelfRefl};
+  Check(kSelectableCount == 6, "the select key walks six effects");
+  for (int i = 0; i < 6; ++i) {
+    const Effect next = order[(i + 1) % 6];
+    Check(NextEffect(order[i]) == next, "the effect after " + std::string(Info(order[i]).label));
+  }
+  Check(NextEffect(Effect::kBloomFix) == Effect::kBounceLight, "the bloom fix goes on to the bounce light");
+  Check(NextEffect(Effect::kNone) == Effect::kBounceLight, "no effect goes on to the bounce light");
+  // Six presses are a full turn from wherever it starts.
+  for (int i = 0; i < 6; ++i) {
+    Effect e = order[i];
+    for (int k = 0; k < 6; ++k) e = NextEffect(e);
+    Check(e == order[i], "six presses come back to " + std::string(Info(order[i]).label));
+  }
+  // The order of the list is the order of the six (the pause menu's old COMPARE KEY row): ParseEffect and Info agree.
+  for (int i = 0; i < 6; ++i) {
+    Check(static_cast<int>(order[i]) == i, "the effect list starts with the six in order");
+    Check(ParseEffect(Info(order[i]).choice) == order[i], "the choice word of " + std::string(Info(order[i]).label));
+  }
+  // The note: the effect with the prefix, and what the saved setting shows.
+  const Label on = SelectedLabelOf(Effect::kSunShafts, true, false);
+  CheckEq(on.name, "COMPARE: SUN SHAFTS", "the select note's title");
+  CheckEq(on.state, "ON", "the select note's state when on");
+  Check(on.good, "an effect that is on is drawn good");
+  const Label off = SelectedLabelOf(Effect::kBounceLight, false, false);
+  CheckEq(off.state, "OFF", "the select note's state when off");
+  Check(!off.good, "an effect that is off is not good");
+  const Label blocked = SelectedLabelOf(Effect::kBounceLight, false, true);
+  CheckEq(blocked.state, "NEEDS AMBIENT OCCLUSION", "the bounce light without occlusion says what it needs");
+  Check(SelectedLabelOf(Effect::kNone, false, false).name.empty(), "no effect, no note");
+}
+
 void TestTiming() {
   Check(AcceptPress(1000, -1), "the first press counts");
   Check(AcceptPress(0, -1), "the first press counts at time 0");
@@ -371,6 +411,7 @@ int main() {
   TestForcedOnText();
   TestPress();
   TestLabel();
+  TestSelect();
   TestTiming();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

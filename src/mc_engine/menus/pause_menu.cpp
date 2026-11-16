@@ -8,10 +8,10 @@
 #include "debug_menu.h"
 #include "debug_menu_pages.h"
 #include "display_menu.h"
-#include "mc_engine/display/effect_compare.h"
 #include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "pause_parity_rows.h"
+#include "pause_selfrefl_row.h"
 #include "upscaling_menu.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
@@ -51,7 +51,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #if defined(LARECOMP_HAS_GPU)
-#include "gpu/effect_compare.h"
+#include "gpu/car_shadow_map_rules.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
@@ -1490,22 +1490,32 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 // ── Menu contents ──────────────────────────────────────────────────────
 
 #if defined(LARECOMP_HAS_GPU)
-// ── VSYNC and MSAA: one row each, whichever renderer runs ──────────────
+// ── The graphics pages: one set for both renderers ─────────────────────
 //
-// The DISPLAY page is one page for both renderers: a row has the same name and place on both and maps
-// to the running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list).
-// A choice the other renderer cannot run shows as its nearest there, and keeps its saved text, so it
-// comes back when the renderer is switched back.
-// CHECK: on XENIA (started with the XENIA renderer: the launcher's Troubleshooting section) the DISPLAY
-// page lists DISPLAY MODE, VSYNC, RESOLUTION, DISPLAY GAMMA, FPS LIMIT, SMOOTH UI, RENDER SCALE, MSAA and
-// ANISOTROPIC (9 rows, in that order). VSYNC writes vsync, MSAA is OFF / 2X with "(RESTART)" and writes
-// disable_msaa, RENDER SCALE says "(RESTART)", lists 33% / 67% / 100% at 4K and writes resolution_scale;
-// leaving the menu after changing either of those two offers "Restart now?". ANISOTROPIC is live and
-// writes anisotropic_override. On NATIVE the page runs DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR, DISPLAY
-// GAMMA, FPS LIMIT, SMOOTH UI, UPSCALING, its mode row, SHARPNESS, MSAA, POST AA,
-// ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY, FRAME GENERATION (its rows), and VSYNC writes
-// mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC, display_gamma) is live on both and no longer on RECOMP
-// SETTINGS.
+// GRAPHICS is a hub of six pages for both renderers: a row has the same name and place on both and maps to the
+// running renderer's own mechanism underneath (RowDynamics::cvar and the row's own list). A choice the other
+// renderer cannot run shows as its nearest there, and keeps its saved text, so it comes back when the renderer
+// is switched back. What only one renderer has is tagged XeniaOnly / NativeOnly and listed only for the renderer
+// this launch runs (MenuItemCount); a page with no row for it is not listed either (its hub row is tagged the
+// same way: REFLECTIONS is NATIVE only).
+//
+//   DISPLAY               DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA, VSYNC, FPS LIMIT, then NVIDIA REFLEX or AMD
+//                         ANTI-LAG 2 where the GPU has one (kVideoItems, LowLatencyMenuRows)
+//   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
+//                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
+//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR (kImageQualityItems)
+//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
+//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS (kLightItems)
+//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
+//   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
+//                         (kWorldDetailItems)
+// On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
+// ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS) and WORLD DETAIL.
+// CHECK: on XENIA (started with the XENIA renderer: the launcher's Troubleshooting section) the hub lists those five pages in that
+// order and no page is empty. MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
+// 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of those two offers "Restart now?".
+// ANISOTROPIC is live and writes anisotropic_override. On NATIVE VSYNC writes mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC,
+// display_gamma) is live on both.
 
 int FindStringIndex(const std::string& value, const char* const* vals, int count);
 
@@ -1545,40 +1555,20 @@ constexpr RowDynamics kMsaaRowDynamics = {.str_label = MsaaLabel,
                                           .cvar = MsaaCvar};
 #endif
 
-// DISPLAY: every row is one row for both renderers. DISPLAY MODE, RESOLUTION and VSYNC are live on
-// both; MSAA, RENDER SCALE (upscaling_menu.cpp) and the rest map to the running renderer's own
-// setting. What only one renderer has (UPSCALING, SHARPNESS, HDR, frame generation) is tagged
-// XeniaOnly / NativeOnly and listed only when that renderer is the one this launch runs
-// (MenuItemCount).
-//
-// The page is three runs of rows, in this order (the last two come from VideoExtraRows):
-//   1. this table: the window and its presentation (DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR,
-//      DISPLAY GAMMA, FPS LIMIT, SMOOTH UI);
-//   2. the picture: UPSCALING, its mode row and SHARPNESS (upscaling_menu.cpp), then kPictureItems
-//      (MSAA, POST AA, ANISOTROPIC, AMBIENT OCCLUSION, AO INTENSITY: the anti-aliasing, filtering and
-//      occlusion that used to sit on the RENDERER page or came after it);
-//   3. frame generation's rows (frame_generation_menu.cpp).
-// At most 19 rows (the native renderer on an RTX 50 series card, which has the frame generation
-// multiplier row: 8 here, 3 of the upscaler's, 5 picture rows, 3 of frame generation's); a page over
-// kMaxRowsPerMenu (24) is refused whole. The graphics upgrades that came after the occlusion (SHADOW
-// DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, ROAD REFLECTIONS) are the GRAPHICS QUALITY
-// page's (kGfxQualityItems), so this page keeps the window, the picture and the frame rate: with them it
-// had 22 rows of 24 and the next two graphics packages would not have fitted.
-// CHECK: that a page of 17 or 18 rows scrolls in the pause menu like the 12 and 14 row ones do (the
-// cursor reaches every row, the last row's label and value and the scroll bar are not cut, no row is
-// drawn twice); ui_forms.cpp FormScroll reads the first row on screen.
+// DISPLAY (GRAPHICS > DISPLAY): the window and how it is presented, in this order: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY
+// GAMMA, VSYNC, FPS LIMIT, and after them (MenuDef::extra, LowLatencyMenuRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
+// GPU, the driver or the graphics API has no latency reducer. Every row is one row for both renderers: DISPLAY MODE, RESOLUTION and FPS LIMIT
+// are live on both. What only one renderer has (ASPECT RATIO, HDR, VSYNC, the latency row) is tagged XeniaOnly / NativeOnly and listed only
+// when that renderer is the one this launch runs (MenuItemCount). The upscaler's and frame generation's rows are the UPSCALING page's, the
+// picture's are IMAGE QUALITY's, LIGHTING AND SHADOWS' and REFLECTIONS' (they were on this page, which had 19 rows with them).
+// At most 8 rows. Width ("Page width" above ItemRowLabel): the widest label is "AMD ANTI-LAG 2 (NOT WORKING)" (28) or "RESOLUTION
+// (7680X4320)" (22; 23 at five digits across, display_menu.h), the widest value "BORDERLESS" / "FULLSCREEN" / "ON + BOOST" (10): 38 of 41.
 const ItemDef kVideoItems[] = {
     // DISPLAY MODE and RESOLUTION: the window's mode and its size, which is the output resolution
     // (display_menu.h, display_mode.h). Both are live (Windows; Linux through SDL, where gamescope
     // sets the size and the RESOLUTION row is grey).
     WithDynamics(Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
                  &mcla_menu::kDisplayModeDynamics),
-#if defined(LARECOMP_HAS_GPU)
-    // VSYNC is the native renderer's (mcla_gpu_vsync, live at the next present). The Xenia renderer's
-    // vsync only sets the guest's vblank interval and does not stop tearing (its presenter always
-    // presents with tearing allowed), so it is XENIA VSYNC on the debug RENDERING page instead.
-    NativeOnly(Bool("PM_RxVsync", "mcla_gpu_vsync", "VSYNC: ")),
-#endif
     WithDynamics(Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
                  &mcla_menu::kResolutionDynamics),
 #if defined(LARECOMP_HAS_GPU)
@@ -1588,22 +1578,23 @@ const ItemDef kVideoItems[] = {
     // shape. Live, NATIVE only (the Xenia renderer's present always fills the window, 16:9 at least).
     // Width: "ASPECT RATIO: " 14 and "16X10" 5.
     NativeOnly(Str("PM_RxAspect", "aspect_ratio", "ASPECT RATIO: ", kAspectVals, kAspectNames, 5)),
-    // The renderer's upscaling and render scale rows (UPSCALING, its mode row and SHARPNESS) are
-    // appended after this table, from upscaling_menu.cpp (MenuDef::extra, VideoExtraRows); its mode
-    // row is RENDER SCALE on both renderers. MSAA and the picture rows after them are kPictureItems.
     NativeOnly(Submenu("PM_RxSubGpuHdr", "HDR", "RxGpuHdrMenu")),
 #endif
     // Live, both renderers: the game's gamma ramp is set again at the next frame
     // (hooks/display_gamma.cpp). CONSOLE is the console's TV ramp, PC an sRGB one. Width: 13, values 7.
     Str ("PM_RxDisplayGamma", "display_gamma",           "DISPLAY GAMMA: ",
          kDisplayGammaVals, kDisplayGammaNames, 2),
+#if defined(LARECOMP_HAS_GPU)
+    // VSYNC is the native renderer's (mcla_gpu_vsync, live at the next present). The Xenia renderer's
+    // vsync only sets the guest's vblank interval and does not stop tearing (its presenter always
+    // presents with tearing allowed), so it is XENIA VSYNC on the debug RENDERING page instead.
+    NativeOnly(Bool("PM_RxVsync", "mcla_gpu_vsync", "VSYNC: ")),
+#endif
     // Grey with "(FRAME GEN)" while frame generation runs: the limiter then uses the row of its own
     // (frame_generation_menu.h) and counts rendered frames.
     WithDynamics(Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
                      "UNCAPPED"),
                  &mcla_menu::kFpsLimitDynamics),
-    // Live. Menus and the HUD at the console's 30 steps a second, drawn smoothly in between.
-    Bool("PM_RxSmoothUi",    "ui_interpolate",           "SMOOTH UI: "),
 };
 
 // (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
@@ -1680,7 +1671,11 @@ const ItemDef kControllerItems[] = {
          kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
-// Everything that trades image quality for framerate, in one place.
+// WORLD DETAIL (GRAPHICS > WORLD DETAIL): how much of the world is there and how far it is drawn, in two runs (the old WORLD DENSITY and
+// LOD AND FOLIAGE pages): what is in the streets (TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST), then the level of detail
+// (FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD), kWorldDetailItems below. Everything here trades image quality for framerate. The old PERFORMANCE
+// hub is gone with its RENDERING page: SHADOWS is on LIGHTING AND SHADOWS, DEPTH OF FIELD on IMAGE QUALITY and the vendor's latency
+// reducer on DISPLAY.
 //
 // The developer switches that used to be here are not rows of the normal menus any more
 // (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, CHEAP CAR SHADOW, FOLIAGE, SINGLE TILE,
@@ -1695,32 +1690,6 @@ const ItemDef kControllerItems[] = {
 // PROP DRAW DIST patches rage::fragTuneStruct in place after the game has parsed
 // $/tune/types/fragments, so it applies live. "Prop" here means a breakable fragment
 // (pole, sign, fence, barrier), not the whole world.
-// PERFORMANCE is a hub over three menus, split by what the rows touch.
-const ItemDef kPerfItems[] = {
-    Submenu("PM_RxSubPerfRend", "RENDERING",     "RxPerfRendMenu"),
-    Submenu("PM_RxSubPerfWorld", "WORLD DENSITY", "RxPerfWorldMenu"),
-    Submenu("PM_RxSubPerfLod",  "LOD AND FOLIAGE", "RxPerfLodMenu"),
-};
-
-// RENDERING: SHADOWS off is the biggest single FPS win and is live (render_phases.cpp); DEPTH OF
-// FIELD is a picture preference. The vendor's latency reducer row is appended after these
-// (LowLatencyMenuRows).
-const ItemDef kPerfRendItems[] = {
-    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
-    Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
-};
-
-const ItemDef kPerfWorldItems[] = {
-    Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
-         kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
-    Dbl ("PM_RxPedDensity",  "ped_density_scale",    "PEDESTRIANS: ",
-         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-    Dbl ("PM_RxParkedCars",  "parked_car_scale",     "PARKED CARS: ",
-         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-    Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
-         kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
-         "%gM", "", "STOCK"),
-};
 
 // CITY LOD (lod_city_scale, graphics.cpp, live): AUTO, 0.5X, 1X, 1.5X, 2X (the launcher's the same).
 // AUTO is the cvar's 0 and says what it comes to on this GPU, like the other AUTO rows: "AUTO (2X)" on a
@@ -1741,7 +1710,17 @@ std::string CityLodLabel(double v) {
 }
 constexpr RowDynamics kCityLodDynamics = {.value_label = CityLodLabel};
 
-const ItemDef kPerfLodItems[] = {
+// 7 rows, no suffix. Width: the longest label is "FOLIAGE SHADOWS" (15) and the longest value "AUTO (2X)" (9): 24 of the 41 a page can take.
+const ItemDef kWorldDetailItems[] = {
+    Dbl ("PM_RxUnspawn",     "traffic_unspawn_dist", "TRAFFIC RANGE: ",
+         kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
+    Dbl ("PM_RxPedDensity",  "ped_density_scale",    "PEDESTRIANS: ",
+         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+    Dbl ("PM_RxParkedCars",  "parked_car_scale",     "PARKED CARS: ",
+         kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
+    Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
+         kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
+         "%gM", "", "STOCK"),
     // Live: the hook reads the cvar on every pass (graphics.cpp).
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     Dbl ("PM_RxLodTraffic",  "lod_traffic_scale", "TRAFFIC LOD: ", kLodValues, 6, "%gX"),
@@ -1923,48 +1902,70 @@ std::string CarReflectionLabel(int i) {
     }
 }
 constexpr RowDynamics kCarReflectionDynamics = {.str_label = CarReflectionLabel};
-// Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live): the player's car paint reflects its own body, the wing
-// in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One level, ON (the stored
-// word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and the
-// row shows AUTO). AUTO picks by the graphics card and says what it
-// comes to ("AUTO (ON)"): OFF on an integrated GPU, ON on a discrete one (gpu/gpu_class.h). It works in the game, behind the pause
-// menu and in the garage, not on the map. The label is "CAR SELF-REFLECTIONS" (20 characters, the page's widest with COMPARE KEY
-// (NUMPAD)) with a value of at most 10 ("AUTO (OFF)").
-const char* const kNativeCarSelfReflVals[]  = {"auto", "off", "on"};
-const char* const kNativeCarSelfReflNames[] = {"AUTO", "OFF", "ON"};
-std::string CarSelfReflLabel(int i) {
+// Car shadows (mcla_gpu_car_shadow_map, gpu/car_shadow_map.h, live): your car casts a shadow of its real shape on itself and on the road beside
+// it (the game's own sun shadows draw it in a rough low-detail form, so the wing, the mirrors and the wheels cast none of their own): OFF, HIGH
+// (a 1024x1024 map fitted to the car) or ULTRA (2048x2048). AUTO says what it comes to on this GPU, like the other AUTO rows: ULTRA on a
+// discrete graphics card and HIGH on an integrated one (car_shadow_map_rules.h AutoLevel). The stored words are the shown words (no level is
+// called low). The map is drawn only while the contact shadows are on, in the game view and in daylight; the row stays live whatever they say.
+// The label is "CAR SHADOWS" (11 characters) with a value of at most 12 ("AUTO (ULTRA)").
+const char* const kNativeCarShadowVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeCarShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string CarShadowLabel(int i) {
     switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kCarSelfRefl);
+    case 0: {
+        namespace map = mcla::gpu::car_shadow_map;
+        return mcla::gpu::gpu_class::AutoLabelOf(
+            map::LevelName(map::AutoLevel(mcla::gpu::gpu_class::Current())));
+    }
     case 1:  return "OFF";
-    default: return "ON";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
     }
 }
-constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel};
-// Compare key (mcla_compare_effect, mc_engine/display/effect_compare.h, live): which effect the key flips off and on to
-// see what it does, with the key's own name in the row's label ("COMPARE KEY (F1)" and the effect as its value).
-// The first six effects of gpu/effect_compare.h, in its order; the bloom size fix is a fix and has no row (F4 or
-// the command line set it). A flip is never saved, and it ends when the row is changed. Width: the label is "COMPARE
-// KEY" (11) and " (F1)" (5), the longest value "AMBIENT OCCLUSION" (17), 33 together; the page's widest label, "CAR SELF-REFLECTIONS"
-// (20) or the key's name in "COMPARE KEY (NUMPAD)" (20), with that value comes to 37, under the 41 a page can
-// take; a key whose name is longer than six characters is left out of the label, which keeps it under 41 whatever
-// the key.
-constexpr const char* kCompareVals[]  = {"bounce", "contact", "shafts", "occlusion", "filter", "selfrefl"};
-constexpr const char* kCompareNames[] = {"BOUNCE LIGHT", "CONTACT SHADOWS", "SUN SHAFTS", "AMBIENT OCCLUSION",
-                                         "SHADOW FILTER", "SELF-REFLECTIONS"};
-static_assert(sizeof(kCompareVals) / sizeof(kCompareVals[0]) == 6 &&
-                  sizeof(kCompareNames) / sizeof(kCompareNames[0]) == 6 &&
-                  std::string_view(kCompareVals[4]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kShadowFilter).choice &&
-                  std::string_view(kCompareVals[5]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kCarSelfRefl).choice &&
-                  std::string_view(kCompareNames[5]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kCarSelfRefl).label &&
-                  std::string_view(kCompareNames[3]) == mcla::gpu::compare::Info(mcla::gpu::compare::Effect::kAmbientOcclusion).label,
-              "the COMPARE KEY row lists the first six effects of gpu/effect_compare.h in its order");
-const char* CompareSuffix() {
-    static thread_local std::string text;
-    const std::string key = mcla::compare::KeyLabel();
-    text = key.size() <= 6 ? " (" + key + ")" : std::string();
-    return text.c_str();
+constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
+// Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
+// paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
+// level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
+// the row shows AUTO). Where the graphics card can ray trace (Direct3D 12 with DXR 1.1 and shader model 6.5: gpu.h CarRtReflAvailable, decided in
+// car_rt_scene.h CarRtSupported) the reflection can be traced from the car's own triangles instead of marched through the picture, so a part the
+// camera cannot see shows in the paint too. One row for both settings, AUTO / OFF / ON / RAY TRACED, RAY TRACED only where it can run:
+//   AUTO        mcla_gpu_car_selfrefl = auto, mcla_gpu_car_selfrefl_rt = auto; "AUTO (RAY TRACED)", "AUTO (ON)" or "AUTO (OFF)" by what runs
+//               on this PC (OFF on an integrated GPU, ON on a discrete one, RAY TRACED where that one can trace: gpu/gpu_class.h)
+//   OFF         mcla_gpu_car_selfrefl = off
+//   ON          mcla_gpu_car_selfrefl = on, mcla_gpu_car_selfrefl_rt = off
+//   RAY TRACED  mcla_gpu_car_selfrefl = on, mcla_gpu_car_selfrefl_rt = auto
+// The row reads the two settings back as pause_selfrefl_row.h says (a larecomp.toml can hold a pair the row never writes: auto with the ray tracing
+// off shows as ON, or OFF where auto is off). It works in the game, behind the pause menu and in the garage, not on the map. The label is
+// "CAR SELF-REFLECTIONS" (20 characters) with a value of at most 17 ("AUTO (RAY TRACED)").
+// CHECK: on an RTX card (D3D12) the row steps AUTO (RAY TRACED) > OFF > ON > RAY TRACED and wraps; on Vulkan or a card without DXR 1.1 it has three
+// values and AUTO says "AUTO (ON)"; the log's "[car refl]" and "[car rt refl]" lines follow each step.
+constexpr const char* kCarSelfReflRtCvar = "mcla_gpu_car_selfrefl_rt";
+const char* const kNativeCarSelfReflVals[]  = {"auto"};  // the row's own list (the dynamics') has the values; this one names one so the row is a valid kStrCycle
+const char* const kNativeCarSelfReflNames[] = {"AUTO"};
+bool CarSelfReflAutoIsOn() {
+    return mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kCarSelfRefl, "auto") == "on";
 }
-constexpr RowDynamics kCompareDynamics = {.suffix = CompareSuffix};
+int CarSelfReflCount() {
+    return mcla_menu::selfrefl::Count(mcla::gpu::CarRtReflAvailable());
+}
+std::string CarSelfReflLabel(int i) {
+    return mcla_menu::selfrefl::LabelOf(mcla_menu::selfrefl::At(i), CarSelfReflAutoIsOn(),
+                                        mcla::gpu::CarRtReflAvailable());
+}
+int CarSelfReflIndex() {
+    return mcla_menu::selfrefl::IndexOf(mcla_menu::selfrefl::ChoiceOf(
+        CvarGet("mcla_gpu_car_selfrefl"), CvarGet(kCarSelfReflRtCvar), CarSelfReflAutoIsOn(),
+        mcla::gpu::CarRtReflAvailable()));
+}
+void CarSelfReflSet(int i, CvarWriter write) {
+    const mcla_menu::selfrefl::Writes w = mcla_menu::selfrefl::WritesOf(mcla_menu::selfrefl::At(i));
+    if (w.rt && CvarGet(kCarSelfReflRtCvar) != w.rt) write(kCarSelfReflRtCvar, w.rt);
+    if (w.selfrefl && CvarGet("mcla_gpu_car_selfrefl") != w.selfrefl) write("mcla_gpu_car_selfrefl", w.selfrefl);
+}
+constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel,
+                                              .value_count = CarSelfReflCount,
+                                              .value_index = CarSelfReflIndex,
+                                              .set_value = CarSelfReflSet};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -1975,15 +1976,12 @@ const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"}
 const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
 const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
-// DISPLAY, after the upscaler's rows (VideoExtraRows): how the picture is smoothed, filtered and
-// shaded, in the order the owner asked for (2026-11-07): MSAA, POST AA, ANISOTROPIC, AMBIENT
-// OCCLUSION, AO INTENSITY. (The graphics upgrades after them are the GRAPHICS QUALITY page's,
-// kGfxQualityItems below.)
-// One ANISOTROPIC row per renderer (the same name and place), MSAA on both
-// (the row's own mechanism per renderer, kMsaaRowDynamics); the rest are the NATIVE renderer's.
-// Width: the longest label here is "POST AA (FSR 3.1 ON)" (20) and the longest value "AUTO (ULTRA)" (12, the
-// ambient occlusion row's), both under the page's widest ("Page width").
-const ItemDef kPictureItems[] = {
+// IMAGE QUALITY (GRAPHICS > IMAGE QUALITY): how the picture is smoothed, filtered and focused, in this order: MSAA, POST AA, ANISOTROPIC,
+// DEPTH OF FIELD, MOTION BLUR. One ANISOTROPIC row per renderer (the same name and place), MSAA on both (the row's own mechanism per renderer,
+// kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR are the game's own switches (disable_dof, disable_motion_blur:
+// picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are on both renderers. 5 rows.
+// Width: the longest label is "POST AA (FSR 3.1 ON)" (20) and the longest value "SMAA" (4): 24 of the 41 a page can take.
+const ItemDef kImageQualityItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
                  &kMsaaRowDynamics),
@@ -1997,33 +1995,23 @@ const ItemDef kPictureItems[] = {
     // takes the new level when its sampler is made again.
     XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
                    kXeniaAnisoVals, kXeniaAnisoNames, 7)),
-#if defined(LARECOMP_HAS_GPU)
-    NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
-                                kNativeAoVals, kNativeAoNames, 4),
-                            &kAoDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
-                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
-                            &kAoIntensityDynamics)),
-#endif
+    Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
+    Bool("PM_RxBlur",        "disable_motion_blur",       "MOTION BLUR: ",    true),
 };
 
+// LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
+// (perf_no_shadows) is on both renderers: off is the biggest single FPS win and is live (render_phases.cpp). The rest are the NATIVE renderer's
+// graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
+// (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
+// (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS). The ids and the
+// cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
+// grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
+// (SsgiOn). 11 rows of the 24 a page can hold.
+// Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
+// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
+const ItemDef kLightItems[] = {
+    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
 #if defined(LARECOMP_HAS_GPU)
-// GRAPHICS QUALITY (DISPLAY's sister page, the GRAPHICS tab's second button): the graphics upgrades of the
-// NATIVE renderer that make the world look better, each with an AUTO that follows the graphics card
-// (gpu/gpu_class.h): the sun's shadows (how finely they are drawn, how they are filtered), the contact
-// shadows, the traffic cars' shadows, the reflections, the car paint's own reflections, the sun shafts and the bounce light. Every row is
-// live. The order is shadows first (SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS), then reflections (ROAD
-// REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS), then light (SUN SHAFTS, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH). The ids and
-// the cvars are the rows' own as they were on DISPLAY: a saved setting reads the same. BOUNCE LIGHT is grey while AMBIENT
-// OCCLUSION is off (it is made from the occlusion's passes). The last row, COMPARE KEY, is not a graphics setting: it names the
-// effect above that the compare key flicks off and on (see kCompareVals).
-// Width: the longest label is "ROAD REFLECTIONS" (16) and the longest value "AUTO (ULTRA)" (12: the contact shadows' and the
-// bounce light's AUTO on a strong card), 28 together, under the 41 a page can take ("Page width" above
-// ItemRowLabel); COMPARE KEY is the one row with a suffix, its key's name (33 at most, see kCompareVals).
-// 11 rows of the 24 a page can hold. SUN SHAFTS has the longest value, "AUTO (DEFAULT)" (14), with its 10-character
-// label: 24 together. BOUNCE LIGHT STRENGTH (21) with STRONGEST (9) is the widest pair of a setting at 30.
-// BOUNCE LIGHT STRENGTH is grey while the bounce light is off (SsgiOn).
-const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
                                 "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4),
                             &kShadowDetailDynamics)),
@@ -2036,6 +2024,32 @@ const ItemDef kGfxQualityItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
                                 kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4),
                             &kTrafficShadowsDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
+                                kNativeCarShadowVals, kNativeCarShadowNames, 4),
+                            &kCarShadowDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
+                                kNativeAoVals, kNativeAoNames, 4),
+                            &kAoDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
+                                kNativeAoLevelVals, kNativeAoLevelNames, 4),
+                            &kAoIntensityDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
+                                kNativeSsgiVals, kNativeSsgiNames, 4),
+                            &kSsgiDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
+                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
+                            &kSsgiLevelDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
+                                kNativeShaftsVals, kNativeShaftsNames, 7),
+                            &kShaftsDynamics)),
+#endif
+};
+
+#if defined(LARECOMP_HAS_GPU)
+// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint and the car itself reflect: ROAD REFLECTIONS, CAR REFLECTIONS
+// and CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection). Every row is live and has an AUTO that follows the
+// graphics card. Width: the longest label is "CAR SELF-REFLECTIONS" (20), the longest value "AUTO (RAY TRACED)" (17): 37 of the 41 a page can take.
+const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kRoadReflectionDynamics)),
@@ -2043,29 +2057,10 @@ const ItemDef kGfxQualityItems[] = {
                                 "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
                             &kCarReflectionDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
-                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 3),
+                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1),
                             &kCarSelfReflDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
-                                kNativeShaftsVals, kNativeShaftsNames, 7),
-                            &kShaftsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
-                                kNativeSsgiVals, kNativeSsgiNames, 4),
-                            &kSsgiDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
-                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5),
-                            &kSsgiLevelDynamics)),
-    // The key that flicks one of the effects above off and on to see what it does (not saved).
-    NativeOnly(WithDynamics(Str("PM_RxGpuCompare", "mcla_compare_effect", "COMPARE KEY: ",
-                                kCompareVals, kCompareNames, 6),
-                            &kCompareDynamics)),
 };
 #endif
-
-// The rows DISPLAY has after its own table (MenuDef::extra): the upscaler's, kPictureItems, then
-// frame generation's (frame_generation_menu.cpp puts them together and keeps the table).
-const ItemDef* VideoExtraRows(int& count) {
-    return DisplayMenuRows(kPictureItems, int(sizeof(kPictureItems) / sizeof(kPictureItems[0])), count);
-}
 
 #if defined(LARECOMP_HAS_GPU)
 // DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
@@ -2087,7 +2082,7 @@ const ItemDef kGpuHdrItems[] = {
 };
 #endif
 
-// PERFORMANCE > RENDERING > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
+// DISPLAY > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
 // latency reducer. The row comes from the renderer's own answer (gpu/latency.h): it names the vendor's
 // feature, and there is none where the GPU, the driver or the graphics API has no reducer, which is
 // how a PC that cannot run it never sees it. AUTO says what it comes to on this GPU. Anti-Lag 2 has no
@@ -2134,7 +2129,7 @@ const ItemDef kAntiLagRows[] = {
 };
 #endif
 
-// The rows RENDERING takes from the renderer (MenuDef::extra): the vendor's latency reducer, or none.
+// The rows DISPLAY takes from the renderer (MenuDef::extra), after its own: the vendor's latency reducer, or none.
 const ItemDef* LowLatencyMenuRows(int& count) {
 #if defined(LARECOMP_HAS_GPU)
     switch (mcla::gpu::latency::AvailableKind()) {
@@ -2165,7 +2160,6 @@ const ItemDef kCamHubItems[] = {
     Submenu("PM_RxSubCamFov",   "FOV",          "RxCamFovMenu"),
     Submenu("PM_RxSubCamRear",  "REAR VIEW",    "RxCamRearMenu"),
     Submenu("PM_RxSubCamLook",  "LOOK AROUND",  "RxCamLookMenu"),
-    Bool("PM_RxBlur",        "disable_motion_blur",      "MOTION BLUR: ",    true),
 };
 
 const ItemDef kCamChaseItems[] = {
@@ -2335,15 +2329,20 @@ const ItemDef kUiItems[] = {
 // The SETTINGS tab holds a few pages of rows (RECOMP SETTINGS, CONTROLLER) and a handful of hubs,
 // each a list of Submenu rows. The hubs' children are ordinary menus below; a menu some row opens gets
 // no button of its own (MenuIsNested).
+// GRAPHICS (see "The graphics pages" above): six pages, REFLECTIONS on the NATIVE renderer only. A hub row whose page has no row for the running
+// renderer is not listed (the Submenu row carries the page's renderer mask). Width: "LIGHTING AND SHADOWS" (20), no values.
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Submenu("PM_RxSubGfxQ", "GRAPHICS QUALITY", "RxGfxQualityMenu")),
+    // The upscaler's rows on NATIVE; on XENIA the page is RENDER SCALE alone.
+    Submenu("PM_RxSubUpscaling", "UPSCALING", "RxUpscalingMenu"),
 #endif
-    Submenu("PM_RxSubPerf",   "PERFORMANCE", "RxPerfMenu"),
+    Submenu("PM_RxSubImageQuality", "IMAGE QUALITY", "RxImageQualityMenu"),
+    Submenu("PM_RxSubLighting", "LIGHTING AND SHADOWS", "RxLightingMenu"),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Submenu("PM_RxSubTex", "TEXTURE MODS", "RxTexMenu")),
+    NativeOnly(Submenu("PM_RxSubReflections", "REFLECTIONS", "RxReflectionsMenu")),
 #endif
+    Submenu("PM_RxSubWorldDetail", "WORLD DETAIL", "RxWorldDetailMenu"),
 };
 const ItemDef kGameHubItems[] = {
     Submenu("PM_RxSubCam",    "CAMERA",          "RxCamMenu"),
@@ -2385,6 +2384,11 @@ const ItemDef kIfaceHubItems[] = {
 };
 const ItemDef kExtrasHubItems[] = {
     Submenu("PM_RxSubCut", "CUTSCENES", "RxCutMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    // Texture mods on the Plume renderer (it had a page of its own on GRAPHICS). The two modder actions (DUMP SCENE TEXTURES, RELOAD
+    // TEXTURE MODS) are on the DEBUG menu's TOOLS page (debug_menu_pages.cpp). Width: "TEXTURE MODS" 12.
+    NativeOnly(Bool("PM_RxTexMods", "texture_mods", "TEXTURE MODS: ")),
+#endif
     Bool("PM_RxVinylLayers", "extra_vinyl_layers",       "EXTRA VINYL LAYERS: ", false, " (RESTART)"),
     Bool("PM_RxBigSession",  "net_lift_big_session_limits", "NO 8 PLAYER LIMITS: ", false,
          " (NEXT HOST)"),
@@ -2396,13 +2400,6 @@ const ItemDef kExtrasHubItems[] = {
     Str ("PM_RxStartGarage", "start_garage", "START GARAGE: ",
          kStartGarageVals, kStartGarageNames, 4, " (NEXT START)"),
 };
-#if defined(LARECOMP_HAS_GPU)
-// Texture mods on the Plume renderer. The two modder actions (DUMP SCENE TEXTURES, RELOAD TEXTURE
-// MODS) are on the DEBUG menu's TOOLS page (debug_menu_pages.cpp).
-const ItemDef kTexItems[] = {
-    Bool("PM_RxTexMods",     "texture_mods", "TEXTURE MODS: "),
-};
-#endif
 // NO first: the cursor starts on the first row, so a stray A keeps the game.
 const ItemDef kQuitItems[] = {
     Action("PM_RxQuitNo",  kActionQuitNo),
@@ -2520,7 +2517,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabRecomp", "RECOMP SETTINGS", "Fixes and options added by the recomp.",
      "RxRecompMenu",
      kRecompItems, int(sizeof(kRecompItems) / sizeof(kRecompItems[0]))},
-    {"PM_RxTabGfx", "GRAPHICS", "Display, quality, performance, textures.",
+    {"PM_RxTabGfx", "GRAPHICS", "Display, upscaling, picture and detail.",
      "RxGfxMenu",
      kGfxHubItems, int(sizeof(kGfxHubItems) / sizeof(kGfxHubItems[0]))},
     {"PM_RxTabGame", "GAMEPLAY", "Camera, map, time of day and cars.",
@@ -2537,33 +2534,32 @@ const MenuDef kMenus[] = {
      "RxExtrasMenu",
      kExtrasHubItems, int(sizeof(kExtrasHubItems) / sizeof(kExtrasHubItems[0]))},
     // Reached through a hub.
-    {"PM_RxTabVideo", "DISPLAY", "Window, picture quality and frame rate.",
+    {"PM_RxTabVideo", "DISPLAY", "Window, vsync, frame rate and latency.",
      "RxVideoMenu",
      kVideoItems, int(sizeof(kVideoItems) / sizeof(kVideoItems[0])),
-     VideoExtraRows, false, UpscalingMenuRelayout},
-#if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabGfxQ", "GRAPHICS QUALITY", "Shadows, light and reflections.",
-     "RxGfxQualityMenu",
-     kGfxQualityItems, int(sizeof(kGfxQualityItems) / sizeof(kGfxQualityItems[0]))},
-#endif
-    {"PM_RxTabPerf", "PERFORMANCE", "Trade image quality for framerate.",
-     "RxPerfMenu",
-     kPerfItems, int(sizeof(kPerfItems) / sizeof(kPerfItems[0]))},
-    {"PM_RxTabPerfRend", "RENDERING", "Shadows, depth of field and latency.",
-     "RxPerfRendMenu",
-     kPerfRendItems, int(sizeof(kPerfRendItems) / sizeof(kPerfRendItems[0])),
      LowLatencyMenuRows},
-    {"PM_RxTabPerfWorld", "WORLD DENSITY", "Traffic, pedestrians and props.",
-     "RxPerfWorldMenu",
-     kPerfWorldItems, int(sizeof(kPerfWorldItems) / sizeof(kPerfWorldItems[0]))},
-    {"PM_RxTabPerfLod", "LOD AND FOLIAGE", "Level of detail and foliage shadows.",
-     "RxPerfLodMenu",
-     kPerfLodItems, int(sizeof(kPerfLodItems) / sizeof(kPerfLodItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabTex", "TEXTURE MODS", "Texture mods on or off.",
-     "RxTexMenu",
-     kTexItems, int(sizeof(kTexItems) / sizeof(kTexItems[0]))},
+    // The upscaler's rows and frame generation's (MenuDef::extra: they follow the PC and the settings), and on XENIA RENDER SCALE alone. The
+    // page whose rows can change while the game runs (UpscalingMenuRelayout).
+    {"PM_RxTabUpscaling", "UPSCALING", "Upscaling and frame generation.",
+     "RxUpscalingMenu",
+     nullptr, 0,
+     UpscalingPageRows, false, UpscalingMenuRelayout},
 #endif
+    {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering and blur.",
+     "RxImageQualityMenu",
+     kImageQualityItems, int(sizeof(kImageQualityItems) / sizeof(kImageQualityItems[0]))},
+    {"PM_RxTabLighting", "LIGHTING AND SHADOWS", "Shadows, occlusion and bounce light.",
+     "RxLightingMenu",
+     kLightItems, int(sizeof(kLightItems) / sizeof(kLightItems[0]))},
+#if defined(LARECOMP_HAS_GPU)
+    {"PM_RxTabReflections", "REFLECTIONS", "Road, car and self reflections.",
+     "RxReflectionsMenu",
+     kReflectionItems, int(sizeof(kReflectionItems) / sizeof(kReflectionItems[0]))},
+#endif
+    {"PM_RxTabWorldDetail", "WORLD DETAIL", "Traffic, props and level of detail.",
+     "RxWorldDetailMenu",
+     kWorldDetailItems, int(sizeof(kWorldDetailItems) / sizeof(kWorldDetailItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
     // The paused world behind the menu shows the highlights too (the UI is a layer in the pause
     // view as well, gpu/frame_layers.h), so the HIGHLIGHTS row's change is seen at once. This line
@@ -2918,30 +2914,30 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // right, the button prompts and the scroll bar first, at any screen size. A
 // page comes to about 245 units plus 11 a character of that label and value
 // (capitals of the menu's font: I and digits narrower, M and W wider).
-// DISPLAY must stay at or under 41 characters of that pair (24 and 17, say),
-// about 700 units, in every state of every row (the Windows and the other
-// platforms' suffixes, both renderers, sizes such as "2560X1440"). Its widest
-// label is "RESOLUTION (7680X4320)" (22; 23 at five digits across), then "RENDER
-// SCALE (RESTART)" (XENIA, 22), "UPSCALING (APPLYING)" and "SHARPNESS (FSR ONLY)"
-// (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while
-// it is being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest:
-// "ULTRA PERF. (33%)", "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)";
-// the DISPLAY MODE and RESOLUTION values are 10 and 9): 40 together (41 at five
-// digits across), so a row that joins the page may bring a label of up to 23
-// characters with a value of up to 18, and nothing wider than either. A label or a
-// value that is longer than its page's widest needs counting against that before
-// it goes in, in each state a suffix can be in; the upscaling rows' states are
-// counted in upscaling_menu.cpp, the display rows' in display_menu.h.
-// DISPLAY's picture rows (kPictureItems) are inside it: "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)"
-// 17, "AMBIENT OCCLUSION" 17, "AO INTENSITY" 12, "ANISOTROPIC" 11, values at most 12 ("AUTO (ULTRA)", the
-// ambient occlusion row's AUTO; the others' longest is "DEFAULT", 7).
-// The GRAPHICS QUALITY page (kGfxQualityItems, 11 rows, one suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"),
-// then "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CONTACT SHADOWS", "TRAFFIC SHADOWS" and "CAR REFLECTIONS" 15, "SHADOW DETAIL" and
-// "SHADOW FILTER" 13, "BOUNCE LIGHT" 12, "SUN SHAFTS" 10; values at most 12 ("AUTO (ULTRA)", "AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)"), SUN SHAFTS'
-// "AUTO (DEFAULT)" 14 and BOUNCE LIGHT STRENGTH's "STRONGEST" 9: 30 together for CAR SELF-REFLECTIONS ("AUTO (OFF)" 10), 30 for BOUNCE LIGHT
-// STRENGTH. The last row, COMPARE KEY, has the key's name as its suffix: "COMPARE KEY (NUMPAD)" at most (20, under 23),
-// its values at most 17 ("AMBIENT OCCLUSION", under 18). The page's widest label (21) and widest value (17) come
-// to 38, under 41.
+// A page must stay at or under 41 characters of that pair (24 and 17, say), about 700 units, in every
+// state of every row (the Windows and the other platforms' suffixes, both renderers, sizes such as
+// "2560X1440"). A label or a value that is longer than its page's widest needs counting against that
+// before it goes in, in each state a suffix can be in; each page counts its own, here and where it is
+// built:
+// UPSCALING (UpscalingPageRows: the upscaler's rows and frame generation's, 6 at most): its widest label
+// is "RENDER SCALE (RESTART)" (XENIA, 22), then "UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)" and "FRAME
+// GEN MULTIPLIER" (20); its widest value 18 ("FSR 3.1 (APPLYING)", the frame generation row while it is
+// being made), then 17 ("PERFORMANCE (50%)" and the mode row's other longest: "ULTRA PERF. (33%)",
+// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", "FSR 3.1 (NO ROOM)"): 40 together. The upscaling rows' states
+// are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
+// DISPLAY (kVideoItems and the latency row, 8 rows): its widest label is the latency row's "AMD ANTI-LAG 2
+// (NOT WORKING)" (28; "RESOLUTION (7680X4320)" is 22, 23 at five digits across, display_menu.h) and its
+// widest value 10 (the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and
+// "AUTO (OFF)"): 38 together.
+// IMAGE QUALITY (kImageQualityItems, 5 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
+// FIELD" 14, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
+// LIGHTING AND SHADOWS (kLightItems, 11 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
+// "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
+// SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
+// (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
+// REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
+// REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "FOLIAGE
+// SHADOWS" 15, "AUTO (2X)" 9: 24.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.
@@ -3095,8 +3091,8 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. DISPLAY reaches 19 on a card with the frame
-// generation multiplier row; a page over the cap is refused whole (BuildNativeRows), so there is room.
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 11 rows
+// (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {
@@ -3459,10 +3455,10 @@ constexpr int kMaxFormRebuilds = 4;
 int g_form_rebuilds = 0;
 
 // CHECK: the page built again (needs a real DLSS failure, e.g. the fail injection of
-// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'DISPLAY': its rows changed
-// ... built again (1 of 4)" and a second "[ui-forms] form 'DISPLAY' created" when DISPLAY is next
+// diffs	emporal-test.patch while DLSS runs): the log has "[pause-menu] 'UPSCALING': its rows changed
+// ... built again (1 of 4)" and a second "[ui-forms] form 'UPSCALING' created" when UPSCALING is next
 // opened (not before), the page opens with no DLSS in UPSCALING and no DLSS mode row, its rows and
-// the highlight work, B and re-entering work, and a DISPLAY left open across the failure keeps its
+// the highlight work, B and re-entering work, and an UPSCALING left open across the failure keeps its
 // rows (DLSS mode row grey "(UNAVAILABLE)") with no row showing another row's label or value.
 uint32_t EnsureMenuForm(int m) {
     const MenuDef& md = kMenus[m];

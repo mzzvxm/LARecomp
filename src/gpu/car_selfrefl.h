@@ -9,7 +9,7 @@
 // frame's depth), and this keeps that image and the numbers that take a point of this frame into it.
 //
 //   mcla_gpu_car_selfrefl        auto | off | on, a graphics setting like the contact shadows (the pause menu's CAR
-//                                SELF-REFLECTIONS row on GRAPHICS QUALITY, live, saved): on darkens the reflection where the
+//                                SELF-REFLECTIONS row on REFLECTIONS, shared with mcla_gpu_car_selfrefl_rt, live, saved): on darkens the reflection where the
 //                                ray passes just behind a part of the car (the specular occlusion) and reflects the car's own
 //                                colour there. `auto` is the class's cell (gpu_class.h): off on Low, on on Mid and High.
 //                                The setting has one level (the older low, the occlusion alone, cost the same as the full effect:
@@ -28,7 +28,7 @@
 //                                the march of this file is the fallback and the other devices' version
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
 // With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
-// Selected()), and no history is made. The compare key (F1, effect_compare.h) flips the setting like the others.
+// Selected()), and no history is made. The compare key (a developer tool, effect_compare.h) flips the setting like the others.
 //
 // WHERE IT RUNS (menu_world.h): in the game view, in the pause menu's and the race pause's world and in the garage (the 4x view
 // of the pause identities, which the host draws once for its three tiles, so the history at the first resolve is the whole

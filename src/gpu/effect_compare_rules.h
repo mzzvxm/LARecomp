@@ -1,9 +1,10 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the compare key's rules (pure)
+// MCLA GPU renderer -- the compare keys' rules (pure)
 // ===========================================================================
-// What a press of the compare key does and says, from the settings' texts: whether the chosen effect is
-// on now, which way the flip goes, whether anything could show it, the words of the label, how often a
+// What a press of the compare key (F1: flips the selected effect) and of the select key (F12: the next effect)
+// does and says, from the settings' texts: whether the chosen effect is
+// on now, which way the flip goes, whether anything could show it, which effect comes next, the words of the label, how often a
 // press counts and how the label fades. No renderer, no cvars, no clock: effect_compare_test.cpp checks
 // every effect against every value, and mc_engine/display/effect_compare.cpp only reads the settings and the
 // time and calls these. The flip itself (effect_compare.h) is read by the settings' own readers.
@@ -101,6 +102,15 @@ inline Press PressOf(Effect effect, Force current, const Saved& saved) {
   return out;
 }
 
+// The effects the select key walks, in the order of the list: the first six (the bounce light, the contact shadows, the
+// sun shafts, the ambient occlusion, the shadow filter, the car self-reflections). The bloom size fix is a fix, not an effect
+// to look at: only F4 or the command line select it, and the select key goes on from it to the first.
+inline constexpr int kSelectableCount = 6;
+constexpr Effect NextEffect(Effect current) {
+  const int index = static_cast<int>(current);
+  return current != Effect::kNone && index + 1 < kSelectableCount ? static_cast<Effect>(index + 1) : Effect::kBounceLight;
+}
+
 // The label's two parts: the effect ("BOUNCE LIGHT") and what it is doing ("OFF"), or what is missing.
 struct Label {
   std::string name;
@@ -116,6 +126,15 @@ inline Label LabelOf(Effect effect, bool shown_on, bool blocked) {
   label.name = std::string(Info(effect).label);
   label.state = blocked ? "NEEDS AMBIENT OCCLUSION" : shown_on ? "ON" : "OFF";
   label.good = !blocked && shown_on;
+  return label;
+}
+
+// The note the select key shows: the effect now selected ("COMPARE: SUN SHAFTS") and what your setting shows of it ("ON").
+inline Label SelectedLabelOf(Effect effect, bool on, bool blocked) {
+  Label label = LabelOf(effect, on, blocked);
+  if (!label.name.empty()) {
+    label.name = "COMPARE: " + label.name;
+  }
   return label;
 }
 

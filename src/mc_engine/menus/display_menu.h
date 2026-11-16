@@ -33,12 +33,12 @@
 // Width (pause_menu.cpp, "Page width"), in characters: DISPLAY MODE 12; RESOLUTION 10, 22 with its
 // suffix " (7680X4320)" (a display of 10240 pixels across: 23; the grey WINDOWED row of gamescope has
 // the same form), 20 with " (RESTART)" or " (DISPLAY)" (where the display's size cannot be asked). Values: "BORDERLESS" and "FULLSCREEN" 10; sizes 9 at most
-// ("3840X2160"), 10 at five digits across. The page's widest label is 23 and its widest value 18
-// ("FSR 3.1 (APPLYING)", frame_generation_menu.h): 41 of 41 (22 and 18, 40, at 7680 across).
-// CHECK: DISPLAY open on a 4K display in BORDERLESS ("RESOLUTION (3840X2160)" grey, the longest label
-// on the page with a native upscaler at "PERFORMANCE (50%)"), in FULLSCREEN and in WINDOWED, on NATIVE
-// and on XENIA ("RENDER SCALE (RESTART)"): the right edge, the button prompts and the scroll bar are not
-// cut. The page is built once ("native rows built" once) while the lists change under it: stepping DISPLAY
+// ("3840X2160"), 10 at five digits across. The page's widest label is the latency row's "AMD ANTI-LAG 2
+// (NOT WORKING)" (28, pause_menu.cpp "Page width"), then this one at 23 (22 at 7680 across); its widest value
+// 10: 38 of 41.
+// CHECK: DISPLAY open on a 4K display in BORDERLESS ("RESOLUTION (3840X2160)" grey), in FULLSCREEN and in
+// WINDOWED, on NATIVE and on XENIA (four rows there): the right edge, the button prompts and the scroll bar are
+// not cut. The page is built once ("native rows built" once) while the lists change under it: stepping DISPLAY
 // MODE greys and relabels RESOLUTION at once, and its value list changes length (a handful of sizes in
 // WINDOWED, about 20 modes in FULLSCREEN, one in BORDERLESS) without the row showing a stale text.
 

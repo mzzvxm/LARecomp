@@ -21,7 +21,7 @@
 // the callback and would not show; the settings here are only written through SetFlagByName (the pause
 // menu's CvarSet, the debug menu's reset), the way shadow_filter.cpp relies on already.
 //
-// The compare key (effect_compare.h) flips one of these settings without writing it: while its flip is on
+// The compare key (a developer tool, effect_compare.h) flips one of these settings without writing it: while its flip is on
 // the setting, Get() answers `off`, or the effect's on text, in place of the saved word.
 // ===========================================================================
 

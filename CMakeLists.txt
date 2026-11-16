@@ -41,6 +41,17 @@ if(LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
     endif()
 endif()
 
+# Developer tools: code for the people who work on the game, never in a release. OFF by default: with it off there is no key, no
+# setting and no code of them in the build (the compile definition LARECOMP_DEV_TOOLS is not set). Configure with
+#   -DLARECOMP_DEV_TOOLS=ON
+# for a test or play build. It is set for every target of this project (the renderer reads one of the tools' state too).
+#   the compare keys (src/mc_engine/display/effect_compare.cpp): F1 turns the selected graphics effect off and on to see what it does,
+#   F12 selects the next effect (bounce light, contact shadows, sun shafts, ambient occlusion, shadow filter, self-reflections).
+option(LARECOMP_DEV_TOOLS "Developer tools: the compare keys (F1 flips an effect, F12 picks the effect). Not for a release build" OFF)
+if(LARECOMP_DEV_TOOLS)
+    add_compile_definitions(LARECOMP_DEV_TOOLS=1)
+endif()
+
 if(MINGW)
     # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
     # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the
@@ -190,7 +201,6 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/split_runtime.cpp
 
     src/mc_engine/gameplay/map_warp.cpp
-    src/mc_engine/display/effect_compare.cpp
     src/mc_engine/gameplay/real_weather.cpp
     src/mc_engine/gameplay/squash_stretch.cpp
     src/mc_engine/gameplay/tire_offset.cpp
@@ -360,6 +370,10 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/achievements.cpp
     src/mc_engine/ui/kerning.cpp
 )
+# The developer tools' sources are in the build only with -DLARECOMP_DEV_TOOLS=ON (see the option above).
+if(LARECOMP_DEV_TOOLS)
+    list(APPEND LARECOMP_SOURCES src/mc_engine/display/effect_compare.cpp)
+endif()
 # The HUD track's parser and evaluation (src/mc_engine/cinematic/hud_track.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_hud_track_test, then run <build dir>/larecomp_hud_track_test (exit 0 = passed).
 add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
@@ -871,6 +885,9 @@ else()
     # check that needs no game: cmake --build <dir> --target larecomp_pause_parity_test, then run it
     # (exit 0 = passed).
     add_executable(larecomp_pause_parity_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_parity_rows_test.cpp)
+    # The CAR SELF-REFLECTIONS row's values and how it reads its two settings back (pause_selfrefl_row.h):
+    # cmake --build <dir> --target larecomp_pause_selfrefl_test, then run it (exit 0 = passed).
+    add_executable(larecomp_pause_selfrefl_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_selfrefl_row_test.cpp)
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL

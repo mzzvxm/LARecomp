@@ -23,7 +23,7 @@
 //   seconds after the game first drew, whether DLSS was ever used or not (the warm-up: about ten
 //   seconds of one worker thread, so that the first live switch to DLSS takes tens of milliseconds
 //   and not ten seconds). The warm-up now waits for a sign that the player may switch: the UPSCALING
-//   row was shown (the pause menu's DISPLAY page), or DLSS frame generation is chosen. DLSS chosen
+//   row was shown (the pause menu's UPSCALING page), or DLSS frame generation is chosen. DLSS chosen
 //   itself starts Streamline as before (Request and Prepare). On Vulkan Streamline has to be loaded
 //   before the instance and only when DLSS is the saved choice at the start: not lazy, not changed.
 //
