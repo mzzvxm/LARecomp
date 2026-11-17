@@ -50,3 +50,13 @@ identity_names = ""
 
 # Seconds a new game session plays before its gamertag must be proved.
 identity_grace_sec = 20
+
+# Relayed packets one player may send per second; over it they are dropped.
+# 0 = no limit. The dashboard shows each player's busiest second (peak_*) to
+# tune these from.
+# Every relayed packet, to anyone.
+limit_peer_pps = 5000
+# LAN searches (broadcasts on port 1001), which reach every player.
+limit_discovery_pps = 50
+# Packets to a player who has not answered the sender.
+limit_unanswered_pps = 200

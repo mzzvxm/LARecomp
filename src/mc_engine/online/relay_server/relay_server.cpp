@@ -57,6 +57,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -125,6 +126,51 @@ constexpr int64_t kLanReachMs = 30000;
 // Vip range. 10.0.0.1 is never handed out fresh (see VipAllocatable).
 constexpr uint32_t kVipFirst = 0x0A000002;
 constexpr uint32_t kVipLast = 0x0AFFFFFE;
+// A register from an unknown address only becomes a peer once that address
+// echoes a ping: a forged source address never sees the ping, so it can
+// neither take a vip nor pose as someone else. Caps keep a flood of forged
+// registers from growing the tables; at a cap the oldest unproven address
+// gives way, so a newcomer is only shut out if a whole table's worth of
+// forged registers arrives before its pong does. The per-IP cap is wide
+// because every player behind one tunnel or NAT shares an IP.
+constexpr size_t kMaxPending = 4096;
+constexpr int kMaxPendingPerIp = 256;
+constexpr int64_t kPendingTtlMs = 5000;
+constexpr int64_t kPendingPingMs = 250;  // at most one ping per pending address this often
+constexpr size_t kMaxPeers = 4096;
+// A known session id from a new address only moves the peer there if its old
+// address stays silent through this many ms of pings (a real NAT rebind); a
+// game that still answers at the old address keeps it.
+constexpr int64_t kMoveProbeMs = 1500;
+constexpr int64_t kMoveProbeEveryMs = 500;
+constexpr int64_t kMoveRefusedMs = 10000;  // registers from a refused claimant are ignored this long
+// Another session id on an address whose game heartbeated this recently is
+// ignored: the game there is alive (heartbeats come every 5 s).
+constexpr int64_t kIncumbentFreshMs = 7000;
+constexpr int64_t kReplacedMemoryMs = 60000;   // a replaced game may come back and undo it
+constexpr int64_t kContestedMs = 300000;       // after that, only its session id is taken there
+constexpr int kQueriesPerPeerPerSec = 10;
+constexpr size_t kMaxSeenFlows = 2048;
+constexpr int64_t kBudgetLogMs = 5000;
+
+// Relayed-traffic classes, each with its own budget and peak counter.
+enum TrafficClass { kClassAll = 0, kClassDiscovery = 1, kClassUnanswered = 2, kClassCount = 3 };
+
+// Token bucket holding at most one second of budget, refilled by elapsed time.
+struct Bucket {
+  double tokens = 1e18;  // clamped to the capacity on the first refill (starts full)
+  int64_t last_ms = 0;
+
+  bool Take(int limit, int64_t now) {
+    if (limit <= 0) return true;  // 0 = no limit
+    if (last_ms != 0 && now > last_ms) tokens += static_cast<double>(now - last_ms) * limit / 1000.0;
+    last_ms = now;
+    if (tokens > limit) tokens = limit;
+    if (tokens < 1.0) return false;
+    tokens -= 1.0;
+    return true;
+  }
+};
 
 struct Peer {
   sockaddr_in addr{};       // control socket address (where we send to this peer)
@@ -139,7 +185,63 @@ struct Peer {
   int rtt_ms = -1;          // last measured round trip (ms); -1 = unknown
   uint64_t ping_token = 0;  // token of the outstanding RTT probe
   int64_t ping_sent_ms = 0; // when that probe was sent
+  int64_t last_hb_ms = 0;   // last accepted register / heartbeat carrying this sid
+  int64_t query_sec = 0;    // host-list answers in the current second
+  int query_n = 0;
+  // Relayed traffic per class (TrafficClass): budgets, and the packets offered
+  // in the current second and the busiest second since connect.
+  Bucket budget[kClassCount];
+  int64_t win_sec = 0;
+  uint32_t win_pkts[kClassCount] = {};
+  uint32_t peak_pkts[kClassCount] = {};
+  uint64_t over_budget[kClassCount] = {};  // dropped since the last budget log line
+  int64_t last_budget_log_ms = 0;
 };
+
+// A register / heartbeat from an address that has not echoed a ping yet.
+struct Pending {
+  SessionInfo info{};
+  bool is_register = false;
+  uint64_t token = 0;
+  uint64_t seq = 0;  // tells this entry from a later one for the same address
+  int64_t first_ms = 0;
+  int64_t last_ping_ms = 0;
+};
+
+// Arrival order of pending entries, oldest first: {KeyOf(addr), Pending::seq}.
+// An entry whose address is gone from the table, or back with another seq, is
+// skipped when it reaches the front.
+using PendingOrder = std::deque<std::pair<uint64_t, uint64_t>>;
+
+struct IpPending {
+  int live = 0;        // entries of this IP in the pending table
+  PendingOrder order;  // their arrival order
+};
+
+// A known session id that showed up at a new (already ping-proven) address,
+// waiting to see whether its old address is still alive.
+struct MoveProbe {
+  sockaddr_in new_addr{};
+  SessionInfo info{};
+  bool is_register = false;
+  int64_t start_ms = 0;
+  int probes = 0;
+};
+
+// The game an address carried before another session id replaced it.
+struct Replaced {
+  uint64_t old_sid = 0;
+  uint32_t old_vip = 0;
+  int64_t when_ms = 0;
+};
+
+// Strings from the wire end in a NUL and the prop count stays in its array
+// before a SessionInfo is stored or handed to anyone.
+void SanitizeSession(SessionInfo& s) {
+  s.name[sizeof(s.name) - 1] = 0;
+  s.gamertag[sizeof(s.gamertag) - 1] = 0;
+  if (s.prop_count > kMaxSessionProps) s.prop_count = kMaxSessionProps;
+}
 
 int64_t NowMs() {
   using namespace std::chrono;
@@ -313,6 +415,12 @@ std::string g_token;                   // admin token; every request must carry 
 //   identity_grace_sec = 20            seconds a new game session plays before its
 //                                      gamertag must be proved (0..120; once per
 //                                      session, 6 new sessions per IP a minute)
+//   limit_peer_pps = 5000              relayed packets one player may send a
+//                                      second, to anyone; 0 = no limit
+//   limit_discovery_pps = 50           of those, LAN searches (broadcasts on port
+//                                      1001, which reach every player)
+//   limit_unanswered_pps = 200         of those, packets to a player who has not
+//                                      answered the sender
 //
 // Strings are UTF-8; control characters are dropped. Without server.toml (or
 // without a name in it) the older relay_name.txt / relay_icon.png still work.
@@ -376,6 +484,10 @@ struct Identity {
   // probe goes out before it knows the gamertag ("Player") and gives up after
   // ~3 s; the proof needs a round trip to the master first.
   int id_grace_sec = 20;
+  // Relayed-packet budgets per sending peer, in packets per second; 0 = no limit.
+  int limit_peer_pps = 5000;       // every relayed packet
+  int limit_discovery_pps = 50;    // broadcasts on the discovery port (fan out to everyone)
+  int limit_unanswered_pps = 200;  // unicasts to a peer that has not answered the sender
 };
 
 std::string g_dir;       // the exe's folder, with a trailing slash
@@ -584,6 +696,13 @@ void LoadIdentity(bool log) {
     const std::string grace = get("identity_grace_sec");
     if (!grace.empty()) id.id_grace_sec = (std::max)(0, (std::min)(120, std::atoi(grace.c_str())));
   }
+  auto limit = [&](const char* k, int& out) {
+    const std::string v = get(k);
+    if (!v.empty()) out = (std::max)(0, (std::min)(10000000, std::atoi(v.c_str())));
+  };
+  limit("limit_peer_pps", id.limit_peer_pps);
+  limit("limit_discovery_pps", id.limit_discovery_pps);
+  limit("limit_unanswered_pps", id.limit_unanswered_pps);
 
   // The icon file name stays inside the exe's folder.
   std::string icon_file = get("icon");
@@ -1520,8 +1639,8 @@ int main(int argc, char** argv) {
 #else
   fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
 #endif
-  LogInfo("relay v5 (2026-10-23): identity by game session id, rooms by game traffic, server browser, "
-          "nick check\n");
+  LogInfo("relay v6 (2026-11-16): identity by game session id, rooms by game traffic, server browser, "
+          "nick check, address proof, traffic budgets\n");
   LogInfo("matchmaker+relay listening on %s:%u\n", bind_ip.c_str(), port);
 
   // Allocator state lives next to the exe, so it is the same file however the
@@ -1634,13 +1753,53 @@ int main(int argc, char** argv) {
   int64_t last_json = start_ms;
   int64_t last_rooms = start_ms;
   {
-    std::srand(static_cast<unsigned>(std::time(nullptr)) ^ static_cast<unsigned>(NowMs()));
-    char t[9];
-    std::snprintf(t, sizeof(t), "%08x",
-                  (static_cast<unsigned>(std::rand()) << 16) ^ static_cast<unsigned>(std::rand()) ^
-                      static_cast<unsigned>(NowMs()));
+    // 128 random bits: the token is all that stands between the panel and a kick/ban.
+    std::random_device rd;
+    char t[33];
+    for (int i = 0; i < 16; ++i)
+      std::snprintf(t + i * 2, 3, "%02x", static_cast<unsigned>(rd() & 0xFF));
     g_token = t;
   }
+  // Ping tokens are what proves an address receives our packets, so they must
+  // not be guessable.
+  std::mt19937_64 rng;
+  {
+    std::random_device rd;
+    std::seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+    rng.seed(seq);
+  }
+  auto fresh_token = [&]() -> uint64_t {
+    uint64_t t = 0;
+    while (t == 0) t = rng();  // 0 is a peer's "no probe outstanding"
+    return t;
+  };
+  // Relay budgets, copied from the identity config whenever it is (re)loaded.
+  int lim_class[kClassCount] = {};
+  auto read_limits = [&]() {
+    std::lock_guard<std::mutex> lk(g_ident_mtx);
+    lim_class[kClassAll] = g_ident.limit_peer_pps;
+    lim_class[kClassDiscovery] = g_ident.limit_discovery_pps;
+    lim_class[kClassUnanswered] = g_ident.limit_unanswered_pps;
+  };
+  read_limits();
+  uint64_t drops_rate = 0;
+  // Address proof, moves and replacements (see Pending / MoveProbe / Replaced).
+  std::unordered_map<uint64_t, Pending> pending;        // key = KeyOf(addr)
+  std::unordered_map<uint32_t, IpPending> pending_by_ip;  // network-order ip -> its entries
+  PendingOrder pending_order;                           // every entry, oldest first
+  uint64_t pending_seq = 0;
+  std::unordered_map<uint64_t, MoveProbe> moves;        // key = session id
+  std::unordered_map<uint64_t, int64_t> move_refused;   // KeyOf(addr) -> ignored until (ms)
+  std::unordered_map<uint64_t, Replaced> replaced;      // KeyOf(addr) -> the game it carried before
+  std::unordered_map<uint64_t, std::pair<uint64_t, int64_t>> contested;  // KeyOf(addr) -> {sid, until}
+  // Directed game-data traffic: key = (src vip << 32) | dst vip, value = last
+  // packet (ms). A pair is linked only when both directions are live.
+  std::unordered_map<uint64_t, int64_t> dir_seen;
+  // One-way broadcast reach: key = (sender vip << 32) | receiver vip, value =
+  // expiry (ms). Given to a peer toward someone who unicasts it unanswered.
+  std::unordered_map<uint64_t, int64_t> bcast_reach;
+  int64_t last_pending_cap_log = 0, last_peer_cap_log = 0, last_incumbent_log = 0,
+          last_move_refused_log = 0;
   std::thread(HttpServer, static_cast<uint16_t>(port + 1), bind_net).detach();
   std::thread(AnnounceLoop, port).detach();
 
@@ -1676,7 +1835,52 @@ int main(int argc, char** argv) {
     if (a != addr_to_sid.end() && a->second == sid) addr_to_sid.erase(a);
     auto v = vip_to_sid.find(p.virtual_ip);
     if (v != vip_to_sid.end() && v->second == sid) vip_to_sid.erase(v);
+    moves.erase(sid);  // a move claim for a peer that is gone starts over as a new peer
     peers.erase(it);
+  };
+
+  auto send_ping = [&](uint64_t token, const sockaddr_in& dst) {
+    PingMsg pm{};
+    pm.hdr.magic = kMagic;
+    pm.hdr.version = kProtocolVersion;
+    pm.hdr.type = static_cast<uint8_t>(MsgType::kPing);
+    pm.token = token;
+    sendto(sock, reinterpret_cast<const char*>(&pm), sizeof(pm), 0,
+           reinterpret_cast<const sockaddr*>(&dst), sizeof(dst));
+  };
+
+  auto send_ack = [&](const Peer& p, const sockaddr_in& dst) {
+    RegisterMsg ack{};
+    ack.hdr.magic = kMagic;
+    ack.hdr.version = kProtocolVersion;
+    ack.hdr.type = static_cast<uint8_t>(MsgType::kRegisterAck);
+    ack.session = p.info;
+    send_to(&ack, static_cast<int>(sizeof(ack)), dst);
+  };
+
+  // Stores a register's session in its peer, as every accepted register does.
+  auto store_session = [&](Peer& p, const SessionInfo& s, const sockaddr_in& src, int64_t now) {
+    p.info = s;
+    p.info.host_ip = src.sin_addr.s_addr;
+    p.info.virtual_ip = p.virtual_ip;
+    p.last_hb_ms = now;
+  };
+
+  auto erase_pending = [&](std::unordered_map<uint64_t, Pending>::iterator it) {
+    const uint32_t ip = static_cast<uint32_t>(it->first >> 16);
+    auto c = pending_by_ip.find(ip);
+    if (c != pending_by_ip.end() && --c->second.live <= 0) pending_by_ip.erase(c);
+    return pending.erase(it);
+  };
+
+  // Drops what is no longer pending from the front of an arrival order, so
+  // the front is the oldest entry still waiting.
+  auto trim_order = [&](PendingOrder& order) {
+    while (!order.empty()) {
+      auto p = pending.find(order.front().first);
+      if (p != pending.end() && p->second.seq == order.front().second) break;
+      order.pop_front();
+    }
   };
 
   auto peer_by_addr = [&](const sockaddr_in& a) -> Peer* {
@@ -1686,35 +1890,50 @@ int main(int argc, char** argv) {
     return p == peers.end() ? nullptr : &p->second;
   };
 
-  // Register / heartbeat: find the peer by its session id, following it to a
-  // new ip:port if it moved, or create it -- adopting the vip it already
-  // carries when it has one.
-  auto identify = [&](const sockaddr_in& src, const SessionInfo& s) -> Peer& {
+  // Register / heartbeat from an address that is either unknown or already
+  // this session's: find the peer by its session id, or create it -- adopting
+  // the vip it already carries when it has one. A session id seen at a new
+  // address does not move there yet: its old address is pinged first (see
+  // MoveProbe). nullptr = no peer now (move pending, or the table is full).
+  auto identify = [&](const sockaddr_in& src, const SessionInfo& s, bool is_register,
+                      int64_t now) -> Peer* {
     const uint64_t akey = KeyOf(src);
     // A client that sends no session id is identified by its address, as before.
     const uint64_t sid = s.session_id ? s.session_id : (0x8000000000000000ull | akey);
-    const int64_t now = NowMs();
 
     auto a = addr_to_sid.find(akey);
-    if (a != addr_to_sid.end() && a->second != sid) {
-      // This ip:port now speaks for another session: that game process is gone.
-      remove_peer(a->second, "replaced by a new game on the same address");
-    }
+    if (a != addr_to_sid.end() && a->second != sid) return nullptr;  // callers handle that case
 
     auto it = peers.find(sid);
     if (it != peers.end()) {
       Peer& p = it->second;
       if (KeyOf(p.addr) != akey) {
-        LogInfo("peer %s gt=\"%s\" moved %s -> %s (same game, same vip)\n",
-                VipStr(p.virtual_ip).c_str(), Safe(s.gamertag).c_str(), AddrStr(p.addr).c_str(),
-                AddrStr(src).c_str());
-        auto old = addr_to_sid.find(KeyOf(p.addr));
-        if (old != addr_to_sid.end() && old->second == sid) addr_to_sid.erase(old);
-        p.addr = src;
-        addr_to_sid[akey] = sid;
+        // Session ids are public (hosts list theirs), so this may be someone
+        // else posing as this game: move only if the old address goes quiet.
+        if (moves.count(sid)) return nullptr;  // one claim at a time
+        MoveProbe mp;
+        mp.new_addr = src;
+        mp.info = s;
+        mp.is_register = is_register;
+        mp.start_ms = now;
+        mp.probes = 1;
+        p.ping_token = fresh_token();
+        p.ping_sent_ms = now;
+        send_ping(p.ping_token, p.addr);
+        moves.emplace(sid, mp);
+        return nullptr;
       }
       p.last_seen_ms = now;
-      return p;
+      return &p;
+    }
+
+    if (peers.size() >= kMaxPeers) {
+      if (now - last_peer_cap_log >= 2000) {
+        last_peer_cap_log = now;
+        LogInfo("REFUSED gt=\"%s\" from %s: peer table full (%zu)\n", Safe(s.gamertag).c_str(),
+                AddrStr(src).c_str(), peers.size());
+      }
+      return nullptr;
     }
 
     Peer p;
@@ -1747,7 +1966,131 @@ int main(int argc, char** argv) {
     p.room = p.virtual_ip;
     vip_to_sid[p.virtual_ip] = sid;
     addr_to_sid[akey] = sid;
-    return peers.emplace(sid, p).first->second;
+    return &peers.emplace(sid, p).first->second;
+  };
+
+  // The accepted register / heartbeat: nick check, then identify(), store the
+  // session and ack. `proven` = the address just echoed a ping for it, and
+  // that client is waiting for an ack.
+  auto accept_register = [&](const sockaddr_in& src, const SessionInfo& s, bool is_register,
+                             bool proven) {
+    bool enforce;
+    int grace_sec;
+    {
+      std::lock_guard<std::mutex> lk(g_ident_mtx);
+      enforce = g_ident.id_enforce;
+      grace_sec = g_ident.id_grace_sec;
+    }
+    if (enforce) {
+      namespace ident = larecomp::identity;
+      const std::string nick = ident::NickFromField(s.gamertag, sizeof(s.gamertag));
+      const std::pair<uint32_t, std::string> who{src.sin_addr.s_addr, ident::NormalizeNick(nick)};
+      const int64_t now_ms = NowMs();
+      auto ad = admitted.find(who);
+      bool in = ad != admitted.end() && ad->second >= now_ms;
+      if (!in && grace_sec > 0) {
+        const uint64_t sid = s.session_id ? s.session_id : (0x8000000000000000ull | KeyOf(src));
+        auto g = grace_start.find(sid);
+        if (g == grace_start.end()) {
+          auto& rate = grace_rate[src.sin_addr.s_addr];
+          const int64_t minute = ident::NowUnix() / 60;  // wall clock: "per minute" as anyone reads it
+          if (rate.first != minute) rate = {minute, 0};
+          if (grace_rate.size() > 65536) grace_rate.clear();
+          if (++rate.second <= kGraceSessionsPerIpPerMin && grace_start.size() < 65536)
+            g = grace_start.emplace(sid, now_ms).first;
+        }
+        in = g != grace_start.end() && now_ms - g->second < int64_t(grace_sec) * 1000;
+      }
+      if (!in) {
+        // No ack: the game never learns a vip and shows no server.
+        // A peer already in (its proof lapsed) is dropped -- only when this
+        // comes from its own address, since session ids are public.
+        if (s.session_id) {
+          auto known = peers.find(s.session_id);
+          if (known != peers.end() && KeyOf(known->second.addr) == KeyOf(src))
+            remove_peer(known->first, "nick no longer verified");
+        }
+        if (NowMs() - last_refusal_log > 2000) {
+          last_refusal_log = NowMs();
+          LogInfo("REFUSED gt=\"%s\" from %s: nick not verified on this relay\n",
+                  Safe(s.gamertag).c_str(), AddrStr(src).c_str());
+        }
+        return;
+      }
+    }
+    const int64_t now = NowMs();
+    const uint32_t claimed = s.virtual_ip;
+    Peer* pp = identify(src, s, is_register, now);
+    if (!pp) return;
+    Peer& p = *pp;
+    store_session(p, s, src, now);
+    if (is_register) {
+      LogInfo("REGISTER vip=%s gt=\"%s\" \"%s\" port=%u host=%u %u/%u\n",
+              VipStr(p.virtual_ip).c_str(), Safe(p.info.gamertag).c_str(),
+              Safe(p.info.name).c_str(), p.info.host_port, p.info.is_host,
+              p.info.cur_players, p.info.max_players);
+    }
+    // A register always gets an ack: that is how a client learns its
+    // vip. A heartbeat gets one only when the client does not carry
+    // the vip we hold for it (its first acks were lost), so it can
+    // still learn it.
+    if (proven || is_register || claimed != p.virtual_ip) send_ack(p, src);
+  };
+
+  // An unknown address: remember its register and ping it; the pong makes it
+  // a peer (accept_register). Nothing is allocated or saved before that.
+  auto pend = [&](const sockaddr_in& src, const SessionInfo& s, bool is_register, int64_t now) {
+    const uint64_t akey = KeyOf(src);
+    auto it = pending.find(akey);
+    bool fresh = false;
+    if (it == pending.end()) {
+      // Room for it: at a cap the oldest unproven address gives way (first of
+      // this IP, then of all), never the newcomer -- refusing newcomers would
+      // let a trickle of forged registers lock everyone out.
+      const uint32_t ip = src.sin_addr.s_addr;
+      bool evicted = false;
+      {
+        auto q = pending_by_ip.find(ip);
+        if (q != pending_by_ip.end()) {
+          trim_order(q->second.order);
+          if (q->second.live >= kMaxPendingPerIp && !q->second.order.empty()) {
+            const uint64_t oldest = q->second.order.front().first;
+            q->second.order.pop_front();
+            erase_pending(pending.find(oldest));  // may drop this IP's entry: q is not used again
+            evicted = true;
+          }
+        }
+      }
+      trim_order(pending_order);
+      if (pending.size() >= kMaxPending && !pending_order.empty()) {
+        const uint64_t oldest = pending_order.front().first;
+        pending_order.pop_front();
+        erase_pending(pending.find(oldest));
+        evicted = true;
+      }
+      if (evicted && now - last_pending_cap_log >= 2000) {
+        last_pending_cap_log = now;
+        LogInfo("unproven addresses at the cap (%zu): the oldest gives way to %s\n", pending.size(),
+                AddrStr(src).c_str());
+      }
+      Pending pe;
+      pe.token = fresh_token();
+      pe.seq = ++pending_seq;
+      pe.first_ms = now;
+      it = pending.emplace(akey, pe).first;
+      IpPending& mine = pending_by_ip[ip];
+      ++mine.live;
+      mine.order.emplace_back(akey, pe.seq);
+      pending_order.emplace_back(akey, pe.seq);
+      fresh = true;
+    }
+    Pending& pe = it->second;
+    pe.info = s;
+    pe.is_register = pe.is_register || is_register;
+    if (fresh || now - pe.last_ping_ms >= kPendingPingMs) {
+      pe.last_ping_ms = now;
+      send_ping(pe.token, src);
+    }
   };
 
   // Rooms = connected components of the live game-data links; a room is named
@@ -1788,6 +2131,20 @@ int main(int argc, char** argv) {
     for (auto it = lan_reach.begin(); it != lan_reach.end();) {
       if (now >= it->second)
         it = lan_reach.erase(it);
+      else
+        ++it;
+    }
+    for (auto it = bcast_reach.begin(); it != bcast_reach.end();) {
+      if (now >= it->second)
+        it = bcast_reach.erase(it);
+      else
+        ++it;
+    }
+    for (auto it = dir_seen.begin(); it != dir_seen.end();) {
+      const uint32_t a = static_cast<uint32_t>(it->first >> 32);
+      const uint32_t b = static_cast<uint32_t>(it->first & 0xFFFFFFFFu);
+      if (now - it->second > kLinkTtlMs || !parent.count(a) || !parent.count(b))
+        it = dir_seen.erase(it);
       else
         ++it;
     }
@@ -2136,72 +2493,64 @@ int main(int argc, char** argv) {
           case MsgType::kHeartbeat: {
             if (n >= static_cast<int>(sizeof(RegisterMsg))) {
               auto* m = reinterpret_cast<RegisterMsg*>(rbuf);
+              SanitizeSession(m->session);
               const bool is_register = static_cast<MsgType>(hdr->type) == MsgType::kRegister;
-              bool enforce;
-              int grace_sec;
+              const int64_t now = NowMs();
+              const uint64_t akey = KeyOf(src);
+              const uint64_t sid =
+                  m->session.session_id ? m->session.session_id : (0x8000000000000000ull | akey);
               {
-                std::lock_guard<std::mutex> lk(g_ident_mtx);
-                enforce = g_ident.id_enforce;
-                grace_sec = g_ident.id_grace_sec;
-              }
-              if (enforce) {
-                namespace ident = larecomp::identity;
-                const std::string nick =
-                    ident::NickFromField(m->session.gamertag, sizeof(m->session.gamertag));
-                const std::pair<uint32_t, std::string> who{src.sin_addr.s_addr, ident::NormalizeNick(nick)};
-                const int64_t now_ms = NowMs();
-                auto ad = admitted.find(who);
-                bool in = ad != admitted.end() && ad->second >= now_ms;
-                if (!in && grace_sec > 0) {
-                  const uint64_t sid = m->session.session_id ? m->session.session_id
-                                                             : (0x8000000000000000ull | KeyOf(src));
-                  auto g = grace_start.find(sid);
-                  if (g == grace_start.end()) {
-                    auto& rate = grace_rate[src.sin_addr.s_addr];
-                    const int64_t minute = ident::NowUnix() / 60;  // wall clock: "per minute" as anyone reads it
-                    if (rate.first != minute) rate = {minute, 0};
-                    if (grace_rate.size() > 65536) grace_rate.clear();
-                    if (++rate.second <= kGraceSessionsPerIpPerMin && grace_start.size() < 65536)
-                      g = grace_start.emplace(sid, now_ms).first;
-                  }
-                  in = g != grace_start.end() && now_ms - g->second < int64_t(grace_sec) * 1000;
+                auto mr = move_refused.find(akey);
+                if (mr != move_refused.end()) {
+                  if (now < mr->second) break;  // claimed a live game's session id
+                  move_refused.erase(mr);
                 }
-                if (!in) {
-                  // No ack: the game never learns a vip and shows no server.
-                  // A peer already in (its proof lapsed) is dropped.
-                  if (m->session.session_id) {
-                    auto known = peers.find(m->session.session_id);
-                    if (known != peers.end()) remove_peer(known->first, "nick no longer verified");
-                  }
-                  if (NowMs() - last_refusal_log > 2000) {
-                    last_refusal_log = NowMs();
-                    LogInfo("REFUSED gt=\"%s\" from %s: nick not verified on this relay\n",
-                            Safe(m->session.gamertag).c_str(), AddrStr(src).c_str());
+                auto ct = contested.find(akey);
+                if (ct != contested.end()) {
+                  if (now >= ct->second.second)
+                    contested.erase(ct);
+                  else if (sid != ct->second.first)
+                    break;  // this address belongs to the game that came back
+                }
+              }
+              Peer* at = peer_by_addr(src);
+              if (at && at->sid == sid) {
+                accept_register(src, m->session, is_register, false);
+                break;
+              }
+              if (at) {
+                // Same ip:port, another session id: a new game process there,
+                // or a forged packet. The address already answered pings.
+                auto rp = replaced.find(akey);
+                if (rp != replaced.end() && now - rp->second.when_ms < kReplacedMemoryMs &&
+                    rp->second.old_sid == sid) {
+                  // The game this address carried before is still running.
+                  replaced.erase(rp);
+                  remove_peer(at->sid, "replacement undone: the first game is still there");
+                  contested[akey] = {sid, now + kContestedMs};
+                  accept_register(src, m->session, is_register, false);
+                  break;
+                }
+                if (now - at->last_hb_ms < kIncumbentFreshMs) {
+                  if (now - last_incumbent_log >= 2000) {
+                    last_incumbent_log = now;
+                    LogInfo("register from %s ignored: another game there (%s gt=\"%s\") is alive\n",
+                            AddrStr(src).c_str(), VipStr(at->virtual_ip).c_str(),
+                            Safe(at->info.gamertag).c_str());
                   }
                   break;
                 }
+                // That game process is gone.
+                Replaced r;
+                r.old_sid = at->sid;
+                r.old_vip = at->virtual_ip;
+                r.when_ms = now;
+                remove_peer(r.old_sid, "replaced by a new game on the same address");
+                replaced[akey] = r;
+                accept_register(src, m->session, is_register, false);
+                break;
               }
-              const uint32_t claimed = m->session.virtual_ip;
-              Peer& p = identify(src, m->session);
-              p.info = m->session;
-              p.info.host_ip = src.sin_addr.s_addr;
-              p.info.virtual_ip = p.virtual_ip;
-              if (is_register) {
-                LogInfo("REGISTER vip=%s gt=\"%s\" \"%s\" port=%u host=%u %u/%u\n",
-                        VipStr(p.virtual_ip).c_str(), Safe(p.info.gamertag).c_str(),
-                        Safe(p.info.name).c_str(), p.info.host_port, p.info.is_host,
-                        p.info.cur_players, p.info.max_players);
-              }
-              // A register always gets an ack: that is how a client learns its
-              // vip. A heartbeat gets one only when the client does not carry
-              // the vip we hold for it (its first acks were lost), so it can
-              // still learn it.
-              if (is_register || claimed != p.virtual_ip) {
-                RegisterMsg ack = *m;
-                ack.hdr.type = static_cast<uint8_t>(MsgType::kRegisterAck);
-                ack.session = p.info;
-                send_to(&ack, static_cast<int>(sizeof(ack)), src);
-              }
+              pend(src, m->session, is_register, now);
             }
             break;
           }
@@ -2212,13 +2561,24 @@ int main(int argc, char** argv) {
               if (p && p->ping_token == pm->token) {
                 p->rtt_ms = static_cast<int>(NowMs() - p->ping_sent_ms);
                 p->last_seen_ms = NowMs();
+              } else {
+                // An unknown address proving it receives what we send.
+                auto pe = pending.find(KeyOf(src));
+                if (pe != pending.end() && pe->second.token == pm->token) {
+                  const Pending proven = pe->second;
+                  erase_pending(pe);
+                  accept_register(src, proven.info, proven.is_register, true);
+                }
               }
             }
             break;
           }
           case MsgType::kUnregister: {
+            // Only the session itself, from its own address, may leave.
+            if (n < static_cast<int>(sizeof(RegisterMsg))) break;
+            const auto* m = reinterpret_cast<const RegisterMsg*>(rbuf);
             Peer* p = peer_by_addr(src);
-            if (p) remove_peer(p->sid, "unregistered");
+            if (p && m->session.session_id == p->sid) remove_peer(p->sid, "unregistered");
             break;
           }
           case MsgType::kQuery: {
@@ -2232,8 +2592,19 @@ int main(int argc, char** argv) {
             lm->hdr.magic = kMagic;
             lm->hdr.version = kProtocolVersion;
             lm->hdr.type = static_cast<uint8_t>(MsgType::kList);
+            // Only registered peers get the list (a small query must not buy a
+            // large answer for a forged address), and only a few times a second.
             Peer* requester = peer_by_addr(src);
-            const uint64_t self = requester ? requester->sid : 0;
+            if (!requester) break;
+            {
+              const int64_t sec = NowMs() / 1000;
+              if (requester->query_sec != sec) {
+                requester->query_sec = sec;
+                requester->query_n = 0;
+              }
+              if (++requester->query_n > kQueriesPerPeerPerSec) break;
+            }
+            const uint64_t self = requester->sid;
             const auto sizes = room_sizes();
             int count = 0;
             auto add = [&](const Peer& pr) {
@@ -2243,6 +2614,7 @@ int main(int argc, char** argv) {
               auto it = sizes.find(pr.room);
               int cur = it == sizes.end() ? 1 : it->second;
               si.cur_players = static_cast<uint8_t>(cur > 255 ? 255 : cur);
+              si.host_ip = 0;  // players' real IPs are not handed out (the client never uses it)
               std::memcpy(out + sizeof(ListMsg) + count * sizeof(SessionInfo), &si,
                           sizeof(SessionInfo));
               ++count;
@@ -2313,7 +2685,8 @@ int main(int argc, char** argv) {
               uint64_t fk = (static_cast<uint64_t>(sender.virtual_ip & 0xFFFFFF) << 40) |
                             (static_cast<uint64_t>(rm->addr & 0xFFFFFF) << 16) |
                             static_cast<uint64_t>(rm->src_port);
-              if (seen_flows.insert(fk).second) {
+              // Capped: a peer spraying made-up destinations must not grow it forever.
+              if (seen_flows.size() < kMaxSeenFlows && seen_flows.insert(fk).second) {
                 if (rm->addr == 0) {
                   LogInfo("FLOW %s -> BCAST port=%u room=%s\n", VipStr(sender.virtual_ip).c_str(),
                           rm->src_port, VipStr(sender.room).c_str());
@@ -2321,6 +2694,54 @@ int main(int argc, char** argv) {
                   LogInfo("FLOW %s -> %s port=%u\n", VipStr(sender.virtual_ip).c_str(),
                           VipStr(rm->addr).c_str(), rm->src_port);
                 }
+              }
+            }
+            // Classify, count (before any drop, so the peaks show what peers
+            // really send) and charge the budgets. Discovery broadcasts fan
+            // out to everyone; unicasts to a peer that never answered the
+            // sender are what a flood of one player looks like.
+            const bool discovery = rm->src_port == kDiscoveryPort;
+            Peer* dstp = nullptr;
+            bool answered = false;
+            if (rm->addr != 0) {
+              auto vit = vip_to_sid.find(rm->addr);
+              auto pit = vit == vip_to_sid.end() ? peers.end() : peers.find(vit->second);
+              if (pit != peers.end()) {
+                dstp = &pit->second;
+                auto ds = dir_seen.find((static_cast<uint64_t>(dstp->virtual_ip) << 32) |
+                                        sender.virtual_ip);
+                answered = ds != dir_seen.end() && now - ds->second <= kLinkTtlMs;
+              }
+            }
+            {
+              bool cls[kClassCount] = {true, rm->addr == 0 && discovery,
+                                       dstp && !discovery && !answered};
+              const int64_t sec = now / 1000;
+              if (sender.win_sec != sec) {
+                sender.win_sec = sec;
+                for (auto& w : sender.win_pkts) w = 0;
+              }
+              int over = -1;
+              for (int c = 0; c < kClassCount; ++c) {
+                if (!cls[c]) continue;
+                if (++sender.win_pkts[c] > sender.peak_pkts[c]) sender.peak_pkts[c] = sender.win_pkts[c];
+                if (over < 0 && !sender.budget[c].Take(lim_class[c], now)) over = c;
+              }
+              if (over >= 0) {
+                ++drops_rate;
+                ++sender.over_budget[over];
+                if (now - sender.last_budget_log_ms >= kBudgetLogMs) {
+                  sender.last_budget_log_ms = now;
+                  static const char* const kWhich[kClassCount] = {"peer", "discovery", "unanswered"};
+                  for (int c = 0; c < kClassCount; ++c) {
+                    if (!sender.over_budget[c]) continue;
+                    LogInfo("peer %s gt=\"%s\" over its %s budget: %llu packets dropped\n",
+                            VipStr(sender.virtual_ip).c_str(), Safe(sender.info.gamertag).c_str(),
+                            kWhich[c], static_cast<unsigned long long>(sender.over_budget[c]));
+                    sender.over_budget[c] = 0;
+                  }
+                }
+                break;
               }
             }
             // Build the deliver packet on the stack (no per-packet heap alloc),
@@ -2348,8 +2769,13 @@ int main(int argc, char** argv) {
                   continue;
                 if (!global && pr.room != room) {
                   auto r = lan_reach.find(LinkKey(sender.virtual_ip, pr.virtual_ip));
-                  if (r == lan_reach.end() || now >= r->second)
-                    continue;
+                  if (r == lan_reach.end() || now >= r->second) {
+                    // Or one-way: pr unicast the sender without an answer yet.
+                    auto b = bcast_reach.find((static_cast<uint64_t>(sender.virtual_ip) << 32) |
+                                              pr.virtual_ip);
+                    if (b == bcast_reach.end() || now >= b->second)
+                      continue;
+                  }
                 }
                 send_to(out, out_len, pr.addr);
                 ++pr.tx_pkts;
@@ -2358,13 +2784,11 @@ int main(int argc, char** argv) {
                   flow_edges[(static_cast<uint64_t>(sender.virtual_ip) << 32) | pr.virtual_ip] = now;
               }
             } else {
-              auto vit = vip_to_sid.find(rm->addr);
-              auto pit = vit == vip_to_sid.end() ? peers.end() : peers.find(vit->second);
-              if (pit == peers.end()) {
+              if (!dstp) {
                 ++drops_unknown_dst;  // that vip is offline or not identified yet
                 break;
               }
-              Peer& dst = pit->second;
+              Peer& dst = *dstp;
               send_to(out, out_len, dst.addr);
               ++dst.tx_pkts;
               dst.tx_bytes += inner_len;
@@ -2375,8 +2799,18 @@ int main(int argc, char** argv) {
                 sender.lan_reply_ms = now;
                 lan_reach[LinkKey(sender.virtual_ip, dst.virtual_ip)] = now + kLanReachMs;
               } else {
-                links[LinkKey(sender.virtual_ip, dst.virtual_ip)] = now;
-                merge_rooms(sender.room, dst.room);
+                // One player sending is not two playing together: the pair is
+                // linked (one room) only once traffic flows both ways. Until
+                // then the receiver's room broadcasts still reach the sender,
+                // so the sender can follow the join, but not the other way.
+                if (answered) {
+                  links[LinkKey(sender.virtual_ip, dst.virtual_ip)] = now;
+                  merge_rooms(sender.room, dst.room);
+                } else {
+                  bcast_reach[(static_cast<uint64_t>(dst.virtual_ip) << 32) | sender.virtual_ip] =
+                      now + kLanReachMs;
+                }
+                dir_seen[(static_cast<uint64_t>(sender.virtual_ip) << 32) | dst.virtual_ip] = now;
                 flow_edges[(static_cast<uint64_t>(sender.virtual_ip) << 32) | dst.virtual_ip] = now;
               }
             }
@@ -2423,6 +2857,61 @@ int main(int argc, char** argv) {
       recompute_rooms(now);
     }
 
+    // Move claims: ping the old address a few times, then decide. Any packet
+    // from the old address after the claim (pong, heartbeat, relay) means
+    // the game is still there, and the claimant is refused.
+    for (auto it = moves.begin(); it != moves.end();) {
+      auto pit = peers.find(it->first);
+      if (pit == peers.end()) {
+        it = moves.erase(it);
+        continue;
+      }
+      Peer& p = pit->second;
+      MoveProbe& mp = it->second;
+      if (now - mp.start_ms < kMoveProbeMs) {
+        if (mp.probes < 3 && now - mp.start_ms >= mp.probes * kMoveProbeEveryMs) {
+          ++mp.probes;
+          p.ping_sent_ms = now;
+          send_ping(p.ping_token, p.addr);  // same token: a late pong still counts
+        }
+        ++it;
+        continue;
+      }
+      const uint64_t nkey = KeyOf(mp.new_addr);
+      if (p.last_seen_ms > mp.start_ms) {
+        move_refused[nkey] = now + kMoveRefusedMs;
+        if (now - last_move_refused_log >= 2000) {
+          last_move_refused_log = now;
+          LogInfo("REFUSED move of %s gt=\"%s\" to %s: the game still answers at %s\n",
+                  VipStr(p.virtual_ip).c_str(), Safe(p.info.gamertag).c_str(),
+                  AddrStr(mp.new_addr).c_str(), AddrStr(p.addr).c_str());
+        }
+      } else {
+        auto taken = addr_to_sid.find(nkey);
+        if (taken == addr_to_sid.end() || taken->second == it->first) {
+          LogInfo("peer %s gt=\"%s\" moved %s -> %s (same game, same vip)\n",
+                  VipStr(p.virtual_ip).c_str(), Safe(mp.info.gamertag).c_str(),
+                  AddrStr(p.addr).c_str(), AddrStr(mp.new_addr).c_str());
+          auto old = addr_to_sid.find(KeyOf(p.addr));
+          if (old != addr_to_sid.end() && old->second == it->first) addr_to_sid.erase(old);
+          p.addr = mp.new_addr;
+          addr_to_sid[nkey] = it->first;
+          p.last_seen_ms = now;
+          const uint32_t claimed = mp.info.virtual_ip;
+          store_session(p, mp.info, mp.new_addr, now);
+          if (mp.is_register) {
+            LogInfo("REGISTER vip=%s gt=\"%s\" \"%s\" port=%u host=%u %u/%u\n",
+                    VipStr(p.virtual_ip).c_str(), Safe(p.info.gamertag).c_str(),
+                    Safe(p.info.name).c_str(), p.info.host_port, p.info.is_host,
+                    p.info.cur_players, p.info.max_players);
+          }
+          if (mp.is_register || claimed != p.virtual_ip) send_ack(p, p.addr);
+        }
+        // else another game took that address meanwhile: the claim is void.
+      }
+      it = moves.erase(it);
+    }
+
     // RTT probes: fresh token to every peer every 2 s (peer echoes kPong).
     if (now - last_ping >= 2000) {
       last_ping = now;
@@ -2432,8 +2921,8 @@ int main(int argc, char** argv) {
       pm.hdr.type = static_cast<uint8_t>(MsgType::kPing);
       for (auto& kv : peers) {
         Peer& pr = kv.second;
-        pr.ping_token =
-            (static_cast<uint64_t>(std::rand()) << 32) ^ static_cast<uint64_t>(now) ^ pr.virtual_ip;
+        if (moves.count(kv.first)) continue;  // its move probe owns the token for now
+        pr.ping_token = fresh_token();
         pr.ping_sent_ms = now;
         pm.token = pr.ping_token;
         sendto(sock, reinterpret_cast<const char*>(&pm), sizeof(pm), 0,
@@ -2445,6 +2934,7 @@ int main(int argc, char** argv) {
     if (now - last_identity_load >= 5000) {
       last_identity_load = now;
       LoadIdentity(false);
+      read_limits();
     }
 
     // Publish a JSON snapshot for the dashboard every 500 ms.
@@ -2467,6 +2957,8 @@ int main(int argc, char** argv) {
       j += ",\"drop_src\":" + std::to_string(drops_unknown_src);
       j += ",\"drop_dst\":" + std::to_string(drops_unknown_dst);
       j += ",\"next_vip\":\"" + VipStr(next_vip) + "\"";
+      j += ",\"pending\":" + std::to_string(pending.size());
+      j += ",\"drop_rate\":" + std::to_string(drops_rate);
       {
         std::lock_guard<std::mutex> lk(g_ident_mtx);
         j += ",\"name\":\"" + JsonEscape(g_server_name.c_str()) + "\"";
@@ -2514,6 +3006,9 @@ int main(int argc, char** argv) {
         j += ",\"conn_ms\":" + std::to_string(now - pr.connect_ms);
         j += ",\"rx_pkts\":" + std::to_string(pr.rx_pkts);
         j += ",\"tx_pkts\":" + std::to_string(pr.tx_pkts);
+        j += ",\"peak_pps\":" + std::to_string(pr.peak_pkts[kClassAll]);
+        j += ",\"peak_disc_pps\":" + std::to_string(pr.peak_pkts[kClassDiscovery]);
+        j += ",\"peak_cold_pps\":" + std::to_string(pr.peak_pkts[kClassUnanswered]);
         j += "}";
       }
       j += "],\"edges\":[";
@@ -2561,6 +3056,33 @@ int main(int argc, char** argv) {
       // A timed-out game keeps its vip: nothing else gets it (the counter only
       // moves forward), and it is adopted back if that game returns.
       for (uint64_t sid : expired) remove_peer(sid, "timed out");
+      // Unproven addresses that never echoed their ping, and the address
+      // guards once they lapse.
+      for (auto it = pending.begin(); it != pending.end();) {
+        if (now - it->second.first_ms > kPendingTtlMs)
+          it = erase_pending(it);
+        else
+          ++it;
+      }
+      trim_order(pending_order);
+      for (auto it = move_refused.begin(); it != move_refused.end();) {
+        if (now >= it->second)
+          it = move_refused.erase(it);
+        else
+          ++it;
+      }
+      for (auto it = replaced.begin(); it != replaced.end();) {
+        if (now - it->second.when_ms >= kReplacedMemoryMs)
+          it = replaced.erase(it);
+        else
+          ++it;
+      }
+      for (auto it = contested.begin(); it != contested.end();) {
+        if (now >= it->second.second)
+          it = contested.erase(it);
+        else
+          ++it;
+      }
       for (auto it = admitted.begin(); it != admitted.end();) {
         if (it->second < now)
           it = admitted.erase(it);
