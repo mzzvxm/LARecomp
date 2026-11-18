@@ -277,6 +277,17 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
     }
   };
 
+  // --build_shader_packs / --precache_pipelines: no window, no sound, no pad, no graphics driver (GetRequirements() asks
+  // for nothing, but the driver settings choose what rex::Init loads: "none" for each). CHECK: the setting names
+  // apu.driver and hid.drivers, and that ui.driver = none is accepted while the app requires no UI.
+  if (batch_ != BatchMode::kNone) {
+    def("ui.driver", "none");
+    def("apu.driver", "none");
+    def("hid.drivers", "none");
+    def("gpu.driver", "none");
+    return;
+  }
+
   // The renderer: the SDK's gpu.driver. Plume with no emulated GPU is the default; a player (or the pause menu's
   // RENDERER row, or MigrateLegacyConfig) picks the SDK's Xenia GPU with any / d3d12 / vulkan.
   def("gpu.driver", std::string(mcla::native_gfx::nocp::kDriverName));
