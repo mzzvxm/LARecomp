@@ -35,14 +35,19 @@
 #include <cstdint>
 #include <string>
 
+#include <rex/guest.h>
+#include <rex/title.h>
+
 namespace mcla::native_gfx::nocp {
 
-// Claims the GPU register window and starts the vblank source. Refuses (and
-// says so) when something already owns the window -- which is the case
-// whenever the SDK's graphics system is alive, and is the check that keeps
-// this from being switched on halfway.
-bool Install();
+// Starts the vblank source and takes the register file. Called by NoCPGraphicsDriver::AttachTitle (nocp_driver.h):
+// the SDK has attached the GPU register window to that driver and calls ReadGuestRegister/WriteGuestRegister
+// (register index = (address & 0xFFFF) / 4) for every guest load and store in it.
+bool Install(rex::IGuestInterrupts& interrupts, const rex::VideoMode& video_mode);
 void Shutdown();
+
+uint32_t ReadGuestRegister(uint32_t index);
+void WriteGuestRegister(uint32_t index, uint32_t value);
 
 bool Installed();
 

@@ -2,7 +2,7 @@
 # larecomp - ReXGlue Recompiled Project
 #
 # This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
-# SDK boilerplate lives in generated/rexglue.cmake.
+# SDK boilerplate (rexglue_project, rexglue_setup_target, the host settings) comes from the rexglue package.
 
 cmake_minimum_required(VERSION 3.25)
 project(larecomp LANGUAGES CXX)
@@ -10,13 +10,19 @@ project(larecomp LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(WIN32)
-    set(REXGLUE_REQUIRED_GRAPHICS_BACKENDS "d3d12;vulkan" CACHE STRING "Required ReXGlue graphics backends")
+# rexglue 0.11: the SDK is a package (find_package) or, for development, a source folder built with the project.
+#   -DREXSDK_DIR=<LAR-RXSDK checkout>   add_subdirectory (builds the SDK here)
+#   -DCMAKE_PREFIX_PATH=<install>       an installed SDK (the launcher's prebuilt kit: tools/prebuilt-local)
+# REXGLUE_REQUIRED_GRAPHICS_BACKENDS is gone (D3D12 on Windows and Vulkan are always built); the Xenia GPU drivers are
+# modules the package stages next to the exe (rexgpu-xenos-d3d12, -vulkan, -null).
+# A project that still has generated/rexglue.cmake keeps working with a deprecation warning: delete the file.
+if(REXSDK_DIR)
+    add_subdirectory("${REXSDK_DIR}" rexglue-sdk)
 else()
-    set(REXGLUE_REQUIRED_GRAPHICS_BACKENDS "vulkan" CACHE STRING "Required ReXGlue graphics backends")
+    find_package(rexglue 0.11.0 REQUIRED CONFIG)
 endif()
-
-include(generated/rexglue.cmake)
+# The codegen output folder stays `generated` (larecomp_manifest.toml out_directory_path), not generated/default.
+rexglue_project(larecomp OUTPUT_DIR generated)
 
 # CPU level of the generated code and of larecomp's own sources (applied at the end of this file).
 #   baseline   what the SDK builds for: x86-64 with SSE4.1, no -march flag from here. The default.
@@ -54,11 +60,10 @@ if(MINGW)
     # Clang in SimplifyCFG. A fault inside a guest __try scope is therefore not caught with
     # this toolchain; the generated code of this game has no such scope. The sources carry
     # the list as it was when the file was included, so it is set again.
+    # CHECK (0.11): rexglue_setup_target applies ${REXGLUE_RECOMP_OPTIONS} to the larecomp_recompiled object library itself
+    # (target_compile_options), so removing the option from the variable here, before it, is all that is needed. Does the
+    # 0.11 option list still carry -fasync-exceptions for MinGW (rexglue_recomp_options: "always on Windows")?
     list(REMOVE_ITEM REXGLUE_RECOMP_OPTIONS -fasync-exceptions)
-    if(REXGLUE_ENTRYPOINT_GENERATED_SOURCES)
-        set_source_files_properties(${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
-            PROPERTIES COMPILE_OPTIONS "${REXGLUE_RECOMP_OPTIONS}")
-    endif()
 endif()
 
 # Sources
@@ -68,7 +73,10 @@ set_source_files_properties(thirdparty/monocypher/monocypher.c PROPERTIES LANGUA
 
 set(LARECOMP_SOURCES
     src/main.cpp
+    src/larecomp_app.cpp
     src/spdlog_console.cpp
+    # LARecomp's side of the rexglue settings: the owners, the aliases of the old names, the by-name API.
+    src/settings/larecomp_settings.cpp
     src/crash_handler.cpp
     # The named object a running game holds, so the launcher can tell the game runs without listing processes.
     src/game_marker.cpp
@@ -300,6 +308,8 @@ set(LARECOMP_SOURCES
     src/native_gfx/guest/vblank_probe.cpp
     src/native_gfx/nocp/guest_gpu.cpp
     src/native_gfx/nocp/nocp_app.cpp
+    # The no-command-processor renderer as an in-process Xenos driver (gpu.driver = larecomp).
+    src/native_gfx/nocp/nocp_driver.cpp
     src/native_gfx/guest/host_heap.cpp
     src/native_gfx/guest/host_resource_heap.cpp
     src/native_gfx/guest/guest_constants.cpp
@@ -372,11 +382,17 @@ target_include_directories(larecomp_hud_track_test PRIVATE src/mc_engine/cinemat
 add_executable(larecomp_pad_feed_test EXCLUDE_FROM_ALL
     src/mc_engine/ui/pad_feed_test.cpp)
 target_include_directories(larecomp_pad_feed_test PRIVATE src/mc_engine/ui)
-if(NOT WIN32)
-    # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
-    # drive it) is Windows-only; Linux renders through Plume. The guest-side
-    # files Plume shares (native_gfx/guest, nocp, vertex_declaration, ...) stay,
-    # with their DXGI enums coming from src/compat/linux.
+# The legacy Direct3D 12 native graphics runtime (native_gfx/d3d12, 27.8k lines, plus native_gfx.cpp, geometry.cpp,
+# telemetry.cpp, guest/sampler_state.cpp): "no longer offered" since the renderer choice was Plume or XENIA, and it sits on
+# headers that are private in rexglue 0.11 (rex/ui/d3d12/*: d3d12_api.h, d3d12_util.h, d3d12_provider.h, d3d12_presenter.h).
+# It stays in the tree, untouched, and OFF: Windows is built like Linux, which has always been built without it (the stubs
+# in src/compat/linux/linux_stubs.cpp stand in for the observers hooks.cpp feeds it). Turning it ON needs those four headers
+# and what they include vendored from the SDK's src/gpu/xenos/host/d3d12, and the rex::Runtime / KernelState / Memory call sites
+# of its 34 files ported (about 9 + 3 + 20 sites); nobody has done that.
+option(LARECOMP_NATIVE_GFX_LEGACY "Build the legacy Direct3D 12 native graphics runtime (Windows only, not ported to rexglue 0.11)" OFF)
+if(NOT WIN32 OR NOT LARECOMP_NATIVE_GFX_LEGACY)
+    # The guest-side files Plume shares (native_gfx/guest, nocp, vertex_declaration, ...) stay,
+    # with their DXGI enums coming from the Windows SDK or, off Windows, from src/compat/linux.
     set(_larecomp_win_only
         src/native_gfx/native_gfx.cpp
         src/native_gfx/geometry.cpp
@@ -389,11 +405,13 @@ if(NOT WIN32)
     endforeach()
     list(REMOVE_ITEM LARECOMP_SOURCES ${_larecomp_win_only})
     list(APPEND LARECOMP_SOURCES src/compat/linux/linux_stubs.cpp)
-    # The generated code and the SDK headers read and write guest memory through
-    # typed pointers; clang -O2/-O3 on Linux reorders those accesses (measured: an
-    # .fxc parsed to different bytes than on Windows). Aliasing off keeps them in order.
-    string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
-    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
+    if(NOT WIN32)
+        # The generated code and the SDK headers read and write guest memory through
+        # typed pointers; clang -O2/-O3 on Linux reorders those accesses (measured: an
+        # .fxc parsed to different bytes than on Windows). Aliasing off keeps them in order.
+        string(APPEND CMAKE_CXX_FLAGS " -fno-strict-aliasing")
+        include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/compat/linux)
+    endif()
 endif()
 # Capture mode's fixed step, tags, frame gate books, take books and scene clock (src/mc_engine/cinematic/capture_core.h) have a check that
 # needs no game:
@@ -535,11 +553,9 @@ if(REXGLUE_ENABLE_XEO3_TARGET)
     # Sources come from a dedicated codegen run:
     #   rexglue codegen --xeo3 larecomp_xeo3_manifest.toml   -> generated_xeo3/
     # which also writes generated_xeo3/CMakeLists.txt. This drives that project.
-    message(STATUS "Building XEO3 DLL target for Microsoft Emulator")
-    rexglue_add_xeo3_dll_target(larecomp_xeo3
-        GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/generated_xeo3"
-        OUTPUT_NAME   "xeo3_545407F8"
-    )
+    # rexglue 0.11 has no XEO3 target (rexglue_add_xeo3_dll_target is gone): the files larecomp_xeo3_manifest.toml and
+    # larecomp_config_xeo3.toml stay for whoever picks it up again, with their own [rexcrt] table (a [shim] now).
+    message(FATAL_ERROR "REXGLUE_ENABLE_XEO3_TARGET: the XEO3 DLL target is not part of rexglue 0.11")
 else()
     if(WIN32)
         # Compile the .rc so the app icon is embedded in the exe (not just copied
@@ -588,10 +604,26 @@ else()
         add_executable(larecomp ${LARECOMP_SOURCES})
     endif()
 
-    # GPU_PLUGINS stages rexgpu-xenos next to the executable: the Xenos GPU
-    # emulation is a runtime-loaded plugin now, so it is never linked and
-    # TARGET_RUNTIME_DLLS does not see it.
-    rexglue_setup_target(larecomp GPU_PLUGINS xenos)
+    # rexglue_setup_target links rex::sdk (rexbase, rexppc, rexxenos, rexkernel, rexxam, rexxbdm, rexapp), builds the
+    # generated sources into larecomp_recompiled, and stages next to the exe the 12 provider modules (rexfilesystem, rexhid,
+    # rexapu, rexui, rexgpu, rexxam, rexxbdm, and the drivers rexgpu-xenos-{d3d12,vulkan,null}, rexapu-sdl3, rexhid-{sdl3,
+    # xinput}, rexui-sdl3) and shared SDL3. The Xenia GPU drivers are what gpu.driver = d3d12/vulkan loads (the XENIA
+    # renderer); the default renderer is the driver compiled into the exe (native_gfx/nocp/nocp_driver.cpp).
+    # EXCLUDE <name> drops a staged file (rexgpu-xenos-null is only a test driver); NO_COPY stages nothing.
+    # The launcher's file lists and tools/prebuilt-local must follow the new set (R7 of the plan).
+    rexglue_setup_target(larecomp)
+
+    # o1heap (MIT, https://github.com/pavel-kirienko/o1heap): the guest-visible object allocator of
+    # native_gfx/guest/host_heap.cpp. It was the SDK target rex::o1heap up to 0.10 and is gone in 0.11 (the SDK uses tlsf
+    # privately), so it comes in as a submodule of LARecomp:
+    #   git submodule add https://github.com/pavel-kirienko/o1heap thirdparty/o1heap
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap/o1heap/o1heap.c")
+        message(FATAL_ERROR "thirdparty/o1heap is missing: git submodule update --init --recursive "
+                            "(rexglue 0.11 no longer ships rex::o1heap)")
+    endif()
+    add_library(larecomp_o1heap STATIC thirdparty/o1heap/o1heap/o1heap.c)
+    target_include_directories(larecomp_o1heap PUBLIC thirdparty/o1heap/o1heap)
+    target_link_libraries(larecomp PRIVATE larecomp_o1heap)
 
     if(NOT WIN32 AND NOT APPLE)
         # The ISO installer and the save importer open GTK file dialogs.
@@ -761,9 +793,7 @@ else()
 
         target_link_libraries(larecomp
             PRIVATE
-            # native_gfx guest-visible object allocator (guest/host_heap.cpp):
-            # coalescing heap over a block of guest physical memory.
-            rex::o1heap
+            # (the native_gfx guest-visible object allocator, guest/host_heap.cpp, needs o1heap: see below)
             dxgi
             # native_gfx D3D12 backend (D3D12SerializeRootSignature etc.)
             d3d12

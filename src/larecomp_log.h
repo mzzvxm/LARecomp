@@ -1,14 +1,17 @@
 #pragma once
 
 #include <rex/logging/log_category.h>
+#include <rex/logging/logger.h>
 
+// Log categories on rexglue 0.11: a LogCategory is a constinit object (no RegisterLogCategory), added to the logger once
+// with AddCategories (LarecompApp::OnConfigure adds App, Crash and mc::log::mc), which also gives each a
+// log.categories.<name> setting.
+// CHECK: category names with a dot (the 0.10 names were "larecomp.app" and "larecomp.crash"): the plan says "a lowercase
+// identifier", so the underscore form is used; log.categories.larecomp_app is the setting a player would write.
 namespace larecomp::log {
-inline const rex::LogCategoryId App =
-    rex::RegisterLogCategory("larecomp.app");
-
-inline const rex::LogCategoryId Crash =
-    rex::RegisterLogCategory("larecomp.crash");
-}
+inline constinit rex::log::LogCategory App{"larecomp_app", "LARecomp application"};
+inline constinit rex::log::LogCategory Crash{"larecomp_crash", "LARecomp crash handler"};
+}  // namespace larecomp::log
 
 #define LARECOMP_APP_DEBUG(...)   REXLOG_CAT_DEBUG(::larecomp::log::App, __VA_ARGS__)
 #define LARECOMP_APP_INFO(...)    REXLOG_CAT_INFO(::larecomp::log::App, __VA_ARGS__)

@@ -1,8 +1,10 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
-// larecomp - ReXGlue Recompiled Project
+// larecomp - ReXGlue Recompiled Project, on rexglue 0.11: a rex::app::TitleApp (larecomp_app.h).
 //
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
+// kPPCImageConfig, the generated image of the game. The codegen output folder is `generated` (rexglue_project's
+// OUTPUT_DIR in CMakeLists.txt) and the file prefix is the manifest's project name.
 #include "generated/larecomp_init.h"
 
 #include "larecomp_app.h"
@@ -32,5 +34,31 @@ extern "C" double roundeven(double x) {
     return std::nearbyint(x);
 }
 
-REX_DEFINE_APP(larecomp, LarecompApp::Create)
+// Init, the first-launch wizards (save picker, ISO installer, save import: each draws in the window and is pumped by
+// RunSetupFrame), LaunchTitle (the boot build behind the progress popup happens inside it, in OnTitleLaunch), Run,
+// Shutdown. REX_TITLE_APP would do Init, LaunchTitle, Run, Shutdown; the wizards need the gap.
+static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
+    // The actions end the process before any window or runtime exists, so the app has to know before Init (it decides
+    // what systems to ask for). The launcher's setup passes both on one command line: the packs first, then the pipelines.
+    if (args.Has("build_shader_packs")) {
+        app.SetBatchMode(LarecompApp::BatchMode::kBuildShaderPacks);
+    } else if (args.Has("precache_pipelines")) {
+        app.SetBatchMode(LarecompApp::BatchMode::kPrecachePipelines);
+    }
+    // CHECK: both given at once (0.10 ran the packs and then the pipelines in one process): BatchMode needs a third value,
+    // or RunBatchMode runs both when both options are present.
+    if (app.Init(args)) {
+        if (app.GetBatchMode() == LarecompApp::BatchMode::kNone) {
+            while (app.SetupPending() && app.RunSetupFrame()) {
+            }
+            if (!rex::app::IsShutdownRequested() && app.LaunchTitle()) {
+                app.Run();
+            }
+        }
+    }
+    return app.Shutdown();
+}
+
+// wWinMain and main (the exe is a WIN32 program: wWinMain), a default-constructed LarecompApp.
+REX_TITLE_APP_MAIN(LarecompApp, LarecompMain)
 #endif // REXGLUE_HAS_XEO3_TARGET
