@@ -81,6 +81,7 @@
 #include "larecomp_log.h"
 #include "menu_camera.h"
 #include "time_of_day.h"
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------- cvars
 
@@ -842,7 +843,6 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
 #include <rex/ppc/context.h>
 
 #include "menu_camera.h"
-#include "larecomp_guest.h"
 
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {}
 bool Hook_MenuCameraPick(PPCRegister& r3) { return false; }

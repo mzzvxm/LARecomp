@@ -52,6 +52,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "sdk_access.h"
+#include "larecomp_guest.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/effect_compare.h"
@@ -5589,7 +5590,6 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 
 #include <rex/ppc/context.h>
 #include "pause_menu.h"
-#include "larecomp_guest.h"
 
 bool PauseMenuPopStack() { return false; }
 bool PauseMenuUiOptionsOpen() { return false; }

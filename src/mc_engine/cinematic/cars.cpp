@@ -76,6 +76,7 @@
 #include "larecomp_log.h"
 #include "native_call.h"
 #include "scene_runtime.h"
+#include "larecomp_guest.h"
 
 #if __has_include("camera_runtime.h")
 #include "camera_runtime.h"  // M1b: SetCarResolver. Present once its branch is merged; then the registry is the camera's car source
@@ -1021,7 +1022,6 @@ size_t SceneCarCount() {
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "cars.h"
-#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 void TickCars() {}

@@ -87,6 +87,7 @@
 #include "state_log.h"
 
 #include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------- cvars
 
@@ -885,7 +886,6 @@ void MCLATimeScaleOverride(PPCRegister& f13) {
 #include <rex/ppc/context.h>
 
 #include "scene_runtime.h"
-#include "larecomp_guest.h"
 
 void MCLATimeScaleOverride(PPCRegister& f13) {}
 

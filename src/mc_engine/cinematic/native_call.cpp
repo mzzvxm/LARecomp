@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 
@@ -164,7 +165,6 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, 
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "native_call.h"
-#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 NativeResult CallNative(uint32_t, std::initializer_list<uint32_t>, bool) {

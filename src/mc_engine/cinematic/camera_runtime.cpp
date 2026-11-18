@@ -50,6 +50,7 @@
 #include "camera.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
+#include "larecomp_guest.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/cut_request.h"
@@ -398,7 +399,6 @@ void SetCarResolver(CarResolver resolver) {
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "camera_runtime.h"
-#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 bool CinematicCameraApply(uint8_t*, uint32_t, uint32_t) { return false; }
