@@ -15,6 +15,7 @@
 #include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 #include <rex/memory/virtual_memory.h>
+#include <rex/string/text.h>
 
 #include "backend.h"
 #include "device.h"
@@ -166,7 +167,7 @@ bool ShaderStore::AttachFirst(const std::vector<std::filesystem::path>& folders)
   }
   std::string looked;
   for (const std::filesystem::path& folder : folders) {
-    looked += (looked.empty() ? "" : ", ") + rex::path_to_utf8(folder);
+    looked += (looked.empty() ? "" : ", ") + rex::string::PathToUTF8(folder);
   }
   REXLOG_INFO("[gpu] shader pack: none found (looked in {}); pending: draws of guest content are "
               "skipped until the packs are attached",
@@ -181,19 +182,19 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
   }
   if (attached()) {
     REXLOG_WARN("[gpu] shader pack: already attached from {}; {} is not read",
-                rex::path_to_utf8(path_), rex::path_to_utf8(folder));
+                rex::string::PathToUTF8(path_), rex::string::PathToUTF8(folder));
     return true;
   }
   path_ = folder / kPackFileName;
   std::error_code ec;
   if (!std::filesystem::exists(path_, ec)) {
-    REXLOG_DEBUG("[gpu] shader pack: none at {}", rex::path_to_utf8(path_));
+    REXLOG_DEBUG("[gpu] shader pack: none at {}", rex::string::PathToUTF8(path_));
     path_.clear();
     return false;
   }
   file_ = rex::memory::MappedMemory::Open(path_, rex::memory::MappedMemory::Mode::kRead);
   if (!file_ || !file_->GetData()) {
-    REXLOG_ERROR("[gpu] shader pack: cannot open {}", rex::path_to_utf8(path_));
+    REXLOG_ERROR("[gpu] shader pack: cannot open {}", rex::string::PathToUTF8(path_));
     file_.reset();
     path_.clear();
     return false;
@@ -207,7 +208,7 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
   folder_ = folder;
   // The exact size and hash name the build of the pack a log was made with.
   REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} bytes, xxh3 {:016x}, {})",
-              entries_.size(), rex::path_to_utf8(path_), file_->GetSize(),
+              entries_.size(), rex::string::PathToUTF8(path_), file_->GetSize(),
               XXH3_64bits(file_->GetData(), file_->GetSize()), Dxil() ? "DXIL" : "SPIR-V");
   if (const uint64_t pending = pending_lookups_.exchange(0)) {
     REXLOG_WARN("[gpu] shader pack: {} shader lookups were answered before it was attached "
@@ -222,7 +223,7 @@ bool ShaderStore::Validate() {
   const uint8_t* data = file_->GetData();
   const uint64_t size = file_->GetSize();
   const auto fail = [&](const std::string& why) {
-    REXLOG_ERROR("[gpu] shader pack {}: {}", rex::path_to_utf8(path_), why);
+    REXLOG_ERROR("[gpu] shader pack {}: {}", rex::string::PathToUTF8(path_), why);
     return false;
   };
   if (size < pack::kPackHeaderBytes || std::memcmp(data, pack::kPackMagic, 4) != 0) {
@@ -450,7 +451,7 @@ bool ShaderStore::LoadVariants(std::string* why) {
   }
   variants_file_ = rex::memory::MappedMemory::Open(variants_path_, rex::memory::MappedMemory::Mode::kRead);
   if (!variants_file_ || !variants_file_->GetData()) {
-    return fail("cannot open " + rex::path_to_utf8(variants_path_) +
+    return fail("cannot open " + rex::string::PathToUTF8(variants_path_) +
                 " (the shader pack build writes it beside the main pack)");
   }
   const uint8_t* data = variants_file_->GetData();
@@ -537,7 +538,7 @@ bool ShaderStore::LoadVariants(std::string* why) {
   variants_ready_.store(true, std::memory_order_release);  // last: has_variants()
   REXLOG_INFO("[gpu] shader pack: {} shader variants from {} ({} bytes): HDR scene {}, bloom Gaussians {}, "
               "environment map {}, shadow filter {}, glow visibility {}, car self-reflection {}, auto-exposure sample {}",
-              total, rex::path_to_utf8(variants_path_), size, per_variant[kHdrVariant],
+              total, rex::string::PathToUTF8(variants_path_), size, per_variant[kHdrVariant],
               per_variant[kBloomVariant], per_variant[kEnvVariant], per_variant[kShadowFilterVariant],
               per_variant[kGlowVariant], per_variant[kCarSelfReflVariant], per_variant[kLuminanceVariant]);
   return true;

@@ -12,7 +12,6 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
-#include <rex/system.h>
 #include <rex/platform/native_window.h>
 #include <rex/platform/process.h>
 #include <rex/ui/ui_system.h>

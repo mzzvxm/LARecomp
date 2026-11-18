@@ -64,7 +64,7 @@ uint32_t FoldColorFormat(uint32_t color_format) {
 
 bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
   if (screen_width_ == 0) {
-    const rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
+    rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
     const uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
     if (!base) {
       return false;
