@@ -264,6 +264,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
+    car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
+    car_refl_.SetCarDump(&car_dump_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -281,6 +283,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetAmbientOcclusion(&ao_);
     scene_.SetSunShafts(&shafts_);
     scene_.SetCarSelfRefl(&car_refl_);
+    scene_.SetCarDump(&car_dump_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -341,6 +344,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     ao_.Shutdown();
     shafts_.Shutdown();
     car_refl_.Shutdown();
+    car_dump_.Shutdown();
     flicker_probe_.Shutdown();
     capture_readback_.Shutdown();
     hdr_tone_.Shutdown();
@@ -508,6 +512,7 @@ void Renderer::Shutdown() {
   ao_.Shutdown();
   shafts_.Shutdown();
   car_refl_.Shutdown();
+  car_dump_.Shutdown();
   flicker_probe_.Shutdown();
   capture_readback_.Shutdown();
   hdr_tone_.Shutdown();

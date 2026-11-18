@@ -131,6 +131,7 @@
 
 namespace mcla::gpu {
 
+class CarDump;
 class PassTiming;
 
 class CarSelfRefl {
@@ -157,6 +158,8 @@ class CarSelfRefl {
   void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
+  // The debug car dump (car_dump.h): handed the history image of its frame when it is drawn, to check its triangles against. Null: none.
+  void SetCarDump(CarDump* dump) { dump_ = dump; }
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
@@ -254,6 +257,7 @@ class CarSelfRefl {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  CarDump* dump_ = nullptr;
   bool ready_ = false;            // the shaders exist
   bool shaders_failed_ = false;   // they could not be made: not tried again
   bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)

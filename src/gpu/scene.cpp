@@ -22,6 +22,7 @@
 #include "backend.h"
 #include "ab.h"
 #include "ao.h"
+#include "car_dump.h"
 #include "car_selfrefl.h"
 #include "cut_request.h"
 #include "cycles.h"
@@ -1325,6 +1326,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (car_refl_ && car_refl_->wants_draws()) {
       car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
     }
+    if (car_dump_ && car_dump_->frame_open()) {
+      car_dump_->OnAnchor(banks);  // ... and the car dump projects the frame's triangles by it
+    }
   }
 
   if (!list) {
@@ -1342,8 +1346,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     } else {
       ++window_.prepared;
       if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
-          (car_refl_ && car_refl_->wants_draws())) {
-        NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity);
+          (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws())) {
+        NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1913,7 +1917,7 @@ void Scene::NoteMenuWorld() {
 }
 
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
-                                 uint64_t vs_identity, uint64_t ps_identity) {
+                                 uint64_t vs_identity, uint64_t ps_identity, const DrawView& view) {
   EdramKey color;
   EdramKey depth;
   const EdramKey* color0 = nullptr;
@@ -1941,6 +1945,17 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     car_refl_->OnMainDraw(draw.match, draw.stencil_ids);
+  }
+  if (car_dump_ && car_dump_->wants_draws()) {
+    CarDump::MainDraw dump;
+    dump.view = &view;
+    dump.banks = &banks;
+    dump.state = &d.state;
+    dump.shaders = &shaders_;
+    dump.vs = d.vs;
+    dump.primitive = d.primitive;
+    dump.stencil_ids = draw.stencil_ids;
+    car_dump_->OnMainDraw(dump);
   }
 }
 
@@ -3274,6 +3289,9 @@ void Scene::OnPresent() {
   }
   if (car_refl_) {
     car_refl_->OnPresent();
+  }
+  if (car_dump_) {
+    car_dump_->OnPresent();  // the dump frame's census and OBJ
   }
   if (temporal_) {
     temporal_->EndFrame();

@@ -14,6 +14,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "car_dump.h"
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "gpu_class.h"
@@ -609,6 +610,9 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   push.lin[3] = float(p.m[3][3]);
   pass_timing_->Mark(list, "car history");
   passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));
+  if (dump_) {
+    dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
+  }
   return true;
 }
 

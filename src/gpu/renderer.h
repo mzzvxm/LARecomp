@@ -54,6 +54,7 @@
 #include "ao.h"
 #include "capture.h"
 #include "capture_readback.h"
+#include "car_dump.h"
 #include "car_selfrefl.h"
 #include "descriptors.h"
 #include "device.h"
@@ -282,6 +283,7 @@ class Renderer final : public RenderThread::Executor {
   AmbientOcclusion ao_;       // render thread; screen-space ambient occlusion (ao.h)
   SunShafts shafts_;          // render thread; screen-space sun shafts (shafts.h)
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
+  CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

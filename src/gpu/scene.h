@@ -90,6 +90,7 @@ class GuestOcclusion;
 class PassTiming;
 class SunShafts;
 class CarSelfRefl;
+class CarDump;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -130,6 +131,9 @@ class Scene {
   // The car self-reflection prototype (car_selfrefl.h): told of the main view's draws, the camera and the mid-scene depth
   // copy, and asked for the constants of the car paint variant's draws. Null: none (the variant then draws as the game's).
   void SetCarSelfRefl(CarSelfRefl* car_refl) { car_refl_ = car_refl; }
+  // The car dump (car_dump.h, debug-only): told of the main view's draws that write a vehicle ID in the frame it dumps, of the camera and
+  // of the present. Null: none.
+  void SetCarDump(CarDump* car_dump) { car_dump_ = car_dump; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -356,7 +360,7 @@ class Scene {
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
   void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
-                            uint64_t vs_identity, uint64_t ps_identity);
+                            uint64_t vs_identity, uint64_t ps_identity, const DrawView& view);
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
@@ -416,6 +420,7 @@ class Scene {
   SunShafts* shafts_ = nullptr;
   menu_world::Announcer menu_world_;  // the one line per change of world
   CarSelfRefl* car_refl_ = nullptr;
+  CarDump* car_dump_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in

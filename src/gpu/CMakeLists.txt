@@ -15,6 +15,7 @@ add_library(larecomp_gpu OBJECT
     background_build.cpp
     buffer_heap.cpp
     capture.cpp
+    car_dump.cpp
     car_selfrefl.cpp
     capture_readback.cpp
     constants.cpp
@@ -179,6 +180,10 @@ add_executable(larecomp_temporal_menu_test EXCLUDE_FROM_ALL temporal_menu_test.c
 # The car self-reflection's rules (car_selfrefl_rules.h: the modes, the matrix, the constants, the depth linearisation) likewise:
 #   cmake --build <dir> --target larecomp_car_selfrefl_rules_test, then run src/gpu/larecomp_car_selfrefl_rules_test.
 add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_rules_test.cpp)
+# The car dump's rules (car_dump_rules.h: the matrices out of a vertex shader bank, the positions and indices as the guest holds them, the
+# triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
+#   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
+add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test.cpp)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
