@@ -16,6 +16,7 @@ add_library(larecomp_gpu OBJECT
     buffer_heap.cpp
     capture.cpp
     car_dump.cpp
+    car_frame.cpp
     car_mesh_read.cpp
     car_selfrefl.cpp
     capture_readback.cpp

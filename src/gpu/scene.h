@@ -91,6 +91,7 @@ class PassTiming;
 class SunShafts;
 class CarSelfRefl;
 class CarDump;
+class CarFrame;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -134,6 +135,9 @@ class Scene {
   // The car dump (car_dump.h, debug-only): told of the main view's draws that write a vehicle ID in the frame it dumps, of the camera and
   // of the present. Null: none.
   void SetCarDump(CarDump* car_dump) { car_dump_ = car_dump; }
+  // The player car's draws (car_frame.h): told of the main view's draws that write a vehicle ID in the frames a car effect asks for them,
+  // and of the frame's start and its present. Null: none.
+  void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -421,6 +425,7 @@ class Scene {
   menu_world::Announcer menu_world_;  // the one line per change of world
   CarSelfRefl* car_refl_ = nullptr;
   CarDump* car_dump_ = nullptr;
+  CarFrame* car_frame_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in

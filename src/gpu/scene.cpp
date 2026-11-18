@@ -23,6 +23,7 @@
 #include "ab.h"
 #include "ao.h"
 #include "car_dump.h"
+#include "car_frame.h"
 #include "car_selfrefl.h"
 #include "cut_request.h"
 #include "cycles.h"
@@ -900,6 +901,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_refl_) {
     car_refl_->BeginFrame();
   }
+  if (car_frame_) {
+    car_frame_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -1346,7 +1350,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     } else {
       ++window_.prepared;
       if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
-          (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws())) {
+          (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
+          (car_frame_ && car_frame_->wants_draws())) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
@@ -1956,6 +1961,21 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     dump.primitive = d.primitive;
     dump.stencil_ids = draw.stencil_ids;
     car_dump_->OnMainDraw(dump);
+  }
+  if (car_frame_ && car_frame_->wants_draws()) {
+    CarFrame::MainDraw frame;
+    frame.view = &view;
+    frame.banks = &banks;
+    frame.state = &d.state;
+    frame.shaders = &shaders_;
+    frame.vs = d.vs;
+    frame.ps = d.ps;
+    frame.input_layout = d.input_layout;
+    frame.geometry = &d.geometry;
+    frame.primitive = d.primitive;
+    frame.stencil_ids = draw.stencil_ids;
+    frame.cache = geometry_;
+    car_frame_->OnMainDraw(frame);
   }
 }
 
@@ -3292,6 +3312,9 @@ void Scene::OnPresent() {
   }
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ
+  }
+  if (car_frame_) {
+    car_frame_->OnPresent();  // the car draw list's frame boundary
   }
   if (temporal_) {
     temporal_->EndFrame();
