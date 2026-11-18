@@ -35,7 +35,11 @@
 //            colour target; ambient_share = La / (La + Ls * N.L) from the game's own constants (PS c26
 //            the ambient, PS c39 the sun colour, VS c16 the direction the sunlight travels: the
 //            direction to the sun is its opposite), N from the depth; the look's direct number
-//            moves the share towards 1 (the occlusion then darkens the sun-lit part too)
+//            moves the share towards 1 (the occlusion then darkens the sun-lit part too). A vehicle's
+//            pixel takes the visibility raised to a power below 1 (ao_paint.h, mcla_gpu_ao_paint): the
+//            paint's colour is mostly the reflection of the sky, which only a blocker on the mirror
+//            ray takes away, and the multiply took it away like a diffuse term (owner, 2026-11-17: a
+//            black car's wing uprights and the boot lid under the wing went almost black)
 // The lens (the projection) is the previous frame's: the camera exists only at the game's motion blur
 // draw, which comes after the trigger (OnAnchor keeps each frame's). A frame without a previous
 // frame's camera has no occlusion.
@@ -806,6 +810,8 @@ class AmbientOcclusion {
     // How far a vehicle's samples reach on a pixel that is not a vehicle, as a share of the radius
     // (mcla_gpu_ao_car_reach; 0 or 1: all of it).
     float car_reach = 0.4f;
+    // The power the occlusion is raised to on a car's paint, as the apply's code (ao_paint.h, mcla_gpu_ao_paint): 4 is 5/16, the default.
+    uint32_t paint_code = 4;
   };
   void UpdateLook();
 
@@ -1046,6 +1052,7 @@ class AmbientOcclusion {
   Look look_;
   uint32_t look_logged_index_ = ~0u;
   float car_reach_logged_ = -1.0f;
+  uint32_t paint_code_logged_ = ~0u;
   HostImage depth_[3];  // the linear depth chain: the traced size (half the picture's above 1080 lines), then 1/2 and 1/4 of it
   HostImage raw_;       // the main pass's visibility (also the contact shadows' march while their size is the traced one)
   HostImage denoised_;  // the denoise's (also the contact shadows' filter pass's then)

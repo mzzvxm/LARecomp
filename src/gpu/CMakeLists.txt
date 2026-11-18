@@ -103,6 +103,10 @@ add_library(larecomp_gpu OBJECT
 # The occlusion's reach round vehicles and its slice sum, with the C++ twin of its main pass (ao_halo.h) likewise:
 #   cmake --build <dir> --target larecomp_ao_halo_test, then run src/gpu/larecomp_ao_halo_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_ao_halo_test EXCLUDE_FROM_ALL ao_halo_test.cpp)
+# The occlusion on a car's paint (ao_paint.h: the stored visibility raised to a power below 1 on a vehicle's pixel; given the src/gpu folder it
+# also checks that the shader's and ao.cpp's constants and flags are the header's) likewise:
+#   cmake --build <dir> --target larecomp_ao_paint_test, then run src/gpu/larecomp_ao_paint_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ao_paint_test EXCLUDE_FROM_ALL ao_paint_test.cpp)
 # The occlusion's blur radius that follows the picture's size, its wide blur, the noise sequence and the history weight (ao_stable.h; given
 # the src/gpu folder it also checks that the shaders' and ao.cpp's constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ao_stable_test, then run src/gpu/larecomp_ao_stable_test <src/gpu dir> (exit 0 = passed).

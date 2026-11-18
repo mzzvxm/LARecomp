@@ -8,10 +8,12 @@
 //
 // the occlusion's (when its term is on, flag bit 22) and the contact shadows' (flag bit 23):
 //
-//   ao_factor      lerp(1, ao, strength * ambient_share * distance_fade)
+//   ao_factor      lerp(1, ao_seen, strength * ambient_share * distance_fade)
 //     ao             the denoised visibility at the pixel; from the half resolution image (AoLow) by a
 //                    bilinear upsample whose weights fall with the difference of linear depth, so
 //                    it does not leak over an edge;
+//     ao_seen        ao on the world; on a vehicle's pixel, ao raised to the paint power (below), by the share of the
+//                    pixel's neighbourhood that the depth pass marked as a vehicle;
 //     ambient_share  how much of the light on this surface is ambient, from the game's own constants:
 //                    La / (La + Ls * N.L), La the ambient light's luma (PS c26), Ls the sun's (PS
 //                    c39), L the direction to the sun (minus VS c16, which holds the way the light
@@ -42,6 +44,17 @@
 //                    is under a pixel far away.
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fades) the pixel is not written.
+//
+// THE PAINT (ao_paint.h has the story, the numbers and the test). The game draws a car's paint as one colour, and the
+// factor multiplies all of it: on dark glossy paint nearly all of that colour is the reflection of the environment, which
+// only a blocker on the mirror ray takes away, not the share of the hemisphere that a part cannot see (the visibility is
+// stored raised to the look's power, 3.6 by default, which makes a part that sees 70% of its sky 0.28: with the
+// reflection multiplied like a diffuse term the uprights of a wing and the lid under it lost over half of their colour,
+// owner, 2026-11-17). A vehicle's pixel takes ao raised to the paint power (flags bits 17-20, 5/16 by default: the look's
+// own power taken out again, 3.6 * 5/16 = 1.125, the visibility itself, a little more, which is what the specular occlusion
+// of a clear coat comes to; mcla_gpu_ao_paint) in place of ao. Nothing else of the factor changes: the share, the fade, the
+// contact factor and the bounce light, and a pixel with at most half of its neighbourhood vehicle (the world, the road under
+// and beside a car: the contact line that grounds it) takes ao as it is, to the bit.
 //
 // BOUNCE LIGHT (compiled with AO_GI=1 as ao_apply_gi_ps / ao_apply_gi_ms_ps, the pass the bounce light's setting
 // uses; the plain compilation above is the source without it, to the byte): the occlusion's visibility and the
@@ -119,6 +132,11 @@ bool AoContactFull() { return (g_push.slots2.z & (1u << 21)) != 0u; }
 uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : g_push.slots.w; }
 int2 ContactImageSize() { return AoContactFull() ? int2(g_push.sizes.xy) : int2(g_push.sizes.zw); }
 uint ColourSlot() { return g_push.slots2.y & 0xFFFFu; }
+// The paint power's code (ao_paint.h): flags bits 17-20, the place of the denoise's radius, which this pass does not read (ao.cpp
+// clears them): the power is (code + 1) sixteenths, and code 15, the power 1, is off (the paint is darkened like the world).
+uint AoPaintCode() { return (g_push.slots2.z >> 17) & 0xFu; }
+float AoPaintPower() { return float(AoPaintCode() + 1u) * (1.0f / 16.0f); }
+bool AoPaintOn() { return AoPaintCode() != 15u; }
 #if AO_GI
 // The most the bounce factor may be, in multiples of the pixel's own colour: flags bits 8-15 in units of 0.04 (the
 // apply has no use for the slices and steps the main pass keeps there). The cap multiple of the ceiling: bits 26-31 in
@@ -135,9 +153,12 @@ float LinearAt(int2 p, int2 last) {
 
 // A visibility image (the AO's or the contact shadows') at the pixel of the picture: as it is, or,
 // from the half resolution one, a bilinear upsample whose weights fall with the difference of linear
-// depth.
-float VisibilityAt(uint slot, int2 pixel, float tc) {
+// depth. `vehicle` is the share of the same neighbourhood that the depth pass marked as a vehicle (the
+// depth image's lowest bit, 0 to 1; the weights are the visibility's): the depth is read for the weights
+// anyway, so it costs next to nothing at half size and one load of the pixel's own depth at full size.
+float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
   if (!AoLow()) {
+    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
     return g_textures[slot].Load(int3(pixel, 0)).x;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -145,6 +166,7 @@ float VisibilityAt(uint slot, int2 pixel, float tc) {
   const int2 q0 = int2(floor(q));
   const float2 f = q - float2(q0);
   float sum = 0.0f;
+  float vehicle_sum = 0.0f;
   float weights = 0.0f;
   for (int j = 0; j < 2; ++j) {
     for (int i = 0; i < 2; ++i) {
@@ -154,10 +176,30 @@ float VisibilityAt(uint slot, int2 pixel, float tc) {
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       sum += g_textures[slot].Load(int3(c, 0)).x * w;
+      vehicle_sum += (AoIsVehicle(td) ? 1.0f : 0.0f) * w;
       weights += w;
     }
   }
+  vehicle = vehicle_sum / max(weights, 1e-8f);
   return sum / max(weights, 1e-8f);
+}
+
+// The same without the vehicle share (the contact shadows' image).
+float VisibilityAt(uint slot, int2 pixel, float tc) {
+  float unused_vehicle;
+  return VisibilityAt(slot, pixel, tc, unused_vehicle);
+}
+
+// The visibility a pixel takes into the factor (ao_paint.h PaintVisibility): `ao` on the world, and on a vehicle's pixel ao raised
+// to the paint power. `vehicle` is the share of the pixel's neighbourhood that is a vehicle; the paint's rule starts where over half
+// of it is (ao_paint.h kVehicleFrom: at half size the share is a bilinear mix of four texels, and the road beside a tyre has a
+// vehicle texel or two in it, which must not lighten the contact line) and is all there at 1.
+float PaintVisibility(float ao, float vehicle) {
+  const float on_car = saturate((vehicle - 0.5f) * 2.0f);
+  if (on_car <= 0.0f || !AoPaintOn()) {
+    return ao;
+  }
+  return lerp(ao, pow(ao, AoPaintPower()), on_car);
 }
 
 #if AO_GI
@@ -222,8 +264,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float gi_vehicle;
   GiAt(g_push.slots.z, ColourSlot(), pixel, tc, gi_image, gi_colour, gi_vehicle);
   const float ao = gi_image.x;
+  const float ao_vehicle = gi_vehicle;
 #else
-  const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc) : 1.0f;
+  float ao_vehicle = 0.0f;
+  const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle) : 1.0f;
 #endif
 
   // The normal from the full resolution depth, as the main pass has it.
@@ -249,7 +293,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float ambient_share = (ambient + sun) > 1e-6f ? ambient / (ambient + sun) : 1.0f;
   const float share = lerp(ambient_share, 1.0f, saturate(g_push.extra.z));
   const float fade = 1.0f - smoothstep(g_push.shape.w, fade_end, tc);
-  const float ao_factor = ao_on ? lerp(1.0f, ao, saturate(g_push.shape.z * share * fade)) : 1.0f;
+  // The visibility the factor takes: ao itself on the world, the paint's on a vehicle (PaintVisibility).
+  const float ao_seen = ao_on ? PaintVisibility(ao, ao_vehicle) : 1.0f;
+  const float ao_factor = ao_on ? lerp(1.0f, ao_seen, saturate(g_push.shape.z * share * fade)) : 1.0f;
 
   // The contact shadows: on the sun's share of the light only.
   float cs = 1.0f;

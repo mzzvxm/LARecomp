@@ -19,6 +19,7 @@
 
 #include "ao_fast.h"
 #include "ao_halo.h"
+#include "ao_paint.h"
 #include "ao_stable.h"
 #include "contact_trace.h"
 #include "descriptors.h"
@@ -438,6 +439,19 @@ REXCVAR_DEFINE_INT32(
     .range(0, 100000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_ao_paint, 0.3125, "MCLA/GPU",
+    "Diagnostic: how much of ambient occlusion a car's glossy paint takes. The colour of dark paint is nearly all the "
+    "reflection of the sky, and a reflection is blocked only where the mirror ray is, not by the share of the sky a part "
+    "cannot see, so a part that is partly covered (the uprights of a wing and the lid under it) lost most of its colour. On "
+    "a car's pixels the occlusion's value (the image's, already raised to the look's power) is raised to this power: 1 "
+    "darkens the paint like the world, smaller keeps more of its colour. The default, 0.3125, takes the default look's power "
+    "(3.6) out again, so the paint is darkened by the share of the sky a part can see. Rounded to sixteenths, 1/16 to 1. "
+    "Live.")
+    .debug_only()
+    .range(0.0625, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu {
 
 namespace {
@@ -461,6 +475,7 @@ constexpr uint32_t kVsReflectionParams = 43;
 constexpr float kFalloffRatio = 0.615f;
 static_assert(kFalloffRatio == ssgi_light::kFalloffRatio);  // the far ring's falloff (ssgi_light.h) is the same shape
 constexpr float kMinVisibility = 0.1f;
+static_assert(kMinVisibility == ao_paint::kStoredFloor);  // the paint's twin (ao_paint.h) assumes the same floor
 // The frames the occlusion has to stay off before its images are given back.
 constexpr uint32_t kReleaseAfterFrames = 60;
 // Sizes below this (host pixels, either way) are not worth the passes.
@@ -497,6 +512,8 @@ constexpr uint32_t kApplyMaskFlag = 1u << 24;
 constexpr uint32_t kApplyContactFullFlag = 1u << 21;
 constexpr uint32_t kApplyHighSlotShift = 16;
 static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift), "two bindless slots must fit one 32 bit word");
+// The power the occlusion is raised to on a car's paint rides in the apply's flags, bits 17-20 (ao_paint.h; the denoise's radius is
+// there in the base push and the apply does not read it, so the code replaces it).
 // The colour chain's level 0 takes one MSAA sample of each pixel, the host sample in slots2.x (hlsl/ao_color_ps.hlsl AoOneSample; Plan::OneSampleColour).
 constexpr uint32_t kColourOneSampleFlag = 1u << 21;
 // The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): its gain limit rides in flags bits 8-15 (the slices'
@@ -551,6 +568,9 @@ constexpr float kGiCapFloor = ssgi_light::kCapFloor;
 static_assert(((ssgi_light::kLimitMask | ssgi_light::kCapMask) &
                (kApplyOcclusionFlag | kApplyContactFlag | kApplyMaskFlag | kContactFilterFlag)) == 0,
               "the bounce light's limit and cap bits must not overlap the apply's flags or the contact filter flag");
+static_assert((ao_paint::kCodeMask & (0xFFu | ssgi_light::kLimitMask | ssgi_light::kCapMask | (1u << 16) | kApplyContactFullFlag | kApplyOcclusionFlag |
+                                      kApplyContactFlag | kApplyMaskFlag | kContactFilterFlag)) == 0,
+              "the paint power's code must not overlap any other flag of the apply");
 // The debug pictures of mcla_gpu_ssgi_test_view, as the colour view pass numbers them (ao_color_ps.hlsl
 // pass 2): the image's rgb, its yzw, its x, its yzw cleaned by a 5x5 mean.
 constexpr uint32_t kGiViewRgb = 1;
@@ -2188,11 +2208,17 @@ void AmbientOcclusion::UpdateLook() {
   look_.power = def.power;
   look_.direct = def.direct;
   look_.car_reach = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_car_reach), 0.0, 1.0));
+  look_.paint_code = ao_paint::CodeFor(REXCVAR_GET(mcla_gpu_ao_paint));
   if (index != look_logged_index_) {
     look_logged_index_ = index;
     REXLOG_INFO("[gpu] ao: intensity {} (mcla_gpu_ao_intensity, live): strength {:.3g}, radius {:.3g} "
                 "m, power {:.3g}, direct {:.3g}",
                 def.name, look_.strength, look_.radius, look_.power, look_.direct);
+  }
+  if (look_.paint_code != paint_code_logged_) {
+    paint_code_logged_ = look_.paint_code;
+    REXLOG_INFO("[gpu] ao: a car's paint takes the occlusion raised to the power {:.4g} (mcla_gpu_ao_paint, live; 1 is the world's)",
+                ao_paint::PowerOf(look_.paint_code));
   }
   if (look_.car_reach != car_reach_logged_) {
     car_reach_logged_ = look_.car_reach;
@@ -2886,6 +2912,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[1] = float(plan.render[1]);
     push.sizes[2] = float(plan.ao[0]);
     push.sizes[3] = float(plan.ao[1]);
+    // The paint power's code (ao_paint.h, hlsl/ao_apply_ps.hlsl AoPaintPower), over the denoise's radius bits which this pass does not read.
+    push.slots2[2] = (push.slots2[2] & ~ao_paint::kCodeMask) | (look_.paint_code << ao_paint::kCodeShift);
     // The contact filter's flag (bit 25) tells the apply that slots2.x is the march's own image and that it does the
     // 3x3 filter itself (mcla_gpu_contact_shadows_fast); without it the image is the denoise pass's output.
     push.slots2[2] |= (plan.occlusion ? kApplyOcclusionFlag : 0u) |
