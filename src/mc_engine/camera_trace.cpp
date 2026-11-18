@@ -52,6 +52,7 @@
 #endif
 
 #include "settings/larecomp_settings.h"
+#include <rex/ppc/context.h>
 #include <rex/ppc/recompiled_code.h>
 
 #include "hooks/hooks_internal.h"
