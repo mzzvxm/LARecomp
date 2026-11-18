@@ -92,3 +92,4 @@ identity_db.txt.tmp
 
 # Design notes and RE maps are kept local, out of the repository.
 docs/
+!src/settings/generated/
