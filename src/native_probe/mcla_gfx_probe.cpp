@@ -74,11 +74,12 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/hook.h>
-#include <rex/logging.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/ppc/hook.h>
+#include <rex/logging/log_category.h>
+#include <rex/ppc/context.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 namespace mcla::gfx_probe {
 namespace {

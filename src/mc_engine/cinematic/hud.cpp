@@ -7,7 +7,7 @@
 #include <mutex>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"

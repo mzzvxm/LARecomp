@@ -15,7 +15,7 @@
 #include <map>
 #include <thread>
 
-#include <rex/filesystem.h>
+#include <rex/platform/file.h>
 
 #include "larecomp_log.h"
 #include "../../online/protocol/browser_protocol.h"

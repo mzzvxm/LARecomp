@@ -6,8 +6,8 @@
 
 #include "render_thread.h"
 
-#include <rex/logging.h>
-#include <rex/thread.h>
+#include <rex/logging/log_category.h>
+#include <rex/platform/thread.h>
 
 #include "cycles.h"
 #include "present_schedule.h"

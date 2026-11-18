@@ -26,8 +26,8 @@
 #define MCLA_TEXTURE_DECODE_SSSE3 0
 #endif
 
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/texture.h>
+#include <rex/xenos/format.h>
 
 namespace mcla::gpu::texture_decode {
 

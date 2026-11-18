@@ -52,7 +52,7 @@
 #endif
 
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include "hooks/hooks_internal.h"
 #include "logging.h"

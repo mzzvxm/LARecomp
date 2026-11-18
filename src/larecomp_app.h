@@ -1,11 +1,8 @@
 #pragma once
 
-#include <rex/rex_app.h>
-#include <rex/system/flags.h>
-#include <rex/system/achievement_manager.h>
-#include <rex/input/device_assignment.h>
-#include <rex/input/input_system.h>
-#include <rex/system/gpu_plugin.h>
+#include <rex/app/title_app.h>
+#include <rex/xam/achievement_manager.h>
+#include <rex/hid/input_system.h>
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/threading.h"
 #include "os/thread_priority.h"
@@ -59,7 +56,7 @@
 #include "mc_engine/ui/controller_toast.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/ui/achievements.h"
-#include <rex/ui/keybinds.h>
+#include <rex/ui/ui_system.h>
 #include <rex/system.h>
 #include <fmt/format.h>
 
@@ -87,11 +84,9 @@
 #endif
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/runtime.h>
-#include <rex/graphics/flags.h>
-#include <rex/ui/flags.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/platform/file.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 #include <rex/ppc/context.h>
 
 #include <atomic>

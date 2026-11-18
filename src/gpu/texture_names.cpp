@@ -7,7 +7,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "native_gfx/guest/guest_resources.h"
 #include "records.h"

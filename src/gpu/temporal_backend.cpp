@@ -12,7 +12,7 @@
 #include <thread>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "upscaler_load_policy.h"
 

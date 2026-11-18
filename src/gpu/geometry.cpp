@@ -15,7 +15,7 @@
 #include <format>
 
 #include <rex/hash.h>
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "cycles.h"
 #include "resolve_memory.h"

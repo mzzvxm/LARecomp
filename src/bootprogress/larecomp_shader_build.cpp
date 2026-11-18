@@ -28,12 +28,11 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 #include <rex/system.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 
 #include "larecomp_log.h"
 #include "larecomp_version.h"

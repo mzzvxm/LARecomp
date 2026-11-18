@@ -10,8 +10,8 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
 // "Why's This Dealer?" squash & stretch — visual only, no physics contact.

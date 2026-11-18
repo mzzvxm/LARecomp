@@ -40,8 +40,8 @@
 
 #if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -279,7 +279,6 @@ void Hook_PumpWakeMixerDone() {
 }
 #elif !defined(REXGLUE_HAS_XEO3_TARGET)
 // The wake is a Win32 event; elsewhere the game's own Sleep runs (false = not handled).
-#include <rex/ppc.h>
 bool Hook_PumpWakeRingWait(PPCRegister&, PPCRegister&, PPCRegister&, PPCRegister&, PPCRegister&) { return false; }
 void Hook_PumpWakeSlotFreed() {}
 bool Hook_PumpWake(PPCRegister&) { return false; }

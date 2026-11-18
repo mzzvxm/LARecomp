@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-#include <rex/ui/imgui_dialog.h>
+#include <rex/ui/dialog.h>
 
 namespace larecomp {
 

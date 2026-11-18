@@ -4,7 +4,7 @@
 #include "backend.h"
 #include "gpu.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "backend_impl.h"
 

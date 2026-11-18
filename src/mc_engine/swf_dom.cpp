@@ -4,8 +4,8 @@
 #include "swf_dom.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include <atomic>
 #include <cstring>

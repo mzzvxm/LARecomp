@@ -26,8 +26,7 @@
 // the clock counts real time at any frame rate.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 #include <cmath>
 #include <cstdint>
 

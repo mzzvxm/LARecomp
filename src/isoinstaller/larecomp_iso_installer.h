@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <functional>
 
-#include <rex/rex_app.h>
+#include <rex/app/title_app.h>
 
 namespace larecomp {
 

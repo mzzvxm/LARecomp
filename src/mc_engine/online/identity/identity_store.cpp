@@ -8,8 +8,8 @@
 #include <sstream>
 #include <vector>
 
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/user_profile.h>
 
 #include "larecomp_log.h"
 

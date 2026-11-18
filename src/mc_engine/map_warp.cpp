@@ -36,12 +36,12 @@
 //
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/runtime.h>
+#include <rex/platform/file.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/ui/ui_system.h>
 
 #include <atomic>
 #include <cmath>

@@ -48,7 +48,7 @@
 #include <mutex>
 #include <vector>
 
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
 
 namespace {
 

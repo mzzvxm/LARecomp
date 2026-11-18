@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "ao.h"
 #include "car_frame.h"

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 #include <array>
 #include <cstdint>
 

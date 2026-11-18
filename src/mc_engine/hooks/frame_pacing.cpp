@@ -57,9 +57,9 @@
 // there and read back at that frame's swap (Patch_60FPS_Byte, frame_timing.cpp).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/chrono/clock.h>
+#include <rex/chrono.h>
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include <algorithm>
 #include <atomic>

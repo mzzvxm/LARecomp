@@ -9,7 +9,7 @@
 #include <dxgiformat.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/system/xmemory.h>
+#include <rex/memory/mapped_ptr.h>
 
 
 namespace mcla::native_gfx {

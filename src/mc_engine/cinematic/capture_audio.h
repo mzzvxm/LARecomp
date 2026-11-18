@@ -24,8 +24,8 @@
 #include <cstdint>
 #include <string>
 
-#include <rex/audio/audio_driver.h>
-#include <rex/thread.h>
+#include <rex/apu/audio_driver.h>
+#include <rex/platform/sync.h>
 
 namespace mc::cinematic::capture_audio {
 

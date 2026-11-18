@@ -22,14 +22,15 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/system/interfaces/graphics.h>
-#include <rex/hook.h>
-#include <rex/logging.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/xenos/texture.h>
+#include <rex/gpu/graphics_system.h>
+#include <rex/ppc/hook.h>
+#include <rex/logging/log_category.h>
+#include <rex/ppc/context.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ui/d3d12/d3d12_provider.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ui/ui_system.h>
 
 #include <rex/ui/d3d12/d3d12_presenter.h>
 

@@ -10,7 +10,7 @@
 
 #include "online_common.h"
 
-#include <rex/system/xmemory.h>  // rex::memory::Memory::TranslateVirtual
+#include <rex/kernel/guest_memory.h>  // rex::memory::Memory::TranslateVirtual
 
 // Guest pointers span the whole address space: the XEX image sits at
 // 0x82000000, but heap objects (paint/vinyl block, e.g. 0xBF4FE930) live in the

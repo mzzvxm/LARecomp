@@ -11,10 +11,9 @@
 
 #include <imgui.h>
 
-#include <rex/logging.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/logging/log_category.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"

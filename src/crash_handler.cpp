@@ -276,8 +276,8 @@ std::filesystem::path ExeDir() {
 #include <spdlog/spdlog.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/exception_handler.h>
-#include <rex/platform/seh.h>
+#include <rex/platform/exception_handler.h>
+#include <rex/ppc/seh.h>
 
 #include <chrono>
 #include <csignal>

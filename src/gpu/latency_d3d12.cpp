@@ -34,7 +34,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include <plume_d3d12.h>
 

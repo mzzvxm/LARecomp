@@ -2,7 +2,7 @@
 // not compiled: the D3D12 native graphics runtime. Plume is the renderer here.
 // (The DualSense and Xbox trigger effects build everywhere, through SDL off Windows.)
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "native_gfx/native_gfx.h"
 

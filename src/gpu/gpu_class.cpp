@@ -11,7 +11,7 @@
 #include <plume_render_interface.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 namespace mcla::gpu::gpu_class {
 

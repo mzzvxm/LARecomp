@@ -11,10 +11,10 @@
 #include <system_error>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
+#include <rex/platform/file.h>
 #include <rex/hash.h>
-#include <rex/logging.h>
-#include <rex/memory/mapped_memory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/virtual_memory.h>
 
 #include "backend.h"
 #include "device.h"

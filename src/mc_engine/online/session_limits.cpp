@@ -12,7 +12,6 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
 
 // 0x8226BBE4, before the store: r11 is the "more than 8 players" flag.
 void Hook_NetBigSessionFlag(PPCRegister& r11) {

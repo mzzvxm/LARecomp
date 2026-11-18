@@ -6,7 +6,7 @@
 #include <cstring>
 
 #include <rex/hash.h>
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "format.h"
 #include "guest_device.h"

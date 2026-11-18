@@ -2,7 +2,7 @@
 
 #include "buffer_heap.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "device.h"
 #include "frame.h"

@@ -7,7 +7,7 @@
 
 #include <cstdio>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 #include <rex/ui/renderdoc_api.h>
 
 namespace mcla::gpu {

@@ -14,12 +14,11 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/input/input_system.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/immediate_drawer.h>
-#include <rex/ui/keybinds.h>
+#include <rex/platform/file.h>
+#include <rex/hid/input_system.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
+#include <rex/overlay_renderer.h>
 #if __has_include(<rex/ui/image_decode.h>)
 #include <rex/ui/image_decode.h>
 #define LARECOMP_BROWSER_HAS_ICON 1

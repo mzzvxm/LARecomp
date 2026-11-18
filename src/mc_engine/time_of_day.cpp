@@ -34,7 +34,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <chrono>

@@ -7,7 +7,7 @@
 #include <format>
 #include <string>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"

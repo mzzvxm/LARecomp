@@ -37,7 +37,8 @@
 //    so that one is compared with the game's code as well. The log says how long each took.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
 
 #include <algorithm>
 #include <atomic>

@@ -56,8 +56,8 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 
 #if defined(_WIN32)
 #include <windows.h>

@@ -15,10 +15,8 @@
 
 #include <dxgiformat.h>
 
-#include <rex/graphics/pipeline/texture/conversion.h>
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/texture.h>
+#include <rex/xenos/fetch.h>
 #include <rex/math.h>
 
 namespace tu = rex::graphics::texture_util;

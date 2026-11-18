@@ -11,8 +11,8 @@
 #include <unordered_map>
 #include <vector>
 #include <imgui_internal.h>
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 
 #include "overlay_input_core.h"
 #include "mc_engine/input_state.h"

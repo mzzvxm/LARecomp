@@ -9,7 +9,7 @@
 #include <toml++/toml.hpp>
 
 #include "settings/larecomp_settings.h"
-#include <rex/system/achievement_manager.h>
+#include <rex/xam/achievement_manager.h>
 
 #include "larecomp_log.h"
 

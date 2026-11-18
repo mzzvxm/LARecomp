@@ -23,7 +23,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 // Defined by the fork's SDK when it has its own dumper, by string_dumper.cpp
 // otherwise. Same names either way, so a toml written for one works with both.

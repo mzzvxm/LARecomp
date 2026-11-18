@@ -1,7 +1,6 @@
 // Discord Rich Presence: the district the player is driving in.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
 
 #include "hooks.h"
 #include "discord_rpc/discord_rpc.h"

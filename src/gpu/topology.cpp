@@ -7,7 +7,7 @@
 
 #include "topology.h"
 
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/format.h>
 
 namespace mcla::gpu {
 

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 namespace larecomp::log {
 inline const rex::LogCategoryId App =

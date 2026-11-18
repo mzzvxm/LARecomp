@@ -64,8 +64,9 @@
 // on top. A previous look older than that, or further away, is not the same drive.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <chrono>

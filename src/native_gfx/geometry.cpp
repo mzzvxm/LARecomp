@@ -14,8 +14,8 @@
 #include <d3d12.h>
 #include <dxgiformat.h>
 
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d12/context.h"
 #include "d3d12/resource_cache.h"

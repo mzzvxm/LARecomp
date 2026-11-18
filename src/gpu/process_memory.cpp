@@ -7,8 +7,8 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/runtime.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

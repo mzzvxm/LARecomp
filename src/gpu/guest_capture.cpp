@@ -14,10 +14,10 @@
 #include <new>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/format/ucode.h>
+#include <rex/xenos/ucode.h>
 #include <rex/hash.h>
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <emmintrin.h>

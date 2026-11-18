@@ -18,7 +18,7 @@
 #include <format>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "constants.h"
 #include "descriptors.h"

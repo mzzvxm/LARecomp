@@ -5,8 +5,8 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 
 #include <algorithm>
 #include <cctype>

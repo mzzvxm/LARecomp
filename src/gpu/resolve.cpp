@@ -20,12 +20,12 @@
 #include <fstream>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
-#include <rex/logging.h>
+#include <rex/platform/file.h>
+#include <rex/xenos/texture.h>
+#include <rex/xenos/register.h>
+#include <rex/xenos/fetch.h>
+#include <rex/xenos/format.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"

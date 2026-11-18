@@ -17,7 +17,7 @@
 #include <thread>
 #include <vector>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "install_wizard_dialog.h"
 

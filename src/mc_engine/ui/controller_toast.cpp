@@ -4,8 +4,8 @@
 #include "mc_engine/input_state.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/ui/imgui_dialog.h>
+#include <rex/logging/log_category.h>
+#include <rex/ui/dialog.h>
 #include <imgui.h>
 
 #include <algorithm>

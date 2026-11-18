@@ -18,7 +18,7 @@
 #include <memory>
 #include <string>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "latency_backend.h"
 #include "temporal_dlss.h"

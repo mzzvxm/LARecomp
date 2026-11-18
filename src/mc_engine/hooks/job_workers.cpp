@@ -33,7 +33,7 @@
 // One line in larecomp.log per pool thread says what was done to it.
 
 #if !defined(REXGLUE_HAS_XEO3_TARGET)
-#include <rex/ppc.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include <cstdint>
 #include <cstring>

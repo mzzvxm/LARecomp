@@ -6,7 +6,7 @@
 #include <mutex>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 namespace mcla::gpu::sync_builds {
 

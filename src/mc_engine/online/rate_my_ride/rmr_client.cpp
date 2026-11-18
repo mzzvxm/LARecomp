@@ -13,9 +13,8 @@
 #include <thread>
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/user_profile.h>
 
 #include "larecomp_log.h"
 #include "../identity/identity_store.h"

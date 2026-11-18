@@ -14,7 +14,7 @@
 #include <mutex>
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "string_dumper.h"
 
@@ -23,7 +23,6 @@
 // dump/strings.toml would race and drop entries. The stock SDK has none, so
 // larecomp owns the store (string_dumper.h) and creates it on first use.
 #if __has_include(<rex/system/string_dumper.h>)
-#include <rex/system/kernel_state.h>
 #include <rex/system/string_dumper.h>
 #define LARECOMP_SDK_HAS_STRING_DUMPER 1
 #endif

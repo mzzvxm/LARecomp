@@ -21,8 +21,8 @@
 
 #include <cstdint>
 
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/register.h>
+#include <rex/xenos/format.h>
 
 #include "draw_decode.h"
 

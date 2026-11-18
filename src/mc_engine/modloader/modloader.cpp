@@ -1,7 +1,7 @@
 #include "modloader.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <algorithm>
 #include <array>

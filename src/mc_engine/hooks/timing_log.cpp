@@ -4,9 +4,8 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
-#include <rex/perf/counter.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/platform/perf.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>

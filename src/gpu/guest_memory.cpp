@@ -3,9 +3,9 @@
 
 #include "guest_memory.h"
 
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 
 #include "native_gfx/guest/guest_resources.h"
 

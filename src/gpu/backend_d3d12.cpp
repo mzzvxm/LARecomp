@@ -21,7 +21,7 @@
 #include <wrl/client.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include <plume_d3d12.h>
 

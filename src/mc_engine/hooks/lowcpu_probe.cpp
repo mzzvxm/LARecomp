@@ -39,9 +39,9 @@
 #include "settings/larecomp_settings.h"
 
 #if defined(_WIN32)
-#include <rex/chrono/clock.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/chrono.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/system/export_resolver.h>
 
 #include <atomic>

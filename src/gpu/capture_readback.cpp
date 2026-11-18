@@ -10,7 +10,7 @@
 #include <cstring>
 #include <thread>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "device.h"
 #include "mc_engine/cinematic/capture_core.h"

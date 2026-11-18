@@ -12,9 +12,9 @@
 #include <unordered_map>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d_structs.h"
 #include "guest_resources.h"

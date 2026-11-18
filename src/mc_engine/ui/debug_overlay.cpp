@@ -3,9 +3,8 @@
 #include "mc_engine/menu_items.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/perf/counter.h>
+#include <rex/platform/perf.h>
 #include <rex/version.h>
-#include <rex/ui/flags.h>
 #include <imgui.h>
 
 #include <algorithm>

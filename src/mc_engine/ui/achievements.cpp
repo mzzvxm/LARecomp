@@ -2,7 +2,7 @@
 #include "imgui_theme.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/system/achievement_manager.h>
+#include <rex/xam/achievement_manager.h>
 #include <rex/ui/overlay/achievement_icon_cache.h>
 #include <imgui.h>
 

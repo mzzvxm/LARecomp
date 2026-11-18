@@ -12,11 +12,10 @@
 
 #include "imgui.h"
 #include "settings/larecomp_settings.h"
-#include <rex/input/input_system.h>
-#include <rex/runtime.h>
+#include <rex/hid/input_system.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ui/ui_event.h>
 #include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
 
 
 namespace {

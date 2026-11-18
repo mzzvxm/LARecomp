@@ -4,7 +4,7 @@
 
 #include "native_window.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 #include <rex/ui/window.h>
 
 #if !defined(_WIN32) && defined(PLUME_SDL_VULKAN_ENABLED)

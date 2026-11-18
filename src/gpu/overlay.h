@@ -40,7 +40,7 @@
 #include <vector>
 
 #include <plume_render_interface.h>
-#include <rex/ui/immediate_drawer.h>
+#include <rex/overlay_renderer.h>
 
 #include "hdr.h"
 

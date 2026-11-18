@@ -23,11 +23,11 @@
 #include <mutex>
 #include <thread>
 
-#include <rex/audio/audio_driver.h>
+#include <rex/apu/audio_driver.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/thread.h>
+#include <rex/logging/log_category.h>
+#include <rex/platform/sync.h>
 
 #include "cinematic/capture_audio.h"
 

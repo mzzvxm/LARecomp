@@ -5,11 +5,10 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
-#include <rex/input/input_system.h>
+#include <rex/hid/input_system.h>
 #include <thread>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>

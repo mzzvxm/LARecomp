@@ -1,5 +1,5 @@
 #pragma once
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 namespace mc::log {
 inline const rex::LogCategoryId mc = rex::RegisterLogCategory("mc");

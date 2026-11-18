@@ -10,7 +10,7 @@
 #include <string>
 
 #include <rex/ppc/context.h>  // PPCRegister
-#include <rex/runtime.h>      // rex::Runtime
+#include <rex/kernel/title_runtime.h>      // rex::Runtime
 
 #include "larecomp_log.h"     // LARECOMP_APP_INFO
 

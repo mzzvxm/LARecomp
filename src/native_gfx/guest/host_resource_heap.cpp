@@ -7,8 +7,8 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/system/kernel_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 
 #include "host_heap.h"
 

@@ -8,8 +8,8 @@
 #include <format>
 #include <utility>
 
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "car_frame_rules.h"
 #include "guest_memory.h"

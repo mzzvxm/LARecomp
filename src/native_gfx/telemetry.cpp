@@ -18,8 +18,8 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d12/pipeline_cache.h"
 #include "d3d12/shader_db.h"

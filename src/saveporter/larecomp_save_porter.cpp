@@ -24,16 +24,14 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/filesystem/devices/stfs_container_device.h>
-#include <rex/logging.h>
-#include <rex/system/xam/user_profile.h>
-#include <rex/system/xtypes.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
+#include <rex/platform/file.h>
+#include <rex/filesystem/stfs.h>
+#include <rex/logging/log_category.h>
+#include <rex/xam/user_profile.h>
+#include <rex/kernel/types/status.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 #include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
-#include <rex/ui/windowed_app_context_sdl.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

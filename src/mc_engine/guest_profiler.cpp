@@ -3,7 +3,7 @@
 #include "guest_profiler.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/ppc/func.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include "logging.h"
 #include "os/thread_priority.h"

@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "device.h"
 #include "thread_load.h"

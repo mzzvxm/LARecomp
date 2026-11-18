@@ -4,11 +4,12 @@
 #include "swf_import.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/thread_state.h>
-#include <rex/system/xmemory.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/thread_state.h>
+#include <rex/kernel/guest_memory.h>
 
 #include <algorithm>
 #include <atomic>

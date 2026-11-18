@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "car_rt_scene.h"

@@ -3,8 +3,8 @@
 
 #include "memory_census.h"
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "draw_decode.h"
 #include "guest_device.h"

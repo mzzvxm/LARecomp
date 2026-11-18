@@ -55,8 +55,9 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <array>
 #include <cstdint>

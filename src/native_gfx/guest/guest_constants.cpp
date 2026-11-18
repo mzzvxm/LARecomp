@@ -6,7 +6,7 @@
 
 #include <cstring>
 
-#include <rex/system/xmemory.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "guest_resources.h"
 

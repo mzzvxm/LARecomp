@@ -8,7 +8,7 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tire offset — the consumer for a field retail never reads.

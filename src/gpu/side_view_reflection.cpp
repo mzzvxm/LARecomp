@@ -43,7 +43,7 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/format.h>
 
 #include "edram.h"
 #include "live_text.h"

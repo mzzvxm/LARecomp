@@ -8,7 +8,7 @@
 #include <cstring>
 #include <string>
 
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/hooks/hooks.h"
 #include "mc_engine/logging.h"

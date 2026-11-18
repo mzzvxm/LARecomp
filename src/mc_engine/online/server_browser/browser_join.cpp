@@ -6,9 +6,9 @@
 #include <map>
 #include <mutex>
 
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include "../online_common.h"
 #include "../system_link.h"

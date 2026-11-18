@@ -57,11 +57,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/xam/user_profile.h>
 
 REX_EXTERN(__imp__rex_sub_824FDF00);
 REX_EXTERN(__imp__rex_sub_824FE058);

@@ -19,9 +19,8 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/graphics/pipeline/texture/conversion.h>
-#include <rex/graphics/pipeline/texture/info.h>
+#include <rex/platform/file.h>
+#include <rex/xenos/texture.h>
 
 #include "mc_engine/logging.h"
 #include "mc_engine/modloader/modloader.h"

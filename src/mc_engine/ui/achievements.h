@@ -1,6 +1,6 @@
 #pragma once
 
-#include <rex/ui/imgui_drawer.h>
+#include <rex/ui/ui_system.h>
 #include <rex/ui/overlay/achievement_notification.h>
 
 #include <memory>

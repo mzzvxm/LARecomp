@@ -2,7 +2,6 @@
 // driver animation names of a car the game does not ship.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
 #include <cstddef>
 #include <cstdint>
 

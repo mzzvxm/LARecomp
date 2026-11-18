@@ -3,7 +3,7 @@
 // This is just an spdlog thing
 #include "spdlog_console.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 #include <spdlog/spdlog.h>
 
 #include <chrono>

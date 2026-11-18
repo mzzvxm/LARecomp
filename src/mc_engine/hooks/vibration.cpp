@@ -15,10 +15,10 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
-#include <rex/input/input.h>
-#include <rex/input/input_system.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/xam/input.h>
+#include <rex/hid/input_system.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <cstdint>
 #include <cstring>

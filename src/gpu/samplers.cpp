@@ -16,8 +16,8 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/xenos.h>
-#include <rex/logging.h>
+#include <rex/xenos/fetch.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"

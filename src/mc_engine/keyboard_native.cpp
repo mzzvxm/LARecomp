@@ -20,18 +20,18 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/input/input_system.h>
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/xmemory.h>
+#include <rex/platform/file.h>
+#include <rex/hid/input_system.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/kernel/guest_memory.h>
 #include <rex/ui/image_decode.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ui/ui_system.h>
 #include <rex/ui/ui_event.h>
 #include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
 
 #include "imgui.h"
 #include "hooks/hooks_internal.h"

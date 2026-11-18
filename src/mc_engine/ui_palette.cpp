@@ -7,7 +7,7 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "hooks/hooks_internal.h"
 #include "logging.h"
@@ -107,8 +107,9 @@ const char* UiPaletteHex(int k) {
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
 
 #include "swf_import.h"
 

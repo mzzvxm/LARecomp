@@ -3,11 +3,10 @@
 // swap interval and the guest's D3D fence spin.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/chrono/clock.h>
+#include <rex/chrono.h>
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>

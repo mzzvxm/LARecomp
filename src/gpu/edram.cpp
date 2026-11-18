@@ -10,10 +10,10 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/format.h>
 #include <rex/hash.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "descriptors.h"
 #include "device.h"

@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/format.h>
 #include <rex/hash.h>
 
 namespace mcla {

@@ -5,7 +5,7 @@
 
 #include "rpc_client.h"
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 #include <rex/platform.h>
 
 #include <atomic>

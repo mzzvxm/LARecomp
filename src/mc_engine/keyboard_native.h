@@ -63,7 +63,7 @@
 
 #include <cstdint>
 
-#include <rex/ppc.h>
+#include <rex/ppc/context.h>
 
 // Before `lis r30` at 0x82614CFC: the end of the keystroke poll, reached on every
 // path out of sub_82614C70, ahead of the memcpy that publishes the key table.

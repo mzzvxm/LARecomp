@@ -21,10 +21,10 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/system/xam/user_profile.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
+#include <rex/logging/log_category.h>
+#include <rex/xam/user_profile.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "larecomp_version.h"

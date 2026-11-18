@@ -5,10 +5,10 @@
 
 #include <atomic>
 #include "settings/larecomp_settings.h"
-#include <rex/string.h>
+#include <rex/string/text.h>
 #include <rex/string/numeric.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 #include <imgui.h>
 
 #include <algorithm>

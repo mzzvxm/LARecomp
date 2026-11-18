@@ -8,8 +8,8 @@
 
 #include "settings/larecomp_settings.h"
 
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 // Defined in native_gfx.cpp at global scope, like every cvar in this runtime.
 

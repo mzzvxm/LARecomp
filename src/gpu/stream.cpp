@@ -12,7 +12,7 @@
 #include <immintrin.h>
 #endif
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "mc_engine/threading.h"
 

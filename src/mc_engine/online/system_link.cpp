@@ -19,7 +19,7 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
 
 // Online session content (DLC) compatibility gate. sub_8238B7E0 runs a symmetric
 // "mine is a superset of theirs" mask test twice on join; any mask difference

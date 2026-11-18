@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ui/window.h>
 
 #if defined(_WIN32)

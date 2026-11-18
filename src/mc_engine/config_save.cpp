@@ -11,7 +11,7 @@
 #include <unordered_set>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "profile/larecomp_profile_store.h"
 

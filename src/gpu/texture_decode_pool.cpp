@@ -19,7 +19,7 @@
 #include <windows.h>
 #endif
 
-#include <rex/thread.h>
+#include <rex/platform/thread.h>
 
 #include "mc_engine/threading.h"
 #include "os/thread_priority.h"

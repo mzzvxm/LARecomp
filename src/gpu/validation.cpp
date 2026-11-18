@@ -9,8 +9,8 @@
 #include <fstream>
 #include <iterator>
 
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "cycles.h"

@@ -3,9 +3,9 @@
 
 #include "logging.h"
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/system/xthread.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/hook.h>
+#include <rex/kernel/object/kernel_thread.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

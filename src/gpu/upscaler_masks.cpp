@@ -7,7 +7,7 @@
 #include <unordered_map>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "host_shaders.h"
 #include "pass_timing.h"

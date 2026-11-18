@@ -11,11 +11,10 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/ui/keybinds.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ui/ui_system.h>
 #include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

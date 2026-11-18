@@ -19,9 +19,9 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

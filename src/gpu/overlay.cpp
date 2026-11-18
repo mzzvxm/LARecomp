@@ -17,13 +17,12 @@
 #include <format>
 #include <string>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 #include <rex/math.h>
 #include <rex/ui/graphics_util.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/presenter.h>
+#include <rex/ui/ui_system.h>
+#include <rex/overlay_renderer.h>
 #include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
 
 #include "descriptors.h"
 #include "device.h"

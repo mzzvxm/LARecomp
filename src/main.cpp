@@ -7,7 +7,7 @@
 
 #include "larecomp_app.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <cmath>
 #include <cstdint>

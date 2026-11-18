@@ -20,10 +20,10 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 
 #include "device.h"
 #include "frame.h"

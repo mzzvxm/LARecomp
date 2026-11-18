@@ -47,11 +47,11 @@
 #include <string>
 #include <vector>
 
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
-#include <rex/system/xmemory.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/user_profile.h>
+#include <rex/kernel/guest_memory.h>
 
 #include "rmr_client.h"
 #include "rmr_protocol.h"

@@ -20,9 +20,9 @@
 #include <string>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
+#include <rex/platform/file.h>
 #include <rex/hash.h>
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "car_selfrefl.h"

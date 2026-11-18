@@ -56,7 +56,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
 
 #include <algorithm>
 #include <array>

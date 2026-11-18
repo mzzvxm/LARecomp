@@ -15,10 +15,9 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/keybinds.h>
+#include <rex/platform/file.h>
+#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN

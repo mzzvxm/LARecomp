@@ -6,19 +6,18 @@
 
 #include <atomic>
 
-#include <rex/chrono/clock.h>
+#include <rex/chrono.h>
 #include "settings/larecomp_settings.h"
-#include <rex/perf/counter.h>
-#include <rex/logging.h>
+#include <rex/platform/perf.h>
+#include <rex/logging/log_category.h>
 #if defined(_WIN32)
 #include <rex/ui/d3d12/d3d12_provider.h>
 #endif
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/immediate_drawer.h>
+#include <rex/ui/ui_system.h>
+#include <rex/overlay_renderer.h>
 #include <rex/ui/overlay/debug_overlay.h>
-#include <rex/ui/presenter.h>
 #include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
+#include <rex/ui/ui_event.h>
 
 #include "guest_gpu.h"
 #include "../native_gfx.h"

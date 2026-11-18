@@ -8,7 +8,7 @@
 #include "temporal_dlss.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

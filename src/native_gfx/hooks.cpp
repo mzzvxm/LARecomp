@@ -59,8 +59,8 @@
 #include <cstdint>
 
 #include "settings/larecomp_settings.h"
-#include <rex/hook.h>
-#include <rex/ppc.h>
+#include <rex/ppc/hook.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include "../native_probe/mcla_gfx_probe.h"
 #include <cstdio>

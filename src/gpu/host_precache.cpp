@@ -5,7 +5,7 @@
 
 #include <format>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "os/thread_priority.h"
 

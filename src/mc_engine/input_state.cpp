@@ -45,12 +45,11 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/input/device.h>
-#include <rex/input/input_system.h>
-#include <rex/runtime.h>
+#include <rex/hid/pad.h>
+#include <rex/hid/input_system.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ui/ui_event.h>
 #include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
 
 #include "adaptive_triggers.h"
 #include "device_watch.h"

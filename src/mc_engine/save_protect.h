@@ -3,12 +3,11 @@
 #include <chrono>
 #include <cstdint>
 #include <thread>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/util/object_table.h>
-#include <rex/system/xam/content_manager.h>
-#include <rex/system/xfile.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/object/object_table.h>
+#include <rex/xam/content_manager.h>
+#include <rex/kernel/object/file_object.h>
 
 // A career save being written: a file open for writing on a content package,
 // which the SDK mounts at \Device\Content\<n>\ (xam/content_manager.cpp), or

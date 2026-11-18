@@ -7,7 +7,7 @@
 
 #include "layout.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "descriptors.h"

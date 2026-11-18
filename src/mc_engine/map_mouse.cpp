@@ -10,13 +10,12 @@
 #include <functional>
 
 #include "settings/larecomp_settings.h"
-#include <rex/input/input_system.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/hid/input_system.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 #include <rex/ui/ui_event.h>
 #include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
 
 namespace {
 

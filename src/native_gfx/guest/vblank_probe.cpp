@@ -9,8 +9,8 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "guest_resources.h"
 

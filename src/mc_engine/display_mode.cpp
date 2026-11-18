@@ -19,7 +19,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/graphics/video_mode_util.h>
 #include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/ui_system.h>
 
 #include "logging.h"
 

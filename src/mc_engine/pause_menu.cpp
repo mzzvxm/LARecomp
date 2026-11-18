@@ -41,14 +41,14 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/filesystem.h>
-#include <rex/input/input.h>
-#include <rex/input/input_system.h>
-#include <rex/runtime.h>
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/platform/file.h>
+#include <rex/xam/input.h>
+#include <rex/hid/input_system.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
 #include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
+#include <rex/ui/ui_system.h>
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/effect_compare.h"

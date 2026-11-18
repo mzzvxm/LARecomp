@@ -52,8 +52,8 @@
 #include <unordered_map>
 
 #include "settings/larecomp_settings.h"
-#include <rex/memory/utils.h>
-#include <rex/system/xmemory.h>
+#include <rex/memory/virtual_memory.h>
+#include <rex/kernel/guest_memory.h>
 
 namespace {
 

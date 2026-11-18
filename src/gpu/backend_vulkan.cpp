@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include <plume_vulkan.h>
 

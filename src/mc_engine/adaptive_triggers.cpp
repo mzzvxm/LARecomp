@@ -61,8 +61,8 @@
 #include "adaptive_triggers.h"
 
 #include "settings/larecomp_settings.h"
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -88,7 +88,7 @@
 #pragma comment(lib, "hid.lib")
 #else
 #include <SDL3/SDL.h>
-#include <rex/input/input_system.h>
+#include <rex/hid/input_system.h>
 #include <rex/ui/window.h>
 #include "trigger_sdl.h"
 #endif
