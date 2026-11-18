@@ -11,36 +11,55 @@
 //   mcla_gpu_car_dump      0 off (the default); N: dump the first frame at or after guest frame N that has a draw writing a
 //                          vehicle ID (the car draws before the world, so every vehicle draw of the frame comes before the
 //                          history pass; the dump frame ends at the guest's present). Hot: a new value dumps again.
-//   mcla_gpu_car_dump_id   the stencil ID the OBJ and the first check are made for; 0: the ID with the most draws in the frame.
+//   mcla_gpu_car_dump_id   the stencil ID the OBJ and the first check are made for; 0: the player's car, found as car_dump_rules.h
+//                          ChoosePlayerId does (the ID whose gWorld is nearest to the player's vehicle in the game's memory, else the
+//                          nearest ID with a paint draw, else the one with the most body draws); the log says which rule chose it.
 //
-// WHAT A DRAW GIVES (the note's sections 1 and 3). One rigid car draw is ONE affine model-to-world matrix, in the draw's vertex
-// shader constants: the bone's three registers of the palette gCarMtxBuffer (c64.., bone = trunc(c204.x)) and then gWorld c0-c3
-// (the tyres have no palette: gWorld alone); gWorldViewProj c8-c11 is gWorld times the camera's view-projection. Positions are
-// model-space floats (float32 or float16, never packed). So the triangles are: the draw's indices (guest memory, under the
-// index endian; strips, quads and fans expanded with the renderer's own ConvertIndices / StripToList / GenerateIndices) over the
-// POSITION element of the draw's declaration (its stream's fetch constant gives the address, size and the stride), taken
-// through that matrix (car_dump_rules.h). Skinned vertex shaders (BLENDINDICES) and the damage branch (bool b0) are NOT done:
-// those draws are counted and written with the palette matrix alone.
+// WHAT A DRAW GIVES (the note's sections 1, 3 and 9). One rigid car draw is ONE affine model-to-world matrix, in the draw's vertex
+// shader constants: the bone's three registers of the palette gCarMtxBuffer (c64.., bone = trunc(c204.x)) and then gWorld c0-c3;
+// gWorldViewProj c8-c11 is gWorld times the camera's view-projection. But not every vertex shader reads the palette: the tyres and the wheel
+// blur proxies read gWorld alone (placing them with the palette puts them hundreds of metres away: c204 and the palette hold what an earlier
+// draw left), and the character shaders (the driver) blend up to four palette bones per vertex. The RECIPE of a draw is therefore chosen by what
+// its vertex shader reads: the microcode is read from guest memory (DrawRecord::vs_ucode_address, checked against the draw's shader
+// identity) and walked (car_dump_rules.h ScanConstantReads: the constants read at a fixed index, the reads through a0 of the palette's rows);
+// a shader that reads the rows and c204 is palette then gWorld, one that reads the rows and no c204 blends bones per vertex (BLENDINDICES,
+// BLENDWEIGHT: SkinBlend, then gWorld), one that reads no rows is gWorld alone. The shader pack has no such information (its entries hold
+// the vertex elements, the texture fetch mask and the flags), so without the microcode (not readable, or not the draw's shader) the
+// declaration and a short table of known world-only shaders (car_dump_rules.h kKnownWorldOnlyVs) stand in.
+// Positions are model-space floats (float32 or float16, never packed). So the triangles are: the draw's indices (guest memory, under the
+// index endian; strips, quads and fans expanded with the renderer's own ConvertIndices / StripToList / GenerateIndices) over the POSITION
+// element of the draw's declaration (its stream's fetch constant gives the address, size and the stride), taken through that matrix
+// (car_dump_rules.h). The damage branch (bool b0) is NOT done: such draws are counted.
+//
+// WHAT A DRAW IS. Body (the rigid parts and the tyres: what the car is made of), skinned (the driver, blended on the CPU as the vertex
+// shader does, an unverified decode: the log counts the bones that are not in the palette and the weight sums) and wheel proxy (a stencil-only
+// draw per wheel with a stencil ID of its own: its shader pair, or no colour write; not geometry of the car). The proxies are left out
+// of the car and the checks and counted in the census; the skinned draws are left out of the OBJ of the car and its first check (the
+// body: what a shadow or a reflection of the car needs) and written to a second file and a second check line.
 //
 // WHEN GUEST MEMORY IS READ: in the dump frame only, in the draw's own call (OnMainDraw), as the geometry cache reads it for the
 // same draw (the guest is held back then); before the dump frame and after it a main-view draw costs a flag read, and the
 // frame's draws before the first vehicle draw a counter. The cvar is read once a frame.
 //
 // WHAT IT WRITES (the log lines are prefixed "[car dump]"; car_dump_<frame>.obj goes next to the executable):
-//   - at the end of the dump frame: the census (per ID: draws, vertices, triangles, how near its gWorld is to the camera; per
-//     (ID, vertex shader, pixel shader): draws, primitive, index size, the position's format, offset and stride, the bones used,
+//   - at the end of the dump frame: why the chosen ID is the player's car, the census (per ID: draws by part, vertices, triangles,
+//     how near its gWorld is to the camera and to the player's vehicle; per (ID, vertex shader, pixel shader): the recipe and where it
+//     came from, the part, draws, primitive, index size, the position's format, offset and stride, the colour mask, the bones used,
 //     draws with the damage bool b0 on, skinned draws, before or after the first world draw, gWorld's translation and its
 //     distance to the camera, and whether gWorld times the camera's view-projection is the draw's gWorldViewProj, to a relative
-//     1e-3) and the OBJ of the chosen ID, one group per draw named id_vsHash_psHash_bone;
+//     1e-3), the OBJ of the chosen ID's body, one group per draw named id_vsHash_psHash_bone, and for a car with skinned draws
+//     car_dump_<frame>_skinned.obj;
 //   - when the car history image of the same frame arrives from the GPU (car_selfrefl.h: its alpha is the view distance of every
 //     vehicle pixel; the car self-reflections must be on, mcla_gpu_car_selfrefl_test=1 does it): the check. Every triangle is
 //     projected with the frame's camera (the anchor draw's constants) and rasterised on the CPU at the image's size, with a
 //     nearest-distance test; it logs the share of vehicle pixels covered by at least one triangle, the mean and 95th percentile
-//     of the depth error and the triangles that are wholly off the image, for the chosen ID alone and for all IDs, and for each
-//     (ID, VS, PS) how the draws' own pixels sit against the image under the palette recipe and under gWorld alone (it settles
-//     which recipe a family follows, see car_dump_rules.h FitCount).
+//     of the depth error and the triangles that are wholly off the image, for the chosen ID's body alone, the body with its skinned
+//     parts and all IDs (the wheel proxies are in none), and for each (ID, VS, PS) how the draws' own pixels sit against the image
+//     under the palette recipe, under gWorld alone and, for a skinned group, under the blend (it settles which recipe a family
+//     follows, see car_dump_rules.h FitCount).
 // The image is a half float (its own steps are about 0.05% of the distance) and, at half size, read at the lower right pixel of
-// each 2x2 block; the check samples the same point. Run it with the upscaler off, the car parked, in the game's own view.
+// each 2x2 block; the check samples the same point. Run it with the upscaler off, the car parked, in the game's own view. The
+// driver's pixels are vehicle pixels of the image too: the body's coverage cannot reach 100% of them.
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread.
 // ===========================================================================
@@ -48,6 +67,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -120,6 +140,21 @@ class CarDump {
     kNoTriangles,    // nothing left after the index expansion
   };
 
+  // Where the player's vehicle is in the game's own memory (read when the dump frame opens).
+  struct PlayerVehicle {
+    bool valid = false;       // the position was read
+    uint32_t vehicle = 0;     // dword_8288DCF8: the vehicle the local player drives
+    uint32_t entity = 0;      // vehicle + 0x14
+    double position[3] = {};  // row 3 of the entity's world matrix (entity + 0x90 + 0x30)
+    std::string note;         // what was found, for the log
+  };
+
+  // What the microcode of a vertex shader was found to read (cached by shader identity, verified microcode only).
+  struct ShaderReads {
+    car_dump::ConstantReads reads;
+    bool verified = false;  // the microcode was readable and hashes to the shader's identity
+  };
+
   // One vehicle draw of the dump frame, as a small record, and what the dump frame made of it.
   struct Draw {
     uint32_t id = 0;       // the lowest vehicle ID the draw writes (stencil reference >> 2)
@@ -137,15 +172,27 @@ class CarDump {
     uint32_t offset = 0;
     uint32_t stride = 0;
     bool damage = false;   // bool b0 (enableVertDamage) is on
-    bool skinned = false;  // the vertex shader reads BLENDINDICES
+    bool skinned = false;  // the vertex shader reads BLENDINDICES (the declaration says so)
+    uint32_t colour_mask = 0;  // the write masks of the bound colour targets, or-ed
+    car_dump::ProxyWhy proxy = car_dump::ProxyWhy::kNo;
+    car_dump::Recipe recipe = car_dump::Recipe::kPalette;
+    car_dump::RecipeSource recipe_source = car_dump::RecipeSource::kDefault;
+    car_dump::Role role = car_dump::Role::kBody;
+    bool ucode_read = false;   // the recipe comes from the microcode of this shader
     Problem problem = Problem::kNone;
     car_dump::CarMatrices matrices;
+    temporal::Mat4 model;      // the recipe's model-to-world (car_dump_rules.h ModelMatrix)
+    car_dump::SkinStats skin;  // the blend of a skinned draw: vertices, bones outside the palette, weight sums
+    std::string skin_note;     // why a skinned draw has no blended positions
     uint32_t triangles = 0;
     uint32_t degenerate = 0;
     uint32_t out_of_range = 0;
     uint32_t vertices = 0;       // distinct vertices the triangles name
     uint32_t first_vertex = 0;   // `local` starts at this vertex of the stream
     std::vector<float> local;    // model-space positions of the vertices first_vertex..first_vertex + span, 3 floats each
+    std::vector<float> blended;  // a skinned draw: the blended local positions of the same vertices (empty when not done)
+    const float* Positions() const { return recipe == car_dump::Recipe::kSkinned ? blended.data() : local.data(); }
+    size_t PositionCount() const { return (recipe == car_dump::Recipe::kSkinned ? blended.size() : local.size()) / 3; }
     std::vector<uint32_t> tri;   // 3 numbers a triangle, relative to first_vertex
   };
 
@@ -164,10 +211,14 @@ class CarDump {
   void Refresh();
   void Open();
   void Expand(const MainDraw& draw, Draw* out);
+  void ReadPlayerVehicle();
+  const ShaderReads& ReadsOf(const DrawRecord& record);
+  bool SkinDraw(const MainDraw& draw, uint32_t first, uint32_t span, Draw* out);
   void Finish();
-  void Census(uint32_t chosen);
-  void WriteObj(uint32_t chosen) const;
-  uint32_t ChosenId() const;
+  void Summarise(car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const;
+  car_dump::Pick ChoosePlayer(const car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const;
+  void Census(uint32_t chosen, const car_dump::IdSummary (&ids)[car_dump::kIdSlots]);
+  void WriteObj(uint32_t chosen, car_dump::Role role) const;
   void ProcessHistory(uint64_t frame, uint32_t width, uint32_t height, uint32_t row_bytes);
   void TryCheck();
   void RunCheck();
@@ -189,6 +240,10 @@ class CarDump {
   bool finished_ = false;     // the census is written; the check waits for the image
   History history_;
   uint32_t chosen_ = 0;
+  PlayerVehicle player_;      // read when the frame opens
+
+  // The microcode scans, by vertex shader identity (verified ones only: a failed read is tried again).
+  std::unordered_map<uint64_t, ShaderReads> reads_;
 
   // Scratch of Expand.
   std::vector<uint32_t> guest_indices_;

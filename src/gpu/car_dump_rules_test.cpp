@@ -1,5 +1,7 @@
-// Check of the car dump prototype's rules (car_dump_rules.h): the matrices out of a vertex shader bank, the vertex and index bytes as
-// the guest holds them, the triangle list, the rasteriser and the statistics that compare it with the car history image. A program
+// Check of the car dump prototype's rules (car_dump_rules.h): the matrices out of a vertex shader bank, the recipe of a draw from what its
+// vertex shader reads (the microcode walk, on microcode assembled here: no game shader is in this file), the wheel proxies and the
+// skinned vertices, the choice of the player's car, the vertex and index bytes as the guest holds them, the triangle list, the
+// rasteriser and the statistics that compare it with the car history image. A program
 // of its own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_car_dump_rules_test     (src/gpu/CMakeLists.txt)
@@ -9,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -476,10 +479,409 @@ void TestStatistics() {
   Check(cd::FitCount{}.Share(0) == 0.0, "a share of nothing is zero");
 }
 
+
+// ---------------------------------------------------------------------------
+// microcode assembled by hand (the layout of car_dump_rules.h's ScanConstantReads)
+// ---------------------------------------------------------------------------
+
+struct AluSpec {
+  uint32_t vector_op = 1;    // mul: two operands
+  uint32_t scalar_op = 50;   // retain_prev: none
+  uint32_t reg[3] = {0, 0, 0};          // src1, src2, src3 register numbers
+  bool temp[3] = {true, true, true};     // true: a temporary register, false: a float constant
+  bool rel0 = false, rel1 = false;       // const_0_rel_abs, const_1_rel_abs
+  bool a0 = true;                        // const_address_register_relative: a0 (else the loop counter)
+};
+
+struct Microcode {
+  std::vector<uint32_t> dwords;
+  // `count` ALU instructions follow the one pair of control flow (address 1); sequence bit 2k set marks instruction k as a fetch.
+  explicit Microcode(const std::vector<AluSpec>& alu, uint32_t fetch_mask = 0, bool exec = true) {
+    const uint32_t count = uint32_t(alu.size());
+    uint32_t sequence = 0;
+    for (uint32_t k = 0; k < count; ++k) {
+      if (fetch_mask & (1u << k)) {
+        sequence |= 1u << (2 * k);
+      }
+    }
+    // the first control flow instruction: exec (opcode 1) at address 1; the second: nop
+    const uint32_t w0 = 1u | (count << 12) | (sequence << 16);
+    const uint32_t w1 = exec ? (1u << 12) : 0u;
+    dwords = {w0, (w1 & 0xFFFFu), 0u};
+    for (const AluSpec& a : alu) {
+      dwords.push_back(a.scalar_op << 26);
+      dwords.push_back((a.a0 ? 1u << 29 : 0u) | (a.rel1 ? 1u << 30 : 0u) | (a.rel0 ? 1u << 31 : 0u));
+      dwords.push_back(a.reg[2] | (a.reg[1] << 8) | (a.reg[0] << 16) | (a.vector_op << 24) | (a.temp[2] ? 1u << 29 : 0u) |
+                       (a.temp[1] ? 1u << 30 : 0u) | (a.temp[0] ? 1u << 31 : 0u));
+    }
+  }
+  std::vector<uint8_t> Bytes() const {
+    std::vector<uint8_t> out;
+    for (uint32_t d : dwords) {
+      out.push_back(uint8_t(d >> 24));
+      out.push_back(uint8_t(d >> 16));
+      out.push_back(uint8_t(d >> 8));
+      out.push_back(uint8_t(d));
+    }
+    return out;
+  }
+  cd::ConstantReads Scan() const {
+    const std::vector<uint8_t> bytes = Bytes();
+    return cd::ScanConstantReads(bytes.data(), uint32_t(bytes.size()));
+  }
+};
+
+AluSpec ReadsConstant(uint32_t reg) {  // mul r, c#, r
+  AluSpec a;
+  a.reg[0] = reg;
+  a.temp[0] = false;
+  return a;
+}
+
+// mad r, r, c#[a0], r: the constant is the second operand, addressed through const_0_rel_abs (the first operand is a register)
+AluSpec ReadsRelative(uint32_t base, bool via_a0 = true) {
+  AluSpec a;
+  a.vector_op = 11;
+  a.reg[1] = base;
+  a.temp[1] = false;
+  a.rel0 = true;
+  a.a0 = via_a0;
+  return a;
+}
+
+void TestMicrocodeScan() {
+  // A rigid part's shader: gWorld (c0, c3), gWorldViewProj (c8), the bone index c204, the palette's three rows through a0.
+  {
+    const Microcode m({ReadsConstant(0), ReadsConstant(3), ReadsConstant(8), ReadsConstant(204), ReadsRelative(64), ReadsRelative(65),
+                       ReadsRelative(66)});
+    const cd::ConstantReads r = m.Scan();
+    Check(r.valid && r.instructions == 7, "the walk finds the exec block's seven ALU instructions");
+    Check(r.Reads(0) && r.Reads(3) && r.Reads(8) && r.Reads(204) && !r.Reads(1) && !r.Reads(64) && !r.Reads(255),
+          "the registers read at a fixed index are exactly those named (a relative base is not one)");
+    Check(r.bone_index() && r.relative_a0 && r.palette_rows && !r.relative_loop, "bone index, a0 reads of the palette rows, no loop reads");
+    const cd::RecipeChoice c = cd::ChooseRecipe(r, false, 0x1234);
+    Check(c.recipe == cd::Recipe::kPalette && c.source == cd::RecipeSource::kMicrocode, "reads the rows and c204: palette then gWorld, by the microcode");
+  }
+  // A character's shader: the rows through a0, no c204: the bones come per vertex.
+  {
+    const Microcode m({ReadsConstant(0), ReadsRelative(64), ReadsRelative(65), ReadsRelative(66), ReadsConstant(8)});
+    const cd::ConstantReads r = m.Scan();
+    Check(r.valid && r.palette_rows && !r.bone_index(), "rows and no bone index");
+    Check(cd::ChooseRecipe(r, false, 1).recipe == cd::Recipe::kSkinned, "rows without c204: blended bones");
+    Check(cd::ChooseRecipe(r, true, 1).recipe == cd::Recipe::kSkinned && cd::ChooseRecipe(r, true, 1).source == cd::RecipeSource::kMicrocode,
+          "... with BLENDINDICES in the declaration too");
+  }
+  // The tyres' and the wheel proxies' shaders: gWorld and gWorldViewProj, literals in the high registers, no a0.
+  {
+    const Microcode m({ReadsConstant(0), ReadsConstant(1), ReadsConstant(8), ReadsConstant(253), ReadsConstant(255)});
+    const cd::ConstantReads r = m.Scan();
+    Check(r.valid && !r.relative_a0 && !r.palette_rows && !r.bone_index(), "no palette reads");
+    Check(r.Reads(253) && r.Reads(255), "the literals in the palette's last registers are read as fixed registers");
+    Check(cd::ChooseRecipe(r, false, 1).recipe == cd::Recipe::kWorld, "reads no rows: gWorld alone (the tyres)");
+    // The microcode decides even when the declaration or the table says otherwise.
+    Check(cd::ChooseRecipe(r, true, cd::kKnownWorldOnlyVs[0]).recipe == cd::Recipe::kWorld, "... whatever the declaration says");
+  }
+  // Relative reads through the loop counter, or of other registers, are not the palette.
+  {
+    const Microcode loop({ReadsConstant(0), ReadsRelative(64, false)});
+    const cd::ConstantReads r = loop.Scan();
+    Check(r.relative_loop && !r.relative_a0 && !r.palette_rows, "a loop-counter read of c64 is no palette read");
+    const Microcode lights({ReadsConstant(0), ReadsRelative(128), ReadsRelative(163)});
+    const cd::ConstantReads l = lights.Scan();
+    Check(l.relative_a0 && !l.palette_rows, "a0 reads of the lights' registers are no palette read");
+    Check(cd::ChooseRecipe(l, false, 1).recipe == cd::Recipe::kWorld, "... so the shader is gWorld alone");
+    const Microcode near_rows({ReadsRelative(63)});
+    const Microcode last_row({ReadsRelative(67)});
+    Check(!near_rows.Scan().palette_rows && !last_row.Scan().palette_rows, "bases 63 and 67 are outside the rows 64-66");
+  }
+  // Which operands count: a one-operand vector op ignores src2, a fetch is skipped, a scalar mulsc takes its constant from src3.
+  {
+    AluSpec frc;  // frc r, r: src2 holds a constant number that nothing reads
+    frc.vector_op = 8;
+    frc.reg[1] = 204;
+    frc.temp[1] = false;
+    Check(!Microcode({frc}).Scan().Reads(204), "a one-operand vector op does not read src2");
+    AluSpec mul = ReadsConstant(77);
+    Check(Microcode({mul}).Scan().Reads(77), "a two-operand vector op reads src1");
+    AluSpec second;  // mul r, r, c#: the constant is src2
+    second.reg[1] = 88;
+    second.temp[1] = false;
+    Check(Microcode({second}).Scan().Reads(88), "... and src2");
+    Check(!Microcode({second}, 1u).Scan().Reads(88) && Microcode({second}, 1u).Scan().valid, "an instruction the sequence marks as a fetch is not walked");
+    AluSpec mulsc;  // mulsc: src3 is a constant whatever its sel bit says (the bit is part of the temporary's number there)
+    mulsc.scalar_op = 42;
+    mulsc.reg[2] = 100;
+    mulsc.temp[2] = true;
+    mulsc.vector_op = 30;  // no vector operands
+    Check(Microcode({mulsc}).Scan().Reads(100), "mulsc reads its constant from src3");
+    AluSpec rcp;  // rcp r: one scalar operand src3, a constant when its sel bit says so
+    rcp.scalar_op = 19;
+    rcp.vector_op = 30;
+    rcp.reg[2] = 7;
+    rcp.temp[2] = false;
+    Check(Microcode({rcp}).Scan().Reads(7), "a one-operand scalar op reads src3 when it is a constant");
+    rcp.temp[2] = true;
+    Check(!Microcode({rcp}).Scan().Reads(7), "... and not when it is a register");
+    AluSpec none;  // retain_prev: no operand
+    none.vector_op = 30;
+    none.reg[2] = 9;
+    none.temp[2] = false;
+    Check(!Microcode({none}).Scan().Reads(9), "an opcode without operands reads nothing");
+  }
+  // Which addressing bit belongs to an operand: with src1 a constant, const_0_rel_abs is the first constant's, const_1_rel_abs the second's.
+  {
+    AluSpec a;
+    a.vector_op = 1;
+    a.reg[0] = 64;
+    a.temp[0] = false;
+    a.reg[1] = 205;
+    a.temp[1] = false;
+    a.rel0 = true;  // src1 relative, src2 not
+    const cd::ConstantReads r = Microcode({a}).Scan();
+    Check(r.palette_rows && r.Reads(205) && !r.Reads(64), "two constants: const_0_rel_abs addresses the first, const_1_rel_abs the second");
+    a.rel0 = false;
+    a.rel1 = true;  // src2 relative, src1 not
+    const cd::ConstantReads q = Microcode({a}).Scan();
+    Check(!q.palette_rows && q.Reads(64) && !q.Reads(205) && q.relative_a0, "... and the other way round");
+  }
+  // Garbage in, nothing out.
+  {
+    Check(!cd::ScanConstantReads(nullptr, 100).valid, "no microcode");
+    const uint8_t tiny[8] = {};
+    Check(!cd::ScanConstantReads(tiny, 8).valid, "microcode shorter than a control flow pair");
+    const uint8_t zeros[48] = {};
+    Check(!cd::ScanConstantReads(zeros, 48).valid, "control flow without an exec block");
+    const cd::ConstantReads empty_block = Microcode({}).Scan();
+    Check(empty_block.valid && empty_block.instructions == 0, "an exec block with no instruction is a program that reads nothing");
+    // an exec block that names instructions beyond the microcode: skipped, not read
+    Microcode cut({ReadsConstant(5), ReadsConstant(6)});
+    std::vector<uint8_t> bytes = cut.Bytes();
+    bytes.resize(bytes.size() - 12);  // the second instruction is gone
+    const cd::ConstantReads r = cd::ScanConstantReads(bytes.data(), uint32_t(bytes.size()));
+    Check(r.valid && r.instructions == 1 && r.Reads(5) && !r.Reads(6), "an instruction beyond the end of the microcode is not walked");
+  }
+}
+
+void TestRecipeFallback() {
+  const cd::ConstantReads none;  // microcode not read
+  const cd::RecipeChoice blend = cd::ChooseRecipe(none, true, 0x77);
+  Check(blend.recipe == cd::Recipe::kSkinned && blend.source == cd::RecipeSource::kDeclaration, "without microcode: BLENDINDICES says skinned");
+  for (uint64_t known : cd::kKnownWorldOnlyVs) {
+    const cd::RecipeChoice c = cd::ChooseRecipe(none, false, known);
+    Check(c.recipe == cd::Recipe::kWorld && c.source == cd::RecipeSource::kTable, "without microcode: a known world-only shader is gWorld alone");
+  }
+  Check(cd::ChooseRecipe(none, false, 0xEDDAF3E3986AE099ull).recipe == cd::Recipe::kWorld, "the tyres' shader (xWheelRubber VS_ParallaxRubber2) is in the table");
+  Check(cd::ChooseRecipe(none, false, 0x8B2189251306AF48ull).recipe == cd::Recipe::kWorld, "the wheel proxy's shader (xTestRimBlur VS_drawCheap) is in the table");
+  const cd::RecipeChoice other = cd::ChooseRecipe(none, false, 0x23FB35FC659D4A67ull);
+  Check(other.recipe == cd::Recipe::kPalette && other.source == cd::RecipeSource::kDefault, "without microcode and unknown: the car default, the palette");
+  Check(std::string(cd::RecipeName(cd::Recipe::kWorld)) == "gWorld alone" && std::string(cd::RecipeSourceName(cd::RecipeSource::kTable)) == "table",
+        "recipe names");
+
+  // The model matrix of a recipe.
+  Bank bank;
+  tp::Mat4 world = Translation(10, 0, 0);
+  bank.SetMatrix(cd::kWorldRegister, world);
+  bank.Set(cd::kPaletteRegister + 3, 1, 0, 0, 5.0f);  // bone 1: x + 5
+  bank.Set(cd::kPaletteRegister + 4, 0, 1, 0, 0);
+  bank.Set(cd::kPaletteRegister + 5, 0, 0, 1, 0);
+  bank.Set(cd::kBoneIndexRegister, 1.0f, 0, 0, 0);
+  const cd::CarMatrices m = cd::DecodeCarMatrices(bank.bytes);
+  const double p[3] = {1.0, 2.0, 3.0};
+  double w[4];
+  cd::TransformPoint(cd::ModelMatrix(m, cd::Recipe::kPalette), p, w);
+  Check(Near(w[0], 16.0) && Near(w[1], 2.0) && Near(w[2], 3.0), "the palette recipe moves the point by the bone, then by gWorld");
+  cd::TransformPoint(cd::ModelMatrix(m, cd::Recipe::kWorld), p, w);
+  Check(Near(w[0], 11.0) && Near(w[1], 2.0) && Near(w[2], 3.0), "gWorld alone leaves the bone out (the tyres: the stale bone is not applied)");
+  cd::TransformPoint(cd::ModelMatrix(m, cd::Recipe::kSkinned), p, w);
+  Check(Near(w[0], 11.0), "a skinned draw's matrix is gWorld (its vertices are blended first)");
+}
+
+void TestParts() {
+  const uint64_t body_vs = 0x23FB35FC659D4A67ull, body_ps = cd::kCarPaintPs;
+  Check(cd::WheelProxyOf(body_vs, body_ps, 0xF) == cd::ProxyWhy::kNo, "a paint draw with a colour write is an ordinary draw");
+  Check(cd::WheelProxyOf(cd::kWheelProxyVs, body_ps, 0xF) == cd::ProxyWhy::kShader, "the wheel proxy's vertex shader marks a proxy");
+  Check(cd::WheelProxyOf(body_vs, cd::kWheelProxyPs, 0xF) == cd::ProxyWhy::kShader, "... and its pixel shader");
+  Check(cd::WheelProxyOf(body_vs, body_ps, 0) == cd::ProxyWhy::kNoColour, "no colour write at all: a stencil-only marker");
+  Check(cd::WheelProxyOf(body_vs, body_ps, 0x10) == cd::ProxyWhy::kNoColour, "only bits above RGBA are no colour write");
+  Check(cd::WheelProxyOf(body_vs, body_ps, 0x1) == cd::ProxyWhy::kNo, "one colour channel written is a draw that shows");
+  Check(cd::kWheelProxyVs == 0x8B2189251306AF48ull && cd::kWheelProxyPs == 0x7D4887A7CB75AF65ull && cd::kCarPaintPs == 0x439B193A3F675533ull,
+        "the identities of the wheel proxy pair and of the paint");
+  Check(cd::RoleOf(cd::ProxyWhy::kShader, cd::Recipe::kWorld) == cd::Role::kProxy, "a proxy is a proxy whatever its recipe");
+  Check(cd::RoleOf(cd::ProxyWhy::kNoColour, cd::Recipe::kSkinned) == cd::Role::kProxy, "... even a skinned one");
+  Check(cd::RoleOf(cd::ProxyWhy::kNo, cd::Recipe::kSkinned) == cd::Role::kSkinned, "a skinned draw is a skinned part");
+  Check(cd::RoleOf(cd::ProxyWhy::kNo, cd::Recipe::kWorld) == cd::Role::kBody && cd::RoleOf(cd::ProxyWhy::kNo, cd::Recipe::kPalette) == cd::Role::kBody,
+        "the tyres (gWorld alone) and the rigid parts are the body");
+}
+
+void TestSkin() {
+  Check(cd::BlendFormatOf(0x00182886) == cd::BlendFormat::kUnorm8 && cd::BlendFormatOf(0x001A2286) == cd::BlendFormat::kUint8 &&
+            cd::BlendFormatOf(0x001A23A6) == cd::BlendFormat::kFloat4 && cd::BlendFormatOf(0x001A2360) == cd::BlendFormat::kHalf4 &&
+            cd::BlendFormatOf(0x001A2187) == cd::BlendFormat::kNone,
+        "the blend element formats");
+  Check(cd::BlendBytes(cd::BlendFormat::kUnorm8) == 4 && cd::BlendBytes(cd::BlendFormat::kFloat4) == 16 && cd::BlendBytes(cd::BlendFormat::kHalf4) == 8 &&
+            cd::BlendBytes(cd::BlendFormat::kNone) == 0,
+        "their sizes");
+
+  // Four guest bytes g0 g1 g2 g3 as the host reads them (4-byte swap, then B8G8R8A8: x y z w = g1 g2 g3 g0; R8G8B8A8_UINT: g3 g2 g1 g0).
+  const uint8_t bytes[4] = {0x00, 0x80, 0xFF, 0x40};
+  float v[4];
+  cd::DecodeBlend4(bytes, cd::BlendFormat::kUnorm8, v);
+  Check(Near(v[0], 128.0 / 255.0, 1e-6) && v[1] == 1.0f && Near(v[2], 64.0 / 255.0, 1e-6) && v[3] == 0.0f, "unorm bytes: x y z w = g1 g2 g3 g0 over 255");
+  cd::DecodeBlend4(bytes, cd::BlendFormat::kUint8, v);
+  Check(v[0] == 64.0f && v[1] == 255.0f && v[2] == 128.0f && v[3] == 0.0f, "raw bytes: x y z w = g3 g2 g1 g0");
+  const uint8_t floats[16] = {0x3F, 0x80, 0, 0, 0x40, 0, 0, 0, 0xC0, 0x40, 0, 0, 0, 0, 0, 0};  // 1, 2, -3, 0
+  cd::DecodeBlend4(floats, cd::BlendFormat::kFloat4, v);
+  Check(v[0] == 1.0f && v[1] == 2.0f && v[2] == -3.0f && v[3] == 0.0f, "four big-endian floats");
+  const uint8_t halves[8] = {0x3C, 0x00, 0x40, 0x00, 0x00, 0x00, 0x38, 0x00};  // 1, 2, 0, 0.5
+  cd::DecodeBlend4(halves, cd::BlendFormat::kHalf4, v);
+  Check(v[0] == 1.0f && v[1] == 2.0f && v[2] == 0.0f && v[3] == 0.5f, "four big-endian half floats");
+
+  // Bones: the unorm byte times 255, the raw byte, the float rounded; outside the palette (0-63) or no number: no bone.
+  Check(cd::BoneOf(3.0f / 255.0f, cd::BlendFormat::kUnorm8) == 3 && cd::BoneOf(63.0f / 255.0f, cd::BlendFormat::kUnorm8) == 63, "unorm bones 3 and 63");
+  Check(cd::BoneOf(64.0f / 255.0f, cd::BlendFormat::kUnorm8) == cd::kNoBone, "bone 64 is outside the palette");
+  Check(cd::BoneOf(5.4f, cd::BlendFormat::kFloat4) == 5 && cd::BoneOf(5.6f, cd::BlendFormat::kFloat4) == 6, "float bones are rounded");
+  Check(cd::BoneOf(-1.0f, cd::BlendFormat::kFloat4) == cd::kNoBone && cd::BoneOf(std::numeric_limits<float>::quiet_NaN(), cd::BlendFormat::kHalf4) == cd::kNoBone,
+        "a negative or NaN bone is none");
+  Check(Near(cd::WeightOf(255.0f, cd::BlendFormat::kUint8), 1.0) && cd::WeightOf(0.25f, cd::BlendFormat::kUnorm8) == 0.25f, "raw weights are over 255, the others as they are");
+
+  // A bank with bone 2 = move by +1 in x, bone 5 = scale by 2.
+  Bank bank;
+  bank.Set(cd::kPaletteRegister + 6, 1, 0, 0, 1.0f);
+  bank.Set(cd::kPaletteRegister + 7, 0, 1, 0, 0);
+  bank.Set(cd::kPaletteRegister + 8, 0, 0, 1, 0);
+  bank.Set(cd::kPaletteRegister + 15, 2, 0, 0, 0);
+  bank.Set(cd::kPaletteRegister + 16, 0, 2, 0, 0);
+  bank.Set(cd::kPaletteRegister + 17, 0, 0, 2, 0);
+  auto palette = std::make_unique<cd::SkinPalette>();
+  cd::LoadPalette(bank.bytes, palette.get());
+  Check(palette->rows[2][0][3] == 1.0f && palette->rows[5][2][2] == 2.0f, "the palette holds bone b's rows at c64 + 3 b");
+
+  const float p[3] = {1.0f, 2.0f, 3.0f};
+  cd::SkinInfluence skin;
+  skin.bone[0] = 2;
+  skin.weight[0] = 0.25f;
+  skin.bone[1] = 5;
+  skin.weight[1] = 0.75f;
+  float out[3];
+  cd::SkinStats stats;
+  cd::SkinBlend(*palette, skin, p, out, &stats);
+  // bone 2: (2, 2, 3); bone 5: (2, 4, 6); 0.25 and 0.75: (2, 3.5, 5.25)
+  Check(Near(out[0], 2.0, 1e-6) && Near(out[1], 3.5, 1e-6) && Near(out[2], 5.25, 1e-6), "the blend is the weighted sum of the bones' transforms");
+  Check(stats.vertices == 1 && stats.bad_bone == 0 && stats.bad_weight == 0 && stats.worst_weight_sum_error < 1e-6, "a good vertex adds nothing to the bad counts");
+
+  cd::SkinInfluence bad;
+  bad.bone[0] = cd::kNoBone;
+  bad.weight[0] = 0.5f;  // a bone that is not in the palette, with weight
+  bad.bone[1] = 2;
+  bad.weight[1] = 0.3f;
+  bad.bone[2] = cd::kNoBone;
+  bad.weight[2] = 0.0f;  // a bone that is not in the palette, with no weight: harmless
+  cd::SkinBlend(*palette, bad, p, out, &stats);
+  Check(stats.vertices == 2 && stats.bad_bone == 1, "a weighted influence of a bone outside the palette is counted, a weightless one is not");
+  Check(stats.bad_weight == 1 && Near(stats.worst_weight_sum_error, 0.2, 1e-6), "weights that add up to 0.8 are counted (error 0.2)");
+  Check(Near(out[0], 0.3 * 2.0, 1e-6), "the bad influence adds nothing to the position");
+
+  // From the vertex bytes: unorm indices (x y z w = g1 g2 g3 g0) and weights.
+  const uint8_t index_bytes[4] = {0, 2, 5, 0};     // g0 = 0, g1 = 2, g2 = 5, g3 = 0: x = 2, y = 5, z = 0, w = 0
+  const uint8_t weight_bytes[4] = {0, 64, 191, 0};  // x = 64/255, y = 191/255, z = 0, w = 0 (adds up to 1)
+  const cd::SkinInfluence read = cd::ReadInfluence(index_bytes, cd::BlendFormat::kUnorm8, weight_bytes, cd::BlendFormat::kUnorm8);
+  Check(read.bone[0] == 2 && read.bone[1] == 5 && read.bone[2] == 0 && read.bone[3] == 0, "the influences' bones from unorm bytes");
+  Check(Near(read.weight[0] + read.weight[1], 1.0, 1e-6), "... and their weights");
+  cd::SkinStats s2;
+  cd::SkinBlend(*palette, read, p, out, &s2);
+  // bone 2: (2, 2, 3) weight 64/255; bone 5: (2, 4, 6) weight 191/255; bone 0 has zero weight in z and w
+  Check(Near(out[0], 2.0, 1e-5) && s2.bad_weight == 0 && s2.bad_bone == 0, "a vertex read from bytes blends to the expected position");
+  // The order of the components does not matter as long as indices and weights use the same one.
+  const uint8_t index_swapped[4] = {5, 0, 2, 0};   // g0 g1 g2 g3 permuted with the weights below
+  const uint8_t weight_swapped[4] = {191, 0, 64, 0};
+  const cd::SkinInfluence read2 = cd::ReadInfluence(index_swapped, cd::BlendFormat::kUnorm8, weight_swapped, cd::BlendFormat::kUnorm8);
+  float out2[3];
+  cd::SkinBlend(*palette, read2, p, out2, nullptr);
+  Check(Near(out2[0], out[0], 1e-5) && Near(out2[1], out[1], 1e-5) && Near(out2[2], out[2], 1e-5), "the blend does not depend on the component order shared by indices and weights");
+}
+
+void TestPlayerPick() {
+  const double inf = std::numeric_limits<double>::infinity();
+  cd::IdSummary ids[cd::kIdSlots];
+  auto car = [&](uint32_t id, uint32_t body, uint32_t paint, double camera, double player) {
+    ids[id].body_draws = body;
+    ids[id].paint_draws = paint;
+    ids[id].camera_distance = camera;
+    ids[id].player_distance = player;
+  };
+  // The first run: ID 1 the player's R34 (210 draws, 14 with paint, 7 m), ID 2 another car (138 draws, 10 m), IDs 3-10 wheel proxies.
+  car(1, 208, 14, 7.06, 0.3);
+  car(2, 136, 10, 10.0, 12.0);
+  for (uint32_t id = 3; id <= 10; ++id) {
+    ids[id].proxy_draws = 1;
+    ids[id].camera_distance = 10.0 + id;
+  }
+  ids[1].skinned_draws = 15;
+  cd::Pick p = cd::ChoosePlayerId(ids, 0, true);
+  Check(p.id == 1 && p.reason == cd::PickReason::kPlayerVehicle, "the ID nearest to the player's vehicle in the game's memory");
+  p = cd::ChoosePlayerId(ids, 0, false);
+  Check(p.id == 1 && p.reason == cd::PickReason::kNearestPaint, "without the player's vehicle: the nearest ID with paint draws");
+  // The nearest paint car is not the player's: the vehicle rule wins.
+  car(1, 208, 14, 20.0, 12.0);
+  car(2, 136, 10, 6.0, 0.4);
+  p = cd::ChoosePlayerId(ids, 0, true);
+  Check(p.id == 2 && p.reason == cd::PickReason::kPlayerVehicle, "the player's vehicle decides even when another car is nearer the camera");
+  p = cd::ChoosePlayerId(ids, 0, false);
+  Check(p.id == 2 && p.reason == cd::PickReason::kNearestPaint, "... and the camera decides without it");
+  // The vehicle is too far from every ID (a stale read, or another coordinate system): the paint rule.
+  car(1, 208, 14, 7.0, 40.0);
+  car(2, 136, 10, 10.0, 30.0);
+  p = cd::ChoosePlayerId(ids, 0, true);
+  Check(p.id == 1 && p.reason == cd::PickReason::kNearestPaint, "no ID within 5 m of the player's vehicle: the nearest paint car");
+  car(1, 208, 14, 7.0, 4.9);
+  Check(cd::ChoosePlayerId(ids, 0, true).reason == cd::PickReason::kPlayerVehicle, "4.9 m is within the match distance");
+  car(1, 208, 14, 7.0, 5.1);
+  Check(cd::ChoosePlayerId(ids, 0, true).reason == cd::PickReason::kNearestPaint, "5.1 m is not");
+  // Wheel proxies are never chosen, whatever their distance.
+  ids[7].proxy_draws = 1;
+  ids[7].camera_distance = 0.5;
+  ids[7].player_distance = 0.0;
+  car(1, 208, 14, 7.0, 40.0);
+  p = cd::ChoosePlayerId(ids, 0, true);
+  Check(p.id == 1, "an ID with only a wheel proxy is no car, however near");
+  // No camera: the most paint draws.
+  car(1, 208, 14, inf, inf);
+  car(2, 136, 10, inf, inf);
+  p = cd::ChoosePlayerId(ids, 0, false);
+  Check(p.id == 1 && p.reason == cd::PickReason::kMostPaint, "the camera is not known: the most paint draws");
+  // No paint draw anywhere: the most body draws.
+  car(1, 208, 0, 7.0, inf);
+  car(2, 300, 0, 10.0, inf);
+  p = cd::ChoosePlayerId(ids, 0, false);
+  Check(p.id == 2 && p.reason == cd::PickReason::kMostDraws, "no paint draw in the frame: the most body draws");
+  // A requested ID is honoured when it holds a car's draw, even a skinned one; not when it holds only a proxy.
+  p = cd::ChoosePlayerId(ids, 1, true);
+  Check(p.id == 1 && p.reason == cd::PickReason::kRequested, "mcla_gpu_car_dump_id = 1 picks ID 1");
+  p = cd::ChoosePlayerId(ids, 7, true);
+  Check(p.id != 7 && p.reason != cd::PickReason::kRequested, "a requested ID that has only a wheel proxy is refused");
+  p = cd::ChoosePlayerId(ids, 23, true);
+  Check(p.id != 23 && p.reason != cd::PickReason::kRequested, "a requested ID with no draw is refused");
+  p = cd::ChoosePlayerId(ids, 99, true);
+  Check(p.reason != cd::PickReason::kRequested, "a requested ID out of range is refused");
+  ids[12].skinned_draws = 3;
+  Check(cd::ChoosePlayerId(ids, 12, false).id == 12, "an ID with a skinned draw only can be asked for");
+  // Nothing at all.
+  cd::IdSummary empty[cd::kIdSlots];
+  p = cd::ChoosePlayerId(empty, 0, true);
+  Check(p.id == 0 && p.reason == cd::PickReason::kNone, "no car in the frame: no ID");
+  Check(ids[1].Draws() == ids[1].body_draws + ids[1].skinned_draws + ids[1].proxy_draws, "the draws of an ID add up");
+  Check(std::string(cd::PickReasonName(cd::PickReason::kPlayerVehicle)).find("player") != std::string::npos, "the reason names the rule");
+}
+
 }  // namespace
 
 int main() {
   TestBank();
+  TestMicrocodeScan();
+  TestRecipeFallback();
+  TestParts();
+  TestSkin();
+  TestPlayerPick();
   TestVertexBytes();
   TestTriangleSet();
   TestRaster();

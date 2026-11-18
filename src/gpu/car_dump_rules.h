@@ -10,9 +10,14 @@
 //     to clip matrix gWorldViewProj c8-c11, and the bone the car vertex shaders pick out of the palette gCarMtxBuffer
 //     (c64-c255, three registers a bone, the bone chosen per draw by gBoneIndex.x = c204.x):
 //         local = [position 1] * palette(bone)     world = [local 1] * gWorld     clip = [local 1] * gWorldViewProj
+//     (for the shaders that read the palette: the tyres and the wheel proxies have none, and the character shaders blend bones)
 //   - the position of a vertex out of the bytes the guest holds (the formats the game's declarations give a position) and
 //     the index bytes under their endian swap
 //   - the index list of a draw as a clean list of triangles (no degenerate ones, none that name a vertex the stream does not hold)
+//   - the recipe of a draw (palette then gWorld, gWorld alone, or per-vertex blended bones) from what its vertex shader READS: a walk
+//     over the shader's Xenos microcode (ScanConstantReads) that says which float constants it reads at a fixed index and whether it
+//     reads the bone palette through a0; the blend of a skinned vertex's up to four bones (SkinBlend)
+//   - what a draw is (body, skinned part, wheel proxy) and which stencil ID is the player's car (ChoosePlayerId)
 //   - a tiny CPU rasteriser with a nearest-distance buffer, and the statistics that compare it with an image of distances
 //
 // Matrices are row vectors (v' = v M) as in temporal_math.h: a product A * B applies A first. The bank's registers are the
@@ -23,6 +28,7 @@
 // ===========================================================================
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -108,6 +114,55 @@ inline CarMatrices DecodeCarMatrices(const uint8_t* vs_bank) {
   out.model = temporal::Mul(out.palette, out.world);
   out.finite = temporal::Finite(out.world) && temporal::Finite(out.wvp) && temporal::Finite(out.palette);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// the recipe: how a draw's vertices reach the world, by what its vertex shader READS
+// ---------------------------------------------------------------------------
+// The car vertex shaders are not alike (perf/CAR-RT-SPIKE.md section 9): the rigid parts read the bone palette gCarMtxBuffer through the
+// address register a0 (the bone chosen per draw by gBoneIndex.x = c204.x), the tyres and the wheel blur proxies read no palette at all
+// (gWorld alone), and the character shaders (the driver) blend up to four palette bones per vertex. Using the palette on a shader that
+// does not read it puts its triangles up to hundreds of metres away (c204 and the palette hold what an earlier draw left there).
+// Which constant registers a shader reads is not in the shader pack (its entries hold the texture fetch mask and the vertex elements,
+// shaderpack/pack_format.h), but the draw record names the microcode (DrawRecord::vs_ucode_address) and the microcode says it: a walk
+// over its exec blocks (ScanConstantReads below) gives the registers read at a fixed index and whether a read goes through a0.
+enum class Recipe : uint8_t {
+  kPalette,  // [p 1] * palette(bone c204.x) * gWorld: the shader reads the palette by a0 and the bone index c204
+  kWorld,    // [p 1] * gWorld: the shader reads no palette (tyres, wheel proxies, parts a skinning pass has placed already)
+  kSkinned,  // blend of up to four palette bones per vertex (BLENDINDICES / BLENDWEIGHT), then gWorld: the characters (the driver)
+};
+
+inline const char* RecipeName(Recipe recipe) {
+  switch (recipe) {
+    case Recipe::kPalette: return "palette then gWorld";
+    case Recipe::kWorld: return "gWorld alone";
+    case Recipe::kSkinned: return "blended bones then gWorld";
+  }
+  return "?";
+}
+
+// Where the recipe came from.
+enum class RecipeSource : uint8_t {
+  kMicrocode,    // the vertex shader's microcode was read and scanned (ScanConstantReads)
+  kDeclaration,  // no microcode: the declaration has BLENDINDICES
+  kTable,        // no microcode: the shader is in kKnownWorldOnlyVs
+  kDefault,      // no microcode and nothing known: the car default
+};
+
+inline const char* RecipeSourceName(RecipeSource source) {
+  switch (source) {
+    case RecipeSource::kMicrocode: return "microcode";
+    case RecipeSource::kDeclaration: return "declaration";
+    case RecipeSource::kTable: return "table";
+    case RecipeSource::kDefault: return "default";
+  }
+  return "?";
+}
+
+// A draw's model-to-world matrix under a recipe: palette then gWorld for kPalette (without a valid bone that is gWorld alone), gWorld for
+// the others (kSkinned: its vertices are blended first, SkinBlend below).
+inline const temporal::Mat4& ModelMatrix(const CarMatrices& m, Recipe recipe) {
+  return recipe == Recipe::kPalette ? m.model : m.world;
 }
 
 // [p 1] * m, all four components of the result.
@@ -285,6 +340,406 @@ inline void DecodeIndices(const uint8_t* raw, uint32_t count, bool index32, uint
       std::memcpy(&v, swapped.data() + size_t(i) * 2, 2);
       (*out)[i] = v;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// what a vertex shader reads: the walk over its microcode
+// ---------------------------------------------------------------------------
+// The Xenos microcode (rex/graphics/format/ucode.h, the layout is copied here so that this header stays free of the SDK): three dwords
+// of control flow hold two 48-bit instructions; an exec instruction (opcodes 1-6, 13, 14) names a block of up to six instructions
+// (address, count, a sequence of 2 bits an instruction whose low bit says fetch (1) or ALU (0)); an ALU instruction is three dwords:
+//   dword 0: bits 26-31 scalar opcode
+//   dword 1: bit 29 const_address_register_relative (1: a0, 0: the loop counter aL), bit 30 const_1_rel_abs, bit 31 const_0_rel_abs
+//   dword 2: bits 0-7 src3_reg, 8-15 src2_reg, 16-23 src1_reg (a constant's FULL index, or a temporary register), bits 24-28 vector
+//            opcode, bit 29 src3_sel, 30 src2_sel, 31 src1_sel (1: a temporary register, 0: a float constant)
+// The vector opcode takes 0-3 operands (src1..src3), the scalar opcode 0, 1 (src3, a register or a constant) or 2 (the constant
+// src3 and a temporary: mulsc, addsc, subsc); which of the three const addressing bits belongs to an operand follows the SDK's
+// AluInstruction::src_const_is_addressed. The walk is the pack builder's (shaderpack/containers.cpp TextureFetchMask): control
+// flow pairs up to the first exec block's address.
+//
+// A VS the same walk was run over on all 1,072 retail vertex shaders gives, for the car and character families: a palette VS (the
+// rigid car parts) reads c204 and a0-relative registers 64, 65, 66 (the bone's three rows); a character (skinned) VS reads the same
+// a0-relative rows and no c204; the tyres (xWheelRubber VS_ParallaxRubber2) and the wheel proxies (xTestRimBlur VS_drawCheap) read
+// neither. (Some "Skinned" car VS, xBumpSpec VS_BumpSpecSkinned for one, read no palette either: gWorld alone.)
+
+// The float constants a vertex shader reads.
+struct ConstantReads {
+  bool valid = false;             // at least one exec block was found in the microcode
+  uint32_t instructions = 0;      // ALU instructions walked
+  uint64_t absolute[4] = {};      // bit r of word r / 64: the register r is read at a fixed index
+  bool relative_a0 = false;       // some constant is read relative to a0
+  bool relative_loop = false;     // ... or to the loop counter
+  bool palette_rows = false;      // a0-relative with a base of 64, 65 or 66: the rows of the bone palette
+  bool Reads(uint32_t reg) const { return reg < kRegisterCount && ((absolute[reg >> 6] >> (reg & 63u)) & 1u) != 0; }
+  bool bone_index() const { return Reads(kBoneIndexRegister); }
+};
+
+// The first and last base register of the palette's three rows read through a0 (gCarMtxBuffer(a0 + 0..2) with a0 = 3 bone).
+inline constexpr uint32_t kPaletteFirstBase = kPaletteRegister;
+inline constexpr uint32_t kPaletteLastBase = kPaletteRegister + kBoneRegisters - 1;
+
+namespace ucode {
+// Operands the vector opcodes 0-31 and the scalar opcodes 0-63 take (the SDK's kAluVectorOpcodeInfos / kAluScalarOpcodeInfos).
+inline constexpr uint8_t kVectorOperands[32] = {
+    2, 2, 2, 2, 2, 2, 2, 2,  // add mul max min seq sgt sge sne
+    1, 1, 1,                 // frc trunc floor
+    3, 3, 3, 3,              // mad cndeq cndge cndgt
+    2, 2, 3, 2, 1,           // dp4 dp3 dp2add cube max4
+    2, 2, 2, 2,              // setp_eq/ne/gt/ge_push
+    2, 2, 2, 2,              // kill_eq/gt/ge/ne
+    2, 2, 0, 0};             // dst maxa (30 and 31: none)
+inline constexpr std::array<uint8_t, 64> kScalarOperands = [] {
+  std::array<uint8_t, 64> table{};
+  for (int i = 0; i <= 40; ++i) {
+    table[size_t(i)] = 1;  // adds ... sqrt (the setp, kills and maxas forms included)
+  }
+  table[33] = 0;  // setp_clr
+  for (int i = 42; i <= 47; ++i) {
+    table[size_t(i)] = 2;  // mulsc, addsc, subsc: two opcodes each
+  }
+  table[48] = table[49] = 1;  // sin cos
+  return table;           // 41 and retain_prev (50) and the unused 51-63: none
+}();
+}  // namespace ucode
+
+inline bool IsExecOpcode(uint32_t op) { return (op >= 1 && op <= 6) || op == 13 || op == 14; }
+
+// The constants the vertex shader microcode `ucode` (raw big-endian guest bytes) reads.
+inline ConstantReads ScanConstantReads(const uint8_t* ucode, uint32_t size) {
+  ConstantReads out;
+  const uint32_t n = ucode ? size / 4 : 0;
+  if (n < 3) {
+    return out;
+  }
+  const auto dword = [&](uint32_t i) { return LoadBe32(ucode + size_t(i) * 4); };
+  struct Block {
+    uint32_t address, count, sequence;
+  };
+  std::vector<Block> blocks;
+  uint32_t limit = n;  // the control flow ends where the first block's instructions start
+  for (uint32_t i = 0; i + 2 < limit; i += 3) {
+    const uint32_t d0 = dword(i), d1 = dword(i + 1), d2 = dword(i + 2);
+    const uint32_t w0[2] = {d0, (d1 >> 16) | (d2 << 16)};
+    const uint32_t w1[2] = {d1 & 0xFFFFu, d2 >> 16};
+    for (int k = 0; k < 2; ++k) {
+      if (!IsExecOpcode((w1[k] >> 12) & 0xFu)) {
+        continue;
+      }
+      const uint32_t address = w0[k] & 0xFFFu;
+      if (address != 0) {
+        limit = std::min(limit, address * 3u);
+      }
+      blocks.push_back(Block{address, (w0[k] >> 12) & 0x7u, (w0[k] >> 16) & 0xFFFu});
+    }
+  }
+  for (const Block& block : blocks) {
+    out.valid = true;
+    for (uint32_t k = 0; k < block.count; ++k) {
+      if (((block.sequence >> (2 * k)) & 1u) != 0) {
+        continue;  // a fetch
+      }
+      const uint32_t first = (block.address + k) * 3;
+      if (first + 2 >= n) {
+        continue;
+      }
+      const uint32_t a0 = dword(first), a1 = dword(first + 1), a2 = dword(first + 2);
+      ++out.instructions;
+      const uint32_t vector_op = (a2 >> 24) & 0x1Fu;
+      const uint32_t scalar_op = (a0 >> 26) & 0x3Fu;
+      const uint32_t reg[3] = {(a2 >> 16) & 0xFFu, (a2 >> 8) & 0xFFu, a2 & 0xFFu};
+      const bool temp[3] = {((a2 >> 31) & 1u) != 0, ((a2 >> 30) & 1u) != 0, ((a2 >> 29) & 1u) != 0};
+      const bool rel0 = ((a1 >> 31) & 1u) != 0;
+      const bool rel1 = ((a1 >> 30) & 1u) != 0;
+      const bool via_a0 = ((a1 >> 29) & 1u) != 0;
+      // Whether operand i (0-2) addresses relatively: const_0_rel_abs unless an earlier operand is a constant too.
+      const auto addressed = [&](int i) {
+        if (i == 0) {
+          return rel0;
+        }
+        if (i == 1) {
+          return temp[0] ? rel0 : rel1;
+        }
+        return (temp[0] && temp[1]) ? rel0 : rel1;
+      };
+      const auto note = [&](int i, bool force_constant) {
+        if (temp[i] && !force_constant) {
+          return;
+        }
+        if (addressed(i)) {
+          if (via_a0) {
+            out.relative_a0 = true;
+            out.palette_rows |= reg[i] >= kPaletteFirstBase && reg[i] <= kPaletteLastBase;
+          } else {
+            out.relative_loop = true;
+          }
+        } else {
+          out.absolute[reg[i] >> 6] |= uint64_t(1) << (reg[i] & 63u);
+        }
+      };
+      for (uint32_t i = 0; i < ucode::kVectorOperands[vector_op]; ++i) {
+        note(int(i), false);
+      }
+      const uint32_t scalar_operands = ucode::kScalarOperands[scalar_op];
+      if (scalar_operands == 1) {
+        note(2, false);
+      } else if (scalar_operands == 2) {
+        note(2, true);  // mulsc / addsc / subsc: src3 is the constant whatever src3_sel says (it bears a register number then)
+      }
+    }
+  }
+  return out;
+}
+
+// The vertex shaders (runtime identity, the pack's keys) that read no palette, for a draw whose microcode cannot be read (an
+// address that is no committed memory, or microcode that does not hash to the draw's identity). From the scan of the retail
+// game's 1,072 vertex shaders (the names are the translator's group and entry point):
+//   eddaf3e3986ae099  xWheelRubber VS_ParallaxRubber2   the tyres (draws of the car's own ID)
+//   8b2189251306af48  xTestRimBlur VS_drawCheap         the wheel blur proxies (stencil-only)
+//   4764a78e1ea7b71b  xBumpSpec VS_BumpSpecSkinned      \ car parts of a "skinned" material that read gWorld alone (the vertices
+//   b9b899942e0fd120  xBumpSpecAlpha VS_BumpSpecSkinned |  were placed by a pass before) -- not the xBumpSpecSkinned VS_BumpSpecSkinned,
+//   5887ef4cbf2630ce  xUnderbody VSSkinned               /  which blends bones (f3875986f1cffb77)
+inline constexpr uint64_t kKnownWorldOnlyVs[] = {
+    0xEDDAF3E3986AE099ull, 0x8B2189251306AF48ull, 0x4764A78E1EA7B71Bull, 0xB9B899942E0FD120ull, 0x5887EF4CBF2630CEull,
+};
+
+struct RecipeChoice {
+  Recipe recipe = Recipe::kPalette;
+  RecipeSource source = RecipeSource::kDefault;
+};
+
+// The recipe of a draw from what its vertex shader reads. With the microcode: a shader that reads the palette rows by a0 and the bone
+// index c204 is a rigid part (the palette's bone c204.x, then gWorld), one that reads the rows and no bone index takes its bones per
+// vertex (kSkinned), one that reads no rows reads gWorld alone. Without it: BLENDINDICES in the declaration says skinned, the table
+// says gWorld alone, anything else is the car default (the palette).
+inline RecipeChoice ChooseRecipe(const ConstantReads& reads, bool blend_indices, uint64_t vs_identity) {
+  RecipeChoice choice;
+  if (reads.valid) {
+    choice.source = RecipeSource::kMicrocode;
+    choice.recipe = !reads.palette_rows ? Recipe::kWorld : (reads.bone_index() ? Recipe::kPalette : Recipe::kSkinned);
+    return choice;
+  }
+  if (blend_indices) {
+    choice.recipe = Recipe::kSkinned;
+    choice.source = RecipeSource::kDeclaration;
+    return choice;
+  }
+  for (uint64_t known : kKnownWorldOnlyVs) {
+    if (known == vs_identity) {
+      choice.recipe = Recipe::kWorld;
+      choice.source = RecipeSource::kTable;
+      return choice;
+    }
+  }
+  return choice;
+}
+
+// ---------------------------------------------------------------------------
+// what a draw is: body, skinned part, wheel proxy
+// ---------------------------------------------------------------------------
+
+// The wheel blur proxies: per wheel one stencil-only draw (78 triangles, 80 vertices, a stride of 12) of the player's car with a
+// stencil ID of its own (feature-parity/GHOSTING-DESIGN.md 9.2: "stencil-only proxies ... shader pair VS 8B2189251306AF48 / PS
+// 7D4887A7CB75AF65"). They are markers for the wheels' motion blur, not geometry, and are not part of the car.
+inline constexpr uint64_t kWheelProxyVs = 0x8B2189251306AF48ull;  // xTestRimBlur VS_drawCheap
+inline constexpr uint64_t kWheelProxyPs = 0x7D4887A7CB75AF65ull;
+// The car paint's pixel shader (xCarPaintCustomizable PS_CarPaint, shaderpack/variants/car_selfrefl.h kCarPaint).
+inline constexpr uint64_t kCarPaintPs = 0x439B193A3F675533ull;
+
+enum class ProxyWhy : uint8_t {
+  kNo,        // an ordinary draw
+  kShader,    // the wheel proxy's shader pair
+  kNoColour,  // no colour target takes a write: the draw only marks stencil (or depth), it shows nothing
+};
+
+inline ProxyWhy WheelProxyOf(uint64_t vs_identity, uint64_t ps_identity, uint32_t colour_write_mask) {
+  if (vs_identity == kWheelProxyVs || ps_identity == kWheelProxyPs) {
+    return ProxyWhy::kShader;
+  }
+  return (colour_write_mask & 0xFu) == 0 ? ProxyWhy::kNoColour : ProxyWhy::kNo;
+}
+
+inline const char* ProxyWhyName(ProxyWhy why) {
+  switch (why) {
+    case ProxyWhy::kNo: return "no";
+    case ProxyWhy::kShader: return "its shader pair";
+    case ProxyWhy::kNoColour: return "colour mask 0";
+  }
+  return "?";
+}
+
+// A draw's part in a car: what the car is made of (body: rigid parts and the tyres), what hangs on it with bones of its own
+// (skinned: the driver), and what is no geometry of it (proxy).
+enum class Role : uint8_t { kBody, kSkinned, kProxy };
+
+inline Role RoleOf(ProxyWhy proxy, Recipe recipe) {
+  if (proxy != ProxyWhy::kNo) {
+    return Role::kProxy;
+  }
+  return recipe == Recipe::kSkinned ? Role::kSkinned : Role::kBody;
+}
+
+inline const char* RoleName(Role role) {
+  switch (role) {
+    case Role::kBody: return "body";
+    case Role::kSkinned: return "skinned";
+    case Role::kProxy: return "wheel proxy";
+  }
+  return "?";
+}
+
+// ---------------------------------------------------------------------------
+// skinned vertices
+// ---------------------------------------------------------------------------
+// The character vertex shaders (xCharacter*: the driver, which has the vehicle's stencil ID) take up to four bones a vertex:
+// BLENDINDICES (4 bone numbers) and BLENDWEIGHT (4 weights), a 3x4 matrix of the palette for each (the rows c64 + 3 bone ... + 2, as the
+// rigid parts' bone), the weights applied to the blended matrix, which takes the position to the "local" position gWorld takes to the world
+// (xCharacter_normalmap VSSkinned_Wind: r5 / r10 / r8 are the blended rows, gWorldViewProj multiplies the result). The bone's row
+// is picked by a0 = round(index * 255 * 3) in the shader, from constants in registers that differ per shader (c250 there): the
+// numbers here take a bone as the byte of the vertex stream (CHECK in the run: the log counts the vertices whose bone is not in the
+// palette and the weight sums).
+//
+// The formats the declarations give (format.cpp VertexFormat): k_8_8_8_8 normalised (decltype 0x00182886, which the host reads as BGRA
+// unorm after the 4-byte swap: the guest bytes g0 g1 g2 g3 are x y z w = g1 g2 g3 g0), k_8_8_8_8 raw (0x001A2286, R8G8B8A8_UINT: x y z w = g3
+// g2 g1 g0 as integers), four floats and four half floats.
+enum class BlendFormat : uint8_t { kNone, kUnorm8, kUint8, kFloat4, kHalf4 };
+
+inline BlendFormat BlendFormatOf(uint32_t packed_decltype) {
+  switch (packed_decltype) {
+    case 0x00182886: return BlendFormat::kUnorm8;
+    case 0x001A2286: return BlendFormat::kUint8;
+    case 0x001A23A6: return BlendFormat::kFloat4;
+    case 0x001A2360: return BlendFormat::kHalf4;
+    default: return BlendFormat::kNone;
+  }
+}
+
+inline uint32_t BlendBytes(BlendFormat format) {
+  switch (format) {
+    case BlendFormat::kUnorm8:
+    case BlendFormat::kUint8: return 4;
+    case BlendFormat::kFloat4: return 16;
+    case BlendFormat::kHalf4: return 8;
+    default: return 0;
+  }
+}
+
+// The four components of an element's guest bytes, as the shader gets them (x y z w): 0-1 for the unorm bytes, the byte for the raw ones.
+inline void DecodeBlend4(const uint8_t* be, BlendFormat format, float out[4]) {
+  out[0] = out[1] = out[2] = out[3] = 0.0f;
+  switch (format) {
+    case BlendFormat::kUnorm8:
+      out[0] = float(be[1]) / 255.0f;
+      out[1] = float(be[2]) / 255.0f;
+      out[2] = float(be[3]) / 255.0f;
+      out[3] = float(be[0]) / 255.0f;
+      break;
+    case BlendFormat::kUint8:
+      out[0] = float(be[3]);
+      out[1] = float(be[2]);
+      out[2] = float(be[1]);
+      out[3] = float(be[0]);
+      break;
+    case BlendFormat::kFloat4:
+      for (uint32_t i = 0; i < 4; ++i) {
+        const uint32_t bits = LoadBe32(be + 4 * i);
+        std::memcpy(&out[i], &bits, 4);
+      }
+      break;
+    case BlendFormat::kHalf4:
+      for (uint32_t i = 0; i < 4; ++i) {
+        out[i] = HalfToFloat(LoadBe16(be + 2 * i));
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// One vertex's influences: the bone of each (out of the palette's range: kNoBone) and its weight.
+inline constexpr uint32_t kNoBone = 0xFFFFFFFFu;
+struct SkinInfluence {
+  uint32_t bone[4] = {kNoBone, kNoBone, kNoBone, kNoBone};
+  float weight[4] = {};
+};
+
+inline uint32_t BoneOf(float component, BlendFormat format) {
+  const float scaled = format == BlendFormat::kUnorm8 ? component * 255.0f : component;
+  if (!std::isfinite(scaled) || scaled < -0.5f || scaled > float(kPaletteBones) - 0.5f) {
+    return kNoBone;
+  }
+  return uint32_t(scaled + 0.5f);
+}
+
+inline float WeightOf(float component, BlendFormat format) {
+  return format == BlendFormat::kUint8 ? component / 255.0f : component;
+}
+
+inline SkinInfluence ReadInfluence(const uint8_t* indices, BlendFormat index_format, const uint8_t* weights, BlendFormat weight_format) {
+  float i[4], w[4];
+  DecodeBlend4(indices, index_format, i);
+  DecodeBlend4(weights, weight_format, w);
+  SkinInfluence out;
+  for (int k = 0; k < 4; ++k) {
+    out.bone[k] = BoneOf(i[k], index_format);
+    out.weight[k] = std::isfinite(w[k]) ? WeightOf(w[k], weight_format) : 0.0f;
+  }
+  return out;
+}
+
+// The palette of one draw: bone b's three rows (c64 + 3 b ...), 4 floats each.
+struct SkinPalette {
+  float rows[kPaletteBones][kBoneRegisters][4];
+};
+
+inline void LoadPalette(const uint8_t* vs_bank, SkinPalette* out) {
+  for (uint32_t b = 0; b < kPaletteBones; ++b) {
+    for (uint32_t r = 0; r < kBoneRegisters; ++r) {
+      for (uint32_t c = 0; c < 4; ++c) {
+        out->rows[b][r][c] = BankFloat(vs_bank, kPaletteRegister + b * kBoneRegisters + r, c);
+      }
+    }
+  }
+}
+
+// What the blending of a draw's vertices met.
+struct SkinStats {
+  uint32_t vertices = 0;
+  uint32_t bad_bone = 0;    // vertices with an influence of weight > 0.001 whose bone is not in the palette
+  uint32_t bad_weight = 0;  // vertices whose weights do not add up to 1 (within 2%)
+  double worst_weight_sum_error = 0.0;
+};
+
+// The blended local position of vertex `p` (3 floats) with `skin`: the sum of weight * (bone rows applied to [p 1]).
+inline void SkinBlend(const SkinPalette& palette, const SkinInfluence& skin, const float p[3], float out[3], SkinStats* stats) {
+  double sum_weight = 0.0;
+  double local[3] = {0.0, 0.0, 0.0};
+  bool bad_bone = false;
+  for (int k = 0; k < 4; ++k) {
+    const double w = double(skin.weight[k]);
+    sum_weight += w;
+    if (skin.bone[k] == kNoBone) {
+      bad_bone |= w > 0.001;
+      continue;
+    }
+    if (w == 0.0) {
+      continue;
+    }
+    const float(*rows)[4] = palette.rows[skin.bone[k]];
+    for (int r = 0; r < 3; ++r) {
+      local[r] += w * (double(rows[r][0]) * double(p[0]) + double(rows[r][1]) * double(p[1]) + double(rows[r][2]) * double(p[2]) +
+                       double(rows[r][3]));
+    }
+  }
+  out[0] = float(local[0]);
+  out[1] = float(local[1]);
+  out[2] = float(local[2]);
+  if (stats) {
+    ++stats->vertices;
+    stats->bad_bone += bad_bone;
+    const double error = std::fabs(sum_weight - 1.0);
+    stats->bad_weight += error > 0.02;
+    stats->worst_weight_sum_error = std::max(stats->worst_weight_sum_error, error);
   }
 }
 
@@ -587,5 +1042,113 @@ struct FitCount {
   }
   double Share(uint64_t part) const { return samples ? double(part) / double(samples) : 0.0; }
 };
+
+// ---------------------------------------------------------------------------
+// which stencil ID is the player's car
+// ---------------------------------------------------------------------------
+// IDs are handed out per frame in drawing order (a car has no stable ID, feature-parity/GHOSTING-DESIGN.md 9.2), and the wheel proxies take
+// IDs of their own, so "the ID with the most draws" is only a guess. What the frame knows of each ID (IdSummary) is judged here:
+//   1. the ID the settings ask for, when it has any draw that is not a wheel proxy;
+//   2. the ID whose gWorld is nearest to the player's vehicle in the game's own memory (the global dword_8288DCF8, the vehicle the local
+//      player drives; vehicle + 0x14 the entity, entity + 0x90 its world matrix, perf/CAR-RT-SPIKE.md section 2 and
+//      mc_engine/squash_stretch.cpp), when that is within kPlayerMatchMetres (the render thread reads the guest's state a frame or a few
+//      after the draws: a car at 25 m/s moves 0.4 m a frame);
+//   3. else the ID with a paint draw that is nearest the camera (the player's car is the one the camera follows), or with the most paint
+//      draws when the camera is not known;
+//   4. else the ID with the most body draws.
+// An ID with no body draw (the wheel proxies' IDs, the driver alone) is never chosen by 2-4.
+inline constexpr uint32_t kIdSlots = 24;  // the stencil IDs 0-23 (temporal::kVehicleIds)
+inline constexpr double kPlayerMatchMetres = 5.0;
+
+struct IdSummary {
+  uint32_t body_draws = 0;     // draws that are the car's geometry (not skinned, not a wheel proxy)
+  uint32_t skinned_draws = 0;
+  uint32_t proxy_draws = 0;
+  uint32_t paint_draws = 0;    // of the body draws, those drawn by the car paint's pixel shader
+  double camera_distance = std::numeric_limits<double>::infinity();  // the nearest gWorld of its body draws to the camera
+  double player_distance = std::numeric_limits<double>::infinity();  // ... to the player's vehicle
+  uint32_t Draws() const { return body_draws + skinned_draws + proxy_draws; }
+};
+
+enum class PickReason : uint8_t {
+  kNone,           // no ID has a body draw
+  kRequested,      // mcla_gpu_car_dump_id
+  kPlayerVehicle,  // the nearest to the player's vehicle in the game's memory
+  kNearestPaint,   // an ID with paint draws, nearest the camera
+  kMostPaint,      // ... the camera not known: the most paint draws
+  kMostDraws,      // no paint draw anywhere: the most body draws
+};
+
+inline const char* PickReasonName(PickReason reason) {
+  switch (reason) {
+    case PickReason::kNone: return "no ID has a body draw";
+    case PickReason::kRequested: return "asked for by mcla_gpu_car_dump_id";
+    case PickReason::kPlayerVehicle: return "its gWorld is the nearest to the player's vehicle";
+    case PickReason::kNearestPaint: return "it has paint draws and is the nearest to the camera";
+    case PickReason::kMostPaint: return "it has the most paint draws (the camera is not known)";
+    case PickReason::kMostDraws: return "it has the most body draws (no paint draw in the frame)";
+  }
+  return "?";
+}
+
+struct Pick {
+  uint32_t id = 0;  // 0: none
+  PickReason reason = PickReason::kNone;
+};
+
+inline Pick ChoosePlayerId(const IdSummary (&ids)[kIdSlots], int32_t requested, bool player_known) {
+  Pick pick;
+  if (requested > 0 && uint32_t(requested) < kIdSlots && ids[requested].body_draws + ids[requested].skinned_draws != 0) {
+    pick.id = uint32_t(requested);
+    pick.reason = PickReason::kRequested;
+    return pick;
+  }
+  // 2: the player's vehicle.
+  if (player_known) {
+    double best = kPlayerMatchMetres;
+    for (uint32_t id = 1; id < kIdSlots; ++id) {
+      if (ids[id].body_draws != 0 && ids[id].player_distance <= best) {
+        best = ids[id].player_distance;
+        pick.id = id;
+      }
+    }
+    if (pick.id != 0) {
+      pick.reason = PickReason::kPlayerVehicle;
+      return pick;
+    }
+  }
+  // 3: the nearest ID with a paint draw.
+  double nearest = std::numeric_limits<double>::infinity();
+  uint32_t most_paint = 0;
+  for (uint32_t id = 1; id < kIdSlots; ++id) {
+    if (ids[id].body_draws == 0 || ids[id].paint_draws == 0) {
+      continue;
+    }
+    if (ids[id].camera_distance < nearest) {
+      nearest = ids[id].camera_distance;
+      pick.id = id;
+    }
+    if (ids[id].paint_draws > ids[most_paint].paint_draws) {
+      most_paint = id;
+    }
+  }
+  if (pick.id != 0) {
+    pick.reason = PickReason::kNearestPaint;
+    return pick;
+  }
+  if (most_paint != 0) {
+    pick.id = most_paint;
+    pick.reason = PickReason::kMostPaint;
+    return pick;
+  }
+  // 4: the most body draws.
+  for (uint32_t id = 1; id < kIdSlots; ++id) {
+    if (ids[id].body_draws > ids[pick.id].body_draws) {
+      pick.id = id;
+    }
+  }
+  pick.reason = pick.id != 0 ? PickReason::kMostDraws : PickReason::kNone;
+  return pick;
+}
 
 }  // namespace mcla::gpu::car_dump
