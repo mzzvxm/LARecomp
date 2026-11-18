@@ -40,7 +40,7 @@
 // their blobs one copy in the file.
 //
 // The variants of this build: variants/hdr_scene.h (when the HDR curve is embedded, CMakeLists.txt),
-// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h, variants/car_selfrefl.h and variants/luminance_scale.h. A package that adds one writes
+// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h, variants/car_selfrefl.h, variants/car_chrome.h and variants/luminance_scale.h. A package that adds one writes
 // variants/<name>.{h,cpp} with a function that returns its VariantDef and adds it to BuiltInVariants() in
 // variant_pack.cpp.
 //
@@ -100,7 +100,7 @@ struct VariantDef {
   std::function<VariantTransformResult(const VariantShader& shader, std::string_view hlsl)> transform;
 };
 
-// The variants this build knows: the bloom's, the environment map's, the shadow filter's and the car self-reflection's always, the HDR
+// The variants this build knows: the bloom's, the environment map's, the shadow filter's, the car self-reflection's and the car chrome's always, the HDR
 // scene's when the curve is embedded. For each one that is left out (`left_out`, when given) a line says which and why, for a log.
 std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out = nullptr);
 
