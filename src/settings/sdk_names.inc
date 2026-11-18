@@ -84,3 +84,9 @@
 {"log_level", "log.level"},
 {"log_file", "log.file_name"},
 {"log_flush_interval", "log.flush_interval"},
+// online (WP-C2: scoped on the SDK side, flat names aliased there; Find() does not resolve aliases, so the by-name
+// calls of LARecomp go through this table)
+{"mcla_online_enable", "mcla_online.enable"},
+{"mcla_online_server", "mcla_online.server"},
+{"mcla_online_port", "mcla_online.port"},
+{"mcla_online_connect_timeout_ms", "mcla_online.connect_timeout_ms"},

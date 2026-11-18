@@ -33,6 +33,7 @@
 #include <string_view>
 #include <vector>
 
+#include <rex/console_command.h>
 #include <rex/result.h>
 #include <rex/setting.h>
 #include <rex/settings_registry.h>
@@ -41,6 +42,10 @@
 #include "settings/generated/settings_all.h"
 
 namespace larecomp::settings {
+
+// A console command (or any owner declared next to the code that uses it) hands itself over here from its constructor;
+// RegisterAll registers it with the rest. cvar_convert.py emits one owner per REXCVAR_DEFINE_COMMAND*.
+void RegisterExtraOwner(rex::SettingOwner& owner);
 
 // Registers every owner (generated and hand-written) and all aliases. Call once from OnConfigure.
 // CHECK: SettingsRegistry::Register(owner) before the file layer is read applies values that already wait for

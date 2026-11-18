@@ -47,6 +47,15 @@ constexpr std::string_view kScope = "larecomp.";
 
 }  // namespace
 
+namespace {
+std::vector<rex::SettingOwner*>& Extra() {
+  static std::vector<rex::SettingOwner*> extra;
+  return extra;
+}
+}  // namespace
+
+void RegisterExtraOwner(rex::SettingOwner& owner) { Extra().push_back(&owner); }
+
 rex::Result<void> RegisterAll(rex::ISettingsRegistry& registry) {
   State& s = S();
   std::lock_guard lock(s.mutex);
@@ -54,6 +63,9 @@ rex::Result<void> RegisterAll(rex::ISettingsRegistry& registry) {
   s.owners.clear();
   s.owners.push_back(&g_app);
   for (rex::SettingOwner* owner : GeneratedOwners()) {
+    s.owners.push_back(owner);
+  }
+  for (rex::SettingOwner* owner : Extra()) {
     s.owners.push_back(owner);
   }
   for (const SdkName& n : kSdkNames) {
@@ -331,11 +343,11 @@ void ResetToDefault(std::string_view name) {
 }
 
 bool InvokeCommand(std::string_view name, std::string_view args) {
-  // CHECK: the three commands (gpu_trace_next, warp, menu_cam_dump) become rex::ConsoleCommand by hand
-  // (rex/console_command.h); ISettingsRegistry::Run(name, args) runs one by its full name.
-  (void)name;
-  (void)args;
-  return false;
+  // The three commands (gpu_trace_next, warp, menu_cam_dump) are rex::ConsoleCommand members of owners cvar_convert.py
+  // emits next to their code; the registry runs one by its full name. CHECK: AppInterfaces::Get<ISettingsRegistry>.
+  const std::string full = std::string("larecomp.") + std::string(name);
+  auto* registry = rex::AppInterfaces::Get<rex::ISettingsRegistry>();
+  return registry && static_cast<bool>(registry->Run(full, args));
 }
 
 void RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
