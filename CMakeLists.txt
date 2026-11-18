@@ -649,7 +649,11 @@ else()
         message(FATAL_ERROR "thirdparty/libmspack is missing: git submodule update --init --recursive "
                             "(rexglue 0.11 no longer exposes its LZX decoder)")
     endif()
-    add_library(larecomp_mspack STATIC "${LARECOMP_MSPACK_DIR}/lzxd.c")
+    # lzxd.c is LGPL-2.1 (only): it is a shared library of its own (larecomp_mspack.dll / .so next to the executable), not
+    # linked into larecomp, so a player can replace it with a build of their own as the license asks; its license
+    # (thirdparty/libmspack/libmspack/COPYING.LIB) goes with a release.
+    add_library(larecomp_mspack SHARED "${LARECOMP_MSPACK_DIR}/lzxd.c")
+    set_target_properties(larecomp_mspack PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
     target_include_directories(larecomp_mspack PRIVATE "${LARECOMP_MSPACK_DIR}")
     target_compile_options(larecomp_mspack PRIVATE -w)
     set_source_files_properties(src/mc_engine/modloader/xcompress.cpp PROPERTIES
