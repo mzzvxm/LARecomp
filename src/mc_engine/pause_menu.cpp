@@ -40,7 +40,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
@@ -58,17 +58,6 @@
 #include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
 #endif
-
-REXCVAR_DEFINE_BOOL(show_test_movie, false, "MCLA/Settings",
-    "Show the TestMovie debug button in the pause menu")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(garage_tire_offset, true, "MCLA/Patches",
-    "Add a TIRE OFFSET row to the garage wheels > dimensions screen, editing "
-    "the per-car TireOffset0/1 bytes retail parses but never uses.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).
 bool ButtonPromptsArePlayStation();
@@ -885,7 +874,7 @@ std::string CvarGet(const char* name) {
         for (const auto& [k, v] : g_deferred)
             if (k == name) return v;
     }
-    return rex::cvar::GetFlagByName(name);
+    return larecomp::cvar::GetFlagByName(name);
 }
 
 bool CvarGetBool(const char* name) {
@@ -917,7 +906,7 @@ void CvarSet(const char* name, const char* value) {
     // so an apply that hangs used to leave no trace at all -- the last line in
     // the log was whatever came before the click.
     MC_INFO("[pause-menu] cvar '{}' -> '{}'", name, value);
-    rex::cvar::SetFlagByName(name, value);
+    larecomp::cvar::SetFlagByName(name, value);
     MC_INFO("[pause-menu] cvar '{}' applied", name);
 }
 
@@ -998,9 +987,9 @@ std::string TomlLineValue(const std::filesystem::path& path, const std::string& 
 // --mcla_online_enable on the command line decides this run only, and must
 // not end up written into the file.
 void InitOnlineSettings() {
-    if (!rex::cvar::GetFlagInfo(kOnlineEnableCvar)) return;
+    if (!larecomp::cvar::GetFlagInfo(kOnlineEnableCvar)) return;
 
-    const bool on = rex::cvar::GetFlagByName(kOnlineEnableCvar) == "true";
+    const bool on = larecomp::cvar::GetFlagByName(kOnlineEnableCvar) == "true";
     g_online_boot.store(on ? 1 : 0, std::memory_order_relaxed);
     if (TomlLineValue(ConfigPath(), kOnlineEnableCvar) == "true")
         SetDeferred(kOnlineEnableCvar, "true");
@@ -1010,7 +999,7 @@ void InitOnlineSettings() {
     // instead of being the bare flip that left the game half online. This
     // runs on the overlay's thread with the cvar registry locked, so it only
     // stores -- the net update does the rest.
-    rex::cvar::RegisterChangeCallback(
+    larecomp::cvar::RegisterChangeCallback(
         kOnlineEnableCvar, [](std::string_view, std::string_view value) {
             if (SystemLinkOnlineSettingCvar()) return;
             const bool on = value == "true";
@@ -1030,7 +1019,7 @@ void KeepOnlineChoiceInConfig() {
     if (g_online_boot.load(std::memory_order_relaxed) < 0) return;
 
     const std::string held = HeldValue(kOnlineEnableCvar);
-    if (held.empty() || rex::cvar::GetFlagByName(kOnlineEnableCvar) == held) return;
+    if (held.empty() || larecomp::cvar::GetFlagByName(kOnlineEnableCvar) == held) return;
 
     static std::chrono::steady_clock::time_point last{};
     const auto now = std::chrono::steady_clock::now();
@@ -2463,7 +2452,7 @@ bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMen
 uint8_t RunningRendererMask() {
     static const uint8_t mask = [] {
 #if defined(LARECOMP_HAS_GPU)
-        if (rex::cvar::GetFlagByName("mcla_gpu") == "true")
+        if (larecomp::cvar::GetFlagByName("mcla_gpu") == "true")
             return uint8_t(mcla_menu::kRendNative);
 #endif
         return uint8_t(mcla_menu::kRendXenia);
@@ -3906,8 +3895,8 @@ static void ResetDeadGraphicsWords() {
     static const char* const kNames[] = {"mcla_gpu_ao", "mcla_gpu_contact_shadows", "mcla_gpu_ssgi",
                                          "mcla_gpu_car_selfrefl"};
     for (const char* name : kNames) {
-        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-        if (!info || info->source != rex::cvar::Source::kDefault || !info->constraints.HasAllowedValues())
+        const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+        if (!info || info->source != larecomp::cvar::Source::kDefault || !info->constraints.HasAllowedValues())
             continue;
         std::string saved = TomlLineValue(ConfigPath(), name);
         // The toml's own quotes are not part of the value.
@@ -3919,13 +3908,13 @@ static void ResetDeadGraphicsWords() {
             continue;
         MC_WARN("[settings] larecomp.toml has {} = '{}', which is no longer a value of the setting; "
                 "using {} (the next settings save rewrites the line)", name, saved, info->default_value);
-        rex::cvar::SetFlagByName(name, info->default_value);
+        larecomp::cvar::SetFlagByName(name, info->default_value);
     }
 }
 
 void InitPauseMenuHooks() {
     ResetDeadGraphicsWords();
-    rex::cvar::RegisterChangeCallback(
+    larecomp::cvar::RegisterChangeCallback(
         "language", [](std::string_view, std::string_view) {
             const int idx = ResolveLanguageIndex();
             if (idx >= 0)
@@ -3937,11 +3926,11 @@ void InitPauseMenuHooks() {
     // The test pattern lives for the run: a save never writes it, and one an older save left in the
     // file is switched off now (it would cover the menu that could switch it off).
     larecomp::NoteSessionOnlyCvar(kHdrTestPatternCvar);
-    if (const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(kHdrTestPatternCvar);
-        info && info->source == rex::cvar::Source::kConfig && info->getter() == "true") {
+    if (const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(kHdrTestPatternCvar);
+        info && info->source == larecomp::cvar::Source::kConfig && info->getter() == "true") {
         MC_INFO("[pause-menu] {} = true in larecomp.toml is ignored: the test pattern is never kept",
                 kHdrTestPatternCvar);
-        rex::cvar::SetFlagByName(kHdrTestPatternCvar, "false");
+        larecomp::cvar::SetFlagByName(kHdrTestPatternCvar, "false");
     }
     MC_INFO("[pause-menu] hooks registered");
 }
@@ -3954,7 +3943,7 @@ void InitPauseMenuHooks() {
 // (English), or the player's own user_language, stays. NoteStartupCvar keeps this
 // write out of larecomp.toml: the file keeps the player's `language`.
 void InitLanguageSetting() {
-    const rex::cvar::FlagEntry* user = rex::cvar::GetFlagInfo("user_language");
+    const larecomp::cvar::FlagEntry* user = larecomp::cvar::GetFlagInfo("user_language");
     if (!user) {
         MC_WARN("[language] this SDK has no user_language cvar; the language choice only "
                 "reloads the string table");
@@ -3969,8 +3958,8 @@ void InitLanguageSetting() {
     // the old line to "auto". A saved pt is offered and stays: whether it takes effect depends
     // on the mods' files (DecidePortuguese), which are not known yet, and it must survive a
     // run without the mod.
-    const rex::cvar::FlagEntry* lang = rex::cvar::GetFlagInfo("language");
-    if (lang && lang->source == rex::cvar::Source::kDefault) {
+    const larecomp::cvar::FlagEntry* lang = larecomp::cvar::GetFlagInfo("language");
+    if (lang && lang->source == larecomp::cvar::Source::kDefault) {
         std::string saved = TomlLineValue(ConfigPath(), "language");
         // The toml's own quotes are not part of the value.
         if (saved.size() >= 2 && (saved.front() == '"' || saved.front() == '\x27') &&
@@ -3981,7 +3970,7 @@ void InitLanguageSetting() {
         if (!offered) {
             MC_WARN("[language] larecomp.toml has language = '{}', which is not offered (the disc "
                     "has no text for it); using auto", saved);
-            rex::cvar::SetFlagByName("language", "auto");
+            larecomp::cvar::SetFlagByName("language", "auto");
         }
     }
 
@@ -3991,7 +3980,7 @@ void InitLanguageSetting() {
         if (choice == kLangVals[i]) pos = i;
     if (pos < 0) {  // a value the cvar's list would have refused, but a path let through
         MC_WARN("[language] '{}' is not offered; using auto", choice);
-        rex::cvar::SetFlagByName("language", "auto");
+        larecomp::cvar::SetFlagByName("language", "auto");
         pos = 0;
     }
     if (pos == 0) {
@@ -4006,7 +3995,7 @@ void InitLanguageSetting() {
     }
 
     const std::string xlanguage = std::to_string(kLangXLanguage[pos]);
-    if (!rex::cvar::SetFlagByName("user_language", xlanguage)) {
+    if (!larecomp::cvar::SetFlagByName("user_language", xlanguage)) {
         MC_WARN("[language] could not set user_language {} for '{}'; the game starts in "
                 "user_language {}", xlanguage, choice, g_auto_xlanguage);
         return;
@@ -4094,7 +4083,7 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4) {
 }
 
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4) {
-    if (!REXCVAR_GET(show_test_movie))
+    if (!larecomp::settings::show_test_movie.Get())
         return false;
 
     PatchStringTableEntry("PM_TestMovie", "Teste");

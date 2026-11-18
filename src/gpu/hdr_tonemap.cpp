@@ -9,22 +9,12 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "draw_decode.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
-
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_hdr_highlights, 2.0, "MCLA/GPU",
-    "HDR output: how far the game's lights, the sun, the sky at dusk and the headlights go above "
-    "the game's white: 1 normal, 1.5 bright, 2 brighter, 3 brightest. It is the steepness of the "
-    "HDR curve above where it leaves the game's, so the brightest light stays under the display's "
-    "peak whatever it is. Changes at once, also in the world behind the pause menu and the map; "
-    "nothing happens while HDR output is off.")
-    .range(1.0, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -116,7 +106,7 @@ bool HdrToneMap::Initialize(HostPasses& passes, ShaderStore& shaders, FrameLayer
   REXLOG_INFO("[gpu] hdr scene: set up (the tone map is drawn again into a float image once the HDR "
               "variants of the game's shaders are loaded: {}; highlights {}, knee {})",
               shaders.has_hdr_variants() ? "they are" : "not yet",
-              REXCVAR_GET(mcla_gpu_hdr_highlights), kKnee);
+              larecomp::settings::mcla_gpu_hdr_highlights.Get(), kKnee);
   return true;
 }
 
@@ -277,7 +267,7 @@ HdrToneMap::Action HdrToneMap::ClassifyToneMap(const DrawFacts& f) {
   }
   const float peak = PeakInGameUnits(gamma);
   constants_.knee = kKnee;
-  constants_.highlights = float(REXCVAR_GET(mcla_gpu_hdr_highlights));
+  constants_.highlights = float(larecomp::settings::mcla_gpu_hdr_highlights.Get());
   constants_.peak = peak;
   constants_.reserved = 0.0f;
   candidate_valid_ = true;

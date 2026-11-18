@@ -27,10 +27,6 @@
 
 // Defined by the fork's SDK when it has its own dumper, by string_dumper.cpp
 // otherwise. Same names either way, so a toml written for one works with both.
-REXCVAR_DECLARE(bool, string_dump_enabled);
-REXCVAR_DECLARE(bool, string_replace_enabled);
-REXCVAR_DECLARE(std::string, string_folder);
-REXCVAR_DECLARE(std::string, string_language);
 
 namespace mc::strings {
 

@@ -10,7 +10,7 @@
 #include <new>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -21,16 +21,6 @@
 #include "context.h"
 #include "barrier_batch.h"
 
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_region_kb);
-REXCVAR_DECLARE(bool, mcla_native_gfx_verify_regions);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_frames);
-REXCVAR_DECLARE(bool, mcla_native_gfx_streaming_sticky);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_streaming_demote_frames);
-REXCVAR_DECLARE(bool, mcla_native_gfx_region_memo);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
-REXCVAR_DECLARE(bool, mcla_native_gfx_partial_reupload);
-REXCVAR_DECLARE(bool, mcla_native_gfx_watch_before_copy);
-REXCVAR_DECLARE(bool, mcla_native_gfx_overlap_index);
 
 namespace mcla::native_gfx {
 
@@ -421,14 +411,14 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // copied are stale with the region marked clean -- a "lost" notification the
   // runtime itself created. Armed first, such a write faults and dirties the
   // region again, and the next draw re-sends it.
-  const bool arm_first = REXCVAR_GET(mcla_native_gfx_watch_before_copy) && !region.streaming;
+  const bool arm_first = larecomp::settings::mcla_native_gfx_watch_before_copy.Get() && !region.streaming;
   if (arm_first) {
     WatchRegion(region);
   }
   // Inline data is uploaded from a stable whole-region snapshot so its copy
   // and hash always describe the same bytes. Partial uploads are for exact
   // write-range invalidations on ordinary cached regions only.
-  const bool partial = REXCVAR_GET(mcla_native_gfx_partial_reupload) && !region.exact_hash &&
+  const bool partial = larecomp::settings::mcla_native_gfx_partial_reupload.Get() && !region.exact_hash &&
                        !region.whole_dirty && !region.streaming &&
                        region.block_dirty.size() == blocks &&
                        region.block_hash.size() == blocks && region.block_frame.size() == blocks;
@@ -539,7 +529,7 @@ bool BufferCache::UploadRegion(D3D12Context& context, ID3D12GraphicsCommandList*
   // Whole-region hash, read by nothing but the MESHCHK probe (VerifyRegion);
   // it re-read every uploaded byte, ~14 MB a frame in gameplay.
   region.content_hash =
-      REXCVAR_GET(mcla_native_gfx_diag) ? HashGuestBytes(upload_src, region.size) : 0;
+      larecomp::settings::mcla_native_gfx_diag.Get() ? HashGuestBytes(upload_src, region.size) : 0;
   {
     region.block_hash.assign(blocks, 0);
     region.block_frame.assign(blocks, 0);
@@ -616,7 +606,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   RegionMap& map = regions_[uint32_t(swap)];
   // The same buffer is bound by draw after draw, so try the memo before the
   // tree. 4 KiB granularity matches how regions are aligned.
-  const bool memo_enabled = REXCVAR_GET(mcla_native_gfx_region_memo);
+  const bool memo_enabled = larecomp::settings::mcla_native_gfx_region_memo.Get();
   LookupMemo& memo =
       lookup_memo_[uint32_t(swap) & 1u][(guest_address >> 12) & (kLookupMemoSize - 1u)];
   Region* region = nullptr;
@@ -677,7 +667,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
   // reports the guest's writes, so it runs whether or not the backstop is on.
   // Inline regions always use exact hashes; other regions keep the sampled path.
   if (region && !region->dirty && !region->block_hash.empty() &&
-      (region->exact_hash || region->streaming || REXCVAR_GET(mcla_native_gfx_verify_regions))) {
+      (region->exact_hash || region->streaming || larecomp::settings::mcla_native_gfx_verify_regions.Get())) {
     // Only the blocks this request actually reads, and each at most once a
     // frame. Verifying the whole region was correct and cost 25 MB of hashing
     // per frame (wall ~55 ms -> ~150 ms); a draw cannot be corrupted by bytes
@@ -729,8 +719,8 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
         } else {
           ++stats_.streaming_clean;
           const uint32_t demote_after =
-              (REXCVAR_GET(mcla_native_gfx_streaming_sticky) && region->exact_hash)
-                  ? REXCVAR_GET(mcla_native_gfx_streaming_demote_frames)
+              (larecomp::settings::mcla_native_gfx_streaming_sticky.Get() && region->exact_hash)
+                  ? larecomp::settings::mcla_native_gfx_streaming_demote_frames.Get()
                   : 4u;
           if (demote_after != 0 && ++region->clean_streak >= demote_after) {
             region->streaming = false;
@@ -747,7 +737,7 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
             // that missed every slice is still there: the re-send is what
             // flushes it. Measured when this went in: hash catches on watched
             // regions went from ~1210 to ~615 per 600 frames.
-            if (REXCVAR_GET(mcla_native_gfx_watch_before_copy)) {
+            if (larecomp::settings::mcla_native_gfx_watch_before_copy.Get()) {
               region->dirty = true;
               region->whole_dirty = true;
               ++stats_.demotion_resends;
@@ -781,8 +771,8 @@ bool BufferCache::Resolve(D3D12Context& context, ID3D12GraphicsCommandList* cl,
     // same bytes never live in two resources.
     uint32_t lo = AlignDown(guest_address, kRegionGranularity);
     uint32_t hi = AlignUp(uint32_t(uint64_t(guest_address) + size), kRegionGranularity);
-    const uint32_t max_region = REXCVAR_GET(mcla_native_gfx_region_kb)
-                                    ? uint32_t(REXCVAR_GET(mcla_native_gfx_region_kb)) << 10
+    const uint32_t max_region = larecomp::settings::mcla_native_gfx_region_kb.Get()
+                                    ? uint32_t(larecomp::settings::mcla_native_gfx_region_kb.Get()) << 10
                                     : kMaxRegionBytesDefault;
     std::vector<uint32_t> merged;
     // Start where an overlap first becomes possible instead of at begin(): a
@@ -1182,7 +1172,7 @@ void BufferCache::ApplyPendingInvalidations() {
   // dirtied, the write is lost, and only the sampled hash notices, later. The
   // overlap-safe walk starts at the first region whose start is within the
   // largest region size below the range, which is monotone in the start.
-  const bool overlap_safe = REXCVAR_GET(mcla_native_gfx_overlap_index);
+  const bool overlap_safe = larecomp::settings::mcla_native_gfx_overlap_index.Get();
   const auto mark = [&](Region& r, uint64_t lo, uint64_t hi) {
     ++stats_.inval_scan_steps;
     if (!r.dirty) {
@@ -1194,7 +1184,7 @@ void BufferCache::ApplyPendingInvalidations() {
     // which is the old behaviour.
     // A streaming region is off the watch, so an exact range (a guest
     // unlock) does not cover every write it may have had: send it whole.
-    if (REXCVAR_GET(mcla_native_gfx_partial_reupload) && !r.streaming) {
+    if (larecomp::settings::mcla_native_gfx_partial_reupload.Get() && !r.streaming) {
       MarkDirtyBlocks(r, lo, hi);
     } else {
       r.whole_dirty = true;
@@ -1211,10 +1201,10 @@ void BufferCache::ApplyPendingInvalidations() {
       // A sampled hash may miss a write, so it keeps the measured non-sticky
       // promotion and four-clean-frame demotion policy regardless of config.
       const uint64_t gap =
-          (REXCVAR_GET(mcla_native_gfx_streaming_sticky) && r.exact_hash) ? 2u : 1u;
+          (larecomp::settings::mcla_native_gfx_streaming_sticky.Get() && r.exact_hash) ? 2u : 1u;
       r.dirty_streak = (r.dirty_frame + gap >= frame_) ? r.dirty_streak + 1u : 1u;
       r.dirty_frame = frame_;
-      const uint32_t threshold = REXCVAR_GET(mcla_native_gfx_streaming_frames);
+      const uint32_t threshold = larecomp::settings::mcla_native_gfx_streaming_frames.Get();
       if (!r.streaming && threshold != 0 && r.dirty_streak >= threshold) {
         r.streaming = true;
         r.clean_streak = 0;

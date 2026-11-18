@@ -63,7 +63,7 @@
 
 #include <rex/audio/conversion.h>
 #include <rex/audio/downmix.h>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -89,24 +89,6 @@
 #include "capture_audio_core.h"
 #include "larecomp_log.h"
 
-REXCVAR_DEFINE_BOOL(mcla_capture_audio, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: during a take the game's audio output is replaced by one that mixes exactly one video frame of sound "
-    "per frame and writes it to audio.wav in the take's folder; the real device is given back when the take ends. The capture driver is put in "
-    "front of the audio output when such a take starts, not before (a game with no take has the stock output). Off: nothing is installed, the "
-    "real output plays during the take, in real time, and no WAV is made. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_audio_surround, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take's WAV has the six channels of the game's 5.1 mix (fl fr fc lfe bl br) instead of the stereo "
-    "fold the real output plays. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_audio_timeout_ms, 2000, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how long the game waits at its frame gate for the mixer's frames of one video frame before it goes on "
-    "with a frame of silence for each that has not come (counted in the audio summary; three in a row stop the waiting for the take).")
-    .range(50, 60000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 // The listener hook (below): the emitter system's per-frame update.
 REX_EXTERN(__imp__rex_sub_8272A130);
@@ -143,7 +125,7 @@ float GuestFloat(const uint8_t* base, uint32_t ea) {
 
 // The SDK's queue length: audio_maxqframes clamped as audio_system.cpp does (0: not known).
 uint32_t SdkQueueLength() {
-    const std::string v = rex::cvar::GetFlagByName("audio_maxqframes");
+    const std::string v = larecomp::cvar::GetFlagByName("audio_maxqframes");
     if (v.empty()) return 0;
     char* end = nullptr;
     const long n = std::strtol(v.c_str(), &end, 10);
@@ -222,7 +204,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
             Abort();
         }
         if (!(fps > 0.0)) return false;
-        channels_ = REXCVAR_GET(mcla_capture_audio_surround) ? 6 : 2;
+        channels_ = larecomp::settings::mcla_capture_audio_surround.Get() ? 6 : 2;
         {
             std::error_code ec;
             const std::filesystem::path p(wav_path);
@@ -336,7 +318,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
         const auto t0 = Clock::now();
         bool timed_out = false;
         if (!dead_) {
-            const auto deadline = t0 + std::chrono::milliseconds(REXCVAR_GET(mcla_capture_audio_timeout_ms));
+            const auto deadline = t0 + std::chrono::milliseconds(larecomp::settings::mcla_capture_audio_timeout_ms.Get());
             for (int guard = 0; guard < 4096; ++guard) {
                 bool met;
                 {
@@ -356,7 +338,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
                 ++timeouts_;
                 ++timeouts_in_a_row_;
                 LARECOMP_APP_WARN("[cap] audio: video frame {}: the mixer gave no frame in {} ms; silence in its place ({} step(s) in a row)", frames_ - 1,
-                                  REXCVAR_GET(mcla_capture_audio_timeout_ms), timeouts_in_a_row_);
+                                  larecomp::settings::mcla_capture_audio_timeout_ms.Get(), timeouts_in_a_row_);
                 if (timeouts_in_a_row_ >= kTimeoutsToDead && !dead_) {
                     dead_ = true;
                     LARECOMP_APP_ERROR("[cap] audio: {} steps in a row without the mixer: the rest of the take's WAV is silence", timeouts_in_a_row_);
@@ -637,7 +619,7 @@ rex::audio::AudioDriver* Unwrap(rex::audio::AudioDriver* driver) {
 bool Begin(double fps, const std::string& wav_path, const std::string& csv_path, uint64_t first_update) {
     g_last = Summary{};
     CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire);
-    switch (PlanDriver(REXCVAR_GET(mcla_capture_audio), d != nullptr)) {
+    switch (PlanDriver(larecomp::settings::mcla_capture_audio.Get(), d != nullptr)) {
         case DriverPlan::kNone:
             LARECOMP_APP_INFO("[cap] audio: mcla_capture_audio is off: the real output plays during the take and no WAV is made");
             return false;

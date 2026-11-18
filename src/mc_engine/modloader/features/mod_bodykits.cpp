@@ -30,7 +30,7 @@
 // that call in the recompiled code too (ctx.r20, loaded by `lwzx r20,r31,r26`).
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -39,12 +39,6 @@
 
 #include "../../logging.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(mod_bodykits, true, "MCLA/Garage",
-    "Line N of a car's `body` part shows wide body kit N-1 (widebody, spoiler_wide, "
-    "hood_wide, door_l_wide, door_r_wide, trunk_wide index N-1). Shipped cars only "
-    "have body_0/body_1 and are unaffected.")
-    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_82391EA8);
 REX_EXTERN(__imp__rex_sub_82391F48);
@@ -68,7 +62,7 @@ extern "C" REX_FUNC(rex_sub_82391EA8) {
     const uint32_t cfg = ctx.r3.u32;
     const uint32_t line = ctx.r20.u32;
     __imp__rex_sub_82391EA8(ctx, base);
-    if (!REXCVAR_GET(mod_bodykits) || !cfg || line == 0) return;
+    if (!larecomp::settings::mod_bodykits.Get() || !cfg || line == 0) return;
 
     const uint32_t index = line - 1 > kMaxIndex ? kMaxIndex : line - 1;
     const uint8_t before = LoadU8(base, cfg + kSlotIndexAt + kWidebodySlot);
@@ -86,7 +80,7 @@ extern "C" REX_FUNC(rex_sub_82391F48) {
     const uint32_t cfg = ctx.r3.u32;
     const uint32_t slot = ctx.r4.u32;
     __imp__rex_sub_82391F48(ctx, base);
-    if (!REXCVAR_GET(mod_bodykits) || slot != kWidebodySlot || !cfg) return;
+    if (!larecomp::settings::mod_bodykits.Get() || slot != kWidebodySlot || !cfg) return;
     if (LoadU8(base, cfg + kWideBodyKitAt) == 0) return;  // r3 already 0
     const uint32_t index = LoadU8(base, cfg + kSlotIndexAt + kWidebodySlot);
     ctx.r3.u64 = (index > kMaxIndex ? kMaxIndex : index) + 1;

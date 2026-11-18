@@ -93,7 +93,7 @@
 #if !defined(_WIN32)
 #include <SDL3/SDL.h>
 #endif
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -115,20 +115,6 @@
 #endif
 #include "wheel_slip.h"
 
-REXCVAR_DEFINE_BOOL(impulse_triggers, true, "MCLA/Input",
-    "Xbox One and Xbox Series trigger rumble: the right trigger shakes while the driven wheels "
-    "spin under power, the left while the brakes lock the wheels, harder the more they slip. "
-    "Controllers without trigger motors, and a DualSense (which has its own settings), are not "
-    "touched.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(impulse_trigger_strength, 50.0, "MCLA/Input",
-    "How strong the Xbox trigger rumble is, in percent of what the trigger motors can do "
-    "(10 to 100).")
-    .range(10.0, 100.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(bool, trigger_slip_log);  // wheel_slip.cpp
 
 namespace {
 
@@ -184,7 +170,7 @@ float g_level[2] = {0.0f, 0.0f};  // the motors' smoothed power, 0 to 1: left, r
 // The motor power for a slip amount.
 float Motor(float amount) {
     if (amount < kFrom) return 0.0f;
-    const float strength = std::clamp(float(REXCVAR_GET(impulse_trigger_strength)) / 100.0f, 0.1f, 1.0f);
+    const float strength = std::clamp(float(larecomp::settings::impulse_trigger_strength.Get()) / 100.0f, 0.1f, 1.0f);
     return strength * (kFloor + (1.0f - kFloor) * std::clamp(amount, 0.0f, 1.0f));
 }
 
@@ -324,7 +310,7 @@ void Scan() {
 
 // One pass of the worker, with g_mutex held; returns how long to wait before the next.
 int Step(int64_t now) {
-    if (!REXCVAR_GET(impulse_triggers)) {
+    if (!larecomp::settings::impulse_triggers.Get()) {
         // Off: let go of what was set and give the pads back.
         CloseAll();
         return kIdleMs;
@@ -348,7 +334,7 @@ int Step(int64_t now) {
 #endif
     if (no_pads) {
         // The slip log (trigger_slip_log, a test aid) also runs with no pad, e.g. on a scripted drive.
-        if (REXCVAR_GET(trigger_slip_log) && larecomp::triggers::IsDriving()) {
+        if (larecomp::settings::trigger_slip_log.Get() && larecomp::triggers::IsDriving()) {
             larecomp::slip::Current();
             return kStepMs;
         }
@@ -398,7 +384,7 @@ void EarlyInit() {
 }
 
 void Tick() {
-    if (g_started.load(std::memory_order_relaxed) || !REXCVAR_GET(impulse_triggers)) return;
+    if (g_started.load(std::memory_order_relaxed) || !larecomp::settings::impulse_triggers.Get()) return;
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_started.load(std::memory_order_relaxed) || g_shut_down) return;
     g_started.store(true, std::memory_order_relaxed);

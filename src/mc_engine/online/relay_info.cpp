@@ -5,7 +5,7 @@
 #include <cstring>
 #include <random>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -187,8 +187,8 @@ std::vector<uint8_t> FetchIcon(const std::string& host, uint16_t port, uint32_t 
 }
 
 void ConfiguredServer(std::string& host, uint16_t& port) {
-    host = rex::cvar::GetFlagByName("mcla_online_server");
-    const int cfg = std::atoi(rex::cvar::GetFlagByName("mcla_online_port").c_str());
+    host = larecomp::cvar::GetFlagByName("mcla_online_server");
+    const int cfg = std::atoi(larecomp::cvar::GetFlagByName("mcla_online_port").c_str());
     port = (cfg > 0 && cfg < 65536) ? uint16_t(cfg) : uint16_t(31000);
     if (const size_t colon = host.rfind(':'); colon != std::string::npos) {
         const int p = std::atoi(host.c_str() + colon + 1);

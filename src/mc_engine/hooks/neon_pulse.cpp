@@ -35,7 +35,7 @@
 // arithmetic, and the check chain (perf\scripts\chain-neonfix.ps1) reads the visible result.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/hook.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
@@ -46,14 +46,6 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "neon_pulse.h"
-
-REXCVAR_DEFINE_BOOL(mcla_fix_neon_30hz, true, "MCLA/Patches",
-    "Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash "
-    "rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, "
-    "and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame "
-    "rate shows the console's throb. Off: the pulse is worked out at every frame.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_82353E38);  // the car effect object's update (the pulse is its last step)
 REX_EXTERN(rex_sub_823DBBC8);         // the game's sine: f1 in (a double), f1 out
@@ -97,7 +89,7 @@ extern "C" REX_FUNC(rex_sub_82353E38) {
     // A steady neon (rate 0) is 0.5 at any clock: nothing to hold.
     if (rate_ext == 0 && rate_int == 0) return;
 
-    const bool fix_on = REXCVAR_GET(mcla_fix_neon_30hz);
+    const bool fix_on = larecomp::settings::mcla_fix_neon_30hz.Get();
     if (!g_logged.exchange(true, std::memory_order_relaxed)) {
         LARECOMP_APP_INFO("[NeonPulse] first car with a neon flash: flash rate {} exterior, {} interior (a wave of "
                           "{:.1f} Hz and {:.1f} Hz); the pulse is held on the console's 30 Hz clock: {}",

@@ -18,18 +18,13 @@
 #include <system_error>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/graphics/pipeline/texture/conversion.h>
 #include <rex/graphics/pipeline/texture/info.h>
 
 #include "mc_engine/logging.h"
 #include "mc_engine/modloader/modloader.h"
-
-REXCVAR_DEFINE_STRING(larecomp_texture_folder, "", "Graphics",
-                      "Folder the texture dumps are written to. Empty: textures_dump/ in the "
-                      "mod folder (modloader/, mods/ or models/ beside the executable)")
-    .debug_only();
 
 namespace mcla {
 
@@ -41,7 +36,7 @@ namespace texture_conversion = rex::graphics::texture_conversion;
 // into the mod folder; a toml the game rewrote still carries it.
 std::filesystem::path TextureDumpDir() {
   const std::filesystem::path exe = rex::filesystem::GetExecutableFolder();
-  const std::string folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
+  const std::string folder = larecomp::cvar::GetFlagByName("larecomp_texture_folder");
   if (folder.empty() || folder == "textures") {
     return mc::modloader::ModRootDir(exe) / "textures_dump";
   }

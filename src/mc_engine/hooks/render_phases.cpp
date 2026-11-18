@@ -4,7 +4,7 @@
 // that reports which phase a hang stopped in.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <atomic>
@@ -17,24 +17,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-// ── Render phase culling ────────────────────────────────────────────────────
-// These reactivate the game's own dev command-line switches (see
-// dev_options.cpp). They are not new code paths: the retail renderer still
-// contains every branch, only the switch that reaches it was stripped.
-//
-// perf_no_shadows is the big one. sub_822E47E0 (the renderer ctor) reacts to it
-// with `phase_mask &= 0xFFFF9E1F`, clearing render phase bits 0x20 0x40 0x80
-// 0x100 0x2000 0x4000 in the enable mask at renderer+448. The phase loop in
-// sub_822E6408 only dispatches a phase's draw lists when its bit is set, so
-// those passes stop existing entirely: no shadow-map traversal, no
-// shadowDepth/shadowAlphaDepth/shadowBlend technique draws, no shadow render
-// targets. Restart-only because the mask is computed once, at renderer init.
-REXCVAR_DEFINE_BOOL(perf_no_shadows, false, "MCLA/Performance",
-    "Drop every real-time shadow render phase. Largest single framerate win; the world "
-    "loses cast shadows. Applied straight to the renderer's phase enable mask, so it "
-    "takes effect immediately.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Which render phase bits perf_no_shadows clears.
 //
@@ -53,85 +35,6 @@ REXCVAR_DEFINE_BOOL(perf_no_shadows, false, "MCLA/Performance",
 //   0x7DF0  everything sub_823120C8 dispatches on; also takes 0x10/0x200/0x800,
 //           which are unrelated live passes, so it corrupts the frame
 static constexpr uint32_t kShadowPhaseBitsDefault = 0x65E0u;
-
-REXCVAR_DEFINE_STRING(perf_shadow_phase_bits, "0x65E0", "MCLA/Performance",
-    "Render phase bits perf_no_shadows clears in renderer+448 (hex). 0x65E0 = sun cascades "
-    "(0x61E0, what the game's own 'noshadows' clears) plus the night/blend shadow phase "
-    "0x400 that it misses. 0x400 alone isolates the night path.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(perf_no_race_shadows, false, "MCLA/Performance",
-    "Drop the shadow pass during races only (dev switch 'noraceshadows').")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-// Live. The one reader of the dev switch is sub_8235FA90, Vehicle::Draw's phase 0x10 / shadow-pass
-// routine (feature-parity/GFX-UPGRADES-DESIGN.md 13.2). The recompiled code reads node+4 with
-// `lwz r11,4(r9)` at 0x8235FB20 on every call and keeps no copy. The routine sets the car up at
-// LOD 2 and, only while the switch is OFF, sets it up once more at the forced LOD
-// (dword_827E624C, 1) before the draw: with the switch on the car is drawn at LOD 2. (That LOD 2 is
-// the coarser one is the usual order of LODs, not checked.) ApplyLoadTimeDevOptions already keeps
-// node+4 equal to this cvar every frame, so a flip reaches the game at the next shadow draw; the
-// restart tag and "applies at the next start" came from the fork, which listed the switch among
-// the options read at start-up (true for TREE IMPOSTORS and SCREEN BLUR, below, not for this one).
-// CHECK: perf/scripts/chain-live3b.ps1 flips it in free roam in daylight and compares the car's
-// shadow before and after. At night the 0x400 phase does not go through this routine, so nothing
-// changes there.
-REXCVAR_DEFINE_BOOL(perf_fast_vehicle_shadows, false, "MCLA/Performance",
-    "Draw cars into the shadow passes with less detail (dev switch 'fastVehShadows'): the game "
-    "skips the extra, more detailed draw it adds for each car's shadow. Use instead of "
-    "perf_no_shadows to keep world shadows. Takes effect at the next frame that draws shadows: "
-    "no restart.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Load-time, not per-frame: sub_8230B778 skips allocating the ImpostorDepth /
-// ShadowImpostor / ImpostorColor / ImpostorNormal render targets. node+4 is kept
-// in sync with this cvar every frame, but the game makes these targets once, with
-// the world, at start-up (the fork logged one world setup and 53 impostor setups
-// at start-up and none when a race started or was quit: sub_82305230 ->
-// sub_8230C388 -> sub_8230B778), so the change is seen at the next start. This
-// said "the next load of that system" before, and the pause row "(ON RELOAD)".
-// CHECK: toggled in the pause menu, then a district change: the impostors do not
-// change until the game is started again.
-REXCVAR_DEFINE_BOOL(perf_no_impostors, false, "MCLA/Performance",
-    "Do not allocate the foliage impostor render targets (dev switch 'noimpostors'). "
-    "Distant trees lose their billboards. Applies at the next start of the game.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-// Same shape: sub_82310478 skips the prop parse for $/city/<district> entirely.
-// CHECK: when that parse runs. If it is part of the world's set-up at start-up, like the
-// impostor targets, this too is seen only at the next start (tag, description and the pause
-// row's "(ON RELOAD)" would then say restart).
-REXCVAR_DEFINE_BOOL(perf_no_trees, false, "MCLA/Performance",
-    "Skip loading the prop/foliage set (dev switch 'notrees'). Last resort. Applies on "
-    "the next district load.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Read once, at start-up. The recompiled code reads the switch in sub_82306860, the constructor of
-// the post-effect object with vtable 0x820424B0: it stores `nofsblur == 0` as a byte at object+5
-// (and `fastdraw == 0 && nomotionblur == 0` at object+4); no other reader of the node was found. The
-// constructor is reached from the game's start-up chain (direct calls: sub_821305E8 -> sub_821BD7C0
-// -> sub_82131790 -> sub_82131508 -> sub_822C2EA8 -> sub_823047D8; the same chain makes the other
-// renderer clients), so ApplyLoadTimeDevOptions keeping node+4 equal to the cvar reaches nothing
-// until the object is made again: a flip during play does nothing, as the owner saw, and a district
-// load does not make it again. (An earlier survey read the harness's "applies on the next load of
-// that system" as "applies at the next load"; the code says start.)
-// Not a candidate for the phase mask (ApplyRenderPhaseMask): the fork's frame-structure survey puts
-// the 0x2 phase on the 256x256 reflection view, and the blur passes (motion blur, the bloom blurs)
-// are inside the post phase (0x08000000) with the bright pass and the luminance chain, so no phase
-// bit drops a blur alone. A live switch would write object+5 of the live object (sub_823047D8
-// stores the new object at `[r3 + 20]` of its argument) or hook the loads of that byte.
-// CHECK: where the object is kept, which pass reads byte +5 and what it skips; none of that was
-// run, and the row stays a launch argument until it is.
-REXCVAR_DEFINE_BOOL(perf_no_fullscreen_blur, false, "MCLA/Performance",
-    "Skip the full-screen blur pass (dev switch 'nofsblur'). Applies at the next start of "
-    "the game.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // Bumped once per frame from Patch_DeltaTimePre; read by the freeze watchdog.
 std::atomic<uint64_t> g_frame_heartbeat{0};
@@ -206,7 +109,7 @@ static constexpr uint32_t kPhaseRequested = 364u;    // phases asked for this fr
 static constexpr uint32_t kPhaseEffective = 360u;    // requested & enable, what consumers read
 
 static uint32_t ShadowPhaseBits() {
-    const std::string s = rex::cvar::GetFlagByName("perf_shadow_phase_bits");
+    const std::string s = larecomp::cvar::GetFlagByName("perf_shadow_phase_bits");
     if (s.empty()) return kShadowPhaseBitsDefault;
     const uint32_t v = uint32_t(std::strtoul(s.c_str(), nullptr, 0));
     return v ? v : kShadowPhaseBitsDefault;
@@ -218,7 +121,7 @@ void ApplyRenderPhaseMask() {
     static uint32_t stock_bits = 0;  // of applied_bits, which were set before we touched them
     static bool have_stock = false;
 
-    const bool want = rex::cvar::GetFlagByName("perf_no_shadows") == "true";
+    const bool want = larecomp::cvar::GetFlagByName("perf_no_shadows") == "true";
     const uint32_t bits = ShadowPhaseBits();
     if (!want && !was_applied) return;
 
@@ -305,10 +208,10 @@ void StartFreezeWatchdog() {
                 ReadGuestU32(base, renderer + kPhaseRequested),
                 ReadGuestU32(base, renderer + kPhaseEffective));
             LARECOMP_APP_ERROR("[Watchdog] perf_no_shadows={} bits={} no_trees={} no_impostors={}",
-                               rex::cvar::GetFlagByName("perf_no_shadows"),
-                               rex::cvar::GetFlagByName("perf_shadow_phase_bits"),
-                               rex::cvar::GetFlagByName("perf_no_trees"),
-                               rex::cvar::GetFlagByName("perf_no_impostors"));
+                               larecomp::cvar::GetFlagByName("perf_no_shadows"),
+                               larecomp::cvar::GetFlagByName("perf_shadow_phase_bits"),
+                               larecomp::cvar::GetFlagByName("perf_no_trees"),
+                               larecomp::cvar::GetFlagByName("perf_no_impostors"));
         }
     }).detach();
 }

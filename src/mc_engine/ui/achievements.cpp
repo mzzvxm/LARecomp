@@ -1,7 +1,7 @@
 #include "achievements.h"
 #include "imgui_theme.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/system/achievement_manager.h>
 #include <rex/ui/overlay/achievement_icon_cache.h>
 #include <imgui.h>
@@ -114,7 +114,7 @@ class AchievementsDialog final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const std::string key = rex::cvar::GetFlagByName("bind_mcla_achievements");
+    const std::string key = larecomp::cvar::GetFlagByName("bind_mcla_achievements");
     const Prompt prompts[] = {{"CLOSE", key.empty() ? "F7" : key.c_str(), kPromptBack}};
 
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),

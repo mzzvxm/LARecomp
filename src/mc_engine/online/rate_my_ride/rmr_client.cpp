@@ -12,7 +12,7 @@
 #include <random>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xam/user_profile.h>
@@ -22,27 +22,6 @@
 #include "rmr_net.h"
 #include "rmr_store.h"
 #include "../leaderboards/lb_client.h"
-
-REXCVAR_DEFINE_BOOL(rmr_enabled, true, "MCLA/Multiplayer",
-                    "Rate My Ride: serve the mode from our own backend instead of Rockstar's "
-                    "dead server. Off = stock behaviour (\"server not available\").")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(rmr_server, "", "MCLA/Multiplayer",
-                      "Rate My Ride server as host[:port]. Empty = the online relay host "
-                      "(mcla_online_server) when online is enabled, otherwise a local store "
-                      "shared by the profiles on this PC. \"local\" forces the local store.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rmr_server_port, rmr::kDefaultPort, "MCLA/Multiplayer",
-                     "TCP port of the Rate My Ride server when it runs on the relay host "
-                     "(default 31002). A port typed into rmr_server overrides it.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(rmr_diag, false, "MCLA/Multiplayer",
-                    "Log every Rate My Ride request and record in detail.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 // mcla_online_enable / mcla_online_server belong to the fork SDK's online
 // client (src/kernel/xam/mcla_online.cpp) and are read by name: declaring them
@@ -100,10 +79,10 @@ std::string ProfileName() { return ProfileNameFor<rex::system::xam::UserProfile>
 
 Target ResolveTarget() {
   Target t;
-  int cfg_port = REXCVAR_GET(rmr_server_port);
+  int cfg_port = larecomp::settings::rmr_server_port.Get();
   uint16_t port = (cfg_port > 0 && cfg_port < 65536) ? static_cast<uint16_t>(cfg_port)
                                                      : rmr::kDefaultPort;
-  const std::string server = REXCVAR_GET(rmr_server);
+  const std::string server = larecomp::settings::rmr_server.Get();
   if (server == "local") return t;
   if (!server.empty()) {
     net::SplitHostPort(server, t.host, port);
@@ -111,9 +90,9 @@ Target ResolveTarget() {
     t.port = port;
     return t;
   }
-  if (rex::cvar::GetFlagByName("mcla_online_enable") == "true") {
+  if (larecomp::cvar::GetFlagByName("mcla_online_enable") == "true") {
     uint16_t relay_port = 0;  // the relay's own UDP port is not ours
-    net::SplitHostPort(rex::cvar::GetFlagByName("mcla_online_server"), t.host, relay_port);
+    net::SplitHostPort(larecomp::cvar::GetFlagByName("mcla_online_server"), t.host, relay_port);
     t.remote = !t.host.empty();
     t.port = port;
   }
@@ -234,8 +213,8 @@ bool ParseHex(const std::string& hex, Token& out) {
 
 }  // namespace
 
-bool Enabled() { return REXCVAR_GET(rmr_enabled); }
-bool Diag() { return REXCVAR_GET(rmr_diag); }
+bool Enabled() { return larecomp::settings::rmr_enabled.Get(); }
+bool Diag() { return larecomp::settings::rmr_diag.Get(); }
 
 bool ResolveServer(std::string& host, uint16_t& port) {
   const Target t = ResolveTarget();

@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "backend.h"
@@ -32,20 +32,6 @@
 #include "temporal_dlss.h"
 #include "texture_bytes.h"
 
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_frame_generation_multiplier, 2, "MCLA/GPU",
-    "How many frames DLSS frame generation shows for each one the game renders (mcla_gpu_frame_"
-    "generation = dlss): 2 makes one in between, 3 two, 4 three. 3 and 4 need an RTX 50 series card "
-    "(the plugin says how many the card takes; a higher number than it takes is lowered). The frame "
-    "cap counts rendered frames (mcla_gpu_frame_generation_fps_limit). Live.")
-    .range(2, 4)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(std::string, mcla_gpu_frame_generation);  // frame_generation.cpp
-REXCVAR_DECLARE(int32_t, mcla_gpu_frame_generation_fps_limit);  // frame_generation.cpp
-REXCVAR_DECLARE(bool, mcla_gpu_vsync);                    // renderer.cpp
-REXCVAR_DECLARE(int32_t, mcla_gpu_hdr_layers_view);       // hdr_scene.cpp
-REXCVAR_DECLARE(bool, mcla_gpu_hdr_test_pattern);         // hdr.cpp
 
 namespace mcla::gpu {
 
@@ -140,7 +126,7 @@ int32_t DlssFrameGenerationFpsLimit(int32_t player_limit) {
   if (!DlssFrameGenerationRunning()) {
     return player_limit;
   }
-  const int32_t cap = REXCVAR_GET(mcla_gpu_frame_generation_fps_limit);
+  const int32_t cap = larecomp::settings::mcla_gpu_frame_generation_fps_limit.Get();
   if (cap >= 0) {
     return cap;
   }
@@ -222,7 +208,7 @@ void DlssFrameGeneration::Shutdown(SwapChain& swap_chain) {
 // ---------------------------------------------------------------------------
 
 bool DlssFrameGeneration::SettingIsDlss() const {
-  return REXCVAR_GET(mcla_gpu_frame_generation) == "dlss";
+  return larecomp::settings::mcla_gpu_frame_generation.Get() == "dlss";
 }
 
 bool DlssFrameGeneration::Candidate() const {
@@ -240,7 +226,7 @@ bool DlssFrameGeneration::Candidate() const {
 bool DlssFrameGeneration::WantsVsync() const {
   // The plugin supports vertical sync on D3D12 only (its guide's section 22); the player's own
   // setting applies there, where it says so.
-  return !vulkan_ && REXCVAR_GET(mcla_gpu_vsync) && dlss::GetFrameGenerationFacts().vsync_supported;
+  return !vulkan_ && larecomp::settings::mcla_gpu_vsync.Get() && dlss::GetFrameGenerationFacts().vsync_supported;
 }
 
 void DlssFrameGeneration::ReadDisplayRefresh() {
@@ -267,7 +253,7 @@ uint32_t DlssFrameGeneration::Multiplier() const {
   } else if (!dlss::NameLooksLikeMultiFrameGeneration(gpu_name_)) {
     most = 2;
   }
-  const int32_t asked = REXCVAR_GET(mcla_gpu_frame_generation_multiplier);
+  const int32_t asked = larecomp::settings::mcla_gpu_frame_generation_multiplier.Get();
   return std::clamp<uint32_t>(uint32_t(std::max(asked, 2)), 2u, most);
 }
 
@@ -736,7 +722,7 @@ bool DlssFrameGeneration::Record(plume::RenderCommandList* list, const FrameArgs
     return NotGenerated(stats_.not_idle, args);  // an idle present repeats the last frame
   }
   // The HDR debug views and the test pattern show something else than the frame.
-  if (REXCVAR_GET(mcla_gpu_hdr_layers_view) != 0 || REXCVAR_GET(mcla_gpu_hdr_test_pattern)) {
+  if (larecomp::settings::mcla_gpu_hdr_layers_view.Get() != 0 || larecomp::settings::mcla_gpu_hdr_test_pattern.Get()) {
     return NotGenerated(stats_.not_scene, args);
   }
   // Reflex through Streamline must be on and have made a few sleeps before the plugin is told to

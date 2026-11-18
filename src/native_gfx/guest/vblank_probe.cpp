@@ -8,20 +8,11 @@
 #include <cstdio>
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
 #include "guest_resources.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_vblank_probe, false, "MCLA/NativeGfx",
-    "Read-only probe of the guest's vblank and flip machinery, for the port to a runtime with no "
-    "command processor. Reports the vblank counter, the flip counter and the pending-flip queue "
-    "indices in the D3DDevice, so the offsets the replacement will drive are proven while the "
-    "emulated path still works. Writes nothing.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {
 
@@ -86,7 +77,7 @@ void NoteGraphicsEnginesInitialized(const uint8_t* base, uint32_t device_va) {
 }
 
 void ProbeVblankState(const uint8_t* base) {
-  if (!REXCVAR_GET(mcla_native_gfx_vblank_probe)) {
+  if (!larecomp::settings::mcla_native_gfx_vblank_probe.Get()) {
     return;
   }
   State& s = state();

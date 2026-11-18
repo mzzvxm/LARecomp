@@ -5,7 +5,7 @@
 // script thread.
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -20,146 +20,6 @@
 #include "cutscene_gallery.h"
 #include "pause_menu.h"
 #include "logging.h"
-
-REXCVAR_DEFINE_STRING(cutscene_replay, "cut_story_district_champs", "MCLA/Cutscenes",
-    "Which cutscene the pause menu's CUTSCENES tab replays. Names match the "
-    "scene's animation pack under $/resources/animation/cineanimpacks. The "
-    "default is a hangout exit because those need no cars: an offline scan of "
-    "the generated scripts shows the cut_hangout_* scenes make zero Cars_* and "
-    "zero AssignNameToSlot calls, while the story scenes want four racers that "
-    "free roam does not have.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(cutscene_play_now, "", "MCLA/Cutscenes",
-    "Set to a cutscene name to play it immediately, without going through the "
-    "menu. Clears itself once the scene starts.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_force_events, false, "MCLA/Cutscenes",
-    "Diagnostic only, and it does NOT help a replay: mgr+305 turned out to be "
-    "the SKIP request, not a 'scene is playing' flag. sub_823BEEB0 reads it, "
-    "asks sub_823BBB98 for the time of the next cut event, and jumps the scene "
-    "clock there -- measured: the garage scene picked 2.833s and ended in four "
-    "frames, and district champs picked 74.233s and its clock went 0.036 -> "
-    "74.254 in one frame. Leave it off; it is kept only to reproduce that.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_force_camera, false, "MCLA/Cutscenes",
-    "Run the camera event's own start handler (sub_823D7280) on the event that "
-    "Camera_LaunchEvent queued, if the cutscene camera is still idle a frame "
-    "later. That handler is the only thing in the game that writes the camera's "
-    "clock (cineCam+120), and mcCineDirector::IsCameraActive (sub_823CDC90) "
-    "refuses to hand the screen to the cutscene camera while that clock is "
-    "negative -- so if the event is queued but never dispatched, this is exactly "
-    "the work the game skipped, done with the game's own function and the game's "
-    "own event object. It is a no-op when the camera is already running.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_menu_autoclose, true, "MCLA/Cutscenes",
-    "Let a scene picked from the pause menu start by itself: unpause the game "
-    "with the pause manager's own ResumeOnly request, play, then hand the menu "
-    "by calling the same function the Continue item calls (sub_8265F428), so the "
-    "menu closes through the game's own transition -- the one that unpauses and "
-    "emits resume/ENTERNORMAL/HUDMOVIE. Turn it off to arm the scene and close "
-    "the menu by hand instead.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_skip_uses_teardown, false, "MCLA/Cutscenes",
-    "Make the skip button end a REPLAY through our own teardown instead of the "
-    "game's skip path. Off, because the native path is the one that restores "
-    "anything: it does not kill the scene, it pushes the scene clock to the next "
-    "cut event, and SetTime then runs every event in between -- including the "
-    "tail (fade_to_black, bookmark_cut_to_game, fade_to_scene) that hands the "
-    "camera back, brings the HUD in and stops the speech. Our teardown skips all "
-    "of that, which is why it left the audio playing and nothing restored. Kept "
-    "only as an escape hatch if a scene wedges with no cut event to jump to.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_keep_movies, true, "MCLA/Cutscenes",
-    "Clear mgr+316 before the scene tears down, so FinishScene does not run its "
-    "movie teardown. That branch is `if (mgr+316) { sub_821F6238(movies); "
-    "sub_821F15C8(...); }`, and sub_821F6238 walks four movie slots calling "
-    "sub_821F4C18, which does `v4 = slot[2]; if (v4) { *v4 = 0; slot[2] = 0; }` "
-    "-- it writes zero over the first dword of whatever that slot points at, and "
-    "the first dword of an object is its vtable. The pause menu is a Flash movie "
-    "(PAUSEMOVIE), and reopening it after a replay died on exactly that: a vfunc "
-    "call through an object whose vtable had been zeroed. mgr+316 is set by "
-    "SetSceneName, so every replay took that branch. A mission survives it "
-    "because the flow rebuilds the movies on the way back to gameplay; a replay "
-    "has no flow. The cost of skipping it is the scene's subtitle movie not "
-    "being released -- a leak, not a crash.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_probe_log, false, "MCLA/Cutscenes",
-    "Print the per-frame trace of a replay: which characters stream in, every "
-    "actor launch with its clip and entity, the camera hand-over, and each cine "
-    "event as it fires with its name from the game's own table. Off by default "
-    "because a 74 second scene is a few hundred lines. The things that mean "
-    "something went wrong -- a bailed script, a wedged scene, a stuck release "
-    "counter -- are always printed regardless.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(cutscene_run_script, "", "MCLA/Cutscenes",
-    "Start any script object by name, relative to $/script_obj, on the next "
-    "frame. Meant for the game's own cutscene harness -- "
-    "'tools/CutsceneTests/SETUP_GENERIC_CUTSCENE' slots the racers and "
-    "characters a scene needs. Clears itself once the script is mounted.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_setup, true, "MCLA/Cutscenes",
-    "Run $/script_obj/tools/CutsceneTests/SETUP_GENERIC_CUTSCENE before the "
-    "scene. It is the game's own standalone-cutscene harness: it slots four "
-    "racers and nine character sets, which is what a generated cutscene script "
-    "assumes and bails out without.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_bind_coordsys, false, "MCLA/Cutscenes",
-    "Anchor the scene to the player's car before it plays, through the game's "
-    "own CineScript_SetGameCoordSysBindingCopyRacer. A cutscene is authored "
-    "around its own origin, not in world space; the gameplay script that "
-    "normally plays one WARPS the player to the scene and leaves the binding "
-    "at zero, which is why an all-zero binding looked correct when this was "
-    "measured on a real garage entry. A replay does not warp, so with no "
-    "anchor the scene plays at the world origin -- measured: the player's car "
-    "went from (819.6, 17.5, -808.4) to (-0.1, -2.8, -5.6) across one replay, "
-    "which is both the car that will not drive afterwards and the actors that "
-    "walk on nothing. Anchoring brings the scene to the car instead, which is "
-    "what the reward and cop-pullover scenes do natively. Off by default: it "
-    "made things worse in play, so the anchor stays behind this flag until "
-    "there is a measurement that says what it broke.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_pad_racers, true, "MCLA/Cutscenes",
-    "Repeat the player into the cutscene's remaining car slots when the world "
-    "has fewer racers than the scene wants. Wrong on screen -- several cars end "
-    "up being the same one -- but it is what gets a scene past its "
-    "'insufficient number of racers slotted' guard in free roam.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cutscene_debug, false, "MCLA/Cutscenes",
-    "Dump the whole script-thread tree and the scrThread array with each "
-    "cutscene gate report. Off by default: it is ~200 lines a shot.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(cutscene_stop, "", "MCLA/Cutscenes",
-    "Abort the running cutscene and dump which of mcCineScript's gates never "
-    "opened. 'kill' raises the script's own kill flag; 'finish' runs the "
-    "teardown directly, which is what gets the HUD back from a wedged scene.")
-    .allowed({"", "kill", "finish"})
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -775,7 +635,7 @@ void LogScriptState() {
             launched ? LaunchedThreadAlive(launched) : false);
     // The full tree is ~200 threads, which is unreadable at the two-second
     // cadence; it is only worth printing when someone is chasing a launch.
-    if (root && REXCVAR_GET(cutscene_debug)) LogScriptThread(root, 1);
+    if (root && larecomp::settings::cutscene_debug.Get()) LogScriptThread(root, 1);
 
     uint8_t* base = Membase();
     const uint32_t arr = ReadGuestBE32(kScrThreadArray);
@@ -784,7 +644,7 @@ void LogScriptState() {
                             : 0;
     MC_INFO("[cutscene]   scrThreads={} current=0x{:08X}", n,
             ReadGuestBE32(kScrThreadCur));
-    if (!REXCVAR_GET(cutscene_debug)) return;
+    if (!larecomp::settings::cutscene_debug.Get()) return;
     for (uint16_t i = 0; i < n && i < 32; ++i) {
         const uint32_t t = ReadGuestBE32(arr + uint32_t(4 * i));
         if (!t) continue;
@@ -910,7 +770,7 @@ void RequestKillScene() {
 // See cutscene_keep_movies: mgr+316 decides whether FinishScene tears the movie
 // slots down, and that teardown zeroes a vtable the pause menu still uses.
 void ClearSceneMovieTeardownFlag() {
-    if (!REXCVAR_GET(cutscene_keep_movies)) return;
+    if (!larecomp::settings::cutscene_keep_movies.Get()) return;
     const uint32_t mgr = ReadGuestBE32(kCineScriptPtr);
     uint8_t* base = Membase();
     if (!mgr || !base || !base[mgr + 316]) return;
@@ -1360,7 +1220,7 @@ void UnstickAnimPackRelease(const char* why) {
 // Every probe below is a trace, not a diagnosis, so it answers to a cvar. The
 // warnings that mean something is broken are deliberately left outside it.
 bool ProbeLog() {
-    return REXCVAR_GET(cutscene_probe_log) && CutsceneReplayBusy();
+    return larecomp::settings::cutscene_probe_log.Get() && CutsceneReplayBusy();
 }
 
 void RunNativeSetup() {
@@ -1377,7 +1237,7 @@ void RunNativeSetup() {
     // binding at mcCineScript+64 at it. Doing it by hand into a different field
     // is what the old copy here did, and it never took.
     bool bound = false;
-    if (!REXCVAR_GET(cutscene_bind_coordsys)) {
+    if (!larecomp::settings::cutscene_bind_coordsys.Get()) {
         MC_INFO("[cutscene] native setup: coord sys bind disabled");
     } else if (PPCFunc* bind_fn = GuestFn(kBindCoordSysToRacerFn)) {
         if (const uint32_t racer = PlayerRacer()) {
@@ -1385,7 +1245,7 @@ void RunNativeSetup() {
             bound = true;
         }
     }
-    if (REXCVAR_GET(cutscene_bind_coordsys))
+    if (larecomp::settings::cutscene_bind_coordsys.Get())
         MC_INFO("[cutscene] native setup: scene anchored to the player's car: "
                 "{}", bound);
 
@@ -1460,7 +1320,7 @@ void RunNativeSetup() {
     // harness's own wording). Repeating the one we have is wrong on screen but
     // it answers whether this table is the only thing standing in the way.
     int slotted = 0;
-    const bool pad = REXCVAR_GET(cutscene_pad_racers) && found > 0;
+    const bool pad = larecomp::settings::cutscene_pad_racers.Get() && found > 0;
     static_assert(kCarSlots <= kCarSlotMax, "car slot table is 16 wide");
     for (int slot = 0; slot < kCarSlots; ++slot) {
         const bool have = slot < found || pad;
@@ -1646,7 +1506,7 @@ int FindCutscene(const std::string& id) {
 // still idle, run that handler on the game's own event object -- same function,
 // same argument, just called from here instead of from the event timeline.
 void ForceCameraEventIfIdle() {
-    if (!REXCVAR_GET(cutscene_force_camera) || g_cam_forced || !g_cam_event) return;
+    if (!larecomp::settings::cutscene_force_camera.Get() || g_cam_forced || !g_cam_event) return;
     const uint32_t director = ReadGuestBE32(kCineDirector);
     const uint32_t cam = director ? ReadGuestBE32(director + 8) : 0;
     if (!cam || ReadGuestFloat(cam + kCineCamTime) >= 0.0f) return;
@@ -1678,7 +1538,7 @@ const char* const* CutsceneIds() { return g_ids; }
 const char* const* CutsceneLabels() { return g_labels; }
 
 int CutsceneSelectedIndex() {
-    const int i = FindCutscene(REXCVAR_GET(cutscene_replay));
+    const int i = FindCutscene(larecomp::settings::cutscene_replay.Get());
     return i < 0 ? 0 : i;
 }
 
@@ -1696,9 +1556,9 @@ void TickCutsceneGallery() {
     // poll +304); `= finish` runs the teardown itself and is what gets the HUD
     // back when the script is stuck before its own kill check.
     {
-        const std::string stop = REXCVAR_GET(cutscene_stop);
+        const std::string stop = larecomp::settings::cutscene_stop.Get();
         if (!stop.empty()) {
-            rex::cvar::SetFlagByName("cutscene_stop", "");
+            larecomp::cvar::SetFlagByName("cutscene_stop", "");
             LogCutsceneGates("stop requested");
             if (!SceneIsPlaying())
                 MC_WARN("[cutscene] nothing to stop — no scene is selected "
@@ -1715,9 +1575,9 @@ void TickCutsceneGallery() {
     // Run an arbitrary script object. Independent of the replay state machine
     // so it also works while a scene is up.
     {
-        const std::string script = REXCVAR_GET(cutscene_run_script);
+        const std::string script = larecomp::settings::cutscene_run_script.Get();
         if (!script.empty()) {
-            rex::cvar::SetFlagByName("cutscene_run_script", "");
+            larecomp::cvar::SetFlagByName("cutscene_run_script", "");
             const uint32_t t = StartScriptByName(script.c_str(), 1500);
             if (t)
                 MC_INFO("[cutscene] '{}' started, thread 0x{:08X}",
@@ -1731,14 +1591,14 @@ void TickCutsceneGallery() {
     // larecomp.toml or from the console and the scene starts on the next
     // frame, no menu involved.
     {
-        const std::string now = REXCVAR_GET(cutscene_play_now);
+        const std::string now = larecomp::settings::cutscene_play_now.Get();
         if (!now.empty()) {
-            rex::cvar::SetFlagByName("cutscene_play_now", "");
+            larecomp::cvar::SetFlagByName("cutscene_play_now", "");
             const int i = FindCutscene(now);
             if (i < 0) {
                 MC_WARN("[cutscene] '{}' is not in the gallery", now);
             } else if (!CutsceneReplayBusy()) {
-                rex::cvar::SetFlagByName("cutscene_replay", kCutscenes[i].id);
+                larecomp::cvar::SetFlagByName("cutscene_replay", kCutscenes[i].id);
                 g_pending.store(i, std::memory_order_relaxed);
             }
         }
@@ -1812,7 +1672,7 @@ void TickCutsceneGallery() {
             // press would do, hands the input and the screen back.
             PauseMenuLeaveSubmenu();
             LogPauseManager("before the replay");
-            if (!REXCVAR_GET(cutscene_menu_autoclose)) {
+            if (!larecomp::settings::cutscene_menu_autoclose.Get()) {
                 MC_INFO("[cutscene] armed — close the pause menu and the scene "
                         "starts");
             } else if (!ClosePauseMenuLikeContinue()) {
@@ -1835,7 +1695,7 @@ void TickCutsceneGallery() {
             --g_wait_frames;
             return;
         }
-        if (REXCVAR_GET(cutscene_setup)) {
+        if (larecomp::settings::cutscene_setup.Get()) {
             // The dev harness is the better path when the build has it: it is
             // the game's own code. Retail archives may not ship tools/, so
             // check before trying and reproduce it natively otherwise.
@@ -1917,7 +1777,7 @@ void TickCutsceneGallery() {
         // One line per change, so the whole replay costs a handful of lines.
         LogCineDirector("frame " + std::to_string(g_playing_frames), false);
 
-        if (REXCVAR_GET(cutscene_force_events)) {
+        if (larecomp::settings::cutscene_force_events.Get()) {
             const uint32_t mgr = ReadGuestBE32(kCineScriptPtr);
             uint8_t* base = Membase();
             if (mgr && base && base[mgr + 305] == 0) base[mgr + 305] = 1;
@@ -1925,7 +1785,7 @@ void TickCutsceneGallery() {
         // The player asking to skip: mgr+305 is the request byte the game's own
         // skip path reads. Take it before sub_823BEEB0 sees it and end the
         // scene the way the stop cvar does.
-        if (REXCVAR_GET(cutscene_skip_uses_teardown)) {
+        if (larecomp::settings::cutscene_skip_uses_teardown.Get()) {
             const uint32_t mgr = ReadGuestBE32(kCineScriptPtr);
             uint8_t* base = Membase();
             if (mgr && base && base[mgr + 305]) {

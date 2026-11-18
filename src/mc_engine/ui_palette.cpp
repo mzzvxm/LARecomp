@@ -6,7 +6,7 @@
 #include <cstring>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 
 #include "hooks/hooks_internal.h"
@@ -113,13 +113,6 @@ const char* UiPaletteHex(int k) {
 #include "swf_import.h"
 
 REX_EXTERN(__imp__rex_sub_825EE1C8);  // swfCONTEXT: a number from _global
-
-REXCVAR_DEFINE_BOOL(ui_color_buttons, true, "MCLA/UI",
-    "Show the pause menu's color buttons (UI OPTIONS) as the garage's own "
-    "PickColor: garage.xsf's color button, placed in the pause movie and "
-    "driven the way the garage's Fillmenu drives it.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace larecomp {
 namespace {
@@ -560,7 +553,7 @@ void UiPaletteTick(uint8_t* base) {
     }
 
     PauseMenuColorRows rows;
-    const bool open = REXCVAR_GET(ui_color_buttons) && PauseMenuColorButtons(&rows);
+    const bool open = larecomp::settings::ui_color_buttons.Get() && PauseMenuColorButtons(&rows);
     if (!open || (g_btn.menu && rows.count != g_btn.count)) {
         if (g_btn.menu) Destroy(base);
         if (!open) {

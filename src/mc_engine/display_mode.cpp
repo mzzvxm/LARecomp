@@ -16,7 +16,7 @@
 #include <string_view>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/video_mode_util.h>
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
@@ -35,13 +35,6 @@
 // The SDK's window is SDL's; see display_mode.h (Linux).
 #include <SDL3/SDL.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(fullscreen_exclusive, false, "UI/Window",
-    "With fullscreen on: exclusive fullscreen. The display is switched to the size of `resolution` "
-    "(the nearest mode it lists; the display's own size when `resolution` is empty) while the game "
-    "has the focus, and put back when the game loses it or closes. Off is borderless fullscreen: a "
-    "window without a frame the size of the display, the display left as it is. Windows only.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::display {
 
@@ -72,7 +65,7 @@ constexpr int kLastPass = 10;
 constexpr uint32_t kRetryMs = 100;
 #endif
 
-bool Flag(const char* name) { return rex::cvar::GetFlagByName(name) == "true"; }
+bool Flag(const char* name) { return larecomp::cvar::GetFlagByName(name) == "true"; }
 
 void ScheduleApply(int pass);
 
@@ -147,7 +140,7 @@ namespace {
 // with 1280x720, and the window then already was that size, so no write did anything.
 bool AskedWindowedSize(Size* out) {
   Size asked;
-  if (!ParseSize(rex::cvar::GetFlagByName("resolution"), &asked)) return false;
+  if (!ParseSize(larecomp::cvar::GetFlagByName("resolution"), &asked)) return false;
   *out = asked;
   return true;
 }
@@ -210,7 +203,7 @@ std::vector<Size> WindowSteps(Size work, Size frame) {
 
 Size WantedExclusiveSize() {
   Size want;
-  if (!ParseSize(rex::cvar::GetFlagByName("resolution"), &want)) want = DesktopSize();
+  if (!ParseSize(larecomp::cvar::GetFlagByName("resolution"), &want)) want = DesktopSize();
   const std::vector<Size> sizes = ExclusiveSizes();
   return sizes.empty() ? want : Nearest(sizes, want);
 }
@@ -1088,10 +1081,10 @@ void Initialize(rex::ui::Window* window) {
   // waited for the UI thread, which waited for that lock, and the game hung for good. These only
   // queue the change for the UI thread, where it runs once the lock is released; the SDK registers
   // no other callback for the name.
-  rex::cvar::UnregisterChangeCallbacks("fullscreen");
-  rex::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
-  rex::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
-  rex::cvar::RegisterChangeCallback("resolution", SettingChanged);
+  larecomp::cvar::UnregisterChangeCallbacks("fullscreen");
+  larecomp::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
+  larecomp::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
+  larecomp::cvar::RegisterChangeCallback("resolution", SettingChanged);
 #if defined(_WIN32)
   // The first look at the display, before this game changes anything about it: the book starts from the
   // display in its own mode, and the log has the sizes the rows will offer.

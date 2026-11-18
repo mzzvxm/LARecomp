@@ -71,7 +71,7 @@
 
 #include "capture_mode.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <algorithm>
 #include <atomic>
@@ -126,100 +126,6 @@ extern char** environ;
 #include "gpu/sync_builds.h"
 #endif
 
-REXCVAR_DEFINE_DOUBLE(mcla_capture_fps, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: a take at this many frames a second, from the next update: the game steps by exactly 1 / this "
-    "whatever a frame takes to render, every frame is read back and the game waits for it before the next update. 0 ends the take. "
-    "10 to 1000. A scene's capture key does the same.")
-    .range(0.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mcla_fixed_step_fps, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the game steps by exactly 1 / this many frames a second, whatever the frame takes (the engine timer is given "
-    "the game's own tick count for it); the FPS limit, the step cap and frame pacing stand aside. No take, no frame gate. 0: off. "
-    "10 to 1000.")
-    .range(0.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_dir, "captures", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the folder the take folders go in (a relative path is relative to the game's folder). Read when a "
-    "take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_name, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take's folder name when the scene gives none (a name that is taken gets -2, -3 ...). Empty: "
-    "the scene's own name, else take. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_out, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take folder itself, exactly (it has to be new or empty); the take then ignores the dir and "
-    "the name. Empty: <dir>/<name>. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_sink, "none", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: what happens to a frame once it is read back: none (counted and dropped), ffmpeg (a pipe to the "
-    "program in mcla_capture_ffmpeg: FFV1 in video.mkv), png (ffmpeg writes one PNG for every frame) or raw (video.bgra, B8G8R8A8 "
-    "frames). A scene's sink wins. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_statelog, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: write state.csv in the take (the game's state for every frame: the scene's statelog on does the "
-    "same). Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_ffmpeg, "ffmpeg", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode (sink ffmpeg): the ffmpeg program, a full path or a name on PATH.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_ffmpeg_args, "-c:v ffv1 -level 3 -g 1 -slices 24 -pix_fmt bgr0", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode (sink ffmpeg): ffmpeg's output options, between the raw input and video.mkv.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_ring, 4, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: host buffers between the readback and the writer (2 to 8): the most frames that wait for the writer. "
-    "Fewer are used when mcla_capture_memory_mb or the free memory says so. Read when a take starts.")
-    .range(2, 8)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_memory_mb, 2048, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the hard cap, in MiB, on the memory a take holds (its GPU readback buffers and its ring, one frame "
-    "each). The ring is cut first, then the GPU buffers; a take that does not fit with 2 + 2 frames does not run, and the log says what "
-    "to change (a lower render scale). Nothing grows with the take's length or the writer's speed. Read when a take starts.")
-    .range(64, 65536)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_ram_floor_mb, 1024, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: free physical memory, in MiB, that has to stay free. A take whose buffers would take it lower is cut "
-    "down or refused at its start, and a take that sees it fall below stops with an error (an 8K take used up the PC's RAM). 0: no floor.")
-    .range(0, 65536)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_lag, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how many frames the game may run ahead of the readback. 0: it waits for frame k to be read back "
-    "before it starts update k + 1.")
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_gate_timeout_ms, 20000, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how long the game waits at the frame gate before it goes on (counted in the summary; three in a "
-    "row switch the waiting off for the take).")
-    .range(100, 600000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_virtual_clock, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: during a take the upscaler's history rule and the UI movies' pacing read frames x step instead of "
-    "the wall clock. Off, a slow capture makes the upscaler start its history again on every frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mcla_capture_delay_ms, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the readback of each frame sleeps this long (a slow writer, in milliseconds).")
-    .range(0.0, 5000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_log_every, 30, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: a [cap] line with the costs of a frame every this many frames (0: the summary only).")
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -612,10 +518,10 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
     if (core::SinkUsesFfmpeg(s.kind)) {
         // CHECK: `-pix_fmt bgr0` is taken by the ffv1 encoder of the ffmpeg 9.0 full build (E7's 4K take ran with it: 1224 MB mkv); the png
         // line (-c:v png -pix_fmt rgb24, image2 numbering from 0, -fps_mode passthrough) has not run.
-        const std::string& program = REXCVAR_GET(mcla_capture_ffmpeg);
+        const std::string& program = larecomp::settings::mcla_capture_ffmpeg.Get();
         const std::string cmd = s.kind == core::SinkKind::kPng
                                     ? core::FfmpegPngCommandLine(program, f.width, f.height, f.bgra, t.fps, t.layout.frame_pattern)
-                                    : core::FfmpegCommandLine(program, f.width, f.height, f.bgra, t.fps, REXCVAR_GET(mcla_capture_ffmpeg_args),
+                                    : core::FfmpegCommandLine(program, f.width, f.height, f.bgra, t.fps, larecomp::settings::mcla_capture_ffmpeg_args.Get(),
                                                               t.layout.video_mkv);
         t.ffmpeg_command = cmd;
         if (!s.pipe.Start(cmd, t.layout.ffmpeg_log)) {
@@ -725,10 +631,10 @@ const ExeInfo& GetExeInfo() {
 // The settings that differ from their defaults, sorted by name (a setting that holds a secret keeps its name and loses its value).
 std::vector<std::pair<std::string, std::string>> SnapshotCvars() {
     std::vector<std::pair<std::string, std::string>> out;
-    for (const std::string& name : rex::cvar::ListModifiedFlags()) {
-        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-        if (!info || info->type == rex::cvar::FlagType::Command) continue;
-        std::string value = core::IsSecretCvarName(name) ? std::string("(not recorded)") : rex::cvar::GetFlagByName(name);
+    for (const std::string& name : larecomp::cvar::ListModifiedFlags()) {
+        const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+        if (!info || info->type == larecomp::cvar::FlagType::Command) continue;
+        std::string value = core::IsSecretCvarName(name) ? std::string("(not recorded)") : larecomp::cvar::GetFlagByName(name);
         if (value.size() > 400) value.resize(400);
         out.emplace_back(name, std::move(value));
     }
@@ -953,7 +859,7 @@ void CopySceneFile(Take& t) {
 bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
     std::error_code ec;
     std::string folder;
-    const std::string& out = REXCVAR_GET(mcla_capture_out);
+    const std::string& out = larecomp::settings::mcla_capture_out.Get();
     if (!out.empty()) {
         folder = out;
         while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
@@ -970,8 +876,8 @@ bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
         t.name = Utf8(Path(folder).filename());
         if (t.name.empty()) t.name = "take";
     } else {
-        const std::string& root = REXCVAR_GET(mcla_capture_dir);
-        const std::string wanted = !spec.name.empty() ? spec.name : REXCVAR_GET(mcla_capture_name);
+        const std::string& root = larecomp::settings::mcla_capture_dir.Get();
+        const std::string wanted = !spec.name.empty() ? spec.name : larecomp::settings::mcla_capture_name.Get();
         const std::string base = core::SanitizeTakeName(wanted, SceneName());
         const std::string name = core::UniqueName(base, [&](const std::string& n) {
             std::error_code e2;
@@ -1001,7 +907,7 @@ bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
 double WantedFps() {
     const double scene = g_scene_fps.load(std::memory_order_relaxed);
     if (scene > 0.0) return core::ClampFps(scene);
-    return core::ClampFps(REXCVAR_GET(mcla_capture_fps));
+    return core::ClampFps(larecomp::settings::mcla_capture_fps.Get());
 }
 
 // Waits until `needed` take frames have been read back or reported lost. False: `timeout_ms` went by with nothing moving (no frame read back,
@@ -1050,15 +956,15 @@ void BeginTake(uint64_t u0, double fps) {
     t.ticks = core::StepTicksForFps(fps);
     t.step_ms = 1000.0 / fps;
     t.first_update = u0;
-    t.virtual_clock = REXCVAR_GET(mcla_capture_virtual_clock);
-    t.lag = std::clamp<int>(REXCVAR_GET(mcla_capture_lag), 0, 2);
-    t.ring = REXCVAR_GET(mcla_capture_ring);
+    t.virtual_clock = larecomp::settings::mcla_capture_virtual_clock.Get();
+    t.lag = std::clamp<int>(larecomp::settings::mcla_capture_lag.Get(), 0, 2);
+    t.ring = larecomp::settings::mcla_capture_ring.Get();
     t.scene_running = CurrentSceneState() == SceneState::kRunning || CurrentSceneState() == SceneState::kFinished;
     // the scene's time at the update before this one, and this update's own step on top: the time this update's frame shows
     t.first_scene_t = SceneTime() + t.step_ms / 1000.0;
-    t.cap_bytes = static_cast<uint64_t>(std::max(64, REXCVAR_GET(mcla_capture_memory_mb))) << 20;
-    t.floor_bytes = static_cast<uint64_t>(std::max(0, REXCVAR_GET(mcla_capture_ram_floor_mb))) << 20;
-    const std::string& sink_text = !spec.sink.empty() ? spec.sink : REXCVAR_GET(mcla_capture_sink);
+    t.cap_bytes = static_cast<uint64_t>(std::max(64, larecomp::settings::mcla_capture_memory_mb.Get())) << 20;
+    t.floor_bytes = static_cast<uint64_t>(std::max(0, larecomp::settings::mcla_capture_ram_floor_mb.Get())) << 20;
+    const std::string& sink_text = !spec.sink.empty() ? spec.sink : larecomp::settings::mcla_capture_sink.Get();
     if (!core::ParseSinkKind(sink_text, &t.sink)) {
         LARECOMP_APP_ERROR("[cap] the sink '{}' is none, ffmpeg, png or raw: using none", sink_text);
     }
@@ -1070,7 +976,7 @@ void BeginTake(uint64_t u0, double fps) {
     t.started_utc = core::FormatUtc(UnixNow());
     CopySceneFile(t);
     t.cvars = SnapshotCvars();
-    t.state_log = spec.state_log || REXCVAR_GET(mcla_capture_statelog);
+    t.state_log = spec.state_log || larecomp::settings::mcla_capture_statelog.Get();
     g_state_rows = 0;
     if (t.state_log) {
         g_state_file = OpenWrite(t.layout.state_csv);
@@ -1215,7 +1121,7 @@ void GateInTake(uint64_t u, double want_fps) {
     }
     const uint64_t handed = g_handover.Handed();
     const uint64_t needed = core::FramesNeeded(handed, static_cast<uint32_t>(t.lag), ending);
-    const int timeout_ms = REXCVAR_GET(mcla_capture_gate_timeout_ms);
+    const int timeout_ms = larecomp::settings::mcla_capture_gate_timeout_ms.Get();
     capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
     const auto w0 = Clock::now();
     bool off;
@@ -1249,7 +1155,7 @@ void GateInTake(uint64_t u, double want_fps) {
     }
     capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
     t.gate_ms.push_back(wait_ms);
-    if (const int every = REXCVAR_GET(mcla_capture_log_every); every > 0 && !t.gate_ms.empty()) {
+    if (const int every = larecomp::settings::mcla_capture_log_every.Get(); every > 0 && !t.gate_ms.empty()) {
         const uint64_t k_prev = t.gate_ms.size() - 1;
         if (k_prev % uint64_t(every) == 0 || k_prev < 3) LogFrame(t, static_cast<size_t>(k_prev));
     }
@@ -1339,11 +1245,11 @@ void CaptureSceneRequest(double fps) {
 // ---------------------------------------------------------------------------------------------------------------------
 uint64_t FixedStepTicks() {
     if (g_take_active.load(std::memory_order_acquire)) return g_take_ticks.load(std::memory_order_acquire);
-    return core::StepTicksForFps(REXCVAR_GET(mcla_fixed_step_fps));
+    return core::StepTicksForFps(larecomp::settings::mcla_fixed_step_fps.Get());
 }
 
 bool FixedStepActive() {
-    return g_take_active.load(std::memory_order_acquire) || REXCVAR_GET(mcla_fixed_step_fps) > 0.0;
+    return g_take_active.load(std::memory_order_acquire) || larecomp::settings::mcla_fixed_step_fps.Get() > 0.0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1351,7 +1257,7 @@ bool FixedStepActive() {
 // ---------------------------------------------------------------------------------------------------------------------
 namespace {
 bool ClockWanted() {
-    return g_take_active.load(std::memory_order_acquire) && REXCVAR_GET(mcla_capture_virtual_clock) &&
+    return g_take_active.load(std::memory_order_acquire) && larecomp::settings::mcla_capture_virtual_clock.Get() &&
            g_take_ticks.load(std::memory_order_acquire) != 0;
 }
 }  // namespace
@@ -1401,11 +1307,11 @@ void SceneClockNoteAnchor(uint32_t reset, uint32_t time_bit) {
 // the interface: render thread
 // ---------------------------------------------------------------------------------------------------------------------
 int CaptureLag() {
-    return std::clamp<int>(REXCVAR_GET(mcla_capture_lag), 0, 2);
+    return std::clamp<int>(larecomp::settings::mcla_capture_lag.Get(), 0, 2);
 }
 
 double CaptureDelayMs() {
-    return REXCVAR_GET(mcla_capture_delay_ms);
+    return larecomp::settings::mcla_capture_delay_ms.Get();
 }
 
 MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min) {
@@ -1476,7 +1382,7 @@ HostBuffer CaptureAcquire(double* stall_ms) {
     // gate's timeout (ffmpeg stuck, a disk that stopped taking data): the take then ends with an error, it never queues beyond its ring.
     double waited = 0.0;
     bool stuck = false;
-    const core::HostRing::Slot slot = s.ring.Acquire(REXCVAR_GET(mcla_capture_gate_timeout_ms), &waited, &stuck);
+    const core::HostRing::Slot slot = s.ring.Acquire(larecomp::settings::mcla_capture_gate_timeout_ms.Get(), &waited, &stuck);
     if (stall_ms) *stall_ms = waited;
     if (waited > 1.0) {
         std::lock_guard<std::mutex> rows(g_rows_mutex);
@@ -1485,7 +1391,7 @@ HostBuffer CaptureAcquire(double* stall_ms) {
     if (!slot.data) {
         if (stuck) {
             g_sink_stuck.store(true, std::memory_order_release);
-            TakeFail("the writer freed no buffer for " + std::to_string(REXCVAR_GET(mcla_capture_gate_timeout_ms) / 1000) +
+            TakeFail("the writer freed no buffer for " + std::to_string(larecomp::settings::mcla_capture_gate_timeout_ms.Get() / 1000) +
                      " s: ffmpeg or the disk has stopped taking frames (see ffmpeg.log in the take folder)");
         }
         return b;

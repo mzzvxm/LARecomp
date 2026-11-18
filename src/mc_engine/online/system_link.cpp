@@ -18,23 +18,8 @@
 #include <atomic>
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(online_ignore_content_check, true, "MCLA/Multiplayer",
-                    "Ignore the session DLC/content compatibility check when joining or hosting "
-                    "online. The check is symmetric and fails on any mask difference, so it "
-                    "wrongly demands DLC (South Central) even when nobody owns any. Turn off to "
-                    "restore the stock behaviour.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(online_diag, false, "MCLA/Multiplayer",
-                    "Log online session content masks and the valid-vehicle count at the join "
-                    "content check. Used to confirm whether the host's session properties "
-                    "transported. Verbose; leave off for normal play.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 // Online session content (DLC) compatibility gate. sub_8238B7E0 runs a symmetric
 // "mine is a superset of theirs" mask test twice on join; any mask difference
@@ -47,7 +32,7 @@ REXCVAR_DEFINE_BOOL(online_diag, false, "MCLA/Multiplayer",
 // When online_diag is on we dump both masks plus the global content mask
 // (0x827E9170) and the valid-vehicle-profile count (obj 0x8288E920 +0x53C).
 bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    if (REXCVAR_GET(online_diag)) {
+    if (larecomp::settings::online_diag.Get()) {
         auto* rt = rex::Runtime::instance();
         auto* mem = rt ? rt->memory() : nullptr;
         if (mem) {
@@ -63,7 +48,7 @@ bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
                 mode, local_mask, other, global_mask, valid_count);
         }
     }
-    if (!REXCVAR_GET(online_ignore_content_check)) return false;
+    if (!larecomp::settings::online_ignore_content_check.Get()) return false;
     r3.u64 = 1;
     return true;  // jump to the blr at 0x823882E4
 }
@@ -75,7 +60,7 @@ bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
 // join fails (wrong MaxPlayers). This dumps the count word (blob[0]) and the
 // parsed key fields. Read-only; gated by online_diag.
 void Hook_DumpJoinBlob(PPCRegister& r4) {
-    if (!REXCVAR_GET(online_diag)) return;
+    if (!larecomp::settings::online_diag.Get()) return;
     auto* rt = rex::Runtime::instance();
     auto* mem = rt ? rt->memory() : nullptr;
     if (!mem) return;
@@ -564,11 +549,11 @@ rex::memory::Memory* Mem() {
     return rt ? rt->memory() : nullptr;
 }
 
-bool OnlineLive() { return rex::cvar::GetFlagByName(kOnlineCvar) == "true"; }
+bool OnlineLive() { return larecomp::cvar::GetFlagByName(kOnlineCvar) == "true"; }
 
 void SetOnlineCvar(bool on) {
     t_setting_cvar = true;
-    rex::cvar::SetFlagByName(kOnlineCvar, on ? "true" : "false");
+    larecomp::cvar::SetFlagByName(kOnlineCvar, on ? "true" : "false");
     t_setting_cvar = false;
 }
 

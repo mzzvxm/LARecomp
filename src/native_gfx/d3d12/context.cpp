@@ -10,7 +10,7 @@
 #include <chrono>
 #include <cstdio>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/ui/d3d12/d3d12_provider.h>
 #include <rex/ui/d3d12/d3d12_util.h>
@@ -19,10 +19,6 @@
 // outside the namespace too: the macro builds the storage accessor from the
 // enclosing scope, and declaring it inside mcla::native_gfx asks the linker
 // for a symbol nobody defines.
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_upload_mb);
-REXCVAR_DECLARE(bool, mcla_native_gfx_record_replay);
-REXCVAR_DECLARE(bool, mcla_native_gfx_submit_thread);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -111,7 +107,7 @@ bool D3D12Context::FinishInitialize() {
       iq->AddApplicationMessage(D3D12_MESSAGE_SEVERITY_ERROR, "native_gfx infoqueue probe");
       after = iq->GetNumStoredMessages();
     }
-    if (REXCVAR_GET(mcla_native_gfx_diag)) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get()) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(f, "IQPROBE have=%d before=%llu after=%llu limit=%llu\n", have ? 1 : 0,
                      (unsigned long long)before, (unsigned long long)after,
@@ -152,7 +148,7 @@ bool D3D12Context::FinishInitialize() {
   }
 
   // Read once: the ring size and the buffers that back it must not disagree.
-  const uint64_t requested_mib = REXCVAR_GET(mcla_native_gfx_upload_mb);
+  const uint64_t requested_mib = larecomp::settings::mcla_native_gfx_upload_mb.Get();
   upload_capacity_ = (requested_mib ? requested_mib : kUploadCapacityDefaultMiB) << 20;
 
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -188,7 +184,7 @@ bool D3D12Context::FinishInitialize() {
 
 ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
   if (!initialized_ || frame_open_) {
-    if (REXCVAR_GET(mcla_native_gfx_diag)) {  // TEMP DIAG (BEGINFAIL)
+    if (larecomp::settings::mcla_native_gfx_diag.Get()) {  // TEMP DIAG (BEGINFAIL)
       static uint32_t n = 0;
       if (n++ < 8u) {
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
@@ -202,8 +198,8 @@ ID3D12GraphicsCommandList* D3D12Context::BeginFrame() {
   }
   // Decided per submission, so the A/B harness can flip them between frames.
   // The submission thread replays recorded streams, so it implies recording.
-  const bool threaded = REXCVAR_GET(mcla_native_gfx_submit_thread);
-  const bool recording = threaded || REXCVAR_GET(mcla_native_gfx_record_replay);
+  const bool threaded = larecomp::settings::mcla_native_gfx_submit_thread.Get();
+  const bool recording = threaded || larecomp::settings::mcla_native_gfx_record_replay.Get();
   if (threaded) {
     StartWorker();
   } else {
@@ -305,7 +301,7 @@ bool D3D12Context::ReplayAndSubmit(uint32_t slot, uint64_t fence_value, bool rep
     if (FAILED(close_hr)) {
       ok = false;
       REXLOG_ERROR("[native_gfx] command list Close failed {:#010x}", uint32_t(close_hr));
-      if (REXCVAR_GET(mcla_native_gfx_diag)) {  // TEMP DIAG (CLOSEFAIL)
+      if (larecomp::settings::mcla_native_gfx_diag.Get()) {  // TEMP DIAG (CLOSEFAIL)
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
           std::fprintf(f, "CLOSEFAIL hr=0x%08X removed=0x%08X\n", unsigned(close_hr),
                        unsigned(device_ ? device_->GetDeviceRemovedReason() : S_OK));
@@ -430,7 +426,7 @@ thread_local bool t_side_list_open = false;
 bool SideListOpenOnThisThread() { return t_side_list_open; }
 
 bool D3D12Context::SubmitThreadActive() {
-  return REXCVAR_GET(mcla_native_gfx_submit_thread) && worker_.joinable();
+  return larecomp::settings::mcla_native_gfx_submit_thread.Get() && worker_.joinable();
 }
 
 void D3D12Context::EnqueueWorkerTask(std::function<void()> task) {
@@ -546,7 +542,7 @@ void D3D12Context::DrainDebugMessages(const char* context_label) {
   if (FAILED(device_->QueryInterface(IID_PPV_ARGS(&info_queue)))) {
     REXLOG_ERROR("[native_gfx] {}: no D3D12 InfoQueue (debug layer off?)", context_label);
     static uint32_t iq_lines = 0;
-    if (REXCVAR_GET(mcla_native_gfx_diag) && iq_lines++ < 8u) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get() && iq_lines++ < 8u) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(f, "D3DERR %s: no_infoqueue\n", context_label);
         std::fclose(f);
@@ -558,7 +554,7 @@ void D3D12Context::DrainDebugMessages(const char* context_label) {
   if (count == 0) {
     REXLOG_ERROR("[native_gfx] {}: InfoQueue empty", context_label);
     static uint32_t iq_lines = 0;
-    if (REXCVAR_GET(mcla_native_gfx_diag) && iq_lines++ < 8u) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get() && iq_lines++ < 8u) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
         std::fprintf(f, "D3DERR %s: infoqueue_empty\n", context_label);
         std::fclose(f);
@@ -586,7 +582,7 @@ void D3D12Context::DrainDebugMessages(const char* context_label) {
       // the process stdout is not readable, and this is the only place that
       // says WHY a command list failed to close.
       static uint32_t iq_lines = 0;
-      if (REXCVAR_GET(mcla_native_gfx_diag) && iq_lines++ < 8u) {
+      if (larecomp::settings::mcla_native_gfx_diag.Get() && iq_lines++ < 8u) {
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
           std::fprintf(f, "D3DERR %s: [sev %d id %d] %s\n", context_label,
                        int(message->Severity), int(message->ID), text);

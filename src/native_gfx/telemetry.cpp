@@ -17,7 +17,7 @@
 #include <set>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -32,30 +32,6 @@
 #include "guest/guest_resources.h"
 #include "guest/texture_format.h"
 #include "shader_identity.h"
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_geomdump, false, "MCLA/NativeGfx",
-                    "Dump a per-draw geometry snapshot (streams, strides, input layout, index "
-                    "buffer, slicing) built from guest state, to "
-                    "mcla_native_gfx_geometry.txt. One entry per distinct draw shape.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_texdump, false, "MCLA/NativeGfx",
-                    "Decode the first textures the game binds straight out of guest memory "
-                    "(fetch constant -> format -> untile) and write them to "
-                    "mcla_native_gfx_textures/ for offline inspection. This is the correctness "
-                    "test for the texture decoder against real game data; off by default "
-                    "because it writes tens of MB.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_telemetry, false, "MCLA/NativeGfx",
-                    "Collect resource-usage telemetry (bound buffers, index buffers, texture "
-                    "fetch constants) while the native graphics runtime is active. Written to "
-                    "mcla_native_gfx_resources_*.csv. Off by default: it takes a mutex and two "
-                    "map lookups per fetch slot on every draw.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {
 
@@ -183,7 +159,7 @@ uint64_t g_pso_counter_misses = 0;
 uint64_t g_pso_counter_skipped = 0;
 
 void DumpTexture(const uint8_t* base, const uint32_t d[6]) {
-  if (!REXCVAR_GET(mcla_native_gfx_texdump) || g_tex_dumped >= kMaxTexDumps) {
+  if (!larecomp::settings::mcla_native_gfx_texdump.Get() || g_tex_dumped >= kMaxTexDumps) {
     return;
   }
   const TextureFetch f = DecodeTextureFetch(d);
@@ -443,7 +419,7 @@ void WriteReports() {
 
 void TelemetryRecordDraw(const uint8_t* base, uint32_t dev, uint32_t prim_type, uint32_t elements,
                          bool indexed) {
-  if (!REXCVAR_GET(mcla_native_gfx_telemetry)) {
+  if (!larecomp::settings::mcla_native_gfx_telemetry.Get()) {
     return;
   }
   (void)prim_type;
@@ -539,7 +515,7 @@ void TelemetryRecordDraw(const uint8_t* base, uint32_t dev, uint32_t prim_type, 
 void TelemetryRecordGeometry(const uint8_t* base, uint32_t dev, uint32_t primitive_type,
                              uint32_t element_count, uint32_t start_element, int32_t base_vertex,
                              bool indexed, uint64_t vs_dirty, uint64_t ps_dirty) {
-  if (!REXCVAR_GET(mcla_native_gfx_geomdump)) {
+  if (!larecomp::settings::mcla_native_gfx_geomdump.Get()) {
     return;
   }
   std::lock_guard<std::mutex> lock(g_mutex);

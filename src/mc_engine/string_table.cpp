@@ -13,7 +13,7 @@
 #include <memory>
 #include <mutex>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 
 #include "string_dumper.h"
@@ -137,8 +137,8 @@ void ScanMCLAStringTable(bool trigger_rescan = false) {
     if (!active) return;
     Dumper& dumper = *active;
 
-    bool do_dump = REXCVAR_GET(string_dump_enabled);
-    bool do_replace = REXCVAR_GET(string_replace_enabled);
+    bool do_dump = larecomp::settings::string_dump_enabled.Get();
+    bool do_replace = larecomp::settings::string_replace_enabled.Get();
 
     if (!do_dump && !do_replace) return;
 
@@ -178,8 +178,8 @@ void InitStringTableTools() {
         bool was_replace_enabled = false;
         
         while (true) {
-            bool do_dump = REXCVAR_GET(string_dump_enabled);
-            bool do_replace = REXCVAR_GET(string_replace_enabled);
+            bool do_dump = larecomp::settings::string_dump_enabled.Get();
+            bool do_replace = larecomp::settings::string_replace_enabled.Get();
 
             // Trigger para garantir que o Rescan() só ocorra 1 vez quando ativado, 
             // e não a cada 500ms estourando o I/O do disco.

@@ -4,7 +4,7 @@
 // coexists with a fork SDK that still exports its own copy.
 
 #include "rpc_client.h"
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/platform.h>
 
@@ -23,9 +23,6 @@
 // The SDK compiled this only on Windows and Linux (its CMakeLists bailed out
 // elsewhere); larecomp adds the file unconditionally, so the guard lives here.
 #if REX_PLATFORM_WIN32 || REX_PLATFORM_LINUX
-
-REXCVAR_DEFINE_BOOL(larecomp_discord_activity, true, "Discord", "Enable Discord Rich Presence activity")
-    .debug_only();
 
 #if REX_PLATFORM_WIN32
 #ifndef NOMINMAX
@@ -432,7 +429,7 @@ void WorkerThread() {
                                 .count();
   bool handshake_sent = false;
   bool ready = false;
-  bool last_activity_enabled = REXCVAR_GET(larecomp_discord_activity);
+  bool last_activity_enabled = larecomp::settings::larecomp_discord_activity.Get();
 
   while (g_running.load()) {
     if (!IsConnected()) {
@@ -459,7 +456,7 @@ void WorkerThread() {
 
     DrainMessages(&ready);
 
-    const bool activity_enabled = REXCVAR_GET(larecomp_discord_activity);
+    const bool activity_enabled = larecomp::settings::larecomp_discord_activity.Get();
     if (activity_enabled != last_activity_enabled) {
       last_activity_enabled = activity_enabled;
       g_dirty = true;

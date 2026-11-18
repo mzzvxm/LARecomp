@@ -2,15 +2,7 @@
 
 #include "ab.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ab_interleave, false, "MCLA/GPU",
-    "Diagnostic (M6a): alternate the render thread's code under test between its old "
-    "(A) and candidate (B) path every statistics window, and log each window's prepare time "
-    "under its variant. Off: the candidate path always runs.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+#include "settings/larecomp_settings.h"
 
 namespace mcla::gpu::ab {
 
@@ -23,7 +15,7 @@ bool g_enabled = false;
 }
 
 void Initialize() {
-  g_enabled = REXCVAR_GET(mcla_gpu_ab_interleave);
+  g_enabled = larecomp::settings::mcla_gpu_ab_interleave.Get();
   detail::g_b = true;
 }
 

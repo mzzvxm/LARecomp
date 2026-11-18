@@ -4,7 +4,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/keybinds.h>
 
@@ -21,27 +21,6 @@
 #include "gpu/gpu_class.h"
 #include "logging.h"
 #include "ui/imgui_theme.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_compare_effect, "bounce", "MCLA/GPU",
-    "Which graphics effect the compare key flips off and on, to see what it does: bounce (the bounce light, the "
-    "default), contact (contact shadows), shafts (sun shafts), occlusion (ambient occlusion), filter (the sun "
-    "shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow size fix: it has no row, set it "
-    "here or on the command line). The key is "
-    "F1 until it is rebound in the key bindings of F4 (bind_mcla_compare). Pressing it shows the effect the other "
-    "way than your setting has it, a label at the top of the screen says how, and the next press puts your "
-    "setting back. The flip is never saved, and it is dropped when the setting it flips is changed or this one "
-    "is. Live.")
-    .allowed({"bounce", "contact", "shafts", "occlusion", "filter", "selfrefl", "bloom"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(
-    mcla_compare_label_seconds, 1.5, "MCLA/GPU",
-    "Diagnostic: how long the compare key's label stays up before it fades out (about 0.35 s more), 0.5 to 30. "
-    "A test run takes its pictures a second after the press and sets it higher. Live.")
-    .debug_only()
-    .range(0.5, 30.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::compare {
 
@@ -85,13 +64,13 @@ cmp::Saved ReadSaved() {
   cmp::Saved saved;
   saved.cls = gpu::gpu_class::Current();
   saved.class_known = gpu::gpu_class::Known();
-  saved.occlusion = rex::cvar::GetFlagByName("mcla_gpu_ao");
-  saved.contact = rex::cvar::GetFlagByName("mcla_gpu_contact_shadows");
-  saved.shafts = rex::cvar::GetFlagByName("mcla_gpu_sun_shafts");
-  saved.bounce = rex::cvar::GetFlagByName("mcla_gpu_ssgi");
-  saved.filter = rex::cvar::GetFlagByName("mcla_gpu_shadow_filter");
-  saved.car_refl = rex::cvar::GetFlagByName("mcla_gpu_car_selfrefl");
-  const std::string bloom = rex::cvar::GetFlagByName("mcla_gpu_bloom_scale");
+  saved.occlusion = larecomp::cvar::GetFlagByName("mcla_gpu_ao");
+  saved.contact = larecomp::cvar::GetFlagByName("mcla_gpu_contact_shadows");
+  saved.shafts = larecomp::cvar::GetFlagByName("mcla_gpu_sun_shafts");
+  saved.bounce = larecomp::cvar::GetFlagByName("mcla_gpu_ssgi");
+  saved.filter = larecomp::cvar::GetFlagByName("mcla_gpu_shadow_filter");
+  saved.car_refl = larecomp::cvar::GetFlagByName("mcla_gpu_car_selfrefl");
+  const std::string bloom = larecomp::cvar::GetFlagByName("mcla_gpu_bloom_scale");
   saved.bloom = bloom != "false" && bloom != "0";
   return saved;
 }
@@ -104,7 +83,7 @@ void OnKey() {
   }
   last_press_ms = now;
 
-  const cmp::Effect effect = cmp::ParseEffect(rex::cvar::GetFlagByName("mcla_compare_effect"));
+  const cmp::Effect effect = cmp::ParseEffect(larecomp::cvar::GetFlagByName("mcla_compare_effect"));
   cmp::State& state = cmp::Global();
   if (state.Flipped() != cmp::Effect::kNone && state.Flipped() != effect) {
     state.Clear();  // the key was set to another effect while one was flipped
@@ -150,7 +129,7 @@ class LabelDialog final : public rex::ui::ImGuiDialog {
       label = g_shown.label;
       age = std::chrono::duration<float>(Clock::now() - g_shown.at).count();
     }
-    const float hold = float(std::clamp(REXCVAR_GET(mcla_compare_label_seconds), 0.5, 30.0));
+    const float hold = float(std::clamp(larecomp::settings::mcla_compare_label_seconds.Get(), 0.5, 30.0));
     const float alpha = cmp::LabelAlpha(age, hold);
     if (alpha <= 0.0f) {
       Hide();
@@ -178,7 +157,7 @@ std::unique_ptr<LabelDialog> g_label;
 }  // namespace
 
 std::string KeyLabel() {
-  const std::string key = rex::cvar::GetFlagByName(kBindName);
+  const std::string key = larecomp::cvar::GetFlagByName(kBindName);
   std::string out;
   for (const char c : key) {
     const unsigned char u = static_cast<unsigned char>(c);
@@ -203,11 +182,11 @@ void Start(rex::ui::ImGuiDrawer* drawer) {
   // A flip ends when the setting it flips is changed, and when the key is set to another effect.
   for (int i = 0; i < cmp::kEffectCount; ++i) {
     const cmp::Effect effect = static_cast<cmp::Effect>(i);
-    rex::cvar::RegisterChangeCallback(cmp::Info(effect).cvar, [effect](std::string_view, std::string_view) {
+    larecomp::cvar::RegisterChangeCallback(cmp::Info(effect).cvar, [effect](std::string_view, std::string_view) {
       OnSettingChanged(effect);
     });
   }
-  rex::cvar::RegisterChangeCallback("mcla_compare_effect", [](std::string_view, std::string_view) {
+  larecomp::cvar::RegisterChangeCallback("mcla_compare_effect", [](std::string_view, std::string_view) {
     if (cmp::Global().Flipped() != cmp::Effect::kNone) {
       cmp::Global().Clear();
       Hide();
@@ -215,8 +194,8 @@ void Start(rex::ui::ImGuiDrawer* drawer) {
   });
   MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect), the label stays {:.1f} s",
           KeyLabel(), kBindName,
-          std::string(cmp::Info(cmp::ParseEffect(rex::cvar::GetFlagByName("mcla_compare_effect"))).label),
-          REXCVAR_GET(mcla_compare_label_seconds));
+          std::string(cmp::Info(cmp::ParseEffect(larecomp::cvar::GetFlagByName("mcla_compare_effect"))).label),
+          larecomp::settings::mcla_compare_label_seconds.Get());
 }
 
 }  // namespace mcla::compare

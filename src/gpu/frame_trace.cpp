@@ -9,25 +9,13 @@
 #include <cstring>
 #include <filesystem>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
 #include "backend.h"
 #include "cycles.h"
 #include "draw_decode.h"
-
-REXCVAR_DEFINE_UINT64(mcla_gpu_trace_frame, 0, "MCLA/GPU",
-                      "Write a raw trace of the guest frame that begins after this many guest "
-                      "frames (0 = off) to mcla_gpu_trace_<frame>.txt next to the executable. "
-                      "Decoded by tools/gpu/trace_analyze.py. A 6000-draw frame is tens of MB.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_gpu_trace_count, 1, "MCLA/GPU",
-                      "How many consecutive frames mcla_gpu_trace_frame writes, one file each.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -41,17 +29,24 @@ std::atomic<FrameTrace*> g_trace_for_command{nullptr};
 
 }  // namespace mcla::gpu
 
-REXCVAR_DEFINE_COMMAND(
-    gpu_trace_next,
-    [] {
+// Console command `gpu_trace_next` (was REXCVAR_DEFINE_COMMAND in category "MCLA/GPU"; its .debug_only() has no equivalent).
+class LarecompCommand_gpu_trace_next final : public rex::SettingOwner {
+ public:
+  LarecompCommand_gpu_trace_next() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
+  REX_COMMAND(gpu_trace_next, "Write a raw trace of the next guest frame (see mcla_gpu_trace_frame).",
+              [](std::string_view args) -> rex::Result<void> {
+                (void)args;
+                ([] {
       if (mcla::gpu::FrameTrace* t =
               mcla::gpu::g_trace_for_command.load(std::memory_order_acquire)) {
         t->RequestNext();
         REXLOG_INFO("[gpu] trace: the frame after the next present will be written");
       }
-    },
-    "MCLA/GPU", "Write a raw trace of the next guest frame (see mcla_gpu_trace_frame).")
-    .debug_only();
+    })();
+                return rex::Ok();
+              });
+};
+inline LarecompCommand_gpu_trace_next g_larecomp_command_gpu_trace_next;
 
 namespace mcla::gpu {
 
@@ -87,9 +82,9 @@ bool FrameTrace::ShouldTrace(uint64_t frames) {
     frames_left_ = 0;
     return Open(frames);
   }
-  const uint64_t target = REXCVAR_GET(mcla_gpu_trace_frame);
+  const uint64_t target = larecomp::settings::mcla_gpu_trace_frame.Get();
   if (target != 0 && frames == target && !(traced_any_ && frame_ == target)) {
-    const uint32_t count = REXCVAR_GET(mcla_gpu_trace_count);
+    const uint32_t count = larecomp::settings::mcla_gpu_trace_count.Get();
     frames_left_ = count > 1 ? count - 1 : 0;
     return Open(frames);
   }

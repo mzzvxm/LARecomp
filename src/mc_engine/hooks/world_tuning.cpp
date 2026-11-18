@@ -3,7 +3,7 @@
 // and the framerate floor for new breaks).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <cstdint>
@@ -15,47 +15,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-// BadassBaboon's Recomp Adjustments: Ambient traffic & pedestrian density tuning for city performance
-REXCVAR_DEFINE_BOOL(enable_ambient_tuning, true, "MCLA/Performance",
-    "Enable ambient traffic and pedestrian density tuning.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(traffic_unspawn_dist, 250.0, "MCLA/Performance",
-    "Traffic vehicle unspawn radius in meters (default 400.0, lower = higher FPS in city).")
-    .range(100.0, 600.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(ped_density_scale, 0.5, "MCLA/Performance",
-    "Pedestrian density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(parked_car_scale, 0.5, "MCLA/Performance",
-    "Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// ── rage::fragTuneStruct overrides ──────────────────────────────────────────
-// Both values live in the fragment tune the game parses out of
-// $/tune/types/fragments (fragment = breakable prop: poles, signs, fences,
-// barriers). They are patched in the parsed struct at runtime, so no RPF edit
-// and no decryption is involved. 0 keeps whatever the tune file loaded.
-REXCVAR_DEFINE_DOUBLE(global_max_draw_distance, 0.0, "MCLA/Performance",
-    "fragTuneStruct::GlobalMaxDrawingDistance — draw distance for breakable props "
-    "(poles, signs, fences). 0 = keep the tune file's value (3000); the engine's own "
-    "constructor default is 250.")
-    .range(0.0, 6000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
-    "fragTuneStruct::BreakingFrameRateLimit — framerate floor under which the engine "
-    "stops spawning new fragment breaks. 0 = keep the tune file's value (10); the "
-    "engine's own constructor default is 30.")
-    .range(0.0, 120.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // BadassBaboon's Recomp Adjustments: ambient traffic / pedestrian density.
 //
@@ -149,10 +108,10 @@ static void WriteZoneValues(uint8_t* base, uint32_t a, const DensityTuningValues
 }
 
 static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
-    enabled = REXCVAR_GET(enable_ambient_tuning);
-    want.unspawn = static_cast<float>(REXCVAR_GET(traffic_unspawn_dist));
-    want.ped = static_cast<float>(REXCVAR_GET(ped_density_scale));
-    want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
+    enabled = larecomp::settings::enable_ambient_tuning.Get();
+    want.unspawn = static_cast<float>(larecomp::settings::traffic_unspawn_dist.Get());
+    want.ped = static_cast<float>(larecomp::settings::ped_density_scale.Get());
+    want.parked = static_cast<float>(larecomp::settings::parked_car_scale.Get());
 }
 
 // Brings one zone to the wanted state. If the game moved a field since our last
@@ -325,7 +284,7 @@ void ApplyFragTuneOverrides() {
     if (obj == 0) return;
 
     for (auto& f : g_frag_tune) {
-        const double want = std::strtod(rex::cvar::GetFlagByName(f.cvar).c_str(), nullptr);
+        const double want = std::strtod(larecomp::cvar::GetFlagByName(f.cvar).c_str(), nullptr);
 
         if (!(want > 0.0)) {
             // Auto: track whatever the tune file left there, and put it back once

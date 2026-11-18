@@ -44,7 +44,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/input/device.h>
 #include <rex/input/input_system.h>
 #include <rex/runtime.h>
@@ -58,21 +58,6 @@
 #include "ui/pad_vendor.h"
 #include "wheel/wheel_input.h"
 
-REXCVAR_DEFINE_BOOL(input_log, false, "MCLA/Input",
-    "Log every key, mouse and controller event that the active-device rules looked at and what they "
-    "decided (counted, or why it was ignored), at most 4000 lines. The switches themselves are always "
-    "logged.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(input_test_pad_loss, false, "MCLA/Input",
-    "Test only: set to true to act as if the controller in the player's hands had just been unplugged: the "
-    "same rule as a real removal (only while a pad is the active device and the game is driven; the pad "
-    "need not be real). The next pad poll takes it; set it to false and true again for another.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(std::string, button_prompts);  // hooks/ui.cpp
 
 namespace larecomp::input {
 namespace {
@@ -196,7 +181,7 @@ constexpr int kMaxEventLines = 4000;
 std::atomic<int> g_event_lines{0};
 
 bool VerboseOpen() {
-  return REXCVAR_GET(input_log) && g_event_lines.fetch_add(1, std::memory_order_relaxed) < kMaxEventLines;
+  return larecomp::settings::input_log.Get() && g_event_lines.fetch_add(1, std::memory_order_relaxed) < kMaxEventLines;
 }
 
 // ---- the SDK -------------------------------------------------------------------------------------------
@@ -309,10 +294,10 @@ void Init() {
   if (g_ready.load(std::memory_order_acquire)) return;
   std::call_once(g_once, [] {
     Apply(Core().Seed(mcla::ui::PlayStationControllerPresent() ? GlyphFamily::PlayStation : GlyphFamily::Xbox), /*notify=*/false);
-    ApplyPromptSetting(REXCVAR_GET(button_prompts), /*notify=*/false);
-    rex::cvar::RegisterChangeCallback("button_prompts",
+    ApplyPromptSetting(larecomp::settings::button_prompts.Get(), /*notify=*/false);
+    larecomp::cvar::RegisterChangeCallback("button_prompts",
         [](std::string_view, std::string_view value) { ApplyPromptSetting(value); });
-    rex::cvar::RegisterChangeCallback("input_test_pad_loss", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("input_test_pad_loss", [](std::string_view, std::string_view value) {
       if (value == "true" || value == "1") g_test_loss.store(true, std::memory_order_relaxed);
     });
     larecomp::devwatch::AddChangeListener(&OnWatcherChanged, nullptr);

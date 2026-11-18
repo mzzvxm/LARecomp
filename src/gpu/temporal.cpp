@@ -9,7 +9,7 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "backend.h"
@@ -28,45 +28,8 @@
 #include "upscaler_load_policy.h"
 #include "upscaler_math.h"
 
-REXCVAR_DECLARE(bool, mcla_gpu_upscaler_masks);  // scene.cpp
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pause_vehicle_vectors, false, "MCLA/GPU",
-    "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
-    "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
-    "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
-    "the game's slots for the vehicles are not trusted in those frames). Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_temporal_jitter_hold, true, "MCLA/GPU",
-    "Diagnostic: hold the temporal upscalers' sub-pixel jitter at zero while the history restarts in every frame (a "
-    "camera the cut rule or the game's previous-matrix test cannot follow): a frame resolved from one frame is "
-    "steadier unjittered. Off: the jitter goes on as before. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Test levers for the static-scene flicker analysis (debug only, live, never saved; defaults = the
-// behaviour without them).
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_zero_jitter, false, "MCLA/GPU",
-    "While FSR or DLSS draws the scene: no sub-pixel jitter at all. The projection is not moved and "
-    "the upscaler is told a jitter of 0 (one value, so the draws, the motion vectors and the upscaler "
-    "agree). The upscaler then has no sub-pixel samples to rebuild detail from and the picture is "
-    "no sharper than the render size; a flicker that follows the jitter phase is gone with it, one "
-    "that stays is not the jitter's. For A/B. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_post_reads_output, true, "MCLA/GPU",
-    "While FSR or DLSS draws the scene at the output's size (FSR's Native AA, DLAA): the game's post "
-    "chain before the upscale (the half-size downsample that the bloom's bright pass, the exposure "
-    "and the motion blur's half-size layer are made from) reads the previous frame's upscaled "
-    "picture, as it does at every other mode (on, the default since 2026-11-14: measured on a still "
-    "pause view with FSR Native AA, flat areas 8x and the distant tower 3x steadier). Off: the old "
-    "path, the raw jittered scene at that size, kept for A/B. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -1122,7 +1085,7 @@ void TemporalSystem::StandInForPostChain() {
   // depends on the ratio: the products, the output image and the scale are the same ones.
   if (!upscaler_math::PostChainReadsOutput(last_render_size_[0], last_render_size_[1],
                                            last_output_size_[0], last_output_size_[1],
-                                           REXCVAR_GET(mcla_gpu_upscaler_post_reads_output))) {
+                                           larecomp::settings::mcla_gpu_upscaler_post_reads_output.Get())) {
     return;
   }
   if (!output_.texture || output_.layout != plume::RenderTextureLayout::SHADER_READ ||
@@ -1538,13 +1501,13 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
     // While the history restarts in every frame the upscaler cannot take the jitter out: held at zero (temporal_menu.h).
-    const bool hold_on = REXCVAR_GET(mcla_gpu_temporal_jitter_hold);
+    const bool hold_on = larecomp::settings::mcla_gpu_temporal_jitter_hold.Get();
     frame_.jitter[0] = temporal::HeldJitter(frame_.jitter[0], jitter_hold_.Held(), hold_on);
     frame_.jitter[1] = temporal::HeldJitter(frame_.jitter[1], jitter_hold_.Held(), hold_on);
     // mcla_gpu_upscaler_zero_jitter (debug): no sub-pixel offset. This one value is the draws'
     // projection offset (OnMainView), the vectors' jitter (pending_.jitter) and the upscaler's
     // jitterOffset (RecordUpscale), so all three get the 0.
-    upscaler_math::ApplyZeroJitter(REXCVAR_GET(mcla_gpu_upscaler_zero_jitter), frame_.jitter);
+    upscaler_math::ApplyZeroJitter(larecomp::settings::mcla_gpu_upscaler_zero_jitter.Get(), frame_.jitter);
   }
   NoteLeverChanges();
 }
@@ -1552,8 +1515,8 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
 void TemporalSystem::NoteLeverChanges() {
   // One log line each time a test lever of this file changes (and the first time it is on), so that a
   // run's log says which frames had it.
-  const bool zero = REXCVAR_GET(mcla_gpu_upscaler_zero_jitter);
-  const bool post = REXCVAR_GET(mcla_gpu_upscaler_post_reads_output);
+  const bool zero = larecomp::settings::mcla_gpu_upscaler_zero_jitter.Get();
+  const bool post = larecomp::settings::mcla_gpu_upscaler_post_reads_output.Get();
   if (zero != lever_zero_jitter_) {
     lever_zero_jitter_ = zero;
     REXLOG_INFO("{} debug lever mcla_gpu_upscaler_zero_jitter is now {} (from frame {}): {}", kPrefix,
@@ -1934,7 +1897,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
   if (pending_.previous && temporal::UseGameVehicleMotion(fr.view == temporal::View::kPause,
-                                                          REXCVAR_GET(mcla_gpu_pause_vehicle_vectors))) {
+                                                          larecomp::settings::mcla_gpu_pause_vehicle_vectors.Get())) {
     // The vehicles' own motion from the game's slots, on top of the camera's from this renderer's
     // own history (vehicle_motion.h); the anchor's constants are only at hand here. Not in the pause view (the
     // pause menu, the garage, the map): a vehicle there takes the camera's motion, as the occlusion's history
@@ -2268,7 +2231,7 @@ void TemporalSystem::Report() {
                 w.post_reads_served, w.view_upscaled[kPlayView], w.view_upscaled[kPauseView],
                 w.upscale_plain_not_ready, w.upscale_plain_first, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
-                motion_.masks().StateText(REXCVAR_GET(mcla_gpu_upscaler_masks)),
+                motion_.masks().StateText(larecomp::settings::mcla_gpu_upscaler_masks.Get()),
                 MsaaKeptUnderUpscaler() ? "yes" : "no",
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
   }

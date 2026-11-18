@@ -4,7 +4,7 @@
 // category; what they share is in hooks_internal.h.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <atomic>
 #include <string>
 #include <string_view>
@@ -51,11 +51,11 @@ void InitHooks() {
 
     // export_vinyl acts as a button: toggling it ON runs the export, then it
     // flips back OFF so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("export_vinyl",
+    larecomp::cvar::RegisterChangeCallback("export_vinyl",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 ExportVinyl();
-                rex::cvar::SetFlagByName("export_vinyl", "false");
+                larecomp::cvar::SetFlagByName("export_vinyl", "false");
             }
         }
     );
@@ -63,20 +63,20 @@ void InitHooks() {
     // cam_probe_mark / cam_probe_dump: buttons — snapshot the gameplay camera
     // and diff it, to find what the look-around actually moves. Same
     // flip-back-off shape as the dumps below.
-    rex::cvar::RegisterChangeCallback("cam_probe_mark",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_mark",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeMark();
-                rex::cvar::SetFlagByName("cam_probe_mark", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_mark", "false");
             }
         }
     );
 
-    rex::cvar::RegisterChangeCallback("cam_probe_dump",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_dump",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeDump();
-                rex::cvar::SetFlagByName("cam_probe_dump", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_dump", "false");
             }
         }
     );
@@ -84,54 +84,54 @@ void InitHooks() {
     // The one that is actually usable: arms both samples on a timer, because
     // opening this overlay to press a button is itself enough to take the game
     // out of the camera state being measured.
-    rex::cvar::RegisterChangeCallback("cam_probe_run",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_run",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeRun();
-                rex::cvar::SetFlagByName("cam_probe_run", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_run", "false");
             }
         }
     );
 
     // rubberband_dump: button — writes the 11 parsed tune entries out and flips
     // itself back off so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("rubberband_dump",
+    larecomp::cvar::RegisterChangeCallback("rubberband_dump",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 DumpRubberBandTuning();
-                rex::cvar::SetFlagByName("rubberband_dump", "false");
+                larecomp::cvar::SetFlagByName("rubberband_dump", "false");
             }
         }
     );
 
     // import_vinyl: type a .vgp file name + Enter to apply it, then the field
     // clears itself. The empty write re-fires this callback, hence the guard.
-    rex::cvar::RegisterChangeCallback("import_vinyl",
+    larecomp::cvar::RegisterChangeCallback("import_vinyl",
         [](std::string_view name, std::string_view new_value) {
             if (new_value.empty()) return;
             ImportVinyl(std::string(new_value));
-            rex::cvar::SetFlagByName("import_vinyl", "");
+            larecomp::cvar::SetFlagByName("import_vinyl", "");
         }
     );
 
     // dump_vinyl_shapes: button — toggling ON writes the shape catalog manifest,
     // then flips back OFF so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("dump_vinyl_shapes",
+    larecomp::cvar::RegisterChangeCallback("dump_vinyl_shapes",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 DumpVinylShapes();
-                rex::cvar::SetFlagByName("dump_vinyl_shapes", "false");
+                larecomp::cvar::SetFlagByName("dump_vinyl_shapes", "false");
             }
         }
     );
 
     // capture_vinyl_shapes: button — starts the hands-free sweep, which runs on
     // the per-frame tick (Patch_DeltaTimePre) and finalizes itself.
-    rex::cvar::RegisterChangeCallback("capture_vinyl_shapes",
+    larecomp::cvar::RegisterChangeCallback("capture_vinyl_shapes",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 RequestVinylShapeCapture();
-                rex::cvar::SetFlagByName("capture_vinyl_shapes", "false");
+                larecomp::cvar::SetFlagByName("capture_vinyl_shapes", "false");
             }
         }
     );

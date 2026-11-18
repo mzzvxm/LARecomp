@@ -6,25 +6,13 @@
 #include <format>
 #include <unordered_map>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "pipelines.h"
 #include "texture_bytes.h"
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_upscaler_mask_test, 0, "MCLA/GPU",
-    "Diagnostic: tests whether the upscalers read their mask inputs. 1 gives the reactive mask (what "
-    "FSR calls reactive; DLSS's bias-current-colour and reactive hints) every pixel at 1, 2 gives the "
-    "transparency and composition mask every pixel at 1, 3 both. An upscaler that reads a mask then "
-    "stops trusting its history: the picture loses its smoothness over time (edges crawl, thin lines "
-    "flicker); one that does not read it looks as before. Only while FSR or DLSS runs. 0: the real "
-    "masks. Live.")
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mcla::gpu {
 
@@ -394,7 +382,7 @@ bool UpscalerMasks::Prepare(bool multisampled) {
 
 bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_width,
                             uint32_t render_height) {
-  const uint32_t test = uint32_t(REXCVAR_GET(mcla_gpu_upscaler_mask_test));
+  const uint32_t test = uint32_t(larecomp::settings::mcla_gpu_upscaler_mask_test.Get());
   const bool ready = list && initialized_ && !failed_;
   bool any = false;
   for (size_t i = 0; i < kLayerCount; ++i) {

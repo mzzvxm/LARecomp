@@ -14,7 +14,7 @@
 #include <thread>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -37,42 +37,6 @@
 #include "upscaler_load_policy.h"
 #include "upscaler_math.h"
 
-// FSR's own tuning constants, passed through ffxConfigure on the context (FfxApiConfigureUpscaleKey;
-// debug only, live, never saved). -1 is "not set": FSR's own default. A value of 0 or more is passed to
-// the context before its first dispatch and again whenever it changes; the runtime clamps it to its
-// range. FSR 3.1 reads them; FSR 4's provider may refuse the keys (the log says what it answered).
-// The first two are 0 by default (the play build's values: measured on a still scene, the strongest
-// flickers drop by about two thirds, and no ghosting shows while driving); the third is a test lever
-// with FSR's own default.
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_velocity_factor, 0.0, "MCLA/GPU",
-    "FSR's fVelocityFactor, 0 to 1 (FSR's own default is 1). 0, the default here, trusts the history "
-    "less where something moved, which steadies bright pixels (on a still scene the strongest "
-    "flickers drop by about two thirds, with no visible ghosting while driving). -1: not set, FSR's "
-    "own default is restored. Passed to the context once it exists and again when it changes. Debug "
-    "only. Live.")
-    .debug_only()
-    .range(-1.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_shading_change_scale, 0.0, "MCLA/GPU",
-    "FSR 3.1's fShadingChangeScale, 0 and up (FSR's own default is 1). More makes its computed "
-    "shading change count for more, so a pixel whose lighting changed lets go of its history "
-    "faster; 0, the default here, turns that off (together with the velocity factor of 0, the "
-    "strongest flickers of a still scene drop by about two thirds). -1: not set, FSR's own default "
-    "is restored. Passed to the context once it exists and again when it changes. Debug only. Live.")
-    .debug_only()
-    .range(-1.0, 16.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_min_disocclusion_accumulation, -1.0, "MCLA/GPU",
-    "Test lever (FSR 3.1): FSR's fMinDisocclusionAccumulation (its default is -0.333; only 0 to 1 "
-    "can be set here). AMD: raising it may reduce the white flicker of thin objects that "
-    "disocclude one another often; too high, ghosting. -1: not set, FSR's own default. Passed to the "
-    "context once it exists and again when it changes. For A/B. Live.")
-    .debug_only()
-    .range(-1.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The key numbers upscaler_math.h keeps (so that it needs no SDK) are the SDK's own.
 static_assert(mcla::gpu::upscaler_math::FsrLeverKey(
@@ -554,8 +518,8 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
 
 void FfxBackend::Impl::ApplyLevers(Context& context) {
   const double cvars[upscaler_math::kFsrLeverCount] = {
-      REXCVAR_GET(mcla_gpu_fsr_velocity_factor), REXCVAR_GET(mcla_gpu_fsr_shading_change_scale),
-      REXCVAR_GET(mcla_gpu_fsr_min_disocclusion_accumulation)};
+      larecomp::settings::mcla_gpu_fsr_velocity_factor.Get(), larecomp::settings::mcla_gpu_fsr_shading_change_scale.Get(),
+      larecomp::settings::mcla_gpu_fsr_min_disocclusion_accumulation.Get()};
   const upscaler_math::FsrLeverPlan plan = upscaler_math::PlanFsrLevers(cvars, &context.levers);
   if (plan.mask == 0) {
     return;

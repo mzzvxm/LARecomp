@@ -11,21 +11,13 @@
 #include <cstdint>
 
 #include "imgui.h"
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/input/input_system.h>
 #include <rex/runtime.h>
 #include <rex/ui/ui_event.h>
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
 
-REXCVAR_DEFINE_BOOL(hide_mouse_pointer, true, "MCLA/Input",
-    "Hide the mouse pointer during play. It goes at once when a controller is "
-    "used and after about 3 seconds without mouse movement, only over the game "
-    "window while it has focus. Mouse movement, a click, the wheel or losing "
-    "focus brings it back, and it stays while the mouse is over an overlay.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(bool, mnk_mode);
 
 namespace {
 
@@ -97,7 +89,7 @@ void TickCursorHide() {
     }
     // mnk_mode hides and captures the pointer itself and puts back what it found, so
     // anything left hidden here would stay hidden after it lets go.
-    if (REXCVAR_GET(mnk_mode)) {
+    if (larecomp::settings::GetAs<bool>("hid.mnk_mode")) {
         if (ours) Post(window, false);
         return;
     }
@@ -134,7 +126,7 @@ void TickCursorHide() {
     was_focused = focused;
 
     // The map keeps the pointer visible when the option to hide it there is off.
-    const bool want_hidden = REXCVAR_GET(hide_mouse_pointer) && focused && !over_overlay &&
+    const bool want_hidden = larecomp::settings::hide_mouse_pointer.Get() && focused && !over_overlay &&
                              !MapMouseWantsPointer() &&
                              (pad_active || now - last_activity >= kIdleBeforeHide);
     if (want_hidden != ours) Post(window, want_hidden);

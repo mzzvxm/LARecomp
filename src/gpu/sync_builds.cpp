@@ -5,20 +5,8 @@
 #include <atomic>
 #include <mutex>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_sync_builds, false, "MCLA/GPU",
-    "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
-    "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
-    "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
-    "on the render thread instead, so no frame of a recording misses an object. The frames that "
-    "make a new pipeline are slow while it is on. The log counts the waits and their time "
-    "(\"[gpu] capture sync\"). Capture mode turns the same switch on by itself while it records. "
-    "Off: as before. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::sync_builds {
 
@@ -37,7 +25,7 @@ void SetCaptureActive(bool active) {
 }
 
 bool CaptureActive() {
-  return g_call_flag.load(std::memory_order_acquire) || REXCVAR_GET(mcla_gpu_sync_builds);
+  return g_call_flag.load(std::memory_order_acquire) || larecomp::settings::mcla_gpu_sync_builds.Get();
 }
 
 bool NoteWait(Kind kind, uint64_t ns) {

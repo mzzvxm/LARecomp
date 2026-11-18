@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "backend.h"
@@ -33,45 +33,6 @@
 #define MCLA_CAR_RT_REFL_HAS_SHADER 0
 #endif
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_car_selfrefl_rt, "auto", "MCLA/GPU",
-    "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of "
-    "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
-    "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
-    "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "
-    "screen-space version whatever this says. Live.")
-    .allowed({"auto", "off"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_rt_length, 4.0, "MCLA/GPU",
-    "Diagnostic: how far the ray traced car self-reflection's ray reaches, in the game's world units (about metres); what it finds weighs "
-    "less from 0.6 of it and nothing at it. Live.")
-    .debug_only()
-    .range(0.5, 20.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_rt_gloss, 2.5, "MCLA/GPU",
-    "Diagnostic: the half angle, in degrees, of the cone the ray traced car self-reflection casts its rays over: the paint's gloss. A part of "
-    "your car reflected in another has an edge as soft as the cone is wide at its distance (2.5 degrees: about a hand's width at 1 m); 0 is a perfect "
-    "mirror (one ray, a razor edge). Live.")
-    .debug_only()
-    .range(0.0, 12.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_rt_denoise, 2, "MCLA/GPU",
-    "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
-    "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
-    "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_rt_parts, 7, "MCLA/GPU",
-    "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
-    "driver. 7 (the default): the body, the glass and the tyres. Live.")
-    .debug_only()
-    .range(1, 15)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -345,14 +306,14 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!pipeline || !EnsureOutput(history.width, history.height)) {
     return false;
   }
-  const float length = car_rt_refl::ClampedLength(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_length)));
-  const uint32_t parts = uint32_t(std::clamp<int32_t>(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_parts), 1, int32_t(car_rt_refl::kPartAll)));
-  const float gloss = car_rt_refl::ClampedGloss(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_gloss)));
+  const float length = car_rt_refl::ClampedLength(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_length.Get()));
+  const uint32_t parts = uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_selfrefl_rt_parts.Get(), 1, int32_t(car_rt_refl::kPartAll)));
+  const float gloss = car_rt_refl::ClampedGloss(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_gloss.Get()));
   const float tan_half = car_rt_refl::ConeTan(gloss);
 
   // The denoise (car_rt_refl.h DENOISE): the passes this frame, where the setting asks for them, the cone has width, the pipeline is made and
   // the scratch image is there; else the raw trace is what the paint reads.
-  int denoise_passes = car_rt_refl::DenoisePassCount(int(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_denoise)), tan_half);
+  int denoise_passes = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);
   plume::RenderPipeline* denoise = denoise_passes > 0 ? DenoisePipeline() : nullptr;
   if (denoise && !EnsureDenoiseImages(history.width, history.height)) {
     denoise = nullptr;

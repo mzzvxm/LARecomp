@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "device.h"
@@ -24,87 +24,6 @@
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_sun_shafts, "auto", "MCLA/GPU",
-    "Sun shafts: a low sun behind trees and buildings streams light across the scene, as light "
-    "through a haze. They show at dawn and dusk (strongest between 2.5 and 27 degrees of sun "
-    "height, none by day above 45 degrees, none at night or in rain) and only while the sun is on "
-    "the screen or not far beyond its edge. The value is how strong they are: off is the game's own "
-    "picture, then light, default, strong, stronger and strongest (1x to 5x the built-in strength; default is 2x). "
-    "auto (the default) is default on a discrete graphics card and off on an integrated one (a "
-    "handheld, or the iGPU of a desktop CPU). The ray quality follows the card by itself. low and high "
-    "are values of an older version and mean default. Costs graphics card time only while they show. Live.")
-    .allowed({"auto", "off", "light", "default", "strong", "stronger", "strongest", "low", "high"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_intensity, 1.0, "MCLA/GPU",
-    "Diagnostic: a fine multiplier on the strength mcla_gpu_sun_shafts gives the sun shafts (1 is "
-    "the level as it is). Live.")
-    .debug_only()
-    .range(0.0, 8.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_steps, 0, "MCLA/GPU",
-    "Diagnostic: how many steps each ray of the sun shafts marches (8 to 128). 0: by the graphics "
-    "card (32 on a mid-range one, 64 on a fast one). More steps make smoother rays and cost more; "
-    "the light the rays gather stays the same. Live.")
-    .debug_only()
-    .range(0, 128)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_density, 0.9, "MCLA/GPU",
-    "Diagnostic: how much of the way to the sun each ray of the sun shafts covers, 0.3 to 1 "
-    "(1: all of it). Longer rays are longer streaks; shorter ones stay near the sun. Live.")
-    .debug_only()
-    .range(0.3, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_threshold, 0.5, "MCLA/GPU",
-    "Diagnostic: the brightness (the scene's linear light, 1 is white) the sky must pass to light "
-    "the sun shafts; what is under it does not shine. Lower lets more of the sky shine. Live.")
-    .debug_only()
-    .range(0.0, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_sky_depth, 1e-5, "MCLA/GPU",
-    "Diagnostic: the stored depth (1 near, 0 far) at or under which a pixel is sky for the sun "
-    "shafts. The sky is drawn at the far end, 0; raise it if the shafts find no sky. Live.")
-    .debug_only()
-    .range(0.0, 0.01)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the sun shafts instead of adding them (only while they are on "
-    "and the sun gives shafts): 1 the sky image the rays march over, 2 the blurred image, 3 the "
-    "added light alone. 0: off. Live.")
-    .debug_only()
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_sun_shafts_early, false, "MCLA/GPU",
-    "Diagnostic: adds the sun shafts at the game's mid-scene depth copy, before the fog and the "
-    "particles, instead of at the game's copy of the main colour after them (the fog then covers "
-    "them), to compare the two. Without it the shafts go in at that copy and fall back to the "
-    "mid-scene point by themselves when no such copy comes. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_sun_shafts_cap, true, "MCLA/GPU",
-    "Diagnostic: caps the sun shafts' two working images at 960x540 (the size they are at 1080p, a quarter "
-    "of their old size at 4K, the same shape as the picture; a picture whose half size is under that is "
-    "untouched). The shafts are a smooth, blurred light, so the picture is the same to within the ray "
-    "noise being coarser; it saves a good part of the passes' time at 1440p and 4K while the shafts "
-    "show. False: the images are half the picture's size, as they were. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_census, 0, "MCLA/GPU",
-    "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log "
-    "line of what the sun shafts did: the sun's height and where it is in the picture, the "
-    "fades, what became of the frame's two points. 0: off. Live.")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -213,7 +132,7 @@ SunShafts::Level ReadLevel() {
 
 // The ray steps in force: the class's, or the debug cvar's (shafts_level.h).
 uint32_t ReadSteps() {
-  return shafts_level::Steps(gpu_class::Current(), REXCVAR_GET(mcla_gpu_sun_shafts_steps));
+  return shafts_level::Steps(gpu_class::Current(), larecomp::settings::mcla_gpu_sun_shafts_steps.Get());
 }
 
 }  // namespace
@@ -414,7 +333,7 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
 }
 
 void SunShafts::BeginFrame() {
-  census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_sun_shafts_census)));
+  census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_sun_shafts_census.Get()));
   Level level = ReadLevel();
   if (!ready_ && level != Level::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short
@@ -927,7 +846,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   sun_ = sun;
   LogSkySun(sun);
   const Level level = level_;
-  const float intensity = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_intensity), 0.0, 8.0));
+  const float intensity = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_intensity.Get(), 0.0, 8.0));
   const float strength = sun.strength * shafts_level::Multiplier(level) * intensity;
   if (!(strength * kGain > kMinStrength)) {
     // The sun gives no shafts now (noon, night, rain, behind the camera): nothing is recorded.
@@ -950,7 +869,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   // The working images: half the picture, capped at a 960x540 box (shafts_image.h; the cvar is read every frame, so
   // a switch re-makes the images at the next sun frame). The sky pass spreads its four taps over a texel's footprint.
   const shafts_image::Size image =
-      shafts_image::ImageSize(plan.render[0], plan.render[1], REXCVAR_GET(mcla_gpu_sun_shafts_cap));
+      shafts_image::ImageSize(plan.render[0], plan.render[1], larecomp::settings::mcla_gpu_sun_shafts_cap.Get());
   plan.image[0] = image.width;
   plan.image[1] = image.height;
   plan.footprint[0] = shafts_image::Footprint(plan.render[0], plan.image[0]);
@@ -970,11 +889,11 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   }
   plan.level = level;
   plan.steps = ReadSteps();
-  plan.density = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_density), 0.3, 1.0));
+  plan.density = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_density.Get(), 0.3, 1.0));
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
   // The noise is a fixed pattern, shifted every frame only while a temporal upscaler averages it.
   plan.noise_shift = upscaler_running ? float(frame_ & 1023u) : 0.0f;
-  plan.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_view), 0, 3));
+  plan.view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_view.Get(), 0, 3));
 
   if (!RecordSky(summary, list, plan)) {
     outcome_ = Outcome::kNotRecorded;
@@ -989,7 +908,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   // never looked at, and what they teach must not reach the play view's policy (EndSkyFrame).
   anchor_ = trigger_world_ != menu_world::World::kPlay
                 ? shafts_anchor::Anchor::kMidScene
-                : policy_.Choose(REXCVAR_GET(mcla_gpu_sun_shafts_early));
+                : policy_.Choose(larecomp::settings::mcla_gpu_sun_shafts_early.Get());
   if (anchor_ == shafts_anchor::Anchor::kMidScene) {
     // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene
     // that gives no copy of the main colour at the second point. The copy is still watched there.
@@ -1050,11 +969,11 @@ bool SunShafts::RecordSky(const ResolveCache::Summary& summary, plume::RenderCom
   push.sizes[1] = float(plan.image[1]);
   push.sizes[2] = float(plan.render[0]);
   push.sizes[3] = float(plan.render[1]);
-  push.sun[0] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_sky_depth), 0.0, 0.01));
+  push.sun[0] = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_sky_depth.Get(), 0.0, 0.01));
   push.sun[1] = kShineLimit;
   push.tint[0] = plan.footprint[0];
   push.tint[1] = plan.footprint[1];
-  push.tint[3] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_threshold), 0.0, 4.0));
+  push.tint[3] = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_threshold.Get(), 0.0, 4.0));
   pass_timing_->Mark(list, "shafts sky");
   passes_->DrawInto(list, sky_, sky, &push, sizeof(push));
   return true;
@@ -1358,8 +1277,8 @@ void SunShafts::LogInterval() {
               shafts_anchor::AnchorName(shafts_anchor::Anchor::kMidScene), interval_.lost,
               interval_.sun_by_sky, interval_.sun_by_light,
               interval_.copies_missing, shafts_anchor::AnchorName(policy_.Choose(
-                  REXCVAR_GET(mcla_gpu_sun_shafts_early))),
-              REXCVAR_GET(mcla_gpu_sun_shafts_early)
+                  larecomp::settings::mcla_gpu_sun_shafts_early.Get())),
+              larecomp::settings::mcla_gpu_sun_shafts_early.Get()
                   ? " (forced by mcla_gpu_sun_shafts_early)"
                   : (policy_.fallen_back() ? " (the fall-back)" : ""),
               policy_.fallbacks(), policy_.returns(), runs_ + lost_, runs_end_, runs_mid_, lost_);

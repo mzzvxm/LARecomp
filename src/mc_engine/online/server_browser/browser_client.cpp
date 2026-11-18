@@ -13,7 +13,7 @@
 #include <set>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "../rate_my_ride/rmr_net.h"
 #include "../relay_info.h"
@@ -364,13 +364,13 @@ void Worker(std::shared_ptr<Client::State> st) {
         std::vector<Target> targets;
         std::set<std::string> seen;
         std::string master_status;
-        const std::string master = rex::cvar::GetFlagByName("online_master_server");
+        const std::string master = larecomp::cvar::GetFlagByName("online_master_server");
         if (!master.empty()) {
             std::vector<std::string> listed;
             FetchMaster(master, listed, master_status);
             for (const auto& a : listed) AddTarget(targets, seen, a, true, false, false);
         }
-        const std::string favorites = rex::cvar::GetFlagByName("server_browser_servers");
+        const std::string favorites = larecomp::cvar::GetFlagByName("server_browser_servers");
         size_t pos = 0;
         while (pos <= favorites.size()) {
             size_t comma = favorites.find(',', pos);
@@ -382,7 +382,7 @@ void Worker(std::shared_ptr<Client::State> st) {
             std::string host;
             uint16_t port = 0;
             relay_info::ConfiguredServer(host, port);
-            if (!rex::cvar::GetFlagByName("mcla_online_server").empty())
+            if (!larecomp::cvar::GetFlagByName("mcla_online_server").empty())
                 AddTarget(targets, seen, host + ":" + std::to_string(port), false, false, true);
         }
 

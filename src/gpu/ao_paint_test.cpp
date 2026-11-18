@@ -19,6 +19,7 @@
 
 #include "ao_paint.h"
 #include "ssgi_light.h"
+#include "settings/larecomp_settings.h"
 
 using namespace mcla::gpu;
 using namespace mcla::gpu::ao_paint;
@@ -270,12 +271,12 @@ void CheckSources(const std::string& gpu) {
   {
     const size_t at = cpp.find("mcla_gpu_ao_paint, ");
     const std::string block = at == std::string::npos ? std::string() : cpp.substr(at, 2500);
-    const size_t end = block.find("lifecycle(rex::cvar::Lifecycle::kHotReload)");
+    const size_t end = block.find("lifecycle(larecomp::cvar::Lifecycle::kHotReload)");
     Check(end != std::string::npos && block.substr(0, end).find(".debug_only()") != std::string::npos &&
               block.substr(0, end).find(".range(0.0625, 1.0)") != std::string::npos,
           "ao.cpp: mcla_gpu_ao_paint is debug-only, live and from 1/16 to 1");
   }
-  Check(has(cpp, "ao_paint::CodeFor(REXCVAR_GET(mcla_gpu_ao_paint))"), "ao.cpp: the setting's code is the header's");
+  Check(has(cpp, "ao_paint::CodeFor(larecomp::settings::mcla_gpu_ao_paint.Get())"), "ao.cpp: the setting's code is the header's");
   Check(has(cpp, "(push.slots2[2] & ~ao_paint::kCodeMask) | (look_.paint_code << ao_paint::kCodeShift)"), "ao.cpp: the apply's flags carry the code after the radius bits are cleared");
   Check(has(cpp, "static_assert((ao_paint::kCodeMask &"), "ao.cpp: the code's bits are asserted not to overlap the apply's flags");
   Check(has(cmake, "larecomp_ao_paint_test") && has(cmake, "ao_paint_test.cpp"), "CMakeLists.txt: the test is a target");

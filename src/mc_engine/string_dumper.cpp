@@ -17,30 +17,13 @@
 #include <toml++/toml.hpp>
 
 #include "logging.h"
+#include "settings/larecomp_settings.h"
 
 // The fork's SDK defines these four next to its own dumper; the stock SDK has
 // none of them. Same names, defaults and help text as the fork, so a toml set up
 // for one keeps working on the other.
 #if !__has_include(<rex/system/string_dumper.h>)
-REXCVAR_DEFINE_BOOL(string_dump_enabled, false, "System/String Replacement",
-                    "Capture encountered strings to TOML for translation/modding")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_BOOL(string_replace_enabled, false, "System/String Replacement",
-                    "Inject replacement strings from disk when available")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(string_folder, "", "System/String Replacement",
-                      "Override the strings folder (empty = <game data>/strings)")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(string_language, "", "System/String Replacement",
-                      "Language code for string replacements (e.g. pt_BR, es_ES)")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 #endif
 
 namespace mc::strings {
@@ -130,7 +113,7 @@ bool StringDumper::LoadReplacementFile(const std::filesystem::path& path) {
     if (!entries) {
       return false;
     }
-    const std::string active_lang = REXCVAR_GET(string_language);
+    const std::string active_lang = larecomp::settings::string_language.Get();
     size_t loaded = 0;
     for (const auto& node : *entries) {
       const auto* entry = node.as_table();
@@ -309,7 +292,7 @@ std::string StringDumper::EscapeToml(std::string_view input) {
 }
 
 std::filesystem::path DefaultStringsDir(const std::filesystem::path& game_data_root) {
-  const std::string configured = REXCVAR_GET(string_folder);
+  const std::string configured = larecomp::settings::string_folder.Get();
   if (!configured.empty()) {
     // The cvar store holds UTF-8.
     return std::filesystem::path(std::u8string(configured.begin(), configured.end()));

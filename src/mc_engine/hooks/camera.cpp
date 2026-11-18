@@ -2,7 +2,7 @@
 // 30 FPS, and the free-fly debug camera.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
 #include <rex/ppc.h>
@@ -27,72 +27,6 @@
 #include "../menu_camera.h"
 #include "../mouse_look.h"
 
-REXCVAR_DEFINE_DOUBLE(fov_1p_scale, 1.0, "MCLA/Camera", "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)")
-    .range(0.5, 5.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(fov_3p_scale, 1.0, "MCLA/Camera", "FOV scale — 3rd person / chase cam (0.5 = narrower, 2.0 = wider)")
-    .range(0.5, 5.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// BadassBaboon's Recomp Adjustments: Continuous exponential camera boom smoothing at 60 FPS
-REXCVAR_DEFINE_BOOL(smooth_chase_cam, true, "MCLA/Camera",
-    "Fix: Smooth chase camera boom interpolation at 60 FPS using continuous-time exponential decay.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(chase_cam_smoothing_factor, 1.0, "MCLA/Camera",
-    "Chase camera boom smoothing factor multiplier (0.1 - 3.0).")
-    .range(0.1, 3.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// BadassBaboon's Recomp Adjustments: Smooth camera transition interpolation & wrap fix
-REXCVAR_DEFINE_BOOL(smooth_camera_transitions, true, "MCLA/Camera",
-    "Fix: Eliminate camera transition jitter and 180-degree wrap flipping when transitioning between orbit, menu, and gameplay cameras.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-
-// BadassBaboon's Recomp Adjustments: Continuous-time camera shake scaling
-REXCVAR_DEFINE_BOOL(scale_camera_shake, true, "MCLA/Camera",
-    "Fix: Scale camera shake intensity across framerates (60+ FPS) to prevent violent noise jitter during drifts, burnouts, and crashes.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(camera_shake_scale, 0.6, "MCLA/Camera",
-    "Camera shake intensity multiplier (0.0 = disabled, 0.6 = balanced PC rumble, 1.0 = full console shake).")
-    .range(0.0, 3.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(debug_cam, "off", "MCLA/Camera",
-    "Free-fly camera during live gameplay: left stick moves, right stick looks, triggers change "
-    "speed. Gameplay keeps running underneath (drive, traffic, physics).")
-    .allowed({"off", "free"})
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(debug_cam_speed, 40.0, "MCLA/Camera",
-    "Free-fly camera move speed (world units/second).")
-    .range(1.0, 500.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(debug_cam_sens, 2.5, "MCLA/Camera",
-    "Free-fly camera look sensitivity (radians/second at full stick).")
-    .range(0.2, 10.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(debug_cam_mouse, true, "MCLA/Camera",
-    "Free-fly camera: use the mouse to look (the pointer is hidden and locked while it is active).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(debug_cam_mouse_sens, 0.0025, "MCLA/Camera",
-    "Free-fly mouse look sensitivity (radians per raw mouse count).")
-    .range(0.0002, 0.02)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Free-fly camera host state (see Patch_DebugCam). Angles are seeded from the
 // camera on activation, then integrated from the right stick each frame. The
@@ -107,11 +41,11 @@ static float g_freecam_pitch = 0.0f;
 // The counts are fed into yaw/pitch as a displacement (no dt scaling: they are already per tick). Independent of mnk_mode, so it does not hijack the pad. Sign matches
 // the right-stick path: mouse right = look right (yaw down), mouse up = look up (pitch down). Caller clamps pitch afterward. debug_cam_mouse is the master on/off.
 static void FreecamMouseUpdate(bool active, float& yaw, float& pitch) {
-    if (!active || !REXCVAR_GET(debug_cam_mouse)) return;
+    if (!active || !larecomp::settings::debug_cam_mouse.Get()) return;
     larecomp::mouselook::Want(larecomp::mouselook::Client::DebugCam);
     float dx = 0.0f, dy = 0.0f;
     if (!larecomp::mouselook::Take(larecomp::mouselook::Client::DebugCam, dx, dy)) return;
-    const float s = static_cast<float>(REXCVAR_GET(debug_cam_mouse_sens));
+    const float s = static_cast<float>(larecomp::settings::debug_cam_mouse_sens.Get());
     yaw -= dx * s;
     pitch += dy * s;
 }
@@ -135,7 +69,7 @@ static float NormalizeStick(int16_t raw) {
 // are loads/compares only). Only bypasses when the free camera is requested, so
 // photo mode is untouched when debug_cam = off.
 bool Patch_DebugCamGate() {
-    return REXCVAR_GET(debug_cam) == "free";
+    return larecomp::settings::debug_cam.Get() == "free";
 }
 
 // Free-fly camera driver. Hook at 0x822C0668: r3 = dcam manager (from
@@ -161,7 +95,7 @@ void Patch_DebugCam(PPCRegister& r3) {
 
     uint32_t mgr = static_cast<uint32_t>(r3.u64);
 
-    if (REXCVAR_GET(debug_cam) != "free") {
+    if (larecomp::settings::debug_cam.Get() != "free") {
         // Release: cut the blend back to the gameplay camera immediately.
         if (ReadGuestF32(base, mgr + 860) > 0.0f) {
             WriteGuestF32(base, mgr + 860, 0.0f);
@@ -216,8 +150,8 @@ void Patch_DebugCam(PPCRegister& r3) {
         }
     }
 
-    float sens = static_cast<float>(REXCVAR_GET(debug_cam_sens));
-    float speed = static_cast<float>(REXCVAR_GET(debug_cam_speed));
+    float sens = static_cast<float>(larecomp::settings::debug_cam_sens.Get());
+    float speed = static_cast<float>(larecomp::settings::debug_cam_speed.Get());
 
     // Look: integrate the right stick into yaw/pitch and write them back; the
     // game rebuilds the orientation matrix (+0xD0) from these each frame.
@@ -258,7 +192,7 @@ void Patch_DebugCam(PPCRegister& r3) {
 
 void Patch_FOVScale(PPCRegister& f1, PPCRegister& r24) {
     int cam_idx = static_cast<int>(r24.u64);
-    double scale = (cam_idx == 1) ? REXCVAR_GET(fov_1p_scale) : REXCVAR_GET(fov_3p_scale);
+    double scale = (cam_idx == 1) ? larecomp::settings::fov_1p_scale.Get() : larecomp::settings::fov_3p_scale.Get();
     if (scale != 1.0) {
         f1.f64 = f1.f64 * scale;
     }
@@ -304,7 +238,7 @@ static double FilterAtFrameTime(double k30, double dt, double scale) {
 }
 
 static void ApplyCameraSmoothing(PPCRegister& reg) {
-    if (!REXCVAR_GET(smooth_chase_cam)) return;
+    if (!larecomp::settings::smooth_chase_cam.Get()) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
@@ -314,7 +248,7 @@ static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (raw_k <= 0.0 || raw_k >= 1.0 || dt <= 0.0f) return;
 
     const double k30 = EngineAlreadyHalvedCameraFactor(base) ? raw_k : 0.5 * raw_k;
-    const double scale = REXCVAR_GET(chase_cam_smoothing_factor);
+    const double scale = larecomp::settings::chase_cam_smoothing_factor.Get();
     reg.f64 = FilterAtFrameTime(k30, dt, scale);
 }
 
@@ -363,7 +297,7 @@ static void ScaleBoomFilter(PPCRegister& reg, double dt) {
 }
 
 void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {
-    if (!REXCVAR_GET(smooth_chase_cam)) return;
+    if (!larecomp::settings::smooth_chase_cam.Get()) return;
 
     const double dt = f1.f64;
     if (!(dt > 0.0)) return;
@@ -379,9 +313,9 @@ void MCLACameraBoomFilters(PPCRegister& f13, PPCRegister& f9, PPCRegister& f1) {
 // high-frequency chatter at high framerates (60, 120, 240 FPS) while maintaining 100% natural
 // camera orientation and responsive feel.
 void MCLACameraShakeFilter(PPCRegister& f31, PPCRegister& f30, PPCRegister& f29, PPCRegister& f0, PPCRegister& r1) {
-    if (!REXCVAR_GET(scale_camera_shake)) return;
+    if (!larecomp::settings::scale_camera_shake.Get()) return;
 
-    const double user_scale = REXCVAR_GET(camera_shake_scale);
+    const double user_scale = larecomp::settings::camera_shake_scale.Get();
     if (user_scale == 1.0) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
@@ -421,7 +355,7 @@ static float s_unwrapped_delta = 0.0f;
 static float s_prev_raw_delta = 0.0f;
 
 void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegister& r4, PPCRegister& r1) {
-    if (!REXCVAR_GET(smooth_camera_transitions)) return;
+    if (!larecomp::settings::smooth_camera_transitions.Get()) return;
 
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;

@@ -4,29 +4,10 @@
 
 #include <algorithm>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "device.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_perf_markers, false, "MCLA/GPU",
-    "Name the frame's phases in the command lists for GPU profilers: PIX events on D3D12, "
-    "debug utils labels on Vulkan; how deep, mcla_gpu_perf_markers_level. Nsight GPU "
-    "Trace's multi-pass metrics need them. Off: no label is recorded. Read when a frame "
-    "starts.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_perf_markers_level, 1, "MCLA/GPU",
-    "How deep mcla_gpu_perf_markers names the frame. 0: Frame alone. 1: Frame and its phases "
-    "(Scene, EndOfFrame, Present, Overlay) -- the same in every frame, what Nsight's multi-pass "
-    "metrics need. 2: also a label per guest clear, resolve, composite and Lock write-back "
-    "inside Scene; their count changes from frame to frame, so multi-pass metrics drop them. "
-    "Read when a frame starts.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -45,7 +26,7 @@ void PerfMarkers::BeginFrame() {
     depth_ = 0;
     overflow_ = 0;
   }
-  const bool wanted = REXCVAR_GET(mcla_gpu_perf_markers);
+  const bool wanted = larecomp::settings::mcla_gpu_perf_markers.Get();
   if (wanted && !supported_) {
     if (!warned_) {
       warned_ = true;
@@ -56,7 +37,7 @@ void PerfMarkers::BeginFrame() {
     return;
   }
   const uint32_t level =
-      uint32_t(std::clamp<int32_t>(REXCVAR_GET(mcla_gpu_perf_markers_level), kFrame, kEvent));
+      uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_perf_markers_level.Get(), kFrame, kEvent));
   if (wanted != enabled_ || (wanted && level != level_)) {
     REXLOG_INFO("[gpu] perf markers {}, level {}", wanted ? "on" : "off", level);
   }

@@ -36,16 +36,7 @@
 // the game runs: the 10 s window starts when it is switched on.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(lowcpu_probe, false, "MCLA/Diagnostics",
-    "Every 10 s, two lines in the log about a PC with few cores: how late the game's audio callback "
-    "and its 1 ms clock tick were (counts of gaps over 8, 12 and 20 ms, clock staleness) and the "
-    "CPU time of the audio worker and the timer-queue thread. Only reads. For crackling sound and "
-    "stutter when the processor is busy: start the game with it, reproduce the problem, send the "
-    "log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
+#include "settings/larecomp_settings.h"
 
 #if defined(_WIN32)
 #include <rex/chrono/clock.h>
@@ -236,17 +227,17 @@ void Reporter() {
     uint64_t prev_tsc = __rdtsc();
     uint64_t prev_process = ProcessTimes100ns();
 
-    while (REXCVAR_GET(lowcpu_probe)) {
+    while (larecomp::settings::lowcpu_probe.Get()) {
         if (!queue.handle) {
             queue.handle = FindThread(L"rex::thread::TimerQueue", &queue.tid);
             queue.Rebase();
         }
 
         // In steps of a second so that turning the probe off is seen soon.
-        for (int64_t s = 0; s < kReportSeconds && REXCVAR_GET(lowcpu_probe); ++s) {
+        for (int64_t s = 0; s < kReportSeconds && larecomp::settings::lowcpu_probe.Get(); ++s) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        if (!REXCVAR_GET(lowcpu_probe)) {
+        if (!larecomp::settings::lowcpu_probe.Get()) {
             break;
         }
 
@@ -360,7 +351,7 @@ void OnAudioCallback(const uint8_t* base) {
 
 // The body of the audio callback that sub_823F56D0 jumps to; runs on the SDK's audio worker.
 extern "C" REX_FUNC(rex_sub_823ECA40) {
-    if (REXCVAR_GET(lowcpu_probe)) {
+    if (larecomp::settings::lowcpu_probe.Get()) {
         OnAudioCallback(base);
     }
     __imp__rex_sub_823ECA40(ctx, base);

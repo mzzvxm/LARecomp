@@ -20,7 +20,7 @@
 // fma_float_fast = false passes everything on. Takes effect at the next start.
 
 #if defined(_WIN32) && defined(__x86_64__)
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -42,15 +42,6 @@
 // mingw-w64's math.h does not (ucrtbase.dll exports it either way).
 extern "C" int _get_FMA3_enable(void);
 #endif
-
-REXCVAR_DEFINE_BOOL(fma_float_fast, true, "MCLA/Performance",
-    "On a CPU without FMA3 (Intel before Haswell, AMD before Piledriver), fused multiply-adds "
-    "whose operands are single-precision values are computed with a double multiply and add, "
-    "which gives the same bits, instead of the C runtime's software fma (157 to 165 cycles a "
-    "call). Nothing changes on a CPU with FMA3. Off passes every call to the runtime. Takes "
-    "effect at the next start.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
 
@@ -91,7 +82,7 @@ int InitMode() {
         g_runtime.store(fn, std::memory_order_relaxed);
     }
     const bool fma3 = _get_FMA3_enable() != 0;
-    int mode = (!fma3 && REXCVAR_GET(fma_float_fast)) ? kExact : kRuntime;
+    int mode = (!fma3 && larecomp::settings::fma_float_fast.Get()) ? kExact : kRuntime;
     // Set before anything is logged, in case logging reaches fma itself; only the thread
     // that sets it says so.
     int expected = kUnset;

@@ -7,7 +7,7 @@
 #include <atomic>
 
 #include <rex/chrono/clock.h>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/perf/counter.h>
 #include <rex/logging.h>
 #if defined(_WIN32)
@@ -23,29 +23,6 @@
 #include "guest_gpu.h"
 #include "../native_gfx.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_nocp, true, "MCLA/NativeGfx",
-    "Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls "
-    "LoadGpuPlugin and rexgpu-xenos is never loaded: no command processor, no PM4 parser, no "
-    "register file, no EDRAM render-target cache, no shader translator. The app then supplies "
-    "what the guest still needs and what none of that was: the GPU register window, the vblank "
-    "source, and a swapchain to present on. "
-    "Decided once at startup -- whether the emulator is in the process is not a runtime setting.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_nocp_vsync, false, "MCLA/NativeGfx",
-    "Frame pacing for the no-command-processor mode: on = the guest video mode's refresh rate, "
-    "off = 1000 Hz, matching what the emulated path does with vsync off. "
-    "This exists because the SDK's `vsync` cvar is defined in "
-    "src/graphics/command_processor.cpp, so it lives in the GPU plugin and is simply ABSENT once "
-    "that plugin is not loaded -- a `vsync` line in larecomp.toml is an unknown key in this mode, "
-    "and querying it by name would silently answer false whatever it was set to.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The fork's SDK also takes the swap timing into rex::perf, for the counter
 // half of its overlay; the stock SDK has no such call and gets the numbers
@@ -100,7 +77,7 @@ PipelineCacheCloseListener g_pipeline_close_listener;
 
 }  // namespace
 
-bool WantNoCommandProcessor() { return REXCVAR_GET(mcla_native_gfx_nocp); }
+bool WantNoCommandProcessor() { return larecomp::settings::mcla_native_gfx_nocp.Get(); }
 
 namespace {
 std::atomic<const char*> g_last_hook{nullptr};
@@ -204,7 +181,7 @@ bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer* imgui_dra
   if (window) {
     window->AddListener(&g_pipeline_close_listener);
   }
-  if (REXCVAR_GET(mcla_native_gfx_own_swapchain)) {
+  if (larecomp::settings::mcla_native_gfx_own_swapchain.Get()) {
     REXLOG_INFO("[nocp] native swapchain owns presentation; skipping D3D12Presenter swapchain creation");
     return true;
   }

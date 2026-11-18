@@ -7,7 +7,7 @@
 #include "gpu_class.h"
 #include "temporal_dlss.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #if defined(_WIN32)
@@ -20,18 +20,6 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_object_names, false, "MCLA/GPU",
-    "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
-    "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
-    "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
-    "when something can read them: on their own when RenderDoc, PIX or Nsight Graphics started "
-    "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
-    "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
-    "device opens.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DECLARE(bool, mcla_gpu_perf_markers);  // perf_markers.cpp
 
 namespace mcla::gpu {
 
@@ -39,13 +27,13 @@ namespace {
 
 // Why debug names are wanted (Device::object_names), or null when nothing is known to read them.
 const char* ObjectNamesReason(bool debug_layer) {
-  if (REXCVAR_GET(mcla_gpu_object_names)) {
+  if (larecomp::settings::mcla_gpu_object_names.Get()) {
     return "mcla_gpu_object_names";
   }
   if (debug_layer) {
     return "the debug layer";
   }
-  if (REXCVAR_GET(mcla_gpu_perf_markers)) {
+  if (larecomp::settings::mcla_gpu_perf_markers.Get()) {
     return "mcla_gpu_perf_markers";
   }
 #ifndef NDEBUG

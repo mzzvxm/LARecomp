@@ -9,13 +9,12 @@
 #include <format>
 #include <fstream>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
 #include "mc_engine/modloader/modloader.h"
 
-REXCVAR_DECLARE(bool, texture_mods);
 
 namespace mcla::gpu {
 
@@ -115,7 +114,7 @@ bool TextureMods::HashFromFileName(const std::string& stem, uint64_t* hash) {
 
 void TextureMods::Initialize() {
   files_.clear();
-  if (!REXCVAR_GET(texture_mods)) {
+  if (!larecomp::settings::texture_mods.Get()) {
     REXLOG_INFO("[gpu] texture mods: switched off; no replacements");
     return;
   }

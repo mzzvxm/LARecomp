@@ -21,6 +21,7 @@
 #include "ao_size.h"
 #include "ao_stable.h"
 #include "ssgi_stable.h"
+#include "settings/larecomp_settings.h"
 
 namespace as = mcla::gpu::ao_size;
 namespace stable = mcla::gpu::ao_stable;
@@ -434,11 +435,11 @@ void CheckSources(const std::string& gpu) {
   };
   for (const char* name : {"mcla_gpu_ao_half_above_1080, true", "mcla_gpu_ssgi_half, true"}) {
     const std::string block = cvar_block(name);
-    const size_t end = block.find("lifecycle(rex::cvar::Lifecycle::kHotReload)");
+    const size_t end = block.find("lifecycle(larecomp::cvar::Lifecycle::kHotReload)");
     Check(end != std::string::npos && block.substr(0, end).find(".debug_only()") != std::string::npos,
           std::string("ao.cpp: ") + name + " is debug-only and hot-reloadable");
   }
-  Check(Has(cpp, "REXCVAR_GET(mcla_gpu_ao_half_above_1080)") && Has(cpp, "REXCVAR_GET(mcla_gpu_ssgi_half)"), "ao.cpp: both cvars are read by the plan");
+  Check(Has(cpp, "larecomp::settings::mcla_gpu_ao_half_above_1080.Get()") && Has(cpp, "larecomp::settings::mcla_gpu_ssgi_half.Get()"), "ao.cpp: both cvars are read by the plan");
   Check(Has(cpp, "ao_size::Decide(in)") && Has(cpp, "ao_size::SizesOf(plan.render, choice)"), "ao.cpp: the plan takes the sizes from ao_size.h");
   Check(Has(cpp, "kApplyContactFullFlag = 1u << 21") && Has(apply, "g_push.slots2.z & (1u << 21)"), "the apply's contact-at-picture-size flag is bit 21 in ao.cpp and in the shader");
   Check(Has(cpp, "kColourOneSampleFlag = 1u << 21") && Has(color, "g_push.slots2.z & (1u << 21)"), "the colour chain's one-sample flag is bit 21 in ao.cpp and in the shader");

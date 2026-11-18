@@ -25,7 +25,7 @@
 
 #include "state_log.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -64,13 +64,6 @@
 #include "larecomp_log.h"
 #include "scene_runtime.h"
 #include "state_log_core.h"
-
-REXCVAR_DEFINE_STRING(mcla_state_log, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: write one CSV row per game update (the player's and the scene's cars, the camera, the hour and weather, the "
-    "clocks, the scene clock, the random number state) to this .csv file, or to state.csv in this folder, for take_diff.py. Rows "
-    "are written while the player has a car. A scene's `statelog on` asks for the same. Empty: off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic::statelog {
 
@@ -207,8 +200,8 @@ std::string Stamp() {
 
 double FixedStepFps() {
     // The fixed step is capture mode's (M2a: mcla_fixed_step_fps); this file does not depend on it being in the build.
-    if (!rex::cvar::GetFlagInfo("mcla_fixed_step_fps")) return 0.0;
-    return std::atof(rex::cvar::GetFlagByName("mcla_fixed_step_fps").c_str());
+    if (!larecomp::cvar::GetFlagInfo("mcla_fixed_step_fps")) return 0.0;
+    return std::atof(larecomp::cvar::GetFlagByName("mcla_fixed_step_fps").c_str());
 }
 
 struct State {
@@ -283,7 +276,7 @@ void OpenLog(const std::string& key, const std::string& cvar_value) {
 
 // Opens, keeps, switches or closes the log so that it is what is asked for now. Cheap when nothing changed.
 void Reconcile() {
-    const std::string& cvar = REXCVAR_GET(mcla_state_log);
+    const std::string& cvar = larecomp::settings::mcla_state_log.Get();
     std::string want_key;
     if (!cvar.empty()) want_key = "cvar:" + cvar;
     else if (g.scene_wants) want_key = "scene:" + std::to_string(g.scene_serial);
@@ -358,7 +351,7 @@ void Gather(Sample& m) {
 
 void Tick() {
     // Cheap exit: nothing asked for and nothing open.
-    if (REXCVAR_GET(mcla_state_log).empty() && !g.scene_wants && g.open_key.empty()) return;
+    if (larecomp::settings::mcla_state_log.Get().empty() && !g.scene_wants && g.open_key.empty()) return;
     Reconcile();
     if (!g.writer || !g.writer->IsOpen()) return;
 

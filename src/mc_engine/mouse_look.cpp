@@ -25,12 +25,6 @@
 #include "online/server_browser/browser_ui.h"
 #include "ui/settings.h"
 
-REXCVAR_DEFINE_BOOL(mouse_look_log, false, "MCLA/Camera",
-    "Log what the mouse look does: the raw mouse counts and the view angles about every tenth of a second while it moves "
-    "(at most 4000 lines). The changes of relative mouse mode are always logged.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace larecomp::mouselook {
 namespace {
 

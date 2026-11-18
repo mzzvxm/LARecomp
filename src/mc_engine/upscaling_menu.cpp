@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "display_mode.h"
 
@@ -35,7 +35,7 @@ using mcla_menu::RowDynamics;
 using mcla_menu::Str;
 using mcla_menu::WithDynamics;
 
-std::string Cvar(const char* name) { return rex::cvar::GetFlagByName(name); }
+std::string Cvar(const char* name) { return larecomp::cvar::GetFlagByName(name); }
 double CvarNumber(const char* name) { return std::strtod(Cvar(name).c_str(), nullptr); }
 bool CvarOn(const char* name) { return Cvar(name) == "true"; }
 

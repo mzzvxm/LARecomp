@@ -30,7 +30,7 @@
 // `census:` lines print them, so a run says which test turns the cars away and whether the distances are right.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <algorithm>
@@ -50,41 +50,6 @@
 #include "gpu/traffic_shadow.h"
 #include "gpu/traffic_shadow_gates.h"
 #endif
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_traffic_shadows, "auto", "MCLA/GPU",
-    "Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the "
-    "ground under them is dark (the game only draws the player's car into it). off: the game's own "
-    "picture. near: the nearest few cars within a short distance of the camera. all: every car "
-    "within a long distance (costs more graphics and processor time). auto (the default): near on a "
-    "discrete graphics card, off on integrated graphics. Daylight only (the game has no sun shadow "
-    "at night and in rain). Live: it applies to the next frame, to the cars already on the road.")
-    .allowed({"auto", "off", "near", "all"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_traffic_shadows_radius, 0.0, "MCLA/GPU",
-    "Diagnostic: how far from the camera a car may be and still cast into the sun shadow map, in "
-    "metres. 0 is the setting's own (near 40, all 150). Live.")
-    .debug_only()
-    .range(0.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_traffic_shadows_cars, 0, "MCLA/GPU",
-    "Diagnostic: the most cars that cast into the sun shadow map at once (the nearest ones). 0 is "
-    "the setting's own (near 4, all 16); at most 24. Live.")
-    .debug_only()
-    .range(0, 24)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_traffic_shadows_cascades, 0, "MCLA/GPU",
-    "Diagnostic: the cars are drawn into the first this many of the four sun shadow cascades "
-    "(each one costs the cars' draws again). 0 or 4 is all four. Live.")
-    .debug_only()
-    .range(0, 4)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 #if defined(LARECOMP_HAS_GPU)
 namespace {
@@ -221,8 +186,8 @@ void NoteOff(State& s) {
 
 // The limits of the setting in force, the debug overrides applied.
 ts::Limits CurrentLimits(ts::Mode mode) {
-    return ts::LimitsFor(mode, REXCVAR_GET(mcla_gpu_traffic_shadows_radius), REXCVAR_GET(mcla_gpu_traffic_shadows_cars),
-                         REXCVAR_GET(mcla_gpu_traffic_shadows_cascades));
+    return ts::LimitsFor(mode, larecomp::settings::mcla_gpu_traffic_shadows_radius.Get(), larecomp::settings::mcla_gpu_traffic_shadows_cars.Get(),
+                         larecomp::settings::mcla_gpu_traffic_shadows_cascades.Get());
 }
 
 // The census and the decision, for either route: whether the car (any stable id: its guest address) casts in

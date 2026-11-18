@@ -14,7 +14,7 @@
 #include <string>
 #include <string_view>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "ao_fast.h"
@@ -39,431 +39,6 @@
 #include "texture_bytes.h"
 #include "traffic_shadow.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_ao, "auto", "MCLA/GPU",
-    "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
-    "from the picture's depth, only on the sky light and not on the sun's (the game's own "
-    "constants say how much of a surface's light is which). off, high (half resolution, 2 slices), "
-    "ultra (full resolution, 3 slices) or auto (the default): off on an integrated graphics card, "
-    "high on a discrete one with less than 5.5 GiB of video memory, ultra on the rest. The pause menu "
-    "and the launcher show the same words. A value that is none of these (the low of an older "
-    "larecomp.toml) is ignored and the setting runs as auto. "
-    "Costs graphics card time, ultra more than high. "
-    "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
-    "Live.")
-    .allowed({"auto", "off", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_ao_intensity, "default", "MCLA/GPU",
-    "How strong ambient occlusion looks: light, default, strong or max. Each is a set of four "
-    "numbers: how strongly it darkens, how far it looks for things that block the sky light, how "
-    "hard the measure is pushed, and how much it also darkens the part of a surface the sun lights; "
-    "the stronger ones reach farther and make every crease, corner and under-car shadow darker. "
-    "Only used while mcla_gpu_ao is not off (the pause menu's AO INTENSITY row). Live.")
-    .allowed({"light", "default", "strong", "max"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_fade_end, 160.0, "MCLA/GPU",
-    "The distance, in the game's world units (about metres), where ambient occlusion has faded "
-    "out entirely; it starts to fade at half of it. Fog, rain and particles are not darkened "
-    "either way: they are drawn over the picture afterwards. Live.")
-    .debug_only()
-    .range(20.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_car_reach, 0.4, "MCLA/GPU",
-    "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
-    "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "
-    "where the tyres meet the road and the car's footprint, not a halo). The car's own body is "
-    "darkened with the whole radius as before. 1 (or 0): a car blocks the sky light as far as a wall "
-    "does. Live.")
-    .debug_only()
-    .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ao_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the ambient occlusion as a grey picture instead of applying it "
-    "(only while it is on): 1 the factor the picture is multiplied by (white: none), 2 the "
-    "visibility, 3 the share of the light that is ambient, 4 the surface normals, 5 the distance "
-    "(a log scale), 6 how much of the last frames each pixel kept (white: all it can, black: none, "
-    "so it is new, a vehicle whose own motion is not known, or has no history yet; the history itself "
-    "goes on as usual), 7 the occlusion's own part of the factor (the visibility with the ambient "
-    "share, the strength and the distance fade; white: none), 8 the pixels it takes for vehicles "
-    "(white). 0: "
-    "off. Live.")
-    .debug_only()
-    .range(0, 8)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ao_history, 12, "MCLA/GPU",
-    "Diagnostic: how many frames ambient occlusion averages to take its sampling noise out, 1 to "
-    "64. Each frame's occlusion is found again in the next by the camera's motion and kept only "
-    "where it is the same surface; more frames is smoother and slower to follow a moving shadow "
-    "(a car's), fewer is noisier. 1: no averaging (two blur passes on every frame instead). Live.")
-    .debug_only()
-    .range(1, 64)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ao_stable, true, "MCLA/GPU",
-    "Diagnostic: the occlusion's noise stays as small in a big picture as in a small one: its blur reaches "
-    "as far in the picture at 4K (7x7 pixels) as it does at 720 lines (3x3), the wide blur of the pixels "
-    "that have no history follows, and the noise's shift from frame to frame is a lattice of 13 frames that "
-    "any 12 consecutive frames cover evenly. The bounce light's a-trous filter has more iterations in a "
-    "bigger picture and its history is clipped to a wider box. False: the first version's 3x3 blur and 5x5 "
-    "wide blur at every size, its additive recurrence, its 2 a-trous iterations and its clip of 1.25 "
-    "deviations, for comparing. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ao_fast_math, true, "MCLA/GPU",
-    "Diagnostic: the bounce light's sectors take the angle of each sample's horizon from a polynomial (Abramowitz and "
-    "Stegun's, 6.8e-5 radians at the most, 0.0014 of one of the 32 sectors) in place of the hardware's acos, which "
-    "costs less; every other saving of the occlusion's and the bounce light's shader passes is the same maths to a "
-    "rounding error and has no switch. False: the hardware's acos (the shader as it was in that one respect), for "
-    "comparing the cost and the picture. Live; the first frame after the change makes the other pipeline on the "
-    "render thread (a debug switch: a hitch of tens of milliseconds, once).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ao_half_above_1080, true, "MCLA/GPU",
-    "Diagnostic: above 1080 lines of render height (1440p, 4K, an upscaler's larger render size) the ambient "
-    "occlusion's passes (depth chain, visibility, blur, history) run at half the picture's size, 720 lines for 1440p "
-    "and 1080 for 4K, and the apply pass's depth-aware upsample puts the result back; 1080 lines and below are as "
-    "they were. The occlusion's own 18 samples a pixel make a signal that has no more detail than that, so the picture "
-    "is the same to within a thin edge and the passes cost a quarter. The contact shadows keep the picture's size "
-    "(their own depth and images). False: every size at the size the quality says (the render size on ultra). With "
-    "the bounce light on, mcla_gpu_ssgi_half decides instead (the bounce light's images give the visibility too). "
-    "Live; the first frame after the change makes the images again.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ssgi_half, true, "MCLA/GPU",
-    "Diagnostic: above 1080 lines of render height the bounce light (every quality, high and ultra) runs at half the "
-    "picture's size, like mcla_gpu_ao_half_above_1080 does the occlusion, and its colour chain takes one of the "
-    "colour target's MSAA samples a pixel (the four pixels of a 2x2 block give the texel) instead of all of them: the "
-    "bounce light is the lowest frequency signal of the picture (it gathers 5 to 16 metres and is filtered over up to "
-    "30 pixels), so the picture is the same to within a thin edge and its passes cost a quarter and the images a "
-    "quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before "
-    "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_contact_shadows, "auto", "MCLA/GPU",
-    "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot "
-    "of a kerb or a wall, under props on the pavement), found from the picture's depth and put only "
-    "on the sun's light, so they never darken what the game's own shadows already cover. Early in the "
-    "morning and in the evening, when the game draws no sun shadows at all, they are the only ones. "
-    "They are left out at night and in rain. off, high (8 steps), ultra (16 steps) or auto (the "
-    "default): off on an integrated graphics card, high on a discrete one with less than 5.5 GiB of "
-    "video memory, ultra on the rest. The pause menu and the launcher show the same words. A value "
-    "that is none of these (the low of an older larecomp.toml) is ignored and the setting runs as "
-    "auto. They are worked out at the size the game is drawn at, so a "
-    "higher render scale gives sharper shadows (only high, with the ambient occlusion not on ultra, "
-    "works at half that size). Costs graphics card time, ultra more than high. Also drawn behind the "
-    "pause menu and on the map. Live.")
-    .allowed({"auto", "off", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_length, 0.6, "MCLA/GPU",
-    "Diagnostic: how far toward the sun contact shadows look, in the game's world units (about "
-    "metres), with the sun high. The length grows with a low sun (0.7 / tan of its elevation, 1 to 3 "
-    "times). Live.")
-    .debug_only()
-    .range(0.1, 3.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_strength, 1.0, "MCLA/GPU",
-    "Diagnostic: how strongly contact shadows darken the sun's light where they apply, 0 to 2 "
-    "(the sun's elevation and the wetness scale it further). Live.")
-    .debug_only()
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_thickness, 0.3, "MCLA/GPU",
-    "Diagnostic: how far in front of a step of the ray a surface may be and still hide it, in the "
-    "game's world units: a thing nearer to the camera than that only overlaps on screen and hides "
-    "nothing. Live.")
-    .debug_only()
-    .range(0.05, 3.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_vehicles, 1.0, "MCLA/GPU",
-    "Diagnostic: how strongly contact shadows darken the ground under a car, 0 to 1. The game's sun "
-    "shadow map holds only the player's car, so the ground under a traffic car is as lit as an open "
-    "road; a ground pixel with a car's body above it and in the way of the sun (found from the "
-    "picture's depth and the cars' pixels, seen through the gap under the car) gets the full contact "
-    "shadow, as the player's car gets its sun shadow from the game. Cars the game's sun shadow map "
-    "holds (the player's, and traffic with TRAFFIC SHADOWS) are left out. 0 is the contact shadows as "
-    "they were (only a strip along the car's edges and its wheels). Live.")
-    .debug_only()
-    .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_fade, 0.6, "MCLA/GPU",
-    "Diagnostic: how much of the contact shadows' ray a shadow stays fully dark over, 0.2 to 0.98: "
-    "past that share of the ray's length it fades out, so that a shadow cut off by the ray's end "
-    "does not end in a hard line. At 0.2 it looks like the first version's fade (a quarter of the "
-    "shadow gone half way along the ray). Live.")
-    .debug_only()
-    .range(0.2, 0.98)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_contact_shadows_fast, true, "MCLA/GPU",
-    "Diagnostic: the cheaper contact shadows, to compare against the plain ones (false: the passes as "
-    "they were). The march takes fewer steps where its ray covers few pixels on the screen (far "
-    "pixels, a smaller picture; the squared spacing is kept), and the 3x3 filter that keeps shadow "
-    "edges is done inside the apply pass, which saves a pass and a full size image write (only where "
-    "the contact passes run at the picture's size: ultra, or the occlusion on ultra). With that, and in a "
-    "frame that has the game's sun shadow mask, the march is also left out where the game's own shadow "
-    "covers a pixel and its neighbours (the apply cannot use the result there: exactly the same picture). "
-    "The picture is the same to within a shadow edge moving by a pixel. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_contact_skip_stat, 0, "MCLA/GPU",
-    "Diagnostic: with mcla_gpu_contact_shadows_fast and the game's sun shadow mask in the frame, every N frames (0: never) the contact march's "
-    "skip is counted: a second march pass classifies every pixel (skipped under the game's own shadow, the sky or past the fade, turned from "
-    "the sun, marching) with the mask's stored value at its centre, and the log gets the shares, the spread of those values (does the "
-    "game's shade store exactly 0, which the skip needs?) and the model's march time for that share. That frame costs one more march and a "
-    "readback of the picture. Live.")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_contact_shadows_mask_gain, 2.0, "MCLA/GPU",
-    "Diagnostic: what the game's sun shadow mask's stored value is multiplied by to give the sun's "
-    "visibility (1 lit): the game's collector stores half of it and the lit shaders multiply by 2. "
-    "Look at mcla_gpu_contact_shadows_view 3 (white where lit) if shadows are darkened twice or not "
-    "at all. Live.")
-    .debug_only()
-    .range(0.5, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_contact_shadows_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the contact shadows as a grey picture instead of applying them "
-    "(only while they are on, and instead of mcla_gpu_ao_view): 1 the factor the picture is "
-    "multiplied by (white: none), 2 the contact visibility (black where the ray is hidden), 3 the "
-    "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
-    "4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where "
-    "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
-    "near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.")
-    .debug_only()
-    .range(0, 5)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_contact_shadows_car_map_march, false, "MCLA/GPU",
-    "Diagnostic: with the player's car's own sun shadow map in the frame (car_shadow_map.h), the short march that "
-    "the car's own pixels (and any vehicle's) take also runs on the pixels the map covers, and the pixel gets the darker "
-    "of the two. False: where the map holds a part of the car at a vehicle's pixel the map is the truth about the car's "
-    "own parts (a wing's plate and its posts, a mirror, a sill), which the march only guesses from the picture's depth "
-    "(a thin part has no thickness there), so that pixel takes no march steps and its contact shadow is the map's. "
-    "For comparing the two on the wing and the mirrors (view 5 shows the map's term). Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_ssgi, "auto", "MCLA/GPU",
-    "Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and "
-    "the walls beside it, found from the picture, so a red wall tints the pavement by it and a street "
-    "lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient "
-    "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
-    "was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps "
-    "each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the "
-    "default): off on every graphics card for now, until its cost is measured. The pause menu and the "
-    "launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is "
-    "ignored and the setting runs as auto. Costs graphics card time, "
-    "ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.")
-    .allowed({"auto", "off", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_ssgi_intensity, "default", "MCLA/GPU",
-    "How strong the bounce light looks: light, default, strong, stronger or strongest. Each is a set of four "
-    "numbers: how much of the light the surroundings send back the picture gets, the most it may add to a pixel "
-    "(a guard against noise in the dark), how far it looks for lit surfaces (5 to 16 metres, past the ambient "
-    "occlusion's own reach), and the brightest light it may bring (never whiter than a white wall in full sun). "
-    "The stronger ones lift shadows and the sides of cars more and look farther. Only used while the bounce light "
-    "(mcla_gpu_ssgi) is on (the pause menu's BOUNCE LIGHT STRENGTH row). Live.")
-    .allowed({"light", "default", "strong", "stronger", "strongest"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_strength, -1.0, "MCLA/GPU",
-    "Diagnostic: replaces the level's strength of the bounce light (mcla_gpu_ssgi_intensity), 0 to 12: how much of "
-    "the bounce light the picture gets (1: all that the surroundings send back by the picture's own colours; 0 "
-    "runs the passes and adds nothing). -1: the level's. Live.")
-    .debug_only()
-    .range(-1.0, 12.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_radius, 1.0, "MCLA/GPU",
-    "Diagnostic: how far the bounce light's NEAR samples look, as a multiple of the ambient occlusion's radius "
-    "(mcla_gpu_ao_intensity); the same samples give the occlusion's visibility, so a change moves that too. 1: the "
-    "occlusion's own. (The far ring that reaches past them is mcla_gpu_ssgi_reach.) Live.")
-    .debug_only()
-    .range(0.5, 3.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_reach, -1.0, "MCLA/GPU",
-    "Diagnostic: replaces the level's reach of the bounce light (mcla_gpu_ssgi_intensity), 0 to 16 metres: a "
-    "second ring of samples from the occlusion's radius out to this, into what the near samples left open (the "
-    "occlusion's own look does not change). 0: no ring. -1: the level's. Live.")
-    .debug_only()
-    .range(-1.0, 16.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_far_steps, -1, "MCLA/GPU",
-    "Diagnostic: the far ring's samples on each side of each direction, 0 to 7 (0: no ring). -1: by the bounce "
-    "light's quality (2 at ultra, 1 at high). Live.")
-    .debug_only()
-    .range(-1, 7)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_clamp, -1.0, "MCLA/GPU",
-    "Diagnostic: replaces the level's gain limit of the bounce light (mcla_gpu_ssgi_intensity), 0.05 to 10.2: the "
-    "most the bounce may add to a pixel, as a multiple of that pixel's own colour (its largest channel; the hue "
-    "stays; a soft limit that only guards a nearly black pixel's noise, so a shadow can gain several times "
-    "its own light). The brightest the bounce can make a pixel is set by the cap, not by this. -1: the "
-    "level's. Live.")
-    .debug_only()
-    .range(-1.0, 10.2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_low, 0, "MCLA/GPU",
-    "Diagnostic: what the bounce light's high does (mcla_gpu_ssgi high or auto that comes to high) to be cheaper "
-    "than ultra: 0 fewer directions (2 slices and 2 steps each instead of 3 and 3) at the occlusion's own "
-    "size, 1 half the picture's size (the occlusion's slices and steps) even where the occlusion is high, 2 "
-    "both. The same samples give the occlusion's visibility, so 1 and 2 also make the occlusion's own "
-    "picture half resolution while the bounce light is on. Live.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the bounce light's apply as a picture instead of applying it (only "
-    "while the bounce light is on, and instead of the occlusion's and the contact shadows' views; the "
-    "test's own views come first): 1 the factor the picture is multiplied by, in colour (the "
-    "occlusion's plus the bounce), 2 the bounce each pixel gets (four times as bright as the others), "
-    "3 the albedo estimate (the colour over the light the game's constants say fell on it, up to 1), "
-    "4 that light, 5 how much of the colour is a surface (black: a source of light, which gets no "
-    "bounce), 6 the change of the picture against the game's own (grey: none; lighter: brighter; "
-    "darker). Shown at 0.3 of the value, except 6. 0: off. Live.")
-    .debug_only()
-    .range(0, 6)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_ssgi_test, false, "MCLA/GPU",
-    "Diagnostic: the debug override of the bounce light (mcla_gpu_ssgi): forces its passes on, at the "
-    "occlusion's own quality and whatever mcla_gpu_ssgi says (only while mcla_gpu_ao is not off). The "
-    "scene colour at the occlusion's trigger is kept in a chain of images and the occlusion's main "
-    "pass becomes a visibility bitmask that also finds what colour the blockers of each pixel's sky "
-    "light are, then accumulated over frames and filtered. The occlusion's own look stays (its "
-    "visibility now comes from the bitmask); the bounce is added to the picture as the setting adds it "
-    "(mcla_gpu_ssgi_strength 0: not added), or shown by mcla_gpu_ssgi_test_view. Costs about as much "
-    "as the occlusion again. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_thickness, 0.0, "MCLA/GPU",
-    "Diagnostic: how thick the surfaces the bitmask finds are assumed to be, in the game's world units "
-    "(about metres): a sample blocks the directions between its front and its back, the back being "
-    "this far behind the front along the view ray. 0: solid, a sample blocks everything below its "
-    "horizon (the occlusion's own horizon search, to within 1/32). Live.")
-    .debug_only()
-    .range(0.0, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_clamp, -1.0, "MCLA/GPU",
-    "Diagnostic: replaces the level's cap (mcla_gpu_ssgi_intensity), 0.25 to 15.75: the brightest radiance a "
-    "sample of the scene colour may carry into the bounce, and the ceiling the bounce may fill a pixel up to, as a "
-    "multiple of the frame's ambient plus sun light (never under 0.5): a street lamp, neon or the sun's disc is a "
-    "source, not a surface that bounces light, and may light its neighbours no whiter than a white wall in full "
-    "sun. -1: the level's. Live.")
-    .debug_only()
-    .range(-1.0, 15.75)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_facing, 1.0, "MCLA/GPU",
-    "Diagnostic: how much a sample's surface must face the pixel to light it, 0 to 1: 0 takes every "
-    "surface to face the pixel, 1 weighs each by the slope of its depth along the slice (a roof seen "
-    "from the ground, a wall seen from behind: nothing). Costs one more depth read per lit sector. "
-    "Live.")
-    .debug_only()
-    .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_test_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the bounce light test as a picture instead of the scene colour "
-    "(only while mcla_gpu_ssgi_test is on, and instead of the other debug views): 1 the bounce light "
-    "the main pass found (one frame, noisy), 2 the scene colour chain's level 0 (the colour the "
-    "blockers are taken from: averaged over the samples, capped), 3 its level 1, 4 its level 2, 5 the "
-    "bounce light cleaned by a 5x5 mean, 6 the visibility the bitmask found (one frame, noisy: the "
-    "occlusion's own view 2 shows it after the denoise and the history), 7 the bounce light after the "
-    "accumulation over frames (the history), 8 the bounce light after the a-trous filter too (what the "
-    "picture's bounce will be made of), 9 how much of the history each pixel kept (white: all it can, "
-    "black: none, so it is new, a vehicle whose own motion is not known, or has no history yet). Shown at "
-    "0.3 of its value times mcla_gpu_ssgi_test_view_gain (view 9 at full white). 0: off. Live.")
-    .debug_only()
-    .range(0, 9)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_view_gain, 1.0, "MCLA/GPU",
-    "Diagnostic: the brightness of mcla_gpu_ssgi_test_view's picture, 0.1 to 16 times. Live.")
-    .debug_only()
-    .range(0.1, 16.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_test_history, 16, "MCLA/GPU",
-    "Diagnostic: how many frames the bounce light test averages the bounce over, 2 to 64 (the "
-    "occlusion's own visibility keeps mcla_gpu_ao_history). The bounce is found again in the last frame "
-    "by the camera's and the vehicles' motion and kept only where it is the same surface; more frames is "
-    "smoother and slower to follow a light that changed, fewer is noisier. Live.")
-    .debug_only()
-    .range(2, 64)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ssgi_test_history_clamp, 2.0, "MCLA/GPU",
-    "Diagnostic: how far the bounce's history may be from this frame's 3x3 neighbourhood of the bounce, in "
-    "standard deviations of that neighbourhood (never under 5% of its mean, and 15% of the history's own value "
-    "wider on each side): the history is cut to that box. Narrow follows a changed light at once and keeps more "
-    "noise (the first version, 1.25 with no share of the history, made the accumulated bounce 2.5 to 3.5 times as "
-    "noisy); wide keeps the history longer and leaves a ghost of a car that went by. Live.")
-    .debug_only()
-    .range(0.25, 8.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ssgi_test_atrous, 2, "MCLA/GPU",
-    "Diagnostic: the iterations of the a-trous filter that takes the noise out of the bounce light after the "
-    "history, for a picture of 720 lines, 0 to 3 (0: none; each iteration reaches twice as far: 5x5, 9x9, 17x17 "
-    "pixels, and stops at depth edges and corners). A bigger picture gets one more for each doubling of its "
-    "height (3 at 1080 and 1440 lines, 4 at 2160, at most 5), so the filter reaches as much of the picture; "
-    "mcla_gpu_ao_stable false keeps this number at every size. The history itself is never filtered. Live.")
-    .debug_only()
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_ao_census, 0, "MCLA/GPU",
-    "Diagnostic: every Nth guest frame (and the first three frames with the main view), one block "
-    "of log lines with the main view's draws around the game's mid-scene depth resolve, that "
-    "resolve (where it is, how big, inside EndTiling or not), the light constants the occlusion "
-    "uses (PS c26 ambient, PS c39 sun colour, VS c16 sun direction), the depth clear value, the "
-    "lens the game's motion blur draw gives, what the history did and a statistic of the linear "
-    "depth (read back from the graphics card, so the first three frames and every Nth one run the "
-    "depth passes even with the occlusion off). Frames where the main view does not have exactly "
-    "one qualifying resolve are logged as they come (the first 40). 0: off. Live.")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_ao_paint, 0.3125, "MCLA/GPU",
-    "Diagnostic: how much of ambient occlusion a car's glossy paint takes. The colour of dark paint is nearly all the "
-    "reflection of the sky, and a reflection is blocked only where the mirror ray is, not by the share of the sky a part "
-    "cannot see, so a part that is partly covered (the uprights of a wing and the lid under it) lost most of its colour. On "
-    "a car's pixels the occlusion's value (the image's, already raised to the look's power) is raised to this power: 1 "
-    "darkens the paint like the world, smaller keeps more of its colour. The default, 0.3125, takes the default look's power "
-    "(3.6) out again, so the paint is darkened by the share of the sky a part can see. Rounded to sixteenths, 1/16 to 1. "
-    "Live.")
-    .debug_only()
-    .range(0.0625, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -623,7 +198,7 @@ constexpr uint32_t kDefaultLook = 1;
 
 // The index of mcla_gpu_ao_intensity's look; anything the list does not know is the default.
 uint32_t ReadLookIndex() {
-  std::string value = REXCVAR_GET(mcla_gpu_ao_intensity);
+  std::string value = larecomp::settings::mcla_gpu_ao_intensity.Get();
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return char(std::tolower(c)); });
   for (uint32_t i = 0; i < kLookCount; ++i) {
@@ -1116,7 +691,7 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
   if (needs.bounce && gi_ready_) {
     // The bitmask pass with its counts compiled in, for both qualities (the setting is live), with the acos that
     // mcla_gpu_ao_fast_math says (the other is made on first use after a switch of the cvar: a debug A/B).
-    const bool fast_math = REXCVAR_GET(mcla_gpu_ao_fast_math);
+    const bool fast_math = larecomp::settings::mcla_gpu_ao_fast_math.Get();
     for (const uint32_t variant : {uint32_t(fast_math ? kVMainGi3 : kVMainGi3Exact),
                                    uint32_t(fast_math ? kVMainGi2 : kVMainGi2Exact), uint32_t(kVColor), uint32_t(kVColorMs),
                                    uint32_t(kVColorMip), uint32_t(kVDenoiseGi), uint32_t(kVTemporalGi),
@@ -1143,7 +718,7 @@ void AmbientOcclusion::ListPrecache(const host_plan::Choice& occlusion,
   // switched it on). The census (a debug log) runs the depth passes with everything off. A pass that is
   // off lists nothing: it is not compiled for nothing, and a switch to on makes its pipelines in the
   // background (HoldUntilBuilt).
-  const bool census = REXCVAR_GET(mcla_gpu_ao_census) != 0;
+  const bool census = larecomp::settings::mcla_gpu_ao_census.Get() != 0;
   const auto list = [&](const host_plan::AmbientNeeds& needs) {
     uint32_t added = 0;
     for (const uint32_t variant : VariantsFor(needs)) {
@@ -1358,7 +933,7 @@ void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* boun
 
 plume::RenderPipeline* AmbientOcclusion::MainGiPipeline(const GiPlan& gi) {
   plume::RenderPipeline* pipeline =
-      Pipeline(MainGiVariant(gi.fewer, gi.FarStepsSent(), REXCVAR_GET(mcla_gpu_ao_fast_math)));
+      Pipeline(MainGiVariant(gi.fewer, gi.FarStepsSent(), larecomp::settings::mcla_gpu_ao_fast_math.Get()));
   // The compilation that reads the counts, if the one for them could not be made (it said why): the push block carries them.
   return pipeline ? pipeline : Pipeline(kVMainGi);
 }
@@ -1389,7 +964,7 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
 }
 
 void AmbientOcclusion::BeginFrame() {
-  census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_ao_census)));
+  census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_ao_census.Get()));
   Mode mode = ReadMode();
   if (!ready_ && mode != Mode::kOff) {
     mode = Mode::kOff;  // the passes could not be made (Initialize said so)
@@ -1428,7 +1003,7 @@ void AmbientOcclusion::BeginFrame() {
   mode_ = mode;
   contact_mode_ = contact;
   gi_mode_ = gi_mode;
-  const bool test = REXCVAR_GET(mcla_gpu_ssgi_test);
+  const bool test = larecomp::settings::mcla_gpu_ssgi_test.Get();
   gi_active_ = (test || gi_mode_ != Mode::kOff) && mode_ != Mode::kOff && EnsureGiShaders();
   const bool gi_test = test && gi_active_;
   if (gi_test != gi_test_) {
@@ -1937,12 +1512,12 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.apply = false;
   }
   plan.upscaler = upscaler_running;
-  plan.view = plan.occlusion ? uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_view), 0, 8)) : 0u;
+  plan.view = plan.occlusion ? uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_view.Get(), 0, 8)) : 0u;
   if (plan.view == 8u) {
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
   }
   if (contact) {
-    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewCarMap);
+    const int contact_view = std::clamp(larecomp::settings::mcla_gpu_contact_shadows_view.Get(), 0, kContactViewCarMap);
     if (contact_view != 0) {
       // instead of the occlusion's; 5 (the car's shadow map's term) is shown as the contact visibility, which the march then holds
       plan.contact.car_map_view = contact_view == kContactViewCarMap;
@@ -2022,7 +1597,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     in.bounce = plan.gi.on;
     in.bounce_ultra = plan.gi.on && plan.gi.mode == Mode::kUltra;
     in.bounce_half = plan.gi.on && plan.gi.half;
-    in.half_above_ao = REXCVAR_GET(mcla_gpu_ao_half_above_1080);
+    in.half_above_ao = larecomp::settings::mcla_gpu_ao_half_above_1080.Get();
     in.half_above_bounce = plan.gi.half_above;
     const ao_size::Choice choice = ao_size::Decide(in);
     plan.low = choice.low;
@@ -2160,12 +1735,12 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                 double(HeldBytes()) / (1024.0 * 1024.0), ao_size::Mib(ao_size::Bytes(model).Total()),
                 ao_size::Mib(ao_size::BytesBefore(model).Total()));
     if (plan.occlusion) {
-      const int radius = REXCVAR_GET(mcla_gpu_ao_stable) ? ao_stable::DenoiseRadius(plan.ao[1]) : 1;
+      const int radius = larecomp::settings::mcla_gpu_ao_stable.Get() ? ao_stable::DenoiseRadius(plan.ao[1]) : 1;
       REXLOG_INFO("[gpu] ao: the blur is {0}x{0} pixels and the wide blur of the pixels that have no history {1}x{1} "
                   "at {2} lines ({3}: it reaches {4:.2f} of what it does at 720 lines; ao_stable.h, "
                   "mcla_gpu_ao_stable)",
                   2 * radius + 1, 2 * ao_stable::WideRadius(radius) + 1, plan.ao[1],
-                  radius == 1 && !REXCVAR_GET(mcla_gpu_ao_stable) ? "the first version's, at every size"
+                  radius == 1 && !larecomp::settings::mcla_gpu_ao_stable.Get() ? "the first version's, at every size"
                                                                   : "follows the image's height",
                   double(radius) * double(ao_stable::kReferenceHeight) / double(std::max(plan.ao[1], 1u)));
       if (!plan.gi.on) {
@@ -2177,7 +1752,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
         before.low = plan.low && !plan.by_height;
         before.contact_full = false;
         const ao_size::Sizes sizes_before = ao_size::SizesOf(plan.render, before);
-        const int radius_before = REXCVAR_GET(mcla_gpu_ao_stable) ? ao_stable::DenoiseRadius(sizes_before.ao[1]) : 1;
+        const int radius_before = larecomp::settings::mcla_gpu_ao_stable.Get() ? ao_stable::DenoiseRadius(sizes_before.ao[1]) : 1;
         const ao_size::Sizes sizes_now = ao_size::SizesOf(plan.render, plan.SizeChoice());
         const ao_size::AoCost cost_now =
             ao_size::Cost(sizes_now, plan.render, taps, uint32_t(radius), split);
@@ -2243,8 +1818,8 @@ void AmbientOcclusion::UpdateLook() {
   look_.radius = def.radius;
   look_.power = def.power;
   look_.direct = def.direct;
-  look_.car_reach = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_car_reach), 0.0, 1.0));
-  look_.paint_code = ao_paint::CodeFor(REXCVAR_GET(mcla_gpu_ao_paint));
+  look_.car_reach = float(std::clamp(larecomp::settings::mcla_gpu_ao_car_reach.Get(), 0.0, 1.0));
+  look_.paint_code = ao_paint::CodeFor(larecomp::settings::mcla_gpu_ao_paint.Get());
   if (index != look_logged_index_) {
     look_logged_index_ = index;
     REXLOG_INFO("[gpu] ao: intensity {} (mcla_gpu_ao_intensity, live): strength {:.3g}, radius {:.3g} "
@@ -2287,7 +1862,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // the blur reaches as far in the picture at 4K as at 720 lines (ao_stable.h: 1, 2 or 3); the first version's
   // 3x3 at every size is mcla_gpu_ao_stable false.
   const uint32_t denoise_radius =
-      REXCVAR_GET(mcla_gpu_ao_stable) ? uint32_t(ao_stable::DenoiseRadius(plan.ao[1])) : 1u;
+      larecomp::settings::mcla_gpu_ao_stable.Get() ? uint32_t(ao_stable::DenoiseRadius(plan.ao[1])) : 1u;
   push->slots2[1] = uint32_t(frame_ & 1023);
   push->slots2[2] = plan.view | (slices << 8) | (steps << 12) | ((low ? 1u : 0u) << 16) |
                     (denoise_radius << 17);
@@ -2297,7 +1872,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // linearisation (t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored depth).
   const temporal::Mat4& p = previous_.projection;
   const float radius = look_.radius * (plan.gi.on ? plan.gi.radius : 1.0f);
-  const float fade_end = float(std::clamp(REXCVAR_GET(mcla_gpu_ao_fade_end), 20.0, 1000.0));
+  const float fade_end = float(std::clamp(larecomp::settings::mcla_gpu_ao_fade_end.Get(), 20.0, 1000.0));
   push->lens[0] = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
   push->lens[1] = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
   push->lens[2] = radius;
@@ -2407,7 +1982,7 @@ bool AmbientOcclusion::FrameMotion(temporal::Mat4* motion, Pose* source, bool* c
 
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
-  use.cap = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ao_history), 1, 64));
+  use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));
   use.motion = temporal::Identity();
   if (use.cap < 2) {
     use.why = HistoryWhy::kCap;
@@ -2663,7 +2238,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
-  if (plan.gi.on && REXCVAR_GET(mcla_gpu_ao_stable)) {
+  if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
     plan.gi.atrous = uint32_t(ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1]));
   }
 
@@ -2731,7 +2306,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.extra[0] = look_.car_reach;
     // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
     // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
-    push.slots2[1] = ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable));
+    push.slots2[1] = ao_stable::NoiseCode(frame_, larecomp::settings::mcla_gpu_ao_stable.Get());
     // The bounce light test's main pass is the same pass as a visibility bitmask: it reads the colour
     // chain too (slots.x, slots.y, slots2.w; the plain pass leaves them alone), the thickness and the
     // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the
@@ -3319,7 +2894,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   contact_wet_ = wet;
   contact_gate_sun_ = Smoothstep(kGateOffDegrees, kGateFullDegrees, elevation);
   contact_gate_wet_ = 1.0f - std::clamp((wet - kWetDry) / kWetSpan, 0.0f, 1.0f);
-  const float setting = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_strength), 0.0, 2.0));
+  const float setting = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_strength.Get(), 0.0, 2.0));
   contact_strength_ = setting * contact_gate_sun_ * contact_gate_wet_;
   if (!(contact_strength_ > 0.002f) || !(Luma(sun) > 1e-4f)) {
     state = ContactState::kGated;
@@ -3331,18 +2906,18 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.mode = contact_mode_;
   c.strength = contact_strength_;
   // The ray grows with a low sun (its shadows are long): 0.7 / tan(elevation), 1 to 3 times.
-  c.length = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_length), 0.1, 3.0) *
+  c.length = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_length.Get(), 0.1, 3.0) *
                    contact_trace::LengthGrow(elevation));
-  c.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_thickness), 0.05, 3.0));
+  c.thickness = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_thickness.Get(), 0.05, 3.0));
   c.steps = contact_mode_ == Mode::kHigh ? contact_trace::kStepsHigh : contact_trace::kStepsUltra;
-  c.end_fade_start = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_fade),
+  c.end_fade_start = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_fade.Get(),
                                       double(contact_trace::kFadeStartMin),
                                       double(contact_trace::kFadeStartMax)));
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
-  c.mask_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_mask_gain), 0.5, 4.0));
-  c.under_vehicle = float(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_vehicles), 0.0, 1.0));
-  c.fast = REXCVAR_GET(mcla_gpu_contact_shadows_fast);
+  c.mask_gain = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_mask_gain.Get(), 0.5, 4.0));
+  c.under_vehicle = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_vehicles.Get(), 0.0, 1.0));
+  c.fast = larecomp::settings::mcla_gpu_contact_shadows_fast.Get();
   finish();
 }
 
@@ -3499,7 +3074,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   } else if (contact_skip_.texture) {
     passes_->ReleaseImage(contact_skip_);
   }
-  const bool stat_wanted = REXCVAR_GET(mcla_gpu_contact_skip_stat) > 0 && c.fast && in_apply && mask_slot != kNoSlot && !debug_picture;
+  const bool stat_wanted = larecomp::settings::mcla_gpu_contact_skip_stat.Get() > 0 && c.fast && in_apply && mask_slot != kNoSlot && !debug_picture;
   Push stat_push = push;  // the march's push as it is: the statistics pass is the same shader, the flag and the mask's slot added
   // The player's car's own sun shadow map (car_shadow_map.h; contact_trace.h "the player's car's own sun shadow map"): in a frame that has
   // one the march reads it for the pixels it covers (the push block has no room for the matrix: the shader reads its three rows from the
@@ -3516,7 +3091,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
       if (plan.contact.car_map_view) {
         map_flags |= contact_trace::kCarMapViewFlag;
       }
-      if (REXCVAR_GET(mcla_gpu_contact_shadows_car_map_march)) {
+      if (larecomp::settings::mcla_gpu_contact_shadows_car_map_march.Get()) {
         map_flags |= contact_trace::kCarMapKeepMarchFlag;
       }
       push.slots2[2] |= map_flags;
@@ -3567,7 +3142,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
 
 void AmbientOcclusion::RecordContactStat(plume::RenderCommandList* list, const Plan& plan, const Push& march_push, uint32_t mask_slot,
                                          float limit) {
-  const int every = REXCVAR_GET(mcla_gpu_contact_skip_stat);
+  const int every = larecomp::settings::mcla_gpu_contact_skip_stat.Get();
   if (stat_busy_ || every <= 0 || (stat_taken_ != 0 && frame_ < stat_last_frame_ + uint64_t(every))) {
     return;
   }
@@ -3738,19 +3313,19 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   // What the quality means: the debug override is the occlusion's own (as it was); the setting's ultra is 3 and
   // 3 at the picture's size and its high is cheaper by fewer directions, by half the size, or both
   // (mcla_gpu_ssgi_low, named for the level that was called low).
-  const int low_how = std::clamp(REXCVAR_GET(mcla_gpu_ssgi_low), 0, 2);
+  const int low_how = std::clamp(larecomp::settings::mcla_gpu_ssgi_low.Get(), 0, 2);
   g.fewer = gi_test_ ? plan->mode == Mode::kHigh : (g.mode == Mode::kHigh && low_how != 1);
   g.half = !gi_test_ && g.mode == Mode::kHigh && low_how >= 1;
-  g.half_above = REXCVAR_GET(mcla_gpu_ssgi_half);  // above 1080 lines, every quality (ao_size.h)
+  g.half_above = larecomp::settings::mcla_gpu_ssgi_half.Get();  // above 1080 lines, every quality (ao_size.h)
   // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
   // is set (ssgi_level.h).
   const ssgi_level::Level level = ReadSsgiLevel();
   ssgi_level::Overrides overrides;
-  overrides.strength = REXCVAR_GET(mcla_gpu_ssgi_strength);
-  overrides.limit = REXCVAR_GET(mcla_gpu_ssgi_clamp);
-  overrides.reach = REXCVAR_GET(mcla_gpu_ssgi_reach);
-  overrides.cap = REXCVAR_GET(mcla_gpu_ssgi_test_clamp);
-  overrides.far_steps = REXCVAR_GET(mcla_gpu_ssgi_far_steps);
+  overrides.strength = larecomp::settings::mcla_gpu_ssgi_strength.Get();
+  overrides.limit = larecomp::settings::mcla_gpu_ssgi_clamp.Get();
+  overrides.reach = larecomp::settings::mcla_gpu_ssgi_reach.Get();
+  overrides.cap = larecomp::settings::mcla_gpu_ssgi_test_clamp.Get();
+  overrides.far_steps = larecomp::settings::mcla_gpu_ssgi_far_steps.Get();
   const ssgi_level::Effective numbers = ssgi_level::Choose(level, overrides);
   g.level = uint32_t(level);
   g.overridden = numbers.overridden;
@@ -3767,20 +3342,20 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
                 ssgi_level::Name(level), numbers.overridden ? " with debug overrides" : "", g.strength, g.limit,
                 g.reach, g.far_steps, g.cap);
   }
-  g.radius = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_radius), 0.5, 3.0));
-  g.apply_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_view), 0, 6));
-  g.thickness = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_thickness), 0.0, 4.0));
-  g.facing = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_facing), 0.0, 1.0));
-  g.view_gain = float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view_gain), 0.1, 16.0));
-  g.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_view), 0, 9));
-  g.history = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history), 2, 64));
+  g.radius = float(std::clamp(larecomp::settings::mcla_gpu_ssgi_radius.Get(), 0.5, 3.0));
+  g.apply_view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_view.Get(), 0, 6));
+  g.thickness = float(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_thickness.Get(), 0.0, 4.0));
+  g.facing = float(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_facing.Get(), 0.0, 1.0));
+  g.view_gain = float(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_view_gain.Get(), 0.1, 16.0));
+  g.view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_view.Get(), 0, 9));
+  g.history = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_history.Get(), 2, 64));
   // The clip box of the bounce's history: the setting's width and a share of the history's own value, or the first
   // version's 1.25 deviations alone (ssgi_stable.h).
-  const bool stable = REXCVAR_GET(mcla_gpu_ao_stable);
-  g.clamp_width = stable ? float(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0))
+  const bool stable = larecomp::settings::mcla_gpu_ao_stable.Get();
+  g.clamp_width = stable ? float(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_history_clamp.Get(), 0.25, 8.0))
                          : ssgi_stable::kFirstClipWidth;
   g.clip_history = stable ? ssgi_stable::kClipHistoryShare : ssgi_stable::kFirstClipHistoryShare;
-  g.atrous = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_atrous), 0, 3));
+  g.atrous = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_atrous.Get(), 0, 3));
   if (g.view != 0) {
     plan->view = 0;  // instead of the other debug views: they are of the plain passes
     g.apply_view = 0;  // the test's own pictures come first
@@ -4377,9 +3952,9 @@ void AmbientOcclusion::Census() {
                 "so far {}, {} of them with a history to lean on ({} frames at most, clip {:.2f} "
                 "deviations, {} a-trous iterations); images held {:.1f} MiB",
                 kPrefix, ModeName(gi_mode_), gi_test_ ? "on" : "off", gi_runs_, gi_history_runs_,
-                uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history), 2, 64)),
-                std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_history_clamp), 0.25, 8.0),
-                uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_ssgi_test_atrous), 0, 3)),
+                uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_history.Get(), 2, 64)),
+                std::clamp(larecomp::settings::mcla_gpu_ssgi_test_history_clamp.Get(), 0.25, 8.0),
+                uint32_t(std::clamp(larecomp::settings::mcla_gpu_ssgi_test_atrous.Get(), 0, 3)),
                 double(HeldBytes()) / (1024.0 * 1024.0));
   }
 }

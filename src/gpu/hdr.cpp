@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "gpu.h"
@@ -34,40 +34,6 @@
 #pragma comment(lib, "user32.lib")
 #endif
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_hdr, "off", "MCLA/GPU",
-    "HDR output for an HDR10 display. off: the usual picture. auto: HDR while Windows has HDR "
-    "turned on for the display the game is on, following Windows' HDR switch and the display the "
-    "window is moved to. on: HDR even if Windows does not say its HDR is on; where the display or "
-    "the driver cannot show it the usual picture is used and the log says why. The HUD and the "
-    "menus are shown at your paper white setting; the game's lights, the sun, the sky at dusk and "
-    "the headlights go above it (how far: mcla_gpu_hdr_highlights). Takes effect within a moment, "
-    "at the end of a frame; the picture may flicker once while the window's swap chain is made "
-    "again.")
-    .allowed({"off", "auto", "on"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_hdr_paper_white_nits, 0.0, "MCLA/GPU",
-    "How bright the game's white is in HDR, in nits (Windows' own slider covers 80 to 480). 0: "
-    "the Windows SDR content brightness setting, or 200 when Windows does not report it. "
-    "Changes at once.")
-    .range(0.0, 10000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_hdr_peak_nits, 0.0, "MCLA/GPU",
-    "The brightest level HDR output may reach, in nits (200 to 4000 covers most displays). 0: "
-    "what the display reports, or 1000 when it reports nothing. Changes at once.")
-    .range(0.0, 10000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_hdr_test_pattern, false, "MCLA/GPU",
-    "In HDR, shows brightness bars instead of the game. The top row starts at 100 nits and "
-    "doubles every 4 bars, to see where the display stops showing steps; the bottom left is "
-    "paper white and the bottom right the same bars rolled off to the peak setting. It covers the "
-    "whole picture, the menus too. The pause menu's TEST PATTERN row shows it only while that row "
-    "is highlighted and never saves it; set on the command line it stays on for the run. Changes at "
-    "once.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -303,7 +269,7 @@ void PollLoop() {
 
 // The setting the render thread sees now, and the display read the moment it leaves off.
 void SyncMode() {
-  const std::string& text = REXCVAR_GET(mcla_gpu_hdr);
+  const std::string& text = larecomp::settings::mcla_gpu_hdr.Get();
   if (text == g_mode_text) {
     return;
   }
@@ -331,7 +297,7 @@ void Start(plume::RenderWindow window) {
   g_active.store(false);
   g_decided.store(false);
   g_refused = false;
-  g_mode_text = REXCVAR_GET(mcla_gpu_hdr);
+  g_mode_text = larecomp::settings::mcla_gpu_hdr.Get();
   g_mode.store(ParseMode(g_mode_text));
 #if defined(_WIN32)
   g_window = window;
@@ -457,8 +423,8 @@ AutoLevels Auto() {
 
 HdrLevels Levels() {
   const AutoLevels automatic = Auto();
-  const double peak_setting = REXCVAR_GET(mcla_gpu_hdr_peak_nits);
-  const double white_setting = REXCVAR_GET(mcla_gpu_hdr_paper_white_nits);
+  const double peak_setting = larecomp::settings::mcla_gpu_hdr_peak_nits.Get();
+  const double white_setting = larecomp::settings::mcla_gpu_hdr_paper_white_nits.Get();
   HdrLevels levels;
   levels.peak = peak_setting > 0.0 ? std::clamp(float(peak_setting), 80.0f, 10000.0f)
                                    : automatic.peak;
@@ -467,7 +433,7 @@ HdrLevels Levels() {
   // White above the peak would only be the roll-off's work.
   levels.white = std::min(levels.white, levels.peak);
   levels.knee = 0.75f * levels.peak;
-  levels.flags = REXCVAR_GET(mcla_gpu_hdr_test_pattern) ? kHdrFlagTestPattern : 0u;
+  levels.flags = larecomp::settings::mcla_gpu_hdr_test_pattern.Get() ? kHdrFlagTestPattern : 0u;
   return levels;
 }
 

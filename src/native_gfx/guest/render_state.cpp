@@ -8,10 +8,9 @@
 
 #include <dxgiformat.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/system/xmemory.h>
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_depth32);
 
 namespace mcla::native_gfx {
 
@@ -281,7 +280,7 @@ uint32_t DepthRenderTargetFormatToDxgi(uint32_t depth_format) {
   // which costs 8 bytes per texel instead of 4 and buys ~24 bits of mantissa
   // where the guest had 24 bits of absolute range. It changes no guest-visible
   // semantics: the shader still samples a normalised depth.
-  if (depth_format == 0 && !REXCVAR_GET(mcla_native_gfx_depth32)) {
+  if (depth_format == 0 && !larecomp::settings::mcla_native_gfx_depth32.Get()) {
     return DXGI_FORMAT_D24_UNORM_S8_UINT;
   }
   return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;

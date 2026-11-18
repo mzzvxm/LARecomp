@@ -44,7 +44,7 @@
 
 #include "freecam_runtime.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <atomic>
 #include <cmath>
@@ -67,49 +67,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/cut_request.h"
 #endif
-
-REXCVAR_DEFINE_BOOL(mcla_freecam, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the free camera. The pad flies the camera (left stick moves, right stick looks, triggers up and down, LB and RB tilt, "
-    "D-pad zooms and sets the speed, a stick click is fast or slow) and the game gets no pad input but Start, so the car does not drive. "
-    "Back + A records the flight, Back + X is home. Off: the game's own camera.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(mcla_freecam_record, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: record the free camera's flight into a raw track file (one sample a game update; ports\\scripts\\scene_cam.py turns it "
-    "into a scene's camera track). On starts a file, off ends it. Back + A on the pad flips it. Only records while the free camera flies.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(mcla_freecam_out, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the file the next free camera recording is written to (replaced when it exists). Empty: freecam\\flight-<date>-<time>.cam.csv "
-    "next to the game.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_speed, 12.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how fast the free camera flies at a full stick, in metres a second (L3 four times as fast, R3 a quarter, D-pad left and right "
-    "step it).")
-    .range(0.5, 500.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_look, 70.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how fast the free camera turns at a full right stick, in degrees a second.")
-    .range(5.0, 360.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_inertia, 0.25, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how long the free camera takes to settle after the sticks move, in seconds (the turn and the tilt take half). 0: none.")
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(mcla_freecam_log, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: while the free camera flies, log its pose every this many frames ([fly] lines). 0: only the events.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -258,9 +215,9 @@ void WriteCamera(uint8_t* base, uint32_t sp, const fc::Pose& pose) {
 
 fc::Params ParamsFromCvars() {
     fc::Params p;
-    p.speed = REXCVAR_GET(mcla_freecam_speed);
-    p.look = REXCVAR_GET(mcla_freecam_look);
-    p.inertia = REXCVAR_GET(mcla_freecam_inertia);
+    p.speed = larecomp::settings::mcla_freecam_speed.Get();
+    p.look = larecomp::settings::mcla_freecam_look.Get();
+    p.inertia = larecomp::settings::mcla_freecam_inertia.Get();
     return p;
 }
 
@@ -297,11 +254,11 @@ void StopRecording(const char* why) {
     LARECOMP_APP_INFO("[fly] to make a scene's camera track of it: python -I ports\\scripts\\scene_cam.py convert {} -o flight.scene", g.path);
     g.record.samples.clear();
     g.pending.clear();
-    if (REXCVAR_GET(mcla_freecam_record)) rex::cvar::SetFlagByName("mcla_freecam_record", "false");
+    if (larecomp::settings::mcla_freecam_record.Get()) larecomp::cvar::SetFlagByName("mcla_freecam_record", "false");
 }
 
 void StartRecording(const uint8_t* base) {
-    std::string path = REXCVAR_GET(mcla_freecam_out);
+    std::string path = larecomp::settings::mcla_freecam_out.Get();
     if (path.empty()) path = "freecam/flight-" + TimeStamp("%Y%m%d-%H%M%S") + ".cam.csv";
     std::error_code ec;
     const std::filesystem::path fs_path = PathFromUtf8(path);
@@ -309,7 +266,7 @@ void StartRecording(const uint8_t* base) {
     g.file.open(fs_path, std::ios::binary | std::ios::trunc);
     if (!g.file) {
         LARECOMP_APP_ERROR("[fly] cannot write {}: no recording", path);
-        rex::cvar::SetFlagByName("mcla_freecam_record", "false");
+        larecomp::cvar::SetFlagByName("mcla_freecam_record", "false");
         return;
     }
     g.path = path;
@@ -363,7 +320,7 @@ void Disengage(uint8_t* base, uint32_t sp, const char* why, bool forget_pose) {
 }  // namespace
 
 bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
-    const bool armed = REXCVAR_GET(mcla_freecam);
+    const bool armed = larecomp::settings::mcla_freecam.Get();
     if (!armed && !g.armed && !g.flying) return false;  // the one flag test
     if (!base) return false;
 
@@ -417,7 +374,7 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
         g.have_frame = true;
         g.last_frame = frame;
         ++g.frames;
-        if (ev.toggle_record) rex::cvar::SetFlagByName("mcla_freecam_record", REXCVAR_GET(mcla_freecam_record) ? "false" : "true");
+        if (ev.toggle_record) larecomp::cvar::SetFlagByName("mcla_freecam_record", larecomp::settings::mcla_freecam_record.Get() ? "false" : "true");
         if (ev.home) {
             g.flyer.Seed(GameCamera(base, sp, g.flyer.pose().yaw));
             g.cut_flag = true;
@@ -429,11 +386,11 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
             LARECOMP_APP_INFO("[fly] a cut is marked here");
         }
         if (ev.reset_view) LARECOMP_APP_INFO("[fly] the horizon is level and the field of view is back to {:.1f}", g.flyer.pose().fov);
-        const bool want = REXCVAR_GET(mcla_freecam_record);
+        const bool want = larecomp::settings::mcla_freecam_record.Get();
         if (want && !g.recording) StartRecording(base);
         else if (!want && g.recording) StopRecording("stopped");
         if (g.recording) AddSample(base, dt);
-        const uint32_t every = REXCVAR_GET(mcla_freecam_log);
+        const uint32_t every = larecomp::settings::mcla_freecam_log.Get();
         if (every != 0 && g.frames % every == 0) {
             const fc::Pose& p = g.flyer.pose();
             LARECOMP_APP_INFO("[fly] frame {}: at {:.2f} {:.2f} {:.2f}, yaw {:.2f} pitch {:.2f} roll {:.2f} fov {:.2f}, speed x{:.2f}{}", frame, p.position.x,

@@ -9,7 +9,7 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/xenos.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
@@ -24,52 +24,6 @@
 #include "render_scale.h"
 #include "temporal_identities.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_edram_aliasing, false, "MCLA/GPU",
-    "EDRAM inheritance detector (M5.2d): per EDRAM "
-    "tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would "
-    "see another identity's bytes on the console -- which the host does not carry over. Off: "
-    "none of its work is done.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_coverage_queries, false, "MCLA/GPU",
-    "With mcla_gpu_edram_aliasing: an occlusion query around each opaque draw the detector "
-    "takes to cover its scissor, checking that it did. Costs GPU time, for "
-    "checking a report. Off: no query pool is made, read or reset, and such takes go "
-    "unchecked (listed once per pair).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_edram_capture, 0, "MCLA/GPU",
-    "With mcla_gpu_edram_aliasing: a RenderDoc capture of the frame after the first report of "
-    "each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps "
-    "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
-    "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_ghost_log_interval, 0, "MCLA/GPU",
-    "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
-    "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
-    "frame. Hot reload for reproducing the frame ghost.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_msaa, "2", "MCLA/GPU",
-    "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
-    "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
-    "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
-    "and map world view, which the game draws with 4 samples, get the same as the game view. "
-    "Targets the game does not multisample, or that are not images of the screen, keep the "
-    "game's samples. Live: a change is made between two frames, after the pipelines for the new "
-    "sample count are made. While an upscaler (mcla_gpu_upscaler) runs, MSAA is 1 sample "
-    "whatever this says (the upscaler smooths the picture, and MSAA under it only costs time); "
-    "the choice is kept and comes back when the upscaler is off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -303,7 +257,7 @@ void EdramTargets::NoteMainViews(const Target& target) {
 
 EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
   MsaaSetting setting;
-  setting.text = REXCVAR_GET(mcla_gpu_msaa);
+  setting.text = larecomp::settings::mcla_gpu_msaa.Get();
   std::string v;
   for (unsigned char c : setting.text) {
     if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
@@ -468,15 +422,15 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
     }
   }
   // The detector and its checks are chosen at start.
-  aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
+  aliasing_ = larecomp::settings::mcla_gpu_edram_aliasing.Get();
   if (!aliasing_) {
     return;
   }
   for (auto& owners : tile_owner_) {
     owners.fill(kNoOwner);
   }
-  capture_ = REXCVAR_GET(mcla_gpu_edram_capture);
-  if (!REXCVAR_GET(mcla_gpu_coverage_queries)) {
+  capture_ = larecomp::settings::mcla_gpu_edram_capture.Get();
+  if (!larecomp::settings::mcla_gpu_coverage_queries.Get()) {
     REXLOG_INFO("[gpu] edram: inheritance detector on; opaque draws it takes to cover their "
                 "scissor go unchecked (mcla_gpu_coverage_queries off)");
     return;
@@ -1120,7 +1074,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     }
     AssignOwner(*target);
     it = targets_.emplace(key, std::move(target)).first;
-    if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+    if (larecomp::settings::mcla_gpu_ghost_log_interval.Get() != 0) {
       const Target& made = *it->second;
       REXLOG_INFO("[gpu] ghost target create frame {} {} target {} texture {} height {} gen {}",
                   frame_, DescribeEdramKey(key), static_cast<const void*>(&made),
@@ -1193,7 +1147,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     stats_.barriers += 2;
   }
   ++stats_.grown;
-  if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+  if (larecomp::settings::mcla_gpu_ghost_log_interval.Get() != 0) {
     REXLOG_INFO("[gpu] ghost target grow frame {} {} target {} texture {} -> {} height {} -> {} "
                 "gen {}",
                 frame_, DescribeEdramKey(key), static_cast<const void*>(&t),

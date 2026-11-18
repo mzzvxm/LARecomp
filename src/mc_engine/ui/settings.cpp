@@ -4,7 +4,7 @@
 #include "mc_engine/debug_menu.h"
 
 #include <atomic>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/string.h>
 #include <rex/string/numeric.h>
 #include <rex/ui/imgui_dialog.h>
@@ -37,7 +37,7 @@ bool CategoryIsPathOrChild(std::string_view category, std::string_view path) {
 }
 
 std::string EffectiveGraphicsBackend() {
-  const std::string backend = rex::cvar::GetFlagByName("graphics_backend");
+  const std::string backend = larecomp::cvar::GetFlagByName("graphics_backend");
   if (backend == "d3d12" || backend == "vulkan") {
     return backend;
   }
@@ -50,14 +50,14 @@ std::string EffectiveGraphicsBackend() {
 #endif
 }
 
-bool IsD3D12Setting(const rex::cvar::FlagEntry& entry) {
+bool IsD3D12Setting(const larecomp::cvar::FlagEntry& entry) {
   const std::string_view category(entry.category);
   return CategoryIsPathOrChild(category, "GPU/D3D12") ||
          CategoryIsPathOrChild(category, "UI/D3D12") ||
          entry.name.find("d3d12") != std::string::npos;
 }
 
-bool IsVulkanSetting(const rex::cvar::FlagEntry& entry) {
+bool IsVulkanSetting(const larecomp::cvar::FlagEntry& entry) {
   const std::string_view category(entry.category);
   return CategoryIsPathOrChild(category, "GPU/Vulkan") ||
          CategoryIsPathOrChild(category, "UI/Vulkan") ||
@@ -71,7 +71,7 @@ bool IsKeybindCategory(const std::string& category) {
 
 // The SDK's keyboard-and-mouse emulation (mnk_mode, mnk_mouse, mnk_sensitivity and the keybind_* keys that turn keys into pad buttons) is retired as
 // a player path: it is forced off at start and the native keyboard (the kb_* settings) is always on, so none of them is offered here.
-bool IsRetiredMnk(const rex::cvar::FlagEntry& entry) {
+bool IsRetiredMnk(const larecomp::cvar::FlagEntry& entry) {
   return entry.name == "mnk_mode" || entry.name == "mnk_mouse" || entry.name == "mnk_sensitivity" ||
          CategoryIsPathOrChild(entry.category, "Input/Keybinds/Controller");
 }
@@ -79,9 +79,9 @@ bool IsRetiredMnk(const rex::cvar::FlagEntry& entry) {
 // Every cvar is listed, for every player, whether or not the debug menu is unlocked: this panel
 // (F4) is a function-key menu, not the pause menu, and only the pause menu is cleaned up. The
 // SDK's settings_hide_inactive_backend_cvars decides the backend part of this.
-bool ShouldShow(const rex::cvar::FlagEntry& entry) {
+bool ShouldShow(const larecomp::cvar::FlagEntry& entry) {
   if (IsRetiredMnk(entry)) return false;
-  if (rex::cvar::GetFlagByName("settings_hide_inactive_backend_cvars") == "false") {
+  if (larecomp::cvar::GetFlagByName("settings_hide_inactive_backend_cvars") == "false") {
     return true;
   }
   const std::string backend = EffectiveGraphicsBackend();
@@ -175,7 +175,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const std::string close_key = rex::cvar::GetFlagByName("bind_mcla_settings");
+    const std::string close_key = larecomp::cvar::GetFlagByName("bind_mcla_settings");
     const Prompt prompts[] = {
         {"SAVE", "CTRL+S", kPromptAccept},
         {"CLOSE", close_key.empty() ? "F4" : close_key.c_str(), kPromptBack},
@@ -212,7 +212,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
         // many were left out. This panel lists them for everyone, locked or not.
         unsaved_debug_ = 0;
         for (const larecomp::DebugCvarChange& change : larecomp::NonDefaultDebugCvars()) {
-          if (change.source == rex::cvar::Source::kRuntime) ++unsaved_debug_;
+          if (change.source == larecomp::cvar::Source::kRuntime) ++unsaved_debug_;
         }
         if (unsaved_debug_ > 0) saved_flash_ = 6.0f;
       }
@@ -336,7 +336,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
                   upper.c_str());
   }
 
-  void DrawSettings(std::vector<rex::cvar::FlagEntry>& registry, float height) {
+  void DrawSettings(std::vector<larecomp::cvar::FlagEntry>& registry, float height) {
     const std::string search = Lower(search_);
     const bool searching = !search.empty();
     const auto& style = imgui_drawer()->style().settings;
@@ -386,16 +386,16 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     ImGui::PopStyleColor();
   }
 
-  static ImVec4 LifecycleColor(rex::cvar::Lifecycle lc, const rex::ui::SettingsStyle& style) {
+  static ImVec4 LifecycleColor(larecomp::cvar::Lifecycle lc, const rex::ui::SettingsStyle& style) {
     switch (lc) {
-      case rex::cvar::Lifecycle::kHotReload: return style.lifecycle_live;
-      case rex::cvar::Lifecycle::kRequiresRestart: return style.lifecycle_restart;
-      case rex::cvar::Lifecycle::kInitOnly: return style.lifecycle_init_only;
+      case larecomp::cvar::Lifecycle::kHotReload: return style.lifecycle_live;
+      case larecomp::cvar::Lifecycle::kRequiresRestart: return style.lifecycle_restart;
+      case larecomp::cvar::Lifecycle::kInitOnly: return style.lifecycle_init_only;
     }
     return style.lifecycle_unknown;
   }
 
-  static void NameCell(const rex::cvar::FlagEntry& entry, const std::string& label,
+  static void NameCell(const larecomp::cvar::FlagEntry& entry, const std::string& label,
                        const rex::ui::SettingsStyle& style) {
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
@@ -403,9 +403,9 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     if (ImGui::IsItemHovered()) {
       const char* lifecycle = "";
       switch (entry.lifecycle) {
-        case rex::cvar::Lifecycle::kHotReload: lifecycle = "Live - changes apply immediately"; break;
-        case rex::cvar::Lifecycle::kRequiresRestart: lifecycle = "Requires restart to take effect"; break;
-        case rex::cvar::Lifecycle::kInitOnly: lifecycle = "Read-only - set at initialization only"; break;
+        case larecomp::cvar::Lifecycle::kHotReload: lifecycle = "Live - changes apply immediately"; break;
+        case larecomp::cvar::Lifecycle::kRequiresRestart: lifecycle = "Requires restart to take effect"; break;
+        case larecomp::cvar::Lifecycle::kInitOnly: lifecycle = "Read-only - set at initialization only"; break;
       }
       ImGui::SetTooltip("%s\n%s\n[%s]%s", entry.name.c_str(), entry.description.c_str(),
                         lifecycle,
@@ -415,53 +415,53 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     }
   }
 
-  void SettingRow(rex::cvar::FlagEntry& entry, const rex::ui::SettingsStyle& style) {
-    const bool read_only = entry.lifecycle == rex::cvar::Lifecycle::kInitOnly;
+  void SettingRow(larecomp::cvar::FlagEntry& entry, const rex::ui::SettingsStyle& style) {
+    const bool read_only = entry.lifecycle == larecomp::cvar::Lifecycle::kInitOnly;
     const std::string current = entry.getter();
     NameCell(entry, entry.name, style);
 
     ImGui::TableNextColumn();
     if (read_only) ImGui::BeginDisabled();
     switch (entry.type) {
-      case rex::cvar::FlagType::Boolean: {
+      case larecomp::cvar::FlagType::Boolean: {
         // Flush right, like the game's options' check boxes.
         bool v = rex::string::from_string<bool>(current, false);
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x -
                              ImGui::GetFrameHeight());
         if (ImGui::Checkbox("##v", &v)) {
-          rex::cvar::SetFlagByName(entry.name, v ? "true" : "false");
+          larecomp::cvar::SetFlagByName(entry.name, v ? "true" : "false");
         }
         break;
       }
-      case rex::cvar::FlagType::Int32:
-      case rex::cvar::FlagType::Int64:
-      case rex::cvar::FlagType::Uint32:
-      case rex::cvar::FlagType::Uint64: {
+      case larecomp::cvar::FlagType::Int32:
+      case larecomp::cvar::FlagType::Int64:
+      case larecomp::cvar::FlagType::Uint32:
+      case larecomp::cvar::FlagType::Uint64: {
         int v = std::atoi(current.c_str());
         const int lo = entry.constraints.min ? static_cast<int>(*entry.constraints.min) : INT_MIN;
         const int hi = entry.constraints.max ? static_cast<int>(*entry.constraints.max) : INT_MAX;
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::InputInt("##v", &v)) {
-          rex::cvar::SetFlagByName(entry.name, std::to_string(std::clamp(v, lo, hi)));
+          larecomp::cvar::SetFlagByName(entry.name, std::to_string(std::clamp(v, lo, hi)));
         }
         break;
       }
-      case rex::cvar::FlagType::Double: {
+      case larecomp::cvar::FlagType::Double: {
         double v = std::atof(current.c_str());
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::InputDouble("##v", &v, 0.0, 0.0, "%.4f")) {
           if (entry.constraints.min) v = std::max(v, *entry.constraints.min);
           if (entry.constraints.max) v = std::min(v, *entry.constraints.max);
-          rex::cvar::SetFlagByName(entry.name, std::to_string(v));
+          larecomp::cvar::SetFlagByName(entry.name, std::to_string(v));
         }
         break;
       }
-      case rex::cvar::FlagType::Command:
+      case larecomp::cvar::FlagType::Command:
         if (ImGui::Button("RUN##v", ImVec2(-FLT_MIN, 0.0f))) {
           entry.command_callback("");
         }
         break;
-      case rex::cvar::FlagType::String:
+      case larecomp::cvar::FlagType::String:
         if (!entry.constraints.allowed_values.empty()) {
           const auto& options = entry.constraints.allowed_values;
           int index = 0;
@@ -475,7 +475,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
           if (ImGui::BeginCombo("##v", options[index].c_str())) {
             for (int i = 0; i < static_cast<int>(options.size()); ++i) {
               if (ImGui::Selectable(options[i].c_str(), i == index)) {
-                rex::cvar::SetFlagByName(entry.name, options[i]);
+                larecomp::cvar::SetFlagByName(entry.name, options[i]);
               }
               if (i == index) ImGui::SetItemDefaultFocus();
             }
@@ -486,14 +486,14 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
           rex::string::copy_truncating(buf, current, sizeof(buf));
           ImGui::SetNextItemWidth(-FLT_MIN);
           if (ImGui::InputText("##v", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-            rex::cvar::SetFlagByName(entry.name, buf);
+            larecomp::cvar::SetFlagByName(entry.name, buf);
           }
           // Right-click copy/paste for string cvars (e.g. paste a server IP).
           if (ImGui::BeginPopupContextItem("##strctx")) {
             if (ImGui::MenuItem("Copy")) ImGui::SetClipboardText(buf);
             if (ImGui::MenuItem("Paste")) {
               if (const char* clip = ImGui::GetClipboardText(); clip && *clip) {
-                rex::cvar::SetFlagByName(entry.name, clip);
+                larecomp::cvar::SetFlagByName(entry.name, clip);
               }
             }
             ImGui::EndPopup();
@@ -504,7 +504,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     if (read_only) ImGui::EndDisabled();
   }
 
-  void KeybindRow(std::vector<rex::cvar::FlagEntry>& registry, rex::cvar::FlagEntry& entry,
+  void KeybindRow(std::vector<larecomp::cvar::FlagEntry>& registry, larecomp::cvar::FlagEntry& entry,
                   const rex::ui::SettingsStyle& style) {
     const std::string current = entry.getter();
 
@@ -543,11 +543,11 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     }
     ImGui::SameLine();
     if (ImGui::Button("RESET##v", ImVec2(reset_w, 0.0f))) {
-      rex::cvar::SetFlagByName(entry.name, entry.default_value);
+      larecomp::cvar::SetFlagByName(entry.name, entry.default_value);
     }
   }
 
-  void Capture(const rex::cvar::FlagEntry& entry) {
+  void Capture(const larecomp::cvar::FlagEntry& entry) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       capturing_bind_name_.clear();
       return;
@@ -556,7 +556,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
       const auto key = static_cast<ImGuiKey>(k);
       if (key == ImGuiKey_Escape || !ImGui::IsKeyPressed(key)) continue;
       const std::string name = rex::ui::VirtualKeyToString(ImGuiKeyToVirtualKey(key));
-      if (!name.empty()) rex::cvar::SetFlagByName(entry.name, name);
+      if (!name.empty()) larecomp::cvar::SetFlagByName(entry.name, name);
       capturing_bind_name_.clear();
       return;
     }
@@ -565,7 +565,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
       for (int mb = 0; mb < 3; ++mb) {
         if (ImGui::IsMouseClicked(mb)) {
           const char* names[] = {"LMB", "RMB", "MMB"};
-          rex::cvar::SetFlagByName(entry.name, names[mb]);
+          larecomp::cvar::SetFlagByName(entry.name, names[mb]);
           capturing_bind_name_.clear();
           return;
         }

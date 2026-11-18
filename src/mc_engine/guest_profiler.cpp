@@ -2,7 +2,7 @@
 
 #include "guest_profiler.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/func.h>
 
 #include "logging.h"
@@ -45,16 +45,6 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
-
-REXCVAR_DEFINE_BOOL(guest_profile, false, "MCLA/Diag",
-    "Sample the busiest threads, and photograph every thread when the game stops. "
-    "The same thing MCLA_PROFILE=1 turns on, reachable from the config file so a "
-    "session need not be launched from a shell to get it. The periodic report says "
-    "where frame time goes; the stall dump is the one that matters when a load "
-    "never finishes, because the thread the sampler follows is parked in a wait by "
-    "then and the stuck one is somebody else. Reports land in logs/profile_*.log.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mc::profiler {
 namespace {
@@ -1066,7 +1056,7 @@ void DumpAllThreads(const char* reason) {
 
 bool EnabledImpl() {
     const char* e = std::getenv("MCLA_PROFILE");
-    return (e && *e == '1') || REXCVAR_GET(guest_profile);
+    return (e && *e == '1') || larecomp::settings::guest_profile.Get();
 }
 
 // MCLA_PROFILE_THREAD pins the sampler to a named thread, matched as a

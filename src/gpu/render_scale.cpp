@@ -8,40 +8,12 @@
 #include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "temporal_backend.h"
 
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_resolution_scale, 0.0, "MCLA/GPU",
-    "Render scale: every render target that is an image of the screen (the scene, the UI, the "
-    "post-processing sized from the screen) is this many times the guest's in each direction, from "
-    "0.5 to 3 in steps of 0.05 (0.75 = 960x540, 1.5 = 1920x1080, 2 = 2560x1440, 3 = 3840x2160 from "
-    "720p; other values go to the nearest step, and outside 0.5 to 3 to the nearer end). 0, the "
-    "default: the screen's -- the window's 16:9 area over the game's 1280x720, followed while the "
-    "game runs (fullscreen, a resized window): the picture is drawn at the size of the window "
-    "(\"Render Scale 100%\" in the pause menu); above it is supersampling. Not used while a "
-    "temporal upscaler (mcla_gpu_upscaler) runs: its output is always the screen's, and the scene "
-    "is drawn at its mode's share of that. Not used either while mcla_gpu_fsr is on with a preset "
-    "(mcla_gpu_fsr_preset). Live: the images are made again at the new scale at a frame boundary, "
-    "once the value has stood for a moment (and, while an upscaler runs, once its context for the "
-    "new sizes is ready); a scale whose images the card cannot make (video memory is short) is not "
-    "made: the old one is kept, the pause menu's RENDER SCALE row says LIMITED and the log says so. "
-    "The guest keeps seeing its own sizes.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_fsr_preset, "custom", "MCLA/GPU",
-    "With mcla_gpu_fsr on: the internal resolution scale is the screen's (the window's 16:9 "
-    "area over the game's 1280x720, followed while the game runs) divided by an FSR1 quality "
-    "ratio -- ultra_quality 1.3, quality 1.5, balanced 1.7, performance 2, ultra_performance 3 -- "
-    "on the 0.05 grid and at least 0.5, and FSR1 upscales it to the window. custom: "
-    "mcla_gpu_resolution_scale (by default the screen's, which leaves FSR1 nothing to upscale: pick "
-    "a preset). With mcla_gpu_fsr off it is not used, nor while a temporal upscaler "
-    "(mcla_gpu_upscaler) runs. Live, like mcla_gpu_resolution_scale.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DECLARE(bool, mcla_gpu_fsr);  // present.cpp
 
 namespace mcla::gpu {
 
@@ -85,7 +57,7 @@ std::string g_reported_preset;
 // The preset the cvar names; custom, with an error line for a text that is none (`once`: only the
 // first time the same text is seen).
 FsrPreset ReadPreset(bool once) {
-  const std::string preset_text = REXCVAR_GET(mcla_gpu_fsr_preset);
+  const std::string preset_text = larecomp::settings::mcla_gpu_fsr_preset.Get();
   FsrPreset preset = FsrPreset::kCustom;
   if (ParseFsrPreset(preset_text, &preset)) {
     return preset;
@@ -106,7 +78,7 @@ FsrPreset ReadPreset(bool once) {
 }  // namespace
 
 RenderScaleChoice ChooseWantedRenderScale(uint32_t window_width, uint32_t window_height) {
-  return ChooseRenderScale(REXCVAR_GET(mcla_gpu_resolution_scale), REXCVAR_GET(mcla_gpu_fsr),
+  return ChooseRenderScale(larecomp::settings::mcla_gpu_resolution_scale.Get(), larecomp::settings::mcla_gpu_fsr.Get(),
                            ReadPreset(/*once=*/true), window_width, window_height);
 }
 
@@ -176,8 +148,8 @@ RenderScaleStatus GetRenderScaleStatus() {
 // default in a 4K window on a weak GPU makes the images of the screen at 3x (3840x2160) with no
 // fallback (only a live change that could not be made has the "limited" answer), as a saved 3 did before.
 RenderScaleChoice ChooseStartRenderScale(uint32_t window_width, uint32_t window_height) {
-  const double asked = REXCVAR_GET(mcla_gpu_resolution_scale);
-  const bool fsr = REXCVAR_GET(mcla_gpu_fsr);
+  const double asked = larecomp::settings::mcla_gpu_resolution_scale.Get();
+  const bool fsr = larecomp::settings::mcla_gpu_fsr.Get();
   const FsrPreset preset = ReadPreset(/*once=*/false);
   // The temporal upscaler as chosen: whether this PC can run it is not known yet (the probe of its
   // backend ends later), so the choice counts. If it cannot run, the temporal system takes the render

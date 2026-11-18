@@ -39,7 +39,7 @@
 // sleep's length. Bigger CPUs keep the Sleep(0).
 
 #if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <atomic>
@@ -61,16 +61,6 @@
 
 #include "../threading.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(pump_wake_on_demand, true, "MCLA/Performance",
-    "The game's frame-pacing thread (it frees the draw command ring's slots and sleeps out "
-    "7 ms a round) comes round at once when the main thread is waiting for a slot, instead of "
-    "after its Sleep. Lifts the frame rate an uncapped game was held to when a frame takes "
-    "less than 7 ms; changes nothing under a frame rate cap below that. Needs 4 or more "
-    "logical processors, and a watchdog on the audio mixer turns it off if the audio runs "
-    "dry. Off is the game's own Sleep.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -112,7 +102,7 @@ bool EnoughProcessors() {
 }
 
 bool Allowed(int64_t now) {
-    return REXCVAR_GET(pump_wake_on_demand) && EnoughProcessors() &&
+    return larecomp::settings::pump_wake_on_demand.Get() && EnoughProcessors() &&
            g_trips.load(std::memory_order_relaxed) < 2 &&
            now >= g_paused_until_ns.load(std::memory_order_relaxed);
 }

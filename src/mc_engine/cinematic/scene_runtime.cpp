@@ -57,7 +57,7 @@
 
 #include "scene_runtime.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -89,25 +89,6 @@
 #include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
 
 // ---------------------------------------------------------------- cvars
-
-REXCVAR_DEFINE_STRING(mcla_scene, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: run the scene file at this path: a full path, or a name looked up next to the game and in its scenes "
-    "folder (.scene may be left off). Hour, weather, traffic, time scale and settings follow the scene's timeline; the file is "
-    "read again when it changes. Empty: off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(mcla_scene_restart, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: a change of this number runs the armed scene again from its start.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_scene_t, -1.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: 0 or more holds the scene's clock at this many seconds on every update (stills, scrubbing); -1 lets "
-    "it run.")
-    .range(-1.0, 86400.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -464,27 +445,27 @@ void ApplyCvar(const Event& e) {
         LARECOMP_APP_ERROR("[scene] line {}: {}", e.line, why);
         return;
     }
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(e.name);
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(e.name);
     if (!info) {
         LARECOMP_APP_WARN("[scene] line {}: no setting called '{}'", e.line, e.name);
         return;
     }
-    if (info->type == rex::cvar::FlagType::Command) {
+    if (info->type == larecomp::cvar::FlagType::Command) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' is a command, not a setting", e.line, e.name);
         return;
     }
-    if (info->lifecycle != rex::cvar::Lifecycle::kHotReload) {
+    if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' is read only at start; a scene cannot change it", e.line, e.name);
         return;
     }
-    const std::string before = rex::cvar::GetFlagByName(e.name);
+    const std::string before = larecomp::cvar::GetFlagByName(e.name);
     const bool known = std::any_of(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == e.name; });
     if (!larecomp::SetCvarForScene(e.name, e.text)) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' did not take '{}' (a value out of its range, or not of its kind)", e.line, e.name, e.text);
         return;
     }
     if (!known) g.saved.push_back({e.name, before});
-    LARECOMP_APP_INFO("[scene] set {} = {} (was {})", e.name, rex::cvar::GetFlagByName(e.name), before);
+    LARECOMP_APP_INFO("[scene] set {} = {} (was {})", e.name, larecomp::cvar::GetFlagByName(e.name), before);
 }
 
 // Every setting the scene took goes back to its value and its origin (default, file, command line, run time): a command-line value
@@ -684,7 +665,7 @@ void Arm(const std::string& want) {
     g.requested = want;
     g.path = ResolvePath(want);
     g.file_name = LeafName(g.path);
-    g.restart_seen = REXCVAR_GET(mcla_scene_restart);
+    g.restart_seen = larecomp::settings::mcla_scene_restart.Get();
     g.state = SceneState::kPending;
     LARECOMP_APP_INFO("[scene] armed: {}", g.path);
 }
@@ -710,19 +691,19 @@ void Restart(const char* why, bool world_ready) {
 
 // One update of a loaded scene.
 void Step(uint8_t* base) {
-    if (g.state == SceneState::kFinished && g.restart_seen == REXCVAR_GET(mcla_scene_restart)) return;  // handed back; nothing more to do
+    if (g.state == SceneState::kFinished && g.restart_seen == larecomp::settings::mcla_scene_restart.Get()) return;  // handed back; nothing more to do
     const bool ready = WorldReady(base);
     const bool paused = GamePaused(base);
     const float dt = RF(base, kGuestUnscaledDelta);
     const double duration = g.scene.Duration();
 
-    if (g.restart_seen != REXCVAR_GET(mcla_scene_restart)) {
-        g.restart_seen = REXCVAR_GET(mcla_scene_restart);
+    if (g.restart_seen != larecomp::settings::mcla_scene_restart.Get()) {
+        g.restart_seen = larecomp::settings::mcla_scene_restart.Get();
         Restart("restart requested", ready);
     }
 
     SceneClock::Step st = g.clock.Advance(ready, paused, (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0, duration);
-    const double still = REXCVAR_GET(mcla_scene_t);
+    const double still = larecomp::settings::mcla_scene_t.Get();
     if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
 
     switch (g.clock.state()) {
@@ -782,11 +763,11 @@ void OnSceneCvarChanged(std::string_view, std::string_view value) {
 }
 
 // After the cvar's own definition at the top of the file, so the cvar exists when the callback is added.
-[[maybe_unused]] const bool g_want_watching = (rex::cvar::RegisterChangeCallback("mcla_scene", OnSceneCvarChanged), true);
+[[maybe_unused]] const bool g_want_watching = (larecomp::cvar::RegisterChangeCallback("mcla_scene", OnSceneCvarChanged), true);
 
 void EnsureWantKnown() {
     if (g_want_seeded.load(std::memory_order_acquire)) return;
-    const std::string value = rex::cvar::GetFlagByName("mcla_scene");  // the cvar system's own locked read; none of our locks is held
+    const std::string value = larecomp::cvar::GetFlagByName("mcla_scene");  // the cvar system's own locked read; none of our locks is held
     {
         std::lock_guard<std::mutex> lock(g_want_mutex);
         if (!g_want_known) StoreWantLocked(value);  // a callback that ran meanwhile holds a newer value

@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "display_mode.h"
 
@@ -19,7 +19,7 @@ using mcla::display::Size;
 using mcla_menu::CvarWriter;
 using mcla_menu::RowDynamics;
 
-std::string Cvar(const char* name) { return rex::cvar::GetFlagByName(name); }
+std::string Cvar(const char* name) { return larecomp::cvar::GetFlagByName(name); }
 
 // A setting written only when it differs, through the pause menu's own writer.
 void Put(CvarWriter write, const char* name, const std::string& value) {

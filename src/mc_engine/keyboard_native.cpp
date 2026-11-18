@@ -19,7 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
 #include <rex/ppc.h>
@@ -53,174 +53,12 @@
 // start (larecomp_app.h) and Hook_KeyboardFeed puts it back off if anything turns it on later, so a key can never be a pad button AND a
 // native key at once (Enter as Start and accept).
 
-REXCVAR_DEFINE_BOOL(keyboard_native, true, "MCLA/Input",
-    "Native keyboard, always on. Feeds the keyboard and the mouse buttons straight into the game's own "
-    "input layer (rage ioMapper) from the window's key events: menus and driving get separate key sets, "
-    "so Enter can be 'accept' in a menu and Pause on the road without ever being both. A debug switch "
-    "to tell whether a bug comes from it (off = the keyboard does nothing).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// ── Menus (the FlashNavigator mapper). Comma separated key names, the same names
-// as keybind_* ("Return", "Escape", "Space", "PageUp", "F5", "Semicolon" ...).
-// A combination such as Shift+Up counts as its last key.
-REXCVAR_DEFINE_STRING(kb_ui_accept, "Return,Space", "MCLA/Input/Keyboard - menus",
-    "Menus: A / accept").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_back, "Escape,Backspace", "MCLA/Input/Keyboard - menus",
-    "Menus: B / back").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_x, "X", "MCLA/Input/Keyboard - menus", "Menus: X")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_y, "Y", "MCLA/Input/Keyboard - menus", "Menus: Y")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_lb, "Q", "MCLA/Input/Keyboard - menus", "Menus: LB (previous tab)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_rb, "E", "MCLA/Input/Keyboard - menus", "Menus: RB (next tab)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_lt, "PageUp", "MCLA/Input/Keyboard - menus", "Menus: LT")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_rt, "PageDown", "MCLA/Input/Keyboard - menus", "Menus: RT")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_up, "Up,W", "MCLA/Input/Keyboard - menus", "Menus: up")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_down, "Down,S", "MCLA/Input/Keyboard - menus", "Menus: down")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_left, "Left,A", "MCLA/Input/Keyboard - menus", "Menus: left")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_right, "Right,D", "MCLA/Input/Keyboard - menus", "Menus: right")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_start, "Return,Escape", "MCLA/Input/Keyboard - menus",
-    "Start: opens the pause menu on the road and answers \"PRESS START\" on the title screen. "
-    "It is Start only while NO menu is open: with a menu up these keys are accept/back and "
-    "nothing else, which is what keeps Enter from being accept and Start at once. A key held "
-    "when a menu closes stays off until released, so the Enter that picks CONTINUE cannot "
-    "reopen the pause menu.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_ui_select, "Tab", "MCLA/Input/Keyboard - menus",
-    "Menus: the Back/Select button (GPS, map). Start has no key here on purpose.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// ── Driving (the player's control-map mapper).
-REXCVAR_DEFINE_STRING(kb_drive_steer_left, "A,Left", "MCLA/Input/Keyboard - driving",
-    "Driving: steer left (pairs with the right key at the same position)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_steer_right, "D,Right", "MCLA/Input/Keyboard - driving",
-    "Driving: steer right")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_gas, "W,Up", "MCLA/Input/Keyboard - driving", "Driving: accelerate")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_brake, "S,Down", "MCLA/Input/Keyboard - driving",
-    "Driving: brake / reverse").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_handbrake, "Space", "MCLA/Input/Keyboard - driving",
-    "Driving: handbrake (the pad's A)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-// The defaults of the road (KBM-DESIGN.md 2.7, phase P5): WASD and the arrows steer, accelerate and brake; Space is the handbrake; Ctrl is the weight transfer (Caps Lock was a
-// lock key that toggles the host's state); Shift, X or the left mouse button is nitro; the right mouse button looks back (the mouse itself looks around: mouse_look.h). None of
-// these is also a menu key that matters on the road: the menu's keys (kb_ui_*) live in the UI mapper, which the road's mapper never sees, and Start (Enter, Esc) is live only while
-// no menu is open. Q and E are the gears here and the tabs (LB, RB) in a menu; Tab is the map's and the GPS's Back button, never a driving key.
-REXCVAR_DEFINE_STRING(kb_drive_weight, "Control", "MCLA/Input/Keyboard - driving",
-    "Driving: weight transfer, the 'turn in' of the pad's B (either Ctrl key)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// "Shift,X,LMB": X stays on nitro as well as Shift (a pad habit). It used to be needed so that the prompt for the pad's X, painted with the menu's X key, did what the pad's X
-// does on the road (KBM-DESIGN 1.3 item 8); the prompts now show the driving key on the road (prompt_glyphs.h, Context), so the first key with a cap, Shift, is what shows there.
-REXCVAR_DEFINE_STRING(kb_drive_nitro, "Shift,X,LMB", "MCLA/Input/Keyboard - driving",
-    "Driving: nitro (the pad's X). On the road the X prompt shows the first of these keys that has a cap. LMB is the left mouse button.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_headlights, "H", "MCLA/Input/Keyboard - driving",
-    "Driving: headlights (the pad's Y)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_horn, "G", "MCLA/Input/Keyboard - driving", "Driving: horn")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_camera, "V", "MCLA/Input/Keyboard - driving",
-    "Driving: change camera, one step along the game's cycle (the pad's RB)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_camera_keys, "1,2,3,4,5", "MCLA/Input/Keyboard - driving",
-    "Driving: keys that jump straight to a camera, slot 1..5 (empty = off). The game only "
-    "has a button that steps through its cameras; the jump presses it for you, as many "
-    "times as the cycle needs, and stops on the one asked for.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_camera_views, "4,0,3,2,1", "MCLA/Input/Keyboard - driving",
-    "Driving: which camera each slot above selects, as the game numbers them: 0 bumper, "
-    "1 cockpit, 2/3/4 the chase views. Default: slot 1 action(4), 2 bumper(0), 3 classic(3), "
-    "4 static(2), 5 cockpit(1). Swap numbers here if 3 and 4 turn out the other way round.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_lookback, "R,RMB", "MCLA/Input/Keyboard - driving",
-    "Driving: look back. RMB is the right mouse button.").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_map, "M", "MCLA/Input/Keyboard - driving", "Driving: map")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_talk, "T", "MCLA/Input/Keyboard - driving", "Driving: talk")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_shift_up, "E", "MCLA/Input/Keyboard - driving",
-    "Driving: gear up (manual transmission)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_shift_down, "Q", "MCLA/Input/Keyboard - driving",
-    "Driving: gear down (manual transmission)").lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_pause, "", "MCLA/Input/Keyboard - driving",
-    "Driving: the PAUSE action of the control map. Empty by default: the pause menu is opened "
-    "by Start in the UI mapper (kb_ui_start), which is where the pad's Start goes as well.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_popup_select, "", "MCLA/Input/Keyboard - driving",
-    "Driving: answer a pop-up with A (empty = pad only; Enter would also be Pause)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(kb_drive_popup_back, "", "MCLA/Input/Keyboard - driving",
-    "Driving: answer a pop-up with B (empty = pad only)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Keyboard steering is not a 0 / 100 % switch: full lock builds up while a key is held and returns to centre when it is let go (mouse_look_core.h StepSteer). The ramp
-// rides the left stick's X axis of the state the game reads (KeySteerScope, XamInputGetState wrapper), so the game steers exactly as it does for a stick pushed that far.
-REXCVAR_DEFINE_DOUBLE(kb_steer_rise, 0.40, "MCLA/Input/Keyboard - driving",
-    "Keyboard steering: seconds from centre to full lock while a steering key is held (a tap is a small correction). Shorter = twitchier, 0.05 is nearly the old on / off steering.")
-    .range(0.05, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(kb_steer_return, 0.25, "MCLA/Input/Keyboard - driving",
-    "Keyboard steering: seconds from full lock back to centre when the steering key is let go, and the time the wheel takes to come through the centre when you steer the other "
-    "way. Shorter = the car straightens up quicker.")
-    .range(0.05, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(kb_steer_ramp, true, "MCLA/Input/Keyboard - driving",
-    "Debug: the steering ramp above. Off = the old key pair, full lock at once and centre at once (it rebuilds the driving mapper).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(kb_steer_log, false, "MCLA/Input/Keyboard - driving",
-    "Log the steering ramp: one line per input poll while a steering key is held or the wheel is coming back (at most 3000 lines).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(keycaps_dir, "", "MCLA/Input",
-    "Folder of the 64x64 key cap PNGs the keyboard glyphs are painted from, named by "
-    "lower-case key (return.png, escape.png, a.png, capslock.png ...). Empty = the "
-    "set embedded in the executable (src/keycaps/). Built by tools/keycaps/pack_keycaps.py.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The extra buttons of a pad (back paddles: L4, L5, R4, R5). A pad that has them sends nothing
-// of its own for them -- the maker's software makes each one press some other button or key --
-// so the host key the pad is set to send is named here and the game gets a button of its own.
-// Bind it in Options > Controller > Customize like any other button. Empty = not used.
-REXCVAR_DEFINE_STRING(extra_button_l4, "", "MCLA/Input/Extra buttons",
-    "Host key(s) that the pad's L4 button sends (e.g. \"Numpad4\"; several: \"Numpad4,F13\"). "
-    "The key stops acting as a keyboard key and becomes the game button L4. Empty = unused.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(extra_button_l5, "", "MCLA/Input/Extra buttons",
-    "Host key(s) that the pad's L5 button sends. See extra_button_l4.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(extra_button_r4, "", "MCLA/Input/Extra buttons",
-    "Host key(s) that the pad's R4 button sends. See extra_button_l4.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(extra_button_r5, "", "MCLA/Input/Extra buttons",
-    "Host key(s) that the pad's R5 button sends. See extra_button_l4.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // button_prompts and prompts_live are owned by hooks/ui.cpp (the platform flag); the glyph family itself comes from the input state (input_state.h, which folds button_prompts in).
-REXCVAR_DECLARE(std::string, button_prompts);
-REXCVAR_DECLARE(bool, prompts_live);
 
-REXCVAR_DEFINE_STRING(prompts_ps_map, "", "MCLA/Input",
-    "Debug: which dictionary bitmaps hold the game's own PlayStation shoulder, Start and Back buttons, as SLOT=shared_N.dds pairs separated by commas "
-    "(slots A B X Y LB RB LT RT Start Back Phone), e.g. \"LB=shared_8.dds,RB=shared_32.dds\". A slot with no entry here or in the built-in table (prompt_glyphs.h) "
-    "gets the shipped picture (src/keycaps/ps_*.png). Used to try candidates without a build.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(prompts_glyph_dump, "", "MCLA/Input",
-    "Debug: a folder; when the UI's texture dictionary is first found, every small DXT5 bitmap in it is written there as raw RGBA (<name>_<w>x<h>.rgba, plus index.txt), "
-    "to see which bitmap is which glyph. Empty = off. Read once at start.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -439,11 +277,11 @@ void WatchBindings() {
     std::call_once(once, [] {
         // The callbacks run inside the cvar registry's lock: they only bump the number.
         for (const char* name : kNames)
-            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+            larecomp::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
                 g_bindings_gen.fetch_add(1, std::memory_order_relaxed);
             });
         for (const char* name : kPromptNames)
-            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+            larecomp::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
                 g_prompt_settings_gen.fetch_add(1, std::memory_order_relaxed);
             });
     });
@@ -526,15 +364,15 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
     // With the ramp on (kb_steer_ramp) the steering keys are not mapper entries at all: the input poll ramps them and the XamInputGetState wrapper adds the value to the left stick
     // (KeySteerScope), so the pad's own entries for the axis stay as they are.
     uint32_t steer_out = 0;
-    if (REXCVAR_GET(kb_steer_ramp)) {
+    if (larecomp::settings::kb_steer_ramp.Get()) {
         d.steer_pad.clear();
         d.steer_pad_type.clear();
         d.steer_keys.clear();
         d.steer_scancodes.clear();
         d.steer_active = -2;
     } else if (out_of("STEER_AXIS", steer_out)) {
-        const auto left = ParseKeyList(REXCVAR_GET(kb_drive_steer_left));
-        const auto right = ParseKeyList(REXCVAR_GET(kb_drive_steer_right));
+        const auto left = ParseKeyList(larecomp::settings::kb_drive_steer_left.Get());
+        const auto right = ParseKeyList(larecomp::settings::kb_drive_steer_right.Get());
         const size_t n = std::min(left.size(), right.size());
         d.steer_pad.clear();
         d.steer_pad_type.clear();
@@ -584,7 +422,7 @@ void AppendDriveEntries(uint8_t* b, DriveStruct& d) {
 void Hook_ControlMapRebuilt(PPCRegister& r30) {
     // The game proper has started: the ultrawide title prompt goes back to the middle (ultrawide.h).
     mc::ultrawide::NoteGameEntered();
-    const bool keyboard = REXCVAR_GET(keyboard_native);
+    const bool keyboard = larecomp::settings::keyboard_native.Get();
     if (!keyboard && !ExtrasEnabled()) return;
     uint8_t* b = GuestBase();
     const uint32_t ea = static_cast<uint32_t>(r30.u64);
@@ -831,10 +669,10 @@ void UpdateSteering(uint8_t* b) {
 // ── extra pad buttons ───────────────────────────────────────────────────
 std::string ExtraCvar(int i) {
     switch (i) {
-        case 0: return REXCVAR_GET(extra_button_l4);
-        case 1: return REXCVAR_GET(extra_button_l5);
-        case 2: return REXCVAR_GET(extra_button_r4);
-        default: return REXCVAR_GET(extra_button_r5);
+        case 0: return larecomp::settings::extra_button_l4.Get();
+        case 1: return larecomp::settings::extra_button_l5.Get();
+        case 2: return larecomp::settings::extra_button_r4.Get();
+        default: return larecomp::settings::extra_button_r5.Get();
     }
 }
 
@@ -974,8 +812,8 @@ void UpdateCameraJump(uint8_t* b, const larecomp::kbm::KeySnapshot& snap) {
     static uint32_t lists_gen = 0;
     if (const uint32_t gen = BindingsGen(); gen != lists_gen) {
         lists_gen = gen;
-        keys = ParseKeyList(REXCVAR_GET(kb_drive_camera_keys));
-        views = ParseIntList(REXCVAR_GET(kb_drive_camera_views));
+        keys = ParseKeyList(larecomp::settings::kb_drive_camera_keys.Get());
+        views = ParseIntList(larecomp::settings::kb_drive_camera_views.Get());
     }
     const uint32_t ctl = (g_game_entered && !MenuOpen(b)) ? CameraControl(b) : 0;
 
@@ -1095,7 +933,7 @@ std::string CapStem(const std::string& key, uint32_t width, uint32_t height) {
 bool ReadCapBytes(const std::string& key, uint32_t width, uint32_t height,
                   std::vector<uint8_t>* bytes) {
     const std::string stem = CapStem(key, width, height);
-    const std::string dir = REXCVAR_GET(keycaps_dir);
+    const std::string dir = larecomp::settings::keycaps_dir.Get();
     if (!dir.empty()) {
         const std::filesystem::path path = std::filesystem::path(dir) / (stem + ".png");
         if (!bytes) return std::filesystem::exists(path);
@@ -1247,7 +1085,7 @@ bool ScanSidekick(uint8_t* b) {
     });
     MeasureTexture(t, "Phone", larecomp::prompts::Info(larecomp::prompts::Slot::Phone).backdrop);
     // The first P4 run could not say what this glyph looks like (it is not in the dictionary): the dump writes it with the others, for the glyph sheet.
-    if (const std::string dump = REXCVAR_GET(prompts_glyph_dump); !dump.empty()) {
+    if (const std::string dump = larecomp::settings::prompts_glyph_dump.Get(); !dump.empty()) {
         const std::vector<uint8_t> rgba = larecomp::prompts::DecodeBc3GuestSurface(t.original, w, h);
         std::error_code ec;
         std::filesystem::create_directories(dump, ec);
@@ -1371,7 +1209,7 @@ bool ScanDictionary(uint8_t* b) {
     g_art_warm = false;
     g_prompts_dirty.store(true, std::memory_order_relaxed);
     MC_INFO("[kbnative] glyph dictionary @0x{:08X}: {} textures found", dict, g_glyph_tex.size());
-    const std::string dump = REXCVAR_GET(prompts_glyph_dump);
+    const std::string dump = larecomp::settings::prompts_glyph_dump.Get();
     if (!dump.empty()) DumpDictionary(b, dump);
     return !g_glyph_tex.empty();
 }
@@ -1505,7 +1343,7 @@ std::string KeyOfCvar(std::string_view cvar, uint32_t width, uint32_t height) {
 }
 
 larecomp::prompts::Art DecideFor(const uint8_t* b, const GlyphTarget& g, larecomp::prompts::Family family, larecomp::prompts::Context ctx) {
-    const auto overrides = larecomp::prompts::ParsePsMap(REXCVAR_GET(prompts_ps_map));
+    const auto overrides = larecomp::prompts::ParsePsMap(larecomp::settings::prompts_ps_map.Get());
     return larecomp::prompts::Decide(
         family, ctx, static_cast<larecomp::prompts::Slot>(g.pslot), overrides, [&](const std::string& name) { return HaveBitmap(b, name); },
         [&](const std::string& stem) { return CapExists(stem, g.width, g.height); },
@@ -1515,7 +1353,7 @@ larecomp::prompts::Art DecideFor(const uint8_t* b, const GlyphTarget& g, larecom
 // The glyph family the pixels follow. With prompts_live off the movies' platform flag shows the PlayStation set (the older way), so the pixels stay the Xbox ones for it.
 larecomp::prompts::Family EffectiveFamily() {
     const larecomp::prompts::Family f = larecomp::input::ActiveGlyphFamily();
-    if (f == larecomp::prompts::Family::PlayStation && !REXCVAR_GET(prompts_live)) return larecomp::prompts::Family::Xbox;
+    if (f == larecomp::prompts::Family::PlayStation && !larecomp::settings::prompts_live.Get()) return larecomp::prompts::Family::Xbox;
     return f;
 }
 
@@ -1697,7 +1535,7 @@ void WatchMnk() {
     static std::once_flag once;
     std::call_once(once, [] {
         for (const char* name : {"mnk_mode", "mnk_mouse"})
-            rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view value) {
+            larecomp::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view value) {
                 if (value != "false" && value != "0") g_mnk_turned_on.store(true, std::memory_order_relaxed);
             });
     });
@@ -1706,8 +1544,8 @@ void WatchMnk() {
 void KeepMnkOff() {
     WatchMnk();
     if (!g_mnk_turned_on.exchange(false, std::memory_order_relaxed)) return;
-    rex::cvar::SetFlagByName("mnk_mode", "false");
-    rex::cvar::SetFlagByName("mnk_mouse", "false");
+    larecomp::cvar::SetFlagByName("mnk_mode", "false");
+    larecomp::cvar::SetFlagByName("mnk_mouse", "false");
     MC_WARN("[kbnative] mnk_mode / mnk_mouse were turned on and are put back off: the old keyboard-and-mouse mode is retired "
             "(its keys would be pad buttons as well as native keys, Enter as Start and accept at once)");
 }
@@ -1747,7 +1585,7 @@ void RebuildPadKeys(const uint8_t* b) {
 
 // Hook at loc_82615048 of sub_82614D30; r31 is the pad being built.
 void Hook_PadBitsFinalize(PPCRegister& r31) {
-    if (g_game_entered || !REXCVAR_GET(keyboard_native)) return;
+    if (g_game_entered || !larecomp::settings::keyboard_native.Get()) return;
     uint8_t* b = GuestBase();
     const uint32_t pad = static_cast<uint32_t>(r31.u64);
     if (!b || pad != 0x82905388u) return;  // pad 0 only
@@ -1783,7 +1621,7 @@ void Hook_PadBitsFinalize(PPCRegister& r31) {
 bool Hook_ControlCaptureKey(PPCRegister& r11, PPCRegister& r28) {
     // With the keyboard off only the extra pad buttons are answered; a real pad button is
     // left to the game's own read.
-    const bool keyboard = REXCVAR_GET(keyboard_native);
+    const bool keyboard = larecomp::settings::keyboard_native.Get();
     if (!keyboard && !ExtrasEnabled()) return false;
     uint8_t* b = GuestBase();
     const uint32_t out_type = static_cast<uint32_t>(r28.u64);
@@ -1852,7 +1690,7 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
     if (static_cast<uint32_t>(r3.u64) != 0) return false;  // pad / axis: the own labels of the game
     const uint32_t key = static_cast<uint32_t>(r4.u64);
     const bool extra = ExtraIndexOfScancode(key) >= 0;
-    if (!extra && !REXCVAR_GET(keyboard_native)) return false;
+    if (!extra && !larecomp::settings::keyboard_native.Get()) return false;
     uint8_t* b = GuestBase();
     if (!b || key == 0 || key > 255) return false;
     const uint32_t block = LabelBlock(b);
@@ -1928,8 +1766,8 @@ void RefreshSteerKeys() {
     g_steer_keys_gen = gen;
     g_steer_left_ids.clear();
     g_steer_right_ids.clear();
-    for (const KeyRef& k : ParseKeyList(REXCVAR_GET(kb_drive_steer_left))) g_steer_left_ids.push_back(k.vk);
-    for (const KeyRef& k : ParseKeyList(REXCVAR_GET(kb_drive_steer_right))) g_steer_right_ids.push_back(k.vk);
+    for (const KeyRef& k : ParseKeyList(larecomp::settings::kb_drive_steer_left.Get())) g_steer_left_ids.push_back(k.vk);
+    for (const KeyRef& k : ParseKeyList(larecomp::settings::kb_drive_steer_right.Get())) g_steer_right_ids.push_back(k.vk);
 }
 
 void UpdateSteerRamp(const larecomp::kbm::KeySnapshot& keys) {
@@ -1939,7 +1777,7 @@ void UpdateSteerRamp(const larecomp::kbm::KeySnapshot& keys) {
     const float dt = std::chrono::duration<float>(now - last).count();
     last = now;
 
-    const bool road = REXCVAR_GET(kb_steer_ramp) && !g_screen_menu.load(std::memory_order_relaxed);  // g_screen_menu: a menu screen is up or the game is not entered (PollPrompts, this poll)
+    const bool road = larecomp::settings::kb_steer_ramp.Get() && !g_screen_menu.load(std::memory_order_relaxed);  // g_screen_menu: a menu screen is up or the game is not entered (PollPrompts, this poll)
     int dir = 0;
     if (road) {
         RefreshSteerKeys();
@@ -1953,13 +1791,13 @@ void UpdateSteerRamp(const larecomp::kbm::KeySnapshot& keys) {
         g_steer_value = 0.0f;  // a menu opened, the ramp is off: nothing is left over to steer with
     } else {
         larecomp::mouselook::SteerParams params;
-        params.rise_s = static_cast<float>(REXCVAR_GET(kb_steer_rise));
-        params.return_s = static_cast<float>(REXCVAR_GET(kb_steer_return));
+        params.rise_s = static_cast<float>(larecomp::settings::kb_steer_rise.Get());
+        params.return_s = static_cast<float>(larecomp::settings::kb_steer_return.Get());
         g_steer_value = larecomp::mouselook::StepSteer(g_steer_value, dir, dt, params);
     }
     const int16_t axis = larecomp::mouselook::SteerToAxis(g_steer_value);
     g_key_steer.store(axis, std::memory_order_relaxed);
-    if (REXCVAR_GET(kb_steer_log) && (dir != 0 || before != 0.0f || g_steer_value != 0.0f) && g_steer_log_lines < 3000) {
+    if (larecomp::settings::kb_steer_log.Get() && (dir != 0 || before != 0.0f || g_steer_value != 0.0f) && g_steer_log_lines < 3000) {
         ++g_steer_log_lines;
         MC_INFO("[kbnative] steer dir={:+d} value={:+.3f} axis={} dt_ms={:.1f}", dir, g_steer_value, int(axis), dt * 1000.0f);
     }
@@ -1984,7 +1822,7 @@ void Hook_KeyboardFeed() {
     larecomp::kbm::KeySnapshot keys = g_keys.Poll();
     if (overlay) keys = {};
 
-    const bool keyboard = REXCVAR_GET(keyboard_native);
+    const bool keyboard = larecomp::settings::keyboard_native.Get();
     if (keyboard) FeedKeys(b, keys);
     // The pad's extra buttons work with or without the native keyboard.
     FeedExtras(b, keys);

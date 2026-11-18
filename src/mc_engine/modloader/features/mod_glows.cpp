@@ -46,7 +46,7 @@
 // reverse): v.f32[3] = x, [2] = y, [1] = z, [0] = w.
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -67,19 +67,6 @@
 #include "mod_data.h"
 #include "mod_glows.h"
 
-REXCVAR_DEFINE_BOOL(mod_glows, true, "MCLA/World",
-    "Light glows a mod places in the world (models/<mod>/glows.bin), drawn by MCLA's "
-    "glow renderer.")
-    .debug_only();
-REXCVAR_DEFINE_INT32(mod_glows_max, 64, "MCLA/World",
-    "Mod glows submitted per frame, nearest first. MCLA draws 96 a frame in all, "
-    "car lights included.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_glow_size, 1.8, "MCLA/World",
-    "Mod glow size multiplier (on top of each glow's own).")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_glow_intensity, 1.0, "MCLA/World", "Mod glow intensity multiplier.")
-    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_82729438);
 REX_EXTERN(rex_sub_822FC250);
@@ -237,15 +224,15 @@ void SubmitGlows(PPCContext& ctx, uint8_t* base) {
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < draw2) g_near.emplace_back(d2, i);
     }
-    const size_t want = size_t(std::clamp(REXCVAR_GET(mod_glows_max), 0, 96));
+    const size_t want = size_t(std::clamp(larecomp::settings::mod_glows_max.Get(), 0, 96));
     if (g_near.size() > want) {
         std::nth_element(g_near.begin(), g_near.begin() + want, g_near.end());
         g_near.resize(want);
     }
 
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_t0).count();
-    const float size_mul = float(REXCVAR_GET(mod_glow_size));
-    const float glow_i = ReadF32(base, kGlowIntensity) * float(REXCVAR_GET(mod_glow_intensity));
+    const float size_mul = float(larecomp::settings::mod_glow_size.Get());
+    const float glow_i = ReadF32(base, kGlowIntensity) * float(larecomp::settings::mod_glow_intensity.Get());
     const float sx = ReadF32(base, kGlowSize + 0) * size_mul;
     const float sy = ReadF32(base, kGlowSize + 4) * size_mul;
 
@@ -271,14 +258,14 @@ void SubmitGlows(PPCContext& ctx, uint8_t* base) {
 extern "C" REX_FUNC(rex_sub_82729438) {
     const bool star_pass = (ctx.r4.u32 & 0xFF) != 0;
     __imp__rex_sub_82729438(ctx, base);
-    if (star_pass || !REXCVAR_GET(mod_glows)) return;
+    if (star_pass || !larecomp::settings::mod_glows.Get()) return;
     const uint64_t ret = ctx.r3.u64;
     SubmitGlows(ctx, base);
     ctx.r3.u64 = ret;
 }
 
 void TickModGlows() {
-    if (g_scratch.load(std::memory_order_relaxed) || !REXCVAR_GET(mod_glows)) return;
+    if (g_scratch.load(std::memory_order_relaxed) || !larecomp::settings::mod_glows.Get()) return;
     auto* rt = rex::Runtime::instance();
     PPCFunc* malloc_fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kGuestMallocFn)
                                                         : nullptr;

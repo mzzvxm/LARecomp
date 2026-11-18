@@ -51,7 +51,7 @@
 #include <Windows.h>
 #endif
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 
 #include "hooks/hooks_internal.h"
@@ -60,13 +60,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
-
-REXCVAR_DEFINE_BOOL(cam_trace, false, "MCLA/Diagnostics",
-    "Write cam_trace.csv: every game update's camera (position, direction, shake), the player "
-    "car's position and the clock's time step, every guest swap, and when each frame was "
-    "presented and reached the screen. For measuring camera judder.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_822C0320);  // camera system tick
 REX_EXTERN(__imp__rex_sub_822B2AB0);  // mcPlayerCamera::Update
@@ -101,7 +94,7 @@ int64_t QpcFrequency() {
 }
 
 bool Tracing() {
-    return REXCVAR_GET(cam_trace);
+    return larecomp::settings::cam_trace.Get();
 }
 
 // Lines go to a buffer; a thread of its own writes it out, so no game thread

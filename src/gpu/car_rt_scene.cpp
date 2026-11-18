@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "ao.h"
@@ -22,34 +22,6 @@
 #include "pass_timing.h"
 #include "temporal_identities.h"
 #include "upload.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_car_rt_check, false, "MCLA/GPU",
-    "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
-    "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
-    "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
-    "vehicle pixels the structures cover (the other cars and the driver count as misses) and how far the distances are apart. It "
-    "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_rt_view, 0, "MCLA/GPU",
-    "Debug: shows the car ray tracing check's picture over the scene (only while mcla_gpu_car_rt_check is on): 1 the error of each "
-    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit), 2 the hit's normal as colour (x right, y up, "
-    "z forward, times 0.5 plus 0.5). 0: off. Live.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_rt_masks, 0, "MCLA/GPU",
-    "Debug: how the car's parts are told apart in the top level: 0 the tyres by their shader and glass by being drawn after the world's "
-    "first draw (only in a frame where some of the car's draws are and some are not: where all are, nothing is glass), 1 every part "
-    "that is no tyre is a body. Live.")
-    .debug_only()
-    .range(0, 1)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -493,7 +465,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // CHECK: "glass = drawn after the frame's first world draw" against the census (the spike's section 2 says 18 translucent draws came
   // after the world in one view and the whole car did in another): the check's log counts the hits by class, mcla_gpu_car_rt_masks 1
   // turns the rule off.
-  const bool glass_rule = REXCVAR_GET(mcla_gpu_car_rt_masks) == 0 && rr::GlassRuleInformative(after_world, body_draws);
+  const bool glass_rule = larecomp::settings::mcla_gpu_car_rt_masks.Get() == 0 && rr::GlassRuleInformative(after_world, body_draws);
   std::vector<plume::RenderTopLevelASInstance> instances;
   std::vector<rr::InstanceRow> rows;
   for (uint32_t i = 0; i < frame.draws.size() && instances.size() < rr::kMaxInstances; ++i) {
@@ -594,7 +566,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     recorded = true;
   }
   LogTotals("");
-  if (REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid) {
+  if (larecomp::settings::mcla_gpu_car_rt_check.Get() && view_.valid) {
     RecordCheck(list, slot, summary, ao);
     recorded = true;
   }
@@ -1059,7 +1031,7 @@ void CarRtScene::LogTotals(const char* why) {
 
 void CarRtScene::OnPresent() {
   if (ready_) {
-    if (REXCVAR_GET(mcla_gpu_car_rt_check)) {
+    if (larecomp::settings::mcla_gpu_car_rt_check.Get()) {
       Request();  // the check asks for the structures, so for the car's draws too
     }
     if (requested_ || requested_prev_) {
@@ -1100,7 +1072,7 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
     }
     return;
   }
-  const int view_mode = REXCVAR_GET(mcla_gpu_car_rt_view);
+  const int view_mode = larecomp::settings::mcla_gpu_car_rt_view.Get();
   const bool due = frame_ >= next_readback_ && !readback_busy_;
   if (!due && view_mode == 0) {
     return;

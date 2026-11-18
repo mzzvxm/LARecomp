@@ -1,6 +1,6 @@
 #include "modloader.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 
 #include <algorithm>
@@ -43,584 +43,6 @@
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/music/custom_music.h"
 
-REXCVAR_DEFINE_BOOL(model_mods, true, "MCLA/Mods",
-    "Load model replacements from <exe>/modloader/<mod>/<asset>.obj (or mods/, "
-    "models/). Each .obj is "
-    "baked into a native drawable and packed into xarchive_mods.rpf, which is "
-    "appended to the archive list -- the engine's own last-mounted-wins rule "
-    "makes it override per file. Game archives are never modified.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_INT32(model_mods_bone, -1, "MCLA/Mods",
-    "-1 keeps a skinned mesh's own weights (glTF with JOINTS_0/WEIGHTS_0), "
-    "matching its joints to the driver's bones by bind-pose position, so the "
-    "model follows the seated pose. Any value >= 0 ignores the weights and "
-    "rides the whole mesh rigidly on that one bone, which is all a .obj can do.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_offset_y, 0.0, "MCLA/Mods",
-    "Extra height for the replacement model, in metres, on top of the automatic "
-    "lift onto its bone. Positive raises it. Use this if the model still sits "
-    "below or above the seat -- it takes a restart but no rebuild.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_offset_x, 0.0, "MCLA/Mods",
-    "Sideways nudge for the replacement model, in metres.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_offset_z, 0.0, "MCLA/Mods",
-    "Forward/back nudge for the replacement model, in metres.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_yaw, 0.0, "MCLA/Mods",
-    "Turns the replacement model about the vertical axis, in degrees. Source "
-    "models rarely face the same way the game does -- 180 turns a model that "
-    "sits with its back to the wheel.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_pitch, 0.0, "MCLA/Mods",
-    "Tips the replacement model forward or back, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_roll, 0.0, "MCLA/Mods",
-    "Rolls the replacement model sideways, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_scale, 1.0, "MCLA/Mods",
-    "Size multiplier on top of the automatic fit, which matches the model's "
-    "height to the driver's. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_submeshes, true, "MCLA/Mods",
-    "Spread the replacement mesh across every submesh of the character instead "
-    "of the largest one alone. The resource cannot be made bigger, but the "
-    "driver is fifteen submeshes holding 8208 vertices and 37512 indices "
-    "between them, against 2320 and 12957 in the biggest -- so this raises what "
-    "a mod can bring by three and a half times, and most characters then arrive "
-    "with no welding at all. Every submesh borrowed this way is repointed at "
-    "the shader whose textures were replaced. Turn it off to go back to filling "
-    "one submesh, which is the conservative path if a model renders oddly.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_decimate, false, "MCLA/Mods",
-    "Whether a replacement mesh larger than the slot it has to live in may be "
-    "welded down to fit: a character, a rim, or a part replaced on a shipped "
-    "car. A car built on a donor is always welded to its ceilings "
-    "(model_mods_car_budget for the body) and ignores this. The slot is fixed "
-    "-- for a character, the drawable's largest submesh, around 2300 vertices, "
-    "and a few hundred on the low LOD -- and the welding is a blunt instrument: "
-    "vertices that share a cell of a spatial grid are merged and averaged, "
-    "which on a detailed model rounds off faces and hands. Off, a mesh still "
-    "too big is refused with the reason in the log and that variant keeps the "
-    "shipped model, so what a mod shows is what it brought; decimate it "
-    "yourself in a modelling tool, where you can see what you are giving up. "
-    "Expect the low LOD to be refused first, so the original driver reappears "
-    "at a distance. On welds it in instead.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_proportions, 0.0, "MCLA/Mods",
-    "How much of the replacement model's own build to keep when it is reposed "
-    "onto the driver's skeleton, 0 to 1. At 0 every joint lands exactly on the "
-    "bone it was matched to, which is what the game's skinning expects and what "
-    "a human-shaped model wants. A model built to other proportions gets "
-    "stretched to reach those bones -- a cartoon character with a six centimetre "
-    "neck has it pulled out to the driver's twenty-six -- and raising this "
-    "keeps its own bone lengths instead, taking only the pose from the "
-    "skeleton. The cost is that limbs no longer end where the game thinks they "
-    "do, so hands drift off the wheel as it goes up. Try 1 for anything that is "
-    "not roughly human.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_textures, true, "MCLA/Mods",
-    "Use the replacement model's own textures. The images embedded in a .glb "
-    "(one per material) are packed into a single atlas, each primitive's UVs "
-    "are remapped into its own cell, and the result is written over the "
-    "character's diffuse map in place -- same address, same size, same format. "
-    "Off leaves the mesh wearing the original driver's skin.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_car_textures, true, "MCLA/Mods",
-    "Give a replacement car body its own textures. A car is drawn by several "
-    "shaders of one drawable and each of them samples at most one image, so the "
-    "mod's materials are grouped by the shader they were mapped to, packed into "
-    "one atlas per shader with their UVs remapped, and written over that "
-    "shader's colour map in the car's material packs (.xtl and .xtp) in place.\n"
-    "\n"
-    "Only shaders that sample anything get one. CarPaintCustomizable, CarGlass, "
-    "BlackMatte and Chrome read no texture at all -- the effect decides that, "
-    "not the data -- so their materials keep the UVs they came with, which is "
-    "what paint needs for its vinyls to sit right.\n"
-    "\n"
-    "Off ships the donor's packs exactly as the game holds them, and the body "
-    "comes back wearing the donor's own artwork.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_autoalign, true, "MCLA/Mods",
-    "Put a replacement wheel on the game's axle, in two steps. First the turn: "
-    "every shipped wheel spins about X and is half as wide as it is tall, so the "
-    "thinnest axis of the model is taken to be its axle and rotated onto that "
-    "one -- a wheel exported lying flat comes in standing up without anyone "
-    "having to work out which ninety degrees it needed. Then the depth: a wheel "
-    "is not centred in its own bounding box, it keeps its hub and spokes in the "
-    "negative half of the axle with only a thin lip at the far edge, so a bare "
-    "rim left centred sits sunk inside the tyre. Its face is pushed out flush "
-    "with the shipped wheel's instead, turning the model around first if it came "
-    "in facing inward. The manual rim angles and nudge below are applied on top. "
-    "Turn this off to place a wheel entirely by hand.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_keep_badge, true, "MCLA/Mods",
-    "Leave the wheel's badge quad as it shipped instead of silencing it.\n"
-    "\n"
-    "It is nine vertices on its own material, and that material is the only "
-    "one on the wheel that samples a texture -- so silencing it, which is what "
-    "the geometry rewrite did to every unused submesh, takes the badge off the "
-    "car and leaves a mod's paint read by nothing.\n"
-    "\n"
-    "Off restores the old behaviour. Only mods that bring an image of their own "
-    "reach this at all, so a wheel mod with no texture behaves the same either "
-    "way -- which makes this the switch to try first when a textured wheel mod "
-    "misbehaves and an untextured one on the same build does not.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_shade_profile, true, "MCLA/Mods",
-    "Rebuild a replaced wheel's baked shading from the template instead of "
-    "flooding it with one average.\n"
-    "\n"
-    "A shipped wheel carries its ambient occlusion per vertex, and it is not a "
-    "small effect: measured across five of them the lane runs the full 0..255 "
-    "with a deviation above fifty. Carrying it over vertex by vertex prints the "
-    "old rim's spoke shadows onto the new one, so it was replaced by a single "
-    "average -- which removes the shadows and every cavity with them. What is "
-    "left is a rim shaded only by its material's specular, and because that is "
-    "pinned to the geometry it sweeps around as the wheel turns and blows out "
-    "as soon as the rim is painted.\n"
-    "\n"
-    "On, the lane is read from the template through coordinates that cannot "
-    "carry a spoke: distance from the axle, depth along it, and how the surface "
-    "faces in each. The shipped lane predicts itself that way to R^2 0.82, and "
-    "read with a mod's own coordinates it gives structure of the right kind at "
-    "about 60% of the shipped amplitude.\n"
-    "\n"
-    "It is not a reconstruction. Fitted on one wheel and scored against "
-    "another's bake it reaches R^2 -0.09, no better than the flat average, at "
-    "every grid size tried -- half of a wheel's bake is its own spokes, and "
-    "there is no bake for geometry the game never saw. Off restores the flat "
-    "average, which is featureless but is not a guess.")
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(model_mods_rim_texture_mode, -1, "MCLA/Mods",
-    "Where a wheel mod's own image is applied: -1 auto, 0 the hub cap, 1 the "
-    "whole rim.\n"
-    "\n"
-    "A shipped wheel keeps no skin. Its metal is the shader and the baked "
-    "per-vertex shade, and its texture is a decal sheet -- the maker's logo "
-    "plus a few lug nuts and valve stems, most of it transparent -- sampled by "
-    "a nine-vertex quad sitting on the hub. So there are two sensible things a "
-    "mod's image can be, and they want opposite treatment.\n"
-    "\n"
-    "Auto decides on the image's own alpha, which is what tells the two apart: "
-    "a badge is a logo on transparency, a skin has nothing to be transparent "
-    "for. An image with real transparency goes to the cap alone, on the quad "
-    "the game already draws there. An opaque one is taken for a rim skin, and "
-    "the body is pointed at the textured material so it lands across the whole "
-    "wheel.\n"
-    "\n"
-    "Either way the badge quad is left as it shipped, so the cap is never "
-    "blank. Force the choice with 0 or 1 when a mod's alpha does not say what "
-    "it meant.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_band_profile, false, "MCLA/Mods",
-    "Carry the template wheel's material bands onto the replacement instead of "
-    "flooding one."
-    "\n"
-    "texcoord1.x is the rim's material selector: xRimMain's VS_Common indexes "
-    "materialHookups and tintColors with it, and PS_Multi then reflects a "
-    "dual-paraboloid environment map through whatever material came out. A "
-    "shipped wheel's body uses FOUR bands, and two unrelated ones put them in "
-    "the same places -- band 1 is a ring at 0.82..0.88 of the radius two "
-    "thirds of the way in, band 2 the outer lip past 0.93, band 0 the face and "
-    "spokes, band 3 scattered accents. Flooding the dominant band gives the "
-    "whole rim one material, and one material over a mirror is a mirror ball: "
-    "the highlight sweeps round as the wheel turns. The bands are rings, so "
-    "they are carried by nearest neighbour in radius and axial depth, each "
-    "normalised to its own mesh. Only the band moves -- the colour does not, "
-    "which is what separates this from model_mods_rim_inherit_shade."
-    "\n"
-    "OFF, because it does not beat doing nothing. Validated against ground "
-    "truth by predicting one shipped wheel's bands from another's and counting "
-    "per-vertex agreement: flooding the dominant band alone already scores 59% "
-    "on the skyline and 57% on the bbs, and the transfer scores 61%/51% "
-    "matching on absolute depth and 57%/70% matching on each mesh's own depth "
-    "span. Neither normalisation wins in both directions, so the bands are in "
-    "the same PLACES on every wheel without being predictable per vertex from "
-    "where a vertex sits. Kept, off, so the next idea has something to beat.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_shade_occlusion, true, "MCLA/Mods",
-    "Bake the wheel's shade lane from occlusion measured on the replacement."
-    "\n"
-    "A shipped wheel carries a baked lane: measured on three of them it runs "
-    "0..252 with a deviation near fifty (bbs_ch 0..252 mean 155 dev 52, "
-    "amer_razor 5..254 mean 186 dev 45, 5zigen_5zr 0..249 mean 144 dev 55). "
-    "A modded wheel had none: flooding one average gives a deviation of ZERO, "
-    "and the only shading left is the material's specular, which is pinned to "
-    "the geometry and sweeps round as the wheel turns. That is what \"the "
-    "normals change with rotation\" is, and it is not the normals."
-    "\n"
-    "The other answer -- model_mods_rim_inherit_shade -- carries the "
-    "template's lane across by proximity, and lights the wheel NEON: the lane's "
-    "colour is 0x000000 on every shipped wheel, so what moves is the UV1 band "
-    "beside it, and a band picks a material (RimMaterialA..E). Scattered across "
-    "a shape that does not share them, some vertices land on the emissive one."
-    "\n"
-    "So the lane is measured instead of copied or invented. Validated before "
-    "being switched on: this car's rim comes out 0..255 mean 156 deviation 77 "
-    "against a target of mean 155 deviation 52 -- the mean lands on its own, "
-    "and only the contrast is pulled in. Off falls back to the flat fill."
-    "\n"
-    "Takes precedence over model_mods_rim_shade_profile, which guesses the same "
-    "lane from statistics and which its own comment scores at R^2 -0.09 across "
-    "wheels -- no better than the flat average it replaces.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_rim_inherit_shade, false, "MCLA/Mods",
-    "Diagnostic. Copy the shipped wheel's per-vertex shading onto the "
-    "replacement, vertex by vertex from whichever original vertex is nearest. "
-    "This is what a character replacement does, and it works there because the "
-    "mesh has been reposed onto the very skeleton it replaces. A wheel shares "
-    "nothing with the wheel it replaces, so what arrives is the old wheel's "
-    "baked shadows printed onto the new spokes, and its four material bands "
-    "scattered by proximity across a shape that does not have them. Off, which "
-    "is the default, gives the whole wheel one band and that band's own average "
-    "shade, both read off the template.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_rim_offset_x, 0.0, "MCLA/Mods",
-    "Nudge for a replacement wheel along its axle, where one unit is the "
-    "wheel's own diameter. Positive pushes it further into the tyre, negative "
-    "pulls it out. Only needed when the automatic flush above lands slightly "
-    "off for a particular model.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_rim_yaw, 0.0, "MCLA/Mods",
-    "Turns a replacement wheel about the vertical axis, in degrees. Separate "
-    "from the character angles because a wheel and a driver never want the same "
-    "correction.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_rim_pitch, 0.0, "MCLA/Mods",
-    "Tips a replacement wheel forward or back, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_rim_roll, 0.0, "MCLA/Mods",
-    "Rolls a replacement wheel sideways, in degrees.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_rim_scale, 1.0, "MCLA/Mods",
-    "Size multiplier for a replacement wheel, on top of the automatic fit to "
-    "the shipped wheel's own bounds. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_car_yaw, 180.0, "MCLA/Mods",
-    "Turns a replacement car about the vertical axis before its parts are "
-    "placed, in degrees. 180 is the normal value and the default: glTF has a "
-    "model face +Z and MCLA has it face -Z, which is checked rather than "
-    "assumed -- the shipped cars keep their headlights at negative Z and their "
-    "tail lights at positive Z, and an exported car has it the other way round.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(model_mods_car_scale, 1.0, "MCLA/Mods",
-    "Size multiplier for a replacement car, on top of the automatic fit. The "
-    "fit matches the length of the mod's body to the length of the body it "
-    "replaces, and every part of the car is then moved by that one factor -- "
-    "scaling each part into its own slot instead would leave a hood a size "
-    "larger than the doors beside it. 1.0 leaves it alone.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_grow, false, "MCLA/Mods",
-    "Give a replacement wheel or car part buffers of its own instead of welding "
-    "it down into the ones the shipped resource came with. The resource is made "
-    "longer and the submesh is pointed at the new space; nothing already in it "
-    "moves. This is what removes the detail ceiling -- a wheel slot holds 3,701 "
-    "vertices and a modern wheel model is fifty times that -- and it was thought "
-    "impossible until the streamer's read budget turned out to be what had been "
-    "corrupting grown resources. 65535 vertices per submesh remains, because a "
-    "submesh counts and indexes its vertices in sixteen bits. Characters are not "
-    "affected: a skinned submesh also caps its bone palette, which is a separate "
-    "allocation, so they stay on the path that already works. Turn this off to "
-    "go back to welding everything into the shipped buffers.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(model_mods_car_budget, 16777216, "MCLA/Mods",
-    "The largest a replaced car body may be grown to, in bytes for LOD 0; the "
-    "lower LODs get a quarter of it. Anything the mod brings beyond what fits "
-    "is welded away, whatever model_mods_decimate says. It is a ceiling, not a "
-    "size: a body that needs less is grown only to what it needs.\n"
-    "\n"
-    "Growing a drawable has no natural limit -- the mod hands over whatever it "
-    "modelled and the resource follows -- but the game has one in practice. "
-    "Counted over the 8849 vehicle drawables the game ships, the largest "
-    "declares 1,163,264 bytes and the median 45,056; counted over body_lod_0 "
-    "alone the largest is 884,736 and the median 266,240. The default used to "
-    "sit just under that largest, so a mod could be as heavy as the heaviest "
-    "thing the engine already streams and no heavier.\n"
-    "\n"
-    "It cannot any more. Each large buffer now starts on a block boundary and "
-    "the padding counts against the ceiling; the shader passes are dealt their "
-    "share in order, so by the last ones the padding has eaten the room: at "
-    "4,194,304 the BMW came back with Chrome at 4 of 7353 triangles, CarLight "
-    "at 124 of 2660 and CarGlass at 112 of 830. At 16,777,216 every pass "
-    "arrives whole, a 7,340,032-byte body_lod_0, and the car drives "
-    "correctly.\n"
-    "\n"
-    "0 lifts the ceiling entirely, which is the setting to try when you want to "
-    "know whether size is what a car is failing on.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_car_pack_write, true, "MCLA/Mods",
-    "Write the mod's atlases into the car's material packs."
-    "\n"
-    "A probe, not a feature. model_mods_car_textures gates TWO things at once: "
-    "the atlas, which rewrites the mesh's UVs, and the pack rewrite, which "
-    "unpacks .xtl/.xtp, drops the atlases in and repacks them through "
-    "BuildRsc5File instead of shipping the donor's bytes as they came. "
-    "Switching that cvar off made a broken car whole again, which says the "
-    "fault is in one of those two and not which."
-    "\n"
-    "Off keeps the atlas and its UV rewrite and ships the packs untouched. The "
-    "car then wears the donor's artwork through the mod's UVs, which looks "
-    "wrong on purpose -- what is being read is the GEOMETRY. Whole means the "
-    "pack rewrite is at fault; in pieces means the UV rewrite is.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_share_images, false, "MCLA/Mods",
-    "Let two materials that name the same picture share one cell of the atlas."
-    "\n"
-    "A textures/ folder is keyed by material name, so a car whose three lamp "
-    "materials all draw 750i_taillight ships three identical files and they "
-    "take three cells. Collapsing them by content is free resolution -- the "
-    "lamp shader went from six images in a 1024 atlas to two in a 512, which is "
-    "128 pixels a material against 256."
-    "\n"
-    "OFF, because it is not free. Turning it on is the ONE change between the "
-    "last build of this car that drew correctly and the one that came back as "
-    "flat slabs, isolated by switching model_mods_car_textures off: with the "
-    "atlas gone the geometry was whole again and the car merely wore the "
-    "donor's artwork. Sharing a cell makes that cell cover the UNION of what "
-    "every part sharing it asks for, which is the only thing here that changes "
-    "a UV by more than a texel -- and something downstream of that is not "
-    "surviving it. Until that is understood this stays off and each material "
-    "keeps its own cell.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_cabin_light, true, "MCLA/Mods",
-    "Give a replacement car's cabin (the car-space part slots, interior0) the "
-    "donor's per-vertex interior lighting, read off the donor's cabin vertex "
-    "nearest each new one, instead of one flooded average.\n"
-    "\n"
-    "The colour word of a cabin vertex is how much of each of the car's three "
-    "interior lights (siColor0..2: the interior neon among them) reaches it. "
-    "Flooded with one average the BMW's cabin barely answered the interior neon "
-    "being switched on. Off restores the flood.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_car_lod1_copy, true, "MCLA/Mods",
-    "Ship a replacement car's LOD 1 as a byte copy of the LOD 0 just built, for "
-    "the body and for every part slot the donor gives a LOD 1.\n"
-    "\n"
-    "The garage draws LOD 1 close up. Measured on the BMW e38: the crumpled "
-    "bonnet, the V cut into the plate and the bent grille in the garage are "
-    "body_lod_1 exactly -- rasterised offline, LOD 0 is smooth and LOD 1 is that "
-    "picture. LOD 1 was rewritten on a quarter of the budget, and a quarter "
-    "buys 12,075 of the paint's 21,706 triangles through a clustering "
-    "decimator, which is what crumples a panel. interior0's LOD 1 was worse: "
-    "the donor has no paint there at all, so 10,138 triangles of shell were "
-    "simply missing from it.\n"
-    "\n"
-    "A copy is what the game itself does for the Caprice -- its body_lod_0 and "
-    "body_lod_1 are the same file, md5 and all -- and here it costs nothing: "
-    "block rounding already makes both LODs of the body 2 MB.\n"
-    "\n"
-    "OFF rebuilds LOD 1 from the donor's own LOD 1 on a quarter budget, the "
-    "old behaviour.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_part_probe, false, "MCLA/Mods",
-    "TEMPORARY diagnostic: every second, while the player's car is waiting to "
-    "reattach its parts (car+6467) -- which is when the game draws none of it, "
-    "wheels included -- log which selected part is not resident yet and the "
-    "state of its stream (object, resource, handle, flags, state, refcount). "
-    "See PartProbeLoop.")
-    .debug_only();
-REXCVAR_DEFINE_BOOL(model_mods_glass_band, true, "MCLA/Mods",
-    "Give a replacement body's glass the pane number of the donor glass nearest "
-    "each piece of it, instead of the dominant pane of the submesh it is written "
-    "into. texcoord1.x on CarGlass says which pane a vertex is -- 0 windscreen, "
-    "1 rear, 2/3 doors -- and the window film tints 1-3 only, so a body flooded "
-    "with 0 takes no film at all. See MeshOffset::band_by_piece. Read at archive "
-    "build time.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-REXCVAR_DEFINE_UINT32(model_mods_part_growth, 8, "MCLA/Mods",
-    "How much larger than the donor's own a replacement PART may be, as a "
-    "multiple of the shipped resource.\n"
-    "\n"
-    "A part is not a body and does not need the body's machinery: the Impala's "
-    "front bumper is 1731 vertices where its shell is three thousand-odd, and "
-    "the whole of a car's sixty parts together weigh less than one of its LODs. "
-    "Eight times the shipped size is room for a part modelled far more finely "
-    "than the one it stands in for, and still small enough that nothing has to "
-    "be dealt out between shaders the way the body's room is.\n"
-    "\n"
-    "1 keeps every part at exactly the size the donor shipped, which is the "
-    "setting to try when a car loads without its parts.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_car_verbatim, false, "MCLA/Mods",
-    "Diagnostic, cars only. Copies each part's shipped file into the mod "
-    "archive exactly as it lies in the game's own -- same bytes, same "
-    "compressed length, same flag -- instead of decompressing it and packing it "
-    "back. Everything else about the mod archive stays as it is, so this "
-    "separates the two halves of a failure: if the game is happy with the "
-    "verbatim copy, what it dislikes is the repack; if it still refuses, the "
-    "repack is innocent and the problem is in serving a vehicle resource from a "
-    "second archive at all. `model_mods_passthrough` cannot answer that on its "
-    "own, because it still re-encodes the stream -- and an LZX of stored blocks "
-    "is larger than the compressed original it replaces.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_passthrough, false, "MCLA/Mods",
-    "Diagnostic. Repacks the original character resource without touching its "
-    "geometry, so the .obj is ignored. If the driver still renders correctly "
-    "with this on, the packing path (LZX, archive, mount, flags) is sound and "
-    "any breakage belongs to the mesh rewrite; if it breaks, the packing path "
-    "is at fault.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_anchor_bones, true, "MCLA/Mods",
-    "Whether the repose plants each of the mod's joints on the bone it was "
-    "matched to. On (the default) a hand lands exactly on the bone the game "
-    "drives a hand with, and the body pays for it: a model's chest joint sits "
-    "lower than the driver's chest bone, so the chest is hauled up and back "
-    "while the collarbone barely moves, and the flesh between them loses 21 mm "
-    "of shape -- the crease across the chest, the angular shoulder, and the "
-    "belly pulled in behind a spine bone that sits at the back of a torso where "
-    "the model's sits down the middle. Off, joints keep the offsets they were "
-    "authored with and only turn: measured on the driver mod that halves the "
-    "distortion, 5.7 mm to 2.8 mm averaged over every bone, at the cost of the "
-    "wrist landing 38 mm and the foot 96 mm off their bones, which swings them "
-    "on the wrong lever once animation starts. Standing still, off looks "
-    "better; in motion is what only the game can answer.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(model_mods_weight_smoothing, 4, "MCLA/Mods",
-    "How many rounds of neighbour averaging the mod's skin weights get before "
-    "the model is reposed onto the driver's skeleton. 0 keeps them exactly as "
-    "authored. The models people bring are rigidly weighted -- a GTA-era "
-    "character puts every vertex at full strength on one bone and zero on the "
-    "rest -- and the repose hands each bone its own rigid transform, built from "
-    "a skeleton with different bone lengths. Two neighbouring vertices bound "
-    "hard to different bones then get two unrelated transforms and the edge "
-    "between them is torn: measured on the driver mod, edges came out at 7.6x "
-    "their own length, which is the flat blade that was hanging off that "
-    "character's back. Smoothing gives a seam vertex a share of both bones so "
-    "the seam bends instead. Four rounds took the worst edge to 2.1x; away from "
-    "a seam it changes nothing.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(model_mods_grow_slack, 65536, "MCLA/Mods",
-    "Room left unused at the end of a resource `model_mods_grow` has enlarged. "
-    "The tail of a grown segment does not arrive intact, and this is what keeps "
-    "the mesh out of it -- measured on a wheel: buffers ending 16 KB short of "
-    "the segment's end came back with holes, and ending 82 KB short came back "
-    "clean. Where between those two the boundary sits has not been pinned down, "
-    "so the default is the distance that was measured to work rather than the "
-    "smallest that might. 0 restores the old behaviour and the holes with it.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_car_space_only, true, "MCLA/Mods",
-    "Write a donor car's replacement mesh only into the models the donor authors "
-    "in the CAR's frame, and silence the pass's submeshes in the others.\n"
-    "\n"
-    "A vehicle body is several models and the game draws each with its own part "
-    "matrix -- a bumper, a lamp, a door window. Geometry that arrives in car "
-    "space and lands in one of those goes wherever that bone is, which is the "
-    "nose in the ground and the lamps above the roof.\n"
-    "\n"
-    "Silencing here zeroes the index and vertex counts and leaves the buffer "
-    "pointers, which is the technique that twice failed in game when it emptied a "
-    "whole part; applied to some submeshes of a shader rather than all, it has "
-    "always been fine. It was suspected once of causing blades and cleared: those "
-    "were buffers crossing a resource block boundary, and the fix for that is "
-    "elsewhere (MeshOffset::block_align). Kept switchable because it is the one "
-    "thing between a car in its right place and a car whose nose is in the "
-    "ground. Read at archive build time, so it needs a restart and no rebuild.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(model_mods_grow_probe, 0, "MCLA/Mods",
-    "With `model_mods_grow` on: 1 grows the resource and stops there, the segment "
-    "gets bigger and nothing else changes -- no buffer moves, no pointer is "
-    "rewritten, no count is touched, and the mesh is decimated into the buffers "
-    "the template already owned. Growing and repointing have only ever been "
-    "tried together, so the first attempt could be written off without saying "
-    "which of the two was at fault. If this renders, a resource can be made "
-    "larger safely and the fault is in the repointing; if it does not, growth "
-    "alone is the fault and the rest never mattered. 2 goes one rung further: "
-    "the buffers are put in the new space and repointed, but the counts are "
-    "left alone, so the mesh is still decimated to what the template shipped. "
-    "That is what says whether the bytes written into the grown space actually "
-    "arrive and can be fetched from -- 1 never reads them. Only when both pass "
-    "is a changed count worth trying.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(model_mods_diag, false, "MCLA/Mods",
-    "Write a `.diag` folder beside the mods: one .txt per rebuilt asset "
-    "holding the template's submesh table, both rigs with the joint-to-bone "
-    "mapping, and how the mesh was dealt across the submeshes -- plus the mesh "
-    "itself as .obj before and after the retarget. A character that comes out "
-    "mangled is one of three things (a joint on the wrong bone, a bad deal, or "
-    "a submesh the writer could not describe and therefore left drawing what it "
-    "shipped) and they all look alike on screen; this tells them apart.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace mc::modloader {
 
@@ -1253,7 +675,7 @@ size_t LoadSidecarTextures(const std::filesystem::path& folder, Mesh& mesh) {
         // against costs more than the cell it saves is worth.
         size_t sum = 0;
         for (uint8_t byte : bytes) sum = sum * 131u + byte;
-        const auto same = REXCVAR_GET(model_mods_share_images)
+        const auto same = larecomp::settings::model_mods_share_images.Get()
                               ? image_of_content.find({bytes.size(), sum})
                               : image_of_content.end();
         if (same != image_of_content.end()) {
@@ -2885,7 +2307,7 @@ void PartProbeLoop() {
     std::string last;
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (!REXCVAR_GET(model_mods_part_probe)) continue;
+        if (!larecomp::settings::model_mods_part_probe.Get()) continue;
         auto* runtime = rex::Runtime::instance();
         if (!runtime || !runtime->memory()) continue;
         const uint8_t* base = runtime->memory()->virtual_membase();
@@ -3070,7 +2492,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
     // the parts it already draws, and an atlas written for a new part would
     // replace the texture under the old ones.
     const bool want_car_textures =
-        REXCVAR_GET(model_mods_car_textures) && !plan.verbatim && !plan.extend &&
+        larecomp::settings::model_mods_car_textures.Get() && !plan.verbatim && !plan.extend &&
         !mesh.images.empty() && ReadPackMaterials(pack, pack_materials);
     // CarLight still gets an atlas, but not as a colour map -- it has none. The
     // texture PackMaterialDiffuse picks for it is the lens NORMAL map (+16,
@@ -3226,7 +2648,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                donor, name, error);
             continue;
         }
-        if (lod == 1 && !body_lod0_file.empty() && REXCVAR_GET(model_mods_car_lod1_copy)) {
+        if (lod == 1 && !body_lod0_file.empty() && larecomp::settings::model_mods_car_lod1_copy.Get()) {
             LARECOMP_APP_INFO("[mods] {}/vehicles/{}: body_lod_1 is a copy of body_lod_0 "
                               "({} bytes)", vehicle.mod_name, car, body_lod0_file.size());
             writer.Add(car_dir + "/" + name, body_lod0_file, body_lod0_flag, body_lod0_type);
@@ -3317,7 +2739,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         // 53,248 bytes; run 997, same budget, same 3,555,328-byte LOD 0 and
         // 1,114,112-byte LOD 1, with LOD 2 grown to 458,752, was in pieces.
         // Whatever the far LOD of a vehicle is allowed to be, it is not that.
-        const uint32_t full = REXCVAR_GET(model_mods_car_budget);
+        const uint32_t full = larecomp::settings::model_mods_car_budget.Get();
         const uint32_t budget = lod == 0 ? full : full / 4;
         const uint32_t room = budget > shipped_size ? budget - shipped_size : 0;
         // What each shader is actually being given, in the unit the ceiling is
@@ -3445,7 +2867,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // what lets the window film reach a replacement's rear and quarter
             // windows. See MeshOffset::band_by_piece.
             if (std::string_view(CarEffectName(effects[shader])) == "CarGlass" &&
-                REXCVAR_GET(model_mods_glass_band)) {
+                larecomp::settings::model_mods_glass_band.Get()) {
                 offset.nearest_band = true;
                 offset.band_by_piece = true;
             }
@@ -3456,7 +2878,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             offset.force_shader = static_cast<int32_t>(shader);
             // The model arrives in car space, so it only goes into models that
             // are in car space too. See MeshOffset::car_space_only.
-            offset.car_space_only = REXCVAR_GET(model_mods_car_space_only);
+            offset.car_space_only = larecomp::settings::model_mods_car_space_only.Get();
             offset.block_align = VirtualBlockSize(resource);
             // LOD 0 and 1 hold the mesh whole; the donor ships them as the same
             // file, so that is what it meant by them. LOD 2 is welded down into
@@ -3775,7 +3197,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // Same as the body: LOD 1 is LOD 0 again. For interior0 this is not
             // only quality -- the donor's interior0_lod_1 draws no paint, so the
             // 10,138 triangles of shell that live in this slot had nowhere to go.
-            if (lod == 1 && !lod0_file.empty() && REXCVAR_GET(model_mods_car_lod1_copy)) {
+            if (lod == 1 && !lod0_file.empty() && larecomp::settings::model_mods_car_lod1_copy.Get()) {
                 LARECOMP_APP_INFO("[mods] {}/vehicles/{}: {} is a copy of LOD 0 ({} bytes)",
                                   vehicle.mod_name, car, name, lod0_file.size());
                 writer.Add(car_dir + "/" + name, lod0_file, lod0_flag, lod0_type);
@@ -3900,7 +3322,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
             // stops the part being rounded up to that, it must not cut into
             // what the mesh may take.
             const uint32_t ceiling = std::max<uint32_t>(
-                shipped_size * REXCVAR_GET(model_mods_part_growth), 1u << 20);
+                shipped_size * larecomp::settings::model_mods_part_growth.Get(), 1u << 20);
             size_t filled = 0;
             std::vector<bool> claimed(effects.size(), false);
 
@@ -3966,7 +3388,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 // A car-space slot has car-space models that need the same guard
                 // as the body; an own-space slot is ALL bone-local by definition,
                 // and the part has already been moved into that frame.
-                offset.car_space_only = !own_space && REXCVAR_GET(model_mods_car_space_only);
+                offset.car_space_only = !own_space && larecomp::settings::model_mods_car_space_only.Get();
                 // A car-space slot is the cabin, and there the colour word is how
                 // much of each interior light reaches a vertex -- read it off the
                 // donor's cabin where this one sits. See MeshOffset::nearest_shade.
@@ -3974,7 +3396,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                 // not what an exterior panel routed through here should wear.
                 offset.nearest_shade = !own_space && !offset.nearest_band &&
                                        offset.fixed_shade == 0 &&
-                                       REXCVAR_GET(model_mods_cabin_light);
+                                       larecomp::settings::model_mods_cabin_light.Get();
                 if (const auto stated = plan.bands.find(mapping.slot);
                     stated != plan.bands.end() && !offset.nearest_band) {
                     offset.fixed_band = stated->second;
@@ -4259,7 +3681,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
         // at half of .xtp -- and both are written, because the game picks
         // between them by distance and writing one leaves the car changing
         // skin as you drive away from it.
-        const bool is_pack = !atlas_of.empty() && REXCVAR_GET(model_mods_car_pack_write) &&
+        const bool is_pack = !atlas_of.empty() && larecomp::settings::model_mods_car_pack_write.Get() &&
                              !name.empty() &&
                              (name == donor + ".xtl" || name == donor + ".xtp");
         // The manifest, when the mod adds variants the donor never had: each
@@ -4702,7 +4124,7 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
             continue;
         }
 
-        const float yaw = static_cast<float>(REXCVAR_GET(model_mods_car_yaw));
+        const float yaw = static_cast<float>(larecomp::settings::model_mods_car_yaw.Get());
         const float source_length = src_max[2] - src_min[2];
         if (source_length <= 1e-4f) {
             LARECOMP_APP_ERROR("[mods] {}/vehicles/{}: the body groups have no length",
@@ -4710,12 +4132,12 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
             continue;
         }
         const float scale = (car_max[2] - car_min[2]) / source_length *
-                            static_cast<float>(REXCVAR_GET(model_mods_car_scale));
+                            static_cast<float>(larecomp::settings::model_mods_car_scale.Get());
         LARECOMP_APP_INFO("[mods] {}/vehicles/{}: car is {:.2f} long against the game's {:.2f}, "
                           "scale {:.3f}", vehicle.mod_name, vehicle.car, source_length,
                           car_max[2] - car_min[2], scale);
 
-        const bool verbatim = REXCVAR_GET(model_mods_car_verbatim);
+        const bool verbatim = larecomp::settings::model_mods_car_verbatim.Get();
         if (verbatim) {
             LARECOMP_APP_INFO("[mods] {}/vehicles/{}: verbatim copy, the mesh is ignored",
                               vehicle.mod_name, vehicle.car);
@@ -4816,12 +4238,12 @@ size_t BuildVehicleMods(const std::vector<VehicleMod>& vehicles, const Rpf3Reade
                 offset.pre_fitted = true;
                 offset.uniform_shade = true;
                 offset.whole_models = true;
-                offset.grow_buffers = REXCVAR_GET(model_mods_grow);
-                offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
-                offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
-                offset.decimate = REXCVAR_GET(model_mods_decimate);
-                offset.submeshes = REXCVAR_GET(model_mods_submeshes);
-                offset.diagnose = REXCVAR_GET(model_mods_diag);
+                offset.grow_buffers = larecomp::settings::model_mods_grow.Get();
+                offset.grow_probe = larecomp::settings::model_mods_grow_probe.Get();
+                offset.grow_slack = larecomp::settings::model_mods_grow_slack.Get();
+                offset.decimate = larecomp::settings::model_mods_decimate.Get();
+                offset.submeshes = larecomp::settings::model_mods_submeshes.Get();
+                offset.diagnose = larecomp::settings::model_mods_diag.Get();
 
                 RewriteStats stats;
                 if (!passthrough &&
@@ -4925,7 +4347,7 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         // gone.
         Image atlas;
         uint32_t atlas_cells = 0;
-        const bool want_textures = REXCVAR_GET(model_mods_textures) && !passthrough;
+        const bool want_textures = larecomp::settings::model_mods_textures.Get() && !passthrough;
         if (want_textures && !mesh.images.empty()) {
             std::string atlas_error;
             if (!BuildMeshAtlas(mesh, kAtlasCell, atlas, atlas_error, &atlas_cells)) {
@@ -4975,7 +4397,7 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         }
 
         MeshOffset offset;
-        if (REXCVAR_GET(model_mods_rim_autoalign)) {
+        if (larecomp::settings::model_mods_rim_autoalign.Get()) {
             AlignRimToAxle(mesh, offset);
             offset.align_axle = true;  // the depth half of it, done against the template
         }
@@ -4987,33 +4409,33 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         uint32_t textured_shader = 0;
         if (have_textures && TexturePackShader(textures, textured_shader)) {
             sampled = true;
-            if (REXCVAR_GET(model_mods_rim_keep_badge))
+            if (larecomp::settings::model_mods_rim_keep_badge.Get())
                 offset.reserve_shader = static_cast<int32_t>(textured_shader);
 
-            const int32_t mode = REXCVAR_GET(model_mods_rim_texture_mode);
+            const int32_t mode = larecomp::settings::model_mods_rim_texture_mode.Get();
             whole_rim = mode < 0 ? ImageIsOpaque(atlas, atlas_cells, kAtlasCell) : mode != 0;
             if (whole_rim) offset.force_shader = static_cast<int32_t>(textured_shader);
         }
-        offset.uniform_shade = !REXCVAR_GET(model_mods_rim_inherit_shade);
+        offset.uniform_shade = !larecomp::settings::model_mods_rim_inherit_shade.Get();
         offset.shade_occlusion =
-            offset.uniform_shade && REXCVAR_GET(model_mods_rim_shade_occlusion);
+            offset.uniform_shade && larecomp::settings::model_mods_rim_shade_occlusion.Get();
         offset.band_profile =
-            offset.uniform_shade && REXCVAR_GET(model_mods_rim_band_profile);
+            offset.uniform_shade && larecomp::settings::model_mods_rim_band_profile.Get();
         // The statistical guess only runs when the measurement is not: they
         // write the same lane, and the one that describes the actual mesh wins.
         offset.shade_profile = offset.uniform_shade && !offset.shade_occlusion &&
-                               REXCVAR_GET(model_mods_rim_shade_profile);
-        offset.grow_buffers = REXCVAR_GET(model_mods_grow);
-        offset.x = static_cast<float>(REXCVAR_GET(model_mods_rim_offset_x));
-        offset.yaw += static_cast<float>(REXCVAR_GET(model_mods_rim_yaw));
-        offset.pitch += static_cast<float>(REXCVAR_GET(model_mods_rim_pitch));
-        offset.roll += static_cast<float>(REXCVAR_GET(model_mods_rim_roll));
-        offset.scale = static_cast<float>(REXCVAR_GET(model_mods_rim_scale));
-        offset.decimate = REXCVAR_GET(model_mods_decimate);
-        offset.submeshes = REXCVAR_GET(model_mods_submeshes);
-        offset.diagnose = REXCVAR_GET(model_mods_diag);
-        offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
-        offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
+                               larecomp::settings::model_mods_rim_shade_profile.Get();
+        offset.grow_buffers = larecomp::settings::model_mods_grow.Get();
+        offset.x = static_cast<float>(larecomp::settings::model_mods_rim_offset_x.Get());
+        offset.yaw += static_cast<float>(larecomp::settings::model_mods_rim_yaw.Get());
+        offset.pitch += static_cast<float>(larecomp::settings::model_mods_rim_pitch.Get());
+        offset.roll += static_cast<float>(larecomp::settings::model_mods_rim_roll.Get());
+        offset.scale = static_cast<float>(larecomp::settings::model_mods_rim_scale.Get());
+        offset.decimate = larecomp::settings::model_mods_decimate.Get();
+        offset.submeshes = larecomp::settings::model_mods_submeshes.Get();
+        offset.diagnose = larecomp::settings::model_mods_diag.Get();
+        offset.grow_probe = larecomp::settings::model_mods_grow_probe.Get();
+        offset.grow_slack = larecomp::settings::model_mods_grow_slack.Get();
 
         RewriteStats stats;
         // Bone 0 explicitly: a wheel's skeleton is one bone, so there is nothing
@@ -5348,7 +4770,7 @@ void Init() {
     g_mod_archive_ready = false;
     g_archives_to_mount.clear();
 
-    const bool enable_models = REXCVAR_GET(model_mods);
+    const bool enable_models = larecomp::settings::model_mods.Get();
 
     const std::filesystem::path exe_dir = ExeDir();
     const std::filesystem::path models_dir = ModRootDir(exe_dir);
@@ -5673,7 +5095,7 @@ void Init() {
 
     if (!raw_files.empty()) boot::EndPhase();
 
-    const bool passthrough = REXCVAR_GET(model_mods_passthrough);
+    const bool passthrough = larecomp::settings::model_mods_passthrough.Get();
     if (passthrough) {
         LARECOMP_APP_INFO("[mods] passthrough is on: repacking the original geometry, "
                           ".obj meshes are ignored");
@@ -5698,7 +5120,7 @@ void Init() {
         // it remaps the UVs, and the rewrite decimates and reorders vertices,
         // after which the primitive boundaries the remap needs are gone.
         Image atlas;
-        const bool want_textures = REXCVAR_GET(model_mods_textures) && !passthrough;
+        const bool want_textures = larecomp::settings::model_mods_textures.Get() && !passthrough;
         if (want_textures && !mesh.images.empty()) {
             std::string atlas_error;
             if (!BuildMeshAtlas(mesh, kAtlasCell, atlas, atlas_error)) {
@@ -5727,27 +5149,27 @@ void Init() {
             }
 
             RewriteStats stats;
-            const int32_t configured_bone = REXCVAR_GET(model_mods_bone);
+            const int32_t configured_bone = larecomp::settings::model_mods_bone.Get();
             const uint32_t bone = configured_bone == -2  ? kSlotOneTest
                                   : configured_bone < 0 ? kAutomaticBone
                                                         : static_cast<uint32_t>(configured_bone);
             MeshOffset offset;
-            offset.x = static_cast<float>(REXCVAR_GET(model_mods_offset_x));
-            offset.y = static_cast<float>(REXCVAR_GET(model_mods_offset_y));
-            offset.z = static_cast<float>(REXCVAR_GET(model_mods_offset_z));
-            offset.yaw = static_cast<float>(REXCVAR_GET(model_mods_yaw));
-            offset.pitch = static_cast<float>(REXCVAR_GET(model_mods_pitch));
-            offset.roll = static_cast<float>(REXCVAR_GET(model_mods_roll));
-            offset.scale = static_cast<float>(REXCVAR_GET(model_mods_scale));
-            offset.proportions = static_cast<float>(REXCVAR_GET(model_mods_proportions));
-            offset.decimate = REXCVAR_GET(model_mods_decimate);
-            offset.submeshes = REXCVAR_GET(model_mods_submeshes);
-            offset.weight_smoothing = REXCVAR_GET(model_mods_weight_smoothing);
-            offset.anchor_bones = REXCVAR_GET(model_mods_anchor_bones);
-            offset.grow_buffers = REXCVAR_GET(model_mods_grow);
-            offset.grow_probe = REXCVAR_GET(model_mods_grow_probe);
-            offset.grow_slack = REXCVAR_GET(model_mods_grow_slack);
-            offset.diagnose = REXCVAR_GET(model_mods_diag);
+            offset.x = static_cast<float>(larecomp::settings::model_mods_offset_x.Get());
+            offset.y = static_cast<float>(larecomp::settings::model_mods_offset_y.Get());
+            offset.z = static_cast<float>(larecomp::settings::model_mods_offset_z.Get());
+            offset.yaw = static_cast<float>(larecomp::settings::model_mods_yaw.Get());
+            offset.pitch = static_cast<float>(larecomp::settings::model_mods_pitch.Get());
+            offset.roll = static_cast<float>(larecomp::settings::model_mods_roll.Get());
+            offset.scale = static_cast<float>(larecomp::settings::model_mods_scale.Get());
+            offset.proportions = static_cast<float>(larecomp::settings::model_mods_proportions.Get());
+            offset.decimate = larecomp::settings::model_mods_decimate.Get();
+            offset.submeshes = larecomp::settings::model_mods_submeshes.Get();
+            offset.weight_smoothing = larecomp::settings::model_mods_weight_smoothing.Get();
+            offset.anchor_bones = larecomp::settings::model_mods_anchor_bones.Get();
+            offset.grow_buffers = larecomp::settings::model_mods_grow.Get();
+            offset.grow_probe = larecomp::settings::model_mods_grow_probe.Get();
+            offset.grow_slack = larecomp::settings::model_mods_grow_slack.Get();
+            offset.diagnose = larecomp::settings::model_mods_diag.Get();
             if (!passthrough &&
                 !RewriteDrawableGeometry(resource, mesh, bone, offset, error, &stats)) {
                 LARECOMP_APP_ERROR("[mods] {}/{}: {}", mod.mod_name, variant, error);

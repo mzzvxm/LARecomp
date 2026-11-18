@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "upscaling_menu.h"
 
@@ -28,7 +28,7 @@ using mcla_menu::Str;
 using mcla_menu::WithDynamics;
 
 std::string ChosenText() {
-    return rex::cvar::GetFlagByName("mcla_gpu_frame_generation");
+    return larecomp::cvar::GetFlagByName("mcla_gpu_frame_generation");
 }
 bool FsrChosen() { return ChosenText() == "fsr31"; }
 bool DlssChosen() { return ChosenText() == "dlss"; }

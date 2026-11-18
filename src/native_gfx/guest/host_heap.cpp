@@ -7,13 +7,12 @@
 #include <mutex>
 
 #include <o1heap.h>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 
 // Defined in guest/texture_ownership.cpp, at global scope like every cvar here.
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_own_heap_kb);
 
 namespace mcla::native_gfx {
 
@@ -28,7 +27,7 @@ namespace {
 constexpr uint32_t kHeapSizeDefault = 4u * 1024u * 1024u;
 
 uint32_t HeapSizeFromCvar() {
-  const uint64_t kb = REXCVAR_GET(mcla_native_gfx_own_heap_kb);
+  const uint64_t kb = larecomp::settings::mcla_native_gfx_own_heap_kb.Get();
   if (!kb) {
     return kHeapSizeDefault;
   }

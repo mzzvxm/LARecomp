@@ -19,7 +19,7 @@
 #include <sstream>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
@@ -47,23 +47,12 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_skip_shaders, "", "MCLA/GPU",
-    "Workaround for a driver that dies compiling one particular shader combination: a "
-    "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "
-    "guest pipeline that uses any of them is not built, and its draws are treated like those "
-    "of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which "
-    "overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + "
-    "68387d4a0b431769 (each alone is fine).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
 namespace {
 // True when the pipeline uses a shader named by mcla_gpu_skip_shaders.
 bool SkipShaders(uint64_t vs, uint64_t ps) {
   static const std::set<uint64_t> keys = [] {
     std::set<uint64_t> out;
-    std::stringstream list(REXCVAR_GET(mcla_gpu_skip_shaders));
+    std::stringstream list(larecomp::settings::mcla_gpu_skip_shaders.Get());
     std::string item;
     while (std::getline(list, item, ',')) {
       if (!item.empty()) {
@@ -75,51 +64,6 @@ bool SkipShaders(uint64_t vs, uint64_t ps) {
   return !keys.empty() && (keys.count(vs) != 0 || (ps != 0 && keys.count(ps) != 0));
 }
 }  // namespace
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pipeline_cache, true, "MCLA/GPU",
-    "Keep the pipelines the game asked for across sessions ("
-    "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
-    "executable on exit, and are read back at start -- the other backend's file too, so what one "
-    "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_bloom_scale, true, "MCLA/GPU",
-    "Fix: the glow of lights (the bloom) keeps the size the game gives it at render scales above 1x "
-    "(a higher render resolution, or an upscaler to a 1080p or 4K output). The game blurs the bloom "
-    "with taps a fixed number of pixels apart; at 2x or 3x the same taps reach half or a third as far "
-    "on the screen, so a window's glow shrinks and the glow of a lamp or a tail light disappears. This "
-    "makes each tap cover the pixels it stands for, so the glow looks as it does at 1x. At a render "
-    "scale of 1x the picture is the same either way. Off: the game's own taps. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_glow_visibility, "soft", "MCLA/GPU",
-    "How the glow of street lamps (their halo and star) and the other glow sprites decide whether they are "
-    "hidden by the scene: game (the game's own: one depth test at the glow's centre, so a lamp beside a palm "
-    "trunk or a pole pops fully on and off as the wind or the camera moves it by a fraction of a pixel) or "
-    "soft (the share of 24 tests on a small disc round the centre scales the glow: a glow in the open is the "
-    "game's, one at an edge fades over about two pixels instead of popping; the disc is the same size at every "
-    "render scale). game leaves the game's own shaders, and the picture, as they are. Needs the shader pack's "
-    "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).")
-    .debug_only()
-    .allowed({"game", "soft"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_luminance_scale_fix, true, "MCLA/GPU",
-    "Fix: the game's auto-exposure (how bright the picture is made, which adapts over time) measures the "
-    "same part of the screen at render scales above 1x as at 1x. The game averages the brightness of the "
-    "frame from a small set of taps a fixed number of pixels apart; at 2x or 3x the same taps cover a "
-    "half or a third of the area they covered at 1x (28% of the picture at 3x), so a small bright light "
-    "(a lamp, a lit window, a tail light) moving in and out of one of them can make the brightness pump "
-    "or flicker, most at night. This makes each tap average the pixels it stands for. At a render scale "
-    "of 1x the picture is the same either way. Off: the game's own taps. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -137,10 +81,10 @@ bool IsGameChoice(std::string_view text) {
 bool GlowSoftSelected() {
   static std::once_flag registered;
   std::call_once(registered, [] {
-    g_glow_soft.store(!IsGameChoice(REXCVAR_GET(mcla_gpu_glow_visibility)), std::memory_order_relaxed);
+    g_glow_soft.store(!IsGameChoice(larecomp::settings::mcla_gpu_glow_visibility.Get()), std::memory_order_relaxed);
     REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
                 g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
-    rex::cvar::RegisterChangeCallback("mcla_gpu_glow_visibility", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("mcla_gpu_glow_visibility", [](std::string_view, std::string_view value) {
       g_glow_soft.store(!IsGameChoice(value), std::memory_order_relaxed);
       REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
                   g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
@@ -164,7 +108,7 @@ bool GlowSoftSelected() {
 uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   // (the compare key's flip, effect_compare.h, can force the bloom fix either way for a moment; the setting is not changed)
   if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 &&
-      compare::Global().Apply(compare::Effect::kBloomFix, REXCVAR_GET(mcla_gpu_bloom_scale))) {
+      compare::Global().Apply(compare::Effect::kBloomFix, larecomp::settings::mcla_gpu_bloom_scale.Get())) {
     return ShaderStore::kBloomVariant;
   }
   if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&
@@ -184,7 +128,7 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
     return ShaderStore::kCarSelfReflVariant;
   }
-  if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && REXCVAR_GET(mcla_gpu_luminance_scale_fix)) {
+  if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     return ShaderStore::kLuminanceVariant;
   }
   return 0;
@@ -395,7 +339,7 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
   shaders_ = &shaders;
   // persist_ is set last: the render thread's Autosave (EndFrame) reads it first, and then finds
   // the records below in place.
-  const bool persist = REXCVAR_GET(mcla_gpu_pipeline_cache);
+  const bool persist = larecomp::settings::mcla_gpu_pipeline_cache.Get();
   if (persist) {
     LoadPersistent();
     // The list holds each multisampled pipeline at the count it was recorded with; this start
@@ -490,7 +434,7 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
   }
   persistence_started_ = true;
   shaders_ = &shaders;
-  if (!REXCVAR_GET(mcla_gpu_pipeline_cache)) {
+  if (!larecomp::settings::mcla_gpu_pipeline_cache.Get()) {
     result.outcome = SetupOutcome::kDisabled;
     return result;
   }

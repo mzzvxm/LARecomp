@@ -16,7 +16,7 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
@@ -33,55 +33,6 @@
 #include "texture_names.h"
 #include "upload.h"
 #include "watch.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_dump, false, "MCLA/GPU",
-    "Write every texture the NATIVE renderer uploads to <mods>/textures_dump/<dictionary>/"
-    "<name>__<hash>.dds, once per texture per session (F2 does it for one frame). Texture mods "
-    "replace a texture by the hash at the end of the file name, from "
-    "<mods>/<Mod>/textures_replace/; <mods> is modloader/, mods/ or models/.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    texture_mods, true, "MCLA/Textures",
-    "Use the texture mods (<mods>/<Mod>/textures_replace/). False shows the game's own textures; "
-    "changing it re-indexes the mods at the start of the next frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    texture_reload, false, "MCLA/Textures",
-    "Set to true to reload the texture mods (<mods>/<Mod>/textures_replace/) at the start of the "
-    "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_texture_decode_threads, -1, "MCLA/GPU",
-    "Threads that decode the textures of the draws queued behind the one the renderer is on "
-    "(untile, byte swap), so a burst of new textures as the game streams in the next stretch of "
-    "road does not stall the render thread. -1: one thread per 4 logical processors, up to 3, none "
-    "below 4 processors. 0: the render thread decodes every texture itself, when its draw needs "
-    "it. The threads run below the game's.")
-    .debug_only()
-    .range(-1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_decode_selftest, false, "MCLA/GPU",
-    "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
-    "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
-    "with the plain per-block one, and logs whether every byte matched.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_decode_verify, false, "MCLA/GPU",
-    "Test only: every texture level the game uploads is decoded a second time with the plain "
-    "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
-    "once per texture. Slow: it brings the old cost back.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -482,7 +433,7 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolve_ = &resolve;
   subscriber_ = memory.Subscribe("textures");
   mods_.Initialize();
-  if (REXCVAR_GET(mcla_gpu_texture_decode_selftest)) {
+  if (larecomp::settings::mcla_gpu_texture_decode_selftest.Get()) {
     const auto t0 = Clock::now();
     const texture_decode::SelfTestResult test = texture_decode::SelfTest(1500);
     const double ms = double(NsSince(t0)) / 1e6;
@@ -501,7 +452,7 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                    test.mismatches, test.runs, test.first);
     }
   }
-  const int32_t threads_setting = REXCVAR_GET(mcla_gpu_texture_decode_threads);
+  const int32_t threads_setting = larecomp::settings::mcla_gpu_texture_decode_threads.Get();
   const uint32_t threads =
       threads_setting < 0 ? DecodePool::AutoThreads() : uint32_t(threads_setting);
   pool_.Start(threads);
@@ -575,14 +526,14 @@ void TextureCache::Shutdown() {
 void TextureCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
-  static bool mods_were_on = REXCVAR_GET(texture_mods);
-  if (mods_were_on != REXCVAR_GET(texture_mods)) {
-    mods_were_on = REXCVAR_GET(texture_mods);
+  static bool mods_were_on = larecomp::settings::texture_mods.Get();
+  if (mods_were_on != larecomp::settings::texture_mods.Get()) {
+    mods_were_on = larecomp::settings::texture_mods.Get();
     reload_requested_.store(true, std::memory_order_relaxed);
   }
-  if (REXCVAR_GET(texture_reload)) {
+  if (larecomp::settings::texture_reload.Get()) {
     // A trigger, not a setting: put it back so setting it again reloads again.
-    rex::cvar::SetFlagByName("texture_reload", "false");
+    larecomp::cvar::SetFlagByName("texture_reload", "false");
     reload_requested_.store(true, std::memory_order_relaxed);
   }
   if (reload_requested_.exchange(false, std::memory_order_relaxed)) {
@@ -1070,7 +1021,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   }
   // Mods look at the guest's bytes first (a replacement needs no decode) and a texture dump
   // wants them as they are at the upload: left to the draw.
-  if (!mods_.empty() || REXCVAR_GET(mcla_gpu_texture_dump)) {
+  if (!mods_.empty() || larecomp::settings::mcla_gpu_texture_dump.Get()) {
     return;
   }
   if (entries_.find(key) != entries_.end() || failed_.find(key) != failed_.end()) {
@@ -1147,7 +1098,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   job->version = e->version;
   job->frame = frame_;
   job->sequence = sequence;
-  job->verify = REXCVAR_GET(mcla_gpu_texture_decode_verify);
+  job->verify = larecomp::settings::mcla_gpu_texture_decode_verify.Get();
   job->Hold(pool_, total);
   e->prefetch = job;
   pool_.Submit(job);
@@ -1258,7 +1209,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
       const uint64_t size = plan.size;
       scratch_.resize(size_t(size));
       bool decode_ok;
-      if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
+      if (larecomp::settings::mcla_gpu_texture_decode_verify.Get()) {
         bool mismatch = false;
         decode_ok = texture_decode::DecodeVerified(r, scratch_.data(), uint32_t(pitch), &mismatch);
         ++stats_.verified;
@@ -1294,7 +1245,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
 }
 
 bool TextureCache::SelectReplacement(Entry& e, plume::RenderCommandList* list) {
-  const bool dumping = REXCVAR_GET(mcla_gpu_texture_dump);
+  const bool dumping = larecomp::settings::mcla_gpu_texture_dump.Get();
   e.base_hash = 0;
   if ((!mods_.empty() || dumping) && e.ranges[0][1]) {
     // The key every dump and replacement agrees on (SDK HashGuestData):

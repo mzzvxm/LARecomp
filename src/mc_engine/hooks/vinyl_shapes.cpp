@@ -25,23 +25,6 @@
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 #include "../texture_dump.h"
 
-REXCVAR_DEFINE_BOOL(dump_vinyl_shapes, false, "MCLA/Garage",
-    "Dump the vinyl shape catalog (every ShapeIdx -> source bitmap filename + "
-    "texture header) to <exe dir>/vinyls/vinyl_shapes.json. Enter the Vinyl editor "
-    "once so the shape library loads, then toggle ON; it fires once and flips back "
-    "OFF. Used to build the image->vinyl decomposer's brush set.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(capture_vinyl_shapes, false, "MCLA/Garage",
-    "Hands-free: force-load every vinyl shape a few at a time, hash each, and "
-    "build the full ShapeIdx->hash map in vinyls/vinyl_shape_hashes.txt (+ .json) "
-    "— no manual browsing. Enter the Vinyl editor (main menu, not a picker grid), "
-    "then toggle ON; it sweeps all ~894 shapes over a few seconds and logs when "
-    "done. Join the hashes to the DDS the texture dumper already wrote.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace {
 
 // mcCarVinylShapeLibrary (dword_8288DFC4) + its shape database (dword_828CD0F8).

@@ -20,7 +20,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/xam/user_profile.h>
 #include <rex/ui/imgui_dialog.h>
@@ -38,12 +38,6 @@
 #endif
 #include <windows.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(profile_auto_select, false, "MCLA",
-    "Start with the save named by user_name and never show the save picker, even when several "
-    "saves exist. The picker's 'Always use this save' box sets it; hold Shift while the game "
-    "starts to see the picker once anyway.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace larecomp {
 
@@ -76,9 +70,9 @@ std::string Sanitize(std::string_view raw) {
 // is the fork's; without it every value counts as coming from the config.
 bool NameGivenFromOutside() {
   auto probe = [](auto name) -> bool {
-    if constexpr (requires { rex::cvar::GetFlagSource(name); }) {
-      using Source = decltype(rex::cvar::GetFlagSource(name));
-      const Source source = rex::cvar::GetFlagSource(name);
+    if constexpr (requires { larecomp::cvar::GetFlagSource(name); }) {
+      using Source = decltype(larecomp::cvar::GetFlagSource(name));
+      const Source source = larecomp::cvar::GetFlagSource(name);
       return source == Source::kCommandLine || source == Source::kEnvironment;
     } else {
       return false;
@@ -511,8 +505,8 @@ class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
     const bool fresh = selected_ == NewRow();
     const std::string name = fresh ? Sanitize(name_buffer_) : plan_.choices[selected_].name;
 
-    rex::cvar::SetFlagByName(kUserName, name);
-    rex::cvar::SetFlagByName("profile_auto_select", remember_ ? "true" : "false");
+    larecomp::cvar::SetFlagByName(kUserName, name);
+    larecomp::cvar::SetFlagByName("profile_auto_select", remember_ ? "true" : "false");
 
     // The content manager renames the directory the marker names to user_name
     // whenever user_name is a directory that does not exist yet. With several
@@ -574,11 +568,11 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
 
   // Only the SDK fork files saves under a profile name. The stock SDK uses the
   // hex XUID and has no user_name cvar, so there is nothing to choose between.
-  if (!rex::cvar::GetFlagInfo(kUserName)) {
+  if (!larecomp::cvar::GetFlagInfo(kUserName)) {
     REXLOG_INFO("Save picker: off, this SDK has no user_name profile");
     return;
   }
-  if (rex::cvar::Query<bool>("headless")) {
+  if (larecomp::cvar::Query<bool>("headless")) {
     return;
   }
   if (NameGivenFromOutside()) {
@@ -593,12 +587,12 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
     root = user_data_root;
   }
 
-  const std::string configured = Sanitize(rex::cvar::GetFlagByName(kUserName));
+  const std::string configured = Sanitize(larecomp::cvar::GetFlagByName(kUserName));
   const std::string marker = pf::ReadMarker(root);
   std::vector<pf::Profile> choices = pf::Enumerate(root, &Sanitize);
   const size_t saves = choices.size();
   const bool forced = ShiftHeld();
-  const bool remember = REXCVAR_GET(profile_auto_select);
+  const bool remember = larecomp::settings::profile_auto_select.Get();
 
   // user_name names a directory that is not there while the marker points at one
   // that is: the content manager will rename the second to the first. That is
@@ -664,7 +658,7 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
   // that prompt shut, and keeps a real save in place should the picker never get
   // a window to draw on.
   if (configured.empty()) {
-    rex::cvar::SetFlagByName(kUserName, g_plan.preselect);
+    larecomp::cvar::SetFlagByName(kUserName, g_plan.preselect);
   }
 }
 
@@ -677,7 +671,7 @@ bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& path
   g_plan = {};
   if (!drawer) {
     REXLOG_WARN("Save picker: no UI to show it on, keeping '{}'",
-                rex::cvar::GetFlagByName(kUserName));
+                larecomp::cvar::GetFlagByName(kUserName));
     return false;
   }
   REXLOG_INFO("Save picker: showing {} choice(s), '{}' preselected", plan.choices.size(),

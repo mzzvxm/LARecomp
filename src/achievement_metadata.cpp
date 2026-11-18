@@ -8,7 +8,7 @@
 
 #include <toml++/toml.hpp>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/system/achievement_manager.h>
 
 #include "larecomp_log.h"
@@ -22,7 +22,7 @@ namespace {
 // A numeric value is the raw Xbox language id, so map it back to the name the
 // TOML uses (same table as the SDK's xam_user.cpp).
 std::string CurrentLanguageName() {
-  const std::string raw = rex::cvar::GetFlagByName("user_language");
+  const std::string raw = larecomp::cvar::GetFlagByName("user_language");
   if (raw.empty()) {
     return "English";
   }

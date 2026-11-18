@@ -29,7 +29,7 @@
 // WorthBlending).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <algorithm>
@@ -46,24 +46,6 @@
 #include "hooks_internal.h"
 #include "../cinematic/capture_mode.h"
 #include "../swf_dom.h"
-
-REXCVAR_DEFINE_BOOL(ui_interpolate, true, "MCLA/UI",
-    "Smooth UI. Every UI movie (menus, pop-ups, map panels and the HUD) steps at the "
-    "console's 30 a second, so they run at the console's speed at any frame rate, and "
-    "what moved in the last step is drawn between where it was and where it is: "
-    "needles, the song ticker, the menus' lists and highlights, page changes and "
-    "fades glide instead of stepping. The picture is one step (up to 33 ms) behind the "
-    "game; nothing is blended below about 47 FPS. Off, only the movies named in "
-    "ui_movie_pacing step at 30 a second and nothing is blended.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(ui_interpolate_camera, true, "MCLA/UI",
-    "With ui_interpolate: also draw the pause menu's 3D between the movie's last two "
-    "steps: the camera that swings in when the menu opens, between its pages and out "
-    "again, and the place, size and turn of the 3D panels. Off leaves them in 30 Hz "
-    "steps.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 // The swf context the player is advancing or drawing: both write it (sub_825EDC08 and
@@ -228,7 +210,7 @@ void UiSmoothNoteStep(uint32_t context, int64_t step_ns, int64_t period_ns) {
 // Mid-asm hook at 0x825FB484 in sub_825FB348 (larecomp_config.toml). r30 = the node,
 // r31 = the parent's state block. Runs on the draw thread for every node of every movie.
 void Hook_UiSmoothDraw(PPCRegister& r30, PPCRegister& r31) {
-    if (!REXCVAR_GET(ui_interpolate)) return;
+    if (!larecomp::settings::ui_interpolate.Get()) return;
     auto* rt = rex::Runtime::instance();
     uint8_t* base = rt ? rt->virtual_membase() : nullptr;
     if (!base) return;
@@ -491,7 +473,7 @@ std::array<uint32_t, 32> g_scene_cut_serial{};
 // the context ctx, between its last two steps, with the rule of the nodes. Returns true
 // when v was changed to the blended value.
 bool SceneBlend(uint32_t ctx, uint32_t obj, const SceneSpec& spec, float* v, int n) {
-    if (!REXCVAR_GET(ui_interpolate) || !REXCVAR_GET(ui_interpolate_camera) || ctx < 0x10000 ||
+    if (!larecomp::settings::ui_interpolate.Get() || !larecomp::settings::ui_interpolate_camera.Get() || ctx < 0x10000 ||
         n < 1 || n > 3) {
         return false;
     }

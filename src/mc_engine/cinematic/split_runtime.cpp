@@ -16,7 +16,7 @@
 // A scene with no `split` key costs one empty loop at begin and a flag test an update. The renderer is the Plume one (the cvar belongs to it);
 // without it the keys are read and the log says nothing can show them. No game memory is read here.
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <cmath>
 #include <string>
@@ -25,7 +25,6 @@
 #include "scene_runtime.h"
 
 #if defined(LARECOMP_HAS_GPU)
-REXCVAR_DECLARE(double, mcla_gpu_split);  // gpu/split.cpp
 #endif
 
 namespace mc::cinematic {
@@ -37,7 +36,7 @@ double g_before = -1.0;
 
 double CvarValue() {
 #if defined(LARECOMP_HAS_GPU)
-    return REXCVAR_GET(mcla_gpu_split);
+    return larecomp::settings::mcla_gpu_split.Get();
 #else
     return -1.0;
 #endif
@@ -45,7 +44,7 @@ double CvarValue() {
 
 void SetCvar(double value) {
 #if defined(LARECOMP_HAS_GPU)
-    REXCVAR_SET(mcla_gpu_split, value);
+    (void)larecomp::settings::mcla_gpu_split.Set(value);
 #else
     (void)value;
 #endif

@@ -54,7 +54,7 @@
 // dialogs say "exporting", then where the photos went or that it failed.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 
@@ -82,16 +82,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../logging.h"
-
-REXCVAR_DEFINE_BOOL(photo_album_export, true, "MCLA/PhotoMode",
-    "The photo album's PUBLISH ALBUM button becomes EXPORT ALBUM: it saves every photo "
-    "in the album as a JPEG in photo_album_export_dir instead of uploading the album to "
-    "the Social Club (closed). Photos already in the folder are not written twice.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(photo_album_export_dir, "", "MCLA/PhotoMode",
-    "Folder EXPORT ALBUM writes the photos to. Empty = Pictures\\LARecomp.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_82289AB0);  // net.AuthenticateGamer(netui, kind)
 REX_EXTERN(__imp__rex_sub_821FA230);  // mcUIManager::FindElement(name)
@@ -374,7 +364,7 @@ fs::path PathFromUtf8(const std::string& s) {
 }
 
 fs::path ExportDir() {
-    const std::string configured = REXCVAR_GET(photo_album_export_dir);
+    const std::string configured = larecomp::settings::photo_album_export_dir.Get();
     if (!configured.empty()) return PathFromUtf8(configured);
 #ifdef _WIN32
     // FOLDERID_Pictures, spelled out so the GUID needs no import library.
@@ -591,7 +581,7 @@ bool GuestStrIEquals(const uint8_t* base, uint32_t ea, std::string_view want) {
 }  // namespace
 
 bool PhotoAlbumExportCommand(PPCContext& ctx, uint8_t* base, uint32_t cmd) {
-    if (!REXCVAR_GET(photo_album_export)) {
+    if (!larecomp::settings::photo_album_export.Get()) {
         RestoreKeyTexts(base);
         return false;
     }
@@ -605,7 +595,7 @@ bool PhotoAlbumExportCommand(PPCContext& ctx, uint8_t* base, uint32_t cmd) {
 // net.AuthenticateGamer: the album asks for 'Upload' before UploadPhoto. An export needs
 // no LIVE profile, so that one is answered at once, the way the game answers success.
 extern "C" REX_FUNC(rex_sub_82289AB0) {
-    if (REXCVAR_GET(photo_album_export) && GuestStrIEquals(base, ctx.r4.u32, "Upload")) {
+    if (larecomp::settings::photo_album_export.Get() && GuestStrIEquals(base, ctx.r4.u32, "Upload")) {
         ctx.r4.u64 = kNetEvAuthenticated;
         ctx.r5.u64 = 3;
         ctx.r6.s64 = -1;

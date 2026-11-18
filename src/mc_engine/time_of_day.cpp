@@ -32,7 +32,7 @@
 //   0x822F1DB0  Hook_TimeOfDay  (r3)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/runtime.h>
 
@@ -50,43 +50,6 @@
 #include "mc_engine/config_save.h"
 #include "real_weather.h"
 #include "time_of_day.h"
-
-REXCVAR_DEFINE_BOOL(time_of_day_hold, false, "MCLA/World",
-    "Freeze the world at time_of_day instead of letting the day cycle run. This "
-    "is the on/off switch — the hour by itself changes nothing while this is "
-    "off, so you can park a value and arm it later.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(time_of_day, 12.0, "MCLA/World",
-    "Hour to hold the world at (0-24, fractional), applied while "
-    "time_of_day_hold is on. Takes effect every frame, so dragging the bar walks "
-    "the sun across the sky live. Menu presets: 6.0 sunrise, 16.75 afternoon, "
-    "17.4 sunset, 23.5 night.")
-    .range(0.0, 24.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(time_of_day_realtime, false, "MCLA/World",
-    "Follow your computer's clock: the world sits at the real local hour and "
-    "keeps up with it. Outranks time_of_day_hold.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(weather, "game", "MCLA/World",
-    "Force the weather. 'game' leaves it alone, including its own random "
-    "changes; a named sky pins that one and stops the automatic changes. 'real' "
-    "follows the actual weather where you are, refreshed once an hour — it "
-    "resolves your location from your IP through ipapi.co and reads the forecast "
-    "from open-meteo.com, so those two services see your IP while it is on. "
-    "Applies live.")
-    .allowed({"game", "real", "nice", "cloudy", "stormy", "foggy"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(time_of_day_speed, 1.0, "MCLA/World",
-    "Multiplier on the day cycle speed. Only applies while time_of_day_hold is "
-    "off — a held hour does not advance at all. 1 = stock, 0 = frozen where it "
-    "is, 10 = ten times faster. The stock rate varies with the hour (about 2 "
-    "minutes per hour at midday, 3 at night).")
-    .range(0.0, 100.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -245,7 +208,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         static uint8_t s_saved_auto = 1;
         static int s_forced_idx = -1;
 
-        std::string want_weather = REXCVAR_GET(weather);
+        std::string want_weather = larecomp::settings::weather.Get();
         bool real = (want_weather == "real");
         RealWeather_SetEnabled(real);
 
@@ -340,7 +303,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     bool want_pin = shot >= 0;
     float hour = want_pin ? static_cast<float>(shot) / 1000.0f : 0.0f;
 
-    if (!want_pin && REXCVAR_GET(time_of_day_realtime)) {
+    if (!want_pin && larecomp::settings::time_of_day_realtime.Get()) {
         std::time_t t = std::time(nullptr);
         std::tm tm{};
 #if defined(_WIN32)
@@ -353,7 +316,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         want_pin = true;
     }
 
-    bool hold_on = REXCVAR_GET(time_of_day_hold);
+    bool hold_on = larecomp::settings::time_of_day_hold.Get();
 
     // The cvar tracks the world whenever it is not the thing driving it: boot at
     // 15h and it reads 15, drive until 18h and it reads 18. So arming the hold
@@ -370,7 +333,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
             s_mirrored = current;
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%.4f", current);
-            rex::cvar::SetFlagByName("time_of_day", buf);
+            larecomp::cvar::SetFlagByName("time_of_day", buf);
             // The mirror is the world's hour, not the player's choice: a settings
             // save leaves it out (it only matters while the hold is on, and then
             // this does not run).
@@ -379,7 +342,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     }
 
     if (!want_pin && hold_on) {
-        hour = static_cast<float>(REXCVAR_GET(time_of_day));
+        hour = static_cast<float>(larecomp::settings::time_of_day.Get());
         want_pin = true;
     }
 
@@ -393,7 +356,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         // the rate it will pick, measure what it actually advanced last frame and
         // add the missing share on top. Self-calibrating, and speed 0 lands on a
         // clean freeze because the extra is exactly minus the step.
-        double speed = REXCVAR_GET(time_of_day_speed);
+        double speed = larecomp::settings::time_of_day_speed.Get();
         static float s_prev = -1.0f;
         float now = ReadF32(base, mgr + kTodCurrent);
         if (speed != 1.0 && s_prev >= 0.0f) {

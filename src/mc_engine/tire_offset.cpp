@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -55,20 +55,6 @@
 // no clearance test to consult because the shipped one (sub_82392F68) only ever
 // looked at radius and ride height.
 // ─────────────────────────────────────────────────────────────────────────
-
-REXCVAR_DEFINE_DOUBLE(tire_offset_step, 0.012, "MCLA/Patches",
-    "Metres of lateral wheel movement per TIRE OFFSET notch (17 notches, "
-    "-8..+8, so the default spans about +/-10 cm). 0 disables the effect while "
-    "leaving the garage row usable.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(tire_offset_targets, 31, "MCLA/Patches",
-    "Bitmask (decimal) of the per-wheel matrix blocks TIRE OFFSET moves: 1 = "
-    "model+1088 (the tyre), 2 = +1344, 4 = +1600, 8 = +1856, 16 = +1920. "
-    "31 moves all five; drop bits to find which block owns which part.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -220,10 +206,10 @@ void Hook_TireOffsetWheels(PPCRegister& r31) {
     const int rear = int(int8_t(base[refl + kReflTireOffset + 1]));
     if (!front && !rear) return;  // stock car: nothing to do, no cost
 
-    const float step = float(REXCVAR_GET(tire_offset_step));
+    const float step = float(larecomp::settings::tire_offset_step.Get());
     if (!(step > 0.0f)) return;
 
-    const uint32_t targets = REXCVAR_GET(tire_offset_targets);
+    const uint32_t targets = larecomp::settings::tire_offset_targets.Get();
     for (int b = 0; b < kNumBlocks; ++b) {
         if (targets & (1u << b))
             ShiftBlock(base, model, kBlocks[b], front, rear, step);

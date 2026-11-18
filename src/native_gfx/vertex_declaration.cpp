@@ -6,9 +6,8 @@
 
 #include <dxgiformat.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_decl_float);
 
 namespace mcla::native_gfx {
 
@@ -50,10 +49,10 @@ DXGI_FORMAT TranslateType(uint32_t packed) {
     // card -- the panel itself renders and resolves correctly, which is why
     // every earlier search downstream of it found nothing wrong.
     case 0x002C23A5:
-      return REXCVAR_GET(mcla_native_gfx_decl_float) ? DXGI_FORMAT_R32G32_FLOAT
+      return larecomp::settings::mcla_native_gfx_decl_float.Get() ? DXGI_FORMAT_R32G32_FLOAT
                                                      : DXGI_FORMAT_R32_FLOAT;
     case 0x001A23A6:
-      return REXCVAR_GET(mcla_native_gfx_decl_float) ? DXGI_FORMAT_R32G32B32A32_FLOAT
+      return larecomp::settings::mcla_native_gfx_decl_float.Get() ? DXGI_FORMAT_R32G32B32A32_FLOAT
                                                      : DXGI_FORMAT_R32G32_FLOAT;
     case 0x002A23B9: return DXGI_FORMAT_R32G32B32_FLOAT;
     case 0x001A2286: return DXGI_FORMAT_R8G8B8A8_UINT;

@@ -21,7 +21,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "display_gamma.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/hook.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
@@ -30,12 +30,6 @@
 #include <string>
 
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_STRING(display_gamma, "tv", "MCLA/Video",
-    "Display gamma ramp. tv: the console's for an HDTV (BT.709), as the game ships. pc: sRGB, "
-    "for PC monitors, with brighter shadows. Live.")
-    .allowed({"tv", "pc"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Generated guest code: the identity ramps (a 256-entry table and a PWL ramp), then
 // D3DDevice_SetGammaRamp and D3DDevice_SetPWLGamma.
@@ -86,7 +80,7 @@ void WriteU32(uint8_t* base, uint32_t ea, uint32_t value) {
 // The pause menu sets the option on another thread than the one that renders, so it is read
 // through the registry, which hands out a copy.
 int WantedMode() {
-    return rex::cvar::GetFlagByName("display_gamma") == "pc" ? kModePc : kModeTv;
+    return larecomp::cvar::GetFlagByName("display_gamma") == "pc" ? kModePc : kModeTv;
 }
 
 const char* ModeName(int mode) {

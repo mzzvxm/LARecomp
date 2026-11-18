@@ -9,23 +9,12 @@
 #include <mutex>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "larecomp_log.h"
 #include "lb_store.h"
 #include "../rate_my_ride/rmr_client.h"
 #include "../rate_my_ride/rmr_net.h"
-
-REXCVAR_DEFINE_BOOL(leaderboards_enabled, true, "MCLA/Multiplayer",
-                    "Leaderboards: serve the Xbox LIVE stats boards (race wins, battle modes, "
-                    "race times) from our own backend, shared through the Rate My Ride "
-                    "server. Off = stock behaviour (empty boards).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(leaderboards_diag, false, "MCLA/Multiplayer",
-                    "Log every leaderboard read and write in detail.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace lb::client {
 
@@ -155,8 +144,8 @@ void WorkerMain() {
 
 Store* LocalStoreForAwards() { return LocalStore(); }
 
-bool Enabled() { return REXCVAR_GET(leaderboards_enabled); }
-bool Diag() { return REXCVAR_GET(leaderboards_diag); }
+bool Enabled() { return larecomp::settings::leaderboards_enabled.Get(); }
+bool Diag() { return larecomp::settings::leaderboards_diag.Get(); }
 
 uint64_t PlayerOwnerKey() { return rmr::client::PlayerOwnerKey(); }
 

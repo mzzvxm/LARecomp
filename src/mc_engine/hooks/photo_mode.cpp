@@ -2,7 +2,7 @@
 // picture the game JPEG-encodes on the CPU is the frame that was on screen.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/interfaces/graphics.h>
@@ -12,25 +12,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../logging.h"
-
-REXCVAR_DEFINE_BOOL(photo_auto_readback, true, "MCLA/PhotoMode",
-    "Fix: photo mode previews show an old frame or garbage. The game takes its "
-    "picture on the CPU, by locking the front buffer and JPEG-encoding it, so it "
-    "needs the GPU resolve copied back to guest memory. This asks for a readback "
-    "of just the two front buffers for a few frames around each shot, instead of "
-    "the global readback_resolve cvar which stalls every resolve of every frame "
-    "(on an SDK without the scoped readback, the global one for about a second "
-    "around each shot). Leave ON.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
-    "Diagnostics for photo_auto_readback: logs the photo album state machine's "
-    "phase transitions and the front buffer addresses the readback is armed for. "
-    "Pair with the GPU-side gpu_log_resolve_readback_misses to see whether the "
-    "resolve that fills the front buffer actually lands in the armed range.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // ---------------------------------------------------------------------------
 // Photo mode: front buffer readback
@@ -97,7 +78,7 @@ static bool RequestScopedResolveReadback(Gfx* gfx, uint32_t base, uint32_t span,
 // dword_82839374 on every swap and the capture locks whichever is current, so
 // covering only one of them would be a coin flip.
 static void ArmPhotoFrontBufferReadback() {
-    if (!REXCVAR_GET(photo_auto_readback)) return;
+    if (!larecomp::settings::photo_auto_readback.Get()) return;
     auto* rt = rex::Runtime::instance();
     if (!rt) return;
     auto* mem = rt->memory();
@@ -135,7 +116,7 @@ static void ArmPhotoFrontBufferReadback() {
     if (!scoped) {
         HoldGlobalReadback(ReadbackClient::kPhoto, kGlobalHoldNs);
     }
-    if (REXCVAR_GET(photo_readback_debug)) {
+    if (larecomp::settings::photo_readback_debug.Get()) {
         static uint32_t last_logged[2] = {0, 0};
         if (bases[0] != last_logged[0] || bases[1] != last_logged[1]) {
             last_logged[0] = bases[0];
@@ -164,7 +145,7 @@ void Hook_PhotoModeCapture(PPCRegister& r3) {
     const auto* p = mem->TranslateVirtual<const uint8_t*>(state_ea + 132);
     if (!p) return;
     uint32_t phase = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
-    if (REXCVAR_GET(photo_readback_debug)) {
+    if (larecomp::settings::photo_readback_debug.Get()) {
         static uint32_t last_phase = 0xFFFFFFFFu;
         if (phase != last_phase) {
             last_phase = phase;

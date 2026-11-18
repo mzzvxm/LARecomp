@@ -17,39 +17,9 @@
 #include <emmintrin.h>
 #endif
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/hash.h>
 #include <rex/logging.h>
-
-// One alpha-to-mask pattern for every draw. MCLA draws its alpha-tested
-// surfaces twice over the same depth: the depth pre-pass (the ShadowBlend
-// shaders, whose colour becomes the shadow collector) with the solid offsets
-// 2, 2, 2, 2, then, after a colour clear, the colour pass under GREATER_EQUAL
-// with the dithered 3, 1, 0, 2. In two pixels of each quad the dithered
-// threshold is above the solid one (by 1/(2N) and 1/(4N) at N samples), so a
-// sample whose alpha lies between them keeps the pre-pass's depth -- what is
-// behind it fails the depth test -- and gets no colour: it keeps the clear,
-// 2.38 in the HDR target, a white dot. That is what the hardware rule the
-// shaders follow gives (Xenia's; Xenia shows the same dots): half a pixel at
-// the console's 2x, the whole pixel at 1x (mcla_gpu_msaa off); dots on fences
-// and foliage, a checkerboard on LOD cross-fades. Every draw on one pattern
-// makes a surface's depth and colour cover the same samples at any sample
-// count. With MSAA it is the dithered one the game gives its colour passes.
-// At 1 sample (mcla_gpu_msaa off, every upscaler) a dither has one sample per
-// pixel to spread over: a fixed 2x2 screen door on grass and fences that no
-// upscaler takes out (it does not move with the jitter). There every draw
-// takes the solid 2, 2, 2, 2 of the game's pre-passes, a plain threshold.
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_a2c_dither_all, true, "MCLA/GPU",
-    "Alpha to coverage: every draw takes the same offsets, so a depth pre-pass the game draws "
-    "with the solid ones (2, 2, 2, 2) covers the samples its colour pass (dithered 3, 1, 0, 2) "
-    "covers: the dithered with MSAA, the solid at 1 sample (a dither there is a fixed screen "
-    "door on grass and fences). Off: each draw keeps the game's offsets, as the "
-    "console and Xenia -- samples the pre-pass gave depth and the colour pass dropped keep the "
-    "clear (white dots on fences and foliage, a white checkerboard on LOD cross-fades; with "
-    "MSAA off, whole pixels). Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -239,7 +209,7 @@ AlphaTest ComputeAlphaTest(const XenosState& state) {
 }
 
 uint32_t AlphaToMaskOffsets(const XenosState& state, uint32_t host_samples) {
-  if (!REXCVAR_GET(mcla_gpu_a2c_dither_all)) {
+  if (!larecomp::settings::mcla_gpu_a2c_dither_all.Get()) {
     return state.color_control.value >> 24;
   }
   return host_samples > 1 ? kAlphaToMaskDithered : kAlphaToMaskSolid;

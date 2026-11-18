@@ -35,7 +35,7 @@
 // command and the key only file a request, since both arrive on the UI thread.
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/runtime.h>
 #include <rex/ppc/context.h>
@@ -60,26 +60,6 @@
 #include "map_warp.h"
 #include "profile/larecomp_profile_store.h"
 #include "modloader/features/mod_data.h"
-
-REXCVAR_DEFINE_STRING(warp_spot, "", "MCLA/World",
-    "Where F9 drops the car: \"x y z heading\" (heading in degrees, 0 = facing +Z). "
-    "Empty = the first point a mod names in models/<mod>/warps.txt. The car is "
-    "dropped onto whatever collision is below the point.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
-    "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
-    "start_garage = last starts the session there. The game keeps it up to date.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
-    "Which district garage the car starts the session at: hollywood (what the game "
-    "always does), beaches, sc, or last (the garage nearest the car when the game was "
-    "closed). The car is moved there once, when it first appears at Hollywood's door, so a "
-    "change is seen at the next start of the game.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
 
@@ -337,7 +317,7 @@ void LoadSpots() {
 
 // F9's destination: warp_spot, else the first mod warp point.
 bool DefaultSpot(Spot* out, std::string* name) {
-    const std::string text = REXCVAR_GET(warp_spot);
+    const std::string text = larecomp::settings::warp_spot.Get();
     float v[4];
     int n = 0;
     if (!text.empty() && ParseFloats(text, v, 4, &n) && n >= 3) {
@@ -534,13 +514,13 @@ int GarageByName(const std::string& name) {
     return -1;
 }
 
-int ReadLastGarage() { return GarageByName(REXCVAR_GET(start_garage_last)); }
+int ReadLastGarage() { return GarageByName(larecomp::settings::start_garage_last.Get()); }
 
 // The live cvar and its one line of larecomp.toml, the way the server browser
 // keeps its settings: the SDK only rewrites the whole file when a menu is left.
 void WriteLastGarage(int index) {
     const std::string name = kGarages[index].name;
-    rex::cvar::SetFlagByName("start_garage_last", name);
+    larecomp::cvar::SetFlagByName("start_garage_last", name);
     const std::filesystem::path toml = rex::filesystem::GetExecutableFolder() / "larecomp.toml";
     if (!larecomp::profiles::EditConfig(
             toml, {{"start_garage_last", larecomp::profiles::QuoteTomlString(name)}}))
@@ -557,7 +537,7 @@ void TickStartGarage() {
     if (!g_start_done) {
         ++g_start_frames;
         if (g_start_frames < kStartSettleFrames) return;
-        const std::string want = REXCVAR_GET(start_garage);
+        const std::string want = larecomp::settings::start_garage.Get();
         int target = want == "last" ? ReadLastGarage() : GarageByName(want);
         if (target < 0) target = 0;
         const bool at_door = GarageDist(kGarages[0], cur[12], cur[14]) < kSpawnRadius;
@@ -601,11 +581,20 @@ void TickStartGarage() {
 
 }  // namespace
 
-REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
-                            "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
+// Console command `warp` (was REXCVAR_DEFINE_COMMAND_ARGS in category "MCLA/World"; its .debug_only() has no equivalent).
+class LarecompCommand_warp final : public rex::SettingOwner {
+ public:
+  LarecompCommand_warp() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
+  REX_COMMAND(warp, "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
                             "where it was), 'warp x y z [heading]', or 'warp' to list the points. "
-                            "The car is dropped onto whatever collision is below the point.")
-    .debug_only();
+                            "The car is dropped onto whatever collision is below the point.",
+              [](std::string_view args) -> rex::Result<void> {
+                (void)args;
+                (ConsoleWarp)(args);
+                return rex::Ok();
+              });
+};
+inline LarecompCommand_warp g_larecomp_command_warp;
 
 void TickMapWarp() {
     RegisterBindOnce();

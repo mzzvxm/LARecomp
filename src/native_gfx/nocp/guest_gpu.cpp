@@ -13,7 +13,7 @@
 #include <vector>
 
 #include <rex/chrono/clock.h>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
@@ -31,7 +31,6 @@
 #include "../guest/vblank_probe.h"
 
 // Defined in nocp_app.cpp, at global scope like every cvar here.
-REXCVAR_DECLARE(bool, mcla_native_gfx_nocp_vsync);
 
 namespace mcla::native_gfx::nocp {
 
@@ -332,8 +331,8 @@ int VblankWorker() {
       "[nocp] vblank source: {} Hz (mcla_native_gfx_nocp_vsync={}). The SDK's `vsync` cvar is "
       "defined in the GPU plugin and is absent in this mode, so a `vsync` line in larecomp.toml "
       "does nothing here.",
-      REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? refresh_hz : 1000.0,
-      REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? "true" : "false");
+      larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? refresh_hz : 1000.0,
+      larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? "true" : "false");
 
   uint32_t report_ticks = 0;
   uint64_t last = rex::chrono::Clock::QueryGuestTickCount();
@@ -345,7 +344,7 @@ int VblankWorker() {
     // false no matter what the config said -- Query<bool> on an unregistered
     // name returns the default -- which is a silent wrong answer, not an error.
     const uint64_t interval =
-        REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? vsync_interval : free_interval;
+        larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? vsync_interval : free_interval;
     // The guest clock is not monotonic across two reads: it re-bases its
     // snapshot, and truncation can publish a baseline one tick lower. Every
     // value here is unsigned, so a single backwards step made the difference

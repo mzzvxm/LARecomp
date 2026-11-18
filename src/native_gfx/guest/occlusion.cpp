@@ -6,29 +6,8 @@
 #include <atomic>
 #include <cstdio>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_disable_occlusion, true, "MCLA/NativeGfx",
-    "Select the guest's no-occlusion path (byte_8288D5D1 = 0) while the native "
-    "backend is active. "
-    "MCLA gates a vehicle's body on an occlusion query: sub_82323808 keeps one "
-    "slot per object, answers 'occluded' whenever a slot exists, and refreshes "
-    "the very timestamp the reaper ages slots by -- so a slot survives only "
-    "until the query completes and releases it. This backend has no command "
-    "processor and cannot run the query, so the slot is refreshed forever and "
-    "the body is never submitted again. Measured: the body block in "
-    "sub_8235D500 is reached exactly once and never after, while the wheels, "
-    "discs and exhaust keep drawing because their submit paths consult no "
-    "query, and traffic shows only its contact shadow for the same reason. "
-    "The game itself supports running with occlusion off (sub_82323808 returns "
-    "'draw' immediately when this byte is zero), which is where a backend "
-    "without query support belongs. Cost: geometry that is genuinely hidden is "
-    "still drawn -- GPU time, never a missing object. "
-    "Turn off only to reproduce the vanishing body, or once real queries exist.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {
 namespace {
@@ -43,7 +22,7 @@ std::atomic<uint64_t> g_held{0};
 }  // namespace
 
 void DisableGuestOcclusionQueries(uint8_t* base) {
-  if (!base || !REXCVAR_GET(mcla_native_gfx_disable_occlusion)) {
+  if (!base || !larecomp::settings::mcla_native_gfx_disable_occlusion.Get()) {
     return;
   }
   uint8_t* p = static_cast<uint8_t*>(rex::memory::GuestPtr(base, kOcclusionEnabledByte));

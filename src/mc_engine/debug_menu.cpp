@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <atomic>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "config_save.h"
@@ -19,15 +19,6 @@ std::atomic<bool> g_unlocked{false};
 std::atomic<const char*> g_source{""};
 
 }  // namespace
-
-REXCVAR_DEFINE_BOOL(debug_menu, false, "MCLA/Debug",
-    "Unlock the hidden DEBUG menu and the developer settings, for testing and for bug reports. "
-    "Turn it on with --debug_menu on the command line, REX_DEBUG_MENU=1 in the environment, or "
-    "debug_menu = true in larecomp.toml. It cannot be changed while the game runs, and the game "
-    "never writes it to the file. Settings changed in the DEBUG menu are not saved either.")
-    .lifecycle(rex::cvar::Lifecycle::kInitOnly)
-    .validator([](std::string_view) { return !g_latched.load(); })
-    .debug_only();
 
 namespace larecomp {
 
@@ -52,24 +43,24 @@ bool DebugMenuUnlocked() {
   if (g_latched.load()) {
     return g_unlocked.load();
   }
-  return REXCVAR_GET(debug_menu);
+  return larecomp::settings::debug_menu.Get();
 }
 
 std::string_view DebugMenuUnlockSource() {
   return g_source.load();
 }
 
-const char* CvarSourceName(rex::cvar::Source source) {
+const char* CvarSourceName(larecomp::cvar::Source source) {
   switch (source) {
-    case rex::cvar::Source::kConfig:
+    case larecomp::cvar::Source::kConfig:
       return "larecomp.toml";
-    case rex::cvar::Source::kEnvironment:
+    case larecomp::cvar::Source::kEnvironment:
       return "environment";
-    case rex::cvar::Source::kCommandLine:
+    case larecomp::cvar::Source::kCommandLine:
       return "command line";
-    case rex::cvar::Source::kRuntime:
+    case larecomp::cvar::Source::kRuntime:
       return "this session";
-    case rex::cvar::Source::kDefault:
+    case larecomp::cvar::Source::kDefault:
       break;
   }
   return "default";
@@ -78,7 +69,7 @@ const char* CvarSourceName(rex::cvar::Source source) {
 void MarkSdkDebugCvars() {
   // GetRegistry hands out the entries themselves, and GetFlagInfo only a const view of them.
   // Called while the program starts, before anything else walks the registry.
-  for (rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
+  for (larecomp::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
     for (const char* name : kSdkDebugCvars) {
       if (entry.name == name) {
         entry.is_debug_only = true;
@@ -90,22 +81,22 @@ void MarkSdkDebugCvars() {
 
 std::vector<DebugCvarChange> NonDefaultDebugCvars() {
   std::vector<DebugCvarChange> changes;
-  for (const std::string& name : rex::cvar::ListFlags()) {
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-    if (!info || !info->is_debug_only || info->type == rex::cvar::FlagType::Command ||
+  for (const std::string& name : larecomp::cvar::ListFlags()) {
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+    if (!info || !info->is_debug_only || info->type == larecomp::cvar::FlagType::Command ||
         name == "debug_menu") {
       continue;
     }
     // Source kDefault with another value means code wrote the storage directly: not a setting
     // anybody chose.
-    if (info->source == rex::cvar::Source::kDefault) {
+    if (info->source == larecomp::cvar::Source::kDefault) {
       continue;
     }
     std::string value = info->getter();
     if (value == info->default_value) {
       continue;
     }
-    if (info->source == rex::cvar::Source::kRuntime && IsAtStartupValue(name)) {
+    if (info->source == larecomp::cvar::Source::kRuntime && IsAtStartupValue(name)) {
       continue;
     }
     changes.push_back({name, std::move(value), info->source});
@@ -124,8 +115,8 @@ void InitDebugMenu() {
   }
   MarkSdkDebugCvars();
 
-  const bool unlocked = REXCVAR_GET(debug_menu);
-  const char* source = unlocked ? CvarSourceName(rex::cvar::GetFlagSource("debug_menu")) : "";
+  const bool unlocked = larecomp::settings::debug_menu.Get();
+  const char* source = unlocked ? CvarSourceName(larecomp::cvar::GetFlagSource("debug_menu")) : "";
   g_source.store(source);
   g_unlocked.store(unlocked);
   g_latched.store(true);

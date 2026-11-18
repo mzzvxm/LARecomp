@@ -29,9 +29,6 @@
 #include "gpu/gpu.h"
 #endif
 
-REXCVAR_DECLARE(bool, mcla_native_gfx);
-REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
-REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "mc_engine/guest_profiler.h"
 #include "mc_engine/pause_menu.h"
 #include "mc_engine/config_save.h"
@@ -89,7 +86,7 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include <dxgi.h>
 #endif
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/runtime.h>
 #include <rex/graphics/flags.h>
@@ -154,7 +151,7 @@ class LarecompApp : public rex::ReXApp {
   // the config save leaves it out while it stays what it is now (see
   // NoteStartupCvar), so a later version, or another PC, can still change it.
   static void SetFlag(const char* name, const char* value) {
-    const bool ok = rex::cvar::SetFlagByName(name, value);
+    const bool ok = larecomp::cvar::SetFlagByName(name, value);
     FlagLog().push_back(std::string(ok ? "  ok   " : "  FAIL ") + name + " = " + value);
     if (ok) {
       larecomp::NoteStartupCvar(name);
@@ -184,7 +181,7 @@ class LarecompApp : public rex::ReXApp {
     if (FILE* f = fopen("logs/effective_config.txt", "w")) {
       fprintf(f, "=== effective cvar values (sampled in OnPostSetup, after all flags applied) ===\n");
       for (const char* name : kWatched) {
-        std::string v = rex::cvar::GetFlagByName(name);
+        std::string v = larecomp::cvar::GetFlagByName(name);
         fprintf(f, "%-46s = %s\n", name, v.empty() ? "<empty/unset>" : v.c_str());
       }
       // Only variables this build actually reads. The list previously carried
@@ -223,7 +220,7 @@ class LarecompApp : public rex::ReXApp {
                             "chase_cam_smoothing_factor", "enable_ambient_tuning",
                             "traffic_unspawn_dist", "ped_density_scale",
                             "parked_car_scale", "speed_units"}) {
-        std::string v = rex::cvar::GetFlagByName(c);
+        std::string v = larecomp::cvar::GetFlagByName(c);
         fprintf(f, "%-46s = %s\n", c, v.empty() ? "<empty/unset>" : v.c_str());
       }
 
@@ -247,7 +244,7 @@ class LarecompApp : public rex::ReXApp {
   //
   // The registry already records who last wrote each flag, so ask it.
   static bool FlagWasConfigured(const char* name) {
-    return rex::cvar::GetFlagSource(name) != rex::cvar::Source::kDefault;
+    return larecomp::cvar::GetFlagSource(name) != larecomp::cvar::Source::kDefault;
   }
 
   // Dedicated VRAM of the adapter the game will actually run on, in MiB, or 0
@@ -334,13 +331,13 @@ class LarecompApp : public rex::ReXApp {
     // BadassBaboon: Asynchronously submit D3D12 command lists as primary PM4 buffers finish.
     // Allows physical GPU execution to overlap with CPU command recording and reduces queue bubbles.
     SetFlag("d3d12_submit_on_primary_buffer_end",
-            rex::cvar::GetFlagByName("submit_on_primary_buffer_end") == "true" ? "true" : "false");
+            larecomp::cvar::GetFlagByName("submit_on_primary_buffer_end") == "true" ? "true" : "false");
 
     // BadassBaboon: Fast polling for the GPU vsync worker thread, eliminating 1ms coarse sleep stalls.
     // With vsync off the guest vblank interval is 1 ms, so fast poll makes the "GPU VSync" worker
     // spin a whole core permanently. Gated so it can be A/B tested from larecomp.toml.
     SetFlag("gpu_vsync_fast_poll",
-            rex::cvar::GetFlagByName("vsync_fast_poll") == "false" ? "false" : "true");
+            larecomp::cvar::GetFlagByName("vsync_fast_poll") == "false" ? "false" : "true");
 
     const char* fetch = getenv("MCLA_ALLOW_INVALID_FETCH");
     SetFlag("gpu_allow_invalid_fetch_constants", (fetch && *fetch) ? fetch : "true");
@@ -386,11 +383,11 @@ class LarecompApp : public rex::ReXApp {
   // Loaded here with the backend that setting asks for; "auto" (or unset) makes the same choice as
   // Plume (ChooseAutoBackend). If that backend can't start, the SDK loads its default as before.
   void LoadXenosWithChosenBackend(rex::RuntimeConfig& config) {
-    const std::string asked = rex::cvar::GetFlagByName("graphics_backend");
+    const std::string asked = larecomp::cvar::GetFlagByName("graphics_backend");
     std::string backend;
     // The GPU Plume would run on: mcla_gpu_adapter, else (graphics_backend auto, Vulkan) the one
     // that choice was made for. Empty: no name, the rules of ChooseXeniaAdapter.
-    std::string adapter_name = rex::cvar::GetFlagByName("mcla_gpu_adapter");
+    std::string adapter_name = larecomp::cvar::GetFlagByName("mcla_gpu_adapter");
     if (asked == "d3d12" || asked == "vulkan") {
       backend = asked;
 #if defined(LARECOMP_HAS_GPU)
@@ -499,7 +496,7 @@ class LarecompApp : public rex::ReXApp {
     SetFlag("mnk_mouse", "false");
     // The native keyboard is always on: a `keyboard_native = false` left in larecomp.toml (it was an off-by-default option, turned on and off
     // again) does not switch it off. A command line or the debug menu can still, to tell whether a bug is the keyboard's.
-    if (rex::cvar::GetFlagSource("keyboard_native") == rex::cvar::Source::kConfig) {
+    if (larecomp::cvar::GetFlagSource("keyboard_native") == larecomp::cvar::Source::kConfig) {
         SetFlag("keyboard_native", "true");
     }
 
@@ -603,13 +600,13 @@ class LarecompApp : public rex::ReXApp {
       // matches a key wins, so a second bind on F3 never fired. Its callback
       // is cleared instead, and the telemetry card gets a bind of its own (a
       // cvar name can only be registered once), seeded with the old key.
-      const std::string telemetry_key = rex::cvar::GetFlagByName("bind_debug_overlay");
+      const std::string telemetry_key = larecomp::cvar::GetFlagByName("bind_debug_overlay");
       rex::ui::UnregisterBind("bind_debug_overlay");
       rex::ui::RegisterBind("bind_mcla_telemetry", telemetry_key.empty() ? "F3" : telemetry_key,
                             "Toggle the MCLA telemetry overlay",
                             [this] { mcla::ui::ToggleDebugOverlay(imgui_drawer()); });
       // The same swap for the SDK's settings overlay (see settings.h).
-      const std::string settings_key = rex::cvar::GetFlagByName("bind_settings");
+      const std::string settings_key = larecomp::cvar::GetFlagByName("bind_settings");
       rex::ui::UnregisterBind("bind_settings");
       rex::ui::RegisterBind("bind_mcla_settings", settings_key.empty() ? "F4" : settings_key,
                             "Toggle the MCLA settings panel", [this] {
@@ -617,7 +614,7 @@ class LarecompApp : public rex::ReXApp {
                             });
       // And for the achievement list (see achievements.h). It needs the
       // runtime, which does not exist before the save picker is done.
-      const std::string achievements_key = rex::cvar::GetFlagByName("bind_achievements");
+      const std::string achievements_key = larecomp::cvar::GetFlagByName("bind_achievements");
       rex::ui::UnregisterBind("bind_achievements");
       rex::ui::RegisterBind(
           "bind_mcla_achievements", achievements_key.empty() ? "F7" : achievements_key,
@@ -646,11 +643,11 @@ class LarecompApp : public rex::ReXApp {
 #endif
 
 #if defined(_WIN32)
-    if (REXCVAR_GET(mcla_native_gfx) || mcla::native_gfx::nocp::WantNoCommandProcessor()) {
-      if (REXCVAR_GET(mcla_native_gfx_own_device)) {
+    if (larecomp::settings::mcla_native_gfx.Get() || mcla::native_gfx::nocp::WantNoCommandProcessor()) {
+      if (larecomp::settings::mcla_native_gfx_own_device.Get()) {
         mcla::native_gfx::DeviceManager::Instance().Initialize(false, false);
       }
-      if (REXCVAR_GET(mcla_native_gfx_own_swapchain) && window()) {
+      if (larecomp::settings::mcla_native_gfx_own_swapchain.Get() && window()) {
         HWND hwnd = static_cast<HWND>(window()->GetNativeWindowHandle());
         if (hwnd) {
           RECT rc = {};
@@ -902,7 +899,7 @@ class LarecompApp : public rex::ReXApp {
   // saves copied over. A marker keeps them there afterwards, so lifting the
   // block later does not split the saves between the two folders.
   void ChooseWritableUserFolder(rex::PathConfig& paths) {
-    if (!rex::cvar::GetFlagByName("user_data_root").empty()) return;  // the player's choice
+    if (!larecomp::cvar::GetFlagByName("user_data_root").empty()) return;  // the player's choice
     const std::filesystem::path fallback = LocalUserFolder();
     if (fallback.empty()) return;
     const std::filesystem::path marker = fallback / ".moved_from_documents";

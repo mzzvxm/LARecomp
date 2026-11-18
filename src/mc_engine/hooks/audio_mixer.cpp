@@ -41,7 +41,7 @@
 // worker alone, with no lock; the closing line reads them with atomics.
 
 #if !defined(REXGLUE_HAS_XEO3_TARGET)
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 
@@ -57,18 +57,6 @@
 #include "mc_engine/adaptive_triggers.h"
 #include "os/thread_priority.h"
 
-REXCVAR_DEFINE_INT32(audio_mixer_priority, -1, "MCLA/Audio",
-    "Host priority of the game's two audio threads: the guest thread that mixes each 5.33 ms "
-    "frame (the game's request for a higher priority is ignored) and the SDK's audio worker "
-    "that calls the game for each frame: 0 = normal, 1 = above normal, 2 = highest, 3 = highest "
-    "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
-    "a PC with 6 or fewer logical processors, 0 otherwise. On Linux 1 to 3 raise the threads' "
-    "nice value if the system allows it (it usually does not for an ordinary user). Takes "
-    "effect at the next start.")
-    .range(-1, 3)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
 REX_EXTERN(__imp__rex_sub_823EC8C8);  // the mixer thread's body
 REX_EXTERN(__imp__sub_823F56D0);      // the game's audio callback, run by the SDK's audio worker
 
@@ -78,7 +66,7 @@ constexpr unsigned kSmallPcLogicalProcessors = 6;
 
 // The level to apply, from the setting and the PC.
 int AudioLevel(unsigned logical) {
-    const int setting = REXCVAR_GET(audio_mixer_priority);
+    const int setting = larecomp::settings::audio_mixer_priority.Get();
     if (setting >= 0) {
         return setting;
     }
@@ -94,7 +82,7 @@ void ApplyToThisThread(const char* who) {
     if (level == 0) {
         LARECOMP_APP_INFO("{}, priority left alone (audio_mixer_priority {}, {} logical "
                           "processors); thread \"{}\"",
-                          who, REXCVAR_GET(audio_mixer_priority), logical, name);
+                          who, larecomp::settings::audio_mixer_priority.Get(), logical, name);
         return;
     }
     // Level 1 above normal, 2 highest, 3 highest and the OS's audio scheduling (Windows: the
@@ -107,7 +95,7 @@ void ApplyToThisThread(const char* who) {
     const larecomp::os::ThreadResult result = larecomp::os::SetCurrentThreadIntent(intent);
     LARECOMP_APP_INFO("{}, level {} (audio_mixer_priority {}, {} logical processors): {}; "
                       "thread \"{}\"",
-                      who, level, REXCVAR_GET(audio_mixer_priority), logical, result.Text(true),
+                      who, level, larecomp::settings::audio_mixer_priority.Get(), logical, result.Text(true),
                       name);
 }
 

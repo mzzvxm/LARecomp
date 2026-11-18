@@ -9,22 +9,11 @@
 #include <format>
 #include <utility>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/hash.h>
 #include <rex/logging.h>
 
 #include "guest_memory.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_car_frame_log, false, "MCLA/GPU",
-    "Debug: logs one line under [car frame] whenever the player's car changes in the draw list the car effects share (its "
-    "stencil ID, how many draws it has, how many are rigid parts and how many skinned): what was found, how it was found and what "
-    "was left out. With this on the list is collected in every frame, whether a car effect (the car shadow map, the car ray tracing) "
-    "asks for it or not, so the line shows by itself. A second line, 'keys', says when the car's meshes get new keys (a new key is a "
-    "mesh the car effects read or build again): a few seconds after the car appears there should be none in a parked car; at most one "
-    "line every few seconds. Never saved. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -115,7 +104,7 @@ void CarFrame::AddListener(car_frame::Listener* listener) {
 void CarFrame::BeginFrame() {
   // A request made since the last present (any time in the frame before) starts the collecting here at the latest: the frame's first
   // draw has not been issued yet.
-  if (!collecting_ && REXCVAR_GET(mcla_gpu_car_frame_log)) {
+  if (!collecting_ && larecomp::settings::mcla_gpu_car_frame_log.Get()) {
     requested_ = true;  // the debug line asks for the list itself
   }
   if (requested_ && memory_ && !collecting_) {
@@ -131,7 +120,7 @@ void CarFrame::OnPresent() {
     FinishFrame();
   }
   ++guest_frame_;
-  if (REXCVAR_GET(mcla_gpu_car_frame_log)) {
+  if (larecomp::settings::mcla_gpu_car_frame_log.Get()) {
     requested_ = true;  // the debug line asks for the list itself
   }
   collecting_ = requested_ && memory_ != nullptr;
@@ -177,7 +166,7 @@ void CarFrame::StartFrame() {
   bounds_missing_ = 0;
   world_box_ = car_frame_rules::Box3{};
   counts_ = Counts{};
-  log_ = REXCVAR_GET(mcla_gpu_car_frame_log);
+  log_ = larecomp::settings::mcla_gpu_car_frame_log.Get();
   ctx_ = Context{};
 }
 

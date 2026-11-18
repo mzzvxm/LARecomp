@@ -54,7 +54,7 @@
 //   dword_82839704 +368      camera position (current viewport)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
 
@@ -73,13 +73,6 @@
 #include "../../logging.h"
 #include "mod_data.h"
 
-REXCVAR_DEFINE_BOOL(mod_lights, true, "MCLA/World",
-    "Dynamic lights a mod adds to its part of the map (models/<mod>/lights.bin): its lamps "
-    "light the ground and the cars at night, on a light grid of its own. Built at city load.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_light_intensity, 1.0, "MCLA/World",
-    "Mod light intensity multiplier, applied when the mod's light grid is built (city load).")
-    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_822F87E8);
 REX_EXTERN(__imp__rex_sub_82302078);
@@ -283,7 +276,7 @@ bool Build(PPCContext& ctx, uint8_t* base, const ModGrid& grid, uint32_t& object
     const uint32_t vmin = sphere + 16, vmax = sphere + 32, scratch = sphere + 48, list = sphere + 128;
     const uint32_t ptrs = list + 16, lights = ptrs + ptr_bytes;
 
-    const float mult = float(REXCVAR_GET(mod_light_intensity));
+    const float mult = float(larecomp::settings::mod_light_intensity.Get());
     WriteBE32(base, ptrs, kNullLight);
     for (uint32_t i = 0; i < n; ++i) {
         WriteLight(ctx, base, lights + kLightBytes * i, grid.lights[i], mult);
@@ -326,7 +319,7 @@ void OnCityLights(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
         std::memcpy(g_city_state.data(), base + globals, kStateBytes);
         g_active = -1;
     }
-    if (g_grids.empty() || !REXCVAR_GET(mod_lights)) return;
+    if (g_grids.empty() || !larecomp::settings::mod_lights.Get()) return;
 
     std::array<uint8_t, kPackBytes> pack;
     std::memcpy(pack.data(), base + kPackBlock, kPackBytes);
@@ -348,7 +341,7 @@ void SelectGrid(uint8_t* base, uint32_t globals) {
     if (globals != g_globals || g_grids.empty()) return;
     int want = -1;
     const uint32_t vp = ReadBE32(base, kViewportPtr);
-    if (vp && REXCVAR_GET(mod_lights)) {
+    if (vp && larecomp::settings::mod_lights.Get()) {
         const float cx = ReadF32(base, vp + kCameraPosAt + 0);
         const float cz = ReadF32(base, vp + kCameraPosAt + 8);
         for (size_t i = 0; i < g_grids.size(); ++i) {

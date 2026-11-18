@@ -12,25 +12,13 @@
 // one is enough for a stick that drifts past it.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 
 #include "hooks.h"
 #include "hooks_internal.h"
-
-REXCVAR_DEFINE_DOUBLE(left_stick_deadzone, 0.0, "MCLA/Input",
-    "Dead zone of the left stick, in percent of its range: a stick that rests off centre (drift) "
-    "reads as centred inside it. 0 = none.")
-    .range(0.0, 50.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(right_stick_deadzone, 0.0, "MCLA/Input",
-    "Dead zone of the right stick, in percent of its range: a stick that rests off centre (drift) "
-    "reads as centred inside it. 0 = none.")
-    .range(0.0, 50.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -70,7 +58,7 @@ void ApplyToStick(uint8_t* stick, double percent) {
 }  // namespace
 
 void ApplyStickDeadzones(uint8_t* base, uint32_t state) {
-    ApplyToStick(base + state + kLeftStick, REXCVAR_GET(left_stick_deadzone));
-    ApplyToStick(base + state + kRightStick, REXCVAR_GET(right_stick_deadzone));
+    ApplyToStick(base + state + kLeftStick, larecomp::settings::left_stick_deadzone.Get());
+    ApplyToStick(base + state + kRightStick, larecomp::settings::right_stick_deadzone.Get());
 }
 #endif  // REXGLUE_HAS_XEO3_TARGET

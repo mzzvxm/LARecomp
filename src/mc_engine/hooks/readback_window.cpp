@@ -23,7 +23,7 @@
 // both are moved together: the running one reads its own, the other is inert.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -56,13 +56,13 @@ void HoldGlobalReadback(ReadbackClient client, int64_t hold_ns) {
     std::lock_guard lock(g_mutex);
     if (!g_forced) {
         for (const char* flag : kReadbackFlags)
-            if (rex::cvar::GetFlagByName(flag) == "true") return;  // the user's choice
+            if (larecomp::cvar::GetFlagByName(flag) == "true") return;  // the user's choice
         // Absent when no emulated GPU is loaded (the native renderers' no-CP
         // mode): nothing to turn on, and nothing to turn back off later. A
         // plugin built without one of the backends lacks that one's switch.
         bool any = false;
         for (const char* flag : kReadbackFlags)
-            any |= rex::cvar::SetFlagByName(flag, "true");
+            any |= larecomp::cvar::SetFlagByName(flag, "true");
         if (!any) return;
         g_forced = true;
     }
@@ -78,7 +78,7 @@ void TickGlobalReadback() {
         if (now < deadline) return;
     }
     for (const char* flag : kReadbackFlags)
-        rex::cvar::SetFlagByName(flag, "false");
+        larecomp::cvar::SetFlagByName(flag, "false");
     g_forced = false;
     g_deadline_ns.fill(0);
 }

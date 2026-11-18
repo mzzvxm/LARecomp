@@ -14,7 +14,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
@@ -381,7 +381,7 @@ private:
             nick_msg_ = "Could not write the save marker.";
             return;
         }
-        rex::cvar::SetFlagByName("user_name", name);
+        larecomp::cvar::SetFlagByName("user_name", name);
         std::vector<pf::ConfigEdit> edits;
         edits.push_back({"user_name", pf::QuoteTomlString(name)});
         if (!pf::EditConfig(rex::filesystem::GetExecutableFolder() / "larecomp.toml", edits)) {

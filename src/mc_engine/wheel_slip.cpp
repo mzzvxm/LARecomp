@@ -37,7 +37,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "wheel_slip.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <algorithm>
@@ -51,12 +51,6 @@
 
 #include "hooks/hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(trigger_slip_log, false, "MCLA/Input",
-    "Development: once a second while a car is driven, write each wheel's ground speed, slip speed "
-    "and the wheelspin and lock-up amounts the trigger effects use to the log.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -135,7 +129,7 @@ Amounts Current() {
     const int64_t player = g_player_ms.load(std::memory_order_relaxed);
     if (player == 0 || now - player > kPlayerFreshMs) return out;
     std::string line;
-    const bool log = REXCVAR_GET(trigger_slip_log);
+    const bool log = larecomp::settings::trigger_slip_log.Get();
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         for (const WheelSlot& slot : g_slots) {

@@ -10,23 +10,8 @@
 
 #include <plume_render_interface.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_class, "auto", "MCLA/GPU",
-    "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
-    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory or a "
-    "slower GPU family such as the GTX 10 and 16 series and the RX 400/500 series, high: the "
-    "rest). "
-    "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...' with "
-    "the rule that chose it (by adapter type, by memory or by name). Only "
-    "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
-    "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
-    "a choice of the player's own is never changed. Live.")
-    .allowed({"auto", "low", "mid", "high"})
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::gpu_class {
 
@@ -160,13 +145,13 @@ void Initialize(const plume::RenderDeviceDescription& description,
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
 
-  ApplyOverride(REXCVAR_GET(mcla_gpu_class));
+  ApplyOverride(larecomp::settings::mcla_gpu_class.Get());
   g_known.store(true, std::memory_order_release);
   // A change made while the game runs (the debug menu's F4 panel, the console) takes effect at once:
   // the callback has the new text, so no other thread reads the cvar's string.
   static std::once_flag registered;
   std::call_once(registered, [] {
-    rex::cvar::RegisterChangeCallback("mcla_gpu_class", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("mcla_gpu_class", [](std::string_view, std::string_view value) {
       ApplyOverride(value);
       LogClass();
     });

@@ -9,7 +9,7 @@
 #include <memory>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system.h>
@@ -32,107 +32,6 @@
 #include "mc_engine/ultrawide.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu, true, "MCLA/GPU",
-    "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
-    "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
-    "neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it "
-    "draws the guest's frames: draws into the EDRAM targets, textures from guest memory and "
-    "from resolves, the front buffer through the display's gamma table. Not yet (logged when "
-    "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
-    "memory read in another shape than it was resolved in -- milestone M5. "
-    "")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
-                    "Present on vertical blank. Read every frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pass_timing, false, "MCLA/GPU",
-    "Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, "
-    "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
-    "A measurement for the performance work, off by "
-    "default.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_wait, false, "MCLA/GPU",
-    "Pace presents with the swap chain's latency wait (DXGI waitable object / "
-    "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
-    "interval 0 and the wait alone paces the frame, so measure before turning it on.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
-                      "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
-                      "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The "
-                      "emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or "
-                      "vulkan_device is set.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_verify_constants, false, "MCLA/GPU",
-    "Compare every 64-byte block of both constant banks on every draw, not only the blocks the "
-    "guest's dirty masks name, and send (and count) any that changed without its dirty bit. "
-    "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
-    "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
-    ".")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_validate, false, "MCLA/GPU",
-    "Run the milestone M3 validator on every record besides the replay: per-record counters and "
-    "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
-    "time on the render thread (3.5-7 ms/frame measured in M3).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_batch_draws, 0, "MCLA/GPU",
-    "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
-    "and continue in a new list (0: one submission per guest frame, the default). For measuring "
-    "submission batching.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_release, true, "MCLA/GPU",
-    "Release the guest's Swap as soon as the render thread has read the last guest memory a "
-    "present needs (after the scene's end-of-frame work and the front buffer's texture), and "
-    "before it submits the frame and presents. Without it the guest waits for the whole present, "
-    "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
-    "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
-    "so it never runs more than that ahead.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_release_check, false, "MCLA/GPU",
-    "Diagnostic, with mcla_gpu_present_release: checks what that rests on. It releases the guest at "
-    "every guest present (also when the GPU is behind), and from the release to the end of the "
-    "present it counts, and logs the first 16, each read or write of guest memory by the render "
-    "thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
-                    "Enable the D3D12 debug layer before the device exists and log its warnings "
-                    "and errors. Needs D3D12SDKLayers.dll from the same Agility SDK release as "
-                    "D3D12\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS "
-                    "runtime). Vulkan validation is a property of a Debug build of Plume and "
-                    "cannot be switched on here.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DECLARE(bool, mcla_native_gfx);
-REXCVAR_DECLARE(bool, mcla_native_gfx_nocp);
-REXCVAR_DECLARE(bool, mcla_gpu_memory_census);
-REXCVAR_DECLARE(bool, mcla_gpu_scene_profile);
 
 namespace {
 
@@ -346,17 +245,17 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
                       swap_chain_);
     timing_.Initialize(device_);
-    pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
+    pass_timing_.Initialize(device_, larecomp::settings::mcla_gpu_pass_timing.Get());
     markers_.Initialize(device_);
     capture_.Initialize();
-    census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
-    validate_ = REXCVAR_GET(mcla_gpu_validate);
-    batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
-    profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
-    release_early_ = REXCVAR_GET(mcla_gpu_present_release);
+    census_.SetEnabled(larecomp::settings::mcla_gpu_memory_census.Get());
+    validate_ = larecomp::settings::mcla_gpu_validate.Get();
+    batch_draws_ = larecomp::settings::mcla_gpu_batch_draws.Get();
+    profile_records_ = larecomp::settings::mcla_gpu_scene_profile.Get();
+    release_early_ = larecomp::settings::mcla_gpu_present_release.Get();
     // The swap chain exists and the render thread, which marks the frames, has not started.
     latency::Initialize(device_, swap_chain_);
-    check_release_ = release_early_ && REXCVAR_GET(mcla_gpu_present_release_check);
+    check_release_ = release_early_ && larecomp::settings::mcla_gpu_present_release_check.Get();
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -1247,7 +1146,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
   swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync()
                                     : (dlssg_.active() ? dlssg_.WantsVsync()
-                                                       : REXCVAR_GET(mcla_gpu_vsync)));
+                                                       : larecomp::settings::mcla_gpu_vsync.Get()));
   UpdateHdr();
   UpdateDisplayAspect();
 
@@ -1409,7 +1308,7 @@ bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, boo
     latency::SwapChainChange latency_change;
     swap_chain_.SetFactoryWrapper(on ? &dlss::UpgradeFactory : nullptr);
     result = swap_chain_.RecreateOn(nullptr, hdr,
-                                    on ? dlssg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync),
+                                    on ? dlssg_.WantsVsync() : larecomp::settings::mcla_gpu_vsync.Get(),
                                     on ? std::function<void()>{}
                                        : std::function<void()>([this] { dlssg_.BeforePlainChain(); }));
     latency_change.Replaced(swap_chain_);
@@ -1420,7 +1319,7 @@ bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, boo
     ok = false;
     latency::SwapChainChange latency_change;
     swap_chain_.SetFactoryWrapper(nullptr);
-    result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync),
+    result = swap_chain_.RecreateOn(nullptr, hdr, larecomp::settings::mcla_gpu_vsync.Get(),
                                     [this] { dlssg_.BeforePlainChain(); });
     latency_change.Replaced(swap_chain_);
   }
@@ -1479,7 +1378,7 @@ bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
     {
       latency::SwapChainChange latency_change;
       result = swap_chain_.RecreateOn(on ? fg_.present_queue() : nullptr, hdr,
-                                      on ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
+                                      on ? fg_.WantsVsync() : larecomp::settings::mcla_gpu_vsync.Get());
       latency_change.Replaced(swap_chain_);
     }
     dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
@@ -1488,7 +1387,7 @@ bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
       // generation is off for the session.
       ok = false;
       latency::SwapChainChange latency_change;
-      result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync));
+      result = swap_chain_.RecreateOn(nullptr, hdr, larecomp::settings::mcla_gpu_vsync.Get());
       latency_change.Replaced(swap_chain_);
       dlss::SwapChainRecreated();
     }
@@ -1635,7 +1534,7 @@ void Renderer::ReleaseGuest() {
   tail_start_ = std::chrono::steady_clock::now();
   tail_open_ = true;
   if (release_sequence_ == 0 || !release_early_ || (!tail_short_ && !check_release_) ||
-      REXCVAR_GET(mcla_gpu_vsync)) {
+      larecomp::settings::mcla_gpu_vsync.Get()) {
     return;
   }
   thread_.stream().MarkExecuted(release_sequence_);
@@ -1850,12 +1749,12 @@ std::string g_auto_adapter;
 // The SDK's graphics_backend -- the cvar that also picks the
 // emulated GPU's backend -- as a backend this build has.
 Backend RequestedBackend() {
-  if (!rex::cvar::GetFlagInfo("graphics_backend")) {
+  if (!larecomp::cvar::GetFlagInfo("graphics_backend")) {
     REXLOG_INFO("[gpu] this SDK has no graphics_backend cvar; {} runs",
                 BackendName(kDefaultBackend));
     return kDefaultBackend;
   }
-  const std::string text = rex::cvar::GetFlagByName("graphics_backend");
+  const std::string text = larecomp::cvar::GetFlagByName("graphics_backend");
   Backend backend = kDefaultBackend;
   if (!ParseBackend(text, backend)) {
     REXLOG_ERROR("[gpu] graphics_backend = \"{}\" is not auto, d3d12 or vulkan; {} runs", text,
@@ -1865,19 +1764,19 @@ Backend RequestedBackend() {
                  BackendName(backend), BackendName(kDefaultBackend));
     backend = kDefaultBackend;
   } else if (text == "auto") {
-    backend = ChooseAutoBackend(REXCVAR_GET(mcla_gpu_adapter), g_auto_adapter);
+    backend = ChooseAutoBackend(larecomp::settings::mcla_gpu_adapter.Get(), g_auto_adapter);
   }
   return backend;
 }
 
 bool ResolveEnabled() {
-  if (!REXCVAR_GET(mcla_gpu)) {
+  if (!larecomp::settings::mcla_gpu.Get()) {
     return false;
   }
   const char* missing = nullptr;
-  if (!REXCVAR_GET(mcla_native_gfx_nocp)) {
+  if (!larecomp::settings::mcla_native_gfx_nocp.Get()) {
     missing = "mcla_native_gfx_nocp = true (no emulated GPU in the process)";
-  } else if (REXCVAR_GET(mcla_native_gfx)) {
+  } else if (larecomp::settings::mcla_native_gfx.Get()) {
     missing = "mcla_native_gfx = false (the legacy runtime would present into the same window)";
   }
   // No user_name is fine: the SDK's first-launch profile dialog is drawn by the
@@ -1902,12 +1801,12 @@ bool Enabled() {
 
 Device::Options PlannedDeviceOptions(const Backend* forced) {
   Device::Options options;
-  options.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  options.preferred_adapter = larecomp::settings::mcla_gpu_adapter.Get();
   if (options.preferred_adapter.empty() && (!forced || *forced == g_requested_backend)) {
     // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
     options.preferred_adapter = g_auto_adapter;
   }
-  options.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.debug_layer = larecomp::settings::mcla_gpu_debug_layer.Get();
   options.backend = forced ? *forced : g_requested_backend;
   return options;
 }
@@ -1948,8 +1847,8 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
 
   Renderer::Options options;
   options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
-  options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
-  options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
+  options.swap_chain.vsync = larecomp::settings::mcla_gpu_vsync.Get();
+  options.swap_chain.present_wait = larecomp::settings::mcla_gpu_present_wait.Get();
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
@@ -1990,10 +1889,10 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   // (b). In the normal order the guest has no device yet and (c) is a no-op.
   mcla::native_gfx::nocp::AcquireFenceRetirement();
   g_holds_retired_fence.store(true, std::memory_order_release);
-  g_capture = new GuestCapture(g_renderer->stream(), REXCVAR_GET(mcla_gpu_verify_constants));
+  g_capture = new GuestCapture(g_renderer->stream(), larecomp::settings::mcla_gpu_verify_constants.Get());
   g_capture_active.store(g_capture, std::memory_order_release);
   REXLOG_INFO("[gpu] guest capture on (constant verification {})",
-              REXCVAR_GET(mcla_gpu_verify_constants) ? "on" : "off");
+              larecomp::settings::mcla_gpu_verify_constants.Get() ? "on" : "off");
   if (const uint32_t device = mcla::native_gfx::GraphicsDeviceVa()) {
     auto* runtime = rex::Runtime::instance();
     const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
@@ -2166,7 +2065,7 @@ bool SchedulesPresents() {
   // Frame generation (FSR's or DLSS's) presents through a pacer of its own, which the game's
   // latency reducer paces: no frame is held to a target then.
   return g_capture_active.load(std::memory_order_acquire) != nullptr &&
-         !REXCVAR_GET(mcla_gpu_vsync) && !FrameGenerationRunning() &&
+         !larecomp::settings::mcla_gpu_vsync.Get() && !FrameGenerationRunning() &&
          !DlssFrameGenerationRunning();
 #else
   return false;

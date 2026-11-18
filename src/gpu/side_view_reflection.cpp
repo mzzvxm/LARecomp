@@ -42,29 +42,13 @@
 #include <cstdint>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/xenos.h>
 
 #include "edram.h"
 #include "live_text.h"
 #include "side_views.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_reflection_resolution, "auto", "MCLA/GPU",
-    "How sharp the road reflection is: the wet roads, the shop and building windows and the water "
-    "show a mirror image of the city that the game draws at 256x256 and stretches over the whole "
-    "screen, which is why it looks soft. game (the game's own 256x256), high (512x512), ultra "
-    "(768x768), or auto (game on an integrated graphics chip, high on any other card). Costs a "
-    "little graphics card time and video memory (about 4 MiB for high, 13 MiB for ultra). Live.")
-    .allowed({"auto", "game", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_reflection_scale, 0.0, "MCLA/GPU",
-    "Diagnostic: the road reflection's size as a multiple of the game's 256x256 (any step of 0.05), "
-    "instead of what mcla_gpu_reflection_resolution says. 0: the setting's. Live.")
-    .debug_only()
-    .range(0.0, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -101,7 +85,7 @@ std::string Setting() {
 
 // A step of the grid of twentieths, from 0.05 up (a test: 1.5x is 30).
 Scale TestScale() {
-  const double value = REXCVAR_GET(mcla_gpu_reflection_scale);
+  const double value = larecomp::settings::mcla_gpu_reflection_scale.Get();
   if (!(value >= 0.05)) {
     return Scale::None();
   }

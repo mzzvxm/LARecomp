@@ -12,7 +12,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/immediate_drawer.h>
@@ -217,7 +217,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
 
 void StartOnlineToast(rex::ui::ImGuiDrawer* imgui_drawer,
                       rex::ui::ImmediateDrawer* immediate_drawer) {
-    if (!imgui_drawer || rex::cvar::GetFlagByName("mcla_online_enable").empty()) return;
+    if (!imgui_drawer || larecomp::cvar::GetFlagByName("mcla_online_enable").empty()) return;
     auto shared = std::make_shared<Shared>();
     std::thread(Worker, shared).detach();
     (void)new OnlineToastDialog(imgui_drawer, immediate_drawer, shared);

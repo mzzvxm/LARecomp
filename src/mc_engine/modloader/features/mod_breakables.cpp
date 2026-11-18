@@ -59,7 +59,7 @@
 //   sub_8255A1B0(vehicle, &vel, &angvel)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
@@ -84,13 +84,6 @@
 #include "mod_breakables.h"
 #include "mod_data.h"
 
-REXCVAR_DEFINE_BOOL(mod_breakables, true, "MCLA/World",
-    "Props a mod baked into the city sectors break off when the car hits them fast "
-    "enough (models/<mod>/breakables.bin); a slow bump still stops the car.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_breakable_speed_scale, 1.0, "MCLA/World",
-    "Multiplier on the speed a mod's breakable prop needs to break.")
-    .debug_only();
 
 namespace {
 
@@ -388,7 +381,7 @@ void Break(uint8_t* b, uint32_t index, float vx, float vz, float speed, uint32_t
     p.applied_data = data;
     SlowCar(b, vehicle, col, p.keep);
     MC_INFO("[breakables] prop {} knocked over at {:.0f} km/h (breaks at {:.0f}), car keeps {:.0f}%", p.id,
-            speed * 3.6f, p.brk * 3.6f * float(REXCVAR_GET(mod_breakable_speed_scale)), p.keep * 100.0f);
+            speed * 3.6f, p.brk * 3.6f * float(larecomp::settings::mod_breakable_speed_scale.Get()), p.keep * 100.0f);
 }
 
 void Restore(uint8_t* b, Prop& p) {
@@ -432,7 +425,7 @@ bool ModBreakableDown(int mod, uint32_t id) {
 void TickModBreakables() {
     uint8_t* b = Membase();
     if (!b) return;
-    if (!REXCVAR_GET(mod_breakables)) {
+    if (!larecomp::settings::mod_breakables.Get()) {
         if (!g_broken.empty()) TendBroken(b, 0.0f, 0.0f, true);
         return;
     }
@@ -452,7 +445,7 @@ void TickModBreakables() {
     const float vx = RF(b, col + 272), vz = RF(b, col + 280);
     const float speed = std::sqrt(vx * vx + vz * vz);
     if (!(speed > kMinSpeed)) return;
-    const float scale = float(REXCVAR_GET(mod_breakable_speed_scale));
+    const float scale = float(larecomp::settings::mod_breakable_speed_scale.Get());
     for (int gx = -1; gx <= 1; ++gx) {
         for (int gz = -1; gz <= 1; ++gz) {
             const auto it = g_grid.find(GridKey(px + gx * kGridCell, pz + gz * kGridCell));

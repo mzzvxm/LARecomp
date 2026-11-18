@@ -19,7 +19,7 @@
 #include <filesystem>
 #include <fstream>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
@@ -42,41 +42,6 @@
 #include "texture_decode.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
-                    "Diagnostic: after a Lock write-back, every 8888 level the locked range "
-                    "covers is decoded from guest memory and written as "
-                    "mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga next to the executable "
-                    "(the vinyl's mip chain).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
-                    "With mcla_gpu_resolution_scale above 1, a resolve of a scaled target reads "
-                    "its first host columns and rows -- the half-pixel gap no full-screen draw "
-                    "covers -- from the first one surely covered, as Xenia's "
-                    "resolve_resolution_scale_fill_half_pixel_offset does. Off: "
-                    "the gap keeps whatever was there, a 1-pixel line on the top and left "
-                    "edges. A/B switch.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_7e3_ceiling, true, "MCLA/GPU",
-                    "A resolve of a 7e3 colour target (k_2_10_10_10_FLOAT, the 3D scene) clamps "
-                    "each sample's red, green and blue to what the console's target holds, as "
-                    "Xenia does: 0 to 31.875 as stored, which with the game's exponent bias of 4 "
-                    "is a colour of 1.99 at most. The host's float16 target holds far more, "
-                    "and the tone map and the bloom then see lights the console never had: a "
-                    "red underglow pool is white in the middle instead of pink. Off: no clamp. "
-                    "Not applied to a frame that can carry the HDR float scene (HDR output with "
-                    "the HDR pack loaded and no FXAA or SMAA running): its tone map wants the "
-                    "range. "
-                    "A/B switch.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
-REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
-REXCVAR_DECLARE(bool, mcla_gpu_census_scale);  // scene.cpp
 
 namespace mcla::gpu {
 
@@ -367,7 +332,7 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   passes_ = &passes;
   // The resolve memory reports the readers of inherited pages (reach).
   resolve_memory.SetEdram(&edram);
-  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
+  census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   subscriber_ = memory.Subscribe("resolve products");
   for (uint32_t depth = 0; depth < 2; ++depth) {
     for (uint32_t msaa = 0; msaa < 2; ++msaa) {
@@ -714,7 +679,7 @@ void ResolveCache::OnLock(const LockRecord& record,
                 record.size, pages, double(ns) / 1e6,
                 write_back_logged_ == 8 ? " (further ones counted, not logged)" : "");
   }
-  if (REXCVAR_GET(mcla_gpu_lock_dump)) {
+  if (larecomp::settings::mcla_gpu_lock_dump.Get()) {
     // What the CPU reads now: every level of the locked texture (an 8888 one)
     // whose storage the lock covers, decoded from guest memory. The key comes
     // from the resource's own header: the product may be gone already (the
@@ -1320,7 +1285,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         // Blends the game draws after the overshoot (the fog quad, particles) were made against
         // the unclamped colour; the clamp is only here, at the resolve, so a pool core can stay a
         // little brighter than the console's (the console clamps every write). Small, left.
-        if (src_format == 3 && REXCVAR_GET(mcla_gpu_resolve_7e3_ceiling) && !float_scene) {
+        if (src_format == 3 && larecomp::settings::mcla_gpu_resolve_7e3_ceiling.Get() && !float_scene) {
           full_mode |= kFlagSourceCeiling7e3;
         }
       } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
@@ -1398,7 +1363,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       }
 
       // The source target, at least as tall as the copy reads.
-      const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+      const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
       const bool ghost_sample = ghost_interval != 0 && frame_ % ghost_interval == 0 &&
                                 key.width == 1280 && key.height == 720 && tx0 == 0 && tx1 == 1280;
       const EdramTargets::Target* prior_src = ghost_sample ? edram_->Find(src_key) : nullptr;
@@ -1565,8 +1530,8 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // here by the target's origin, not the copy's: the surface is drawn whole
       // at once and a tile's rectangle starts inside covered pixels.
       push.fill = 0;
-      if (resolution_scale.HalfPixelGap() != 0 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel) &&
-          REXCVAR_GET(mcla_gpu_work_17oct)) {
+      if (resolution_scale.HalfPixelGap() != 0 && larecomp::settings::mcla_gpu_resolve_fill_half_pixel.Get() &&
+          larecomp::settings::mcla_gpu_work_17oct.Get()) {
         bool present = false;
         xreg::PA_SU_VTX_CNTL vtx;
         vtx.value = pre.Register(guest::reg::kPaSuVtxCntl, &present);

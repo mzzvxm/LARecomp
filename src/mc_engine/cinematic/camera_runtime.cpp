@@ -36,7 +36,7 @@
 
 #include "camera_runtime.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -54,12 +54,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/cut_request.h"
 #endif
-
-REXCVAR_DEFINE_UINT32(mcla_cam_log, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: while a scene's camera is running, log it every this many frames: scene time, position, direction, field of "
-    "view. 0: only the cuts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -382,7 +376,7 @@ bool CinematicCameraApply(uint8_t* base, uint32_t sp, uint32_t mode) {
         g.cut_pending = false;
         AnnounceCut(base, sp, v.took_over ? "the scene's camera takes over" : "a cut of the scene", g.t);
     }
-    const uint32_t every = REXCVAR_GET(mcla_cam_log);
+    const uint32_t every = larecomp::settings::mcla_cam_log.Get();
     if (every != 0 && g.frames % every == 0) {
         LARECOMP_APP_INFO("[cam] t={:.3f} mode {} shot {}: at {:.3f} {:.3f} {:.3f}, looking along {:.4f} {:.4f} {:.4f}, up {:.4f} {:.4f} {:.4f}, fov {:.3f}", g.t,
                           mode, v.shot, v.position.x, v.position.y, v.position.z, v.basis.forward.x, v.basis.forward.y, v.basis.forward.z,

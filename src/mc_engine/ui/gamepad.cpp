@@ -1,6 +1,6 @@
 #include "gamepad.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include <SDL3/SDL.h>
@@ -255,7 +255,7 @@ void EnsurePadLayer() {
     // the SAME SDL: HIDAPI stays on for it, and gamepad events stay on, because the driver is
     // driven by exactly those events. Switching them off here left a detected pad that never
     // sent a button.
-    const bool sdk_uses_sdl = rex::cvar::GetFlagByName("input_backend") == "sdl";
+    const bool sdk_uses_sdl = larecomp::cvar::GetFlagByName("input_backend") == "sdl";
     if (!sdk_uses_sdl) {
       SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
       SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
@@ -273,7 +273,7 @@ void EnsurePadLayer() {
       SDL_SetGamepadEventsEnabled(false);
     }
     // The mappings the SDK's driver loads, so a DirectInput pad maps the same.
-    const std::string mappings = rex::cvar::GetFlagByName("hid_mappings_file");
+    const std::string mappings = larecomp::cvar::GetFlagByName("hid_mappings_file");
     std::error_code ec;
     if (!mappings.empty() && std::filesystem::exists(mappings, ec)) {
       SDL_AddGamepadMappingsFromFile(mappings.c_str());

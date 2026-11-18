@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -29,62 +29,6 @@
 #endif
 #include <windows.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(custom_music, false, "MCLA/Audio",
-    "Old host player: decodes <exe>/music/*.mp3 outside the game and plays them "
-    "over it, with the guest radio carrying only the row. Off, because the "
-    "native route (mc_engine/music) turns the same files into real game "
-    "objects, real cues and real streaming wave banks -- the radio then behaves "
-    "exactly as it does for a shipped song. This only ever sees a file the "
-    "native route could not take, and playing that one a second-class way hides "
-    "the reason instead of showing it.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(custom_music_announce, true, "MCLA/Audio",
-    "Print the song name on the HUD info strip (the bar under the speedometer "
-    "that normally carries the district name) whenever the radio moves to a new "
-    "track. Uses the game's own message channel, so it looks like any other line "
-    "the game puts there; applies to the shipped radio as well as custom MP3s.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(custom_music_announce_seconds, 15.0, "MCLA/Audio",
-    "How long the song name stays on the HUD info strip. The game's own uses of "
-    "that channel are short (3 s for MUSIC OFF, 5 s for a district name), but a "
-    "track title is worth reading, so this defaults longer. Anything the game "
-    "itself puts on the strip replaces it before the time is up.")
-    .range(1.0, 60.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
-    "Trim applied on top of the in-game music slider for custom MP3 tracks. "
-    "The shipped radio goes through the RAGE mixer and its ducking curves, "
-    "which the host player does not, so 1.0 comes out noticeably louder.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(custom_music_cue_gain_db, 4.0, "MCLA/Audio",
-    "Gain for native custom music in the game's audio mixer, after the bank's "
-    "3 dB MP3 decode headroom. Shipped songs keep their original gain.")
-    .range(0.0, 6.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(music_bank_log, false, "MCLA/Audio",
-    "Log every streaming wave bank the audio engine opens: the bank id (an index "
-    "into the sounds.dat string table) and whether the file was found. Use it "
-    "when a song plays silently -- it separates 'the bank was never asked for' "
-    "from 'the bank was opened and decoded to nothing'.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(music_list, false, "MCLA/Audio",
-    "Log the whole radio once, right after mcMusicManager finishes building it: "
-    "every genre bucket with each song's hash code and title. This is how you "
-    "tell whether a song added through the audio metadata (a rebuilt game.dat "
-    "plus its wave bank) actually reached AddSong, since the game's own log "
-    "line for that was compiled out.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace {
 
@@ -560,7 +504,7 @@ bool AppendToGenre(uint32_t mgr, uint32_t genre, uint32_t entry_ea) {
 // a song declared in the audio metadata was picked up.
 void DumpRadio(uint32_t mgr) {
     static bool done = false;
-    if (done || !REXCVAR_GET(music_list) || !IsGuestPtr(mgr)) return;
+    if (done || !larecomp::settings::music_list.Get() || !IsGuestPtr(mgr)) return;
     done = true;
 
     for (uint32_t g = 0; g < 8; ++g) {
@@ -681,7 +625,7 @@ float CurrentMusicVolume(uint32_t mgr) {
     if (!(v >= 0.0f && v <= 1.0f)) v = ReadGuestBEFloat(mgr + kMgrVolume);
     if (!(v >= 0.0f && v <= 1.0f)) v = 1.0f;
 
-    double trim = REXCVAR_GET(custom_music_volume);
+    double trim = larecomp::settings::custom_music_volume.Get();
     if (trim < 0.0) trim = 0.0;
     if (trim > 1.0) trim = 1.0;
 
@@ -718,7 +662,7 @@ bool     g_notify_primed = false;  // first song seen, deliberately not announce
 // and our own end-of-track advance alike, and at its tail the game had already
 // loaded this very string for a log call it no longer prints.
 void AnnounceSongByKey(uint32_t key_ea) {
-    if (!REXCVAR_GET(custom_music_announce)) return;
+    if (!larecomp::settings::custom_music_announce.Get()) return;
     if (!IsGuestPtr(key_ea) || key_ea == g_notified_key) return;
 
     // The boot-time selection is recorded, not shown: nobody is looking at the
@@ -759,7 +703,7 @@ void AnnounceSongByKey(uint32_t key_ea) {
 
     g_notified_key = key_ea;
 
-    double secs = REXCVAR_GET(custom_music_announce_seconds);
+    double secs = larecomp::settings::custom_music_announce_seconds.Get();
     if (!(secs > 0.0)) secs = 15.0;
 
     CallInfoStrip(ui_logic, g_notify_buf, static_cast<float>(secs));
@@ -775,7 +719,7 @@ void InitCustomMusic() {
     // metadata and ship no .mp3 at all.
     CollectNativeTitles();
 
-    if (!REXCVAR_GET(custom_music)) return;
+    if (!larecomp::settings::custom_music.Get()) return;
 
     CollectTracks();
     if (g_tracks.empty()) {
@@ -884,7 +828,7 @@ void MCLA_CustomMusic_CueGain(PPCRegister& r4, PPCRegister& r6) {
     if (!mc::music::IsCustomCue(static_cast<uint32_t>(r4.u32))) return;
     const uint32_t params = static_cast<uint32_t>(r6.u32);
     if (params < 0x1000u || params > 0xFFFFFFFBu) return;
-    const float gain = static_cast<float>(REXCVAR_GET(custom_music_cue_gain_db));
+    const float gain = static_cast<float>(larecomp::settings::custom_music_cue_gain_db.Get());
     if (!(gain > 0.0f)) return;
     const float original = ReadGuestBEFloat(params);
     if (!std::isfinite(original)) return;
@@ -901,7 +845,7 @@ void MCLA_CustomMusic_CueGain(PPCRegister& r4, PPCRegister& r6) {
 // sub_821372D8 from inside a hook, and the id is enough to identify the bank
 // against the file.
 void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
-    if (!REXCVAR_GET(music_bank_log)) return;
+    if (!larecomp::settings::music_bank_log.Get()) return;
     const uint32_t slot = static_cast<uint32_t>(r31.u32);
     if (!IsGuestPtr(slot)) return;
     const int32_t handle = static_cast<int32_t>(r3.u32);
@@ -920,7 +864,7 @@ void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
 // 0x821461F4, RequestLoad's failure tail. r4 is the assembled "Sfx/<BANK>" path,
 // so this is the one place the bank is named in full.
 void MCLA_Audio_BankError(PPCRegister& r4, PPCRegister& r31) {
-    if (!REXCVAR_GET(music_bank_log)) return;
+    if (!larecomp::settings::music_bank_log.Get()) return;
     const uint32_t slot = static_cast<uint32_t>(r31.u32);
     const uint32_t id = IsGuestPtr(slot) ? ReadGuestBE16(slot + 0x42) : 0;
 

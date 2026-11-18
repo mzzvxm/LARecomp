@@ -15,10 +15,8 @@
 #include "context.h"
 #include "device_manager.h"
 #include "shader_db.h"
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(int32_t, mcla_native_gfx_shadow_bias);
-REXCVAR_DECLARE(bool, mcla_native_gfx_rectlist_nocull);
-REXCVAR_DECLARE(bool, mcla_native_gfx_pipeline_library);
 
 namespace mcla::native_gfx {
 
@@ -316,7 +314,7 @@ void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
   out.stencil_mask = (render_state.stencil_read_mask & 0xFFu) |
                      ((render_state.stencil_write_mask & 0xFFu) << 8);
   out.pa_su_sc_mode_cntl = render_state.pa_su_sc_mode_cntl;
-  if (geometry.primitive_type == 8u && REXCVAR_GET(mcla_native_gfx_rectlist_nocull)) {
+  if (geometry.primitive_type == 8u && larecomp::settings::mcla_native_gfx_rectlist_nocull.Get()) {
     out.pa_su_sc_mode_cntl &= ~0x3u;  // clear cull_front | cull_back
   }
   out.y_flipped = ComputeHostViewport(render_state).y_flipped ? 1u : 0u;
@@ -328,7 +326,7 @@ void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
                                &poly_offset_scale, &poly_offset);
     out.depth_bias = IntegerPolygonOffset(render_state.depth_format, poly_offset);
     out.slope_scaled_depth_bias = poly_offset_scale * kPolygonOffsetScaleSubpixelUnit;
-    if (int32_t extra = REXCVAR_GET(mcla_native_gfx_shadow_bias)) {
+    if (int32_t extra = larecomp::settings::mcla_native_gfx_shadow_bias.Get()) {
       const HostViewport shadow_vp = ComputeHostViewport(render_state);
       if (shadow_vp.width == 640.0f && shadow_vp.height == 640.0f) {
         out.depth_bias += extra;
@@ -340,7 +338,7 @@ void PipelineCache::MakeKeyInto(PsoKey& out, const GeometrySnapshot& geometry,
 }
 
 void PipelineCache::InitializePipelineLibrary(D3D12Context& context) {
-  if (pipeline_library_ || !REXCVAR_GET(mcla_native_gfx_pipeline_library)) {
+  if (pipeline_library_ || !larecomp::settings::mcla_native_gfx_pipeline_library.Get()) {
     return;
   }
   Microsoft::WRL::ComPtr<ID3D12Device1> dev1;

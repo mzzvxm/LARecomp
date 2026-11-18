@@ -15,7 +15,7 @@
 #include <x86intrin.h>
 #endif
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/logging.h>
 
@@ -51,68 +51,8 @@
 #include "upscaler_math.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scene_profile, false, "MCLA/GPU",
-    "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
-    "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
-    "draw), one line per window of 600 frames. Off: nothing is timed.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-// The switch over the renderer work of 17/10/2026, asked for by
-// the user, live: on, every part of it runs as its own cvar says; off, the
-// renderer does what it did before that day.
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_work_17oct, true, "MCLA/GPU",
-    "On/off for all of the renderer work of 17/10/2026: the half-pixel fill of "
-    "scaled resolves (mcla_gpu_resolve_fill_half_pixel), the depth bias times the scale "
-    "(mcla_gpu_scale_depth_bias), the delayed colour encodes "
-    "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
-    "that day. Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scale_depth_bias, true, "MCLA/GPU",
-    "With a resolution scale above 1 (M6b.3c): the slope-scaled depth bias times the "
-    "scale of the draw's targets, as Xenia does -- a host pixel is 1/scale of the guest's. Off: "
-    "the guest's factor unchanged (for A/B). Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_census_scale, false, "MCLA/GPU",
-    "Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution "
-    "scale reads (with the fetch's filters) and each copy of an image of the screen that lands "
-    "away from its source. Off: nothing is checked.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-// The scene's extra texture detail bias under an upscaler (Scene::SceneBias): live, for A/B.
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_scene_extra_bias, -1.0, "MCLA/GPU",
-    "While an upscaler draws the scene smaller than it is shown, its textures are sampled by "
-    "log2(render size / output size) levels of detail lower, as the output's size would pick, plus "
-    "this many levels more. -1 is what AMD's FSR guide asks for (a sharper picture the upscaler "
-    "fills in over its jitter); 0 or -0.5 sample blurrier levels, which shimmer less on fine "
-    "texture detail (grass, road grain, fences) and soften it. For A/B. Live.")
-    .debug_only()
-    .range(-3.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_masks, true, "MCLA/GPU",
-    "Whether the upscalers get the reactive mask (the cars' shadow decals, particles, light "
-    "volumes) and the transparency and composition mask (car glass): on, they are drawn "
-    "(upscaler_masks.h). Off: no mask is made and the upscaler trusts its history everywhere, "
-    "for A/B (a mask that is wrong shows as shimmer where it covers). Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_cam_cut_blur_fix, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT (for A/B pictures): on a frame where the scene's camera cuts, the game's motion blur "
-    "gets this frame's own matrices as the previous frame's, so it does not smear the frame (E5: the first frame "
-    "after a cut). Off: the game's constants as they are.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
 namespace mcla::gpu {
 
@@ -791,8 +731,8 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   VerifySwapBankToHost();
   cycles::Measure();  // the base of the first window's TSC rate
   ab::Initialize();
-  profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
-  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
+  profile_ = larecomp::settings::mcla_gpu_scene_profile.Get();
+  census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   geometry_->SetProfile(profile_);
   draw_census_.Configure();
   target_census_.Configure();
@@ -869,7 +809,7 @@ void Scene::ResetListState() {
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
-  scale_depth_bias_ = REXCVAR_GET(mcla_gpu_scale_depth_bias) && REXCVAR_GET(mcla_gpu_work_17oct);
+  scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
   geometry_->BeginFrame(slot);
   edram_->BeginFrame(list, slot);
   textures_->BeginFrame(slot);
@@ -1744,7 +1684,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // A car's shadow decal, a particle, a light volume or a piece of glass is drawn again into the
   // coverage image of the mask the upscaler takes (upscaler_masks.h).
-  if (d.key.color_count == 1 && UpscalerRunning() && REXCVAR_GET(mcla_gpu_upscaler_masks)) {
+  if (d.key.color_count == 1 && UpscalerRunning() && larecomp::settings::mcla_gpu_upscaler_masks.Get()) {
     const UpscalerMasks::Kind kind = UpscalerMasks::KindOf(r.vs_identity, r.ps_identity);
     if (kind != UpscalerMasks::Kind::kNone) {
       PrepareUpscalerMask(d, inputs, kind);
@@ -2053,7 +1993,7 @@ void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
               "history and the occlusion's start again, {} (cut #{})",
               frame_serial_, taken.game_frame, taken.serial, taken.age,
               taken.skipped != 0 ? std::format(", {} older request(s) went with it", taken.skipped) : std::string(),
-              REXCVAR_GET(mcla_cam_cut_blur_fix) ? "the motion blur's previous matrices are made this frame's own"
+              larecomp::settings::mcla_cam_cut_blur_fix.Get() ? "the motion blur's previous matrices are made this frame's own"
                                                  : "the motion blur keeps the game's matrices (mcla_cam_cut_blur_fix is off)",
               cut_frames_);
   if (temporal_ && temporal_->active()) {
@@ -2063,7 +2003,7 @@ void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
 
 void Scene::NeutralizeAnchorBlur(const ConstantBanks::Banks& banks, PreparedDraw& d) {
   cut_blur_pending_ = false;
-  if (!REXCVAR_GET(mcla_cam_cut_blur_fix)) {
+  if (!larecomp::settings::mcla_cam_cut_blur_fix.Get()) {
     return;
   }
   static_assert(sizeof(float) * 256 * 4 == guest::kConstantBankBytes, "the pixel bank is 256 registers of 4 floats");
@@ -2113,7 +2053,7 @@ int32_t Scene::SceneBias() {
       // constant's own bias is added to it by the sampler.
       scene_bias_ = upscaler_math::SceneMipBias(edram_->SceneScale().value(),
                                                 edram_->resolution_scale().value(),
-                                                REXCVAR_GET(mcla_gpu_scene_extra_bias));
+                                                larecomp::settings::mcla_gpu_scene_extra_bias.Get());
     }
     if (scene_bias_ != scene_bias_logged_) {
       scene_bias_logged_ = scene_bias_;
@@ -2123,7 +2063,7 @@ int32_t Scene::SceneBias() {
                   double(scene_bias_) / 32.0, scene_bias_ == 0 ? "no bias" : "log2(render / output) + extra",
                   edram_->SceneApart() ? edram_->SceneScale().value() : 1.0,
                   edram_->SceneApart() ? edram_->resolution_scale().value() : 1.0,
-                  REXCVAR_GET(mcla_gpu_scene_extra_bias));
+                  larecomp::settings::mcla_gpu_scene_extra_bias.Get());
     }
   }
   return scene_bias_;
@@ -3022,7 +2962,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (key == first_key) {
       edram_->NoteDeclaredScale(*target, declared_size);
     }
-    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
         key.base_tiles == 1024) {
       REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "
@@ -3074,7 +3014,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (key == first_key) {
       edram_->NoteDeclaredScale(*target, declared_size);
     }
-    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
         key.base_tiles == 0) {
       REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "

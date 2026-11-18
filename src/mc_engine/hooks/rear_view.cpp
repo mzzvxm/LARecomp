@@ -54,7 +54,7 @@
 // Patch_RearViewFrameSkip).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -67,79 +67,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(rearview, false, "MCLA/HUD",
-    "Show the rear view mirror at the top right of the screen (a feature the retail game "
-    "ships switched off). Takes effect immediately.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(rearview_position, "stock", "MCLA/HUD",
-    "Where the mirror sits: stock (under the race position, top right), left_top, middle_top, "
-    "left_down, middle_footer or right_down.")
-    .allowed({"stock", "left_top", "middle_top", "left_down", "middle_footer", "right_down"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(rearview_frame, true, "MCLA/HUD",
-    "Draw the mirror's frame. The retail game ships the frame meshes without their textures "
-    "(black_small.dds and rearView.dds are gone), so the frame comes out solid white. Off hides "
-    "it and leaves just the mirror view. Takes effect immediately.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(rearview_cars, false, "MCLA/HUD",
-    "Show the racers' cars in the mirror. Retail's mirror phase leaves them out, and the game only "
-    "treats a car as visible when the main camera sees it, so this runs the car's visibility test "
-    "again with the mirror's camera and draws it with the colour pass. Don't combine it with "
-    "rearview_traffic: traffic draws the same cars as black silhouettes. Needs rearview on.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(rearview_traffic, false, "MCLA/HUD",
-    "Put ambient traffic back in the mirror's phase, where retail has it. It draws nothing useful "
-    "there (cars show up as black silhouettes, or not at all) and a car close to the mirror's "
-    "camera blacks the view out, so it is taken out of the phase unless this is on. Needs rearview on.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(rearview_diag, false, "MCLA/HUD",
-    "Log, every couple of seconds, how many objects each render client holds when the mirror's "
-    "phase begins. For working out why cars and traffic do not draw in it.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_shift_x, 0, "MCLA/HUD",
-    "Fine-tunes the mirror and its frame horizontally on top of rearview_position, in 1280x720 "
-    "pixels. Negative is left.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_shift_y, 0, "MCLA/HUD",
-    "Fine-tunes the mirror and its frame vertically on top of rearview_position, in 1280x720 "
-    "pixels. Positive is down.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_window_dx, 22, "MCLA/HUD",
-    "Offset of the scene viewport from the frame window's outer corner, horizontally, in pixels. "
-    "The window's left and right edges lean, so the viewport rectangle has to start inside the "
-    "narrowest part or its corner pokes out of the frame.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_window_dy, 2, "MCLA/HUD",
-    "Offset of the scene viewport from the frame window's outer corner, vertically, in pixels.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_window_w, 229, "MCLA/HUD",
-    "Width of the scene viewport in pixels. The widest rectangle that fits inside the leaning "
-    "window is 229 wide.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(rearview_window_h, 44, "MCLA/HUD",
-    "Height of the scene viewport in pixels. The widest rectangle that fits inside the leaning "
-    "window is 44 tall.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Guest layout (see the file comment for where each was read).
 static constexpr uint32_t kHudManagerPtr    = 0x8286D8D4u;  // dword_8286D8D4
@@ -182,7 +109,7 @@ static constexpr RearViewPreset kPresets[] = {
 };
 
 static RearViewPreset ResolvePreset() {
-    const std::string name = REXCVAR_GET(rearview_position);
+    const std::string name = larecomp::settings::rearview_position.Get();
     for (const auto& p : kPresets)
         if (name == p.name) return p;
     return kPresets[0];
@@ -250,8 +177,8 @@ static void ApplyMirrorMembership(uint8_t* base, bool mirror_on) {
     static constexpr MirrorClient kCars{7, 0x12E183F3u, "cars"};
     static constexpr MirrorClient kTraffic{9, 0x00118002u, "traffic"};
 
-    SetClientMirrorPhase(base, renderer, kCars, mirror_on && REXCVAR_GET(rearview_cars));
-    SetClientMirrorPhase(base, renderer, kTraffic, mirror_on && REXCVAR_GET(rearview_traffic));
+    SetClientMirrorPhase(base, renderer, kCars, mirror_on && larecomp::settings::rearview_cars.Get());
+    SetClientMirrorPhase(base, renderer, kTraffic, mirror_on && larecomp::settings::rearview_traffic.Get());
 }
 
 void TickRearView() {
@@ -261,7 +188,7 @@ void TickRearView() {
     uint32_t form = 0, widget = 0;
     if (!FindRearView(base, form, widget)) return;
 
-    const bool want = REXCVAR_GET(rearview);
+    const bool want = larecomp::settings::rearview.Get();
     ApplyMirrorMembership(base, want);
     const uint32_t widget_flags = ReadGuestU32(base, widget + kWidgetFlags);
 
@@ -282,8 +209,8 @@ void TickRearView() {
     if (next != widget_flags) WriteGuestU32(base, widget + kWidgetFlags, next);
 
     const RearViewPreset preset = ResolvePreset();
-    const int shift_x = preset.x + REXCVAR_GET(rearview_shift_x);
-    const int shift_y = preset.y + REXCVAR_GET(rearview_shift_y);
+    const int shift_x = preset.x + larecomp::settings::rearview_shift_x.Get();
+    const int shift_y = preset.y + larecomp::settings::rearview_shift_y.Get();
 
     // Frame: x = screen_width - [+160], so moving it left means a larger value.
     const float frame_x = kFrameDefaultX - float(shift_x);
@@ -296,10 +223,10 @@ void TickRearView() {
     // Scene viewport, into the mirror pass object.
     const uint32_t pass = ReadGuestU32(base, kMirrorPassPtr);
     if (PlausibleGuestPtr(pass)) {
-        const int w = REXCVAR_GET(rearview_window_w);
-        const int h = REXCVAR_GET(rearview_window_h);
-        const int x = kWindowX + shift_x + REXCVAR_GET(rearview_window_dx);
-        const int y = kWindowY + shift_y + REXCVAR_GET(rearview_window_dy);
+        const int w = larecomp::settings::rearview_window_w.Get();
+        const int h = larecomp::settings::rearview_window_h.Get();
+        const int x = kWindowX + shift_x + larecomp::settings::rearview_window_dx.Get();
+        const int y = kWindowY + shift_y + larecomp::settings::rearview_window_dy.Get();
         if (w > 0 && h > 0) {
             const uint32_t want_rect[4] = {uint32_t(x), uint32_t(y), uint32_t(w), uint32_t(h)};
             for (uint32_t i = 0; i < 4; ++i) {
@@ -311,9 +238,9 @@ void TickRearView() {
 
     if (last_state != 1) {
         LARECOMP_APP_INFO("[RearView] shown: viewport {},{} {}x{}, frame x offset {}",
-                          kWindowX + shift_x + REXCVAR_GET(rearview_window_dx),
-                          kWindowY + shift_y + REXCVAR_GET(rearview_window_dy),
-                          REXCVAR_GET(rearview_window_w), REXCVAR_GET(rearview_window_h), frame_x);
+                          kWindowX + shift_x + larecomp::settings::rearview_window_dx.Get(),
+                          kWindowY + shift_y + larecomp::settings::rearview_window_dy.Get(),
+                          larecomp::settings::rearview_window_w.Get(), larecomp::settings::rearview_window_h.Get(), frame_x);
         last_state = 1;
     }
 }
@@ -390,7 +317,7 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
         if (PlausibleGuestPtr(item)) RestoreCarVisibility(base, item);
         return;
     }
-    if (!REXCVAR_GET(rearview_cars) || !PlausibleGuestPtr(item)) return;
+    if (!larecomp::settings::rearview_cars.Get() || !PlausibleGuestPtr(item)) return;
 
     auto* rt = rex::Runtime::instance();
     PPCFunc* prep = rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kCarVisibilityPrep) : nullptr;
@@ -406,7 +333,7 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
 
     static std::atomic<uint64_t> calls{0};
     const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
-    if (REXCVAR_GET(rearview_diag) && n % 23 == 0)
+    if (larecomp::settings::rearview_diag.Get() && n % 23 == 0)
         LARECOMP_APP_INFO("[RearView] car 0x{:08X}: visible in the mirror={}", item, visible);
 }
 
@@ -414,7 +341,7 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
 // callback sub_82306500 for 0x1000000). Counts what each client holds at that moment:
 // client+8 is its list of render types and each type's +20 its list of instances.
 void Patch_RearViewDiag() {
-    if (!REXCVAR_GET(rearview_diag)) return;
+    if (!larecomp::settings::rearview_diag.Get()) return;
     static std::atomic<uint32_t> calls{0};
     if (calls.fetch_add(1, std::memory_order_relaxed) % 120 != 0) return;
     auto* base = rex::Runtime::instance()->virtual_membase();
@@ -463,7 +390,7 @@ void Patch_RearViewDiag() {
 // rearview off should show the "saw the visible bit" line at the moments the mirror used
 // to pop up, and no mirror view or white frame at all.
 void Patch_RearViewUpdateVisible(PPCRegister& r3) {
-    if (REXCVAR_GET(rearview)) return;
+    if (larecomp::settings::rearview.Get()) return;
     if (r3.u32 & 0xFFu) {
         static std::atomic<uint32_t> blocked{0};
         const uint32_t n = blocked.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -474,7 +401,7 @@ void Patch_RearViewUpdateVisible(PPCRegister& r3) {
 }
 
 void Patch_RearViewUpdateActive(PPCRegister& r3) {
-    if (!REXCVAR_GET(rearview)) r3.u64 = 0;
+    if (!larecomp::settings::rearview.Get()) r3.u64 = 0;
 }
 
 // Hooked at 0x82234148, the `fcmpu cr6, f13, f0` of sub_82234128 (called from sub_82227428,
@@ -487,7 +414,7 @@ void Patch_RearViewUpdateActive(PPCRegister& r3) {
 // generated sub_82234128, not run); turning rearview off while the mirror is up should
 // drop the frame at once instead of fading it.
 void Patch_RearViewDrawAlpha(PPCRegister& f13) {
-    if (!REXCVAR_GET(rearview)) f13.f64 = 0.0;
+    if (!larecomp::settings::rearview.Get()) f13.f64 = 0.0;
 }
 
 // Hooked at 0x822340F4 in mcRearView::Draw (sub_82233E18): the `lwzx` that loads the
@@ -495,7 +422,7 @@ void Patch_RearViewDrawAlpha(PPCRegister& f13) {
 // draw, so the frame is not drawn; the mirror's scene viewport is a separate pass
 // and is untouched.
 bool Patch_RearViewFrameSkip() {
-    return !REXCVAR_GET(rearview_frame);
+    return !larecomp::settings::rearview_frame.Get();
 }
 
 #else // REXGLUE_HAS_XEO3_TARGET

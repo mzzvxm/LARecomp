@@ -16,6 +16,7 @@
 #include <string>
 
 #include "temporal_menu.h"
+#include "settings/larecomp_settings.h"
 
 using namespace mcla::gpu::temporal;
 
@@ -110,7 +111,7 @@ void SourceChecks(const std::string& dir) {
     return;
   }
   Check(cpp.find("UseGameVehicleMotion(fr.view == temporal::View::kPause,") != std::string::npos &&
-            cpp.find("REXCVAR_GET(mcla_gpu_pause_vehicle_vectors)") != std::string::npos,
+            cpp.find("larecomp::settings::mcla_gpu_pause_vehicle_vectors.Get()") != std::string::npos,
         "temporal.cpp builds the vehicle table only where UseGameVehicleMotion allows it (the pause view, unless the debug cvar)");
   Check(cpp.find("BuildVehicleTable(") != std::string::npos &&
             cpp.find("if (pending_.previous && temporal::UseGameVehicleMotion(") != std::string::npos,

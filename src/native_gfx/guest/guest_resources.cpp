@@ -6,13 +6,12 @@
 
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 
 // Defined in native_gfx.cpp at global scope, like every cvar in this runtime.
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_fetch_size_unit);
 
 namespace mcla::native_gfx {
 
@@ -103,7 +102,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
 }  // namespace
 
 uint32_t VertexFetchSizeUnit() {
-  const uint32_t unit = REXCVAR_GET(mcla_native_gfx_fetch_size_unit);
+  const uint32_t unit = larecomp::settings::mcla_native_gfx_fetch_size_unit.Get();
   return unit ? unit : 4u;
 }
 

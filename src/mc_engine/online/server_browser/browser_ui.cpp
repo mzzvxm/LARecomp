@@ -13,7 +13,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/imgui_dialog.h>
@@ -45,22 +45,6 @@
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 
-REXCVAR_DEFINE_STRING(online_master_server, "26.24.254.19:31003", "MCLA/Multiplayer",
-                      "Server list for the server browser (F6): host or host:port of a "
-                      "larecomp_master_server (port 31003 if omitted). Empty = no list, only "
-                      "server_browser_servers and the current server.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(server_browser_servers, "", "MCLA/Multiplayer",
-                      "Your own servers for the server browser, comma-separated host:port.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(server_browser_show_icons, true, "MCLA/Multiplayer",
-                    "Server browser: show each server's icon.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(server_browser_pending, "", "MCLA/Multiplayer",
-                      "Set by the server browser when a room needs another server: the room to "
-                      "offer right after the restart (address|vip|label). Cleared once used.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp {
 namespace {
@@ -78,7 +62,7 @@ std::filesystem::path ConfigPath() { return rex::filesystem::GetExecutableFolder
 // Live cvar and larecomp.toml together: the game rewrites the toml from the
 // live cvars when it exits, and the file is what the next boot reads.
 void SaveSetting(const char* name, const std::string& toml_value, const std::string& live_value) {
-    rex::cvar::SetFlagByName(name, live_value);
+    larecomp::cvar::SetFlagByName(name, live_value);
     std::vector<profiles::ConfigEdit> edits;
     edits.push_back({name, toml_value});
     if (!profiles::EditConfig(ConfigPath(), edits))
@@ -221,7 +205,7 @@ class BrowserDialog final : public rex::ui::ImGuiDialog {
 public:
     BrowserDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate)
         : ImGuiDialog(drawer), immediate_(immediate) {
-        pending_ = ParsePending(rex::cvar::GetFlagByName("server_browser_pending"));
+        pending_ = ParsePending(larecomp::cvar::GetFlagByName("server_browser_pending"));
         if (pending_.valid()) {
             // Offered once, right after the restart it asked for.
             SaveString("server_browser_pending", "");
@@ -362,7 +346,7 @@ private:
         ImGui::SetNextItemWidth(ImGui::CalcTextSize(hint).x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f);
         ImGui::InputTextWithHint("##search", hint, search_, sizeof(search_));
         ImGui::SameLine();
-        bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (ImGui::Checkbox("Icons", &icons))
             SaveSetting("server_browser_show_icons", icons ? "true" : "false", icons ? "true" : "false");
         ImGui::SameLine();
@@ -393,7 +377,7 @@ private:
             ImGui::TextDisabled(snapshot_.refreshing ? "Looking for servers..." : "No servers.");
             ImGui::TextDisabled("Add one below, or set online_master_server.");
         }
-        const bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        const bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         const float row_h = icons ? 48.0f : ImGui::GetTextLineHeightWithSpacing() * 2.0f;
         const std::string current = CurrentRelay();
         // The game's list row (teal bar and cursor) instead of the flat fill.
@@ -452,7 +436,7 @@ private:
             ImGui::TextDisabled("Pick a server on the left.");
             return;
         }
-        const bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        const bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (icons) {
             if (const ImTextureID tex = Icon(s->address)) {
                 ImGui::Image(tex, ImVec2(96, 96));
@@ -477,7 +461,7 @@ private:
             ImGui::Spacing();
             ImGui::TextWrapped("%s", s->description.c_str());
         }
-        auto favs = SplitList(rex::cvar::GetFlagByName("server_browser_servers"));
+        auto favs = SplitList(larecomp::cvar::GetFlagByName("server_browser_servers"));
         const bool fav = std::find(favs.begin(), favs.end(), s->address) != favs.end();
         if (ImGui::SmallButton(fav ? "Remove from my servers" : "Add to my servers")) {
             if (fav)
@@ -600,7 +584,7 @@ private:
         br::ClassifyRoom(r.props, &cruise, &lan);
         const std::string label = (r.gamertag.empty() ? VipText(r.host_vip) : r.gamertag) + " @ " +
                                   (s.name.empty() ? s.address : s.name);
-        if (s.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty()) {
+        if (s.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty()) {
             switch_ = {s.address, r.host_vip, label, kRoom};
             open_switch_ = true;  // opened at window level, where the modal is drawn
             return;
@@ -621,7 +605,7 @@ private:
 
     void PlayOnServer(const br::ServerView& s, bool cruise) {
         const std::string label = s.name.empty() ? s.address : s.name;
-        if (s.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty()) {
+        if (s.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty()) {
             switch_ = {s.address, 0, label, cruise ? kCruise : kRace};
             open_switch_ = true;
             return;
@@ -698,7 +682,7 @@ private:
             } else if (p.finished) {
                 ImGui::TextColored(mcla::ui::kColorGood, "Done. The game restarts to load them.");
                 // After the restart: this server, and what was asked for on it.
-                if (mods_server_.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty())
+                if (mods_server_.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty())
                     SaveString("mcla_online_server", mods_server_.address);
                 SaveSetting("mcla_online_enable", "true", "true");
                 Pending next = mods_action_;
@@ -856,7 +840,7 @@ private:
         ImGui::InputTextWithHint("##add", "host:port", add_, sizeof(add_));
         ImGui::SameLine();
         if (ImGui::Button("Add server") && add_[0]) {
-            auto favs = SplitList(rex::cvar::GetFlagByName("server_browser_servers"));
+            auto favs = SplitList(larecomp::cvar::GetFlagByName("server_browser_servers"));
             std::string a = add_;
             a.erase(std::remove_if(a.begin(), a.end(), [](char c) { return std::isspace(static_cast<unsigned char>(c)); }),
                     a.end());

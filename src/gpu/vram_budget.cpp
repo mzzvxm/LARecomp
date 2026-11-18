@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <format>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "device.h"
@@ -15,16 +15,6 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "textures.h"
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_vram_log, 0, "MCLA/GPU",
-    "Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), "
-    "log how much video memory the process uses against the budget the system gives it, and what "
-    "the texture, resolve product, EDRAM target and resolve memory caches hold, whether or not "
-    "memory is short. For a report of stutter or crashes on a card with little video memory. "
-    "0: off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -209,7 +199,7 @@ uint64_t VideoMemoryBudget::Trim(uint64_t need) {
 }
 
 void VideoMemoryBudget::LogUse(const backend::VideoMemory& memory, uint64_t frame) {
-  const uint32_t every = REXCVAR_GET(mcla_gpu_vram_log);
+  const uint32_t every = larecomp::settings::mcla_gpu_vram_log.Get();
   if (every == 0 || frame < next_use_log_) {
     return;
   }

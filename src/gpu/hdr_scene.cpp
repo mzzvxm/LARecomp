@@ -6,31 +6,13 @@
 #include <algorithm>
 #include <format>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_hdr_layers_view, 0, "MCLA/GPU",
-    "Diagnostic (HDR output): what a frame whose UI was kept as a layer shows. 0 the frame, 1 the "
-    "UI layer alone, 2 the scene alone, 3 the UI's coverage as grey, 4 magenta where the scene "
-    "is above the game's white, 5 the float scene's difference from the 8-bit scene times 16. "
-    "Frames without layers show the front buffer whatever this says. Live.")
-    .debug_only()
-    .range(0, 5)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_hdr_compose_in_present, true, "MCLA/GPU",
-    "Diagnostic (HDR output): the present's passes that read the frame 1:1 add the UI layer to the "
-    "scene themselves, instead of reading a float image the compose pass made of the two. On by "
-    "default: one full-screen float16 pass and its image less (about 0.15 ms and 63 MiB at 4K). Off: "
-    "the compose pass and its image as before, for comparing the two. A scaled present and the "
-    "debug views of mcla_gpu_hdr_layers_view use the image whatever this says. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -126,7 +108,7 @@ bool HdrScene::Select(const TextureKey& front, uint32_t width, uint32_t height, 
 }
 
 bool HdrScene::ComposeInPresent() const {
-  return REXCVAR_GET(mcla_gpu_hdr_compose_in_present) && REXCVAR_GET(mcla_gpu_hdr_layers_view) == 0;
+  return larecomp::settings::mcla_gpu_hdr_compose_in_present.Get() && larecomp::settings::mcla_gpu_hdr_layers_view.Get() == 0;
 }
 
 void HdrScene::NoteInline(const Layers& layers) {
@@ -149,7 +131,7 @@ bool HdrScene::Compose(plume::RenderCommandList* list, const Layers& layers, uin
   }
   inline_presents_ = 0;
   const FrameLayers::Frame& frame = layers.frame;
-  const uint32_t view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_hdr_layers_view), 0, 5));
+  const uint32_t view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_hdr_layers_view.Get(), 0, 5));
   const bool kept = image_.texture && image_.width == width && image_.height == height;
   const float ui_alpha = layers.ui_alpha;  // the HUD fade Select chose for this frame
   if (kept && composed_generation_ == frame.generation && composed_view_ == view &&

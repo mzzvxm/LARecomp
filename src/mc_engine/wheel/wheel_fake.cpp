@@ -40,7 +40,7 @@
 //   sub_8275CAA0  EffectOperation(user, {id, op}, 1, 1, 0)   op 2 PLAY, 1 STOP (see sub_82467A18: set/update an effect, then op 2)
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/ppc/function.h>
 #include <rex/runtime.h>
@@ -69,21 +69,6 @@
 #include "wheel_ffb.h"
 #include "wheel_input.h"
 
-REXCVAR_DEFINE_STRING(wheel_fake, "off", "MCLA/Wheel",
-    "Present the game with a steering wheel without owning one. off: nothing changes. pad: the "
-    "real pad or keyboard-and-mouse state is shown as a wheel (stick X steers, triggers are the "
-    "pedals, bumpers shift). keys: A/D steer, W throttle, S brake, Q/E shift down/up. Takes "
-    "effect on the next input poll.")
-    .allowed({"off", "pad", "keys"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_log, false, "MCLA/Wheel",
-    "Log every force-feedback command the game sends while wheel_fake is on: effect id, type, "
-    "duration and parameters. Capped so a long race cannot fill the log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
 REX_EXTERN(__imp__rex_sub_8275CB70);
 REX_EXTERN(__imp__rex_sub_8275CB78);
 REX_EXTERN(__imp__rex_sub_8275C980);
@@ -98,7 +83,7 @@ namespace {
 enum class FakeMode { kOff, kPad, kKeys };
 
 FakeMode CurrentMode() {
-    const std::string& v = REXCVAR_GET(wheel_fake);
+    const std::string& v = larecomp::settings::wheel_fake.Get();
     if (v == "pad") return FakeMode::kPad;
     if (v == "keys") return FakeMode::kKeys;
     return FakeMode::kOff;
@@ -219,7 +204,7 @@ const char* EffectTypeName(uint32_t t) {
 std::atomic<int> g_ffb_log_budget{4000};
 
 bool FfbLogOn() {
-    return REXCVAR_GET(wheel_ffb_log) && g_ffb_log_budget.load(std::memory_order_relaxed) > 0;
+    return larecomp::settings::wheel_ffb_log.Get() && g_ffb_log_budget.load(std::memory_order_relaxed) > 0;
 }
 
 void FfbLog(const char* what, uint32_t user, const uint8_t* base, uint32_t effect_ptr,
@@ -274,7 +259,7 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
                           "flags 0x{:04X}); source: {}",
                           RdU16(base, caps + 2),
                           CurrentMode() == FakeMode::kOff ? "a real wheel (SDL)"
-                                                          : REXCVAR_GET(wheel_fake));
+                                                          : larecomp::settings::wheel_fake.Get());
     }
 }
 

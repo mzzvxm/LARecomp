@@ -34,7 +34,7 @@
 // that polls with these natives gets the same treatment, and script_pad_latch_ms = 0 turns it off.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <chrono>
@@ -44,16 +44,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_INT32(script_pad_latch_ms, 100, "MCLA/Input",
-    "A script that asks whether a button was pressed only every few updates (the title screen's "
-    "Start above 30 FPS) misses a press that comes in an update it does not look in. It is told "
-    "about that press, at its next look, if its previous look was at most this many milliseconds "
-    "before. Without it the button has to be pressed several times. 0 = the game's own "
-    "behaviour: a press is seen only by a script that looks in the update it happened in.")
-    .range(0, 500)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -100,7 +90,7 @@ int64_t NowMs() {
 // answer and `down` whether the button is held now. Returns true when the script is to be told
 // that it was pressed.
 bool ScriptLook(Native native, uint32_t object, uint32_t what, bool down, bool pressed) {
-    const int32_t window_ms = REXCVAR_GET(script_pad_latch_ms);
+    const int32_t window_ms = larecomp::settings::script_pad_latch_ms.Get();
     if (window_ms <= 0) return false;
     const uint8_t* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return false;
@@ -145,7 +135,7 @@ bool ScriptLook(Native native, uint32_t object, uint32_t what, bool down, bool p
 
 // The running script's place asked a native that refused to answer: it is not polling now.
 void ScriptRefused() {
-    if (REXCVAR_GET(script_pad_latch_ms) <= 0) return;
+    if (larecomp::settings::script_pad_latch_ms.Get() <= 0) return;
     const uint8_t* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     const uint32_t thread = ReadGuestU32(base, kCurrentScriptThread);
@@ -172,7 +162,7 @@ void ActionAnswered(Native native, PPCRegister& r3) {
     const uint32_t controls = t_controls;
     const uint32_t action = t_action;
     t_controls = 0;
-    if (!controls || REXCVAR_GET(script_pad_latch_ms) <= 0) return;
+    if (!controls || larecomp::settings::script_pad_latch_ms.Get() <= 0) return;
     const uint8_t* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     const uint32_t records = ReadGuestU32(base, controls + kControlsRecords);

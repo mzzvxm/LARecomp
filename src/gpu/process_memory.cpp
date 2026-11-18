@@ -6,7 +6,7 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
@@ -20,15 +20,6 @@
 #include <windows.h>
 #include <psapi.h>
 #endif
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_process_memory_log, 0, "MCLA/GPU",
-    "Diagnostic: every this many frames, log what the process's memory is made of (the commit "
-    "charge and working set, the committed address space by kind, the private regions by size, "
-    "the process heaps, the biggest regions). It walks the whole address space, which takes "
-    "some milliseconds on the render thread each time. 0: off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -192,7 +183,7 @@ void Report(uint64_t frame) {
 }  // namespace
 
 void ProcessMemoryTick(uint64_t frame) {
-  const uint32_t every = REXCVAR_GET(mcla_gpu_process_memory_log);
+  const uint32_t every = larecomp::settings::mcla_gpu_process_memory_log.Get();
   if (every == 0) {
     return;
   }

@@ -3,7 +3,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "ultrawide.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 
 #include <algorithm>
@@ -25,8 +25,6 @@
 #include "gpu/gpu.h"
 #endif
 
-REXCVAR_DECLARE(std::string, aspect_ratio);  // hooks/graphics.cpp
-REXCVAR_DECLARE(int32_t, hud_width);         // hooks/graphics.cpp
 
 namespace mc::ultrawide {
 
@@ -95,7 +93,7 @@ std::string Ask() {
       return g_ask;
     }
   }
-  return REXCVAR_GET(aspect_ratio);
+  return larecomp::settings::aspect_ratio.Get();
 }
 
 // The choice in force, for a caller that has no setting text (no registry read once Recompute has run).
@@ -165,7 +163,7 @@ void SetWindowSize(uint32_t width, uint32_t height) {
     const int stretch = Active() ? 1 : 0;
     if (stretch != g_xenia_stretch) {
       g_xenia_stretch = stretch;
-      rex::cvar::SetFlagByName("present_letterbox", stretch ? "false" : "true");
+      larecomp::cvar::SetFlagByName("present_letterbox", stretch ? "false" : "true");
     }
   }
 }
@@ -559,11 +557,11 @@ void NoteUiPiece(uint32_t instance, bool begin) {
 void Init() {
   {
     std::lock_guard<std::mutex> lock(g_ask_mutex);
-    g_ask = REXCVAR_GET(aspect_ratio);
+    g_ask = larecomp::settings::aspect_ratio.Get();
     g_ask_known = true;
   }
-  g_hud_width.store(std::clamp<int32_t>(REXCVAR_GET(hud_width), 0, 100), std::memory_order_relaxed);
-  rex::cvar::RegisterChangeCallback("hud_width", [](std::string_view, std::string_view value) {
+  g_hud_width.store(std::clamp<int32_t>(larecomp::settings::hud_width.Get(), 0, 100), std::memory_order_relaxed);
+  larecomp::cvar::RegisterChangeCallback("hud_width", [](std::string_view, std::string_view value) {
     int32_t percent = 0;
     const char* end = value.data() + value.size();
     if (std::from_chars(value.data(), end, percent).ec != std::errc()) {
@@ -575,7 +573,7 @@ void Init() {
                         Active() ? "" : " (the picture is 16:9: nothing moves)");
     }
   });
-  rex::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
+  larecomp::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
     {
       std::lock_guard<std::mutex> lock(g_ask_mutex);
       g_ask = std::string(value);

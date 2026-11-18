@@ -27,7 +27,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/system.h>
@@ -47,30 +47,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
-
-REXCVAR_DEFINE_INT32(
-    shader_pack_threads, 0, "MCLA/GPU",
-    "How many threads build the shader packs from your game files on the first start. 0 chooses "
-    "by itself from the processor's cores and the free memory. A lower number leaves the PC more "
-    "usable during the build, which then takes longer.")
-    .range(0, 64)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(
-    build_shader_packs, false, "MCLA/GPU",
-    "Builds the shader packs from your game files and closes, without starting the game: no "
-    "window, no graphics. The launcher runs this at the end of its setup so that the first start "
-    "has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. "
-    "Exit code 0 when the packs are in place.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(
-    build_shader_packs_force, false, "MCLA/GPU",
-    "With build_shader_packs: build even when the packs in place are current.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace larecomp::shaderbuild {
 namespace {
@@ -211,7 +187,7 @@ sp::BuildRequest MakeRequest(const std::filesystem::path& game_root, const std::
   request.out_dir = folder;
   request.dxc_dir = ShaderCompilerFolder();
   request.formats = formats;
-  request.threads = static_cast<unsigned>(std::max(0, REXCVAR_GET(shader_pack_threads)));
+  request.threads = static_cast<unsigned>(std::max(0, larecomp::settings::shader_pack_threads.Get()));
   request.force = force;
   request.sink = sink;
   request.variant_step = VariantStepForBuild();
@@ -421,7 +397,7 @@ void ConfigurePackFolder(const std::filesystem::path& cache_root) {
 #if defined(LARECOMP_HAS_GPU)
   // Only a cache folder the player named moves the packs; otherwise the renderer picks (next to
   // the program, or the local application data folder where that cannot be written).
-  if (cache_root.empty() || rex::cvar::GetFlagByName("cache_root").empty()) return;
+  if (cache_root.empty() || larecomp::cvar::GetFlagByName("cache_root").empty()) return;
   mcla::gpu::SetShaderPackFolder(cache_root / "shaders");
 #else
   (void)cache_root;
@@ -442,7 +418,7 @@ bool PacksCurrent(const std::filesystem::path& game_root) {
 }
 
 bool CommandLineRequested() {
-  return REXCVAR_GET(build_shader_packs);
+  return larecomp::settings::build_shader_packs.Get();
 }
 
 namespace {
@@ -535,7 +511,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   };
 
   // Packs that are current need nothing, not even the executable's image to be read.
-  const bool force = REXCVAR_GET(build_shader_packs_force);
+  const bool force = larecomp::settings::build_shader_packs_force.Get();
   if (!force) {
     const sp::StampCheck check =
         sp::CheckStamp(folder, AllFormats(), sp::GameFilesQuick{game_root, ShaderCompilerFolder()}, VariantStepForBuild());

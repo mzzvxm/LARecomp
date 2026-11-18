@@ -35,7 +35,7 @@
 // The showroom's own limits are in showroom.cpp.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
@@ -55,13 +55,6 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(vehicle_records_relocate, true, "MCLA/Patches",
-    "Keep the parts bought for each car model in a table sized to the roster, so the game "
-    "takes more than 77 vehicles. Off = the game's own 77-slot table: past 77 vehicles it "
-    "overwrites other profile data, and a large roster crashes the boot.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_8238C9B0);  // LocalOptions reset
 REX_EXTERN(__imp__rex_sub_8238C278);  // new-game defaults: a record per roster vehicle
@@ -106,7 +99,7 @@ std::array<std::atomic<bool>, kSiteCount> g_site_seen{};
 uint64_t g_slots_hash = 0;
 bool g_slots_hash_valid = false;
 
-bool Enabled() { return REXCVAR_GET(vehicle_records_relocate); }
+bool Enabled() { return larecomp::settings::vehicle_records_relocate.Get(); }
 
 uint16_t ReadGuestU16(const uint8_t* b, uint32_t a) {
     return static_cast<uint16_t>((uint32_t(b[a]) << 8) | uint32_t(b[a + 1]));

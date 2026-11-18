@@ -5,7 +5,7 @@
 #include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include "discord_rpc/rpc_client.h"
 
 // -----------------------------------------------------------------------------
@@ -18,26 +18,6 @@
 // in each language.
 //
 // -----------------------------------------------------------------------------
-
-REXCVAR_DEFINE_BOOL(larecomp_discord_rpc, true, "Discord",
-                    "Enable Discord Rich Presence.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(larecomp_discord_rpc_log_state, false, "Discord",
-                    "Log Discord RPC state changes with printf.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(larecomp_discord_large_image, "mcla_logo", "Discord",
-                      "Discord RPC large image key.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(larecomp_discord_rpc_language, "auto", "Discord",
-                      "Rich Presence language. 'auto' follows the game (user_language); or force "
-                      "en / pt / es. Discord itself does not translate presence text.")
-    .allowed({"auto", "en", "pt", "es"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Localization table. Columns: EN, PT, ES (fallback EN). Add a language by
 // appending a column here + a case in the resolver + a value in RpcStr use.
@@ -90,7 +70,7 @@ const char* RpcTr(RpcStr key) {
   };
 
   int lang = EN;
-  std::string sel = REXCVAR_GET(larecomp_discord_rpc_language);
+  std::string sel = larecomp::settings::larecomp_discord_rpc_language.Get();
   if (sel == "pt") {
     lang = PT;
   } else if (sel == "es") {
@@ -103,7 +83,7 @@ const char* RpcTr(RpcStr key) {
     // std::string on our fork; GetFlagByName gives text either way, so accept
     // the name as well as the raw Xbox language id (5 = Spanish, 9 =
     // Portuguese). Anything not translated yet falls back to English.
-    const std::string game = rex::cvar::GetFlagByName("user_language");
+    const std::string game = larecomp::cvar::GetFlagByName("user_language");
     if (game == "Portuguese" || game == "9") lang = PT;
     else if (game == "Spanish" || game == "5") lang = ES;
     else lang = EN;
@@ -154,7 +134,7 @@ const char* StateTextForState(LarecompDiscordState state) {
 }
 
 void LogStateChange(const std::string& details, const std::string& state_text) {
-  if (!REXCVAR_GET(larecomp_discord_rpc_log_state)) {
+  if (!larecomp::settings::larecomp_discord_rpc_log_state.Get()) {
     return;
   }
 
@@ -168,7 +148,7 @@ void LogStateChange(const std::string& details, const std::string& state_text) {
 }  // namespace
 
 void LARECOMP_Discord_Init() {
-  if (!REXCVAR_GET(larecomp_discord_rpc)) {
+  if (!larecomp::settings::larecomp_discord_rpc.Get()) {
     return;
   }
 
@@ -182,7 +162,7 @@ void LARECOMP_Discord_Init() {
 
   rpc.details_ = "";
   rpc.state_ = "";
-  rpc.large_image_key_ = REXCVAR_GET(larecomp_discord_large_image);
+  rpc.large_image_key_ = larecomp::settings::larecomp_discord_large_image.Get();
   rpc.large_image_text_ = "LARecomp";
 
   larecomp::discord_rpc::Start(kDiscordApplicationId, rpc);
@@ -209,7 +189,7 @@ void LARECOMP_Discord_Shutdown() {
 void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
                                    std::string_view details,
                                    std::string_view state_text) {
-  if (!REXCVAR_GET(larecomp_discord_rpc)) {
+  if (!larecomp::settings::larecomp_discord_rpc.Get()) {
     return;
   }
 

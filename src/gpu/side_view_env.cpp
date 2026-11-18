@@ -74,16 +74,6 @@
 #include "live_text.h"
 #include "side_views.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_env_resolution, "auto", "MCLA/GPU",
-    "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the "
-    "world around the car as a 512x256 picture for them to reflect, which is why the reflections look "
-    "soft up close. game (the game's own 512x256), high (1024x512), ultra (1536x768), or auto (game on "
-    "an integrated graphics chip or a card with less than about 6 GB of memory, high on any other card). "
-    "Costs a little graphics card time and video memory (about 4 MiB for high, 16 MiB for ultra). Live.")
-    .allowed({"auto", "game", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu {
 
 namespace {

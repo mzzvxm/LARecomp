@@ -73,25 +73,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(mcla_gfx_probe, false, "MCLA/Debug",
-                    "Milestone 0: passive D3D9-Xenon probe. Renders nothing, changes nothing. "
-                    "Writes mcla_gfx_probe_*.csv next to the executable.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_INT32(mcla_gfx_probe_frames, 900, "MCLA/Debug",
-                     "Milestone 0: number of guest frames to capture before the probe dumps its "
-                     "report and goes idle (0 = never stop).")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gfx_probe {
 namespace {
@@ -300,7 +287,7 @@ uint32_t g_last_surface_info = 0;
 // External linkage from here on: these are the capture entry points called
 // by the graphics hooks in native_gfx/hooks.cpp (declared in the header).
 
-bool Enabled() { return REXCVAR_GET(mcla_gfx_probe) && !g_done.load(std::memory_order_relaxed); }
+bool Enabled() { return larecomp::settings::mcla_gfx_probe.Get() && !g_done.load(std::memory_order_relaxed); }
 
 void RecordShader(const uint8_t* base, const UcodeRef& u, uint32_t is_pixel) {
   if (!u.hash) {
@@ -563,19 +550,19 @@ void OnFrameEnd() {
     g_max_draws_frame = g_draws_this_frame;
   }
   g_draws_this_frame = 0;
-  const int32_t limit = REXCVAR_GET(mcla_gfx_probe_frames);
+  const int32_t limit = larecomp::settings::mcla_gfx_probe_frames.Get();
   if (limit > 0 && g_frame >= uint32_t(limit) && !g_done.load(std::memory_order_relaxed)) {
     g_done.store(true, std::memory_order_relaxed);
   }
 }
 
 void Install() {
-  if (!REXCVAR_GET(mcla_gfx_probe)) {
+  if (!larecomp::settings::mcla_gfx_probe.Get()) {
     return;
   }
   g_active.store(true, std::memory_order_relaxed);
   REXLOG_INFO("[mcla_gfx_probe] active — passive capture for {} frames",
-              REXCVAR_GET(mcla_gfx_probe_frames));
+              larecomp::settings::mcla_gfx_probe_frames.Get());
 }
 
 void OpenBracket(uint32_t caller_marker, uint32_t surface_info) {

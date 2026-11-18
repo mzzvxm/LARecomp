@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -74,20 +74,6 @@
 #include "texture_bytes.h"
 #include "vram_budget.h"
 
-REXCVAR_DECLARE(std::string, mcla_gpu_frame_generation);  // frame_generation.cpp
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_dlss_mask_tags, 7, "MCLA/GPU",
-    "Diagnostic: which of Streamline's hint inputs carry the masks DLSS is given (what is drawn "
-    "again for the upscaler: shadows of cars, particles, light volumes, car glass). Add up: 1 the "
-    "reactive mask goes in as the bias-current-colour hint, 2 as the reactive mask hint, 4 the glass "
-    "mask goes in as the transparency and composition hint. 7: all three. Used with "
-    "mcla_gpu_upscaler_mask_test (an all-ones mask) to see which hint the DLSS plugin reads: with "
-    "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
-    "smoothness over time is read. Live.")
-    .range(0, 7)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mcla::gpu {
 
@@ -301,7 +287,7 @@ bool NameLooksLikeRtx(const std::string& name) {
 // while the game runs). On Vulkan only the saved choice at the start counts: the device is made
 // through Streamline then, which costs seconds, and the plugins' extensions and queues go into it.
 bool WantFrameGenerationPlugins(Backend backend, const std::string& gpu_name) {
-  if (REXCVAR_GET(mcla_gpu_frame_generation) == "dlss") {
+  if (larecomp::settings::mcla_gpu_frame_generation.Get() == "dlss") {
     return true;
   }
   // On D3D12 for every card that can run it by its name (plugins cannot be added after slInit, and
@@ -2468,7 +2454,7 @@ std::string DlssBackend::Impl::Evaluate(void* native_list, Context& context,
   // CHECK: which of these three tags the DLSS plugin of Streamline 2.14.16 reads (the docs excerpt
   // we have lists only the exposure tag for it): mcla_gpu_upscaler_mask_test with
   // mcla_gpu_dlss_mask_tags 1, 2 and 4 in turn settles it. A tag it does not read is ignored.
-  const uint32_t tag_bits = uint32_t(REXCVAR_GET(mcla_gpu_dlss_mask_tags));
+  const uint32_t tag_bits = uint32_t(larecomp::settings::mcla_gpu_dlss_mask_tags.Get());
   const backend::NativeImage mask_native =
       backend::NativeImageOf(in.mask.texture, backend::ImageUse::kComputeRead);
   const bool has_mask = in.mask.texture != nullptr && mask_native.complete;
@@ -2736,7 +2722,7 @@ void BeforeDevice(Backend backend, const std::string& preferred_adapter) {
   // a start-time choice on Vulkan like DLSS itself (a Vulkan game started without it lists it as
   // after-restart, dlss_frame_generation.h). On D3D12 neither needs a start-time decision.
   const bool dlss_chosen = ReadUpscalerSettings().upscaler == Upscaler::kDlss;
-  const bool frame_gen_chosen = REXCVAR_GET(mcla_gpu_frame_generation) == "dlss";
+  const bool frame_gen_chosen = larecomp::settings::mcla_gpu_frame_generation.Get() == "dlss";
   if (!dlss_chosen && !frame_gen_chosen) {
     return;
   }

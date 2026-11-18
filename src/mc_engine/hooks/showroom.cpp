@@ -31,7 +31,7 @@
 //   elements are plain objects as `new Object()` makes them, new slots -1.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/function_dispatcher.h>
@@ -45,12 +45,6 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(showroom_unlimited, true, "MCLA/Patches",
-    "The garage's showroom lists every vehicle on sale. Off = the game's own showroom: 70 rows, "
-    "and a picture for at most 7 vehicles past the game's own.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_826A9D58);  // mcGarage::ListShowroomVehicles
 REX_EXTERN(__imp__rex_sub_8268DB80);  // next free row of a garage list
@@ -89,7 +83,7 @@ constexpr uint32_t kKey = 0x00, kValue = 0x10, kOut = 0x20;
 constexpr uint32_t kStrLength = 0x40, kStrVehicleId = 0x50, kStrPictures = 0x68, kStrMovie = 0x80;
 constexpr uint32_t kStrMenu = 0x90, kStrElements = 0x98, kStrProperty1 = 0xA8, kStrType = 0xB8;
 
-bool Enabled() { return REXCVAR_GET(showroom_unlimited); }
+bool Enabled() { return larecomp::settings::showroom_unlimited.Get(); }
 
 uint32_t RosterCount(const uint8_t* b) {
     return (uint32_t(b[kRosterCount]) << 8) | uint32_t(b[kRosterCount + 1]);

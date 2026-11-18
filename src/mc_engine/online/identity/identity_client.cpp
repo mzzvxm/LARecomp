@@ -7,7 +7,7 @@
 #include <mutex>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "larecomp_log.h"
 #include "../rate_my_ride/rmr_net.h"
@@ -65,7 +65,7 @@ void Publish(const Status& s) {
     g_status.generation = gen;
 }
 
-bool OnlineOn() { return rex::cvar::GetFlagByName("mcla_online_enable") == "true"; }
+bool OnlineOn() { return larecomp::cvar::GetFlagByName("mcla_online_enable") == "true"; }
 
 bool Resolve(const std::string& host, uint16_t port, sockaddr_in& out) {
     addrinfo hints{};
@@ -362,8 +362,8 @@ void Worker() {
             continue;
         }
         serving = true;
-        const std::string server = rex::cvar::GetFlagByName("mcla_online_server") + "|" +
-                                   rex::cvar::GetFlagByName("mcla_online_port");
+        const std::string server = larecomp::cvar::GetFlagByName("mcla_online_server") + "|" +
+                                   larecomp::cvar::GetFlagByName("mcla_online_port");
         if (requests) {
             HandleRequests(s);
             Publish(s);

@@ -14,7 +14,7 @@
 // the game asks again, so the per-frame tick sends the stop itself.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/input/input.h>
 #include <rex/input/input_system.h>
 #include <rex/ppc.h>
@@ -26,11 +26,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(controller_vibration, true, "MCLA/Input",
-    "Controller vibration. Off keeps the game's rumble from reaching any controller and stops a "
-    "motor that is running.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -47,7 +42,7 @@ std::atomic<uint32_t> g_driven[kUsers];
 void Hook_VibrationSet(PPCRegister& r3, PPCRegister& r5) {
     uint8_t* base = rex::Runtime::instance()->virtual_membase();
     if (!base || r5.u32 == 0) return;
-    if (!REXCVAR_GET(controller_vibration)) {
+    if (!larecomp::settings::controller_vibration.Get()) {
         std::memset(base + r5.u32, 0, 4);
     }
     if (r3.u32 < kUsers) {
@@ -66,7 +61,7 @@ uint32_t VibrationDriven(uint32_t user) {
 // Per frame, on the game's thread (Patch_DeltaTimePre): the option was turned off while a
 // motor was running.
 void TickVibration() {
-    if (REXCVAR_GET(controller_vibration)) return;
+    if (larecomp::settings::controller_vibration.Get()) return;
     auto* input = static_cast<rex::input::InputSystem*>(
         rex::Runtime::instance()->input_system());
     if (!input) return;

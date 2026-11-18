@@ -15,18 +15,12 @@
 #include <cctype>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/graphics/xenos.h>
 #include <rex/logging.h>
 
 #include "descriptors.h"
 #include "device.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_anisotropy, "game", "MCLA/GPU",
-    "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
-    "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -36,7 +30,7 @@ namespace {
 
 // mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's.
 int32_t ReadOverride() {
-  std::string value = REXCVAR_GET(mcla_gpu_anisotropy);
+  std::string value = larecomp::settings::mcla_gpu_anisotropy.Get();
   std::string v;
   for (unsigned char c : value) {
     if (!std::isspace(c)) v.push_back(char(std::tolower(c)));

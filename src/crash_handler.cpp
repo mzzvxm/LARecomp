@@ -275,7 +275,7 @@ std::filesystem::path ExeDir() {
 
 #include <spdlog/spdlog.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/exception_handler.h>
 #include <rex/platform/seh.h>
 
@@ -296,19 +296,6 @@ std::filesystem::path ExeDir() {
 #include "spdlog_console.h"
 
 extern uint8_t* g_guest_mem;  // main.cpp; set once the runtime's memory exists
-
-REXCVAR_DEFINE_STRING(
-    mcla_test_crash, "", "MCLA/Debug",
-    "Crash test for the Linux crash logger: MODE or MODE:SECONDS (5 seconds by default), a few "
-    "seconds after the game has started. segv writes to address 0x10 on a worker thread; guest "
-    "reads the guest's null page (the runtime logs 'Unhandled guest access violation' first, as for "
-    "a real guest crash); stack runs a worker thread out of stack (it has a signal stack); abort "
-    "calls abort(); terminate throws an exception nobody catches; illegal runs an illegal "
-    "instruction; fpe divides by zero. The log must end with '!!! CRASH DETECTED !!!' (or '!!! "
-    "ABORT DETECTED !!!') and a stack trace, and the game dies with the signal's status. Only works "
-    "with the debug menu unlocked. Linux only.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace {
 
@@ -449,7 +436,7 @@ void RunCrashTest(const std::string& mode) {
 }
 
 void ArmCrashTest() {
-    std::string spec = REXCVAR_GET(mcla_test_crash);
+    std::string spec = larecomp::settings::mcla_test_crash.Get();
     if (spec.empty()) return;
     // The same gate as everything hidden: the answer was fixed at start, nothing unlocks a running game.
     if (!larecomp::DebugMenuUnlocked()) {

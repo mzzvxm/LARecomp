@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 
@@ -29,7 +29,6 @@
 #include "shaders.h"
 #include "temporal_backend.h"
 
-REXCVAR_DECLARE(bool, mcla_gpu_pipeline_cache);
 
 namespace mcla::gpu {
 
@@ -223,7 +222,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
                 "The Plume renderer is not in use (mcla_gpu is off), so there are no pipelines to "
                 "prepare.");
   }
-  if (!REXCVAR_GET(mcla_gpu_pipeline_cache)) {
+  if (!larecomp::settings::mcla_gpu_pipeline_cache.Get()) {
     return Fail(result, PrebuildStatus::kNotNeeded,
                 "The pipeline cache is turned off (mcla_gpu_pipeline_cache), so the game keeps no "
                 "pipeline list and there is nothing to prepare.");

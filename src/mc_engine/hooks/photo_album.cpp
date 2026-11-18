@@ -79,7 +79,7 @@
 //   new one goes.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 
@@ -93,23 +93,6 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../logging.h"
-
-REXCVAR_DEFINE_BOOL(photo_album_keep_new_preview, true, "MCLA/PhotoMode",
-    "Fix: while choosing the slot for a new photo, the album shows the photo you just "
-    "took -- in the big picture and pulsing in the highlighted slot -- instead of the "
-    "last saved photo the cursor passed over. The game decodes every photo into one "
-    "shared preview image, and in the slot picker it let the slots overwrite the new "
-    "one.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(photo_ui_trace, false, "MCLA/Diagnostics",
-    "Log the UI statechart while the photo album scene is up (photo mode, the album, "
-    "the Rate My Ride snapshots): events posted and dispatched, delayed events, the "
-    "UI.* and photoAlbum.* commands with the states they touch, and the paced movies' "
-    "frame counts every 10 seconds. Silent everywhere else.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_8263CB78);  // snapshot vhsm update
 REX_EXTERN(__imp__rex_sub_8263C9C8);  // decode a slot's photo into PreviewPicture
@@ -225,7 +208,7 @@ constexpr uint32_t kCapturePhase = 132;
 // Only while PhotoAlbumScene is active: photo mode, the album, the Rate My Ride
 // snapshots and their dialogs all live under it.
 bool Tracing(const uint8_t* base) {
-    if (!REXCVAR_GET(photo_ui_trace)) return false;
+    if (!larecomp::settings::photo_ui_trace.Get()) return false;
     // Posts also come from the render thread (the capture), hence the atomics.
     static std::atomic<uint32_t> cached_machine{0};
     static std::atomic<uint32_t> scene{0};
@@ -333,7 +316,7 @@ extern "C" REX_FUNC(rex_sub_8263CB78) {
 extern "C" REX_FUNC(rex_sub_8263C9C8) {
     const uint32_t album = ctx.r3.u32;
     const uint32_t slot = ctx.r4.u32;
-    if (!REXCVAR_GET(photo_album_keep_new_preview) || !album ||
+    if (!larecomp::settings::photo_album_keep_new_preview.Get() || !album ||
         !base[album + kAlbumSavingSnapshot]) {
         __imp__rex_sub_8263C9C8(ctx, base);
         return;

@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "car_dump.h"
@@ -26,89 +26,6 @@
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_car_selfrefl, "auto", "MCLA/GPU",
-    "Car self-reflections: your car's paint reflects its own body, which the game's paint does not: the wing shows in the "
-    "trunk lid and the mirror in the door, and the reflection is darker where the body shades it, under a spoiler or "
-    "in a wheel arch, and it also shows the car's own colour in the reflection. on is the one level; off leaves the game's "
-    "paint as it is. auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, or the "
-    "iGPU of a desktop CPU). Costs the graphics card a little while it is on (about 0.1 ms a frame at 4K on an RTX 5080). "
-    "It works in the game, behind the pause menu and in the garage, not on the map. Live.")
-    .allowed({"auto", "off", "on"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_test, 0, "MCLA/GPU",
-    "Diagnostic: forces the car self-reflections (mcla_gpu_car_selfrefl) to a level whatever the setting says, for a test "
-    "or a comparison. 0: follow the setting (the default). 1: the specular occlusion alone, the reflection is darkened where "
-    "a short ray along it passes just behind a part of the car (the setting has no such level: it costs the same as 2). "
-    "2: the full effect, the same, and the car's own colour of the previous frame is reflected there (what the setting on does). "
-    "Needs the shader pack's "
-    "car_selfrefl variant and the motion blur draw's camera. Live.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): "
-    "1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace "
-    "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, "
-    "orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the "
-    "ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, "
-    "yellow: a hit on a part the camera sees, orange: on a part it does not). 0: off. Live.")
-    .debug_only()
-    .range(0, 5)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_length, 2.0, "MCLA/GPU",
-    "Diagnostic: how far the car self-reflection's ray goes, in the game's world units (about metres). Live.")
-    .debug_only()
-    .range(0.2, 6.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_thickness, 0.3, "MCLA/GPU",
-    "Diagnostic: how far behind a part of the car's surface (as the previous frame saw it) a ray point still hits it, "
-    "in the game's world units; the weight of a point is full up to half of it and falls to nothing at it. Live.")
-    .debug_only()
-    .range(0.02, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_strength, 1.0, "MCLA/GPU",
-    "Diagnostic: the most of the reflection the car self-reflection takes over, 0 to 1. Live.")
-    .debug_only()
-    .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_steps, 12, "MCLA/GPU",
-    "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each, and three more for "
-    "each segment between two points that holds the outline of a part; they are closer together near the car's surface, and "
-    "the step the weight makes at a part's outline is a point's share of the whole hit). Live.")
-    .debug_only()
-    .range(4, 24)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_full, 0.25, "MCLA/GPU",
-    "Diagnostic: the share of the car self-reflection ray's points that, all inside a part of the car, take the whole hit "
-    "(0.25: 3 of the 12). A smaller one makes every hit heavier and the outline of a part a steeper step, a larger one lighter and "
-    "softer. Live.")
-    .debug_only()
-    .range(0.05, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_gain, 1.0, "MCLA/GPU",
-    "Diagnostic: a multiplier on the brightness of the car's own colour in its reflection (1: the target's exponent bias "
-    "taken out, which is the paint's own units; unverified: raise it if the reflection of the car looks too dark). Live.")
-    .debug_only()
-    .range(0.0, 16.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_history, 0, "MCLA/GPU",
-    "Diagnostic: the size of the car self-reflection's history image: 0 the rule (half of the render size for the occlusion-only "
-    "test level and from 2560 pixels across, the full size otherwise), 1 the full render size, 2 half of it in each direction (a quarter "
-    "of the memory and of the pass's work). Live.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -163,11 +80,11 @@ host_plan::Choice CarReflChoice() {
 }
 
 // The debug override wins when it is above 0.
-bool Forced() { return REXCVAR_GET(mcla_gpu_car_selfrefl_test) > 0; }
+bool Forced() { return larecomp::settings::mcla_gpu_car_selfrefl_test.Get() > 0; }
 
 CarSelfRefl::Mode ReadMode() {
   if (Forced()) {
-    return car_selfrefl::ModeOfTest(int(REXCVAR_GET(mcla_gpu_car_selfrefl_test)));
+    return car_selfrefl::ModeOfTest(int(larecomp::settings::mcla_gpu_car_selfrefl_test.Get()));
   }
   return CarSelfRefl::Mode(uint8_t(CarReflChoice().level));
 }
@@ -177,13 +94,13 @@ std::atomic<bool> g_selected{false};
 
 car_selfrefl::Tuning ReadTuning() {
   car_selfrefl::Tuning t;
-  t.length = float(REXCVAR_GET(mcla_gpu_car_selfrefl_length));
-  t.thickness = float(REXCVAR_GET(mcla_gpu_car_selfrefl_thickness));
-  t.strength = float(REXCVAR_GET(mcla_gpu_car_selfrefl_strength));
-  t.steps = int(REXCVAR_GET(mcla_gpu_car_selfrefl_steps));
-  t.view = int(REXCVAR_GET(mcla_gpu_car_selfrefl_view));
-  t.gain = float(REXCVAR_GET(mcla_gpu_car_selfrefl_gain));
-  t.full = float(REXCVAR_GET(mcla_gpu_car_selfrefl_full));
+  t.length = float(larecomp::settings::mcla_gpu_car_selfrefl_length.Get());
+  t.thickness = float(larecomp::settings::mcla_gpu_car_selfrefl_thickness.Get());
+  t.strength = float(larecomp::settings::mcla_gpu_car_selfrefl_strength.Get());
+  t.steps = int(larecomp::settings::mcla_gpu_car_selfrefl_steps.Get());
+  t.view = int(larecomp::settings::mcla_gpu_car_selfrefl_view.Get());
+  t.gain = float(larecomp::settings::mcla_gpu_car_selfrefl_gain.Get());
+  t.full = float(larecomp::settings::mcla_gpu_car_selfrefl_full.Get());
   return car_selfrefl::Clamped(t);
 }
 
@@ -545,7 +462,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   }
   // The image is the render size over a divisor (car_selfrefl_rules.h HistoryDivisor: half for the occlusion-only test level and
   // from 2560 across, a quarter of the memory), the pass reads the plane's pixel at the lower right of each block.
-  const uint32_t divisor = car_selfrefl::HistoryDivisor(mode_, render_w, int(REXCVAR_GET(mcla_gpu_car_selfrefl_history)));
+  const uint32_t divisor = car_selfrefl::HistoryDivisor(mode_, render_w, int(larecomp::settings::mcla_gpu_car_selfrefl_history.Get()));
   const uint32_t image_w = car_selfrefl::HistoryEdge(render_w, divisor);
   const uint32_t image_h = car_selfrefl::HistoryEdge(render_h, divisor);
   // The main colour's identity beside the depth's, at the same samples (shafts.cpp RecordSky).

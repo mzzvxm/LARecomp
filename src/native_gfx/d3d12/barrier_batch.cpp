@@ -5,6 +5,7 @@
 
 #include "barrier_batch.h"
 #include "device_manager.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::native_gfx {
 
@@ -140,7 +141,7 @@ void BarrierBatch::Flush(ID3D12GraphicsCommandList* cl, ID3D12GraphicsCommandLis
   }
 
   const bool enhanced_supported = DeviceManager::Instance().capabilities().enhanced_barriers_supported;
-  const bool enhanced_enabled = REXCVAR_GET(mcla_native_gfx_enhanced_barriers);
+  const bool enhanced_enabled = larecomp::settings::mcla_native_gfx_enhanced_barriers.Get();
 
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> local_cl7;
   if (!cl7 && enhanced_supported && enhanced_enabled) {

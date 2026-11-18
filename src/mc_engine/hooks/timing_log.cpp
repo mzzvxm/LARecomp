@@ -3,7 +3,7 @@
 // interrupt probe it reports.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/perf/counter.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
@@ -20,7 +20,6 @@
 #include "hooks_internal.h"
 #include "../draw_stats.h"
 
-REXCVAR_DECLARE(int32_t, fps_limit);  // frame_timing.cpp
 
 // ── Frame-time instrumentation ─────────────────────────────────────────
 //
@@ -213,7 +212,7 @@ void RecordFrameTime() {
                       "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                       tm.tm_hour, tm.tm_min, tm.tm_sec,
-                      int(REXCVAR_GET(fps_limit)));
+                      int(larecomp::settings::fps_limit.Get()));
         return std::fopen(name, "w");
     }();
     if (!log) return;

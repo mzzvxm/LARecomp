@@ -2,7 +2,7 @@
 #include "imgui_theme.h"
 #include "mc_engine/menu_items.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/perf/counter.h>
 #include <rex/version.h>
 #include <rex/ui/flags.h>
@@ -22,7 +22,6 @@
 #include <psapi.h>
 #endif
 
-REXCVAR_DECLARE(double, video_mode_refresh_rate);
 
 namespace mcla::ui {
 
@@ -55,7 +54,7 @@ MclaDebugOverlayDialog::~MclaDebugOverlayDialog() = default;
 void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_FirstUseEver);
 
-  const std::string key = rex::cvar::GetFlagByName("bind_mcla_telemetry");
+  const std::string key = larecomp::cvar::GetFlagByName("bind_mcla_telemetry");
   const Prompt prompts[] = {{"CLOSE", key.empty() ? "F3" : key.c_str(), kPromptBack}};
 
   bool close = false;
@@ -77,7 +76,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     // 10000 FPS and pull the graph to the floor).
     const bool measured = ft_us > 0 || fps > 0;
 
-    const int refresh = static_cast<int>(REXCVAR_GET(video_mode_refresh_rate));
+    const int refresh = static_cast<int>(larecomp::settings::GetAs<double>("ui.video_mode_refresh_rate"));
     const int target_hz = refresh > 0 ? refresh : 60;
 
     // The headline reads like the GPS card's "ROOKIE - 3640 REP" line, with
@@ -120,7 +119,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     // Each renderer's own switch: the native renderer's VSYNC row is mcla_gpu_vsync; with Xenia's,
     // `vsync` (the debug page's XENIA VSYNC).
     const bool vsync_on =
-        rex::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
+        larecomp::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
     std::snprintf(line, sizeof(line), "%s - %d HZ", vsync_on ? "ON" : "OFF", target_hz);
     StatRow("VSYNC", line);
 

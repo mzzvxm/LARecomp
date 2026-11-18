@@ -25,16 +25,11 @@
 
 #include <rex/audio/audio_driver.h>
 #include <rex/audio/sdl/sdl_audio_system.h>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/thread.h>
 
 #include "cinematic/capture_audio.h"
-
-REXCVAR_DEFINE_STRING(mcla_audio_output, "auto", "MCLA/Audio",
-                      "auto: the default device, or silence when none opens. null: always silent.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::audio {
 
@@ -108,7 +103,7 @@ class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
 
   rex::X_STATUS CreateDriver(size_t index, rex::thread::Semaphore* semaphore,
                              rex::audio::AudioDriver** out_driver) override {
-    if (REXCVAR_GET(mcla_audio_output) != "null") {
+    if (larecomp::settings::mcla_audio_output.Get() != "null") {
       if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {
         return X_STATUS_SUCCESS;
       }

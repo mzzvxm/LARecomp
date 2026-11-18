@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "ao.h"
@@ -42,24 +42,6 @@
 #endif
 #include "host_shaders.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_car_shadow_map, "auto", "MCLA/GPU",
-    "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it. The game's own sun shadows "
-    "draw the car in a rough low-detail form into maps whose texels are 1 to 25 cm, so the wing, the mirrors, the sills and the "
-    "wheels cast no shadow of their own; this draws the car again from the sun, at full detail, into a small map fitted to it "
-    "(2048 by 2048 on ultra, 1024 by 1024 on high), and the contact shadows read it. It only runs while the contact shadows "
-    "(mcla_gpu_contact_shadows) are on, in the game view, in daylight. off, high, ultra or auto (the default): ultra on a discrete "
-    "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
-    "and 8 or 32 MiB of video memory. Live.")
-    .allowed({"auto", "off", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_shadow_map_view, 0, "MCLA/GPU",
-    "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
-    "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.")
-    .debug_only()
-    .range(0, 1)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -470,7 +452,7 @@ void CarShadowMap::BeginFrame() {
   choice_ = rules::Resolve(cls, Setting().Get());
   contact_on_ =
       host_plan::Resolve(host_plan::Pass::kContact, cls, true, ContactSetting().Get()).level != host_plan::Level::kOff;
-  view_mode_ = int(REXCVAR_GET(mcla_gpu_car_shadow_map_view));
+  view_mode_ = int(larecomp::settings::mcla_gpu_car_shadow_map_view.Get());
   wanted_ = choice_.level != rules::Level::kOff && contact_on_ && car_frame_ != nullptr;
   const uint32_t state = uint32_t(choice_.level) * 2u + (contact_on_ ? 1u : 0u);
   if (state != last_level_logged_) {

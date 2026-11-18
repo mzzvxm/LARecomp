@@ -51,20 +51,9 @@
 #include <string>
 #include <unordered_map>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/memory/utils.h>
 #include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(online_race_prop_guard, true, "MCLA/Multiplayer",
-                    "Skip the physics update of a prop whose owner is broken instead of "
-                    "crashing. Starting an online race re-syncs every race prop.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(online_race_prop_watch, "", "MCLA/Multiplayer",
-                      "Diagnostic: guest address (hex) of a prop inst. Its owner's inst word "
-                      "is polled every frame and every change is logged. Empty = off.")
-    .debug_only();
 
 namespace {
 
@@ -143,7 +132,7 @@ uint32_t g_watch_last = 0;
 bool g_watch_last_valid = false;
 
 uint32_t WatchInst() {
-    const std::string text = REXCVAR_GET(online_race_prop_watch);
+    const std::string text = larecomp::settings::online_race_prop_watch.Get();
     if (text != g_watch_text) {
         g_watch_text = text;
         g_watch_inst = text.empty() ? 0u : static_cast<uint32_t>(std::strtoul(text.c_str(), nullptr, 16));
@@ -198,12 +187,12 @@ bool OwnerBroken(uint32_t inst, uint32_t owner, const char* site) {
             "(vtable {:08X}{}) owner+16 {:08X} -- {}{}; memory around the owner:{}",
             site, n, inst, inst_vt, owner, owner_vt, owner_vt == kOwnerVtable ? " = prop owner" : "",
             owner_inst, state,
-            REXCVAR_GET(online_race_prop_guard) ? "; physics update skipped" : "",
+            larecomp::settings::online_race_prop_guard.Get() ? "; physics update skipped" : "",
             Readable(mem, owner, 4) ? HexDump(mem, (owner & ~0xFu) - 0x40, 0xA0) : std::string(" (unreadable)"));
     } else if ((n & (n - 1)) == 0) {
         LARECOMP_APP_WARN("[race-props] {} broken owners so far", n);
     }
-    return REXCVAR_GET(online_race_prop_guard);
+    return larecomp::settings::online_race_prop_guard.Get();
 }
 
 }  // namespace

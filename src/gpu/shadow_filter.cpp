@@ -9,59 +9,12 @@
 #include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "effect_compare.h"
 #include "gpu_class.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_shadow_filter, "auto", "MCLA/GPU",
-    "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
-    "pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a "
-    "smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
-    "contact hardening: a shadow is sharp where it touches what casts it and softer with the distance "
-    "from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) "
-    "picks by the graphics card: game on an integrated one, soft on the rest. The sun's shadows show from "
-    "8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss "
-    "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
-    "shows, the graphics card builds its shaders (a short stutter).")
-    .allowed({"auto", "game", "soft", "pcss"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_shadow_filter_taps, 0, "MCLA/GPU",
-    "Diagnostic: how many taps the soft shadow filter takes, 4 to 32. 0: by the graphics card (8 on an "
-    "integrated one, 16 on the rest). Live.")
-    .debug_only()
-    .range(0, 32)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_shadow_filter_radius, 1.0, "MCLA/GPU",
-    "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter measured in "
-    "texels of the shadow map (1: the edge of a shadow takes the same number of shadow map texels, so "
-    "the same width as the game's on its own 1280x1280 map, half as wide on high and a third on ultra: "
-    "mcla_gpu_shadow_resolution). Live.")
-    .debug_only()
-    .range(0.25, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_shadow_filter_sun, 4.0, "MCLA/GPU",
-    "Diagnostic: how big the sun is for the contact hardening of pcss, as a multiple of its real angular "
-    "radius (0.27 degrees). 1 is the real sun, whose penumbra is narrower than one texel of the shadow map "
-    "for anything lower than about 3 metres, so a shadow is sharp everywhere; a larger sun makes the "
-    "edge of the shadow of a car or a pole visibly softer with the distance from what casts it (the "
-    "width is capped at twice the soft filter's). Live.")
-    .debug_only()
-    .range(0.25, 15.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_shadow_filter_pcf, false, "MCLA/GPU",
-    "Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own "
-    "sampler, which compares a depth blended from four texels (what the game's four taps do). On: "
-    "it compares the four texels one by one and blends the answers (a true percentage-closer tap); "
-    "the shadow edge is a little smoother and its bias a little different. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::shadow_filter {
 
@@ -107,9 +60,9 @@ void LogMode(Mode mode) {
   REXLOG_INFO("[gpu] shadow filter: {} (mcla_gpu_shadow_filter = {}, GPU class {}{}; {} taps{}; live)", name,
               ChoiceName(choice), gpu_class::ClassName(cls),
               choice == Choice::kPcss && mode == Mode::kSoft ? "; pcss is soft on a Low class: no blocker search" : "",
-              TapsFor(cls, REXCVAR_GET(mcla_gpu_shadow_filter_taps)),
+              TapsFor(cls, larecomp::settings::mcla_gpu_shadow_filter_taps.Get()),
               mode == Mode::kPcss
-                  ? std::format(", 8 blocker taps, sun x{:g}", std::clamp(REXCVAR_GET(mcla_gpu_shadow_filter_sun),
+                  ? std::format(", 8 blocker taps, sun x{:g}", std::clamp(larecomp::settings::mcla_gpu_shadow_filter_sun.Get(),
                                                                          kMinSunTuning, kMaxSunTuning))
                   : std::string());
 }
@@ -117,9 +70,9 @@ void LogMode(Mode mode) {
 void EnsureRegistered() {
   static std::once_flag registered;
   std::call_once(registered, [] {
-    g_choice.store(static_cast<uint8_t>(ParseChoice(Lower(REXCVAR_GET(mcla_gpu_shadow_filter)))),
+    g_choice.store(static_cast<uint8_t>(ParseChoice(Lower(larecomp::settings::mcla_gpu_shadow_filter.Get()))),
                    std::memory_order_relaxed);
-    rex::cvar::RegisterChangeCallback("mcla_gpu_shadow_filter", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("mcla_gpu_shadow_filter", [](std::string_view, std::string_view value) {
       g_choice.store(static_cast<uint8_t>(ParseChoice(Lower(std::string(value)))), std::memory_order_relaxed);
     });
   });
@@ -152,9 +105,9 @@ ShadowFilterConstants CurrentConstants(bool temporal_upscaler, uint64_t frame) {
   EnsureRegistered();
   const gpu_class::GpuClass cls = EffectiveClass();
   const bool pcss = ModeFor(cls, static_cast<Choice>(g_choice.load(std::memory_order_relaxed))) == Mode::kPcss;
-  return MakeConstants(cls, REXCVAR_GET(mcla_gpu_shadow_filter_taps), REXCVAR_GET(mcla_gpu_shadow_filter_radius),
-                       g_atlas_scale_inverse.load(std::memory_order_relaxed), REXCVAR_GET(mcla_gpu_shadow_filter_pcf),
-                       temporal_upscaler, frame, pcss, REXCVAR_GET(mcla_gpu_shadow_filter_sun));
+  return MakeConstants(cls, larecomp::settings::mcla_gpu_shadow_filter_taps.Get(), larecomp::settings::mcla_gpu_shadow_filter_radius.Get(),
+                       g_atlas_scale_inverse.load(std::memory_order_relaxed), larecomp::settings::mcla_gpu_shadow_filter_pcf.Get(),
+                       temporal_upscaler, frame, pcss, larecomp::settings::mcla_gpu_shadow_filter_sun.Get());
 }
 
 void SetAtlasRadiusScale(float scale_inverse) {

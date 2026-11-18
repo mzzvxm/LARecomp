@@ -10,7 +10,7 @@
 #include <string>
 #include <system_error>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/hash.h>
 #include <rex/logging.h>
@@ -20,16 +20,6 @@
 #include "device.h"
 #include "native_gfx/shader_identity.h"
 #include "shaderpack/pack_format.h"
-
-REXCVAR_DEFINE_STRING(
-    shader_pack_dir, "", "MCLA/GPU",
-    "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v2.pack) are read from "
-    "and built into. Empty: the cache/shaders folder next to the program or, where that folder "
-    "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
-    "left in the program's assets folder by an older install is still used when there is none "
-    "in that folder. When this is set, only this folder is used.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -58,7 +48,7 @@ bool CanWriteTo(const std::filesystem::path& dir) {
 
 // shader_pack_dir as a path; empty when it is not set.
 std::filesystem::path CvarPackFolder() {
-  const std::string dir = REXCVAR_GET(shader_pack_dir);
+  const std::string dir = larecomp::settings::shader_pack_dir.Get();
   return std::filesystem::path(std::u8string(dir.begin(), dir.end()));
 }
 

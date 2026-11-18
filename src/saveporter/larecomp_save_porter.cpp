@@ -23,7 +23,7 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/filesystem/devices/stfs_container_device.h>
 #include <rex/logging.h>
@@ -49,13 +49,6 @@
 #else
 #include <gtk/gtk.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(skip_save_import, false, "MCLA",
-    "Skip the save import wizard shown on first launch and start with no save. "
-    "The wizard is skipped automatically anyway when no Xenia or RPCS3 save is "
-    "found on the machine.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp {
 
@@ -723,7 +716,7 @@ bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& p
                           std::function<void()> on_finished) {
   const fs::path user_data_root = paths.user_data_root;
 
-  if (REXCVAR_GET(skip_save_import)) {
+  if (larecomp::settings::skip_save_import.Get()) {
     REXLOG_INFO("Save import: skipped (skip_save_import)");
     return false;
   }

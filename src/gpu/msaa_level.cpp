@@ -6,23 +6,12 @@
 #include <atomic>
 #include <format>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "edram.h"
 #include "gpu.h"
 #include "pipelines.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_msaa_with_upscaler, false, "MCLA/GPU",
-    "While FSR or DLSS draws the scene, keep the MSAA level of mcla_gpu_msaa (2, 4 or 8 samples) "
-    "instead of 1 sample. The upscaler then gets a scene whose edges and alpha tested foliage are "
-    "already smoothed by the sample coverage, and has less aliasing to average over its jitter; it "
-    "costs the multisampled scene at the render size. The upscaler's masks (mcla_gpu_upscaler_masks) "
-    "are not affected: they are drawn into coverage images with the same samples and averaged, so "
-    "the two switches are independent. For A/B. Live (read at start too).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -39,7 +28,7 @@ double MillisSince(std::chrono::steady_clock::time_point t) {
 }  // namespace
 
 bool MsaaKeptUnderUpscaler() {
-  return REXCVAR_GET(mcla_gpu_msaa_with_upscaler);
+  return larecomp::settings::mcla_gpu_msaa_with_upscaler.Get();
 }
 
 bool MsaaSwitching() {

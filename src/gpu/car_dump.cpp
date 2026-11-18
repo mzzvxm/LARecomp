@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
@@ -33,29 +33,6 @@
 #include "native_gfx/shader_identity.h"
 #include "native_gfx/vertex_declaration.h"
 #include "vehicle_motion.h"
-
-REXCVAR_DEFINE_UINT64(
-    mcla_gpu_car_dump, 0, "MCLA/GPU",
-    "Debug: takes the triangles of every car the game draws in ONE frame out of the game's memory, puts them in world space with "
-    "each draw's own matrices and writes them to car_dump_<frame>.obj next to the executable (one group per draw, for the car "
-    "chosen by mcla_gpu_car_dump_id), with a census of the car draws (how many draws, vertices and triangles each car has and "
-    "which shaders draw it) in the log under [car dump]. 0 (the default) is off. A number N dumps the first frame at or after the "
-    "game's frame N that has a car in it. With the car self-reflections on (mcla_gpu_car_selfrefl_test=1) it also checks the "
-    "triangles against the picture of the cars the self-reflections keep, and logs how much of the car they cover and how close "
-    "their distances are. Park the car, switch the upscaler off and use the game's own view (not the garage or the pause menu). A "
-    "new value dumps again. It costs nothing while it is off and one slow frame when it dumps.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_dump_id, 0, "MCLA/GPU",
-    "Debug: which car mcla_gpu_car_dump writes to its OBJ file and checks first, by the number the game stamps into the stencil "
-    "for it (1 to 23, handed out in drawing order each frame, so a car has no fixed number). 0 (the default) takes the player's "
-    "car: the one nearest to the vehicle the player drives in the game's memory, else the one with paint draws nearest to the "
-    "camera, else the one with the most body draws; the log says which. Live.")
-    .debug_only()
-    .range(0, 23)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -125,7 +102,7 @@ void CarDump::Shutdown() {
 }
 
 void CarDump::Refresh() {
-  const uint64_t target = REXCVAR_GET(mcla_gpu_car_dump);
+  const uint64_t target = larecomp::settings::mcla_gpu_car_dump.Get();
   if (target != target_) {
     target_ = target;
     done_ = false;  // a new request dumps again
@@ -361,7 +338,7 @@ void CarDump::Summarise(car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const {
 }
 
 car_dump::Pick CarDump::ChoosePlayer(const car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const {
-  const int32_t wanted = REXCVAR_GET(mcla_gpu_car_dump_id);
+  const int32_t wanted = larecomp::settings::mcla_gpu_car_dump_id.Get();
   const car_dump::Pick pick = car_dump::ChoosePlayerId(ids, wanted, player_.valid);
   if (wanted > 0 && pick.reason != car_dump::PickReason::kRequested) {
     REXLOG_WARN("{} mcla_gpu_car_dump_id = {} has no car draw in this frame: choosing by the rules instead", kPrefix, wanted);

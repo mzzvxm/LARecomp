@@ -34,7 +34,7 @@
 // of the movie's ActionScript, rewritten here (FindSignUnit below).
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
 
@@ -47,7 +47,6 @@
 
 // Same switch that drives the game's own metric formatter, defined in hooks/ui.cpp:
 // one knob for units, not two. "kmh" converts the HUD, "game"/"mph" leave it.
-REXCVAR_DECLARE(std::string, speed_units);
 
 namespace {
 
@@ -116,7 +115,7 @@ constexpr uint32_t kRetryFrames = 600;
 constexpr uint32_t kMaxAttempts = 20;
 
 Want WantedUnits() {
-    return REXCVAR_GET(speed_units) == "kmh" ? Want::kKmh : Want::kGame;
+    return larecomp::settings::speed_units.Get() == "kmh" ? Want::kKmh : Want::kGame;
 }
 
 // A page we can touch without risking a fault. QueryProtect lives on BaseHeap,

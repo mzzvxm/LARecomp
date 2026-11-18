@@ -97,19 +97,6 @@
 #include "live_text.h"
 #include "side_views.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_shadow_resolution, "auto", "MCLA/GPU",
-    "How fine the sun's shadows can be: the game draws them into four 640x640 maps in one 1280x1280 "
-    "picture, which limits how sharp an edge can get. game (the game's own 1280x1280), high "
-    "(2560x2560), ultra (3840x3840), or auto (game on an integrated graphics chip, high on any other "
-    "card). With SHADOW FILTER on soft the edge of a shadow is half as wide on high and a third as "
-    "wide on ultra; with the game's own filter it keeps its width and gets smoother. Costs a little "
-    "graphics card time and video memory (about 25 MiB for high, 56 MiB for ultra, and as much again "
-    "for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; "
-    "the first time it changes the graphics card builds its shaders (a short stutter).")
-    .allowed({"auto", "game", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu {
 
 namespace {

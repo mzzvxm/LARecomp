@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/ui/keybinds.h>
@@ -368,7 +368,7 @@ void ForgetChangedCount() { g_changed_valid = false; }
 
 // The key a bind is on, for the label: "F4" unless it was rebound. Only A-Z, 0-9, space and '+'.
 std::string BindKeyLabel(const char* bind_cvar, const char* fallback) {
-    const std::string key = rex::cvar::GetFlagByName(bind_cvar);
+    const std::string key = larecomp::cvar::GetFlagByName(bind_cvar);
     std::string out;
     for (const char c : key) {
         const unsigned char u = static_cast<unsigned char>(c);
@@ -490,9 +490,9 @@ void ResetDebugSettings() {
     int skipped = 0;
     for (const larecomp::DebugCvarChange& change : larecomp::NonDefaultDebugCvars()) {
         if (change.name == "debug_menu") continue;
-        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(change.name);
+        const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(change.name);
         if (!info) continue;
-        if (info->lifecycle != rex::cvar::Lifecycle::kHotReload) {
+        if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
             ++skipped;
             REXLOG_INFO("[settings] {} is only read at start: left at {} ({})", change.name,
                         change.value, larecomp::CvarSourceName(change.source));
@@ -500,8 +500,8 @@ void ResetDebugSettings() {
         }
         const std::string default_value = info->default_value;  // the entry may move once we write
         REXLOG_INFO("[settings] {} = {} -> {} (reset)", change.name, change.value, default_value);
-        rex::cvar::SetFlagByName(change.name, default_value);
-        rex::cvar::ResetToDefault(change.name);
+        larecomp::cvar::SetFlagByName(change.name, default_value);
+        larecomp::cvar::ResetToDefault(change.name);
         ++reset;
     }
     REXLOG_INFO("[debug] {} debug setting(s) reset to their default, {} left (read at start only)",
@@ -515,7 +515,7 @@ void ResetDebugSettings() {
 // player rebound is followed.
 // CHECK: the dialog opens over the pause menu (the menu keeps the pad until it is closed).
 void PressBind(const char* bind_cvar, const char* fallback_key) {
-    std::string key = rex::cvar::GetFlagByName(bind_cvar);
+    std::string key = larecomp::cvar::GetFlagByName(bind_cvar);
     if (key.empty()) key = fallback_key;
     const rex::ui::VirtualKey virtual_key = rex::ui::ParseVirtualKey(key);
     if (virtual_key == rex::ui::VirtualKey::kNone) {

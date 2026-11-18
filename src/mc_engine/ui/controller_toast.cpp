@@ -3,7 +3,7 @@
 #include "overlay_input_core.h"
 #include "mc_engine/input_state.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/ui/imgui_dialog.h>
 #include <imgui.h>
@@ -16,11 +16,6 @@
 #include <deque>
 #include <memory>
 #include <string>
-
-REXCVAR_DEFINE_BOOL(mcla_controller_toast, true, "MCLA",
-    "Show the MCLA-styled toast when a controller connects or disconnects. Its corner follows "
-    "controller_toast_position.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::ui {
 
@@ -60,7 +55,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
       return;
     }
 
-    const std::string corner = rex::cvar::GetFlagByName("controller_toast_position");
+    const std::string corner = larecomp::cvar::GetFlagByName("controller_toast_position");
     const bool right = corner.empty() || corner == "Top Right" || corner == "Bottom Right";
     const bool bottom = corner == "Bottom Left" || corner == "Bottom Right";
 
@@ -116,7 +111,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   // The SDK's controller list changed: what came and what went since the last look. Pads already there at the first look
   // toast as connected, as the SDK's toast did at startup.
   void Refresh(Clock::time_point now) {
-    const bool shown = REXCVAR_GET(mcla_controller_toast);
+    const bool shown = larecomp::settings::mcla_controller_toast.Get();
     for (ControllerEvent& event : roster_.Update(larecomp::input::Controllers())) {
       REXLOG_INFO("[toast] controller {}: {}{}", event.connected ? "connected" : "disconnected", event.name,
                   shown ? "" : " (toast off)");

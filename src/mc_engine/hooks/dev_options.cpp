@@ -3,7 +3,7 @@
 // ../debug_options_table.inc, written by tools/debug_options/gen_native_table.py.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -239,7 +239,7 @@ void ApplyPerfDebugOptions() {
     QueueDebugOption("rearview", "1");
 
     for (const auto& p : kPerfDebugOptions) {
-        if (rex::cvar::GetFlagByName(p.cvar) != "true") continue;
+        if (larecomp::cvar::GetFlagByName(p.cvar) != "true") continue;
         QueueDebugOption(p.option, "1");
     }
 }
@@ -270,7 +270,7 @@ void ApplyLoadTimeDevOptions() {
 
     for (size_t i = 0; i < std::size(kPerfDebugOptions); ++i) {
         const auto& p = kPerfDebugOptions[i];
-        const bool want = rex::cvar::GetFlagByName(p.cvar) == "true";
+        const bool want = larecomp::cvar::GetFlagByName(p.cvar) == "true";
         if (primed && want == last[i]) continue;
         last[i] = want;
 
