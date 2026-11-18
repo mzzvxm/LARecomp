@@ -32,6 +32,9 @@
 #include "../online/race_props.h"
 #include "../ultrawide.h"
 
+// See hooks.h: the manifest hook at sub_82130678 returns right after this call.
+void MCLA_DiscErrorBypass() {}
+
 void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
     // reaches sub_822C4630 and mounts the archives.

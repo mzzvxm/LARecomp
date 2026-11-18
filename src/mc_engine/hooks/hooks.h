@@ -140,6 +140,10 @@ void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegist
 // opened. Covers the tunes, cameras and garage files the streamer never sees.
 void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3);
 
+// First instruction of sub_82130678, the disc error handler: with `return` in the manifest hook the
+// function body is skipped (there is no disc to be removed).
+void MCLA_DiscErrorBypass();
+
 // Driver animations of a car the game does not ship. Each hook sits one
 // instruction after the sprintf that names them and hands the buffer to
 // mc::modloader::AliasDriverAnimName, which swaps the new car's name for the

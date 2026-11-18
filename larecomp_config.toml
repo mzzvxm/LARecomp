@@ -2,9 +2,15 @@ project_name = "larecomp"
 file_path = "assets/default.xex"
 out_directory_path = "generated"
 
-# Windows: the 0xE0000000 view is mapped at its exact 4 KB offset, so no guest memory access needs the
-# +0x1000 test (LAR-RXSDK perf/exact-e0-view; -26% instructions in the generated code, -10% frame time on 4 cores).
-exact_e0_view = true
+# rexglue 0.11: the 0xE0000000 view is mapped at its exact 4 KB offset by the SDK itself (placeholders
+# at a page aligned offset, Windows 10 1803 or later), so the old exact_e0_view option is gone.
+
+# The dot products of the vector unit (vmsum3fp128, vmsum4fp128) give the console's result on overflow (a quiet NaN)
+# only in "exact"; the default "fast" is a plain DPPS that returns infinity (rexglue issue 491, fixed in the fork).
+# The other seven [vector_math] keys stay at their defaults.
+[vector_math]
+vmsum3fp128 = "exact"
+vmsum4fp128 = "exact"
 
 [functions]
 0x8244FEC0 = { name = "mc_Sleep", size = 0x8 }
@@ -26779,7 +26785,8 @@ name = "MCLA_FileOpenResult"
 address = 0x821CA708
 registers = ["r1", "r3"]
 
-[rexcrt]
+# rexglue 0.11 calls the replaced runtime routines [shim] (the heap group has to be listed whole).
+[shim]
 RtlAllocateHeap = 0x82134860
 RtlFreeHeap = 0x82135150
 RtlSizeHeap = 0x82133B00
@@ -27732,3 +27739,11 @@ address = 0x8236076C
 name = "Hook_RoadReflCarsPlane"
 registers = ["f0"]
 after_instruction = true
+
+# The disc error handler (sub_82130678, 0x18 bytes) does nothing here: the game files are on the host disk.
+# It used to be replaced at start-up with a no-op through the function table (SetFunction); the hook with
+# `return` skips the body instead, so the app needs no access to the dispatcher.
+[[midasm_hook]]
+address = 0x82130678
+name = "MCLA_DiscErrorBypass"
+return = true
