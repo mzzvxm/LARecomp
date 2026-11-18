@@ -3,9 +3,9 @@
 // See texture_format.h for the telemetry that bounds the supported set.
 //
 // The Xenos data-format layer (tiled address swizzle, block geometry, endian
-// swap) comes from the SDK: those translation units are compiled into rexcore,
-// which lives inside rexruntime, so they link without the rexgpu-xenos plugin
-// and without any part of the command processor.
+// swap) comes from the SDK's rex::xenos library (rex/xenos/texture.h), which
+// links without any Xenos graphics driver module and without any part of the
+// command processor.
 
 #include <cstdio>
 #include "texture_format.h"
@@ -19,9 +19,6 @@
 #include <rex/xenos/fetch.h>
 #include <rex/math.h>
 
-namespace tu = rex::graphics::texture_util;
-namespace tc = rex::graphics::texture_conversion;
-namespace rg = rex::graphics;
 namespace xe = rex::xenos;
 
 namespace mcla::native_gfx {
@@ -90,7 +87,7 @@ namespace {
 
 // Is this one of the formats MCLA has actually been observed to bind? The gate
 // stays hand-written even though the block geometry below now comes from the
-// SDK: rg::FormatInfo::Get answers for every Xenos format there is, so without
+// SDK: xe::FormatInfo::Get answers for every Xenos format there is, so without
 // it an unsupported format would quietly decode as garbage instead of failing.
 bool IsSupportedFormat(uint32_t xenos_format) {
   switch (GuestTextureFormat(xenos_format)) {
@@ -125,17 +122,17 @@ FormatInfo GetFormatInfo(uint32_t xenos_format) {
     fi.bytes_per_block = 0;  // unsupported — caller must fail loudly
     return fi;
   }
-  // rg::FormatInfo (pipeline/texture/info.h) carries the whole Xenos format
+  // xe::FormatInfo (rex/xenos/texture.h) carries the whole Xenos format
   // table: block geometry and bits per pixel for every format.
-  const rg::FormatInfo* info = rg::FormatInfo::Get(xenos_format);
+  const xe::FormatInfo* info = xe::FormatInfo::Get(xenos_format);
   if (!info) {
     fi.bytes_per_block = 0;
     return fi;
   }
   fi.block_width = info->block_width;
   fi.block_height = info->block_height;
-  fi.bytes_per_block = info->bytes_per_block();
-  fi.is_compressed = info->type == rg::FormatType::kCompressed;
+  fi.bytes_per_block = info->GetBytesPerBlock();
+  fi.is_compressed = info->type == xe::FormatType::kCompressed;
   return fi;
 }
 
@@ -226,7 +223,8 @@ uint64_t TiledSurfaceSizeBytes(uint32_t width_blocks, uint32_t height_blocks,
   // under-estimates, 1.13x median over-estimate. It is a read clamp, not an
   // allocation size, so erring high is free.
   //
-  // Deliberately NOT tu::GetTextureTotalSize. That returns the size the guest
+  // Deliberately NOT the SDK's texture total size (GetTextureTotalSize in 0.10, now
+  // xe::GetGuestTextureLayout). That returns the size the guest
   // allocated for the texture, which is a different quantity from how far the
   // address swizzle can reach, and substituting it here would under-clamp the
   // very reads this exists to bound.
@@ -245,7 +243,7 @@ uint64_t TiledSurfaceReachBytes(uint32_t width_blocks, uint32_t height_blocks,
   uint32_t highest = 0;
   for (uint32_t y = 0; y < height_blocks; ++y) {
     for (uint32_t x = 0; x < width_blocks; ++x) {
-      const int32_t off = tu::GetTiledOffset2D(int32_t(x), int32_t(y), width_blocks, bpb_log2);
+      const int32_t off = xe::GetTiledOffset2D(int32_t(x), int32_t(y), width_blocks, bpb_log2);
       if (off > 0 && uint32_t(off) > highest) {
         highest = uint32_t(off);
       }
@@ -256,11 +254,11 @@ uint64_t TiledSurfaceReachBytes(uint32_t width_blocks, uint32_t height_blocks,
 
 uint32_t TiledOffset2D(uint32_t x_block, uint32_t y_block, uint32_t width_blocks,
                        uint32_t bytes_per_block) {
-  // tu::GetTiledOffset2D aligns the pitch to a 32-block tile internally and
+  // xe::GetTiledOffset2D aligns the pitch to a 32-block tile internally and
   // returns a byte offset. Verified equivalent to the open-coded swizzle this
   // used to carry, over 339840 (bpb, width, x, y) combinations spanning every
   // format and surface width MCLA binds.
-  return uint32_t(tu::GetTiledOffset2D(int32_t(x_block), int32_t(y_block), width_blocks,
+  return uint32_t(xe::GetTiledOffset2D(int32_t(x_block), int32_t(y_block), width_blocks,
                                        BppLog2(bytes_per_block)));
 }
 
@@ -276,11 +274,11 @@ bool UntileSurface2D(uint8_t* dst, uint32_t dst_pitch_bytes, const uint8_t* src,
   // TiledSurfaceSizeBytes is an upper bound on every address the swizzle can
   // produce for this geometry. When the caller hands over at least that much
   // readable source, no offset can land outside it, so the whole per-block
-  // bound check is provably dead and tc::Untile runs unguarded. That is the
+  // bound check is provably dead and xe::Untile runs unguarded. That is the
   // path every call from the texture cache takes: it passes exactly this
   // value, having already proven the range readable.
   //
-  // tc::Untile also hoists the row term out of the inner loop and only walks
+  // xe::Untile also hoists the row term out of the inner loop and only walks
   // the column per block. Recomputing the full address per block instead costs
   // an align and a multiply on every one of them, which on a 1024x1024 DXT5
   // is 65536 times over.
@@ -290,12 +288,12 @@ bool UntileSurface2D(uint8_t* dst, uint32_t dst_pitch_bytes, const uint8_t* src,
     // synthetic 1x1-block descriptor carrying the right stride gives the exact
     // same addresses without plumbing the Xenos format down here. Untile's
     // pitches are in blocks, and it does not align the input pitch itself.
-    rg::FormatInfo block_desc{};
+    xe::FormatInfo block_desc{};
     block_desc.block_width = 1;
     block_desc.block_height = 1;
     block_desc.bits_per_pixel = bytes_per_block * 8;
 
-    tc::UntileInfo untile{};
+    xe::UntileRegion untile{};
     untile.offset_x = 0;
     untile.offset_y = 0;
     untile.width = width_blocks;
@@ -307,7 +305,7 @@ bool UntileSurface2D(uint8_t* dst, uint32_t dst_pitch_bytes, const uint8_t* src,
     untile.copy_callback = [](void* out, const void* in, size_t length) {
       std::memcpy(out, in, length);
     };
-    tc::Untile(dst, src, &untile);
+    xe::Untile(dst, src, &untile);
     return true;
   }
 
@@ -319,7 +317,7 @@ bool UntileSurface2D(uint8_t* dst, uint32_t dst_pitch_bytes, const uint8_t* src,
   for (uint32_t y = 0; y < height_blocks; ++y) {
     uint8_t* out = dst + size_t(y) * dst_pitch_bytes;
     for (uint32_t x = 0; x < width_blocks; ++x) {
-      const int32_t off = tu::GetTiledOffset2D(int32_t(x), int32_t(y), width_blocks, bpb_log2);
+      const int32_t off = xe::GetTiledOffset2D(int32_t(x), int32_t(y), width_blocks, bpb_log2);
       if (off < 0 || uint64_t(uint32_t(off)) + bytes_per_block > src_size_bytes) {
         complete = false;  // never read past the end
         out += bytes_per_block;

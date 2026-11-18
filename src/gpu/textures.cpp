@@ -37,7 +37,6 @@
 namespace mcla::gpu {
 
 namespace xe = rex::xenos;
-namespace tu = rex::graphics::texture_util;
 using rex::xenos::FormatInfo;
 
 namespace {
@@ -76,12 +75,12 @@ enum class PlanResult { kOk, kSkip, kFail };
 // What Upload and Prefetch both start from.
 PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const FormatInfo& info,
                      const format::TextureHostFormat& host, bool decompressed,
-                     const tu::TextureGuestLayout& layout, uint32_t level, TextureLevelPlan* plan,
+                     const xe::GuestTextureLayout& layout, uint32_t level, TextureLevelPlan* plan,
                      std::string* why) {
   // Where the level is stored (util.h): the base under base_address with the
   // fetch's pitch, the mips under mip_address at mip_offsets_bytes, levels
   // from the packed one on inside a tail at GetPackedMipOffset.
-  const tu::TextureGuestLayout::Level* stored;
+  const xe::GuestTextureLayout::Level* stored;
   uint32_t address;
   if (level == 0) {
     if (!key.base_page) {
@@ -106,7 +105,7 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
     uint32_t ox = 0, oy = 0, oz = 0;
-    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+    xe::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
                            oz);
     r.source.offset_x = ox;
     r.source.offset_y = oy;
@@ -145,14 +144,14 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
 }
 
 // The guest layout of a 2D texture's key (what every range, plan and extent below comes from).
-tu::TextureGuestLayout LayoutOf(const TextureKey& key) {
-  return tu::GetGuestTextureLayout(xe::DataDimension::k2DOrStacked, key.pitch, key.width,
+xe::GuestTextureLayout LayoutOf(const TextureKey& key) {
+  return xe::GetGuestTextureLayout(xe::DataDimension::k2DOrStacked, key.pitch, key.width,
                                    key.height, 1, key.tiled != 0, xe::TextureFormat(key.format),
                                    key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
 }
 
 // TextureGuestRanges from a layout that is already at hand.
-void RangesOfLayout(const TextureKey& key, const tu::TextureGuestLayout& layout,
+void RangesOfLayout(const TextureKey& key, const xe::GuestTextureLayout& layout,
                     uint32_t ranges[2][2]) {
   ranges[0][0] = ranges[0][1] = ranges[1][0] = ranges[1][1] = 0;
   if (key.base_page) {
@@ -276,7 +275,7 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   out.image_base_page = uint32_t(f.base_address) & 0x1FFFF;
   uint32_t width_minus_1 = 0, height_minus_1 = 0, depth_minus_1 = 0;
   uint32_t base_page = 0, mip_page = 0, mip_min = 0, mip_max = 0;
-  tu::GetSubresourcesFromFetchConstant(f, &width_minus_1, &height_minus_1, &depth_minus_1,
+  xe::GetSubresourcesFromFetchConstant(f, &width_minus_1, &height_minus_1, &depth_minus_1,
                                        &base_page, &mip_page, &mip_min, &mip_max);
   TextureKey& k = out.key;
   k.base_page = base_page;
@@ -314,10 +313,10 @@ bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelS
   if (!info || info->bytes_per_block() == 0) {
     return false;
   }
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+  const xe::GuestTextureLayout layout = xe::GetGuestTextureLayout(
       xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
       xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
-  const tu::TextureGuestLayout::Level* stored;
+  const xe::GuestTextureLayout::Level* stored;
   if (level == 0) {
     if (!key.base_page) {
       return false;
@@ -341,7 +340,7 @@ bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelS
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
     uint32_t ox = 0, oy = 0, oz = 0;
-    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+    xe::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
                            oz);
     r.source.offset_x = ox;
     r.source.offset_y = oy;
@@ -1029,7 +1028,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   }
   // The key's layout is worked out once: the ranges, the entry's own and the plan below all come
   // from it.
-  const tu::TextureGuestLayout layout = LayoutOf(key);
+  const xe::GuestTextureLayout layout = LayoutOf(key);
   uint32_t ranges[2][2];
   RangesOfLayout(key, layout, ranges);
   if (uint64_t(ranges[0][1]) + ranges[1][1] < kPrefetchMinBytes) {
@@ -1192,7 +1191,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     }
   } else {
     const FormatInfo* info = FormatInfo::Get(key.format);
-    const tu::TextureGuestLayout layout = LayoutOf(key);
+    const xe::GuestTextureLayout layout = LayoutOf(key);
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
       TextureLevelPlan plan;
       const PlanResult planned =

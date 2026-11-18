@@ -32,7 +32,7 @@
 
 namespace mcla::gpu {
 
-namespace tu = rex::graphics::texture_util;
+namespace xe = rex::xenos;
 
 namespace {
 
@@ -868,7 +868,7 @@ bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_
                            ty * 32 + 32 <= sy1;
         const uint64_t origin =
             uint64_t(storage.address) +
-            uint32_t(tu::GetTiledOffset2D(tx * 32, ty * 32, pitch, bpb_log2));
+            uint32_t(xe::GetTiledOffset2D(tx * 32, ty * 32, pitch, bpb_log2));
         if (tile_bytes > kPageBytes) {
           inside &= touch(origin, whole ? kPageBytes : 0u);
           inside &= touch(origin + kPageBytes, whole ? kPageBytes : 0u);
