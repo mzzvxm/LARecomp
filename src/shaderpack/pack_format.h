@@ -129,6 +129,9 @@ inline constexpr uint32_t kVariantCarSelfRefl = 7;   // the player's car paint: 
 // The auto-exposure's sample pass at a render scale. Ids 6 and 7 are taken (the glow sprites' soft visibility, the player's car
 // paint reflecting itself), so this one is 8 and the table has 16 ids.
 inline constexpr uint32_t kVariantLuminanceScale = 8;
+// The car's chrome (xChrome::PS_Chrome: the tailpipes, the rims, the trim) with its reflection and its sky ambient occluded by the car's
+// own parts: the same 112 bytes of constants as the paint's (id 7), centimetre scale rays (shaderpack/variants/car_chrome.h).
+inline constexpr uint32_t kVariantCarChrome = 9;
 inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

@@ -101,7 +101,8 @@ bool GlowSoftSelected() {
 // car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), the sun shadow
 // collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart; auto resolved for the
 // GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), the car
-// paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h) and the auto-exposure's sample pass
+// paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h), the chrome's occlusion by the car's own parts
+// (kCarChromeVariant, shaderpack/variants/car_chrome.h: wherever the paint's is on, and mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass
 // mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); each is read
 // at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw and the picture stays
 // the game's (the environment map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one
@@ -128,6 +129,12 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   // (variant_pack.cpp), because only the first of them here would ever draw.
   if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
     return ShaderStore::kCarSelfReflVariant;
+  }
+  // The car's chrome (the tailpipes, the rims): the same history image and constants as the paint's, a shader of its own (the pack step
+  // warns when a shader lands in two variants, and the chrome is in this one alone). The debug-only switch is its A/B.
+  if ((ps.variants & (1u << ShaderStore::kCarChromeVariant)) != 0 && CarSelfRefl::Selected() &&
+      larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
+    return ShaderStore::kCarChromeVariant;
   }
   if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     return ShaderStore::kLuminanceVariant;

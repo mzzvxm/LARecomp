@@ -179,6 +179,15 @@ class GPUSettings final : public rex::SettingOwner {
     "makes each tap cover the pixels it stands for, so the glow looks as it does at 1x. At a render "
     "scale of 1x the picture is the same either way. Off: the game's own taps. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_car_chrome_occlusion, true, "Fix: the chrome of the player's car (the tailpipes, the rims, the badges and trim) is not lit by what the car's own body covers. "
+    "The game's chrome shader looks up the sky in the environment map and adds the sky's ambient colour wherever the surface "
+    "points, and nothing in it knows the bumper over a tailpipe, so the tips, which sit 2 to 7 cm under and behind the parts "
+    "that cover them, glow as if lit from above. This marches two short rays from each chrome pixel through the picture of the "
+    "car from the frame before (the car self-reflection's image): one along the reflection, one towards the sky, and darkens the "
+    "reflection and the ambient where they hit a part of the car, by up to 90 percent. It runs wherever the car "
+    "self-reflection runs (mcla_gpu_car_selfrefl) and needs the shader pack's variant file. Off: the game's own chrome. Live; "
+    "the first time it shows, the graphics card builds its shader (a short stutter).", rex::kDebugOnly);
+
   REX_SETTING(u64, mcla_gpu_car_dump, 0, "Debug: takes the triangles of every car the game draws in ONE frame out of the game's memory, puts them in world space with "
     "each draw's own matrices and writes them to car_dump_<frame>.obj next to the executable (one group per draw, for the car "
     "chosen by mcla_gpu_car_dump_id), with a census of the car draws (how many draws, vertices and triangles each car has and "
@@ -1204,6 +1213,7 @@ inline auto& mcla_gpu_ao_stable = g_gpu.mcla_gpu_ao_stable;
 inline auto& mcla_gpu_ao_view = g_gpu.mcla_gpu_ao_view;
 inline auto& mcla_gpu_batch_draws = g_gpu.mcla_gpu_batch_draws;
 inline auto& mcla_gpu_bloom_scale = g_gpu.mcla_gpu_bloom_scale;
+inline auto& mcla_gpu_car_chrome_occlusion = g_gpu.mcla_gpu_car_chrome_occlusion;
 inline auto& mcla_gpu_car_dump = g_gpu.mcla_gpu_car_dump;
 inline auto& mcla_gpu_car_dump_id = g_gpu.mcla_gpu_car_dump_id;
 inline auto& mcla_gpu_car_frame_log = g_gpu.mcla_gpu_car_frame_log;

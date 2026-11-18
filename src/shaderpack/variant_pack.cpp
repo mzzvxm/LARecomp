@@ -31,6 +31,7 @@
 #include "shaderpack/pack_writer.h"
 #include "shaderpack/variant_overlap.h"
 #include "shaderpack/variants/bloom_gauss.h"
+#include "shaderpack/variants/car_chrome.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/glow_soft.h"
@@ -565,6 +566,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeShadowFilterVariant());
   variants.push_back(MakeGlowSoftVariant());
   variants.push_back(MakeCarSelfReflVariant());
+  variants.push_back(MakeCarChromeVariant());
   variants.push_back(MakeLuminanceScaleVariant());
   return variants;
 }

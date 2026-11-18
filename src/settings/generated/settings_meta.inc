@@ -229,6 +229,7 @@
 {"mcla_gpu_ao_view", "MCLA/GPU"},
 {"mcla_gpu_batch_draws", "MCLA/GPU"},
 {"mcla_gpu_bloom_scale", "MCLA/GPU"},
+{"mcla_gpu_car_chrome_occlusion", "MCLA/GPU"},
 {"mcla_gpu_car_dump", "MCLA/GPU"},
 {"mcla_gpu_car_dump_id", "MCLA/GPU"},
 {"mcla_gpu_car_frame_log", "MCLA/GPU"},

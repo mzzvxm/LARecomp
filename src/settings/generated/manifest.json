@@ -8492,5 +8492,16 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_chrome_occlusion": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Fix: the chrome of the player's car (the tailpipes, the rims, the badges and trim) is not lit by what the car's own body covers. \"\n    \"The game's chrome shader looks up the sky in the environment map and adds the sky's ambient colour wherever the surface \"\n    \"points, and nothing in it knows the bumper over a tailpipe, so the tips, which sit 2 to 7 cm under and behind the parts \"\n    \"that cover them, glow as if lit from above. This marches two short rays from each chrome pixel through the picture of the \"\n    \"car from the frame before (the car self-reflection's image): one along the reflection, one towards the sky, and darkens the \"\n    \"reflection and the ambient where they hit a part of the car, by up to 90 percent. It runs wherever the car \"\n    \"self-reflection runs (mcla_gpu_car_selfrefl) and needs the shader pack's variant file. Off: the game's own chrome. Live; \"\n    \"the first time it shows, the graphics card builds its shader (a short stutter).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

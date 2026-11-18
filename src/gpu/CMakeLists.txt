@@ -189,6 +189,10 @@ add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_ru
 # the camera cannot see, the paint's edge-aware read) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_refl_rules_test, then run src/gpu/larecomp_car_rt_refl_rules_test (exit 0 = passed).
 add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rules_test.cpp)
+# The car chrome's rules (car_chrome_rules.h: the numbers of the two short probes of the chrome variant and a reference march of them over
+# boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
+#   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).
+add_executable(larecomp_car_chrome_rules_test EXCLUDE_FROM_ALL car_chrome_rules_test.cpp)
 # The car dump's rules (car_dump_rules.h: the matrices out of a vertex shader bank, the positions and indices as the guest holds them, the
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
