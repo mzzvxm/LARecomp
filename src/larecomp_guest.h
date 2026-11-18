@@ -16,9 +16,9 @@
 //                      may still be running hooks; the 0.10 runtime outlived them. Most call sites test the result.
 //
 //   Call<R>(fn, args)  rex::ppc::GuestToHostFunction<R>(fn, args): run a recompiled function from host code on the calling
-//                      guest thread, on a register file of its own: ZEROED, taking from the thread only r1, r13, the FP control
-//                      state and the two 0.11 pointers (see ZeroedFrame). The 0.10 function did exactly that (a fresh
-//                      PPCContext newCtx{}), and the callers depend on it: a function reads the registers its caller did not
+//                      guest thread, on the thread's own register file with the registers CLEARED, taking from the thread only
+//                      r1, r13 and the control state, and restoring the file afterwards (see ThreadFileScope). The 0.10
+//                      function cleared them too (a fresh PPCContext newCtx{}), and the callers depend on it: a function reads the registers its caller did not
 //                      set (the pause menu's AllocState passes r3 only and the class factory behind it takes r4 as the class
 //                      name, null meaning the default menu state). rex::ppc::HostToGuestCall runs the callee on the thread's
 //                      OWN register file, so r4..r10 hold whatever the interrupted guest code left there. The 0.10 function
@@ -62,33 +62,50 @@ inline uint8_t* Membase() {
 
 namespace detail {
 
-// The register file a call from host code runs on (what Call uses): all zero, like the `PPCContext newCtx{}` of the 0.10
-// GuestToHostFunction, so a callee that reads a register the caller never set sees 0, not the thread's leftover. From the
-// thread it takes the stack pointer r1 (the call opens its frame below it), the thread pointer r13, the FP control state
-// (written back to the thread at the end, also when the callee throws ThreadStop: it may have changed the rounding mode) and
-// the thread state and stop flag pointers of 0.11, so the callee stops with its thread. detour_frame stays null.
-struct ZeroedFrame {
-  ::PPCContext ctx{};
+// What Call does to the thread's own register file around a call from host code. The callee must run on THAT file, not on a
+// copy: rexglue 0.11 finds a guest thread's registers through it (ThreadState::GetContext(), GetBoundThread()), and the kernel
+// runs guest code on it from inside the callee's own kernel calls (APC delivery in alertable waits, traps through the function
+// dispatcher), opening their frames below ITS r1. On a copy, the thread's r1 stays where the host call started, so such nested
+// guest code writes its frames over the callee's live stack. (2026-11-18: a zeroed copy fixed the pause menu's first AllocState
+// and the second one then came back null.)
+// The registers are cleared like the `PPCContext newCtx{}` of the 0.10 GuestToHostFunction, so a callee that reads a register
+// its caller never set sees 0, not the interrupted guest code's leftover (the pause menu's AllocState passes r3 only; the class
+// factory behind it takes r4 as the class name, null meaning the default state). Kept from the thread: r1 (the call opens its
+// frame below it), r13, the MSR, the FP and vector control state and the four 0.11 fields (thread state, detour frame, stop
+// flag, last indirect target). The whole file comes back at the end, also when the callee throws ThreadStop, with the
+// callee's FP control state (it may have changed the rounding mode, as on 0.10).
+struct ThreadFileScope {
   ::PPCContext& thread_;
+  const ::PPCContext saved_;
 
-  explicit ZeroedFrame(::PPCContext& thread) : thread_(thread) {
-    ctx.r1 = thread.r1;
-    ctx.r13 = thread.r13;
-    ctx.fpscr = thread.fpscr;
-    ctx.thread_state = thread.thread_state;
-    ctx.stop_requested = thread.stop_requested;
+  explicit ThreadFileScope(::PPCContext& thread) : thread_(thread), saved_(thread) {
+    ::PPCContext fresh{};
+    fresh.r1 = thread.r1;
+    fresh.r13 = thread.r13;
+    fresh.msr = thread.msr;
+    fresh.fpscr = thread.fpscr;
+    fresh.vscr = thread.vscr;
+    fresh.last_indirect_target = thread.last_indirect_target;
+    fresh.thread_state = thread.thread_state;
+    fresh.detour_frame = thread.detour_frame;
+    fresh.stop_requested = thread.stop_requested;
+    thread = fresh;
   }
 
-  ~ZeroedFrame() { thread_.fpscr = ctx.fpscr; }
+  ~ThreadFileScope() {
+    const auto fpscr = thread_.fpscr;
+    thread_ = saved_;
+    thread_.fpscr = fpscr;
+  }
 
-  ZeroedFrame(const ZeroedFrame&) = delete;
-  ZeroedFrame& operator=(const ZeroedFrame&) = delete;
+  ThreadFileScope(const ThreadFileScope&) = delete;
+  ThreadFileScope& operator=(const ThreadFileScope&) = delete;
 };
 
 }  // namespace detail
 
-// Runs a recompiled function with the given arguments on the calling guest thread, on a zeroed register file of its own (see
-// the note on Call at the top). Nothing runs, and R{} comes back, for a null function or a thread that is not a guest thread.
+// Runs a recompiled function with the given arguments on the calling guest thread, on the thread's own register file with the
+// registers cleared (see ThreadFileScope). Nothing runs, and R{} comes back, for a null function or a non-guest thread.
 template <typename R, typename Function, typename... Args>
 R Call(Function&& function, Args&&... args) {
   ::PPCFunc* target = function;
@@ -101,10 +118,9 @@ R Call(Function&& function, Args&&... args) {
     }
   }
   // rex::ppc::Call opens the call frame under r1 (back chain, linkage area, stack arguments), sets lr to the host return
-  // address and puts the arguments in place; it saves the file it is given and restores it afterwards, which here is the
-  // zeroed one.
-  detail::ZeroedFrame frame(*bound.ctx);
-  return rex::ppc::Call<R>(frame.ctx, bound.base, *target, std::forward<Args>(args)...);
+  // address and puts the arguments in place; the scope restores the thread's registers afterwards.
+  detail::ThreadFileScope scope(*bound.ctx);
+  return rex::ppc::Call<R>(*bound.ctx, bound.base, *target, std::forward<Args>(args)...);
 }
 
 // A register file of its own for a call into recompiled code made from inside a hook, so nothing of the hook's registers is
