@@ -192,8 +192,8 @@ void Hook_RoadReflCarsEnter(PPCRegister& r30, PPCRegister& r28, PPCRegister& r13
     t_open = false;
     if (larecomp::settings::mcla_gpu_road_reflection_cars_test.Get() <= 0) return;
     if (r28.u32 != kReflectionPhase) return;
-    auto* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     const uint32_t vehicle = r30.u32;
     if (!base || !Plausible(vehicle)) return;
 

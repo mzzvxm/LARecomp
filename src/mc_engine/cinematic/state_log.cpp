@@ -96,8 +96,8 @@ constexpr uint32_t kPublishedCamera = 4272;         // + right, up, forward, pos
 
 // ---------------------------------------------------------------- guest memory, fault-proof (a stale pointer costs a row, not the run)
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // No C++ objects with destructors in here: a function that carries __try cannot unwind them.
@@ -165,9 +165,9 @@ bool ReadByte(uint32_t ea, uint8_t* b) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 // The local player's racer (the same two getters scene_runtime.cpp and M4's cars.cpp call), or 0.
@@ -177,8 +177,8 @@ uint32_t PlayerRacer() {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -420,6 +420,7 @@ std::string CurrentLogPath() {
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "state_log.h"
+#include "larecomp_guest.h"
 
 namespace mc::cinematic::statelog {
 void Tick() {}

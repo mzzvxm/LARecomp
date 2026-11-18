@@ -52,6 +52,7 @@
 #include <unordered_map>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/memory/virtual_memory.h>
 #include <rex/kernel/guest_memory.h>
 
@@ -71,12 +72,12 @@ std::unordered_map<uint32_t, uint32_t> g_live;        // owner -> inst it was ma
 std::unordered_map<uint32_t, FreedOwner> g_freed;     // owner -> how it went
 std::atomic<uint32_t> g_bad{0};
 
-rex::memory::Memory* Mem() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->memory() : nullptr;
+rex::kernel::GuestAddressSpace* Mem() {
+    auto* rt = REX_RUNTIME();
+    return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
-bool Readable(rex::memory::Memory* mem, uint32_t addr, uint32_t len) {
+bool Readable(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint32_t len) {
     if (addr < 0x10000u || addr > 0xFFFFFFFFu - len) return false;
     auto* heap = mem->LookupHeap(addr);
     if (!heap) return false;
@@ -90,7 +91,7 @@ bool LooksLikeObject(uint32_t addr) { return addr >= 0x40000000u && addr < 0xFFF
 // Guest return addresses above the hook: r1 is the current function's frame
 // (after its stwu); each frame's back chain is at +0 and the caller's LR was
 // stored 8 bytes below the frame it points at.
-std::array<uint32_t, 8> GuestChain(rex::memory::Memory* mem, uint32_t sp) {
+std::array<uint32_t, 8> GuestChain(rex::kernel::GuestAddressSpace* mem, uint32_t sp) {
     std::array<uint32_t, 8> out{};
     uint32_t fp = sp;
     for (size_t i = 0; i < out.size(); ++i) {
@@ -113,7 +114,7 @@ std::string ChainText(const std::array<uint32_t, 8>& chain) {
     return s.empty() ? std::string("?") : s;
 }
 
-std::string HexDump(rex::memory::Memory* mem, uint32_t from, uint32_t len) {
+std::string HexDump(rex::kernel::GuestAddressSpace* mem, uint32_t from, uint32_t len) {
     std::string out;
     for (uint32_t a = from; a < from + len; a += 16) {
         out += fmt::format("\n    {:08X}:", a);
@@ -247,6 +248,8 @@ bool Patch_PropOwnerPoseGuard(PPCRegister& r31, PPCRegister& r4) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/heap.h>
 
 void TickRaceProps() {}
 void Hook_PropOwnerCreated(PPCRegister& r3, PPCRegister& r31) {}

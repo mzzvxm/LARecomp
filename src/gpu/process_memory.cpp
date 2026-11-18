@@ -127,8 +127,8 @@ void Report(uint64_t frame) {
   GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
                        sizeof(pmc));
 
-  const rex::Runtime* runtime = rex::Runtime::instance();
-  const uint8_t* membase = runtime ? runtime->virtual_membase() : nullptr;
+  const rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
+  const uint8_t* membase = runtime ? runtime->GetMembase().GetBase() : nullptr;
   const Census c = Walk(reinterpret_cast<uintptr_t>(membase));
 
   // The CRT's malloc and every other heap of the process: what was allocated

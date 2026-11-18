@@ -40,6 +40,7 @@
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/xam/user_profile.h>
+#include <rex/path_settings.h>
 
 #include <algorithm>
 #include <array>
@@ -55,6 +56,7 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_8238C9B0);  // LocalOptions reset
 REX_EXTERN(__imp__rex_sub_8238C278);  // new-game defaults: a record per roster vehicle
@@ -145,9 +147,9 @@ bool EnsureCapacity(uint8_t* b, uint32_t needed, const char* why) {
     if (old && needed <= cap) return true;
     uint32_t want = std::max<uint32_t>({needed + kSlack, cap * 2, 256});
     want = (want + 63) & ~63u;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     const uint32_t block =
-        rt && rt->memory() ? rt->memory()->SystemHeapAlloc(want * kRecordSize, 0x1000) : 0;
+        rt && larecomp::guest::AddressSpace(rt) ? larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(want * kRecordSize, 0x1000) : 0;
     if (!block) {
         LARECOMP_APP_ERROR("[vehicle-records] no guest memory for {} records ({})", want, why);
         return old != 0;
@@ -204,9 +206,9 @@ std::string ProfileDirFor() {
 }
 
 fs::path SidecarPath() {
-    auto* rt = rex::Runtime::instance();
-    const fs::path root = rt ? rt->user_data_root() : fs::path{};
-    const std::string dir = ProfileDirFor<rex::system::xam::UserProfile>();
+    auto* rt = REX_RUNTIME();
+    const fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
+    const std::string dir = ProfileDirFor<rex::xam::UserProfile>();
     if (root.empty() || dir.empty()) return {};
     return root / dir / "545407F8" / "mc4_vehicle_records.bin";
 }

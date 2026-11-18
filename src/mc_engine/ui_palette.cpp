@@ -13,6 +13,7 @@
 #include "logging.h"
 #include "pause_menu.h"
 #include "swf_dom.h"
+#include "larecomp_guest.h"
 
 namespace larecomp {
 namespace {
@@ -86,7 +87,7 @@ void FillHex() {
 
 void UiPaletteInit() {
     if (g_ready) return;
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (base && ReadGameTable(base, g_rgb)) {
         MC_INFO("[ui-palette] using the garage's paint table (first swatch {:02X}{:02X}{:02X})",
                 g_rgb[0][0], g_rgb[0][1], g_rgb[0][2]);
@@ -284,7 +285,7 @@ void BeforeButtonUpdate(PPCContext& ctx, uint8_t* base, uint32_t root) {
 const swf::ImportedSprite* GarageButton() {
     if (g_import_tried) return g_button;
     g_import_tried = true;
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     const swf::ImportedSprite* imp = swf::ImportSprite(kGarageMovie, kButtonChar);
     if (!imp) {
         MC_ERROR("[ui-palette] the garage's color button could not be imported; the color rows "
@@ -437,7 +438,7 @@ int ReadGlobals(uint8_t* base, uint32_t ctx, float out[kNumGlobals]) {
         out[i] = 0.0f;
         if (!g_global_keys[i]) return -1;
         WriteGuestF32(base, g_global_out, 0.0f);
-        if (rex::ppc::GuestToHostFunction<uint32_t>(__imp__rex_sub_825EE1C8, ctx,
+        if (larecomp::guest::Call<uint32_t>(__imp__rex_sub_825EE1C8, ctx,
                                                     g_global_keys[i], g_global_out))
             out[i] = ReadGuestF32(base, g_global_out);
         else

@@ -18,6 +18,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../draw_stats.h"
+#include "larecomp_guest.h"
 
 
 // ── Frame-time instrumentation ─────────────────────────────────────────
@@ -104,7 +105,7 @@ static void AddGpuTimingDeltas(AddDelta&& add_delta) {
 
 void SampleCounters() {
     using rex::platform::CounterID;
-    using rex::perf::GetCounter;
+    using rex::platform::GetCounter;
 
     static int64_t s_prev_counters[static_cast<size_t>(CounterId::kCount)];
     static bool s_initialized = false;
@@ -176,7 +177,7 @@ void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {
     }
     g_int_cpu.fetch_add(1, std::memory_order_relaxed);
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t user_data = static_cast<uint32_t>(r31.u32);
     if (!user_data) return;
@@ -250,7 +251,7 @@ void RecordFrameTime() {
 
     if (now - last_report >= 1000000) {
         wrote = true;
-        auto* membase = rex::Runtime::instance()->virtual_membase();
+        auto* membase = larecomp::guest::Membase();
 
         // Use the ACTUAL elapsed interval, not an assumed 1000 ms: the report
         // fires on the first frame at or past the boundary, so the real window
@@ -320,10 +321,10 @@ void RecordFrameTime() {
                 "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
                 " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
                 CTR(cmdbuf_stalls), CTR(crit_contentions),
-                (long long)rex::perf::GetCounter(rex::platform::CounterID::kApcQueueDepth),
-                (long long)rex::perf::GetCounter(rex::platform::CounterID::kActiveThreads),
-                (long long)rex::perf::GetCounter(rex::platform::CounterID::kBufferQueueDepth),
-                (long long)rex::perf::GetCounter(rex::platform::CounterID::kAudioFrameLatencyUs));
+                (long long)rex::platform::GetCounter(rex::platform::CounterID::kApcQueueDepth),
+                (long long)rex::platform::GetCounter(rex::platform::CounterID::kActiveThreads),
+                (long long)rex::platform::GetCounter(rex::platform::CounterID::kBufferQueueDepth),
+                (long long)rex::platform::GetCounter(rex::platform::CounterID::kAudioFrameLatencyUs));
             g_ctr = {};
         }
 

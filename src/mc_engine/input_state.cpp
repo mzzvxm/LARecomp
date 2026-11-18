@@ -186,7 +186,7 @@ bool VerboseOpen() {
 // ---- the SDK -------------------------------------------------------------------------------------------
 
 rex::input::InputSystem* Isys() {
-  auto* rt = rex::Runtime::instance();
+  auto* rt = REX_RUNTIME();
   return rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
 }
 

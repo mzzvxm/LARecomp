@@ -9,9 +9,11 @@
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
+#include <rex/kernel/heap.h>
 
 #include "../online_common.h"
 #include "../system_link.h"
+#include "larecomp_guest.h"
 
 namespace larecomp::browser {
 namespace {
@@ -49,18 +51,17 @@ JoinPhase g_phase = JoinPhase::kIdle;
 Clock::time_point g_phase_deadline{};
 int g_start_step = 0;
 
-rex::memory::Memory* Mem() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->memory() : nullptr;
+rex::kernel::GuestAddressSpace* Mem() {
+    auto* rt = REX_RUNTIME();
+    return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 template <typename... Args>
 uint32_t CallGuest(uint32_t fn_addr, Args... args) {
-    auto* rt = rex::Runtime::instance();
-    auto* dispatcher = rt ? rt->function_dispatcher() : nullptr;
-    PPCFunc* fn = dispatcher ? dispatcher->GetFunction(fn_addr) : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, static_cast<uint32_t>(args)...);
+    return larecomp::guest::Call<uint32_t>(fn, static_cast<uint32_t>(args)...);
 }
 
 void SetStatus(JoinPhase phase, std::string text) {

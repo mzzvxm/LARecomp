@@ -17,6 +17,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 bool Patch_DisableRubberBanding() {
     return larecomp::settings::disable_rubberbanding.Get();
@@ -72,7 +73,7 @@ static constexpr RubberBandField kRubberBandFields[] = {
 // Writes every entry to <exe>/rubberband_dump.txt. The knobs below are meant to
 // be chosen from these numbers rather than guessed at.
 void DumpRubberBandTuning() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
     if (mgr == 0) {
@@ -194,7 +195,7 @@ void ApplyRubberBandScales() {
         if (!RubberBandGroupNeutral(kRubberBandScales[g], scale[g])) neutral = false;
     }
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
     if (mgr == 0) return;
@@ -295,7 +296,7 @@ void ApplyRubberBandScales() {
 // sub_82742D28 walks. The level is also written into mgr+60 here (the dev option
 // only feeds the next SetupRace).
 void ApplyRubberBandLive() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
     if (mgr == 0) return;
@@ -504,7 +505,7 @@ void ApplyDifficultyPreset() {
     if (g_tune.loaded_mgr == 0) return;
     if (want == applied && g_tune.generation == applied_generation) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     if (ReadGuestU32(base, kRubberBandMgrPtr) != g_tune.loaded_mgr) return;
     std::memcpy(base + g_tune.loaded_mgr + kRubberBandFirst, want ? g_tune.raw : g_tune.complete,

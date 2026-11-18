@@ -25,6 +25,7 @@
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 #include "../texture_dump.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -69,7 +70,7 @@ struct ShapeProbe {
     uint64_t hash = 0;
 };
 
-static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local) {
+static ShapeProbe ProbeShape(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t cat, uint32_t local) {
     ShapeProbe p;
     uint32_t desc_table = GuestRead32(mem, lib + 4 * (26 + cat));
     if (!IsGuestPtr(desc_table)) return p;
@@ -117,7 +118,7 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
     return p;
 }
 
-static std::string ShapeName(rex::memory::Memory* mem, uint32_t db, uint32_t cat, uint32_t local) {
+static std::string ShapeName(rex::kernel::GuestAddressSpace* mem, uint32_t db, uint32_t cat, uint32_t local) {
     uint32_t names = GuestRead32(mem, db + 96 + 8 * cat);
     if (!IsGuestPtr(names)) return {};
     return GuestCStr(mem, GuestRead32(mem, names + 4 * local), 128);
@@ -144,7 +145,7 @@ static std::map<uint32_t, ShapeRec> LoadShapeRecs(const std::filesystem::path& d
 
 // Writes vinyl_shape_hashes.txt (accumulated ShapeIdx->hash map) and
 // vinyl_shapes.json (the full catalog joined to whatever hashes exist so far).
-static void SaveShapeManifest(rex::memory::Memory* mem, uint32_t lib, uint32_t db,
+static void SaveShapeManifest(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t db,
                               const std::map<uint32_t, ShapeRec>& recs,
                               const std::filesystem::path& dir) {
     auto esc = [](const std::string& s) {
@@ -198,9 +199,9 @@ static void SaveShapeManifest(rex::memory::Memory* mem, uint32_t lib, uint32_t d
 // Single-pass dump: hash every currently-resident shape, merge into the
 // persistent map, rewrite the manifest. Use after browsing categories.
 void DumpVinylShapes() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t lib = GuestRead32(mem, kShapeLib);
     uint32_t db = GuestRead32(mem, kShapeDb);
@@ -251,7 +252,7 @@ void RequestVinylShapeCapture() { g_scap_request.store(true, std::memory_order_r
 // Adjust a shape's request-refcount by delta (big-endian RMW). +1 asks the
 // per-frame loader to load it; -1 lets it be released. Increment (not set) so we
 // never clobber the game's own reference for shapes it currently wants.
-static void ShapeRefAdjust(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local,
+static void ShapeRefAdjust(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t cat, uint32_t local,
                            int delta) {
     uint32_t arr = GuestRead32(mem, lib + 4 * (49 + cat));
     if (!IsGuestPtr(arr)) return;
@@ -263,9 +264,9 @@ static void ShapeRefAdjust(rex::memory::Memory* mem, uint32_t lib, uint32_t cat,
 }
 
 void TickVinylShapeCapture() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t lib = GuestRead32(mem, kShapeLib);
     uint32_t db = GuestRead32(mem, kShapeDb);
@@ -339,6 +340,7 @@ void TickVinylShapeCapture() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 void DumpVinylShapes() {}
 void RequestVinylShapeCapture() {}

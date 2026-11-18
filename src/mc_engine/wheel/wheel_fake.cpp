@@ -69,6 +69,7 @@
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
 #include "wheel_input.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_8275CB70);
 REX_EXTERN(__imp__rex_sub_8275CB78);
@@ -445,7 +446,7 @@ extern "C" REX_FUNC(rex_sub_8260C4D0) {
 // gear (-1 reverse, 0 neutral, 1..N), r5 = the vehicle the HUD shows. Speed is the length of the
 // velocity vector at *(vehicle+0x80)+0x110. Read-only.
 void Hook_WheelHudGear(PPCRegister& r4, PPCRegister& r5) {
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     float speed = 0.0f;
     const uint32_t veh = r5.u32;

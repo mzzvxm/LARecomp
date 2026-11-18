@@ -154,8 +154,8 @@ uint32_t WrapperFor(Native n) {
 // ---------------------------------------------------------------- guest memory
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // Is [ea, ea + len) committed host memory (readable)? A racer a test file or a stale list gave may well not be one.
@@ -208,9 +208,9 @@ float RF(const uint8_t* base, uint32_t ea) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool GamePaused(const uint8_t* base) {
@@ -220,14 +220,14 @@ bool GamePaused(const uint8_t* base) {
 
 // The player's racer (0 in a menu, the garage, a loading screen, or off a guest thread).
 uint32_t PlayerRacer(const uint8_t* base) {
-    if (!rex::runtime::ThreadState::Get()) return 0;
+    if (!rex::kernel::ThreadState::Get()) return 0;
     const uint32_t mgr = R32(base, kPlayerMgrPtr);
     PPCFunc* valid_fn = GuestFn(kPlayerValidFn);
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -1021,6 +1021,7 @@ size_t SceneCarCount() {
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "cars.h"
+#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 void TickCars() {}

@@ -37,6 +37,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/guest_memory.h>
+#include <rex/kernel/heap.h>
 
 #include <cstdint>
 #include <cstring>
@@ -44,6 +45,7 @@
 
 #include "hud_units.h"
 #include "logging.h"
+#include "larecomp_guest.h"
 
 // Same switch that drives the game's own metric formatter, defined in hooks/ui.cpp:
 // one knob for units, not two. "kmh" converts the HUD, "game"/"mph" leave it.
@@ -121,24 +123,24 @@ Want WantedUnits() {
 // A page we can touch without risking a fault. QueryProtect lives on BaseHeap,
 // not on Memory, and it fails outright for anything that was never committed --
 // which is most of the address space.
-bool PageAccessible(rex::memory::Memory* mem, uint32_t address, bool need_write) {
+bool PageAccessible(rex::kernel::GuestAddressSpace* mem, uint32_t address, bool need_write) {
     auto* heap = mem->LookupHeap(address);
     if (!heap) return false;
     uint32_t protect = 0;
     if (!heap->QueryProtect(address, &protect)) return false;
-    const uint32_t want = rex::memory::kMemoryProtectRead |
-                          (need_write ? rex::memory::kMemoryProtectWrite : 0u);
+    const uint32_t want = rex::kernel::kMemoryProtectRead |
+                          (need_write ? rex::kernel::kMemoryProtectWrite : 0u);
     return (protect & want) == want;
 }
 
 // TranslateVirtual rather than virtual_membase() + address: heaps carry a host
 // offset (the physical window does), and raw arithmetic gets those wrong.
-uint8_t* HostPointer(rex::memory::Memory* mem, uint32_t address) {
+uint8_t* HostPointer(rex::kernel::GuestAddressSpace* mem, uint32_t address) {
     return mem->TranslateVirtual<uint8_t*>(address);
 }
 
 // Writes one site's field. `to_kmh` picks which of the two byte strings goes in.
-void WriteSite(rex::memory::Memory* mem, Site& site, bool to_kmh) {
+void WriteSite(rex::kernel::GuestAddressSpace* mem, Site& site, bool to_kmh) {
     const uint32_t at = site.found_at + site.field_offset;
     if (!PageAccessible(mem, at, true) ||
         !PageAccessible(mem, at + site.field_len - 1, true)) {
@@ -152,7 +154,7 @@ void WriteSite(rex::memory::Memory* mem, Site& site, bool to_kmh) {
 
 // True when the site still holds one of the two shapes we know. A movie reload
 // leaves the old address holding something else entirely.
-bool SiteStillOurs(rex::memory::Memory* mem, const Site& site) {
+bool SiteStillOurs(rex::kernel::GuestAddressSpace* mem, const Site& site) {
     const uint32_t at = site.found_at + site.field_offset;
     if (!PageAccessible(mem, at, false) ||
         !PageAccessible(mem, at + site.field_len - 1, false)) {
@@ -178,9 +180,9 @@ constexpr uint32_t kSignUnitOffset = 14;                // of "mph" in the signa
 uint32_t g_sign_unit = 0;  // guest address of the constant's "mph" / "kmh"
 bool g_sign_searched = false;
 
-bool ChunkReadable(rex::memory::Memory* mem, uint32_t chunk_base);  // below
+bool ChunkReadable(rex::kernel::GuestAddressSpace* mem, uint32_t chunk_base);  // below
 
-void FindSignUnit(rex::memory::Memory* mem, uint32_t speedometer_label) {
+void FindSignUnit(rex::kernel::GuestAddressSpace* mem, uint32_t speedometer_label) {
     g_sign_searched = true;
     g_sign_unit = 0;
     const uint32_t start = speedometer_label > kMovieLabelOffset ? speedometer_label - kMovieLabelOffset
@@ -206,7 +208,7 @@ void FindSignUnit(rex::memory::Memory* mem, uint32_t speedometer_label) {
 }
 
 // Writes the sign's unit if it still holds one of its two spellings.
-void WriteSignUnit(rex::memory::Memory* mem, bool to_kmh) {
+void WriteSignUnit(rex::kernel::GuestAddressSpace* mem, bool to_kmh) {
     if (!g_sign_unit || !PageAccessible(mem, g_sign_unit, true) ||
         !PageAccessible(mem, g_sign_unit + 2, true)) {
         return;
@@ -242,7 +244,7 @@ constexpr uint32_t kMaxSigLen = sizeof(kGlyphSig) > sizeof(kMultSig) ? sizeof(kG
 // calls, and the whole point of the chunk granularity is that most of the
 // address space is not mapped at all: LookupHeap returning null lets a chunk be
 // dismissed without touching the page tables.
-bool ChunkReadable(rex::memory::Memory* mem, uint32_t chunk_base) {
+bool ChunkReadable(rex::kernel::GuestAddressSpace* mem, uint32_t chunk_base) {
     auto* heap = mem->LookupHeap(chunk_base);
     if (!heap) return false;
     return heap->QueryRangeAccess(chunk_base, chunk_base + kChunk - 1) !=
@@ -255,7 +257,7 @@ bool ChunkReadable(rex::memory::Memory* mem, uint32_t chunk_base) {
 // cursor steps back by kMaxSigLen-1 so a match straddling the cut is still seen.
 // Dismissed chunks are charged against the budget too, otherwise a sweep over a
 // mostly-empty address space would run the whole range in a single frame.
-void ScanStep(rex::memory::Memory* mem) {
+void ScanStep(rex::kernel::GuestAddressSpace* mem) {
     uint32_t budget = kBytesPerFrame;
 
     while (budget >= kChunk && g_cursor < kScanEnd) {
@@ -330,9 +332,9 @@ void ScanStep(rex::memory::Memory* mem) {
 void TickHudUnits() {
     const Want want = WantedUnits();
 
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // Back to stock: undo in place, keep the addresses so a later flip does not

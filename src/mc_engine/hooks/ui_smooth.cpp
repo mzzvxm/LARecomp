@@ -211,8 +211,8 @@ void UiSmoothNoteStep(uint32_t context, int64_t step_ns, int64_t period_ns) {
 // r31 = the parent's state block. Runs on the draw thread for every node of every movie.
 void Hook_UiSmoothDraw(PPCRegister& r30, PPCRegister& r31) {
     if (!larecomp::settings::ui_interpolate.Get()) return;
-    auto* rt = rex::Runtime::instance();
-    uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base) return;
     // Nodes of our own (swf_dom.cpp) are placed by LARecomp's code, not by a step.
     if (larecomp::swf::DrawingRaw()) return;
@@ -557,8 +557,8 @@ bool SceneBlend(uint32_t ctx, uint32_t obj, const SceneSpec& spec, float* v, int
 }
 
 uint8_t* GuestBase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 }  // namespace
 

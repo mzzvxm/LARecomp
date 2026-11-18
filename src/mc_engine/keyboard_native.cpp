@@ -1,6 +1,7 @@
 // See keyboard_native.h for the design and what every address below is.
 #include "keyboard_native.h"
 #include "ultrawide.h"
+#include "larecomp_guest.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
@@ -102,8 +103,8 @@ enum UiButton : uint32_t {
 
 // ── small helpers ───────────────────────────────────────────────────────
 uint8_t* GuestBase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 bool HeapPtr(uint32_t ea) { return ea >= 0x40000000u && ea < 0xE0000000u; }
@@ -168,7 +169,7 @@ std::atomic<bool> g_listener_attached{false};
 // walks the window's listener lists.
 void EnsureKeyListener() {
     if (g_listener_attached.load(std::memory_order_relaxed)) return;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     auto* isys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
     rex::ui::Window* window = isys ? isys->window() : nullptr;
     if (!window || g_listener_posted.exchange(true)) return;
@@ -619,9 +620,9 @@ void EnsureNavKeys(uint8_t* b) {
 // Re-run the game's own rebuild for the controllers we have seen, so an edited
 // driving binding applies without waiting for the game to rebuild by itself.
 void ReapplyDrive(uint8_t* b) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher() || g_reapplying) return;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kRebuildFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt || g_reapplying) return;
+    PPCFunc* fn = rt->FindFunction(kRebuildFn).value_or(nullptr);
     if (!fn) return;
     g_reapplying = true;
     for (auto& d : g_drive) {
@@ -632,7 +633,7 @@ void ReapplyDrive(uint8_t* b) {
             d = DriveStruct{};
             continue;
         }
-        rex::ppc::GuestToHostFunction<uint32_t>(fn, d.ea);
+        larecomp::guest::Call<uint32_t>(fn, d.ea);
     }
     g_reapplying = false;
 }
@@ -1652,10 +1653,10 @@ constexpr uint32_t kLabelText = 512;   // text names at +512 + 16 * scancode
 
 uint32_t LabelBlock(uint8_t* b) {
     if (g_label_block) return g_label_block;
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->memory()) return 0;
+    auto* rt = REX_RUNTIME();
+    if (!rt || !larecomp::guest::AddressSpace(rt)) return 0;
     const uint32_t size = kLabelText + 16 * 256;
-    const uint32_t block = rt->memory()->SystemHeapAlloc(size, 0x1000);
+    const uint32_t block = larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(size, 0x1000);
     if (!block) return 0;
     std::memset(b + block, 0, size);
     for (int icon = 1; icon < 64; ++icon)

@@ -65,6 +65,7 @@
 #include "d3d12/barrier_batch.h"
 #include "d3d12/untile_pass.h"
 #include "diag.h"
+#include "larecomp_guest.h"
 
 // Defined in device_manager.cpp and swapchain.cpp
 
@@ -183,7 +184,7 @@ std::atomic<uint32_t> g_render_thread_id{0};
 // backend, initialize the smoke-test renderer. Any failure latches kFailed
 // and logs once; the guest swap then proceeds normally.
 bool TryInitialize() {
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   if (!runtime) {
     REXLOG_ERROR("[native_gfx] no Runtime instance");
     return false;
@@ -1775,8 +1776,8 @@ void NotifyFrameBoundary() {
   // vehicle's body on one. Selecting the guest's own no-occlusion path every
   // boundary is what keeps the body submitted; see guest/occlusion.h for the
   // slot-refresh mechanism that makes it permanent rather than intermittent.
-  DisableGuestOcclusionQueries(rex::Runtime::instance()
-                                   ? rex::Runtime::instance()->virtual_membase()
+  DisableGuestOcclusionQueries(REX_RUNTIME()
+                                   ? larecomp::guest::Membase()
                                    : nullptr);
   {
     static uint64_t occ_report = 0;
@@ -1787,7 +1788,7 @@ void NotifyFrameBoundary() {
 
   // Vblank/flip machinery, for the no-command-processor port. Sampled every
   // boundary (two loads) and reported on the same cadence as the rest.
-  ProbeVblankState(rex::Runtime::instance() ? rex::Runtime::instance()->virtual_membase()
+  ProbeVblankState(REX_RUNTIME() ? larecomp::guest::Membase()
                                             : nullptr);
   {
     static uint64_t vb_report = 0;

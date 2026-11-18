@@ -28,6 +28,8 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 #include <rex/platform/sync.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include "cinematic/capture_audio.h"
 
@@ -41,7 +43,7 @@ inline constexpr std::chrono::nanoseconds kNullFramePeriod{256'000'000'000ll / 4
 
 class NullOutputDriver final : public rex::audio::AudioDriver {
  public:
-  NullOutputDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore)
+  NullOutputDriver(rex::kernel::GuestAddressSpace* memory, rex::platform::Semaphore* frame_semaphore)
       : AudioDriver(memory), frame_semaphore_(frame_semaphore), clock_([this] { Consume(); }) {}
 
   ~NullOutputDriver() override {
@@ -94,7 +96,7 @@ class NullOutputDriver final : public rex::audio::AudioDriver {
 class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
                                  public mc::cinematic::capture_audio::DriverHost {
  public:
-  explicit OutputWithFallback(rex::runtime::FunctionDispatcher* function_dispatcher)
+  explicit OutputWithFallback(rex::kernel::FunctionDispatcher* function_dispatcher)
       : SDLAudioSystem(function_dispatcher) {
     mc::cinematic::capture_audio::SetHost(this);  // only a pointer: nothing is installed until a take asks
   }
@@ -146,7 +148,7 @@ class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
 };
 
 inline std::unique_ptr<rex::system::IAudioSystem> CreateAudioSystem(
-    rex::runtime::FunctionDispatcher* function_dispatcher) {
+    rex::kernel::FunctionDispatcher* function_dispatcher) {
   return std::make_unique<OutputWithFallback>(function_dispatcher);
 }
 

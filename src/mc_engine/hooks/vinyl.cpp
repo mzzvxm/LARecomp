@@ -22,6 +22,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
+#include "larecomp_guest.h"
 
 // Vinyl (decal) layer caps. MCLA stores car decals in a fixed 288-slot layer
 // array (each layer = 20 bytes) partitioned across 5 surfaces by two parallel
@@ -44,9 +45,9 @@
 void ApplyVinylLayerCaps() {
     if (!larecomp::settings::extra_vinyl_layers.Get()) return;
 
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // dword_820510B0 (the capacity table) lives in the XEX read-only data
@@ -58,7 +59,7 @@ void ApplyVinylLayerCaps() {
     auto make_writable = [&](uint32_t addr) {
         if (auto* heap = mem->LookupHeap(addr)) {
             heap->Protect(addr, 5 * sizeof(uint32_t),
-                          rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+                          rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite);
         }
     };
 
@@ -126,9 +127,9 @@ static std::atomic<uint32_t> g_vinyl_player{0};
 // surfaces/layers spans many frames, so we hold readback until it's actually
 // idle instead of a fixed guess. Self-contained (direct guest reads).
 static bool VinylCompositeBusy() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return false;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return false;
     auto rd8 = [&](uint32_t a) -> uint8_t { return *mem->TranslateVirtual<const uint8_t*>(a); };
     auto is_ptr = [](uint32_t ea) { return ea >= 0x10000u && ea < 0xFFFF0000u; };
@@ -198,7 +199,7 @@ constexpr uint32_t kOffsetsTable = 0x827E9770;
 // Resolves the current garage car's paint object: the hook-cached value first,
 // else the live mcCarModel global (dword_8288DCF8; carModel+20 = paint). Returns
 // 0 if no car is loaded. `src` (optional) is set to which source succeeded.
-uint32_t ResolveCurrentPaint(rex::memory::Memory* mem, const char** src = nullptr) {
+uint32_t ResolveCurrentPaint(rex::kernel::GuestAddressSpace* mem, const char** src = nullptr) {
     uint32_t paint = g_vinyl_paint.load(std::memory_order_relaxed);
     if (IsGuestPtr(paint)) { if (src) *src = "hook"; return paint; }
     uint32_t car_model = GuestRead32(mem, 0x8288DCF8);
@@ -210,7 +211,7 @@ uint32_t ResolveCurrentPaint(rex::memory::Memory* mem, const char** src = nullpt
 }
 
 // Reads the car name C-string at *(paint+76)+8; sanitizes to a filename token.
-std::string ReadCarName(rex::memory::Memory* mem, uint32_t paint) {
+std::string ReadCarName(rex::kernel::GuestAddressSpace* mem, uint32_t paint) {
     std::string name;
     uint32_t p76 = GuestRead32(mem, paint + 76);
     if (IsGuestPtr(p76)) {
@@ -240,9 +241,9 @@ std::string TimestampToken() {
 }  // namespace
 
 void ExportVinyl() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // Prefer the paint cached by the regen hook; fall back to the current
@@ -332,9 +333,9 @@ void ExportVinyl() {
 // memory writes (the block is a writable heap object) — no guest calls, so this
 // is safe to run from the F4/cvar-callback thread.
 void ImportVinyl(const std::string& name_in) {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // Trim surrounding whitespace/quotes from the typed name.
@@ -485,6 +486,7 @@ void ImportVinyl(const std::string& name_in) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void ExportVinyl() {}

@@ -13,6 +13,7 @@
 #include <functional>
 
 #include <rex/app/title_app.h>
+#include "app_paths.h"
 
 namespace rex::ui {
 class ImGuiDrawer;
@@ -35,7 +36,7 @@ bool SaveAlreadyPresent(const std::filesystem::path& user_data_root);
 // message loop under it never drains SDL's event queue; the stock SDK does not
 // even offer a way to pump it. OnFinalizePaths returns std::nullopt while the
 // wizard is up and resumes from `on_finished`.
-bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
                           std::function<void()> on_finished);
 
 }  // namespace larecomp

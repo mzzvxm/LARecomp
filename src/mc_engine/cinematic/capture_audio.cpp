@@ -68,6 +68,7 @@
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/kernel/heap.h>
 
 #include <algorithm>
 #include <atomic>
@@ -110,8 +111,8 @@ uint32_t Swap32(uint32_t v) {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 float GuestFloat(const uint8_t* base, uint32_t ea) {
@@ -148,7 +149,7 @@ Summary g_last;
 
 class CaptureOutputDriver final : public rex::audio::AudioDriver {
   public:
-    CaptureOutputDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
+    CaptureOutputDriver(rex::kernel::GuestAddressSpace* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
         : AudioDriver(memory), sem_(frame_semaphore), real_(real), index_(index) {
         // Made inside the SDK's global critical region (the host's InstallCapture): nothing is logged here, Begin says it once the lock is
         // given back.
@@ -600,7 +601,7 @@ void SetHost(DriverHost* host) {
     g_host = host;
 }
 
-rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
+rex::audio::AudioDriver* WrapDriver(rex::kernel::GuestAddressSpace* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
     return new CaptureOutputDriver(memory, frame_semaphore, real, index);
 }
 

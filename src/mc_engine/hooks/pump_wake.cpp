@@ -61,6 +61,7 @@
 
 #include "../threading.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -108,7 +109,7 @@ bool Allowed(int64_t now) {
 }
 
 const uint8_t* GuestBase() {
-    static const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    static const uint8_t* base = larecomp::guest::Membase();
     return base;
 }
 

@@ -1,6 +1,7 @@
 // The game's own menu screens, made from C++. See ui_forms.h and.
 
 #include "ui_forms.h"
+#include "larecomp_guest.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/ppc/call.h>
@@ -100,7 +101,7 @@ constexpr int kMaxForms = 48;
 Entry g_forms[kMaxForms];  // guest thread only
 int g_form_count = 0;
 
-uint8_t* Base() { return rex::Runtime::instance()->virtual_membase(); }
+uint8_t* Base() { return larecomp::guest::Membase(); }
 
 uint32_t R32(uint32_t ea) { return ReadGuestU32(Base(), ea); }
 void W32(uint32_t ea, uint32_t v) { WriteGuestU32(Base(), ea, v); }
@@ -119,14 +120,13 @@ bool Plausible(uint32_t ea) { return ea >= 0x10000u && ea < 0xC0000000u; }
 // A guest function by address, for the vtable slots.
 template <typename... Args>
 uint32_t CallAt(uint32_t fn_addr, Args... args) {
-    auto* rt = rex::Runtime::instance();
-    auto* dispatcher = rt ? rt->function_dispatcher() : nullptr;
-    PPCFunc* fn = dispatcher ? dispatcher->GetFunction(fn_addr) : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
     if (!fn) {
         MC_WARN("[ui-forms] guest fn 0x{:08X} not in the dispatcher", fn_addr);
         return 0;
     }
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, uint32_t(args)...);
+    return larecomp::guest::Call<uint32_t>(fn, uint32_t(args)...);
 }
 
 template <typename... Args>
@@ -137,7 +137,7 @@ uint32_t VCall(uint32_t obj, uint32_t slot, Args... args) {
 }
 
 uint32_t NewGuest(uint32_t size) {
-    return rex::ppc::GuestToHostFunction<uint32_t>(__imp__rex_sub_82130528, size);
+    return larecomp::guest::Call<uint32_t>(__imp__rex_sub_82130528, size);
 }
 
 uint32_t NewGuestString(const char* s) {
@@ -199,7 +199,7 @@ bool RegisterWithMainForm(uint32_t form) {
 
 void PlaySound(uint32_t table) {
     if (const uint32_t name = R32(table))
-        rex::ppc::GuestToHostFunction<void>(__imp__rex_sub_821E6800, name);
+        larecomp::guest::Call<void>(__imp__rex_sub_821E6800, name);
 }
 
 // Guest calls made from the key handler start a frame below the thread's own
@@ -208,7 +208,7 @@ void PlaySound(uint32_t table) {
 void CheckContext(const PPCContext& ctx) {
     static bool told = false;
     if (told) return;
-    auto* ts = rex::runtime::ThreadState::Get();
+    auto* ts = rex::kernel::ThreadState::Get();
     if (ts && ts->context() != &ctx) {
         told = true;
         MC_WARN("[ui-forms] a form key handler ran on a nested guest context; guest calls "
@@ -236,7 +236,7 @@ uint32_t CreateListForm(const char* title_key, const char* desc_key, int rows,
     const uint32_t form = name && desc ? NewGuest(kFormSize) : 0;
     if (!form) return 0;
     std::memset(base + form, 0, kFormSize);
-    rex::ppc::GuestToHostFunction<uint32_t>(__imp__rex_sub_82654318, form, name, desc,
+    larecomp::guest::Call<uint32_t>(__imp__rex_sub_82654318, form, name, desc,
                                             uint32_t(rows), kOptionsHeaderCap, kOptionsPrompts,
                                             kOptionsPromptCount);
 

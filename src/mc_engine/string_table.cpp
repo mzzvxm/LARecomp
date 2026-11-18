@@ -43,8 +43,8 @@ Dumper* ActiveDumper() {
     static std::once_flag once;
     static std::unique_ptr<Dumper> dumper;
     std::call_once(once, [] {
-        if (auto* rt = rex::Runtime::instance()) {
-            dumper = std::make_unique<Dumper>(mc::strings::DefaultStringsDir(rt->game_data_root()));
+        if (auto* rt = REX_RUNTIME()) {
+            dumper = std::make_unique<Dumper>(mc::strings::DefaultStringsDir(rt->GetTitlePaths().game_root.Get()));
         }
     });
     return dumper.get();
@@ -54,8 +54,8 @@ Dumper* ActiveDumper() {
 constexpr uint32_t kStringTableGlobal = 0x8286D7FC;
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadBE32(uint8_t* base, uint32_t ea) {
@@ -201,5 +201,6 @@ void InitStringTableTools() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/title_paths.h>
 
 #endif // REXGLUE_HAS_XEO3_TARGET

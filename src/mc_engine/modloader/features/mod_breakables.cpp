@@ -83,6 +83,7 @@
 #include "../../logging.h"
 #include "mod_breakables.h"
 #include "mod_data.h"
+#include "larecomp_guest.h"
 
 
 namespace {
@@ -144,8 +145,8 @@ std::unordered_set<uint64_t> g_down;  // (mod << 32) | id, read by the glow feed
 uint32_t g_scratch = 0;               // guest: velocity (16) + angular velocity (16)
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t R32(uint8_t* b, uint32_t ea) {
@@ -345,22 +346,22 @@ void ApplyModels(uint8_t* b, Prop& p, uint32_t data, bool broken) {
 
 bool EnsureScratch() {
     if (g_scratch) return true;
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kGuestMallocFn) : nullptr;
-    const uint32_t raw = fn ? rex::ppc::GuestToHostFunction<uint32_t>(fn, 48u) : 0;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(kGuestMallocFn).value_or(nullptr) : nullptr;
+    const uint32_t raw = fn ? larecomp::guest::Call<uint32_t>(fn, 48u) : 0;
     if (raw) g_scratch = (raw + 15) & ~15u;
     return g_scratch != 0;
 }
 
 void SlowCar(uint8_t* b, uint32_t vehicle, uint32_t col, float keep) {
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kSetVelocityFn) : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(kSetVelocityFn).value_or(nullptr) : nullptr;
     if (!fn || !EnsureScratch()) return;
     for (int k = 0; k < 4; ++k) {
         WF(b, g_scratch + 4 * k, RF(b, col + 272 + 4 * k) * (k < 3 ? keep : 1.0f));
         WF(b, g_scratch + 16 + 4 * k, RF(b, col + 288 + 4 * k));
     }
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, vehicle, g_scratch, g_scratch + 16);
+    larecomp::guest::Call<uint32_t>(fn, vehicle, g_scratch, g_scratch + 16);
 }
 
 uint64_t DownKey(int mod, uint32_t id) { return (uint64_t(uint32_t(mod)) << 32) | id; }

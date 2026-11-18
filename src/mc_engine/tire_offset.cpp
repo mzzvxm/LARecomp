@@ -83,8 +83,8 @@ constexpr int kNumBlocks = int(sizeof(kBlocks) / sizeof(kBlocks[0]));
 constexpr int kNumWheels = 4;
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadBE32(const uint8_t* base, uint32_t ea) {

@@ -328,7 +328,7 @@ static void MenuCamDump() {
         mfov = g_last_menu_fov;
     }
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     float ppos[3] = {0.0f, 0.0f, 0.0f};
     bool have_player = false;
     if (base) {
@@ -549,7 +549,7 @@ static bool ResolveEntry(CamEntry* out, int* out_slot) {
 // fallback and the cutscene reset to 0 are all bypassed and the requested slot
 // always wins.
 bool Hook_MenuCameraPick(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return false;
     uint32_t p = static_cast<uint32_t>(r3.u64);
     if (!IsGuestAddr(p)) return false;
@@ -644,9 +644,9 @@ static void LogExposureSample() {
     static uint32_t taken = 0;
     static uint32_t tick = 0;
     if (taken >= want || (++tick % 120u) != 0u) return;
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     if (!runtime) return;
-    auto* base = runtime->virtual_membase();
+    auto* base = runtime->GetMembase().GetBase();
     if (!base) return;
     const uint32_t phys = static_cast<uint32_t>(larecomp::settings::mcla_exposure_log_addr.Get()) & 0x1FFFFFFFu;
     static constexpr uint32_t kAliases[] = {0xE0000000u, 0xC0000000u, 0xA0000000u};
@@ -680,7 +680,7 @@ static void LogExposureSample() {
 
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
     LogExposureSample();
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     uint32_t sp = static_cast<uint32_t>(r1.u64);
     if (!IsGuestAddr(sp)) return;
@@ -842,6 +842,7 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
 #include <rex/ppc/context.h>
 
 #include "menu_camera.h"
+#include "larecomp_guest.h"
 
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {}
 bool Hook_MenuCameraPick(PPCRegister& r3) { return false; }

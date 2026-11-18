@@ -10,6 +10,7 @@
 #include <functional>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/hid/input_system.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
@@ -84,8 +85,8 @@ constexpr uint32_t kIsActiveVFunc = 92;
 // ── Guest memory ───────────────────────────────────────────────────────
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadGuestBE32(uint32_t ea) {
@@ -132,9 +133,9 @@ void WriteGuestFloat(uint32_t ea, float f) {
 // ── Guest calls ────────────────────────────────────────────────────────
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 void CallSetCursorPos(uint32_t screen, float x, float y, float z) {
@@ -146,14 +147,14 @@ void CallSetCursorPos(uint32_t screen, float x, float y, float z) {
                     "cursor cannot be driven");
         return;
     }
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, screen, double(x), double(y),
+    larecomp::guest::Call<uint32_t>(fn, screen, double(x), double(y),
                                            double(z));
 }
 
 void CallMoveMapCamera(uint32_t screen, uint32_t vec4, bool use_given_height) {
     PPCFunc* fn = GuestFn(kMoveMapCameraFn);
     if (!fn) return;
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, screen, vec4, 0u, 1u, 1u, 1u,
+    larecomp::guest::Call<uint32_t>(fn, screen, vec4, 0u, 1u, 1u, 1u,
                                            use_given_height ? 1u : 0u);
 }
 
@@ -166,7 +167,7 @@ bool ScreenIsActive(uint32_t screen) {
     if (!fn_addr) return false;
     PPCFunc* fn = GuestFn(fn_addr);
     if (!fn) return false;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, screen) != 0;
+    return larecomp::guest::Call<uint32_t>(fn, screen) != 0;
 }
 
 // sub_82625F50 reads its target with lvx, which ignores the low four bits of
@@ -179,7 +180,7 @@ uint32_t ScratchVec4() {
 
     PPCFunc* malloc_fn = GuestFn(kGuestMallocFn);
     if (!malloc_fn) return 0;
-    uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 32u);
+    uint32_t raw = larecomp::guest::Call<uint32_t>(malloc_fn, 32u);
     if (!raw) return 0;
 
     uint32_t aligned = (raw + 15u) & ~15u;
@@ -275,7 +276,7 @@ class MapMouseListener final : public rex::ui::WindowInputListener {
 MapMouseListener g_listener;
 
 rex::ui::Window* GetWindow() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return nullptr;
     auto* isys = static_cast<rex::input::InputSystem*>(rt->input_system());
     return isys ? isys->window() : nullptr;
@@ -520,10 +521,10 @@ void DropFocusIfCursorLeft(uint32_t screen) {
     if (!in_range || !set_focus) return;
 
     float radius = ReadGuestFloat(screen + kFocusRadius) * 0.5f;
-    if (rex::ppc::GuestToHostFunction<uint32_t>(in_range, screen, double(radius)))
+    if (larecomp::guest::Call<uint32_t>(in_range, screen, double(radius)))
         return;
 
-    rex::ppc::GuestToHostFunction<uint32_t>(set_focus, screen, 0u);
+    larecomp::guest::Call<uint32_t>(set_focus, screen, 0u);
 }
 
 // Walks the cursor to `target` in steps no longer than the stick's own, and

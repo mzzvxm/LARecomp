@@ -111,7 +111,7 @@ void RaiseMax(std::atomic<uint64_t>& max, uint64_t value) {
 }
 
 uint32_t FindBundle() {
-    rex::Runtime* runtime = rex::Runtime::instance();
+    rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
     auto* resolver = runtime ? runtime->export_resolver() : nullptr;
     auto* entry = resolver ? resolver->GetExportByOrdinal("xboxkrnl.exe", 0x00AD) : nullptr;
     return entry ? entry->variable_ptr : 0;

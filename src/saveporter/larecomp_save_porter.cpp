@@ -24,6 +24,7 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
+#include "app_paths.h"
 #include <rex/platform/file.h>
 #include <rex/filesystem/stfs.h>
 #include <rex/logging/log_category.h>
@@ -110,7 +111,7 @@ std::string ProfileDirNameFor() {
   }
 }
 
-std::string ProfileDirName() { return ProfileDirNameFor<rex::system::xam::UserProfile>(); }
+std::string ProfileDirName() { return ProfileDirNameFor<rex::xam::UserProfile>(); }
 
 bool ReadFileBytes(const fs::path& path, std::vector<uint8_t>& out) {
 #if defined(_WIN32)
@@ -710,9 +711,9 @@ bool SaveAlreadyPresent(const fs::path& user_data_root) {
   return present;
 }
 
-bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
                           std::function<void()> on_finished) {
-  const fs::path user_data_root = paths.user_data_root;
+  const fs::path user_data_root = paths.user_root;
 
   if (larecomp::settings::skip_save_import.Get()) {
     REXLOG_INFO("Save import: skipped (skip_save_import)");

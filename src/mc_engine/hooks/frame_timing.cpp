@@ -35,6 +35,7 @@
 #include "../camera_trace.h"
 #include "../cinematic/capture_mode.h"
 #include "../guest_profiler.h"
+#include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
@@ -609,7 +610,7 @@ void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
     if (!larecomp::settings::real_frame_delta.Get()) return;
     if (TimingLogEnabled())
         g_fixedstep_hits.fetch_add(1, std::memory_order_relaxed);
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
 }

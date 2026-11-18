@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
 
@@ -220,8 +221,8 @@ double NowSeconds() {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // Allocates the scratch from the game's own heap once and keeps the 16-byte
@@ -231,12 +232,12 @@ uint32_t EnsureScratch() {
     uint32_t cur = g_scratch.load(std::memory_order_acquire);
     if (cur) return cur;
 
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kGuestMallocFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(kGuestMallocFn).value_or(nullptr);
     if (!fn) return 0;
 
-    uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(fn, 160u);
+    uint32_t raw = larecomp::guest::Call<uint32_t>(fn, 160u);
     if (!IsGuestPtr(raw)) {
         MC_WARN("[squash] guest malloc failed");
         return 0;

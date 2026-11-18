@@ -51,6 +51,7 @@ struct DebugOption {
     uint32_t value_addr;  // guest address of node+4
 };
 #include "../debug_options_table.inc"
+#include "larecomp_guest.h"
 
 // Dead registration-stub bytes double as scratch for the value strings.
 static constexpr uint32_t kDbgScratchStart = 0x827A76E0u;
@@ -80,7 +81,7 @@ static bool EnsureDebugScratchWritable() {
     constexpr uint32_t kPage = 0x1000u;
     const uint32_t lo = kDbgScratchStart & ~(kPage - 1u);
     const uint32_t hi = (kDbgScratchEnd + kPage - 1u) & ~(kPage - 1u);
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return false;
 
     // Reports whether the host pages backing the range really are writable now.
@@ -107,11 +108,11 @@ static bool EnsureDebugScratchWritable() {
 #endif
     };
 
-    auto* memory = rex::Runtime::instance()->memory();
+    auto* memory = larecomp::guest::AddressSpace(REX_RUNTIME());
     auto* heap = memory ? memory->LookupHeap(kDbgScratchStart) : nullptr;
     if (heap) {
         constexpr uint32_t kRW =
-            rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite;
+            rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite;
         if (heap->Protect(lo, hi - lo, kRW) && range_is_writable()) {
             state = State::kOk;
             LARECOMP_APP_INFO("[DbgOpt] scratch 0x{:08X}-0x{:08X} writable (guest heap)", lo, hi);
@@ -141,7 +142,7 @@ static bool EnsureDebugScratchWritable() {
 // dev command line would have left. Returns false if the scratch region is
 // exhausted or could not be made writable.
 static bool SetDebugOptionValue(uint32_t value_addr, const std::string& value) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) {
         LARECOMP_APP_ERROR("[DbgOpt] no guest membase");
         return false;
@@ -264,7 +265,7 @@ void ApplyLoadTimeDevOptions() {
     static bool last[std::size(kPerfDebugOptions)] = {};
     static uint32_t value_ptr[std::size(kPerfDebugOptions)] = {};
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     for (size_t i = 0; i < std::size(kPerfDebugOptions); ++i) {
@@ -307,7 +308,7 @@ void SetRubberBandLevelOption(int level) {
     static int last = -2;
     if (level > 10) level = 10;
     if (level == last) return;
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const DebugOption* opt = FindDebugOption("rubberband");
     if (!opt) return;
@@ -396,6 +397,7 @@ void Patch_DevOptionRegistered(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 void ApplyDebugOptions() {}
 void Patch_DevOptionRegistered(PPCRegister& r3) {}

@@ -91,8 +91,8 @@ std::atomic<uint32_t> g_cs_applied{0};
 void TickCameraProbe();
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 float ReadGuestFloat(uint32_t ea) {

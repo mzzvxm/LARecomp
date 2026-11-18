@@ -44,6 +44,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -92,7 +93,7 @@ int64_t NowMs() {
 bool ScriptLook(Native native, uint32_t object, uint32_t what, bool down, bool pressed) {
     const int32_t window_ms = larecomp::settings::script_pad_latch_ms.Get();
     if (window_ms <= 0) return false;
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (!base) return false;
     const uint32_t thread = ReadGuestU32(base, kCurrentScriptThread);
     const uint32_t pc = thread ? ReadGuestU32(base, thread + kScriptThreadPc) : 0;
@@ -136,7 +137,7 @@ bool ScriptLook(Native native, uint32_t object, uint32_t what, bool down, bool p
 // The running script's place asked a native that refused to answer: it is not polling now.
 void ScriptRefused() {
     if (larecomp::settings::script_pad_latch_ms.Get() <= 0) return;
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t thread = ReadGuestU32(base, kCurrentScriptThread);
     const uint32_t pc = thread ? ReadGuestU32(base, thread + kScriptThreadPc) : 0;
@@ -163,7 +164,7 @@ void ActionAnswered(Native native, PPCRegister& r3) {
     const uint32_t action = t_action;
     t_controls = 0;
     if (!controls || larecomp::settings::script_pad_latch_ms.Get() <= 0) return;
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t records = ReadGuestU32(base, controls + kControlsRecords);
     if (!records) return;

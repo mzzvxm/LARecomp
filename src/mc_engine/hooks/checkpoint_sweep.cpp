@@ -77,6 +77,7 @@
 #include "checkpoint_sweep_tracker.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_822653A8);  // the recompiled checkpoint test
 
@@ -177,7 +178,7 @@ extern "C" REX_FUNC(rex_sub_822653A8) {
 // manager's own, which runs in every update outside any script) that finds the start beyond its
 // previous end starts the segment there instead, which contains the game's.
 void Hook_TriggerLineSweep(PPCRegister& r1, PPCRegister& r31, PPCRegister& r27) {
-    uint8_t* const base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* const base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t thread = ReadGuestU32(base, kCurrentScriptThread);
     if (!thread) return;

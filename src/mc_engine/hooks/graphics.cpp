@@ -15,6 +15,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "../ultrawide.h"
+#include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
@@ -23,15 +24,15 @@
 // The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
 // force (mc_engine/ultrawide.h). Called at startup and whenever it changes.
 void ApplyAspectRatioPatch() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     constexpr uint32_t addr = 0x8201E7EC;
     if (auto* heap = mem->LookupHeap(addr)) {
         heap->Protect(addr, sizeof(uint32_t),
-                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+                      rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite);
     }
 
     auto* patch_ptr = mem->TranslateVirtual<uint8_t*>(addr);
@@ -122,7 +123,7 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCReg
     // Forcing 1280x720 single tile onto offscreen targets breaks their layout and EDRAM allocation.
     if (r17.u64 != 0) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     r7.u64 = r28.u64;  // tile width  = screen width
@@ -212,7 +213,7 @@ bool Patch_DisableDoF() {
 // zero — they white-out / desaturate the frame — so only +0xF0 is touched.
 void Patch_DofComposite(PPCRegister& r3) {
     if (!larecomp::settings::disable_dof.Get()) return;
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     uint32_t o = static_cast<uint32_t>(r3.u64);  // dofObj guest address
     if (!o) return;
@@ -239,7 +240,7 @@ static double CityLodInForce(double user_value) {
 // A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
 // nothing; it is removed.
 void UpdateCityLODMemory() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const double user_value = larecomp::settings::lod_city_scale.Get();
@@ -273,6 +274,7 @@ void UpdateCityLODMemory() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }

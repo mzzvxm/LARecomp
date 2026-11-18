@@ -11,6 +11,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../logging.h"
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------------------
 // Photo mode: front buffer readback
@@ -45,9 +46,9 @@
 // plausible object or the address isn't in a physical heap.
 static uint32_t GuestTextureBaseAddress(uint32_t texture_ea) {
     if (texture_ea < 0x10000u || texture_ea >= 0xFFFF0000u) return 0;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return 0;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return 0;
     const auto* p = mem->TranslateVirtual<const uint8_t*>(texture_ea + 32);
     if (!p) return 0;
@@ -78,9 +79,9 @@ static bool RequestScopedResolveReadback(Gfx* gfx, uint32_t base, uint32_t span,
 // covering only one of them would be a coin flip.
 static void ArmPhotoFrontBufferReadback() {
     if (!larecomp::settings::photo_auto_readback.Get()) return;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     auto* gfx = rt->graphics_system();
     if (!mem || !gfx) return;
 
@@ -135,9 +136,9 @@ static void ArmPhotoFrontBufferReadback() {
 // Arming from 3/5/6 puts the readback window several frames ahead of the
 // LockRect in sub_82178B20, which is what the front buffer resolve needs.
 void Hook_PhotoModeCapture(PPCRegister& r3) {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t state_ea = static_cast<uint32_t>(r3.u64);
     if (state_ea < 0x10000u || state_ea >= 0xFFFF0000u) return;

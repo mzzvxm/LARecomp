@@ -1,4 +1,5 @@
 #include <rex/ppc/context.h>
+#include "larecomp_guest.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
@@ -17,7 +18,7 @@
 namespace {
 
 uint8_t* GetMembase() {
-  return rex::Runtime::instance()->virtual_membase();
+  return larecomp::guest::Membase();
 }
 
 uint32_t ReadGuestBE32(uint32_t guest_addr) {
@@ -322,7 +323,7 @@ RaceInfo g_race;
 // simply stays empty and the presence falls back to the old generic wording.
 RaceInfo ReadRaceInfo() {
   RaceInfo info;
-  if (!rex::Runtime::instance() || !GetMembase()) return info;
+  if (!REX_RUNTIME() || !GetMembase()) return info;
 
   const uint32_t race = ReadGuestBE32(kCurrentRace);
   if (!IsGuestPtr(race) || race == kRacePoison) return info;

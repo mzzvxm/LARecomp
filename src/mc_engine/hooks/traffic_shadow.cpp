@@ -206,8 +206,8 @@ bool DecideAndPublish(State& s, ts::Mode mode, const ts::Limits& limits, uint32_
 }
 
 const uint8_t* GuestBase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // Which copy of a thread-split state this thread reads: the byte [[r13]+72], as sub_8235F738 and sub_82794EE8

@@ -7,6 +7,7 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 
 #include <rex/kernel/title_runtime.h>
 #include <rex/memory/mapped_ptr.h>
@@ -20,11 +21,11 @@ bool IsGuestRangeReadable(uint32_t guest_address, uint64_t size) {
       uint64_t(guest_address) + size > 0x100000000ull) {
     return false;
   }
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   if (!runtime) {
     return false;
   }
-  auto* memory = runtime->memory();
+  auto* memory = larecomp::guest::AddressSpace(runtime);
   if (!memory) {
     return false;
   }
@@ -46,11 +47,11 @@ bool IsGuestRangeReadable(uint32_t guest_address, uint64_t size) {
 }
 
 const uint8_t* TranslatePhysicalGuest(uint32_t physical_address) {
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   if (!runtime) {
     return nullptr;
   }
-  auto* memory = runtime->memory();
+  auto* memory = larecomp::guest::AddressSpace(runtime);
   return memory ? memory->TranslatePhysical<const uint8_t*>(physical_address) : nullptr;
 }
 

@@ -12,6 +12,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 // Traffic (va_) vehicles turned into player cars: chassis-bound substitution.
 //
@@ -30,7 +31,7 @@
 // the traffic car's own 16-vertex hull. It is a no-op for every shipped player car,
 // which is why it is unconditional rather than cvar-gated.
 static void SubstituteChassisBound(uint32_t root, PPCRegister& child) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || root == 0) return;
     if (base[root + 4] != 12) child.u64 = root;
 }
@@ -60,7 +61,7 @@ void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {
 // true jumps to the epilogue at 0x8259AA90, which is exactly right: a non-composite
 // has no children to release.
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const auto bound = static_cast<uint32_t>(r30.u64);
     if (!base) return false;
     return bound == 0 || base[bound + 4] != 12;
@@ -115,7 +116,7 @@ bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) {
 // 0x82379548 in sub_823794E0, before `stb r9, 267(r31)` that clears the brake bind's
 // pending byte. r31 is the cache. True jumps to the epilogue at 0x8237954C.
 bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 256) != 0) return false;
     NoteShaderBindRace("brake variables");
     return true;
@@ -124,7 +125,7 @@ bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) {
 // 0x823794C8 in sub_823793E8, before `stb r11, 266(r31)` that clears the paint bind's
 // pending byte. r31 is the cache. True jumps to the epilogue at 0x823794CC.
 bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 252) != 0) return false;
     NoteShaderBindRace("paint variables");
     return true;
@@ -164,7 +165,7 @@ bool Patch_WheelFitBypass() {
 }
 
 void Patch_BypassVehicleDLC(PPCRegister& r30) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     uint32_t struct_addr = static_cast<uint32_t>(r30.u64);
@@ -193,7 +194,7 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {
 void MCLAChassisDepthSmoothing(PPCRegister& f0) {
     if (!larecomp::settings::smooth_chassis_depth.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -225,7 +226,7 @@ void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3) {
 void MCLAChassisPushbackAccel(PPCRegister& f1) {
     if (!larecomp::settings::smooth_chassis_depth.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     float dt_scale = 1.0f;
     if (base) {
         const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -250,7 +251,7 @@ void MCLAChassisPushbackAccel(PPCRegister& f1) {
 static void StepBikeGyroFilter(PPCRegister& factor, double k30) {
     if (!larecomp::settings::smooth_bike_gyro.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -271,7 +272,7 @@ void MCLABikeGyroVelocityFilter(PPCRegister& f0) { StepBikeGyroFilter(f0, 0.30);
 void MCLATireSlipSmoothing(PPCRegister& f0) {
     if (!larecomp::settings::smooth_vehicle_physics.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);

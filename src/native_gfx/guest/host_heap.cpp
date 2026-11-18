@@ -8,9 +8,11 @@
 
 #include <o1heap.h>
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/guest_memory.h>
+#include <rex/kernel/heap.h>
 
 // Defined in guest/texture_ownership.cpp, at global scope like every cvar here.
 
@@ -71,8 +73,7 @@ bool HostHeap::Init() {
     return true;
   }
 
-  auto* kernel = rex::system::KernelState::shared();
-  auto* memory = kernel ? kernel->memory() : nullptr;
+  auto* memory = larecomp::guest::AddressSpace();
   if (!memory) {
     REXLOG_ERROR("[native_gfx] HostHeap: no Memory instance");
     return false;
@@ -96,7 +97,7 @@ bool HostHeap::Init() {
   // code, and that holds for any address below 0xE0000000 -- the only range
   // PhysicalHostOffset shifts (rex/system/xmemory.h). AdoptInitTexture asserts
   // it per allocation anyway.
-  rex::memory::BaseHeap* heap =
+  rex::kernel::BaseHeap* heap =
       memory->LookupHeapByType(/*physical=*/false, /*page_size=*/64u * 1024u);
   if (!heap) {
     REXLOG_ERROR("[native_gfx] HostHeap: LookupHeapByType(virtual, 64K) returned null");
@@ -106,9 +107,9 @@ bool HostHeap::Init() {
   const uint32_t heap_size = HeapSizeFromCvar();
   uint32_t guest_va = 0;
   const bool ok = heap->Alloc(heap_size, 64u * 1024u,
-                              rex::memory::kMemoryAllocationReserve |
-                                  rex::memory::kMemoryAllocationCommit,
-                              rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite,
+                              rex::kernel::kMemoryAllocationReserve |
+                                  rex::kernel::kMemoryAllocationCommit,
+                              rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite,
                               /*top_down=*/true, &guest_va);
   if (!ok || !guest_va) {
     REXLOG_ERROR("[native_gfx] HostHeap: failed to reserve {} bytes in the virtual window",
@@ -190,8 +191,7 @@ uint32_t HostHeap::AllocGuest(std::size_t size, std::size_t alignment) {
   if (!p) {
     return 0;
   }
-  auto* kernel = rex::system::KernelState::shared();
-  auto* memory = kernel ? kernel->memory() : nullptr;
+  auto* memory = larecomp::guest::AddressSpace();
   if (!memory) {
     Free(p);
     return 0;
@@ -203,8 +203,7 @@ void HostHeap::FreeGuest(uint32_t guest_va) {
   if (!guest_va) {
     return;
   }
-  auto* kernel = rex::system::KernelState::shared();
-  auto* memory = kernel ? kernel->memory() : nullptr;
+  auto* memory = larecomp::guest::AddressSpace();
   if (!memory) {
     return;
   }

@@ -389,8 +389,8 @@ void WriteReport() {
     }
     FILE* f = std::fopen((dir / "mcla_gfx_probe_xex_shaders.bin").string().c_str(), "wb");
     if (f) {
-      auto* runtime = rex::Runtime::instance();
-      const uint8_t* base = runtime->memory()->virtual_membase();
+      auto* runtime = REX_RUNTIME();
+      const uint8_t* base = runtime->GetMembase().GetBase();
       std::fwrite(HostPtr(base, kXexShaderLo), 1, kXexShaderHi - kXexShaderLo, f);
       std::fclose(f);
     }

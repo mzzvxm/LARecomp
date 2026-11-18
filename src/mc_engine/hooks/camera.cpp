@@ -25,6 +25,7 @@
 #include "hooks_internal.h"
 #include "../menu_camera.h"
 #include "../mouse_look.h"
+#include "larecomp_guest.h"
 
 
 // Free-fly camera host state (see Patch_DebugCam). Angles are seeded from the
@@ -89,7 +90,7 @@ bool Patch_DebugCamGate() {
 // The game rebuilds orientation as a yaw about +Y (sub_82202E38), i.e. Y is up.
 // We keep yaw/pitch/position in host state and drive them from the sticks.
 void Patch_DebugCam(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     uint32_t mgr = static_cast<uint32_t>(r3.u64);
@@ -138,7 +139,7 @@ void Patch_DebugCam(PPCRegister& r3) {
     // are ambiguous). XInput axes: up/right positive, int16 range.
     float lx = 0.0f, ly = 0.0f, rx = 0.0f, ry = 0.0f;
     auto* isys = static_cast<rex::input::InputSystem*>(
-        rex::Runtime::instance()->input_system());
+        REX_RUNTIME()->input_system());
     if (isys) {
         rex::input::X_INPUT_STATE state{};
         if (isys->GetState(0, &state) == 0) {
@@ -239,7 +240,7 @@ static double FilterAtFrameTime(double k30, double dt, double scale) {
 static void ApplyCameraSmoothing(PPCRegister& reg) {
     if (!larecomp::settings::smooth_chase_cam.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -317,7 +318,7 @@ void MCLACameraShakeFilter(PPCRegister& f31, PPCRegister& f30, PPCRegister& f29,
     const double user_scale = larecomp::settings::camera_shake_scale.Get();
     if (user_scale == 1.0) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     f29.f64 *= user_scale;
@@ -356,7 +357,7 @@ static float s_prev_raw_delta = 0.0f;
 void MCLACameraTransitionSmoothing(PPCRegister& r27, PPCRegister& r26, PPCRegister& r4, PPCRegister& r1) {
     if (!larecomp::settings::smooth_camera_transitions.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t trans_obj = static_cast<uint32_t>(r27.u64);

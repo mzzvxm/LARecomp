@@ -46,6 +46,7 @@
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_826A9D58);  // mcGarage::ListShowroomVehicles
 REX_EXTERN(__imp__rex_sub_8268DB80);  // next free row of a garage list
@@ -91,14 +92,14 @@ uint32_t RosterCount(const uint8_t* b) {
 }
 
 uint32_t Alloc(uint32_t size) {
-    auto* rt = rex::Runtime::instance();
-    return rt && rt->memory() ? rt->memory()->SystemHeapAlloc(size, 0x1000) : 0;
+    auto* rt = REX_RUNTIME();
+    return rt && larecomp::guest::AddressSpace(rt) ? larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(size, 0x1000) : 0;
 }
 
 uint32_t Call(uint32_t fn_addr, PPCContext& ctx, uint8_t* base,
               std::initializer_list<uint32_t> gpr) {
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(fn_addr)
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr)
                                                   : nullptr;
     if (!fn) return 0;
     PPCContext c{};
@@ -338,8 +339,8 @@ void GrowFlashArrays(PPCContext& ctx, uint8_t* b, uint32_t roster) {
 // meet here): the showroom's template gets a row per roster vehicle.
 void ShowroomRows_8269381C(PPCRegister& r1) {
     if (!Enabled()) return;
-    auto* rt = rex::Runtime::instance();
-    uint8_t* b = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    uint8_t* b = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!b || !IsShowroomTemplate(b)) return;
     const uint32_t at = r1.u32 + kCountLocal;
     const int32_t count = static_cast<int32_t>(ReadGuestU32(b, at));

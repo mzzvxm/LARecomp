@@ -203,8 +203,8 @@ const ColumnInit g_column_init;
 // ── Guest memory / call helpers ───────────────────────────────────────
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadGuestBE32(uint32_t ea) {
@@ -228,9 +228,9 @@ uint8_t ReadGuestU8(uint32_t ea) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 void WriteGuestBE32(uint32_t ea, uint32_t v) {
@@ -244,7 +244,7 @@ void WriteGuestBE32(uint32_t ea, uint32_t v) {
 
 uint32_t CallGuestMalloc(uint32_t size) {
     PPCFunc* fn = GuestFn(kGuestMallocFn);
-    return fn ? rex::ppc::GuestToHostFunction<uint32_t>(fn, size) : 0;
+    return fn ? larecomp::guest::Call<uint32_t>(fn, size) : 0;
 }
 
 uint32_t AllocGuestString(const char* str) {
@@ -309,7 +309,7 @@ void LogPauseManager(const char* why) {
 bool ClosePauseMenuLikeContinue() {
     PPCFunc* fn = GuestFn(kPauseMenuContinueFn);
     if (!fn) return false;
-    rex::ppc::GuestToHostFunction<void>(fn);
+    larecomp::guest::Call<void>(fn);
     MC_INFO("[cutscene] closed the pause menu the way PM_Continue does");
     return true;
 }
@@ -318,7 +318,7 @@ void RequestPauseState(uint32_t code, const char* why) {
     const uint32_t mgr = ReadGuestBE32(kPauseStatePtr);
     PPCFunc* fn = GuestFn(kPauseRequestFn);
     if (!mgr || !fn) return;
-    rex::ppc::GuestToHostFunction<void>(fn, mgr, code);
+    larecomp::guest::Call<void>(fn, mgr, code);
     // Names straight from the game's own table at off_827E91A8, so the log says
     // what was actually sent instead of guessing between two of them.
     static const char* kNames[] = {"None", "PauseSimulation", "ResumeSimulation",
@@ -332,7 +332,7 @@ bool SceneIsPlaying() {
     if (!ReadGuestBE32(kCineScriptPtr)) return false;
     PPCFunc* fn = GuestFn(kIsScenePlayingFn);
     if (!fn) return false;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn) != 0;
+    return larecomp::guest::Call<uint32_t>(fn) != 0;
 }
 
 bool CineScriptReady() { return ReadGuestBE32(kCineScriptPtr) != 0; }
@@ -548,7 +548,7 @@ void LogCutsceneGates(const char* why) {
         MC_INFO("[cutscene]   mgr+0x1A0: {}", row);
     }
     if (PPCFunc* cam = GuestFn(kCameraAnimFn)) {
-        const uint32_t clip = rex::ppc::GuestToHostFunction<uint32_t>(cam);
+        const uint32_t clip = larecomp::guest::Call<uint32_t>(cam);
         // sub_823C4FA8 reads *(float*)(clip + 12) as the camera's duration
         // when it places the cut_to_game / fade_to_scene events, so that float
         // is the scene's length. Zero means the camera has nothing to play.
@@ -851,7 +851,7 @@ void FadeBackToScene() {
     WriteGuestFloat(kFadeArgBlock + kFadeDurAt, kFadeSeconds);
     // Same call shape the dispatcher uses: no parent, flag 1, the argument
     // block and its size, and the misc task's own stack size.
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, name, 0u, 1u, kFadeArgBlock,
+    larecomp::guest::Call<uint32_t>(fn, name, 0u, 1u, kFadeArgBlock,
                                            kFadeArgSize, kFadeStack);
     MC_INFO("[cutscene] fading back to scene over {:.2f}s", kFadeSeconds);
 }
@@ -915,10 +915,10 @@ uint32_t PlayerRacer() {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!player_mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t idx = 0; idx < kPlayerSweep; ++idx) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, player_mgr, idx)
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, player_mgr, idx)
               & 0xFF))
             continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(
                 racer_fn, player_mgr, idx))
             return r;
     }
@@ -969,7 +969,7 @@ bool LoadSetDressing(const char* items) {
     const uint32_t name = AllocGuestString(items);
     if (!name) return false;
     // Second argument is the flag the garage flow script passes as 0.
-    const uint32_t ok = rex::ppc::GuestToHostFunction<uint32_t>(
+    const uint32_t ok = larecomp::guest::Call<uint32_t>(
         fn, prop_mgr, name, 0u);
     g_set_dressing_up.store(ok != 0, std::memory_order_relaxed);
     MC_INFO("[cutscene] set dressing '{}' requested: {}", items,
@@ -989,7 +989,7 @@ void UnloadSetDressing() {
     const uint32_t prop_mgr = ReadGuestBE32(kPropMgrPtr);
     PPCFunc* fn = GuestFn(kUnloadSetDressFn);
     if (!prop_mgr || !fn) return;
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, prop_mgr, 0u);
+    larecomp::guest::Call<uint32_t>(fn, prop_mgr, 0u);
     MC_INFO("[cutscene] set dressing unloaded");
 }
 
@@ -1000,7 +1000,7 @@ void ForceFinishScene() {
                 kFinishSceneFn);
         return;
     }
-    rex::ppc::GuestToHostFunction<uint32_t>(fn);
+    larecomp::guest::Call<uint32_t>(fn);
     MC_INFO("[cutscene] FinishScene forced");
     // A skip lands between fade-out and fade-in; unconditional here because a
     // fade to the scene when the scene is already visible is what the game
@@ -1066,10 +1066,10 @@ bool ScriptObjectExists(const char* name) {
     const uint32_t nm = AllocGuestString(name);
     const uint32_t ext = AllocGuestString("sco");
     if (!dir || !nm || !ext) return false;
-    rex::ppc::GuestToHostFunction<uint32_t>(push, kSearchPath, dir);
+    larecomp::guest::Call<uint32_t>(push, kSearchPath, dir);
     const uint32_t hit =
-        rex::ppc::GuestToHostFunction<uint32_t>(exists, kSearchPath, nm, ext);
-    rex::ppc::GuestToHostFunction<uint32_t>(pop, kSearchPath);
+        larecomp::guest::Call<uint32_t>(exists, kSearchPath, nm, ext);
+    larecomp::guest::Call<uint32_t>(pop, kSearchPath);
     return hit != 0;
 }
 
@@ -1241,7 +1241,7 @@ void RunNativeSetup() {
         MC_INFO("[cutscene] native setup: coord sys bind disabled");
     } else if (PPCFunc* bind_fn = GuestFn(kBindCoordSysToRacerFn)) {
         if (const uint32_t racer = PlayerRacer()) {
-            rex::ppc::GuestToHostFunction<void>(bind_fn, racer);
+            larecomp::guest::Call<void>(bind_fn, racer);
             bound = true;
         }
     }
@@ -1292,16 +1292,16 @@ void RunNativeSetup() {
         PPCFunc* prcr_fn  = GuestFn(kPlayerRacerFn);
         for (uint32_t idx = 0; player_mgr && valid_fn && prcr_fn &&
                                idx < kPlayerSweep && found < kCarSlots; ++idx) {
-            if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, player_mgr,
+            if (!(larecomp::guest::Call<uint32_t>(valid_fn, player_mgr,
                                                           idx) & 0xFF))
                 continue;
-            const uint32_t racer = rex::ppc::GuestToHostFunction<uint32_t>(
+            const uint32_t racer = larecomp::guest::Call<uint32_t>(
                 prcr_fn, player_mgr, idx);
             if (!racer) continue;
             uint32_t uid = ReadGuestBE32(racer + kRacerUidAt);
             if (!uid) {
                 uid = kUidFirstFree + uint32_t(found);
-                while (rex::ppc::GuestToHostFunction<uint32_t>(racer_fn,
+                while (larecomp::guest::Call<uint32_t>(racer_fn,
                                                                racer_mgr, uid))
                     ++uid;
                 WriteGuestBE32(racer + kRacerUidAt, uid);
@@ -1349,7 +1349,7 @@ void RunNativeSetup() {
         for (int slot = 0; slot < kSetupCharCount; ++slot) {
             const uint32_t str = AllocGuestString(kSetupCharacters[slot]);
             if (!str) break;
-            rex::ppc::GuestToHostFunction<uint32_t>(name_fn, str,
+            larecomp::guest::Call<uint32_t>(name_fn, str,
                                                     uint32_t(slot));
             ++named;
         }
@@ -1363,7 +1363,7 @@ uint32_t StartScriptByName(const char* name, uint32_t stack) {
     if (!mgr || !fn) return 0;
     const uint32_t guest_name = AllocGuestString(name);
     if (!guest_name) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, guest_name, 0u, 1u, 0u,
+    return larecomp::guest::Call<uint32_t>(fn, guest_name, 0u, 1u, 0u,
                                                    0u, stack);
 }
 
@@ -1411,7 +1411,7 @@ bool StartCutsceneScript(const Cutscene& cs) {
 
     // Same shape the game uses for its own native script launches
     // (sub_822C4BD8): root thread as the parent, flag 1, no load args.
-    const uint32_t thread = rex::ppc::GuestToHostFunction<uint32_t>(
+    const uint32_t thread = larecomp::guest::Call<uint32_t>(
         fn, name, 0u, 1u, 0u, 0u, kScriptStackSize);
     if (!thread) {
         MC_WARN("[cutscene] '{}' failed to mount", path);
@@ -1515,7 +1515,7 @@ void ForceCameraEventIfIdle() {
     g_cam_forced = true;
     MC_WARN("[cutscene][cam] the queued camera event 0x{:08X} was never "
             "dispatched -- running its start handler by hand", g_cam_event);
-    rex::ppc::GuestToHostFunction<void>(fn, uint32_t(0), g_cam_event);
+    larecomp::guest::Call<void>(fn, uint32_t(0), g_cam_event);
     MC_WARN("[cutscene][cam] camera clock is now {:.3f} (clip 0x{:08X})",
             ReadGuestFloat(cam + kCineCamTime), ReadGuestBE32(cam + kCineCamClip));
 }
@@ -2209,6 +2209,7 @@ void MCLA_CineCamInstall(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
 #include <rex/ppc/context.h>
 
 #include "cutscene_gallery.h"
+#include "larecomp_guest.h"
 
 int  CutsceneCount() { return 0; }
 const char* CutsceneId(int) { return ""; }

@@ -66,6 +66,7 @@
 #include "mod_breakables.h"
 #include "mod_data.h"
 #include "mod_glows.h"
+#include "larecomp_guest.h"
 
 
 REX_EXTERN(__imp__rex_sub_82729438);
@@ -266,11 +267,11 @@ extern "C" REX_FUNC(rex_sub_82729438) {
 
 void TickModGlows() {
     if (g_scratch.load(std::memory_order_relaxed) || !larecomp::settings::mod_glows.Get()) return;
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* malloc_fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kGuestMallocFn)
+    auto* rt = REX_RUNTIME();
+    PPCFunc* malloc_fn = rt ? rt->FindFunction(kGuestMallocFn).value_or(nullptr)
                                                         : nullptr;
-    if (!malloc_fn || !rt->virtual_membase()) return;
-    const uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 64u);
+    if (!malloc_fn || !rt->GetMembase().GetBase()) return;
+    const uint32_t raw = larecomp::guest::Call<uint32_t>(malloc_fn, 64u);
     if (raw) g_scratch.store((raw + 15) & ~15u, std::memory_order_release);
 }
 

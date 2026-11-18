@@ -44,8 +44,8 @@ struct Target {
 };
 
 fs::path UserRoot() {
-  auto* rt = rex::Runtime::instance();
-  fs::path root = rt ? rt->user_data_root() : fs::path{};
+  auto* rt = REX_RUNTIME();
+  fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
   if (root.empty()) {
     std::error_code ec;
     root = fs::current_path(ec);
@@ -74,7 +74,7 @@ std::string ProfileNameFor() {
   }
 }
 
-std::string ProfileName() { return ProfileNameFor<rex::system::xam::UserProfile>(); }
+std::string ProfileName() { return ProfileNameFor<rex::xam::UserProfile>(); }
 
 Target ResolveTarget() {
   Target t;
@@ -309,5 +309,6 @@ void Submit(Request&& req, Done done) {
 // XEO3 stubs: the XEO3 DLL does not carry the Rate My Ride backend.
 
 #include <rex/ppc/context.h>
+#include <rex/path_settings.h>
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

@@ -15,6 +15,7 @@
 #include <functional>
 
 #include <rex/app/title_app.h>
+#include "app_paths.h"
 
 namespace rex::ui {
 class ImGuiDrawer;
@@ -37,7 +38,7 @@ void PrepareProfileChoice(const std::filesystem::path& user_data_root);
 //
 // Asynchronous like the other first-launch dialogs: OnFinalizePaths returns
 // std::nullopt while it is up and resumes from `on_finished`.
-bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
                        std::function<void()> on_finished);
 
 }  // namespace larecomp

@@ -20,6 +20,7 @@
 #include <rex/logging/log_category.h>
 
 #include "install_wizard_dialog.h"
+#include "app_paths.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -501,10 +502,10 @@ InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path user_d
 
 }  // namespace
 
-void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig runtime_paths,
-                                 std::function<void(rex::PathConfig)> complete) {
-  const std::u8string install_dir = runtime_paths.game_data_root.u8string();
-  auto install = MakeIsoInstall(runtime_paths.user_data_root);
+void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, larecomp::Paths runtime_paths,
+                                 std::function<void(larecomp::Paths)> complete) {
+  const std::u8string install_dir = runtime_paths.game_root.u8string();
+  auto install = MakeIsoInstall(runtime_paths.user_root);
   new InstallWizardDialog(
       drawer, "MCLA: CE Setup",
       "MCLA: CE game files were not found. Select your Xbox 360 ISO to install them.",
@@ -513,13 +514,13 @@ void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig r
       [runtime_paths = std::move(runtime_paths), complete = std::move(complete)](
           std::filesystem::path installed_dir) mutable {
         if (complete) {
-          runtime_paths.game_data_root = std::move(installed_dir);
+          runtime_paths.game_root = std::move(installed_dir);
           complete(std::move(runtime_paths));
         }
       });
 }
 
-bool TryAutomatedIsoInstall(const rex::PathConfig& runtime_paths, bool& attempted) {
+bool TryAutomatedIsoInstall(const larecomp::Paths& runtime_paths, bool& attempted) {
   attempted = false;
   const char* automated_iso = std::getenv("LARECOMP_INSTALL_ISO");
   if (automated_iso == nullptr || *automated_iso == '\0') {
@@ -530,7 +531,7 @@ bool TryAutomatedIsoInstall(const rex::PathConfig& runtime_paths, bool& attempte
   std::atomic<uint64_t> total_bytes{0};
   std::string error;
   REXLOG_INFO("Installing MCLA: CE game files from LARECOMP_INSTALL_ISO={}", automated_iso);
-  if (!MakeIsoInstall(runtime_paths.user_data_root)(runtime_paths.game_data_root, std::filesystem::path(automated_iso),
+  if (!MakeIsoInstall(runtime_paths.user_root)(runtime_paths.game_root, std::filesystem::path(automated_iso),
                                                     copied_bytes, total_bytes, nullptr, error)) {
     REXLOG_ERROR("Automated ISO installation failed: {}", error);
     return false;

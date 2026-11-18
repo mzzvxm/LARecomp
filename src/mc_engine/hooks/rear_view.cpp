@@ -68,6 +68,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 // Guest layout (see the file comment for where each was read).
 static constexpr uint32_t kHudManagerPtr    = 0x8286D8D4u;  // dword_8286D8D4
@@ -183,7 +184,7 @@ static void ApplyMirrorMembership(uint8_t* base, bool mirror_on) {
 }
 
 void TickRearView() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     uint32_t form = 0, widget = 0;
@@ -309,7 +310,7 @@ static void SaveCarVisibility(uint8_t* base, uint32_t item) {
 }
 
 void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t item = static_cast<uint32_t>(r3.u64);
     const uint32_t phase = static_cast<uint32_t>(r4.u64);
@@ -320,12 +321,12 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
     }
     if (!larecomp::settings::rearview_cars.Get() || !PlausibleGuestPtr(item)) return;
 
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* prep = rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kCarVisibilityPrep) : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* prep = rt->FindFunction(kCarVisibilityPrep).value_or(nullptr);
     if (!prep) return;
     SaveCarVisibility(base, item);
     g_in_mirror_prep = true;
-    rex::ppc::GuestToHostFunction<uint32_t>(prep, item);
+    larecomp::guest::Call<uint32_t>(prep, item);
     g_in_mirror_prep = false;
 
     const uint16_t visible =
@@ -345,7 +346,7 @@ void Patch_RearViewDiag() {
     if (!larecomp::settings::rearview_diag.Get()) return;
     static std::atomic<uint32_t> calls{0};
     if (calls.fetch_add(1, std::memory_order_relaxed) % 120 != 0) return;
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
     if (!PlausibleGuestPtr(renderer)) return;

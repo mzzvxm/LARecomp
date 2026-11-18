@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/kernel/guest_memory.h>
 
 // Online session content (DLC) compatibility gate. sub_8238B7E0 runs a symmetric
@@ -33,8 +34,8 @@
 // (0x827E9170) and the valid-vehicle-profile count (obj 0x8288E920 +0x53C).
 bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
     if (larecomp::settings::online_diag.Get()) {
-        auto* rt = rex::Runtime::instance();
-        auto* mem = rt ? rt->memory() : nullptr;
+        auto* rt = REX_RUNTIME();
+        auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
         if (mem) {
             uint32_t local_ptr = static_cast<uint32_t>(r3.u64);
             uint32_t local_mask = IsGuestPtr(local_ptr) ? GuestRead32(mem, local_ptr) : 0;
@@ -61,8 +62,8 @@ bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
 // parsed key fields. Read-only; gated by online_diag.
 void Hook_DumpJoinBlob(PPCRegister& r4) {
     if (!larecomp::settings::online_diag.Get()) return;
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     if (!mem) return;
 
     uint32_t blob = static_cast<uint32_t>(r4.u64);
@@ -131,8 +132,8 @@ void Hook_InviteSendProbe(PPCRegister& r3, PPCRegister& r4) {
 // default xuid the invite target gets filtered out and nothing is sent. Log the
 // count and the first target xuid so we can see if a recipient survives.
 void Hook_InviteSendPrimitiveProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     uint32_t targets = static_cast<uint32_t>(r4.u64);
     uint32_t count = static_cast<uint32_t>(r5.u64);
     uint32_t xhi = 0, xlo = 0;
@@ -183,7 +184,7 @@ struct ChallengeTime {
     double value() const { return static_cast<double>(static_cast<int32_t>(sec)) + frac; }
 };
 
-bool ReadChallengeTime(rex::memory::Memory* mem, uint32_t ea, ChallengeTime& out) {
+bool ReadChallengeTime(rex::kernel::GuestAddressSpace* mem, uint32_t ea, ChallengeTime& out) {
     if (!mem || !IsGuestPtr(ea)) return false;
     out.sec = GuestRead32(mem, ea + 0);
     uint32_t raw = GuestRead32(mem, ea + 4);
@@ -201,7 +202,7 @@ struct ClockState {
     uint32_t high_ms = 0;    // +84: monotonic high-water mark of the reported time
 };
 
-ClockState ReadClock(rex::memory::Memory* mem) {
+ClockState ReadClock(rex::kernel::GuestAddressSpace* mem) {
     ClockState st;
     if (!mem) return st;
     uint32_t netmgr = GuestRead32(mem, 0x8286F1D8);
@@ -229,8 +230,8 @@ void Hook_ChallengeClockGate(PPCRegister& r3) {
     static int last_ok = -1;
     static uint32_t last_flags = 0xFFFFFFFFu;
     int ok = static_cast<int>(r3.u64 & 0xFF);
-    auto* rt = rex::Runtime::instance();
-    ClockState st = ReadClock(rt ? rt->memory() : nullptr);
+    auto* rt = REX_RUNTIME();
+    ClockState st = ReadClock(rt ? larecomp::guest::AddressSpace(rt) : nullptr);
     if (ok == last_ok && st.flags == last_flags) return;
     last_ok = ok;
     last_flags = st.flags;
@@ -258,8 +259,8 @@ void Hook_ChallengeProp3Gate(PPCRegister& r3) {
 // the challenge window (5..35s) means the two clocks are in different domains,
 // i.e. netTimeSync never aligned them.
 void Hook_ChallengeTimeGate(PPCRegister& r3, PPCRegister& r4) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     ChallengeTime deadline, now;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
@@ -287,8 +288,8 @@ void Hook_ChallengeIsGroupHost(PPCRegister& r3) {
 // while the requester's own player state has already flipped to "challenging" -
 // the exact symptom being chased.
 void Hook_ChallengeHostPublishGate(PPCRegister& r3, PPCRegister& r4) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     ChallengeTime deadline, now;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
@@ -321,8 +322,8 @@ void Hook_ChallengeResolveChallenger(PPCRegister& r3) {
 void Hook_PromptEntryGate(PPCRegister& r11) {
     static uint32_t last_state = 0xFFFFFFFFu;
     static uint32_t last_pending = 0xFFFFFFFFu;
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     uint32_t state = static_cast<uint32_t>(r11.u64);
     uint32_t pending = mem ? (GuestRead32(mem, 0x82873D94) >> 24) : 0xFFFFFFFFu;
     if (state == last_state && pending == last_pending) return;
@@ -544,9 +545,9 @@ std::atomic<int> g_link_applied{-1};
 // pause_menu.cpp does not take that for the player's own switch.
 thread_local bool t_setting_cvar = false;
 
-rex::memory::Memory* Mem() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->memory() : nullptr;
+rex::kernel::GuestAddressSpace* Mem() {
+    auto* rt = REX_RUNTIME();
+    return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 bool OnlineLive() { return larecomp::cvar::GetFlagByName(kOnlineCvar) == "true"; }
@@ -571,7 +572,7 @@ int Applied() {
 
 // Drops the MAC cache and flags every signed-in player record for a rebuild,
 // which the presence manager does later in the same net update.
-void RefreshLocalPlayers(rex::memory::Memory* mem) {
+void RefreshLocalPlayers(rex::kernel::GuestAddressSpace* mem) {
     GuestWrite8(mem, kMacCachedFlag, 0);
     const uint32_t netmgr = GuestRead32(mem, kNetMgrGlobal);
     if (!IsGuestPtr(netmgr)) return;
@@ -665,6 +666,8 @@ void Hook_NetLinkWhileDown(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/heap.h>
 
 bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) { return false; }
 void Hook_DumpJoinBlob(PPCRegister& r4) {}

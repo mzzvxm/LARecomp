@@ -9,8 +9,10 @@
 
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/guest_memory.h>
+#include <rex/kernel/heap.h>
 
 #include "host_heap.h"
+#include "larecomp_guest.h"
 
 namespace mcla::native_gfx {
 
@@ -26,9 +28,8 @@ Registry& registry() {
   return r;
 }
 
-rex::memory::Memory* GuestMemory() {
-  auto* kernel = rex::system::KernelState::shared();
-  return kernel ? kernel->memory() : nullptr;
+rex::kernel::GuestAddressSpace* GuestMemory() {
+  return larecomp::guest::AddressSpace();
 }
 
 }  // namespace

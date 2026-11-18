@@ -2,6 +2,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
+#include <rex/kernel/title_paths.h>
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,7 @@
 #include "xcompress.h"
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/music/custom_music.h"
+#include "larecomp_guest.h"
 
 
 namespace mc::modloader {
@@ -230,10 +232,10 @@ size_t ShipMovedDriverPacks(const Rpf3Reader& archive, Rpf3Writer& writer, const
 }
 
 uint8_t* GuestPointer(uint32_t address) {
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     if (!runtime || !address) return nullptr;
 
-    auto* base = runtime->virtual_membase();
+    auto* base = runtime->GetMembase().GetBase();
     return base ? base + address : nullptr;
 }
 
@@ -2308,9 +2310,9 @@ void PartProbeLoop() {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!larecomp::settings::model_mods_part_probe.Get()) continue;
-        auto* runtime = rex::Runtime::instance();
-        if (!runtime || !runtime->memory()) continue;
-        const uint8_t* base = runtime->memory()->virtual_membase();
+        auto* runtime = REX_RUNTIME();
+        if (!runtime || !larecomp::guest::AddressSpace(runtime)) continue;
+        const uint8_t* base = runtime->GetMembase().GetBase();
         if (!base) continue;
 
         const uint32_t car = ProbeU32(base, 0x8288DCF8u);
@@ -4786,13 +4788,13 @@ void Init() {
                               "folders there", other, models_dir.filename().string());
     }
 
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     if (!runtime) {
         LARECOMP_APP_ERROR("[mods] no runtime, model replacement disabled");
         return;
     }
 
-    const std::filesystem::path game_root = runtime->game_data_root();
+    const std::filesystem::path game_root = runtime->GetTitlePaths().game_root.Get();
 
     std::vector<ModEntry> mods, rim_mods;
     std::vector<VehicleMod> car_mods;

@@ -58,6 +58,7 @@
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/path_settings.h>
 
 #include <array>
 #include <cstdint>
@@ -379,8 +380,8 @@ fs::path ExportDir() {
     }
     if (pictures) CoTaskMemFree(pictures);
 #endif
-    auto* rt = rex::Runtime::instance();
-    fs::path root = rt ? rt->user_data_root() : fs::path{};
+    auto* rt = REX_RUNTIME();
+    fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
     return (root.empty() ? fs::path(".") : root) / "photos";
 }
 

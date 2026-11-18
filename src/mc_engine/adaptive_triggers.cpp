@@ -128,8 +128,8 @@ int64_t NowMs() {
 std::atomic<int64_t> g_hud_ms{0};  // when the HUD last updated
 
 bool GamePaused() {
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base) return false;
     const uint32_t p = ReadGuestU32(base, kPauseStatePtr);
     return p != 0 && base[p + 4] != 0 && base[p + 10] == 0;
@@ -153,7 +153,7 @@ bool WindowInFront() {
     // slack then. No window yet (or none to ask) counts as in front: nothing is driven without one.
     // CHECK: that the flag follows a click on another window under X11 and Wayland, and the Steam
     // overlay on a Steam Deck; a flag that stays false would keep the triggers slack for good.
-    rex::Runtime* rt = rex::Runtime::instance();
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
     auto* input = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
     rex::ui::Window* window = input ? input->window() : nullptr;
     return window ? window->HasFocus() : true;

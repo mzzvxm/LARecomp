@@ -8,6 +8,7 @@
 #include <rex/ppc/hook.h>
 
 #include <type_traits>
+#include "larecomp_guest.h"
 
 /* ---------- constants */
 
@@ -15,10 +16,10 @@
 	REX_EXTERN(__imp__rex_##function)
 
 #define REX_PPC_INVOKE(function, ...) \
-	rex::ppc::GuestToHostFunction<function_return_t<decltype(function)>>(__imp__rex_##function, __VA_ARGS__)
+	larecomp::guest::Call<function_return_t<decltype(function)>>(__imp__rex_##function, __VA_ARGS__)
 
 #define REX_PPC_INVOKE2(return_type, function, ...) \
-	rex::ppc::GuestToHostFunction<return_type>(__imp__rex_##function, __VA_ARGS__)
+	larecomp::guest::Call<return_type>(__imp__rex_##function, __VA_ARGS__)
 
 #define REX_PPC_HOOK(function) \
     REX_HOOK(rex_##function, function##_Hook)
@@ -37,8 +38,8 @@
 	PPCContext& __restrict name = *context
 
 #define REX_PPC_MEMBASE_PTR(name) \
-auto* runtime = rex::Runtime::instance(); \
-auto* memory = runtime->memory(); \
+auto* runtime = REX_RUNTIME(); \
+auto* memory = larecomp::guest::AddressSpace(runtime); \
 uint8_t* name = memory->virtual_membase()
 
 

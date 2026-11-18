@@ -23,8 +23,8 @@ namespace nfx = mcla::native_gfx;
 namespace {
 
 const uint8_t* GuestBase() {
-  auto* runtime = rex::Runtime::instance();
-  return runtime ? runtime->virtual_membase() : nullptr;
+  auto* runtime = REX_RUNTIME();
+  return runtime ? runtime->GetMembase().GetBase() : nullptr;
 }
 
 }  // namespace

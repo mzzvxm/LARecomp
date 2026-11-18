@@ -56,10 +56,11 @@
 #include "rmr_client.h"
 #include "rmr_protocol.h"
 #include "../tournament.h"
+#include "larecomp_guest.h"
 
 namespace {
 
-using rex::memory::Memory;
+using Memory = rex::kernel::GuestAddressSpace;
 
 constexpr char kTable[] = "RateMyRide";
 
@@ -118,8 +119,8 @@ bool g_failure_text_swapped = false;  // game thread only
 // ----------------------------------------------------------- guest i/o ----
 
 Memory* Mem() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->memory() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 uint32_t U32(PPCRegister& r) { return static_cast<uint32_t>(r.u64); }
@@ -159,11 +160,10 @@ bool IsRmrTable(Memory* mem, uint32_t table) {
 
 template <typename... Args>
 uint32_t CallGuest(uint32_t fn_addr, Args... args) {
-  auto* rt = rex::Runtime::instance();
-  auto* dispatcher = rt ? rt->function_dispatcher() : nullptr;
-  PPCFunc* fn = dispatcher ? dispatcher->GetFunction(fn_addr) : nullptr;
+  auto* rt = REX_RUNTIME();
+  PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
   if (!fn) return 0;
-  return rex::ppc::GuestToHostFunction<uint32_t>(fn, static_cast<uint32_t>(args)...);
+  return larecomp::guest::Call<uint32_t>(fn, static_cast<uint32_t>(args)...);
 }
 
 // Sets the text of the "RMR_Failure_Menu" dialog, like sub_826B0D50 does for
@@ -840,5 +840,6 @@ void Hook_RmrEnter(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

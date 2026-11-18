@@ -19,6 +19,7 @@
 #include "d3d_structs.h"
 #include "guest_resources.h"
 #include "host_heap.h"
+#include "larecomp_guest.h"
 
 namespace mcla::native_gfx {
 
@@ -164,7 +165,7 @@ void AdoptInitTexture(const uint8_t* base, uint32_t grc_texture_va) {
   // does. If the two disagree the game reads a different address than the one
   // the header was written to, and every texture comes out as garbage far from
   // here. Checking it at adoption turns that into a counter.
-  auto* memory = rex::Runtime::instance() ? rex::Runtime::instance()->memory() : nullptr;
+  auto* memory = REX_RUNTIME() ? larecomp::guest::AddressSpace(REX_RUNTIME()) : nullptr;
   auto* via_guest = rex::memory::GuestPtr<uint8_t*>(mutable_base, ours_va);
   auto* via_memory = memory ? memory->TranslateVirtual<uint8_t*>(ours_va) : nullptr;
   if (via_memory != via_guest) {

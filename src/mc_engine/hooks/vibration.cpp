@@ -26,6 +26,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -40,7 +41,7 @@ std::atomic<uint32_t> g_driven[kUsers];
 // 0x8275CC34 in sub_8275CB88: the `bl XamInputSetState`. r3 = the user, r5 = the speeds on the
 // stack (two big-endian 16-bit values, left first).
 void Hook_VibrationSet(PPCRegister& r3, PPCRegister& r5) {
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     if (!base || r5.u32 == 0) return;
     if (!larecomp::settings::controller_vibration.Get()) {
         std::memset(base + r5.u32, 0, 4);
@@ -63,7 +64,7 @@ uint32_t VibrationDriven(uint32_t user) {
 void TickVibration() {
     if (larecomp::settings::controller_vibration.Get()) return;
     auto* input = static_cast<rex::input::InputSystem*>(
-        rex::Runtime::instance()->input_system());
+        REX_RUNTIME()->input_system());
     if (!input) return;
     for (uint32_t user = 0; user < kUsers; ++user) {
         if (g_driven[user].exchange(0, std::memory_order_relaxed) == 0) continue;

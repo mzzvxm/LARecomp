@@ -34,6 +34,7 @@
 #include "larecomp_log.h"
 #include "../camera_look.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (GuestRead32, ...)
+#include "larecomp_guest.h"
 
 // Shared by the two open probes: read the path the call was handed off the
 // guest stack, hold it against the filter, and say whether it was found.
@@ -41,7 +42,7 @@ static void TraceOpen(const char* kind, uint32_t stack, uint32_t offset, bool fo
     const std::string filter = larecomp::settings::stream_trace.Get();
     if (filter.empty()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     char path[192];
@@ -73,7 +74,7 @@ static void TraceOpen(const char* kind, uint32_t stack, uint32_t offset, bool fo
 // spin -- the callers are written assuming this never returns -- it only says
 // what happened before the game stops.
 void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     // Most of these messages take a plain integer -- "zlibInflater::InflateBegin
@@ -211,7 +212,7 @@ void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3) {
 // sub_8217D828) read it from different offsets, so the raw words go in the log
 // and the layout can be settled by looking at them rather than by guessing.
 void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     auto word = [&](uint32_t ea) {
@@ -281,7 +282,7 @@ void MCLA_ResourceSegments(PPCRegister& r31) {
     const std::string filter = larecomp::settings::segment_trace.Get();
     if (filter.empty()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t table = static_cast<uint32_t>(r31.u64);
@@ -357,7 +358,7 @@ void MCLA_ResourceSegments(PPCRegister& r31) {
 void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {
     if (!larecomp::settings::inflate_trace.Get()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t ctx = static_cast<uint32_t>(r4.u64);
     if (ctx < 0x1000 || ctx >= 0xC0000000) return;
@@ -462,7 +463,7 @@ void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {
 // and cop lights, and no vehicle physics class at all -- no SteeringLimit, TurnBias,
 // SlidingFric or OptSlipPercent. Do not spend another session looking for them here.
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const auto name_addr = static_cast<uint32_t>(r5.u64);
     if (!base || !name_addr) return;
 
@@ -590,9 +591,9 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {
     uint64_t dur = uint64_t(now - tl_lzx_start_ns);
     tl_lzx_start_ns = 0;
 
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     uint32_t sp = static_cast<uint32_t>(r1.u64);
@@ -635,7 +636,7 @@ void MCLA_StreamBufferProbe(PPCRegister& r3) {
     const uint32_t stream = r3.u32;
     if (stream != 0x82860C18u && stream != 0x82860C40u) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
     auto word = [&](uint32_t offset) {
         const uint8_t* p = base + stream + offset;
@@ -679,7 +680,7 @@ void MCLA_StartInputProbe() {
         } seen[4];
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            auto* rt = rex::Runtime::instance();
+            auto* rt = REX_RUNTIME();
             auto* sys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
             if (!sys) continue;
             for (uint32_t user = 0; user < 4; ++user) {

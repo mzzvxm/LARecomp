@@ -1894,8 +1894,8 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   REXLOG_INFO("[gpu] guest capture on (constant verification {})",
               larecomp::settings::mcla_gpu_verify_constants.Get() ? "on" : "off");
   if (const uint32_t device = mcla::native_gfx::GraphicsDeviceVa()) {
-    auto* runtime = rex::Runtime::instance();
-    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    auto* runtime = REX_RUNTIME();
+    const uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
     if (base && g_capture->FenceCatchUp(base, device)) {
       REXLOG_WARN("[gpu] the guest's device {:#010x} existed before the capture; one fence "
                   "record covers the fences it inserted until now",

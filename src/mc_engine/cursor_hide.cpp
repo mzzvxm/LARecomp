@@ -68,7 +68,7 @@ void Post(rex::ui::Window* window, bool hide) {
 }  // namespace
 
 void TickCursorHide() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     auto* isys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
     rex::ui::Window* window = isys ? isys->window() : nullptr;
     if (!window) return;

@@ -4,6 +4,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/xam/achievement_manager.h>
 #include <rex/ui/overlay/achievement_icon_cache.h>
+#include <rex/kernel/title_runtime.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -33,7 +34,7 @@ class AchievementToast final : public rex::ui::AchievementNotificationDialog {
   static constexpr float kDisplaySeconds = 4.5f;
 
   AchievementToast(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                   rex::Runtime* runtime)
+                   rex::kernel::TitleRuntime* runtime)
       : AchievementNotificationDialog(drawer), icons_(immediate, runtime) {}
 
   // Any thread: guest threads unlock achievements.
@@ -109,7 +110,7 @@ void ReleaseList();
 class AchievementsDialog final : public rex::ui::ImGuiDialog {
  public:
   AchievementsDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                     rex::Runtime* runtime, rex::system::AchievementManager* achievements)
+                     rex::kernel::TitleRuntime* runtime, rex::system::AchievementManager* achievements)
       : ImGuiDialog(drawer), achievements_(achievements), icons_(immediate, runtime) {}
 
  protected:
@@ -222,13 +223,13 @@ void ReleaseList() {
 }  // namespace
 
 std::unique_ptr<rex::ui::AchievementNotificationDialog> MakeAchievementToast(
-    rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, rex::Runtime* runtime) {
+    rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, rex::kernel::TitleRuntime* runtime) {
   if (!drawer || !immediate || !runtime) return nullptr;
   return std::make_unique<AchievementToast>(drawer, immediate, runtime);
 }
 
 void ToggleAchievements(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                        rex::Runtime* runtime, rex::system::AchievementManager* achievements) {
+                        rex::kernel::TitleRuntime* runtime, rex::system::AchievementManager* achievements) {
   if (g_list) {
     g_list.reset();
   } else if (drawer && immediate && runtime && achievements) {

@@ -42,6 +42,7 @@
 #include "online_common.h"
 #include "tournament_schedule.h"
 #include "rate_my_ride/rmr_client.h"
+#include "larecomp_guest.h"
 
 #include <cstring>
 #include <deque>
@@ -52,7 +53,7 @@
 
 namespace {
 
-using rex::memory::Memory;
+using Memory = rex::kernel::GuestAddressSpace;
 
 // rlUpload record, 152 bytes (layout in rate_my_ride.cpp). The state machines
 // only check the count and read the file id; the rest makes it a record any
@@ -116,8 +117,8 @@ struct Served {
 Served g_served[kKinds];
 
 Memory* Mem() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->memory() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 void Put32(uint8_t* p, uint32_t v) {
@@ -288,6 +289,8 @@ void Hook_TournamentPump(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/title_runtime.h>
 
 void Hook_TournamentPump(PPCRegister& r3) {}
 #endif  // REXGLUE_HAS_XEO3_TARGET

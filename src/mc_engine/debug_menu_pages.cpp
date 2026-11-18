@@ -521,7 +521,7 @@ void PressBind(const char* bind_cvar, const char* fallback_key) {
         REXLOG_WARN("[debug] {} is on '{}', which is no key the game knows", bind_cvar, key);
         return;
     }
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
     if (!window) {
         REXLOG_WARN("[debug] {} cannot be pressed: the game has no window yet", bind_cvar);

@@ -210,8 +210,8 @@ std::atomic<uint32_t> g_player_custom{0};
 std::atomic<uint32_t> g_player_car{0};   // model data of the player's car, for the log
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 bool IsPlausibleGuestPtr(uint32_t ea) {

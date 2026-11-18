@@ -53,7 +53,7 @@ bool g_logged_want = false;
 int g_mode_lines = 0;
 
 rex::ui::Window* GameWindow() {
-  auto* rt = rex::Runtime::instance();
+  auto* rt = REX_RUNTIME();
   auto* isys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
   return isys ? isys->window() : nullptr;
 }

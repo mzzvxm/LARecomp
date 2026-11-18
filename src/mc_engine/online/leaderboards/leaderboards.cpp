@@ -48,6 +48,7 @@
 #include "../online_common.h"
 #include "lb_client.h"
 #include "lb_protocol.h"
+#include "larecomp_guest.h"
 
 #include <algorithm>
 #include <atomic>
@@ -92,8 +93,8 @@ constexpr uint32_t kColumnSize = 24;   // XUSER_STATS_COLUMN
 
 // ── guest memory ───────────────────────────────────────────────────────────
 uint8_t* Base() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->virtual_membase() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 uint32_t R32(uint8_t* b, uint32_t a) {
   const uint8_t* p = b + a;
@@ -109,10 +110,10 @@ void W64(uint8_t* b, uint32_t a, uint64_t v) { W32(b, a, uint32_t(v >> 32)); W32
 
 // Calls the guest function at `fn` (an address) with up to four integer args.
 uint32_t CallGuest(uint32_t fn, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0) {
-  auto* rt = rex::Runtime::instance();
-  PPCFunc* host = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(fn) : nullptr;
+  auto* rt = REX_RUNTIME();
+  PPCFunc* host = rt ? rt->FindFunction(fn).value_or(nullptr) : nullptr;
   if (!host) return 0;
-  return rex::ppc::GuestToHostFunction<uint32_t>(host, a0, a1, a2, a3);
+  return larecomp::guest::Call<uint32_t>(host, a0, a1, a2, a3);
 }
 
 uint32_t VCall(uint8_t* b, uint32_t obj, uint32_t slot, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0) {

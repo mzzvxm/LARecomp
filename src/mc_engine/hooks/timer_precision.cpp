@@ -32,6 +32,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -70,7 +71,7 @@ FloatClock g_game_time;    // timer [+0x18]
 FloatClock g_audio_time;   // the audio engine's clock
 
 void AdvanceTimerField(PPCRegister& r3, PPCRegister& f0, FloatClock& clock, uint32_t field) {
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t addr = static_cast<uint32_t>(r3.u64) + field;
     const float guest = ReadGuestF32(base, addr);
@@ -94,7 +95,7 @@ void MCLATimeAccumGame(PPCRegister& r3, PPCRegister& f0) {
 // f0 the new sum (which the next instructions turn into milliseconds, so it is replaced
 // too), r29 the engine timer, whose [+0x60] was just added.
 void MCLAAudioClockAccum(PPCRegister& r9, PPCRegister& r29, PPCRegister& f0) {
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t clock_addr = static_cast<uint32_t>(r9.u64) + static_cast<uint32_t>(-12492);
     const float inc = ReadGuestF32(base, static_cast<uint32_t>(r29.u64) + 0x60);

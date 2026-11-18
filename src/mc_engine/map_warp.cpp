@@ -60,6 +60,7 @@
 #include "map_warp.h"
 #include "profile/larecomp_profile_store.h"
 #include "modloader/features/mod_data.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -129,8 +130,8 @@ void File(const Request& r) {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadBE32(uint32_t ea) {
@@ -159,9 +160,9 @@ void WriteF32(uint32_t ea, float f) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool GameIsPaused() {
@@ -177,8 +178,8 @@ uint32_t PlayerRacer() {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -211,7 +212,7 @@ bool EnsureScratch() {
     if (g_scratch) return true;
     PPCFunc* malloc_fn = GuestFn(kGuestMallocFn);
     // matrix 64 + velocity 16 + angular velocity 16, probe segment 32, result 96
-    const uint32_t raw = malloc_fn ? rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 240u) : 0;
+    const uint32_t raw = malloc_fn ? larecomp::guest::Call<uint32_t>(malloc_fn, 240u) : 0;
     if (!raw) return false;
     g_scratch = (raw + 15) & ~15u;
     return true;
@@ -232,7 +233,7 @@ bool ProbeGround(float x, float y, float z, float len, float* ground) {
     std::memset(base + res, 0, 96);
     base[res + 76] = 0xFF;  // component: none
     base[res + 77] = 0xFF;
-    const uint32_t hit = rex::ppc::GuestToHostFunction<uint32_t>(fn, level, seg, res, 0u, 0x800u,
+    const uint32_t hit = larecomp::guest::Call<uint32_t>(fn, level, seg, res, 0u, 0x800u,
                                                                   0xFFFFFFFFu, 4u, 1u, 0u);
     if (!(hit & 0xFF)) return false;
     *ground = ReadF32(res + 20);
@@ -244,7 +245,7 @@ bool Teleport(uint32_t racer, const float m[16], bool snap) {
     if (!fn || !EnsureScratch()) return false;
     for (int i = 0; i < 16; ++i) WriteF32(g_scratch + 4 * i, m[i]);
     for (int i = 0; i < 8; ++i) WriteF32(g_scratch + 64 + 4 * i, 0.0f);
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, racer, g_scratch, g_scratch + 64, g_scratch + 80,
+    larecomp::guest::Call<uint32_t>(fn, racer, g_scratch, g_scratch + 64, g_scratch + 80,
                                             snap ? 1u : 0u, kProbeUp, kProbeDown);
     return true;
 }

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
@@ -173,8 +174,8 @@ constexpr uint32_t kObjNameMax = kObjSize - kObjName - 1;
 // ── Guest memory helpers ──────────────────────────────────────────────
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 bool IsGuestPtr(uint32_t ea) { return ea >= 0x82000000u && ea < 0xC0000000u; }
@@ -233,29 +234,29 @@ void WriteGuestBEFloat(uint32_t ea, float value) {
 }
 
 uint32_t CallGuest1(uint32_t fn_addr, uint32_t a0) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0);
+    return larecomp::guest::Call<uint32_t>(fn, a0);
 }
 
 uint32_t CallGuest2(uint32_t fn_addr, uint32_t a0, uint32_t a1) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1);
 }
 
 // sub_82208930(uiLogic, text, a3, a4, seconds). Separate from the CallGuestN
 // helpers because the last argument has to reach f1, not a GPR.
 void CallInfoStrip(uint32_t ui_logic, uint32_t text, float seconds) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kInfoStripFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return;
+    PPCFunc* fn = rt->FindFunction(kInfoStripFn).value_or(nullptr);
     if (!fn) return;
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, ui_logic, text, uint32_t(-1), uint32_t(-1),
+    larecomp::guest::Call<uint32_t>(fn, ui_logic, text, uint32_t(-1), uint32_t(-1),
                                            seconds);
 }
 

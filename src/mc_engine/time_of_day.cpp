@@ -50,6 +50,7 @@
 #include "mc_engine/config_save.h"
 #include "real_weather.h"
 #include "time_of_day.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -143,7 +144,7 @@ std::atomic<int> g_scene_weather{-1};
 }  // namespace
 
 int Weather_GetIndex() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return -1;
     int idx = static_cast<int>(ReadU32(base, kWeatherIndex));
     return (idx >= 0 && idx < 4) ? idx : -1;
@@ -168,7 +169,7 @@ int Weather_NameToIndex(const char* name) {
 }
 
 float TimeOfDay_GetHour() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return -1.0f;
     // Read the manager from its global rather than from whatever the hook last
     // saw: the menu-camera hook can run before the lighting update on a frame,
@@ -196,7 +197,7 @@ void TimeOfDay_SceneHour(float hour) {
 // the hour to the render slot at the end, so the lighting, sky, shadows and
 // headlights all follow through the game's own path.
 void Hook_TimeOfDay(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     uint32_t mgr = static_cast<uint32_t>(r3.u64);
     if (mgr < 0x10000u) return;

@@ -186,8 +186,8 @@ std::atomic<uint32_t> g_last_list{0};
 // ── Guest memory helpers ────────────────────────────────────────────────
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadGuestBE32(uint32_t ea) {
@@ -352,39 +352,39 @@ void GuestAppendMenuItem(uint32_t parent, uint32_t child) {
 // ── Guest PPC function dispatch ───────────────────────────────────────
 
 uint32_t CallGuestFn1(uint32_t fn_addr, uint32_t arg0) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) {
         MC_WARN("[pause-menu] guest fn 0x{:08X} not in dispatcher", fn_addr);
         return 0;
     }
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, arg0);
+    return larecomp::guest::Call<uint32_t>(fn, arg0);
 }
 
 uint32_t CallGuestFn2(uint32_t fn_addr, uint32_t a0, uint32_t a1) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1);
 }
 
 uint32_t CallGuestFn4(uint32_t fn_addr, uint32_t a0, uint32_t a1, uint32_t a2,
                       uint32_t a3) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1, a2, a3);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1, a2, a3);
 }
 
 uint32_t CallGuestFn3(uint32_t fn_addr, uint32_t a0, uint32_t a1, uint32_t a2) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1, a2);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1, a2);
 }
 
 uint32_t AllocGuestString(const char* str) {
@@ -398,11 +398,11 @@ uint32_t AllocGuestString(const char* str) {
 
 bool IsGuestButtonClicked(uint32_t guest_key_addr) {
     if (!guest_key_addr) return false;
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return false;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kIsButtonClickedFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return false;
+    PPCFunc* fn = rt->FindFunction(kIsButtonClickedFn).value_or(nullptr);
     if (!fn) return false;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, guest_key_addr, 1u) != 0;
+    return larecomp::guest::Call<uint32_t>(fn, guest_key_addr, 1u) != 0;
 }
 
 // ── VirtualHSM engine access ─────────────────────────────────────────
@@ -425,12 +425,12 @@ bool GuestStackPop() {
     uint32_t navStack = rootNode + 776;
     uint32_t engine   = rootNode + 4;
 
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return false;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kStackPopFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return false;
+    PPCFunc* fn = rt->FindFunction(kStackPopFn).value_or(nullptr);
     if (!fn) return false;
 
-    uint32_t newTop = rex::ppc::GuestToHostFunction<uint32_t>(fn, navStack, engine, 1u);
+    uint32_t newTop = larecomp::guest::Call<uint32_t>(fn, navStack, engine, 1u);
     MC_INFO("[pause-menu] stackPop -> top 0x{:08X}", newTop);
     return true;
 }
@@ -3018,7 +3018,7 @@ void ApplyItem(const ItemDef& it, int dir) {
         case kActionQuitYes: {
             // Same as leaving a menu: settings that moved are written first.
             if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
-            auto* runtime = rex::Runtime::instance();
+            auto* runtime = REX_RUNTIME();
             rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
             if (window) {
                 MC_INFO("[pause-menu] quit requested from the QUIT menu");
@@ -3867,7 +3867,7 @@ bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
 // If it can't be started, the game keeps running rather than quit without it.
 void PauseMenuRestartGame() {
     if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
     if (!window) {
         MC_WARN("[pause-menu] restart requested, but there is no window to close");
@@ -4957,7 +4957,7 @@ void Hook_CarbonUiTick(PPCRegister& r3) {
     uint16_t pressed = 0;
     {
         auto* isys = static_cast<rex::input::InputSystem*>(
-            rex::Runtime::instance()->input_system());
+            REX_RUNTIME()->input_system());
         if (isys) {
             rex::input::X_INPUT_STATE st{};
             if (isys->GetState(0, &st) == 0) {
@@ -5590,6 +5590,7 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 
 #include <rex/ppc/context.h>
 #include "pause_menu.h"
+#include "larecomp_guest.h"
 
 bool PauseMenuPopStack() { return false; }
 bool PauseMenuUiOptionsOpen() { return false; }

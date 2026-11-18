@@ -2,6 +2,8 @@
 // and.
 
 #include "swf_import.h"
+#include "larecomp_guest.h"
+#include <rex/kernel/title_paths.h>
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/ppc/call.h>
@@ -339,12 +341,12 @@ void W16(uint8_t* base, uint32_t ea, uint16_t v) {
 bool Load(Import& im) {
     using namespace mc::modloader;
     const auto t0 = std::chrono::steady_clock::now();
-    auto* rt = rex::Runtime::instance();
-    uint8_t* base = rt ? rt->virtual_membase() : nullptr;
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     if (!base || !mem) return false;
 
-    const std::filesystem::path archive_path = rt->game_data_root() / kSourceArchive;
+    const std::filesystem::path archive_path = rt->GetTitlePaths().game_root.Get() / kSourceArchive;
     Rpf3Reader archive;
     Rpf3Entry entry;
     std::vector<uint8_t> raw;
@@ -412,7 +414,7 @@ bool Load(Import& im) {
     WriteGuestU32(base, rsc, map);
     WriteGuestU32(base, rsc + 8, name);
 
-    auto* ts = rex::runtime::ThreadState::Get();
+    auto* ts = rex::kernel::ThreadState::Get();
     const uint32_t r13 = ts && ts->context() ? ts->context()->r13.u32 : 0;
     const uint32_t tls = r13 ? ReadGuestU32(base, r13) : 0;
     if (!tls) {
@@ -422,7 +424,7 @@ bool Load(Import& im) {
     const uint32_t resource_was = ReadGuestU32(base, tls + kTlsResource);
     WriteGuestU32(base, tls + kTlsResource, 0);
     for (const int idx : cl.chars())
-        rex::ppc::GuestToHostFunction<uint32_t>(__imp__rex_sub_825FDA90, rsc,
+        larecomp::guest::Call<uint32_t>(__imp__rex_sub_825FDA90, rsc,
                                                 guest + (cl.Char(idx) - lo));
     WriteGuestU32(base, tls + kTlsResource, resource_was);
 
@@ -520,8 +522,8 @@ uint32_t GuestScratch(uint32_t bytes) {
     bytes = (bytes + 15) & ~15u;
     if (bytes > kScratchBlock) return 0;
     if (g_scratch_used + bytes > kScratchBlock) {
-        auto* rt = rex::Runtime::instance();
-        const uint32_t block = rt && rt->memory() ? rt->memory()->SystemHeapAlloc(kScratchBlock) : 0;
+        auto* rt = REX_RUNTIME();
+        const uint32_t block = rt && larecomp::guest::AddressSpace(rt) ? larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(kScratchBlock) : 0;
         if (!block) return 0;
         g_scratch = block;
         g_scratch_used = 0;
@@ -534,9 +536,9 @@ uint32_t GuestScratch(uint32_t bytes) {
 uint32_t GuestString(const char* text) {
     const uint32_t len = uint32_t(std::strlen(text));
     const uint32_t at = GuestScratch(len + 1);
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!at || !rt) return 0;
-    std::memcpy(rt->virtual_membase() + at, text, len + 1);
+    std::memcpy(rt->GetMembase().GetBase() + at, text, len + 1);
     return at;
 }
 

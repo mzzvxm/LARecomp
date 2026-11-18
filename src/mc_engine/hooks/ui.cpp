@@ -25,6 +25,7 @@
 #include "../logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
 #include "../input_state.h"
+#include "larecomp_guest.h"
 
 
 bool SkipIntro() {
@@ -90,7 +91,7 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
 // is null skip the block it feeds -- the hook jumps to 0x82725144, the `li r3, 1`
 // that closes the scope. A movie with no lights node has nothing to light.
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const uint32_t node = static_cast<uint32_t>(r3.u32);
     if (base && node) {
         const uint8_t* p = base + node + 8;
@@ -131,7 +132,7 @@ void Patch_SpeedLimitUnits(PPCRegister& r8) {
     const std::string units = larecomp::settings::speed_units.Get();
     bool metric = units == "kmh";
     if (units == "game") {
-        const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+        const uint8_t* base = larecomp::guest::Membase();
         const uint8_t* p = base + 0x8288E5A0u;  // the formatter's metric flag (Patch_SpeedUnits)
         metric = (uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]) != 0;
     }
@@ -184,8 +185,8 @@ bool ButtonPromptsArePlayStation() { return larecomp::input::ActiveGlyphFamily()
 // +88 (0x58) is the int mcVariant::asInt returns for type 3, +92 (0x5C) the
 // plain "%d" char buffer sub_823DC018 formatted into for the string readers.
 static void WritePlatformVar(uint32_t entry, int value) {
-    auto* rt = rex::Runtime::instance();
-    uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base || !entry) return;
 
     base[entry + 88] = 0;
@@ -278,11 +279,11 @@ static int g_swf_ctx_count = 0;
 static bool g_swf_pushed_nonzero = false;
 
 static uint32_t CallGuestFn3(uint32_t fn_addr, uint32_t a0, uint32_t a1, uint32_t a2) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1, a2);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1, a2);
 }
 
 void Hook_SwfContextEnter(PPCRegister& r3) {

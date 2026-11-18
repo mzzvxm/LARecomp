@@ -16,6 +16,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 // Which render phase bits perf_no_shadows clears.
 //
@@ -58,7 +59,7 @@ std::atomic<uint64_t> g_frame_heartbeat{0};
 // Gated on the array's real contents rather than on the cvars, so it covers any
 // other way of ending up with an empty impostor pool.
 bool Patch_ImpostorShadowGuard(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return false;
 
     const uint32_t mgr = static_cast<uint32_t>(r3.u64);
@@ -124,7 +125,7 @@ void ApplyRenderPhaseMask() {
     const uint32_t bits = ShadowPhaseBits();
     if (!want && !was_applied) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
     if (renderer == 0) return;
@@ -189,7 +190,7 @@ void StartFreezeWatchdog() {
             if (++stalled < 5 || reported) continue;
             reported = true;
 
-            auto* base = rex::Runtime::instance()->virtual_membase();
+            auto* base = larecomp::guest::Membase();
             if (!base) {
                 LARECOMP_APP_ERROR("[Watchdog] frame stalled {}s, no guest membase", stalled);
                 continue;
@@ -234,7 +235,7 @@ void LogRenderPhaseMaskOnce() {
     if (samples >= 8) return;
     if (++frame % 60) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
     if (renderer == 0) return;

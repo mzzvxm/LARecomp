@@ -28,6 +28,7 @@
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "larecomp_version.h"
+#include "app_paths.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -62,7 +63,7 @@ std::string SanitizeWith(std::string_view raw) {
 }
 
 std::string Sanitize(std::string_view raw) {
-  return SanitizeWith<rex::system::xam::UserProfile>(raw);
+  return SanitizeWith<rex::xam::UserProfile>(raw);
 }
 
 // True when user_name came from the command line or the environment: someone
@@ -662,7 +663,7 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
   }
 }
 
-bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
                        std::function<void()> on_finished) {
   if (!g_plan.ask) {
     return false;
@@ -678,7 +679,7 @@ bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& path
               plan.preselect);
   // Shows itself on construction and deletes itself when closed, like every
   // rex::ui::ImGuiDialog.
-  (void)new ProfilePickerDialog(drawer, std::move(plan), paths.config_path, std::move(on_finished));
+  (void)new ProfilePickerDialog(drawer, std::move(plan), paths.config_file, std::move(on_finished));
   return true;
 }
 

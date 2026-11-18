@@ -14,6 +14,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 // BadassBaboon's Recomp Adjustments: ambient traffic / pedestrian density.
 //
@@ -143,7 +144,7 @@ void MCLAAmbientDensityTuning(PPCRegister& r3) {
     const uint32_t a = static_cast<uint32_t>(r3.u64);
     if (a == 0) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     bool enabled = false;
@@ -189,7 +190,7 @@ static void UpdateSpawnGate(uint8_t* base, SpawnGate& g, bool close, const char*
 // Per-frame: walks the 31 zones of the live manager. Costs ~155 guest float
 // compares and writes only what the game or a cvar changed.
 void ApplyAmbientDensityTuning() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t mgr = ReadGuestU32(base, kAmbientManagerPtr);
@@ -276,7 +277,7 @@ static FragTuneField g_frag_tune[] = {
 };
 
 void ApplyFragTuneOverrides() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t obj = ReadGuestU32(base, kFragTunePtr);

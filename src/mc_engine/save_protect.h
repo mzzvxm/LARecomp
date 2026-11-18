@@ -15,7 +15,7 @@
 // the game has not closed yet: ending then would bring the old save back at the
 // next start.
 inline bool MclaSaveInProgress() {
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   auto* kernel = runtime ? runtime->kernel_state() : nullptr;
   if (!kernel) {
     return false;

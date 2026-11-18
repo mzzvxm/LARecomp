@@ -113,8 +113,8 @@ WheelSlot g_slots[8];  // a car has four wheels, a bike two; the rest is room fo
 namespace larecomp::slip {
 
 void NotePlayer(uint32_t player) {
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base || !Plausible(player)) return;
     const uint32_t car = ReadGuestU32(base, player + 8);
     if (!Plausible(car)) return;
@@ -162,8 +162,8 @@ Amounts Current() {
 void Hook_WheelSlip(PPCRegister& r31) {
     const uint32_t car = g_car.load(std::memory_order_relaxed);
     if (car == 0) return;
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base) return;
     const uint32_t wheel = r31.u32;
     const uint32_t owner = ReadGuestU32(base, wheel + kOwner);

@@ -48,6 +48,7 @@
 #include "hooks_internal.h"
 #include "../logging.h"
 #include "../swf_dom.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_82720908);  // 2D draw phase of one movie
 
@@ -276,7 +277,7 @@ std::string GuestText(const uint8_t* base, uint32_t ea, size_t max) {
 
 const uint8_t* GuestBase() {
     static const uint8_t* base = nullptr;
-    if (!base) base = rex::Runtime::instance()->virtual_membase();
+    if (!base) base = larecomp::guest::Membase();
     return base;
 }
 

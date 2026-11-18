@@ -378,8 +378,8 @@ const uint8_t* GuestBase() {
   static std::atomic<const uint8_t*> cached{nullptr};
   const uint8_t* base = cached.load(std::memory_order_relaxed);
   if (!base) {
-    if (rex::Runtime* runtime = rex::Runtime::instance()) {
-      base = runtime->virtual_membase();
+    if (rex::kernel::TitleRuntime* runtime = REX_RUNTIME()) {
+      base = runtime->GetMembase().GetBase();
       cached.store(base, std::memory_order_relaxed);
     }
   }

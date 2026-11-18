@@ -140,8 +140,8 @@ void SetRampAgain(PPCContext& ctx, uint8_t* base, uint32_t device) {
 void Hook_DisplayGammaType(PPCRegister& r1) {
     const int mode = WantedMode();
     if (mode == kModePc) {
-        auto* runtime = rex::Runtime::instance();
-        uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+        auto* runtime = REX_RUNTIME();
+        uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
         if (!base) {
             return;
         }

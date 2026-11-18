@@ -2,6 +2,7 @@
 
 #include <rex/ui/ui_system.h>
 #include <rex/ui/overlay/achievement_notification.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <memory>
 
@@ -21,13 +22,13 @@ namespace mcla::ui {
 // fixed 320x70 window whose second line no longer fits once the panels' font
 // and padding apply. Null when any argument is (as the SDK's factory).
 std::unique_ptr<rex::ui::AchievementNotificationDialog> MakeAchievementToast(
-    rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, rex::Runtime* runtime);
+    rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, rex::kernel::TitleRuntime* runtime);
 
 // Opens or closes the achievement list (F7). LARecomp owns this one rather
 // than overriding CreateAchievementsOverlay: the SDK keeps that dialog in a
 // unique_ptr only its own bind releases, so a list that closes itself (Esc,
 // the footer prompt) could not be closed safely through it.
 void ToggleAchievements(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                        rex::Runtime* runtime, rex::system::AchievementManager* achievements);
+                        rex::kernel::TitleRuntime* runtime, rex::system::AchievementManager* achievements);
 
 } // namespace mcla::ui
