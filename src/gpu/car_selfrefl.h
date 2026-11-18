@@ -57,12 +57,15 @@
 // self-test (the point must be found in the history at its own distance) then fades the effect out for that frame instead of
 // smearing it. A car with no usable slot (placed this frame) is taken as still, which at speed fails the same test.
 //
-// THE RAY (variant version 3, shaderpack/variants/car_selfrefl.h has the detail): the points are the same for every pixel and
-// frame (no per-pixel noise: it made a part narrower than the steps a dotted patch), closer together near the shaded point; each
-// has a weight that ramps with how far behind a vehicle pixel it is, and the hit is the heaviest, made smaller where it is
-// probably the hidden face of a part (the ray comes back out towards the surface from behind) or a thin part (one point). The
-// pure arithmetic is in car_selfrefl_rules.h with a reference march in the rules test. The paint's own colour in shade stands
-// in for a hidden face in the reflection mode. The noise frame constant (CarSelfReflConstants::b[3]) is not read any more.
+// THE RAY (variant version 4, shaderpack/variants/car_selfrefl.h has the detail): the points are the same for every pixel and
+// frame (no per-pixel noise: it made a part narrower than the steps a dotted patch), closer together near the shaded point. The
+// ray is a chain of segments from point to point; each takes the share of its length that is inside the window of "just behind a
+// vehicle pixel" (an exact integral of the window along the segment; a segment with the outline of a part in it is halved three
+// times to find where, and takes the share on the window's side), the hit is the sum of the segments' covers with a fade along the
+// ray, whole at a share of the ray's points (mcla_gpu_car_selfrefl_full), and made smaller where it is probably the hidden face of a
+// part (the ray comes back out towards the surface from behind). The pure arithmetic is in car_selfrefl_rules.h with a reference
+// march in the rules test. The paint's own colour in shade stands in for a hidden face in the reflection mode. The constants'
+// b[3] is the share of the points (it was a noise frame before version 4).
 //
 // The depth is linearised with the previous frame's lens (the trigger comes before this frame's anchor, as the occlusion's
 // does); a lens that changed by more than 5% between the two frames (the pause view's field of view, a sweep) leaves no
@@ -174,8 +177,7 @@ class CarSelfRefl {
   void OnPresent();
 
   // The 112 bytes a draw of the paint variant reads (Scene::UploadCarSelfReflConstants): the game's paint (mode 0) when
-  // there is no history for this frame. `upscaler_running`: a temporal upscaler works on the frame (the noise then moves
-  // every frame, which its history averages out).
+  // there is no history for this frame. `upscaler_running` is not used any more (it moved the ray's noise, which the ray has not).
   void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
 
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "on", or

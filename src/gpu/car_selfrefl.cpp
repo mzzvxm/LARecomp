@@ -64,7 +64,7 @@ REXCVAR_DEFINE_DOUBLE(
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_selfrefl_thickness, 0.3, "MCLA/GPU",
     "Diagnostic: how far behind a part of the car's surface (as the previous frame saw it) a ray point still hits it, "
-    "in the game's world units; the hit's weight is full up to half of it and falls to nothing at it. Live.")
+    "in the game's world units; the weight of a point is full up to half of it and falls to nothing at it. Live.")
     .debug_only()
     .range(0.02, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -76,10 +76,19 @@ REXCVAR_DEFINE_DOUBLE(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_steps, 12, "MCLA/GPU",
-    "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each; they are closer "
-    "together near the car's surface). Live.")
+    "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each, and three more for "
+    "each segment between two points that holds the outline of a part; they are closer together near the car's surface, and "
+    "the step the weight makes at a part's outline is a point's share of the whole hit). Live.")
     .debug_only()
     .range(4, 24)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_selfrefl_full, 0.25, "MCLA/GPU",
+    "Diagnostic: the share of the car self-reflection ray's points that, all inside a part of the car, take the whole hit "
+    "(0.25: 3 of the 12). A smaller one makes every hit heavier and the outline of a part a steeper step, a larger one lighter and "
+    "softer. Live.")
+    .debug_only()
+    .range(0.05, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_selfrefl_gain, 1.0, "MCLA/GPU",
@@ -171,6 +180,7 @@ car_selfrefl::Tuning ReadTuning() {
   t.steps = int(REXCVAR_GET(mcla_gpu_car_selfrefl_steps));
   t.view = int(REXCVAR_GET(mcla_gpu_car_selfrefl_view));
   t.gain = float(REXCVAR_GET(mcla_gpu_car_selfrefl_gain));
+  t.full = float(REXCVAR_GET(mcla_gpu_car_selfrefl_full));
   return car_selfrefl::Clamped(t);
 }
 
@@ -654,9 +664,9 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
                   kPrefix, menu_world::Name(trigger_world_), id);
     }
   }
+  (void)upscaler_running;  // the ray has no per-pixel noise any more (variant version 3): nothing moves with the frame
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
-                                     car_selfrefl::ExpBiasGain(exp_bias),
-                                     upscaler_running ? float(frame_ & 1023u) : 0.0f);
+                                     car_selfrefl::ExpBiasGain(exp_bias));
   ++paint_with_history_;
 }
 

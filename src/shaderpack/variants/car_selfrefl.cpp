@@ -37,7 +37,8 @@ constexpr std::string_view kAfterBlurredRead = "\n\tr13.xyz = CarReflApply(r13.x
 constexpr std::string_view kAfterFinalWrite =
     "\n\t[branch] if (g_CarReflB.y > 0.5) { oC0.xyz = CarReflDebug(carRefl, iTexCoord4.w); }";
 
-// The helper and its types, before main. The constants are declared by the two edits below it.
+// The helper and its types, before main. The constants are declared by the two edits below it. (Three raw strings that join: the
+// compiler's limit for one string literal is 16 KB.)
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant car_selfrefl (src/shaderpack/variants/car_selfrefl.cpp): the paint's two environment reads occluded by,
 // or replaced with, the car's own colour of the previous frame. The history image (g_CarReflC.x, the picture's size or half of
 // it): a the view distance of the pixels of a vehicle (0 for everything else), rgb the frame's scene colour of those pixels
@@ -45,15 +46,19 @@ constexpr std::string_view kHelper = R"HLSL(// LARecomp variant car_selfrefl (sr
 // (no filtering: a filtered read at a vehicle's edge would mix its colour and distance with the zeros of the world's).
 // g_CarReflM0..M3 take a world position of this frame
 // into the history frame's clip space (the vehicle's own motion is in them). g_CarReflA: x mode (0 off, 1 darken, 2 replace),
-// y ray length (m), z thickness (m), w strength. g_CarReflB: x steps, y debug view, z colour gain, w not read (it was the
-// noise frame: the trace has no per-pixel noise any more, a pixel's samples are the same in every frame).
-// The numbers below are also written as plain functions in src/gpu/car_selfrefl_rules.h (RayDistance, WindowWeight, Approach,
-// ThinFactor, SurfaceSlack), which src/gpu/car_selfrefl_rules_test.cpp checks: keep the two in step.
+// y ray length (m), z thickness (m), w strength. g_CarReflB: x steps, y debug view, z colour gain, w the share of the ray's points
+// that, all inside a part, take the whole hit.
+// The numbers below are also written as plain functions in src/gpu/car_selfrefl_rules.h (RayDistance, SurfaceSlack, MakeWindowShape,
+// WindowWeight, WindowIntegral, SegmentCover, Approach, InWindow, HasOutline, MayCover, OutlineShare, SegmentOf, RayFade, HitSum), which
+// src/gpu/car_selfrefl_rules_test.cpp checks: keep the two in step.
 static const float kCarReflStartMin = 0.04;   // m: no sample is nearer the shaded point than this
 static const float kCarReflDark = 0.85;       // the most of the reflection a hit takes away (mode 1)
 static const float kCarReflBackFloor = 0.5;   // the weight of a hit the ray reached from behind the surface, against 1 from the front
-static const float kCarReflThinFloor = 0.6;   // the weight of a hit that one sample or two small ones make, against 1 for a wide one
 static const float kCarReflShade = 0.4;       // the paint's own colour in shade, for the face the camera does not see (mode 2)
+static const float kCarReflFadeFrom = 0.3;    // the share of the ray's length from which what it finds weighs less...
+static const float kCarReflFadeTo = 0.9;      // ...to nothing at this one
+static const float kCarReflApproachSpan = 0.15;  // m: the length of ray a rise of a tenth of the thickness is measured over
+static const int kCarReflOutlineSteps = 3;    // the halvings that find a part's outline in a segment: 1/8 of it
 
 struct CarReflResult
 {
@@ -63,6 +68,50 @@ struct CarReflResult
     float face;     // 0..1: 1 the ray met the surface the camera sees from its front, 0 it reached it from behind (a hidden face)
     float dist;     // the hit's distance as a share of the ray length
     float state;    // debug: 0 off, 1 the shaded point is not in the history, 2 the ray left the picture, 3 no hit, 4 hit
+};
+
+// What the helpers need of the ray: the matrix to the history frame's clip space, the ray, the image's size, the slack of a slanted
+// surface and the thickness.
+struct CarReflRay
+{
+    float4 m0;
+    float4 m1;
+    float4 m2;
+    float4 m3;
+    float3 world;
+    float3 direction;
+    float2 size;
+    float slack;
+    float thickness;
+    float reach;
+    float3 shape;    // the ray's window (CarReflWindowShape: x bias, y ramp, z where the fall starts), made with the shaded point's distance
+};
+
+// A point of the ray as the history gives it.
+struct CarReflPoint
+{
+    float t;         // distance along the ray
+    float on;        // 1 where the history holds a vehicle pixel
+    float diff;      // the ray point's view distance minus that pixel's: positive is behind it
+    float stored;    // that pixel's view distance (0 where there is none)
+    float2 uv;       // where it is in the picture
+    float3 colour;   // that pixel's colour (0 off the vehicles)
+};
+
+struct CarReflSegment
+{
+    float cover;     // 0..1: the share of the segment inside the window
+    float face;      // 1: the ray goes in at the visible face; 0: it comes back out of the hidden one
+    float share;     // the share of the segment's colour that is the second end's
+};
+
+// What the segments of the ray add up to.
+struct CarReflSum
+{
+    float covers;    // the sum of cover x fade x edge
+    float seen;      // the same times the face
+    float middle;    // the same times the middle's distance
+    float3 colour;   // the same times the colour
 };
 
 float4 CarReflProject(float4 m0, float4 m1, float4 m2, float4 m3, float3 p)
@@ -98,30 +147,187 @@ float CarReflSlack(float depth, float historyHeight, float focal, float nv)
     return min(1.5 * texel * slope, 0.05);
 }
 
-// 0..1: how much a ray point of view distance `depth` is "just behind" a vehicle pixel whose distance is `diff` less. Not a yes
-// or no: it rises from 0 at the bias (the game's depth noise, and the slack of a slanted surface) to 1 over a short ramp, stays
-// there, and falls to 0 between half the thickness and the thickness (a ray that is far behind a thin shell has passed it).
-float CarReflWindow(float diff, float depth, float thickness, float slack)
+)HLSL" R"HLSL(// The window of a ray (made with the shaded point's view distance `depth`): how much a ray point is "just behind" a vehicle pixel, as a
+// function of diff (how far behind). It rises from 0 at the bias (the game's depth noise, and the slack of a slanted surface) over a short ramp to 1, stays there,
+// and falls to 0 between half the thickness and the thickness (a ray that is far behind a thin shell has passed it). The two ramps
+// never overlap (the bias is held under half the thickness less the ramp), so the window is the difference of two smoothsteps and has
+// an exact integral.
+float3 CarReflWindowShape(float depth, float thickness, float slack)
 {
-    const float bias = 0.01 + 0.004 * depth + slack;
     const float ramp = min(0.02 + 0.004 * depth, 0.25 * thickness);
-    return smoothstep(bias, bias + ramp, diff) * (1.0 - smoothstep(0.5 * thickness, thickness, diff));
+    const float bias = min(0.01 + 0.004 * depth + slack, 0.5 * thickness - ramp);
+    return float3(bias, ramp, 0.5 * thickness);
+}
+
+float CarReflWindow(float diff, float3 shape, float thickness)
+{
+    return smoothstep(shape.x, shape.x + shape.y, diff) - smoothstep(shape.z, thickness, diff);
+}
+
+// The integral of smoothstep(edge0, edge1, y) for y up to x.
+float CarReflRampIntegral(float edge0, float edge1, float x)
+{
+    const float width = edge1 - edge0;
+    const float u = saturate((x - edge0) / width);
+    return width * (u * u * u - 0.5 * u * u * u * u) + max(x - edge1, 0.0);
+}
+
+float CarReflWindowIntegral(float diff, float3 shape, float thickness)
+{
+    return CarReflRampIntegral(shape.x, shape.x + shape.y, diff) - CarReflRampIntegral(shape.z, thickness, diff);
 }
 
 // 0..1: how much a ray point has come nearer to the vehicle pixel than the previous point was, when that one was behind it
-// (previousDiff > 0), from nothing to a tenth of the thickness. A ray that is coming out of the back of a surface towards its
-// front reaches the surface from behind it, at the face the picture does not hold; a ray that goes deeper behind the surface
-// went in at the front (0), and so did one that was in front of it at the previous point (the caller passes a negative diff).
-float CarReflApproach(float previousDiff, float diff, float thickness)
+// (previousDiff > 0), from nothing to a tenth of the thickness per kCarReflApproachSpan of the ray's length (dt is the distance
+// between the two points, so a segment cut in two by the search for an outline has the same face as the whole one). A ray that is
+// coming out of the back of a surface towards its front reaches the surface from behind it, at the face the picture does not hold;
+// a ray that goes deeper behind the surface went in at the front (0), and so did one that was in front of it at the previous point.
+float CarReflApproach(float previousDiff, float diff, float dt, float thickness)
 {
-    return (previousDiff > 0.0) ? smoothstep(0.0, 0.1 * thickness, previousDiff - diff) : 0.0;
+    return (previousDiff > 0.0) ? smoothstep(0.0, 0.1 * thickness, (previousDiff - diff) * (kCarReflApproachSpan / max(dt, 1e-3))) : 0.0;
 }
 
-// The weight of the sum of the samples' windows: one sample, or small ones, is a thin part or the edge of one, which the
-// samples may have caught or missed; two samples or more are a part the ray goes along.
-float CarReflThin(float sum)
+float CarReflFade(float share)
 {
-    return lerp(kCarReflThinFloor, 1.0, saturate((sum - 0.5) / 1.5));
+    return 1.0 - smoothstep(kCarReflFadeFrom, kCarReflFadeTo, share);
+}
+
+// The point of the ray at distance t, read from the history. False where it is behind the camera or outside the picture.
+bool CarReflSample(Texture2D<float4> history, CarReflRay ray, float t, out CarReflPoint p)
+{
+    p = (CarReflPoint)0;
+    const float4 c = CarReflProject(ray.m0, ray.m1, ray.m2, ray.m3, ray.world + ray.direction * t);
+    const float2 uv = CarReflUv(c);
+    if (c.w < 0.1 || any(uv < float2(0.0, 0.0)) || any(uv > float2(1.0, 1.0)))
+    {
+        return false;
+    }
+    const float4 texel = CarReflLoad(history, ray.size, uv);
+    p.t = t;
+    p.on = (texel.a > 0.0) ? 1.0 : 0.0;
+    p.diff = c.w - texel.a;
+    p.stored = texel.a;
+    p.uv = uv;
+    p.colour = texel.rgb;  // a point read: the image's rgb is a vehicle's pixel or 0
+    return true;
+}
+
+// 0..1: the fade towards the picture's edge.
+float CarReflEdge(float2 uv)
+{
+    return saturate(min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)) * 12.5);
+}
+
+// The point is in the window of a vehicle pixel (the window is open: diff is past the bias and short of the thickness): the side of
+// an outline the ray's hit is on.
+bool CarReflInWindow(CarReflPoint p, CarReflRay ray)
+{
+    return p.on > 0.5 && p.diff > ray.shape.x && p.diff < ray.thickness;
+}
+
+)HLSL" R"HLSL(// The ends disagree about the surface in a way a line in diff does not say: one is in a vehicle's window and the other not, and either
+// the other is on no vehicle or the vehicle's distance steps by more than half the thickness between them (a part in front of a door).
+// A segment like that has an outline in it.
+bool CarReflHasOutline(CarReflPoint a, CarReflPoint b, CarReflRay ray)
+{
+    return CarReflInWindow(a, ray) != CarReflInWindow(b, ray) &&
+           (!(a.on > 0.5 && b.on > 0.5) || abs(a.stored - b.stored) > 0.5 * ray.thickness);
+}
+
+// Can a segment between two points on a vehicle take anything: does the line in diff between them pass through the open window? (A
+// shortcut: where it cannot, the cover is 0 and the integral need not be made.)
+bool CarReflMayCover(CarReflPoint a, CarReflPoint b, CarReflRay ray)
+{
+    return a.on > 0.5 && b.on > 0.5 && max(a.diff, b.diff) > ray.shape.x && min(a.diff, b.diff) < ray.thickness;
+}
+
+// The segment from a to b (a nearer the shaded point) when both ends are on a vehicle: the mean of the window along the line in diff (the
+// integral's difference over the diff's difference; one window for the whole ray). An end on no vehicle takes nothing: the outline of a
+// part is looked for by the caller.
+CarReflSegment CarReflSpan(CarReflPoint a, CarReflPoint b, CarReflRay ray)
+{
+    CarReflSegment s;
+    s.cover = 0.0;
+    s.face = 1.0;
+    s.share = 1.0;
+    if (a.on > 0.5 && b.on > 0.5)
+    {
+        const float de = b.diff - a.diff;
+        const float safe = (abs(de) < 1e-4) ? 1.0 : de;
+        const float along = (CarReflWindowIntegral(b.diff, ray.shape, ray.thickness) - CarReflWindowIntegral(a.diff, ray.shape, ray.thickness)) / safe;
+        const float level = CarReflWindow(0.5 * (a.diff + b.diff), ray.shape, ray.thickness);
+        s.cover = saturate((abs(de) < 1e-4) ? level : along);
+        s.face = 1.0 - CarReflApproach(a.diff, b.diff, b.t - a.t, ray.thickness);
+        const float wa = CarReflWindow(a.diff, ray.shape, ray.thickness);
+        const float wb = CarReflWindow(b.diff, ray.shape, ray.thickness);
+        s.share = (wa + wb > 1e-4) ? wb / (wa + wb) : 0.5;
+    }
+    return s;
+}
+
+void CarReflAdd(inout CarReflSum sum, CarReflSegment s, float aT, float bT, float edge, float3 aColour, float3 bColour, float rayLength)
+{
+    const float mid = 0.5 * (aT + bT);
+    const float c = saturate(s.cover) * CarReflFade(mid / rayLength) * edge;
+    sum.covers += c;
+    sum.seen += c * s.face;
+    sum.middle += c * mid;
+    sum.colour += c * lerp(aColour, bColour, s.share);
+}
+
+// What the segment from a to b takes of the ray. A segment with an outline in it is halved kCarReflOutlineSteps times to find where
+// (three more reads of the history, only for such segments), and takes the share of its length on the window's side of it: so a
+// part's outline that moves across the segment moves the weight continuously, and a part narrower than the segment takes the share
+// it is wide.
+void CarReflSegmentOf(Texture2D<float4> history, CarReflRay ray, inout CarReflSum sum, CarReflPoint a, CarReflPoint b)
+{
+    if (CarReflHasOutline(a, b, ray))
+    {
+        CarReflPoint inEnd = a;
+        CarReflPoint otherEnd = b;
+        if (!CarReflInWindow(a, ray))
+        {
+            inEnd = b;
+            otherEnd = a;
+        }
+        CarReflPoint inner = inEnd;
+        CarReflPoint outer = otherEnd;
+        [unroll]
+        for (int k = 0; k < kCarReflOutlineSteps; ++k)
+        {
+            CarReflPoint middle;
+            if (!CarReflSample(history, ray, 0.5 * (inner.t + outer.t), middle))
+            {
+                middle = outer;  // not reachable between two points inside the picture; no change if it were
+            }
+            if (CarReflInWindow(middle, ray))
+            {
+                inner = middle;
+            }
+            else
+            {
+                outer = middle;
+            }
+        }
+        const float outline = 0.5 * (inner.t + outer.t);
+        const float whole = abs(otherEnd.t - inEnd.t);
+        const float share = (whole > 0.0) ? saturate(abs(outline - inEnd.t) / whole) : 0.0;
+        CarReflPoint first = inner;
+        CarReflPoint second = inEnd;
+        if (inEnd.t < inner.t)
+        {
+            first = inEnd;
+            second = inner;
+        }
+        CarReflSegment s = CarReflSpan(first, second, ray);
+        s.cover *= share;
+        CarReflAdd(sum, s, min(inEnd.t, outline), max(inEnd.t, outline), min(CarReflEdge(inEnd.uv), CarReflEdge(inner.uv)), first.colour, second.colour,
+                   ray.reach);
+    }
+    else if (CarReflMayCover(a, b, ray))
+    {
+        CarReflAdd(sum, CarReflSpan(a, b, ray), a.t, b.t, min(CarReflEdge(a.uv), CarReflEdge(b.uv)), a.colour, b.colour, ray.reach);
+    }
 }
 
 CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
@@ -135,10 +341,6 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     }
     const float4 more = g_CarReflB;
     const uint4 slots = g_CarReflC;
-    const float4 m0 = g_CarReflM0;
-    const float4 m1 = g_CarReflM1;
-    const float4 m2 = g_CarReflM2;
-    const float4 m3 = g_CarReflM3;
     const float normalSquare = dot(normal, normal);
     const float viewSquare = dot(viewVector, viewVector);
     if (normalSquare < 1e-8 || viewSquare < 1e-8)
@@ -152,14 +354,22 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     {
         return result;
     }
-    const float3 r = 2.0 * nv * n - v;  // the view ray reflected: where the reflection looks
 
+    CarReflRay ray;
+    ray.m0 = g_CarReflM0;
+    ray.m1 = g_CarReflM1;
+    ray.m2 = g_CarReflM2;
+    ray.m3 = g_CarReflM3;
+    ray.world = world;
+    ray.direction = 2.0 * nv * n - v;  // the view ray reflected: where the reflection looks
     Texture2D<float4> history = g_Texture2DDescriptorHeap[TFETCH_INDEX(slots.x)];
-    const float2 size = float2(getTexture2DDimensions(history));
+    ray.size = float2(getTexture2DDimensions(history));
+    ray.thickness = settings.z;
+    ray.reach = max(settings.y, 0.05);
 
     // 1. Is the shaded point in the history, at the distance it has now? A disocclusion, a wrong guess of the car's
     // motion or a cut puts it elsewhere: the whole effect fades with the disagreement. Its colour there is the paint's own.
-    const float4 start = CarReflProject(m0, m1, m2, m3, world);
+    const float4 start = CarReflProject(ray.m0, ray.m1, ray.m2, ray.m3, world);
     result.state = 1.0;
     if (start.w < 0.1)
     {
@@ -170,9 +380,10 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     {
         return result;
     }
-    const float4 own = CarReflLoad(history, size, startUv);
-    const float slack = CarReflSlack(start.w, size.y, length(float3(m0.y, m1.y, m2.y)), nv);
-    const float tolerance = 0.06 + 0.02 * start.w + slack;
+    const float4 own = CarReflLoad(history, ray.size, startUv);
+    ray.slack = CarReflSlack(start.w, ray.size.y, length(float3(ray.m0.y, ray.m1.y, ray.m2.y)), nv);
+    ray.shape = CarReflWindowShape(start.w, ray.thickness, ray.slack);
+    const float tolerance = 0.06 + 0.02 * start.w + ray.slack;
     const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));
     if (!(own.a > 0.0) || agreement <= 0.0)
     {
@@ -181,67 +392,43 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     result.own = min(max(own.rgb, 0.0) * more.z, 64.0);
 
     // 2. The march: `steps` points along the ray, the same for every pixel (a noise per pixel would make neighbours disagree
-    // about a part narrower than the steps, a dotted patch; without it a pixel's answer follows the picture). Each point
-    // has a weight, how much it is just behind a vehicle pixel (CarReflWindow), fading with the distance along the ray.
-    // The hit is the heaviest point. How sure it is of being the face the camera sees: a ray that went in at the front of the
-    // surface and deeper (1), or one that is coming back out towards the surface from behind it (0: the surface's hidden
-    // side, which the picture does not hold, CarReflApproach). And how wide it is: the sum of the weights, one point alone
-    // may be the edge of a thin part.
-    const float rayLength = max(settings.y, 0.05);
+    // about a part narrower than the steps, a dotted patch; without it a pixel's answer follows the picture). The ray is a chain
+    // of segments from point to point, the first from the shaded point (on the vehicle, diff 0, in no window). Each takes the
+    // share of its length that is inside a part (CarReflSegmentOf); the hit is the sum, whole at `more.w` of the points.
     const int steps = clamp(int(more.x + 0.5), 4, 24);
-    float bestWeight = 0.0;
-    float bestT = 0.0;
-    float bestFace = 1.0;
-    float2 bestUv = float2(0.5, 0.5);
-    float3 bestColour = float3(0.0, 0.0, 0.0);
-    float sum = 0.0;
-    float previousT = 0.0;
-    float previousDiff = -1.0;  // how far behind the previous point's vehicle pixel the ray was; negative: in front or no vehicle
+    const float full = max(max(more.w, 0.05) * float(steps), 1.0);
+    CarReflSum sum = (CarReflSum)0;
+    CarReflPoint previous = (CarReflPoint)0;
+    previous.on = 1.0;
+    previous.stored = start.w;
+    previous.uv = startUv;
+    previous.colour = own.rgb;
     result.state = 3.0;
     [loop]
     for (int i = 0; i < steps; ++i)
     {
-        const float t = CarReflDistance(i, steps, rayLength);
-        const float4 c = CarReflProject(m0, m1, m2, m3, world + r * t);
-        const float2 uv = CarReflUv(c);
-        if (c.w < 0.1 || any(uv < float2(0.0, 0.0)) || any(uv > float2(1.0, 1.0)))
+        CarReflPoint current;
+        if (!CarReflSample(history, ray, CarReflDistance(i, steps, ray.reach), current))
         {
             result.state = 2.0;
             break;
         }
-        const float4 texel = CarReflLoad(history, size, uv);
-        const bool onVehicle = texel.a > 0.0;
-        const float diff = c.w - texel.a;
-        const float thickness = max(settings.z, 1.1 * (t - previousT));
-        const float weight = (onVehicle ? CarReflWindow(diff, c.w, thickness, slack) : 0.0) *
-                             (1.0 - smoothstep(0.55, 1.0, t / rayLength));
-        const float face = 1.0 - CarReflApproach(previousDiff, diff, thickness);
-        const float pointWeight = weight * lerp(kCarReflBackFloor, 1.0, face);
-        sum += weight;
-        if (pointWeight > bestWeight)
-        {
-            bestWeight = pointWeight;
-            bestT = t;
-            bestFace = face;
-            bestUv = uv;
-            bestColour = texel.rgb;  // a point read: the image's rgb is a vehicle's pixel or 0
-        }
-        previousDiff = onVehicle ? diff : -1.0;
-        previousT = t;
-        if (sum >= 2.0)
+        CarReflSegmentOf(history, ray, sum, previous, current);
+        previous = current;
+        if (sum.covers * kCarReflBackFloor + sum.seen * (1.0 - kCarReflBackFloor) >= full)
         {
             break;
         }
     }
 
-    // 3. The hit: its colour, and the weight with the self-test and the screen edge.
-    if (bestWeight > 0.0)
+    // 3. The hit: its colour, face and distance are the covers' means, its weight their sum with the self-test.
+    if (sum.covers > 0.0)
     {
-        const float edge = saturate(min(min(bestUv.x, 1.0 - bestUv.x), min(bestUv.y, 1.0 - bestUv.y)) * 12.5);
-        result.colour = min(max(bestColour, 0.0) * more.z, 64.0);
-        result.dist = bestT / rayLength;
-        result.face = bestFace;
-        result.hit = bestWeight * CarReflThin(sum) * agreement * edge;
+        const float occupied = sum.covers * kCarReflBackFloor + sum.seen * (1.0 - kCarReflBackFloor);
+        result.colour = min(max(sum.colour / sum.covers, 0.0) * more.z, 64.0);
+        result.dist = sum.middle / (sum.covers * ray.reach);
+        result.face = sum.seen / sum.covers;
+        result.hit = saturate(occupied / full) * agreement;
         if (result.hit > 0.02)
         {
             result.state = 4.0;
@@ -392,7 +579,8 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
 
   // What the text must hold now: the helper's definitions and their calls, one declaration of each constant in
   // each backend's declaration, and the game's three lines nowhere without their edit. The history is read as points
-  // (never a filtered sample), with one read of the image per ray point and one for the shaded point.
+  // (never a filtered sample), with one read of the image per ray point, three for a segment with an outline in it (in the one
+  // function that samples a point) and one for the shaded point.
   const struct {
     std::string_view needle;
     size_t want;
@@ -404,7 +592,7 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
       {"CarReflResult carRefl = (CarReflResult)0;", 1},
       {"SharedConstants + 608", 1},       {"SharedConstants + 704", 1},
       {"history.SampleLevel(", 0},        {"history.Sample(", 0},
-      {"CarReflLoad(history, size, uv)", 1}, {"CarReflLoad(history, size, startUv)", 1},
+      {"CarReflLoad(history, ray.size, uv)", 1}, {"CarReflLoad(history, ray.size, startUv)", 1},
       {"g_CarReflM0 : packoffset(c38)", 1}, {"g_CarReflC : packoffset(c44)", 1},
   };
   for (const auto& check : kChecks) {
