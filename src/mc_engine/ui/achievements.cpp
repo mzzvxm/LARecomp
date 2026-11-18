@@ -3,7 +3,6 @@
 #include "overlay_support.h"
 
 #include <rex/xam/achievement_manager.h>
-#include <rex/ui/overlay/achievement_icon_cache.h>
 #include <rex/kernel/title_runtime.h>
 #include <imgui.h>
 
