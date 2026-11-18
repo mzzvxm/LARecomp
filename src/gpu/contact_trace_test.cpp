@@ -61,10 +61,11 @@ struct Scene {
     const float d = Hit(x, y, &vehicle);
     return DepthWithVehicleBit(d, vehicle);
   }
-  // The linear depth of the pixel (x, y): the nearer of the ground and the boxes' first face.
+  // The linear depth of the pixel (x, y): the nearer of the ground and the boxes' first face. The vehicle bit is clear (the march reads
+  // it: a vehicle's own pixels march a short ray), whatever the float's last bit would be by itself; DepthV is the one with the bit.
   float Depth(int x, int y) const {
     bool vehicle = false;
-    return Hit(x, y, &vehicle);
+    return DepthWithVehicleBit(Hit(x, y, &vehicle), false);
   }
   float Hit(int x, int y, bool* vehicle) const {
     const Vec3 r = ViewPos(cam, float(x) + 0.5f, float(y) + 0.5f, 1.0f);  // (rx, ry, 1)
@@ -606,11 +607,15 @@ void UnderAVehicle() {
     const Tally off = RunScene(car, up, 0.0f, under);
     Check(off.dark * 3 < off.count, Num("without the term most of the ground under the car stays lit (%.0f%% dark): the patchy look",
                                         100.0 * off.dark / std::max(off.count, 1)));
-    Check(float(t.dark) > 0.97f * float(t.count), Num("with the term every pixel under the car is dark (%.1f%%)", 100.0 * t.dark / std::max(t.count, 1)));
-    Check(t.sum_new / float(t.count) < 0.05f, Num("... mean visibility %.3f", t.sum_new / float(t.count)));
-    // At most three depth reads a pixel, and none for most of the picture's pixels (the sky, the car, a surface that is not horizontal).
-    Check(loads <= 3 * pixels, "the term reads at most three pixels a pixel");
-    Check(double(loads) < 3.0 * double(pixels) * 0.85, Num("... fewer on average (%.2f reads a pixel)", double(loads) / double(pixels)));
+    // The ground under the car is dark, but for the strip along the car's rear edge that the 60 degree sun reaches under the car's rear
+    // (the sun's column is behind the rear face there: 0.25 m of clearance over tan 60 degrees is 14 cm, and the steps' jitter takes a bit
+    // more): 93% here, 97% before the sun's column.
+    Check(float(t.dark) > 0.9f * float(t.count), Num("with the term the ground under the car is dark (%.1f%%)", 100.0 * t.dark / std::max(t.count, 1)));
+    Check(t.sum_new / float(t.count) < 0.1f, Num("... mean visibility %.3f", t.sum_new / float(t.count)));
+    // At most four depth reads a pixel (two columns of two), the second column only where the first found a car, and none for most of the
+    // picture's pixels (the sky, the car, a surface that is not horizontal).
+    Check(loads <= 4 * pixels, "the term reads at most four pixels a pixel");
+    Check(double(loads) < 2.0 * double(pixels), Num("... fewer than two on average (%.2f reads a pixel)", double(loads) / double(pixels)));
   }
 }
 
@@ -734,7 +739,7 @@ void CastDistanceRule() {
   const Tally on = RunScene(car, up, 1.0f, under, &loads, &pixels, 0.0f);
   const Tally near_cast = RunScene(car, up, 1.0f, under, &loads, &pixels, 30.0f);  // the car casts: 8 to 12.5 m, well inside 27 m
   const Tally far_cast = RunScene(car, up, 1.0f, under, &loads, &pixels, 4.0f);    // the car is beyond 4 + 3 m: it keeps the term
-  Check(on.count > 150 && float(on.dark) > 0.97f * float(on.count), "the car's ground is dark with the term (no cast distance)");
+  Check(on.count > 150 && float(on.dark) > 0.9f * float(on.count), "the car's ground is dark with the term (no cast distance)");
   Check(near_cast.worst_change < 1e-6f, Num("a car within the cast distance: the term adds nothing (largest change %.4f), the game's shadow does the job",
                                               near_cast.worst_change));
   Check(far_cast.dark == on.dark && std::fabs(far_cast.sum_new - on.sum_new) < 1e-3f,
@@ -1700,6 +1705,577 @@ void SkipCost() {
   Check(std::fabs(kMixFar + kMixBack + kMixMarch - 1.0) < 1e-9, "the street's class shares add up to 1");
 }
 
+// ---------------------------------------------------------------------------
+// the thin parts of a car and the ground seen past a car (owner, 2026-11-18: three false shadows with the sun low)
+// ---------------------------------------------------------------------------
+//
+// THE RIG. The scenes above look level along +z from the origin, which cannot show a chase camera looking down at a car's trunk or a
+// pause menu's camera looking across it. This rig has world coordinates (y up, z forward, the road at y = 0), a camera at `eye` aimed at a
+// target, boxes (the same Box, `vehicle` marks a car's parts) and cylinders (a tyre, axis along x), and it knows the TRUTH, which no
+// screen-space march does: whether the sun's ray from a point of a surface meets anything, by exact ray tests. The depth image is the
+// view-space z of the first hit with the vehicle bit, as the depth pass writes it.
+struct Cyl {
+  Vec3 centre;
+  float radius = 0.33f, half_length = 0.14f;  // the axis is along x
+  bool vehicle = true;
+};
+
+struct Rig {
+  Camera cam;
+  Vec3 eye;
+  float yaw = 0.0f, pitch = 0.0f;  // radians; forward is (sin yaw cos pitch, -sin pitch, cos yaw cos pitch)
+  std::vector<Box> boxes;
+  std::vector<Cyl> cyls;
+
+  void Aim(Vec3 target) {
+    const Vec3 d = target - eye;
+    yaw = std::atan2(d.x, d.z);
+    pitch = std::atan2(-d.y, std::sqrt(d.x * d.x + d.z * d.z));
+  }
+  Vec3 Right() const { return {std::cos(yaw), 0.0f, -std::sin(yaw)}; }
+  Vec3 Up() const { return {std::sin(yaw) * std::sin(pitch), std::cos(pitch), std::cos(yaw) * std::sin(pitch)}; }
+  Vec3 Forward() const { return {std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch)}; }
+  Vec3 ToWorld(Vec3 v) const { return Right() * v.x + Up() * v.y + Forward() * v.z; }  // a direction, view space to world
+  Vec3 ToView(Vec3 w) const { return {Dot(w, Right()), Dot(w, Up()), Dot(w, Forward())}; }
+
+  static bool HitBox(Vec3 o, Vec3 d, const Box& b, float* t) {
+    const float lo[3] = {b.x0, b.y0, b.z0}, hi[3] = {b.x1, b.y1, b.z1};
+    const float oo[3] = {o.x, o.y, o.z}, dd[3] = {d.x, d.y, d.z};
+    float tn = 0.0f, tf = 1e30f;
+    for (int a = 0; a < 3; ++a) {
+      if (std::fabs(dd[a]) < 1e-9f) {
+        if (oo[a] < lo[a] || oo[a] > hi[a]) {
+          return false;
+        }
+        continue;
+      }
+      const float t1 = (lo[a] - oo[a]) / dd[a], t2 = (hi[a] - oo[a]) / dd[a];
+      tn = std::max(tn, std::min(t1, t2));
+      tf = std::min(tf, std::max(t1, t2));
+    }
+    *t = tn;
+    return tn <= tf;
+  }
+  // A finite cylinder along x: the side and the two caps.
+  static bool HitCyl(Vec3 o, Vec3 d, const Cyl& c, float tmin, float* t) {
+    const float oy = o.y - c.centre.y, oz = o.z - c.centre.z, ox = o.x - c.centre.x;
+    float best = 1e30f;
+    const float a = d.y * d.y + d.z * d.z, b = 2.0f * (oy * d.y + oz * d.z), cc = oy * oy + oz * oz - c.radius * c.radius;
+    if (a > 1e-12f) {
+      const float disc = b * b - 4.0f * a * cc;
+      if (disc >= 0.0f) {
+        const float s = std::sqrt(disc);
+        for (const float ts : {(-b - s) / (2.0f * a), (-b + s) / (2.0f * a)}) {
+          if (ts > tmin && ts < best && std::fabs(ox + ts * d.x) <= c.half_length) {
+            best = ts;
+          }
+        }
+      }
+    }
+    if (std::fabs(d.x) > 1e-9f) {
+      for (const float side : {-1.0f, 1.0f}) {
+        const float ts = (side * c.half_length - ox) / d.x;
+        const float py = oy + ts * d.y, pz = oz + ts * d.z;
+        if (ts > tmin && ts < best && py * py + pz * pz <= c.radius * c.radius) {
+          best = ts;
+        }
+      }
+    }
+    *t = best;
+    return best < 1e29f;
+  }
+  // The nearest hit of o + t d, tmin < t < tmax (the road included): its t, or -1; `vehicle` says whether it is a car's part.
+  float Nearest(Vec3 o, Vec3 d, float tmin, float tmax, bool* vehicle = nullptr, bool* road = nullptr) const {
+    float best = tmax;
+    bool hit = false, veh = false, on_road = false;
+    if (d.y < -1e-9f) {
+      const float t = -o.y / d.y;
+      if (t > tmin && t < best) {
+        best = t;
+        hit = true;
+        on_road = true;
+      }
+    }
+    for (const Box& b : boxes) {
+      float t;
+      if (HitBox(o, d, b, &t) && t > tmin && t < best) {
+        best = t;
+        hit = true;
+        veh = b.vehicle;
+        on_road = false;
+      }
+    }
+    for (const Cyl& c : cyls) {
+      float t;
+      if (HitCyl(o, d, c, tmin, &t) && t < best) {
+        best = t;
+        hit = true;
+        veh = c.vehicle;
+        on_road = false;
+      }
+    }
+    if (vehicle) {
+      *vehicle = hit && veh;
+    }
+    if (road) {
+      *road = hit && on_road;
+    }
+    return hit ? best : -1.0f;
+  }
+  Vec3 PixelDirection(int x, int y) const { return ToWorld(ViewPos(cam, float(x) + 0.5f, float(y) + 0.5f, 1.0f)); }
+};
+
+struct RigImage {
+  DepthImage depth;
+  std::vector<uint8_t> road;  // 1: the pixel shows the road
+};
+RigImage RenderRig(const Rig& rig) {
+  RigImage im;
+  im.depth.cam = rig.cam;
+  im.depth.d.resize(size_t(rig.cam.width) * size_t(rig.cam.height));
+  im.road.assign(im.depth.d.size(), 0);
+  for (int y = 0; y < rig.cam.height; ++y) {
+    for (int x = 0; x < rig.cam.width; ++x) {
+      bool vehicle = false, road = false;
+      const float t = rig.Nearest(rig.eye, rig.PixelDirection(x, y), 0.0f, 60000.0f, &vehicle, &road);
+      const size_t at = size_t(y) * size_t(rig.cam.width) + size_t(x);
+      im.depth.d[at] = DepthWithVehicleBit(t < 0.0f ? 60000.0f : t, vehicle);
+      im.road[at] = road ? 1 : 0;
+    }
+  }
+  return im;
+}
+
+// The world position of the surface a pixel shows.
+Vec3 RigPoint(const Rig& rig, const RigImage& im, int x, int y) {
+  return rig.eye + rig.PixelDirection(x, y) * im.depth.At(x, y);
+}
+
+// What a march does over a rig's picture, against the truth: `false_dark` the pixels it darkens (visibility under 0.5) whose sun ray
+// meets nothing within the ray's own length (`base.length`); `real` the pixels whose ray meets something within `real_length` (the
+// contact shadows that must stay) and `real_dark` how many of those it darkens. Only pixels that face the sun, and of the receivers `which`.
+struct RigScore {
+  int pixels = 0, false_dark = 0, real = 0, real_dark = 0;
+};
+enum class Receiver { kAny, kVehicle, kOther };
+template <class MarchFn>
+RigScore ScoreRig(const Rig& rig, const RigImage& im, Vec3 sun_world, const Trace& base, Receiver which, float real_length, MarchFn&& march) {
+  RigScore s;
+  Trace t = base;
+  t.camera = rig.cam;
+  t.to_sun = rig.ToView(sun_world);
+  const auto depth = [&](int x, int y) { return im.depth.At(x, y); };
+  for (int y = 0; y < rig.cam.height; ++y) {
+    for (int x = 0; x < rig.cam.width; ++x) {
+      const float tc = im.depth.At(x, y);
+      if (tc >= t.sky * 0.5f) {
+        continue;
+      }
+      const bool vehicle = DepthIsVehicle(tc);
+      if ((which == Receiver::kVehicle && !vehicle) || (which == Receiver::kOther && vehicle)) {
+        continue;
+      }
+      const Vec3 pc = ViewPos(rig.cam, float(x) + 0.5f, float(y) + 0.5f, tc);
+      Vec3 normal = NormalFromDepth(rig.cam, depth, x, y, tc, pc);
+      if (Dot(normal, pc) > 0.0f) {
+        normal = normal * -1.0f;
+      }
+      if (Dot(normal, t.to_sun) < 0.1f) {
+        continue;  // turned from the sun: nothing to shadow
+      }
+      t.noise = PixelNoise(x, y);
+      const float v = march(t, depth, x, y);
+      const Vec3 p = RigPoint(rig, im, x, y) + sun_world * 0.012f;
+      ++s.pixels;
+      const bool dark = v < 0.5f;
+      if (dark && rig.Nearest(p, sun_world, 0.0f, base.length) < 0.0f) {
+        ++s.false_dark;
+      }
+      if (rig.Nearest(p, sun_world, 0.0f, real_length) >= 0.0f) {
+        ++s.real;
+        s.real_dark += dark ? 1 : 0;
+      }
+    }
+  }
+  return s;
+}
+
+// A Trace as the game's low sun makes it: the setting's 0.6 m grown by 0.7 / tan(elevation), 16 steps, thickness 0.3 m.
+Trace LowSunTrace(double elevation_degrees) {
+  Trace t;
+  t.length = 0.6f * float(LengthGrow(elevation_degrees));
+  t.thickness = 0.3f;
+  t.steps = kStepsUltra;
+  return t;
+}
+struct PlainMarch {
+  template <class DepthAt>
+  float operator()(const Trace& t, DepthAt&& depth, int x, int y) const {
+    return March(t, depth, x, y);
+  }
+};
+
+// The trunk of a car with a wing: a lid 1.5 m wide and 1.1 m long at 1 m (3 cm thick), the car's body behind it to z = 2.5, a plate
+// (1.6 m wide, 30 cm chord, 4 cm thick) 28 cm above the lid on two 6 cm posts, the rear edge of the lid at z = 0. The Skyline's
+// wing in the owner's pictures is about this.
+Rig MakeWingRig(Vec3 eye, Vec3 target) {
+  Rig r;
+  r.cam = MakeCamera(720);
+  r.eye = eye;
+  r.boxes.push_back({-0.75f, 0.75f, 0.97f, 1.0f, 0.0f, 1.1f, true});   // the lid
+  r.boxes.push_back({-0.8f, 0.8f, 0.35f, 0.97f, 0.0f, 2.5f, true});    // the body below it and the rear window's deck
+  r.boxes.push_back({-0.8f, 0.8f, 1.28f, 1.32f, 0.15f, 0.45f, true});  // the plate
+  for (const float x : {-0.5f, 0.5f}) {
+    r.boxes.push_back({x - 0.03f, x + 0.03f, 1.0f, 1.28f, 0.25f, 0.31f, true});  // the posts
+  }
+  r.Aim(target);
+  return r;
+}
+
+// A pixel of a car marches at most kVehicleReceiverSteps steps over at most kVehicleReceiverLength; any other pixel as the setting says.
+void VehiclePixelsMarchShort() {
+  Scene s;
+  s.cam = MakeCamera(720);
+  const auto plain = [&](int x, int y) { return DepthWithVehicleBit(s.Depth(x, y), false); };
+  const auto car = [&](int x, int y) { return DepthWithVehicleBit(s.Depth(x, y), true); };
+  Trace t;
+  t.camera = s.cam;
+  t.to_sun = Sun(18.0, 90.0);
+  t.length = 1.3f;
+  t.steps = kStepsUltra;
+  t.noise = 0.5f;
+  March(t, plain, 640, 600);
+  const uint32_t steps_plain = t.steps_used;
+  March(t, car, 640, 600);
+  const uint32_t steps_car = t.steps_used;
+  Check(steps_plain == kStepsUltra && steps_car == kVehicleReceiverSteps, Num("a car's pixel marches %.0f steps, any other %.0f", double(steps_car), double(steps_plain)));
+  // The adaptive count measures the short ray, not the setting's: a pixel 39 m away, where a 0.3 m ray is 12 pixels long and the setting's 54,
+  // keeps 4 steps (the floor) where the road's pixel keeps 14.
+  t.adapt_pixels = kAdaptEndPixels;
+  March(t, car, 640, 422);
+  const uint32_t far_car = t.steps_used;
+  March(t, plain, 640, 422);
+  const uint32_t far_plain = t.steps_used;
+  Check(far_car < far_plain && far_car >= kAdaptMinSteps, Num("far away the adaptive count reads the short ray: %.0f steps for a car's pixel, %.0f for the rest", double(far_car), double(far_plain)));
+  // The ray stops at 0.3 m: a wall 0.5 m along the ray is not seen by a car's pixel (the ground in front of a wall facing the camera, the sun
+  // behind the wall), and is by the road's.
+  Scene w;
+  w.cam = MakeCamera(720);
+  w.boxes.push_back({-3.0f, 3.0f, -1.5f, 1.5f, 10.5f, 11.0f});
+  Trace u;
+  u.camera = w.cam;
+  u.to_sun = Sun(45.0, 0.0);  // up and away from the camera, toward the wall
+  u.length = 1.3f;
+  u.steps = kStepsUltra;
+  u.noise = 0.5f;
+  const auto wall_plain = [&](int x, int y) { return DepthWithVehicleBit(w.Depth(x, y), false); };
+  const auto wall_car = [&](int x, int y) { return DepthWithVehicleBit(w.Depth(x, y), true); };
+  int seen_plain = 0, seen_car = 0;
+  for (int y = 500; y < 700; y += 2) {
+    for (int x = 400; x < 880; x += 3) {
+      const float d = w.Depth(x, y);
+      const Vec3 p = ViewPos(w.cam, float(x) + 0.5f, float(y) + 0.5f, d);
+      if (std::fabs(p.y + 1.5f) > 1e-3f || p.z < 9.9f || p.z > 10.3f) {
+        continue;  // the ground 0.2 to 0.6 m in front of the wall: its ray (45 degrees) meets the wall after 0.28 to 0.85 m
+      }
+      seen_plain += March(u, wall_plain, x, y) < 0.5f ? 1 : 0;
+      seen_car += March(u, wall_car, x, y) < 0.5f ? 1 : 0;
+    }
+  }
+  std::printf("vehicle pixels: steps %u against %u; far away (adaptive) %u against %u; a wall 0.3 to 0.9 m along the ray darkens %d road pixels, %d car pixels\n",
+              steps_car, steps_plain, far_car, far_plain, seen_plain, seen_car);
+  Check(seen_plain > 100 && seen_car * 4 < seen_plain, Num("a wall 0.3 to 0.9 m along the ray: dark for the road's pixels %.0f, for a car's %.0f", double(seen_plain), double(seen_car)));
+}
+
+// CASE 1: the sun low behind the camera, a chase camera behind and above the car: a broad black band across the trunk lid under the wing
+// (the owner's pictures; with the sun behind the camera the wing's shadow falls forward onto the rear window, not on the lid).
+//   The mechanism, on this rig: the lid pixel's ray runs toward the sun, which is toward the camera and up, and climbs on the screen. Its
+//   late steps (0.7 to 1.1 m along a 1.3 m ray) are at the plate's height and just in front of the plate's far edge, 0.2 to 0.5 m beyond the
+//   plate along the line of sight, where the camera sees the plate's rear face and top (it is looking down at 7 to 10 degrees) and the plate
+//   hides the step on the screen: a step hidden by a surface that is nearer to the camera by less than the thickness (0.3 m) is "inside" it.
+//   The plate is 4 cm thick, and 0.3 m along a view ray that grazes a horizontal surface is 3.7 cm of height: the thickness rule takes the
+//   surface for a slab extruded along the view ray, which is right for a kerb and wrong for a thin plate, whose slab is empty air beyond its edge.
+void WingBandOnTheTrunk() {
+  const Vec3 sun = Sun(17.7, 180.0);  // behind the camera
+  int old_false = 0, new_false = 0, old_real = 0, new_real = 0, real = 0;
+  for (const Vec3 eye : {Vec3{0.0f, 1.55f, -3.5f}, Vec3{0.0f, 1.8f, -5.0f}, Vec3{0.0f, 2.1f, -5.0f}}) {
+    const Rig rig = MakeWingRig(eye, {0.0f, 1.28f, 0.0f});
+    const RigImage im = RenderRig(rig);
+    Trace nw = LowSunTrace(17.7);
+    Trace od = nw;
+    od.vehicle_rule = false;
+    const RigScore a = ScoreRig(rig, im, sun, od, Receiver::kVehicle, 0.15f, PlainMarch{});
+    const RigScore b = ScoreRig(rig, im, sun, nw, Receiver::kVehicle, 0.15f, PlainMarch{});
+    std::printf("wing from behind, camera %.2f m up %.1f m back: car pixels darkened with nothing blocking the sun within the ray: old %d, new %d; "
+                "pixels with a shadow within 15 cm: %d, darkened old %d, new %d\n", double(eye.y), double(-eye.z), a.false_dark, b.false_dark, b.real, a.real_dark, b.real_dark);
+    old_false += a.false_dark;
+    new_false += b.false_dark;
+    old_real += a.real_dark;
+    new_real += b.real_dark;
+    real += b.real;
+  }
+  Check(old_false > 1500, Num("the old march darkens the trunk under the wing: %.0f pixels with nothing blocking the sun", double(old_false)));
+  Check(new_false * 50 <= old_false, Num("the new march leaves it lit: %.0f of the old %.0f", double(new_false), double(old_false)));
+  Check(real > 100 && new_real * 10 >= old_real * 9, Num("the contact shadows on the car's own pixels within 15 cm stay: %.0f of the old %.0f", double(new_real), double(old_real)));
+}
+
+// CASE 2: the camera at the side of the car (the pause menu's), dashed streaks along the wing's edge and dark blobs at the bases of the
+// uprights; right from some angles and broken from others. Mechanism: the same, from the side: a post (6 cm deep along the view) that stands
+// 0.1 to 0.3 m nearer to the camera than the ray hides the step on the screen and counts as being in front of it by less than the thickness.
+void WingFromTheSide() {
+  int old_false = 0, new_false = 0, old_real_toward = 0, new_real_toward = 0, real_toward = 0;
+  for (const float side : {3.0f, 4.5f}) {
+    const Rig rig = MakeWingRig({-side, 1.5f, 0.4f}, {0.0f, 1.28f, 0.4f});
+    const RigImage im = RenderRig(rig);
+    int row_old = 0, row_new = 0;
+    for (int az = 0; az < 360; az += 45) {
+      const Vec3 sun = Sun(17.7, double(az));
+      Trace nw = LowSunTrace(17.7);
+      Trace od = nw;
+      od.vehicle_rule = false;
+      const RigScore a = ScoreRig(rig, im, sun, od, Receiver::kVehicle, 0.15f, PlainMarch{});
+      const RigScore b = ScoreRig(rig, im, sun, nw, Receiver::kVehicle, 0.15f, PlainMarch{});
+      row_old += a.false_dark;
+      row_new += b.false_dark;
+      if (az == 270) {  // the sun on the camera's side of the car, shining along the plate's length at the posts: their real shadows
+        old_real_toward += a.real_dark;
+        new_real_toward += b.real_dark;
+        real_toward += b.real;
+      }
+    }
+    std::printf("wing from the side, %.1f m away, the sun at 17.7 degrees from 8 directions: false shadow on the car's pixels: old %d, new %d\n", double(side), row_old, row_new);
+    old_false += row_old;
+    new_false += row_new;
+  }
+  Check(old_false > 20000, Num("the old march streaks the wing and blobs its posts from the side: %.0f false pixels over 16 views", double(old_false)));
+  Check(new_false * 8 <= old_false, Num("the new march: %.0f of the old %.0f", double(new_false), double(old_false)));
+  Check(real_toward > 500 && new_real_toward * 10 >= old_real_toward * 9,
+        Num("the posts' own shadows on the lid, the sun shining along the plate at them, stay: %.0f of the old %.0f", double(new_real_toward), double(old_real_toward)));
+}
+
+// The small shadows that must stay: a mirror on a door (a vehicle receiver, 14 cm proud of the door), and a car's tyres and sills on the road
+// (a vehicle's shadow on a receiver that is not one: the vehicle rule leaves those pixels as they were, to the bit).
+Rig MakeMirrorRig() {
+  Rig r;
+  r.cam = MakeCamera(720);
+  r.eye = {-3.0f, 1.3f, 0.2f};
+  r.boxes.push_back({-0.9f, 0.9f, 0.22f, 1.2f, 0.0f, 4.5f, true});      // the car
+  r.boxes.push_back({-1.04f, -0.9f, 0.95f, 1.15f, 1.3f, 1.5f, true});   // the mirror on its left side
+  r.Aim({-0.9f, 1.0f, 1.4f});
+  return r;
+}
+Rig MakeTyreRig() {
+  Rig r;
+  r.cam = MakeCamera(720);
+  r.eye = {3.0f, 1.0f, -6.0f};
+  r.boxes.push_back({-0.9f, 0.9f, 0.22f, 1.2f, 0.0f, 4.5f, true});
+  for (const float x : {-0.78f, 0.78f}) {
+    for (const float z : {0.7f, 3.8f}) {
+      r.cyls.push_back({{x, 0.33f, z}, 0.33f, 0.14f, true});
+    }
+  }
+  r.Aim({0.0f, 0.5f, 3.0f});
+  return r;
+}
+
+void SmallShadowsStay() {
+  // The mirror: the sun low and high, from behind and from the side of the camera.
+  {
+    const Rig rig = MakeMirrorRig();
+    const RigImage im = RenderRig(rig);
+    int old_real = 0, new_real = 0, real = 0, old_false = 0, new_false = 0;
+    for (const double elevation : {20.0, 40.0}) {
+      for (const double az : {135.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, az);
+        Trace nw = LowSunTrace(elevation);
+        Trace od = nw;
+        od.vehicle_rule = false;
+        const RigScore a = ScoreRig(rig, im, sun, od, Receiver::kVehicle, 0.15f, PlainMarch{});
+        const RigScore b = ScoreRig(rig, im, sun, nw, Receiver::kVehicle, 0.15f, PlainMarch{});
+        old_real += a.real_dark;
+        new_real += b.real_dark;
+        real += b.real;
+        old_false += a.false_dark;
+        new_false += b.false_dark;
+      }
+    }
+    std::printf("mirror on a door, 4 suns: shadow within 15 cm: %d pixels, darkened old %d, new %d; false: old %d, new %d\n", real, old_real, new_real, old_false, new_false);
+    Check(real > 2000, Num("the mirror scene has shadows within 15 cm (%.0f pixels)", double(real)));
+    Check(new_real * 100 >= old_real * 90, Num("the mirror's shadow on the door stays: %.0f of the old %.0f pixels", double(new_real), double(old_real)));
+    Check(new_false <= old_false + old_false / 20, "and the mirror scene gets no new false shadow");
+  }
+  // The tyres and the sills on the road: every road pixel is exactly what it was, and the shadows within 15 cm are dark.
+  {
+    const Rig rig = MakeTyreRig();
+    const RigImage im = RenderRig(rig);
+    int differing = 0, real = 0, real_dark = 0, pixels = 0;
+    for (const double elevation : {15.0, 30.0}) {
+      for (const double az : {0.0, 90.0, 180.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, az);
+        Trace nw = LowSunTrace(elevation);
+        Trace od = nw;
+        od.vehicle_rule = false;
+        const RigScore b = ScoreRig(rig, im, sun, nw, Receiver::kOther, 0.15f, PlainMarch{});
+        real += b.real;
+        real_dark += b.real_dark;
+        pixels += b.pixels;
+        nw.camera = od.camera = rig.cam;
+        nw.to_sun = od.to_sun = rig.ToView(sun);
+        const auto depth = [&](int x, int y) { return im.depth.At(x, y); };
+        for (int y = 0; y < rig.cam.height; y += 2) {
+          for (int x = 0; x < rig.cam.width; x += 2) {
+            if (DepthIsVehicle(im.depth.At(x, y))) {
+              continue;
+            }
+            nw.noise = od.noise = PixelNoise(x, y);
+            differing += March(nw, depth, x, y) != March(od, depth, x, y) ? 1 : 0;
+          }
+        }
+      }
+    }
+    std::printf("car and tyres on the road, 8 suns: %d road pixels, shadow within 15 cm of the car: %d, dark %d\n", pixels, real, real_dark);
+    Check(differing == 0, Num("the road around a car is exactly as it was: %.0f pixels differ", double(differing)));
+    Check(real > 3000 && real_dark * 100 >= real * 90, Num("the shadows of the tyres and sills on the road stay dark: %.0f of %.0f", double(real_dark), double(real)));
+  }
+}
+
+// CASE 3: the ground under a car, and the ground beyond it. The owner's photo (an Audi R8, the camera in front of the car on the left and
+// low, the sun behind the car) and a pause-menu picture of the player's R34 (the same set-up): a dark slab rises from the sunlit road right
+// behind the rear tyre. It is gone with contact shadows off and with only the under-a-vehicle term off; the march does not make it.
+//   The mechanism: a ground pixel looks up the column above it and, when the pixel the column falls on is a car's and the point is behind
+//   that shell by less than kUnderReach, calls itself inside the car. A road pixel that the camera sees PAST the car (beyond its far end or
+//   through the gap under it, from a low camera) is behind the shell too, and so is every ground pixel beyond the car seen from high above;
+//   a depth image cannot tell "under the car" from "beyond the car" (the underside is not in it), so the column alone says "under" for both.
+//   What tells them apart is the sun: the ground is under the car when the sun's ray from it is blocked by the car, and a ray that runs
+//   away from the car is not. The second column follows that ray (the same heights up it): both must find the car. That takes the false
+//   shadow away where the sun is not at the car's end (and everywhere with a camera above the car), at the price of the strip along the
+//   sun's edge of the car that the low sun really does reach under it. What is left is the strip of road past the car's far end, seen
+//   through the gap, when the sun is straight behind the car: for the PLAYER's car the game's own shadow map has the right answer and the
+//   term stands aside (kPlayerCarCastDistance: the host passes at least that distance), for a far traffic car the strip is small.
+struct UnderScore {
+  int pixels = 0, dark = 0, dark_blocked = 0, dark_open = 0, blocked = 0;
+};
+// The term over the road pixels of a rig against the truth: `blocked` the road pixels whose sun ray meets a car within 12 m, `dark` those
+// the term darkens (over 0.5), `dark_open` the ones of those whose ray is free.
+UnderScore ScoreUnder(const Rig& rig, const RigImage& im, Vec3 sun_world, bool sun_column, float cast_distance) {
+  UnderScore s;
+  Trace t;
+  t.camera = rig.cam;
+  t.to_sun = rig.ToView(sun_world);
+  t.up = rig.ToView({0.0f, 1.0f, 0.0f});
+  t.under = 1.0f;
+  t.sun_column = sun_column;
+  t.cast_distance = cast_distance;
+  const auto depth = [&](int x, int y) { return im.depth.At(x, y); };
+  for (int y = 0; y < rig.cam.height; ++y) {
+    for (int x = 0; x < rig.cam.width; ++x) {
+      if (!im.road[size_t(y) * size_t(rig.cam.width) + size_t(x)]) {
+        continue;
+      }
+      const float tc = im.depth.At(x, y);
+      const Vec3 pc = ViewPos(rig.cam, float(x) + 0.5f, float(y) + 0.5f, tc);
+      Vec3 normal = NormalFromDepth(rig.cam, depth, x, y, tc, pc);
+      if (Dot(normal, pc) > 0.0f) {
+        normal = normal * -1.0f;
+      }
+      t.noise = PixelNoise(x, y);
+      const bool dark = UnderVehicle(t, depth, tc, pc, normal) > 0.5f;
+      bool vehicle = false;
+      const bool blocked = rig.Nearest(RigPoint(rig, im, x, y) + sun_world * 0.012f, sun_world, 0.0f, 12.0f, &vehicle) >= 0.0f && vehicle;
+      ++s.pixels;
+      s.blocked += blocked ? 1 : 0;
+      s.dark += dark ? 1 : 0;
+      s.dark_blocked += dark && blocked ? 1 : 0;
+      s.dark_open += dark && !blocked ? 1 : 0;
+    }
+  }
+  return s;
+}
+
+// A car 1.8 m wide and 4.5 m long, 25 cm off the road to 1.4 m, with four tyres, its near end at z = `z0`.
+Rig MakeCarRig(Vec3 eye, Vec3 target, float z0, bool tyres) {
+  Rig r;
+  r.cam = MakeCamera(720);
+  r.eye = eye;
+  r.boxes.push_back({-0.9f, 0.9f, 0.25f, 1.4f, z0, z0 + 4.5f, true});
+  if (tyres) {
+    for (const float x : {-0.78f, 0.78f}) {
+      for (const float z : {z0 + 0.7f, z0 + 3.8f}) {
+        r.cyls.push_back({{x, 0.33f, z}, 0.33f, 0.14f, true});
+      }
+    }
+  }
+  r.Aim(target);
+  return r;
+}
+
+void GroundBeyondACar() {
+  // (1) From above and behind, 4 m up, the ground past the car's far end is on the screen above its roof: the vertical column alone calls it
+  //     under the car for a low sun (9000 and 11000 pixels at 30 and 18 degrees, where the sun's ray reaches nothing).
+  {
+    const Rig rig = MakeCarRig({0.0f, 4.0f, 0.0f}, {0.0f, 1.0f, 10.0f}, 8.0f, false);
+    const RigImage im = RenderRig(rig);
+    int old_open = 0, new_open = 0;
+    for (const double elevation : {30.0, 18.0}) {
+      const Vec3 sun = Sun(elevation, 180.0);
+      const UnderScore a = ScoreUnder(rig, im, sun, false, 0.0f);
+      const UnderScore b = ScoreUnder(rig, im, sun, true, 0.0f);
+      std::printf("camera 4 m up behind the car, sun %.0f degrees behind the camera: ground called under the car with the sun free: column alone %d, with the sun's column %d; "
+                  "ground the car really shades %d, called under: column alone %d, with the sun's column %d\n",
+                  elevation, a.dark_open, b.dark_open, b.blocked, a.dark_blocked, b.dark_blocked);
+      old_open += a.dark_open;
+      new_open += b.dark_open;
+    }
+    Check(old_open > 8000, Num("from above, the vertical column darkens the open ground beyond the car: %.0f pixels", double(old_open)));
+    Check(new_open * 50 <= old_open, Num("the sun's column leaves it lit: %.0f of %.0f", double(new_open), double(old_open)));
+  }
+  // (2) The owner's set-up: the camera in front of the car on the left and low, the sun behind the car 30 degrees off its axis (as the sheets'
+  //     front-wheel picture is), at 18 degrees: the road beside and past the car is lit.
+  {
+    const Rig rig = MakeCarRig({3.0f, 1.0f, 3.0f}, {0.0f, 0.6f, 10.0f}, 8.0f, true);
+    const RigImage im = RenderRig(rig);
+    int old_open = 0, new_open = 0, old_true = 0, new_true = 0;
+    for (const double az : {30.0, 60.0}) {
+      const Vec3 sun = Sun(18.0, az);
+      const UnderScore a = ScoreUnder(rig, im, sun, false, 0.0f);
+      const UnderScore b = ScoreUnder(rig, im, sun, true, 0.0f);
+      std::printf("camera at the front left, low, sun 18 degrees at %.0f degrees to the car's axis: ground called under the car with the sun free: column alone %d, with the sun's column %d; "
+                  "ground really under the car and called so: column alone %d, with the sun's column %d\n",
+                  az, a.dark_open, b.dark_open, a.dark_blocked, b.dark_blocked);
+      old_open += a.dark_open;
+      new_open += b.dark_open;
+      old_true += a.dark_blocked;
+      new_true += b.dark_blocked;
+    }
+    Check(old_open > 5000, Num("the column alone darkens the road beside the car: %.0f pixels", double(old_open)));
+    Check(new_open * 20 <= old_open, Num("the sun's column leaves it lit: %.0f of %.0f", double(new_open), double(old_open)));
+    Check(new_true * 2 >= old_true, Num("and keeps the ground under the car (%.0f of the column alone's %.0f pixels)", double(new_true), double(old_true)));
+  }
+  // (3) The sun straight behind the car, the same camera: the slab. The car is the player's (4 to 11 m from the camera, within kPlayerCarCastDistance
+  //     plus its band): the term stands aside and nothing is darkened. A traffic car 20 m off keeps it (and its strip past the far end is small).
+  {
+    const Vec3 sun = Sun(18.0, 0.0);
+    const Rig near_rig = MakeCarRig({3.0f, 1.0f, 3.0f}, {0.0f, 0.6f, 10.0f}, 5.0f, true);
+    const RigImage near_im = RenderRig(near_rig);
+    const UnderScore with = ScoreUnder(near_rig, near_im, sun, true, 0.0f);
+    const UnderScore floor = ScoreUnder(near_rig, near_im, sun, true, UnderCastDistance(0.0f));
+    std::printf("camera at the front left, low, the sun straight behind the car, the car 4 to 11 m off: term on %d pixels (%d with the sun free), with the player's car left out %d\n",
+                with.dark, with.dark_open, floor.dark);
+    Check(with.dark_open > 1000, Num("without the floor the slab is there: %.0f road pixels darkened with the sun free", double(with.dark_open)));
+    Check(floor.dark == 0 && floor.dark_open == 0, Num("with the player's car left out nothing is darkened (%.0f)", double(floor.dark)));
+    const Rig far_rig = MakeCarRig({3.0f, 1.0f, -14.0f}, {0.0f, 0.6f, 4.0f}, 6.0f, true);
+    const RigImage far_im = RenderRig(far_rig);
+    const UnderScore traffic = ScoreUnder(far_rig, far_im, sun, true, UnderCastDistance(0.0f));
+    std::printf("the same car 20 to 29 m off, left in by the floor: term on %d pixels, %d of them under the car, %d with the sun free\n", traffic.dark, traffic.dark_blocked, traffic.dark_open);
+    Check(traffic.dark_blocked > 400, Num("a traffic car beyond the floor keeps its dark ground under it (%.0f pixels)", double(traffic.dark_blocked)));
+  }
+  // (4) The floor itself.
+  Check(UnderCastDistance(0.0f) == kPlayerCarCastDistance && UnderCastDistance(5.0f) == kPlayerCarCastDistance && UnderCastDistance(40.0f) == 40.0f,
+        "the distance the host passes is the traffic setting's, but never under the player's car's");
+  Check(UnderCastWeight(8.0f, UnderCastDistance(0.0f)) == 0.0f && UnderCastWeight(25.0f, UnderCastDistance(0.0f)) == 1.0f,
+        "the player's car (8 m) is left out of the term and a car at 25 m keeps it");
+}
+
 // The shaders repeat the header's constants as `static const float kName = value;`: read them and compare.
 bool ReadFile(const std::string& path, std::string* out) {
   std::ifstream f(path, std::ios::binary);
@@ -1741,8 +2317,10 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kNearZ", kNearZ},                 {&common, "kEdgeRangeSigma", kEdgeRangeSigma},
       {&common, "kEdgeSpatialSigma", kEdgeSpatialSigma}, {&common, "kEdgePlanePixels", kEdgePlanePixels},
       {&common, "kEdgePlaneFloor", kEdgePlaneFloor},
-      {&contact, "kUnderHeight", kUnderHeight},     {&contact, "kUnderStep0", kUnderStep0},
-      {&contact, "kUnderStep1", kUnderStep1},       {&contact, "kUnderStep2", kUnderStep2},
+      {&contact, "kUnderHeight", kUnderHeight},     {&contact, "kUnderStepHigh", kUnderStepHigh},
+      {&contact, "kUnderStepLow", kUnderStepLow},   {&contact, "kUnderSunSinMin", kUnderSunSinMin},
+      {&contact, "kVehicleLength", kVehicleReceiverLength}, {&contact, "kVehicleThickness", kVehicleReceiverThickness},
+      {&contact, "kVehicleSteps", double(kVehicleReceiverSteps)},
       {&contact, "kUnderJitterLow", kUnderJitterLow}, {&contact, "kUnderJitterSpan", kUnderJitterSpan},
       {&contact, "kUnderReach", kUnderReach},       {&contact, "kUnderEpsFloor", kUnderEpsFloor},
       {&contact, "kUnderEpsPixels", kUnderEpsPixels}, {&contact, "kUnderUpLow", kUnderUpLow},
@@ -1772,6 +2350,16 @@ void ShaderConstantsMatch(const std::string& dir) {
   Check(contact.find("const float2 corner = floor(position) * kSkipBlock + 1.0f;") != std::string::npos &&
             contact.find("(corner + float2(2.0f, 2.0f)) * inv_mask") != std::string::npos && contact.find("> g_push.shape.w ? 1.0f : 0.0f") != std::string::npos,
         "the shader's block pass is the twin's (four gathers at the corners of a 4 x 4 block, above the limit: 1)");
+  // The vehicle rule and the under term's two columns are written as the twin's (UnderVehicle, UnderProbe, March).
+  Check(contact.find("length_units = min(length_units, kVehicleLength);") != std::string::npos &&
+            contact.find("thickness = min(thickness, kVehicleThickness);") != std::string::npos &&
+            contact.find("steps = min(steps, uint(kVehicleSteps));") != std::string::npos && contact.find("if (AoIsVehicle(tc)) {") != std::string::npos,
+        "the shader's vehicle rule is the twin's (a car's pixel: the length, the thickness and the steps clamped)");
+  Check(contact.find("const float along = 1.0f / max(sun_up, kUnderSunSinMin);") != std::string::npos &&
+            contact.find("pc + to_sun * (high * along)") != std::string::npos && contact.find("pc + to_sun * (low * along)") != std::string::npos &&
+            contact.find("hit = min(hit, sun);") != std::string::npos && contact.find("if (hit > 0.0f) {") != std::string::npos &&
+            contact.find("if (!(sun_up > 0.0f)) {") != std::string::npos,
+        "the shader's under term is the twin's (a column up and a column along the sun's ray, the weaker one counts, the second read only after a hit)");
 }
 
 }  // namespace
@@ -1793,6 +2381,11 @@ int main(int argc, char** argv) {
   VehicleBitAndSwitches();
   HitWeightRule();
   UpFromTheView();
+  VehiclePixelsMarchShort();
+  WingBandOnTheTrunk();
+  WingFromTheSide();
+  SmallShadowsStay();
+  GroundBeyondACar();
   AdaptiveStepsMatchTheFullMarch();
   FilterInTheApply();
   SkipRules();

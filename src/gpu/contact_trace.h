@@ -31,7 +31,8 @@
 // described where its numbers are, below ("the adaptive step count"), with its cost model (CostModelFast).
 //
 // Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel and CostModelFast (the log lines),
-// MaskSkipOn and kSkipFlag (the march's skip under the game's own shadow); the rest is mirrored in the shader and run by the check.
+// MaskSkipOn and kSkipFlag (the march's skip under the game's own shadow), UnderCastDistance (the player's car and the cars the
+// game's sun shadow map holds are left out of the ground-under-a-vehicle term); the rest is mirrored in the shader and run by the check.
 // ===========================================================================
 
 #include <algorithm>
@@ -57,6 +58,10 @@ inline constexpr float kFadeStartMax = 0.98f;
 // The steps at the high and the ultra setting.
 inline constexpr uint32_t kStepsHigh = 8;
 inline constexpr uint32_t kStepsUltra = 16;
+// A pixel of a vehicle (the depth pass's vehicle bit) marches a short, thin ray: see "a car's own pixels" below.
+inline constexpr float kVehicleReceiverLength = 0.30f;     // m: the ray's length, whatever the sun's height (no growth with a low sun)
+inline constexpr float kVehicleReceiverThickness = 0.06f;  // m: the thickness (the tail that fades out is as long again: hidden up to 0.12 m)
+inline constexpr uint32_t kVehicleReceiverSteps = 12;      // at most this many steps (the squared spacing is kept)
 
 inline double LengthGrow(double elevation_degrees) {
   const double pi = 3.14159265358979323846;
@@ -187,7 +192,9 @@ inline Cost CostModel(uint32_t width, uint32_t height, uint32_t steps, uint32_t 
 //   A pixel by what it does, with the instructions it executes (the street at 2160p, contact_trace_test.cpp StreetMix, has the shares):
 //     the sky or past the contact fade (kMixFar)                 31
 //     turned from the sun (kMixBack): the depth, 4 neighbours, the normal, the facing test        161
-//     a march (kMixMarch): 369 before the steps (the normal, the lift, the ground under a car on a horizontal surface), 79 a step
+//     a march (kMixMarch): 339 before the steps (the normal, the lift, the ground under a car on a horizontal surface: two probes of the
+//       vertical column; 369 with the three of the first version, +144 for a pixel whose first column found a car), 79 a step; a vehicle's
+//       own pixel (no under term, at most kVehicleReceiverSteps steps) 222 before them: 1187 in all against 1490
 //   The cheaper path adds, to a pixel that is not sky: the skip test, 17 instructions (the block the pixel's centre is in is 1:
 //   marched) and, where its blocks are all 0, ends the pixel at 106 in all (the block of its centre, one gather, the return); the
 //   adaptive count 38 instructions where it is on (heights up to kAdaptMaxHeight) against the steps it saves. The first version
@@ -198,7 +205,7 @@ inline constexpr double kPlay4FoldedFilterMs = 0.013;
 inline constexpr double kFoldedFilterShare = kPlay4FoldedFilterMs / kPlay4FilterPassMs;
 inline constexpr double kInstrFar = 31.0;
 inline constexpr double kInstrBack = 161.0;
-inline constexpr double kInstrMarchFixed = 369.0;
+inline constexpr double kInstrMarchFixed = 339.0;
 inline constexpr double kInstrStep = 79.0;
 inline constexpr double kInstrAdaptive = 38.0;
 inline constexpr double kInstrTestLit = 17.0;
@@ -374,6 +381,43 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
 }
 
 // ---------------------------------------------------------------------------
+// a car's own pixels (the thin parts of a car: a wing, its posts, a mirror)
+// ---------------------------------------------------------------------------
+//
+// Owner, 2026-11-18, the player's Skyline with its tall rear wing, the sun at 17.7 h (18 degrees up) and the contact shadows on:
+//   1. the sun behind the camera, the chase camera behind the car: a broad black band across the trunk lid between the uprights, sharp at
+//      the wing's lower edge and soft below. The game's shadows leave that area lit, and with the sun low behind the camera the wing's
+//      shadow falls forward onto the rear window, not on the lid. Not the under-a-car term (it stays with it off) and not the thickness
+//      (it stays at 0.1): the march.
+//   2. the camera at the side of the car (the pause menu's): dashed streaks along the wing's edge, dark blobs at the bases of the uprights;
+//      right from some angles and completely broken from others.
+// The mechanism (contact_trace_test.cpp WingBandOnTheTrunk, WingFromTheSide, a rig with a pitched camera and the exact truth). A step is
+// hidden when the surface at its pixel is nearer to the camera than the step by more than the tolerance and less than the thickness, which
+// takes that surface for a slab extruded behind it ALONG THE VIEW RAY. That is right for a kerb or a bollard (0.3 m deep) and wrong for a
+// part that is much thinner than the thickness: the 4 cm plate of a wing is seen from above at 7 to 10 degrees, where 0.3 m along the view
+// ray is 4 cm of height, so a step just below the plate's level and just beyond its far edge (the ray from the trunk climbs on the screen
+// onto the plate's pixels at 0.7 to 1.1 m along its 1.3 m) has the plate in front of it by 0.02 to 0.5 m, "inside" it; a 6 cm post that stands
+// 0.1 to 0.3 m nearer to the camera than the ray, seen from the side, hides the ray's steps the same way. Seen from the other side of the
+// car (a ray that runs away from the camera, or the camera above the plate) the same plate hides nothing, which is why it looked right from some
+// angles. The thickness cannot be made smaller for everything (a tyre or a bollard is 0.3 m), and a depth image has no back faces to give a
+// part's real thickness.
+// WHAT CHANGES: the pixels that belong to a car (the vehicle bit of their own depth) march a short, thin ray: kVehicleReceiverLength
+// (0.3 m, not grown by a low sun), kVehicleReceiverThickness (6 cm, hidden up to 12 cm) and at most kVehicleReceiverSteps steps. A car's
+// own surfaces are where thin parts overlap their receivers (a wing and its posts on the trunk, a mirror on the door, a spoiler on the
+// deck), the contact shadows that matter there are the small ones (a mirror on its door is 14 cm proud), and for the player's car the game's
+// own sun shadow map holds the large ones, with 1 to 25 cm texels, so nothing is lost there that the game does not draw; a traffic car's
+// big shadows were never right from a depth image. A car's shadow ON THE ROAD (the sills, the tyres, the foot of a car on a kerb) is a
+// vehicle occluder on a receiver that is not a car's pixel: those pixels march exactly as they did (the check compares them to the bit).
+// Measured on the twin at 720p (the check prints them), the sun at 17.7 degrees, the thickness 0.3 and the 1.3 m ray as in the game:
+//   - the trunk lid under the wing from behind, three cameras: 797, 1030 and 1716 pixels darkened where nothing blocks the sun, now 0;
+//   - the wing from the side, 8 sun directions, two distances: 63213 and 16434 pixels, now about 5000 and 1000 (what is left sits at the posts'
+//     bases and the lid's edges, a few pixels wide, where there are small shadows too);
+//   - the mirror on a door, 4 suns: the shadow within 15 cm of the mirror keeps 102% of its dark pixels (14361 against 14112);
+//   - a car's tyres and sills on the road, 8 suns: every road pixel is as it was, and 98% of the pixels shadowed within 15 cm are dark.
+// COST. A vehicle's pixel is a fixed share of the picture (5 to 15% in a chase view) and gets 12 steps instead of 16: 4 x 79 DXIL instructions
+// fewer on 1490 (-20%); the others pay the vehicle test and two minimums (about 9 instructions). The adaptive step count sees the short ray too.
+
+// ---------------------------------------------------------------------------
 // the ground under a vehicle
 // ---------------------------------------------------------------------------
 //
@@ -411,11 +455,35 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
 // dz < 0), ground beside it (the column is outside the shell's pixels), ground beyond it (hidden by the
 // car or above its roof line, the column goes away from it), a surface that is not roughly horizontal
 // (kUnderUpLow), a vehicle's own pixel, anything that is not a vehicle (a table: the contact march's own
-// job). Three steps up the column, jittered by the pixel's noise, heights as shares of kUnderHeight.
+// job). Two steps up the column, jittered by the pixel's noise, heights as shares of kUnderHeight.
+//
+// THE FALSE SLAB (owner, 2026-11-18). The photo of an Audi R8 (the camera in front of the car on the left and low, the sun behind the car) and
+// the player's R34 in the same set-up: a dark slab rises from the sunlit road right behind the rear tyre up to the bumper. It is gone with
+// contact shadows off and with only this term off (mcla_gpu_contact_shadows_vehicles 0); the march does not make it (nor does the thickness).
+// The mechanism (contact_trace_test.cpp GroundBeyondACar): a road pixel that the camera sees PAST the car's end, or through the gap under
+// it from a low camera, is behind the car's shell as much as a pixel under the car is, and the column above it falls on car pixels all the
+// same; so does the ground beyond the car seen from above its roof. A depth image has no underside, so the column alone cannot tell
+// "under the car" from "beyond the car"; the sun can, because the ground is shadowed by the car only where the sun's ray from it is blocked,
+// and a ray that runs away from the car (the sun behind the car, the road behind it) is not. Two changes:
+//   1. a second column, along the sun's ray (the same heights up it: a point h above the ground is h over the sun's height, at least
+//      kUnderSunSinMin, along it): the ground is under the car when BOTH columns find the car, and the second is read only where the first
+//      found one. On the twin's scenes, against the exact truth (the sun's ray meets a car within 12 m): from 4 m above and behind the car, the sun
+//      at 30 and 18 degrees, the ground called under the car with the sun free was 9199 and 11719 pixels, now 0; in the front-left low set-up
+//      with the sun at 18 degrees, 30 and 60 degrees off the car's axis, 5204 and 8212, now 82 and 3, while 76% and 60% of the ground that
+//      the column alone put under the car stays there. The price is the strip along the sun's edge of the car where a low sun really does
+//      reach under it (0.25 m of clearance over the tangent of the sun's height: 14 cm at 60 degrees, 77 cm at 18): 93% of the ground seen under
+//      the check's car at 60 degrees, 97% before, and a ray that has the car's body in front of it by less than the sun's step is not seen.
+//   2. the PLAYER's car is always in the game's sun shadow map (traffic_shadow.h: it is the one vehicle the guest draws into the cascades),
+//      with or without TRAFFIC SHADOWS: its ground is shadowed or lit by the game's own mask and the term has nothing to add and a slab to
+//      take away. The host passes at least kPlayerCarCastDistance (UnderCastDistance), which UnderCastWeight turns into "nothing" for a
+//      shell nearer than 9 m (the chase camera, the pause menu and the photo mode are 4 to 9 m from the car) and "all" from 15 m. It also
+//      leaves out traffic that near, when TRAFFIC SHADOWS is off: the owner's earlier want, the dark ground under traffic, starts at 9 to 15 m.
+//   What is left, by construction: with the sun straight behind a car, the strip of road past the car's far end that a low camera sees
+//   through the gap (the check: 455 pixels beside 1282 under the car, for a car 20 m off). A depth image cannot give it up; for the player's car
+//   (and TRAFFIC SHADOWS' cars) it is gone, for a far traffic car it is a few pixels wide.
 inline constexpr float kUnderHeight = 0.9f;       // m: how far up the column the steps reach
-inline constexpr float kUnderStep0 = 1.0f;        // the heights of the three steps, shares of kUnderHeight
-inline constexpr float kUnderStep1 = 0.6f;
-inline constexpr float kUnderStep2 = 0.35f;
+inline constexpr float kUnderStepHigh = 1.0f;     // the heights of the two steps of a column, shares of kUnderHeight
+inline constexpr float kUnderStepLow = 0.4f;
 inline constexpr float kUnderJitterLow = 0.85f;   // the steps' heights are multiplied by 0.85 + 0.3 noise
 inline constexpr float kUnderJitterSpan = 0.3f;
 inline constexpr float kUnderReach = 6.0f;        // m: how far behind a vehicle's shell a step is still inside it
@@ -423,12 +491,21 @@ inline constexpr float kUnderEpsFloor = 0.05f;    // m: the shell must be nearer
 inline constexpr float kUnderEpsPixels = 3.0f;    // ... plus this many footprints (and is fully so at twice that)
 inline constexpr float kUnderUpLow = 0.75f;       // the surface's normal against the world's up: none below this ...
 inline constexpr float kUnderUpHigh = 0.9f;       // ... all from this
+// The second column runs along the sun's ray: the sun's height (its sine) is kept at least this, so that a very low sun
+// does not send the steps metres away (the steps' heights are then lower than the shares say).
+inline constexpr float kUnderSunSinMin = 0.25f;
 // A car the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) has its shadow already: the
 // term leaves it out. The hook's distance is to the car's origin (its middle) and the shell the step lands on is
 // up to a car's half length nearer or farther, so the term fades in over twice this many metres around that distance.
 inline constexpr float kUnderCastBand = 3.0f;
-
-inline float UnderStep(int k) { return k == 0 ? kUnderStep0 : (k == 1 ? kUnderStep1 : kUnderStep2); }
+// The player's car is always in the game's sun shadow map, with or without TRAFFIC SHADOWS (traffic_shadow.h: it is the one
+// vehicle the guest draws into the cascades), so the term is always left out for a car this near; the host passes
+// UnderCastDistance(the traffic setting's distance). The camera is 4 to 9 m from the player's car in the chase view, the
+// pause menu and the photo mode, and its shell is within 11 m of it; the fade is kUnderCastBand either side.
+inline constexpr float kPlayerCarCastDistance = 12.0f;
+inline float UnderCastDistance(float traffic_cast_distance) {
+  return std::max(traffic_cast_distance, kPlayerCarCastDistance);
+}
 
 // The world's up in this renderer's view space (x right, y up, z forward), from the game's view matrix
 // `m` (row vectors, v' = v M, the camera looking down -z; the upper 3x3's row 1 is the world's Y in view
@@ -539,12 +616,45 @@ struct Trace {
   Vec3 up;                // the world's up in view space (UpInView); zero: no ground-under-a-vehicle term
   float under = 0.0f;     // how strongly the ground under a vehicle is shadowed, 0 (off) to 1
   float cast_distance = 0.0f;  // cars within this many metres of the camera cast into the sun shadow map: the term leaves them out (0: none)
+  bool vehicle_rule = true;    // a vehicle's own pixels march a short, thin ray (kVehicleReceiver*); false: the march as it was (the check's control)
+  bool sun_column = true;      // the ground under a vehicle also needs the column along the sun's ray; false: the vertical column alone, as it was
   mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
 };
 
+// One probe of the term: the weight of the point `p` (view space): 0 when it is behind the lens or off the picture or
+// its pixel is not a vehicle's, else UnderHitWeight of how far behind that shell it is (times the cast distance's weight).
+template <class DepthAt>
+float UnderProbe(const Trace& t, DepthAt&& depth_at, Vec3 p) {
+  const Camera& cam = t.camera;
+  if (p.z <= kNearZ) {
+    return 0.0f;
+  }
+  const float u = 0.5f + 0.5f * p.x / (p.z * cam.tan_x);
+  const float v = 0.5f - 0.5f * p.y / (p.z * cam.tan_y);
+  if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) {
+    return 0.0f;
+  }
+  const int qx = std::min(int(u * float(cam.width)), cam.width - 1);
+  const int qy = std::min(int(v * float(cam.height)), cam.height - 1);
+  ++t.under_loads;
+  const float td = depth_at(qx, qy);
+  if (!DepthIsVehicle(td)) {
+    return 0.0f;
+  }
+  float weight = UnderHitWeight(p.z - td, FootprintUnit(cam.tan_y, float(cam.height)) * p.z);
+  if (t.cast_distance > 0.0f) {
+    // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
+    const float sx = p.x / p.z, sy = p.y / p.z;
+    weight *= UnderCastWeight(td * std::sqrt(1.0f + sx * sx + sy * sy), t.cast_distance);
+  }
+  return weight;
+}
+
 // The ground-under-a-vehicle term of the pixel (x, y), 0 to 1 (the shader's Under): `normal` is the pixel's
 // view-space normal (facing the camera), `pc` its position, `tc` its depth (with the vehicle bit).
-// depth_at(x, y) is the level-0 depth with the vehicle bit.
+// depth_at(x, y) is the level-0 depth with the vehicle bit. Two columns of two probes: straight up, and along the sun's ray
+// (the same heights up it); the ground is under the car when both find it (the weaker one counts), and the second column
+// is only read where the first found something (most of the picture's pixels read two pixels, the others four).
 template <class DepthAt>
 float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 normal) {
   if (!(t.under > 0.0f) || Dot(t.up, t.up) < 0.5f || DepthIsVehicle(tc)) {
@@ -554,34 +664,21 @@ float UnderVehicle(const Trace& t, DepthAt&& depth_at, float tc, Vec3 pc, Vec3 n
   if (!(upness > 0.0f)) {
     return 0.0f;
   }
-  const Camera& cam = t.camera;
-  const float footprint_unit = FootprintUnit(cam.tan_y, float(cam.height));
   const float jitter = kUnderJitterLow + kUnderJitterSpan * t.noise;
-  float hit = 0.0f;
-  for (int k = 0; k < 3; ++k) {
-    const Vec3 p = pc + t.up * (kUnderHeight * UnderStep(k) * jitter);
-    if (p.z <= kNearZ) {
-      continue;
+  const float high = kUnderHeight * kUnderStepHigh * jitter, low = kUnderHeight * kUnderStepLow * jitter;
+  const float vertical = std::max(UnderProbe(t, depth_at, pc + t.up * high), UnderProbe(t, depth_at, pc + t.up * low));
+  float hit = vertical;
+  if (t.sun_column && vertical > 0.0f) {
+    // Up the sun's ray: a point that is `h` above the ground is h / (the sun's height) along it. A sun at or below the horizon
+    // reaches no ground under a car (and the contact shadows are gated off then): none.
+    const float sun_up = Dot(t.to_sun, t.up);
+    if (!(sun_up > 0.0f)) {
+      return 0.0f;
     }
-    const float u = 0.5f + 0.5f * p.x / (p.z * cam.tan_x);
-    const float v = 0.5f - 0.5f * p.y / (p.z * cam.tan_y);
-    if (u < 0.0f || v < 0.0f || u >= 1.0f || v >= 1.0f) {
-      continue;
-    }
-    const int qx = std::min(int(u * float(cam.width)), cam.width - 1);
-    const int qy = std::min(int(v * float(cam.height)), cam.height - 1);
-    ++t.under_loads;
-    const float td = depth_at(qx, qy);
-    if (!DepthIsVehicle(td)) {
-      continue;
-    }
-    float weight = UnderHitWeight(p.z - td, footprint_unit * p.z);
-    if (t.cast_distance > 0.0f) {
-      // The shell's distance from the camera along this pixel's ray (td is its depth, the ray's z).
-      const float sx = p.x / p.z, sy = p.y / p.z;
-      weight *= UnderCastWeight(td * std::sqrt(1.0f + sx * sx + sy * sy), t.cast_distance);
-    }
-    hit = std::max(hit, weight);
+    const float along = 1.0f / std::max(sun_up, kUnderSunSinMin);
+    const float sun = std::max(UnderProbe(t, depth_at, pc + t.to_sun * (high * along)),
+                               UnderProbe(t, depth_at, pc + t.to_sun * (low * along)));
+    hit = std::min(vertical, sun);
   }
   return hit * upness * Saturate(t.under);
 }
@@ -608,13 +705,20 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const float footprint_unit = FootprintUnit(cam.tan_y, float(cam.height));
   const float lift = t.classic ? 0.015f + 0.003f * tc : RayLift(footprint_unit * tc);
   const Vec3 start = pc + normal * lift;
-  const float thickness = std::max(t.thickness, 1e-3f);
+  float thickness = std::max(t.thickness, 1e-3f);
+  float length = t.length;
+  uint32_t steps = t.steps;
+  if (!t.classic && t.vehicle_rule && DepthIsVehicle(tc)) {
+    // A car's own pixel (the wing's trunk lid, a door, a roof): a short, thin ray (kVehicleReceiver*).
+    length = std::min(length, kVehicleReceiverLength);
+    thickness = std::min(thickness, kVehicleReceiverThickness);
+    steps = std::min(steps, kVehicleReceiverSteps);
+  }
   // The ground under a vehicle starts the shadow (0 when the term is off or the pixel is not that).
   float shadow = t.classic ? 0.0f : UnderVehicle(t, depth_at, tc, pc, normal);
   // The steps: the setting's, or (the lever on) as many as the ray's length on the screen needs.
-  uint32_t steps = t.steps;
   if (!t.classic && t.adapt_pixels > 0.0f) {
-    steps = AdaptiveSteps(RayPixelLength(cam, start, start + t.to_sun * t.length), t.steps, t.adapt_pixels,
+    steps = AdaptiveSteps(RayPixelLength(cam, start, start + t.to_sun * length), steps, t.adapt_pixels,
                           t.adapt_min_steps);
   }
   t.steps_used = steps;
@@ -623,7 +727,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
       break;
     }
     const float along = t.classic ? (float(i) + t.noise) / float(steps) : Along(i, t.noise, steps);
-    const Vec3 p = start + t.to_sun * (along * t.length);
+    const Vec3 p = start + t.to_sun * (along * length);
     if (p.z <= kNearZ) {
       break;
     }
@@ -642,7 +746,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     } else {
       const float footprint = footprint_unit * p.z;
       hit = Saturate((dz - HitEpsilon(footprint)) /
-                     HitRamp(footprint, StepLength(i, t.noise, steps, t.length), t.to_sun.z));
+                     HitRamp(footprint, StepLength(i, t.noise, steps, length), t.to_sun.z));
     }
     hit *= 1.0f - Saturate((dz - thickness) / thickness);
     hit *= t.classic ? ClassicEndFade(along) : EndFade(along, t.fade_start);
@@ -693,7 +797,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
 //
 // WHAT IT COST, AND WHAT IT COSTS NOW. The first version measured in the game (PLAY4, 3840x2160, K-DAY 12 h, a view that is
 // about half in the game's shade): the march 0.306 ms against 0.285 plain, slower in spite of skipping. The march is bound by
-// its arithmetic, not by its depth reads (1633 DXIL instructions for a pixel that marches 16 steps, 161 for one that
+// its arithmetic, not by its depth reads (1594 DXIL instructions for a pixel that marches 16 steps, 161 for one that
 // faces away from the sun, 31 for the sky; a 5080 issues about 28 tera of them a second, which is 0.28 ms for the 8.3 million
 // pixels of 4K at the rate of a street, while its 24 depth reads a pixel are about a seventh of that), and the first version's
 // test made the limit, the sizes' ratio and the range in 92 instructions for EVERY pixel of the picture that is not

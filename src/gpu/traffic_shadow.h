@@ -61,7 +61,8 @@
 // What the renderer does with it (ao.cpp, ao_contact_ps.hlsl): the contact shadows' ground-under-a-car term
 // (contact_trace.h UnderVehicle, the screen-space approximation made when only the player's car cast) stands
 // aside for a car that now casts: the hook publishes the cutoff and the term leaves out the car whose shell
-// is nearer than it (Publish / CastDistance, UnderCastWeight). Far cars, beyond the cutoff, keep it.
+// is nearer than it (Publish / CastDistance, UnderCastWeight). Far cars, beyond the cutoff, keep it. The player's car casts whatever the
+// setting says, so the distance the renderer uses is never under contact_trace.h kPlayerCarCastDistance (UnderCastDistance).
 //
 // Everything that decides something is here, pure (no ReXGlue, no renderer): traffic_shadow_test.cpp checks it.
 // ===========================================================================

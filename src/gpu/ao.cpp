@@ -188,10 +188,11 @@ REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_contact_shadows_vehicles, 1.0, "MCLA/GPU",
     "Diagnostic: how strongly contact shadows darken the ground under a car, 0 to 1. The game's sun "
     "shadow map holds only the player's car, so the ground under a traffic car is as lit as an open "
-    "road; a ground pixel with a car's body above it (found from the picture's depth and the cars' "
-    "pixels, seen through the gap under the car) gets the full contact shadow, as the player's car "
-    "gets its sun shadow from the game. 0 is the contact shadows as they were (only a strip along "
-    "the car's edges and its wheels). Live.")
+    "road; a ground pixel with a car's body above it and in the way of the sun (found from the "
+    "picture's depth and the cars' pixels, seen through the gap under the car) gets the full contact "
+    "shadow, as the player's car gets its sun shadow from the game. Cars the game's sun shadow map "
+    "holds (the player's, and traffic with TRAFFIC SHADOWS) are left out. 0 is the contact shadows as "
+    "they were (only a strip along the car's edges and its wheels). Live.")
     .debug_only()
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -2997,12 +2998,13 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       const contact_trace::Vec3 up = contact_trace::UpInView(previous_.view.m);
       REXLOG_INFO("[gpu] contact shadows: the ground under a car {} (strength {:.2f}, "
                   "mcla_gpu_contact_shadows_vehicles; the world's up in view space {:+.2f} {:+.2f} {:+.2f}, "
-                  "the cars' pixels from the depth pass's vehicle bit; it stands aside for the cars TRAFFIC "
-                  "SHADOWS draws into the sun shadow map, within the distance the hook publishes: {:.1f} m "
+                  "the cars' pixels from the depth pass's vehicle bit; it stands aside for the player's car and "
+                  "for the cars TRAFFIC SHADOWS draws into the sun shadow map, within {:.1f} m of the camera "
                   "now)",
                   plan.contact.under_vehicle > 0.0f && contact_trace::Dot(up, up) > 0.5f ? "is shadowed"
                                                                                            : "is as it was",
-                  plan.contact.under_vehicle, up.x, up.y, up.z, traffic_shadow::CastDistance());
+                  plan.contact.under_vehicle, up.x, up.y, up.z,
+                  contact_trace::UnderCastDistance(traffic_shadow::CastDistance()));
     }
     const uint32_t cost_mode = (plan.contact.fast ? 1u : 0u) | (plan.ContactFilterInApply() ? 2u : 0u);
     if (contact_cost_logged_[0] != plan.contact_size[0] || contact_cost_logged_[1] != plan.contact_size[1] ||
@@ -3364,11 +3366,13 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.lin[1] = under ? up.y : 0.0f;
   push.lin[2] = under ? up.z : 0.0f;
   push.lin[3] = under ? c.under_vehicle : 0.0f;
-  // Cars the game now draws into the sun shadow map (TRAFFIC SHADOWS, traffic_shadow.h) have their own shadow: the
-  // term stands aside for a car within this distance of the camera (extra.w; 0: no car casts, the term is as it was).
+  // Cars the game draws into the sun shadow map have their own shadow: the player's car always, and with TRAFFIC SHADOWS
+  // (traffic_shadow.h) the traffic cars up to the distance the hook publishes. The term stands aside for a car within this
+  // distance of the camera (extra.w; contact_trace.h UnderCastDistance: at least kPlayerCarCastDistance, so that the ground
+  // beyond the player's car, lit in the game's mask, is not darkened as if it were under the car).
   // Only the march reads extra.w; the filter below does not, and the value is put back for it all the same.
   const float base_extra_w = push.extra[3];
-  push.extra[3] = under ? traffic_shadow::CastDistance() : 0.0f;
+  push.extra[3] = under ? contact_trace::UnderCastDistance(traffic_shadow::CastDistance()) : 0.0f;
   // The ray start's noise has no history here, only the filter below. Moved every frame it would make
   // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
   // runs and averages the frames, as the shadow filter's and the sun shafts' are.
