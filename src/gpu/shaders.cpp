@@ -546,10 +546,12 @@ bool ShaderStore::LoadVariants(std::string* why) {
   }
   variants_ready_.store(true, std::memory_order_release);  // last: has_variants()
   REXLOG_INFO("[gpu] shader pack: {} shader variants from {} ({} bytes): HDR scene {}, bloom Gaussians {}, "
-              "environment map {}, shadow filter {}, glow visibility {}, car self-reflection {}, auto-exposure sample {}",
+              "environment map {}, shadow filter {}, glow visibility {}, car self-reflection {}, car chrome {}, "
+              "auto-exposure sample {}",
               total, rex::path_to_utf8(variants_path_), size, per_variant[kHdrVariant],
               per_variant[kBloomVariant], per_variant[kEnvVariant], per_variant[kShadowFilterVariant],
-              per_variant[kGlowVariant], per_variant[kCarSelfReflVariant], per_variant[kLuminanceVariant]);
+              per_variant[kGlowVariant], per_variant[kCarSelfReflVariant], per_variant[kCarChromeVariant],
+              per_variant[kLuminanceVariant]);
   return true;
 }
 

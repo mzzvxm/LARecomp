@@ -1766,8 +1766,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
     return Skip::kUpload;
   }
-  // The car paint's self-reflection variant reads 112 bytes after the shared constants.
-  if (d.key.ps_variant == ShaderStore::kCarSelfReflVariant && !UploadCarSelfReflConstants(shared, d)) {
+  // The car paint's self-reflection variant and the car chrome's (the same history image and numbers) read 112 bytes after the shared
+  // constants.
+  if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
+      !UploadCarSelfReflConstants(shared, d)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
