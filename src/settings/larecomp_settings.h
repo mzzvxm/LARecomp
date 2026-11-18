@@ -12,6 +12,9 @@
 //     (sdk_names.inc: vsync -> gpu.vsync ...). So a flat line in larecomp.toml, --mcla_gpu_ao=high on the command
 //     line (the launcher's More game options) and REX_<..> variables all reach the right setting. Each use of an
 //     old name adds one notice line to the log (the SDK's alias rule); nothing else changes for the player.
+//   * The command line has its own policy (settings/cli_rules.h): LARecomp applies the setting options itself, in OnConfigure at
+//     the layer the SDK would use, so that an option no loaded module can take (a setting of a driver that is not loaded this run,
+//     a name that is not a setting, a refused value) costs one log line instead of the start.
 //   * The file stays FLAT. LARecomp's own writer (config_save.cpp, profiles::EditConfig) keeps writing and updating
 //     `name = value` lines, with FlatName() as the key, so a downgrade or the launcher still reads the file.
 //     The SDK's own tables ([gpu], [ui], ...) are read as usual.
@@ -77,6 +80,11 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
 
 // A setting by a flat LARecomp name, a flat old SDK name from sdk_names.inc, or a full name. Null when unknown.
 rex::SettingBase* Find(std::string_view name);
+
+// The full name a flat LARecomp name or a flat old SDK name from sdk_names.inc stands for, WHETHER OR NOT the setting is registered
+// (Find answers null for a driver that is not loaded: gpu.d3d12.adapter for d3d12_adapter). "" for any other name, a full name too.
+// The command line's rules use it to tell a setting of a driver that is not loaded from a name nothing knows (settings/cli_rules.h).
+std::string ResolveName(std::string_view name);
 
 // The old rex::cvar shapes. "" for an unknown name. Two old names are computed, not looked up: input_backend ("sdl" or
 // "xinput", the first of hid.drivers) so the pad code that asks which backend the SDK runs keeps its test.

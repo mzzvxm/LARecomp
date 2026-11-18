@@ -51,7 +51,9 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     }
     // CHECK: both given at once (0.10 ran the packs and then the pipelines in one process): BatchMode needs a third value,
     // or RunBatchMode runs both when both options are present.
-    if (app.Init(args)) {
+    // The SDK stops the start on an option it cannot use, so it gets only its own (the actions, its path flags, the positionals);
+    // the setting options wait for OnConfigure, where one that cannot be used becomes a log line (settings/cli_rules.h).
+    if (app.Init(app.PrepareCommandLine(args))) {
         if (app.GetBatchMode() == LarecompApp::BatchMode::kNone) {
             while (app.SetupPending() && app.RunSetupFrame()) {
             }

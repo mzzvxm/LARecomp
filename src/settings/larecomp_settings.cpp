@@ -170,6 +170,18 @@ rex::SettingBase* Find(std::string_view name) {
   return found ? *found : nullptr;
 }
 
+std::string ResolveName(std::string_view name) {
+  State& s = S();
+  std::lock_guard lock(s.mutex);
+  if (const auto it = s.flat.find(std::string(name)); it != s.flat.end()) {
+    return it->second->GetName();
+  }
+  if (const auto it = s.sdk_by_old_name.find(std::string(name)); it != s.sdk_by_old_name.end()) {
+    return it->second;
+  }
+  return {};
+}
+
 std::string Get(std::string_view name) {
   if (name == "input_backend") {
     // The first of hid.drivers ("sdl3,xinput" -> sdl): what the 0.10 cvar said for a single driver.

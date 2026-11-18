@@ -34,6 +34,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "app_paths.h"
+#include "settings/cli_rules.h"
 
 class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventListener {
  public:
@@ -51,6 +52,13 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   // A --config_file= the command line carries: OnConfigure reads larecomp.toml before the SDK applies the command line, so it
   // cannot see the option itself (main scans for it, as it does for the actions).
   void SetConfigFileHint(std::filesystem::path file) { config_file_hint_ = std::move(file); }
+
+  // Called by main on the command line, and Init gets what this returns. The SDK stops the start on an option it cannot use (a
+  // setting of a driver that is not loaded this run, a name that is not a setting, a refused value, LARecomp's own relaunch flag),
+  // so the SDK keeps only what is its own (the actions, its path flags, the positionals) and the setting options wait here for
+  // OnConfigure (ApplyCommandLineSettings), where each one that cannot be used costs one log line instead of the start. See
+  // settings/cli_rules.h.
+  rex::CLIArgList PrepareCommandLine(const rex::CLIArgList& args);
 
   // First-launch wizards between Init() and LaunchTitle(): the save picker, the ISO installer, the save importer.
   // RunSetupFrame pumps one UI frame and advances the state machine; false when a shutdown was requested.
@@ -85,6 +93,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   enum class SetupStep : uint8_t { kProfile, kInstall, kSaveOffer, kDone };
 
   void ApplyStartupDefaults(rex::SettingsRegistry& settings);
+  void ApplyCommandLineSettings(rex::SettingsRegistry& settings);  // OnConfigure: the setting options PrepareCommandLine kept back
   void ChooseUserFolder();           // OnConfigure: the default of app.user_root
   void MoveUserDataIfNeeded();       // OnInit: the side effects of that choice
   void StartOverlays();              // OnInit: fonts, style, hotkeys, overlays
@@ -97,6 +106,8 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
 
   BatchMode batch_ = BatchMode::kNone;
   std::vector<std::string> path_notes_;
+  std::vector<larecomp::cli::Option> cli_options_;  // the setting options of the command line, in the order typed
+  std::vector<std::string> cli_notes_;              // what was not used and why; logged in OnInit (the log file is open by then)
   std::filesystem::path config_file_hint_;
   std::filesystem::path settings_config_path_;
   SetupStep step_ = SetupStep::kProfile;

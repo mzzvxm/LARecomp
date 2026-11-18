@@ -26,9 +26,11 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include <rex/logging/logger.h>
 #include <rex/path_settings.h>
 #include <rex/platform/file.h>
+#include <rex/platform/process.h>
 #include <rex/ui/dialog.h>
 #include <rex/xam/achievement_manager.h>
 
+#include "settings/cli_rules.h"
 #include "settings/larecomp_settings.h"
 
 #include "achievement_metadata.h"
@@ -254,6 +256,24 @@ rex::Result<void> LarecompApp::OnAction(const rex::CLIActionHit& hit) {
   return rex::Ok();
 }
 
+// The command line the SDK gets: its actions, its path flags and the positionals. Every other option is a SETTING option and
+// stays here for OnConfigure, so that one the SDK would stop the start for (see settings/cli_rules.h) costs a log line instead.
+rex::CLIArgList LarecompApp::PrepareCommandLine(const rex::CLIArgList& args) {
+  std::vector<larecomp::cli::Option> options;
+  options.reserve(args.GetOptions().size());
+  for (const rex::CLIOption& option : args.GetOptions()) {
+    options.push_back({option.name, option.value});
+  }
+  std::vector<std::string_view> actions;
+  for (const rex::CLIAction& action : kActions) {
+    actions.push_back(action.name);
+  }
+  larecomp::cli::Split split = larecomp::cli::SplitCommandLine(options, args.GetPositionals(), actions);
+  cli_options_ = std::move(split.settings);
+  cli_notes_ = std::move(split.notes);
+  return rex::CLIArgList::Parse(std::span<const std::string>(split.sdk));
+}
+
 void LarecompApp::OnModules(std::vector<std::string>& modules) {
   TitleApp::OnModules(modules);
   // apu.driver is "larecomp" (below): nothing would ask for the SDL3 audio module, which the audio driver of
@@ -293,7 +313,78 @@ rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
   const std::filesystem::path config =
       config_file_hint_.empty() ? rex::GetPathSettings().config_file.Get() : config_file_hint_;
   ls::ApplyPlayerConfig(settings, config);
+
+  // The setting options of the command line, at the layer the SDK would have used (it parses the rest, which has none of them).
+  ApplyCommandLineSettings(settings);
   return rex::Ok();
+}
+
+// What the SDK does with a command line, minus its habit of stopping the start: each setting option goes to the registry at the
+// command line layer (the same call, the same alias handling, the same precedence: the command line beats the file and the
+// environment whatever the order), except the ones settings/cli_rules.h says cannot apply, which become one note each:
+//   * a setting of a driver this run does not load (--d3d12_adapter=0 with gpu.driver = larecomp): judged by the four selector
+//     settings as the SDK will see them (command line, then environment, then what the defaults and larecomp.toml gave);
+//   * a name that is not a setting (no dot, not an alias); a --no- of a setting that is not a bool; a changed-meaning flag with no
+//     usable value;
+//   * a value the registry refuses (the setting keeps what it had).
+// CHECK: a dotted name that no loaded module registers by the end of OnInit (a typo under a driver that is loaded) is still
+// "unknown setting ... from CommandLine" in the SDK's App::ReportUnknownSettings and stops the start; only an SDK change closes that.
+void LarecompApp::ApplyCommandLineSettings(rex::SettingsRegistry& settings) {
+  if (cli_options_.empty()) return;
+  namespace cli = larecomp::cli;
+
+  const auto selector = [&](const char* name, const char* variable) {
+    std::string current;
+    if (auto found = settings.Find(name)) current = (*found)->GetText();
+    return cli::EffectiveValue(cli::LastValueOf(cli_options_, name), rex::platform::GetEnvironmentValue(variable), current);
+  };
+  cli::Selection selection;
+  selection.gpu = selector("gpu.driver", "REX_GPU_DRIVER");
+  selection.apu = selector("apu.driver", "REX_APU_DRIVER");
+  selection.hid = selector("hid.drivers", "REX_HID_DRIVERS");
+  selection.ui = selector("ui.driver", "REX_UI_DRIVER");
+#if defined(_WIN32)
+  selection.windows = true;
+#else
+  selection.windows = false;
+#endif
+
+  struct RegistryLookup {
+    rex::SettingsRegistry& registry;
+    bool is_alias(std::string_view name) const { return registry.IsAlias(name); }
+    std::string full_name(std::string_view name) const { return ls::ResolveName(name); }
+    std::optional<bool> registered_is_bool(std::string_view full) const {
+      auto found = registry.Find(full);
+      if (!found) return std::nullopt;
+      return (*found)->GetType() == rex::SettingType::kBool;
+    }
+  };
+  const RegistryLookup lookup{settings};
+
+  std::vector<std::string> candidates;  // for "did you mean": built on the first name nothing knows
+  for (const cli::Option& option : cli_options_) {
+    const cli::Decision decision = cli::Decide(option, selection, lookup);
+    if (decision.verdict != cli::Verdict::kApply) {
+      std::string note = decision.note;
+      if (decision.verdict == cli::Verdict::kUnknown) {
+        std::string typed = option.name;
+        if (typed.starts_with("no-")) typed.erase(0, 3);
+        if (candidates.empty()) {
+          for (rex::SettingBase* setting : ls::AllSettings()) candidates.push_back(ls::FlatName(*setting));
+        }
+        if (const std::string closest = cli::ClosestName(typed, candidates); !closest.empty()) {
+          note += " (did you mean " + closest + "?)";
+        }
+      }
+      cli_notes_.push_back(std::move(note));
+      continue;
+    }
+    for (const cli::Assignment& assignment : decision.set) {
+      if (auto set = settings.SetText(rex::SettingLayer::kCommandLine, assignment.name, assignment.value); !set) {
+        cli_notes_.push_back(cli::Spell(option) + " ignored: " + set.error().GetDescription());
+      }
+    }
+  }
 }
 
 void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
@@ -441,6 +532,9 @@ rex::Result<void> LarecompApp::OnInit() {
   InstallCrashLoggerAfterRuntime();  // CHECK: the SDK installed its crash reporter in Init; ours goes behind it
   for (const auto& note : path_notes_) LARECOMP_APP_WARN("Game data: {}", note);
   path_notes_.clear();
+  // The command line options that could not be used (one line each; the start goes on): ApplyCommandLineSettings, PrepareCommandLine.
+  for (const auto& note : cli_notes_) LARECOMP_APP_WARN("[cli] {}", note);
+  cli_notes_.clear();
 
   if (batch_ != BatchMode::kNone) {
     RunBatchMode();  // asks for a shutdown with the exit code; nothing else of the start-up happens

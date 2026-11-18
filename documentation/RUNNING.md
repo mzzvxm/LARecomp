@@ -33,7 +33,7 @@ This works around an unsigned underflow in the SDK's vblank timer that dispatche
 
 Defaults out of the box are `real_frame_delta = true`, `fps_limit = 60`, `vsync = false`.
 
-Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu.
+Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu. A flag the game cannot use (a typo, an old name, a setting of a graphics or input driver this run does not load, a value the setting refuses) does not stop it: the game starts and the log says `[cli] --name=value ignored: ` and why.
 
 The pause menu holds the settings a player is meant to change. The troubleshooting and developer switches are not in it: they are launch arguments, rows of the launcher's Advanced tab and Troubleshooting section, and, for the ones that work while the game runs, pages of the hidden DEBUG menu (below).
 
