@@ -43,7 +43,7 @@
 // only a run can prove. It is the next step for the sun factor (it would replace `sun` by the car's own shadow: see the report of the
 // package). Why not a baked vertex AO: the vertex buffers are the game's.
 //
-// THE RAY TRACED IMAGE (feat/car-rt-refl, src/gpu/car_rt_refl.h): where the frame has one (g_CarReflC.w bit 0, the slot in g_CarReflC.z),
+// THE RAY TRACED IMAGE (src/gpu/car_rt_refl.h): where the frame has one (g_CarReflC.w bit 0, the slot in g_CarReflC.z),
 // the reflection probe's weight is read from it at the shaded point's place in the history (the paint's version 6 read, 3x3 B-spline,
 // weight only; the image holds every vehicle texel) and the march is not made: the exact answer for the reflection. The image has nothing
 // of the hemisphere, so the sky probe is always marched; the helper's CarChrSkyProbe is where a ray traced ambient occlusion replaces it.

@@ -354,7 +354,7 @@ float CarChrProbe(Texture2D<float4> history, CarChrState s, float3 direction, in
     return saturate(occupied / full) * s.agreement;
 }
 
-// The ray traced image (src/gpu/car_rt_refl.h of feat/car-rt-refl, variant 6 of the paint: g_CarReflC.z its slot, the history's size):
+// The ray traced image (src/gpu/car_rt_refl.h, variant 6 of the paint: g_CarReflC.z its slot, the history's size):
 // alpha 0 no data, 1 the car and no ray of the cone hits it, 1 + w a hit of weight w (the share of the cone), -(1 + w) a hit on a part the
 // camera does not see. Read at the shaded point's place in the history with a 3x3 quadratic B-spline; only the texels the history shows at
 // the shaded point's own distance (the same surface) count; the image answers where the texels with data are at least half of those.

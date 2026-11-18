@@ -25,7 +25,7 @@
 // (ports/scratch/carchrome, not committed: it needs the dump). car_chrome_rules_test.cpp checks the same on synthetic parts: a tube under
 // a lip, a tube in the open, and a plane of every slope.
 //
-// THE RAY TRACED IMAGE (src/gpu/car_rt_refl.h of feat/car-rt-refl): where the frame has it (constants g_CarReflC.w bit 0) the shader reads
+// THE RAY TRACED IMAGE (src/gpu/car_rt_refl.h): where the frame has it (constants g_CarReflC.w bit 0) the shader reads
 // the reflection probe's weight from it, at the shaded point's place in the history (the same read as the paint's variant 6, weight only),
 // and the march is not made: exact for every vehicle texel the host traced. The sky probe has no ray traced answer yet (the image holds
 // the reflection's cone, not the hemisphere), so it is always marched; `kSkyProbe` is the hook where a ray traced ambient occlusion would
