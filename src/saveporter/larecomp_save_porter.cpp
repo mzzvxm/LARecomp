@@ -41,8 +41,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <windows.h>  // before commdlg.h: the SDK headers of 0.11 no longer pull windows.h in first
 #include <commdlg.h>
-#include <windows.h>
 
 #elif defined(__APPLE__)
 #else
