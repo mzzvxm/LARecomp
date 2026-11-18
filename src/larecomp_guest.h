@@ -16,9 +16,15 @@
 //                      may still be running hooks; the 0.10 runtime outlived them. Most call sites test the result.
 //
 //   Call<R>(fn, args)  rex::ppc::GuestToHostFunction<R>(fn, args): run a recompiled function from host code on the calling
-//                      guest thread. The 0.10 function did nothing and returned R{} when the thread was not a guest thread;
-//                      rex::ppc::HostToGuestCall asserts in Debug and dereferences a null register file in Release, so the
-//                      guard stays here. `fn` is a PPCFunc* or the name of a recompiled function (__imp__rex_sub_XXXXXXXX).
+//                      guest thread, on a register file of its own: ZEROED, taking from the thread only r1, r13, the FP control
+//                      state and the two 0.11 pointers (see ZeroedFrame). The 0.10 function did exactly that (a fresh
+//                      PPCContext newCtx{}), and the callers depend on it: a function reads the registers its caller did not
+//                      set (the pause menu's AllocState passes r3 only and the class factory behind it takes r4 as the class
+//                      name, null meaning the default menu state). rex::ppc::HostToGuestCall runs the callee on the thread's
+//                      OWN register file, so r4..r10 hold whatever the interrupted guest code left there. The 0.10 function
+//                      also did nothing and returned R{} when the thread was not a guest thread; HostToGuestCall asserts in
+//                      Debug and dereferences a null register file in Release, so that guard stays here. `fn` is a PPCFunc*
+//                      or the name of a recompiled function (__imp__rex_sub_XXXXXXXX).
 //
 //   CallFrame          rex::CallFrame of the 0.10 fork SDK: a register file of its own for a side call that must not disturb the
 //                      registers of the hook it runs in (see the struct below for what it copies from the parent).
@@ -54,19 +60,51 @@ inline uint8_t* Membase() {
   return runtime ? runtime->GetMembase().GetBase() : nullptr;
 }
 
-// Runs a recompiled function with the given arguments on the calling guest thread. Nothing runs, and R{} comes back, for
-// a null function or a thread that is not a guest thread.
+namespace detail {
+
+// The register file a call from host code runs on (what Call uses): all zero, like the `PPCContext newCtx{}` of the 0.10
+// GuestToHostFunction, so a callee that reads a register the caller never set sees 0, not the thread's leftover. From the
+// thread it takes the stack pointer r1 (the call opens its frame below it), the thread pointer r13, the FP control state
+// (written back to the thread at the end, also when the callee throws ThreadStop: it may have changed the rounding mode) and
+// the thread state and stop flag pointers of 0.11, so the callee stops with its thread. detour_frame stays null.
+struct ZeroedFrame {
+  ::PPCContext ctx{};
+  ::PPCContext& thread_;
+
+  explicit ZeroedFrame(::PPCContext& thread) : thread_(thread) {
+    ctx.r1 = thread.r1;
+    ctx.r13 = thread.r13;
+    ctx.fpscr = thread.fpscr;
+    ctx.thread_state = thread.thread_state;
+    ctx.stop_requested = thread.stop_requested;
+  }
+
+  ~ZeroedFrame() { thread_.fpscr = ctx.fpscr; }
+
+  ZeroedFrame(const ZeroedFrame&) = delete;
+  ZeroedFrame& operator=(const ZeroedFrame&) = delete;
+};
+
+}  // namespace detail
+
+// Runs a recompiled function with the given arguments on the calling guest thread, on a zeroed register file of its own (see
+// the note on Call at the top). Nothing runs, and R{} comes back, for a null function or a thread that is not a guest thread.
 template <typename R, typename Function, typename... Args>
 R Call(Function&& function, Args&&... args) {
   ::PPCFunc* target = function;
-  if (!target || rex::ppc::GetBoundThread().ctx == nullptr) {
+  const rex::ppc::BoundThread bound = rex::ppc::GetBoundThread();
+  if (!target || bound.ctx == nullptr) {
     if constexpr (std::is_void_v<R>) {
       return;
     } else {
       return R{};
     }
   }
-  return rex::ppc::HostToGuestCall<R>(target, std::forward<Args>(args)...);
+  // rex::ppc::Call opens the call frame under r1 (back chain, linkage area, stack arguments), sets lr to the host return
+  // address and puts the arguments in place; it saves the file it is given and restores it afterwards, which here is the
+  // zeroed one.
+  detail::ZeroedFrame frame(*bound.ctx);
+  return rex::ppc::Call<R>(frame.ctx, bound.base, *target, std::forward<Args>(args)...);
 }
 
 // A register file of its own for a call into recompiled code made from inside a hook, so nothing of the hook's registers is
