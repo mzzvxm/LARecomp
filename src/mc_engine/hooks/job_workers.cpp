@@ -19,7 +19,8 @@
 // sub_8258B210 queues 6 of them from the guest thread that runs sub_8258D9F0; that thread then
 // builds the list of pairs and, at the end, waits for the 6 tasks in a blocking kernel wait
 // (sub_8258D5F0, sub_821C4338). The tasks do not block: each loops, taking the guest spin lock
-// sub_821C4278 (a compare-and-swap under the SDK's global lock, sub_821CE0A0) to look at the
+// sub_821C4278 (a compare-and-swap in an mfmsr/mtmsrd atomic region, sub_821CE0A0: up to rexglue
+// 0.10 a global lock, since 0.11 a per-thread MSR bit with no lock) to look at the
 // list, until the list is marked complete. So while the thread that fills the list is slow, the
 // three workers spin. In 178 slow frames of a 4-core run they went from 11% to 60-70% of a
 // core each while the main thread fell from 90% to 35% and the render thread from 85% to 32%.
