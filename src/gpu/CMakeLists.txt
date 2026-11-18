@@ -343,6 +343,29 @@ target_include_directories(larecomp_gpu PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../thirdparty"
     "${LARECOMP_GPU_SHADER_DIR}"
 )
+# xxhash.h for xxhash_inline.h (the renderer's XXH3 hashes): rexglue 0.11's rex/hash.h no longer includes it, and the
+# SDK's headers do not carry it. Header only (XXH_INLINE_ALL): an include folder, nothing to link. The folder is
+# the one src/shaderpack uses: LARECOMP_XXHASH_INCLUDE_DIR, else LAR-XenosRecomp's thirdparty/xxHash (both define
+# their cache variables with the same text; whichever runs first wins, and the value is the same).
+set(LARECOMP_XXHASH_INCLUDE_DIR "" CACHE PATH "Folder with xxhash.h (empty: LAR-XenosRecomp's)")
+get_filename_component(_larecomp_gpu_repo_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(LARECOMP_XENOSRECOMP_DIR "${_larecomp_gpu_repo_root}/thirdparty/LAR-XenosRecomp"
+    CACHE PATH "LAR-XenosRecomp checkout (the shader translator, library target XenosRecompLib)")
+set(_larecomp_gpu_xxhash_include "${LARECOMP_XXHASH_INCLUDE_DIR}")
+if(NOT _larecomp_gpu_xxhash_include)
+    foreach(_candidate "${LARECOMP_XENOSRECOMP_DIR}/thirdparty/xxHash")
+        if(EXISTS "${_candidate}/xxhash.h")
+            set(_larecomp_gpu_xxhash_include "${_candidate}")
+            break()
+        endif()
+    endforeach()
+endif()
+if(NOT _larecomp_gpu_xxhash_include)
+    message(FATAL_ERROR
+        "larecomp_gpu: xxhash.h not found (looked in ${LARECOMP_XENOSRECOMP_DIR}/thirdparty/xxHash: "
+        "git submodule update --init --recursive). Set LARECOMP_XXHASH_INCLUDE_DIR.")
+endif()
+target_include_directories(larecomp_gpu SYSTEM PRIVATE "${_larecomp_gpu_xxhash_include}")
 # plume first: see the note at the top.
 target_link_libraries(larecomp_gpu PRIVATE plume rex::sdk)
 foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)

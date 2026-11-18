@@ -16,8 +16,8 @@
 #                                pass a clone's path for a local build)
 #   LARECOMP_DXC_INCLUDE_DIR     the folder with dxcapi.h (default thirdparty/dxc-bin/inc, else the
 #                                one inside LAR-XenosRecomp's own thirdparty/dxc-bin)
-#   LARECOMP_XXHASH_INCLUDE_DIR  the folder with xxhash.h (default: the SDK's, else the one inside
-#                                LAR-XenosRecomp's thirdparty/xxHash)
+#   LARECOMP_XXHASH_INCLUDE_DIR  the folder with xxhash.h (default: the one inside LAR-XenosRecomp's
+#                                thirdparty/xxHash; rexglue 0.11's installed headers do not carry xxHash)
 #   LARECOMP_HDR_HLSLI           the HDR scene's curve, hdr_tonemap_shoulder.hlsli, which the HDR scene
 #                                variant embeds (default src/gpu/hlsl/hdr_tonemap_shoulder.hlsli; without
 #                                the file there is no HDR variant, and the variant pack holds the others)
@@ -27,7 +27,7 @@ get_filename_component(LARECOMP_SHADERPACK_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/
 set(LARECOMP_XENOSRECOMP_DIR "${LARECOMP_SHADERPACK_REPO_ROOT}/thirdparty/LAR-XenosRecomp"
     CACHE PATH "LAR-XenosRecomp checkout (the shader translator, library target XenosRecompLib)")
 set(LARECOMP_DXC_INCLUDE_DIR "" CACHE PATH "Folder with dxcapi.h (empty: look in thirdparty/dxc-bin/inc)")
-set(LARECOMP_XXHASH_INCLUDE_DIR "" CACHE PATH "Folder with xxhash.h (empty: the SDK's, or LAR-XenosRecomp's)")
+set(LARECOMP_XXHASH_INCLUDE_DIR "" CACHE PATH "Folder with xxhash.h (empty: LAR-XenosRecomp's)")
 set(LARECOMP_HDR_HLSLI "" CACHE FILEPATH
     "The HDR scene's curve for the HDR variant step (empty: src/gpu/hlsl/hdr_tonemap_shoulder.hlsli if it exists)")
 
@@ -64,9 +64,6 @@ if(NOT _larecomp_dxc_include)
 endif()
 
 set(_larecomp_xxhash_include "${LARECOMP_XXHASH_INCLUDE_DIR}")
-if(NOT _larecomp_xxhash_include AND TARGET rex::xxhash)
-    get_target_property(_larecomp_xxhash_include rex::xxhash INTERFACE_INCLUDE_DIRECTORIES)
-endif()
 if(NOT _larecomp_xxhash_include)
     foreach(_candidate "${LARECOMP_XENOSRECOMP_DIR}/thirdparty/xxHash")
         if(EXISTS "${_candidate}/xxhash.h")

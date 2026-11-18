@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include <rex/hash.h>
+#include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 
 #include "format.h"

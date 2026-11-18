@@ -12,7 +12,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
-#include <rex/hash.h>
+#include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 #include <rex/memory/virtual_memory.h>
 

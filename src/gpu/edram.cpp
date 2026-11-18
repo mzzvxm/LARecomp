@@ -11,7 +11,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/xenos/format.h>
-#include <rex/hash.h>
+#include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 

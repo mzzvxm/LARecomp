@@ -15,7 +15,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/xenos/ucode.h>
-#include <rex/hash.h>
+#include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 #include <rex/memory/mapped_ptr.h>
 
