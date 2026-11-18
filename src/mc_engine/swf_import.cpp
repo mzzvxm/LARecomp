@@ -313,20 +313,11 @@ std::atomic<int> g_import_count{0};
 uint32_t g_scratch = 0;
 uint32_t g_scratch_used = kScratchBlock;
 
-// A guest function on a context of its own, below the frame of the one
-// running -- what GuestToHostFunction does, but from `ctx`, which is the live
-// stack inside a guest call (GuestToHostFunction starts from the thread's
-// outer context).
-void Call(PPCFunc* fn, PPCContext& ctx, uint8_t* base, uint32_t r3, uint32_t r4) {
-    PPCContext c{};
-    c.r1 = ctx.r1;
-    c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
-    c.r3.u64 = r3;
-    c.r4.u64 = r4;
-    fn(c, base);
-    ctx.fpscr = c.fpscr;
+// A guest function with two arguments, on the thread's own register file (rexglue 0.11: the hook's ctx IS that
+// file, so the call opens its frame below the live stack of the guest call it runs in), cleared; the hook's
+// registers come back as they were.
+void Call(PPCFunc* fn, uint32_t r3, uint32_t r4) {
+    larecomp::guest::Call<void>(fn, r3, r4);
 }
 
 uint16_t R16(const uint8_t* base, uint32_t ea) {
@@ -503,7 +494,7 @@ void SetBeforeUpdate(uint32_t sprite, BeforeUpdateFn fn) {
     }
 }
 
-void RunCommand(PPCContext& ctx, uint8_t* base, uint32_t cmd, uint32_t parent) {
+void RunCommand(PPCContext&, uint8_t* base, uint32_t cmd, uint32_t parent) {
     if (!cmd || !parent) return;
     PPCFunc* fn = nullptr;
     switch (ReadGuestU32(base, cmd)) {
@@ -515,7 +506,7 @@ void RunCommand(PPCContext& ctx, uint8_t* base, uint32_t cmd, uint32_t parent) {
                 ReadGuestU32(base, cmd));
         return;
     }
-    Call(fn, ctx, base, cmd, parent);
+    Call(fn, cmd, parent);
 }
 
 uint32_t GuestScratch(uint32_t bytes) {

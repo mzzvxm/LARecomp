@@ -107,13 +107,17 @@ void LogRamp(const uint8_t* base, uint32_t device, int mode) {
 
 // Sets the game's ramp again, as the device creation did: the identity, through SetGammaRamp (or
 // SetPWLGamma), which converts it for the display type the helper now gets. The ramp is built on
-// the guest stack below the caller's frame.
+// the guest stack below the caller's frame. The helpers run on the thread's own register file (the
+// hook's ctx is that file; it comes back as it was), as rexglue 0.11 requires.
 void SetRampAgain(PPCContext& ctx, uint8_t* base, uint32_t device) {
     const bool pwl = UsesPwlRamp(base, device);
-    larecomp::guest::CallFrame frame(ctx);
-    PPCContext& call = frame;
     const uint32_t sp = (ctx.r1.u32 - kRampBytes - 256) & ~UINT32_C(15);
     WriteU32(base, sp, ctx.r1.u32);  // back chain
+    larecomp::guest::ThreadFile file;
+    if (!file) {
+        return;
+    }
+    PPCContext& call = file.ctx();
     const uint32_t ramp = sp + 128;
     call.r1.u64 = sp;
     call.r3.u64 = ramp;

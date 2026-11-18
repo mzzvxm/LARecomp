@@ -96,22 +96,22 @@ uint32_t Alloc(uint32_t size) {
     return rt && larecomp::guest::AddressSpace(rt) ? larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(size, 0x1000) : 0;
 }
 
-uint32_t Call(uint32_t fn_addr, PPCContext& ctx, uint8_t* base,
+// The call runs on the thread's own register file (rexglue 0.11: the hook's ctx IS that file), cleared, below
+// the hook's r1; the hook's registers come back as they were.
+uint32_t Call(uint32_t fn_addr, PPCContext&, uint8_t* base,
               std::initializer_list<uint32_t> gpr) {
     auto* rt = REX_RUNTIME();
     PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr)
                                                   : nullptr;
     if (!fn) return 0;
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return 0;
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     PPCRegister* regs[] = {&c.r3, &c.r4, &c.r5, &c.r6, &c.r7, &c.r8};
     size_t i = 0;
     for (uint32_t v : gpr) regs[i++]->u64 = v;
     fn(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
 }
 

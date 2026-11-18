@@ -26,10 +26,12 @@
 //                      Debug and dereferences a null register file in Release, so that guard stays here. `fn` is a PPCFunc*
 //                      or the name of a recompiled function (__imp__rex_sub_XXXXXXXX).
 //
-//   CallFrame          rex::CallFrame of the 0.10 fork SDK: a register file of its own for a side call that must not disturb the
-//                      registers of the hook it runs in (see the struct below for what it copies from the parent).
+//   ThreadFile         for a caller that sets the registers by hand (a vector register, its own frame): the same thread file as
+//                      Call, cleared, handed out to fill and call, restored afterwards. It replaces rex::CallFrame of the 0.10
+//                      fork SDK, a register file of its own, which cannot work on 0.11 (see ThreadFileScope).
 //
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -123,32 +125,38 @@ R Call(Function&& function, Args&&... args) {
   return rex::ppc::Call<R>(*bound.ctx, bound.base, *target, std::forward<Args>(args)...);
 }
 
-// A register file of its own for a call into recompiled code made from inside a hook, so nothing of the hook's registers is
-// touched (the call sets r3..r5 and clobbers the volatile registers). It is a copy of nothing: like the 0.10 rex::CallFrame it
-// is NOT zero-initialised and takes only what a callee needs from the parent: the stack pointer r1, the thread pointer r13 and
-// the FP control state (written back to the parent at the end, as the callee may have changed the rounding mode). The two
-// pointers rexglue 0.11 added to the register file come along: the thread state (kernel calls the callee makes find their
-// thread through it) and the stop flag; detour_frame stays null, the callee runs no detour of the parent's.
-// CHECK: in a Debug build rex::ppc::detail::CheckHookContext compares a hook's register file with the thread's own, and this
-// side file is not that one: a hook (REX_HOOK / a midasm hook) reached by the callee would assert there. Release builds only.
-struct CallFrame {
-  ::PPCContext ctx;
-  ::PPCContext& parent_;
-
-  explicit CallFrame(::PPCContext& parent) : parent_(parent) {
-    ctx.r1 = parent.r1;
-    ctx.r13 = parent.r13;
-    ctx.fpscr = parent.fpscr;
-    ctx.thread_state = parent.thread_state;
-    ctx.stop_requested = parent.stop_requested;
+// The thread's own register file for a call into recompiled code made by a caller that sets the registers by hand (what
+// Call cannot place: a vector register, a frame the caller lays out itself). Same rules as Call (see ThreadFileScope): the
+// file is cleared except r1, r13, the control state and the 0.11 fields, the callee runs ON it, and the whole file comes
+// back at the end with the callee's fpscr, so a hook that makes the call keeps its own registers (r3.. included) as they
+// were. It replaces the CallFrame of the 0.10 fork SDK, a file of its own that rexglue 0.11 does not find.
+//
+//   larecomp::guest::ThreadFile file;   // a hook's own ctx IS this file: read what is needed from it BEFORE this line
+//   if (!file) return 0;                // not a guest thread: nothing to call on
+//   PPCContext& c = file.ctx();
+//   c.r1.u32 -= 0x70;                   // the callee's frames go below r1 (or set r1 to a frame the caller laid out itself)
+//   c.r3.u64 = a; c.r4.u64 = b;
+//   fn(c, base);
+//   return c.r3.u32;                    // read the result before `file` goes out of scope
+class ThreadFile {
+ public:
+  ThreadFile() : bound_(rex::ppc::GetBoundThread()) {
+    if (bound_.ctx != nullptr) {
+      scope_.emplace(*bound_.ctx);
+    }
   }
 
-  ~CallFrame() { parent_.fpscr = ctx.fpscr; }
+  // False on a thread that is not a guest thread: ctx() must not be used then.
+  explicit operator bool() const { return bound_.ctx != nullptr; }
 
-  operator ::PPCContext&() { return ctx; }
+  ::PPCContext& ctx() { return *bound_.ctx; }
 
-  CallFrame(const CallFrame&) = delete;
-  CallFrame& operator=(const CallFrame&) = delete;
+  ThreadFile(const ThreadFile&) = delete;
+  ThreadFile& operator=(const ThreadFile&) = delete;
+
+ private:
+  rex::ppc::BoundThread bound_;
+  std::optional<detail::ThreadFileScope> scope_;
 };
 
 }  // namespace larecomp::guest

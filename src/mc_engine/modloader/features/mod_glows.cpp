@@ -158,9 +158,10 @@ void Load() {
     g_slots.assign(g_glows.size(), 0xFFFFFFFFu);
 }
 
-// One glow through AddGlow, on a fresh context below the caller's frame (what
-// GuestToHostFunction does, plus the position in v1, which it cannot pass).
-uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g, uint32_t slot,
+// One glow through AddGlow, on the thread's own register file (rexglue 0.11: the hook's ctx IS that file),
+// cleared, below the hook's r1, which comes back as it was (what guest::Call does, plus the position in v1,
+// which it cannot pass).
+uint32_t AddGlow(PPCContext&, uint8_t* base, uint32_t scratch, const Glow& g, uint32_t slot,
                  uint32_t uid, float intensity, float sx, float sy) {
     WriteF32(base, scratch + 0, g.x);
     WriteF32(base, scratch + 4, g.y);
@@ -169,11 +170,10 @@ uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g
     WriteF32(base, scratch + 16, sx);
     WriteF32(base, scratch + 20, sy);
 
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return slot;  // not a guest thread (cannot happen from the hook): the slot stays
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     c.r3.u64 = 0xFF000000u | g.rgb;
     c.r4.u64 = scratch + 16;
     c.r5.u64 = 0;
@@ -189,7 +189,6 @@ uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g
     c.v1.f32[1] = g.z;
     c.v1.f32[0] = 1.0f;
     rex_sub_822FC250(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
 }
 

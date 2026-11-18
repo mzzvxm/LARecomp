@@ -42,6 +42,7 @@
 #include <rex/kernel/title_runtime.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 
 #include "hooks_internal.h"
@@ -63,11 +64,15 @@ constexpr uint32_t kThis_IntPulse = 408;
 
 std::atomic<bool> g_logged{false};
 
-// The guest's sine of a float, rounded to a float as the game rounds it (frsp). It runs in a context of
-// its own, so nothing of the caller's registers is touched.
-float GuestSine(PPCContext& ctx, uint8_t* base, float x) {
-    larecomp::guest::CallFrame frame(ctx);
-    PPCContext& call = frame;
+// The guest's sine of a float, rounded to a float as the game rounds it (frsp). It runs on the thread's own
+// register file (the hook's ctx is that file), which comes back as it was, so nothing of the caller's
+// registers is touched.
+float GuestSine(uint8_t* base, float x) {
+    larecomp::guest::ThreadFile file;
+    if (!file) {
+        return static_cast<float>(std::sin(static_cast<double>(x)));  // not a guest thread: cannot happen from the hook
+    }
+    PPCContext& call = file.ctx();
     call.f1.f64 = static_cast<double>(x);
     rex_sub_823DBBC8(call, base);
     return static_cast<float>(call.f1.f64);
@@ -103,7 +108,7 @@ extern "C" REX_FUNC(rex_sub_82353E38) {
     // The clock the update just read (the same float, 0x827D7518). CHECK: that nothing advances it between
     // the update's read and this one; both run on the thread that updates the car, right after each other.
     const float clock = ReadGuestF32(base, kGuestAccumB);
-    auto sine = [&](float x) { return GuestSine(ctx, base, x); };
+    auto sine = [&](float x) { return GuestSine(base, x); };
     if (rate_ext != 0) WriteGuestF32(base, self + kThis_ExtPulse, mcla::neon::HeldPulseOf(rate_ext, clock, sine));
     if (rate_int != 0) WriteGuestF32(base, self + kThis_IntPulse, mcla::neon::HeldPulseOf(rate_int, clock, sine));
 }

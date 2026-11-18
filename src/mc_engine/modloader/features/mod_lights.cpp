@@ -71,6 +71,7 @@
 #include <vector>
 
 #include "../../logging.h"
+#include "larecomp_guest.h"
 #include "mod_data.h"
 
 
@@ -174,22 +175,20 @@ void WriteVec(uint8_t* base, uint32_t ea, float x, float y, float z, float w) {
     WriteF32(base, ea + 12, w);
 }
 
-// A guest function on a fresh context below the caller's frame (what
-// GuestToHostFunction does, plus the two float arguments).
-uint32_t Call(PPCFunc* fn, PPCContext& ctx, uint8_t* base, std::initializer_list<uint32_t> gpr,
+// A guest function on the thread's own register file (rexglue 0.11: the hook's ctx IS that file), cleared,
+// below the hook's r1, which comes back as it was (what guest::Call does, plus the two float arguments).
+uint32_t Call(PPCFunc* fn, PPCContext&, uint8_t* base, std::initializer_list<uint32_t> gpr,
               double f1 = 0.0, double f2 = 0.0) {
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return 0;
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     PPCRegister* regs[] = {&c.r3, &c.r4, &c.r5, &c.r6, &c.r7, &c.r8, &c.r9, &c.r10};
     size_t i = 0;
     for (uint32_t v : gpr) regs[i++]->u64 = v;
     c.f1.f64 = f1;
     c.f2.f64 = f2;
     fn(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
 }
 
