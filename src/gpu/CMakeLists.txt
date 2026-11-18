@@ -2,7 +2,7 @@
 #
 # larecomp_gpu is an OBJECT library so the renderer compiles with its own
 # include order and definitions: plume's headers (its Vulkan-Headers and VMA)
-# ahead of rex::runtime's, which arrive as system includes, and
+# ahead of rex::sdk's, which arrive as system includes, and
 # LARECOMP_GPU_HAS_<backend> visible to these files only. larecomp links the
 # objects. Expects the caller to have added thirdparty/plume and
 # thirdparty/dxc-bin and to set LARECOMP_GPU_BACKENDS (D3D12 and/or VULKAN; the
@@ -344,7 +344,7 @@ target_include_directories(larecomp_gpu PRIVATE
     "${LARECOMP_GPU_SHADER_DIR}"
 )
 # plume first: see the note at the top.
-target_link_libraries(larecomp_gpu PRIVATE plume rex::runtime rex::renderdoc)
+target_link_libraries(larecomp_gpu PRIVATE plume rex::sdk)
 foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)
     target_compile_definitions(larecomp_gpu PRIVATE LARECOMP_GPU_HAS_${_backend}=1)
 endforeach()

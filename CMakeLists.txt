@@ -5,7 +5,7 @@
 # SDK boilerplate (rexglue_project, rexglue_setup_target, the host settings) comes from the rexglue package.
 
 cmake_minimum_required(VERSION 3.25)
-project(larecomp LANGUAGES CXX)
+project(larecomp LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
