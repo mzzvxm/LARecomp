@@ -1,11 +1,14 @@
 // Check of the ray traced car self-reflection's rules (car_rt_refl_rules.h): the image's codes through a half float, the places a texel
-// and a point of the view space have in it, the distance tolerances, the fallback colour of a hit the camera cannot see, the fade and
-// the edge-aware read the paint variant does. A program of its own: it needs no renderer, no ReXGlue and no game files, and exits 0
-// when every check holds.
+// and a point of the view space have in it, the distance tolerances, the cone of rays (its pattern, its turn, its directions), the self-hit
+// rule, the fallback colour of a hit the camera cannot see, the fade, the rays' sum, and the 3x3 B-spline read the paint variant does
+// (with a model of a straight edge through both: the edge's ramp is wide and smooth). A program of its own: it needs no renderer, no ReXGlue
+// and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_car_rt_refl_rules_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_car_rt_refl_rules_test
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -169,59 +172,278 @@ int main() {
     Check(edge.x[0] == 0 && edge.x[1] == 0 && edge.y[2] == 99 && edge.y[3] == 99, "the taps are clamped to the image");
   }
 
+  // the cone: the pattern, its turn, its directions
+  {
+    // the rings: a quarter of the disc's area each, so the mean squared radius is the disc's one half; the pairs are opposite, so the offsets add up to nothing
+    float r2 = 0.0f;
+    for (int ray = 0; ray < rt::kConeRays; ++ray) {
+      r2 += rt::ConeRadius(ray) * rt::ConeRadius(ray);
+    }
+    Check(Near(r2 / rt::kConeRays, 0.5, 1e-6) && rt::kConeRays == 4, "the four rays' squared radii average the disc's one half (two rings of equal area)");
+    bool balanced = true;
+    bool opposite = true;
+    for (float turns : {0.0f, 0.1f, 0.37f, 0.5f, 0.93f}) {
+      float sx = 0.0f, sy = 0.0f;
+      for (int ray = 0; ray < rt::kConeRays; ++ray) {
+        const rt::Disc d = rt::ConeDisc(ray, turns);
+        sx += d.x;
+        sy += d.y;
+        const rt::Disc other = rt::ConeDisc(ray ^ 2, turns);
+        opposite = opposite && std::fabs(d.x + other.x) < 1e-5f && std::fabs(d.y + other.y) < 1e-5f;
+        balanced = balanced && std::fabs(std::hypot(d.x, d.y) - rt::ConeRadius(ray)) < 1e-5f;
+      }
+      balanced = balanced && std::fabs(sx) < 1e-5f && std::fabs(sy) < 1e-5f;
+    }
+    Check(balanced && opposite, "the four offsets add up to nothing for every turn: rays j and j + 2 are opposite, at their own radius");
+    Check(rt::ConeOrder(0) == 1 && rt::ConeOrder(1) == 3 && rt::ConeOrder(2) == 0 && rt::ConeOrder(3) == 2 && rt::kFirstRays == 2 &&
+              rt::ConeRadius(rt::ConeOrder(0)) > rt::ConeRadius(rt::ConeOrder(2)) && rt::ConeRadius(rt::ConeOrder(1)) > rt::ConeRadius(rt::ConeOrder(3)),
+          "the outer pair is cast first, the inner pair after");
+    // the turn: in [0, 1), different from texel to texel, uniform over a block, a step per phase
+    {
+      bool inside = true;
+      double mean = 0.0;
+      int distinct = 0;
+      float previous = -1.0f;
+      for (uint32_t y = 0; y < 64; ++y) {
+        for (uint32_t x = 0; x < 64; ++x) {
+          const float turn = rt::ConeRotation(x, y, 0);
+          inside = inside && turn >= 0.0f && turn < 1.0f;
+          mean += turn;
+          distinct += turn != previous ? 1 : 0;
+          previous = turn;
+        }
+      }
+      mean /= 64.0 * 64.0;
+      Check(inside && std::fabs(mean - 0.5) < 0.03 && distinct > 3900, "the turn of the pattern is in [0, 1), 0.5 on average over a block, a new value at almost every texel");
+      // the same texel by phase: eight different turns, spread (the golden step), and phase 0 is the still pattern
+      float phases[8];
+      for (uint32_t k = 0; k < 8; ++k) {
+        phases[k] = rt::ConeRotation(31, 17, k);
+      }
+      float least = 1.0f;
+      for (int i = 0; i < 8; ++i) {
+        for (int j = i + 1; j < 8; ++j) {
+          const float gap = std::fabs(phases[i] - phases[j]);
+          least = std::min(least, std::min(gap, 1.0f - gap));
+        }
+      }
+      Check(least > 0.05f && phases[0] == rt::ConeRotation(31, 17, 0), "eight frames' turns of one texel are eight well spread angles");
+    }
+    // the directions
+    const float mirror[3] = {0.0f, 0.6f, 0.8f};
+    const float normal_up[3] = {0.0f, 1.0f, 0.0f};
+    bool unit = true;
+    bool same = true;
+    bool angle = true;
+    for (int ray = 0; ray < rt::kConeRays; ++ray) {
+      float d[3];
+      rt::ConeDirection(mirror, normal_up, 0.0f, ray, 0.3f, d);
+      same = same && std::fabs(d[0] - mirror[0]) < 1e-5f && std::fabs(d[1] - mirror[1]) < 1e-5f && std::fabs(d[2] - mirror[2]) < 1e-5f;
+      const float tan_half = rt::ConeTan(3.0f);
+      rt::ConeDirection(mirror, normal_up, tan_half, ray, 0.3f, d);
+      unit = unit && Near(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), 1.0, 1e-5);
+      const float dot = d[0] * mirror[0] + d[1] * mirror[1] + d[2] * mirror[2];
+      const float want = 1.0f / std::sqrt(1.0f + tan_half * rt::ConeRadius(ray) * tan_half * rt::ConeRadius(ray));
+      angle = angle && std::fabs(dot - want) < 1e-5f;
+    }
+    Check(same && unit && angle, "a cone of tangent 0 is the mirror; the directions are unit vectors at the angle atan(tan x radius) from the mirror");
+    // the mean of the four directions is the mirror's to second order, for every turn
+    {
+      float worst = 0.0f;
+      for (float turns : {0.0f, 0.2f, 0.45f, 0.8f}) {
+        float sum[3] = {};
+        for (int ray = 0; ray < rt::kConeRays; ++ray) {
+          float d[3];
+          rt::ConeDirection(mirror, normal_up, rt::ConeTan(3.0f), ray, turns, d);
+          for (int c = 0; c < 3; ++c) {
+            sum[c] += d[c] * 0.25f;
+          }
+        }
+        const float along = sum[0] * mirror[0] + sum[1] * mirror[1] + sum[2] * mirror[2];
+        const float across = std::sqrt(std::max(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2] - along * along, 0.0f));
+        worst = std::max(worst, across);
+      }
+      Check(worst < 1e-3f, "the mean of the cone's directions is the mirror's to second order (an unbiased glossy reflection)");
+    }
+    // above the surface: a grazing mirror ray has the cone's lower rays turned up, all stay at least kMinAbove over the tangent plane
+    {
+      const float graze[3] = {0.0f, 0.04f, 0.99919f};
+      bool above = true;
+      bool moved = false;
+      for (float turns : {0.0f, 0.13f, 0.5f, 0.77f}) {
+        for (int ray = 0; ray < rt::kConeRays; ++ray) {
+          float d[3];
+          rt::ConeDirection(graze, normal_up, rt::ConeTan(10.0f), ray, turns, d);
+          above = above && d[1] >= rt::kMinAbove - 1e-4f && Near(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), 1.0, 1e-5);
+          float plain[3];
+          rt::ConeDirection(graze, normal_up, rt::ConeTan(10.0f), ray, turns, plain);
+          moved = moved || d[1] > 0.04f + 1e-3f;
+        }
+      }
+      Check(above && moved, "at a grazing mirror direction the cone's rays under the tangent plane are lifted to kMinAbove, the others kept");
+    }
+    Check(rt::ConeTan(0.0f) == 0.0f && Near(rt::ConeTan(3.0f), std::tan(3.0 * 3.14159265358979 / 180.0), 1e-6) && Near(rt::ConeTan(100.0f), rt::ConeTan(rt::kConeMaxDegrees)) &&
+              rt::ConeTan(-1.0f) == 0.0f && rt::kConeDefaultDegrees == 2.5f,
+          "the gloss: 0 is a mirror, 2.5 degrees by default, clamped to 12");
+  }
+
+  // the self-hit rule
+  Check(!rt::IsSelfHit(false, true, 1.0f) && !rt::IsSelfHit(false, false, 1.0f) && rt::IsSelfHit(true, true, -1.0f) && rt::IsSelfHit(true, false, 0.9f) &&
+            !rt::IsSelfHit(true, false, 0.5f) && !rt::IsSelfHit(true, false, -0.9f) && !rt::IsSelfHit(true, false, rt::kSelfCos),
+        "a hit is the panel itself on the same instance on its own triangle, or facing the point's own way; another instance (the wing on the lid) never; "
+        "the same instance facing across (a crease, a scoop's far wall) is a real hit");
+
+  // the fallback colour: the mean of the pixel's own surface around it
+  {
+    rt::SurfaceTap taps[9];
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = 3.0f;
+      taps[k].rgb[0] = 0.5f;
+      taps[k].rgb[1] = 0.25f;
+      taps[k].rgb[2] = 0.125f;
+    }
+    float mean[3];
+    rt::SurfaceMean(taps, 3.0f, 0.05f, mean);
+    Check(Near(mean[0], 0.5) && Near(mean[1], 0.25) && Near(mean[2], 0.125), "one surface, one colour: that colour");
+    // a bright glint at the pixel itself (the sky in the paint) is averaged with its neighbours, and a texel on a part in front is left out
+    taps[4].rgb[0] = 2.0f;
+    taps[0].distance = 2.0f;
+    taps[0].rgb[0] = 9.0f;
+    rt::SurfaceMean(taps, 3.0f, 0.05f, mean);
+    const float tents = 1.0f + 4.0f * 0.5f + 3.0f * 0.25f;  // the middle, four edges, three corners (one left out)
+    const float expected = (2.0f * 1.0f + 4.0f * 0.5f * 0.5f + 3.0f * 0.25f * 0.5f) / tents;
+    Check(Near(mean[0], expected, 1e-5) && mean[0] < 0.9f * 2.0f && mean[0] > 0.5f,
+          "a glint on the pixel is averaged with the surface around it, and a texel on a part in front does not count");
+    // no neighbour on the surface: the pixel's own colour
+    for (int k = 0; k < 9; ++k) {
+      if (k != 4) {
+        taps[k].distance = 0.0f;
+      }
+    }
+    rt::SurfaceMean(taps, 3.0f, 0.05f, mean);
+    Check(Near(mean[0], 2.0) && Near(mean[1], 0.25), "with no neighbour on the surface the mean is the pixel's own colour");
+  }
+
   // a reflection ray's hit: what it shows
-  const float own[3] = {0.5f, 0.25f, 0.125f};
+  const float surface[3] = {0.5f, 0.25f, 0.125f};
   const float colour[4][3] = {{0.9f, 0.1f, 0.1f}, {0.9f, 0.1f, 0.1f}, {0.9f, 0.1f, 0.1f}, {0.9f, 0.1f, 0.1f}};
+  rt::VisibleColour seen;
+  rt::VisibleColour hidden;
+  rt::VisibleColour half;
   {
     const rt::Taps taps = rt::BilinearTaps(50.5f, 50.5f, 100, 100);
     const float all_there[4] = {3.0f, 3.0f, 3.0f, 3.0f};
     const float tolerance = 0.05f;
-    const rt::VisibleColour seen = rt::FindVisible(taps, all_there, colour, 3.0f, tolerance);
+    seen = rt::FindVisible(taps, all_there, colour, 3.0f, tolerance);
     Check(Near(seen.coverage, 1.0) && Near(seen.rgb[0], 0.9) && Near(seen.rgb[1], 0.1), "a hit on a surface the four texels show is fully visible, in the surface's colour");
     // the hit at 3 m, the texels show a nearer surface (another part hides it): hidden
     const float hides[4] = {2.5f, 2.5f, 2.5f, 2.5f};
-    const rt::VisibleColour hidden = rt::FindVisible(taps, hides, colour, 3.0f, tolerance);
+    hidden = rt::FindVisible(taps, hides, colour, 3.0f, tolerance);
     Check(hidden.coverage == 0.0f && hidden.rgb[0] == 0.0f, "a hit the texels show a nearer surface for is not visible");
     // two of four texels on the outline
     const float edge[4] = {3.0f, 0.0f, 3.0f, 0.0f};
-    const rt::VisibleColour half = rt::FindVisible(taps, edge, colour, 3.0f, tolerance);
+    half = rt::FindVisible(taps, edge, colour, 3.0f, tolerance);
     Check(Near(half.coverage, 0.5) && Near(half.rgb[0], 0.9), "on the outline half of the footprint matches: coverage a half, the colour of the matching texels only");
     // within the tolerance, with the ramp: a half of it is whole, the full tolerance is none
     Check(rt::MatchWeight(3.0f + 0.5f * tolerance, 3.0f, tolerance) == 1.0f && rt::MatchWeight(3.0f + tolerance, 3.0f, tolerance) == 0.0f &&
               rt::MatchWeight(3.0f + 0.75f * tolerance, 3.0f, tolerance) > 0.0f && rt::MatchWeight(0.0f, 3.0f, tolerance) == 0.0f,
           "the match ramps from half the tolerance to the tolerance and a texel with no vehicle never matches");
-
-    // the fallback rule: a visible hit keeps the colour and the fade's weight; a hidden one has the pixel's own colour in shade at
-    // half the weight; a partly visible one is between
+  }
+  {
+    // the fallback rule: a visible hit keeps the colour and the fade's weight; a hidden one has the surface's mean colour in shade at nearly the whole
+    // weight; a partly visible one is between
     const float length = 4.0f;
-    const rt::Reflection full = rt::Combine(1.0f, length, seen, own);
-    Check(full.kind == rt::Kind::kHit && Near(full.weight, 1.0) && Near(full.rgb[0], 0.9), "a visible hit near: the whole weight, the hit's own colour");
-    const rt::Reflection back = rt::Combine(1.0f, length, hidden, own);
-    Check(back.kind == rt::Kind::kHidden && Near(back.weight, rt::kHiddenWeight) && Near(back.weight, cr::kBackFloor) && Near(back.rgb[0], own[0] * cr::kShade) &&
-              Near(back.rgb[1], own[1] * 0.4) && Near(back.rgb[2], own[2] * 0.4),
-          "a hidden hit: the shaded pixel's own colour times 0.4 at half the weight (version 4's hidden-face rule)");
-    const rt::Reflection partly = rt::Combine(1.0f, length, half, own);  // coverage 0.5 = the full share: whole
-    Check(partly.kind == rt::Kind::kHit && Near(partly.weight, 1.0), "half the footprint matching is enough to be visible (kVisibleFullShare)");
+    const rt::RayShare full = rt::MakeShare(1.0f, length, seen, surface);
+    Check(Near(full.weight, 1.0) && Near(full.visible, 1.0) && Near(full.rgb[0], 0.9), "a visible hit near: the whole weight, the hit's own colour");
+    const rt::RayShare back = rt::MakeShare(1.0f, length, hidden, surface);
+    Check(rt::kHiddenWeight == 0.85f && Near(back.weight, 0.85) && back.visible == 0.0f && Near(back.rgb[0], surface[0] * cr::kShade) &&
+              Near(back.rgb[1], surface[1] * 0.4) && Near(back.rgb[2], surface[2] * 0.4),
+          "a hidden hit: the surface's mean colour times 0.4 at 0.85 of the weight (the shaded underside is there, and dark; the colour is a guess)");
+    Check(rt::kHiddenWeight > 0.5f * (1.0f + cr::kBackFloor) && rt::kHiddenWeight < 1.0f,
+          "the hidden weight is nearer the visible one than version 1's half (the switch of a ray from visible to hidden no longer halves a texel)");
+    const rt::RayShare partly = rt::MakeShare(1.0f, length, half, surface);  // coverage 0.5 = the full share: whole
+    Check(Near(partly.weight, 1.0) && Near(partly.visible, 1.0), "half the footprint matching is enough to be visible (kVisibleFullShare)");
     rt::VisibleColour quarter = half;
     quarter.coverage = 0.2f;  // under the half that is kVisibleFullShare: visible by 0.4
-    const rt::Reflection between = rt::Combine(1.0f, length, quarter, own);
-    Check(between.kind == rt::Kind::kHidden && Near(between.weight, 0.7) && between.rgb[0] > own[0] * 0.4f && between.rgb[0] < 0.9f,
-          "a fifth of the footprint: between the two in weight and colour, still counted as hidden for the debug view");
-    quarter.coverage = 0.25f;
-    Check(rt::Combine(1.0f, length, quarter, own).kind == rt::Kind::kHit, "at half the visible share the hit counts as seen");
+    const rt::RayShare between = rt::MakeShare(1.0f, length, quarter, surface);
+    Check(Near(between.weight, 0.85 + 0.15 * 0.4) && Near(between.visible, 0.4) && between.rgb[0] > surface[0] * 0.4f && between.rgb[0] < 0.9f,
+          "a fifth of the footprint: between the two in weight and colour");
     // the fade with the distance along the ray
-    Check(rt::Combine(0.6f * length, length, seen, own).weight > 0.999f && rt::Combine(0.6f * length + 1e-3f, length, seen, own).weight <= 1.0f,
+    Check(rt::MakeShare(0.6f * length, length, seen, surface).weight > 0.999f && rt::MakeShare(0.6f * length + 1e-3f, length, seen, surface).weight <= 1.0f,
           "no fade up to 0.6 of the ray's length");
-    const float w1 = rt::Combine(0.7f * length, length, seen, own).weight;
-    const float w2 = rt::Combine(0.85f * length, length, seen, own).weight;
+    const float w1 = rt::MakeShare(0.7f * length, length, seen, surface).weight;
+    const float w2 = rt::MakeShare(0.85f * length, length, seen, surface).weight;
     Check(w1 < 1.0f && w2 < w1 && w2 > 0.0f, "the weight falls along the ray");
-    const rt::Reflection gone = rt::Combine(length, length, seen, own);
-    Check(gone.kind == rt::Kind::kMiss && gone.weight == 0.0f && gone.rgb[0] == 0.0f, "at the reach the hit is gone, and gives the miss's code");
+    const rt::RayShare gone = rt::MakeShare(length, length, seen, surface);
+    Check(gone.weight == 0.0f && gone.rgb[0] == 0.0f, "at the reach the hit is gone");
+
+    // the rays' sum
+    rt::RayShare shares[4];
+    for (auto& share : shares) {
+      share = full;
+    }
+    rt::Reflection all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kHit && Near(all.weight, 1.0) && Near(all.rgb[0], 0.9), "four visible hits: the whole weight, the hit's colour");
+    all = rt::CombineRays(shares, 2, 4.0f);
+    Check(all.kind == rt::Kind::kHit && Near(all.weight, 0.5) && Near(all.rgb[0], 0.9),
+          "two hits of four rays (the others missed or were not cast): half the weight, and the misses do not darken the hits' colour");
+    all = rt::CombineRays(shares, 1, 1.0f);
+    Check(Near(all.weight, 1.0), "a gloss of 0: one ray counts for the whole");
+    all = rt::CombineRays(shares, 0, 4.0f);
+    Check(all.kind == rt::Kind::kMiss && all.weight == 0.0f && all.rgb[0] == 0.0f, "no hit: the miss's code");
+    shares[0] = back;
+    shares[1] = back;
+    shares[2] = back;
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kHidden && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0) && all.rgb[0] > surface[0] * 0.4f && all.rgb[0] < 0.9f,
+          "three hidden hits and a visible one: hidden by the majority of the weight, the colour between the shade and the hit's");
+    rt::RayShare faint;
+    faint.weight = 0.001f;
+    faint.rgb[0] = 1.0f;
+    Check(rt::CombineRays(&faint, 1, 4.0f).kind == rt::Kind::kMiss, "a faint weight (under 1/512) is a miss");
+  }
+
+  // the paint's weights: the quadratic B-spline
+  {
+    bool sums = true;
+    bool mirrored = true;
+    bool continuous = true;
+    for (float d = -0.5f; d <= 0.5001f; d += 0.0625f) {
+      float w[3];
+      float m[3];
+      rt::BSplineWeights(d, w);
+      rt::BSplineWeights(-d, m);
+      sums = sums && Near(w[0] + w[1] + w[2], 1.0, 1e-6) && w[0] >= 0.0f && w[1] >= 0.0f && w[2] >= 0.0f;
+      mirrored = mirrored && Near(w[0], m[2], 1e-6) && Near(w[1], m[1], 1e-6);
+    }
+    // moving the place across the half way between two texels changes which texel is the nearest, and nothing about the weights of the texels
+    float at_edge[3];
+    float next_edge[3];
+    rt::BSplineWeights(0.5f, at_edge);   // texel n nearest, the place is half way to n + 1
+    rt::BSplineWeights(-0.5f, next_edge);  // texel n + 1 nearest, the same place
+    continuous = Near(at_edge[1], next_edge[0]) && Near(at_edge[2], next_edge[1]) && Near(at_edge[0], 0.0) && Near(next_edge[2], 0.0);
+    // and the slope too (a bilinear read's weights have a corner there)
+    const float step = 1e-3f;
+    float lo[3], hi[3], lo2[3], hi2[3];
+    rt::BSplineWeights(0.5f - step, lo);
+    rt::BSplineWeights(0.5f, hi);
+    rt::BSplineWeights(-0.5f, lo2);
+    rt::BSplineWeights(-0.5f + step, hi2);
+    const float slope_before = (hi[2] - lo[2]) / step;  // the texel n + 1's weight, texel n nearest
+    const float slope_after = (hi2[1] - lo2[1]) / step;  // the same texel, now the nearest
+    Check(sums && mirrored && continuous, "the B-spline's weights: they add up to 1, mirror, and carry over from one nearest texel to the next");
+    Check(std::fabs(slope_before - slope_after) < 0.01f, "the B-spline's weights have no corner at the change of the nearest texel (their slope is continuous)");
+    float d = 0.0f;
+    Check(rt::NearestTexel(3.4f, &d) == 3 && Near(d, 0.4, 1e-5) && rt::NearestTexel(3.5f, &d) == 4 && Near(d, -0.5, 1e-5) && rt::NearestTexel(-0.2f, &d) == 0 && Near(d, -0.2, 1e-5) &&
+              rt::NearestTexel(7.0f, &d) == 7 && d == 0.0f,
+          "the nearest texel of a place and the offset from its centre, texel i centred at i");
   }
 
   // what the paint reads
   {
-    const rt::Taps taps = rt::BilinearTaps(30.5f, 30.5f, 100, 100);  // every weight a quarter
+    float wx[3], wy[3];
+    rt::BSplineWeights(0.0f, wx);
+    rt::BSplineWeights(0.0f, wy);
     const float depth = 5.0f;
     const float tolerance = 0.06f;
     auto tap = [](float history, rt::Kind kind, float w, float r) {
@@ -231,57 +453,130 @@ int main() {
       t.rgb[0] = t.rgb[1] = t.rgb[2] = r;
       return t;
     };
-    // all four are the player's car at the paint's distance and hit with weight 0.8, colour 0.4: the answer
+    auto nine = [](const rt::PaintTap& each) {
+      std::array<rt::PaintTap, 9> out;
+      out.fill(each);
+      return out;
+    };
+    // all nine are the player's car at the paint's distance and hit with weight 0.8, colour 0.4: the answer
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kHit, 0.8f, 0.4f), tap(5.0f, rt::Kind::kHit, 0.8f, 0.4f), tap(5.0f, rt::Kind::kHit, 0.8f, 0.4f),
-                                    tap(5.0f, rt::Kind::kHit, 0.8f, 0.4f)};
-      const rt::PaintRead read = rt::ReadForPaint(taps, four, depth, tolerance);
-      Check(read.use && read.kind == rt::Kind::kHit && Near(read.weight, 0.8, 1e-5) && Near(read.rgb[0], 0.4, 1e-5), "four hits: their weight and colour");
+      auto all = nine(tap(5.0f, rt::Kind::kHit, 0.8f, 0.4f));
+      const rt::PaintRead read = rt::ReadForPaint(wx, wy, all.data(), depth, tolerance);
+      Check(read.use && read.kind == rt::Kind::kHit && Near(read.weight, 0.8, 1e-5) && Near(read.rgb[0], 0.4, 1e-5), "nine hits: their weight and colour");
     }
-    // two hits (weight 1, colour 0.6) and two misses: the weight is the share of the footprint that hits, the colour the hits' own
+    // the middle column hits (weight 1, colour 0.6), the sides miss: the weight is the B-spline's share of the middle column (0.75 at the middle), the colour the hits' own
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f), tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f),
-                                    tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f)};
-      const rt::PaintRead read = rt::ReadForPaint(taps, four, depth, tolerance);
-      Check(read.use && Near(read.weight, 0.5, 1e-5) && Near(read.rgb[0], 0.6, 1e-5),
-            "two hits and two misses: half the weight, and the miss's black does not darken the hit's colour");
+      auto grid = nine(tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f));
+      for (int k : {1, 4, 7}) {
+        grid[k] = tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f);
+      }
+      const rt::PaintRead read = rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance);
+      Check(read.use && Near(read.weight, 0.75, 1e-5) && Near(read.rgb[0], 0.6, 1e-5),
+            "a column of hits and two of misses: the weight is the middle column's share of the footprint, and the miss's black does not darken the hit's colour");
     }
     // all misses: used (the environment stays), no weight
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f), tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f), tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f),
-                                    tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f)};
-      const rt::PaintRead read = rt::ReadForPaint(taps, four, depth, tolerance);
-      Check(read.use && read.kind == rt::Kind::kMiss && read.weight == 0.0f, "four misses: the image answers with no weight, so the march is not run");
+      auto all = nine(tap(5.0f, rt::Kind::kMiss, 0.0f, 0.0f));
+      const rt::PaintRead read = rt::ReadForPaint(wx, wy, all.data(), depth, tolerance);
+      Check(read.use && read.kind == rt::Kind::kMiss && read.weight == 0.0f, "nine misses: the image answers with no weight, so the march is not run");
     }
     // texels on another surface (a part in front, a neighbouring panel): not counted
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(3.0f, rt::Kind::kHit, 1.0f, 0.1f), tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f),
-                                    tap(0.0f, rt::Kind::kNoData, 0.0f, 0.0f)};
-      const rt::PaintRead read = rt::ReadForPaint(taps, four, depth, tolerance);
+      auto grid = nine(tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f));
+      grid[1] = tap(3.0f, rt::Kind::kHit, 1.0f, 0.1f);
+      grid[5] = tap(3.0f, rt::Kind::kHit, 1.0f, 0.1f);
+      grid[8] = tap(0.0f, rt::Kind::kNoData, 0.0f, 0.0f);
+      const rt::PaintRead read = rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance);
       Check(read.use && Near(read.weight, 1.0, 1e-5) && Near(read.rgb[0], 0.6, 1e-5),
             "texels on another surface, or on none, are left out of the mean (the part in front's colour does not leak)");
     }
     // the footprint's data is under half of the matching texels: the march
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f), tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f),
-                                    tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f)};
-      Check(!rt::ReadForPaint(taps, four, depth, tolerance).use, "only a quarter of the matching texels have data: the march answers (no seam of half-lit pixels)");
-      const rt::PaintTap three[4] = {tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f),
-                                     tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f)};
-      Check(rt::ReadForPaint(taps, three, depth, tolerance).use, "three of four have data: the image answers");
+      auto grid = nine(tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f));
+      grid[0] = tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f);
+      Check(!rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance).use, "only a corner texel (a sixty-fourth of the footprint) has data: the march answers (no seam of half-lit pixels)");
+      grid[4] = tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f);
+      Check(rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance).use, "the middle texel (more than half of the footprint) has data: the image answers");
+      auto most = nine(tap(5.0f, rt::Kind::kHit, 1.0f, 0.6f));
+      most[0] = most[2] = most[6] = tap(5.0f, rt::Kind::kNoData, 0.0f, 0.0f);
+      Check(rt::ReadForPaint(wx, wy, most.data(), depth, tolerance).use, "six of nine have data: the image answers");
     }
     // no texel is the paint's surface: the march (the paint's own agreement test has failed as well)
     {
-      const rt::PaintTap four[4] = {tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f), tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f),
-                                    tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f)};
-      Check(!rt::ReadForPaint(taps, four, depth, tolerance).use, "no texel is the surface the paint is on: no answer");
+      auto all = nine(tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f));
+      Check(!rt::ReadForPaint(wx, wy, all.data(), depth, tolerance).use, "no texel is the surface the paint is on: no answer");
     }
     // hidden hits: the debug kind
     {
-      const rt::PaintTap four[4] = {tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f), tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f), tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f),
-                                    tap(5.0f, rt::Kind::kHit, 0.5f, 0.9f)};
-      const rt::PaintRead read = rt::ReadForPaint(taps, four, depth, tolerance);
+      auto grid = nine(tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f));
+      grid[8] = tap(5.0f, rt::Kind::kHit, 0.5f, 0.9f);
+      const rt::PaintRead read = rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance);
       Check(read.use && read.kind == rt::Kind::kHidden && Near(read.weight, 0.5, 1e-5), "mostly hidden hits are a hidden hit, at their weight");
+    }
+  }
+
+  // THE EDGE: a straight edge of a reflected part crossing the image, through the pass's cone (the texels' own turns of the pattern) and the paint's B-spline.
+  // The model is flat: texel i, row j, ray `ray` hits where the position i + disc.x x width < `edge` (the cone is `width` texels wide at the hit's distance),
+  // weight = hits / 4, colour 1; the paint reads at places along the row. What the first version's edge was (one ray, a gloss of 0) is the comparison.
+  {
+    auto weight_at = [](float place, float edge, float width, int row_phase) {
+      float wx[3], wy[3];
+      float d = 0.0f;
+      const int n = rt::NearestTexel(place, &d);
+      rt::BSplineWeights(d, wx);
+      rt::BSplineWeights(0.0f, wy);
+      rt::PaintTap taps[9];
+      for (int k = 0; k < 9; ++k) {
+        const int tx = n + (k % 3) - 1;
+        const int ty = 20 + (k / 3) - 1;
+        int hits = 0;
+        int cast = 4;
+        if (width <= 0.0f) {
+          hits = float(tx) < edge ? 1 : 0;
+          cast = 1;
+        } else {
+          const float turns = rt::ConeRotation(uint32_t(tx + 100), uint32_t(ty + row_phase), 0);
+          for (int ray = 0; ray < 4; ++ray) {
+            hits += float(tx) + rt::ConeDisc(ray, turns).x * width < edge ? 1 : 0;
+          }
+        }
+        taps[k].history_distance = 5.0f;
+        taps[k].alpha = rt::EncodeAlpha(hits > 0 ? rt::Kind::kHit : rt::Kind::kMiss, float(hits) / float(cast));
+        taps[k].rgb[0] = taps[k].rgb[1] = taps[k].rgb[2] = 1.0f;
+      }
+      return rt::ReadForPaint(wx, wy, taps, 5.0f, 0.06f).weight;
+    };
+    for (float width : {0.0f, 3.0f, 6.0f}) {
+      float widest = 0.0f;      // the largest change of the weight between two reads a quarter texel apart
+      float run_start = -1.0f;  // the places where the weight is between 0.1 and 0.9: the edge's ramp
+      float run_end = -1.0f;
+      float backwards = 0.0f;   // the worst the weight goes back up as the place moves away from the part
+      float previous = weight_at(10.0f, 40.0f, width, 0);
+      for (float place = 10.0f; place < 70.0f; place += 0.25f) {
+        const float w = weight_at(place, 40.0f, width, 0);
+        widest = std::max(widest, std::fabs(w - previous));
+        if (w < previous) {
+          // the part is to the left of the edge: weight 1 left, 0 right: it should only fall as the place moves right
+        } else {
+          backwards = std::max(backwards, w - previous);
+        }
+        if (w > 0.1f && w < 0.9f) {
+          if (run_start < 0.0f) {
+            run_start = place;
+          }
+          run_end = place;
+        }
+        previous = w;
+      }
+      const float ramp = run_end >= 0.0f ? run_end - run_start + 0.25f : 0.0f;
+      if (width == 0.0f) {
+        Check(ramp < 1.6f && widest > 0.18f, "one ray per texel (a gloss of 0): a ramp of a texel and a quarter (2.5 pixels at 4K) and a step of nearly a fifth of the "
+                                              "weight between reads a quarter texel apart (measured " + std::to_string(widest) + ", ramp " + std::to_string(ramp) + ")");
+      } else {
+        Check(ramp > 0.9f * width && ramp < 2.2f * width && widest < 0.13f && backwards < 0.12f,
+              "the cone's edge (width " + std::to_string(width) + " texels): a ramp as wide as the cone (" + std::to_string(ramp) + " texels), no step above 0.13 between "
+              "reads a quarter texel apart (" + std::to_string(widest) + "), and no ripple back (" + std::to_string(backwards) + ")");
+      }
     }
   }
 
