@@ -23,9 +23,12 @@
 
 namespace mcla::compare {
 
-// Registers the key, the label and the changes that drop a flip. Once, for the native renderer, from
-// SetupPresentation (the ImGui drawer exists then).
-void Start(rex::ui::ImGuiDrawer* drawer);
+// Adds the label and registers the changes that drop a flip. Once, for the native renderer, from
+// LarecompApp::StartOverlays (UI thread, the window is open); the UI system owns the label dialog.
+void Start(rex::ui::IUISystem& ui);
+
+// The key: the overlay "mcla_compare" (ui.bind.mcla_compare, F1), a hotkey that runs the flip and shows nothing.
+rex::ui::OverlayConfig KeyOverlayConfig();
 
 // The key's own name for the pause row ("F1" unless it was rebound; capitals, digits, space and '+').
 std::string KeyLabel();

@@ -16,13 +16,8 @@
 #include <imgui.h>
 
 #include <rex/platform/file.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
-#include <rex/overlay_renderer.h>
-#if __has_include(<rex/ui/image_decode.h>)
-#include <rex/ui/image_decode.h>
 #define LARECOMP_MODS_HAS_IMAGES 1
-#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -37,6 +32,7 @@
 #include "mod_download.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/overlay_support.h"
 
 namespace fs = std::filesystem;
 
@@ -195,10 +191,16 @@ Verdict Judge(const LocalMod* local, const br::ServerMod& remote) {
 
 // ---------------------------------------------------------------- window ---
 
-class ModBrowserDialog final : public rex::ui::ImGuiDialog {
+class ModBrowserDialog;
+ModBrowserDialog* g_mod_dialog = nullptr;
+
+class ModBrowserDialog final : public mcla::ui::PanelDialog {
 public:
-    ModBrowserDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate)
-        : ImGuiDialog(drawer), immediate_(immediate) {}
+    explicit ModBrowserDialog(rex::ui::IUISystem& ui) : ui_(&ui) { g_mod_dialog = this; }
+    ~ModBrowserDialog() override {
+        g_mod_dialog = nullptr;
+        pad_block_.Set(false);
+    }
 
     void Toggle() {
         if (g_mod_open.load())
@@ -269,6 +271,7 @@ private:
 
     void Open_() {
         g_mod_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
         client_.SetAutoRefresh(true);
         Rescan();
@@ -277,8 +280,9 @@ private:
 
     void Close_() {
         g_mod_open.store(false);
+        pad_block_.Set(false);
         client_.SetAutoRefresh(false);
-        auto& io = GetIO();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
@@ -328,12 +332,9 @@ private:
 
     void MakeTexture(const std::string& key, const std::vector<uint8_t>& bytes) {
 #if defined(LARECOMP_MODS_HAS_IMAGES)
-        if (bytes.empty() || !immediate_ || textures_.count(key)) return;
-        int w = 0, h = 0;
-        std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
-        if (rgba.empty() || w <= 0 || h <= 0 || w > 2048 || h > 2048) return;
-        auto tex = immediate_->CreateTexture(uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear, false,
-                                             rgba.data());
+        // In OnDraw's call tree (TakeResults): the ImGui context is current, which IconTexture needs.
+        if (bytes.empty() || textures_.count(key)) return;
+        auto tex = mcla::ui::IconTexture::FromEncoded(bytes.data(), bytes.size());
         if (tex) textures_[key] = std::move(tex);
 #else
         (void)key;
@@ -345,7 +346,7 @@ private:
     void Thumb(const std::string& key, const std::string& name) {
         auto it = textures_.find(key);
         if (it != textures_.end()) {
-            ImGui::Image(reinterpret_cast<ImTextureID>(it->second.get()), ImVec2(kThumb, kThumb));
+            ImGui::Image(it->second->Ref(), ImVec2(kThumb, kThumb));
             return;
         }
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -637,7 +638,8 @@ private:
 #endif
     }
 
-    rex::ui::ImmediateDrawer* immediate_;
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     br::Client client_;
     std::shared_ptr<Results> results_;
     bool scanning_local_ = false;
@@ -646,7 +648,7 @@ private:
     std::chrono::steady_clock::time_point remote_wait_since_{};
     std::vector<LocalMod> local_;
     std::vector<Available> remote_;
-    std::map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> textures_;
+    std::map<std::string, std::unique_ptr<mcla::ui::IconTexture>> textures_;
     std::unique_ptr<br::ModDownload> download_;
     std::string download_name_;
     std::string message_;
@@ -655,16 +657,17 @@ private:
     char search_[64] = {};
 };
 
-ModBrowserDialog* g_mod_dialog = nullptr;
-
 }  // namespace
 
-void StartModBrowser(rex::ui::ImGuiDrawer* imgui_drawer, rex::ui::ImmediateDrawer* immediate_drawer) {
-    if (!imgui_drawer || g_mod_dialog) return;
-    g_mod_dialog = new ModBrowserDialog(imgui_drawer, immediate_drawer);
-    rex::ui::RegisterBind("bind_mod_browser", "F5", "Open or close the mod browser", [] {
-        if (g_mod_dialog) g_mod_dialog->Toggle();
-    });
+void StartModBrowser(rex::ui::IUISystem& ui) {
+    if (g_mod_dialog) return;
+    // The dialog is always in the UI system's list and draws nothing while closed (as it did on 0.10); the UI
+    // system owns it, and its destructor clears g_mod_dialog.
+    ui.AddDialog(std::make_unique<ModBrowserDialog>(ui));
+}
+
+void ModBrowserKeyPressed() {
+    if (g_mod_dialog) g_mod_dialog->Toggle();
 }
 
 void ModBrowserOpen() { g_mod_open_asked.store(true); }

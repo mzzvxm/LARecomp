@@ -15,14 +15,8 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
-#include <rex/hid/input_system.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
-#include <rex/overlay_renderer.h>
-#if __has_include(<rex/ui/image_decode.h>)
-#include <rex/ui/image_decode.h>
 #define LARECOMP_BROWSER_HAS_ICON 1
-#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -40,6 +34,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
+#include "mc_engine/ui/overlay_support.h"
 #include "mc_engine/input_state.h"
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
@@ -200,16 +195,24 @@ std::string PendingText(const Pending& p) {
     return p.address + "|" + std::to_string(p.vip) + "|" + p.label + "|" + std::to_string(p.kind);
 }
 
-class BrowserDialog final : public rex::ui::ImGuiDialog {
+class BrowserDialog;
+BrowserDialog* g_dialog = nullptr;
+
+class BrowserDialog final : public mcla::ui::PanelDialog {
 public:
-    BrowserDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate)
-        : ImGuiDialog(drawer), immediate_(immediate) {
+    explicit BrowserDialog(rex::ui::IUISystem& ui) : ui_(&ui) {
+        g_dialog = this;
         pending_ = ParsePending(larecomp::cvar::GetFlagByName("server_browser_pending"));
         if (pending_.valid()) {
             // Offered once, right after the restart it asked for.
             SaveString("server_browser_pending", "");
             pending_until_ = Clock::now() + std::chrono::minutes(3);
         }
+    }
+
+    ~BrowserDialog() override {
+        g_dialog = nullptr;
+        pad_block_.Set(false);
     }
 
     void Toggle() {
@@ -285,6 +288,7 @@ protected:
 private:
     void Open_() {
         g_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
         client_.SetAutoRefresh(true);
         LARECOMP_APP_INFO("[browser] opened");
@@ -292,37 +296,35 @@ private:
 
     void Close_() {
         g_open.store(false);
+        pad_block_.Set(false);
         client_.SetAutoRefresh(false);
-        auto& io = GetIO();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
         LARECOMP_APP_INFO("[browser] closed");
     }
 
-    // A new icon becomes a texture here, on the UI thread.
+    // A new icon becomes a texture here, on the UI thread, in the draw (the ImGui context is current).
     void TakeIcons() {
         for (auto& up : client_.TakeIcons()) {
 #if defined(LARECOMP_BROWSER_HAS_ICON)
-            if (!immediate_) continue;
-            int w = 0, h = 0;
-            std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(up.png.data(), up.png.size(), w, h);
-            if (rgba.empty() || w <= 0 || h <= 0 || w > 512 || h > 512) {
+            auto tex = mcla::ui::IconTexture::FromEncoded(up.png.data(), up.png.size(), 512);
+            if (!tex) {
                 LARECOMP_APP_WARN("[browser] icon of {} could not be decoded", up.address);
                 continue;
             }
-            auto tex = immediate_->CreateTexture(uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear,
-                                                 false, rgba.data());
-            if (tex) icons_[up.address] = std::move(tex);
+            icons_[up.address] = std::move(tex);
 #else
             (void)up;
 #endif
         }
     }
 
-    ImTextureID Icon(const std::string& address) const {
+    // The icon of a server, or null (none yet).
+    mcla::ui::IconTexture* Icon(const std::string& address) const {
         auto it = icons_.find(address);
-        return it == icons_.end() ? ImTextureID{} : reinterpret_cast<ImTextureID>(it->second.get());
+        return it == icons_.end() ? nullptr : it->second.get();
     }
 
     bool Matches(const br::ServerView& s) const {
@@ -394,9 +396,9 @@ private:
             // Past the cursor triangle.
             ImGui::SetCursorPos(ImVec2(start.x + 22.0f, start.y));
             if (icons) {
-                const ImTextureID tex = Icon(s->address);
+                mcla::ui::IconTexture* tex = Icon(s->address);
                 if (tex)
-                    ImGui::Image(tex, ImVec2(row_h - 4, row_h - 4));
+                    ImGui::Image(tex->Ref(), ImVec2(row_h - 4, row_h - 4));
                 else
                     ImGui::Dummy(ImVec2(row_h - 4, row_h - 4));
                 ImGui::SameLine();
@@ -437,8 +439,8 @@ private:
         }
         const bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (icons) {
-            if (const ImTextureID tex = Icon(s->address)) {
-                ImGui::Image(tex, ImVec2(96, 96));
+            if (mcla::ui::IconTexture* tex = Icon(s->address)) {
+                ImGui::Image(tex->Ref(), ImVec2(96, 96));
                 ImGui::SameLine();
             }
         }
@@ -892,10 +894,11 @@ private:
         }
     }
 
-    rex::ui::ImmediateDrawer* immediate_;
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     br::Client client_;
     br::Snapshot snapshot_;
-    std::map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> icons_;
+    std::map<std::string, std::unique_ptr<mcla::ui::IconTexture>> icons_;
     std::string selected_;
     char search_[64] = {};
     char add_[96] = {};
@@ -921,28 +924,21 @@ private:
     Clock::time_point failed_since_{};
 };
 
-BrowserDialog* g_dialog = nullptr;
-
 }  // namespace
 
-void StartServerBrowser(rex::ui::ImGuiDrawer* imgui_drawer, rex::ui::ImmediateDrawer* immediate_drawer,
-                        rex::system::IInputSystem* input_system) {
-    if (!imgui_drawer || g_dialog) return;
-    g_dialog = new BrowserDialog(imgui_drawer, immediate_drawer);
-    StartModBrowser(imgui_drawer, immediate_drawer);
-    rex::ui::RegisterBind("bind_server_browser", "F6", "Open or close the server browser",
-                          [] {
-                              if (g_dialog) g_dialog->Toggle();
-                          });
-    // The SDK's own rule (the game reads input unless one of its overlays has
-    // the mouse) plus ours: nothing while the browser is open. The SDK set its
-    // callback before this runs; this one replaces it.
-    if (auto* input = static_cast<rex::input::InputSystem*>(input_system)) {
-        input->SetActiveCallback([imgui_drawer]() {
-            if (ServerBrowserCapturesInput()) return false;
-            return !imgui_drawer->GetIO().WantCaptureMouse;
-        });
-    }
+void StartServerBrowser(rex::ui::IUISystem& ui) {
+    if (g_dialog) return;
+    // The UI system owns the dialogs; they are always in its list and draw nothing while closed (as on 0.10).
+    ui.AddDialog(std::make_unique<BrowserDialog>(ui));
+    StartModBrowser(ui);
+    // 0.10 replaced the input system's "active" callback here (the game reads input unless an overlay has the mouse,
+    // and nothing while a browser is open). 0.11's UI system keeps the game's keyboard and mouse from an overlay that
+    // wants them (SetInputCaptured); the rest is ours: the pads through InputBlock above, the keyboard and mouse
+    // listeners of LARecomp through ServerBrowserCapturesInput (keyboard_native.cpp, mouse_look.cpp).
+}
+
+void ServerBrowserKeyPressed() {
+    if (g_dialog) g_dialog->Toggle();
 }
 
 void ServerBrowserOpen() { g_open_asked.store(true); }

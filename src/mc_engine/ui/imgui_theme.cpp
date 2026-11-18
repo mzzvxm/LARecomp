@@ -13,6 +13,7 @@
 #include <imgui_internal.h>
 #include <rex/platform/file.h>
 #include <rex/logging/log_category.h>
+#include <rex/ui/ui_system.h>
 
 #include "overlay_input_core.h"
 #include "mc_engine/input_state.h"
@@ -208,6 +209,10 @@ void LoadMclaFonts(ImFontAtlas* atlas) {
   REXLOG_INFO("[ui] Loaded the LARecomp fonts (body and titles, logo, banner)");
 }
 
+// The window rounding ApplyMclaTheme sets, which EnsureMclaTheme tests to know the style is still LARecomp's
+// (the UI system's own default is the Metrics value, 0).
+static constexpr float kThemeWindowRounding = 16.0f;
+
 void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
   style.FontSizeBase = kBodySize;
 
@@ -215,7 +220,7 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
   // In-game panels: a large-radius frosted bezel around a smaller-radius body.
   // Plain windows (the SDK's settings, console, achievements) get the bezel as
   // a thick translucent border.
-  style.WindowRounding    = 16.0f;
+  style.WindowRounding    = kThemeWindowRounding;
   style.ChildRounding     = 8.0f;
   style.FrameRounding     = 4.0f;
   style.PopupRounding     = 10.0f;
@@ -333,41 +338,91 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
   colors[ImGuiCol_TextSelectedBg]        = ImVec4(0.20f, 0.84f, 0.84f, 0.35f);
   colors[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.01f, 0.01f, 0.01f, 0.60f);
 
-  // Per-overlay styling
+  // Per-overlay styling: what the SDK's own overlays (the achievement toast, the console, the settings and debug
+  // overlays) draw with. The palette and metrics of rex::ui::Style are NOT touched except for the toast's size:
+  // the UI system re-applies its default ImGui style whenever they differ from what it applied last, which would
+  // undo the lines above (EnsureMclaTheme puts them back, once, at the next frame, for the same reason).
   if (ui_style) {
-    ui_style->achievements.header_text       = kColorYellow;
-    ui_style->achievements.unlocked_title    = kColorCyan;
-    ui_style->achievements.unlocked_desc     = ImVec4(0.85f, 0.92f, 0.90f, 1.00f);
-    ui_style->achievements.locked_title      = ImVec4(0.68f, 0.68f, 0.65f, 1.00f);
-    ui_style->achievements.locked_desc       = ImVec4(0.48f, 0.48f, 0.46f, 1.00f);
-    ui_style->achievements.badge_gamerscore  = kColorYellow;
-    ui_style->achievements.row_unlocked_bg   = ImVec4(0.05f, 0.35f, 0.35f, 0.40f);
-    ui_style->achievements.progress_bar      = kColorCyan;
-    ui_style->achievements.row_rounding      = 4.0f;
-    ui_style->achievements.window_padding    = ImVec2(18.0f, 14.0f);
-    ui_style->achievements.item_spacing      = ImVec2(10.0f, 7.0f);
+    using rex::ui::FromImVec4;
+    ui_style->achievements.header_text       = FromImVec4(kColorYellow);
+    ui_style->achievements.unlocked_title    = FromImVec4(kColorCyan);
+    ui_style->achievements.unlocked_desc     = FromImVec4(ImVec4(0.85f, 0.92f, 0.90f, 1.00f));
+    ui_style->achievements.locked_title      = FromImVec4(ImVec4(0.68f, 0.68f, 0.65f, 1.00f));
+    ui_style->achievements.locked_desc       = FromImVec4(ImVec4(0.48f, 0.48f, 0.46f, 1.00f));
+    ui_style->achievements.badge_gamerscore  = FromImVec4(kColorYellow);
+    ui_style->achievements.row_unlocked_bg   = FromImVec4(ImVec4(0.05f, 0.35f, 0.35f, 0.40f));
+    ui_style->achievements.progress_bar      = FromImVec4(kColorCyan);
+    ui_style->achievements.window_padding    = rex::Vec2{18.0f, 14.0f};
+    ui_style->achievements.item_spacing      = rex::Vec2{10.0f, 7.0f};
 
-    ui_style->toast.title                    = kColorYellow;
-    ui_style->toast.text                     = kColorTextWhite;
-    ui_style->toast.rounding                 = 12.0f;
-    ui_style->toast.background_alpha         = 0.92f;
+    ui_style->toast.title                    = FromImVec4(kColorYellow);
+    ui_style->toast.text                     = FromImVec4(kColorTextWhite);
 
-    ui_style->console.level[1]               = kColorCyan;
-    ui_style->console.level[2]               = kColorTextWhite;
-    ui_style->console.level[3]               = kColorYellow;
-    ui_style->console.completion_bg          = ImVec4(0.05f, 0.05f, 0.05f, 0.96f);
-    ui_style->console.completion_highlight   = ImVec4(0.05f, 0.43f, 0.43f, 0.70f);
+    ui_style->console.level[1]               = FromImVec4(kColorCyan);
+    ui_style->console.level[2]               = FromImVec4(kColorTextWhite);
+    ui_style->console.level[3]               = FromImVec4(kColorYellow);
+    ui_style->console.completion_bg          = FromImVec4(ImVec4(0.05f, 0.05f, 0.05f, 0.96f));
+    ui_style->console.completion_highlight   = FromImVec4(ImVec4(0.05f, 0.43f, 0.43f, 0.70f));
 
-    ui_style->debug.muted_text               = ImVec4(0.91f, 0.91f, 0.88f, 0.40f);
+    ui_style->debug.muted_text               = FromImVec4(ImVec4(0.91f, 0.91f, 0.88f, 0.40f));
 
     // Cyan is the selection color in the game's menus, so live settings read
     // as plain text; yellow flags the ones that wait for a restart.
-    ui_style->settings.warning               = kColorYellow;
-    ui_style->settings.lifecycle_live        = kColorTextWhite;
-    ui_style->settings.lifecycle_restart     = kColorYellow;
-    ui_style->settings.lifecycle_init_only   = ImVec4(0.80f, 0.36f, 0.32f, 1.00f);
-    ui_style->settings.lifecycle_unknown     = kColorTextWhite;
+    ui_style->settings.warning               = FromImVec4(kColorYellow);
+    ui_style->settings.lifecycle_hot_reload  = FromImVec4(kColorTextWhite);
+    ui_style->settings.lifecycle_restart     = FromImVec4(kColorYellow);
+    ui_style->settings.lifecycle_init_only   = FromImVec4(ImVec4(0.80f, 0.36f, 0.32f, 1.00f));
+    ui_style->settings.lifecycle_unknown     = FromImVec4(kColorTextWhite);
+
+    // The SDK's toast (4.5 s; the only toast LARecomp does not draw itself: the SDK adds it when the title starts)
+    // is a fixed window of this size with the heading and "<name> (<score>G)" under it, in the body face, which
+    // is larger than the SDK's own font. CHECK: sizes picked by arithmetic, to be looked at in a run.
+    ui_style->metrics.toast_width            = 470.0f;
+    ui_style->metrics.toast_height           = 100.0f;
+    ui_style->metrics.toast_stack_height     = 116.0f;
+    ui_style->metrics.toast_rounding         = 12.0f;
+    ui_style->metrics.row_rounding           = 4.0f;
+    ui_style->metrics.window_alpha.toast     = 0.92f;
   }
+}
+
+void EnsureMclaTheme() {
+  if (!ImGui::GetCurrentContext()) return;
+  // First draw: the fonts. They are added here, with the ImGui context current, because IUISystem::GetFonts hands
+  // out the atlas but ImGui's own calls (FontDefault, the context hook) need the context, which only a dialog's
+  // Draw has. The 1.92 atlas is dynamic: glyphs are baked when text uses them, and the textures follow with the
+  // renderer's next pass.
+  static bool fonts_loaded = false;
+  if (!fonts_loaded) {
+    fonts_loaded = true;
+    LoadMclaFonts(ImGui::GetIO().Fonts);
+  }
+  ImGuiStyle& style = ImGui::GetStyle();
+  if (style.WindowRounding != kThemeWindowRounding) {
+    ApplyMclaTheme(style, nullptr);
+  }
+}
+
+namespace {
+
+// Drawn first every frame (it is the first dialog added): puts the fonts and the style in place before any other
+// dialog, the SDK's toast included, draws.
+class ThemeKeeper final : public rex::ui::DialogBase {
+ public:
+  bool Draw(ImGuiIO&) override {
+    EnsureMclaTheme();
+    return true;
+  }
+  bool NeedsContinuousPaint() const override { return false; }
+};
+
+}  // namespace
+
+void InstallMclaTheme(rex::ui::IUISystem& ui) {
+  // The SDK's Style (its overlays' colours and the toast's size) and ImGui's own style, which the UI system applies
+  // from the palette on its first frame after this; the keeper puts ours back right after, in the same frame.
+  ApplyMclaTheme(ui.GetImGuiStyle(), &ui.GetStyle());
+  ui.AddDialog(std::make_unique<ThemeKeeper>());
 }
 
 // --- Panels -------------------------------------------------------------------------

@@ -1,11 +1,12 @@
 #include "controller_toast.h"
 #include "imgui_theme.h"
 #include "overlay_input_core.h"
+#include "overlay_support.h"
 #include "mc_engine/input_state.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
-#include <rex/ui/dialog.h>
+#include <rex/ui/ui_system.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -36,10 +37,7 @@ std::atomic<bool> g_list_changed{true};
 
 void OnControllersChanged(void*) { g_list_changed.store(true, std::memory_order_release); }
 
-class ControllerToastDialog final : public rex::ui::ImGuiDialog {
- public:
-  explicit ControllerToastDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
-
+class ControllerToastDialog final : public PanelDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     const Clock::time_point now = Clock::now();
@@ -131,18 +129,19 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   ControllerRoster roster_;
 };
 
-std::unique_ptr<ControllerToastDialog> g_toasts;
+bool g_started = false;
 
 }  // namespace
 
-void StartControllerToasts(rex::ui::ImGuiDrawer* drawer) {
-  if (!drawer || g_toasts) return;
+void StartControllerToasts(rex::ui::IUISystem& ui) {
+  if (g_started) return;
+  g_started = true;
   // The pads come from the SDK's own device list, by the input state's events: it reads the list when the SDK's
-  // device counter moves and calls us then. The flag starts set, so the first drawn frame takes the list as it is.
+  // device generation moves and calls us then. The flag starts set, so the first drawn frame takes the list as it is.
   if (!larecomp::input::AddControllerListener(&OnControllersChanged, nullptr)) {
     REXLOG_WARN("[toast] the input state's listener table is full: the controller toast will not see pads come and go");
   }
-  g_toasts = std::make_unique<ControllerToastDialog>(drawer);
+  ui.AddDialog(std::make_unique<ControllerToastDialog>());
   REXLOG_INFO("[toast] controller toast ready: it follows the SDK's device list by events (no polling)");
 }
 
