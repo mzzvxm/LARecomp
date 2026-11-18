@@ -18,6 +18,7 @@ add_library(larecomp_gpu OBJECT
     car_dump.cpp
     car_frame.cpp
     car_mesh_read.cpp
+    car_rt_scene.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
     capture_readback.cpp

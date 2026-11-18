@@ -489,6 +489,14 @@ class AmbientOcclusion {
   bool SunDirection(double to_sun[3]) const;
   // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
   bool ContactGated() const { return contact_state_ == ContactState::kGated; }
+  // The frame's linear depth image (level 0: R32_FLOAT at the traced size, the vehicle bit in its lowest bit, hlsl/ao_common.hlsli) and
+  // the lens it was made with (tan of the half field of view, x and y), for a pass that reads it after the occlusion's own, in the same
+  // list (car_rt_scene.h's check). False in a frame whose passes did not run (the image is the next frame's depth history then).
+  struct LinearDepthView {
+    const HostImage* image = nullptr;
+    float tan_half_fov[2] = {};
+  };
+  bool FrameLinearDepth(LinearDepthView* out) const;
 
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
@@ -932,6 +940,8 @@ class AmbientOcclusion {
   bool frame_had_main_view_ = false;
   bool ran_this_frame_ = false;
   bool applied_this_frame_ = false;   // ... and the apply pass drew into the colour target
+  const HostImage* linear_depth_image_ = nullptr;  // the frame's level 0 depth, set when the passes ran (FrameLinearDepth)
+  float linear_depth_tan_[2] = {};
 
   // The camera: this frame's (read at the anchor) and the frame before's, with the kind of view
   // each came from (a pause/map frame's camera is never used for a play frame or the other way).

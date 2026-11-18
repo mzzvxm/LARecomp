@@ -56,6 +56,7 @@
 #include "capture_readback.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
 #include "descriptors.h"
@@ -288,6 +289,7 @@ class Renderer final : public RenderThread::Executor {
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
+  CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

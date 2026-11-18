@@ -24,6 +24,7 @@
 #include "ao.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
 #include "cut_request.h"
@@ -1339,6 +1340,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     }
     if (car_shadow_) {
       car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
+    }
+    if (car_rt_) {
+      car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
     }
   }
 
@@ -3133,6 +3137,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // targets: the reset below forgets them too).
     shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
+  if (car_rt_) {
+    // The same depth copy builds the player's car's ray tracing structures (car_rt_scene.h): new meshes into their bottom level structures,
+    // the frame's top level, and the check pass over the occlusion's linear depth. Before the car self-reflection's own pass, which may
+    // trace in the top level; after the occlusion, whose depth image the check reads.
+    car_rt_->OnResolve(record, summary, list, slot_, ao_);
+  }
   if (car_refl_ && car_refl_->wants_draws()) {
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
     // its own pass and target: the reset below forgets them too).
@@ -3196,6 +3206,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_shadow_) {
     car_shadow_->OnComposite();
+  }
+  if (car_rt_) {
+    car_rt_->OnComposite();
   }
   if (temporal_) {
     temporal_->OnComposite();
@@ -3330,6 +3343,9 @@ void Scene::OnPresent() {
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (car_rt_) {
+    car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
   }
   if (temporal_) {
     temporal_->EndFrame();

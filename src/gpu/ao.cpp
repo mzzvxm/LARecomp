@@ -3136,6 +3136,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // nothing of this frame reads depth_[0] again (the next frame's depth pass writes the other).
     std::swap(depth_[0], depth_prev_);
   }
+  // This frame's linear depth, for the passes that read it after these (FrameLinearDepth): with the bounce light's swap above it is the
+  // history image now.
+  linear_depth_image_ = plan.gi.on ? &depth_prev_ : &depth_[0];
+  linear_depth_tan_[0] = base.lens[0];
+  linear_depth_tan_[1] = base.lens[1];
   ran_this_frame_ = true;
   if (plan.occlusion && applied) {
     if (runs_ == 0) {
@@ -4119,6 +4124,16 @@ void AmbientOcclusion::OnPresent() {
   ran_this_frame_ = false;
   applied_this_frame_ = false;
   ++frame_;
+}
+
+bool AmbientOcclusion::FrameLinearDepth(LinearDepthView* out) const {
+  if (!ran_this_frame_ || !linear_depth_image_ || !linear_depth_image_->texture) {
+    return false;
+  }
+  out->image = linear_depth_image_;
+  out->tan_half_fov[0] = linear_depth_tan_[0];
+  out->tan_half_fov[1] = linear_depth_tan_[1];
+  return true;
 }
 
 menu_world::World AmbientOcclusion::FrameWorld() const {

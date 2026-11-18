@@ -93,6 +93,7 @@ class CarSelfRefl;
 class CarDump;
 class CarFrame;
 class CarShadowMap;
+class CarRtScene;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -142,6 +143,9 @@ class Scene {
   // The player car's sun shadow map (car_shadow_map.h): told of the frame boundary, the anchor, the composite marker and the mid-scene
   // depth copy, where it records its map BEFORE the ambient occlusion's passes. Null: none.
   void SetCarShadowMap(CarShadowMap* car_shadow) { car_shadow_ = car_shadow; }
+  // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
+  // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
+  void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -431,6 +435,7 @@ class Scene {
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in

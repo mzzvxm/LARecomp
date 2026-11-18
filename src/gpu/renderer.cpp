@@ -270,6 +270,21 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
+    // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
+    // asks for it. Initialized before the effects that use it (the ray traced car reflections).
+    {
+      const bool vulkan = ActiveBackend() == Backend::kVulkan;
+      const std::string why = CarRtUnsupportedReason(device_.capabilities(), vulkan);
+      if (!why.empty()) {
+        REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
+      } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
+        REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
+                    "structures while an effect asks for them",
+                    device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+      } else {
+        REXLOG_WARN("[gpu] car ray tracing: the device can trace rays but the structures could not be set up: not available");
+      }
+    }
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -291,6 +306,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
     scene_.SetCarShadowMap(&car_shadow_);
+    scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -353,6 +369,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
+    car_rt_.Shutdown();
     car_frame_.Shutdown();
     flicker_probe_.Shutdown();
     capture_readback_.Shutdown();
@@ -523,6 +540,7 @@ void Renderer::Shutdown() {
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
+  car_rt_.Shutdown();
   car_frame_.Shutdown();
   flicker_probe_.Shutdown();
   capture_readback_.Shutdown();
@@ -1699,6 +1717,8 @@ void Renderer::ReportFrameStats() {
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
                                                          : std::string()) +
+                           (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())
+                                                     : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
