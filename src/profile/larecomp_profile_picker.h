@@ -14,10 +14,10 @@
 #include <filesystem>
 #include <functional>
 
-#include <rex/app/title_app.h>
+#include "app_paths.h"
 
 namespace rex::ui {
-class ImGuiDrawer;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp {

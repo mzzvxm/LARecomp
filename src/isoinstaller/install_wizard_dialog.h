@@ -3,9 +3,8 @@
 //
 // Vendored from the ReXGlue fork's rex::ui::InstallWizardDialog
 // (rex/ui/overlay/install_wizard_overlay.h) so larecomp builds against the stock
-// SDK, which has no such overlay. It only needs rex::ui::ImGuiDialog and ImGui,
-// both upstream. Renamed into larecomp's namespace so it can coexist with the
-// fork's copy when built against the fork.
+// SDK, which has no such overlay. On rexglue 0.11 it is a dialog of the UI system
+// (larecomp_dialog.h) added with ShowDialog.
 
 #include <atomic>
 #include <cstdint>
@@ -16,11 +15,11 @@
 #include <thread>
 #include <vector>
 
-#include <rex/ui/dialog.h>
+#include "larecomp_dialog.h"
 
 namespace larecomp {
 
-class InstallWizardDialog final : public rex::ui::ImGuiDialog {
+class InstallWizardDialog final : public ui::ImGuiDialog {
  public:
   using PickSourceCallback = std::function<std::filesystem::path()>;
   using InstallCallback = std::function<bool(const std::filesystem::path& destination,
@@ -31,15 +30,16 @@ class InstallWizardDialog final : public rex::ui::ImGuiDialog {
                                             std::string& error)>;
   using CompleteCallback = std::function<void(std::filesystem::path)>;
 
-  // Shows itself on construction and deletes itself when closed, like every
-  // rex::ui::ImGuiDialog. `complete` runs on the UI thread, from the dialog's
-  // own draw, once the player presses Start Game after a successful install.
-  InstallWizardDialog(rex::ui::ImGuiDrawer* drawer, std::string title, std::string intro,
+  // Shown with ui::ShowDialog<InstallWizardDialog>(ui, ...) and destroyed by the UI
+  // system when closed. `complete` runs on the UI thread, from the dialog's own
+  // draw, once the player presses Start Game after a successful install.
+  InstallWizardDialog(std::string title, std::string intro,
                       std::string install_directory, PickSourceCallback pick_source,
                       InstallCallback install, CompleteCallback complete);
 
- protected:
   void OnClose() override;
+
+ protected:
   void OnDraw(ImGuiIO& io) override;
 
  private:

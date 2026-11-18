@@ -25,13 +25,14 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
+#include <rex/filesystem/file_system_factory.h>
 #include <rex/filesystem/stfs.h>
 #include <rex/logging/log_category.h>
+#include <rex/module.h>
 #include <rex/xam/user_profile.h>
-#include <rex/kernel/types/status.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
-#include <rex/ui/window.h>
+
+#include "larecomp_dialog.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -53,9 +54,6 @@ namespace larecomp {
 namespace {
 
 namespace fs = std::filesystem;
-
-// X_STATUS_SUCCESS expands to a bare X_STATUS cast; bring the type into scope.
-using rex::X_STATUS;
 
 // The XUID every profile shared before per-profile XUIDs (the fork's
 // UserProfile::kLegacyXuid; still the only one on the stock SDK). Names the
@@ -110,7 +108,7 @@ std::string ProfileDirNameFor() {
   }
 }
 
-std::string ProfileDirName() { return ProfileDirNameFor<rex::system::xam::UserProfile>(); }
+std::string ProfileDirName() { return ProfileDirNameFor<rex::xam::UserProfile>(); }
 
 bool ReadFileBytes(const fs::path& path, std::vector<uint8_t>& out) {
 #if defined(_WIN32)
@@ -286,71 +284,56 @@ void MigrateLegacyXuidDir(const fs::path& user_data_root) {
   }
 }
 
-// Reads all bytes of a mounted STFS entry into a vector.
-bool ReadEntryBytes(rex::filesystem::Entry* entry, std::vector<uint8_t>& out) {
-  rex::filesystem::File* file = nullptr;
-  if (entry->Open(rex::filesystem::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS ||
-      !file) {
-    return false;
-  }
-  out.resize(entry->size());
-  size_t off = 0;
-  while (off < out.size()) {
-    size_t got = 0;
-    file->ReadSync(std::span<uint8_t>(out.data() + off, out.size() - off), off, &got);
-    if (got == 0) {
-      break;
-    }
-    off += got;
-  }
-  file->Destroy();
-  return off == out.size();
-}
-
 // A real-console Xbox 360 save is an STFS package (magic CON/LIVE/PIRS) whose
 // outer file carries profile/console identity, wrapping the actual RAGE save as
 // an inner file. Xenia represents this as a folder named after the package with
-// the decrypted inner file inside. Mount the package and pull out the inner
-// save (the first entry that validates as a RAGE container).
+// the decrypted inner file inside. Open the package (rexglue 0.11: the file
+// system factory's OpenContainer gives an IContainerImage with the parsed tree)
+// and pull out the inner save (the first file that validates as a RAGE container).
+// CHECK: IFileSystemFactory is served by the rexfilesystem module, which is
+// connected before OnInit, so the wizard (Init to LaunchTitle) finds it.
 bool ExtractSaveFromStfs(const fs::path& package, std::vector<uint8_t>& out, SaveInfo& info,
                          std::string& err) {
-  if (!rex::filesystem::StfsContainerDevice::ReadPackageHeader(package)) {
-    err = "not an STFS package";
+  auto* factory = rex::AppInterfaces::Get<rex::filesystem::IFileSystemFactory>();
+  if (!factory) {
+    err = "the file system module is not available";
     return false;
   }
-  auto device = std::make_unique<rex::filesystem::StfsContainerDevice>("", package);
-  if (!device->Initialize()) {
+  auto opened = factory->OpenContainer(package);
+  if (!opened) {
     err = "the STFS package could not be opened (damaged or unsupported)";
     return false;
   }
-  auto* root = device->ResolvePath("");
-  if (!root) {
-    err = "the STFS package has no readable contents";
+  const rex::filesystem::IContainerImage& image = **opened;
+  if (image.GetType() != rex::filesystem::ContainerType::kSTFS) {
+    err = "not an STFS package";
     return false;
   }
 
-  std::queue<rex::filesystem::Entry*> queue;
-  queue.push(root);
-  while (!queue.empty()) {
-    auto* entry = queue.front();
-    queue.pop();
-    for (const auto& child : entry->children()) {
-      queue.push(child.get());
-    }
-    if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
+  // Nodes are in the container's own order (the root first); every file is a candidate.
+  for (const rex::filesystem::ContainerNode& node : image.GetNodes()) {
+    if (rex::HasFlags(node.info.attributes, rex::filesystem::FileAttributes::kDirectory)) {
       continue;
     }
-    if (entry->size() < 12 || entry->size() > 8ull * 1024 * 1024) {
+    if (node.info.size < 12 || node.info.size > 8ull * 1024 * 1024) {
       continue;
     }
-    std::vector<uint8_t> bytes;
-    if (!ReadEntryBytes(entry, bytes)) {
+    std::vector<uint8_t> bytes(static_cast<size_t>(node.info.size));
+    size_t off = 0;
+    while (off < bytes.size()) {
+      auto got = image.Read(node, off, std::span<uint8_t>(bytes.data() + off, bytes.size() - off));
+      if (!got || *got == 0) {
+        break;
+      }
+      off += *got;
+    }
+    if (off != bytes.size()) {
       continue;
     }
     std::string ignored;
     if (ValidateSave(bytes, info, ignored)) {
       out = std::move(bytes);
-      REXLOG_INFO("Extracted inner save '{}' from STFS package", entry->name());
+      REXLOG_INFO("Extracted inner save '{}' from STFS package", node.info.name);
       return true;
     }
   }
@@ -571,17 +554,16 @@ fs::path PickSaveFile() {
 
 // ---- Dialog -----------------------------------------------------------------
 
-class SaveImportDialog final : public rex::ui::ImGuiDialog {
+class SaveImportDialog final : public ui::ImGuiDialog {
  public:
-  SaveImportDialog(rex::ui::ImGuiDrawer* drawer, fs::path user_data_root, fs::path xenia_found,
+  SaveImportDialog(fs::path user_data_root, fs::path xenia_found,
                    fs::path rpcs3_found, std::function<void()> on_finished)
-      : ImGuiDialog(drawer),
-        user_data_root_(std::move(user_data_root)),
+      : user_data_root_(std::move(user_data_root)),
         xenia_found_(std::move(xenia_found)),
         rpcs3_found_(std::move(rpcs3_found)),
         on_finished_(std::move(on_finished)) {}
 
- protected:
+  // Runs once, after the draw that Close() ended: this is what tells the app's setup loop to go on.
   void OnClose() override {
     REXLOG_INFO("Save wizard: dialog closed");
     if (on_finished_) {
@@ -589,6 +571,8 @@ class SaveImportDialog final : public rex::ui::ImGuiDialog {
       on_finished_ = nullptr;
     }
   }
+
+ protected:
 
   void OnDraw(ImGuiIO& io) override {
     // Diagnostics: confirms the dialog is being drawn at a sane size and that
@@ -710,9 +694,9 @@ bool SaveAlreadyPresent(const fs::path& user_data_root) {
   return present;
 }
 
-bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowSaveImportWizard(rex::ui::IUISystem& ui, const Paths& paths,
                           std::function<void()> on_finished) {
-  const fs::path user_data_root = paths.user_data_root;
+  const fs::path user_data_root = paths.user_root;
 
   if (larecomp::settings::skip_save_import.Get()) {
     REXLOG_INFO("Save import: skipped (skip_save_import)");
@@ -730,16 +714,15 @@ bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& p
     REXLOG_INFO("Save import: nothing found to import, starting without a save");
     return false;
   }
-  if (!drawer) {
+  if (!ui.HasWindow()) {
     REXLOG_WARN("Save import: no UI to show the wizard on, starting without importing");
     return false;
   }
 
-  // Self-deletes on Close(), which is also what calls `on_finished`. No pump:
-  // while a dialog is open the ImGui drawer keeps requesting paints, so the
-  // app's own loop draws it (see the SDL note in larecomp_save_porter.h).
+  // The UI system destroys it after Close(), and OnClose is what calls `on_finished`. No pump here: the app's
+  // setup loop runs the frames that draw it (see larecomp_save_porter.h).
   REXLOG_INFO("Save import: showing the wizard");
-  new SaveImportDialog(drawer, user_data_root, xenia, rpcs3, std::move(on_finished));
+  ui::ShowDialog<SaveImportDialog>(ui, user_data_root, xenia, rpcs3, std::move(on_finished));
   return true;
 }
 
