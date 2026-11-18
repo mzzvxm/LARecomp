@@ -6,8 +6,9 @@
 // versions 5 and 6) agree on the numbers below. This header holds them as plain functions with the same arithmetic, so that
 // car_rt_refl_rules_test.cpp checks what the picture depends on: the image's codes, the places a pixel and a point of the view
 // space have in it, the distance tolerances, the cone of rays, the self-hit rule, the fallback colour of a hit the camera cannot see, the sum of
-// the rays and the edge-aware read the paint does. The shaders keep their own copies of these numbers (they cannot include this header):
-// change one, change the other.
+// the rays and the edge-aware read the paint does, and the denoise between the two (the aux image's codes, the filter's taps and strength: the
+// whole of hlsl/car_rt_refl_denoise_cs.hlsl). The shaders keep their own copies of these numbers (they cannot include this header; the two
+// the trace and the denoise share are in hlsl/car_rt_refl_common.hlsli): change one, change the other.
 //
 // THE IMAGE (CarRtRefl's, the size of the car history image, R16G16B16A16_FLOAT, rgb in the history's units: the target's, the
 // shaders' output times 2^exp_bias):
@@ -434,6 +435,169 @@ inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
     out.rgb[c] = colour[c] / weight;
   }
   out.kind = visible >= 0.5f * weight ? Kind::kHit : Kind::kHidden;
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The denoise (hlsl/car_rt_refl_denoise_cs.hlsl): the cone's noise out of the image before the paint reads it
+// ---------------------------------------------------------------------------------------------------------------------
+// WHY. Every texel's four rays are turned by a different angle, so in the band where a reflected part's edge is (the cone's penumbra: a few
+// to a dozen texels wide) the texel's weight is one of 0, 1/4 .. 1 chosen by the pattern's turn, not by the geometry: grain. The paint's 3x3
+// B-spline averages about 2.8 texels' worth of it (the sum of the squared weights of the quadratic B-spline is 0.59 a row), and without a
+// temporal upscaler nothing averages the pattern over frames. On a straight edge (the model of the unit test: the pass's own pattern and early
+// out, the paint's own read) the standard deviation of what the paint reads along the edge is 0.020 of the weight for a cone 2 texels wide, 0.027
+// for 4, 0.032 for 8 and 0.043 for 19; where the part and the environment differ much in brightness (a dark wing underside on a bright lid) that is the grain.
+//
+// WHAT. Up to two edge-aware a-trous passes over the image (the taps 1 then 2 texels apart, a 3x3 kernel of 1 2 1 / 2 4 2 / 1 2 1: together a
+// 7 x 7 triangle of sigma 1.6 texels, about 30 texels' worth of samples), the first into a scratch image, the second back into the trace's. A
+// tap counts only where
+//   - it holds data (the paint's own rule: alpha 0, no data, is left out and stays no data; a miss, alpha 1, counts as weight 0),
+//   - it is the same surface (the history's distance within the tolerance of the centre's, the slope's slack from the centre's N.V, the
+//     distance between the taps counted as the footprint: MatchWeight with Tolerance) and the same instance (the same draw of the car:
+//     the aux image carries both, and N.V, from the primary ray),
+// and the colours are averaged premultiplied by their weights (a miss's black does not darken a hit; it is the paint's own sum).
+// STRENGTH FOLLOWS THE CONE. The noise lives in the penumbra and the penumbra's width is the cone's at its hit: 2 distance tan(half angle),
+// in texels of the surface (ConeFootprint). A part a few centimetres off the panel has a penumbra under a texel (a binary edge with no
+// noise to remove, and one the filter must not blur); a part half a metre away has one of eight to ten. How much of a pass is applied is
+// DenoiseStrength(the largest footprint among the taps that count, the pass): the first pass is 0 below kDenoiseFootprintFrom texels and
+// full from kDenoiseFootprintTo, the second (the wider kernel: more noise out, more blur in) 0 below kDenoiseSecondFrom and full from
+// kDenoiseSecondTo, smoothstep between; a texel whose strength is 0 is copied exactly as the trace made it. The aux image's hit distance
+// (the mean over the rays that hit, 0 where none did) gives the footprint; the taps count too, so the texels just outside a penumbra (rays
+// all missed, no distance of their own) take their share of the smoothing from their neighbours. A gloss of 0 (one ray, nothing to denoise) skips
+// the passes. Measured on the same model (the unit test prints it): both passes take the grain to 0.009 (2 texels), 0.010 (4), 0.0085 (8) and
+// 0.006 (19) of the weight, the edge's ramp (0.9 to 0.1) grows by at most a fifth (2% at 19 texels), and its 50% point stays within 0.05 texels. A real
+// scene has more noise than this model (the four rays' colours and distances differ too: the same sums smooth them): CHECK against the pictures.
+//
+// NOT TEMPORAL. A temporal accumulation in the car's own space was weighed and left out: the reflection depends on the view, so even a
+// perfectly reprojected texel (the car's motion and the camera's are known to the paint, car_selfrefl.cpp's matrix) holds a reflection of
+// the last frame's direction, and the cone's whole penumbra moves by the angle the view turned (0.5 degrees a frame in an orbit: a fifth of a
+// 2.5 degree cone) which an accumulation over a few frames smears into a trailing edge; its rejection rule (the history's depth and instance)
+// cannot see that, and a cut, a pause view, a garage orbit and the vehicle's own motion having no valid matrix some frames would each need
+// its own. With an upscaler the upscaler is the temporal filter (the pattern turns by the frame). A ghost is worse than grain; this does not
+// ghost, and holds nothing from the frame before.
+inline constexpr int kDenoisePasses = 2;               // the passes (a-trous steps 1, 2); mcla_gpu_car_selfrefl_rt_denoise 0 .. 2 (0: the raw image)
+inline constexpr float kDenoiseFootprintFrom = 0.4f;   // texels: a cone this wide or less at its hit leaves the texel as it is
+inline constexpr float kDenoiseFootprintTo = 2.5f;     // texels: from this width the first pass is applied in full
+inline constexpr float kDenoiseSecondFrom = 4.0f;      // texels: the second pass (step 2) is left out under this width ...
+inline constexpr float kDenoiseSecondTo = 10.0f;       // texels: ... and applied in full from this one
+
+// The passes made for the setting `setting` (0 .. kDenoisePasses) and the cone's half angle's tangent: a mirror (one ray) has no noise.
+inline int DenoisePassCount(int setting, float tan_half) {
+  return tan_half > 0.0f ? std::clamp(setting, 0, kDenoisePasses) : 0;
+}
+// The a-trous step of pass `pass` (0, 1): 1 then 2 texels between the taps.
+inline int DenoiseStep(int pass) { return 1 << std::clamp(pass, 0, 1); }
+
+// The AUX image: RGBA8_UNORM, the trace's second output, one texel for each texel of the image (0 in every channel where the texel has no data):
+//   x the hit distance, sqrt(mean distance of the cone's hits / the ray's reach) (0: none hit); a hit never rounds to 0
+//   y the instance (the draw of the car the primary ray hit) / 255, at most 255
+//   z N.V of the surface at the texel
+//   w 1 where the texel has data
+inline float Unorm8(float v) { return std::floor(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f) / 255.0f; }
+inline float EncodeHitDistance(float distance, float reach) {
+  if (!(distance > 0.0f)) {
+    return 0.0f;
+  }
+  return std::max(Unorm8(std::sqrt(std::min(distance / std::max(reach, 1e-3f), 1.0f))), 1.0f / 255.0f);
+}
+inline float DecodeHitDistance(float code, float reach) { return code * code * reach; }
+inline float EncodeInstance(uint32_t instance) { return float(std::min<uint32_t>(instance, 255u)) / 255.0f; }
+inline int InstanceOfCode(float code) { return int(std::floor(code * 255.0f + 0.5f)); }
+
+// The width of the cone at its hit, in texels of the surface at the texel's distance (`texel_m` metres): the penumbra of a part's edge.
+inline float ConeFootprint(float hit_distance, float tan_half, float texel_m) {
+  return texel_m > 0.0f ? 2.0f * hit_distance * tan_half / texel_m : 0.0f;
+}
+// How much of pass `pass` (0, 1) is applied at a texel whose cone is `footprint` texels wide at its hit: the first pass from kDenoiseFootprintFrom to
+// kDenoiseFootprintTo, the second (the wider kernel: more noise out, more blur in) only from kDenoiseSecondFrom to kDenoiseSecondTo.
+inline float DenoiseStrength(float footprint, int pass) {
+  return pass <= 0 ? car_selfrefl::SmoothStep(kDenoiseFootprintFrom, kDenoiseFootprintTo, footprint)
+                   : car_selfrefl::SmoothStep(kDenoiseSecondFrom, kDenoiseSecondTo, footprint);
+}
+// The 3x3 kernel (1 2 1 / 2 4 2 / 1 2 1) at the tap's offset (-1, 0, 1 in each axis).
+inline float DenoiseKernel(int ox, int oy) { return (ox == 0 ? 2.0f : 1.0f) * (oy == 0 ? 2.0f : 1.0f); }
+
+// One of the 3x3 taps of a texel, tap k at the offset (k % 3 - 1, k / 3 - 1) times the pass's step; tap 4 is the texel itself.
+struct DenoiseTap {
+  bool inside = false;            // the tap is in the image
+  float alpha = 0.0f;             // the image's code there
+  float rgb[3] = {};              // the image's colour
+  float history_distance = 0.0f;  // the history's view distance there (0: no vehicle)
+  float hit_code = 0.0f;          // the aux's x
+  int instance = 0;               // the aux's y, as an instance number
+};
+struct DenoiseSetup {
+  float tan_y = 0.0f;         // tan of half the vertical field of view of the history's lens
+  float image_height = 1.0f;  // the image's height in texels
+  float tan_half = 0.0f;      // the tangent of the cone's half angle
+  float reach = 4.0f;         // the reflection ray's length (the aux's hit distance is a share of it)
+  int pass = 0;               // 0: taps one texel apart, 1: two texels apart (DenoiseStep)
+};
+struct DenoiseOut {
+  float rgb[3] = {};
+  float alpha = 0.0f;  // the image's code
+};
+// A texel that has data (tap 4's alpha is no "no data"; the history says a distance and the aux its N.V and instance): the pass's result for it.
+// The taps' weights are the kernel's times how well their history distance agrees with the texel's (the tolerance of their distance apart,
+// the slope from `centre_nv`) and 0 for another instance, a tap with no data or outside the image. The sums are premultiplied by the taps' own
+// weights (the paint's own sum); the result is the texel's own value mixed with them by DenoiseStrength.
+inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, float centre_nv, const DenoiseSetup& setup) {
+  const DenoiseTap& own = taps[4];
+  const float texel_m = PixelMeters(centre_distance, setup.tan_y, setup.image_height);
+  float n = 0.0f;
+  float weight = 0.0f;
+  float hidden = 0.0f;
+  float colour[3] = {};
+  float footprint = 0.0f;
+  for (int k = 0; k < 9; ++k) {
+    const DenoiseTap& tap = taps[k];
+    const int ox = k % 3 - 1;
+    const int oy = k / 3 - 1;
+    const Texel code = DecodeAlpha(tap.alpha);
+    if (!tap.inside || code.kind == Kind::kNoData || tap.instance != own.instance) {
+      continue;
+    }
+    const float apart = float(DenoiseStep(setup.pass)) * std::sqrt(float(ox * ox + oy * oy));
+    const float k_weight = DenoiseKernel(ox, oy) *
+                           MatchWeight(tap.history_distance, centre_distance, Tolerance(centre_distance, texel_m, apart, centre_nv));
+    if (!(k_weight > 0.0f)) {
+      continue;
+    }
+    n += k_weight;
+    weight += k_weight * code.weight;
+    hidden += code.kind == Kind::kHidden ? k_weight * code.weight : 0.0f;
+    for (int c = 0; c < 3; ++c) {
+      colour[c] += k_weight * code.weight * tap.rgb[c];
+    }
+    if (tap.hit_code > 0.0f) {
+      footprint = std::max(footprint, ConeFootprint(DecodeHitDistance(tap.hit_code, setup.reach), setup.tan_half,
+                                                    PixelMeters(tap.history_distance, setup.tan_y, setup.image_height)));
+    }
+  }
+  const float strength = DenoiseStrength(footprint, setup.pass);
+  DenoiseOut out;
+  if (!(strength > 0.0f)) {
+    // No cone wide enough around to have noise: the texel is exactly what the trace made it.
+    out.alpha = own.alpha;
+    for (int c = 0; c < 3; ++c) {
+      out.rgb[c] = own.rgb[c];
+    }
+    return out;
+  }
+  const Texel mine = DecodeAlpha(own.alpha);
+  const float own_hidden = own.alpha < 0.0f ? mine.weight : 0.0f;
+  const float inverse = n > 0.0f ? 1.0f / n : 0.0f;
+  const float mixed_weight = mine.weight + (weight * inverse - mine.weight) * strength;
+  const float mixed_hidden = own_hidden + (hidden * inverse - own_hidden) * strength;
+  if (mixed_weight < 1.0f / 512.0f) {
+    out.alpha = EncodeAlpha(Kind::kMiss, 0.0f);
+    return out;
+  }
+  for (int c = 0; c < 3; ++c) {
+    const float own_colour = mine.weight * own.rgb[c];
+    out.rgb[c] = (own_colour + (colour[c] * inverse - own_colour) * strength) / mixed_weight;
+  }
+  out.alpha = EncodeAlpha(mixed_hidden > 0.5f * mixed_weight ? Kind::kHidden : Kind::kHit, mixed_weight);
   return out;
 }
 

@@ -1,8 +1,9 @@
 // Check of the ray traced car self-reflection's rules (car_rt_refl_rules.h): the image's codes through a half float, the places a texel
 // and a point of the view space have in it, the distance tolerances, the cone of rays (its pattern, its turn, its directions), the self-hit
 // rule, the fallback colour of a hit the camera cannot see, the fade, the rays' sum, and the 3x3 B-spline read the paint variant does
-// (with a model of a straight edge through both: the edge's ramp is wide and smooth). A program of its own: it needs no renderer, no ReXGlue
-// and no game files, and exits 0 when every check holds.
+// (with a model of a straight edge through both: the edge's ramp is wide and smooth), and the denoise's rules (the aux image's codes, the kernel,
+// its edge stops, its strength by the cone's width, and the whole two-pass filter on a synthetic penumbra: how much of the grain it takes out and what
+// it does to the edge). A program of its own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_car_rt_refl_rules_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_car_rt_refl_rules_test
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "car_rt_refl_rules.h"
 
@@ -49,6 +51,201 @@ float ThroughHalf(float value) {
   const float rounded = std::nearbyint(scaled);
   a = std::ldexp(rounded, exponent - 11);
   return negative ? -a : a;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the denoise: a synthetic image, and the passes as the compute shader makes them
+// ---------------------------------------------------------------------------------------------------------------------
+
+constexpr float kTanY = 0.5773503f;      // a 60 degree vertical field of view
+constexpr float kImageHeight = 1080.0f;  // the history image of a 4K picture at half size
+constexpr float kReach = 4.0f;           // the reflection ray's reach, metres
+constexpr float kPanelDistance = 5.0f;   // the panel's view distance, metres: a texel is 5.3 mm there
+
+struct Image {
+  int w = 0;
+  int h = 0;
+  std::vector<float> alpha;
+  std::vector<float> distance;
+  std::vector<float> hit;
+  std::vector<float> nv;
+  std::vector<int> instance;
+  std::vector<std::array<float, 3>> rgb;
+  void Resize(int width, int height) {
+    w = width;
+    h = height;
+    const size_t n = size_t(w) * size_t(h);
+    alpha.assign(n, 0.0f);
+    distance.assign(n, 0.0f);
+    hit.assign(n, 0.0f);
+    nv.assign(n, 0.0f);
+    instance.assign(n, 0);
+    rgb.assign(n, {0.0f, 0.0f, 0.0f});
+  }
+  size_t At(int x, int y) const { return size_t(y) * size_t(w) + size_t(x); }
+};
+
+// One pass over the image as hlsl/car_rt_refl_denoise_cs.hlsl makes it: a texel with data is filtered, the others are copied; the result goes through a half float.
+Image DenoisePass(const Image& in, int pass, float tan_half) {
+  const int step = rt::DenoiseStep(pass);
+  Image out = in;
+  rt::DenoiseSetup setup;
+  setup.tan_y = kTanY;
+  setup.image_height = kImageHeight;
+  setup.tan_half = tan_half;
+  setup.reach = kReach;
+  setup.pass = pass;
+  for (int y = 0; y < in.h; ++y) {
+    for (int x = 0; x < in.w; ++x) {
+      const size_t i = in.At(x, y);
+      if (rt::DecodeAlpha(in.alpha[i]).kind == rt::Kind::kNoData || !(in.distance[i] > 0.0f)) {
+        continue;
+      }
+      rt::DenoiseTap taps[9];
+      for (int k = 0; k < 9; ++k) {
+        const int tx = x + (k % 3 - 1) * step;
+        const int ty = y + (k / 3 - 1) * step;
+        if (tx < 0 || ty < 0 || tx >= in.w || ty >= in.h) {
+          continue;
+        }
+        const size_t j = in.At(tx, ty);
+        taps[k].inside = true;
+        taps[k].alpha = in.alpha[j];
+        for (int c = 0; c < 3; ++c) {
+          taps[k].rgb[c] = in.rgb[j][c];
+        }
+        taps[k].history_distance = in.distance[j];
+        taps[k].hit_code = in.hit[j];
+        taps[k].instance = in.instance[j];
+      }
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps, in.distance[i], in.nv[i], setup);
+      out.alpha[i] = ThroughHalf(o.alpha);
+      for (int c = 0; c < 3; ++c) {
+        out.rgb[i][c] = ThroughHalf(o.rgb[c]);
+      }
+    }
+  }
+  return out;
+}
+Image Denoise(const Image& in, int passes, float tan_half) {
+  Image image = in;
+  for (int pass = 0; pass < passes; ++pass) {
+    image = DenoisePass(image, pass, tan_half);
+  }
+  return image;
+}
+
+// The pass's own picture of a straight edge of a reflected part on a flat panel: texel x, row y, ray `ray` hits where x + disc.x radius < edge (the cone is
+// 2 radius texels wide at the hit, `hit_distance` metres away), weight = hits / 4, the colour (0.5 0.3 0.2); the outer pair first and the inner two only if one of
+// them hit (`early_out`: the pass's rule).
+Image MakeEdgeScene(int w, int h, float edge, float radius, float hit_distance, uint32_t phase, bool early_out) {
+  Image img;
+  img.Resize(w, h);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const size_t i = img.At(x, y);
+      const float turns = rt::ConeRotation(uint32_t(x + 100), uint32_t(y), phase);
+      int hits = 0;
+      for (int slot = 0; slot < 4; ++slot) {
+        if (early_out && slot == 2 && hits == 0) {
+          break;
+        }
+        if (float(x) + rt::ConeDisc(rt::ConeOrder(slot), turns).x * radius < edge) {
+          ++hits;
+        }
+      }
+      img.distance[i] = kPanelDistance;
+      img.nv[i] = 0.8f;
+      img.instance[i] = 3;
+      img.alpha[i] = ThroughHalf(rt::EncodeAlpha(hits > 0 ? rt::Kind::kHit : rt::Kind::kMiss, float(hits) / 4.0f));
+      if (hits > 0) {
+        img.rgb[i] = {ThroughHalf(0.5f), ThroughHalf(0.3f), ThroughHalf(0.2f)};  // the image holds half floats
+        img.hit[i] = rt::EncodeHitDistance(hit_distance, kReach);
+      }
+    }
+  }
+  return img;
+}
+
+// The weight the cone's rays give on average at texel x (the expectation over the pattern's turn): ray j hits where radius_j cos(angle) < edge - x, angle uniform.
+float IdealWeight(float x, float edge, float radius) {
+  float sum = 0.0f;
+  for (int ray = 0; ray < 4; ++ray) {
+    const float r = rt::ConeRadius(ray) * radius;
+    const float s = std::clamp((edge - x) / r, -1.0f, 1.0f);
+    sum += 1.0f - std::acos(s) / 3.14159265358979f;
+  }
+  return sum / 4.0f;
+}
+
+// What the paint's 3x3 B-spline reads at the texel's centre (the weights of the quadratic B-spline at a distance of 0).
+float PaintWeight(const Image& img, int x, int y) {
+  float w[3];
+  rt::BSplineWeights(0.0f, w);
+  float sum = 0.0f;
+  for (int k = 0; k < 9; ++k) {
+    const int tx = std::clamp(x + k % 3 - 1, 0, img.w - 1);
+    const int ty = std::clamp(y + k / 3 - 1, 0, img.h - 1);
+    sum += w[k % 3] * w[k / 3] * rt::DecodeAlpha(img.alpha[img.At(tx, ty)]).weight;
+  }
+  return sum;
+}
+
+struct EdgeStats {
+  double rms = 0.0;       // the paint's read against the ideal read, over the band (the noise and the blur's bias together)
+  double grain = 0.0;     // the standard deviation of the paint's read along the edge (across rows at one place), root mean square over the band: what shows as grain
+  double crossing = 0.0;  // where the rows' mean read crosses 0.5, texels
+  double ramp = 0.0;      // the width of the rows' mean read between 0.9 and 0.1, texels
+};
+// Where a profile that falls from 1 to 0 crosses `level`, by linear interpolation (-1: it does not, from `from` on).
+double CrossingOf(const std::vector<double>& profile, int from, double level) {
+  for (int x = from; x + 1 < int(profile.size()); ++x) {
+    if (profile[size_t(x)] >= level && profile[size_t(x) + 1] < level) {
+      return double(x) + (profile[size_t(x)] - level) / (profile[size_t(x)] - profile[size_t(x) + 1]);
+    }
+  }
+  return -1.0;
+}
+EdgeStats MeasureEdge(const Image& img, float edge, float radius) {
+  float wx[3];
+  rt::BSplineWeights(0.0f, wx);
+  const int y0 = 6;
+  const int y1 = img.h - 6;
+  const int x0 = std::max(4, int(edge - radius) - 8);
+  const int x1 = std::min(img.w - 4, int(edge + radius) + 8);
+  std::vector<double> profile(size_t(img.w), 0.0);
+  std::vector<double> ideal(size_t(img.w), 0.0);
+  for (int x = 0; x < img.w; ++x) {
+    double sum = 0.0;
+    for (int y = y0; y < y1; ++y) {
+      sum += PaintWeight(img, x, y);
+    }
+    profile[size_t(x)] = sum / double(y1 - y0);
+    double read = 0.0;
+    for (int d = -1; d <= 1; ++d) {
+      read += wx[d + 1] * IdealWeight(float(x + d), edge, radius);
+    }
+    ideal[size_t(x)] = read;
+  }
+  double square = 0.0;
+  double grain_square = 0.0;
+  int count = 0;
+  for (int y = y0; y < y1; ++y) {
+    for (int x = x0; x < x1; ++x) {
+      const double read = double(PaintWeight(img, x, y));
+      const double e = read - ideal[size_t(x)];
+      const double g = read - profile[size_t(x)];
+      square += e * e;
+      grain_square += g * g;
+      ++count;
+    }
+  }
+  EdgeStats stats;
+  stats.rms = std::sqrt(square / double(std::max(count, 1)));
+  stats.grain = std::sqrt(grain_square / double(std::max(count, 1)));
+  stats.crossing = CrossingOf(profile, x0, 0.5);
+  stats.ramp = CrossingOf(profile, x0, 0.1) - CrossingOf(profile, x0, 0.9);
+  return stats;
 }
 
 }  // namespace
@@ -577,6 +774,221 @@ int main() {
               "the cone's edge (width " + std::to_string(width) + " texels): a ramp as wide as the cone (" + std::to_string(ramp) + " texels), no step above 0.13 between "
               "reads a quarter texel apart (" + std::to_string(widest) + "), and no ripple back (" + std::to_string(backwards) + ")");
       }
+    }
+  }
+
+  // THE DENOISE: the aux image's codes, the pass count, the strength by the cone's width
+  {
+    Check(rt::EncodeHitDistance(0.0f, 4.0f) == 0.0f && rt::EncodeHitDistance(-1.0f, 4.0f) == 0.0f, "no hit: the aux's distance is 0");
+    Check(rt::EncodeHitDistance(1e-6f, 4.0f) >= 1.0f / 255.0f, "a hit never rounds to 'no hit'");
+    Check(rt::EncodeHitDistance(40.0f, 4.0f) == 1.0f, "a distance past the reach saturates");
+    for (float d : {0.02f, 0.1f, 0.5f, 1.0f, 2.5f, 4.0f}) {
+      const float back = rt::DecodeHitDistance(rt::EncodeHitDistance(d, 4.0f), 4.0f);
+      Check(std::fabs(back - d) <= 0.03f * d + 0.001f, "the hit distance " + std::to_string(d) + " m survives 8 bits within 3% (came back " + std::to_string(back) + ")");
+    }
+    Check(rt::EncodeInstance(0) == 0.0f && rt::InstanceOfCode(rt::EncodeInstance(25)) == 25 && rt::InstanceOfCode(rt::EncodeInstance(300)) == 255,
+          "an instance number is exact up to 255 in 8 bits, and clamps");
+    Check(rt::DenoisePassCount(2, 0.0437f) == 2 && rt::DenoisePassCount(1, 0.0437f) == 1 && rt::DenoisePassCount(0, 0.0437f) == 0 &&
+              rt::DenoisePassCount(9, 0.0437f) == 2 && rt::DenoisePassCount(-3, 0.0437f) == 0 && rt::DenoisePassCount(2, 0.0f) == 0,
+          "the passes: the setting clamped to 0 .. 2, none for a mirror (one ray, no noise)");
+    Check(rt::DenoiseStep(0) == 1 && rt::DenoiseStep(1) == 2, "the a-trous steps are 1 and 2 texels");
+    // a 2.5 degree cone 0.49 m from a panel 5 m away (a texel is 5.3 mm there) is 8 texels wide
+    const float texel_m = rt::PixelMeters(5.0f, kTanY, kImageHeight);
+    const float footprint = rt::ConeFootprint(0.49f, rt::ConeTan(2.5f), texel_m);
+    Check(footprint > 7.5f && footprint < 8.5f, "the cone's width at a hit half a metre away is about 8 texels at 5 m in a 1080 row image (" + std::to_string(footprint) + ")");
+    Check(rt::DenoiseStrength(0.0f, 0) == 0.0f && rt::DenoiseStrength(rt::kDenoiseFootprintFrom, 0) == 0.0f && rt::DenoiseStrength(rt::kDenoiseFootprintTo, 0) == 1.0f &&
+              rt::DenoiseStrength(50.0f, 0) == 1.0f && rt::DenoiseStrength(1.2f, 0) > 0.1f && rt::DenoiseStrength(1.2f, 0) < 0.9f,
+          "the first pass's strength: 0 under the narrow cone's width, 1 from the wide one's, between them smooth");
+    Check(rt::DenoiseStrength(3.0f, 1) == 0.0f && rt::DenoiseStrength(rt::kDenoiseSecondFrom, 1) == 0.0f && rt::DenoiseStrength(rt::kDenoiseSecondTo, 1) == 1.0f &&
+              rt::DenoiseStrength(6.0f, 1) > 0.1f && rt::DenoiseStrength(6.0f, 1) < 0.9f,
+          "the second pass (the wider kernel) starts later: nothing under 4 texels of cone, full from 10");
+    float sum = 0.0f;
+    for (int k = 0; k < 9; ++k) {
+      sum += rt::DenoiseKernel(k % 3 - 1, k / 3 - 1);
+    }
+    Check(sum == 16.0f && rt::DenoiseKernel(0, 0) == 4.0f && rt::DenoiseKernel(1, 0) == 2.0f && rt::DenoiseKernel(-1, 1) == 1.0f, "the kernel is 1 2 1 / 2 4 2 / 1 2 1");
+  }
+
+  // THE DENOISE, ONE TEXEL: what its edge stops do
+  {
+    rt::DenoiseSetup setup;
+    setup.tan_y = kTanY;
+    setup.image_height = kImageHeight;
+    setup.tan_half = rt::ConeTan(2.5f);
+    setup.reach = kReach;
+    setup.pass = 0;
+    const float wide_hit = rt::EncodeHitDistance(0.5f, kReach);  // a cone 8 texels wide at the hit: the filter is applied in full
+    auto make = [&](float alpha_other, float rgb_other, float distance_other, int instance_other, float hit_other, bool inside_other) {
+      std::array<rt::DenoiseTap, 9> taps;
+      for (int k = 0; k < 9; ++k) {
+        taps[size_t(k)].inside = true;
+        taps[size_t(k)].alpha = k == 4 ? rt::EncodeAlpha(rt::Kind::kHit, 1.0f) : alpha_other;
+        taps[size_t(k)].rgb[0] = taps[size_t(k)].rgb[1] = taps[size_t(k)].rgb[2] = k == 4 ? 1.0f : rgb_other;
+        taps[size_t(k)].history_distance = k == 4 ? kPanelDistance : distance_other;
+        taps[size_t(k)].hit_code = k == 4 ? wide_hit : hit_other;
+        taps[size_t(k)].instance = k == 4 ? 3 : instance_other;
+        taps[size_t(k)].inside = k == 4 || inside_other;
+      }
+      return taps;
+    };
+    const float miss = rt::EncodeAlpha(rt::Kind::kMiss, 0.0f);
+    // eight misses around a full hit: a miss counts as weight 0, and the colour is not darkened by it
+    {
+      const auto taps = make(miss, 0.0f, kPanelDistance, 3, 0.0f, true);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      const rt::Texel t = rt::DecodeAlpha(o.alpha);
+      Check(t.kind == rt::Kind::kHit && Near(t.weight, 4.0 / 16.0, 0.01), "a lone hit among misses of the same surface: its weight is the kernel's share, 4/16 (" + std::to_string(t.weight) + ")");
+      Check(Near(o.rgb[0], 1.0, 0.005) && Near(o.rgb[1], 1.0, 0.005), "and its colour is the hit's own, not darkened by the misses' black");
+    }
+    // another instance: the same distance does not make it the same panel
+    {
+      const auto taps = make(miss, 0.0f, kPanelDistance, 4, 0.0f, true);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(rt::DecodeAlpha(o.alpha).weight == 1.0f && o.rgb[0] == 1.0f, "the taps of another instance are left out: the texel keeps weight 1");
+    }
+    // another surface: 0.4 m further (a part behind)
+    {
+      const auto taps = make(miss, 0.0f, kPanelDistance + 0.4f, 3, 0.0f, true);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(rt::DecodeAlpha(o.alpha).weight == 1.0f, "the taps at another distance are left out");
+    }
+    // no data around the texel: nothing to average with
+    {
+      const auto taps = make(0.0f, 0.0f, 0.0f, 0, 0.0f, true);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(rt::DecodeAlpha(o.alpha).weight == 1.0f && o.rgb[0] == 1.0f, "no data around: the texel is as it was, and no data is not spread");
+    }
+    // outside the image
+    {
+      const auto taps = make(miss, 0.0f, kPanelDistance, 3, 0.0f, false);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(rt::DecodeAlpha(o.alpha).weight == 1.0f, "taps outside the image are left out");
+    }
+    // a narrow cone (a part 2 cm away: under half a texel wide): the texel is not touched, though every tap would be taken
+    {
+      auto taps = make(miss, 0.0f, kPanelDistance, 3, 0.0f, true);
+      taps[4].hit_code = rt::EncodeHitDistance(0.02f, kReach);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(o.alpha == rt::EncodeAlpha(rt::Kind::kHit, 1.0f) && o.rgb[0] == 1.0f, "a cone narrower than a texel's half at its hit leaves the texel alone");
+    }
+    // the neighbour's hit gives a miss texel the strength: a texel whose rays all missed beside a wide penumbra takes its share of it
+    {
+      auto taps = make(rt::EncodeAlpha(rt::Kind::kHit, 1.0f), 1.0f, kPanelDistance, 3, wide_hit, true);
+      taps[4].alpha = miss;
+      taps[4].rgb[0] = taps[4].rgb[1] = taps[4].rgb[2] = 0.0f;
+      taps[4].hit_code = 0.0f;
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(rt::DecodeAlpha(o.alpha).weight > 0.5f, "a texel whose rays all missed, among texels that hit with a wide cone, takes their share of the weight (the penumbra's tail)");
+    }
+    // hidden against visible: the majority of the weight decides the sign, and the colour is the weighted mean
+    {
+      auto taps = make(rt::EncodeAlpha(rt::Kind::kHidden, 1.0f), 0.2f, kPanelDistance, 3, wide_hit, true);
+      const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
+      Check(o.alpha < -1.0f && Near(o.rgb[0], (4.0 * 1.0 + 12.0 * 0.2) / 16.0, 0.01), "a visible hit among hidden hits (12/16 of the weight): hidden, and the colours are mixed by weight");
+    }
+    // a slope: the depth changes 17 mm a texel at N.V 0.3, and the taps of step 2 are still the same surface
+    {
+      auto taps = make(miss, 0.0f, kPanelDistance, 3, 0.0f, true);
+      taps[4].hit_code = rt::EncodeHitDistance(2.0f, kReach);  // a cone 33 texels wide: both passes in full
+      for (int k = 0; k < 9; ++k) {
+        taps[size_t(k)].history_distance = kPanelDistance + 0.017f * float(k % 3 - 1) * 2.0f;  // the depth falls along x, 17 mm a texel, taps 2 texels apart
+      }
+      setup.pass = 1;
+      const rt::DenoiseOut steep = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.3f, setup);
+      const rt::DenoiseOut head_on = rt::DenoiseTexel(taps.data(), kPanelDistance, 1.0f, setup);
+      setup.pass = 0;
+      Check(Near(rt::DecodeAlpha(steep.alpha).weight, 4.0 / 16.0, 0.01), "a steep panel's taps (34 mm apart in depth at step 2, N.V 0.3) are the same surface and all count (4/16, " +
+                                                                              std::to_string(rt::DecodeAlpha(steep.alpha).weight) + ")");
+      Check(rt::DecodeAlpha(head_on.alpha).weight > rt::DecodeAlpha(steep.alpha).weight + 0.1f,
+            "the same depths on a panel seen head-on (N.V 1: no slope's slack) are mostly another surface and left out");
+    }
+  }
+
+  // THE DENOISE ON A PENUMBRA: the whole filter over an image of a straight edge, as the paint reads it
+  {
+    const float tan_half = rt::ConeTan(2.5f);
+    // the cone's half width in texels -> the hit distance (metres) that gives it at the panel's distance: width = 2 d tan / texel
+    const float texel_m = rt::PixelMeters(kPanelDistance, kTanY, kImageHeight);
+    const float edge = 48.37f;  // not on a texel's boundary (a boundary makes every texel's pattern a half-half split: no grain at all)
+    for (float radius : {0.15f, 1.0f, 2.0f, 4.0f, 6.0f, 9.6f}) {
+      const float width = 2.0f * radius;
+      const float hit_distance = width * texel_m / (2.0f * tan_half);
+      const Image raw = MakeEdgeScene(96, 64, edge, radius, hit_distance, 0, false);
+      const Image both = Denoise(raw, 2, tan_half);
+      const Image first = Denoise(raw, 1, tan_half);
+      const EdgeStats s0 = MeasureEdge(raw, edge, radius);
+      const EdgeStats s1 = MeasureEdge(first, edge, radius);
+      const EdgeStats s2 = MeasureEdge(both, edge, radius);
+      std::printf("  cone %5.1f texels wide (strength %.2f, %.2f): grain %.4f -> %.4f (one pass %.4f), ramp %.2f -> %.2f, 50%% at %.2f (edge %.2f)\n", width,
+                  rt::DenoiseStrength(width, 0), rt::DenoiseStrength(width, 1), s0.grain, s2.grain, s1.grain, s0.ramp, s2.ramp, s2.crossing, edge);
+      if (width < rt::kDenoiseFootprintFrom) {
+        Check(both.alpha == raw.alpha && both.rgb == raw.rgb,
+              "a cone narrower than " + std::to_string(rt::kDenoiseFootprintFrom) + " texels (a part a few cm off the panel): the image is left exactly as the trace made it");
+      } else if (width >= 4.0f) {
+        Check(s2.grain <= 0.45 * s0.grain && s2.grain < 0.012,
+              "cone " + std::to_string(width) + " texels wide: the grain along the edge falls to under 0.45 of the raw's and under 0.012 (" + std::to_string(s0.grain) + " -> " + std::to_string(s2.grain) + ")");
+        Check(s2.ramp <= 1.3 * s0.ramp + 0.2,
+              "cone " + std::to_string(width) + " texels wide: the edge's ramp (0.9 to 0.1) grows by at most 30% (" + std::to_string(s0.ramp) + " -> " + std::to_string(s2.ramp) + ")");
+        Check(std::fabs(s2.crossing - double(edge)) < 0.12, "cone " + std::to_string(width) + " texels wide: the edge stays where it was (50% at " + std::to_string(s2.crossing) + ")");
+      }
+      if (width >= 2.0f) {
+        Check(s1.grain < 0.6 * s0.grain + 0.003, "one pass alone takes a good part of the grain out too (" + std::to_string(s0.grain) + " -> " + std::to_string(s1.grain) + ")");
+      }
+    }
+    // the weight is conserved by the filter (a straight edge across a flat panel): the sums over the image agree within 1.5%; a colour is not darkened
+    {
+      const Image raw = MakeEdgeScene(96, 64, edge, 6.0f, 0.74f, 0, true);
+      const Image both = Denoise(raw, 2, tan_half);
+      double before = 0.0;
+      double after = 0.0;
+      double worst_hue = 0.0;
+      for (size_t i = 0; i < raw.alpha.size(); ++i) {
+        before += rt::DecodeAlpha(raw.alpha[i]).weight;
+        const rt::Texel t = rt::DecodeAlpha(both.alpha[i]);
+        after += t.weight;
+        if (t.weight > 0.02f) {
+          worst_hue = std::max({worst_hue, std::fabs(double(both.rgb[i][0]) - 0.5) / 0.5, std::fabs(double(both.rgb[i][1]) - 0.3) / 0.3, std::fabs(double(both.rgb[i][2]) - 0.2) / 0.2});
+        }
+      }
+      Check(std::fabs(after - before) < 0.015 * before, "the weight is conserved by the two passes (" + std::to_string(before) + " -> " + std::to_string(after) + ")");
+      Check(worst_hue < 0.01, "a single colour stays that colour wherever the weight is more than 0.02 (premultiplied sums: the misses' black does not darken it); worst " + std::to_string(worst_hue));
+    }
+    // the stops, over a whole image: a hit panel next to another instance, another distance, or no data: not one texel of it is touched by the other side
+    for (int other = 0; other < 3; ++other) {
+      Image img;
+      img.Resize(64, 32);
+      for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 64; ++x) {
+          const size_t i = img.At(x, y);
+          img.nv[i] = 0.8f;
+          if (x < 32) {
+            img.alpha[i] = rt::EncodeAlpha(rt::Kind::kHit, 1.0f);
+            img.rgb[i] = {1.0f, 0.0f, 0.0f};
+            img.distance[i] = kPanelDistance;
+            img.instance[i] = 3;
+            img.hit[i] = rt::EncodeHitDistance(1.0f, kReach);
+          } else if (other < 2) {
+            img.alpha[i] = rt::EncodeAlpha(rt::Kind::kMiss, 0.0f);
+            img.distance[i] = other == 0 ? kPanelDistance : kPanelDistance + 0.5f;
+            img.instance[i] = other == 0 ? 4 : 3;
+          }  // other == 2: no data at all (alpha 0, no vehicle)
+        }
+      }
+      const Image out = Denoise(img, 2, rt::ConeTan(2.5f));
+      bool left_whole = true;
+      bool right_whole = true;
+      for (int y = 0; y < 32; ++y) {
+        for (int x = 0; x < 64; ++x) {
+          const size_t i = img.At(x, y);
+          if (x < 32) {
+            left_whole = left_whole && out.alpha[i] == rt::EncodeAlpha(rt::Kind::kHit, 1.0f) && out.rgb[i][0] == 1.0f && out.rgb[i][1] == 0.0f;
+          } else {
+            right_whole = right_whole && out.alpha[i] == img.alpha[i] && out.rgb[i] == img.rgb[i];
+          }
+        }
+      }
+      const char* what[] = {"another instance at the same distance", "the same instance at another distance (0.5 m)", "no data"};
+      Check(left_whole && right_whole, std::string("a hit panel beside ") + what[other] + ": the panel is untouched (weight 1, its colour), and the other side is exactly as it was");
     }
   }
 
