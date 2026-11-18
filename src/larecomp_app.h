@@ -62,6 +62,9 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
  protected:
   rex::AppSysRequirements GetRequirements() const override;
   rex::Result<void> OnConfigure(rex::SettingsRegistry& settings) override;
+  // A player whose larecomp.toml cannot be read still gets into the game (defaults, the file kept as .unreadable.bak), and a refused value
+  // costs only its own key (rex::app::App::ToleratesBrokenConfig).
+  bool ToleratesBrokenConfig() const override { return true; }
   std::span<const rex::CLIAction> GetActions() const override;
   rex::Result<void> OnAction(const rex::CLIActionHit& hit) override;
   void OnModules(std::vector<std::string>& modules) override;
