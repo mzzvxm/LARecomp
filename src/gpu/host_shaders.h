@@ -46,6 +46,8 @@
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
+#include "car_rt_check_cs.hlsl.dxil.h"
+#include "car_rt_view_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
 #include "dlssg_ui_hdr_ps.hlsl.dxil.h"
 #include "dlssg_ui_ps.hlsl.dxil.h"
@@ -124,6 +126,7 @@
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
+#include "car_rt_view_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
 #include "dlssg_ui_hdr_ps.hlsl.spirv.h"
 #include "dlssg_ui_ps.hlsl.spirv.h"
@@ -421,6 +424,22 @@ inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
 // planes, 1 from multisampled planes.
 inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
   return pass == 0 ? MCLA_GPU_HOST_SHADER_BLOB(car_history_ps) : MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
+}
+
+// The player's car as ray tracing structures (car_rt_scene.h): the check pass, a compute shader with inline ray queries (Shader Model 6.5,
+// built with larecomp_gpu_host_shader_rt: DXIL only). On Vulkan the blob is EMPTY (data null): no SPIR-V is built for it, and the caller
+// leaves the pass out. The other, a pixel shader that puts the check's picture over the scene, is an ordinary host shader on both.
+inline HostShaderBlob CarRtCheckShader() {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return MCLA_GPU_HOST_SHADER_DXIL(car_rt_check_cs);
+  }
+#endif
+  return HostShaderBlob{nullptr, 0, "car_rt_check_cs"};
+}
+
+inline HostShaderBlob CarRtViewPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_view_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).
