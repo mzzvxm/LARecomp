@@ -55,6 +55,16 @@
 //     face, at full weight. The darkest a hit makes the reflection is 85%.
 //   - The history's depth is read as points, so the self-test and the bias carry a slack for a slanted surface (the distance
 //     changes across a texel by tan of the angle to the view): at a grazing angle and at low resolutions they stay quiet.
+// The ray traced image (version 5, src/gpu/car_rt_refl.h): on a device that can trace the player's car's triangles the host makes, at the same
+//   trigger as the history and of the same size, an image that holds for every vehicle texel of the history the car's reflection of ITSELF,
+//   exact (a part the camera does not see, a thin part): rgb the colour the reflection ray's hit shows (the history's colour where the camera
+//   sees that part, the texel's own colour in shade at half the weight where it does not: the hidden-face rule of this variant, kept), alpha
+//   the code (0 no data, 1 the car and no hit, 1 + w a hit of weight w, -(1 + w) a hit on a part the camera does not see). When the frame has
+//   such an image (g_CarReflC.w bit 0) the trace reads it at the shaded point's place in the history (the one the self-test above finds the
+//   point at: its 2x2 texels, those that are the same surface and have data), and its answer is the hit: its weight times the self-test's
+//   agreement, its colour, no march. Where the image has no data there (alpha 0: not the player's car by the triangles, another vehicle, the
+//   frame's first) the march above runs. Without the bit (the setting off, a device that cannot, no structures this frame) the output is
+//   version 4's, bit for bit. The debug view 5 shows the image's state at the pixel.
 // The constants (112 bytes at byte 608 of the draw's SharedConstants block, src/gpu/constants.h CarSelfReflConstants):
 //   float4 g_CarReflM0..M3   world to the history frame's clip space (rows of a row-vector matrix: clip = p.x M0 + p.y M1 + p.z M2 + M3)
 //   float4 g_CarReflA        x mode (0: the game's paint, 1: occlusion, 2: occlusion and self-reflection), y ray length (m),
@@ -62,7 +72,8 @@
 //   float4 g_CarReflB        x steps, y debug view, z colour gain (the history's units to the paint's), w the share of the points that,
 //                            all inside a part, take the whole hit (0.25; it was the noise frame before version 4)
 //   uint4  g_CarReflC        x the history image's bindless slot, y a linear clamp sampler's slot (not read since version 2: the
-//                            image is read as points)
+//                            image is read as points), z the ray traced image's bindless slot, w flags: bit 0 the frame has that image
+//                            (version 5; the constants' words zw were reserved before)
 // With the mode 0 the helper returns the game's colour untouched, so a draw that has no history yet (the first frames, a
 // pause view, a camera cut) is the game's own paint.
 //
@@ -86,7 +97,7 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_selfrefl_version).
-inline constexpr uint32_t kCarSelfReflVariantVersion = 4;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving
+inline constexpr uint32_t kCarSelfReflVariantVersion = 5;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint", 0x439B193A3F675533ull};

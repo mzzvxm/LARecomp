@@ -68,6 +68,7 @@ struct CarReflResult
     float face;     // 0..1: 1 the ray met the surface the camera sees from its front, 0 it reached it from behind (a hidden face)
     float dist;     // the hit's distance as a share of the ray length
     float state;    // debug: 0 off, 1 the shaded point is not in the history, 2 the ray left the picture, 3 no hit, 4 hit
+    float rt;       // debug, version 5: 0 the ray traced image was not read, 1 it has no data here (the march ran), 2 it says no hit, 3 a hit on a part the camera sees, 4 on one it does not
 };
 
 // What the helpers need of the ray: the matrix to the history frame's clip space, the ray, the image's size, the slack of a slanted
@@ -223,6 +224,65 @@ float CarReflEdge(float2 uv)
 bool CarReflInWindow(CarReflPoint p, CarReflRay ray)
 {
     return p.on > 0.5 && p.diff > ray.shape.x && p.diff < ray.thickness;
+}
+
+// Version 5: what the host's ray traced image (src/gpu/car_rt_refl.h, car_rt_refl_rules.h ReadForPaint is the same arithmetic) says at a
+// place in the history. The image is the history's size: alpha 0 no data, 1 the player's car and the ray hits none of it, 1 + w a hit on a
+// part the camera sees (w the weight), -(1 + w) a hit on a part it does not (rgb the stand-in colour). The 2x2 texels around the place are
+// read with the bilinear weights; only the texels the history shows at the paint's own distance (the same surface) count, a texel with no
+// data is left out, and the image answers where the texels with data are at least half of those that are that surface (else the march).
+// The weight is the share of the footprint that hits, the colour the mean of the hits' (a miss's black does not darken a hit).
+struct CarReflRtRead
+{
+    float use;       // 1: the image answers
+    float weight;    // 0..1
+    float3 colour;   // in the history's units
+    float state;     // 1 no data, 2 no hit, 3 a hit on a part the camera sees, 4 on one it does not
+};
+
+CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
+{
+    CarReflRtRead r = (CarReflRtRead)0;
+    r.state = 1.0;
+    Texture2D<float4> image = g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)];
+    const float2 f = uv * size - 0.5;
+    const float2 base = floor(f);
+    const float2 fr = f - base;
+    const int2 last = int2(size) - 1;
+    float geometry = 0.0;
+    float known = 0.0;
+    float weight = 0.0;
+    float hidden = 0.0;
+    float3 colour = float3(0.0, 0.0, 0.0);
+    [unroll]
+    for (int k = 0; k < 4; ++k)
+    {
+        const int2 offset = int2(k & 1, k >> 1);
+        const int2 texel = clamp(int2(base) + offset, int2(0, 0), last);
+        const float wb = (offset.x != 0 ? fr.x : 1.0 - fr.x) * (offset.y != 0 ? fr.y : 1.0 - fr.y);
+        const float4 h = history.Load(int3(texel, 0));
+        const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
+        const float wg = wb * agree;
+        geometry += wg;
+        const float4 t = image.Load(int3(texel, 0));
+        const float code = abs(t.a);
+        if (code >= 0.5)
+        {
+            const float wt = saturate(code - 1.0);
+            known += wg;
+            weight += wg * wt;
+            hidden += (t.a < 0.0) ? wg * wt : 0.0;
+            colour += wg * wt * t.rgb;
+        }
+    }
+    if (geometry > 1e-4 && known >= 0.5 * geometry)
+    {
+        r.use = 1.0;
+        r.weight = weight / known;
+        r.colour = (weight > 1e-5) ? colour / weight : float3(0.0, 0.0, 0.0);
+        r.state = (r.weight <= 0.02) ? 2.0 : ((hidden > 0.5 * weight) ? 4.0 : 3.0);
+    }
+    return r;
 }
 
 )HLSL" R"HLSL(// The ends disagree about the surface in a way a line in diff does not say: one is in a vehicle's window and the other not, and either
@@ -391,6 +451,24 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     }
     result.own = min(max(own.rgb, 0.0) * more.z, 64.0);
 
+    // 1b. Version 5: where the host ray traced this car's reflection of itself for the frame the history is of (g_CarReflC.w bit 0: the
+    // image at g_CarReflC.z, the history's size), its answer at the shaded point's place in the history IS the hit, with the weight the
+    // trace says, and the march below is not done. Where the image has no data there (a pixel that is not the player's car by its triangles,
+    // another vehicle) the march runs as before; with the bit clear this block does nothing and the output is version 4's.
+    if ((slots.w & 1u) != 0u)
+    {
+        const CarReflRtRead rt = CarReflRtLookup(history, ray.size, startUv, start.w, 2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z);
+        result.rt = rt.state;
+        if (rt.use > 0.5)
+        {
+            result.colour = min(max(rt.colour, 0.0) * more.z, 64.0);
+            result.face = 1.0;
+            result.hit = rt.weight * agreement;
+            result.state = (result.hit > 0.02) ? 4.0 : 3.0;
+            return result;
+        }
+    }
+
     // 2. The march: `steps` points along the ray, the same for every pixel (a noise per pixel would make neighbours disagree
     // about a part narrower than the steps, a dotted patch; without it a pixel's answer follows the picture). The ray is a chain
     // of segments from point to point, the first from the shaded point (on the vehicle, diff 0, in no window). Each takes the
@@ -463,7 +541,7 @@ float3 CarReflApply(float3 env, CarReflResult hit, float share)
 
 // The debug views of g_CarReflB.y: 1 the hit weight, 2 the colour the ray sees, 3 the paint's baked vertex AO, 4 the
 // state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit,
-// orange where the hit is the hidden face; brighter the heavier). The write of the colour is scaled by the exponent bias of
+// orange where the hit is the hidden face; brighter the heavier), 5 the ray traced image's state at the pixel. The write of the colour is scaled by the exponent bias of
 // the target, so they are in its units.
 float3 CarReflDebug(CarReflResult hit, float bakedAo)
 {
@@ -480,6 +558,38 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
     if (view == 3u)
     {
         return float3(bakedAo, bakedAo, bakedAo) * unit;
+    }
+    if (view == 5u)
+    {
+        // The ray traced image at the paint's pixel: red the shaded point is not in the history, purple no image this frame, grey the image was
+        // not read (a grazing view), cyan it has no data here (the march ran), green no hit, yellow a hit on a part the camera sees, orange on one
+        // it does not; brighter the heavier.
+        float3 tint = float3(0.0, 0.0, 0.0);
+        if (hit.state > 0.5 && hit.state < 1.5)
+        {
+            tint = float3(1.0, 0.0, 0.0);
+        }
+        else if ((g_CarReflC.w & 1u) == 0u)
+        {
+            tint = float3(0.35, 0.0, 0.35);
+        }
+        else if (hit.rt < 0.5)
+        {
+            tint = float3(0.15, 0.15, 0.15);
+        }
+        else if (hit.rt < 1.5)
+        {
+            tint = float3(0.0, 0.5, 0.5);
+        }
+        else if (hit.rt < 2.5)
+        {
+            tint = float3(0.0, 0.5, 0.0);
+        }
+        else
+        {
+            tint = ((hit.rt > 3.5) ? float3(1.0, 0.3, 0.0) : float3(1.0, 1.0, 0.0)) * (0.25 + 0.75 * saturate(hit.hit));
+        }
+        return tint * unit;
     }
     float3 colour = float3(0.0, 0.0, 0.0);
     if (hit.state > 3.5)

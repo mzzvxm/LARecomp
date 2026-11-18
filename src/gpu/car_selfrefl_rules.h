@@ -33,7 +33,7 @@ struct CarSelfReflConstants {
   float m[16];
   float a[4];     // x mode, y ray length (m), z thickness (m), w strength
   float b[4];     // x steps, y debug view, z colour gain, w the share of the points that take the whole hit (the noise frame before variant version 4)
-  uint32_t c[4];  // x the history image's bindless slot, y a linear clamp sampler's slot, zw reserved
+  uint32_t c[4];  // x the history image's bindless slot, y a linear clamp sampler's slot, z the ray traced image's bindless slot, w flags (kRtImageFlag)
 };
 static_assert(sizeof(CarSelfReflConstants) == 112);
 static_assert(offsetof(CarSelfReflConstants, a) == 64 && offsetof(CarSelfReflConstants, b) == 80 &&
@@ -56,7 +56,7 @@ inline constexpr float kMinThickness = 0.02f;
 inline constexpr float kMaxThickness = 1.0f;
 inline constexpr int kMinSteps = 4;
 inline constexpr int kMaxSteps = 24;
-inline constexpr int kMaxView = 4;
+inline constexpr int kMaxView = 5;  // 5: the ray traced image (car_rt_refl.h), version 5 of the variant
 inline constexpr float kMaxGain = 16.0f;
 inline constexpr float kMinFull = 0.05f;
 inline constexpr float kMaxFull = 1.0f;
@@ -112,6 +112,12 @@ constexpr uint32_t HistoryEdge(uint32_t render_edge, uint32_t divisor) {
   return divisor <= 1 ? render_edge : (render_edge + divisor - 1) / divisor;
 }
 
+// c[3] bit 0: the frame has a ray traced image (car_rt_refl.h) whose bindless slot is c[2], the same size as the history image and
+// made at the same trigger: the paint variant (version 5) reads it in place of the march where it has data. Without the bit the
+// variant does version 4's march and nothing else.
+inline constexpr uint32_t kRtImageFlag = 1u;
+inline constexpr uint32_t kNoRtImage = 0xFFFFFFFFu;
+
 // The constants of a draw that has no history: the game's paint (mode 0) and a slot that is never read.
 inline CarSelfReflConstants OffConstants() {
   CarSelfReflConstants c = {};
@@ -119,7 +125,8 @@ inline CarSelfReflConstants OffConstants() {
 }
 
 inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const float matrix[16],
-                                          uint32_t history_slot, uint32_t sampler_slot, float exp_gain) {
+                                          uint32_t history_slot, uint32_t sampler_slot, float exp_gain,
+                                          uint32_t rt_slot = kNoRtImage) {
   CarSelfReflConstants c = {};
   for (int i = 0; i < 16; ++i) {
     c.m[i] = matrix[i];
@@ -135,6 +142,10 @@ inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const
   c.b[3] = t.full;
   c.c[0] = history_slot;
   c.c[1] = sampler_slot;
+  if (rt_slot != kNoRtImage) {
+    c.c[2] = rt_slot;
+    c.c[3] = kRtImageFlag;
+  }
   return c;
 }
 
