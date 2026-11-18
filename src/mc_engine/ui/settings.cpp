@@ -229,7 +229,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
 
  private:
   void DrawContents() {
-    auto& registry = rex::cvar::GetRegistry();
+    auto& registry = larecomp::cvar::GetRegistry();  // every setting (LARecomp and SDK) and command, source up to date
 
     std::set<std::string> categories;
     for (auto& entry : registry) {

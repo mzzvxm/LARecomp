@@ -14,6 +14,7 @@
 #include <thread>
 
 #include <rex/app/app.h>
+#include <rex/kernel/title_paths.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_exit.h>
 #include <rex/logging/log_category.h>
@@ -259,14 +260,18 @@ rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
     (void)logger->AddCategories(kCategories);
   }
   REX_TRY_VOID(ls::RegisterAll(settings));  // the owners and the aliases of the old flat names
+  ls::ApplyLegacyEnvironment();             // REX_DEBUG_MENU, REX_MCLA_GPU_AO ... as 0.10 spelled them
 
-  // The player's larecomp.toml of the 0.10 line, for the values whose meaning changed (renderer, resolution_scale,
-  // input_backend). CHECK: app.config_file at this point is the default; a --app.config_file on the command line is
-  // not known yet.
-  ls::MigrateLegacyConfig(settings, rex::GetPathSettings().config_file.Get());
-
+  // Defaults first (title layer), then the player's file: the file's migrated values (renderer, resolution_scale,
+  // input_backend) are written at the same layer, and the last write wins.
   ApplyStartupDefaults(settings);
   ChooseUserFolder();
+
+  // The player's larecomp.toml, key by key (a refused value costs only its own line: see larecomp_settings.h) and with the
+  // values whose meaning changed converted. The command line is not applied yet; main hands over a --config_file it saw.
+  const std::filesystem::path config =
+      config_file_hint_.empty() ? rex::GetPathSettings().config_file.Get() : config_file_hint_;
+  ls::ApplyPlayerConfig(settings, config);
   return rex::Ok();
 }
 
@@ -278,8 +283,10 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
   };
 
   // --build_shader_packs / --precache_pipelines: no window, no sound, no pad, no graphics driver (GetRequirements() asks
-  // for nothing, but the driver settings choose what rex::Init loads: "none" for each). CHECK: the setting names
-  // apu.driver and hid.drivers, and that ui.driver = none is accepted while the app requires no UI.
+  // for nothing, but the driver settings choose what rex::Init loads: "none" for each). Read from the SDK: ui.driver, apu.driver
+  // ("none for silence in an app that does not require audio"), hid.drivers (a comma list, "none" skipped) and gpu.driver
+  // ("none for no driver in an app that does not require one") all take "none" exactly when GetRequirements() does not ask for the
+  // system (AudioModule::Init fails with "no audio driver is available" only when it does); DetectHeadless() reads ui.driver.
   if (batch_ != BatchMode::kNone) {
     def("ui.driver", "none");
     def("apu.driver", "none");
@@ -332,13 +339,12 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
   // against --hid.mnk_mode=true on the command line (the command line wins now; the old code forced it off).
   def("hid.mnk_mode", "false");
   def("hid.mnk_mouse", "false");
-#if !defined(_WIN32)
-  def("hid.drivers", "sdl3");  // XInput exists only on Windows
-#endif
-  // A 'controller_toast_enable' default is gone: it was never defined (a silent FAIL in 0.10), and the SDK's controller
-  // toast is not part of the title overlay set LARecomp adds.
-  // The game's language: LARecomp's `language` choice becomes the console's user language before anything runs.
-  InitLanguageSetting();  // CHECK: writes kernel.user_language at the title layer now (kUntilLaunch)
+  // hid.drivers stays at its default "sdl3" on every platform: the 0.10 default input_backend was "sdl" everywhere too
+  // (names read from the SDK: src/hid/sdl3 registers "sdl3", src/hid/xinput registers "xinput"; ApplyPlayerConfig maps a
+  // player's old input_backend line). A 'controller_toast_enable' default is gone: it was never defined (a silent FAIL in
+  // 0.10), and the SDK's controller toast is not part of the title overlay set LARecomp adds.
+  // The language choice is applied in OnInit (InitLanguageSetting): it needs the player's `language` line, which is not
+  // read yet here.
 }
 
 // The emulated GPU's memory and CPU settings for this game (the XENIA renderer), unless the player set them.
@@ -370,28 +376,37 @@ void LarecompApp::SetXeniaHostDefaults() {
 #endif
 }
 
-// The default of app.user_root: Documents\larecomp when it can be written, else %LOCALAPPDATA%\larecomp (Controlled
-// Folder Access blocks Documents for unknown programs, and the SDK's shader storage then throws while creating cache\).
-// A value the player wrote (file, environment, command line) overrides this title-layer default by itself, so the
-// 0.10 "is user_data_root set" test is gone; the copy of the existing saves is done in OnInit, once the final
-// folder is known (MoveUserDataIfNeeded).
+// The default of app.user_root, as in 0.10: <Documents>\larecomp (rex::platform::GetUserFolder() is Documents on Windows and the XDG
+// data home elsewhere, the folder the old SDK's GetUserFolder() gave), the cache under it. The SDK's own default is
+// <app root>\user, which would leave every existing player's saves, identity key, remembered game folder and shader cache behind:
+// this is the default of the TITLE layer, so a user_data_root / cache_root the player wrote (file, environment, command line)
+// still wins. A cache_root default that names the user folder as {app.user_root} follows a player's own user_data_root.
+// When Documents cannot be written (Controlled Folder Access lets unknown programs read Documents but not write there, and the
+// SDK's shader storage then throws while creating cache\) the folder is %LOCALAPPDATA%\larecomp instead; a marker keeps that
+// choice, so lifting the block later does not split the saves. The copy of what is already in Documents is MoveUserDataIfNeeded.
 void LarecompApp::ChooseUserFolder() {
   rex::PathSettings& paths = rex::GetPathSettings();
-  const std::filesystem::path documents = paths.user_root.Get();
+  const std::filesystem::path user_folder = rex::platform::GetUserFolder();
+  const std::filesystem::path documents = user_folder.empty() ? std::filesystem::path() : user_folder / "larecomp";
   const std::filesystem::path fallback = LocalUserFolder();
-  if (fallback.empty()) return;
-  std::error_code ec;
-  const bool moved_before = std::filesystem::exists(fallback / ".moved_from_documents", ec);
-  if (!moved_before && CanWriteTo(documents)) return;
-  if (!CanWriteTo(fallback)) {
-    path_notes_.push_back("cannot write to '" + documents.string() + "' nor to '" + fallback.string() +
-                          "'; saves and the shader cache will fail");
-    return;
+  std::filesystem::path chosen = documents;
+  if (!fallback.empty()) {
+    std::error_code ec;
+    const bool moved_before = std::filesystem::exists(fallback / ".moved_from_documents", ec);
+    if (documents.empty() || moved_before || !CanWriteTo(documents)) {
+      if (CanWriteTo(fallback)) {
+        chosen = fallback;
+      } else {
+        path_notes_.push_back("cannot write to '" + documents.string() + "' nor to '" + fallback.string() +
+                              "'; saves and the shader cache will fail");
+      }
+    }
   }
-  (void)paths.user_root.Set(fallback);
-  if (paths.cache_root.Get().empty() || paths.cache_root.Get() == documents / "cache") {
-    (void)paths.cache_root.Set(fallback / "cache");
+  if (chosen.empty()) {
+    return;  // the SDK's default (<app root>\user) stays: nothing better is known on this platform
   }
+  (void)paths.user_root.Set(chosen);
+  (void)paths.cache_root.SetText(rex::SettingLayer::kTitle, "{app.user_root}/cache");
 }
 
 // -----------------------------------------------------------------------------------------------------------------
@@ -414,9 +429,12 @@ rex::Result<void> LarecompApp::OnInit() {
   // log flush: a warning flushed the file at once, so a repeating warning cost a disk write each time (0.10 comment).
   // CHECK: ILogger has no flush_on level: log.flush_interval (hot) covers it.
   larecomp::InitDebugMenu();  // the command line, the environment and larecomp.toml are all read by now
+  // The game's language: LARecomp's `language` choice becomes the console's user language before the title launches
+  // (kernel.user_language is kUntilLaunch: writable until then). Needs the player's `language` line, so not before OnInit.
+  InitLanguageSetting();
 
   // The game files: when nothing valid is set, look around as the 0.10 start-up did; the wizard handles the rest.
-  rex::kernel::TitlePaths& tp = rex::kernel::GetTitlePaths();
+  rex::kernel::TitlePaths& tp = GetTitleRuntime().GetTitlePaths();
   if (!IsValidGameRoot(tp.game_root.Get())) {
     std::vector<std::string> notes;
     if (auto found = FindGameRoot(rex::GetPathSettings().user_root.Get(), notes); !found.empty()) {
@@ -490,7 +508,7 @@ void LarecompApp::MoveUserDataIfNeeded() {
     LARECOMP_APP_WARN("Game data: user data in '{}' (moved there from Documents on an earlier run)", fallback.string());
     return;
   }
-  const std::filesystem::path documents = rex::platform::GetAppRoot("larecomp");  // CHECK: the default user_root's parent
+  const std::filesystem::path documents = rex::platform::GetUserFolder() / "larecomp";  // where ChooseUserFolder looked first
   size_t copied = 0;
   if (std::filesystem::is_directory(documents, ec)) {
     for (const auto& entry : std::filesystem::directory_iterator(documents, ec)) {
@@ -503,7 +521,7 @@ void LarecompApp::MoveUserDataIfNeeded() {
   { std::ofstream(marker) << documents.string() << '\n'; }
   LARECOMP_APP_WARN("Game data: '{}' cannot be written; user data moved to '{}', {} item(s) copied", documents.string(),
                     fallback.string(), copied);
-  GetUI().ShowMessage(rex::ui::MessageType::kWarning, "LARecomp",
+  GetUI().ShowMessage(rex::MessageType::kWarning, "LARecomp",
                       "LARecomp cannot save to\n" + documents.string() + "\n\nYour saves are kept in\n" + fallback.string() +
                           "\ninstead, and the ones already there were copied over. Nothing else to do.");
 }
@@ -514,7 +532,7 @@ larecomp::Paths LarecompApp::CurrentPaths() const {
   p.user_root = ps.user_root.Get();
   p.cache_root = ps.cache_root.Get();
   p.config_file = ps.config_file.Get();
-  rex::kernel::TitlePaths& tp = rex::kernel::GetTitlePaths();
+  rex::kernel::TitlePaths& tp = GetTitleRuntime().GetTitlePaths();
   p.game_root = tp.game_root.Get();
   p.update_root = tp.update_root.Get();
   p.metadata_root = tp.metadata_root.Get();
@@ -545,7 +563,8 @@ bool LarecompApp::RunSetupFrame() {
     case SetupStep::kProfile:
       if (!step_started_) {
         step_started_ = true;
-        // CHECK (L5): ShowProfilePicker(IUISystem&, const Paths&, done) is the new signature; it seeds kernel.user_name.
+        // Seeds kernel.user_name (so the SDK's own prompt, which would save larecomp.toml in its own format, stays shut)
+        // and writes the choice as flat lines of larecomp.toml. A first run with no save and no name asks here too.
         if (!larecomp::ShowProfilePicker(ui, CurrentPaths(), [this] { step_done_ = true; })) step_done_ = true;
       }
       if (step_done_) advance(SetupStep::kInstall);
@@ -564,8 +583,15 @@ bool LarecompApp::RunSetupFrame() {
             rex::app::RequestShutdown(1);
             return false;
           } else {
-            // CHECK (L5): the wizard writes title.game_root (kUntilLaunch) itself and calls `done` when the files are in.
-            larecomp::ShowRexglueIsoInstallWizard(ui, paths, [this](larecomp::Paths) { step_done_ = true; });
+            // The folder the player installed to becomes the game root (title.game_root is kUntilLaunch: writable until
+            // LaunchTitle); the next step and the SDK's LaunchTitle read it from there.
+            larecomp::ShowRexglueIsoInstallWizard(ui, paths, [this](larecomp::Paths installed) {
+              if (auto set = GetTitleRuntime().GetTitlePaths().game_root.Set(installed.game_root); !set) {
+                LARECOMP_APP_WARN("Game install: title.game_root could not be set to '{}': {}", installed.game_root.string(),
+                                  set.error().GetDescription());
+              }
+              step_done_ = true;
+            });
           }
         }
       }
@@ -592,7 +618,7 @@ bool LarecompApp::RunSetupFrame() {
 // the config are final and logging is up, so the folders are the ones the game itself will use.
 // CHECK: the exe is a GUI program (WIN32): stdout reaches a parent only through a pipe the parent made (the launcher does).
 void LarecompApp::RunBatchMode() {
-  const std::filesystem::path game_root = rex::kernel::GetTitlePaths().game_root.Get();
+  const std::filesystem::path game_root = GetTitleRuntime().GetTitlePaths().game_root.Get();
   int code = 0;
   if (batch_ == BatchMode::kBuildShaderPacks) {
     code = larecomp::shaderbuild::RunCommandLine(game_root);
@@ -665,7 +691,7 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
 bool LarecompApp::RunBootBuild(rex::kernel::TitleRuntime& title) {
   bool force = false;
   for (;;) {
-    auto shaders = std::make_shared<larecomp::shaderbuild::Phase>(rex::kernel::GetTitlePaths().game_root.Get(),
+    auto shaders = std::make_shared<larecomp::shaderbuild::Phase>(GetTitleRuntime().GetTitlePaths().game_root.Get(),
                                                                    title.GetMembase().Get(), force);
     std::atomic<bool> finished{false};
     larecomp::StartBootBuildWithOverlay(

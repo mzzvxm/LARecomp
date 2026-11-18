@@ -46,6 +46,10 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   void SetBatchMode(BatchMode mode) { batch_ = mode; }
   BatchMode GetBatchMode() const { return batch_; }
 
+  // A --config_file= the command line carries: OnConfigure reads larecomp.toml before the SDK applies the command line, so it
+  // cannot see the option itself (main scans for it, as it does for the actions).
+  void SetConfigFileHint(std::filesystem::path file) { config_file_hint_ = std::move(file); }
+
   // First-launch wizards between Init() and LaunchTitle(): the save picker, the ISO installer, the save importer.
   // RunSetupFrame pumps one UI frame and advances the state machine; false when a shutdown was requested.
   bool SetupPending() const;
@@ -85,6 +89,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
 
   BatchMode batch_ = BatchMode::kNone;
   std::vector<std::string> path_notes_;
+  std::filesystem::path config_file_hint_;
   std::filesystem::path settings_config_path_;
   SetupStep step_ = SetupStep::kProfile;
   bool step_started_ = false;
