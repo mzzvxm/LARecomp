@@ -52,6 +52,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "sdk_access.h"
+#include "larecomp_guest.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/effect_compare.h"
@@ -4301,8 +4302,7 @@ bool Hook_ControllerMenuKey(PPCRegister& r3, PPCRegister& r4) {
 
 bool Hook_FlashCommandLog(PPCRegister& r5) {
     // Runs for every Flash UI command: build the line only when it is logged.
-    auto* logger = ::rex::GetLoggerRaw(::mc::log::mc);
-    if (!logger || !logger->should_log(spdlog::level::info)) return false;
+    if (!::mc::log::mc.IsEnabled(::rex::log::Level::kInfo)) return false;
     uint32_t cmd = static_cast<uint32_t>(r5.u64);
     if (!cmd || !GetMembase()) return false;
 
@@ -5589,7 +5589,6 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out) {
 
 #include <rex/ppc/context.h>
 #include "pause_menu.h"
-#include "larecomp_guest.h"
 
 bool PauseMenuPopStack() { return false; }
 bool PauseMenuUiOptionsOpen() { return false; }

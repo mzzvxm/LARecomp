@@ -15,6 +15,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
+#include <rex/kernel/title_paths.h>
 
 #include "string_dumper.h"
 
@@ -186,6 +187,5 @@ void InitStringTableTools() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
-#include <rex/kernel/title_paths.h>
 
 #endif // REXGLUE_HAS_XEO3_TARGET

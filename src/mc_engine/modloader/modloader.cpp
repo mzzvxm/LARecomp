@@ -3,6 +3,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_paths.h>
+#include <format>
 
 #include <algorithm>
 #include <array>
@@ -2317,7 +2318,7 @@ void PartProbeLoop() {
 
         const uint32_t car = ProbeU32(base, 0x8288DCF8u);
         if (!ProbeAddress(car)) {
-            const std::string report = fmt::format("no player car (0x{:08X})", car);
+            const std::string report = std::format("no player car (0x{:08X})", car);
             if (report != last) {
                 last = report;
                 LARECOMP_APP_INFO("[mods-probe] {}", report);
@@ -2359,7 +2360,7 @@ void PartProbeLoop() {
             const bool ready = object != 0 && refs > 0 && stream == 3 &&
                                (flags & 0x30000000u) == 0x30000000u;
             if (ready) continue;
-            waiting += fmt::format(
+            waiting += std::format(
                 "\n  {}{} lod {}: object 0x{:08X} resource 0x{:08X} handle 0x{:08X} "
                 "flags 0x{:08X} (resident bits {}) state {} refs {}",
                 slot < std::size(kCarSlots) ? kCarSlots[slot] : "?", state, lod, object, resource,
@@ -2372,7 +2373,7 @@ void PartProbeLoop() {
         const uint32_t streamer = ProbeU32(base, 0x8286CE50u);
         const int alloc_failed = ProbeAddress(streamer) ? ProbeU8(base, streamer + 6212) : -1;
         const std::string report =
-            fmt::format("car 0x{:08X} reattach pending {} all-ready {} blocked 0x{:08X} "
+            std::format("car 0x{:08X} reattach pending {} all-ready {} blocked 0x{:08X} "
                         "detail {} lod {}{} front bumper {} streamer alloc-failed {} -- {}",
                         car, pending, all_ready, blocked, detail ? 1 : 0, lod,
                         any_lod ? " (any lod)" : "", ProbeU8(base, config + 2144 + 6),
@@ -2914,7 +2915,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                   part.indices.size() / 3, stats.submeshes,
                                   stats.decimated ? ", decimated" : "",
                                   stats.local_silenced
-                                      ? fmt::format(", {} bone-local submesh(es) silenced",
+                                      ? std::format(", {} bone-local submesh(es) silenced",
                                                     stats.local_silenced)
                                       : std::string(),
                                   stats.band_summary.empty()
@@ -3423,7 +3424,7 @@ size_t BuildDonorCar(const VehicleMod& vehicle, const VehiclePlan& plan, Mesh me
                                       part.indices.size() / 3, stats.submeshes,
                                       stats.decimated ? ", decimated" : "",
                                       stats.local_silenced
-                                          ? fmt::format(", {} bone-local submesh(es) silenced",
+                                          ? std::format(", {} bone-local submesh(es) silenced",
                                                         stats.local_silenced)
                                           : std::string());
                 }
@@ -4513,14 +4514,14 @@ size_t BuildRimMods(const std::vector<ModEntry>& mods, const Rpf3Reader& archive
         // means the bake did not run.
         std::string shade;
         if (stats.shade_deviation >= 0.0f) {
-            shade = fmt::format(", shade {}..{} mean {:.0f} deviation {:.0f}", stats.shade_low,
+            shade = std::format(", shade {}..{} mean {:.0f} deviation {:.0f}", stats.shade_low,
                                 stats.shade_high, stats.shade_mean, stats.shade_deviation);
         } else if (offset.shade_profile) {
             shade = ", shade profiled";
         } else if (offset.uniform_shade) {
             shade = ", shade flat";
         }
-        if (stats.bands) shade += fmt::format(", {} material band(s)", stats.bands);
+        if (stats.bands) shade += std::format(", {} material band(s)", stats.bands);
         LARECOMP_APP_INFO("[mods] {} -> rim {} ({} tris in {} submesh(es){}{}{})", mod.mod_name,
                           mod.asset, stats.triangles, stats.submeshes,
                           stats.decimated ? ", decimated" : "", paint, shade);
@@ -4620,7 +4621,7 @@ std::vector<std::string> RimCatalog(const Rpf3Reader& archive,
     std::vector<std::string> catalog;
     for (int list = 0; list < 8; ++list) {
         const std::string path = list == 0 ? std::string("tune/vehicle/wheel_models.list")
-                                           : fmt::format("tune/vehicle/wheel_models{:04d}.list",
+                                           : std::format("tune/vehicle/wheel_models{:04d}.list",
                                                          list);
         std::string text;
         bool found = false;

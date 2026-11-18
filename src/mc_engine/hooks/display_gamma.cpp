@@ -31,6 +31,7 @@
 #include <string>
 
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 // Generated guest code: the identity ramps (a 256-entry table and a PWL ramp), then
 // D3DDevice_SetGammaRamp and D3DDevice_SetPWLGamma.
@@ -109,7 +110,7 @@ void LogRamp(const uint8_t* base, uint32_t device, int mode) {
 // the guest stack below the caller's frame.
 void SetRampAgain(PPCContext& ctx, uint8_t* base, uint32_t device) {
     const bool pwl = UsesPwlRamp(base, device);
-    rex::CallFrame frame(ctx);
+    larecomp::guest::CallFrame frame(ctx);
     PPCContext& call = frame;
     const uint32_t sp = (ctx.r1.u32 - kRampBytes - 256) & ~UINT32_C(15);
     WriteU32(base, sp, ctx.r1.u32);  // back chain

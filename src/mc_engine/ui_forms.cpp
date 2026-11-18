@@ -209,7 +209,7 @@ void CheckContext(const PPCContext& ctx) {
     static bool told = false;
     if (told) return;
     auto* ts = rex::kernel::ThreadState::Get();
-    if (ts && ts->context() != &ctx) {
+    if (ts && ts->GetContext() != &ctx) {
         told = true;
         MC_WARN("[ui-forms] a form key handler ran on a nested guest context; guest calls "
                 "made from it share the outer frame");

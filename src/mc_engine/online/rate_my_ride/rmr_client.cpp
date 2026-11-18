@@ -16,6 +16,7 @@
 #include <rex/kernel/title_runtime.h>
 #include <rex/xam/content_manager.h>
 #include <rex/xam/user_profile.h>
+#include <rex/path_settings.h>
 
 #include "larecomp_log.h"
 #include "../identity/identity_store.h"
@@ -296,6 +297,5 @@ void Submit(Request&& req, Done done) {
 // XEO3 stubs: the XEO3 DLL does not carry the Rate My Ride backend.
 
 #include <rex/ppc/context.h>
-#include <rex/path_settings.h>
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

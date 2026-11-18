@@ -47,6 +47,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "neon_pulse.h"
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_82353E38);  // the car effect object's update (the pulse is its last step)
 REX_EXTERN(rex_sub_823DBBC8);         // the game's sine: f1 in (a double), f1 out
@@ -65,7 +66,7 @@ std::atomic<bool> g_logged{false};
 // The guest's sine of a float, rounded to a float as the game rounds it (frsp). It runs in a context of
 // its own, so nothing of the caller's registers is touched.
 float GuestSine(PPCContext& ctx, uint8_t* base, float x) {
-    rex::CallFrame frame(ctx);
+    larecomp::guest::CallFrame frame(ctx);
     PPCContext& call = frame;
     call.f1.f64 = static_cast<double>(x);
     rex_sub_823DBBC8(call, base);

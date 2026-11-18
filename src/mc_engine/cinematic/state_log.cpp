@@ -64,6 +64,7 @@
 #include "larecomp_log.h"
 #include "scene_runtime.h"
 #include "state_log_core.h"
+#include "larecomp_guest.h"
 
 namespace mc::cinematic::statelog {
 
@@ -420,7 +421,6 @@ std::string CurrentLogPath() {
 #else  // REXGLUE_HAS_XEO3_TARGET
 
 #include "state_log.h"
-#include "larecomp_guest.h"
 
 namespace mc::cinematic::statelog {
 void Tick() {}

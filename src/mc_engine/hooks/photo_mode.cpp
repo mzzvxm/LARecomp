@@ -5,6 +5,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/gpu/graphics_system.h>
+#include <rex/module.h>
 #include <rex/kernel/guest_memory.h>
 #include <cstdint>
 
@@ -82,7 +83,11 @@ static void ArmPhotoFrontBufferReadback() {
     auto* rt = REX_RUNTIME();
     if (!rt) return;
     auto* mem = larecomp::guest::AddressSpace(rt);
-    auto* gfx = rt->graphics_system();
+    // 0.11: the graphics system is an interface of the running app (0.10: rt->graphics_system()).
+    // CHECK: rex::gpu::IGraphicsSystem has no RequestResolveReadback in 0.11 (the 0.10 fork SDK had it), so the
+    // requires-expression below is false and the shot takes the global readback window; the scoped call needs the
+    // fork's SDK patch back on IGraphicsSystem (or a call on LARecomp's own renderer).
+    auto* gfx = REX_INTERFACE(rex::gpu::IGraphicsSystem);
     if (!mem || !gfx) return;
 
     const auto* array = mem->TranslateVirtual<const uint8_t*>(0x828393ACu);  // front buffers[2]

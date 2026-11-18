@@ -132,7 +132,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
 
   // The build stamp the SDK's overlay carried, centered near the bottom.
   ImGui::PushFont(nullptr, kSmallSize);
-  const ImVec2 text_size = ImGui::CalcTextSize(REXGLUE_BUILD_STAMP);
+  const ImVec2 text_size = ImGui::CalcTextSize(rex::GetBuildStamp());
   ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - text_size.x) * 0.5f,
                                  io.DisplaySize.y - text_size.y - io.DisplaySize.y * 0.03f));
   ImGui::SetNextWindowSize(ImVec2(0, 0));
@@ -142,7 +142,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted(REXGLUE_BUILD_STAMP);
+    ImGui::TextUnformatted(rex::GetBuildStamp());
   }
   ImGui::End();
   ImGui::PopStyleColor();

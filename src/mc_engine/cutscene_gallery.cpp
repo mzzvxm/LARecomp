@@ -20,6 +20,7 @@
 #include "cutscene_gallery.h"
 #include "pause_menu.h"
 #include "logging.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -2209,7 +2210,6 @@ void MCLA_CineCamInstall(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
 #include <rex/ppc/context.h>
 
 #include "cutscene_gallery.h"
-#include "larecomp_guest.h"
 
 int  CutsceneCount() { return 0; }
 const char* CutsceneId(int) { return ""; }

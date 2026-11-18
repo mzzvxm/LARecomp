@@ -12,7 +12,8 @@
 //   SetupEnvironment's --build_shader_packs exit       -> GetActions/OnAction, run in OnInit with no drivers loaded
 //   OnPostSetup / OnPostLoadXexImage / LaunchModule    -> OnTitleLaunch(TitleRuntime&): after Load, before the guest starts
 //   OnWindowCloseRequested (veto + FinishWindowClose)  -> IUIEventListener kClose (saves, devices: the UI thread, before RequestShutdown),
-//                                                         OnStop (the same work again if it did not run, then the renderer stops, then the title)
+//                                                         the end of OnRun (the same work again if it did not run, then the renderer stops), then the SDK
+//                                                         stops the title (TitleApp::OnStop is final in 0.11: nothing of ours can run in it)
 //   OnShutdown                                         -> OnShutdown (the SDK ends the process through App::Shutdown)
 //   OnWindowPixelSizeChanged / OnWindowFocusChanged    -> IUIEventListener kResize / kFocus
 //
@@ -57,7 +58,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool RunSetupFrame();
 
   // The six folders, from the settings (valid from OnInit on).
-  larecomp::Paths CurrentPaths() const;
+  larecomp::Paths CurrentPaths();  // not const: GetTitleRuntime() is not
 
  protected:
   rex::AppSysRequirements GetRequirements() const override;
@@ -72,7 +73,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   rex::Result<void> OnInit() override;
   rex::Result<void> OnTitleLaunch(rex::kernel::TitleRuntime& title) override;
   void OnTitleExit(rex::kernel::TitleExitReason reason) override;
-  void OnStop() override;
+  void OnRun() override;   // TitleApp::OnRun, then StopBeforeTitleEnds (TitleApp::OnStop is final in 0.11)
   void OnShutdown() override;
   rex::platform::CrashReporterOptions GetCrashOptions() override;
 
@@ -88,7 +89,8 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   void MoveUserDataIfNeeded();       // OnInit: the side effects of that choice
   void StartOverlays();              // OnInit: fonts, style, hotkeys, overlays
   void BeginSetupStep();
-  void FinishWindowCloseWork();      // the pre-close work (saves, devices, renderer) that must precede the title's end
+  void FinishWindowCloseWork();      // the pre-close work (saves, devices) that must precede the title's end
+  void StopBeforeTitleEnds();        // that work, the achievement manager's release and the renderer's stop: once, before the SDK unloads the title
   bool RunBootBuild(rex::kernel::TitleRuntime& title);
   void RunBatchMode();
   void SetXeniaHostDefaults();
@@ -101,6 +103,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool step_started_ = false;
   std::atomic<bool> step_done_{false};
   std::atomic<bool> close_work_started_{false};
+  std::atomic<bool> before_title_end_done_{false};
   rex::ScopeGuard ui_listener_;
   rex::ScopeGuard exit_listener_;
   rex::kernel::TitleRuntime* title_ = nullptr;

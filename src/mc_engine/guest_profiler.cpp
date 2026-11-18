@@ -7,6 +7,7 @@
 
 #include "logging.h"
 #include "os/thread_priority.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 
 #if defined(_WIN32)
 
@@ -140,7 +141,7 @@ int64_t NowNs() {
 // Guest address recovery, without a PDB
 //=============================================================================
 //
-// Codegen emits PPCFuncMappings[] -- every recompiled function as a
+// Codegen emits kPPCFuncMappings[] -- every recompiled function as a
 // { guest address, host function pointer } pair, terminated by { 0, nullptr }.
 // It is linked into the exe and needs no symbols at all, which matters because
 // a profile taken on somebody else's machine has no PDB next to it: every
@@ -177,13 +178,13 @@ void BuildGuestMap() {
     }
 
     size_t n = 0;
-    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) ++n;
+    for (const PPCFuncMapping* m = kPPCFuncMappings; m->host; ++m) ++n;
     g_guest_by_host.reserve(n);
     g_guest_exact.reserve(n * 2);
 
-    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) {
+    for (const PPCFuncMapping* m = kPPCFuncMappings; m->host; ++m) {
         const uint64_t host = reinterpret_cast<uint64_t>(m->host);
-        const uint32_t guest = static_cast<uint32_t>(m->guest);
+        const uint32_t guest = static_cast<uint32_t>(m->address);
         g_guest_by_host.emplace_back(host, guest);
 
         // Release links fold identical functions together (/OPT:ICF), and with
@@ -1143,16 +1144,18 @@ void Tick(double frame_ms) {
             RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(&Tick), &base, nullptr);
         }
 
+        // Next to the SDK's log file (app.log_root), not a "logs" folder of the working directory: the logger decides where.
+        const std::filesystem::path log_dir = LarecompLogFolder();
         std::error_code ec;
-        std::filesystem::create_directories("logs", ec);
+        std::filesystem::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
         localtime_s(&tm, &t);
         char name[160];
-        std::snprintf(name, sizeof(name), "logs/profile_%04d%02d%02d_%02d%02d%02d.log",
+        std::snprintf(name, sizeof(name), "profile_%04d%02d%02d_%02d%02d%02d.log",
                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
                       tm.tm_sec);
-        g_log = std::fopen(name, "w");
+        g_log = _wfopen((log_dir / name).c_str(), L"w");
         if (g_log) {
             std::fprintf(g_log,
                          "LARecomp guest sampling profile\n"

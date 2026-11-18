@@ -62,6 +62,7 @@
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
 #include <rex/xam/user_profile.h>
+#include <format>
 
 REX_EXTERN(__imp__rex_sub_824FDF00);
 REX_EXTERN(__imp__rex_sub_824FE058);
@@ -513,7 +514,7 @@ extern "C" REX_FUNC(rex_sub_824FED28) {
         if (lb::client::Diag() || !ok) {
           LARECOMP_APP_INFO("[leaderboards] view {} type {}: {} of {} row(s){}", p.view, p.type,
                             p.resp.rows.size(), p.resp.total,
-                            ok ? "" : fmt::format(" FAILED (err {})", p.resp.err));
+                            ok ? "" : std::format(" FAILED (err {})", p.resp.err));
         }
       }
       it = g_pending.erase(it);
@@ -578,7 +579,7 @@ void Hook_LeaderboardWrite(PPCRegister& r25, PPCRegister& r5, PPCRegister& r6) {
         val.agg = c.agg;
         val.bits = bits;
         req.columns.push_back(val);
-        detail += fmt::format(" {:X}={}", c.attr, bits);
+        detail += std::format(" {:X}={}", c.attr, bits);
       }
     }
     if (req.columns.empty()) continue;
