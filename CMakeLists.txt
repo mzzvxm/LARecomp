@@ -639,6 +639,19 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include")
     target_link_libraries(larecomp PRIVATE larecomp_tomlplusplus)
 
+    # SDL3: LARecomp calls it itself (the controller list, the pad's rumble and hints). rexglue 0.11 installs the shared SDL3
+    # its modules load (bin/SDL3.dll, lib/SDL3.lib, include/SDL3) but exports no target for it, so LARecomp links that copy:
+    # one SDL in the process, the SDK's.
+    find_path(LARECOMP_SDL3_INCLUDE_DIR SDL3/SDL.h HINTS "${rexglue_DIR}/../../../include" NO_DEFAULT_PATH)
+    find_library(LARECOMP_SDL3_LIBRARY NAMES SDL3 HINTS "${rexglue_DIR}/../.." NO_DEFAULT_PATH)
+    if(NOT LARECOMP_SDL3_INCLUDE_DIR OR NOT LARECOMP_SDL3_LIBRARY)
+        message(FATAL_ERROR "SDL3 not found in the rexglue install (${rexglue_DIR}/../../..): the SDK installs it with its modules")
+    endif()
+    add_library(larecomp_sdl3 INTERFACE)
+    target_include_directories(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_INCLUDE_DIR}")
+    target_link_libraries(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_LIBRARY}")
+    target_link_libraries(larecomp PRIVATE larecomp_sdl3)
+
     # libmspack (LGPL-2.1, https://github.com/kyz/libmspack, v1.11): lzxd.c only, the LZX decoder of the modloader's
     # xcompress.cpp (the game's XCompress streams). It was reached as rex/system/lzx.h up to 0.10; in 0.11 the SDK's LZX
     # code (src/filesystem/lzx.cpp) is private to rexfilesystem, so LARecomp builds the decoder itself, as the SDK does
@@ -850,6 +863,8 @@ else()
             ole32
             # Rate My Ride client sockets (mc_engine/online/rate_my_ride)
             ws2_32
+            # timeBeginPeriod/timeEndPeriod (the frame timing); rexglue 0.10 linked winmm publicly, 0.11 does not
+            winmm
         )
         if(MINGW)
             # What the sources ask for with #pragma comment(lib, ...) (crash_handler.cpp,
