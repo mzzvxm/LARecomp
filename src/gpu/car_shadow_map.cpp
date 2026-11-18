@@ -18,11 +18,13 @@
 #include "descriptors.h"
 #include "device.h"
 #include "draw_state.h"
+#include "edram.h"
 #include "frame.h"
 #include "gpu_class.h"
 #include "host_plan.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "menu_world.h"
 #include "temporal_identities.h"
 #include "texture_bytes.h"
 
@@ -493,12 +495,16 @@ void CarShadowMap::BeginFrame() {
 
 bool CarShadowMap::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
   // The ambient occlusion's trigger (ao.cpp Judge, car_selfrefl.cpp IsTrigger): the first copy of the main depth that is no
-  // end-of-scene copy, into 078B0000, before the anchor, the play view's rectangle starting at the origin and inside the picture. The
-  // pause menu's, the garage's and the map's worlds (4 guest samples) get no map.
+  // end-of-scene copy, into 078B0000, before the anchor. The play view's rectangle starts at the origin and stays inside the picture;
+  // the pause view's (4 guest samples: the pause menu's, the garage's and the map's worlds) three tiles come in an order nobody has
+  // looked at, so any rectangle inside the picture will do and the destination must be the whole picture (menu_world.h). The
+  // contact shadows run in both, so the map is drawn in both (the owner's broken spoiler shadow was seen behind the pause menu).
   if (!summary.depth_copy || !summary.source || trigger_seen_) {
     return false;
   }
-  if (!temporal::IsPlaySamples(temporal::MainDepthSamples(summary.source_key))) {
+  const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
+  const bool pause = samples == temporal::kPauseSamples;
+  if (!temporal::IsPlaySamples(samples) && !pause) {
     return false;
   }
   if ((record.flags & kEventInsideEndTiling) || summary.clears_depth || summary.dest_address != kTriggerDestination || anchor_seen_ ||
@@ -507,6 +513,10 @@ bool CarShadowMap::IsTrigger(const ResolveRecord& record, const ResolveCache::Su
   }
   const uint32_t width = std::min(summary.dest_width, summary.source->width);
   const uint32_t height = std::min(summary.dest_height, summary.source->height);
+  if (pause) {
+    return menu_world::PauseFirstPointGeometry(summary.x0, summary.y0, summary.x1, summary.y1, width, height, summary.source->width,
+                                               summary.source->height, EdramTargets::kHeightAlignment);
+  }
   return summary.x0 == 0 && summary.y0 == 0 && summary.x1 > summary.x0 && summary.y1 > summary.y0 && uint32_t(summary.x1) <= width &&
          uint32_t(summary.y1) <= height;
 }
