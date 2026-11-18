@@ -467,6 +467,12 @@ class AmbientOcclusion {
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
 
+  // The world-space unit vector toward the sun of this frame so far: -c16 of the light most main-view draws carried (the
+  // world's light; a car's own draws carry a light of their own, which is not the sun). False when no draw had one.
+  bool SunDirection(double to_sun[3]) const;
+  // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
+  bool ContactGated() const { return contact_state_ == ContactState::kGated; }
+
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes.
   struct Push {

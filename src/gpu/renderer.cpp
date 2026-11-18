@@ -269,6 +269,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
+    car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.

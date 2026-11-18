@@ -1558,6 +1558,24 @@ void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Ban
   }
 }
 
+bool AmbientOcclusion::SunDirection(double to_sun[3]) const {
+  LightRaw light;
+  uint32_t with_it = 0;
+  if (!PickLight(&light, &with_it)) {
+    return false;
+  }
+  float ambient[3], sun[3], dir[3];
+  DecodeLight(light, ambient, sun, dir);
+  const double length = std::sqrt(double(dir[0]) * dir[0] + double(dir[1]) * dir[1] + double(dir[2]) * dir[2]);
+  if (!std::isfinite(length) || length < 0.5) {
+    return false;
+  }
+  for (int i = 0; i < 3; ++i) {
+    to_sun[i] = -double(dir[i]) / length;  // c16 is the direction the light travels
+  }
+  return true;
+}
+
 bool AmbientOcclusion::PickLight(LightRaw* out, uint32_t* draws_with_it) const {
   if (light_draws_ == 0) {
     return false;

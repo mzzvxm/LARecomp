@@ -52,6 +52,7 @@
 
 namespace mcla::gpu {
 
+class AmbientOcclusion;
 class BindlessHeap;
 class CarFrame;
 class Device;
@@ -103,6 +104,9 @@ class CarShadowMap {
 
   // Where the player car's draws come from (car_frame.h). The Renderer owns the CarFrame; null: no map.
   void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
+  // The ambient occlusion, for the world's sun direction (AmbientOcclusion::SunDirection): the car's own draws carry a light of their own
+  // (at 17.7 h it is 2 degrees BELOW the horizon while the world's sun is well above it), so car_frame::Frame::to_sun is only the fallback.
+  void SetAmbientOcclusion(const AmbientOcclusion* ao) { ao_ = ao; }
 
   // The Scene opened a frame's first list: reads the settings, asks the CarFrame for the next frame's draws while a map is wanted.
   void BeginFrame();
@@ -189,6 +193,7 @@ class CarShadowMap {
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   CarFrame* car_frame_ = nullptr;
+  const AmbientOcclusion* ao_ = nullptr;
   std::unique_ptr<plume::RenderPipelineLayout> layout_;  // no sets: a push block of 64 bytes (vertex), an input layout
   std::unique_ptr<plume::RenderShader> vertex_shader_;
   std::unique_ptr<plume::RenderShader> matrix_shader_;

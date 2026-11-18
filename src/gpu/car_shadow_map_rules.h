@@ -140,6 +140,7 @@ enum class Why : uint8_t {
   kNoCar,         // the player's car was not found in the frame (or has no usable draw)
   kNoSun,         // no direction to the sun
   kSunLow,        // the sun is below kMinSunDegrees: the contact shadows are gated
+  kContactGated,  // the AO gated the contact shadows in the frame before (the sun's height or the wet road)
 };
 
 inline double SunSin(const double to_sun[3]) {
@@ -177,6 +178,7 @@ constexpr const char* WhyName(Why why) {
     case Why::kNoCar: return "no player car in the frame";
     case Why::kNoSun: return "no direction to the sun";
     case Why::kSunLow: return "the sun is too low (the contact shadows are gated)";
+    case Why::kContactGated: return "the contact shadows are gated (a low sun or a wet road)";
   }
   return "?";
 }

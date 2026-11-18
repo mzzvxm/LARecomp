@@ -13,6 +13,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "ao.h"
 #include "car_frame.h"
 #include "descriptors.h"
 #include "device.h"
@@ -529,7 +530,20 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
   trigger_seen_ = true;
   ++triggers_;
   const car_frame::Frame& frame = car_frame_->Current();
-  const rules::Why why = rules::Decide(choice_.level, contact_on_, /*play_view=*/true, frame.valid && !frame.draws.empty(), frame.to_sun);
+  // The world's sun (the AO's light of the frame); the car's own light only when the AO has none.
+  double to_sun[3] = {frame.to_sun[0], frame.to_sun[1], frame.to_sun[2]};
+  if (ao_) {
+    double world[3];
+    if (ao_->SunDirection(world)) {
+      to_sun[0] = world[0];
+      to_sun[1] = world[1];
+      to_sun[2] = world[2];
+    }
+  }
+  rules::Why why = rules::Decide(choice_.level, contact_on_, /*play_view=*/true, frame.valid && !frame.draws.empty(), to_sun);
+  if (why == rules::Why::kRun && ao_ && ao_->ContactGated()) {
+    why = rules::Why::kContactGated;  // the rain: nobody reads the map
+  }
   if (why != rules::Why::kRun) {
     NoteSkipped(why);
     return false;
@@ -545,7 +559,7 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
   held_ = rules::Hold(held_, estimate);
   const uint32_t size = choice_.size();
   rules::Fit fit;
-  if (!rules::MakeFit(frame.to_sun, pose, held_, size, &fit)) {
+  if (!rules::MakeFit(to_sun, pose, held_, size, &fit)) {
     NoteSkipped(rules::Why::kNoSun);
     return false;
   }
