@@ -1810,6 +1810,12 @@ bool Scene::MaySkipForPipeline(const void* context) {
   if (MsaaSampleCount(s.msaa) < 2) {
     return false;
   }
+  // Nor a draw that writes the stencil: later draws in the frame test what it
+  // leaves, so without it they go unclipped far beyond the draw itself (the
+  // radar's circle: the whole map over the screen for a frame as the map closes).
+  if (d.key.depth_format != 0 && s.depth_control.stencil_enable && StencilWrites(s)) {
+    return false;
+  }
   bool any = false;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
     if (!scene.edram_->DrawnEveryFrame(ColorEdramKey(s, i), scene.frame_serial_,
