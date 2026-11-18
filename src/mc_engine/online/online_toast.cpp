@@ -13,18 +13,14 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
-#include <rex/overlay_renderer.h>
-#if __has_include(<rex/ui/image_decode.h>)
-#include <rex/ui/image_decode.h>
 #define LARECOMP_TOAST_HAS_ICON 1
-#endif
 
 #include "larecomp_log.h"
 #include "relay_info.h"
 #include "system_link.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/overlay_support.h"
 
 namespace larecomp {
 namespace {
@@ -96,11 +92,9 @@ void Worker(std::shared_ptr<Shared> shared) {
     }
 }
 
-class OnlineToastDialog final : public rex::ui::ImGuiDialog {
+class OnlineToastDialog final : public mcla::ui::PanelDialog {
  public:
-    OnlineToastDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                      std::shared_ptr<Shared> shared)
-        : ImGuiDialog(drawer), immediate_(immediate), shared_(std::move(shared)) {}
+    explicit OnlineToastDialog(std::shared_ptr<Shared> shared) : shared_(std::move(shared)) {}
 
  protected:
     void OnDraw(ImGuiIO& io) override {
@@ -147,7 +141,7 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
                                  {}, 25.0f)) {
             constexpr float kIcon = 56.0f;
             if (icon_) {
-                ImGui::Image(reinterpret_cast<ImTextureID>(icon_.get()), ImVec2(kIcon, kIcon));
+                ImGui::Image(icon_->Ref(), ImVec2(kIcon, kIcon));
                 ImGui::SameLine();
             }
             ImGui::BeginGroup();
@@ -184,30 +178,20 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
     }
 
  private:
-    // A new icon from the worker becomes a texture here, on the UI thread,
-    // where the drawer may be used. Called with the mutex held.
+    // A new icon from the worker becomes a texture here, in the draw, on the UI thread, where the ImGui context is
+    // current (an ImGui texture is made with it). Called with the mutex held.
     void TakeIcon() {
 #if defined(LARECOMP_TOAST_HAS_ICON)
-        if (shared_->icon_png.empty() || !immediate_) return;
+        if (shared_->icon_png.empty()) return;
         std::vector<uint8_t> png = std::move(shared_->icon_png);
         shared_->icon_png.clear();
-        int width = 0;
-        int height = 0;
-        std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(png.data(), png.size(), width, height);
-        if (rgba.empty() || width <= 0 || height <= 0 || width > 512 || height > 512) {
-            LARECOMP_APP_WARN("[online] server icon could not be decoded");
-            return;
-        }
-        icon_ = immediate_->CreateTexture(uint32_t(width), uint32_t(height),
-                                          rex::ui::ImmediateTextureFilter::kLinear, false,
-                                          rgba.data());
-        if (!icon_) LARECOMP_APP_WARN("[online] this renderer gave the server icon no texture");
+        icon_ = mcla::ui::IconTexture::FromEncoded(png.data(), png.size(), 512);
+        if (!icon_) LARECOMP_APP_WARN("[online] server icon could not be decoded");
 #endif
     }
 
-    rex::ui::ImmediateDrawer* immediate_;
     std::shared_ptr<Shared> shared_;
-    std::unique_ptr<rex::ui::ImmediateTexture> icon_;
+    std::unique_ptr<mcla::ui::IconTexture> icon_;
     Link last_link_ = Link::kDisconnected;
     bool seen_ = false;
     Clock::time_point show_until_{};
@@ -215,12 +199,11 @@ class OnlineToastDialog final : public rex::ui::ImGuiDialog {
 
 }  // namespace
 
-void StartOnlineToast(rex::ui::ImGuiDrawer* imgui_drawer,
-                      rex::ui::ImmediateDrawer* immediate_drawer) {
-    if (!imgui_drawer || larecomp::cvar::GetFlagByName("mcla_online_enable").empty()) return;
+void StartOnlineToast(rex::ui::IUISystem& ui) {
+    if (larecomp::cvar::GetFlagByName("mcla_online_enable").empty()) return;
     auto shared = std::make_shared<Shared>();
     std::thread(Worker, shared).detach();
-    (void)new OnlineToastDialog(imgui_drawer, immediate_drawer, shared);
+    ui.AddDialog(std::make_unique<OnlineToastDialog>(shared));
 }
 
 void OnlineToastPoke() { g_poke_until_ms.store(NowMs() + kShowOnPoke.count()); }

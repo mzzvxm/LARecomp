@@ -28,10 +28,9 @@
 // memory read in another shape than it was resolved in, are M5.
 //
 // Call order (all on the UI thread except where noted):
-//   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
-//   SetShaderPackFolder   from LarecompApp::OnConfigurePaths, before Startup (optional)
-//   SetShaderPackGate     from LarecompApp::SetupPresentation, before Startup (optional)
-//   Startup               from LarecompApp::SetupPresentation, after the base
+//   SetShaderPackFolder   from LarecompApp::OnInit, before Startup (optional)
+//   SetShaderPackGate     from LarecompApp::OnInit, before Startup (optional)
+//   Startup               from LarecompApp::OnInit, before LaunchTitle (the first-launch dialogs are drawn by it)
 //   AttachShaderPacks     once the shader packs are built, when ShaderPacksAttached() is false
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
 //                         guest threads, from src/native_gfx/hooks.cpp
@@ -40,7 +39,7 @@
 //   PreviewRenderScale, GetRenderScaleStatus
 //                         the pause menu's RENDER RES and FSR1 rows (any thread)
 //   HdrOutputActive, HdrAuto*   the pause menu's HDR rows (any thread)
-//   Shutdown              LarecompApp::FinishWindowClose (the window's close) and OnShutdown
+//   Shutdown              LarecompApp::OnStop: before the title is unloaded, with the UI loop still served
 // ===========================================================================
 
 #include <cstdint>
@@ -52,11 +51,11 @@
 
 #include "render_scale.h"
 
+namespace rex {
+struct NativeWindow;
+}  // namespace rex
 namespace rex::ui {
-class ImGuiDrawer;
-class ImmediateDrawer;
-class Window;
-class WindowedAppContext;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace mcla::gpu {
@@ -65,17 +64,17 @@ namespace mcla::gpu {
 // fixed for the process (the cvars it reads all require a restart).
 bool Enabled();
 
-// The ImmediateDrawer the SDK draws its overlays through in this mode, or null
-// when the mode is off. Needs no device: it records CPU-side frames for the
-// renderer, which may not exist yet when the SDK asks for it.
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
+// Creates the device, the swap chain on `window` (IUISystem::GetNativeWindow), the renderer's
+// components and the render thread, and connects the UI system: the renderer asks it for an overlay
+// frame (IUISystem::DrawOverlays, overlay.h) once per presented frame. False when any of it fails;
+// the reason is logged and the app should not start.
+bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window);
 
-// Creates the device, the swap chain on `window`, the renderer's components
-// and the render thread, and connects the SDK's ImGui drawer (which must be
-// using the drawer from CreateOverlayDrawer). False when any of it fails; the
-// reason is logged and the app should not start.
-bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
-             rex::ui::ImGuiDrawer* imgui_drawer);
+// The hotkeys the renderer answers (LarecompApp::StartOverlays binds them: ui.bind.gpu_*). Any thread;
+// no-ops while the renderer is not running.
+void RequestRenderDocCapture();  // the next frame, with RenderDoc (F11)
+void RequestFrameTrace();        // a raw trace of the next guest frame (F10)
+void RequestTextureDump();       // every texture of the next frame to the dump folder (F2)
 
 // --- the shader packs (shaders.h) ---------------------------------------------
 // The renderer starts without the shader packs when there are none yet: on a first run they are

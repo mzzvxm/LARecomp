@@ -6,7 +6,6 @@
 #include <rex/xam/input.h>
 #include <rex/hid/input_system.h>
 #include <rex/kernel/title_runtime.h>
-#include <rex/ui/window.h>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -26,6 +25,7 @@
 #include "../menu_camera.h"
 #include "../mouse_look.h"
 #include "larecomp_guest.h"
+#include "../sdk_access.h"
 
 
 // Free-fly camera host state (see Patch_DebugCam). Angles are seeded from the
@@ -138,15 +138,13 @@ void Patch_DebugCam(PPCRegister& r3) {
     // Read the pad straight from the host input system (the guest ioPad globals
     // are ambiguous). XInput axes: up/right positive, int16 range.
     float lx = 0.0f, ly = 0.0f, rx = 0.0f, ry = 0.0f;
-    auto* isys = static_cast<rex::input::InputSystem*>(
-        REX_RUNTIME()->input_system());
-    if (isys) {
-        rex::input::X_INPUT_STATE state{};
-        if (isys->GetState(0, &state) == 0) {
-            lx = NormalizeStick(state.gamepad.thumb_lx);
-            ly = -NormalizeStick(state.gamepad.thumb_ly);  // stick up = forward
-            rx = -NormalizeStick(state.gamepad.thumb_rx);  // stick right = look right
-            ry = -NormalizeStick(state.gamepad.thumb_ry);  // stick up = look up
+    if (auto* isys = larecomp::sdk::Input()) {
+        if (auto reading = isys->GetState(0)) {
+            const rex::hid::PadState& pad = reading->state;
+            lx = NormalizeStick(pad.thumb_lx);
+            ly = -NormalizeStick(pad.thumb_ly);  // stick up = forward
+            rx = -NormalizeStick(pad.thumb_rx);  // stick right = look right
+            ry = -NormalizeStick(pad.thumb_ry);  // stick up = look up
         }
     }
 

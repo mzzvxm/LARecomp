@@ -8,15 +8,13 @@
 //
 
 namespace rex::ui {
-class ImGuiDrawer;
-class ImmediateDrawer;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp {
 
-// Creates the pop-up. UI thread, once, after the drawers exist.
-void StartOnlineToast(rex::ui::ImGuiDrawer* imgui_drawer,
-                      rex::ui::ImmediateDrawer* immediate_drawer);
+// Creates the pop-up (the UI system owns it). UI thread, once, after the window is open.
+void StartOnlineToast(rex::ui::IUISystem& ui);
 
 // Keeps the pop-up up for a moment longer. Any thread.
 void OnlineToastPoke();

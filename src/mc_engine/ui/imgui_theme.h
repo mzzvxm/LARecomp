@@ -3,6 +3,10 @@
 #include <imgui.h>
 #include <rex/ui/style.h>
 
+namespace rex::ui {
+class IUISystem;
+}  // namespace rex::ui
+
 #include <span>
 #include <vector>
 
@@ -64,8 +68,27 @@ MclaFonts& GetFonts();
 // Looks in assets/fonts/ first, falling back to embedded binary fonts.
 void LoadMclaFonts(ImFontAtlas* atlas);
 
-// Applies the MCLA UI theme (palette, rounding, borders, spacing).
+// Applies the MCLA UI theme (palette, rounding, borders, spacing) to ImGui's style, and, given the UI system's
+// Style, the colours the SDK's own overlays draw with and the toast's size.
 void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style = nullptr);
+
+// UI thread, once the window is open (LarecompApp::OnInit): applies the theme and adds the dialog that keeps it.
+// The UI system applies its own default style again whenever its Style's palette or metrics changed (the toast's
+// size is one of them), and its first draw does, so ApplyMclaTheme alone would be undone; the dialog (drawn before
+// any other) loads the fonts on its first draw and puts the theme back whenever the style is not ours.
+void InstallMclaTheme(rex::ui::IUISystem& ui);
+
+// Whether an ImGui window wants the mouse / the keyboard as of the last frame the UI system drew, from any thread.
+// ImGui's own flags (ImGui::GetIO().WantCaptureMouse) can only be read on the UI thread with the context current,
+// which the game thread never has (IUISystem::GetImGuiIO makes the context current: not safe off the UI thread
+// while a frame builds), so the theme keeper publishes them once a frame. cursor_hide, mouse_look and
+// keyboard_native read these.
+bool OverlayWantsMouse();
+bool OverlayWantsKeyboard();
+
+// UI thread, inside a dialog's Draw (the ImGui context is current): the same check by hand, for a dialog that is
+// not a PanelDialog (overlay_support.h; PanelDialog::Draw calls it).
+void EnsureMclaTheme();
 
 // MCLA palette, sampled from the game's menus: near-black glass panels inside a
 // frosted silver bezel, chartreuse-yellow titles and the teal selection color.

@@ -898,4 +898,21 @@ bool InflateRaw(const uint8_t* data, size_t size, size_t expected, std::vector<u
     return true;
 }
 
+std::vector<uint8_t> DecodeImageRGBA(const uint8_t* data, size_t size, int& width, int& height) {
+    width = 0;
+    height = 0;
+    if (!data || size == 0 || size > static_cast<size_t>(std::numeric_limits<int>::max())) return {};
+    int channels = 0;
+    stbi_uc* pixels = stbi_load_from_memory(data, static_cast<int>(size), &width, &height, &channels, 4);
+    if (!pixels || width <= 0 || height <= 0) {
+        if (pixels) stbi_image_free(pixels);
+        width = 0;
+        height = 0;
+        return {};
+    }
+    std::vector<uint8_t> out(pixels, pixels + static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+    stbi_image_free(pixels);
+    return out;
+}
+
 }  // namespace mc::modloader

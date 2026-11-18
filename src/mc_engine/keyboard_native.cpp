@@ -29,10 +29,9 @@
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
 #include <rex/kernel/guest_memory.h>
-#include <rex/ui/image_decode.h>
+#include <rex/input_keys.h>
 #include <rex/ui/ui_system.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/window.h>
 
 #include "imgui.h"
 #include "hooks/hooks_internal.h"
@@ -42,6 +41,10 @@
 #include "modloader/texture.h"
 #include "mouse_look_core.h"
 #include "prompt_glyphs.h"
+#include "sdk_access.h"
+#include "ui_events.h"
+#include "ui/imgui_theme.h"
+#include "ui/overlay_support.h"
 #include "native_gfx/guest/texture_format.h"
 #include "online/server_browser/browser_ui.h"
 #include "wheel/wheel_input.h"
@@ -116,70 +119,73 @@ bool HeapPtr(uint32_t ea) { return ea >= 0x40000000u && ea < 0xE0000000u; }
 larecomp::kbm::KeyLatch g_keys;
 
 // The mouse is over one of the ImGui overlays (F4, the browsers): a click or a wheel turn there is not the game's.
-bool MouseOverOverlay() { return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse; }
+bool MouseOverOverlay() { return mcla::ui::OverlayWantsMouse(); }
 
-// Layer 0 like the pointer's and the map's listeners (cursor_hide.cpp, map_mouse.cpp): it never marks an event handled, and what an
-// overlay or a hotkey (F4 ...) handles first never reaches it.
-class KeyEventListener final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
-public:
-    void OnKeyDown(rex::ui::KeyEvent& e) override { Key(e, true); }
-    void OnKeyUp(rex::ui::KeyEvent& e) override { Key(e, false); }
-    void OnMouseDown(rex::ui::MouseEvent& e) override { Button(e, true); }
-    void OnMouseUp(rex::ui::MouseEvent& e) override { Button(e, false); }
-    void OnMouseWheel(rex::ui::MouseEvent& e) override {
-        const int32_t turn = e.scroll_y();
-        if (turn == 0 || MouseOverOverlay()) return;
-        g_keys.Pulse(turn > 0 ? larecomp::kbm::kKeyWheelUp : larecomp::kbm::kKeyWheelDown);
-    }
-    // Nothing stays down while the window is not the player's: SDL ends a held key's events at the focus loss, and a key released
-    // elsewhere would never be heard.
-    void OnLostFocus(rex::ui::UISetupEvent&) override { g_keys.ReleaseAll(); }
-
-private:
-    static void Key(rex::ui::KeyEvent& e, bool down) {
-        const int id = static_cast<int>(e.virtual_key());
-        if (id <= 0 || id > 254) return;
-        if (down) g_keys.Down(id, e.prev_state());
-        else g_keys.Up(id);
-    }
-    static void Button(rex::ui::MouseEvent& e, bool down) {
-        int id = 0;
-        switch (e.button()) {
-            case rex::ui::MouseEvent::Button::kLeft: id = 0x01; break;
-            case rex::ui::MouseEvent::Button::kRight: id = 0x02; break;
-            case rex::ui::MouseEvent::Button::kMiddle: id = 0x04; break;
-            case rex::ui::MouseEvent::Button::kX1: id = 0x05; break;
-            case rex::ui::MouseEvent::Button::kX2: id = 0x06; break;
-            default: return;
+// The UI system's input events (ui_events.h): layer 0 like before, they never mark an event handled, and what an overlay
+// holds (typing in one, the mouse over one) never reaches them. The UI system runs the binds AFTER its listeners
+// (0.10 ran them first and marked the press handled), so the F-key overlays' presses are skipped here by hand.
+void OnInput(rex::InputEvent& e) {
+    using Type = rex::InputEvent::Type;
+    switch (e.type) {
+        case Type::kKeyDown: {
+            const int id = static_cast<int>(e.key);
+            if (id <= 0 || id > 254) return;
+            // CHECK: a UI key (F1 .. F11 by default) never reaches the game as a key press, as in 0.10 (the bind handled it first there).
+            if (mcla::ui::IsBoundKey(e.key, e.modifiers)) return;
+            g_keys.Down(id, e.repeat);
+            break;
         }
-        // A click on an overlay is not a game press; its release always lets go.
-        if (down) {
-            if (!MouseOverOverlay()) g_keys.Down(id, false);
-        } else {
+        case Type::kKeyUp: {
+            const int id = static_cast<int>(e.key);
+            if (id <= 0 || id > 254) return;
             g_keys.Up(id);
+            break;
         }
+        case Type::kButtonDown:
+        case Type::kButtonUp: {
+            int id = 0;
+            switch (e.button) {
+                case rex::MouseButton::kLeft: id = 0x01; break;
+                case rex::MouseButton::kRight: id = 0x02; break;
+                case rex::MouseButton::kMiddle: id = 0x04; break;
+                case rex::MouseButton::kX1: id = 0x05; break;
+                case rex::MouseButton::kX2: id = 0x06; break;
+                default: return;
+            }
+            // A click on an overlay is not a game press; its release always lets go.
+            if (e.type == Type::kButtonDown) {
+                if (!MouseOverOverlay()) g_keys.Down(id, false);
+            } else {
+                g_keys.Up(id);
+            }
+            break;
+        }
+        case Type::kWheel: {
+            if (e.scroll_y == 0.0f || MouseOverOverlay()) return;
+            g_keys.Pulse(e.scroll_y > 0.0f ? larecomp::kbm::kKeyWheelUp : larecomp::kbm::kKeyWheelDown);
+            break;
+        }
+        default:
+            break;
     }
-};
+}
 
-KeyEventListener g_key_listener;
-std::atomic<bool> g_listener_posted{false};
+// Nothing stays down while the window is not the player's: SDL ends a held key's events at the focus loss, and a key released
+// elsewhere would never be heard.
+void OnFocus(bool focused) {
+    if (!focused) g_keys.ReleaseAll();
+}
+
 std::atomic<bool> g_listener_attached{false};
 
-// Called from every input poll (game thread): attaches the listener once the window exists. Added on the UI thread, which is the thread that
-// walks the window's listener lists.
+// Called from every input poll (game thread): adds the handlers once the window exists.
 void EnsureKeyListener() {
     if (g_listener_attached.load(std::memory_order_relaxed)) return;
-    auto* rt = REX_RUNTIME();
-    auto* isys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
-    rex::ui::Window* window = isys ? isys->window() : nullptr;
-    if (!window || g_listener_posted.exchange(true)) return;
-    const bool queued = window->app_context().CallInUIThreadDeferred([window]() {
-        window->AddInputListener(&g_key_listener, 0);
-        window->AddListener(&g_key_listener);
-        g_listener_attached.store(true, std::memory_order_relaxed);
-        MC_INFO("[kbnative] always on (kbm-always-on-v1): keys and the mouse buttons come from the window's events");
-    });
-    if (!queued) g_listener_posted.store(false);
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow() || g_listener_attached.exchange(true)) return;
+    larecomp::uievents::AddInputHandler(&OnInput);
+    larecomp::uievents::AddFocusHandler(&OnFocus);
+    MC_INFO("[kbnative] always on (kbm-always-on-v1): keys and the mouse buttons come from the window's events");
 }
 
 std::string Trim(std::string s) {
@@ -211,8 +217,8 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
             out.push_back({token, static_cast<uint8_t>(mouse->id)});
             continue;
         }
-        const auto vk = rex::ui::ParseVirtualKey(token);
-        if (vk == rex::ui::VirtualKey::kNone) continue;
+        const auto vk = rex::ParseVirtualKey(token);
+        if (vk == rex::VirtualKey::kNone) continue;
         const int code = static_cast<int>(vk);
         if (code <= 0 || code > 254) continue;
         out.push_back({token, static_cast<uint8_t>(code)});
@@ -978,7 +984,7 @@ larecomp::prompts::Bitmap LoadCapBitmap(const std::string& key, uint32_t width, 
     std::vector<uint8_t> bytes;
     if (!ReadCapBytes(key, width, height, &bytes)) return out;
     int w = 0, h = 0;
-    std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
+    std::vector<uint8_t> rgba = mc::modloader::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
     if (rgba.empty() || w <= 0 || h <= 0) return out;
     out.width = static_cast<uint32_t>(w);
     out.height = static_cast<uint32_t>(h);
@@ -1671,7 +1677,7 @@ std::string KeyNameOfScancode(const uint8_t* b, uint8_t sc) {
     if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByScancode(sc)) return mouse->name;
     for (int vk = 1; vk < 255; ++vk) {
         if (b[kVkToScancode + vk] != sc) continue;
-        const std::string n = rex::ui::VirtualKeyToString(static_cast<rex::ui::VirtualKey>(vk));
+        const std::string n = rex::VirtualKeyToString(static_cast<rex::VirtualKey>(vk));
         if (!n.empty()) return n;
     }
     return {};

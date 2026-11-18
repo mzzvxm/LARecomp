@@ -24,8 +24,6 @@
 
 namespace mcla::ui {
 
-static std::unique_ptr<MclaDebugOverlayDialog> g_debug_dialog;
-
 namespace {
 
 // Width of the card's content: the meter and graph run this wide, the window
@@ -43,8 +41,7 @@ void StatRow(const char* label, const char* value) {
 
 }  // namespace
 
-MclaDebugOverlayDialog::MclaDebugOverlayDialog(rex::ui::ImGuiDrawer* drawer)
-    : ImGuiDialog(drawer) {
+MclaDebugOverlayDialog::MclaDebugOverlayDialog(rex::ui::IUISystem& ui) : ui_(&ui) {
   frame_time_history_.fill(16.67f);
 }
 
@@ -53,8 +50,8 @@ MclaDebugOverlayDialog::~MclaDebugOverlayDialog() = default;
 void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_FirstUseEver);
 
-  const std::string key = larecomp::cvar::GetFlagByName("bind_mcla_telemetry");
-  const Prompt prompts[] = {{"CLOSE", key.empty() ? "F3" : key.c_str(), kPromptBack}};
+  const std::string key = BindText("mcla_telemetry", "F3");
+  const Prompt prompts[] = {{"CLOSE", key.c_str(), kPromptBack}};
 
   bool close = false;
   if (BeginPanel("##mcla_telemetry", "TELEMETRY", PanelIcon::kInfo,
@@ -140,7 +137,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
                                  io.DisplaySize.y - text_size.y - io.DisplaySize.y * 0.03f));
   ImGui::SetNextWindowSize(ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-  ImGui::PushStyleColor(ImGuiCol_Text, imgui_drawer()->style().debug.muted_text);
+  ImGui::PushStyleColor(ImGuiCol_Text, rex::ui::ToImVec4(ui_->GetStyle().debug.muted_text));
   if (ImGui::Begin("##mcla_watermark", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
@@ -152,25 +149,17 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::PopStyleVar();
   ImGui::PopFont();
 
+  // The overlay stays in the UI system's table: closing only takes it off the screen, the key shows it again.
   if (close) {
-    // ImGuiDialog::Draw deletes a closed dialog itself, so the owner lets go
-    // first; otherwise the next toggle would delete it a second time.
-    (void)g_debug_dialog.release();
     Close();
   }
 }
 
-void ToggleDebugOverlay(rex::ui::ImGuiDrawer* drawer) {
-  if (!drawer) return;
-  if (g_debug_dialog) {
-    g_debug_dialog.reset();
-  } else {
-    g_debug_dialog = std::make_unique<MclaDebugOverlayDialog>(drawer);
-  }
-}
-
-bool IsDebugOverlayOpen() {
-  return g_debug_dialog != nullptr;
+rex::ui::OverlayConfig DebugOverlayConfig() {
+  return {"mcla_telemetry", {rex::VirtualKey::kF3},
+          [](rex::ui::IUISystem& ui) -> std::unique_ptr<rex::ui::IDialog> {
+            return std::make_unique<MclaDebugOverlayDialog>(ui);
+          }};
 }
 
 } // namespace mcla::ui

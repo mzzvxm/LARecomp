@@ -27,6 +27,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
+#include "../sdk_access.h"
 
 namespace {
 
@@ -63,17 +64,14 @@ uint32_t VibrationDriven(uint32_t user) {
 // motor was running.
 void TickVibration() {
     if (larecomp::settings::controller_vibration.Get()) return;
-    auto* input = static_cast<rex::input::InputSystem*>(
-        REX_RUNTIME()->input_system());
+    auto* input = larecomp::sdk::Input();
     if (!input) return;
     for (uint32_t user = 0; user < kUsers; ++user) {
         if (g_driven[user].exchange(0, std::memory_order_relaxed) == 0) continue;
-        rex::input::X_INPUT_VIBRATION stop;
-        stop.left_motor_speed = 0;
-        stop.right_motor_speed = 0;
-        const uint32_t result = static_cast<uint32_t>(input->SetState(user, &stop));
-        LARECOMP_APP_INFO("[Vibration] off: motors of user {} stopped (input layer answered 0x{:X})",
-                          user, result);
+        const rex::hid::PadVibration stop{0, 0};
+        const auto result = input->SetVibration(user, stop);
+        LARECOMP_APP_INFO("[Vibration] off: motors of user {} stopped (input layer answered {})",
+                          user, result ? "ok" : result.error().message);
     }
 }
 #endif  // REXGLUE_HAS_XEO3_TARGET

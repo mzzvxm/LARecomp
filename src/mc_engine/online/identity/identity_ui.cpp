@@ -16,7 +16,6 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
 
 #ifdef _WIN32
@@ -37,6 +36,7 @@
 #include "identity_client.h"
 #include "identity_store.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/overlay_support.h"
 
 namespace larecomp {
 
@@ -130,9 +130,16 @@ constexpr ImVec4 kWarn = mcla::ui::kColorWarn;
 constexpr ImVec4 kBad = mcla::ui::kColorBad;
 constexpr ImVec4 kDim = mcla::ui::kColorTextDim;
 
-class IdentityDialog final : public rex::ui::ImGuiDialog {
+class IdentityDialog;
+IdentityDialog* g_dialog = nullptr;
+
+class IdentityDialog final : public mcla::ui::PanelDialog {
 public:
-    explicit IdentityDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+    explicit IdentityDialog(rex::ui::IUISystem& ui) : ui_(&ui) { g_dialog = this; }
+    ~IdentityDialog() override {
+        g_dialog = nullptr;
+        pad_block_.Set(false);
+    }
 
     void Toggle() {
         if (g_open.load())
@@ -494,20 +501,24 @@ private:
 
     void Open_() {
         g_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
     }
 
     void Close_() {
         g_open.store(false);
+        pad_block_.Set(false);
         std::memset(pw1_, 0, sizeof(pw1_));
         std::memset(pw2_, 0, sizeof(pw2_));
-        auto& io = GetIO();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         // As the mod browser does: no pad left claimed once the window is gone.
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
     }
 
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     id::Status status_;
     std::string code_;
     std::string shown_code_;
@@ -529,17 +540,18 @@ private:
     std::string picked_;      // guarded by msg_mtx_: the file dialog's answer
 };
 
-IdentityDialog* g_dialog = nullptr;
-
 }  // namespace
 
-void StartIdentity(rex::ui::ImGuiDrawer* imgui_drawer) {
-    if (!imgui_drawer || g_dialog) return;
-    g_dialog = new IdentityDialog(imgui_drawer);
-    rex::ui::RegisterBind("bind_identity", "F8", "Open or close the online identity window", [] {
-        if (g_dialog) g_dialog->Toggle();
-    });
+void StartIdentity(rex::ui::IUISystem& ui) {
+    if (g_dialog) return;
+    // Always in the UI system's list, drawing nothing while closed (as on 0.10); AutoOpen opens it when something
+    // needs the player. The UI system owns it; its destructor clears g_dialog.
+    ui.AddDialog(std::make_unique<IdentityDialog>(ui));
     id::StartClient();
+}
+
+void IdentityKeyPressed() {
+    if (g_dialog) g_dialog->Toggle();
 }
 
 bool IdentityCapturesInput() { return g_open.load(std::memory_order_relaxed); }

@@ -47,8 +47,11 @@
 #include <rex/kernel/title_runtime.h>
 #include <rex/ppc/call.h>
 #include <rex/kernel/function_dispatcher.h>
-#include <rex/ui/window.h>
+#include <rex/app/app.h>
+#include <rex/hid/pad.h>
 #include <rex/ui/ui_system.h>
+
+#include "sdk_access.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/effect_compare.h"
@@ -3018,20 +3021,18 @@ void ApplyItem(const ItemDef& it, int dir) {
         case kActionQuitYes: {
             // Same as leaving a menu: settings that moved are written first.
             if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
-            auto* runtime = REX_RUNTIME();
-            rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
-            if (window) {
+            // 0.10 closed the window on the UI thread (its close event ran the close work); 0.11 asks the app to shut down:
+            // LarecompApp::OnStop does the close work (saves, devices, the renderer) before the title ends.
+            if (auto* ui = larecomp::sdk::UI(); ui && ui->HasWindow()) {
                 MC_INFO("[pause-menu] quit requested from the QUIT menu");
-                window->app_context().CallInUIThread([window] {
+                ui->PostTask([] {
                     MclaWaitForSaves();
-                    window->RequestClose();
+                    rex::app::RequestShutdown(0);
                 });
-            } else if (auto* app_context = runtime ? runtime->app_context() : nullptr) {
-                MC_INFO("[pause-menu] quit requested, closing via deferred quit");
-                MclaWaitForSaves();
-                app_context->RequestDeferredQuit();
             } else {
-                MC_WARN("[pause-menu] quit requested, but app context is unavailable");
+                MC_INFO("[pause-menu] quit requested, no window: shutting down");
+                MclaWaitForSaves();
+                rex::app::RequestShutdown(0);
             }
             break;
         }
@@ -3867,19 +3868,20 @@ bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
 // If it can't be started, the game keeps running rather than quit without it.
 void PauseMenuRestartGame() {
     if (!g_settings_saved.exchange(true, std::memory_order_relaxed)) SaveSettingsNow();
-    auto* runtime = REX_RUNTIME();
-    rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
-    if (!window) {
+    auto* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow()) {
         MC_WARN("[pause-menu] restart requested, but there is no window to close");
         return;
     }
     MC_INFO("[pause-menu] restart requested");
-    window->app_context().CallInUIThread([window] {
+    // CHECK: rex::app::RequestRestart() starts the process again with the same arguments (the SDK's own relaunch); until it is shown to
+    // wait for this process before the new one reads the config (see the CHECK in LarecompApp's constructor), the game keeps its own.
+    ui->PostTask([] {
         MclaWaitForSaves();
         if (!mcla::RelaunchGame()) {
             return;
         }
-        window->RequestClose();
+        rex::app::RequestShutdown(0);
     });
 }
 
@@ -4956,12 +4958,9 @@ void Hook_CarbonUiTick(PPCRegister& r3) {
     static uint16_t prev_buttons = 0;
     uint16_t pressed = 0;
     {
-        auto* isys = static_cast<rex::input::InputSystem*>(
-            REX_RUNTIME()->input_system());
-        if (isys) {
-            rex::input::X_INPUT_STATE st{};
-            if (isys->GetState(0, &st) == 0) {
-                const uint16_t buttons = st.gamepad.buttons;
+        if (auto* isys = larecomp::sdk::Input()) {
+            if (auto reading = isys->GetState(0)) {
+                const uint16_t buttons = reading->state.buttons;
                 pressed = uint16_t(buttons & ~prev_buttons);
                 prev_buttons = buttons;
             }
@@ -4980,8 +4979,8 @@ void Hook_CarbonUiTick(PPCRegister& r3) {
     if (!announced.exchange(true))
         MC_INFO("[carbon-garage] ui tick alive on carbon row");
 
-    constexpr uint16_t kPadA = rex::input::X_INPUT_GAMEPAD_A;
-    constexpr uint16_t kPadB = rex::input::X_INPUT_GAMEPAD_B;
+    constexpr uint16_t kPadA = rex::hid::kPadA;
+    constexpr uint16_t kPadB = rex::hid::kPadB;
 
     if (!open) {
         if (pressed & kPadA) OpenCarbonMenu();

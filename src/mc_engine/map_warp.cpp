@@ -120,7 +120,6 @@ bool g_spots_loaded = false;
 std::vector<NamedSpot> g_spots;
 
 uint32_t g_scratch = 0;          // guest: matrix (64) + velocity (16) + angvel (16)
-std::atomic<bool> g_bind_registered{false};
 int g_watch_frames = -1;         // frames since the last warp, for the fall check
 float g_watch_y = 0.0f;
 
@@ -342,13 +341,6 @@ bool FindSpot(const std::string& name, Spot* out) {
         }
     }
     return false;
-}
-
-void RegisterBindOnce() {
-    if (g_bind_registered.exchange(true)) return;
-    rex::ui::RegisterBind("bind_map_warp", "F9",
-                          "Warp the car to a mod's warp point, and back to where it was",
-                          [] { File({Kind::kToggle, {}, {}}); });
 }
 
 void Warp(const Request& r) {
@@ -597,8 +589,10 @@ class LarecompCommand_warp final : public rex::SettingOwner {
 };
 inline LarecompCommand_warp g_larecomp_command_warp;
 
+// The key (ui.bind.map_warp, F9): LarecompApp::StartOverlays binds it to this, through a hotkey overlay.
+void MapWarpKeyPressed() { File({Kind::kToggle, {}, {}}); }
+
 void TickMapWarp() {
-    RegisterBindOnce();
     WatchAfterWarp();
     TickStartGarage();
     Request r;

@@ -1,28 +1,26 @@
 // MCLA GPU renderer -- the SDK overlays. See overlay.h.
 //
-// Contract followed: the SDK's own D3D12 immediate drawer
-// (src/ui/d3d12/d3d12_immediate_drawer.cpp) for blend state, the four
-// samplers, the line/triangle pipelines, draw semantics (indexed draws add
-// base_vertex; non-indexed draws start at base_vertex) and the scissor
-// conversion (ImmediateDrawer::ScissorToRenderTarget). Threading model: this
-// renderer's; reblue
-// imgui_overlay_drawer.cpp and reeot imgui_overlay.cpp (BSD-3-Clause) record
-// on the UI thread instead.
+// Contract followed: the blend state, the four samplers and the scissor conversion of the SDK's own D3D12
+// immediate drawer (the 0.10 src/ui/d3d12/d3d12_immediate_drawer.cpp, now gone), and Dear ImGui's own backends
+// for what a draw command and a texture request mean (ImDrawCmd, ImTextureData). Threading model: this
+// renderer's; reblue imgui_overlay_drawer.cpp and reeot imgui_overlay.cpp (BSD-3-Clause) record on the UI
+// thread instead.
 
 #include <atomic>
 #include "overlay.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <format>
 #include <string>
 
+#include <imgui.h>
+
 #include <rex/logging/log_category.h>
 #include <rex/math.h>
-#include <rex/ui/graphics_util.h>
 #include <rex/ui/ui_system.h>
 #include <rex/overlay_renderer.h>
-#include <rex/ui/window.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -47,7 +45,12 @@ struct OverlayPushConstants {
   uint32_t hdr_flags;
 };
 static_assert(sizeof(OverlayPushConstants) == 40);
-static_assert(sizeof(rex::ui::ImmediateVertex) == 20);
+// The pipeline reads ImGui's vertices as they are.
+static_assert(sizeof(ImDrawVert) == sizeof(OverlayVertex));
+static_assert(offsetof(ImDrawVert, pos) == offsetof(OverlayVertex, x));
+static_assert(offsetof(ImDrawVert, uv) == offsetof(OverlayVertex, u));
+static_assert(offsetof(ImDrawVert, col) == offsetof(OverlayVertex, color));
+static_assert(sizeof(ImDrawIdx) == sizeof(uint16_t), "the overlay's index buffer is 16-bit");
 
 // Frames kept for reuse by the channel; enough for one being recorded, one
 // published and one retained, plus slack.
@@ -57,14 +60,43 @@ constexpr uint64_t AlignUp(uint64_t v, uint64_t alignment) {
   return (v + alignment - 1) & ~(alignment - 1);
 }
 
-// ImmediateDrawer::ScissorToRenderTarget against the back buffer the frame is
-// drawn into, which during a resize is not the size it was recorded for.
+// A float as the 16.8 fixed point the rasterizer snaps a scissor to (Xenia's FloatToD3D11Fixed16p8; the SDK keeps
+// its copy private since 0.11). https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm
+int32_t FloatToD3D11Fixed16p8(float f32) {
+  // n == NaN || n.unbiasedExponent < -f-1 -> 0 . 0
+  if (!(std::abs(f32) >= 1.0f / 512.0f)) {
+    return 0;
+  }
+  // n >= (2^(i-1)-2^-f) -> 2^(i-1)-1 . 2^f-1
+  if (f32 >= 32768.0f - 1.0f / 256.0f) {
+    return (1 << 23) - 1;
+  }
+  // n <= -2^(i-1) -> -2^(i-1) . 0
+  if (f32 <= -32768.0f) {
+    return -32768 * 256;
+  }
+  uint32_t f32_bits;
+  std::memcpy(&f32_bits, &f32, sizeof(f32_bits));
+  // The mantissa plus the hidden bit, with the sign applied as a two's complement.
+  int32_t result = int32_t((f32_bits & ((1u << 23) - 1)) | (1u << 23));
+  if ((f32_bits >> 31) != 0) {
+    result = -result;
+  }
+  // extraBits = (mantissa - f) - n.unbiasedExponent (guaranteed to be >= 0).
+  const int32_t exponent = int32_t((f32_bits >> 23) & 255) - 127;
+  const uint32_t extra_bits = uint32_t(15 - exponent);
+  if (extra_bits) {
+    // Round to nearest-even, then shift right sign extending.
+    result = int32_t(uint32_t(result) + (1u << (extra_bits - 1)) - 1 + ((uint32_t(result) >> extra_bits) & 1));
+    result >>= extra_bits;
+  }
+  return result;
+}
+
+// The clip rectangle of a draw against the back buffer the frame is drawn into, which during a resize is not the
+// size it was recorded for.
 bool ScissorToPixels(const OverlayDraw& draw, float space_width, float space_height,
                      uint32_t target_width, uint32_t target_height, plume::RenderRect& out) {
-  if (!draw.scissor) {
-    out = plume::RenderRect(0, 0, int32_t(target_width), int32_t(target_height));
-    return target_width && target_height;
-  }
   const float width = float(target_width);
   const float height = float(target_height);
   const float scale_x = width / space_width;
@@ -74,10 +106,10 @@ bool ScissorToPixels(const OverlayDraw& draw, float space_width, float space_hei
   const float x1 = rex::clamp_float(draw.scissor_right * scale_x, x0, width);
   const float y1 = rex::clamp_float(draw.scissor_bottom * scale_y, y0, height);
   // Top-left includes .5, bottom-right excludes it (16.8 fixed point).
-  const int32_t ix0 = (rex::ui::FloatToD3D11Fixed16p8(x0) + 127) >> 8;
-  const int32_t iy0 = (rex::ui::FloatToD3D11Fixed16p8(y0) + 127) >> 8;
-  const int32_t ix1 = (rex::ui::FloatToD3D11Fixed16p8(x1) + 127) >> 8;
-  const int32_t iy1 = (rex::ui::FloatToD3D11Fixed16p8(y1) + 127) >> 8;
+  const int32_t ix0 = (FloatToD3D11Fixed16p8(x0) + 127) >> 8;
+  const int32_t iy0 = (FloatToD3D11Fixed16p8(y0) + 127) >> 8;
+  const int32_t ix1 = (FloatToD3D11Fixed16p8(x1) + 127) >> 8;
+  const int32_t iy1 = (FloatToD3D11Fixed16p8(y1) + 127) >> 8;
   out = plume::RenderRect(ix0, iy0, ix1, iy1);
   return ix1 > ix0 && iy1 > iy0;
 }
@@ -135,6 +167,34 @@ uint32_t OverlayChannel::CreateTexture(uint32_t width, uint32_t height, bool lin
   }
   uploads_.push_back(std::move(upload));
   return id;
+}
+
+void OverlayChannel::ReplaceTexture(uint32_t id, uint32_t width, uint32_t height, bool linear,
+                                    bool repeat, const uint8_t* rgba) {
+  OverlayTextureUpload upload;
+  upload.id = id;
+  upload.width = width;
+  upload.height = height;
+  upload.linear = linear;
+  upload.repeat = repeat;
+  const size_t bytes = size_t(width) * size_t(height) * 4;
+  if (!rgba || !bytes) {
+    return;
+  }
+  upload.rgba.assign(rgba, rgba + bytes);
+  std::lock_guard lock(mutex_);
+  if (closed_) {
+    return;
+  }
+  // An upload for an id that is already queued (two updates inside one render frame) replaces it: the render
+  // thread would otherwise make a texture and retire it in the same frame.
+  for (OverlayTextureUpload& queued : uploads_) {
+    if (queued.id == id) {
+      queued = std::move(upload);
+      return;
+    }
+  }
+  uploads_.push_back(std::move(upload));
 }
 
 void OverlayChannel::DestroyTexture(uint32_t id) {
@@ -202,121 +262,164 @@ void OverlayChannel::Close() {
 }
 
 // ---------------------------------------------------------------------------
-// OverlayDrawer (UI thread)
+// OverlayCapture (UI thread)
 // ---------------------------------------------------------------------------
 
-OverlayDrawer::OverlayDrawer(std::shared_ptr<OverlayChannel> channel)
-    : channel_(std::move(channel)) {}
+namespace {
 
-std::unique_ptr<rex::ui::ImmediateTexture> OverlayDrawer::CreateTexture(
-    uint32_t width, uint32_t height, rex::ui::ImmediateTextureFilter filter, bool is_repeated,
-    const uint8_t* data) {
-  const uint32_t id = channel_->CreateTexture(
-      width, height, filter == rex::ui::ImmediateTextureFilter::kLinear, is_repeated, data);
-  return std::make_unique<OverlayTexture>(width, height, id, channel_);
+// The pixels of an ImGui texture as RGBA8, from the 32-bit RGBA or the 8-bit alpha format.
+bool ExpandTexturePixels(const ImTextureData& tex, std::vector<uint8_t>& rgba) {
+  if (!tex.Pixels || tex.Width <= 0 || tex.Height <= 0) {
+    return false;
+  }
+  const size_t count = size_t(tex.Width) * size_t(tex.Height);
+  if (tex.Format == ImTextureFormat_RGBA32) {
+    rgba.assign(tex.Pixels, tex.Pixels + count * 4);
+    return true;
+  }
+  // Alpha8 (ImGui's font atlas can be one): white with the stored coverage, as ImGui's own backends expand it.
+  rgba.resize(count * 4);
+  for (size_t i = 0; i < count; ++i) {
+    rgba[i * 4 + 0] = 255;
+    rgba[i * 4 + 1] = 255;
+    rgba[i * 4 + 2] = 255;
+    rgba[i * 4 + 3] = tex.Pixels[i];
+  }
+  return true;
 }
 
-void OverlayDrawer::Begin(rex::ui::UIDrawContext& ui_draw_context, float space_width,
-                          float space_height) {
-  // The base resolves a non-positive coordinate space to render-target pixels;
-  // its accessors return what it settled on.
-  ImmediateDrawer::Begin(ui_draw_context, space_width, space_height);
-  frame_ = channel_->AcquireFrame();
-  frame_->width = coordinate_space_width();
-  frame_->height = coordinate_space_height();
-  batch_open_ = false;
-}
+}  // namespace
 
-void OverlayDrawer::BeginDrawBatch(const rex::ui::ImmediateDrawBatch& batch) {
-  if (!frame_) {
-    return;
-  }
-  batch_vertex_base_ = uint32_t(frame_->vertices.size());
-  batch_index_base_ = uint32_t(frame_->indices.size());
-  batch_vertex_count_ = (batch.vertices && batch.vertex_count > 0) ? uint32_t(batch.vertex_count)
-                                                                   : 0;
-  batch_indexed_ = batch.indices != nullptr;
-  batch_index_count_ = (batch_indexed_ && batch.index_count > 0) ? uint32_t(batch.index_count) : 0;
-  // Both pointers are valid only during this batch (ImGui's draw lists).
-  frame_->vertices.insert(frame_->vertices.end(), batch.vertices,
-                          batch.vertices + batch_vertex_count_);
-  if (batch_index_count_) {
-    frame_->indices.insert(frame_->indices.end(), batch.indices,
-                           batch.indices + batch_index_count_);
-  }
-  batch_open_ = true;
-}
-
-void OverlayDrawer::Draw(const rex::ui::ImmediateDraw& draw) {
-  if (!batch_open_ || !frame_ || draw.count <= 0) {
-    return;
-  }
-  OverlayDraw d;
-  d.count = uint32_t(draw.count);
-  d.lines = draw.primitive_type == rex::ui::ImmediatePrimitiveType::kLines;
-  d.indexed = batch_indexed_;
-  bool in_range;
-  if (d.indexed) {
-    in_range = draw.index_offset >= 0 &&
-               uint64_t(draw.index_offset) + d.count <= batch_index_count_;
-    d.first_index = batch_index_base_ + uint32_t(draw.index_offset);
-  } else {
-    in_range = draw.base_vertex >= 0 &&
-               uint64_t(draw.base_vertex) + d.count <= batch_vertex_count_;
-  }
-  if (!in_range) {
-    if (!reported_bad_draw_) {
-      reported_bad_draw_ = true;
-      REXLOG_ERROR("[gpu] overlay draw outside its batch dropped: {} {} from {} (batch has {} "
-                   "vertices, {} indices)",
-                   d.count, d.indexed ? "indices" : "vertices",
-                   d.indexed ? draw.index_offset : draw.base_vertex, batch_vertex_count_,
-                   batch_index_count_);
+// CHECK: ImGui 1.92 grows the font atlas by making a new ImTextureData and sending the old one WantDestroy; both paths end in the channel (a new id,
+// a death). A glyph burst re-sends the whole atlas (ReplaceTexture): if the log shows many "overlay texture" lines or the frame time moves while text
+// is typed, send the update rectangles instead (copy them into the existing texture between two barriers).
+void OverlayCapture::ServeTextures(ImDrawData& draw_data) {
+  ++pass_;
+  if (draw_data.Textures) {
+    std::vector<uint8_t> rgba;
+    for (ImTextureData* tex : *draw_data.Textures) {
+      if (!tex) {
+        continue;
+      }
+      auto known = tracked_.find(tex);
+      // A texture this capture does not know that claims to be done (made before it, or an object address that was
+      // reused): ask ImGui to send it again.
+      if (known == tracked_.end() && tex->Status == ImTextureStatus_OK) {
+        tex->SetStatus(ImTextureStatus_WantCreate);
+      }
+      switch (tex->Status) {
+        case ImTextureStatus_WantCreate: {
+          if (known != tracked_.end()) {
+            channel_->DestroyTexture(known->second.id);  // a new object at an old address
+            tracked_.erase(known);
+          }
+          uint32_t id = 0;
+          if (ExpandTexturePixels(*tex, rgba)) {
+            id = channel_->CreateTexture(uint32_t(tex->Width), uint32_t(tex->Height), /*linear=*/true,
+                                         /*repeat=*/false, rgba.data());
+          }
+          if (id == 0) {
+            REXLOG_ERROR("[gpu] overlay texture {}: no pixels to create it from; it will not be drawn",
+                         tex->UniqueID);
+            break;
+          }
+          tex->SetTexID(static_cast<ImTextureID>(id));
+          tex->SetStatus(ImTextureStatus_OK);
+          tracked_[tex] = Tracked{id, pass_};
+          break;
+        }
+        case ImTextureStatus_WantUpdates: {
+          // The whole texture again, not the rectangles: the render thread makes a new GPU texture (a frame in
+          // flight may still read the old one), so there is nothing to patch. Glyphs arrive in a few bursts.
+          if (known != tracked_.end() && ExpandTexturePixels(*tex, rgba)) {
+            channel_->ReplaceTexture(known->second.id, uint32_t(tex->Width), uint32_t(tex->Height),
+                                     /*linear=*/true, /*repeat=*/false, rgba.data());
+            known->second.seen = pass_;
+          }
+          tex->SetStatus(ImTextureStatus_OK);
+          break;
+        }
+        case ImTextureStatus_WantDestroy: {
+          if (known != tracked_.end()) {
+            channel_->DestroyTexture(known->second.id);
+            tracked_.erase(known);
+          }
+          tex->SetStatus(ImTextureStatus_Destroyed);
+          break;
+        }
+        default:
+          if (known != tracked_.end()) {
+            known->second.seen = pass_;
+          }
+          break;
+      }
     }
+  }
+  // A texture that left the list without a destroy request (a dialog unregistered it): its GPU copy goes too.
+  for (auto it = tracked_.begin(); it != tracked_.end();) {
+    if (it->second.seen != pass_) {
+      channel_->DestroyTexture(it->second.id);
+      it = tracked_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void OverlayCapture::RenderOverlays(ImDrawData& draw_data) {
+  called_ = true;
+  ServeTextures(draw_data);
+  const float width = draw_data.DisplaySize.x;
+  const float height = draw_data.DisplaySize.y;
+  if (!(width > 0.0f) || !(height > 0.0f) || draw_data.CmdListsCount <= 0) {
+    PublishEmpty();
     return;
   }
-  d.base_vertex = int32_t(batch_vertex_base_) + draw.base_vertex;
-  // Every ImmediateTexture in this mode comes from CreateTexture above.
-  d.texture_id = draw.texture ? static_cast<const OverlayTexture*>(draw.texture)->id()
-                              : kOverlayNoTexture;
-  d.scissor = draw.scissor;
-  d.scissor_left = draw.scissor_left;
-  d.scissor_top = draw.scissor_top;
-  d.scissor_right = draw.scissor_right;
-  d.scissor_bottom = draw.scissor_bottom;
-  frame_->draws.push_back(d);
-}
-
-void OverlayDrawer::EndDrawBatch() {
-  batch_open_ = false;
-}
-
-void OverlayDrawer::End() {
-  if (frame_) {
-    channel_->Publish(std::move(frame_));
-  }
-  batch_open_ = false;
-  ImmediateDrawer::End();
-  ++ended_passes_;
-}
-
-void OverlayDrawer::PublishEmpty(float width, float height) {
   std::unique_ptr<OverlayFrame> frame = channel_->AcquireFrame();
   frame->width = width;
   frame->height = height;
+  frame->vertices.reserve(size_t(draw_data.TotalVtxCount));
+  frame->indices.reserve(size_t(draw_data.TotalIdxCount));
+  const ImVec2 origin = draw_data.DisplayPos;
+  for (const ImDrawList* list : draw_data.CmdLists) {
+    const uint32_t vertex_base = uint32_t(frame->vertices.size());
+    const uint32_t index_base = uint32_t(frame->indices.size());
+    frame->vertices.insert(frame->vertices.end(),
+                           reinterpret_cast<const OverlayVertex*>(list->VtxBuffer.Data),
+                           reinterpret_cast<const OverlayVertex*>(list->VtxBuffer.Data) + list->VtxBuffer.Size);
+    frame->indices.insert(frame->indices.end(), list->IdxBuffer.Data, list->IdxBuffer.Data + list->IdxBuffer.Size);
+    for (const ImDrawCmd& cmd : list->CmdBuffer) {
+      // A callback is a backend-specific drawing hook (ImDrawCallback_ResetRenderState has nothing to reset here);
+      // none of LARecomp's dialogs sets one.
+      if (cmd.UserCallback || cmd.ElemCount == 0) {
+        continue;
+      }
+      OverlayDraw draw;
+      draw.count = cmd.ElemCount;
+      draw.first_index = index_base + cmd.IdxOffset;
+      draw.base_vertex = int32_t(vertex_base) + int32_t(cmd.VtxOffset);
+      const ImTextureID texture = cmd.GetTexID();
+      draw.texture_id = texture == ImTextureID_Invalid ? kOverlayNoTexture : uint32_t(texture);
+      draw.scissor_left = cmd.ClipRect.x - origin.x;
+      draw.scissor_top = cmd.ClipRect.y - origin.y;
+      draw.scissor_right = cmd.ClipRect.z - origin.x;
+      draw.scissor_bottom = cmd.ClipRect.w - origin.y;
+      frame->draws.push_back(draw);
+    }
+  }
   channel_->Publish(std::move(frame));
+}
+
+void OverlayCapture::PublishEmpty() {
+  channel_->Publish(channel_->AcquireFrame());
 }
 
 // ---------------------------------------------------------------------------
 // OverlayHost
 // ---------------------------------------------------------------------------
 
-OverlayHost::OverlayHost(rex::ui::WindowedAppContext& app_context, rex::ui::Window& window,
-                         rex::ui::ImGuiDrawer& imgui_drawer, OverlayDrawer& drawer)
-    : app_context_(app_context),
-      window_(&window),
-      imgui_drawer_(&imgui_drawer),
-      drawer_(&drawer) {}
+OverlayHost::OverlayHost(rex::ui::IUISystem& ui, std::shared_ptr<OverlayChannel> channel)
+    : ui_(&ui), capture_(std::move(channel)) {}
 
 void OverlayHost::RequestPass() {
   if (!connected_.load(std::memory_order_acquire) ||
@@ -324,36 +427,29 @@ void OverlayHost::RequestPass() {
     return;
   }
   std::shared_ptr<OverlayHost> self = shared_from_this();
-  if (!app_context_.CallInUIThreadDeferred([self] { self->RunPass(); })) {
-    // The UI loop no longer takes work (the app is quitting).
-    pass_pending_.store(false, std::memory_order_release);
-  }
+  // Dropped (with one warning from the UI system) once the UI system has stopped: pass_pending_ then stays set,
+  // which is right, nothing asks again after Disconnect.
+  ui_->PostTask([self] { self->RunPass(); });
 }
 
 void OverlayHost::RunPass() {
   if (connected_.load(std::memory_order_acquire)) {
-    const uint32_t width = window_->GetActualPhysicalWidth();
-    const uint32_t height = window_->GetActualPhysicalHeight();
-    // Minimised: nothing to lay out against; the retained frame stays.
-    if (width && height) {
-      const uint64_t ended = drawer_->ended_passes();
-      rex::ui::AppUIDrawContext context(width, height);
-      imgui_drawer_->Draw(context);
-      if (drawer_->ended_passes() == ended) {
-        // No dialog: ImGuiDrawer::Draw returned before Begin. Without this the
-        // last frame that had a dialog would stay retained.
-        drawer_->PublishEmpty(float(width), float(height));
-      }
+    capture_.Begin();
+    // On the UI thread RunSynchronous runs inline, so this builds the frame now and RenderOverlays (the capture)
+    // follows on this thread; with no dialog open it returns without calling it.
+    ui_->DrawOverlays(capture_);
+    if (!capture_.called()) {
+      // No dialog: the last frame that had one must not stay retained.
+      capture_.PublishEmpty();
     }
   }
   pass_pending_.store(false, std::memory_order_release);
 }
 
 void OverlayHost::Disconnect() {
-  // The SDK objects die on the UI thread after OnShutdown (rex_app.cpp
-  // OnDestroy), which is where this runs; RunPass runs on that same thread, so
-  // a pass either finished before this or sees connected_ false. The pointers
-  // themselves are left alone: nothing reads them once disconnected.
+  // The UI system stops after OnStop/OnShutdown, where this runs; RunPass runs on that same thread, so a pass
+  // either finished before this or sees connected_ false. The pointer itself is left alone: nothing reads it once
+  // disconnected.
   connected_.store(false, std::memory_order_release);
 }
 
@@ -404,7 +500,6 @@ void OverlayRenderer::Shutdown() {
   intake_ = OverlayIntake{};
   retained_.reset();
   triangle_pipeline_ = nullptr;
-  line_pipeline_ = nullptr;
   for (Target& target : targets_) {
     target = Target{};
   }
@@ -448,14 +543,14 @@ bool OverlayRenderer::BuildTarget(plume::RenderFormat target_format, bool hdr) {
     return false;
   }
 
-  const plume::RenderInputSlot input_slot(0, sizeof(rex::ui::ImmediateVertex));
+  const plume::RenderInputSlot input_slot(0, sizeof(OverlayVertex));
   const plume::RenderInputElement input_elements[] = {
       plume::RenderInputElement("POSITION", 0, 0, plume::RenderFormat::R32G32_FLOAT, 0,
-                                offsetof(rex::ui::ImmediateVertex, x)),
+                                offsetof(OverlayVertex, x)),
       plume::RenderInputElement("TEXCOORD", 0, 1, plume::RenderFormat::R32G32_FLOAT, 0,
-                                offsetof(rex::ui::ImmediateVertex, u)),
+                                offsetof(OverlayVertex, u)),
       plume::RenderInputElement("COLOR", 0, 2, plume::RenderFormat::R8G8B8A8_UNORM, 0,
-                                offsetof(rex::ui::ImmediateVertex, color)),
+                                offsetof(OverlayVertex, color)),
   };
 
   plume::RenderBlendDesc blend;
@@ -485,9 +580,7 @@ bool OverlayRenderer::BuildTarget(plume::RenderFormat target_format, bool hdr) {
 
   desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
   made.triangle_pipeline = device_->CreateGraphicsPipeline(desc, "overlay triangles");
-  desc.primitiveTopology = plume::RenderPrimitiveTopology::LINE_LIST;
-  made.line_pipeline = device_->CreateGraphicsPipeline(desc, "overlay lines");
-  if (!made.triangle_pipeline || !made.line_pipeline) {
+  if (!made.triangle_pipeline) {
     return false;
   }
   made.built = true;
@@ -502,7 +595,6 @@ void OverlayRenderer::UseTarget(bool hdr) {
   }
   hdr_ = hdr;
   triangle_pipeline_ = target.triangle_pipeline.get();
-  line_pipeline_ = target.line_pipeline.get();
 }
 
 bool OverlayRenderer::HasNewContent() {
@@ -599,6 +691,13 @@ void OverlayRenderer::CreateTexture(plume::RenderCommandList* list, uint32_t slo
     frames_->Retire(std::move(texture));
     return;
   }
+  // The same id again (ImGui's font atlas got new glyphs): the texture the frames in flight read is retired, and
+  // the id names the new one from the next draw on.
+  if (auto old = textures_.find(upload.id); old != textures_.end()) {
+    ReleaseTexture(old->second);
+    textures_.erase(old);
+  }
+  failed_textures_.erase(upload.id);
 
   GpuTexture gpu;
   gpu.texture = std::move(texture);
@@ -646,7 +745,7 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
     return 0;
   }
 
-  const uint64_t vertex_bytes = frame.vertices.size() * sizeof(rex::ui::ImmediateVertex);
+  const uint64_t vertex_bytes = frame.vertices.size() * sizeof(OverlayVertex);
   const uint64_t index_bytes = frame.indices.size() * sizeof(uint16_t);
   UploadSpan vertices;
   UploadSpan indices;
@@ -676,7 +775,7 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
   list->setGraphicsPipelineLayout(layout_.get());
   list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
   list->setGraphicsDescriptorSet(heap_->sampler_set(), 1);
-  const plume::RenderInputSlot input_slot(0, sizeof(rex::ui::ImmediateVertex));
+  const plume::RenderInputSlot input_slot(0, sizeof(OverlayVertex));
   if (vertices) {
     const plume::RenderVertexBufferView view(vertices.reference(), uint32_t(vertex_bytes));
     list->setVertexBuffers(0, &view, 1, &input_slot);
@@ -700,7 +799,7 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
   const plume::RenderPipeline* bound = nullptr;
   uint32_t recorded = 0;
   for (const OverlayDraw& draw : frame.draws) {
-    if (!vertices || (draw.indexed && !indices)) {
+    if (!vertices || !indices) {
       continue;
     }
     plume::RenderRect scissor;
@@ -724,19 +823,14 @@ uint32_t OverlayRenderer::Draw(plume::RenderCommandList* list, uint32_t slot,
       push.texture = it->second.slot;
       push.sampler_index = it->second.sampler;
     }
-    const plume::RenderPipeline* pipeline =
-        draw.lines ? line_pipeline_ : triangle_pipeline_;
+    const plume::RenderPipeline* pipeline = triangle_pipeline_;
     if (pipeline != bound) {
       list->setPipeline(pipeline);
       bound = pipeline;
     }
     list->setScissors(scissor);
     list->setGraphicsPushConstants(0, &push);
-    if (draw.indexed) {
-      list->drawIndexedInstanced(draw.count, 1, draw.first_index, draw.base_vertex, 0);
-    } else {
-      list->drawInstanced(draw.count, 1, uint32_t(draw.base_vertex), 0);
-    }
+    list->drawIndexedInstanced(draw.count, 1, draw.first_index, draw.base_vertex, 0);
     ++recorded;
   }
   if (recorded && !reported_first_frame_) {

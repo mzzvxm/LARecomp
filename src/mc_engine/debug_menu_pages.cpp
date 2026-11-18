@@ -14,7 +14,8 @@
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/ui/ui_system.h>
-#include <rex/ui/window.h>
+
+#include "sdk_access.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -509,29 +510,17 @@ void ResetDebugSettings() {
     Answer(kActionDebugReset, "RESET (" + std::to_string(reset) + ")");
 }
 
-// Presses the key a bind is on, on the UI thread, which is where the keys of the window arrive: the
-// panels are ImGui dialogs and are made there. The bind's own callback does the rest, so a key the
-// player rebound is followed.
+// Shows or hides an overlay (LarecompApp::StartOverlays added it as `overlay`: "mcla_settings", "mcla_telemetry"), on the UI thread: the panels are
+// ImGui dialogs and are made and drawn there. 0.10 pressed the key the bind was on, so a key the player rebound was followed; the overlay's own
+// toggle (IUISystem::ToggleOverlay) is the same thing without the key.
 // CHECK: the dialog opens over the pause menu (the menu keeps the pad until it is closed).
-void PressBind(const char* bind_cvar, const char* fallback_key) {
-    std::string key = larecomp::cvar::GetFlagByName(bind_cvar);
-    if (key.empty()) key = fallback_key;
-    const rex::ui::VirtualKey virtual_key = rex::ui::ParseVirtualKey(key);
-    if (virtual_key == rex::ui::VirtualKey::kNone) {
-        REXLOG_WARN("[debug] {} is on '{}', which is no key the game knows", bind_cvar, key);
+void ToggleOverlay(const char* overlay) {
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow()) {
+        REXLOG_WARN("[debug] {} cannot be opened: the game has no window yet", overlay);
         return;
     }
-    auto* runtime = REX_RUNTIME();
-    rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
-    if (!window) {
-        REXLOG_WARN("[debug] {} cannot be pressed: the game has no window yet", bind_cvar);
-        return;
-    }
-    window->app_context().CallInUIThread([virtual_key] {
-        rex::ui::KeyEvent event(nullptr, virtual_key, /*repeat_count=*/1, /*prev_state=*/false,
-                                /*shift=*/false, /*ctrl=*/false, /*alt=*/false, /*super=*/false);
-        rex::ui::ProcessKeyEvent(event);
-    });
+    ui->PostTask([ui, name = std::string(overlay)] { ui->ToggleOverlay(name); });
 }
 
 }  // namespace
@@ -569,8 +558,8 @@ void DebugActionRun(ActionId id) {
     case kActionDebugShowChanged:    ShowChanged(); break;
     case kActionDebugCopyArgs:       CopyArguments(); break;
     case kActionDebugReset:          ResetDebugSettings(); break;
-    case kActionDebugOpenSettings:   PressBind("bind_mcla_settings", "F4"); break;
-    case kActionDebugTelemetry:      PressBind("bind_mcla_telemetry", "F3"); break;
+    case kActionDebugOpenSettings:   ToggleOverlay("mcla_settings"); break;
+    case kActionDebugTelemetry:      ToggleOverlay("mcla_telemetry"); break;
     default:                         break;
     }
 }

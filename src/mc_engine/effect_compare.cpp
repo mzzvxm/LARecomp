@@ -5,7 +5,6 @@
 #include <imgui.h>
 
 #include "settings/larecomp_settings.h"
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
 
 #include <algorithm>
@@ -21,6 +20,7 @@
 #include "gpu/gpu_class.h"
 #include "logging.h"
 #include "ui/imgui_theme.h"
+#include "ui/overlay_support.h"
 
 namespace mcla::compare {
 
@@ -29,7 +29,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 namespace cmp = mcla::gpu::compare;
 
-constexpr char kBindName[] = "bind_mcla_compare";
+constexpr char kBindName[] = "mcla_compare";  // ui.bind.mcla_compare (the 0.10 cvar was bind_mcla_compare)
 constexpr char kDefaultKey[] = "F1";
 
 int64_t NowMs() {
@@ -113,10 +113,7 @@ void OnSettingChanged(cmp::Effect effect) {
 
 // The label, top centre, in the game's panel style (imgui_theme.h): the effect in the menu's yellow, what it is
 // doing under it, teal when on.
-class LabelDialog final : public rex::ui::ImGuiDialog {
- public:
-  explicit LabelDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
-
+class LabelDialog final : public mcla::ui::PanelDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     cmp::Label label;
@@ -152,12 +149,16 @@ class LabelDialog final : public rex::ui::ImGuiDialog {
   }
 };
 
-std::unique_ptr<LabelDialog> g_label;
+bool g_started = false;
 
 }  // namespace
 
+rex::ui::OverlayConfig KeyOverlayConfig() {
+  return {kBindName, {rex::VirtualKey::kF1}, &mcla::ui::MakeHotkey<&OnKey>};
+}
+
 std::string KeyLabel() {
-  const std::string key = larecomp::cvar::GetFlagByName(kBindName);
+  const std::string key = mcla::ui::BindText(kBindName, kDefaultKey);
   std::string out;
   for (const char c : key) {
     const unsigned char u = static_cast<unsigned char>(c);
@@ -170,15 +171,12 @@ std::string KeyLabel() {
   return out.empty() ? std::string(kDefaultKey) : out;
 }
 
-void Start(rex::ui::ImGuiDrawer* drawer) {
-  if (!drawer || g_label) {
+void Start(rex::ui::IUISystem& ui) {
+  if (g_started) {
     return;
   }
-  g_label = std::make_unique<LabelDialog>(drawer);
-  rex::ui::RegisterBind(kBindName, kDefaultKey,
-                        "Flick the graphics effect named by COMPARE KEY (GRAPHICS QUALITY) off and on to see the "
-                        "difference; the label says what the picture shows. Never saved",
-                        [] { OnKey(); });
+  g_started = true;
+  ui.AddDialog(std::make_unique<LabelDialog>());
   // A flip ends when the setting it flips is changed, and when the key is set to another effect.
   for (int i = 0; i < cmp::kEffectCount; ++i) {
     const cmp::Effect effect = static_cast<cmp::Effect>(i);

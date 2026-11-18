@@ -1,22 +1,18 @@
 // The glue of the active-device state machine (input_state.h, input_state_core.h): feeds it from the window's
 // events (keys, mouse, focus: a layer-0 listener, the pattern of cursor_hide.cpp and map_mouse.cpp), from the
 // pad state the game reads (an object on the stack of the XamInputGetState wrapper, wheel/wheel_fake.cpp) and
-// from the SDK's list of devices (rex::input::InputSystem: device_generation() says it changed, Devices() lists
-// it, ActiveDevice(0) names the pad that made the last real input). Nothing here polls the OS: a pad that comes
-// or goes is a change of the SDK's counter (SDL's own notifications), the Sony guess for the very first frames
-// is the device watcher's (device_watch.h, one CM_Register_Notification), and its change listener only marks the
-// list for a fresh look at the next poll.
-//
-// SDK needed: LAR-RXSDK branch feat/input-device-info (PadKind, DeviceInfo vendor / product / pad_kind,
-// InputSystem::device_generation(), Devices(), ActiveDevice()). Building against an SDK without it: define
-// LARECOMP_NO_SDK_DEVICE_INFO; the list and the pad family are then not read (the device starts as Pad, the strip
-// follows the Sony guess until something is used, and pads coming and going are not followed). CHECK: that
-// fallback has never been compiled.
+// from the SDK's list of devices (rexglue 0.11: rex::hid::IInputDeviceList, <rex/hid/input_device_list.h>: DeviceGeneration()
+// says it changed, Devices() lists the pads with name, vendor, product, pad kind and the user each feeds; the pad of
+// user 0 is the one the player holds). Nothing here polls the OS: a pad that comes or goes is a change of the SDK's
+// counter (the drivers' own notifications), the Sony guess for the very first frames is the device watcher's
+// (device_watch.h, one CM_Register_Notification), and its change listener only marks the list for a fresh look at the
+// next poll. The list has no handle per pad, so one is made from vendor, product, name and the pad's place among
+// equal ones (PadId); the keyboard and mouse pad and the idle pad are not listed, so there is no "synthetic" count.
 //
 // Log lines (info level), read by perf\scripts\kbm\kbm_p2_report.py:
 //   [input] state machine ready: ...                      once, when the window listener is attached
-//   [input] devices: N controller(s) [...]; S synthetic; ... when the SDK's list (or the watcher's Sony flag) changed. S is 1 on every run: the SDK's NOP
-//                                                         stand-in ("None": user 0 is always connected, at rest, never the active device); 2 = mnk_mode is on too
+//   [input] devices: N controller(s) [...]; S synthetic; ... when the SDK's list (or the watcher's Sony flag) changed. S is 0 on 0.11: the list leaves the
+//                                                         idle pad (user 0 is always connected, at rest, never the active device) and the keyboard and mouse pad out
 //   [input] switch device D (was E) glyphs G because C; generation N   the device changed
 //   [input] glyphs device D glyphs G (was H) because C; generation N    only the glyph family / strip / setting changed
 //   [input] ev ...                                        with input_log: every event the rules looked at and what they decided
@@ -26,7 +22,7 @@
 //
 // Also here (KBM P7): the SDK's controllers as a list another thread may read (Controllers(), AddControllerListener(): the controller toast),
 // published from CheckDevices, which already looks at the SDK's list whenever its counter moves; and the pads an overlay reads while it is
-// open (NoteOverlayPad), because the SDK hands the game a pad at rest then.
+// open (NoteOverlayPad), because the SDK hands the game a pad at rest then (IInputSystem::AcquireUIBlock, which the dialogs hold: ui/overlay_support.h).
 
 #include "input_state.h"
 #include "input_state_core.h"
@@ -45,15 +41,18 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/hid/pad.h>
+#include <rex/hid/input_device_list.h>
 #include <rex/hid/input_system.h>
-#include <rex/kernel/title_runtime.h>
+#include <rex/hid/pad.h>
+#include <rex/input_keys.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/window.h>
 
 #include "adaptive_triggers.h"
 #include "device_watch.h"
 #include "logging.h"
+#include "sdk_access.h"
+#include "ui_events.h"
+#include "ui/overlay_support.h"
 #include "ui/pad_vendor.h"
 #include "wheel/wheel_input.h"
 
@@ -185,27 +184,45 @@ bool VerboseOpen() {
 
 // ---- the SDK -------------------------------------------------------------------------------------------
 
-rex::input::InputSystem* Isys() {
-  auto* rt = REX_RUNTIME();
-  return rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+// The handle of a listed pad, for the rules that compare lists (a controller that left, the pad in the player's hands): 0.11's list has none, so it is
+// made from what the list says. Two pads that are alike in vendor, product and name get the place among them (the list is in connection order).
+uint64_t PadId(const rex::hid::InputDeviceInfo& d, uint32_t nth_alike) {
+  uint64_t h = 1469598103934665603ull;  // FNV-1a over the name
+  for (const char c : d.name) h = (h ^ static_cast<uint8_t>(c)) * 1099511628211ull;
+  return (uint64_t(d.vendor_id) << 48) ^ (uint64_t(d.product_id) << 32) ^ (h & 0xFFFFFFFFull) ^ (uint64_t(nth_alike) << 56) ^ 1ull;  // never 0
 }
 
-#ifndef LARECOMP_NO_SDK_DEVICE_INFO
-// The family of the pad that made the last real input, as the SDK knows it: 1 PlayStation, 0 any other
-// pad (Xbox; Switch, Steam Deck and generic pads draw as Xbox, v1), -1 when there is none or it is a
-// synthetic device (the SDK's NOP stand-in, which only an idle state is ever read from, so it is never the
-// active device anyway). `id` (when given) gets that pad's SDK handle, left alone when the answer is -1.
-// Valid on the thread that polls the pad.
-int PadFamilyFromSdk(rex::input::InputSystem* isys, uint64_t* id = nullptr) {
-  if (!isys) return -1;
-  const rex::input::DeviceInfo* d = isys->ActiveDevice(0);
-  if (!d || d->synthetic) return -1;
-  if (id) *id = static_cast<uint64_t>(d->id);
-  return d->pad_kind == rex::input::PadKind::kPlayStation ? 1 : 0;
+// The ids of a device list, in order.
+std::vector<uint64_t> PadIds(const std::vector<rex::hid::InputDeviceInfo>& list) {
+  std::vector<uint64_t> ids;
+  ids.reserve(list.size());
+  for (size_t i = 0; i < list.size(); ++i) {
+    uint32_t alike = 0;
+    for (size_t j = 0; j < i; ++j) {
+      if (list[j].vendor_id == list[i].vendor_id && list[j].product_id == list[i].product_id && list[j].name == list[i].name) ++alike;
+    }
+    ids.push_back(PadId(list[i], alike));
+  }
+  return ids;
 }
-#else
-int PadFamilyFromSdk(rex::input::InputSystem*, uint64_t* = nullptr) { return -1; }
-#endif
+
+// The family of the pad of user 0, as the SDK knows it: 1 PlayStation, 0 any other pad (Xbox; Switch (kNintendo), Steam Deck and generic pads draw as Xbox,
+// v1), -1 when there is none. `id` (when given) gets that pad's handle, left alone when the answer is -1. Valid on the thread that polls the pad.
+// 0.10's ActiveDevice(0) was "the pad that made the last real input"; the list's user 0 is the pad the player holds (a second pad that joins user 0 under
+// hid.shared_pads is listed after it), which is the same pad in every case but the shared one.
+// CHECK: with hid.shared_pads on several pads feed user 0; the first listed one decides the glyphs here (0.10's ActiveDevice(0) was the one used last).
+int PadFamilyFromSdk(uint64_t* id = nullptr) {
+  rex::hid::IInputDeviceList* devices = larecomp::sdk::DeviceList();
+  if (!devices) return -1;
+  const std::vector<rex::hid::InputDeviceInfo> list = devices->Devices();
+  const std::vector<uint64_t> ids = PadIds(list);
+  for (size_t i = 0; i < list.size(); ++i) {
+    if (list[i].user != 0) continue;
+    if (id) *id = ids[i];
+    return list[i].pad_kind == rex::hid::PadKind::kPlayStation ? 1 : 0;
+  }
+  return -1;
+}
 
 // The rule of the pause for a lost controller (input_state_core.h). Never destroyed, like the state machine.
 PadLossRule& Loss() {
@@ -233,24 +250,24 @@ std::atomic<bool> g_watch_dirty{false};
 
 // Called on every pad poll (any user): one counter compared; the list is read only when it moved, the
 // first time, or when the watcher said something. Runs on the thread that polls (the guest's).
-void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
-#ifndef LARECOMP_NO_SDK_DEVICE_INFO
-  const uint32_t gen = isys->device_generation();
+// The counter first and the list second, as rex::hid::IInputDeviceList asks: a change between the two shows at the next read.
+void CheckDevices(rex::hid::IInputDeviceList* devices, int64_t now) {
+  const uint32_t gen = devices->DeviceGeneration();
   const bool dirty = g_watch_dirty.load(std::memory_order_relaxed) && g_watch_dirty.exchange(false, std::memory_order_relaxed);
   if (g_list_known.load(std::memory_order_acquire) && gen == g_list_gen.load(std::memory_order_relaxed) && !dirty) return;
+  const std::vector<rex::hid::InputDeviceInfo> devs = devices->Devices();
+  const std::vector<uint64_t> device_ids = PadIds(devs);
   std::array<GlyphFamily, 16> pads{};
   std::array<uint64_t, 16> ids{};
   size_t count = 0;
-  size_t synthetic = 0;  // the SDK's NOP stand-in (always there) and, with mnk_mode, its keyboard-and-mouse pad: not controllers
   std::string names;
   std::vector<ControllerInfo> listed;  // the same controllers for Controllers() (the toast), not capped at 16
-  for (const rex::input::DeviceInfo& d : isys->Devices()) {
-    if (d.synthetic) ++synthetic;
-    if (d.synthetic) continue;
-    listed.push_back({static_cast<uint64_t>(d.id), d.name});
+  for (size_t i = 0; i < devs.size(); ++i) {
+    const rex::hid::InputDeviceInfo& d = devs[i];
+    listed.push_back({device_ids[i], d.name});
     if (count >= pads.size()) continue;
-    ids[count] = static_cast<uint64_t>(d.id);
-    pads[count++] = d.pad_kind == rex::input::PadKind::kPlayStation ? GlyphFamily::PlayStation : GlyphFamily::Xbox;
+    ids[count] = device_ids[i];
+    pads[count++] = d.pad_kind == rex::hid::PadKind::kPlayStation ? GlyphFamily::PlayStation : GlyphFamily::Xbox;
     names += (names.empty() ? "" : ", ");
     names += d.name.empty() ? "?" : d.name;
   }
@@ -262,14 +279,10 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   const LossVerdict loss = Loss().OnList(ids.data(), count, device_before, DrivingNow(), WheelNow(), now);
   const Change ch = Core().OnDevices(pads.data(), count, now);
   MC_INFO("[input] devices: {} controller(s){}{}; {} synthetic; SDK generation {}; the watcher says Sony pad {}", count, count ? ": " : "", names,
-          synthetic, gen, mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
+          0, gen, mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
   LogLoss(loss);
   Apply(ch);
   PublishControllers(std::move(listed));
-#else
-  (void)isys;
-  (void)now;
-#endif
 }
 
 // ---- start-up --------------------------------------------------------------------------------------------
@@ -306,56 +319,77 @@ void Init() {
 
 // ---- the window ----------------------------------------------------------------------------------------
 
-class WindowEvents final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
- public:
-  void OnKeyDown(rex::ui::KeyEvent& e) override {
-    const uint16_t vk = static_cast<uint16_t>(e.virtual_key());
-    const Change ch = Core().OnKeyDown(vk, e.prev_state(), NowMs());
-    if (ch.looked != Cause::None && VerboseOpen()) {
-      MC_INFO("[input] ev key down vk=0x{:02X} repeat={} -> {}", unsigned(vk), e.prev_state() ? 1 : 0, ch.note);
-    }
-    Apply(ch);
-  }
-  // Key-up never counts.
-  void OnKeyUp(rex::ui::KeyEvent&) override {}
-
-  void OnMouseDown(rex::ui::MouseEvent& e) override {
-    if (e.button() == rex::ui::MouseEvent::Button::kNone) return;
-    const Change ch = Core().OnMouseButtonDown(NowMs());
-    if (ch.looked != Cause::None && VerboseOpen()) {
-      MC_INFO("[input] ev mouse down button={} -> {}", static_cast<int>(e.button()), ch.note);
-    }
-    Apply(ch);
-  }
-  void OnMouseUp(rex::ui::MouseEvent&) override {}
-
-  void OnMouseWheel(rex::ui::MouseEvent& e) override {
-    const Change ch = Core().OnMouseWheel(e.scroll_x(), e.scroll_y(), NowMs());
-    if (ch.looked != Cause::None && VerboseOpen()) {
-      MC_INFO("[input] ev mouse wheel scroll={},{} -> {}", e.scroll_x(), e.scroll_y(), ch.note);
-    }
-    Apply(ch);
-  }
-
-  void OnMouseMove(rex::ui::MouseEvent& e) override {
-    const Change ch = Core().OnMouseMove(e.dx(), e.dy(), NowMs());
-    if (ch.looked != Cause::None && VerboseOpen()) {
-      MC_INFO("[input] ev mouse move dx={:.2f} dy={:.2f} -> {}", e.dx(), e.dy(), ch.note);
-    }
-    Apply(ch);
-  }
-
-  void OnGotFocus(rex::ui::UISetupEvent&) override {
-    Core().OnFocus(true, NowMs());
-    if (VerboseOpen()) MC_INFO("[input] ev focus got");
-  }
-  void OnLostFocus(rex::ui::UISetupEvent&) override {
-    Core().OnFocus(false, NowMs());
-    if (VerboseOpen()) MC_INFO("[input] ev focus lost");
-  }
+// The UI system's events (ui_events.h): layer 0 like before, they never mark an event handled, and what an overlay holds (typing in one, the
+// mouse over one) never reaches them, so typing in a dialog does not switch the device. The UI system runs the binds AFTER its listeners, so the
+// F-key overlays' presses are skipped by hand (ui/overlay_support.h IsBoundKey): 0.10 marked them handled first.
+struct PointerTrack {
+  float x = 0.0f;
+  float y = 0.0f;
+  bool known = false;
 };
+PointerTrack g_pointer;  // the UI thread's
 
-WindowEvents g_events;
+void OnInput(rex::InputEvent& e) {
+  using Type = rex::InputEvent::Type;
+  switch (e.type) {
+    case Type::kKeyDown: {
+      if (mcla::ui::IsBoundKey(e.key, e.modifiers)) break;
+      const uint16_t vk = static_cast<uint16_t>(e.key);
+      const Change ch = Core().OnKeyDown(vk, e.repeat, NowMs());
+      if (ch.looked != Cause::None && VerboseOpen()) {
+        MC_INFO("[input] ev key down vk=0x{:02X} repeat={} -> {}", unsigned(vk), e.repeat ? 1 : 0, ch.note);
+      }
+      Apply(ch);
+      break;
+    }
+    // Key-up never counts.
+    case Type::kButtonDown: {
+      if (e.button == rex::MouseButton::kNone) break;
+      const Change ch = Core().OnMouseButtonDown(NowMs());
+      if (ch.looked != Cause::None && VerboseOpen()) {
+        MC_INFO("[input] ev mouse down button={} -> {}", static_cast<int>(e.button), ch.note);
+      }
+      Apply(ch);
+      break;
+    }
+    case Type::kWheel: {
+      // 0.10 gave integer wheel units (120 a detent), 0.11 detents: the rules keep the old units.
+      const int32_t sx = static_cast<int32_t>(e.scroll_x * 120.0f);
+      const int32_t sy = static_cast<int32_t>(e.scroll_y * 120.0f);
+      const Change ch = Core().OnMouseWheel(sx, sy, NowMs());
+      if (ch.looked != Cause::None && VerboseOpen()) {
+        MC_INFO("[input] ev mouse wheel scroll={},{} -> {}", sx, sy, ch.note);
+      }
+      Apply(ch);
+      break;
+    }
+    case Type::kMotion: {
+      // Relative motion arrives in dx / dy under a pointer lock; free motion gives the position, so the step is the difference from the last one
+      // (0.10's dx() / dy() were that step in both).
+      float dx = e.dx;
+      float dy = e.dy;
+      if (dx == 0.0f && dy == 0.0f && g_pointer.known) {
+        dx = e.x - g_pointer.x;
+        dy = e.y - g_pointer.y;
+      }
+      g_pointer = {e.x, e.y, true};
+      const Change ch = Core().OnMouseMove(dx, dy, NowMs());
+      if (ch.looked != Cause::None && VerboseOpen()) {
+        MC_INFO("[input] ev mouse move dx={:.2f} dy={:.2f} -> {}", dx, dy, ch.note);
+      }
+      Apply(ch);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void OnFocus(bool gained) {
+  Core().OnFocus(gained, NowMs());
+  if (VerboseOpen()) MC_INFO("[input] ev focus {}", gained ? "got" : "lost");
+}
+
 std::atomic<bool> g_attached{false};
 
 uint16_t BigU16(const uint8_t* p) { return static_cast<uint16_t>((uint16_t(p[0]) << 8) | p[1]); }
@@ -412,27 +446,26 @@ void NoteOverlayPad(bool connected, uint16_t buttons, float lx, float ly, float 
 void Tick() {
   Init();
   if (g_attached.load(std::memory_order_relaxed)) return;
-  rex::input::InputSystem* isys = Isys();
-  rex::ui::Window* window = isys ? isys->window() : nullptr;
-  if (!window) return;
-  // Layer 0 like the map's and the pointer's listeners: it never marks an event handled, and an overlay
+  rex::ui::IUISystem* ui = larecomp::sdk::UI();
+  if (!ui || !ui->HasWindow()) return;
+  // Layer 0 like the map's and the pointer's handlers: they never mark an event handled, and an overlay
   // above it (the F4 panel, a browser) gets first refusal, so typing in one does not switch the device.
-  window->AddInputListener(&g_events, 0);
-  window->AddListener(&g_events);
-  Core().OnFocus(window->HasFocus(), NowMs(), /*initial=*/true);
-  g_attached.store(true, std::memory_order_relaxed);
+  if (g_attached.exchange(true)) return;
+  larecomp::uievents::AddInputHandler(&OnInput);
+  larecomp::uievents::AddFocusHandler(&OnFocus);
+  Core().OnFocus(ui->IsFocused(), NowMs(), /*initial=*/true);
   const Snapshot s = Core().Get();
   MC_INFO("[input] state machine ready: window listener attached (focus {}); device {} glyphs {}; generation {}",
-          window->HasFocus() ? "yes" : "no", DeviceName(s.device), FamilyName(s.Family()), s.generation);
+          ui->IsFocused() ? "yes" : "no", DeviceName(s.device), FamilyName(s.Family()), s.generation);
 }
 
 // The XamInputGetState wrapper has run: the SDK's list is looked at (one counter), the game is told "not connected" while a lost
 // controller's window is open, and for user 0 the state the game is about to read is tested for activity.
 InputActivityScope::~InputActivityScope() {
   Init();
-  rex::input::InputSystem* isys = Isys();
+  rex::hid::IInputDeviceList* devices = larecomp::sdk::DeviceList();
   const int64_t now = NowMs();
-  if (isys) CheckDevices(isys, now);
+  if (devices) CheckDevices(devices, now);
   const uint32_t u = user_ & 0xFF;
   if ((u != 0 && u != 0xFF) || !base_ || state_ == 0) return;
 
@@ -466,7 +499,7 @@ InputActivityScope::~InputActivityScope() {
   s.rx = static_cast<int16_t>(BigU16(p + 12));
   s.ry = static_cast<int16_t>(BigU16(p + 14));
   uint64_t pad_id = 0;
-  const Change ch = Core().OnPadFrame(s, [isys, &pad_id] { return PadFamilyFromSdk(isys, &pad_id); }, now);
+  const Change ch = Core().OnPadFrame(s, [&pad_id] { return PadFamilyFromSdk(&pad_id); }, now);
   if (pad_id != 0) Loss().NoteActivePad(pad_id);  // the pad in the player's hands: what a later removal is compared with
   if (ch.looked != Cause::None && VerboseOpen()) {
     MC_INFO("[input] ev pad {} buttons=0x{:04X} lt={} rt={} l=({},{}) r=({},{}) -> {}", CauseText(ch.looked), unsigned(s.buttons),

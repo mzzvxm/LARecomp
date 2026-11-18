@@ -32,8 +32,10 @@
 //
 // Windows: its SDL is not the one this executable carries (two copies of SDL run: the window's is
 // inside rexruntime.dll), so nothing here can call SDL on it. Windows is therefore driven through the
-// window's HWND (Window::GetNativeWindowHandle):
-//   - WINDOWED <-> BORDERLESS: Window::SetFullscreen, live, as the old FULLSCREEN row did;
+// window's HWND (IUISystem::GetNativeWindow):
+//   - WINDOWED <-> BORDERLESS: the UI system's own handler of the `fullscreen` setting (rexglue 0.11 applies ui.fullscreen,
+//     ui.fullscreen_exclusive, ui.monitor, ui.resolution and the window size settings live on the UI thread itself; 0.10 left
+//     it to the app's Window::SetFullscreen), so this file only writes the settings and no longer calls the window;
 //   - the window's size in WINDOWED: SetWindowPos on the HWND, live (SDL follows the size from the
 //     window messages and the renderers rebuild their swap chain as for any resize);
 //   - FULLSCREEN: SetFullscreen(true) for the frameless window, plus ChangeDisplaySettingsEx with the
@@ -46,7 +48,7 @@
 // the same way, with SDL_SetWindowSize: no SDK method is needed. Initialize finds the window by its
 // title and says so in the log; when it is not found (a second copy of SDL after all) the size is read
 // at the next start and the row says (RESTART), as before.
-//   - WINDOWED <-> BORDERLESS: Window::SetFullscreen, live;
+//   - WINDOWED <-> BORDERLESS: the UI system's handler of ui.fullscreen, live;
 //   - the window's size in WINDOWED: SDL_SetWindowSize once SDL has given the window back from
 //     fullscreen or maximised (SDL ignores a resize before that), looked at again every 100 ms until
 //     the window has the size. The size is physical pixels; SDL's window coordinates are those divided
@@ -71,7 +73,7 @@
 #include <vector>
 
 namespace rex::ui {
-class Window;
+class IUISystem;
 }
 
 namespace mcla::display {
@@ -85,10 +87,12 @@ struct Size {
 
 enum class Mode : uint8_t { kWindowed, kBorderless, kExclusive };
 
-// UI thread, once the window is open (ReXApp::SetupPresentation): takes over the `fullscreen`
-// setting's change callback from the SDK's, follows `fullscreen_exclusive` and `resolution` too, and
-// applies a FULLSCREEN choice that is already saved (the SDK opened the window borderless).
-void Initialize(rex::ui::Window* window);
+// UI thread, once the window is open (LarecompApp::StartOverlays): follows `fullscreen`, `fullscreen_exclusive` and
+// `resolution` (the UI system applies them to the window as well: its SetSize takes LOGICAL pixels, so at a scaling
+// other than 100% it makes a window larger than the RESOLUTION row says, and this file's pass, queued after it, sizes
+// it in physical pixels again: CHECK that the window does not visibly jump) and applies a FULLSCREEN choice that is
+// already saved (the SDK opened the window borderless).
+void Initialize(rex::ui::IUISystem& ui);
 
 // UI thread: the focus of the window changed. FULLSCREEN gives the display its own mode back while
 // another window has the focus, and takes its mode again when this one has it back.

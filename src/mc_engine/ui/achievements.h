@@ -4,31 +4,24 @@
 #include <rex/ui/overlay/achievement_notification.h>
 #include <rex/kernel/title_runtime.h>
 
-#include <memory>
-
-namespace rex {
-class Runtime;
-namespace system {
-class AchievementManager;
-}  // namespace system
-namespace ui {
-class ImmediateDrawer;
-}  // namespace ui
-}  // namespace rex
+namespace rex::xam {
+class IAchievementManager;
+}  // namespace rex::xam
 
 namespace mcla::ui {
 
-// The "ACHIEVEMENT UNLOCKED" toast as an MCLA panel. The SDK's toast is a
-// fixed 320x70 window whose second line no longer fits once the panels' font
-// and padding apply. Null when any argument is (as the SDK's factory).
-std::unique_ptr<rex::ui::AchievementNotificationDialog> MakeAchievementToast(
-    rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate, rex::kernel::TitleRuntime* runtime);
+// The achievement list (F7) as an MCLA panel: the overlay "mcla_achievements", key ui.bind.mcla_achievements (F7).
+// The SDK has its own overlay on that key ("achievements"); LarecompApp::StartOverlays unbinds it.
+//
+// The "ACHIEVEMENT UNLOCKED" toast is the SDK's now (0.10 let an app replace it with its own MCLA panel; 0.11 adds
+// the toast itself when the title starts, and sizes and colours it from rex::ui::Style: see ApplyMclaTheme).
+//
+// The list reads the achievements of the running title: set the manager from LarecompApp::OnTitleLaunch (null
+// before the title and after it). CHECK / SDK needs: the SDK's icons come from IAchievementRegistry
+// (GetAchievementIcon), which an app cannot reach (it is the kernel's TitleContext, private); until the SDK
+// gives the manager or the runtime a public icon call, this list has no icons.
+void SetAchievementManager(rex::xam::IAchievementManager* manager);
 
-// Opens or closes the achievement list (F7). LARecomp owns this one rather
-// than overriding CreateAchievementsOverlay: the SDK keeps that dialog in a
-// unique_ptr only its own bind releases, so a list that closes itself (Esc,
-// the footer prompt) could not be closed safely through it.
-void ToggleAchievements(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate,
-                        rex::kernel::TitleRuntime* runtime, rex::system::AchievementManager* achievements);
+rex::ui::OverlayConfig AchievementsOverlayConfig();
 
 } // namespace mcla::ui

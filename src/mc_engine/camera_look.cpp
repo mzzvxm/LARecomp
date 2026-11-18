@@ -23,7 +23,6 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
-#include <rex/ui/window.h>
 
 #if defined(_WIN32)
 #include <Windows.h>
@@ -130,7 +129,7 @@ LookTune& TuneFor(uint32_t owner) {
 // ── The mouse ──────────────────────────────────────────────────────────
 //
 // The raw counts come from mouse_look.cpp: the window is put in relative mouse mode while the mouse is the player's (the keyboard and mouse are the active
-// device, a car is on the road, no menu / map / phone / overlay, the window in front), a listener sums every motion event's dx / dy, and the camera tick takes the sum
+// device, a car is on the road, no menu / map / phone / overlay, the window in front), the input system sums the motion (IInputSystem::TakeMotion), and the camera tick takes the sum
 // with exchange(0). Nothing is recentred and nothing polls the OS, so it is the same on Windows, Linux and the Steam Deck. This file asks (Want, once a frame from
 // TickCameraLook) and takes (Take, once per camera tick, from UpdateLookAngles); the decision is mouse_look_core.h's Gate.
 //
