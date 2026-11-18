@@ -169,8 +169,16 @@
 {"gpu_3d_to_2d_texture", "gpu.xenos.texture_3d_to_2d"},
 {"video_driver", "ui.sdl.video_driver"},
 {"metadata_root", "title.metadata_root"},
-// the overlays of LARecomp (the hotkey settings the old SDK had as bind_mcla_*; CHECK: the overlay names are the ones
-// mc_engine/ui registers with IUISystem::AddOverlays, "mcla_settings" etc.: L2B (the UI port) owns them)
+// the overlays of LARecomp (the hotkey settings the old SDK had as bind_<overlay>): the overlay names mc_engine/ui registers
+// with IUISystem::AddOverlays
 {"bind_mcla_settings", "ui.bind.mcla_settings"},
 {"bind_mcla_telemetry", "ui.bind.mcla_telemetry"},
 {"bind_mcla_achievements", "ui.bind.mcla_achievements"},
+{"bind_mcla_compare", "ui.bind.mcla_compare"},
+{"bind_gpu_texture_dump", "ui.bind.gpu_texture_dump"},
+{"bind_gpu_trace_next", "ui.bind.gpu_trace_next"},
+{"bind_gpu_renderdoc_capture", "ui.bind.gpu_renderdoc_capture"},
+{"bind_map_warp", "ui.bind.map_warp"},
+{"bind_mod_browser", "ui.bind.mod_browser"},
+{"bind_server_browser", "ui.bind.server_browser"},
+{"bind_identity", "ui.bind.identity"},
