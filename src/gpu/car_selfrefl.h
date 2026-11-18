@@ -21,7 +21,11 @@
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
 //                                sees (the hit pixel's, or the paint's own in shade for a hidden face), 3 the baked vertex AO,
 //                                4 the state of the trace (yellow a hit, orange a hit that is probably the hidden face of a
-//                                part, brighter the heavier; green no hit; the other colours in the variant's text)
+//                                part, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
+//                                traced image at the paint's pixel (car_rt_refl.h: purple no image, cyan no data there, green no
+//                                hit, yellow a hit on a visible part, orange on a hidden one)
+//   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
+//                                the march of this file is the fallback and the other devices' version
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
 // With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
 // Selected()), and no history is made. The compare key (F1, effect_compare.h) flips the setting like the others.
@@ -66,6 +70,13 @@
 // part (the ray comes back out towards the surface from behind). The pure arithmetic is in car_selfrefl_rules.h with a reference
 // march in the rules test. The paint's own colour in shade stands in for a hidden face in the reflection mode. The constants'
 // b[3] is the share of the points (it was a noise frame before version 4).
+//
+// RAY TRACED (variant version 5, car_rt_refl.h): where the device can trace the car's triangles (car_rt_scene.h) the history pass is followed by a
+// compute pass that gives every vehicle texel of the history the car's reflection of ITSELF from its triangles (exact: a part the camera does not
+// see, a thin part), in an image of the history's size that the next frame's paint reads at the same place it reads the history, in place of
+// the march. The march stays: where the image has no data (alpha 0: not the player's car, another vehicle, the first frame, no structures)
+// the paint does version 4's march, and with mcla_gpu_car_selfrefl_rt off or on a device that cannot trace, version 4's output is the output
+// (the constants' c[3] bit 0 says whether the frame has an image).
 //
 // The depth is linearised with the previous frame's lens (the trigger comes before this frame's anchor, as the occlusion's
 // does); a lens that changed by more than 5% between the two frames (the pause view's field of view, a sweep) leaves no
@@ -132,6 +143,7 @@
 namespace mcla::gpu {
 
 class CarDump;
+class CarRtRefl;
 class PassTiming;
 
 class CarSelfRefl {
@@ -160,6 +172,12 @@ class CarSelfRefl {
   void Shutdown();
   // The debug car dump (car_dump.h): handed the history image of its frame when it is drawn, to check its triangles against. Null: none.
   void SetCarDump(CarDump* dump) { dump_ = dump; }
+  // The ray traced half (car_rt_refl.h): where its pass is wanted and can run it makes an image at the history trigger, right after the
+  // history, that the paint variant (version 5) reads in place of the march. Null: the march everywhere.
+  void SetCarRtRefl(CarRtRefl* rt) { rt_ = rt; }
+  // True when the effect was on at the start and its pipelines were listed with the host precache (Initialize): what CarRtRefl asks to
+  // list its own pipeline the same way.
+  bool ListedAtStart() const { return listed_; }
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
@@ -258,6 +276,7 @@ class CarSelfRefl {
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   CarDump* dump_ = nullptr;
+  CarRtRefl* rt_ = nullptr;
   bool ready_ = false;            // the shaders exist
   bool shaders_failed_ = false;   // they could not be made: not tried again
   bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)
@@ -286,6 +305,7 @@ class CarSelfRefl {
   uint64_t paint_no_id_ = 0;
   uint64_t paint_motion_ = 0;
   uint64_t paint_pause_ = 0;  // paint draws with a history in the pause view's worlds (the car taken as still)
+  uint64_t paint_with_rt_ = 0;  // paint draws given the ray traced image (car_rt_refl.h)
   // The totals at the last census line, for the interval's own numbers.
   uint64_t census_paint_ = 0;
   uint64_t census_with_history_ = 0;

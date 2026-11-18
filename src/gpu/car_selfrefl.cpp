@@ -15,6 +15,7 @@
 #include <rex/logging.h>
 
 #include "car_dump.h"
+#include "car_rt_refl.h"
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "gpu_class.h"
@@ -51,10 +52,11 @@ REXCVAR_DEFINE_INT32(
     "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): "
     "1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace "
     "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, "
-    "orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes). 0: "
-    "off. Live.")
+    "orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the "
+    "ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, "
+    "yellow: a hit on a part the camera sees, orange: on a part it does not). 0: off. Live.")
     .debug_only()
-    .range(0, 4)
+    .range(0, 5)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_selfrefl_length, 2.0, "MCLA/GPU",
@@ -351,10 +353,14 @@ void CarSelfRefl::BeginFrame() {
   mode_ = mode;
   g_selected.store(mode != Mode::kOff, std::memory_order_relaxed);
   tuning_ = ReadTuning();
+  if (rt_) {
+    rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
+  }
 }
 
 uint64_t CarSelfRefl::HeldBytes() const {
-  return history_.texture ? TextureBytes(history_.width, history_.height, 1, history_.format) : 0;
+  const uint64_t rt = rt_ ? rt_->HeldBytes() : 0;
+  return rt + (history_.texture ? TextureBytes(history_.width, history_.height, 1, history_.format) : 0);
 }
 
 void CarSelfRefl::ReleaseImage() {
@@ -362,6 +368,9 @@ void CarSelfRefl::ReleaseImage() {
     return;
   }
   passes_->ReleaseImage(history_);
+  if (rt_) {
+    rt_->ReleaseImage();
+  }
   history_valid_ = false;
   image_for_[0] = image_for_[1] = 0;
 }
@@ -613,6 +622,18 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   if (dump_) {
     dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
   }
+  if (rt_) {
+    // The ray traced reflection of the same texels (car_rt_refl.h): after the history, with the lens it was linearised with.
+    CarRtRefl::HistoryInfo info;
+    info.image = &history_;
+    info.divisor = divisor;
+    info.render_width = render_w;
+    info.render_height = render_h;
+    info.tan_x = 1.0 / std::max(std::fabs(p.m[0][0]), 1e-9);
+    info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
+    info.frame = frame_;
+    rt_->OnHistory(list, info);
+  }
   return true;
 }
 
@@ -669,9 +690,14 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
     }
   }
   (void)upscaler_running;  // the ray has no per-pixel noise any more (variant version 3): nothing moves with the frame
+  // The ray traced image of the same history, if the pass made one (car_rt_refl.h): the variant reads it where it has data.
+  const uint32_t rt_slot = rt_ ? rt_->SlotFor(history_frame_) : car_selfrefl::kNoRtImage;
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
-                                     car_selfrefl::ExpBiasGain(exp_bias));
+                                     car_selfrefl::ExpBiasGain(exp_bias), rt_slot);
   ++paint_with_history_;
+  if (rt_slot != car_selfrefl::kNoRtImage) {
+    ++paint_with_rt_;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -733,11 +759,12 @@ void CarSelfRefl::Census() {
   REXLOG_INFO("{} frame {}: {} view, mode {}, history {}; paint draws in the last {} frames: {}, {} with a history ({} of "
               "them in the pause view's worlds); since the start: {} triggers ({} history passes, {} with no paint draw in "
               "the frame, {} without the previous frame's camera, {} lens changes, {} in a world with no effect), {} paint draws, {} with a history ({} with "
-              "the vehicle's motion, {} without a stencil ID); {:.1f} MiB",
+              "the vehicle's motion, {} without a stencil ID, {} with the ray traced image); {:.1f} MiB{}",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", ModeName(mode_), history_valid_ ? "valid" : "none",
               kCensusFrames, paint_draws_ - census_paint_, paint_with_history_ - census_with_history_,
               paint_pause_ - census_pause_, triggers_, passes_run_, skipped_no_car_, no_camera_, lens_changed_, world_skipped_,
-              paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, double(HeldBytes()) / (1024.0 * 1024.0));
+              paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, paint_with_rt_, double(HeldBytes()) / (1024.0 * 1024.0),
+              rt_ ? rt_->CensusText() : std::string());
   census_paint_ = paint_draws_;
   census_with_history_ = paint_with_history_;
   census_pause_ = paint_pause_;

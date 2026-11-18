@@ -285,6 +285,10 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
         REXLOG_WARN("[gpu] car ray tracing: the device can trace rays but the structures could not be set up: not available");
       }
     }
+    // The ray traced half of the self-reflection (car_rt_refl.h): after the car's structures exist (their descriptor set is in its layout)
+    // and before the precache starts.
+    car_rt_refl_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, car_refl_.ListedAtStart());
+    car_refl_.SetCarRtRefl(&car_rt_refl_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -369,6 +373,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
+    car_rt_refl_.Shutdown();
     car_rt_.Shutdown();
     car_frame_.Shutdown();
     flicker_probe_.Shutdown();
@@ -540,6 +545,7 @@ void Renderer::Shutdown() {
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
+  car_rt_refl_.Shutdown();
   car_rt_.Shutdown();
   car_frame_.Shutdown();
   flicker_probe_.Shutdown();
