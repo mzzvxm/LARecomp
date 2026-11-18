@@ -5,9 +5,12 @@
 #include <thread>
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/filesystem/file.h>
+#include <rex/filesystem/file_open.h>
+#include <rex/kernel/object/file_object.h>
+#include <rex/kernel/object/object_pin.h>
 #include <rex/kernel/object/object_table.h>
 #include <rex/xam/content_manager.h>
-#include <rex/kernel/object/file_object.h>
 
 // A career save being written: a file open for writing on a content package,
 // which the SDK mounts at \Device\Content\<n>\ (xam/content_manager.cpp), or
@@ -16,20 +19,26 @@
 // next start.
 inline bool MclaSaveInProgress() {
   auto* runtime = REX_RUNTIME();
-  auto* kernel = runtime ? runtime->kernel_state() : nullptr;
-  if (!kernel) {
+  if (!runtime) {
     return false;
   }
 #ifdef REX_CONTENT_MANAGER_HAS_UNCLOSED_BACKUPS
-  if (auto* content = kernel->content_manager(); content && content->HasUnclosedBackups()) {
+  if (runtime->GetContentManager().HasUnclosedBackups()) {
     return true;
   }
 #endif
-  // GENERIC_WRITE, GENERIC_ALL, FILE_WRITE_DATA, FILE_APPEND_DATA.
-  constexpr uint32_t kWriteAccess = 0x40000000u | 0x10000000u | 0x2u | 0x4u;
-  for (const auto& file : kernel->object_table()->GetObjectsByType<rex::system::XFile>()) {
-    if (file && (file->file_access() & kWriteAccess) &&
-        file->device()->mount_path().starts_with("\\Device\\Content\\")) {
+  // FILE_WRITE_DATA, FILE_APPEND_DATA (IFile::GetAccess already expands GENERIC_WRITE and GENERIC_ALL to these).
+  constexpr uint32_t kWriteAccess = static_cast<uint32_t>(rex::filesystem::Access::kWriteData) |
+                                    static_cast<uint32_t>(rex::filesystem::Access::kAppendData);
+  // The open files: every FileObject of the table, on a mount whose path (FileStat::absolute_path is the mount path joined
+  // with the file's) is a content package's.
+  for (const auto& open_file : runtime->GetObjectTable().All<rex::kernel::FileObject>()) {
+    if (!open_file || !open_file->file) {
+      continue;
+    }
+    const rex::filesystem::IFile& file = *open_file->file;
+    if ((static_cast<uint32_t>(file.GetAccess()) & kWriteAccess) &&
+        file.GetInfo().absolute_path.starts_with("\\Device\\Content\\")) {
       return true;
     }
   }

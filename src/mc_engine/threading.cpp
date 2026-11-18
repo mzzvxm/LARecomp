@@ -6,6 +6,8 @@
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/hook.h>
 #include <rex/kernel/object/kernel_thread.h>
+#include <rex/kernel/thread_registry.h>
+#include <rex/kernel/title_runtime.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -192,7 +194,9 @@ REX_HOOK(mc_FlushDataCache, FlushDataCache_hook);
 
 // ResumeThread (0x8244FE58)
 u32 ResumeThread_hook(u32 handle) {
-    auto thread = REX_KERNEL_OBJECTS()->LookupObject<rex::system::XThread>(handle);
+    auto* runtime = REX_RUNTIME();
+    if (!runtime) return 0;
+    auto thread = runtime->GetThreadRegistry().FindByHandle(handle);  // a pin: the thread cannot go away under Resume
     if (thread)
         thread->Resume();
     return 0;

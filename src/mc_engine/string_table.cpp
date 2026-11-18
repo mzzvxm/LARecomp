@@ -18,25 +18,11 @@
 
 #include "string_dumper.h"
 
-// The fork's SDK keeps its own dumper in KernelState, fed by its kernel string
-// exports as well. Use that one there: two dumpers flushing the same
-// dump/strings.toml would race and drop entries. The stock SDK has none, so
-// larecomp owns the store (string_dumper.h) and creates it on first use.
-#if __has_include(<rex/system/string_dumper.h>)
-#include <rex/system/string_dumper.h>
-#define LARECOMP_SDK_HAS_STRING_DUMPER 1
-#endif
+// The fork's SDK kept its own dumper in KernelState, fed by its kernel string exports as well; rexglue 0.11 has none (the
+// stock SDK never did), so larecomp owns the store (string_dumper.h) and creates it on first use.
 
 namespace {
 
-#if defined(LARECOMP_SDK_HAS_STRING_DUMPER)
-using Dumper = rex::system::StringDumper;
-
-Dumper* ActiveDumper() {
-    auto* ks = rex::system::kernel_state();
-    return ks ? &ks->string_dumper() : nullptr;
-}
-#else
 using Dumper = mc::strings::StringDumper;
 
 Dumper* ActiveDumper() {
@@ -49,7 +35,6 @@ Dumper* ActiveDumper() {
     });
     return dumper.get();
 }
-#endif
 
 constexpr uint32_t kStringTableGlobal = 0x8286D7FC;
 
