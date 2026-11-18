@@ -57,6 +57,7 @@
 #include "car_dump.h"
 #include "car_frame.h"
 #include "car_selfrefl.h"
+#include "car_shadow_map.h"
 #include "descriptors.h"
 #include "device.h"
 #include "dlss_frame_generation.h"
@@ -286,6 +287,7 @@ class Renderer final : public RenderThread::Executor {
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
+  CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

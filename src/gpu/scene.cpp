@@ -25,6 +25,7 @@
 #include "car_dump.h"
 #include "car_frame.h"
 #include "car_selfrefl.h"
+#include "car_shadow_map.h"
 #include "cut_request.h"
 #include "cycles.h"
 #include "descriptors.h"
@@ -904,6 +905,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_frame_) {
     car_frame_->BeginFrame();
   }
+  if (car_shadow_) {
+    car_shadow_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -1332,6 +1336,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     }
     if (car_dump_ && car_dump_->frame_open()) {
       car_dump_->OnAnchor(banks);  // ... and the car dump projects the frame's triangles by it
+    }
+    if (car_shadow_) {
+      car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
     }
   }
 
@@ -3110,6 +3117,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  if (car_shadow_) {
+    // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
+    // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
+    car_shadow_->OnResolve(record, summary, list);
+  }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
@@ -3181,6 +3193,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (car_shadow_) {
+    car_shadow_->OnComposite();
   }
   if (temporal_) {
     temporal_->OnComposite();

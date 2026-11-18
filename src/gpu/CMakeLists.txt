@@ -19,6 +19,7 @@ add_library(larecomp_gpu OBJECT
     car_frame.cpp
     car_mesh_read.cpp
     car_selfrefl.cpp
+    car_shadow_map.cpp
     capture_readback.cpp
     constants.cpp
     cut_request.cpp
@@ -190,6 +191,10 @@ add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
 add_executable(larecomp_car_frame_rules_test EXCLUDE_FROM_ALL car_frame_rules_test.cpp)
+# The car-only sun shadow map's rules (car_shadow_map_rules.h: the setting, the car's frame, the fit and its held centre, the matrices, the pipeline
+# variants) likewise:
+#   cmake --build <dir> --target larecomp_car_shadow_map_rules_test, then run src/gpu/larecomp_car_shadow_map_rules_test (exit 0 = passed).
+add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_map_rules_test.cpp)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
@@ -549,6 +554,11 @@ larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
 larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
+# The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
+# and the debug view's square.
+larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
+larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
+larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

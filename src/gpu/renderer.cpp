@@ -267,6 +267,8 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for
+    car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
+    car_shadow_.SetCarFrame(&car_frame_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -286,6 +288,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
+    scene_.SetCarShadowMap(&car_shadow_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -345,6 +348,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     temporal_.Shutdown();
     ao_.Shutdown();
     shafts_.Shutdown();
+    car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
     car_frame_.Shutdown();
@@ -514,6 +518,7 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   shafts_.Shutdown();
+  car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
   car_frame_.Shutdown();
@@ -1690,6 +1695,8 @@ void Renderer::ReportFrameStats() {
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
+                           (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
+                                                         : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
