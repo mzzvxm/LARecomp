@@ -749,8 +749,10 @@ void LarecompApp::OnTitleExit(rex::kernel::TitleExitReason reason) { TitleApp::O
 // A normal window close: SDL's close event reaches the listeners first (here), then the SDK's close handler asks for a
 // shutdown (RequestShutdown(0)), the main loop ends and App::Shutdown stops the title (TitleApp::OnStop) and calls OnShutdown.
 // The save wait must come BEFORE the title is terminated, so it runs from the event, on the UI thread, before the
-// shutdown request. CHECK: that the SDL3 driver dispatches kClose from the frame loop and not from inside an SDL event
-// watcher (the 0.10 deadlock with the mouse-capture mutex was a watcher): sdl3_ui_driver.cpp lines 264 and 366.
+// shutdown request. Read from sdl3_ui_driver.cpp (2026-11-18): kClose (SDL_EVENT_WINDOW_CLOSE_REQUESTED and SDL_EVENT_QUIT) is
+// delivered by State::Process from WaitEvents, i.e. from the frame loop (RunFrame) on the UI thread. The event WATCH (WatchEvent)
+// delivers only kResize and kExposed, and only inside the Windows modal move/size loop, so the 0.10 deadlock (the close ran
+// inside a watcher with the mouse-capture mutex held) cannot happen on kClose.
 void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
   using Type = rex::ui::UIEvent::Type;
   switch (event.GetType()) {
