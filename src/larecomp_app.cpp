@@ -45,6 +45,11 @@
 #include "mc_engine/hooks/hooks.h"
 #include "mc_engine/impulse_triggers.h"
 #include "mc_engine/map_mouse.h"
+#include "mc_engine/map_warp.h"
+#include "mc_engine/modloader/modsbrowser/mod_browser_ui.h"
+#include "mc_engine/sdk_access.h"
+#include "mc_engine/ui/overlay_support.h"
+#include "mc_engine/ui_events.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
@@ -70,6 +75,7 @@
 #include "spdlog_console.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/native_window.h"
 #endif
 #include "mc_engine/effect_compare.h"
 
@@ -465,17 +471,64 @@ rex::Result<void> LarecompApp::OnInit() {
   return rex::Ok();
 }
 
-// Fonts, style and the hotkeys: the SDK's overlays are not used (LARecomp draws its own), so the SDK's bind for the same
-// key never fires first as it did in 0.10 (ui.bind.debug/settings/achievements are set to "none" below).
+// The window's overlays and hotkeys on rexglue 0.11 (mc_engine/ui/overlay_support.h says how they are written). UI thread, the
+// window open, before the renderer starts.
+//   * the theme (fonts, style) goes in first: InstallMclaTheme adds the dialog that keeps it (imgui_theme.h);
+//   * the SDK's own overlays that sit on the keys of LARecomp's (debug F3, settings F4, achievements F7) are unbound: their
+//     bind is the setting ui.bind.<name> and an empty text is "no key". A player's own value for them (the file, the command
+//     line) is a higher layer and still wins. The SDK's console (the grave accent key) keeps its key: CHECK with the owner,
+//     it is a developer tool that every player now has;
+//   * LARecomp's overlays and hotkeys are OverlayConfig entries: the name makes the setting ui.bind.<name>, which is the old
+//     bind_<name> cvar (sdk_names.inc maps the three overlays; the rows for the others are listed in the report of WP-L2B).
 void LarecompApp::StartOverlays() {
   rex::ui::IUISystem& ui = GetUI();
-  mcla::ui::LoadMclaFonts(&ui.GetFonts());                           // CHECK: LoadMclaFonts takes the atlas
-  mcla::ui::ApplyMclaTheme(ui.GetImGuiStyle(), &ui.GetStyle());
-  // CHECK: ui.bind.<name> settings of the SDK's own overlays: set to a KeyChord of kNone so only the MCLA ones act.
-  // The MCLA overlays are OverlayConfig{name, default KeyChord, create} entries (F3 telemetry, F4 settings, F7 achievements):
-  //   mcla::ui::DebugOverlayConfig(), SettingsOverlayConfig(settings_config_path_), AchievementsOverlayConfig()
-  // are the replacements of the 0.10 RegisterBind lambdas (L5); each needs the title runtime when it is created.
-  mcla::ui::StartControllerToasts(ui);  // CHECK (L5): IUISystem instead of ImGuiDrawer
+  mcla::ui::InstallMclaTheme(ui);
+
+  rex::SettingsRegistry& settings = REX_SETTINGS();
+  for (const char* name : {"ui.bind.debug", "ui.bind.settings", "ui.bind.achievements"}) {
+    if (auto set = settings.SetText(rex::SettingLayer::kTitle, name, ""); !set) {
+      LARECOMP_APP_WARN("[ui] the SDK's key {} could not be freed for LARecomp's overlay: {}", name, set.error().GetDescription());
+    }
+  }
+
+  mcla::ui::SetSettingsConfigPath(settings_config_path_);
+  using Hotkey = std::unique_ptr<rex::ui::IDialog> (*)(rex::ui::IUISystem&);
+  std::vector<rex::ui::OverlayConfig> overlays;
+  overlays.push_back(mcla::ui::DebugOverlayConfig());                                                  // F3: telemetry card
+  overlays.push_back(mcla::ui::SettingsOverlayConfig());                                               // F4: settings
+  overlays.push_back(mcla::ui::AchievementsOverlayConfig());                                           // F7: achievement list
+  overlays.push_back({"mod_browser", {rex::VirtualKey::kF5}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::ModBrowserKeyPressed>)});
+  overlays.push_back({"server_browser", {rex::VirtualKey::kF6}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::ServerBrowserKeyPressed>)});
+  overlays.push_back({"identity", {rex::VirtualKey::kF8}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::IdentityKeyPressed>)});
+  overlays.push_back({"map_warp", {rex::VirtualKey::kF9}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&MapWarpKeyPressed>)});
+#if defined(LARECOMP_HAS_GPU)
+  // The keys of the Plume renderer (they do nothing without it): F2 texture dump, F10 raw frame trace, F11 RenderDoc capture.
+  if (mcla::native_gfx::nocp::WantNoCommandProcessor() && mcla::gpu::Enabled()) {
+    overlays.push_back({"gpu_texture_dump", {rex::VirtualKey::kF2}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestTextureDump>)});
+    overlays.push_back({"gpu_trace_next", {rex::VirtualKey::kF10}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestFrameTrace>)});
+    overlays.push_back({"gpu_renderdoc_capture", {rex::VirtualKey::kF11}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestRenderDocCapture>)});
+    overlays.push_back(mcla::compare::KeyOverlayConfig());                                             // F1: the compare key
+  }
+#endif
+  if (auto added = ui.AddOverlays(overlays); !added) {
+    LARECOMP_APP_ERROR("[ui] the overlays were not added, so no F-key menu works: {}", added.error().GetDescription());
+  }
+  mcla::ui::StartControllerToasts(ui);  // the connect / disconnect panels (always on the screen's list, drawing nothing between pads)
+}
+
+// The window's client size for the ultrawide maths: physical pixels, from the native window (the video mode is the title's, not the window's).
+static void PublishWindowSize(rex::ui::IUISystem& ui) {
+#if defined(LARECOMP_HAS_GPU)
+  if (auto window = ui.GetNativeWindow()) {
+    uint32_t width = 0, height = 0;
+    mcla::gpu::GetWindowPixelSize(*window, width, height);
+    if (width && height) {
+      mc::ultrawide::SetWindowSize(width, height);
+      return;
+    }
+  }
+#endif
+  if (const auto mode = ui.GetVideoMode(); mode.width) mc::ultrawide::SetWindowSize(mode.width, mode.height);
 }
 
 // The user folder moved by ChooseUserFolder: bring what is already in Documents over (reading it is allowed), without
@@ -610,6 +663,7 @@ void LarecompApp::RunBatchMode() {
 // the progress popup, then the hooks.
 rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   title_ = &title;
+  mcla::ui::SetAchievementManager(&title.GetAchievementManager());  // the F7 list
   g_guest_mem = title.GetMembase().Get();  // CHECK: GuestMembase accessor
   LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}", reinterpret_cast<std::uintptr_t>(g_guest_mem));
 
@@ -714,31 +768,38 @@ void LarecompApp::OnTitleExit(rex::kernel::TitleExitReason reason) { TitleApp::O
 // watcher (the 0.10 deadlock with the mouse-capture mutex was a watcher): sdl3_ui_driver.cpp lines 264 and 366.
 void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
   using Type = rex::ui::UIEvent::Type;
+  larecomp::uievents::DispatchWindow(event);  // the handlers of the input state and the keyboard
   switch (event.GetType()) {
     case Type::kClose:
       FinishWindowCloseWork();
       break;
     case Type::kResize:
-      if (const auto size = GetUI().GetVideoMode(); size.width) {
-        // CHECK: the window's pixel size is what the ultrawide maths needs (GetNativeWindow + SDL), not the video mode.
-        mc::ultrawide::SetWindowSize(GetUI().GetVideoMode().width, GetUI().GetVideoMode().height);
-      }
+      PublishWindowSize(GetUI());
 #if defined(LARECOMP_HAS_GPU)
       mcla::gpu::RequestResize();
 #endif
       break;
     case Type::kFocus:
-      mcla::display::OnFocusChanged(GetUI().IsFocused());  // FULLSCREEN (exclusive) gives the display its mode back
+      // The event carries no direction and IsFocused() still has the old value while the listeners run (UISystem::State::OnEvent
+      // tells them first, then updates its flag), so the answer is read a moment later, on the same thread.
+      GetUI().PostTask([this] {
+        const bool focused = GetUI().IsFocused();
+        mcla::display::OnFocusChanged(focused);  // FULLSCREEN (exclusive) gives the display its mode back
+        larecomp::uievents::DispatchFocus(focused);
+      });
       break;
     default:
       break;
   }
 }
 
-void LarecompApp::OnInputEvent(rex::InputEvent&) {}
+// The UI system hands every key, mouse and wheel event that no overlay holds to its listeners, in order, on the UI thread, before it
+// runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
+void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
-// What the close needs before the title ends: shader build told to stop, saves finished, devices released, the renderer
-// stopped. Latched: the event can come twice.
+// What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
+// twice, and OnStop does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
+// runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (OnStop).
 void LarecompApp::FinishWindowCloseWork() {
   if (close_work_started_.exchange(true, std::memory_order_acq_rel)) return;
   larecomp::RequestBootBuildCancel();
@@ -749,9 +810,6 @@ void LarecompApp::FinishWindowCloseWork() {
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still
   mcla::display::Shutdown();       // the display's own mode back after FULLSCREEN
-#if defined(LARECOMP_HAS_GPU)
-  mcla::gpu::Shutdown();           // the render thread stops, the GPU drains, the swap chain is given back
-#endif
   LARECOMP_APP_INFO("[quit] LARecomp's shutdown took {} ms",
                     std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
   // A bound for whatever the SDK's close still does: armed after the save wait and the renderer stop, which have their own
@@ -765,8 +823,25 @@ void LarecompApp::FinishWindowCloseWork() {
   }).detach();
 }
 
+// App::Shutdown has already called IUISystem BeginStop (DrawOverlays builds nothing from here on) and now stops the title: first what
+// LARecomp must do before the guest ends (the close work, for a shutdown that did not come from the window: the pause menu's QUIT, a
+// restart, a setup failure), then the renderer. The render thread never waits for the UI thread (overlay.h: it posts a pass and takes
+// the last frame), so joining it here cannot deadlock against a pass that never runs. It stops BEFORE the title unloads: it reads the
+// guest's memory and the GPU state the title owns.
+void LarecompApp::OnStop() {
+  FinishWindowCloseWork();
+  mcla::ui::SetAchievementManager(nullptr);  // the manager goes with the title
+#if defined(LARECOMP_HAS_GPU)
+  mcla::gpu::Shutdown();  // the render thread stops, the GPU drains, the swap chain is given back
+#endif
+  TitleApp::OnStop();
+}
+
 // After the title stopped, before the drivers shut down (logging and settings still work).
 void LarecompApp::OnShutdown() {
+  // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
+  ui_listener_ = {};
+  larecomp::sdk::Reset();
   FinishWindowCloseWork();  // also reached by a RequestShutdown that did not come from the window (restart, setup failure)
   larecomp::RequestBootBuildCancel();
   larecomp::WaitForBootBuild();

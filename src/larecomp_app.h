@@ -11,7 +11,8 @@
 //     fonts / style / hotkeys                             (IUISystem fonts, style, OverlayConfig + ui.bind.<name>)
 //   SetupEnvironment's --build_shader_packs exit       -> GetActions/OnAction, run in OnInit with no drivers loaded
 //   OnPostSetup / OnPostLoadXexImage / LaunchModule    -> OnTitleLaunch(TitleRuntime&): after Load, before the guest starts
-//   OnWindowCloseRequested (veto + FinishWindowClose)  -> IUIEventListener kClose (pre-close work), OnShutdown (the rest)
+//   OnWindowCloseRequested (veto + FinishWindowClose)  -> IUIEventListener kClose (saves, devices: the UI thread, before RequestShutdown),
+//                                                         OnStop (the same work again if it did not run, then the renderer stops, then the title)
 //   OnShutdown                                         -> OnShutdown (the SDK ends the process through App::Shutdown)
 //   OnWindowPixelSizeChanged / OnWindowFocusChanged    -> IUIEventListener kResize / kFocus
 //
@@ -63,6 +64,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   rex::Result<void> OnInit() override;
   rex::Result<void> OnTitleLaunch(rex::kernel::TitleRuntime& title) override;
   void OnTitleExit(rex::kernel::TitleExitReason reason) override;
+  void OnStop() override;
   void OnShutdown() override;
   rex::platform::CrashReporterOptions GetCrashOptions() override;
 

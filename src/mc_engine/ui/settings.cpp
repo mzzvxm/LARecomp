@@ -1,13 +1,15 @@
 #include "settings.h"
 #include "imgui_theme.h"
+#include "overlay_support.h"
 #include "mc_engine/config_save.h"
 #include "mc_engine/debug_menu.h"
 
 #include <atomic>
+#include <chrono>
 #include "settings/larecomp_settings.h"
 #include <rex/string/text.h>
 #include <rex/string/numeric.h>
-#include <rex/ui/dialog.h>
+#include <rex/input_keys.h>
 #include <rex/ui/ui_system.h>
 #include <imgui.h>
 
@@ -95,8 +97,8 @@ std::string Lower(std::string s) {
   return s;
 }
 
-rex::ui::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
-  using VK = rex::ui::VirtualKey;
+rex::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
+  using VK = rex::VirtualKey;
   if (key >= ImGuiKey_A && key <= ImGuiKey_Z) {
     return static_cast<VK>(static_cast<uint16_t>(VK::kA) + (key - ImGuiKey_A));
   }
@@ -157,8 +159,14 @@ rex::ui::VirtualKey ImGuiKeyToVirtualKey(ImGuiKey key) {
   }
 }
 
-// Lets go of the open panel without deleting it (see OnDraw).
-void ReleaseSettings();
+// When the panel last drew, in steady-clock milliseconds, 0 before the first draw. A hotkey hides an overlay without telling it
+// (IUISystem removes the dialog, OnClose is only for a dialog that ends itself), so "open" is "drew in the last 300 ms".
+std::atomic<int64_t> g_last_draw_ms{0};
+std::filesystem::path g_config_path;
+
+int64_t NowMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 struct CatNode {
   std::string full_path;
@@ -168,17 +176,20 @@ struct CatNode {
 
 // --- The panel ------------------------------------------------------------------------
 
-class SettingsDialog final : public rex::ui::ImGuiDialog {
+class SettingsDialog final : public PanelDialog {
  public:
-  SettingsDialog(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path)
-      : ImGuiDialog(drawer), config_path_(std::move(config_path)) {}
+  explicit SettingsDialog(rex::ui::IUISystem& ui) : ui_(&ui) {}
+
+  // The pads read neutral for the title while the panel is up (the UI system holds the block for an overlay that says so).
+  bool WantsExclusiveInput() const override { return true; }
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const std::string close_key = larecomp::cvar::GetFlagByName("bind_mcla_settings");
+    g_last_draw_ms.store(NowMs(), std::memory_order_relaxed);
+    const std::string close_key = BindText("mcla_settings", "F4");
     const Prompt prompts[] = {
         {"SAVE", "CTRL+S", kPromptAccept},
-        {"CLOSE", close_key.empty() ? "F4" : close_key.c_str(), kPromptBack},
+        {"CLOSE", close_key.c_str(), kPromptBack},
     };
 
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
@@ -206,7 +217,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     if (clicked == 0 ||
         (!capturing && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))) {
       // Merged into the file, not rewritten from the registry: see config_save.h.
-      if (larecomp::SaveCvarsToConfig(config_path_)) {
+      if (larecomp::SaveCvarsToConfig(g_config_path)) {
         saved_flash_ = 2.0f;
         // The save skips the debug settings changed in this session (config_save.cpp), so say how
         // many were left out. This panel lists them for everyone, locked or not.
@@ -220,16 +231,15 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     saved_flash_ = std::max(0.0f, saved_flash_ - io.DeltaTime);
     if (clicked == 1 ||
         (!capturing && !typing && ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
-      // ImGuiDialog::Draw deletes a closed dialog itself, so the owner lets go
-      // first, as with the telemetry card.
-      ReleaseSettings();
+      // The overlay stays in the UI system's table; the key shows it again.
+      g_last_draw_ms.store(0, std::memory_order_relaxed);
       Close();
     }
   }
 
  private:
   void DrawContents() {
-    auto& registry = rex::cvar::GetRegistry();
+    auto& registry = larecomp::cvar::GetRegistry();  // every setting (LARecomp and SDK) and command, source up to date
 
     std::set<std::string> categories;
     for (auto& entry : registry) {
@@ -339,7 +349,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   void DrawSettings(std::vector<larecomp::cvar::FlagEntry>& registry, float height) {
     const std::string search = Lower(search_);
     const bool searching = !search.empty();
-    const auto& style = imgui_drawer()->style().settings;
+    const auto& style = ui_->GetStyle().settings;
 
     // Two columns: the name takes what is left, the control a fixed share that
     // ends at the panel's right edge, so a long name is clipped by its cell
@@ -387,12 +397,13 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   }
 
   static ImVec4 LifecycleColor(larecomp::cvar::Lifecycle lc, const rex::ui::SettingsStyle& style) {
+    using rex::ui::ToImVec4;
     switch (lc) {
-      case larecomp::cvar::Lifecycle::kHotReload: return style.lifecycle_live;
-      case larecomp::cvar::Lifecycle::kRequiresRestart: return style.lifecycle_restart;
-      case larecomp::cvar::Lifecycle::kInitOnly: return style.lifecycle_init_only;
+      case larecomp::cvar::Lifecycle::kHotReload: return ToImVec4(style.lifecycle_hot_reload);
+      case larecomp::cvar::Lifecycle::kRequiresRestart: return ToImVec4(style.lifecycle_restart);
+      case larecomp::cvar::Lifecycle::kInitOnly: return ToImVec4(style.lifecycle_init_only);
     }
-    return style.lifecycle_unknown;
+    return ToImVec4(style.lifecycle_unknown);
   }
 
   static void NameCell(const larecomp::cvar::FlagEntry& entry, const std::string& label,
@@ -519,7 +530,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
       }
       if (conflicts > 0) {
         ImGui::SameLine();
-        ImGui::TextColored(style.warning, "(!)");
+        ImGui::TextColored(rex::ui::ToImVec4(style.warning), "(!)");
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("Key '%s' is also bound to %d other action(s)", current.c_str(),
                             conflicts);
@@ -555,7 +566,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_NamedKey_END; ++k) {
       const auto key = static_cast<ImGuiKey>(k);
       if (key == ImGuiKey_Escape || !ImGui::IsKeyPressed(key)) continue;
-      const std::string name = rex::ui::VirtualKeyToString(ImGuiKeyToVirtualKey(key));
+      const std::string name = rex::VirtualKeyToString(ImGuiKeyToVirtualKey(key));
       if (!name.empty()) larecomp::cvar::SetFlagByName(entry.name, name);
       capturing_bind_name_.clear();
       return;
@@ -573,7 +584,7 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
     }
   }
 
-  std::filesystem::path config_path_;
+  rex::ui::IUISystem* ui_;
   std::string selected_;
   std::string capturing_bind_name_;
   char search_[128] = {};
@@ -581,26 +592,20 @@ class SettingsDialog final : public rex::ui::ImGuiDialog {
   int unsaved_debug_ = 0;  // debug settings the last Ctrl+S left out
 };
 
-std::unique_ptr<SettingsDialog> g_settings;
-std::atomic<bool> g_settings_open{false};
-
-void ReleaseSettings() {
-  (void)g_settings.release();
-  g_settings_open.store(false, std::memory_order_relaxed);
-}
-
 }  // namespace
 
-void ToggleSettings(rex::ui::ImGuiDrawer* drawer, const std::filesystem::path& config_path) {
-  if (!drawer) return;
-  if (g_settings) {
-    g_settings.reset();
-  } else {
-    g_settings = std::make_unique<SettingsDialog>(drawer, config_path);
-  }
-  g_settings_open.store(g_settings != nullptr, std::memory_order_relaxed);
+rex::ui::OverlayConfig SettingsOverlayConfig() {
+  return {"mcla_settings", {rex::VirtualKey::kF4},
+          [](rex::ui::IUISystem& ui) -> std::unique_ptr<rex::ui::IDialog> {
+            return std::make_unique<SettingsDialog>(ui);
+          }};
 }
 
-bool SettingsOpen() { return g_settings_open.load(std::memory_order_relaxed); }
+void SetSettingsConfigPath(const std::filesystem::path& config_path) { g_config_path = config_path; }
+
+bool SettingsOpen() {
+  const int64_t drew = g_last_draw_ms.load(std::memory_order_relaxed);
+  return drew != 0 && NowMs() - drew < 300;
+}
 
 } // namespace mcla::ui
