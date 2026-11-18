@@ -46,6 +46,14 @@ REXCVAR_DEFINE_DOUBLE(
     .debug_only()
     .range(0.5, 20.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_selfrefl_rt_gloss, 2.5, "MCLA/GPU",
+    "Diagnostic: the half angle, in degrees, of the cone the ray traced car self-reflection casts its rays over: the paint's gloss. A part of "
+    "your car reflected in another has an edge as soft as the cone is wide at its distance (2.5 degrees: about a hand's width at 1 m); 0 is a perfect "
+    "mirror (one ray, a razor edge). Live.")
+    .debug_only()
+    .range(0.0, 12.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_rt_parts, 7, "MCLA/GPU",
     "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
@@ -257,11 +265,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   }
   const float length = car_rt_refl::ClampedLength(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_length)));
   const uint32_t parts = uint32_t(std::clamp<int32_t>(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_parts), 1, int32_t(car_rt_refl::kPartAll)));
+  const float gloss = car_rt_refl::ClampedGloss(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_gloss)));
 
   Push push = {};
   push.slots[0] = history.slot;
   push.slots[1] = parts;
   push.slots[2] = car_rt_refl::kPrimaryParts;
+  push.slots[3] = info.pattern_phase & 7u;
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -273,6 +283,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.tune[0] = car_rt_refl::kShade;
   push.tune[1] = car_rt_refl::kHiddenWeight;
   push.tune[2] = car_rt_refl::kFadeFrom;
+  push.tune[3] = car_rt_refl::ConeTan(gloss);
 
   pass_timing_->Mark(list, "car rt refl");
   // The history is read by a compute shader here (and by the paint's pixel shaders later): a layout both can read. The image is written
@@ -300,9 +311,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   ++passes_run_;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, parts {}",
+    REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
+                "parts {}, {} rays over a cone of {} degrees{}",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
-                view.instance_count, length, parts);
+                view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
+                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "");
   }
   return true;
 }

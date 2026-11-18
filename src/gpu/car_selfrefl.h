@@ -71,10 +71,10 @@
 // march in the rules test. The paint's own colour in shade stands in for a hidden face in the reflection mode. The constants'
 // b[3] is the share of the points (it was a noise frame before version 4).
 //
-// RAY TRACED (variant version 5, car_rt_refl.h): where the device can trace the car's triangles (car_rt_scene.h) the history pass is followed by a
+// RAY TRACED (variant versions 5 and 6, car_rt_refl.h): where the device can trace the car's triangles (car_rt_scene.h) the history pass is followed by a
 // compute pass that gives every vehicle texel of the history the car's reflection of ITSELF from its triangles (exact: a part the camera does not
-// see, a thin part), in an image of the history's size that the next frame's paint reads at the same place it reads the history, in place of
-// the march. The march stays: where the image has no data (alpha 0: not the player's car, another vehicle, the first frame, no structures)
+// see, a thin part), as the share of a cone of rays that hit (a glossy reflection: soft edges), in an image of the history's size that the next
+// frame's paint reads at the same place it reads the history (version 6: a 3x3 B-spline of texels), in place of the march. The march stays: where the image has no data (alpha 0: not the player's car, another vehicle, the first frame, no structures)
 // the paint does version 4's march, and with mcla_gpu_car_selfrefl_rt off or on a device that cannot trace, version 4's output is the output
 // (the constants' c[3] bit 0 says whether the frame has an image).
 //
@@ -198,7 +198,7 @@ class CarSelfRefl {
   void OnPresent();
 
   // The 112 bytes a draw of the paint variant reads (Scene::UploadCarSelfReflConstants): the game's paint (mode 0) when
-  // there is no history for this frame. `upscaler_running` is not used any more (it moved the ray's noise, which the ray has not).
+  // there is no history for this frame. `upscaler_running` only turns the ray traced pass's cone pattern by the frame (the march has no noise, since version 3).
   void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
 
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "on", or
@@ -277,6 +277,7 @@ class CarSelfRefl {
   PassTiming* pass_timing_ = nullptr;
   CarDump* dump_ = nullptr;
   CarRtRefl* rt_ = nullptr;
+  bool upscaler_running_ = false;  // FillConstants' flag of the frame's last paint draw (its draws come before the trigger)
   bool ready_ = false;            // the shaders exist
   bool shaders_failed_ = false;   // they could not be made: not tried again
   bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)

@@ -16,6 +16,8 @@
 //                                     nothing from 0.6 of it)
 //   mcla_gpu_car_selfrefl_rt_parts    a debug override of the parts the reflection ray hits: a mask of car_rt_common.hlsli's
 //                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver; 7 by default)
+//   mcla_gpu_car_selfrefl_rt_gloss    a debug override of the half angle, in degrees, of the cone the rays are spread over (2.5 by default; 0 = a
+//                                     perfect mirror, one ray: the first version's razor edge, for a picture to compare with)
 //   mcla_gpu_car_selfrefl_view = 5    the debug view of this pass's image at the paint's pixel (car_selfrefl.h): purple no image this frame,
 //                                     cyan the image has no data there (the march ran), green the ray hits nothing of the car, yellow a hit
 //                                     on a part the camera sees, orange a hit on a part it does not (the fallback colour), brighter the
@@ -24,44 +26,62 @@
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a
 // vehicle's pixel casts a primary ray from the camera against the car's opaque parts in a narrow window around the pixel's distance: a hit
-// there is the player's car at that pixel, with its exact point and its mesh normal. From it the reflection ray goes against body, glass
-// and tyres; its hit is taken into the same frame's history image, where the colour of the part is if the camera sees it (the texels around
-// the hit show a surface at its distance), else a stand-in (the pixel's own colour in shade, half the weight: car_rt_refl_rules.h says why).
+// there is the player's car at that pixel, with its exact point and its mesh normal. From it a CONE of rays goes against body, glass
+// and tyres (car_rt_refl_rules.h: 4 rays over a cone of mcla_gpu_car_selfrefl_rt_gloss degrees, a pattern turned by a different angle at each
+// texel and, with a temporal upscaler, each frame, so that the weight of a texel is the share of the cone a part covers: the edge of a
+// reflected part is as soft as the cone is wide where it is, sharp near and soft far, like a glossy paint's). Each hit is taken into the
+// same frame's history image, where the colour of the part is if the camera sees it (the texels around the hit show a surface at its
+// distance), else a stand-in (the pixel's own surface's mean colour in shade, nearly the whole weight: car_rt_refl_rules.h says why). A
+// ray that hits the panel it left (it ran under its own triangle's plane: the grazing self-hit) counts as a miss.
 // The output image is the history's size (R16G16B16A16_FLOAT, rgb colour, alpha the code and the weight: car_rt_refl_rules.h) and is for
-// the NEXT frame's paint draws, as the history is: the paint variant (version 5) reads it at the shaded point's place in the history, with
-// the history's own agreement test, in place of the march; where it has no data there (alpha 0: not the player's car by the triangles,
-// another vehicle, a pixel whose primary ray found no surface at that distance) the march answers as before.
+// the NEXT frame's paint draws, as the history is: the paint variant (version 6) reads it at the shaded point's place in the history with a
+// 3x3 quadratic B-spline of the texels that are the paint's own surface (the history's agreement test), in place of the march; where it has no
+// data there (alpha 0: not the player's car by the triangles, another vehicle, a pixel whose primary ray found no surface at that distance)
+// the march answers as before.
+//
+// RESOLUTION (decided with numbers): the image stays at the history's size (half of the picture at 4K: 1920x1080), not the picture's. A
+// 4K picture has about 215k vehicle texels at half size and 860k at full: with a primary ray and a cone of 4 that is 1.1 M against 4.3 M rays
+// (the second would cost about 1 to 1.6 ms, the first 0.25 to 0.45, see COST), and the image 66 MiB instead of 16. The cone already gives every
+// texel four samples of the reflection, one for each picture pixel of the 2x2 block it stands for, so the ray density per pixel is the first
+// version's at full size; the blocks the first version showed were its single binary ray per texel (a hit or a miss: an edge one
+// texel wide, 2 pixels at 4K, stepping at every texel), which the cone's weight ramp (a hand's width wide at 1 m) and the paint's smooth 3x3
+// reconstruction (no corner at a texel's edge) take away. The history's colour is not mipped: with the cone's four rays each reading the
+// 2x2 footprint of its own hit, the colour of the cone is the mean over four points spread across it (a footprint growing with the hit's distance
+// times the cone's angle, by supersampling), and the paint's 3x3 averages the texels' different turns of the pattern.
 //
 // TIMING: the car is drawn before the world, so its own paint cannot see the frame's triangles; the pass runs at the trigger (every car
 // draw of the frame is in) and its image is used by the next frame, exactly as the history is, with the vehicle's motion and the
 // camera's reprojected in the paint's matrix. CarRtScene must have built this frame's top level on the list BEFORE this pass (it is
 // asked every frame this is on: Request).
 //
-// COST (an estimate, not measured: CHECK on the first run): the pass reads the history image once for every texel and writes the output
-// image once (2.1 M texels at 4K with the half-size image: about 0.03 ms), and the two rays of a car texel are two short traversals of a
-// tree of about 200 instances (a few tenths of a millisecond at most for the 0.1 to 0.15 of the picture a car takes, on an RTX class
-// card). It is on top of the history pass. Memory: one more image of the history's size (8 bytes a texel: 16 MiB at 1080p, 16 MiB at
-// 4K with half-size history, 63 MiB at 4K with the full size) while the effect is on; it goes back after 2 s without it, with the
-// history.
+// COST (an estimate, not measured: CHECK on the first run, the pass is timed as "car rt refl" by PassTiming): the pass reads the history
+// image once for every texel and writes the output image once (2.1 M texels at 4K with the half-size image: about 0.03 ms); the vehicle's texels
+// (about 215k of them at 4K in a chase view, a tenth) trace a primary ray and 2 to 4 cone rays (2 where the outer pair finds nothing: the
+// roof, the bonnet, the sides, most of the car; 4 where a part is near), so 0.65 to 1.1 M rays of at most 4 m against a tree of 25 instances,
+// at an assumed 3 to 5 G rays/s for rays this coherent and this short on an RTX 5080 class card (inline ray queries from compute, no shader
+// reordering): 0.15 to 0.35 ms, plus about 25 history reads a texel for the hits' colours and the surface mean (5 M loads, a tenth of a
+// millisecond at most) = 0.25 to 0.45 ms. It is on top of the history pass. Memory: one more image of the history's size (8 bytes a texel: 16 MiB
+// at 4K with half-size history) while the effect is on; it goes back after 2 s without it, with the history.
 //
-// CHECK (nothing here has run; the first run looks at these, view 5 and the log's "[car rt refl]" lines first):
-//   1. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader header
-//      (car_rt_refl_cs.hlsl.dxil.h, g_car_rt_refl_cs_dxil) that larecomp_gpu_host_shader_rt makes; the Scene calls CarRtScene's trigger entry BEFORE
-//      car_refl_->OnResolve (else View().valid is false at this pass and the march runs: the log says "no acceleration structures"); the top
-//      level is readable by a compute shader after its build (a UAV barrier: View().valid says it is built on this list).
-//   2. the view-space axes of the instances against hlsl/ao_common.hlsli AoViewPos (the primary ray finds the car's pixel at the history's
-//      distance only if they agree: view 5 is cyan over the whole car when it does not, and the log's census shows "frames wanted but without
-//      structures" at 0).
-//   3. the shading-normal problem: the reflection ray leaves along reflect(view, mesh normal) and the mesh normal can differ from the triangle's
-//      plane by more than the angle the ray leaves the surface at (a large triangle with smooth normals, a grazing view), so the ray runs under
-//      its own triangle and "hits" the panel it left. It shows as the paint reflecting its own colour on a flat or gently curved panel at grazing
-//      angles (view 5: yellow patches on a hood that reflects nothing). The fix is to take the triangle's own normal from two more primary rays
-//      (the three points on one primitive) and treat a ray under it as a miss; not done: the offset along the normal (4 mm + 2 mm a metre) is
-//      all there is. Measure first.
-//   4. the units of the history's colour against the paint's (the exponent bias gain, as version 4's CHECK 1), the weight of a hidden hit (0.5)
-//      and its colour (the pixel's own times 0.4), the reflection ray's reach (4 m; mcla_gpu_car_selfrefl_rt_length) and the parts it hits
-//      (mcla_gpu_car_selfrefl_rt_parts; glass in by default).
-//   5. the cost (the pass at 4K with the half-size history, and at 1080p with the full-size one), against the history pass's 0.1 ms.
+// CHECK (the first run looks at these, view 5 and the log's "[car rt refl]" lines first):
+//   1. the cost: the pass at 4K with the half-size history and at 1080p with the full-size one; with mcla_gpu_car_selfrefl_rt_gloss 0 (one ray)
+//      the pass is the first version's cost, so the difference is the cone's.
+//   2. the cone's width: 2.5 degrees is a guess at the paint's gloss. The paint's own constants (DL0.w, the specular power) were not logged for the
+//      player's paint (perf/out/G8A.txt has only other shaders' groups); 2.5 degrees is the blur of the environment map's own sharp read (a 512x256
+//      dual paraboloid: 0.7 degrees a texel at the middle of a hemisphere, 1.4 at its rim, bilinear), so a reflected part is as soft as the sky
+//      in the same paint. Wider (6) is hazier, 0 is the razor.
+//   3. the pattern: its noise should be invisible at 4K (the paint's 3x3 averages 9 texels of 4 rays); where an upscaler runs it turns by the
+//      frame, where none does it stands still. If the grain shows, the cone's rays can go to 8 (car_rt_refl_rules.h kConeRays and the shader's loops).
+//   4. the hidden-hit stand-in (the surface's mean colour x 0.4 at 0.85): the wing's underside on the lid should be a smooth dark band, no patches.
+//      The weight and the shade are push constants (tune.x, tune.y) and constants of the rules header.
+//   5. the self-hit rule (instance and facing, IsSelfHit): a lid or a bonnet that reflects nothing must stay the environment's colour at grazing
+//      angles (view 5: no yellow on a flat panel). The exact test needs the triangles' positions (a fifth binding of CarRtScene's set, t4, and
+//      the geometric normal of the committed triangle): not done, CarRtScene is another branch's.
+//   6. the units of the history's colour against the paint's (the exponent bias gain), the reflection ray's reach (4 m;
+//      mcla_gpu_car_selfrefl_rt_length) and the parts it hits (mcla_gpu_car_selfrefl_rt_parts; glass in by default).
+//   7. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader header
+//      (car_rt_refl_cs.hlsl.dxil.h, g_car_rt_refl_cs_dxil) that larecomp_gpu_host_shader_rt makes: the first game run linked them (the
+//      census counted ray traced passes), so this is for a new merge only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipeline is made ahead on the host builder
 // thread where the effect is on at the start (host_precache.h), and in the background where it is switched on later: the pass is not
@@ -116,6 +136,8 @@ class CarRtRefl {
     double tan_x = 0.0;             // tan of half the horizontal and vertical field of view the history was linearised with
     double tan_y = 0.0;             //   (1 / |P00| and 1 / |P11| of the previous frame's projection, as the AO takes them)
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
+    bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
+    uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
   };
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
@@ -134,10 +156,10 @@ class CarRtRefl {
  private:
   // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 64 bytes.
   struct Push {
-    uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, unused
+    uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, the cone pattern's phase
     float image[4];     // the image's size, the picture's size
     float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length
-    float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, unused
+    float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
   };
   static_assert(sizeof(Push) == 64);
 

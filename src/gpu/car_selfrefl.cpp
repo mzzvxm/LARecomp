@@ -632,6 +632,8 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.tan_x = 1.0 / std::max(std::fabs(p.m[0][0]), 1e-9);
     info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
     info.frame = frame_;
+    info.upscaler = upscaler_running_;
+    info.pattern_phase = upscaler_running_ ? uint32_t(frame_ & 7u) : 0u;
     rt_->OnHistory(list, info);
   }
   return true;
@@ -644,6 +646,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
 void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
                                 car_selfrefl::CarSelfReflConstants* out) {
   *out = car_selfrefl::OffConstants();
+  upscaler_running_ = upscaler_running;  // the ray traced pass's pattern turns with the frame while an upscaler works (car_rt_refl.h)
   ++paint_draws_;
   ++frame_paint_draws_;
   const bool one_view = play_view_ != pause_view_;
@@ -689,7 +692,6 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
                   kPrefix, menu_world::Name(trigger_world_), id);
     }
   }
-  (void)upscaler_running;  // the ray has no per-pixel noise any more (variant version 3): nothing moves with the frame
   // The ray traced image of the same history, if the pass made one (car_rt_refl.h): the variant reads it where it has data.
   const uint32_t rt_slot = rt_ ? rt_->SlotFor(history_frame_) : car_selfrefl::kNoRtImage;
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
