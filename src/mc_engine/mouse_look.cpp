@@ -122,6 +122,8 @@ bool Take(Client client, float& dx, float& dy) {
 
 // Relative mouse mode is on: asked for, and the input system applies it (it does not while the window is behind or the
 // input is not captured: GetPointerModeToApply).
+// CHECK: GetPointerModeToApply is kLocked only while the window is in front and the input captured (IInputSystem::IsActive), so a focus
+// loss ends the lock here without a listener; the first events after a grab (TakeMotion is drained at the change) carry no leftover.
 bool Engaged() {
   if (!g_locked.load(std::memory_order_relaxed)) return false;
   rex::hid::IInputSystem* input = larecomp::sdk::Input();

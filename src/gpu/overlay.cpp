@@ -290,6 +290,9 @@ bool ExpandTexturePixels(const ImTextureData& tex, std::vector<uint8_t>& rgba) {
 
 }  // namespace
 
+// CHECK: ImGui 1.92 grows the font atlas by making a new ImTextureData and sending the old one WantDestroy; both paths end in the channel (a new id,
+// a death). A glyph burst re-sends the whole atlas (ReplaceTexture): if the log shows many "overlay texture" lines or the frame time moves while text
+// is typed, send the update rectangles instead (copy them into the existing texture between two barriers).
 void OverlayCapture::ServeTextures(ImDrawData& draw_data) {
   ++pass_;
   if (draw_data.Textures) {

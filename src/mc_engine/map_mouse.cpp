@@ -268,6 +268,7 @@ void OnInput(rex::InputEvent& e) {
     g_mouse_xy.store(packed, std::memory_order_relaxed);
     g_mouse_seq.fetch_add(1, std::memory_order_relaxed);
     if (e.type == Type::kWheel) {
+        // CHECK: scroll_y is positive away from the player (wheel up), as MouseEvent::scroll_y was: the map zooms in on a wheel turned up.
         const int32_t units = int32_t(std::lround(e.scroll_y * float(kScrollPerDetent)));
         if (units) g_wheel_accum.fetch_add(units, std::memory_order_relaxed);
     }

@@ -210,6 +210,7 @@ std::vector<uint64_t> PadIds(const std::vector<rex::hid::InputDeviceInfo>& list)
 // v1), -1 when there is none. `id` (when given) gets that pad's handle, left alone when the answer is -1. Valid on the thread that polls the pad.
 // 0.10's ActiveDevice(0) was "the pad that made the last real input"; the list's user 0 is the pad the player holds (a second pad that joins user 0 under
 // hid.shared_pads is listed after it), which is the same pad in every case but the shared one.
+// CHECK: with hid.shared_pads on several pads feed user 0; the first listed one decides the glyphs here (0.10's ActiveDevice(0) was the one used last).
 int PadFamilyFromSdk(uint64_t* id = nullptr) {
   rex::hid::IInputDeviceList* devices = larecomp::sdk::DeviceList();
   if (!devices) return -1;

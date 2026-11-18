@@ -387,6 +387,8 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style) {
   }
 }
 
+// CHECK: the fonts are added in the first Draw, after NewFrame, so a dialog drawn in that very frame (right after the keeper) still uses the default
+// font once; ImGui's FontDefault takes effect from the next frame. The keeper is the first dialog, so only a dialog added before the first frame meets it.
 void EnsureMclaTheme() {
   if (!ImGui::GetCurrentContext()) return;
   // First draw: the fonts. They are added here, with the ImGui context current, because IUISystem::GetFonts hands

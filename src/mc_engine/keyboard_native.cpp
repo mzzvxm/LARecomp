@@ -129,6 +129,7 @@ void OnInput(rex::InputEvent& e) {
         case Type::kKeyDown: {
             const int id = static_cast<int>(e.key);
             if (id <= 0 || id > 254) return;
+            // CHECK: a UI key (F1 .. F11 by default) never reaches the game as a key press, as in 0.10 (the bind handled it first there).
             if (mcla::ui::IsBoundKey(e.key, e.modifiers)) return;
             g_keys.Down(id, e.repeat);
             break;
