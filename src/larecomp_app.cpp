@@ -514,6 +514,7 @@ void LarecompApp::StartOverlays() {
     LARECOMP_APP_ERROR("[ui] the overlays were not added, so no F-key menu works: {}", added.error().GetDescription());
   }
   mcla::ui::StartControllerToasts(ui);  // the connect / disconnect panels (always on the screen's list, drawing nothing between pads)
+  mcla::display::Initialize(ui);        // the DISPLAY MODE rows: follows the fullscreen / resolution settings (0.10 did this in SetupPresentation)
 }
 
 // The window's client size for the ultrawide maths: physical pixels, from the native window (the video mode is the title's, not the window's).

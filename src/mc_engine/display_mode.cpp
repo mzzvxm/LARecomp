@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -17,9 +19,8 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
-#include <rex/graphics/video_mode_util.h>
-#include <rex/ui/window.h>
 #include <rex/ui/ui_system.h>
+#include <rex/platform/native_window.h>
 
 #include "logging.h"
 
@@ -32,7 +33,7 @@
 #endif
 #include <Windows.h>
 #else
-// The SDK's window is SDL's; see display_mode.h (Linux).
+// The SDK's window is SDL's, and since 0.11 it says which one (rex::NativeWindow::sdl); see display_mode.h (Linux).
 #include <SDL3/SDL.h>
 #endif
 
@@ -44,7 +45,8 @@ namespace {
 constexpr uint32_t kMinWidth = 1280;
 constexpr uint32_t kMinHeight = 720;
 
-std::atomic<rex::ui::Window*> g_window{nullptr};
+// The UI system, set once in Initialize: rexglue 0.11 has no Window object to hold (0.10 held a rex::ui::Window*).
+std::atomic<rex::ui::IUISystem*> g_ui{nullptr};
 // Set once, on the UI thread, with the window: the HWND on Windows, the SDL_Window* elsewhere (null
 // when it was not found).
 std::atomic<void*> g_native{nullptr};
@@ -66,6 +68,66 @@ constexpr uint32_t kRetryMs = 100;
 #endif
 
 bool Flag(const char* name) { return larecomp::cvar::GetFlagByName(name) == "true"; }
+
+// The window is what the UI system holds: its fullscreen state is the setting it applies (ui.fullscreen), its work goes to the UI thread
+// through PostTask, and its native handles come from GetNativeWindow.
+bool WindowIsFullscreen() { return Flag("fullscreen"); }
+
+// Queues a function for the UI thread. False when there is no UI system (yet, or any more).
+bool PostToUi(rex::MoveOnlyFunction<void()> fn) {
+  rex::ui::IUISystem* ui = g_ui.load();
+  if (!ui) return false;
+  ui->PostTask(std::move(fn));
+  return true;
+}
+
+// A resolution preset as the UI system reads ui.resolution ("1920x1080", "1080p", "4k": spaces, underscores, hyphens and case ignored). The
+// SDK's TryParseResolutionPreset (rex::graphics::video_mode_util in 0.10) is private since 0.11 (src/ui/resolution_preset.h; Xenia, Ben Vanik,
+// BSD-3-Clause), so this is a copy.
+bool TryParsePositiveInt32(std::string_view value, int32_t& out) {
+  if (value.empty()) return false;
+  int32_t parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc() || end != value.data() + value.size() || parsed <= 0) return false;
+  out = parsed;
+  return true;
+}
+
+bool TryParseResolutionPreset(std::string_view text, int32_t& width_out, int32_t& height_out) {
+  std::string normalized;
+  for (char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) || c == '_' || c == '-') continue;
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  if (normalized.empty()) return false;
+  const size_t x = normalized.find('x');
+  if (x != std::string::npos && x > 0 && x + 1 < normalized.size()) {
+    int32_t w = 0, h = 0;
+    if (!TryParsePositiveInt32(std::string_view(normalized).substr(0, x), w) ||
+        !TryParsePositiveInt32(std::string_view(normalized).substr(x + 1), h)) {
+      return false;
+    }
+    width_out = w;
+    height_out = h;
+    return true;
+  }
+  static const struct { const char* name; int32_t w, h; } kPresets[] = {
+      {"480p", 640, 480},   {"540p", 960, 540},   {"720p", 1280, 720},   {"900p", 1600, 900},
+      {"1080p", 1920, 1080}, {"1440p", 2560, 1440}, {"1800p", 3200, 1800}, {"2160p", 3840, 2160}, {"4k", 3840, 2160},
+  };
+  for (const auto& p : kPresets) {
+    if (normalized == p.name) {
+      width_out = p.w;
+      height_out = p.h;
+      return true;
+    }
+  }
+  return false;
+}
+
+// What the SDK's window keeps for its state while it is not a window: its configured size, in logical pixels (ui.window_width / ui.window_height,
+// the video mode's size when those are 0), times the window's scale. Defined with the platform parts below.
+double WindowScaleFactor();
 
 void ScheduleApply(int pass);
 
@@ -109,7 +171,7 @@ Mode WantedMode() {
 bool ParseSize(std::string_view text, Size* out) {
   int32_t width = 0;
   int32_t height = 0;
-  if (!rex::graphics::video_mode_util::TryParseResolutionPreset(text, width, height)) return false;
+  if (!TryParseResolutionPreset(text, width, height)) return false;
   if (width <= 0 || height <= 0) return false;
   out->width = uint32_t(width);
   out->height = uint32_t(height);
@@ -153,14 +215,22 @@ Size WantedWindowedSize() {
   // No size asked: the window's own, in physical pixels, for the row to show what is true. Its client
   // area while it is a window; while it is not (fullscreen on the way to a window), the size the SDK
   // keeps for the window state (its logical size, at the window's DPI).
-  rex::ui::Window* window = g_window.load();
-  if (window && !window->IsFullscreen()) {
+  rex::ui::IUISystem* ui = g_ui.load();
+  if (ui && !WindowIsFullscreen()) {
     const Size own = OutputSize();
     if (!own.empty()) return own;
   }
-  if (window) {
-    const Size kept = {window->SizeToPhysical(window->GetDesiredLogicalWidth()),
-                       window->SizeToPhysical(window->GetDesiredLogicalHeight())};
+  if (ui) {
+    rex::ui::UISettings& settings = ui->GetSettings();
+    int32_t width = settings.window_width.Get();
+    int32_t height = settings.window_height.Get();
+    if (width <= 0 || height <= 0) {
+      const rex::VideoMode mode = ui->GetVideoMode();
+      width = int32_t(mode.width);
+      height = int32_t(mode.height);
+    }
+    const double scale = WindowScaleFactor();
+    const Size kept = {uint32_t(std::lround(width * scale)), uint32_t(std::lround(height * scale))};
     if (!kept.empty()) return kept;
   }
   return {kMinWidth, kMinHeight};
@@ -518,8 +588,7 @@ bool RestoreDesktopMode(const char* why, bool fit_window) {
     return true;
   }
   MC_INFO("[display] the display's own mode is back ({})", why);
-  rex::ui::Window* window = g_window.load();
-  if (fit_window && window && window->IsFullscreen()) FitFullscreenWindow(NativeWindow());
+  if (fit_window && g_ui.load() && WindowIsFullscreen()) FitFullscreenWindow(NativeWindow());
   return true;
 }
 
@@ -670,6 +739,13 @@ Size OutputSize() {
   return {uint32_t(rc.right), uint32_t(rc.bottom)};
 }
 
+namespace {
+double WindowScaleFactor() {
+  const HWND hwnd = NativeWindow();
+  return hwnd ? double(WindowDpi(hwnd)) / 96.0 : 1.0;
+}
+}  // namespace
+
 Size DesktopSize() { return CurrentDisplay().book.desktop(); }
 
 std::vector<Size> ExclusiveSizes() { return CurrentDisplay().book.Sizes(); }
@@ -705,19 +781,27 @@ namespace {
 
 // UI thread: makes the window what the settings say. Idempotent; reads the settings when it runs, so a
 // write that comes while one is queued is seen by it, and one that comes after it is queued again.
+// The mode the window was last put in (the UI system applies the fullscreen settings by itself, so this file only notes the
+// change, to keep the second and third look that finish what SDL does with the events that follow). It opens borderless for a saved
+// `fullscreen`, as the SDK made it.
+std::atomic<int> g_last_mode{-1};
+
+bool NoteMode(Mode now) {
+  int before = g_last_mode.load();
+  if (before < 0) before = WindowIsFullscreen() ? int(Mode::kBorderless) : int(Mode::kWindowed);
+  g_last_mode.store(int(now));
+  return before != int(now);
+}
+
 void ApplyNow(int pass) {
-  rex::ui::Window* window = g_window.load();
   const HWND hwnd = NativeWindow();
-  if (!window || !hwnd) return;
+  if (!g_ui.load() || !hwnd) return;
   bool changed = false;
   bool not_yet = false;
   switch (WantedMode()) {
     case Mode::kWindowed: {
       RestoreDesktopMode("the window is a window", false);
-      if (window->IsFullscreen()) {
-        window->SetFullscreen(false);
-        changed = true;
-      }
+      changed |= NoteMode(Mode::kWindowed);
       // The size comes from `resolution` alone (see AskedWindowedSize); with none the window keeps
       // the size it has, which SDL also puts back when the window leaves fullscreen.
       Size asked;
@@ -730,16 +814,11 @@ void ApplyNow(int pass) {
     }
     case Mode::kBorderless:
       changed |= RestoreDesktopMode("BORDERLESS", false);
-      if (!window->IsFullscreen()) {
-        window->SetFullscreen(true);
-        changed = true;
-      }
+      changed |= NoteMode(Mode::kBorderless);
       break;
     case Mode::kExclusive:
-      if (!window->IsFullscreen()) {
-        window->SetFullscreen(true);
-        changed = true;
-      }
+      // The window is borderless (the UI system's ui.fullscreen); the display's own mode switch is ours.
+      changed |= NoteMode(Mode::kExclusive);
       changed |= EnterDesktopMode(hwnd, WantedExclusiveSize());
       break;
   }
@@ -802,21 +881,11 @@ Size PixelSizeOf(SDL_Window* sdl) {
   return {uint32_t(std::max(width, 0)), uint32_t(std::max(height, 0))};
 }
 
-// The SDK's window among SDL's. GetNativeWindowHandle is null off Windows and the SDK has no accessor,
-// so (as the renderer does for Plume, gpu/native_window.cpp) it is the one SDL lists; the title tells
-// it from a window of another SDL's, which would not be listed at all. Null when none matches.
-SDL_Window* FindSdlWindow(rex::ui::Window* window) {
-  int count = 0;
-  SDL_Window** windows = SDL_GetWindows(&count);
-  if (!windows) return nullptr;
-  SDL_Window* found = nullptr;
-  const std::string& title = window->GetTitle();
-  for (int i = 0; i < count && !found; ++i) {
-    const char* name = SDL_GetWindowTitle(windows[i]);
-    if (name && title == name) found = windows[i];
-  }
-  SDL_free(windows);
-  return found;
+// The SDK's window among SDL's: since 0.11 the UI system says which it is (NativeWindow::sdl), so the title no longer has to
+// tell it from another SDL's window. Null when the window is not open or is not SDL's.
+SDL_Window* FindSdlWindow(rex::ui::IUISystem& ui) {
+  auto native = ui.GetNativeWindow();
+  return native ? static_cast<SDL_Window*>(native->sdl) : nullptr;
 }
 
 // What SDL says about the display the window is on. SDL's video calls belong to the UI thread and the
@@ -866,22 +935,27 @@ void RefreshView() {
 
 // Any thread: the menu asks every frame it is open; SDL is asked again at most once a second.
 void AskForFreshView() {
-  rex::ui::Window* window = g_window.load();
-  if (!window) return;
+  if (!g_ui.load()) return;
   const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
                           .count();
   int64_t last = g_view_asked_ms.load();
   if (now - last < 1000 || !g_view_asked_ms.compare_exchange_strong(last, now)) return;
-  window->app_context().CallInUIThreadDeferred([]() { RefreshView(); });
+  PostToUi([]() { RefreshView(); });
 }
 
 }  // namespace
 
 Size OutputSize() {
-  rex::ui::Window* window = g_window.load();
-  return window ? Size{window->GetActualPhysicalWidth(), window->GetActualPhysicalHeight()} : Size{};
+  return g_ui.load() && SdlWindow() ? PixelSizeOf(SdlWindow()) : Size{};
 }
+
+namespace {
+double WindowScaleFactor() {
+  SDL_Window* sdl = SdlWindow();
+  return sdl ? double(PixelDensity(sdl)) : 1.0;
+}
+}  // namespace
 
 Size DesktopSize() {
   AskForFreshView();
@@ -973,23 +1047,23 @@ bool ResizeWindow(SDL_Window* sdl, Size want, bool last_look) {
   return true;
 }
 
+// The mode the window was last put in: the UI system applies the fullscreen setting by itself, so this only notes the change (to look again).
+std::atomic<int> g_last_mode{-1};
+
 void ApplyNow(int pass) {
-  rex::ui::Window* window = g_window.load();
-  if (!window) return;
+  if (!g_ui.load()) return;
   bool again = false;
+  const int wanted = WantedMode() == Mode::kWindowed ? 0 : 1;
+  const int before = g_last_mode.exchange(wanted);
+  const int opened_as = WindowIsFullscreen() ? 1 : 0;
   if (WantedMode() == Mode::kWindowed) {
-    if (window->IsFullscreen()) {
-      window->SetFullscreen(false);
-      again = true;
-    }
+    if ((before < 0 ? opened_as : before) != wanted) again = true;
     // The size comes from `resolution` alone (see AskedWindowedSize). Not asked of a compositor that
     // sets it (gamescope), nor when the SDK's SDL window was not found.
     Size asked;
     if (LiveResize() && AskedWindowedSize(&asked)) {
       again |= ResizeWindow(SdlWindow(), asked, pass >= kLastPass);
     }
-  } else if (!window->IsFullscreen()) {
-    window->SetFullscreen(true);
   }
   if (again && pass < kLastPass) ScheduleApply(pass + 1);
 }
@@ -997,8 +1071,7 @@ void ApplyNow(int pass) {
 // The timer's thread only hands the pass to the UI thread, as the SDK's cursor auto-hide timer does.
 Uint32 SDLCALL RetryTimerCallback(void* userdata, SDL_TimerID, Uint32) {
   const int pass = int(reinterpret_cast<intptr_t>(userdata));
-  rex::ui::Window* window = g_window.load();
-  const bool queued = window && window->app_context().CallInUIThreadDeferred([pass]() {
+  const bool queued = PostToUi([pass]() {
     g_pending.store(false);
     ApplyNow(pass);
   });
@@ -1013,8 +1086,8 @@ bool StartRetryTimer(int pass) {
 }
 
 // UI thread, from Initialize: finds the SDK's SDL window and what SDL says about its display.
-void InitSdl(rex::ui::Window* window) {
-  SDL_Window* sdl = FindSdlWindow(window);
+void InitSdl(rex::ui::IUISystem& ui) {
+  SDL_Window* sdl = FindSdlWindow(ui);
   g_native.store(sdl, std::memory_order_release);
   // gamescope puts its own Wayland socket's name in this variable for the clients it starts (Steam in
   // Game Mode, or a game run under it by hand); it sets the size of a client's window and answers
@@ -1025,9 +1098,8 @@ void InitSdl(rex::ui::Window* window) {
   const char* gamescope = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
   g_size_fixed.store(gamescope && *gamescope);
   if (!sdl) {
-    MC_WARN("[display] the SDK's SDL window was not found (none of SDL_GetWindows' is titled \"{}\"): "
-            "the window's size is read at the next start",
-            window->GetTitle());
+    MC_WARN("[display] the UI system's window is not an SDL window (NativeWindow::sdl is null): "
+            "the window's size is read at the next start");
     return;
   }
   RefreshView();
@@ -1053,13 +1125,12 @@ void OnFocusChanged(bool) {}
 namespace {
 
 void ScheduleApply(int pass) {
-  rex::ui::Window* window = g_window.load();
-  if (!window) return;
+  if (!g_ui.load()) return;
   if (g_pending.exchange(true)) return;  // one is queued: it reads the settings when it runs
 #if !defined(_WIN32)
   if (pass > 0 && StartRetryTimer(pass)) return;
 #endif
-  const bool queued = window->app_context().CallInUIThreadDeferred([pass]() {
+  const bool queued = PostToUi([pass]() {
     g_pending.store(false);
     ApplyNow(pass);
   });
@@ -1068,20 +1139,20 @@ void ScheduleApply(int pass) {
 
 }  // namespace
 
-void Initialize(rex::ui::Window* window) {
-  if (!window) return;
-  g_window.store(window);
+void Initialize(rex::ui::IUISystem& ui) {
+  g_ui.store(&ui);
 #if defined(_WIN32)
-  g_native.store(window->GetNativeWindowHandle(), std::memory_order_release);
+  if (auto native = ui.GetNativeWindow(); native && native->type == rex::NativeWindow::Type::kWin32) {
+    g_native.store(native->window, std::memory_order_release);
+  }
 #else
-  InitSdl(window);
+  InitSdl(ui);
 #endif
-  // The SDK's callback for `fullscreen` (and the app's before this) calls Window::SetFullscreen on the
-  // thread that set the setting, with the settings registry locked: the pause menu's thread then
-  // waited for the UI thread, which waited for that lock, and the game hung for good. These only
-  // queue the change for the UI thread, where it runs once the lock is released; the SDK registers
-  // no other callback for the name.
-  larecomp::cvar::UnregisterChangeCallbacks("fullscreen");
+  // 0.10: the SDK's callback for `fullscreen` called Window::SetFullscreen on the thread that set the setting, with the
+  // settings registry locked, and the pause menu's thread then waited for the UI thread, which waited for that lock (the
+  // game hung for good): the app took the callback over and only queued the change. 0.11's UI system does the same itself
+  // (its handlers PostTask to the UI thread), so these are only ours: they queue a look at the settings, on the UI thread,
+  // once the registry is unlocked.
   larecomp::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
   larecomp::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
   larecomp::cvar::RegisterChangeCallback("resolution", SettingChanged);
