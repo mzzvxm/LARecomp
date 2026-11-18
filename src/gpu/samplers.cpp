@@ -24,7 +24,7 @@
 
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 namespace {
 

@@ -28,7 +28,7 @@
 
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 namespace xreg = rex::xenos::reg;
 
 inline constexpr uint32_t kColorTargetCount = 4;

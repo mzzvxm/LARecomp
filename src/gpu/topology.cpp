@@ -13,7 +13,7 @@ namespace mcla::gpu {
 
 namespace {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 using plume::RenderPrimitiveTopology;
 
 // The 0-based host pattern of one guest primitive unit: `unit` guest vertices

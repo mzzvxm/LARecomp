@@ -31,7 +31,7 @@
 
 namespace mcla::gpu::texture_decode {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 namespace tu = rex::graphics::texture_util;
 
 namespace {

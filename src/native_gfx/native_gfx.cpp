@@ -1329,7 +1329,7 @@ void StoreByte4Surface(uint8_t* guest, const uint8_t* texels, uint32_t width, ui
 uint32_t WriteDerivedMipLevels(const TextureFetch& fetch, const std::vector<uint8_t>& level0,
                                const Byte4Layout& layout, const uint8_t src_index[4]) {
   namespace tu = rex::graphics::texture_util;
-  namespace xenos = rex::graphics::xenos;
+  namespace xenos = rex::xenos;
   const tu::TextureGuestLayout guest_layout = tu::GetGuestTextureLayout(
       xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
       /*depth_or_array_size=*/1u, fetch.tiled, xenos::TextureFormat(fetch.format),
@@ -1591,7 +1591,7 @@ void DumpLockedMippedTextureForDiag(const uint8_t* base, uint32_t resource_va, u
     addr = (((raw >> 20) + 512u) & 0x1000u) + (raw & 0x1FFFFFFFu);
   } else {
     namespace tu = rex::graphics::texture_util;
-    namespace xenos = rex::graphics::xenos;
+    namespace xenos = rex::xenos;
     const tu::TextureGuestLayout gl = tu::GetGuestTextureLayout(
         xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height, 1u,
         fetch.tiled, xenos::TextureFormat(fetch.format), fetch.packed_mips, true,

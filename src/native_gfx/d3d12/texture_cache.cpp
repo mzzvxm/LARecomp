@@ -708,8 +708,8 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       (fetch.mip_address != 0 && fetch.mip_max_level != 0) ? fetch.mip_max_level : 0u;
   const rex::graphics::texture_util::TextureGuestLayout guest_layout =
       rex::graphics::texture_util::GetGuestTextureLayout(
-          rex::graphics::xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
-          /*depth_or_array_size=*/1u, fetch.tiled, rex::graphics::xenos::TextureFormat(fetch.format),
+          rex::xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
+          /*depth_or_array_size=*/1u, fetch.tiled, rex::xenos::TextureFormat(fetch.format),
           fetch.packed_mips, /*has_base=*/true, guest_max_level);
 
   // Per-level source description, built once so the resource can be created
@@ -767,7 +767,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
         // uses for its own packed copies (D3D12TextureCache, GetPackedMipOffset).
         uint32_t off_z = 0;
         rex::graphics::texture_util::GetPackedMipOffset(
-            fetch.width, fetch.height, 1u, rex::graphics::xenos::TextureFormat(fetch.format), level,
+            fetch.width, fetch.height, 1u, rex::xenos::TextureFormat(fetch.format), level,
             p.off_x_blocks, p.off_y_blocks, off_z);
       }
       p.guest_pitch = lv.row_pitch_bytes ? lv.row_pitch_bytes

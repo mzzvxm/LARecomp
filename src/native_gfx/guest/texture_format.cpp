@@ -22,7 +22,7 @@
 namespace tu = rex::graphics::texture_util;
 namespace tc = rex::graphics::texture_conversion;
 namespace rg = rex::graphics;
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 namespace mcla::native_gfx {
 

@@ -9,7 +9,7 @@
 
 namespace mcla {
 
-namespace xenos = rex::graphics::xenos;
+namespace xenos = rex::xenos;
 
 // Content hash of a guest texture. Must stay XXH3-64 over the raw guest bytes:
 // it is what names the dump file, and what the SDK's replacement lookup keys

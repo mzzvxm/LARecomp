@@ -101,7 +101,7 @@ namespace mcla::gpu {
 
 namespace {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 constexpr uint16_t kPitch = 640;
 constexpr uint8_t kSamples = 4;
