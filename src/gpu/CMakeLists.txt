@@ -21,6 +21,7 @@ add_library(larecomp_gpu OBJECT
     car_rt_scene.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
+    car_rt_refl.cpp
     capture_readback.cpp
     constants.cpp
     cut_request.cpp
@@ -588,6 +589,9 @@ larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
 # that shows its picture over the scene.
 larecomp_gpu_host_shader_rt(car_rt_check_cs cs_6_5)
 larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
+# The ray traced half (car_rt_refl.h): one compute pass over the history image with inline ray queries against the car's structures
+# (car_rt_scene.h). Shader Model 6.5, DXIL only (larecomp_gpu_host_shader_rt: feat/car-rt-scene's function): Vulkan has no ray queries yet.
+larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

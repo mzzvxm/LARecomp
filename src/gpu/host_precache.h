@@ -93,6 +93,7 @@ class HostPrecache {
     kSunShafts = 6,         // SunShafts: its pass and variant (shafts.h Variant)
     kCarSelfRefl = 12,      // CarSelfRefl: its history pass (car_selfrefl.h Pass); the numbers between are left for other owners
     kCarShadowMap = 13,     // CarShadowMap: its matrix pass and the depth-only pipelines of the car's vertex formats (car_shadow_map.h VariantKey)
+    kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;
