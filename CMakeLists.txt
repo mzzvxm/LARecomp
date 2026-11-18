@@ -452,6 +452,13 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
+# What LARecomp does with each option of the command line (src/settings/cli_rules.h: which options the SDK keeps, which setting
+# belongs to a driver that is not loaded this run, what a name nothing knows costs) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_cli_rules_test, then run <build dir>/larecomp_cli_rules_test (exit 0 = passed).
+add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
+    src/settings/cli_rules_test.cpp)
+target_include_directories(larecomp_cli_rules_test PRIVATE src)
+
 # The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
 # (src/mc_engine/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
 #   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).
