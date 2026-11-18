@@ -14,31 +14,34 @@
 #include <filesystem>
 #include <functional>
 
-#include <rex/app/title_app.h>
 #include "app_paths.h"
 
 namespace rex::ui {
-class ImGuiDrawer;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp {
 
 // Decides whether the player has to choose, from what is on disk and in
-// larecomp.toml. Call it from SetupEnvironment(), right after the base has read
-// the config and before the base's own name prompt can look at user_name: when
-// a choice is due and user_name is empty, it is seeded with the newest save so
-// that prompt never opens.
+// larecomp.toml. Call it from LarecompApp::OnInit, after the SDK has applied
+// larecomp.toml, the environment and the command line, and before LaunchTitle
+// (the SDK's own name prompt, which saves larecomp.toml in its own scoped
+// format, would open there whenever kernel.user_name is empty): when a choice is
+// due and user_name is empty, it is seeded with the newest save so that prompt
+// never opens, and a first run with no save and no name is asked by the picker.
 void PrepareProfileChoice(const std::filesystem::path& user_data_root);
 
 // Shows the picker and returns at once. True means it is up and `on_finished`
 // will run (on the UI thread, from the dialog's own draw) once the player has
 // chosen; false means there was nothing to ask and `on_finished` is never
-// called. Call it from OnFinalizePaths() before anything that reads the profile
-// name (the save check, the content manager).
+// called. Call it before anything that reads the profile name (the save check,
+// the content manager).
 //
-// Asynchronous like the other first-launch dialogs: OnFinalizePaths returns
-// std::nullopt while it is up and resumes from `on_finished`.
-bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
+// Asynchronous like the other first-launch dialogs: the app's setup loop
+// (LarecompApp::RunSetupFrame) pumps the UI system and goes on from `on_finished`.
+// `paths.config_file` is where the two lines of the choice are written (flat
+// keys: user_name and profile_auto_select).
+bool ShowProfilePicker(rex::ui::IUISystem& ui, const Paths& paths,
                        std::function<void()> on_finished);
 
 }  // namespace larecomp

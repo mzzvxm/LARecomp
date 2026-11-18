@@ -1,155 +1,165 @@
 #pragma once
 
-// Audio output that never fails to open.
+// Audio output that never fails to open, on rexglue 0.11.
 //
-// The game gives up on its whole audio engine when the host cannot open an
-// output device, then dereferences that engine later and crashes. With no
-// usable device (no speakers, a broken driver, an RDP session) the SDL system
-// is swapped for a null output that plays nothing but consumes frames at the
-// hardware's rate, so the guest keeps its timing. --mcla_audio_output=null
-// forces it.
+// The game gives up on its whole audio engine when the host cannot open an output device, then dereferences that engine later and
+// crashes. With no usable device (no speakers, a broken driver, an RDP session) the game must still get its frames consumed at the
+// hardware's rate, so it keeps its timing; --mcla_audio_output=null forces it.
 //
-// The outputs are the game's audio exactly as they are without the trailer
-// toolkit: nothing sits in front of them. Only when a capture-mode take that
-// records sound starts (cinematic/capture_audio.h, mcla_capture_audio) is the
-// capture driver put in front of the first render client's output, by
-// InstallCapture below; it passes every frame on untouched outside the take and
-// takes the mixer over during it to write the take's sound.
+// 0.10: a subclass of the SDK's SDLAudioSystem swapped in a NullOutputDriver (an AudioDriver with its own clock thread that gave each
+// submitted frame back one period later) when the SDL driver failed to open, and carried the trailer toolkit's capture driver.
+// 0.11 splits the job, and most of it is the SDK's now (read from src/apu/audio_system.cpp, AudioSystem::Start):
+//   * the audio system mixes; a driver is only IAudioDriver::OpenDevice(channels, AudioFill) / CloseDevice / IsDeviceLost. When
+//     OpenDevice fails, or there is no driver, the mix runs on a timer thread, one 256-sample frame (5.333 ms at 48 kHz) per period, so
+//     every stream still gets its "frame played" callbacks at the hardware's rate: that IS the null output. It then retries OpenDevice
+//     about once a second (a device plugged in later is picked up), and a device that is lost is closed and reopened the same way.
+//   * what it does NOT do: survive a driver that fails to INITIALIZE. AudioModule::Init returns "no audio driver is available" when
+//     the selected drivers could not start and the app requires audio (TitleApp does), and apu.driver = none is only for an app that
+//     does not (the batch actions of LarecompApp). The SDL3 driver's Initialize fails when SDL_InitSubSystem(SDL_INIT_AUDIO) fails (a
+//     Linux machine with no sound server, for one).
+// So this file is a code module serving ONE audio driver, "larecomp" (apu.driver = larecomp, set by LarecompApp), that wraps the SDK's
+// "sdl3" driver and turns its failures into the SDK's own null path:
+//   * Initialize never fails: if the SDL3 driver cannot start (or is not there) the wrapper has no inner driver and says so once;
+//   * OpenDevice returns the inner driver's error, or an error when there is no inner driver or mcla_audio_output = "null": the SDK
+//     then mixes on its timer. IsDeviceLost / CloseDevice pass through.
+// The inner driver comes from the module that serves "sdl3" (rexapu-sdl3, which LarecompApp::OnModules loads: nothing else asks for
+// it while apu.driver is "larecomp"): its DriverRegistration::create gives a fresh instance that this wrapper owns, initializes with
+// the context it was given and shuts down itself.
+//
+// The trailer toolkit's capture driver (the take's sound, mc_engine/cinematic/capture_audio.cpp) is not carried over: see there.
 
-#include <chrono>
-#include <condition_variable>
-#include <cstdint>
+#include <array>
 #include <memory>
-#include <mutex>
-#include <thread>
+#include <span>
+#include <string_view>
 
 #include <rex/apu/audio_driver.h>
-#include <rex/audio/sdl/sdl_audio_system.h>
-#include "settings/larecomp_settings.h"
+#include <rex/driver.h>
+#include <rex/driver_context.h>
+#include <rex/driver_module.h>
+#include <rex/driver_registration.h>
 #include <rex/logging/log_category.h>
-#include <rex/platform/sync.h>
-#include <rex/kernel/heap.h>
-#include <rex/kernel/function_dispatcher.h>
+#include <rex/module.h>
 
-#include "cinematic/capture_audio.h"
+#include "larecomp_log.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::audio {
 
-// X_STATUS_SUCCESS expands to an unqualified X_STATUS.
-using rex::X_STATUS;
+// The driver's name in apu.driver, and the SDK driver it wraps.
+inline constexpr std::string_view kDriverName = "larecomp";
+inline constexpr std::string_view kInnerDriverName = "sdl3";
+// The module that serves the inner driver; LarecompApp::OnModules adds it to the modules rex::Init loads.
+inline constexpr const char* kInnerModuleName = "rexapu-sdl3";
 
-// XAudio hands out 256-sample frames at 48 kHz: 5.333 ms each.
-inline constexpr std::chrono::nanoseconds kNullFramePeriod{256'000'000'000ll / 48'000};
+namespace detail {
 
-class NullOutputDriver final : public rex::audio::AudioDriver {
+// The factory of the running app, kept by Module::Connect: the wrapper looks the inner driver up at Initialize, when every module has connected.
+inline rex::IInterfaceFactory*& Factory() {
+  static rex::IInterfaceFactory* factory = nullptr;
+  return factory;
+}
+
+inline std::unique_ptr<rex::IDriver> CreateInnerDriver() {
+  rex::IInterfaceFactory* factory = Factory();
+  if (!factory) return nullptr;
+  for (rex::IDriverModule* module : factory->FindAll<rex::IDriverModule>()) {
+    for (const rex::DriverRegistration& registration : module->GetDrivers()) {
+      if (registration.type == rex::DriverType::kAudio && registration.name == kInnerDriverName) {
+        return registration.create();
+      }
+    }
+  }
+  return nullptr;
+}
+
+class OutputDriver final : public rex::apu::IAudioDriver {
  public:
-  NullOutputDriver(rex::kernel::GuestAddressSpace* memory, rex::platform::Semaphore* frame_semaphore)
-      : AudioDriver(memory), frame_semaphore_(frame_semaphore), clock_([this] { Consume(); }) {}
+  std::string_view GetName() const override { return kDriverName; }
 
-  ~NullOutputDriver() override {
-    {
-      std::lock_guard lock(mutex_);
-      stop_ = true;
+  rex::Result<void> Initialize(rex::IDriverContext& context) override {
+    if (larecomp::settings::mcla_audio_output.Get() == "null") {
+      LARECOMP_APP_INFO("[audio] mcla_audio_output = null: the output is silent (the mix runs on its own clock)");
+      return rex::Ok();
     }
-    wake_.notify_one();
-    clock_.join();
+    inner_ = CreateInnerDriver();
+    if (!inner_) {
+      LARECOMP_APP_WARN("[audio] the SDL3 audio driver is not available; continuing without sound");
+      return rex::Ok();
+    }
+    if (auto started = inner_->Initialize(context); !started) {
+      LARECOMP_APP_WARN("[audio] the SDL3 audio driver could not start ({}); continuing without sound", started.error().message);
+      inner_.reset();
+    }
+    return rex::Ok();
   }
 
-  void SubmitFrame(uint32_t) override {
-    {
-      std::lock_guard lock(mutex_);
-      ++queued_;
+  void Shutdown() override {
+    if (inner_) {
+      inner_->Shutdown();
+      inner_.reset();
     }
-    wake_.notify_one();
   }
+
+  // The SDK's audio system calls this again about once a second while it has no device, so a "no output device" line is logged once.
+  rex::Result<rex::u32> OpenDevice(rex::u32 channels, rex::apu::AudioFill fill) override {
+    if (!inner_) {
+      return rex::Err<rex::u32>(rex::ErrorCategory::kPlatform, "silent output (no audio driver, or mcla_audio_output = null)");
+    }
+    auto opened = Inner().OpenDevice(channels, std::move(fill));
+    if (!opened && !warned_) {
+      warned_ = true;
+      LARECOMP_APP_WARN("[audio] no output device could be opened ({}); continuing without sound, and trying again about once a second",
+                        opened.error().message);
+    } else if (opened) {
+      if (warned_) LARECOMP_APP_INFO("[audio] an output device opened");
+      warned_ = false;
+    }
+    return opened;
+  }
+
+  void CloseDevice() override {
+    if (inner_) Inner().CloseDevice();
+  }
+
+  bool IsDeviceLost() const override { return inner_ && static_cast<rex::apu::IAudioDriver*>(inner_.get())->IsDeviceLost(); }
 
  private:
-  // Hands each submitted frame back one period after the previous one, the way
-  // a device that finished playing it would.
-  void Consume() {
-    using Clock = std::chrono::steady_clock;
-    Clock::time_point due{};
-    std::unique_lock lock(mutex_);
-    for (;;) {
-      wake_.wait(lock, [this] { return stop_ || queued_ > 0; });
-      if (stop_) return;
-      const auto now = Clock::now();
-      // After an idle stretch start a fresh schedule instead of releasing a
-      // burst of frames to catch up.
-      due = (due + kNullFramePeriod < now) ? now + kNullFramePeriod : due + kNullFramePeriod;
-      if (wake_.wait_until(lock, due, [this] { return stop_; })) return;
-      --queued_;
-      lock.unlock();
-      frame_semaphore_->Release(1, nullptr);
-      lock.lock();
-    }
-  }
+  rex::apu::IAudioDriver& Inner() { return *static_cast<rex::apu::IAudioDriver*>(inner_.get()); }
 
-  rex::platform::Semaphore* frame_semaphore_;
-  std::mutex mutex_;
-  std::condition_variable wake_;
-  uint32_t queued_ = 0;
-  bool stop_ = false;
-  std::thread clock_;  // last: it reads the members above
+  std::unique_ptr<rex::IDriver> inner_;
+  bool warned_ = false;
 };
 
-class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
-                                 public mc::cinematic::capture_audio::DriverHost {
+inline std::unique_ptr<rex::IDriver> CreateDriver() { return std::make_unique<OutputDriver>(); }
+
+inline constexpr std::array<rex::DriverRegistration, 1> kDrivers = {
+    rex::DriverRegistration{rex::DriverType::kAudio, kDriverName, rex::GraphicsFamily::kNone, &CreateDriver}};
+
+class Module final : public rex::IModule, public rex::IDriverModule {
  public:
-  explicit OutputWithFallback(rex::kernel::FunctionDispatcher* function_dispatcher)
-      : SDLAudioSystem(function_dispatcher) {
-    mc::cinematic::capture_audio::SetHost(this);  // only a pointer: nothing is installed until a take asks
-  }
+  REX_MODULE_SERVES(::rex::IDriverModule)
 
-  ~OutputWithFallback() override { mc::cinematic::capture_audio::SetHost(nullptr); }
-
-  rex::X_STATUS CreateDriver(size_t index, rex::platform::Semaphore* semaphore,
-                             rex::audio::AudioDriver** out_driver) override {
-    if (larecomp::settings::mcla_audio_output.Get() != "null") {
-      if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {
-        return X_STATUS_SUCCESS;
-      }
-      REXLOG_WARN("[audio] no output device could be opened; continuing without sound");
-    }
-    *out_driver = new NullOutputDriver(memory_, semaphore);
-    return X_STATUS_SUCCESS;
+  std::string_view GetName() const override { return "larecomp-audio"; }
+  rex::Result<void> Connect(rex::IInterfaceFactory& factory) override {
+    Factory() = &factory;
+    return rex::Ok();
   }
-
-  // The first take that records sound (capture_audio.cpp Begin): the capture driver goes in front of the real output of the first render
-  // client. One swap of that client's driver pointer under the SDK's global critical region: AudioSystem::SubmitFrame (the mixer's frames,
-  // called by the audio worker's guest callback), UnregisterClient and Restore all use the driver under it, and the worker's client
-  // lookup takes it too, so the worker sees the real output or the wrapper and never a half-made swap; the frame in flight finishes on
-  // the real output first. Game thread; nothing is held but that lock, and only for the swap (the wrapper's own mutex is not taken).
-  bool InstallCapture() override {
-    auto global_lock = global_critical_region_.Acquire();
-    for (size_t i = 0; i < kMaximumClientCount; ++i) {
-      if (clients_[i].in_use && clients_[i].driver &&
-          mc::cinematic::capture_audio::IsCaptureDriver(clients_[i].driver)) {
-        return true;  // already there
-      }
-    }
-    for (size_t i = 0; i < kMaximumClientCount; ++i) {
-      if (!clients_[i].in_use || !clients_[i].driver) continue;
-      clients_[i].driver = mc::cinematic::capture_audio::WrapDriver(
-          memory_, client_semaphores_[i].get(), clients_[i].driver, i);
-      return true;
-    }
-    return false;  // the game has no render client yet
+  void Disconnect() override { Factory() = nullptr; }
+  rex::Result<void> Init() override { return rex::Ok(); }
+  void Shutdown() override {}
+  rex::IInterface* QueryInterface(std::string_view name, rex::u32 version) override {
+    return rex::FindModuleInterface<rex::IDriverModule>(*this, name, version);
   }
-
-  void DestroyDriver(rex::audio::AudioDriver* driver) override {
-    driver = mc::cinematic::capture_audio::Unwrap(driver);  // the output behind the capture driver, when one was put in front
-    if (auto* null_driver = dynamic_cast<NullOutputDriver*>(driver)) {
-      delete null_driver;
-    } else {
-      SDLAudioSystem::DestroyDriver(driver);
-    }
-  }
+  std::span<const rex::DriverRegistration> GetDrivers() const override { return kDrivers; }
 };
 
-inline std::unique_ptr<rex::system::IAudioSystem> CreateAudioSystem(
-    rex::kernel::FunctionDispatcher* function_dispatcher) {
-  return std::make_unique<OutputWithFallback>(function_dispatcher);
+}  // namespace detail
+
+// The module to hand to App::OnRegisterModules. Lives for the whole process.
+inline rex::IModule& Module() {
+  static detail::Module module;
+  return module;
 }
 
 }  // namespace mcla::audio

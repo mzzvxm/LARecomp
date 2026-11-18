@@ -284,17 +284,10 @@ bool RestoreCvarForScene(std::string_view name) {
     }
     hold = it->second;
   }
-  // Still held while it is put back, so a save in between writes the old value, not the scene's.
-  const bool ok = larecomp::cvar::SetFlagByName(name, hold.value);
-  if (ok && hold.source != larecomp::cvar::Source::kRuntime) {
-    // SetFlagByName made the source "run time"; the SDK has no call that sets it back, but the registry entry is plain data.
-    for (larecomp::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-      if (entry.name == name) {
-        entry.source = hold.source;
-        break;
-      }
-    }
-  }
+  // Still held while it is put back, so a save in between writes the old value, not the scene's. The value goes back at the
+  // layer it came from (RestoreValue: the registry only raises a layer, so it is reset first and stored again; the 0.10 code
+  // wrote entry.source of the registry's own vector, which no longer exists).
+  const bool ok = larecomp::cvar::RestoreValue(name, hold.value, hold.source);
   std::lock_guard<std::mutex> lock(g_scene_mutex);
   SceneHolds().erase(key);
   return ok;

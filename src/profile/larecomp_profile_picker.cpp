@@ -23,12 +23,11 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 #include <rex/xam/user_profile.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
+#include "larecomp_dialog.h"
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "larecomp_version.h"
-#include "app_paths.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -109,6 +108,7 @@ struct Plan {
   bool ask = false;
   bool forced = false;               // Shift was held
   bool remember = false;             // profile_auto_select as found
+  bool first_run = false;            // no save and no user_name: the first-run name prompt
   fs::path root;                     // the user data root
   std::vector<pf::Profile> choices;  // newest first, a not-yet-saved user_name ahead of them
   std::string preselect;
@@ -138,16 +138,16 @@ std::string FormatTime(fs::file_time_type when) {
   return buffer;
 }
 
-class ProfilePickerDialog final : public rex::ui::ImGuiDialog {
+class ProfilePickerDialog final : public ui::ImGuiDialog {
  public:
-  ProfilePickerDialog(rex::ui::ImGuiDrawer* drawer, Plan plan, fs::path config_path,
+  ProfilePickerDialog(Plan plan, fs::path config_path,
                       std::function<void()> on_finished)
-      : ImGuiDialog(drawer),
-        plan_(std::move(plan)),
+      : plan_(std::move(plan)),
         config_path_(std::move(config_path)),
         on_finished_(std::move(on_finished)),
-        remember_(plan_.remember) {
+        remember_(plan_.remember || plan_.first_run) {
     selected_ = std::max(0, IndexOf(plan_.choices, plan_.preselect));
+    focus_name_ = selected_ == NewRow();  // the first run opens on the empty name field
   }
 
  protected:
@@ -612,9 +612,18 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
   }
 
   bool ask = false;
+  bool first_run = false;
   const char* reason = "";
-  if (saves == 0) {
-    reason = "no saves yet, the SDK asks for a name";
+  if (saves == 0 && !configured.empty()) {
+    reason = "no saves yet, user_name names the first";
+  } else if (saves == 0) {
+    // First run. The SDK would ask here too (TitleApp::LaunchTitle, "Choose a profile name") and then save the config file
+    // in its own scoped format, with every setting that differs from its default: larecomp.toml has to stay the flat file
+    // the player and the launcher edit. So this dialog asks, and the choice is written as two flat lines (remember is
+    // ticked by default for the same reason: it is the name the SDK's prompt would have saved).
+    ask = true;
+    first_run = true;
+    reason = "no saves yet and no user_name: the first-run name prompt";
   } else if (forced) {
     ask = true;
     reason = "Shift held";
@@ -646,40 +655,40 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
   g_plan.ask = true;
   g_plan.forced = forced;
   g_plan.remember = remember;
+  g_plan.first_run = first_run;
   g_plan.root = std::move(root);
   // The first row: the save played last, which is what pressing Enter should
   // continue. user_name is not the better guess: it is also whatever an earlier
   // session's settings save happened to write down, and a name left over from a
   // test run would send the player into a stale save. A name chosen but not yet
   // saved sits ahead of them, being the newest intent.
-  g_plan.preselect = choices.front().name;
+  g_plan.preselect = choices.empty() ? std::string() : choices.front().name;
   g_plan.choices = std::move(choices);
 
-  // The base's own prompt opens whenever user_name is empty. Seeding it keeps
+  // The SDK's own prompt opens whenever user_name is empty (and there is a window). Seeding it keeps
   // that prompt shut, and keeps a real save in place should the picker never get
-  // a window to draw on.
-  if (configured.empty()) {
+  // a window to draw on. (The first run has nothing to seed with: the picker is the prompt.)
+  if (configured.empty() && !g_plan.preselect.empty()) {
     larecomp::cvar::SetFlagByName(kUserName, g_plan.preselect);
   }
 }
 
-bool ShowProfilePicker(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
+bool ShowProfilePicker(rex::ui::IUISystem& ui, const Paths& paths,
                        std::function<void()> on_finished) {
   if (!g_plan.ask) {
     return false;
   }
   Plan plan = std::move(g_plan);
   g_plan = {};
-  if (!drawer) {
+  if (!ui.HasWindow()) {
     REXLOG_WARN("Save picker: no UI to show it on, keeping '{}'",
                 larecomp::cvar::GetFlagByName(kUserName));
     return false;
   }
   REXLOG_INFO("Save picker: showing {} choice(s), '{}' preselected", plan.choices.size(),
               plan.preselect);
-  // Shows itself on construction and deletes itself when closed, like every
-  // rex::ui::ImGuiDialog.
-  (void)new ProfilePickerDialog(drawer, std::move(plan), paths.config_file, std::move(on_finished));
+  // The UI system owns it from here and destroys it when it closes.
+  (void)ui::ShowDialog<ProfilePickerDialog>(ui, std::move(plan), paths.config_file, std::move(on_finished));
   return true;
 }
 

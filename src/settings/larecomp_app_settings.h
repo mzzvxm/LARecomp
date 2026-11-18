@@ -9,6 +9,9 @@
 #include <rex/setting.h>
 #include <rex/types.h>
 
+#include "settings/step_cap.h"
+#include "settings/validated_setting.h"
+
 namespace larecomp::settings {
 
 class AppSettings final : public rex::SettingOwner {
@@ -22,28 +25,40 @@ class AppSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, graphics_backend, "auto",
               "Graphics API: auto, d3d12, vulkan. Read at start-up by the Plume renderer (and, for the XENIA renderer, "
               "it picks the SDK's d3d12 or vulkan driver)",
-              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart);
+              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart, rex::kDebugOnly);
 
   // The three below were REXCVAR_DEFINE lines that cvar_convert.py cannot move (a validator, a default that is a
   // constant of another file); the script removes the old definitions (HAND_DEFINED) and rewrites their uses.
+  //
+  // THE TWO VALIDATORS THE CONVERSION DROPPED (the only two `.validator(` in the tree before the conversion,
+  // `git grep "validator(" 4538f255 -- src`; the script's HAND_DEFINED set keeps their definitions out of the generated
+  // headers):
+  //   debug_menu       (mc_engine/debug_menu.cpp)         refused a write once InitDebugMenu had run.
+  //                    NOW NATIVE: kStartupOnly. The SDK freezes it just before OnInit (App::Init,
+  //                    ISettingsRegistryControl::Freeze(kStartupOnly)); a write after that fails with "can no longer
+  //                    change", for the console, the settings panel and code. The old comment said the SDK never
+  //                    enforced kInitOnly (nothing called FinalizeInit): 0.11 does.
+  //   frame_step_cap   (mc_engine/hooks/frame_timing.cpp) "adaptive" or a number of ms (positive, finite).
+  //                    RE-ADDED as settings/validated_setting.h's ValidatedString (the model has no validator trait;
+  //                    a SettingBase whose Store tests the text), with the same functions the reader uses
+  //                    (settings/step_cap.h).
   REX_SETTING(bool, debug_menu, false,
               "Unlock the hidden DEBUG menu and the developer settings, for testing and for bug reports. "
-              "Turn it on with --debug_menu on the command line, REX_LARECOMP_DEBUG_MENU=1 in the environment, or "
-              "debug_menu = true in larecomp.toml. It cannot be changed while the game runs, and the game "
-              "never writes it to the file. Settings changed in the DEBUG menu are not saved either.",
+              "Turn it on with --debug_menu on the command line, REX_DEBUG_MENU=1 (or REX_LARECOMP_DEBUG_MENU=1) in the "
+              "environment, or debug_menu = true in larecomp.toml. It cannot be changed while the game runs, and the "
+              "game never writes it to the file. Settings changed in the DEBUG menu are not saved either.",
               rex::kStartupOnly, rex::kDebugOnly);
 
-  // The old validator (adaptive, or a number of milliseconds 16 to 1000) is not available: the reader
-  // (hooks/frame_timing.cpp ParseStepCapMs / IsAdaptiveStepCap) falls back to adaptive for any other text.
-  REX_SETTING(std::string, frame_step_cap, "adaptive",
-              "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
-              "long load): the step is cut to this and the game plays that instant in slow motion, as the "
-              "console did, instead of jumping ahead. adaptive (the default) is 1.5 times "
-              "the recent median frame time, never below 34 ms or above 125 ms: about 34 ms at 60 FPS, 50 ms "
-              "at a steady 30 FPS (so a slow PC never runs in slow motion). Or a number of milliseconds for a "
-              "fixed cap, 16 to 1000 (125 was the old fixed cap). The cap cannot be turned off, and the "
-              "MCLA_MAX_FRAME_MS environment variable, when set, wins (as a fixed number).",
-              rex::kDebugOnly);
+  ValidatedString frame_step_cap{
+      this, "frame_step_cap", "adaptive",
+      "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
+      "long load): the step is cut to this and the game plays that instant in slow motion, as the "
+      "console did, instead of jumping ahead. adaptive (the default) is 1.5 times "
+      "the recent median frame time, never below 34 ms or above 125 ms: about 34 ms at 60 FPS, 50 ms "
+      "at a steady 30 FPS (so a slow PC never runs in slow motion). Or a number of milliseconds for a "
+      "fixed cap, 16 to 1000 (125 was the old fixed cap). The cap cannot be turned off, and the "
+      "MCLA_MAX_FRAME_MS environment variable, when set, wins (as a fixed number).",
+      &IsValidStepCap, "is neither adaptive nor a number of milliseconds", rex::kDebugOnly};
 
   // rmr::kDefaultPort (mc_engine/online/rate_my_ride/rmr_protocol.h); rmr_client.cpp static_asserts the two agree.
   REX_SETTING(rex::i32, rmr_server_port, 31002,

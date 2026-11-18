@@ -3,13 +3,16 @@
 // (the SDK has its own for fullscreen, window_*, audio_mute, log_level, mnk_*, keybind_* ...; adding the same one
 // again is harmless) and uses the table for Find/Get/Set by the old name.
 //
-// CHECK on every row marked [fork]: the names of the settings that OUR 36 Xenia GPU ports add on the merged SDK
-// (Phase 2) are the plan's proposal (UPSTREAM-0.11-PLAN.md 4.7: gpu.xenos.*, gpu.d3d12.* with the prefix dropped,
-// gpu.vulkan.*); read them back from the merged xenos_settings.h / d3d12_settings.h / vulkan_settings.h.
+// VERIFIED against the merge tree (C:\mcv\larecomp\sdk\wt-upstream011, 2026-11-18, every REX_SETTING of the SDK): every
+// target below exists, except the 15 rows marked [fork]. Those are settings that OUR 36 Xenia GPU ports add (Phase 2,
+// not merged yet): their names are the SDK's own naming rule applied to the old name, which the SDK's alias table
+// follows everywhere: 0.10 `d3d12_<x>` -> gpu.d3d12.<x>, `vulkan_<x>` -> gpu.vulkan.<x>, `gpu_<x>` and bare `<x>` ->
+// gpu.xenos.<x>. A port that names its setting differently must change its row here (or the setting is unreachable by
+// its old name; the new full name always works).
 //
 // Not listed on purpose: gpu_vsync_fast_poll and controller_toast_enable (never defined anywhere, silent FAIL today),
-// resolution_scale (one name, two settings: MigrateLegacyConfig sets gpu.resolution_scale_x and _y),
-// input_backend (the value changed too: MigrateLegacyConfig sets hid.drivers).
+// resolution_scale (one name, two settings: ApplyPlayerConfig sets gpu.resolution_scale_x and _y),
+// input_backend (the value changed too: ApplyPlayerConfig sets hid.drivers; larecomp::settings::Get("input_backend") computes it back).
 
 // graphics, the SDK's own flat names
 {"vsync", "gpu.vsync"},
@@ -39,7 +42,7 @@
 {"readback_resolve_rules", "gpu.xenos.readback_resolve_rules"},
 {"resolve_unscaled_copy_rules", "gpu.xenos.resolve_unscaled_copy_rules"},
 {"resolve_unscaled_copy_batch", "gpu.xenos.resolve_unscaled_copy_batch"},
-{"resolve_downscale_unit_layout", "gpu.xenos.resolve_downscale_unit_layout"},
+{"resolve_downscale_unit_layout", "gpu.xenos.resolve_downscale_unit_layout"},  // confirmed by the Xenia tier 1 port (default on, live)
 {"async_pipeline_wait_budget_ms", "gpu.xenos.async_pipeline_wait_budget_ms"},
 {"render_target_max_height", "gpu.xenos.render_target_max_height"},
 {"render_target_trim_seconds", "gpu.xenos.render_target_trim_seconds"},
@@ -90,3 +93,84 @@
 {"mcla_online_server", "mcla_online.server"},
 {"mcla_online_port", "mcla_online.port"},
 {"mcla_online_connect_timeout_ms", "mcla_online.connect_timeout_ms"},
+// The rest of the 0.10 SDK's flat cvar names (inventory of C:\mcvase\sdk-src, REXCVAR_DEFINE_*), by the same rule, for
+// the larecomp.toml of a player who set one (the launcher's Troubleshooting does) and for --d3d12_x= on the command line.
+// Written by a script from the 0.10 definitions and the merge tree's settings; a name with no target is not listed (it was
+// removed upstream: the aliases of the SDK and kRemovedNames in larecomp_settings.cpp cover those).
+{"d3d12_break_on_error", "gpu.d3d12.break_on_error"},
+{"d3d12_break_on_warning", "gpu.d3d12.break_on_warning"},
+{"d3d12_dxbc_disasm", "gpu.d3d12.dxbc_disasm"},
+{"d3d12_dxbc_disasm_dxilconv", "gpu.d3d12.dxbc_disasm_dxilconv"},
+{"d3d12_queue_priority", "gpu.d3d12.queue_priority"},
+{"d3d12_readback_memexport", "gpu.d3d12.readback_memexport"},
+{"d3d12_tessellation_wireframe", "gpu.d3d12.tessellation_wireframe"},
+{"depth_float24_convert_in_pixel_shader", "gpu.xenos.depth_float24_convert_in_pixel_shader"},
+{"depth_float24_round", "gpu.xenos.depth_float24_round"},
+{"depth_transfer_not_equal_test", "gpu.xenos.depth_transfer_not_equal_test"},
+{"direct_host_resolve", "gpu.xenos.direct_host_resolve"},
+{"draw_resolution_scaled_texture_offsets", "gpu.d3d12.draw_resolution_scaled_texture_offsets"},
+{"dump_shaders", "gpu.xenos.dump_shaders"},
+{"dxbc_source_map", "gpu.d3d12.dxbc_source_map"},
+{"dxbc_switch", "gpu.d3d12.dxbc_switch"},
+{"execute_unclipped_draw_vs_on_cpu", "gpu.xenos.execute_unclipped_draw_vs_on_cpu"},
+{"execute_unclipped_draw_vs_on_cpu_for_psi_render_backend", "gpu.xenos.execute_unclipped_draw_vs_on_cpu_for_psi_render_backend"},
+{"execute_unclipped_draw_vs_on_cpu_with_scissor", "gpu.xenos.execute_unclipped_draw_vs_on_cpu_with_scissor"},
+{"force_convert_line_loops_to_strips", "gpu.xenos.force_convert_line_loops_to_strips"},
+{"force_convert_quad_lists_to_triangle_lists", "gpu.xenos.force_convert_quad_lists_to_triangle_lists"},
+{"force_convert_triangle_fans_to_lists", "gpu.xenos.force_convert_triangle_fans_to_lists"},
+{"gamma_render_target_as_unorm16", "gpu.xenos.gamma_render_target_as_unorm16"},
+{"gpu_debug_markers", "gpu.d3d12.debug_markers"},
+{"half_pixel_offset", "gpu.xenos.half_pixel_offset"},
+{"license_mask", "kernel.license_mask"},
+{"mrt_edram_used_range_clamp_to_min", "gpu.xenos.mrt_edram_used_range_clamp_to_min"},
+{"native_2x_msaa", "gpu.xenos.native_2x_msaa"},
+{"native_stencil_value_output", "gpu.d3d12.native_stencil_value_output"},
+{"occlusion_query_enable", "gpu.xenos.occlusion_query_enable"},
+{"pre_mask_resolve_l2_block", "gpu.xenos.pre_mask_resolve_l2_block"},
+{"present_allow_overscan_cutoff", "gpu.xenos.present_allow_overscan_cutoff"},
+{"present_dither", "gpu.xenos.present_dither"},
+{"present_letterbox", "gpu.xenos.present_letterbox"},
+{"present_safe_area_x", "gpu.xenos.present_safe_area_x"},
+{"present_safe_area_y", "gpu.xenos.present_safe_area_y"},
+{"primitive_processor_cache_min_indices", "gpu.xenos.primitive_processor_cache_min_indices"},
+{"query_occlusion_fake_sample_count", "gpu.xenos.query_occlusion_fake_sample_count"},
+{"readback_memexport", "gpu.xenos.readback_memexport"},
+{"readback_resolve_half_pixel_offset", "gpu.xenos.readback_resolve_half_pixel_offset"},
+{"resolve_resolution_scale_fill_half_pixel_offset", "gpu.xenos.resolve_resolution_scale_fill_half_pixel_offset"},
+{"snorm16_render_target_full_range", "gpu.xenos.snorm16_render_target_full_range"},
+{"store_shaders", "gpu.xenos.store_shaders"},
+{"swap_post_effect", "gpu.xenos.swap_post_effect"},
+{"texture_cache_memory_limit_soft_lifetime", "gpu.xenos.texture_cache_memory_limit_soft_lifetime"},
+{"use_fuzzy_alpha_epsilon", "gpu.d3d12.use_fuzzy_alpha_epsilon"},
+{"user_country", "kernel.user_country"},
+{"vulkan_allow_present_mode_fifo_relaxed", "gpu.vulkan.allow_present_mode_fifo_relaxed"},
+{"vulkan_allow_present_mode_immediate", "gpu.vulkan.allow_present_mode_immediate"},
+{"vulkan_allow_present_mode_mailbox", "gpu.vulkan.allow_present_mode_mailbox"},
+{"vulkan_async_skip_incomplete_frames", "gpu.vulkan.async_skip_incomplete_frames"},
+{"vulkan_dynamic_rendering", "gpu.vulkan.dynamic_rendering"},
+{"vulkan_force_convert_quad_lists_to_triangle_lists", "gpu.vulkan.force_convert_quad_lists_to_triangle_lists"},
+{"vulkan_force_expand_point_sprites_in_vs", "gpu.vulkan.force_expand_point_sprites_in_vs"},
+{"vulkan_force_expand_rectangle_lists_in_vs", "gpu.vulkan.force_expand_rectangle_lists_in_vs"},
+{"vulkan_log_debug_messages", "gpu.vulkan.log_debug_messages"},
+{"vulkan_pipeline_creation_threads", "gpu.vulkan.pipeline_creation_threads"},
+{"vulkan_prefer_fill_mode_non_solid", "gpu.vulkan.prefer_fill_mode_non_solid"},
+{"vulkan_prefer_fragment_stores_and_atomics", "gpu.vulkan.prefer_fragment_stores_and_atomics"},
+{"vulkan_prefer_geometry_shader", "gpu.vulkan.prefer_geometry_shader"},
+{"vulkan_prefer_vertex_pipeline_stores_and_atomics", "gpu.vulkan.prefer_vertex_pipeline_stores_and_atomics"},
+{"vulkan_readback_memexport", "gpu.vulkan.readback_memexport"},
+{"vulkan_require_fill_mode_non_solid", "gpu.vulkan.require_fill_mode_non_solid"},
+{"vulkan_require_geometry_shader", "gpu.vulkan.require_geometry_shader"},
+{"vulkan_sparse_shared_memory", "gpu.vulkan.sparse_shared_memory"},
+{"vulkan_tessellation_wireframe", "gpu.vulkan.tessellation_wireframe"},
+{"render_target_path_vulkan", "gpu.vulkan.render_target_path"},
+{"vulkan_validation_enabled", "gpu.vulkan.validation"},
+{"native_stencil_value_output_d3d12_intel", "gpu.d3d12.native_stencil_value_output_intel"},
+{"present_render_pass_clear", "gpu.vulkan.render_pass_clear"},
+{"gpu_3d_to_2d_texture", "gpu.xenos.texture_3d_to_2d"},
+{"video_driver", "ui.sdl.video_driver"},
+{"metadata_root", "title.metadata_root"},
+// the overlays of LARecomp (the hotkey settings the old SDK had as bind_mcla_*; CHECK: the overlay names are the ones
+// mc_engine/ui registers with IUISystem::AddOverlays, "mcla_settings" etc.: L2B (the UI port) owns them)
+{"bind_mcla_settings", "ui.bind.mcla_settings"},
+{"bind_mcla_telemetry", "ui.bind.mcla_telemetry"},
+{"bind_mcla_achievements", "ui.bind.mcla_achievements"},

@@ -30,9 +30,9 @@
 #include "settings/larecomp_settings.h"
 #include <rex/platform/file.h>
 #include <rex/logging/log_category.h>
-#include <rex/system.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
+
+#include "larecomp_dialog.h"
 
 #include "larecomp_log.h"
 #include "larecomp_version.h"
@@ -210,13 +210,12 @@ sp::BuildResult BuildGuarded(const sp::BuildRequest& request) {
 
 // The dialog after a build that failed or was cancelled: the short reason, and what can be done.
 // Retry runs the build again from the start; the game cannot draw without the packs.
-class FailureDialog final : public rex::ui::ImGuiDialog {
+class FailureDialog final : public ui::ImGuiDialog {
  public:
-  FailureDialog(rex::ui::ImGuiDrawer* drawer, bool cancelled, std::string reason,
+  FailureDialog(bool cancelled, std::string reason,
                 std::filesystem::path log_folder, std::function<void()> retry,
                 std::function<void()> quit)
-      : ImGuiDialog(drawer),
-        cancelled_(cancelled),
+      : cancelled_(cancelled),
         reason_(std::move(reason)),
         log_folder_(std::move(log_folder)),
         retry_(std::move(retry)),
@@ -619,29 +618,29 @@ bool Phase::Finish() {
   return false;
 }
 
-void Phase::ShowFailure(rex::ui::ImGuiDrawer* drawer, rex::ui::WindowedAppContext& app_context,
+void Phase::ShowFailure(rex::ui::IUISystem& ui,
                         std::function<void(bool force)> retry, std::function<void()> quit) {
   if (kind_ == Kind::kClosing) return;  // the app is going away: nobody to ask
   const bool cancelled = kind_ == Kind::kCancelled;
   LARECOMP_APP_WARN("[shaderpack] the game cannot start: {}", reason_);
 
-  if (!drawer) {
-    // Nothing to draw a dialog with: say it plainly and quit.
-    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error,
-                              reason_ + "\n\nThe game needs these shaders to draw. Details: " +
-                                  PathUtf8(LogFolder() / "shader_build.txt"));
+  if (!ui.HasWindow()) {
+    // Nothing to draw a dialog with: say it plainly and quit (ShowMessage logs it when there is no window).
+    ui.ShowMessage(rex::MessageType::kError, "LARecomp",
+                   reason_ + "\n\nThe game needs these shaders to draw. Details: " +
+                       PathUtf8(LogFolder() / "shader_build.txt"));
     if (quit) quit();
     return;
   }
 
   // The buttons are pressed inside the dialog's own draw: what they start runs after it.
-  const auto later = [&app_context](std::function<void()> action) -> std::function<void()> {
+  const auto later = [&ui](std::function<void()> action) -> std::function<void()> {
     if (!action) return {};
-    return [&app_context, action = std::move(action)]() { app_context.CallInUIThreadDeferred(action); };
+    return [&ui, action = std::move(action)]() mutable { ui.PostTask([action = std::move(action)] { action(); }); };
   };
   const bool force = retry_forces_;
-  (void)new FailureDialog(
-      drawer, cancelled, reason_, LogFolder(),
+  (void)ui::ShowDialog<FailureDialog>(
+      ui, cancelled, reason_, LogFolder(),
       later([retry = std::move(retry), force]() {
         if (retry) retry(force);
       }),

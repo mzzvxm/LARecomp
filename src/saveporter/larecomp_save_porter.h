@@ -12,11 +12,10 @@
 #include <filesystem>
 #include <functional>
 
-#include <rex/app/title_app.h>
 #include "app_paths.h"
 
 namespace rex::ui {
-class ImGuiDrawer;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp {
@@ -32,11 +31,10 @@ bool SaveAlreadyPresent(const std::filesystem::path& user_data_root);
 // creates a new save on its own. Safe to call only when SaveAlreadyPresent()
 // is false.
 //
-// Asynchronous on purpose. The SDK's window backend is SDL, and a nested
-// message loop under it never drains SDL's event queue; the stock SDK does not
-// even offer a way to pump it. OnFinalizePaths returns std::nullopt while the
-// wizard is up and resumes from `on_finished`.
-bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const larecomp::Paths& paths,
+// Asynchronous on purpose: no nested message loop. The app's setup loop
+// (LarecompApp::RunSetupFrame, between Init and LaunchTitle) keeps pumping the UI
+// system, which draws the dialog, and goes on from `on_finished`.
+bool ShowSaveImportWizard(rex::ui::IUISystem& ui, const Paths& paths,
                           std::function<void()> on_finished);
 
 }  // namespace larecomp

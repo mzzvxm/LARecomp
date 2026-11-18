@@ -23,8 +23,7 @@
 #include <string>
 
 namespace rex::ui {
-class ImGuiDrawer;
-class WindowedAppContext;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp::shaderbuild {
@@ -89,8 +88,8 @@ class Phase {
   // UI thread, after Finish returned false: tells the player and offers Retry / Open log folder /
   // Quit (a cancelled build: Retry / Quit). `retry` is called on the UI thread with whether the
   // next build has to be forced; `quit` closes the app. Nothing is shown when the app is already
-  // closing. Without a drawer a plain message box says it and `quit` is called.
-  void ShowFailure(rex::ui::ImGuiDrawer* drawer, rex::ui::WindowedAppContext& app_context,
+  // closing. Without a window a plain message says it and `quit` is called.
+  void ShowFailure(rex::ui::IUISystem& ui,
                    std::function<void(bool force)> retry, std::function<void()> quit);
 
  private:

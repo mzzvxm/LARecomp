@@ -22,12 +22,11 @@ std::string PathUtf8(const std::filesystem::path& p) {
 }
 }  // namespace
 
-InstallWizardDialog::InstallWizardDialog(rex::ui::ImGuiDrawer* drawer, std::string title,
+InstallWizardDialog::InstallWizardDialog(std::string title,
                                          std::string intro, std::string install_directory,
                                          PickSourceCallback pick_source, InstallCallback install,
                                          CompleteCallback complete)
-    : ImGuiDialog(drawer),
-      title_(std::move(title)),
+    : title_(std::move(title)),
       intro_(std::move(intro)),
       install_directory_(std::move(install_directory)),
       install_directory_input_(32768, '\0'),

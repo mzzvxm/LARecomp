@@ -10,10 +10,9 @@
 
 namespace {
 
-// Set once by InitDebugMenu. After that the cvar can no longer change the answer: the validator
-// below refuses a write, and DebugMenuUnlocked() reads g_unlocked, not the cvar. (kInitOnly alone
-// does not do it: the SDK only enforces it after rex::cvar::FinalizeInit(), and nothing in the
-// SDK's app start or in LARecomp calls that. The settings panel does show it as read-only.)
+// Set once by InitDebugMenu, and DebugMenuUnlocked() reads g_unlocked, not the setting. The setting itself cannot change
+// any more by then either: it is kStartupOnly, which the SDK closes just before OnInit (the 0.10 validator that refused a
+// write after InitDebugMenu is that freeze now: settings/larecomp_app_settings.h). The settings panel shows it read-only.
 std::atomic<bool> g_latched{false};
 std::atomic<bool> g_unlocked{false};
 std::atomic<const char*> g_source{""};
@@ -24,17 +23,13 @@ namespace larecomp {
 
 namespace {
 
-// The SDK cvars that stand behind DEBUG rows, so they are not LARecomp's to tag in their own
-// definition. FIDELITY FX is the SDK presenter's effect and its FSR and CAS settings (the Xenia
-// path only); GRAPHICS API is the SDK's backend choice, a restart-only troubleshooting switch. A
-// name this SDK does not have is skipped.
+// The SDK settings that stand behind DEBUG rows, so they are not LARecomp's to tag in their own definition: the Xenia
+// renderer's vsync (the XENIA VSYNC row on the debug RENDERING page). The other two of the 0.10 list are gone: FIDELITY FX
+// (present_effect and its FSR and CAS settings) left with the Xenia presenter's effects, and GRAPHICS API is LARecomp's own
+// setting now, tagged kDebugOnly where it is declared. The SDK built its settings without the trait, so the mark is made
+// here (larecomp::cvar::MarkDebugOnly) instead of poking the registry's entries as 0.10 did.
 constexpr const char* kSdkDebugCvars[] = {
-    "present_effect",
-    "present_fsr_quality_mode",
-    "present_cas_additional_sharpness",
-    "present_fsr_sharpness_reduction",
-    "graphics_backend",
-    "vsync",  // the Xenia renderer's vsync: XENIA VSYNC on the debug RENDERING page
+    "gpu.vsync",
 };
 
 }  // namespace
@@ -67,15 +62,8 @@ const char* CvarSourceName(larecomp::cvar::Source source) {
 }
 
 void MarkSdkDebugCvars() {
-  // GetRegistry hands out the entries themselves, and GetFlagInfo only a const view of them.
-  // Called while the program starts, before anything else walks the registry.
-  for (larecomp::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-    for (const char* name : kSdkDebugCvars) {
-      if (entry.name == name) {
-        entry.is_debug_only = true;
-        break;
-      }
-    }
+  for (const char* name : kSdkDebugCvars) {
+    larecomp::cvar::MarkDebugOnly(name);
   }
 }
 
@@ -106,9 +94,8 @@ std::vector<DebugCvarChange> NonDefaultDebugCvars() {
   return changes;
 }
 
-// CHECK: the call is in LarecompApp::OnPostInitLogging, after larecomp.toml is read and before
-// anything draws a menu. Unit-tested against the stock SDK's registry only (native/sdk-stock), not
-// run in the game, and not built as part of the full target.
+// The call is in LarecompApp::OnInit, after the SDK has read larecomp.toml, the environment and the command line (App::Init
+// runs OnInit last) and before anything draws a menu. CHECK: not built or run on 0.11 yet.
 void InitDebugMenu() {
   if (g_latched.load()) {
     return;

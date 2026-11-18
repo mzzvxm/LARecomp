@@ -12,9 +12,9 @@
 #include <imgui.h>
 
 #include <rex/logging/log_category.h>
-#include <rex/ui/dialog.h>
 #include <rex/ui/ui_system.h>
 
+#include "larecomp_dialog.h"
 #include "mc_engine/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 
@@ -35,9 +35,9 @@ std::atomic<bool> g_closing{false};
 
 constexpr const char* kDefaultSubtitle = "Loading mods and music before launch.";
 
-// Shared between the worker's completion and the dialog. The dialog deletes
-// itself from inside its own Draw, so nothing else holds a raw pointer to it: a
-// close is asked for through `want_close`.
+// Shared between the worker's completion and the dialog. The UI system owns the
+// dialog and destroys it after its own Draw, so nothing else holds a raw pointer
+// to it: a close is asked for through `want_close`.
 struct OverlayState {
     std::atomic<bool> want_close{false};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -45,18 +45,19 @@ struct OverlayState {
     bool centred = false;    // UI thread only: the shader build was shown (see OnDraw)
 };
 
-class BootProgressDialog final : public rex::ui::ImGuiDialog {
+class BootProgressDialog final : public ui::ImGuiDialog {
  public:
-    BootProgressDialog(rex::ui::ImGuiDrawer* drawer, std::shared_ptr<OverlayState> state)
-        : ImGuiDialog(drawer), state_(std::move(state)) {}
+    explicit BootProgressDialog(std::shared_ptr<OverlayState> state)
+        : state_(std::move(state)) {}
 
- protected:
     // The popup reads the shared progress until it is gone; clearing it is the
     // last thing that happens to it.
     void OnClose() override {
         mc::boot::Reset();
         SetBootBuildHeading(std::string(), false);
     }
+
+ protected:
 
     void OnDraw(ImGuiIO& io) override {
         if (state_->want_close.load()) {
@@ -192,11 +193,10 @@ void JoinBootWorker() {
 
 }  // namespace
 
-void StartBootBuildWithOverlay(rex::ui::WindowedAppContext& app_context,
-                               rex::ui::ImGuiDrawer* drawer, std::function<void()> work,
+void StartBootBuildWithOverlay(rex::ui::IUISystem& ui, std::function<void()> work,
                                std::function<void()> then) {
     // No overlay to show it on: run the build the way it always ran.
-    if (!drawer || !work) {
+    if (!ui.HasWindow() || !work) {
         if (work) {
             work();
             mc::boot::Reset();
@@ -211,26 +211,25 @@ void StartBootBuildWithOverlay(rex::ui::WindowedAppContext& app_context,
     // A cancel left over from an earlier build must not stop this one; a close must.
     g_cancel.store(g_closing.load());
     auto state = std::make_shared<OverlayState>();
-    (void)new BootProgressDialog(drawer, state);
+    (void)ui::ShowDialog<BootProgressDialog>(ui, state);
 
-    // No nested message loop: the dialog keeps the window painting and the app's
-    // own loop runs it. The worker hands the continuation back to the UI thread.
-    g_boot_worker = std::thread([&app_context, state, work = std::move(work),
+    // No nested message loop: the dialog keeps the window painting and the caller's
+    // frame loop runs it. The worker hands the continuation back to the UI thread
+    // (PostTask runs it between frames; a post made while the app shuts down may
+    // be dropped, which is why the state is closed here too and WaitForBootBuild
+    // joins this thread).
+    // CHECK: IUISystem::PostTask from a worker while the caller pumps RunFrame inside OnTitleLaunch.
+    g_boot_worker = std::thread([&ui, state, work = std::move(work),
                                  then = std::move(then)]() mutable {
         work();
-        const bool queued = app_context.CallInUIThreadDeferred(
-            [state, then = std::move(then)]() mutable {
-                JoinBootWorker();
-                // Draws itself away on its next frame.
-                state->want_close = true;
-                if (then) {
-                    then();
-                }
-            });
-        if (!queued) {
-            // The app is already shutting down; WaitForBootBuild joins us.
+        ui.PostTask([state, then = std::move(then)]() mutable {
+            JoinBootWorker();
+            // Draws itself away on its next frame.
             state->want_close = true;
-        }
+            if (then) {
+                then();
+            }
+        });
     });
 }
 

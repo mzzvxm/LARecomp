@@ -33,6 +33,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../camera_trace.h"
+#include "settings/step_cap.h"
 #include "../cinematic/capture_mode.h"
 #include "../guest_profiler.h"
 #include "larecomp_guest.h"
@@ -41,30 +42,10 @@
 #include "gpu/latency.h"
 #endif
 
-// A number of milliseconds as written in frame_step_cap or MCLA_MAX_FRAME_MS: plain digits, a
-// positive finite number, blanks around it allowed. Not clamped here (see kStepCapMinFixedMs).
-static bool ParseStepCapMs(std::string_view text, double& ms) {
-    const std::string copy(text);
-    char* end = nullptr;
-    const double v = std::strtod(copy.c_str(), &end);
-    if (end == copy.c_str()) return false;
-    while (*end == ' ' || *end == '\t') ++end;
-    if (*end != '\0') return false;
-    if (!std::isfinite(v) || !(v > 0.0)) return false;
-    ms = v;
-    return true;
-}
-
-static bool IsAdaptiveStepCap(std::string_view text) {
-    constexpr std::string_view kWord = "adaptive";
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
-    if (text.size() != kWord.size()) return false;
-    for (size_t i = 0; i < kWord.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(text[i])) != kWord[i]) return false;
-    }
-    return true;
-}
+// frame_step_cap and MCLA_MAX_FRAME_MS: "adaptive" or a number of milliseconds. The parsing is shared with the setting's
+// validator (settings/step_cap.h), so what the setting accepts is what this reads. Not clamped here (kStepCapMinFixedMs).
+using larecomp::settings::IsAdaptiveStepCap;
+using larecomp::settings::ParseStepCapMs;
 
 // BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
 //
@@ -406,7 +387,7 @@ static uint64_t StepCapForFrame(uint64_t measured) {
         } else if (ParseStepCapMs(text, requested_ms)) {
             adaptive = false;
         } else {
-            // The validator keeps this out of the cvar; a value that got in anyway is not a reason
+            // The setting's validator (ValidatedString) keeps this out; a value that got in anyway is not a reason
             // to run without a cap.
             adaptive = true;
             REXLOG_WARN("Frame step cap: '{}' is neither adaptive nor a number of ms, using adaptive",

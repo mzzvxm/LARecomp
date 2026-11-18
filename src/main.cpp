@@ -45,6 +45,10 @@ static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     } else if (args.Has("precache_pipelines")) {
         app.SetBatchMode(LarecompApp::BatchMode::kPrecachePipelines);
     }
+    // OnConfigure reads larecomp.toml before the command line is applied: tell it where, when the player says (--config_file).
+    if (const auto config = args.Get("config_file"); config && !config->empty()) {
+        app.SetConfigFileHint(std::filesystem::path(std::u8string(config->begin(), config->end())));
+    }
     // CHECK: both given at once (0.10 ran the packs and then the pipelines in one process): BatchMode needs a third value,
     // or RunBatchMode runs both when both options are present.
     if (app.Init(args)) {
