@@ -1,7 +1,7 @@
 // MCLA GPU renderer -- host viewport, NDC transform and scissor. See viewport.h.
 //
 // Ported from Xenia's draw_util::GetHostViewportInfo and GetScissor
-// (src/graphics/util/draw.cpp in the ReXGlue SDK; Copyright Ben Vanik, the
+// (src/graphics/util/draw.cpp in rexglue 0.10, private since 0.11; Copyright Ben Vanik, the
 // Xenia authors, BSD-3-Clause). The comments there explain every step; the
 // ones here say what was left out and why.
 

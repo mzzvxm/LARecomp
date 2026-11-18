@@ -100,7 +100,7 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
   texture_decode::Request& r = plan->request;
   r = texture_decode::Request{};
   r.source.row_pitch_bytes = stored->row_pitch_bytes;
-  r.source.bytes_per_block = info.bytes_per_block();
+  r.source.bytes_per_block = info.GetBytesPerBlock();
   r.source.tiled = key.tiled != 0;
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
@@ -257,7 +257,7 @@ std::string TextureKey::Describe() const {
 
 TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   TextureFetch out;
-  xe::xe_gpu_texture_fetch_t f;
+  xe::TextureFetch f;
   std::memcpy(&f, dwords, sizeof(f));
   if (f.type != xe::FetchConstantType::kTexture) {
     return out;
@@ -310,7 +310,7 @@ void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
 
 bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage* out) {
   const FormatInfo* info = FormatInfo::Get(key.format);
-  if (!info || info->bytes_per_block() == 0) {
+  if (!info || info->GetBytesPerBlock() == 0) {
     return false;
   }
   const xe::GuestTextureLayout layout = xe::GetGuestTextureLayout(
@@ -335,7 +335,7 @@ bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelS
   texture_decode::Request& r = out->request;
   r = texture_decode::Request{};
   r.source.row_pitch_bytes = stored->row_pitch_bytes;
-  r.source.bytes_per_block = info->bytes_per_block();
+  r.source.bytes_per_block = info->GetBytesPerBlock();
   r.source.tiled = key.tiled != 0;
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
@@ -359,7 +359,7 @@ uint16_t GuestToHostSwizzle(uint16_t fetch_swizzle, uint16_t host_format_swizzle
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t guest = (fetch_swizzle >> (3 * i)) & 7;
     uint32_t component;
-    if (guest >= xe::XE_GPU_TEXTURE_SWIZZLE_0) {
+    if (guest >= xe::REXGPU_SWIZZLE_0) {
       // 6 and 7 folded to 0 and 1, as Xenia does against broken games.
       component = guest & 0b101;
     } else {
@@ -910,7 +910,7 @@ TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFe
                                           std::string* why, const uint32_t (*known_ranges)[2]) {
   (void)fetch;
   const FormatInfo* info = FormatInfo::Get(key.format);
-  if (!info || info->bytes_per_block() == 0) {
+  if (!info || info->GetBytesPerBlock() == 0) {
     *why = "the SDK has no block size for the format";
     return nullptr;
   }

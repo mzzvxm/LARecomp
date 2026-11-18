@@ -344,7 +344,7 @@ uint64_t CompositeTarget(const EdramTargets::Target* target) {
 // first 64): how the reads across scales sample.
 void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fetch,
                    const uint32_t dwords[6], const TextureCache::Binding& bound, Scale scale) {
-  xe::xe_gpu_texture_fetch_t f;
+  xe::TextureFetch f;
   std::memcpy(&f, dwords, sizeof(f));
   const auto filter = [](xe::TextureFilter v) {
     switch (v) {
@@ -1375,7 +1375,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
 
   // Targets. Depth only: no colour target and no pixel shader (pipelines.h).
-  const bool depth_only = s.mode.edram_mode == xe::EdramMode::kDepthOnly;
+  const bool depth_only = s.mode.edram_mode == xe::EDRAMMode::kDepthOnly;
   bool any_color = false;
   if (!depth_only) {
     for (const ColorTargetState& t : s.color) {

@@ -65,26 +65,26 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
       uint32_t address = 0;
       uint32_t count = 0;
       uint32_t sequence = 0;
-      switch (c.opcode()) {
+      switch (c.GetOpcode()) {
         case ucode::ControlFlowOpcode::kExec:
         case ucode::ControlFlowOpcode::kExecEnd:
-          address = c.exec.address();
-          count = c.exec.count();
-          sequence = c.exec.sequence();
+          address = c.exec.GetAddress();
+          count = c.exec.GetCount();
+          sequence = c.exec.GetSequence();
           break;
         case ucode::ControlFlowOpcode::kCondExec:
         case ucode::ControlFlowOpcode::kCondExecEnd:
         case ucode::ControlFlowOpcode::kCondExecPredClean:
         case ucode::ControlFlowOpcode::kCondExecPredCleanEnd:
-          address = c.cond_exec.address();
-          count = c.cond_exec.count();
-          sequence = c.cond_exec.sequence();
+          address = c.cond_exec.GetAddress();
+          count = c.cond_exec.GetCount();
+          sequence = c.cond_exec.GetSequence();
           break;
         case ucode::ControlFlowOpcode::kCondExecPred:
         case ucode::ControlFlowOpcode::kCondExecPredEnd:
-          address = c.cond_exec_pred.address();
-          count = c.cond_exec_pred.count();
-          sequence = c.cond_exec_pred.sequence();
+          address = c.cond_exec_pred.GetAddress();
+          count = c.cond_exec_pred.GetCount();
+          sequence = c.cond_exec_pred.GetSequence();
           break;
         default:
           continue;
@@ -102,7 +102,7 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
         ucode::AluInstruction alu;
         static_assert(sizeof(alu) == sizeof(alu_dwords));
         std::memcpy(&alu, alu_dwords, sizeof(alu));
-        switch (alu.vector_opcode()) {
+        switch (alu.GetVectorOpcode()) {
           case ucode::AluVectorOpcode::kKillEq:
           case ucode::AluVectorOpcode::kKillGt:
           case ucode::AluVectorOpcode::kKillGe:
@@ -111,7 +111,7 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
           default:
             break;
         }
-        switch (alu.scalar_opcode()) {
+        switch (alu.GetScalarOpcode()) {
           case ucode::AluScalarOpcode::kKillsEq:
           case ucode::AluScalarOpcode::kKillsGt:
           case ucode::AluScalarOpcode::kKillsGe:

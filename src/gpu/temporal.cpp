@@ -1703,7 +1703,7 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
   for (uint32_t slot = 0; slot < 3; ++slot) {
     uint32_t dwords[6];
     f.view->FetchGroup(slot, dwords);
-    xe::xe_gpu_texture_fetch_t t;
+    xe::TextureFetch t;
     std::memcpy(&t, dwords, sizeof(t));
     sizes[slot][0] = uint32_t(t.size_2d.width) + 1;
     sizes[slot][1] = uint32_t(t.size_2d.height) + 1;

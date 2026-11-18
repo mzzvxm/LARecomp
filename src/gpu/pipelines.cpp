@@ -2,7 +2,8 @@
 //
 // Canonicalization follows reblue's pipeline cache (BSD-3-Clause) in spirit;
 // the polygon offset conversion is ported from Xenia's draw_util
-// GetD3D10IntegerPolygonOffset (SDK rex/graphics/util/draw.h; Copyright Ben
+// GetD3D10IntegerPolygonOffset (rexglue 0.10's rex/graphics/util/draw.h, private
+// since 0.11; Copyright Ben
 // Vanik, the Xenia authors, BSD-3-Clause).
 
 #include "pipelines.h"
@@ -1429,12 +1430,12 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   bias = DepthBias{};
   const ShaderStore::Entry* vs = inputs.vs;
   const ShaderStore::Entry* ps = inputs.ps;
-  const xe::EdramMode mode = state.mode.edram_mode;
-  if (mode != xe::EdramMode::kColorDepth && mode != xe::EdramMode::kDepthOnly) {
+  const xe::EDRAMMode mode = state.mode.edram_mode;
+  if (mode != xe::EDRAMMode::kColorDepth && mode != xe::EDRAMMode::kDepthOnly) {
     Report(kReportEdramMode, "a draw with an EDRAM mode other than colour+depth or depth only");
     return KeyResult::kEdramMode;
   }
-  const bool depth_only = mode == xe::EdramMode::kDepthOnly;
+  const bool depth_only = mode == xe::EDRAMMode::kDepthOnly;
   // Xenia's reading of kDepthOnly: the pixel shader is not run. In MCLA every
   // such draw has no pixel shader bound anyway (frame census 10/10).
   if (depth_only) {

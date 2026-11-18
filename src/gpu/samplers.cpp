@@ -37,10 +37,10 @@ int32_t ReadOverride() {
   }
   if (!v.empty() && v.back() == 'x') v.pop_back();
   if (v == "off" || v == "0" || v == "1") return int32_t(xe::AnisoFilter::kDisabled);
-  if (v == "2") return int32_t(xe::AnisoFilter::kMax_2_1);
-  if (v == "4") return int32_t(xe::AnisoFilter::kMax_4_1);
-  if (v == "8") return int32_t(xe::AnisoFilter::kMax_8_1);
-  if (v == "16") return int32_t(xe::AnisoFilter::kMax_16_1);
+  if (v == "2") return int32_t(xe::AnisoFilter::kMax21);
+  if (v == "4") return int32_t(xe::AnisoFilter::kMax41);
+  if (v == "8") return int32_t(xe::AnisoFilter::kMax81);
+  if (v == "16") return int32_t(xe::AnisoFilter::kMax161);
   return -1;
 }
 
@@ -48,10 +48,10 @@ const char* OverrideName(int32_t o) {
   switch (o) {
     case -1: return "game";
     case int32_t(xe::AnisoFilter::kDisabled): return "off";
-    case int32_t(xe::AnisoFilter::kMax_2_1): return "2x";
-    case int32_t(xe::AnisoFilter::kMax_4_1): return "4x";
-    case int32_t(xe::AnisoFilter::kMax_8_1): return "8x";
-    case int32_t(xe::AnisoFilter::kMax_16_1): return "16x";
+    case int32_t(xe::AnisoFilter::kMax21): return "2x";
+    case int32_t(xe::AnisoFilter::kMax41): return "4x";
+    case int32_t(xe::AnisoFilter::kMax81): return "8x";
+    case int32_t(xe::AnisoFilter::kMax161): return "16x";
   }
   return "?";
 }
@@ -124,7 +124,7 @@ void Samplers::Shutdown() {
 
 uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_t mip_max,
                        int32_t extra_bias) {
-  xe::xe_gpu_texture_fetch_t fetch;
+  xe::TextureFetch fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
 
   Description d;
@@ -133,7 +133,7 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   d.clamp[2] = uint8_t(fetch.clamp_z);
   const xe::TextureFilter mip_filter = fetch.mip_filter;
   d.mip_base_map = mip_filter == xe::TextureFilter::kBaseMap;
-  xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax_16_1);
+  xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax161);
   const bool game_aniso = aniso != xe::AnisoFilter::kDisabled;
   const bool eligible = mip_max > mip_min && !d.mip_base_map &&
                         fetch.mag_filter == xe::TextureFilter::kLinear &&

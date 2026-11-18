@@ -6,7 +6,7 @@
 // windows the capture copied (register window R, fetch window F, event window
 // P, surface headers), the call arguments, the object headers. Nothing is
 // interpreted here; tools/gpu/trace_analyze.py decodes it with the Xenos
-// register and fetch-constant layouts (rex/graphics/xenos.h) and answers the
+// register and fetch-constant layouts (rex/xenos/register.h, fetch.h) and answers the
 // questions the renderer is designed from (which EDRAM ranges a frame draws to and aliases, what every resolve
 // copies where, which later fetch reads a resolve destination and how).
 //

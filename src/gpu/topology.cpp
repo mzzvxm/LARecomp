@@ -2,12 +2,13 @@
 //
 // The quad and rectangle decompositions and the polygonal rule follow Xenia
 // (src/graphics/d3d12/pipeline_cache.cpp geometry shaders kQuadList and
-// kRectangleList, include/rex/graphics/util/draw.h IsPrimitivePolygonal, in
-// the ReXGlue SDK; Copyright Ben Vanik, the Xenia authors, BSD-3-Clause).
+// kRectangleList, IsPrimitivePolygonal in rexglue 0.10's rex/graphics/util/draw.h,
+// private since 0.11; Copyright Ben Vanik, the Xenia authors, BSD-3-Clause).
 
 #include "topology.h"
 
 #include <rex/xenos/format.h>
+#include <rex/xenos/state.h>
 
 namespace mcla::gpu {
 
