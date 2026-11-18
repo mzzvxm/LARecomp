@@ -357,7 +357,7 @@ constexpr double kStepCapMaxFixedMs = 1000.0;
 
 static double GuestTicksPerMs() {
     static const double per_ms = [] {
-        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+        uint64_t hz = rex::Clock::GetGuestTickFrequency();
         if (hz == 0) hz = 50000000;
         return static_cast<double>(hz) * 0.001;
     }();

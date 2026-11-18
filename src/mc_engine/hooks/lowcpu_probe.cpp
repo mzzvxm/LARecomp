@@ -229,7 +229,7 @@ void Reporter() {
 
     while (larecomp::settings::lowcpu_probe.Get()) {
         if (!queue.handle) {
-            queue.handle = FindThread(L"rex::thread::TimerQueue", &queue.tid);
+            queue.handle = FindThread(L"rex::platform::TimerQueue", &queue.tid);
             queue.Rebase();
         }
 
@@ -320,7 +320,7 @@ void OnAudioCallback(const uint8_t* base) {
         std::memcpy(&raw, base + bundle + 16, sizeof(raw));
         tick = __builtin_bswap32(raw);
     }
-    const uint32_t now_ms = rex::chrono::Clock::QueryGuestUptimeMillis();
+    const uint32_t now_ms = rex::Clock::GetGuestUptimeMillis();
 
     const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
                                SteadyClock::now().time_since_epoch()).count();

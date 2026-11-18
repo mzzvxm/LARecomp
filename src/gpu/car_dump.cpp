@@ -577,7 +577,7 @@ void CarDump::WriteObj(uint32_t chosen, car_dump::Role role) const {
   }
   const bool body = role == car_dump::Role::kBody;
   const std::filesystem::path path =
-      rex::filesystem::GetExecutableFolder() / std::format("car_dump_{}{}.obj", dump_frame_, body ? "" : "_skinned");
+      rex::platform::GetExecutableFolder() / std::format("car_dump_{}{}.obj", dump_frame_, body ? "" : "_skinned");
   std::ofstream file(path, std::ios::binary | std::ios::trunc);
   if (!file.is_open()) {
     REXLOG_ERROR("{} could not open {}", kPrefix, path.string());

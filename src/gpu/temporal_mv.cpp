@@ -67,7 +67,7 @@ uint32_t TemporalMotion::StencilChannel(const uint32_t fetch[6], uint32_t* host_
   // The very swizzle the texture cache gives the view the anchor binds (textures.cpp Bind2D).
   const uint16_t host = GuestToHostSwizzle(
       constant.swizzle,
-      format::TextureHost(uint32_t(rex::graphics::xenos::TextureFormat::k_8_8_8_8)).host_swizzle);
+      format::TextureHost(uint32_t(rex::xenos::TextureFormat::k_8_8_8_8)).host_swizzle);
   if (host_swizzle) {
     *host_swizzle = host;
   }

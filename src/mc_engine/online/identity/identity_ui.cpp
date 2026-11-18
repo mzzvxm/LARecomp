@@ -383,7 +383,7 @@ private:
         larecomp::cvar::SetFlagByName("user_name", name);
         std::vector<pf::ConfigEdit> edits;
         edits.push_back({"user_name", pf::QuoteTomlString(name)});
-        if (!pf::EditConfig(rex::filesystem::GetExecutableFolder() / "larecomp.toml", edits)) {
+        if (!pf::EditConfig(rex::platform::GetExecutableFolder() / "larecomp.toml", edits)) {
             nick_msg_ = "Could not write larecomp.toml.";
             return;
         }

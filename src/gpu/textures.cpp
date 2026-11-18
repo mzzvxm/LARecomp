@@ -38,7 +38,7 @@ namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
 namespace tu = rex::graphics::texture_util;
-using rex::graphics::FormatInfo;
+using rex::xenos::FormatInfo;
 
 namespace {
 

@@ -45,7 +45,7 @@ class DriverHost {
 void SetHost(DriverHost* host);
 
 // The capture driver in front of `real` (owned by the result): called by the host's InstallCapture. `index`: the SDK's client.
-rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real,
+rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real,
                                     size_t index);
 // Whether `driver` is a capture driver (what WrapDriver made).
 bool IsCaptureDriver(const rex::audio::AudioDriver* driver);

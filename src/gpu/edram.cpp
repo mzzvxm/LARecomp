@@ -1172,8 +1172,8 @@ void EdramTargets::AssignOwner(Target& t) {
   // doubled for a 64 bpp format (Xenia's RenderTargetKey::GetPitchTiles). 4x
   // doubles the samples across, 2x and 4x down.
   const uint32_t across = t.key.samples >= 4 ? 2 : 1;
-  const bool wide = !t.key.depth && rex::graphics::xenos::IsColorRenderTargetFormat64bpp(
-                                        rex::graphics::xenos::ColorRenderTargetFormat(t.key.format));
+  const bool wide = !t.key.depth && rex::xenos::IsColorRenderTargetFormat64bpp(
+                                        rex::xenos::ColorRenderTargetFormat(t.key.format));
   t.columns_per_texel = wide ? 2 : 1;
   t.pitch_tiles = ((uint32_t(t.key.pitch) * across + 79) / 80) * t.columns_per_texel;
   if (owner_keys_.size() >= kNoOwner) {

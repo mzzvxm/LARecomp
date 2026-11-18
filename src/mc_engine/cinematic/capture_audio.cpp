@@ -148,7 +148,7 @@ Summary g_last;
 
 class CaptureOutputDriver final : public rex::audio::AudioDriver {
   public:
-    CaptureOutputDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
+    CaptureOutputDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
         : AudioDriver(memory), sem_(frame_semaphore), real_(real), index_(index) {
         // Made inside the SDK's global critical region (the host's InstallCapture): nothing is logged here, Begin says it once the lock is
         // given back.
@@ -262,7 +262,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
         auto last_change = begin;
         uint64_t last_total = 0;
         for (;;) {
-            while (rex::thread::Wait(sem_, false, std::chrono::milliseconds(0)) == rex::thread::WaitResult::kSuccess) ++drained;
+            while (rex::thread::Wait(sem_, false, std::chrono::milliseconds(0)) == rex::platform::WaitResult::kSuccess) ++drained;
             uint64_t arrived;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -536,7 +536,7 @@ class CaptureOutputDriver final : public rex::audio::AudioDriver {
         held_ = 0;
     }
 
-    rex::thread::Semaphore* sem_;
+    rex::platform::Semaphore* sem_;
     rex::audio::AudioDriver* real_;
     size_t index_ = 0;  // the SDK's client
     bool primary_ = false;
@@ -600,7 +600,7 @@ void SetHost(DriverHost* host) {
     g_host = host;
 }
 
-rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
+rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
     return new CaptureOutputDriver(memory, frame_semaphore, real, index);
 }
 

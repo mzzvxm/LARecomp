@@ -96,7 +96,7 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list,
   line("adapter=" + OneLine(d.name));
   line(std::format("vendor={}", static_cast<int>(d.vendor)));
   line(std::format("driver={:#x}", d.driverVersion));
-  line("exe=" + FileIdentity(rex::filesystem::GetExecutablePath()));
+  line("exe=" + FileIdentity(rex::platform::GetExecutablePath()));
   line("pack=" + FileIdentity(parts.shaders.path()));
   line("variant_pack=" + (parts.shaders.has_variants() ? FileIdentity(parts.shaders.variants_path())
                                                        : std::string("none")));

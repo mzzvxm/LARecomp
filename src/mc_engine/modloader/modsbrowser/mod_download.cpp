@@ -60,7 +60,7 @@ std::string Utf8(const fs::path& p) {
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder()); }
+fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::platform::GetExecutableFolder()); }
 
 bool ValidModName(const std::string& n) {
     if (n.empty() || n.size() > 64 || n[0] == '.') return false;

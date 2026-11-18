@@ -186,7 +186,7 @@ void DecodePool::Quiesce(uint64_t before) {
 }
 
 void DecodePool::WorkerMain(uint32_t index) {
-  rex::thread::set_current_thread_name("larecomp texture decode");
+  rex::platform::SetCurrentThreadName("larecomp texture decode");
   (void)index;
   // Below the game's threads: what they leave idle is what this uses. Not the background level:
   // the render thread waits for a job a worker is running (Finish).

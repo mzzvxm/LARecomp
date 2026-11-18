@@ -287,7 +287,7 @@ void FlickerProbe::Detect(uint64_t frame) {
 
 void FlickerProbe::Dump(uint64_t event, uint64_t frame, const char* what, const Frame& f) const {
   const std::filesystem::path path =
-      rex::filesystem::GetExecutableFolder() /
+      rex::platform::GetExecutableFolder() /
       std::format("mcla_flicker_{:03}_{:06}_{}.tga", event, frame, what);
   std::ofstream out(path, std::ios::binary);
   if (!out) {

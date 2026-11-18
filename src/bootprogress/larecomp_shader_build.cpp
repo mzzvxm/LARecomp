@@ -71,7 +71,7 @@ constexpr uint32_t AllFormats() {
 // D3D12 folder next to the program (the Agility SDK's folder). Defined here once: the startup
 // check, the stamp check and the build request all take it from this function.
 std::filesystem::path ShaderCompilerFolder() {
-  return rex::filesystem::GetExecutableFolder() / "D3D12";
+  return rex::platform::GetExecutableFolder() / "D3D12";
 }
 
 // The variant pack's step (the HDR scene's tone map, the bloom's Gaussians at a render scale, ...): the

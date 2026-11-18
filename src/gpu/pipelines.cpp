@@ -367,7 +367,7 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
 void Pipelines::LoadPersistent() {
   // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
   // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
-  const std::filesystem::path exe_folder = rex::filesystem::GetExecutableFolder();
+  const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
   std::string backend = BackendName();
   std::transform(backend.begin(), backend.end(), backend.begin(),
                  [](unsigned char ch) { return char(std::tolower(ch)); });

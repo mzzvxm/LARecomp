@@ -521,7 +521,7 @@ int ReadLastGarage() { return GarageByName(larecomp::settings::start_garage_last
 void WriteLastGarage(int index) {
     const std::string name = kGarages[index].name;
     larecomp::cvar::SetFlagByName("start_garage_last", name);
-    const std::filesystem::path toml = rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+    const std::filesystem::path toml = rex::platform::GetExecutableFolder() / "larecomp.toml";
     if (!larecomp::profiles::EditConfig(
             toml, {{"start_garage_last", larecomp::profiles::QuoteTomlString(name)}}))
         MC_WARN("[garage] could not write start_garage_last to larecomp.toml");

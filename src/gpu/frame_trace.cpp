@@ -92,7 +92,7 @@ bool FrameTrace::ShouldTrace(uint64_t frames) {
 }
 
 bool FrameTrace::Open(uint64_t frames) {
-  const std::filesystem::path path = rex::filesystem::GetExecutableFolder() /
+  const std::filesystem::path path = rex::platform::GetExecutableFolder() /
                                      ("mcla_gpu_trace_" + std::to_string(frames) + ".txt");
   frame_ = frames;
   traced_any_ = true;

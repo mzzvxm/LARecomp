@@ -119,7 +119,7 @@ void TextureMods::Initialize() {
     return;
   }
   const std::filesystem::path mod_root =
-      mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder());
+      mc::modloader::ModRootDir(rex::platform::GetExecutableFolder());
   std::error_code ec;
   if (!std::filesystem::is_directory(mod_root, ec)) {
     REXLOG_INFO("[gpu] texture mods: no {} folder; no replacements", mod_root.string());

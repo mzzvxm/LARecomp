@@ -958,7 +958,7 @@ bool ReadCapBytes(const std::string& key, uint32_t width, uint32_t height,
     // No resources in a Linux executable: CMake copies src/keycaps next to it as keycaps/.
     // CHECK: not run on Linux (the key prompts of the keyboard; a missing folder gives the blank cap).
     const std::filesystem::path path =
-        rex::filesystem::GetExecutableFolder() / "keycaps" / (stem + ".png");
+        rex::platform::GetExecutableFolder() / "keycaps" / (stem + ".png");
     if (!bytes) return std::filesystem::exists(path);
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;

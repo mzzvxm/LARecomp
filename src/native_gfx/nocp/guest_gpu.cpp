@@ -320,7 +320,7 @@ int VblankWorker() {
   rex::system::X_VIDEO_MODE video_mode;
   rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
   const double refresh_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
-  const uint64_t tick_frequency = rex::chrono::Clock::guest_tick_frequency();
+  const uint64_t tick_frequency = rex::Clock::GetGuestTickFrequency();
   const uint64_t vsync_interval = std::max(uint64_t(1), uint64_t(double(tick_frequency) / refresh_hz));
   // Vsync off runs at 1000 Hz, not uncapped: measured on MCLA at 910/s, and
   // the game's pacing is built on the rate.
@@ -334,9 +334,9 @@ int VblankWorker() {
       larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? "true" : "false");
 
   uint32_t report_ticks = 0;
-  uint64_t last = rex::chrono::Clock::QueryGuestTickCount();
+  uint64_t last = rex::Clock::QueryGuestTickCount();
   while (s.worker_running.load(std::memory_order_relaxed)) {
-    const uint64_t now = rex::chrono::Clock::QueryGuestTickCount();
+    const uint64_t now = rex::Clock::QueryGuestTickCount();
     // Our own cvar, not the SDK's `vsync`: that one is defined in
     // src/graphics/command_processor.cpp, so it lives in the GPU plugin and
     // does not exist in this mode. Querying it by name would have answered
@@ -385,7 +385,7 @@ int VblankWorker() {
       report_ticks = 0;
       REXLOG_INFO("[nocp] {}", Summary());
     }
-    rex::thread::Sleep(std::chrono::milliseconds(1));
+    rex::platform::SleepFor(std::chrono::milliseconds(1));
   }
   return 0;
 }

@@ -27,14 +27,14 @@
 
 namespace mcla {
 
-using rex::graphics::FormatInfo;
-using rex::graphics::FormatType;
+using rex::xenos::FormatInfo;
+using rex::xenos::FormatType;
 namespace texture_conversion = rex::graphics::texture_conversion;
 
 // "textures" is the value this cvar had by default before the dumps moved
 // into the mod folder; a toml the game rewrote still carries it.
 std::filesystem::path TextureDumpDir() {
-  const std::filesystem::path exe = rex::filesystem::GetExecutableFolder();
+  const std::filesystem::path exe = rex::platform::GetExecutableFolder();
   const std::string folder = larecomp::cvar::GetFlagByName("larecomp_texture_folder");
   if (folder.empty() || folder == "textures") {
     return mc::modloader::ModRootDir(exe) / "textures_dump";

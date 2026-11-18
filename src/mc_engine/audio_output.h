@@ -41,7 +41,7 @@ inline constexpr std::chrono::nanoseconds kNullFramePeriod{256'000'000'000ll / 4
 
 class NullOutputDriver final : public rex::audio::AudioDriver {
  public:
-  NullOutputDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore)
+  NullOutputDriver(rex::memory::Memory* memory, rex::platform::Semaphore* frame_semaphore)
       : AudioDriver(memory), frame_semaphore_(frame_semaphore), clock_([this] { Consume(); }) {}
 
   ~NullOutputDriver() override {
@@ -83,7 +83,7 @@ class NullOutputDriver final : public rex::audio::AudioDriver {
     }
   }
 
-  rex::thread::Semaphore* frame_semaphore_;
+  rex::platform::Semaphore* frame_semaphore_;
   std::mutex mutex_;
   std::condition_variable wake_;
   uint32_t queued_ = 0;
@@ -101,7 +101,7 @@ class OutputWithFallback final : public rex::audio::sdl::SDLAudioSystem,
 
   ~OutputWithFallback() override { mc::cinematic::capture_audio::SetHost(nullptr); }
 
-  rex::X_STATUS CreateDriver(size_t index, rex::thread::Semaphore* semaphore,
+  rex::X_STATUS CreateDriver(size_t index, rex::platform::Semaphore* semaphore,
                              rex::audio::AudioDriver** out_driver) override {
     if (larecomp::settings::mcla_audio_output.Get() != "null") {
       if (SDLAudioSystem::CreateDriver(index, semaphore, out_driver) == X_STATUS_SUCCESS) {

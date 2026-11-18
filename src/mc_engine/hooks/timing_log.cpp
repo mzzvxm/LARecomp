@@ -103,7 +103,7 @@ static void AddGpuTimingDeltas(AddDelta&& add_delta) {
 }
 
 void SampleCounters() {
-    using rex::perf::CounterId;
+    using rex::platform::CounterID;
     using rex::perf::GetCounter;
 
     static int64_t s_prev_counters[static_cast<size_t>(CounterId::kCount)];
@@ -320,10 +320,10 @@ void RecordFrameTime() {
                 "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
                 " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
                 CTR(cmdbuf_stalls), CTR(crit_contentions),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kApcQueueDepth),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kActiveThreads),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kBufferQueueDepth),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kAudioFrameLatencyUs));
+                (long long)rex::perf::GetCounter(rex::platform::CounterID::kApcQueueDepth),
+                (long long)rex::perf::GetCounter(rex::platform::CounterID::kActiveThreads),
+                (long long)rex::perf::GetCounter(rex::platform::CounterID::kBufferQueueDepth),
+                (long long)rex::perf::GetCounter(rex::platform::CounterID::kAudioFrameLatencyUs));
             g_ctr = {};
         }
 

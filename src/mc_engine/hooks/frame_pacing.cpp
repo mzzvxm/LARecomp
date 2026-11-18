@@ -293,7 +293,7 @@ int64_t PlanFrame(int64_t now) {
         }
         const double step_ms = step / ms;
         // Into guest timebase ticks; MCLAFrameDelta's hitch clamp still applies.
-        const double hz = static_cast<double>(rex::chrono::Clock::guest_tick_frequency());
+        const double hz = static_cast<double>(rex::Clock::GetGuestTickFrequency());
         g_step_ticks = static_cast<uint64_t>(step_ms * 0.001 * hz + 0.5);
         g_have_step = g_step_ticks > 0;
     }

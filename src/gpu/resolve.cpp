@@ -46,9 +46,9 @@
 namespace mcla::gpu {
 
 namespace xe = rex::graphics::xenos;
-namespace xreg = rex::graphics::reg;
+namespace xreg = rex::xenos::reg;
 namespace tu = rex::graphics::texture_util;
-using rex::graphics::FormatInfo;
+using rex::xenos::FormatInfo;
 
 namespace {
 
@@ -127,7 +127,7 @@ uint64_t AlignUp(uint64_t v, uint64_t a) {
 void DumpLevelTga(uint32_t serial, const TextureKey& key, uint32_t level, uint32_t width,
                   uint32_t height, const uint8_t* rgba, uint32_t row_pitch) {
   const std::filesystem::path path =
-      rex::filesystem::GetExecutableFolder() /
+      rex::platform::GetExecutableFolder() /
       std::format("mcla_gpu_lock_{:04}_{:08x}_{}x{}_L{}.tga", serial, key.base_page << 12,
                   key.width, key.height, level);
   std::ofstream out(path, std::ios::binary);

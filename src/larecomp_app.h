@@ -1152,7 +1152,7 @@ class LarecompApp : public rex::ReXApp {
     // assets/achievements.toml.
     // CHECK: not run on Linux (the labels and descriptions of the achievements).
     const std::filesystem::path loose =
-        rex::filesystem::GetExecutableFolder() / "assets" / "achievements.toml";
+        rex::platform::GetExecutableFolder() / "assets" / "achievements.toml";
     std::ifstream in(loose, std::ios::binary);
     if (in) {
       const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

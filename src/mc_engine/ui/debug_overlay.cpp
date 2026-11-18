@@ -61,8 +61,8 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing,
                  prompts)) {
-    int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
-    int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
+    int64_t ft_us = rex::perf::GetSnapshotCounter(rex::platform::CounterID::kFrameTimeUs);
+    int64_t fps = rex::perf::GetSnapshotCounter(rex::platform::CounterID::kFps);
     // Only the SDK's Xenia command processor sets these two counters (and only in a build with perf
     // counters), so on the native renderer they stay 0. There the card uses ImGui's own frame clock:
     // the time of the last frame the UI was drawn in and its rolling 60-frame rate (the UI is drawn

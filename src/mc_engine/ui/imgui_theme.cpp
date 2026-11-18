@@ -94,7 +94,7 @@ static void StretchFace(ImFont* font, float px, float factor) {
 void LoadMclaFonts(ImFontAtlas* atlas) {
   if (!atlas) return;
 
-  const fs::path dir = rex::filesystem::GetExecutableFolder() / "assets" / "fonts";
+  const fs::path dir = rex::platform::GetExecutableFolder() / "assets" / "fonts";
 
   ImFontConfig font_cfg;
   font_cfg.OversampleH = 2;

@@ -56,7 +56,7 @@ std::atomic<bool> g_open_asked{false};
 
 // --------------------------------------------------------------- config ---
 
-std::filesystem::path ConfigPath() { return rex::filesystem::GetExecutableFolder() / "larecomp.toml"; }
+std::filesystem::path ConfigPath() { return rex::platform::GetExecutableFolder() / "larecomp.toml"; }
 
 // Live cvar and larecomp.toml together: the game rewrites the toml from the
 // live cvars when it exits, and the file is what the next boot reads.

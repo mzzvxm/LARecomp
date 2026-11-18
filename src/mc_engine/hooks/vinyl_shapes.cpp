@@ -64,8 +64,8 @@ struct ShapeProbe {
     uint32_t w = 0, h = 0, base = 0, size = 0, pitch = 0;
     bool tiled = false;
     std::string fmt;
-    rex::graphics::xenos::TextureFormat format{};
-    rex::graphics::xenos::Endian endian{};
+    rex::xenos::TextureFormat format{};
+    rex::xenos::Endian endian{};
     uint64_t hash = 0;
 };
 
@@ -86,15 +86,15 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
     uint32_t dims = GuestRead32(mem, tex + 0x20);
     uint32_t d3dtex = GuestRead32(mem, tex + 0x1C);
     if (!IsGuestPtr(d3dtex)) return p;
-    rex::graphics::xenos::xe_gpu_texture_fetch_t fetch{};
+    rex::xenos::xe_gpu_texture_fetch_t fetch{};
     fetch.dword_0 = GuestRead32(mem, d3dtex + 0x1C);
     fetch.dword_1 = GuestRead32(mem, d3dtex + 0x20);
     fetch.dword_2 = GuestRead32(mem, d3dtex + 0x24);
     fetch.dword_3 = GuestRead32(mem, d3dtex + 0x28);
     fetch.dword_4 = GuestRead32(mem, d3dtex + 0x2C);
     fetch.dword_5 = GuestRead32(mem, d3dtex + 0x30);
-    rex::graphics::TextureInfo ti{};
-    if (rex::graphics::TextureInfo::Prepare(fetch, &ti) && ti.width >= 1 && ti.width <= 4096 &&
+    rex::xenos::TextureInfo ti{};
+    if (rex::xenos::TextureInfo::Prepare(fetch, &ti) && ti.width >= 1 && ti.width <= 4096 &&
         ti.height >= 1 && ti.height <= 4096) {
         p.w = dims >> 16;
         p.h = dims & 0xFFFF;

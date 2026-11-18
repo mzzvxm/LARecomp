@@ -954,7 +954,7 @@ constexpr const char* kOnlineServerCvar = "mcla_online_server";
 std::atomic<int> g_online_boot{-1};
 
 std::filesystem::path ConfigPath() {
-    return rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+    return rex::platform::GetExecutableFolder() / "larecomp.toml";
 }
 
 // The value the pause menu holds for `name`, empty when it holds none.

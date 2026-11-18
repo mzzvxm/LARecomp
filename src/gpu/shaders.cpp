@@ -115,7 +115,7 @@ bool ShaderStore::Initialize(Device& device) {
 }
 
 std::filesystem::path ShaderStore::DefaultPackFolder() {
-  const std::filesystem::path beside = rex::filesystem::GetExecutableFolder() / "cache" / "shaders";
+  const std::filesystem::path beside = rex::platform::GetExecutableFolder() / "cache" / "shaders";
   if (CanWriteTo(beside)) {
     return beside;
   }
@@ -144,14 +144,14 @@ std::vector<std::filesystem::path> ShaderStore::SearchFolders(
     folders.push_back(configured);
   } else {
     // Where DefaultPackFolder builds them, looked at without writing anything.
-    folders.push_back(rex::filesystem::GetExecutableFolder() / "cache" / "shaders");
+    folders.push_back(rex::platform::GetExecutableFolder() / "cache" / "shaders");
     if (const std::filesystem::path local = LocalPackFolder(); !local.empty()) {
       folders.push_back(local);
     }
   }
   // Where the pack was before it was built on the player's PC (and where a test setup still
   // puts it): last, so a pack built for this game wins over a stale copy left here.
-  const std::filesystem::path legacy = rex::filesystem::GetExecutableFolder() / "assets";
+  const std::filesystem::path legacy = rex::platform::GetExecutableFolder() / "assets";
   if (std::find(folders.begin(), folders.end(), legacy) == folders.end()) {
     folders.push_back(legacy);
   }

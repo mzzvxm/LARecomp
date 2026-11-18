@@ -59,7 +59,7 @@ bool RenderThread::Stop(std::chrono::milliseconds deadline) {
 }
 
 void RenderThread::Main() {
-  rex::thread::set_current_thread_name("larecomp gpu render");
+  rex::platform::SetCurrentThreadName("larecomp gpu render");
   using Clock = std::chrono::steady_clock;
   auto next_idle = Clock::now() + idle_period_;
   // While records keep coming the idle deadline is checked every

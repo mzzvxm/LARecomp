@@ -48,7 +48,7 @@ namespace {
 // beyond the microcode counts as killing: the EDRAM detector may report too
 // much, never too little.
 bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
-  namespace ucode = rex::graphics::ucode;
+  namespace ucode = rex::xenos::ucode;
   const uint32_t dword_count = size / 4;
   const auto load = [&](uint32_t first, uint32_t* out) {
     for (uint32_t k = 0; k < 3; ++k) {

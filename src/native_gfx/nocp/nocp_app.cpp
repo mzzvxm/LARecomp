@@ -127,8 +127,8 @@ void NoteSwapCall() {
   // come from here instead: GuestFrameStats() hands them to the overlay through
   // ReXApp::SetGuestFrameStats.
   static uint64_t last_tick = 0;
-  const uint64_t freq = rex::chrono::Clock::QueryHostTickFrequency();
-  const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
+  const uint64_t freq = rex::Clock::GetHostTickFrequency();
+  const uint64_t now = rex::Clock::GetHostTickCount();
   if (last_tick && now > last_tick && freq) {
     const uint64_t delta = now - last_tick;
     const int64_t frame_us = int64_t(delta * 1000000ull / freq);
