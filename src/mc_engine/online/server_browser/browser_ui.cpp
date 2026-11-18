@@ -41,6 +41,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
+#include "mc_engine/input_state.h"
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 
@@ -141,11 +142,15 @@ ImVec4 PingColor(int ms) {
 // switches off while it is open, so the window reads the pads itself
 // (ui/gamepad.h: Xbox pads through XInput with a slow retry for empty slots,
 // every other pad through SDL) and hands them to ImGui's own gamepad
-// navigation. Returns whether a pad is connected.
+// navigation. Returns whether a pad is connected. What it read also goes to the
+// input state (a pad picked up inside the dialog makes the pad the active device,
+// so the CLOSE prompt says B or CIRCLE): the SDK hands the game a pad at rest
+// while the dialog is open, so nothing else sees it.
 bool FeedGamepad(ImGuiIO& io, bool* b_pressed) {
     *b_pressed = false;
     static uint16_t last_buttons = 0;
     const padfeed::PadSample pad = mcla::ui::ReadOverlayPads();
+    larecomp::input::NoteOverlayPad(pad.connected, pad.buttons, pad.lx, pad.ly, pad.rx, pad.ry);
     if (!pad.connected) {
         last_buttons = 0;
         return false;
@@ -256,7 +261,8 @@ protected:
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
         ImGui::SetNextWindowSizeConstraints(ImVec2(720.0f, 420.0f), io.DisplaySize);
-        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // The word follows the device the player used last (B, CIRCLE or ESC), not whether a pad is plugged in.
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", mcla::ui::CloseKeyLabel("server browser"), mcla::ui::kPromptBack}};
         // Dense screen: rows a step smaller, like the game's mission lists.
         ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
         if (mcla::ui::BeginPanel("###larecomp_server_browser", "SERVER BROWSER", mcla::ui::PanelIcon::kInfo,
@@ -307,7 +313,7 @@ private:
         auto& io = GetIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-        mcla::ui::ReleaseOverlayPads();
+        ReleaseBrowserGamepad();
         LARECOMP_APP_INFO("[browser] closed");
     }
 
@@ -964,6 +970,10 @@ bool ServerBrowserCapturesInput() {
 
 bool FeedBrowserGamepad(ImGuiIO& io, bool* b_pressed) { return FeedGamepad(io, b_pressed); }
 
-void ReleaseBrowserGamepad() { mcla::ui::ReleaseOverlayPads(); }
+void ReleaseBrowserGamepad() {
+    mcla::ui::ReleaseOverlayPads();
+    // The input state compares the next reading with a pad at rest, not with the last one of this dialog.
+    larecomp::input::NoteOverlayPad(false, 0, 0.0f, 0.0f, 0.0f, 0.0f);
+}
 
 }  // namespace larecomp

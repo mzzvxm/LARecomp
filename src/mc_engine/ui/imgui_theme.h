@@ -103,6 +103,15 @@ struct Prompt {
   ImU32 key_color = kPromptNeutral;
 };
 
+// The word for a dialog's CLOSE prompt, for the glyphs the player is using right now
+// (larecomp::input::ActiveGlyphFamily(): the last device used, a pad's family or the
+// keyboard, with the button_prompts setting as an override): B on an Xbox-family pad
+// (Switch, Steam Deck and other pads too), CIRCLE on a PlayStation pad, ESC on the
+// keyboard. Ask it every frame the panel is drawn (one atomic load), so the prompt
+// follows the player's hands while the dialog is open. UI thread. `dialog` only names
+// the dialog in the one log line written when the answer changes.
+const char* CloseKeyLabel(const char* dialog);
+
 // A game-style panel: frosted bezel, dark glass body with the title at its
 // top, and an optional footer bar of prompts below the body. Set the window
 // position and size first, as for ImGui::Begin. The prompts must outlive the

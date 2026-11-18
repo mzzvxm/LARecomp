@@ -224,7 +224,8 @@ protected:
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
         ImGui::SetNextWindowSizeConstraints(ImVec2(640.0f, 400.0f), io.DisplaySize);
-        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // The word follows the device the player used last (B, CIRCLE or ESC), not whether a pad is plugged in.
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", mcla::ui::CloseKeyLabel("mod browser"), mcla::ui::kPromptBack}};
         // Dense screen: rows a step smaller, like the game's mission lists.
         ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
         if (mcla::ui::BeginPanel("###larecomp_mod_browser", "MOD BROWSER", mcla::ui::PanelIcon::kInfo,

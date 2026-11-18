@@ -159,7 +159,8 @@ protected:
                                 ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(size, ImGuiCond_Appearing);
         ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 360.0f), io.DisplaySize);
-        const mcla::ui::Prompt prompts[] = {{"CLOSE", pad ? "B" : "ESC", mcla::ui::kPromptBack}};
+        // The word follows the device the player used last (B, CIRCLE or ESC), not whether a pad is plugged in.
+        const mcla::ui::Prompt prompts[] = {{"CLOSE", mcla::ui::CloseKeyLabel("identity window"), mcla::ui::kPromptBack}};
         // Dense screen: rows a step smaller, like the game's mission lists.
         ImGui::PushFont(nullptr, mcla::ui::kSmallSize);
         const bool panel = mcla::ui::BeginPanel("###larecomp_identity", "ONLINE IDENTITY", mcla::ui::PanelIcon::kInfo,

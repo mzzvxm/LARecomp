@@ -7,11 +7,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <imgui_internal.h>
 #include <rex/filesystem.h>
 #include <rex/logging.h>
+
+#include "overlay_input_core.h"
+#include "mc_engine/input_state.h"
 
 namespace fs = std::filesystem;
 
@@ -530,6 +534,23 @@ void DrawPrompt(ImDrawList* draw, ImVec2 pos, const Prompt& p, bool hovered) {
 }
 
 }  // namespace
+
+const char* CloseKeyLabel(const char* dialog) {
+  const larecomp::input::GlyphFamily family = larecomp::input::ActiveGlyphFamily();
+  const char* word = CloseKeyWord(family);
+  // One line per dialog when its prompt changes (and the first time it draws), not one per frame; the dialogs draw on the UI thread only.
+  static std::unordered_map<std::string, int> logged;
+  const std::string key = dialog ? dialog : "dialog";
+  auto [at, fresh] = logged.try_emplace(key, static_cast<int>(family));
+  if (fresh || at->second != static_cast<int>(family)) {
+    at->second = static_cast<int>(family);
+    REXLOG_INFO("[ui] the {}'s close prompt says {} (glyphs: {})", key, word,
+                family == larecomp::input::GlyphFamily::Xbox          ? "Xbox"
+                : family == larecomp::input::GlyphFamily::PlayStation ? "PlayStation"
+                                                                      : "keyboard");
+  }
+  return word;
+}
 
 bool BeginPanel(const char* id, const char* title, PanelIcon icon, ImGuiWindowFlags flags,
                 std::span<const Prompt> prompts, float title_size) {
