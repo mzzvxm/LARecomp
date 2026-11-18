@@ -139,6 +139,7 @@ void ApplyFragTuneOverrides();
 // rubberband.cpp
 void ApplyRubberBandLevel();
 void SetRubberBandLevelOption(int level);  // dev_options.cpp
+void ApplyDifficultyPreset(); // difficulty_preset: the Complete Edition's or the launch build's tune table
 void ApplyRubberBandScales();
 void ApplyRubberBandLive();   // copies the scaled tune into the AI racers mid-race
 void DumpRubberBandTuning();

@@ -1389,8 +1389,12 @@ constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 // ASPECT RATIO: ":" is not allowed in a name, so the shapes read 16X9 as RESOLUTION reads 2560X1440.
 constexpr const char* kAspectVals[]  = {"auto", "16:9", "16:10", "21:9", "32:9"};
 constexpr const char* kAspectNames[] = {"AUTO", "16X9", "16X10", "21X9", "32X9"};
-// DIFFICULTY. AI DIFFICULTY is a percent, -1 = the game's own choice (STOCK);
-// the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
+// DIFFICULTY. PRESET picks whose rules the AI races by: the Complete Edition's
+// (the build larecomp runs) or the launch build's, before the title update of
+// December 2008 eased it. AI DIFFICULTY is a percent, -1 = the game's own choice
+// (STOCK); the scales are multipliers over the shipped RubberBandTune (1 = as shipped).
+constexpr const char* kDiffPresetVals[]  = {"complete", "original"};
+constexpr const char* kDiffPresetNames[] = {"COMPLETE EDITION", "ORIGINAL 2008"};
 constexpr double kAiDiffVals[]     = {-1.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0,
                                       60.0, 70.0, 80.0, 90.0, 100.0};
 constexpr double kRbScaleVals[]    = {0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0};
@@ -2354,6 +2358,7 @@ const ItemDef kGameHubItems[] = {
 // turned the rubberband off whole, and with it the leash on a leading AI
 // (MinThrottle), is not a row any more: the scales below soften it.)
 const ItemDef kDiffItems[] = {
+    Str("PM_RxDiffPreset", "difficulty_preset", "PRESET: ", kDiffPresetVals, kDiffPresetNames, 2),
     WithDynamics(Dbl("PM_RxAiDiff", "ai_difficulty", "AI DIFFICULTY: ",
                      kAiDiffVals, int(sizeof(kAiDiffVals) / sizeof(kAiDiffVals[0])), "%g"),
                  &kAiDiffDynamics),

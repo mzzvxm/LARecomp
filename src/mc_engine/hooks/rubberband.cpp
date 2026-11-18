@@ -187,7 +187,8 @@ void DumpRubberBandTuning() {
     }
     out << "mcRubberBandMgr 0x" << std::hex << mgr << std::dec
         << "  (11 x mcRubberBandTuning, 140 bytes, at mgr+76)\n"
-        << "values are post-LoadTuning: +48 *= 2, +56 *= 2.5, +64 *= 2\n\n";
+        << "values are post-LoadTuning: +48 *= 2, +56 *= 2.5, +64 *= 2 "
+        << "(difficulty_preset = original puts the values as parsed back)\n\n";
 
     for (int i = 0; i < kRubberBandCount; ++i) {
         const uint32_t e = mgr + kRubberBandFirst + uint32_t(i) * kRubberBandStride;
@@ -269,11 +270,20 @@ void ApplyRubberBandLevel() {
     SetRubberBandLevelOption(want);
 }
 
+// Set when the difficulty preset has just rewritten the tune table: the scales
+// take their baseline from the new table instead of the one they last saw.
+static bool g_rubberband_rebase = false;
+
 void ApplyRubberBandScales() {
     static constexpr size_t kFieldCount = RubberBandFieldTotal();
     static float baseline[kRubberBandCount][kFieldCount] = {};
     static bool have_base = false;
     static bool was_scaled = false;
+    if (g_rubberband_rebase) {
+        g_rubberband_rebase = false;
+        have_base = false;
+        was_scaled = false;
+    }
 
     double scale[std::size(kRubberBandScales)];
     bool neutral = true;
@@ -439,6 +449,215 @@ void ApplyRubberBandLive() {
                 WriteGuestU32(base, racer + 412 + o, w);
         }
     }
+}
+
+// ── Difficulty preset: the launch build's rules ─────────────────────────────
+//
+// The disc build of December 2008 (title ID 545407F2, no title update) and the
+// Complete Edition larecomp runs ship the same eleven RubberBandTune files and
+// the same AI brain (mcBrainRacing, the throttle in sub_822BCFE0, the nitrous
+// and shortcut tests in sub_822BE670 all match instruction for instruction).
+// What the title update "improved AI balance" changed sits in mcRubberBandMgr,
+// read side by side in both XEXs:
+//
+//  1. LoadTuning (sub_82743A10). The launch build uses the files as parsed. The
+//     Complete Edition then doubles UseNitroMinDistFromFinish (+48) and
+//     HomeStretchDistance (+64), multiplies UnlimitedNitroMinDistBehindPlayer
+//     (+56) by 2.5 and moves BehindDistOffsets[2..7] down into [1..6]. The AI
+//     stops spending nitrous further from the line, is held to
+//     HomeStretchBehindMaxThrottle over twice the run-in, and needs to be 2.5x
+//     further behind before nitrous turns unlimited.
+//  2. The race-result step (sub_82742F28): a win adds points to mgr+64, 18 of
+//     them raise the base level mgr+56 by one, up to a ceiling picked by the
+//     race's tier (0..3); a loss takes points away down to a floor. The launch
+//     ceilings are 5, 6, 8, 10 and the floors 0, 2, 4, 5; the Complete Edition
+//     has 4, 7, 8, 10 and 0, 1, 4, 5.
+//  3. The base level a new career starts from: 3 in the launch constructor,
+//     0 in the Complete Edition's (sub_82742DF8). mgr+56 is stored in mc4.sav,
+//     so a save keeps whatever it had reached.
+//  4. The script native RubberBandMgr_SetDifficulty wrote mgr+56 and mgr+60 in
+//     the launch build and is nullsub_1 in the Complete Edition, whose career
+//     script no longer makes the call that restored the base to 3 after the
+//     hookman race that drops it to 0. Not reproduced: reviving the native with
+//     the newer scripts would leave the base at 0.
+//
+// "original" reproduces 1-3: the raw parsed tune goes back into the table, the
+// race-result step runs with the launch ceilings and floors, and a base below 3
+// is lifted to 3 at the first race set up after the game starts or the preset
+// is switched on (the launch build's starting point; a career that has climbed
+// past 3 is left where it is). "complete" is the game unchanged.
+REXCVAR_DEFINE_STRING(difficulty_preset, "complete", "MCLA/Difficulty",
+    "Whose AI rules races use: complete = the Complete Edition's, as shipped; original = the "
+    "launch build's (December 2008), before the title update that eased it: the AI keeps its "
+    "nitrous closer to the finish, the home-stretch hold-back is shorter, and the career "
+    "difficulty starts at 3 and climbs and falls within the launch limits.")
+    .allowed({"complete", "original"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+static bool DifficultyPresetOriginal() {
+    return rex::cvar::GetFlagByName("difficulty_preset") == "original";
+}
+
+namespace {
+
+constexpr uint32_t kRubberBandTableBytes = kRubberBandCount * kRubberBandStride;
+
+// The table both ways, captured while LoadTuning runs: `raw` entry by entry as
+// the parser fills it (before the Complete Edition's rescale), `complete` once
+// LoadTuning returns. `generation` counts the loads, so a reload is noticed.
+struct CapturedTune {
+    uint32_t mgr = 0;            // the manager LoadTuning is filling, while it runs
+    uint32_t parsed = 0;         // bit i: entry i was captured raw
+    uint8_t raw[kRubberBandTableBytes] = {};
+    uint8_t complete[kRubberBandTableBytes] = {};
+    uint32_t loaded_mgr = 0;     // the manager both copies belong to
+    uint32_t generation = 0;
+};
+CapturedTune g_tune;
+
+// Set when the game starts and whenever the preset turns to original: the next
+// race setup lifts a base below 3 to 3.
+bool g_lift_base_pending = true;
+
+}  // namespace
+
+REX_EXTERN(__imp__rex_sub_82743A10);  // mcRubberBandMgr::LoadTuning
+REX_EXTERN(__imp__rex_sub_821C04B0);  // the tune parser: loads a named file into a struct
+REX_EXTERN(__imp__rex_sub_82742F28);  // mcRubberBandMgr: the race-result step
+REX_EXTERN(__imp__rex_sub_82743B30);  // RubberBandMgr_SetupRace
+
+// LoadTuning: r3 = the manager. It parses RubberBandTune00..10 into mgr+76
+// (stride 140) through sub_821C04B0, then rescales. The parser wrapper below
+// copies each entry as it lands; the table as LoadTuning leaves it is the
+// Complete Edition's.
+extern "C" REX_FUNC(rex_sub_82743A10) {
+    const uint32_t mgr = ctx.r3.u32;
+    g_tune.mgr = mgr;
+    g_tune.parsed = 0;
+    __imp__rex_sub_82743A10(ctx, base);
+    g_tune.mgr = 0;
+    if (g_tune.parsed != (1u << kRubberBandCount) - 1u) {
+        LARECOMP_APP_ERROR("[DifficultyPreset] RubberBandTune parsed only partly (mask {:03X}); "
+                           "the original preset stays off for this load", g_tune.parsed);
+        g_tune.loaded_mgr = 0;
+        return;
+    }
+    std::memcpy(g_tune.complete, base + mgr + kRubberBandFirst, kRubberBandTableBytes);
+    g_tune.loaded_mgr = mgr;
+    ++g_tune.generation;
+}
+
+// The parser: r7 = the struct it fills. Only while LoadTuning runs, and only
+// for a destination that is one of the manager's eleven entries.
+extern "C" REX_FUNC(rex_sub_821C04B0) {
+    const uint32_t dest = ctx.r7.u32;
+    __imp__rex_sub_821C04B0(ctx, base);
+    const uint32_t mgr = g_tune.mgr;
+    if (mgr == 0 || dest < mgr + kRubberBandFirst) return;
+    const uint32_t off = dest - (mgr + kRubberBandFirst);
+    if (off >= kRubberBandTableBytes || off % kRubberBandStride != 0) return;
+    std::memcpy(g_tune.raw + off, base + dest, kRubberBandStride);
+    g_tune.parsed |= 1u << (off / kRubberBandStride);
+}
+
+// The race-result step: r3 = the manager, r4 = won (low byte), r5 = the race's
+// tier. mgr+56 base level, +60 level in force, +64 points. Same code as
+// sub_82742F28 with the ceilings and floors a parameter.
+static void RaceResultStep(uint8_t* base, uint32_t mgr, bool won, int32_t tier,
+                           const int32_t (&win_ceiling)[4], const int32_t (&loss_floor)[4]) {
+    static constexpr int32_t kWinPoints[4] = {4, 6, 9, 14};
+    static constexpr int32_t kLossPoints[4] = {-14, -9, -6, -4};
+    const bool known = tier >= 0 && tier <= 3;
+    int32_t points = int32_t(ReadGuestU32(base, mgr + 64));
+    const int32_t level = int32_t(ReadGuestU32(base, mgr + 56));
+    int32_t limit = 5;
+    if (won) {
+        if (known) limit = win_ceiling[tier];
+        if (level < limit) points += known ? kWinPoints[tier] : 0;
+    } else {
+        if (known) limit = loss_floor[tier];
+        if (level > limit) points += known ? kLossPoints[tier] : 0;
+    }
+    auto set_level = [&](int32_t v) {
+        WriteGuestU32(base, mgr + 56, uint32_t(v));
+        WriteGuestU32(base, mgr + 60, uint32_t(v));
+    };
+    if (points >= 18) {
+        if (level >= limit) return;  // the points are not stored either
+        WriteGuestU32(base, mgr + 64, uint32_t(points % 18 - 18));
+        const int32_t up = level + 1;
+        set_level(up < 0 ? 0 : (up <= limit ? up : limit));
+        return;
+    }
+    if (points <= -18) {
+        if (level <= limit) return;
+        WriteGuestU32(base, mgr + 64, uint32_t(points % -18 + 18));
+        const int32_t down = level - 1;
+        set_level(down < limit ? limit : (down > 10 ? 10 : down));
+        return;
+    }
+    WriteGuestU32(base, mgr + 64, uint32_t(points));
+}
+
+extern "C" REX_FUNC(rex_sub_82742F28) {
+    if (!DifficultyPresetOriginal()) {
+        __imp__rex_sub_82742F28(ctx, base);
+        return;
+    }
+    static constexpr int32_t kLaunchWinCeiling[4] = {5, 6, 8, 10};
+    static constexpr int32_t kLaunchLossFloor[4] = {0, 2, 4, 5};
+    const uint32_t mgr = ctx.r3.u32;
+    const int32_t before = int32_t(ReadGuestU32(base, mgr + 56));
+    RaceResultStep(base, mgr, (ctx.r4.u32 & 0xFFu) != 0, int32_t(ctx.r5.u32),
+                   kLaunchWinCeiling, kLaunchLossFloor);
+    const int32_t after = int32_t(ReadGuestU32(base, mgr + 56));
+    if (after != before)
+        LARECOMP_APP_INFO("[DifficultyPreset] career difficulty {} -> {} (launch limits)", before,
+                          after);
+}
+
+extern "C" REX_FUNC(rex_sub_82743B30) {
+    if (g_lift_base_pending && DifficultyPresetOriginal()) {
+        g_lift_base_pending = false;
+        const uint32_t mgr = ReadGuestU32(base, kRubberBandMgrPtr);
+        if (mgr != 0) {
+            const int32_t level = int32_t(ReadGuestU32(base, mgr + 56));
+            if (level < 3) {
+                WriteGuestU32(base, mgr + 56, 3u);
+                LARECOMP_APP_INFO("[DifficultyPreset] career difficulty {} -> 3, where the launch "
+                                  "build starts", level);
+            }
+        }
+    }
+    __imp__rex_sub_82743B30(ctx, base);
+}
+
+// Per frame: puts the preset's table into the manager when the preset changes
+// or the tune was loaded again. Only then, so the scales above can keep writing
+// over it; they re-read their baseline from what this wrote.
+void ApplyDifficultyPreset() {
+    static int applied = -1;
+    static uint32_t applied_generation = 0;
+    static int last_want = -1;
+    const int want = DifficultyPresetOriginal() ? 1 : 0;
+    // Switched on while the game runs: the next race lifts the base again.
+    if (want == 1 && last_want == 0) g_lift_base_pending = true;
+    last_want = want;
+    if (g_tune.loaded_mgr == 0) return;
+    if (want == applied && g_tune.generation == applied_generation) return;
+
+    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!base) return;
+    if (ReadGuestU32(base, kRubberBandMgrPtr) != g_tune.loaded_mgr) return;
+    std::memcpy(base + g_tune.loaded_mgr + kRubberBandFirst, want ? g_tune.raw : g_tune.complete,
+                kRubberBandTableBytes);
+    const bool first = applied < 0;
+    applied = want;
+    applied_generation = g_tune.generation;
+    g_rubberband_rebase = true;
+    if (want || !first)
+        LARECOMP_APP_INFO("[DifficultyPreset] {} tune in the table",
+                          want ? "launch build (as parsed)" : "Complete Edition");
 }
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.

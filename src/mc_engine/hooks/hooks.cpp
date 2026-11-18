@@ -181,6 +181,7 @@ void Patch_DeltaTimePre() {
     ApplyRenderPhaseMask();       // perf_no_shadows, live
     ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches
     ApplyRubberBandLevel();       // forced AI difficulty tune index
+    ApplyDifficultyPreset();      // difficulty_preset: whose tune table the AI races by
     ApplyRubberBandScales();      // AI catch-up / hold-back limits
     ApplyRubberBandLive();        // ...pushed into the AI racers of the race in progress
     mc::cinematic::TickScene();   // trailer toolkit: a scene armed by mcla_scene (hour, weather, traffic, time scale, settings); one string test when off
