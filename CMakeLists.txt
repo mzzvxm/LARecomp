@@ -808,6 +808,10 @@ else()
         # cmake_minimum_required 3.25). The rest of larecomp sees only gpu.h.
         target_link_libraries(larecomp PRIVATE larecomp_gpu $<LINK_ONLY:plume>)
         target_compile_definitions(larecomp PRIVATE LARECOMP_HAS_GPU=1)
+        # larecomp_app.cpp hands the renderer the SDK's window (gpu/native_window.h, which names plume's types): that one
+        # file sees plume's headers.
+        set_source_files_properties(src/larecomp_app.cpp PROPERTIES
+            INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:plume,INTERFACE_INCLUDE_DIRECTORIES>")
         message(STATUS "larecomp: Plume renderer (src/gpu) built for ${LARECOMP_GPU_BACKENDS}")
     endif()
 
