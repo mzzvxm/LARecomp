@@ -1,0 +1,520 @@
+#pragma once
+// ===========================================================================
+// MCLA GPU renderer -- the player's car as ray tracing structures: the rules that need no renderer
+// ===========================================================================
+// car_rt_scene.h builds one bottom level structure per mesh of the player's car and, every frame, one top level structure with one
+// instance per draw. This header holds what needs no device, as pure functions on plain numbers, so that
+// car_rt_scene_rules_test.cpp builds on its own:
+//
+//   - the instance transform: a draw's model-to-world matrix (row vectors, as the game's) and the frame's camera into the 3x4 matrix
+//     (column vectors) an instance of the top level takes, in the frame's VIEW space (x right, y up, z forward = the AO's linear depth t),
+//     and the decision whether the camera matrix the frame carries has z forward already or backward as the game's own view matrix has it
+//   - the instance masks and the row of the per-instance table the shaders read
+//   - the clean-up of a mesh read from guest memory (triangles that name no vertex, positions that are not numbers, normals that are no
+//     unit vectors, smooth normals made from the triangles where the declaration had none)
+//   - a range allocator with coalescing (the shared position, normal, index and acceleration structure buffers)
+//   - the eviction policy of the meshes (not seen for a few hundred frames, or the memory cap) and the per-frame build budget
+//   - the check pass's statistics (the words the shader counts into, as numbers)
+//
+// This header includes nothing of the renderer.
+// ===========================================================================
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <vector>
+
+#include "car_dump_rules.h"
+#include "temporal_math.h"
+
+namespace mcla::gpu::car_rt_rules {
+
+// ---------------------------------------------------------------------------
+// limits
+// ---------------------------------------------------------------------------
+
+// Instances of the top level and rows of the table: the player's car is about 195 rigid draws (perf/CAR-RT-SPIKE.md section 10).
+inline constexpr uint32_t kMaxInstances = 1024;
+// A mesh beyond these is not built (one draw of a car has a few thousand triangles).
+inline constexpr uint32_t kMaxMeshVertices = 1u << 20;
+inline constexpr uint32_t kMaxMeshTriangles = 400000;
+// The memory the structures, the shared buffers and their growth may hold in all (bytes).
+inline constexpr uint64_t kMemoryCapBytes = 64ull << 20;
+// A mesh that no draw of the frame names for this many frames is given back; one seen in the last kProtectFrames is never taken for the
+// cap's sake (it is in the frame being recorded or the one before).
+inline constexpr uint64_t kEvictAfterFrames = 300;
+inline constexpr uint64_t kProtectFrames = 2;
+// A mesh whose read or build failed is tried again after this many frames.
+inline constexpr uint64_t kRetryFailedFrames = 600;
+// Triangles read from guest memory in one frame (the listener runs inside a draw's call), and triangles whose bottom level structure is
+// built in one frame at the trigger. A car is about 91,000; the rest waits for the next frame, where the draws that need it are left out.
+inline constexpr uint32_t kStageTrianglesPerFrame = 150000;
+inline constexpr uint32_t kBuildTrianglesPerFrame = 150000;
+// Acceleration structure placement (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT, and Vulkan's scratch alignment).
+inline constexpr uint64_t kStructureAlignment = 256;
+
+// ---------------------------------------------------------------------------
+// masks and the per-instance table
+// ---------------------------------------------------------------------------
+// hlsl/car_rt_common.hlsli CAR_RT_MASK_*: the instance mask a ray's own mask is tested against.
+inline constexpr uint32_t kMaskBody = 0x01;    // the opaque rigid parts
+inline constexpr uint32_t kMaskGlass = 0x02;   // drawn after the world: glass, lights and other translucent parts
+inline constexpr uint32_t kMaskTyres = 0x04;
+inline constexpr uint32_t kMaskDriver = 0x08;  // skinned: not in the first version
+// The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
+inline constexpr uint32_t kFlagAfterWorld = 0x100;
+
+// The tyres' vertex shader (xWheelRubber VS_ParallaxRubber2: no palette, gWorld alone; car_dump_rules.h kKnownWorldOnlyVs).
+inline constexpr uint64_t kTyreVs = car_dump::kKnownWorldOnlyVs[0];
+static_assert(kTyreVs == 0xEDDAF3E3986AE099ull);
+
+// Whether "drawn after the frame's first world draw" tells glass from the rest in this frame. Where every draw of the car was drawn after
+// the first world draw (the car dump's frame 13460: the whole car came after the world in that view) or none was, the rule says nothing
+// and every draw that is no tyre is a body.
+inline bool GlassRuleInformative(size_t draws_after_world, size_t draws) {
+  return draws_after_world > 0 && draws_after_world < draws;
+}
+
+inline uint32_t InstanceMask(bool tyre, bool after_world, bool glass_rule_informative) {
+  if (tyre) {
+    return kMaskTyres;
+  }
+  return (after_world && glass_rule_informative) ? kMaskGlass : kMaskBody;
+}
+
+// One row of the table the shaders read (StructuredBuffer<uint4>, hlsl/car_rt_common.hlsli CarRtInstance).
+struct InstanceRow {
+  uint32_t first_index = 0;   // the mesh's first index in the shared index buffer (uint32 units)
+  uint32_t first_vertex = 0;  // the mesh's first vertex in the shared normal buffer (vertices, 12 bytes each)
+  uint32_t flags = 0;         // the mask, kFlagAfterWorld
+  uint32_t draw = 0;          // the draw's place in car_frame::Frame::draws
+};
+
+inline InstanceRow MakeRow(uint32_t first_index, uint32_t first_vertex, uint32_t mask, bool after_world, uint32_t draw) {
+  InstanceRow row;
+  row.first_index = first_index;
+  row.first_vertex = first_vertex;
+  row.flags = (mask & 0xFFu) | (after_world ? kFlagAfterWorld : 0u);
+  row.draw = draw;
+  return row;
+}
+
+// ---------------------------------------------------------------------------
+// the instance transform
+// ---------------------------------------------------------------------------
+
+// Which side of the camera the player's car is on in the matrix `view` (row vectors, world to view): +1 when it is in front along +z (the
+// AO's view space: z forward), -1 when it is along -z (the game's own view matrix: the camera looks down -z, c14 is BACKWARD), 0 when it
+// cannot be told (the car is within half a metre of the camera's plane). The player's car is in front of the camera in the game's view, the
+// pause menu's and the garage's. The determinant says nothing: it only tells the world's handedness against the view's.
+inline int ViewZSign(const temporal::Mat4& view, const double world_position[3]) {
+  const double z = world_position[0] * view.m[0][2] + world_position[1] * view.m[1][2] + world_position[2] * view.m[2][2] + view.m[3][2];
+  if (!std::isfinite(z) || std::fabs(z) < 0.5) {
+    return 0;
+  }
+  return z > 0.0 ? 1 : -1;
+}
+
+inline double Determinant3(const temporal::Mat4& m) {
+  return m.m[0][0] * (m.m[1][1] * m.m[2][2] - m.m[1][2] * m.m[2][1]) - m.m[0][1] * (m.m[1][0] * m.m[2][2] - m.m[1][2] * m.m[2][0]) +
+         m.m[0][2] * (m.m[1][0] * m.m[2][1] - m.m[1][1] * m.m[2][0]);
+}
+
+// The 3x4 matrix (column vectors, as DXR and Vulkan take it: out[i][j] is the weight of input j in output i, j = 3 the translation) that
+// takes a point of a mesh's model space into the view space: (p, 1) * model_to_world * view, with the view's z negated where it looks down
+// -z (`flip_z`). Both are affine row-vector matrices. False (nothing written) when the result is not finite, is not affine (a perspective
+// column), or has no volume.
+//
+// The matrix is rigid with the scale the game's own bone matrices carry (the squash and stretch of the car body may scale a part): the
+// shaders' normal is made with the cofactor matrix (hlsl/car_rt_common.hlsli CarRtHitNormal), which is right for any invertible matrix.
+inline bool PackInstanceTransform(const temporal::Mat4& model_to_world, const temporal::Mat4& view, bool flip_z, float out[3][4]) {
+  temporal::Mat4 t = temporal::Mul(model_to_world, view);
+  if (flip_z) {
+    for (int r = 0; r < 4; ++r) {
+      t.m[r][2] = -t.m[r][2];
+    }
+  }
+  if (!temporal::Finite(t)) {
+    return false;
+  }
+  constexpr double kAffine = 1e-4;
+  if (std::fabs(t.m[0][3]) > kAffine || std::fabs(t.m[1][3]) > kAffine || std::fabs(t.m[2][3]) > kAffine ||
+      std::fabs(t.m[3][3] - 1.0) > kAffine) {
+    return false;
+  }
+  if (!(std::fabs(Determinant3(t)) > 1e-9)) {
+    return false;
+  }
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      out[i][j] = float(t.m[j][i]);
+    }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// a mesh read from guest memory
+// ---------------------------------------------------------------------------
+
+// Area-weighted smooth normals of a triangle list: the sum of the face normals (their length is twice the area) of the triangles a vertex
+// belongs to, made unit length. A vertex no triangle names gets (0, 0, 1). The winding is the mesh's own; the shaders turn the normal to
+// face the ray, so its sign does not matter.
+inline void SmoothNormals(const std::vector<float>& positions, const std::vector<uint32_t>& indices, std::vector<float>* normals) {
+  const size_t vertices = positions.size() / 3;
+  std::vector<double> sum(vertices * 3, 0.0);
+  for (size_t t = 0; t + 3 <= indices.size(); t += 3) {
+    const uint32_t a = indices[t], b = indices[t + 1], c = indices[t + 2];
+    if (a >= vertices || b >= vertices || c >= vertices) {
+      continue;
+    }
+    double e1[3], e2[3];
+    for (int k = 0; k < 3; ++k) {
+      e1[k] = double(positions[size_t(b) * 3 + k]) - double(positions[size_t(a) * 3 + k]);
+      e2[k] = double(positions[size_t(c) * 3 + k]) - double(positions[size_t(a) * 3 + k]);
+    }
+    const double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+    for (int k = 0; k < 3; ++k) {
+      sum[size_t(a) * 3 + k] += n[k];
+      sum[size_t(b) * 3 + k] += n[k];
+      sum[size_t(c) * 3 + k] += n[k];
+    }
+  }
+  normals->assign(vertices * 3, 0.0f);
+  for (size_t v = 0; v < vertices; ++v) {
+    const double x = sum[v * 3], y = sum[v * 3 + 1], z = sum[v * 3 + 2];
+    const double length = std::sqrt(x * x + y * y + z * z);
+    if (length > 1e-20 && std::isfinite(length)) {
+      (*normals)[v * 3] = float(x / length);
+      (*normals)[v * 3 + 1] = float(y / length);
+      (*normals)[v * 3 + 2] = float(z / length);
+    } else {
+      (*normals)[v * 3 + 2] = 1.0f;
+    }
+  }
+}
+
+struct MeshClean {
+  uint32_t triangles_in = 0;
+  uint32_t triangles_dropped = 0;  // naming a vertex that is not there, a repeated vertex, or a position that is not a number
+  bool normals_made = false;       // none came with the mesh (or the wrong number): smooth normals from the triangles
+  uint32_t normals_replaced = 0;   // given normals that were no numbers or had no length, replaced by the smooth normal
+};
+
+// Makes a mesh fit for the structures: `positions` (x y z a vertex) keeps its vertices, `indices` keeps the whole triangles that name
+// vertices of it, all different and with finite positions, `normals` ends with one unit vector per vertex.
+inline MeshClean CleanMesh(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals) {
+  MeshClean report;
+  const size_t vertices = positions->size() / 3;
+  positions->resize(vertices * 3);
+  std::vector<uint8_t> finite(vertices, 1);
+  for (size_t v = 0; v < vertices; ++v) {
+    finite[v] = std::isfinite((*positions)[v * 3]) && std::isfinite((*positions)[v * 3 + 1]) && std::isfinite((*positions)[v * 3 + 2]);
+  }
+  const size_t triangles = indices->size() / 3;
+  report.triangles_in = uint32_t(triangles);
+  size_t kept = 0;
+  for (size_t t = 0; t < triangles; ++t) {
+    const uint32_t a = (*indices)[t * 3], b = (*indices)[t * 3 + 1], c = (*indices)[t * 3 + 2];
+    if (a >= vertices || b >= vertices || c >= vertices || a == b || b == c || a == c || !finite[a] || !finite[b] || !finite[c]) {
+      continue;
+    }
+    (*indices)[kept * 3] = a;
+    (*indices)[kept * 3 + 1] = b;
+    (*indices)[kept * 3 + 2] = c;
+    ++kept;
+  }
+  report.triangles_dropped = uint32_t(triangles - kept);
+  indices->resize(kept * 3);
+  std::vector<float> smooth;
+  if (normals->size() != vertices * 3) {
+    SmoothNormals(*positions, *indices, normals);
+    report.normals_made = true;
+    return report;
+  }
+  for (size_t v = 0; v < vertices; ++v) {
+    float* n = normals->data() + v * 3;
+    const double length = std::sqrt(double(n[0]) * n[0] + double(n[1]) * n[1] + double(n[2]) * n[2]);
+    if (length > 1e-6 && std::isfinite(length)) {
+      n[0] = float(n[0] / length);
+      n[1] = float(n[1] / length);
+      n[2] = float(n[2] / length);
+      continue;
+    }
+    if (smooth.empty()) {
+      SmoothNormals(*positions, *indices, &smooth);
+    }
+    n[0] = smooth[v * 3];
+    n[1] = smooth[v * 3 + 1];
+    n[2] = smooth[v * 3 + 2];
+    ++report.normals_replaced;
+  }
+  return report;
+}
+
+// ---------------------------------------------------------------------------
+// the shared buffers
+// ---------------------------------------------------------------------------
+
+// First fit over a set of free ranges with coalescing. The unit is the caller's (bytes, vertices, indices).
+class RangeAllocator {
+ public:
+  void Reset(uint64_t capacity) {
+    free_.clear();
+    capacity_ = capacity;
+    used_ = 0;
+    if (capacity != 0) {
+      free_[0] = capacity;
+    }
+  }
+  // The capacity grows to `capacity`; what is added is free.
+  void Grow(uint64_t capacity) {
+    if (capacity <= capacity_) {
+      return;
+    }
+    Insert(capacity_, capacity - capacity_);
+    capacity_ = capacity;
+  }
+  bool Alloc(uint64_t size, uint64_t alignment, uint64_t* offset) {
+    if (size == 0) {
+      return false;
+    }
+    const uint64_t align = std::max<uint64_t>(alignment, 1);
+    for (auto it = free_.begin(); it != free_.end(); ++it) {
+      const uint64_t begin = it->first, length = it->second;
+      const uint64_t start = (begin + align - 1) / align * align;
+      if (start < begin || start + size > begin + length) {
+        continue;
+      }
+      free_.erase(it);
+      if (start > begin) {
+        free_[begin] = start - begin;
+      }
+      if (start + size < begin + length) {
+        free_[start + size] = begin + length - (start + size);
+      }
+      used_ += size;
+      *offset = start;
+      return true;
+    }
+    return false;
+  }
+  void Free(uint64_t offset, uint64_t size) {
+    if (size == 0 || offset + size > capacity_) {
+      return;
+    }
+    Insert(offset, size);
+    used_ -= std::min(used_, size);
+  }
+  uint64_t capacity() const { return capacity_; }
+  uint64_t used() const { return used_; }
+  uint64_t largest_free() const {
+    uint64_t best = 0;
+    for (const auto& [offset, length] : free_) {
+      best = std::max(best, length);
+    }
+    return best;
+  }
+  // The end of the last range in use: everything beyond it is free (what a growth has to copy).
+  uint64_t high_water() const {
+    if (!free_.empty()) {
+      const auto last = std::prev(free_.end());
+      if (last->first + last->second == capacity_) {
+        return last->first;
+      }
+    }
+    return capacity_;
+  }
+  size_t free_ranges() const { return free_.size(); }
+
+ private:
+  void Insert(uint64_t offset, uint64_t size) {
+    auto next = free_.lower_bound(offset);
+    if (next != free_.begin()) {
+      auto previous = std::prev(next);
+      if (previous->first + previous->second == offset) {
+        offset = previous->first;
+        size += previous->second;
+        free_.erase(previous);
+      }
+    }
+    if (next != free_.end() && offset + size == next->first) {
+      size += next->second;
+      free_.erase(next);
+    }
+    free_[offset] = size;
+  }
+
+  std::map<uint64_t, uint64_t> free_;  // offset -> length
+  uint64_t capacity_ = 0;
+  uint64_t used_ = 0;
+};
+
+// The capacity a buffer grows to when `needed` does not fit: double, at least `needed` rounded up to `step`, never over `limit`.
+inline uint64_t GrownCapacity(uint64_t capacity, uint64_t needed, uint64_t step, uint64_t limit) {
+  const uint64_t wanted = std::max(capacity * 2, (needed + step - 1) / step * step);
+  return std::min(std::max(wanted, needed), std::max(limit, needed));
+}
+
+// ---------------------------------------------------------------------------
+// eviction
+// ---------------------------------------------------------------------------
+
+struct MeshUse {
+  uint64_t key = 0;
+  uint64_t bytes = 0;      // what it holds in all: positions, normals, indices, its structure
+  uint64_t last_seen = 0;  // the last frame a draw of the car named it
+};
+
+struct EvictionRequest {
+  uint64_t frame = 0;
+  uint64_t cap_bytes = kMemoryCapBytes;
+  uint64_t need_bytes = 0;  // what the meshes about to be added will hold
+  uint64_t unseen_frames = kEvictAfterFrames;
+  uint64_t protect_frames = kProtectFrames;
+};
+
+struct EvictionPlan {
+  std::vector<uint64_t> keys;
+  bool fits = true;  // after the evictions the needed bytes are inside the cap
+};
+
+// The meshes to give back: first every one not seen for `unseen_frames`, then, while the resident bytes and the needed ones are over the
+// cap, the least recently seen among those not seen in the last `protect_frames` (the larger first at a tie).
+inline EvictionPlan PlanEviction(const std::vector<MeshUse>& meshes, const EvictionRequest& request) {
+  EvictionPlan plan;
+  uint64_t resident = 0;
+  for (const MeshUse& m : meshes) {
+    resident += m.bytes;
+  }
+  const auto age = [&](const MeshUse& m) { return request.frame > m.last_seen ? request.frame - m.last_seen : 0; };
+  std::vector<const MeshUse*> rest;
+  for (const MeshUse& m : meshes) {
+    if (age(m) > request.unseen_frames) {
+      plan.keys.push_back(m.key);
+      resident -= m.bytes;
+    } else {
+      rest.push_back(&m);
+    }
+  }
+  if (resident + request.need_bytes > request.cap_bytes) {
+    std::vector<const MeshUse*> candidates;
+    for (const MeshUse* m : rest) {
+      if (age(*m) > request.protect_frames) {
+        candidates.push_back(m);
+      }
+    }
+    std::sort(candidates.begin(), candidates.end(), [](const MeshUse* a, const MeshUse* b) {
+      return a->last_seen != b->last_seen ? a->last_seen < b->last_seen : a->bytes > b->bytes;
+    });
+    for (const MeshUse* m : candidates) {
+      if (resident + request.need_bytes <= request.cap_bytes) {
+        break;
+      }
+      plan.keys.push_back(m->key);
+      resident -= m->bytes;
+    }
+  }
+  plan.fits = resident + request.need_bytes <= request.cap_bytes;
+  return plan;
+}
+
+// How many of the pending meshes (their triangle counts, in order) are taken in one frame: until the budget is reached, at least one.
+inline size_t TakeWithinBudget(const std::vector<uint32_t>& triangles, uint64_t budget) {
+  uint64_t sum = 0;
+  size_t taken = 0;
+  for (uint32_t t : triangles) {
+    if (taken != 0 && sum + t > budget) {
+      break;
+    }
+    sum += t;
+    ++taken;
+  }
+  return taken;
+}
+
+// Whether the totals changed enough from the last time they were logged to say them again: the first time, then a change of a quarter
+// or of a mebibyte, whichever is larger.
+inline bool TotalsChangedMuch(uint64_t last_logged, uint64_t now) {
+  if (last_logged == ~uint64_t(0)) {
+    return true;
+  }
+  const uint64_t difference = now > last_logged ? now - last_logged : last_logged - now;
+  return difference >= std::max<uint64_t>(1ull << 20, last_logged / 4);
+}
+
+// ---------------------------------------------------------------------------
+// the check pass's statistics (hlsl/car_rt_check_cs.hlsl)
+// ---------------------------------------------------------------------------
+// The shader counts into 16 words: for each vehicle pixel of the AO's linear depth image a ray from the view-space origin through the
+// pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction has z = 1) is compared with the
+// pixel's own distance.
+inline constexpr uint32_t kStatsWords = 16;
+inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image
+inline constexpr uint32_t kStatCovered = 1;    // ... whose ray hit a part of the car
+inline constexpr uint32_t kStatErrorSum = 2;   // the sum of |hit - image| / image over the covered, in units of kErrorUnit
+inline constexpr uint32_t kStatNearer = 3;     // covered pixels whose hit is nearer than the image's by more than kNearFarTolerance
+inline constexpr uint32_t kStatFarther = 4;    // ... farther
+inline constexpr uint32_t kStatHistogram = 5;  // 8 words: the covered pixels by |hit - image| / image, below each of kBucketEdges
+inline constexpr uint32_t kBuckets = 8;
+inline constexpr uint32_t kStatGlass = 13;     // hits on an instance of kMaskGlass
+inline constexpr uint32_t kStatTyres = 14;     // ... of kMaskTyres
+inline constexpr uint32_t kStatBody = 15;      // ... of kMaskBody
+static_assert(kStatHistogram + kBuckets == kStatGlass);
+inline constexpr double kBucketEdges[kBuckets] = {0.0025, 0.005, 0.01, 0.02, 0.05, 0.10, 0.25, 1e30};
+inline constexpr double kErrorUnit = 1000.0;
+inline constexpr double kNearFarTolerance = 0.02;
+
+struct CheckSummary {
+  uint64_t vehicle = 0;
+  uint64_t covered = 0;
+  uint64_t missed = 0;     // vehicle pixels no part of the player's car covers: the other cars, the driver, anything not built yet
+  double coverage = 0.0;   // covered / vehicle
+  double mean_error = 0.0;  // mean |hit - image| / image over the covered
+  double p50 = 0.0;        // the upper edge of the histogram's bucket holding the median and the 95th percentile (1e30: the last)
+  double p95 = 0.0;
+  double within_1pct = 0.0;  // the share of covered pixels within 1%
+  double nearer = 0.0;       // ... with a hit nearer than the image by more than 2%
+  double farther = 0.0;
+  uint64_t glass = 0, tyres = 0, body = 0;
+};
+
+inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
+  CheckSummary s;
+  s.vehicle = words[kStatVehicle];
+  s.covered = std::min(words[kStatCovered], words[kStatVehicle]);
+  s.missed = s.vehicle - s.covered;
+  s.coverage = s.vehicle ? double(s.covered) / double(s.vehicle) : 0.0;
+  s.glass = words[kStatGlass];
+  s.tyres = words[kStatTyres];
+  s.body = words[kStatBody];
+  if (s.covered == 0) {
+    return s;
+  }
+  const double covered = double(s.covered);
+  s.mean_error = double(words[kStatErrorSum]) / kErrorUnit / covered;
+  uint64_t seen = 0;
+  bool have50 = false, have95 = false;
+  for (uint32_t b = 0; b < kBuckets; ++b) {
+    seen += words[kStatHistogram + b];
+    if (!have50 && double(seen) >= 0.5 * covered) {
+      s.p50 = kBucketEdges[b];
+      have50 = true;
+    }
+    if (!have95 && double(seen) >= 0.95 * covered) {
+      s.p95 = kBucketEdges[b];
+      have95 = true;
+    }
+  }
+  s.within_1pct = double(uint64_t(words[kStatHistogram]) + words[kStatHistogram + 1] + words[kStatHistogram + 2]) / covered;
+  s.nearer = double(words[kStatNearer]) / covered;
+  s.farther = double(words[kStatFarther]) / covered;
+  return s;
+}
+
+}  // namespace mcla::gpu::car_rt_rules
