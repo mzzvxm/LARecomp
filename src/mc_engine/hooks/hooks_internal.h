@@ -81,6 +81,13 @@ bool PhotoCityReturning();
 // photo_ui_trace is on and the photo album scene is up.
 bool PhotoUiTracing(const uint8_t* base);
 
+// photo_export.cpp (photo_album_export): called with every "photoAlbum" command, before
+// the game's handler. Keeps the EXPORT ALBUM texts in the string table; for UploadPhoto
+// it writes the album to disk and returns true -- the game's handler must not run then.
+// May call guest code through ctx.
+struct PPCContext;
+bool PhotoAlbumExportCommand(PPCContext& ctx, uint8_t* base, uint32_t cmd);
+
 // ui_smooth.cpp (ui_interpolate): what ui.cpp's movie pacing tells the interpolation.
 // A paced movie came up for a step in this update, stepped or held back.
 void UiSmoothTouch(uint32_t context, int64_t now_ns);

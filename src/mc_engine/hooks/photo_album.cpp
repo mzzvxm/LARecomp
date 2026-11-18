@@ -424,13 +424,23 @@ extern "C" REX_FUNC(rex_sub_821F8A58) {
     __imp__rex_sub_821F8A58(ctx, base);
 }
 
-// "photoAlbum" commands: (obj, ?, cmd).
+// "photoAlbum" commands: (obj, ?, cmd). photo_export.cpp sees each one first: it keeps
+// the EXPORT ALBUM texts in place and takes UploadPhoto over.
 extern "C" REX_FUNC(rex_sub_8263FA10) {
-    const std::string name = CommandName(base, ctx.r3.u32, R16(base, ctx.r5.u32 + 2));
+    const uint16_t cmd = R16(base, ctx.r5.u32 + 2);
+    const std::string name = CommandName(base, ctx.r3.u32, cmd);
     if (Tracing(base))
         MC_INFO("[photo-ui] {}", name);
     if (name == "photoAlbum.EnableCity")
         g_city_return_until_ns.store(NowNs() + 100'000'000, std::memory_order_relaxed);
+
+    // The export calls guest code through ctx; the game's handler gets its arguments back.
+    const uint64_t r3 = ctx.r3.u64, r4 = ctx.r4.u64, r5 = ctx.r5.u64, r6 = ctx.r6.u64;
+    if (PhotoAlbumExportCommand(ctx, base, cmd)) return;
+    ctx.r3.u64 = r3;
+    ctx.r4.u64 = r4;
+    ctx.r5.u64 = r5;
+    ctx.r6.u64 = r6;
     __imp__rex_sub_8263FA10(ctx, base);
 }
 
