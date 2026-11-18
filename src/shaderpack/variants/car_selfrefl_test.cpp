@@ -80,7 +80,8 @@ void RunOnFixture() {
   Check(result.ok, "the fixture transforms: " + result.error);
   if (!result.ok) return;
   const std::string& text = result.hlsl;
-  Check(Count(text, "CarReflTrace(iTexCoord1.xyz, iTexCoord2.xyz, iTexCoord6.xyz, iPos.xy)") == 1, "one trace call");
+  Check(Count(text, "CarReflTrace(iTexCoord1.xyz, iTexCoord2.xyz, iTexCoord6.xyz)") == 1,
+        "one trace call, with no pixel position (the points of the ray have no per-pixel noise)");
   Check(Count(text, "CarReflApply(r10.xyz, carRefl, 1.0)") == 1, "the sharp read is applied once at full weight");
   Check(Count(text, "CarReflApply(r13.xyz, carRefl, 0.5)") == 1, "the blurred read is applied once at half weight");
   Check(Count(text, "CarReflDebug(carRefl, iTexCoord4.w)") == 1, "one debug view");
@@ -95,6 +96,28 @@ void RunOnFixture() {
   Check(text.find("struct CarReflResult") < text.find("void main("), "the helper is before main");
   Check(text.find("CarReflResult carRefl = (CarReflResult)0;") > text.find("CubeMapData cubeMapData"),
         "the local result follows the cube map data");
+  // The ray of version 3 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
+  // numbers in the helper are the ones of that header.
+  Check(sp::kCarSelfReflVariantVersion == 3, "the variant's version is 3 (the stamp rebuilds the pack's paint)");
+  Check(Count(text, "CarReflNoise") == 0 && Count(text, "g_CarReflB.w") == 0,
+        "no per-pixel noise: the trace does not read the noise frame");
+  Check(Count(text, "[unroll]") == 0 && Count(text, "[loop]") == 1, "one loop and no bisection after it: the heaviest point is the hit");
+  Check(Count(text, "CarReflDistance(i, steps, rayLength)") == 1, "the points come from the one distance function, the same for every pixel");
+  Check(Count(text, "float CarReflWindow(") == 1 && Count(text, "float CarReflApproach(") == 1 && Count(text, "float CarReflThin(") == 1 &&
+            Count(text, "float CarReflSlack(") == 1 && Count(text, "float3 CarReflSeen(") == 1,
+        "the helpers of the weights are there once each");
+  Check(Contains(text, "static const float kCarReflStartMin = 0.04;") && Contains(text, "static const float kCarReflDark = 0.85;") &&
+            Contains(text, "static const float kCarReflBackFloor = 0.5;") && Contains(text, "static const float kCarReflThinFloor = 0.6;") &&
+            Contains(text, "static const float kCarReflShade = 0.4;"),
+        "the numbers are those of car_selfrefl_rules.h (start 0.04 m, dark 0.85, hidden face 0.5, thin part 0.6, shade 0.4)");
+  Check(Contains(text, "max(rayLength * u * sqrt(u), kCarReflStartMin)"), "the points' distance grows as u^1.5");
+  Check(Contains(text, "lerp(kCarReflBackFloor, 1.0, face)") && Contains(text, "CarReflThin(sum)") &&
+            Contains(text, "lerp(hit.own * kCarReflShade, hit.colour, hit.face)"),
+        "a hidden-face or thin hit takes less weight, and mode 2 shows the paint's own colour in shade for the hidden face");
+  Check(Contains(text, "env * (1.0 - kCarReflDark * weight)") && Contains(text, "return lerp(env, CarReflSeen(hit), weight);"),
+        "the two modes: the occlusion scaled by the weight, the reflection of what the ray sees");
+  Check(Count(text, "history.Load(") == 1 && Count(text, "history.Sample") == 0 && Count(text, "Gather") == 0,
+        "the history is only read as points");
   // What must stay: the other fetches and the alpha test line.
   Check(Contains(text, "r0.y = tfetch2D(FastShadowCollectorSampler_"), "the shadow read is untouched");
   Check(Contains(text, "r9.xyzw = tfetch2D(VinylSampler_"), "the vinyl read is untouched");

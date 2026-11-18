@@ -32,7 +32,7 @@ struct CarSelfReflConstants {
   // the vehicle's own motion in it.
   float m[16];
   float a[4];     // x mode, y ray length (m), z thickness (m), w strength
-  float b[4];     // x steps, y debug view, z colour gain, w noise frame
+  float b[4];     // x steps, y debug view, z colour gain, w the noise frame (not read since variant version 3: no per-pixel noise)
   uint32_t c[4];  // x the history image's bindless slot, y a linear clamp sampler's slot, zw reserved
 };
 static_assert(sizeof(CarSelfReflConstants) == 112);
@@ -42,9 +42,9 @@ static_assert(offsetof(CarSelfReflConstants, a) == 64 && offsetof(CarSelfReflCon
 // The tuning cvars (mcla_gpu_car_selfrefl_*), already read.
 struct Tuning {
   float length = 2.0f;      // the ray's length in the game's world units (about metres)
-  float thickness = 0.25f;  // how far behind a surface a point still hits it
+  float thickness = 0.3f;   // how far behind a surface a point still hits it (the weight falls from half of it to 0 at it)
   float strength = 1.0f;    // the most the hit takes of the reflection, 0 to 1
-  int steps = 12;           // points on the ray
+  int steps = 12;           // points on the ray, closer together near the shaded point (RayDistance)
   int view = 0;             // the debug view, 0 none
   float gain = 1.0f;        // times the exponent bias's, for the history's colour units (CHECK)
 };
@@ -143,5 +143,76 @@ inline double LinearDepth(double stored, const temporal::Mat4& p) {
   const double den = p.m[2][2] - ndc * p.m[2][3];
   return den != 0.0 ? (p.m[3][2] - ndc * p.m[3][3]) / den : 0.0;
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The ray of the paint variant, as plain functions
+// ---------------------------------------------------------------------------------------------------------------------
+// The arithmetic the variant's helper does for each ray point (shaderpack/variants/car_selfrefl.cpp: CarReflDistance,
+// CarReflSlack, CarReflWindow, CarReflApproach, CarReflThin, CarReflSeen, CarReflApply), written here with the same numbers so that
+// car_selfrefl_rules_test.cpp can check what the picture depends on: that the ray's points and weights do not jump from pixel to
+// pixel (a dotted patch is a weight that does), and that a hit which may be the wrong face of a thin part cannot take the whole
+// reflection. The shader keeps its own copy of these numbers (it cannot include this header): change one, change the other.
+// The history is read as points, so "diff" below is how far BEHIND the vehicle pixel the ray point's view distance is (negative:
+// in front of it, which is no hit).
+
+// HLSL's smoothstep.
+inline float SmoothStep(float edge0, float edge1, float x) {
+  const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+inline constexpr float kRayStartMin = 0.04f;  // m: no sample is nearer the shaded point than this
+inline constexpr float kDark = 0.85f;         // the most of the reflection a hit takes away (the occlusion)
+inline constexpr float kBackFloor = 0.5f;     // the weight of a hit the ray reached from behind the surface, against 1 from in front
+inline constexpr float kThinFloor = 0.6f;     // the weight of a hit made by one sample or small ones, against 1 for a wide one
+inline constexpr float kShade = 0.4f;         // the paint's own colour in shade, for the face the camera does not see
+
+// The distance along the ray of sample `index` (0 to steps - 1) of `steps`: the samples are closer together near the shaded
+// point (the spacing grows with the distance: t = length (u^1.5), u = (index + 1) / steps), and the same for every pixel and frame.
+inline float RayDistance(int index, int steps, float length) {
+  const float u = float(index + 1) / float(steps);
+  return std::max(length * u * std::sqrt(u), kRayStartMin);
+}
+
+// How far off the stored distance of a slanted surface can be, in metres (added to the bias of the hit test): the history holds the
+// distance at a texel's centre, up to a texel from where a ray point projects, and a surface seen with N.V = nv changes its distance
+// by about sqrt(1 - nv^2) / nv metres per metre across the picture. `focal` is the projection's scale (the length of the history
+// matrix's y column, 1 / tan(half the vertical field of view)); `history_height` the image's height in texels.
+inline float SurfaceSlack(float depth, float history_height, float focal, float nv) {
+  const float texel = depth * 2.0f / (history_height * std::max(focal, 0.001f));
+  const float slope = std::min(std::sqrt(std::max(1.0f - nv * nv, 0.0f)) / std::max(nv, 0.1f), 8.0f);
+  return std::min(1.5f * texel * slope, 0.05f);
+}
+
+// 0..1: how much a ray point `diff` metres behind a vehicle pixel (view distance `depth`) is "just behind" it. 0 up to the bias
+// (the game's depth noise and the slack), a short ramp to 1, 1 up to half the thickness, a fall to 0 at the thickness: a ray that
+// is far behind a thin shell has gone past it, not hit it.
+inline float WindowWeight(float diff, float depth, float thickness, float slack) {
+  const float bias = 0.01f + 0.004f * depth + slack;
+  const float ramp = std::min(0.02f + 0.004f * depth, 0.25f * thickness);
+  return SmoothStep(bias, bias + ramp, diff) * (1.0f - SmoothStep(0.5f * thickness, thickness, diff));
+}
+
+// 0..1: how much a ray point has come nearer to the vehicle pixel than the previous point was, when that one was behind it
+// (previous_diff > 0; pass a negative one for a point in front of the surface or on no vehicle), from nothing to a tenth of the
+// thickness. A ray that is coming out of the back of a surface towards its front reaches it from behind: the face the picture
+// does not hold (face = 1 - this). A ray that goes deeper behind the surface went in at the front: 0.
+inline float Approach(float previous_diff, float diff, float thickness) {
+  return previous_diff > 0.0f ? SmoothStep(0.0f, 0.1f * thickness, previous_diff - diff) : 0.0f;
+}
+
+// The weight of the sum of the samples' window weights: one full sample is a thin part or the edge of one that the samples may have
+// caught or missed (kThinFloor to 0.73), two samples and a half and more are a part the ray goes along (1).
+inline float ThinFactor(float sum) { return kThinFloor + (1.0f - kThinFloor) * std::clamp((sum - 0.5f) / 1.5f, 0.0f, 1.0f); }
+
+// The weight a sample of window weight `window` at share `share` of the ray's length (0..1) has as the hit, `face` as above.
+inline float PointWeight(float window, float share, float face) {
+  return window * (1.0f - SmoothStep(0.55f, 1.0f, share)) * (kBackFloor + (1.0f - kBackFloor) * face);
+}
+
+// The reflection `env` with an occlusion of weight `weight` (the mode 1), and the colour a hit shows in the reflection mode: the hit
+// pixel's own colour for the face the camera sees, the paint's own colour in shade for a hidden one.
+inline float Darkened(float env, float weight) { return env * (1.0f - kDark * std::clamp(weight, 0.0f, 1.0f)); }
+inline float SeenColour(float own, float hit_colour, float face) { return own * kShade + (hit_colour - own * kShade) * face; }
 
 }  // namespace mcla::gpu::car_selfrefl

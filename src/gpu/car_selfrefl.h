@@ -19,7 +19,9 @@
 //                                (no setting reaches it any more), 2 forces the full effect, whatever the setting says (the G8b chain's runs
 //                                and the old command lines use it).
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
-//                                found, 3 the baked vertex AO, 4 the state of the trace (colours in the variant's text)
+//                                sees (the hit pixel's, or the paint's own in shade for a hidden face), 3 the baked vertex AO,
+//                                4 the state of the trace (yellow a hit, orange a hit that is probably the hidden face of a
+//                                part, brighter the heavier; green no hit; the other colours in the variant's text)
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
 // With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
 // Selected()), and no history is made. The compare key (F1, effect_compare.h) flips the setting like the others.
@@ -54,6 +56,13 @@
 // frame, so a car that changes its place in the order between two frames gets another car's motion for one frame; the variant's
 // self-test (the point must be found in the history at its own distance) then fades the effect out for that frame instead of
 // smearing it. A car with no usable slot (placed this frame) is taken as still, which at speed fails the same test.
+//
+// THE RAY (variant version 3, shaderpack/variants/car_selfrefl.h has the detail): the points are the same for every pixel and
+// frame (no per-pixel noise: it made a part narrower than the steps a dotted patch), closer together near the shaded point; each
+// has a weight that ramps with how far behind a vehicle pixel it is, and the hit is the heaviest, made smaller where it is
+// probably the hidden face of a part (the ray comes back out towards the surface from behind) or a thin part (one point). The
+// pure arithmetic is in car_selfrefl_rules.h with a reference march in the rules test. The paint's own colour in shade stands
+// in for a hidden face in the reflection mode. The noise frame constant (CarSelfReflConstants::b[3]) is not read any more.
 //
 // The depth is linearised with the previous frame's lens (the trigger comes before this frame's anchor, as the occlusion's
 // does); a lens that changed by more than 5% between the two frames (the pause view's field of view, a sweep) leaves no

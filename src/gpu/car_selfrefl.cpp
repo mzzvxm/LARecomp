@@ -49,7 +49,8 @@ REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_view, 0, "MCLA/GPU",
     "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): "
     "1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace "
-    "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit). 0: "
+    "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, "
+    "orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes). 0: "
     "off. Live.")
     .debug_only()
     .range(0, 4)
@@ -61,9 +62,9 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.2, 6.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_car_selfrefl_thickness, 0.25, "MCLA/GPU",
+    mcla_gpu_car_selfrefl_thickness, 0.3, "MCLA/GPU",
     "Diagnostic: how far behind a part of the car's surface (as the previous frame saw it) a ray point still hits it, "
-    "in the game's world units. Live.")
+    "in the game's world units; the hit's weight is full up to half of it and falls to nothing at it. Live.")
     .debug_only()
     .range(0.02, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -75,7 +76,8 @@ REXCVAR_DEFINE_DOUBLE(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_steps, 12, "MCLA/GPU",
-    "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each). Live.")
+    "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each; they are closer "
+    "together near the car's surface). Live.")
     .debug_only()
     .range(4, 24)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
