@@ -18,6 +18,8 @@
 //                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver; 7 by default)
 //   mcla_gpu_car_selfrefl_rt_gloss    a debug override of the half angle, in degrees, of the cone the rays are spread over (2.5 by default; 0 = a
 //                                     perfect mirror, one ray: the first version's razor edge, for a picture to compare with)
+//   mcla_gpu_car_selfrefl_rt_denoise  a debug override of the passes of the filter that takes the cone's grain out of the image before the paint
+//                                     reads it (2 by default; 1 one pass; 0 none: the raw trace, for a picture to compare with). See DENOISE.
 //   mcla_gpu_car_selfrefl_view = 5    the debug view of this pass's image at the paint's pixel (car_selfrefl.h): purple no image this frame,
 //                                     cyan the image has no data there (the march ran), green the ray hits nothing of the car, yellow a hit
 //                                     on a part the camera sees, orange a hit on a part it does not (the fallback colour), brighter the
@@ -38,6 +40,22 @@
 // 3x3 quadratic B-spline of the texels that are the paint's own surface (the history's agreement test), in place of the march; where it has no
 // data there (alpha 0: not the player's car by the triangles, another vehicle, a pixel whose primary ray found no surface at that distance)
 // the march answers as before.
+//
+// DENOISE (hlsl/car_rt_refl_denoise_cs.hlsl, car_rt_refl_rules.h "The denoise" has the why, the numbers and the test): every texel's pattern of 4 rays is
+// turned by a different angle, so in the band where a reflected part's edge is the texel's weight is one of 0, 1/4 .. 1 almost at random: grain, which
+// the paint's 3x3 B-spline averages only about 2.8 texels' worth of and, with no upscaler, nothing averages over the frames. After the trace, up to two
+// edge-aware a-trous compute passes (taps 1 then 2 texels apart, a 3x3 kernel; image -> scratch -> image) take it out: a tap counts only where it holds
+// data (a miss counts as weight 0), is the same instance and the same surface (the history's distance within the tolerance, the slope from N.V); the
+// colours are averaged premultiplied by the weights; and how much of each pass is applied follows the cone's width at its hit in texels (the trace's aux
+// image, RGBA8: hit distance, instance, N.V; 2 distance tan(half angle) / texel): nothing under 0.4 texels (a part a few centimetres off the panel has a
+// binary edge: nothing to take out, nothing to blur), the first pass in full from 2.5 texels, the second (wider) from 10. On the pure model of a
+// straight penumbra (the unit test) the grain along the edge falls 2 to 7 times (to under 0.011 of the weight) and the edge's ramp grows by at most a
+// fifth, the 50% point stays where it was to 0.05 texels. The paint's variant is unchanged (the image has the same codes and the same size: version 6).
+// A TEMPORAL accumulation was weighed and left out (car_rt_refl_rules.h says why: the reflection moves with the view, so a reprojected texel holds the
+// last frame's direction and an accumulation over a few frames trails the edge; its rejection rule cannot see that, and the cut, pause, garage and
+// no-motion frames each need their own; with an upscaler the upscaler is the temporal filter and the pattern turns by the frame). The passes are
+// skipped for a gloss of 0 (one ray: no noise), for the setting 0, and for the frames the denoise's pipeline or images are not ready (the raw image
+// is read then). One pass leaves its result in the scratch image, which the paint then reads (SlotFor); two leave it in the trace's own.
 //
 // RESOLUTION (decided with numbers): the image stays at the history's size (half of the picture at 4K: 1920x1080), not the picture's. A
 // 4K picture has about 215k vehicle texels at half size and 860k at full: with a primary ray and a cone of 4 that is 1.1 M against 4.3 M rays
@@ -61,7 +79,15 @@
 // at an assumed 3 to 5 G rays/s for rays this coherent and this short on an RTX 5080 class card (inline ray queries from compute, no shader
 // reordering): 0.15 to 0.35 ms, plus about 25 history reads a texel for the hits' colours and the surface mean (5 M loads, a tenth of a
 // millisecond at most) = 0.25 to 0.45 ms. It is on top of the history pass. Memory: one more image of the history's size (8 bytes a texel: 16 MiB
-// at 4K with half-size history) while the effect is on; it goes back after 2 s without it, with the history.
+// at 4K with half-size history) while the effect is on; it goes back after 2 s without it, with the history. The denoise adds a scratch image of
+// the same size (16 MiB at 4K) and the aux image (4 bytes a texel: 8 MiB), so 33 MiB in all instead of 16, in the same lifetime.
+// DENOISE COST (an estimate, not measured: PassTiming's "car rt denoise"): the two dispatches run a thread for every texel of the image (2.1 M at
+// 4K with the half-size image), which for a texel with no data reads one value and writes it (a tenth of the image is a vehicle's, the waves with
+// none leave at once); a vehicle texel (about 215k) does 9 taps of 3 loads (the image, the history's distance, the aux) and about 150 operations:
+// 215k x 27 x 2 passes = 11.6 M loads, nearly all from the cache (8 x 8 groups, the taps 1 and 2 texels apart), about 0.02 to 0.03 ms on an RTX 5080
+// class card; the early outs about 0.01 ms; three barriers' drain of a few microseconds each: 0.04 to 0.07 ms, under the 0.1 ms asked. A weaker
+// ray tracing card (an RTX 2060, an RX 6600 class) is 3 to 4 times that, 0.15 to 0.25 ms; the image is about 1080 rows on every card (the half-size
+// history at 4K, the full-size at 1080p) so the work does not grow with the output's size.
 //
 // CHECK (the first run looks at these, view 5 and the log's "[car rt refl]" lines first):
 //   1. the cost: the pass at 4K with the half-size history and at 1080p with the full-size one; with mcla_gpu_car_selfrefl_rt_gloss 0 (one ray)
@@ -70,8 +96,14 @@
 //      player's paint (perf/out/G8A.txt has only other shaders' groups); 2.5 degrees is the blur of the environment map's own sharp read (a 512x256
 //      dual paraboloid: 0.7 degrees a texel at the middle of a hemisphere, 1.4 at its rim, bilinear), so a reflected part is as soft as the sky
 //      in the same paint. Wider (6) is hazier, 0 is the razor.
-//   3. the pattern: its noise should be invisible at 4K (the paint's 3x3 averages 9 texels of 4 rays); where an upscaler runs it turns by the
-//      frame, where none does it stands still. If the grain shows, the cone's rays can go to 8 (car_rt_refl_rules.h kConeRays and the shader's loops).
+//   3. the pattern: its noise should be invisible at 4K (the denoise, and the paint's 3x3 over its result); where an upscaler runs it turns by the
+//      frame, where none does it stands still. Look at the trunk lid under the wing at gloss 2.5 and 6 with mcla_gpu_car_selfrefl_rt_denoise 0 (the
+//      raw trace: the grain of the last run), 1 and 2, no upscaler, 4K and 1080p: the grain should be gone at 2, the edge as glossy as at 0 (not
+//      blurrier). If the edge is too soft raise car_rt_refl_rules.h kDenoiseSecondFrom/To (the second pass) or kDenoiseFootprintTo; if grain
+//      remains lower them; if it still shows the cone's rays can go to 8 (kConeRays and the shader's loops), or the cone's early out can go.
+//   3b. the denoise's own things: the aux image's RGBA8 UAV store and the SRV read of it through the bindless heap (a Texture2D<float4> view of an
+//      R8G8B8A8_UNORM texture), the barriers between the passes (image <-> scratch: no flicker of old frames at the car's edge), the cost
+//      ("car rt denoise" in the pass timing against the estimate above), and the pause view (the car stands still there: the pattern too).
 //   4. the hidden-hit stand-in (the surface's mean colour x 0.4 at 0.85): the wing's underside on the lid should be a smooth dark band, no patches.
 //      The weight and the shade are push constants (tune.x, tune.y) and constants of the rules header.
 //   5. the self-hit rule (instance and facing, IsSelfHit): a lid or a bonnet that reflects nothing must stay the environment's colour at grazing
@@ -143,11 +175,11 @@ class CarRtRefl {
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
   bool OnHistory(plume::RenderCommandList* list, const HistoryInfo& info);
 
-  // The bindless slot of the image the paint draws of the frame after `history_frame` read, or car_selfrefl::kNoRtImage when the pass did
-  // not run for that history.
+  // The bindless slot of the image the paint draws of the frame after `history_frame` read (the denoise's result: the trace's image after two
+  // passes or none, the scratch image after one), or car_selfrefl::kNoRtImage when the pass did not run for that history.
   uint32_t SlotFor(uint64_t history_frame) const;
 
-  // The image goes back (the history's went: no car for 2 s, or the setting off).
+  // The images go back (the history's went: no car for 2 s, or the setting off).
   void ReleaseImage();
   uint64_t HeldBytes() const;
   // The text CarSelfRefl's census line ends with (the totals, and the interval since the last call); empty where there is no ray tracing.
@@ -162,19 +194,49 @@ class CarRtRefl {
     float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
   };
   static_assert(sizeof(Push) == 64);
+  // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
+  struct DenoisePush {
+    uint32_t slots[4];  // history slot, the image to filter, the aux image, the pass (0: taps one texel apart, 1: two)
+    float image[4];     // the image's size in texels
+    float lens[4];      // tan half the vertical field of view, the reflection ray's length, the tangent of the cone's half angle
+    float tune[4];      // the first pass's footprint where it starts and where it is in full, the second pass's
+  };
+  static_assert(sizeof(DenoisePush) == 64);
 
   // The register spaces of the layout: the bindless texture set, the output's, the car's structures' (hlsl CAR_RT_SPACE), the push block.
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;
   static constexpr uint32_t kSceneSet = 2;
   static constexpr uint32_t kPushSpace = 3;
+  // The denoise's layout has no structures' set: the texture set, the output's, the push block.
+  static constexpr uint32_t kDenoisePushSpace = 2;
+
+  // A descriptor set that names one or two images as storage images (a new set for a new texture: a set in use by the GPU is never rewritten).
+  struct OutputSet {
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    const plume::RenderTexture* first = nullptr;
+    const plume::RenderTexture* second = nullptr;
+  };
 
   bool MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene);
+  bool MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes);
   std::unique_ptr<plume::RenderPipeline> MakePipeline();
+  std::unique_ptr<plume::RenderPipeline> MakeDenoisePipeline();
   plume::RenderPipeline* Pipeline();
+  // The denoise's pipeline when it is made, else null (the frame goes on with the raw image: the denoise is never waited for).
+  plume::RenderPipeline* DenoisePipeline();
   // The pipeline is made (or being made): false while it is not, so the pass is not wanted for the frame (a live switch to on).
   bool PipelineReady();
+  // The trace's image and aux image, and the set that names them.
   bool EnsureOutput(uint32_t width, uint32_t height);
+  // The scratch image of the denoise and the sets of its two passes; false: no denoise this frame (the images are released).
+  bool EnsureDenoiseImages(uint32_t width, uint32_t height);
+  bool EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second, const char* name);
+  void RetireSet(OutputSet& out);
+  void ReleaseScratch();
+  // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1.
+  void DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
+                       const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -187,26 +249,42 @@ class CarRtRefl {
   bool ready_ = false;          // layout and shader exist
   bool listed_ = false;         // the pipeline was listed (at the start, or in the background after it)
   bool pipeline_failed_ = false;
-  plume::RenderDescriptorSetBuilder output_builder_;
+  plume::RenderDescriptorSetBuilder output_builder_;  // u0 the image, u1 the aux image
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> shader_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;
 
-  // The output image and its descriptor set (a new set for a new texture: a set in use by the GPU is never rewritten).
+  // The denoise: its own layout and shader, and its pipeline in the host precache beside the trace's (key variant 1); optional: the trace runs
+  // without it.
+  bool denoise_ready_ = false;  // its layout and shader exist
+  bool denoise_failed_ = false;
+  plume::RenderDescriptorSetBuilder denoise_builder_;  // u0 the image the pass writes
+  std::unique_ptr<plume::RenderPipelineLayout> denoise_layout_;
+  std::unique_ptr<plume::RenderShader> denoise_shader_;
+  std::unique_ptr<plume::RenderPipeline> denoise_pipeline_;
+
+  // The images: the trace's output (what the paint reads after two denoise passes or none), the aux (hit distance, instance, N.V), the scratch
+  // (between the two denoise passes; what the paint reads after one), and the sets that name them as storage images.
   HostImage image_;
-  std::unique_ptr<plume::RenderDescriptorSet> output_set_;
-  const plume::RenderTexture* output_set_texture_ = nullptr;
+  HostImage aux_;
+  HostImage scratch_;
+  OutputSet trace_set_;   // u0 image_, u1 aux_
+  OutputSet first_set_;   // u0 scratch_
+  OutputSet final_set_;   // u0 image_
 
   // The frame.
   bool active_ = false;
   bool recorded_ = false;      // the image holds the trace of `recorded_frame_`'s history
   uint64_t recorded_frame_ = 0;
+  bool result_in_scratch_ = false;  // the paint reads the scratch image for that history (one denoise pass), else the trace's
 
   // The log and the totals.
   bool first_logged_ = false;
   bool no_scene_logged_ = false;
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
+  uint64_t denoise_runs_ = 0;   // frames the trace was denoised (one or two passes)
+  bool denoise_logged_ = false;
   uint64_t no_scene_ = 0;       // frames the pass was wanted but the scene had no structures
   uint64_t not_ready_ = 0;      // frames it was wanted but the pipeline was still being made
   uint64_t census_passes_ = 0;

@@ -592,6 +592,9 @@ larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 # The ray traced half (car_rt_refl.h): one compute pass over the history image with inline ray queries against the car's structures
 # (car_rt_scene.h). Shader Model 6.5, DXIL only (larecomp_gpu_host_shader_rt: feat/car-rt-scene's function): Vulkan has no ray queries yet.
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
+# Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays). Built DXIL only
+# beside the trace (the pass runs only where the trace does), through the same function.
+larecomp_gpu_host_shader_rt(car_rt_refl_denoise_cs cs_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

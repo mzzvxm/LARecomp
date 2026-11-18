@@ -30,14 +30,21 @@
 // which the mesh's smooth normal does not know) is a miss. The texel's weight is the sum of the rays' over the number of rays, its colour
 // their weighted mean. After the first two rays (the outer pair) that found nothing the inner two are not cast.
 //
+// A SECOND OUTPUT, for the denoise that follows (car_rt_refl_denoise_cs.hlsl, car_rt_refl_rules.h "The denoise"): g_aux (RGBA8_UNORM, the same
+// size) holds, for a texel with data, x the hit distance (sqrt of the mean over the rays that hit / the ray's length; 0 where none did), y the
+// instance of the primary ray's hit / 255, z N.V of the surface, w 1; all 0 where the texel has no data.
+//
 // Shader Model 6.5, inline ray queries (DXR tier 1.1). The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0:
-// the history), set 1 the output (u0, space 1), set 2 the car's acceleration structures (CAR_RT_SPACE 2), the push block (b0, space 3).
+// the history), set 1 the outputs (u0 the image, u1 the aux, space 1), set 2 the car's acceleration structures (CAR_RT_SPACE 2), the push
+// block (b0, space 3).
 
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
+#include "car_rt_refl_common.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
 RWTexture2D<float4> g_output : register(u0, space1);
+RWTexture2D<float4> g_aux : register(u1, space1);
 
 struct CarRtReflPush
 {
@@ -58,7 +65,6 @@ ConstantBuffer<CarRtReflPush> g_push : register(b0, space3);
 
 static const float kMinNv = 0.03;
 static const float kMinDepth = 0.05;
-static const float kMaxSlack = 0.05;
 static const float kVisibleFullShare = 0.5;
 static const float kMaxColour = 60000.0;
 static const float kNoData = 0.0;
@@ -68,34 +74,18 @@ static const float kSurfaceSpacing = 2.0;    // texels between the taps of the s
 static const float kTwoPi = 6.283185307179586;
 
 // ---------------------------------------------------------------------------------------------------------------------
-// the numbers of car_rt_refl_rules.h
+// the aux image (EncodeHitDistance, EncodeInstance of car_rt_refl_rules.h)
 // ---------------------------------------------------------------------------------------------------------------------
 
-// The spacing of half floats at t.
-float HalfStep(float t)
+// sqrt of the hit distance's share of the reach: more steps near the panel, where the cone is narrow; a hit never rounds to 0 (no hit).
+float EncodeHitDistance(float distance, float reach)
 {
-    return exp2(floor(log2(max(t, 6.2e-5))) - 10.0);
+    return distance > 0.0 ? max(sqrt(min(distance / max(reach, 1e-3), 1.0)), 1.0 / 255.0) : 0.0;
 }
 
-float SurfaceSlope(float nv)
+float EncodeInstance(uint instance)
 {
-    return min(sqrt(max(1.0 - nv * nv, 0.0)) / max(nv, 0.1), 8.0);
-}
-
-float Tolerance(float t, float pixelMeters, float footprint, float nv)
-{
-    const float slack = min(footprint * pixelMeters * SurfaceSlope(nv), kMaxSlack);
-    return HalfStep(t) + 0.01 + 0.005 * t + slack;
-}
-
-float PixelMeters(float t, float tanY, float edge)
-{
-    return t * 2.0 * tanY / max(edge, 1.0);
-}
-
-float MatchWeight(float texelDistance, float t, float tolerance)
-{
-    return texelDistance > 0.0 ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - t)) : 0.0;
+    return float(min(instance, 255u)) / 255.0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -201,13 +191,15 @@ float3 SurfaceMean(Texture2D<float4> history, uint2 texel, float t, float nv)
 }
 
 // One ray of the cone. False: a miss (nothing of the car in reach, a hit beyond the weight's fade, or the panel the ray left). True: `fade`
-// the fade of its distance, `visible` how much of its hit the history shows (0..1), `seen` the colour the history shows there.
+// the fade of its distance, `visible` how much of its hit the history shows (0..1), `seen` the colour the history shows there, `hitDistance`
+// the distance along the ray (for the aux image).
 bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float reach, uint originInstance, uint originPrimitive,
-              float3 originNormal, out float fade, out float visible, out float3 seen)
+              float3 originNormal, out float fade, out float visible, out float3 seen, out float hitDistance)
 {
     fade = 0.0;
     visible = 0.0;
     seen = float3(0.0, 0.0, 0.0);
+    hitDistance = 0.0;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
@@ -241,6 +233,7 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     const float coverage = VisibleAt(history, hit, hitNv, seen);
     fade = faded;
     visible = saturate(coverage / kVisibleFullShare);
+    hitDistance = distance;
     return true;
 }
 
@@ -248,8 +241,9 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
 // one texel
 // ---------------------------------------------------------------------------------------------------------------------
 
-float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own)
+float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
 {
+    aux = float4(0.0, 0.0, 0.0, 0.0);
     const float t = own.a;
     const float divisor = g_push.lens.z;
     const float2 render = g_push.image.zw;
@@ -290,6 +284,8 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own)
     {
         return float4(0.0, 0.0, 0.0, kNoData);  // a surface of the car, but not the one the picture shows here
     }
+    // the texel has data from here on: what the denoise needs to know about it (its hit distance below, where a ray hit)
+    aux = float4(0.0, EncodeInstance(primaryInstance), saturate(nv), 1.0);
     if (nv < kMinNv)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: the paint does not trace it either (a miss: nothing changes)
@@ -305,6 +301,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own)
     float fade[4] = {0.0, 0.0, 0.0, 0.0};      // 0: the ray found nothing (or was not cast)
     float visible[4] = {0.0, 0.0, 0.0, 0.0};
     float3 seen[4] = {float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0)};
+    float distances[4] = {0.0, 0.0, 0.0, 0.0};
     bool found = false;
     [unroll]
     for (int slot = 0; slot < 4; ++slot)
@@ -322,11 +319,13 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own)
         float f = 0.0;
         float v = 0.0;
         float3 c = float3(0.0, 0.0, 0.0);
-        if (TraceRay(history, origin, direction2, reach, primaryInstance, primaryPrimitive, normal, f, v, c))
+        float d = 0.0;
+        if (TraceRay(history, origin, direction2, reach, primaryInstance, primaryPrimitive, normal, f, v, c, d))
         {
             fade[ray] = f;
             visible[ray] = v;
             seen[ray] = c;
+            distances[ray] = d;
             found = true;
         }
     }
@@ -365,6 +364,16 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own)
         return float4(0.0, 0.0, 0.0, 1.0);
     }
     const float3 colour = min(max(colourSum / weightSum, 0.0), kMaxColour);
+    // the mean distance of the rays that hit: how wide the cone is where it meets the part (the denoise's strength)
+    float distanceSum = 0.0;
+    float hitCount = 0.0;
+    [unroll]
+    for (int m = 0; m < 4; ++m)
+    {
+        distanceSum += fade[m] > 0.0 ? distances[m] : 0.0;
+        hitCount += fade[m] > 0.0 ? 1.0 : 0.0;
+    }
+    aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);
     return float4(colour, visibleSum >= 0.5 * weightSum ? 1.0 + weight : -(1.0 + weight));
 }
 
@@ -379,10 +388,12 @@ void main(uint3 id : SV_DispatchThreadID)
     Texture2D<float4> history = g_textures[g_push.slots.x];
     const float4 own = history.Load(int3(id.xy, 0));
     float4 result = float4(0.0, 0.0, 0.0, kNoData);
-    // Most of the image is no vehicle (alpha 0): one read and one write. A wave with no vehicle texel in it never reaches the rays.
+    float4 aux = float4(0.0, 0.0, 0.0, 0.0);
+    // Most of the image is no vehicle (alpha 0): one read and two writes. A wave with no vehicle texel in it never reaches the rays.
     if (own.a > 0.0 && own.a < 60000.0)
     {
-        result = TraceTexel(history, id.xy, own);
+        result = TraceTexel(history, id.xy, own, aux);
     }
     g_output[id.xy] = result;
+    g_aux[id.xy] = aux;
 }

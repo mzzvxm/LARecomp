@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -25,6 +27,7 @@
 // The compute shader's blob: built for D3D12 only (larecomp_gpu_host_shader_rt: cs_6_5 DXIL), the one backend that traces the car.
 #if defined(LARECOMP_GPU_HAS_D3D12)
 #include "car_rt_refl_cs.hlsl.dxil.h"  // CHECK: the name and variable (g_car_rt_refl_cs_dxil) larecomp_gpu_host_shader_rt gives, as the other host shaders'
+#include "car_rt_refl_denoise_cs.hlsl.dxil.h"  // CHECK: likewise g_car_rt_refl_denoise_cs_dxil (larecomp_gpu_host_shader_rt(car_rt_refl_denoise_cs cs_6_0))
 #define MCLA_CAR_RT_REFL_HAS_SHADER 1
 #else
 #define MCLA_CAR_RT_REFL_HAS_SHADER 0
@@ -55,6 +58,14 @@ REXCVAR_DEFINE_DOUBLE(
     .range(0.0, 12.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
+    mcla_gpu_car_selfrefl_rt_denoise, 2, "MCLA/GPU",
+    "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
+    "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
+    "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.")
+    .debug_only()
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
     mcla_gpu_car_selfrefl_rt_parts, 7, "MCLA/GPU",
     "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
     "driver. 7 (the default): the body, the glass and the tyres. Live.")
@@ -68,6 +79,7 @@ namespace {
 
 constexpr const char* kPrefix = "[car rt refl]";
 constexpr const char* kPipelineName = "car rt refl";
+constexpr const char* kDenoiseName = "car rt refl denoise";
 constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
 constexpr uint32_t kGroup = 8;  // the shader's thread group is 8 x 8
 
@@ -77,6 +89,7 @@ LiveText& Setting() {
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
+uint64_t DenoiseKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 1); }
 
 }  // namespace
 
@@ -109,12 +122,21 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
     return;
   }
   ready_ = true;
+  // The denoise is optional: the trace runs, and its raw image is read, where its layout or shader could not be made.
+  denoise_ready_ = MakeDenoiseLayoutAndShader(device, passes);
+  denoise_failed_ = false;
+  if (!denoise_ready_) {
+    passes.precache().Note("ray traced car self-reflections: the denoise's layout or shader could not be made (the raw trace is read)", 0);
+  }
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
   if (reflection_on_at_start && car_rt_refl::SettingOf(Setting().Get()) == car_rt_refl::Setting::kAuto) {
-    const bool added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); });
+    uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
+    if (denoise_ready_) {
+      added += passes.precache().Add(DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); }) ? 1u : 0u;
+    }
     listed_ = true;
-    passes.precache().Note("ray traced car self-reflections: on (auto) where the car self-reflections are", added ? 1u : 0u);
+    passes.precache().Note("ray traced car self-reflections: on (auto) where the car self-reflections are", added);
   } else {
     passes.precache().Note("ray traced car self-reflections: made when first wanted", 0);
   }
@@ -124,12 +146,13 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
 #if MCLA_CAR_RT_REFL_HAS_SHADER
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
+  output_builder_.addReadWriteTexture(1);  // u1: the aux image (hit distance, instance, N.V) for the denoise
   output_builder_.end();
 
   plume::RenderPipelineLayoutBuilder builder;
   builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
   const uint32_t texture_set = builder.addDescriptorSet(heap_->texture_set_builder());  // space 0: Texture2D<float4>[]
-  const uint32_t output_set = builder.addDescriptorSet(output_builder_);                // space 1: the output
+  const uint32_t output_set = builder.addDescriptorSet(output_builder_);                // space 1: the outputs
   const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());                 // space 2: the car's structures (CAR_RT_SPACE)
   builder.addPushConstant(0, kPushSpace, sizeof(Push), plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
@@ -151,6 +174,35 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
 #endif
 }
 
+bool CarRtRefl::MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes) {
+#if MCLA_CAR_RT_REFL_HAS_SHADER
+  denoise_builder_.begin();
+  denoise_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
+  denoise_builder_.end();
+
+  plume::RenderPipelineLayoutBuilder builder;
+  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  const uint32_t texture_set = builder.addDescriptorSet(heap_->texture_set_builder());  // space 0: Texture2D<float4>[] (the history, the images)
+  const uint32_t output_set = builder.addDescriptorSet(denoise_builder_);               // space 1: the output
+  builder.addPushConstant(0, kDenoisePushSpace, sizeof(DenoisePush), plume::RenderShaderStageFlag::COMPUTE);
+  builder.end();
+  if (texture_set != kTextureSet || output_set != kOutputSet) {
+    REXLOG_ERROR("{} the denoise layout's sets are not in the order the shader declares them", kPrefix);
+    return false;
+  }
+  denoise_layout_ = device.CreatePipelineLayout(builder, "car rt refl denoise layout");
+  if (!denoise_layout_) {
+    return false;
+  }
+  denoise_shader_ = passes.CreateShader(g_car_rt_refl_denoise_cs_dxil, sizeof(g_car_rt_refl_denoise_cs_dxil), "car_rt_refl_denoise_cs");
+  return denoise_shader_ != nullptr;
+#else
+  (void)device;
+  (void)passes;
+  return false;
+#endif
+}
+
 void CarRtRefl::Shutdown() {
   // The host builder's function names this object's layout and shader: stop it first.
   if (passes_) {
@@ -158,11 +210,18 @@ void CarRtRefl::Shutdown() {
   }
   // The GPU is idle and the heap goes later: the slot is not handed back (CarSelfRefl::Shutdown).
   image_ = HostImage{};
-  output_set_.reset();
-  output_set_texture_ = nullptr;
+  aux_ = HostImage{};
+  scratch_ = HostImage{};
+  trace_set_ = OutputSet{};
+  first_set_ = OutputSet{};
+  final_set_ = OutputSet{};
   pipeline_.reset();
   shader_.reset();
   layout_.reset();
+  denoise_pipeline_.reset();
+  denoise_shader_.reset();
+  denoise_layout_.reset();
+  denoise_ready_ = false;
   ready_ = false;
   recorded_ = false;
   active_ = false;
@@ -180,6 +239,26 @@ void CarRtRefl::Shutdown() {
 
 std::unique_ptr<plume::RenderPipeline> CarRtRefl::MakePipeline() {
   return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), shader_.get(), kGroup, kGroup, 1), kPipelineName);
+}
+
+std::unique_ptr<plume::RenderPipeline> CarRtRefl::MakeDenoisePipeline() {
+  return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), denoise_shader_.get(), kGroup, kGroup, 1),
+                                        kDenoiseName);
+}
+
+plume::RenderPipeline* CarRtRefl::DenoisePipeline() {
+  if (denoise_pipeline_) {
+    return denoise_pipeline_.get();
+  }
+  if (!denoise_ready_ || denoise_failed_ || !passes_->precache().Ready(DenoiseKey())) {
+    return nullptr;  // not made yet (or never): this frame goes on with the raw image
+  }
+  denoise_pipeline_ = passes_->precache().Acquire(DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); });
+  if (!denoise_pipeline_) {
+    denoise_failed_ = true;
+    REXLOG_ERROR("{} the denoise's pipeline could not be made: the raw trace is read this session", kPrefix);
+  }
+  return denoise_pipeline_.get();
 }
 
 plume::RenderPipeline* CarRtRefl::Pipeline() {
@@ -209,6 +288,9 @@ bool CarRtRefl::PipelineReady() {
     // Off at the start, wanted now: made on a worker of their own.
     std::vector<HostPrecache::Item> fresh;
     fresh.push_back({PipelineKey(), kPipelineName, [this] { return MakePipeline(); }});
+    if (denoise_ready_) {
+      fresh.push_back({DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); }});
+    }
     listed_ = true;
     precache.AddLive("ray traced car self-reflections", std::move(fresh));
     REXLOG_INFO("{} ray traced car self-reflections were not listed at the start: the pipeline is made in the background, and the pass runs "
@@ -266,6 +348,21 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   const float length = car_rt_refl::ClampedLength(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_length)));
   const uint32_t parts = uint32_t(std::clamp<int32_t>(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_parts), 1, int32_t(car_rt_refl::kPartAll)));
   const float gloss = car_rt_refl::ClampedGloss(float(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_gloss)));
+  const float tan_half = car_rt_refl::ConeTan(gloss);
+
+  // The denoise (car_rt_refl.h DENOISE): the passes this frame, where the setting asks for them, the cone has width, the pipeline is made and
+  // the scratch image is there; else the raw trace is what the paint reads.
+  int denoise_passes = car_rt_refl::DenoisePassCount(int(REXCVAR_GET(mcla_gpu_car_selfrefl_rt_denoise)), tan_half);
+  plume::RenderPipeline* denoise = denoise_passes > 0 ? DenoisePipeline() : nullptr;
+  if (denoise && !EnsureDenoiseImages(history.width, history.height)) {
+    denoise = nullptr;
+  }
+  if (!denoise) {
+    denoise_passes = 0;
+    if (scratch_.texture) {
+      ReleaseScratch();  // not needed while the denoise is off or cannot run
+    }
+  }
 
   Push push = {};
   push.slots[0] = history.slot;
@@ -283,28 +380,64 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.tune[0] = car_rt_refl::kShade;
   push.tune[1] = car_rt_refl::kHiddenWeight;
   push.tune[2] = car_rt_refl::kFadeFrom;
-  push.tune[3] = car_rt_refl::ConeTan(gloss);
+  push.tune[3] = tan_half;
+
+  using Layout = plume::RenderTextureLayout;
+  namespace Stage = plume::RenderBarrierStage;
+  // Moves up to four images to their layouts in one barrier and notes it (the layout the next pass finds them in).
+  auto transition = [&](plume::RenderBarrierStages stages, std::initializer_list<std::pair<HostImage*, Layout>> changes) {
+    plume::RenderTextureBarrier barriers[4];
+    uint32_t count = 0;
+    for (const auto& change : changes) {
+      barriers[count++] = plume::RenderTextureBarrier(change.first->texture.get(), change.second);
+      change.first->layout = change.second;
+    }
+    list->barriers(stages, nullptr, 0, barriers, count);
+  };
 
   pass_timing_->Mark(list, "car rt refl");
-  // The history is read by a compute shader here (and by the paint's pixel shaders later): a layout both can read. The image is written
-  // as a storage image, and read by the paint's pixel shaders afterwards.
-  list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
-                 plume::RenderTextureBarrier(history.texture.get(), plume::RenderTextureLayout::SHADER_READ));
-  history.layout = plume::RenderTextureLayout::SHADER_READ;
-  list->barriers(plume::RenderBarrierStage::COMPUTE,
-                 plume::RenderTextureBarrier(image_.texture.get(), plume::RenderTextureLayout::GENERAL));
-  image_.layout = plume::RenderTextureLayout::GENERAL;
+  // The history is read by a compute shader here (and by the paint's pixel shaders later): a layout both can read. The images are written
+  // as storage images; the one the paint reads is read by its pixel shaders afterwards.
+  transition(Stage::GRAPHICS_AND_COMPUTE, {{&history, Layout::SHADER_READ}});
+  transition(Stage::COMPUTE, {{&image_, Layout::GENERAL}, {&aux_, Layout::GENERAL}});
   // CHECK: CarRtScene leaves the top level built, and readable by a compute shader, when View().valid (a UAV barrier after its build).
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
-  list->setComputeDescriptorSet(output_set_.get(), kOutputSet);
+  list->setComputeDescriptorSet(trace_set_.set.get(), kOutputSet);
   list->setComputeDescriptorSet(view.set, kSceneSet);
   list->setPipeline(pipeline);
   list->setComputePushConstants(0, &push, 0, sizeof(push));
   list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                 plume::RenderTextureBarrier(image_.texture.get(), plume::RenderTextureLayout::SHADER_READ));
-  image_.layout = plume::RenderTextureLayout::SHADER_READ;
+
+  result_in_scratch_ = false;
+  if (denoise_passes == 0) {
+    transition(Stage::GRAPHICS, {{&image_, Layout::SHADER_READ}});
+  } else {
+    // First pass: the trace's image (and the aux image) are read, the scratch image written. Second pass: the scratch is read, the trace's image
+    // written again. One pass leaves its result in the scratch image.
+    pass_timing_->Mark(list, "car rt denoise");
+    transition(Stage::COMPUTE, {{&image_, Layout::SHADER_READ}, {&aux_, Layout::SHADER_READ}, {&scratch_, Layout::GENERAL}});
+    DispatchDenoise(list, denoise, history.slot, image_, first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half);
+    if (denoise_passes >= 2) {
+      transition(Stage::COMPUTE, {{&scratch_, Layout::SHADER_READ}, {&image_, Layout::GENERAL}});
+      DispatchDenoise(list, denoise, history.slot, scratch_, final_set_, 1, history.width, history.height, float(info.tan_y), length, tan_half);
+      transition(Stage::GRAPHICS, {{&image_, Layout::SHADER_READ}});
+    } else {
+      result_in_scratch_ = true;
+      transition(Stage::GRAPHICS, {{&scratch_, Layout::SHADER_READ}});
+    }
+    ++denoise_runs_;
+    if (!denoise_logged_) {
+      denoise_logged_ = true;
+      REXLOG_INFO("{} the first denoise: frame {}, {} pass{} over the {}x{} image (the cone's grain: car_rt_refl_rules.h), scratch image {:.1f} MiB, "
+                  "aux image {:.1f} MiB",
+                  kPrefix, info.frame, denoise_passes, denoise_passes == 1 ? "" : "es", history.width, history.height,
+                  double(TextureBytes(scratch_.width, scratch_.height, 1, scratch_.format)) / (1024.0 * 1024.0),
+                  double(TextureBytes(aux_.width, aux_.height, 1, aux_.format)) / (1024.0 * 1024.0));
+    }
+  }
+  // What follows is not this pass's: closes its timing segment (PassTiming labels everything up to the next mark).
+  pass_timing_->Mark(list, "after car rt refl");
 
   recorded_ = true;
   recorded_frame_ = info.frame;
@@ -320,56 +453,147 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   return true;
 }
 
+void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
+                                const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length,
+                                float tan_half) {
+  DenoisePush push = {};
+  push.slots[0] = history_slot;
+  push.slots[1] = input.slot;
+  push.slots[2] = aux_.slot;
+  push.slots[3] = pass;
+  push.image[0] = float(width);
+  push.image[1] = float(height);
+  push.lens[0] = tan_y;
+  push.lens[1] = length;
+  push.lens[2] = tan_half;
+  push.tune[0] = car_rt_refl::kDenoiseFootprintFrom;
+  push.tune[1] = car_rt_refl::kDenoiseFootprintTo;
+  push.tune[2] = car_rt_refl::kDenoiseSecondFrom;
+  push.tune[3] = car_rt_refl::kDenoiseSecondTo;
+  list->setComputePipelineLayout(denoise_layout_.get());
+  list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
+  list->setComputeDescriptorSet(output.set.get(), kOutputSet);
+  list->setPipeline(pipeline);
+  list->setComputePushConstants(0, &push, 0, sizeof(push));
+  list->dispatch((width + kGroup - 1) / kGroup, (height + kGroup - 1) / kGroup, 1);
+}
+
 bool CarRtRefl::EnsureOutput(uint32_t width, uint32_t height) {
   constexpr plume::RenderTextureFlags kFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
-  if (!passes_->EnsureImage(image_, width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "car rt refl image", kFlags)) {
+  const plume::RenderTexture* image_before = image_.texture.get();
+  const plume::RenderTexture* aux_before = aux_.texture.get();
+  // CHECK: the aux image is R8G8B8A8_UNORM with STORAGE | UNORDERED_ACCESS: written by the trace as a typed UAV (u1) and read by the denoise through
+  // the bindless Texture2D<float4> heap (HostPasses::EnsureImage gives it a slot and a view of its own format).
+  if (!passes_->EnsureImage(image_, width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "car rt refl image", kFlags) ||
+      !passes_->EnsureImage(aux_, width, height, plume::RenderFormat::R8G8B8A8_UNORM, "car rt refl aux", kFlags)) {
+    // EnsureImage released the one that failed and logged it; the other goes too (the pass needs both).
+    ReleaseImage();
     return false;
   }
-  if (!output_set_ || output_set_texture_ != image_.texture.get()) {
-    // A new texture: a new set for it; the old one goes after the lists that name it.
-    if (output_set_) {
-      frames_->Retire(std::move(output_set_));
-    }
-    output_set_ = device_->CreateDescriptorSet(output_builder_, 1, 0, "car rt refl output set");
-    if (!output_set_) {
-      passes_->ReleaseImage(image_);
-      output_set_texture_ = nullptr;
-      return false;
-    }
-    output_set_->setTexture(0, image_.texture.get(), plume::RenderTextureLayout::GENERAL, image_.view.get());
-    output_set_texture_ = image_.texture.get();
+  // A new texture is a new set for it (the old one goes after the lists that name it); the denoise's last pass writes the image too.
+  if (image_.texture.get() != image_before) {
+    RetireSet(final_set_);
+    RetireSet(trace_set_);
+  }
+  if (aux_.texture.get() != aux_before) {
+    RetireSet(trace_set_);
+  }
+  if (!EnsureSet(trace_set_, output_builder_, image_, &aux_, "car rt refl output set")) {
+    ReleaseImage();
+    return false;
   }
   if (image_for_[0] != width || image_for_[1] != height) {
     image_for_[0] = width;
     image_for_[1] = height;
-    REXLOG_INFO("{} image {}x{} R16G16B16A16_FLOAT ({:.1f} MiB)", kPrefix, width, height, double(HeldBytes()) / (1024.0 * 1024.0));
+    REXLOG_INFO("{} image {}x{} R16G16B16A16_FLOAT and aux image R8G8B8A8_UNORM ({:.1f} MiB, with the denoise's scratch image when it runs)", kPrefix,
+                width, height, double(HeldBytes()) / (1024.0 * 1024.0));
   }
   return true;
 }
 
+bool CarRtRefl::EnsureDenoiseImages(uint32_t width, uint32_t height) {
+  constexpr plume::RenderTextureFlags kFlags = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+  const plume::RenderTexture* before = scratch_.texture.get();
+  if (!passes_->EnsureImage(scratch_, width, height, plume::RenderFormat::R16G16B16A16_FLOAT, "car rt refl scratch", kFlags)) {
+    RetireSet(first_set_);
+    return false;
+  }
+  if (scratch_.texture.get() != before) {
+    RetireSet(first_set_);
+  }
+  if (!EnsureSet(first_set_, denoise_builder_, scratch_, nullptr, "car rt refl denoise first set") ||
+      !EnsureSet(final_set_, denoise_builder_, image_, nullptr, "car rt refl denoise final set")) {
+    ReleaseScratch();
+    return false;
+  }
+  return true;
+}
+
+bool CarRtRefl::EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second,
+                          const char* name) {
+  const plume::RenderTexture* first_texture = first.texture.get();
+  const plume::RenderTexture* second_texture = second ? second->texture.get() : nullptr;
+  if (out.set && out.first == first_texture && out.second == second_texture) {
+    return true;
+  }
+  RetireSet(out);
+  out.set = device_->CreateDescriptorSet(builder, second ? 2u : 1u, 0, name);
+  if (!out.set) {
+    return false;
+  }
+  out.set->setTexture(0, first_texture, plume::RenderTextureLayout::GENERAL, first.view.get());
+  if (second) {
+    out.set->setTexture(1, second_texture, plume::RenderTextureLayout::GENERAL, second->view.get());
+  }
+  out.first = first_texture;
+  out.second = second_texture;
+  return true;
+}
+
+void CarRtRefl::RetireSet(OutputSet& out) {
+  if (out.set && frames_) {
+    frames_->Retire(std::move(out.set));
+  }
+  out = OutputSet{};
+}
+
+void CarRtRefl::ReleaseScratch() {
+  if (!passes_) {
+    return;
+  }
+  passes_->ReleaseImage(scratch_);
+  RetireSet(first_set_);
+}
+
 uint32_t CarRtRefl::SlotFor(uint64_t history_frame) const {
-  if (!recorded_ || recorded_frame_ != history_frame || !image_.texture || image_.slot == kNoSlot) {
+  const HostImage& result = result_in_scratch_ ? scratch_ : image_;
+  if (!recorded_ || recorded_frame_ != history_frame || !result.texture || result.slot == kNoSlot) {
     return car_selfrefl::kNoRtImage;
   }
-  return image_.slot;
+  return result.slot;
 }
 
 void CarRtRefl::ReleaseImage() {
   recorded_ = false;
+  result_in_scratch_ = false;
   if (!passes_) {
     return;
   }
   passes_->ReleaseImage(image_);
-  if (output_set_ && frames_) {
-    frames_->Retire(std::move(output_set_));
-  }
-  output_set_.reset();
-  output_set_texture_ = nullptr;
+  passes_->ReleaseImage(aux_);
+  passes_->ReleaseImage(scratch_);
+  RetireSet(trace_set_);
+  RetireSet(first_set_);
+  RetireSet(final_set_);
   image_for_[0] = image_for_[1] = 0;
 }
 
 uint64_t CarRtRefl::HeldBytes() const {
-  return image_.texture ? TextureBytes(image_.width, image_.height, 1, image_.format) : 0;
+  uint64_t bytes = 0;
+  for (const HostImage* held : {&image_, &aux_, &scratch_}) {
+    bytes += held->texture ? TextureBytes(held->width, held->height, 1, held->format) : 0;
+  }
+  return bytes;
 }
 
 std::string CarRtRefl::CensusText() {
@@ -378,9 +602,9 @@ std::string CarRtRefl::CensusText() {
   }
   const uint64_t interval = passes_run_ - census_passes_;
   census_passes_ = passes_run_;
-  return std::format("; ray traced: {} passes since the start ({} in the interval), {} frames wanted but without the car's structures, {} "
+  return std::format("; ray traced: {} passes since the start ({} in the interval, {} denoised), {} frames wanted but without the car's structures, {} "
                      "waiting for the pipeline",
-                     passes_run_, interval, no_scene_, not_ready_);
+                     passes_run_, interval, denoise_runs_, no_scene_, not_ready_);
 }
 
 }  // namespace mcla::gpu
