@@ -192,7 +192,7 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
     return false;
   }
   file_ = rex::memory::MappedMemory::Open(path_, rex::memory::MappedMemory::Mode::kRead);
-  if (!file_ || !file_->data()) {
+  if (!file_ || !file_->GetData()) {
     REXLOG_ERROR("[gpu] shader pack: cannot open {}", rex::path_to_utf8(path_));
     file_.reset();
     path_.clear();
@@ -207,8 +207,8 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
   folder_ = folder;
   // The exact size and hash name the build of the pack a log was made with.
   REXLOG_INFO("[gpu] shader pack: {} shaders from {} ({} bytes, xxh3 {:016x}, {})",
-              entries_.size(), rex::path_to_utf8(path_), file_->size(),
-              XXH3_64bits(file_->data(), file_->size()), Dxil() ? "DXIL" : "SPIR-V");
+              entries_.size(), rex::path_to_utf8(path_), file_->GetSize(),
+              XXH3_64bits(file_->GetData(), file_->GetSize()), Dxil() ? "DXIL" : "SPIR-V");
   if (const uint64_t pending = pending_lookups_.exchange(0)) {
     REXLOG_WARN("[gpu] shader pack: {} shader lookups were answered before it was attached "
                 "(each skipped a draw)",
@@ -219,8 +219,8 @@ bool ShaderStore::Attach(const std::filesystem::path& folder) {
 }
 
 bool ShaderStore::Validate() {
-  const uint8_t* data = file_->data();
-  const uint64_t size = file_->size();
+  const uint8_t* data = file_->GetData();
+  const uint64_t size = file_->GetSize();
   const auto fail = [&](const std::string& why) {
     REXLOG_ERROR("[gpu] shader pack {}: {}", rex::path_to_utf8(path_), why);
     return false;
@@ -326,7 +326,7 @@ void ShaderStore::GetVertexElements(const Entry& entry, std::vector<VertexElemen
   if (!file_ || entry.velem_count == 0) {
     return;
   }
-  const uint8_t* p = file_->data() + entry.velem_offset;
+  const uint8_t* p = file_->GetData() + entry.velem_offset;
   out.reserve(entry.velem_count);
   for (uint32_t i = 0; i < entry.velem_count; ++i) {
     // address:12 | usage:4 | usage_index:4, as the legacy pack reader decodes it.
@@ -386,7 +386,7 @@ plume::RenderShader* ShaderStore::GetShader(const Entry& entry, uint32_t variant
     }
     const Blob& blob = packed ? (Dxil() ? packed_blobs->dxil : packed_blobs->spirv)
                               : (Dxil() ? entry.dxil[variant] : entry.spirv[variant]);
-    const uint8_t* base = packed ? variants_file_->data() : file_->data();
+    const uint8_t* base = packed ? variants_file_->GetData() : file_->GetData();
     if (!VerifyBlob(entry, blob, !Dxil(), base)) {
       slot.result = ShaderResult::kBadBlob;
     } else {
@@ -449,12 +449,12 @@ bool ShaderStore::LoadVariants(std::string* why) {
     return fail("the shader pack is not attached");
   }
   variants_file_ = rex::memory::MappedMemory::Open(variants_path_, rex::memory::MappedMemory::Mode::kRead);
-  if (!variants_file_ || !variants_file_->data()) {
+  if (!variants_file_ || !variants_file_->GetData()) {
     return fail("cannot open " + rex::path_to_utf8(variants_path_) +
                 " (the shader pack build writes it beside the main pack)");
   }
-  const uint8_t* data = variants_file_->data();
-  const uint64_t size = variants_file_->size();
+  const uint8_t* data = variants_file_->GetData();
+  const uint64_t size = variants_file_->GetSize();
   if (size < kHeaderBytes || std::memcmp(data, pack::kVariantPackMagic, 4) != 0) {
     return fail("not a shader variant pack");
   }

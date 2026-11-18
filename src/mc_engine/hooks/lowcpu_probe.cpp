@@ -42,7 +42,10 @@
 #include <rex/chrono.h>
 #include <rex/ppc/recompiled_code.h>
 #include <rex/kernel/title_runtime.h>
-#include <rex/system/export_resolver.h>
+#include <rex/kernel/module.h>
+#include <rex/kernel/object/module_object.h>
+#include <rex/kernel/object/object_pin.h>
+#include <rex/kernel/object/object_table.h>
 
 #include <atomic>
 #include <chrono>
@@ -110,11 +113,19 @@ void RaiseMax(std::atomic<uint64_t>& max, uint64_t value) {
     }
 }
 
+// The guest address of KeTimeStampBundle: the variable export 0xAD of the xboxkrnl module, which the module registry
+// names and the object table holds (the export resolver of 0.10 is not public any more).
 uint32_t FindBundle() {
     rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
-    auto* resolver = runtime ? runtime->export_resolver() : nullptr;
-    auto* entry = resolver ? resolver->GetExportByOrdinal("xboxkrnl.exe", 0x00AD) : nullptr;
-    return entry ? entry->variable_ptr : 0;
+    if (!runtime) {
+        return 0;
+    }
+    const auto handle = runtime->GetModuleRegistry().GetModule("xboxkrnl.exe");
+    if (!handle) {
+        return 0;
+    }
+    auto module = runtime->GetObjectTable().Get<rex::kernel::ModuleObject>(*handle);
+    return module ? module->GetVariable(0x00AD) : 0;
 }
 
 // A thread of this process by its description, opened for query; nullptr if none.

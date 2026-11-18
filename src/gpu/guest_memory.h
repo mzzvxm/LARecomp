@@ -39,7 +39,6 @@
 #include <mutex>
 #include <utility>
 #include <vector>
-#include <rex/kernel/heap.h>
 
 namespace rex::kernel {
 class GuestAddressSpace;

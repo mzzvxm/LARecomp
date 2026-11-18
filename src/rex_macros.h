@@ -31,16 +31,16 @@
 	type(&name)[count] = *reinterpret_cast<type(*)[count]>(0x100000000 + address)
 
 #define REX_PPC_CONTEXT_REF(name) \
-	auto current_thread = rex::system::XThread::GetCurrentThread(); \
-	assert(current_thread != nullptr); \
-	auto context = current_thread->thread_state()->context(); \
+	auto* current_thread_state = rex::kernel::ThreadState::Get(); \
+	assert(current_thread_state != nullptr); \
+	auto* context = current_thread_state->GetContext(); \
 	assert(context != nullptr); \
 	PPCContext& __restrict name = *context
 
 #define REX_PPC_MEMBASE_PTR(name) \
 auto* runtime = REX_RUNTIME(); \
 auto* memory = larecomp::guest::AddressSpace(runtime); \
-uint8_t* name = memory->virtual_membase()
+uint8_t* name = memory->GetVirtualMembase()
 
 
 /* ---------- definitions */
