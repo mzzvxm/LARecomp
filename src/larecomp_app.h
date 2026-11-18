@@ -63,6 +63,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   rex::Result<void> OnConfigure(rex::SettingsRegistry& settings) override;
   std::span<const rex::CLIAction> GetActions() const override;
   rex::Result<void> OnAction(const rex::CLIActionHit& hit) override;
+  void OnModules(std::vector<std::string>& modules) override;
   void OnRegisterModules(std::vector<rex::IModule*>& modules) override;
   rex::Result<void> OnInit() override;
   rex::Result<void> OnTitleLaunch(rex::kernel::TitleRuntime& title) override;

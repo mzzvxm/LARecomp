@@ -42,7 +42,7 @@
 {"readback_resolve_rules", "gpu.xenos.readback_resolve_rules"},
 {"resolve_unscaled_copy_rules", "gpu.xenos.resolve_unscaled_copy_rules"},
 {"resolve_unscaled_copy_batch", "gpu.xenos.resolve_unscaled_copy_batch"},
-{"resolve_downscale_unit_layout", "gpu.xenos.resolve_downscale_unit_layout"},
+{"resolve_downscale_unit_layout", "gpu.xenos.resolve_downscale_unit_layout"},  // confirmed by the Xenia tier 1 port (default on, live)
 {"async_pipeline_wait_budget_ms", "gpu.xenos.async_pipeline_wait_budget_ms"},
 {"render_target_max_height", "gpu.xenos.render_target_max_height"},
 {"render_target_trim_seconds", "gpu.xenos.render_target_trim_seconds"},

@@ -242,11 +242,20 @@ rex::Result<void> LarecompApp::OnAction(const rex::CLIActionHit& hit) {
   return rex::Ok();
 }
 
+void LarecompApp::OnModules(std::vector<std::string>& modules) {
+  TitleApp::OnModules(modules);
+  // apu.driver is "larecomp" (below): nothing would ask for the SDL3 audio module, which the audio driver of
+  // mc_engine/audio_output.h wraps. The batch actions load no audio at all.
+  if (batch_ == BatchMode::kNone) {
+    modules.push_back(mcla::audio::kInnerModuleName);
+  }
+}
+
 void LarecompApp::OnRegisterModules(std::vector<rex::IModule*>& modules) {
   // The no-command-processor driver, selected by gpu.driver = larecomp (nocp_driver.h).
   modules.push_back(&mcla::native_gfx::nocp::Module());
-  // CHECK (L6): the audio fallback (NullOutputDriver of mc_engine/audio_output.h) becomes an IAudioDriver served by a
-  // code module registered here, selected by apu.driver; see 8.7 of the plan. The SDL3 driver is the normal one.
+  // The audio driver that never fails to open, selected by apu.driver = larecomp (audio_output.h).
+  modules.push_back(&mcla::audio::Module());
 }
 
 // -----------------------------------------------------------------------------------------------------------------
@@ -294,6 +303,10 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
     def("gpu.driver", "none");
     return;
   }
+
+  // The audio output: the SDK's apu.driver. "larecomp" wraps the SDL3 driver and turns a device that does not open (or an SDL audio
+  // system that does not start) into the SDK's own silent mix (audio_output.h); mcla_audio_output = null forces the silence.
+  def("apu.driver", std::string(mcla::audio::kDriverName));
 
   // The renderer: the SDK's gpu.driver. Plume with no emulated GPU is the default; a player (or the pause menu's
   // RENDERER row, or MigrateLegacyConfig) picks the SDK's Xenia GPU with any / d3d12 / vulkan.
