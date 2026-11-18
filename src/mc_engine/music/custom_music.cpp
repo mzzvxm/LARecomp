@@ -15,9 +15,9 @@
 #include "mc_engine/music/audio_dat.h"
 #include "mc_engine/music/wave_bank.h"
 
-// stb_image carries a raw-deflate decoder and its implementation is already
-// compiled into modloader/texture.cpp; the archive stores plain files deflated.
-#include "mc_engine/modloader/stb_image.h"
+// The archive stores plain files deflated: modloader's InflateRaw (texture.h) inflates them with the stb_image
+// decoder compiled into modloader/texture.cpp (rexglue 0.11 no longer exports the SDK's own copy).
+#include "mc_engine/modloader/texture.h"
 
 namespace fs = std::filesystem;
 
@@ -178,15 +178,12 @@ bool ReadArchiveFile(const modloader::Rpf3Reader& archive, const std::string& pa
         return false;
     }
     if (entry.flag & 0x40000000u) {
-        int out_length = 0;
-        char* inflated = stbi_zlib_decode_noheader_malloc(
-            reinterpret_cast<const char*>(out.data()), static_cast<int>(out.size()), &out_length);
-        if (!inflated || out_length <= 0) {
+        std::vector<uint8_t> inflated;
+        if (!modloader::InflateRaw(out.data(), out.size(), entry.size, inflated) || inflated.empty()) {
             LARECOMP_APP_ERROR("[music] cannot inflate {}", path);
             return false;
         }
-        out.assign(inflated, inflated + out_length);
-        std::free(inflated);
+        out = std::move(inflated);
     }
     return true;
 }
