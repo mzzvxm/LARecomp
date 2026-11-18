@@ -11,7 +11,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REXCVAR_DEFINE_BOOL(photo_auto_readback, true, "MCLA/PhotoMode",
     "Fix: photo mode previews show an old frame or garbage. The game takes its "

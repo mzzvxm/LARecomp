@@ -7,11 +7,11 @@
 #include <rex/input/input_system.h>
 #include <rex/system/gpu_plugin.h>
 #include "discord_rpc/discord_rpc.h"
-#include "mc_engine/threading.h"
+#include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
-#include "mc_engine/logging.h"
-#include "mc_engine/display_mode.h"
-#include "mc_engine/ultrawide.h"
+#include "mc_engine/core/logging.h"
+#include "mc_engine/display/display_mode.h"
+#include "mc_engine/display/ultrawide.h"
 #include "spdlog_console.h"
 #include "larecomp_log.h"
 #include "crash_handler.h"
@@ -32,20 +32,20 @@
 REXCVAR_DECLARE(bool, mcla_native_gfx);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_device);
 REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
-#include "mc_engine/guest_profiler.h"
-#include "mc_engine/pause_menu.h"
-#include "mc_engine/config_save.h"
-#include "mc_engine/debug_menu.h"
-#include "mc_engine/effect_compare.h"
+#include "mc_engine/core/guest_profiler.h"
+#include "mc_engine/menus/pause_menu.h"
+#include "mc_engine/core/config_save.h"
+#include "mc_engine/menus/debug_menu.h"
+#include "mc_engine/display/effect_compare.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
-#include "mc_engine/map_mouse.h"
-#include "mc_engine/save_protect.h"
-#include "mc_engine/restart.h"
-#include "mc_engine/audio_output.h"
-#include "mc_engine/string_table.h"
+#include "mc_engine/input/map_mouse.h"
+#include "mc_engine/core/save_protect.h"
+#include "mc_engine/core/restart.h"
+#include "mc_engine/music/audio_output.h"
+#include "mc_engine/menus/string_table.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "saveporter/larecomp_save_porter.h"
 #include "profile/larecomp_profile_picker.h"
@@ -54,9 +54,9 @@ REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
 #include "bootprogress/larecomp_pipeline_build.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/wheel/wheel_input.h"
-#include "mc_engine/adaptive_triggers.h"
-#include "mc_engine/device_watch.h"
-#include "mc_engine/impulse_triggers.h"
+#include "mc_engine/input/adaptive_triggers.h"
+#include "mc_engine/input/device_watch.h"
+#include "mc_engine/input/impulse_triggers.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/debug_overlay.h"
 #include "mc_engine/ui/controller_toast.h"
@@ -585,13 +585,13 @@ class LarecompApp : public rex::ReXApp {
 
     // The window's display mode (windowed, borderless, exclusive fullscreen) and its size follow the
     // `fullscreen`, `fullscreen_exclusive` and `resolution` settings while the game runs
-    // (mc_engine/display_mode.h). The SDK's callback for `fullscreen`, which called
+    // (mc_engine/display/display_mode.h). The SDK's callback for `fullscreen`, which called
     // Window::SetFullscreen on the thread that set the cvar with the cvar registry locked (the pause
     // menu's thread then waited for the UI thread, which waited for that lock: the game hung for
     // good), is replaced there by ones that queue the change for the UI thread.
     mcla::display::Initialize(window());
 
-    // The picture's shape follows the window's (mc_engine/ultrawide.h).
+    // The picture's shape follows the window's (mc_engine/display/ultrawide.h).
     if (window()) {
       mc::ultrawide::SetWindowSize(window()->GetActualPhysicalWidth(),
                                    window()->GetActualPhysicalHeight());

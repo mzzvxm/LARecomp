@@ -60,7 +60,7 @@
 #include <cerrno>
 #endif
 
-#include "../time_of_day.h"
+#include "mc_engine/gameplay/time_of_day.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
 #include "state_log_core.h"

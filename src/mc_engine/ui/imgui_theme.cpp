@@ -15,7 +15,7 @@
 #include <rex/logging.h>
 
 #include "overlay_input_core.h"
-#include "mc_engine/input_state.h"
+#include "mc_engine/input/input_state.h"
 
 namespace fs = std::filesystem;
 

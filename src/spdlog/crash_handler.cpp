@@ -4,7 +4,7 @@
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
 #include "crash_handler.h"
-#include "mc_engine/logging.h"
+#include "mc_engine/core/logging.h"
 
 #include <filesystem>
 

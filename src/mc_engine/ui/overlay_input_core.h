@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "../input_state.h"
+#include "mc_engine/input/input_state.h"
 
 namespace mcla::ui {
 

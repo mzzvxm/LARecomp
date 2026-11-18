@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- the compare key: which effect it flips, and the flip itself
 // ===========================================================================
 // A graphics effect (the bounce light, the contact shadows ...) is hard to judge from memory. The compare
-// key (mc_engine/effect_compare.h, F1 until it is rebound) flips ONE chosen effect off and on again at the
+// key (mc_engine/display/effect_compare.h, F1 until it is rebound) flips ONE chosen effect off and on again at the
 // same spot, so the difference can be seen. This header is the shared, light half that the settings' readers
 // include: the list of effects, and the flip as the readers see it.
 //

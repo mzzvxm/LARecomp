@@ -24,8 +24,8 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../menu_camera.h"
-#include "../mouse_look.h"
+#include "mc_engine/camera/menu_camera.h"
+#include "mc_engine/input/mouse_look.h"
 
 REXCVAR_DEFINE_DOUBLE(fov_1p_scale, 1.0, "MCLA/Camera", "FOV scale — 1st person / cockpit (0.5 = narrower, 2.0 = wider)")
     .range(0.5, 5.0)

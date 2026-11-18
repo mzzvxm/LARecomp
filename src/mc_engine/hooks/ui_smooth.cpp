@@ -45,7 +45,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../cinematic/capture_mode.h"
-#include "../swf_dom.h"
+#include "mc_engine/menus/swf_dom.h"
 
 REXCVAR_DEFINE_BOOL(ui_interpolate, true, "MCLA/UI",
     "Smooth UI. Every UI movie (menus, pop-ups, map panels and the HUD) steps at the "

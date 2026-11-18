@@ -80,8 +80,8 @@
 #include <utility>
 #include <vector>
 
-#include "../config_save.h"
-#include "../time_of_day.h"
+#include "mc_engine/core/config_save.h"
+#include "mc_engine/gameplay/time_of_day.h"
 #include "larecomp_log.h"
 #include "native_call.h"
 #include "state_log.h"

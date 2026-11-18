@@ -41,7 +41,7 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
-#include "mc_engine/input_state.h"
+#include "mc_engine/input/input_state.h"
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 

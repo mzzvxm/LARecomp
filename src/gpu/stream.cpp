@@ -14,7 +14,7 @@
 
 #include <rex/logging.h>
 
-#include "mc_engine/threading.h"
+#include "mc_engine/core/threading.h"
 
 namespace mcla::gpu {
 

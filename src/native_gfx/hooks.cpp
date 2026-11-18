@@ -79,7 +79,7 @@
 #include "../gpu/gpu.h"
 #include "../gpu/texture_names.h"
 #endif
-#include "../mc_engine/draw_stats.h"
+#include "mc_engine/core/draw_stats.h"
 #include "../mc_engine/hooks/display_gamma.h"
 
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at

@@ -1,7 +1,7 @@
 #include "controller_toast.h"
 #include "imgui_theme.h"
 #include "overlay_input_core.h"
-#include "mc_engine/input_state.h"
+#include "mc_engine/input/input_state.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>

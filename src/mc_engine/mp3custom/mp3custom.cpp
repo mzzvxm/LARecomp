@@ -4,7 +4,7 @@
 #include "mc_engine/music/custom_music.h"
 #include "mp3_player.h"
 
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 #include <algorithm>
 #include <cmath>

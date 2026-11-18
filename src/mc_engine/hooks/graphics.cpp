@@ -15,7 +15,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-#include "../ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
@@ -61,12 +61,12 @@ REXCVAR_DEFINE_DOUBLE(lod_city_scale, 0.0, "MCLA/LOD",
     .range(0.0, 10.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// "auto" is the window's own shape, whatever it is (mc_engine/ultrawide.h): wider than 16:9 widens the
+// "auto" is the window's own shape, whatever it is (mc_engine/display/ultrawide.h): wider than 16:9 widens the
 // view and keeps the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out); taller than
 // 16:9 (16:10 such as 1920x1200 or the Steam Deck's 1280x800, 4:3, 5:4, a portrait window) keeps the
 // game's width and shows more above and below, the HUD again 16:9 in the middle. The others pick a shape
 // whatever the window is: the picture lies in the largest frame of that shape in the window, centred,
-// with pure black bars where the window is not that shape (mc_engine/frame_fit.h). Live: the pause
+// with pure black bars where the window is not that shape (mc_engine/display/frame_fit.h). Live: the pause
 // menu's DISPLAY > ASPECT RATIO and the launcher write it while the game runs. The Xenia renderer
 // always follows the window, and keeps 16:9 with bars in a window taller than that.
 REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
@@ -77,7 +77,7 @@ REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
     .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Live, and only on a picture wider than 16:9 (mc_engine/ultrawide.h, "the HUD's corner pieces"): the
+// Live, and only on a picture wider than 16:9 (mc_engine/display/ultrawide.h, "the HUD's corner pieces"): the
 // guest hooks read it when a piece is drawn and the renderer when it squeezes the piece's draws.
 // The pause menu (INTERFACE > UI, HUD WIDTH) and the launcher name three steps: CENTERED 0, WIDER 50,
 // FULL 100.
@@ -118,7 +118,7 @@ REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
-// force (mc_engine/ultrawide.h). Called at startup and whenever it changes.
+// force (mc_engine/display/ultrawide.h). Called at startup and whenever it changes.
 void ApplyAspectRatioPatch() {
     auto* rt = rex::Runtime::instance();
     if (!rt) return;

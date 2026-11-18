@@ -81,7 +81,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REXCVAR_DEFINE_BOOL(photo_album_export, true, "MCLA/PhotoMode",
     "The photo album's PUBLISH ALBUM button becomes EXPORT ALBUM: it saves every photo "

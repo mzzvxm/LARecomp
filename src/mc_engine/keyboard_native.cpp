@@ -1,6 +1,6 @@
 // See keyboard_native.h for the design and what every address below is.
 #include "keyboard_native.h"
-#include "ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
@@ -35,12 +35,12 @@
 
 #include "imgui.h"
 #include "hooks/hooks_internal.h"
-#include "input_state.h"
-#include "kbm_input.h"
-#include "logging.h"
+#include "mc_engine/input/input_state.h"
+#include "mc_engine/input/kbm_input.h"
+#include "mc_engine/core/logging.h"
 #include "modloader/texture.h"
-#include "mouse_look_core.h"
-#include "prompt_glyphs.h"
+#include "mc_engine/input/mouse_look_core.h"
+#include "mc_engine/input/prompt_glyphs.h"
 #include "native_gfx/guest/texture_format.h"
 #include "online/server_browser/browser_ui.h"
 #include "wheel/wheel_input.h"

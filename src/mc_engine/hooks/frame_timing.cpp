@@ -33,9 +33,9 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../camera_trace.h"
+#include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/capture_mode.h"
-#include "../guest_profiler.h"
+#include "mc_engine/core/guest_profiler.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/latency.h"

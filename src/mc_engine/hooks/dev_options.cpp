@@ -51,7 +51,7 @@ struct DebugOption {
     const char* name;
     uint32_t value_addr;  // guest address of node+4
 };
-#include "../debug_options_table.inc"
+#include "mc_engine/menus/debug_options_table.inc"
 
 // Dead registration-stub bytes double as scratch for the value strings.
 static constexpr uint32_t kDbgScratchStart = 0x827A76E0u;

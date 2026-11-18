@@ -16,7 +16,7 @@
 #include <rex/ui/imgui_drawer.h>
 #include <rex/ui/windowed_app_context.h>
 
-#include "mc_engine/boot_progress.h"
+#include "mc_engine/core/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 
 namespace larecomp {

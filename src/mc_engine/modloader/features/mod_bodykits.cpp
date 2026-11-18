@@ -37,7 +37,7 @@
 
 #include <cstdint>
 
-#include "../../logging.h"
+#include "mc_engine/core/logging.h"
 #include "larecomp_log.h"
 
 REXCVAR_DEFINE_BOOL(mod_bodykits, true, "MCLA/Garage",

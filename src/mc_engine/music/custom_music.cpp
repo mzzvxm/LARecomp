@@ -9,7 +9,7 @@
 #include <sstream>
 
 #include "../../larecomp_log.h"
-#include "mc_engine/boot_progress.h"
+#include "mc_engine/core/boot_progress.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/modloader/rpf3.h"
 #include "mc_engine/music/audio_dat.h"

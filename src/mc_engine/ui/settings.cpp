@@ -1,7 +1,7 @@
 #include "settings.h"
 #include "imgui_theme.h"
-#include "mc_engine/config_save.h"
-#include "mc_engine/debug_menu.h"
+#include "mc_engine/core/config_save.h"
+#include "mc_engine/menus/debug_menu.h"
 
 #include <atomic>
 #include <rex/cvar.h>

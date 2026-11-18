@@ -18,7 +18,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../draw_stats.h"
+#include "mc_engine/core/draw_stats.h"
 
 REXCVAR_DECLARE(int32_t, fps_limit);  // frame_timing.cpp
 

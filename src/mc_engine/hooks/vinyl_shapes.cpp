@@ -23,7 +23,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
-#include "../texture_dump.h"
+#include "mc_engine/core/texture_dump.h"
 
 REXCVAR_DEFINE_BOOL(dump_vinyl_shapes, false, "MCLA/Garage",
     "Dump the vinyl shape catalog (every ShapeIdx -> source bitmap filename + "

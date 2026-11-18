@@ -27,7 +27,7 @@
 #include "host_passes.h"
 #include "hdr_scene.h"
 #include "host_shaders.h"
-#include "mc_engine/frame_fit.h"
+#include "mc_engine/display/frame_fit.h"
 #include "pass_timing.h"
 #include "split.h"
 #include "textures.h"

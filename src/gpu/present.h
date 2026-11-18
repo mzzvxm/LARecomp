@@ -21,7 +21,7 @@
 // renderer was told to show at a wider aspect (SetDisplayAspect: an ultrawide window, mc_engine/
 // ultrawide.h), the picture the game drew squeezed sideways is stretched to that aspect, which is
 // the window's, and fills it. With the ASPECT RATIO setting the picture lies in the FRAME instead
-// (SetFrameAspect, mc_engine/frame_fit.h): the largest rectangle of the chosen shape in the window,
+// (SetFrameAspect, mc_engine/display/frame_fit.h): the largest rectangle of the chosen shape in the window,
 // centred, pure black around it; the stretched picture is the frame, any other (a movie, a loading
 // screen) keeps its own shape in the middle of the frame. Sampled with the table applied per texel before the bilinear mix
 // (hlsl/present_ps.hlsl). An idle present (the guest not swapping) shows the
@@ -143,11 +143,11 @@ class PresentPass {
   void SetHdrScene(HdrScene* scene) { hdr_scene_ = scene; }
 
   // The aspect ratio the next frames are shown at: the front buffer is stretched sideways to it
-  // before it is fitted into the window (mc_engine/ultrawide.h: the game drew the scene with a
+  // before it is fitted into the window (mc_engine/display/ultrawide.h: the game drew the scene with a
   // camera of this aspect into its 16:9 image). 0, or the front buffer's own aspect: shown as it
   // is. Once per frame, before Prepare; it holds for PrepareImage and Draw after it.
   void SetDisplayAspect(double aspect) { display_aspect_ = aspect; }
-  // The aspect ratio of the frame the picture lies in (mc_engine/frame_fit.h): 0, or the game's own
+  // The aspect ratio of the frame the picture lies in (mc_engine/display/frame_fit.h): 0, or the game's own
   // 16:9, is no frame (the window itself, as it always was). Every picture is placed in it, the stretched
   // one filling it; the bars are what the back buffer's clear leaves. Once per frame, with SetDisplayAspect.
   void SetFrameAspect(double aspect) { frame_aspect_ = aspect; }
@@ -215,7 +215,7 @@ class PresentPass {
     uint32_t w = 0;
     uint32_t h = 0;
   };
-  // `frame_aspect`: SetFrameAspect's (mc_engine/frame_fit.h PlaceSource does the arithmetic).
+  // `frame_aspect`: SetFrameAspect's (mc_engine/display/frame_fit.h PlaceSource does the arithmetic).
   static Fit FitOf(uint32_t source_width, uint32_t source_height, uint32_t width, uint32_t height,
                    double aspect = 0.0, double frame_aspect = 0.0);
   // The tail of Prepare and PrepareImage: the letterbox, FSR1's passes or the table pass, for the

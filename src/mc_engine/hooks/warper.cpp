@@ -70,7 +70,7 @@
 #include <cstring>
 #include <string>
 
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REXCVAR_DEFINE_BOOL(warp_transition_fix, true, "MCLA/Patches",
     "Finish a cinematic warp (pause menu -> garage from far away) whose camera "

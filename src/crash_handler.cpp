@@ -292,7 +292,7 @@ std::filesystem::path ExeDir() {
 #include <thread>
 
 #include "crash_report_linux.h"
-#include "mc_engine/debug_menu.h"
+#include "mc_engine/menus/debug_menu.h"
 #include "spdlog_console.h"
 
 extern uint8_t* g_guest_mem;  // main.cpp; set once the runtime's memory exists

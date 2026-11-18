@@ -12,7 +12,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "mc_engine/device_watch.h"
+#include "mc_engine/input/device_watch.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN

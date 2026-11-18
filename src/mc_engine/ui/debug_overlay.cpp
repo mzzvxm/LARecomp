@@ -1,6 +1,6 @@
 #include "debug_overlay.h"
 #include "imgui_theme.h"
-#include "mc_engine/menu_items.h"
+#include "mc_engine/menus/menu_items.h"
 
 #include <rex/cvar.h>
 #include <rex/perf/counter.h>

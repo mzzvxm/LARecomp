@@ -39,7 +39,7 @@
 #include <cstring>
 
 #include "larecomp_log.h"
-#include "mc_engine/threading.h"
+#include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
 
 REX_EXTERN(__imp__rex_sub_821C4528);  // the body of every task pool thread

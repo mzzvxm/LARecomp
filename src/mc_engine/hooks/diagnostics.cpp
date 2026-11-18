@@ -33,7 +33,7 @@
 
 #include "hooks.h"
 #include "larecomp_log.h"
-#include "../camera_look.h"
+#include "mc_engine/camera/camera_look.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (GuestRead32, ...)
 
 // Diagnostic: dumps every tune field as it registers. Off by default -- it fires for

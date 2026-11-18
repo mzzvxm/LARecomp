@@ -21,9 +21,9 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../cinematic/capture_mode.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
-#include "../input_state.h"
+#include "mc_engine/input/input_state.h"
 
 REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
 

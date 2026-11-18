@@ -11,8 +11,8 @@
 #include <rex/runtime.h>
 
 #include "mc_engine/hooks/hooks.h"
-#include "mc_engine/logging.h"
-#include "mc_engine/pause_menu.h"
+#include "mc_engine/core/logging.h"
+#include "mc_engine/menus/pause_menu.h"
 
 namespace {
 

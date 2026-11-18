@@ -38,7 +38,7 @@
 #include "larecomp_log.h"
 #include "larecomp_version.h"
 #include "bootprogress/larecomp_boot_progress.h"
-#include "mc_engine/boot_progress.h"
+#include "mc_engine/core/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
 #include "shaderpack/variant_pack.h"

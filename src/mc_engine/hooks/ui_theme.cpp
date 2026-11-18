@@ -45,8 +45,8 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
-#include "../swf_dom.h"
+#include "mc_engine/core/logging.h"
+#include "mc_engine/menus/swf_dom.h"
 
 REXCVAR_DEFINE_STRING(ui_theme_accent, "", "MCLA/UI",
     "Replaces the blue/teal that every menu uses (selection bar, highlights, "

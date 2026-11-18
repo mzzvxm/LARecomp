@@ -44,7 +44,7 @@ endif()
 if(MINGW)
     # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
     # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the
-    # Microsoft STL do not mix). __try/__except (mc_engine/camera_look.cpp) needs
+    # Microsoft STL do not mix). __try/__except (mc_engine/camera/camera_look.cpp) needs
     # -fms-extensions, and mingw-w64 assumes Windows 7 (_WIN32_WINNT 0x601) where the
     # Windows SDK assumes the current Windows. Both as the SDK sets them for itself.
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fms-extensions>)
@@ -73,8 +73,8 @@ set(LARECOMP_SOURCES
     # The named object a running game holds, so the launcher can tell the game runs without listing processes.
     src/game_marker.cpp
 
-    src/mc_engine/threading.cpp
-    src/mc_engine/fma_fast.cpp
+    src/mc_engine/core/threading.cpp
+    src/mc_engine/core/fma_fast.cpp
 
     # Thread priorities for every OS (os/thread_priority.h). The shader pack library and its tool
     # expect this file from whoever links them.
@@ -132,32 +132,32 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/inflate_fast.cpp
     src/mc_engine/hooks/lzx_native.cpp
 
-    src/mc_engine/guest_profiler.cpp
-    src/mc_engine/carbon_parts.cpp
-    src/mc_engine/pause_menu.cpp
-    src/mc_engine/config_save.cpp
-    src/mc_engine/debug_menu.cpp
-    src/mc_engine/debug_menu_pages.cpp
-    src/mc_engine/ui_palette.cpp
-    src/mc_engine/swf_dom.cpp
-    src/mc_engine/swf_import.cpp
-    src/mc_engine/ui_forms.cpp
-    src/mc_engine/string_table.cpp
-    src/mc_engine/string_dumper.cpp
-    src/mc_engine/menu_camera.cpp
-    src/mc_engine/map_mouse.cpp
-    src/mc_engine/cursor_hide.cpp
-    src/mc_engine/input_state.cpp
-    src/mc_engine/mouse_look.cpp
-    src/mc_engine/camera_look.cpp
-    src/mc_engine/camera_trace.cpp
-    src/mc_engine/display_menu.cpp
-    src/mc_engine/display_mode.cpp
-    src/mc_engine/ultrawide.cpp
-    src/mc_engine/frame_generation_menu.cpp
-    src/mc_engine/upscaling_menu.cpp
+    src/mc_engine/core/guest_profiler.cpp
+    src/mc_engine/gameplay/carbon_parts.cpp
+    src/mc_engine/menus/pause_menu.cpp
+    src/mc_engine/core/config_save.cpp
+    src/mc_engine/menus/debug_menu.cpp
+    src/mc_engine/menus/debug_menu_pages.cpp
+    src/mc_engine/menus/ui_palette.cpp
+    src/mc_engine/menus/swf_dom.cpp
+    src/mc_engine/menus/swf_import.cpp
+    src/mc_engine/menus/ui_forms.cpp
+    src/mc_engine/menus/string_table.cpp
+    src/mc_engine/core/string_dumper.cpp
+    src/mc_engine/camera/menu_camera.cpp
+    src/mc_engine/input/map_mouse.cpp
+    src/mc_engine/input/cursor_hide.cpp
+    src/mc_engine/input/input_state.cpp
+    src/mc_engine/input/mouse_look.cpp
+    src/mc_engine/camera/camera_look.cpp
+    src/mc_engine/camera/camera_trace.cpp
+    src/mc_engine/menus/display_menu.cpp
+    src/mc_engine/display/display_mode.cpp
+    src/mc_engine/display/ultrawide.cpp
+    src/mc_engine/menus/frame_generation_menu.cpp
+    src/mc_engine/menus/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
-    src/mc_engine/time_of_day.cpp
+    src/mc_engine/gameplay/time_of_day.cpp
 
     # Trailer toolkit capture mode: the fixed step, the frame gate and the scene clock (maths in capture_core), and the take folder (names, memory plan,
     # host ring, take.json in take_folder). Inert unless a scene's capture key or one of the debug cvars mcla_capture_fps / mcla_fixed_step_fps asks.
@@ -189,20 +189,20 @@ set(LARECOMP_SOURCES
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
 
-    src/mc_engine/map_warp.cpp
-    src/mc_engine/effect_compare.cpp
-    src/mc_engine/real_weather.cpp
-    src/mc_engine/squash_stretch.cpp
-    src/mc_engine/tire_offset.cpp
-    src/mc_engine/hud_units.cpp
-    src/mc_engine/adaptive_triggers.cpp
-    src/mc_engine/device_watch.cpp
-    src/mc_engine/impulse_triggers.cpp
-    src/mc_engine/impulse_wgi.cpp
-    src/mc_engine/wheel_slip.cpp
-    src/mc_engine/cutscene_gallery.cpp
-    src/mc_engine/texture_dump.cpp
-    src/mc_engine/boot_progress.cpp
+    src/mc_engine/gameplay/map_warp.cpp
+    src/mc_engine/display/effect_compare.cpp
+    src/mc_engine/gameplay/real_weather.cpp
+    src/mc_engine/gameplay/squash_stretch.cpp
+    src/mc_engine/gameplay/tire_offset.cpp
+    src/mc_engine/gameplay/hud_units.cpp
+    src/mc_engine/input/adaptive_triggers.cpp
+    src/mc_engine/input/device_watch.cpp
+    src/mc_engine/input/impulse_triggers.cpp
+    src/mc_engine/input/impulse_wgi.cpp
+    src/mc_engine/gameplay/wheel_slip.cpp
+    src/mc_engine/gameplay/cutscene_gallery.cpp
+    src/mc_engine/core/texture_dump.cpp
+    src/mc_engine/core/boot_progress.cpp
 
     # Trailer toolkit: the game's own UI on and off (the HUD alpha, its scene track). Inert at alpha 1.
     src/mc_engine/cinematic/hud.cpp
@@ -354,7 +354,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/debug_overlay.cpp
     src/mc_engine/ui/controller_toast.cpp
     src/mc_engine/ui/pad_vendor.cpp
-    src/mc_engine/restart.cpp
+    src/mc_engine/core/restart.cpp
     src/mc_engine/ui/gamepad.cpp
     src/mc_engine/ui/settings.cpp
     src/mc_engine/ui/achievements.cpp
@@ -365,13 +365,13 @@ set(LARECOMP_SOURCES
 add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/hud_track_test.cpp
     src/mc_engine/cinematic/hud_track.cpp)
-target_include_directories(larecomp_hud_track_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cinematic)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
 add_executable(larecomp_pad_feed_test EXCLUDE_FROM_ALL
     src/mc_engine/ui/pad_feed_test.cpp)
-target_include_directories(larecomp_pad_feed_test PRIVATE src/mc_engine/ui)
+target_include_directories(larecomp_pad_feed_test PRIVATE src src/mc_engine/ui)
 if(NOT WIN32)
     # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
     # drive it) is Windows-only; Linux renders through Plume. The guest-side
@@ -401,7 +401,7 @@ endif()
 add_executable(larecomp_capture_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_core_test.cpp
     src/mc_engine/cinematic/capture_core.cpp)
-target_include_directories(larecomp_capture_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_capture_test PRIVATE src src/mc_engine/cinematic)
 # The take folder's names, memory plan, host ring (real threads), take.json and state log rows (src/mc_engine/cinematic/take_folder.h) have a check that
 # needs no game (give it a file name and it also writes a sample take.json for scene_run.py's reader):
 #   cmake --build <build dir> --target larecomp_take_test, then run <build dir>/larecomp_take_test [sample.json] (exit 0 = passed).
@@ -409,20 +409,20 @@ add_executable(larecomp_take_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/take_folder_test.cpp
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_core.cpp)
-target_include_directories(larecomp_take_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_take_test PRIVATE src src/mc_engine/cinematic)
 # A take's sound (src/mc_engine/cinematic/capture_audio_core.h): the samples a number of video frames owns, the mixer frames that cover them, the books of what
 # was released, arrived, given up and written, and the WAV file. A check that needs no game:
 #   cmake --build <build dir> --target larecomp_capture_audio_test, then run <build dir>/larecomp_capture_audio_test (exit 0 = passed).
 add_executable(larecomp_capture_audio_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_audio_test.cpp
     src/mc_engine/cinematic/capture_audio_core.cpp)
-target_include_directories(larecomp_capture_audio_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_capture_audio_test PRIVATE src src/mc_engine/cinematic)
 # The state log's pure half (src/mc_engine/cinematic/state_log_core.h: the row, the hashes, the file's place, the bounded queue, the writer)
 # has a check that needs no game: cmake --build <build dir> --target larecomp_state_log_test, then run <build dir>/larecomp_state_log_test.
 add_executable(larecomp_state_log_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/state_log_test.cpp
     src/mc_engine/cinematic/state_log_core.cpp)
-target_include_directories(larecomp_state_log_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_state_log_test PRIVATE src src/mc_engine/cinematic)
 find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_state_log_test PRIVATE Threads::Threads)
@@ -435,21 +435,21 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
 # The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
-# (src/mc_engine/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
+# (src/mc_engine/input/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
 #   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).
 add_executable(larecomp_device_watch_test EXCLUDE_FROM_ALL
-    src/mc_engine/device_watch_test.cpp)
-target_include_directories(larecomp_device_watch_test PRIVATE src/mc_engine)
+    src/mc_engine/input/device_watch_test.cpp)
+target_include_directories(larecomp_device_watch_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_device_watch_test PRIVATE Threads::Threads)
 endif()
 
-# The active-device state machine (src/mc_engine/input_state_core.h: pad / mouse / key filters, the last-input-wins rules, hot-plug, the
+# The active-device state machine (src/mc_engine/input/input_state_core.h: pad / mouse / key filters, the last-input-wins rules, hot-plug, the
 # generation) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_input_state_test, then run <build dir>/larecomp_input_state_test (exit 0 = passed).
 add_executable(larecomp_input_state_test EXCLUDE_FROM_ALL
-    src/mc_engine/input_state_test.cpp)
-target_include_directories(larecomp_input_state_test PRIVATE src/mc_engine)
+    src/mc_engine/input/input_state_test.cpp)
+target_include_directories(larecomp_input_state_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_input_state_test PRIVATE Threads::Threads)
 endif()
@@ -459,14 +459,14 @@ endif()
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/scene_test.cpp
     src/mc_engine/cinematic/scene.cpp)
-target_include_directories(larecomp_scene_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_scene_test PRIVATE src src/mc_engine/cinematic)
 # The camera rig's maths, track parser and evaluator (src/mc_engine/cinematic/camera.h) have one too:
 #   cmake --build <build dir> --target larecomp_camera_test, then run <build dir>/larecomp_camera_test (exit 0 = passed).
 add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera_test.cpp
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/scene.cpp)
-target_include_directories(larecomp_camera_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_camera_test PRIVATE src src/mc_engine/cinematic)
 # The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements (header only), the registry of poses and the script of native calls, pure) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
 add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
@@ -474,42 +474,42 @@ add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/car_registry.cpp
     src/mc_engine/cinematic/car_spawn.cpp
     src/mc_engine/cinematic/path_follow.cpp)
-target_include_directories(larecomp_cars_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_cars_test PRIVATE src src/mc_engine/cinematic)
 # A scene car's route (path_follow.h: the file, the speed along it, the heading, the cut into the AI's destinations: pure) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_path_test, then run <build dir>/larecomp_path_test (exit 0 = passed; with route files as arguments it summarises each).
 add_executable(larecomp_path_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/path_follow_test.cpp
     src/mc_engine/cinematic/path_follow.cpp)
-target_include_directories(larecomp_path_test PRIVATE src/mc_engine/cinematic)
-# What a settings save does with a cvar a scene holds (src/mc_engine/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
+target_include_directories(larecomp_path_test PRIVATE src src/mc_engine/cinematic)
+# What a settings save does with a cvar a scene holds (src/mc_engine/core/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).
 add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
-    src/mc_engine/config_save_test.cpp)
-target_include_directories(larecomp_config_save_test PRIVATE src/mc_engine)
-# The always-on keyboard's event latch, the mouse keys and the neutral pad rule (src/mc_engine/kbm_input.h, header only) have a check that needs no game:
+    src/mc_engine/core/config_save_test.cpp)
+target_include_directories(larecomp_config_save_test PRIVATE src src/mc_engine)
+# The always-on keyboard's event latch, the mouse keys and the neutral pad rule (src/mc_engine/input/kbm_input.h, header only) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_kbm_input_test, then run <build dir>/larecomp_kbm_input_test (exit 0 = passed).
 add_executable(larecomp_kbm_input_test EXCLUDE_FROM_ALL
-    src/mc_engine/kbm_input_test.cpp)
-target_include_directories(larecomp_kbm_input_test PRIVATE src/mc_engine)
+    src/mc_engine/input/kbm_input_test.cpp)
+target_include_directories(larecomp_kbm_input_test PRIVATE src src/mc_engine)
 find_package(Threads)
 if(Threads_FOUND)
     target_link_libraries(larecomp_kbm_input_test PRIVATE Threads::Threads)
 endif()
-# Mouse look and keyboard steering's pure part (src/mc_engine/mouse_look_core.h, header only: the raw delta sum, the relative-mode gate, the look angles and their return behind
+# Mouse look and keyboard steering's pure part (src/mc_engine/input/mouse_look_core.h, header only: the raw delta sum, the relative-mode gate, the look angles and their return behind
 # the car, the steering ramp, the sensitivity rule) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_mouse_look_test, then run <build dir>/larecomp_mouse_look_test (exit 0 = passed).
 add_executable(larecomp_mouse_look_test EXCLUDE_FROM_ALL
-    src/mc_engine/mouse_look_test.cpp)
-target_include_directories(larecomp_mouse_look_test PRIVATE src/mc_engine)
+    src/mc_engine/input/mouse_look_test.cpp)
+target_include_directories(larecomp_mouse_look_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_mouse_look_test PRIVATE Threads::Threads)
 endif()
-# The live button prompts' pure part (src/mc_engine/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
+# The live button prompts' pure part (src/mc_engine/input/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
 # their override, the reading back of the game's DXT5 bitmaps) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_prompt_glyphs_test, then run <build dir>/larecomp_prompt_glyphs_test (exit 0 = passed).
 add_executable(larecomp_prompt_glyphs_test EXCLUDE_FROM_ALL
-    src/mc_engine/prompt_glyphs_test.cpp)
-target_include_directories(larecomp_prompt_glyphs_test PRIVATE src/mc_engine)
+    src/mc_engine/input/prompt_glyphs_test.cpp)
+target_include_directories(larecomp_prompt_glyphs_test PRIVATE src src/mc_engine)
 # The free camera's flight, the pad, the recorder's chords and the raw track file (src/mc_engine/cinematic/freecam.h):
 #   cmake --build <build dir> --target larecomp_freecam_test, then run <build dir>/larecomp_freecam_test (exit 0 = passed).
 add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
@@ -517,13 +517,13 @@ add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/freecam.cpp
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/scene.cpp)
-target_include_directories(larecomp_freecam_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_freecam_test PRIVATE src src/mc_engine/cinematic)
 # The scene's `split` track (the parser's keys and EvaluateSplit) has a check of its own, also without the game:
 #   cmake --build <build dir> --target larecomp_split_track_test, then run <build dir>/larecomp_split_track_test (exit 0 = passed).
 add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/split_track_test.cpp
     src/mc_engine/cinematic/scene.cpp)
-target_include_directories(larecomp_split_track_test PRIVATE src/mc_engine/cinematic)
+target_include_directories(larecomp_split_track_test PRIVATE src src/mc_engine/cinematic)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
@@ -769,7 +769,7 @@ else()
             d3d12
             # native_gfx memory census (GetProcessMemoryInfo)
             psapi
-            # real-world weather fetch (mc_engine/real_weather.cpp)
+            # real-world weather fetch (mc_engine/gameplay/real_weather.cpp)
             winhttp
             # audio mixer thread priority (mc_engine/hooks/audio_mixer.cpp): MMCSS
             avrt
@@ -822,13 +822,13 @@ else()
         endif()
     endif()
 
-    # The frame maths of the ASPECT RATIO setting (src/mc_engine/frame_fit.h) has a check that needs no game:
+    # The frame maths of the ASPECT RATIO setting (src/mc_engine/display/frame_fit.h) has a check that needs no game:
     # cmake --build <dir> --target larecomp_frame_fit_test, then run it (exit 0 = passed).
-    add_executable(larecomp_frame_fit_test EXCLUDE_FROM_ALL src/mc_engine/frame_fit_test.cpp)
-    # The FULLSCREEN RESOLUTION list's rules (mc_engine/display_sizes.h) have a check that needs no
+    add_executable(larecomp_frame_fit_test EXCLUDE_FROM_ALL src/mc_engine/display/frame_fit_test.cpp)
+    # The FULLSCREEN RESOLUTION list's rules (mc_engine/display/display_sizes.h) have a check that needs no
     # display, no SDK and no GPU: cmake --build <dir> --target larecomp_display_sizes_test, then run
     # larecomp_display_sizes_test (exit 0 = passed).
-    add_executable(larecomp_display_sizes_test EXCLUDE_FROM_ALL src/mc_engine/display_sizes_test.cpp)
+    add_executable(larecomp_display_sizes_test EXCLUDE_FROM_ALL src/mc_engine/display/display_sizes_test.cpp)
 
     # The shared Rate My Ride server players reach on TCP 31002. Standalone: the
     # store and protocol sources only, no SDK.
@@ -870,7 +870,7 @@ else()
     # The value steps and texts of the pause-menu rows the launcher also has (pause_parity_rows.h) have a
     # check that needs no game: cmake --build <dir> --target larecomp_pause_parity_test, then run it
     # (exit 0 = passed).
-    add_executable(larecomp_pause_parity_test EXCLUDE_FROM_ALL src/mc_engine/pause_parity_rows_test.cpp)
+    add_executable(larecomp_pause_parity_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_parity_rows_test.cpp)
     # The thread priority intents (src/os/thread_priority.h) have a check that needs no game:
     #   cmake --build <dir> --target larecomp_thread_priority_test, then run it (exit 0 = passed).
     add_executable(larecomp_thread_priority_test EXCLUDE_FROM_ALL

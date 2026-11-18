@@ -92,7 +92,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REXCVAR_DEFINE_BOOL(photo_album_keep_new_preview, true, "MCLA/PhotoMode",
     "Fix: while choosing the slot for a new photo, the album shows the photo you just "

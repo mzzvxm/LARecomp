@@ -80,7 +80,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "../../logging.h"
+#include "mc_engine/core/logging.h"
 #include "mod_breakables.h"
 #include "mod_data.h"
 
