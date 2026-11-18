@@ -8,9 +8,8 @@
 // depth only, from the sun, at full detail, with the geometry its own main-view draws used (car_frame.h), into a small square
 // map fitted to the car. The contact shadows pass reads it.
 //
-// CONTRACT (2026-11-18): feat/car-shadow-map implements CarShadowMap (car_shadow_map.cpp: the replay, the fit, the debug
-// view, the setting); feat/car-shadow-apply reads View() in the AO's contact pass. The view struct below is fixed; the class
-// may grow.
+// car_shadow_map.cpp makes the map (the replay, the fit, the debug view, the setting); the AO's contact pass reads View()
+// (ao.cpp, hlsl/ao_contact_ps.hlsl).
 //
 // WHAT IT DOES, and when (the details are in car_shadow_map.cpp and car_shadow_map_rules.h):
 //   mcla_gpu_car_shadow_map        auto | off | high | ultra: the map's size, 2048 (ultra) or 1024 (high); `auto` is ultra on a

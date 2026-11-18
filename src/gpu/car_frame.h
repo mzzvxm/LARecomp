@@ -9,9 +9,7 @@
 // CarFrame collects that during the frame, in the per-draw call the car dump has (Scene::NoteAmbientOcclusion), and hands it
 // out at the history trigger (car_selfrefl.h kTriggerDestination), when every car draw of the frame is in.
 //
-// CONTRACT (2026-11-18): feat/car-frame implements this header in car_frame.cpp; feat/car-shadow-map and feat/car-rt-scene
-// use it. The names and fields below are fixed; the implementer may add members. A field marked "may be empty" may stay
-// empty in a first version, and its users must cope.
+// car_frame.cpp implements it; car_shadow_map.cpp uses it. A field marked "may be empty" may stay empty, and its users must cope.
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread.
 //
