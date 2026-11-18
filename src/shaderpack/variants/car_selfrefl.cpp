@@ -227,11 +227,13 @@ bool CarReflInWindow(CarReflPoint p, CarReflRay ray)
 }
 
 // Version 5: what the host's ray traced image (src/gpu/car_rt_refl.h, car_rt_refl_rules.h ReadForPaint is the same arithmetic) says at a
-// place in the history. The image is the history's size: alpha 0 no data, 1 the player's car and the ray hits none of it, 1 + w a hit on a
-// part the camera sees (w the weight), -(1 + w) a hit on a part it does not (rgb the stand-in colour). The 2x2 texels around the place are
-// read with the bilinear weights; only the texels the history shows at the paint's own distance (the same surface) count, a texel with no
-// data is left out, and the image answers where the texels with data are at least half of those that are that surface (else the march).
-// The weight is the share of the footprint that hits, the colour the mean of the hits' (a miss's black does not darken a hit).
+// place in the history. The image is the history's size: alpha 0 no data, 1 the player's car and none of the cone's rays hits it, 1 + w a hit
+// on parts the camera sees (w the weight: the share of the cone the hits cover), -(1 + w) a hit on parts it does not (rgb the stand-in colour).
+// Version 6: the place is read with a quadratic B-spline of 3x3 texels (the nearest texel and its eight neighbours, the weights of
+// car_rt_refl_rules.h BSplineWeights) in place of the 2x2 bilinear read, whose weights have a corner at every texel and showed the
+// half size image's blocks at a hit's edge; only the texels the history shows at the paint's own distance (the same surface) count, a
+// texel with no data is left out, and the image answers where the texels with data are at least half of those that are that surface
+// (else the march). The weight is the share of the footprint that hits, the colour the mean of the hits' (a miss's black does not darken a hit).
 struct CarReflRtRead
 {
     float use;       // 1: the image answers
@@ -246,8 +248,10 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
     r.state = 1.0;
     Texture2D<float4> image = g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)];
     const float2 f = uv * size - 0.5;
-    const float2 base = floor(f);
-    const float2 fr = f - base;
+    const float2 nearest = floor(f + 0.5);
+    const float2 d = f - nearest;
+    const float3 wx = float3(0.5 * (0.5 - d.x) * (0.5 - d.x), 0.75 - d.x * d.x, 0.5 * (0.5 + d.x) * (0.5 + d.x));
+    const float3 wy = float3(0.5 * (0.5 - d.y) * (0.5 - d.y), 0.75 - d.y * d.y, 0.5 * (0.5 + d.y) * (0.5 + d.y));
     const int2 last = int2(size) - 1;
     float geometry = 0.0;
     float known = 0.0;
@@ -255,11 +259,11 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
     float hidden = 0.0;
     float3 colour = float3(0.0, 0.0, 0.0);
     [unroll]
-    for (int k = 0; k < 4; ++k)
+    for (int k = 0; k < 9; ++k)
     {
-        const int2 offset = int2(k & 1, k >> 1);
-        const int2 texel = clamp(int2(base) + offset, int2(0, 0), last);
-        const float wb = (offset.x != 0 ? fr.x : 1.0 - fr.x) * (offset.y != 0 ? fr.y : 1.0 - fr.y);
+        const int2 offset = int2(k % 3, k / 3) - 1;
+        const int2 texel = clamp(int2(nearest) + offset, int2(0, 0), last);
+        const float wb = wx[k % 3] * wy[k / 3];
         const float4 h = history.Load(int3(texel, 0));
         const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
         const float wg = wb * agree;
@@ -451,9 +455,9 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     }
     result.own = min(max(own.rgb, 0.0) * more.z, 64.0);
 
-    // 1b. Version 5: where the host ray traced this car's reflection of itself for the frame the history is of (g_CarReflC.w bit 0: the
+    // 1b. Versions 5 and 6: where the host ray traced this car's reflection of itself for the frame the history is of (g_CarReflC.w bit 0: the
     // image at g_CarReflC.z, the history's size), its answer at the shaded point's place in the history IS the hit, with the weight the
-    // trace says, and the march below is not done. Where the image has no data there (a pixel that is not the player's car by its triangles,
+    // trace says (version 6: of a cone of rays, read with a 3x3 B-spline), and the march below is not done. Where the image has no data there (a pixel that is not the player's car by its triangles,
     // another vehicle) the march runs as before; with the bit clear this block does nothing and the output is version 4's.
     if ((slots.w & 1u) != 0u)
     {

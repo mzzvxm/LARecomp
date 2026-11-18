@@ -65,6 +65,12 @@
 //   agreement, its colour, no march. Where the image has no data there (alpha 0: not the player's car by the triangles, another vehicle, the
 //   frame's first) the march above runs. Without the bit (the setting off, a device that cannot, no structures this frame) the output is
 //   version 4's, bit for bit. The debug view 5 shows the image's state at the pixel.
+// Version 6 (the image's weight is the share of a CONE of rays that hit, a glossy reflection, and its texels are no longer a hit or a miss): the
+//   paint reads the image with a quadratic B-spline of the 3x3 texels around the shaded point's place in the history, in place of the 2x2
+//   bilinear read (src/gpu/car_rt_refl_rules.h BSplineWeights, ReadForPaint: the same arithmetic). The bilinear read's weights have a corner at
+//   every texel, which at 4K with the half size image showed as two pixel stair-steps at the edge of a reflected part; the B-spline's have
+//   none. Nothing else of the paint's text changes: the agreement test with the history's distance, the half-of-the-matching-texels
+//   rule and the codes of the image are version 5's.
 // The constants (112 bytes at byte 608 of the draw's SharedConstants block, src/gpu/constants.h CarSelfReflConstants):
 //   float4 g_CarReflM0..M3   world to the history frame's clip space (rows of a row-vector matrix: clip = p.x M0 + p.y M1 + p.z M2 + M3)
 //   float4 g_CarReflA        x mode (0: the game's paint, 1: occlusion, 2: occlusion and self-reflection), y ray length (m),
@@ -97,7 +103,7 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_selfrefl_version).
-inline constexpr uint32_t kCarSelfReflVariantVersion = 5;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5
+inline constexpr uint32_t kCarSelfReflVariantVersion = 6;  // 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5; 6: the ray traced image is read with a 3x3 quadratic B-spline of texels (the cone's weights, no stair-steps)
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint", 0x439B193A3F675533ull};

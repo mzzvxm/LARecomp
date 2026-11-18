@@ -97,12 +97,12 @@ void RunOnFixture() {
   Check(text.find("CarReflResult carRefl = (CarReflResult)0;") > text.find("CubeMapData cubeMapData"),
         "the local result follows the cube map data");
   // The ray of version 4 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
-  // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march.
-  Check(sp::kCarSelfReflVariantVersion == 5, "the variant's version is 5 (the stamp rebuilds the pack's paint)");
+  // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march, version 6 reads it with a 3x3 B-spline.
+  Check(sp::kCarSelfReflVariantVersion == 6, "the variant's version is 6 (the stamp rebuilds the pack's paint)");
   Check(Count(text, "CarReflNoise") == 0 && Count(text, "g_CarReflB.w") == 0 && Count(text, "more.w") == 2,
         "no per-pixel noise: the trace reads no noise frame, the constant's w is the share of the points that take the whole hit");
   Check(Count(text, "[unroll]") == 2 && Count(text, "[loop]") == 1,
-        "one loop over the points, one unrolled search of three halvings in a segment with an outline in it, and the ray traced image's four taps");
+        "one loop over the points, one unrolled search of three halvings in a segment with an outline in it, and the ray traced image's nine taps");
   Check(Count(text, "CarReflDistance(i, steps, ray.reach)") == 1, "the points come from the one distance function, the same for every pixel");
   Check(Count(text, "float CarReflWindow(") == 1 && Count(text, "float CarReflWindowIntegral(") == 1 && Count(text, "float CarReflApproach(") == 1 &&
             Count(text, "CarReflSegment CarReflSpan(") == 1 && Count(text, "void CarReflSegmentOf(") == 1 && Count(text, "bool CarReflHasOutline(") == 1 &&
@@ -133,6 +133,11 @@ void RunOnFixture() {
   Check(Count(text, "CarReflRtRead CarReflRtLookup(") == 1 && Count(text, "= CarReflRtLookup(history, ray.size, startUv, start.w,") == 1 &&
             Count(text, "image.Load(") == 1 && Count(text, "image.Sample") == 0,
         "one lookup of the ray traced image, at the shaded point's place in the history, read as texels");
+  Check(Contains(text, "for (int k = 0; k < 9; ++k)") && Contains(text, "const float wb = wx[k % 3] * wy[k / 3];") &&
+            Contains(text, "const float3 wx = float3(0.5 * (0.5 - d.x) * (0.5 - d.x), 0.75 - d.x * d.x, 0.5 * (0.5 + d.x) * (0.5 + d.x));") &&
+            Contains(text, "const float2 nearest = floor(f + 0.5);") && !Contains(text, "const int2 offset = int2(k & 1, k >> 1);"),
+        "version 6: the image is read with the quadratic B-spline of the 3x3 texels around the nearest one (car_rt_refl_rules.h BSplineWeights), "
+        "not the 2x2 bilinear taps");
   Check(Contains(text, "if ((slots.w & 1u) != 0u)") && Contains(text, "g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)]") &&
             Contains(text, "slots.z);") && Contains(text, "result.hit = rt.weight * agreement;"),
         "the image is read only where the constants' flag says the frame has one (the slot in c.z, the flag in c.w), with the self-test's "
