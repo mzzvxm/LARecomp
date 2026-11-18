@@ -14,7 +14,6 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
-#include <spdlog/spdlog.h>
 
 #include <csignal>
 #include <cstdio>
@@ -29,6 +28,10 @@
 namespace {
 
 std::mutex g_sym_mtx;  // dbghelp is single-threaded; serialize handler entry
+
+// Hands what the logger holds to every sink, so the file has the last lines. rexglue 0.11: the SDK's logger is the only
+// registry (spdlog is private to the SDK), and rex::log::Flush() is its call for a crash handler.
+void FlushLogs() { rex::log::Flush(); }
 
 // Resolve one host address to "module+off  symbol+off (file:line)" and log it.
 // Recompiled guest functions appear in the PDB as rex_sub_82XXXXXX, so a symbol
@@ -51,6 +54,9 @@ void LogAddr(const char* label, DWORD64 a) {
         }
     }
 
+    // std::format (the SDK's log macros) takes a C string by pointer; an array argument is the one spelling left to doubt.
+    const char* const mod_name = modname;
+
     char symbuf[sizeof(SYMBOL_INFO) + 512] = {};
     auto* si = reinterpret_cast<SYMBOL_INFO*>(symbuf);
     si->SizeOfStruct = sizeof(SYMBOL_INFO);
@@ -65,13 +71,13 @@ void LogAddr(const char* label, DWORD64 a) {
     bool haveline = SymGetLineFromAddr64(proc, a, &ldisp, &line) != FALSE;
 
     if (sym && haveline) {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}  ({}:{})", label, a, modname,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}  ({}:{})", label, a, mod_name,
                              a - modbase, sym, sdisp, line.FileName, line.LineNumber);
     } else if (sym) {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}", label, a, modname, a - modbase,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}", label, a, mod_name, a - modbase,
                              sym, sdisp);
     } else {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  <no symbol>", label, a, modname,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  <no symbol>", label, a, mod_name,
                              a - modbase);
     }
 }
@@ -136,20 +142,12 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
         LogAddr(lbl, sf.AddrPC.Offset);
     }
 
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
+    FlushLogs();
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
 namespace {
-
-void FlushLogs() {
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
-}
 
 // Stack trace for deaths that carry no EXCEPTION_POINTERS: std::terminate,
 // abort(), a CRT invalid parameter, a pure virtual call. SetUnhandledException
@@ -273,8 +271,6 @@ std::filesystem::path ExeDir() {
 // and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from the early handlers.
 // A fault the runtime handles never reaches the report.
 
-#include <spdlog/spdlog.h>
-
 #include "settings/larecomp_settings.h"
 #include <rex/platform/exception_handler.h>
 #include <rex/ppc/seh.h>
@@ -301,11 +297,7 @@ namespace {
 
 namespace lx = larecomp::crash::lx;
 
-void FlushLogs() {
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
-}
+void FlushLogs() { rex::log::Flush(); }
 
 // A signal handler must never take the log sink's lock (the crashing thread may hold it), so the
 // flush runs on the reporter's helper thread, which the handler waits for at most 300 ms.
@@ -466,12 +458,12 @@ void InstallCrashLogger() {
     if (installed) return;
     installed = true;
 
-    // Where the log sink appends, as an absolute path: the report opens the file again by name.
+    // Where the log sink appends, as an absolute path: the report opens the file again by name. The SDK opens its file in
+    // App::Init, after this runs, so only an absolute log.file_name (LARECOMP_LOG_FILE) names it for certain here;
+    // otherwise the early reports go to stderr and InstallCrashLoggerAfterRuntime() sets the path.
     std::string log_path;
-    if (const char* name = LarecompLogFilePath(); name && *name) {
-        std::error_code ec;
-        const auto absolute = std::filesystem::absolute(name, ec);
-        log_path = ec ? std::string(name) : absolute.string();
+    if (const std::filesystem::path named(rex::GetLogger().file_name.Get()); named.is_absolute()) {
+        log_path = named.string();
     }
     lx::InstallEarly(log_path.c_str(), lx::LocalUtcOffsetSeconds(), &FlushLogsOnHelperThread);
     lx::S().skip_signal = &SehRegionActive;
@@ -496,7 +488,12 @@ void InstallCrashLoggerAfterRuntime() {
     // Runtime::Setup has run by the time OnPostSetup calls this): called in the order installed.
     rex::platform::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
     lx::InstallLate();
-    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFilePath());
+    // OnInit: the SDK has opened this run's log file, so LarecompLogFile() names it (the reports append to it by name).
+    const std::filesystem::path log_file = LarecompLogFile();
+    if (!log_file.empty()) {
+        std::snprintf(lx::S().log_path, sizeof(lx::S().log_path), "%s", log_file.string().c_str());
+    }
+    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", log_file.string());
 
     ArmCrashTest();
 }

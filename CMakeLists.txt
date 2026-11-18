@@ -613,10 +613,12 @@ else()
     # The launcher's file lists and tools/prebuilt-local must follow the new set (R7 of the plan).
     rexglue_setup_target(larecomp)
 
-    # o1heap (MIT, https://github.com/pavel-kirienko/o1heap): the guest-visible object allocator of
+    # Third-party code that rexglue 0.10 installed for every program and 0.11 keeps private. Each is a submodule of
+    # LARecomp (.gitmodules), pinned to the commit the 0.11 SDK itself pins (o1heap: the one the 0.10 SDK pinned).
+
+    # o1heap (MIT, https://github.com/pavel-kirienko/o1heap, 3.0.0): the guest-visible object allocator of
     # native_gfx/guest/host_heap.cpp. It was the SDK target rex::o1heap up to 0.10 and is gone in 0.11 (the SDK uses tlsf
-    # privately), so it comes in as a submodule of LARecomp:
-    #   git submodule add https://github.com/pavel-kirienko/o1heap thirdparty/o1heap
+    # privately).
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/o1heap/o1heap/o1heap.c")
         message(FATAL_ERROR "thirdparty/o1heap is missing: git submodule update --init --recursive "
                             "(rexglue 0.11 no longer ships rex::o1heap)")
@@ -624,6 +626,35 @@ else()
     add_library(larecomp_o1heap STATIC thirdparty/o1heap/o1heap/o1heap.c)
     target_include_directories(larecomp_o1heap PUBLIC thirdparty/o1heap/o1heap)
     target_link_libraries(larecomp PRIVATE larecomp_o1heap)
+
+    # toml++ (MIT, https://github.com/marzer/tomlplusplus, v3.4.0): header only, `#include <toml++/toml.hpp>` in
+    # achievement_metadata.cpp, mc_engine/string_dumper.cpp and settings/larecomp_settings.cpp. Another copy than the SDK's
+    # (which parses its own config files inside its libraries) is no clash: the SDK's headers do not expose a toml++ type.
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include/toml++/toml.hpp")
+        message(FATAL_ERROR "thirdparty/tomlplusplus is missing: git submodule update --init --recursive "
+                            "(rexglue 0.11 no longer installs toml++)")
+    endif()
+    add_library(larecomp_tomlplusplus INTERFACE)
+    target_include_directories(larecomp_tomlplusplus SYSTEM INTERFACE
+        "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include")
+    target_link_libraries(larecomp PRIVATE larecomp_tomlplusplus)
+
+    # libmspack (LGPL-2.1, https://github.com/kyz/libmspack, v1.11): lzxd.c only, the LZX decoder of the modloader's
+    # xcompress.cpp (the game's XCompress streams). It was reached as rex/system/lzx.h up to 0.10; in 0.11 the SDK's LZX
+    # code (src/filesystem/lzx.cpp) is private to rexfilesystem, so LARecomp builds the decoder itself, as the SDK does
+    # (-w: third-party C). The headers (mspack.h, lzx.h) are visible to xcompress.cpp alone: their names are too generic for
+    # the include path of every source.
+    set(LARECOMP_MSPACK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libmspack/libmspack/mspack")
+    if(NOT EXISTS "${LARECOMP_MSPACK_DIR}/lzxd.c")
+        message(FATAL_ERROR "thirdparty/libmspack is missing: git submodule update --init --recursive "
+                            "(rexglue 0.11 no longer exposes its LZX decoder)")
+    endif()
+    add_library(larecomp_mspack STATIC "${LARECOMP_MSPACK_DIR}/lzxd.c")
+    target_include_directories(larecomp_mspack PRIVATE "${LARECOMP_MSPACK_DIR}")
+    target_compile_options(larecomp_mspack PRIVATE -w)
+    set_source_files_properties(src/mc_engine/modloader/xcompress.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
+    target_link_libraries(larecomp PRIVATE larecomp_mspack)
 
     if(NOT WIN32 AND NOT APPLE)
         # The ISO installer and the save importer open GTK file dialogs.

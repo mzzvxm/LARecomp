@@ -8,12 +8,12 @@
 
 #include "string_dumper.h"
 
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <system_error>
 
-#include <fmt/format.h>
 #include <toml++/toml.hpp>
 
 #include "logging.h"
@@ -224,14 +224,14 @@ void StringDumper::FlushDump() {
   }
   for (const auto& [id, entry] : to_flush) {
     if (!existing_ids.contains(id)) {
-      new_content += fmt::format(
+      new_content += std::format(
           "[[strings]]\n"
           "hash = \"{:016x}\"\n"
           "context = \"{}\"\n"
           "original = \"{}\"\n",
           entry.id, EscapeToml(entry.context), EscapeToml(entry.original));
       if (entry.guest_address != 0) {
-        new_content += fmt::format("address = \"0x{:08X}\"\n", entry.guest_address);
+        new_content += std::format("address = \"0x{:08X}\"\n", entry.guest_address);
       }
       new_content += "\n";
       ++appended;
