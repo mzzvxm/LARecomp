@@ -281,29 +281,6 @@ void EnsurePadLayer() {
   });
 }
 
-std::vector<PadInfo> ListPads() {
-  std::vector<PadInfo> pads;
-  if (!g_layer_up) return pads;
-  // Picks up devices that came or went since the last call.
-  SDL_UpdateJoysticks();
-  int count = 0;
-  if (SDL_JoystickID* ids = SDL_GetJoysticks(&count)) {
-    for (int i = 0; i < count; ++i) {
-      // Mapped or not: in DirectInput mode an Xbox Elite has no mapping but
-      // SDL still knows it as a gamepad by its USB ids. Wheels and the wheel
-      // code's virtual device are not pads.
-      if (SDL_IsJoystickVirtual(ids[i])) continue;
-      if (!SDL_IsGamepad(ids[i]) && SDL_GetJoystickTypeForID(ids[i]) != SDL_JOYSTICK_TYPE_GAMEPAD) {
-        continue;
-      }
-      const char* name = SDL_GetJoystickNameForID(ids[i]);
-      pads.push_back({ids[i], name && name[0] ? name : "Controller"});
-    }
-    SDL_free(ids);
-  }
-  return pads;
-}
-
 PadSample ReadOverlayPads() {
   EnsurePadLayer();
   return Reader().Read();

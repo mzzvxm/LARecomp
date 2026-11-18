@@ -12,8 +12,9 @@ namespace mcla::ui {
 
 // LARecomp's pad layer for its own dialogs (the save picker, the server browser, the mod browser,
 // the identity window). Two SDLs can run in this process: the SDK's, inside rexruntime.dll, owns
-// the pads in game; the exe's own static copy is shared with the wheel code and the controller
-// toast. (On Linux they are one SDL.)
+// the pads in game; the exe's own static copy is shared with the wheel code. (On Linux they are
+// one SDL.) The controller toast does not read pads: it follows the SDK's device list by events
+// (controller_toast.cpp, input_state.h).
 //
 // Xbox pads (Windows) are read through XInput, read-only and shared with the SDK. A slot with
 // no pad is XInput's slow case ("costs milliseconds"), so an empty slot is asked once a second
@@ -28,14 +29,6 @@ namespace mcla::ui {
 // Starts the exe's SDL joystick layer for the rest of the session, with the
 // wheel code's hints whichever of the two runs first. Idempotent.
 void EnsurePadLayer();
-
-struct PadInfo {
-  uint32_t id;
-  std::string name;
-};
-// Every connected pad (gamepad-type joysticks, mapped or not; no wheels or
-// virtual devices), for the controller toast.
-std::vector<PadInfo> ListPads();
 
 // Every pad there is, merged, for a dialog that is drawn this frame (XInput's button bits, sticks
 // -1..1 with up and right positive). UI thread. Cheap when no pad is plugged in.
