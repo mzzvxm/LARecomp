@@ -1,7 +1,7 @@
 // MCLA GPU renderer -- overlay vertex shader.
 //
-// Input is rex::ui::ImmediateVertex (x, y, u, v, RGBA8 color) in the drawer's
-// coordinate space, the same math as the SDK's immediate drawer: y grows down,
+// Input is mcla::gpu::OverlayVertex = ImGui's ImDrawVert (x, y, u, v, RGBA8 color) in the
+// frame's coordinate space (ImDrawData::DisplaySize): y grows down,
 // so scale.y is negative. On Vulkan dxc flips the output y (-fvk-invert-y),
 // which keeps one set of push constants for both backends.
 

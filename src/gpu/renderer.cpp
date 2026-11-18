@@ -13,8 +13,9 @@
 #include <rex/logging/log_category.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/system.h>
+#include <rex/platform/native_window.h>
+#include <rex/platform/process.h>
 #include <rex/ui/ui_system.h>
-#include <rex/ui/window.h>
 
 #include "backend.h"
 #include "device_fault_format.h"
@@ -75,7 +76,7 @@ Renderer::~Renderer() {
   Shutdown();
 }
 
-bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
+bool Renderer::Initialize(const rex::NativeWindow& window, const Options& options,
                           std::shared_ptr<OverlayChannel> overlay_channel,
                           std::shared_ptr<OverlayHost> overlay_host) {
   if (initialized_) {
@@ -134,8 +135,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     uint32_t width = swap_chain_.width();
     uint32_t height = swap_chain_.height();
     if (width == 0 || height == 0) {
-      width = window->GetActualPhysicalWidth();
-      height = window->GetActualPhysicalHeight();
+      GetWindowPixelSize(window, width, height);
       if (width == 0 || height == 0) {
         REXLOG_WARN("[gpu] the window has no size yet: a render scale taken from it measures it "
                     "as the game's {}x{}",
@@ -1734,10 +1734,8 @@ std::atomic<GuestCapture*> g_capture_active{nullptr};
 // startup hand-over until Shutdown gives the write back to the vblank thread.
 std::atomic<bool> g_holds_retired_fence{false};
 
-// UI thread. The channel and drawer exist before the renderer: the SDK asks for
-// the drawer inside its SetupPresentation, before Startup runs.
+// UI thread. Made by Startup, shared with the renderer; Shutdown switches the host off.
 std::shared_ptr<OverlayChannel> g_overlay_channel;
-OverlayDrawer* g_overlay_drawer = nullptr;  // owned by the SDK (immediate_drawer_)
 std::shared_ptr<OverlayHost> g_overlay_host;
 // What graphics_backend asks this renderer for (RequestedBackend), decided with
 // Enabled().
@@ -1815,35 +1813,17 @@ std::vector<std::filesystem::path> ShaderPackSearchFolders() {
   return ShaderStore::SearchFolders(g_shader_pack_folder);
 }
 
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
-  if (!Enabled()) {
-    return nullptr;
-  }
-  if (!g_overlay_channel) {
-    g_overlay_channel = std::make_shared<OverlayChannel>();
-  }
-  auto drawer = std::make_unique<OverlayDrawer>(g_overlay_channel);
-  g_overlay_drawer = drawer.get();
-  return drawer;
-}
-
-bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
-             rex::ui::ImGuiDrawer* imgui_drawer) {
+bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
   if (!Enabled()) {
     return false;
   }
   if (g_renderer) {
     return g_active.load(std::memory_order_acquire) != nullptr;
   }
-  if (!window || !imgui_drawer || !g_overlay_drawer || !g_overlay_channel) {
-    REXLOG_ERROR(
-        "[gpu] startup needs the window, the SDK's ImGui drawer and the overlay drawer from "
-        "CreateOverlayDrawer (window={}, imgui={}, overlay={}); refusing to run without overlays",
-        window != nullptr, imgui_drawer != nullptr, g_overlay_drawer != nullptr);
-    return false;
-  }
-  g_overlay_host =
-      std::make_shared<OverlayHost>(app_context, *window, *imgui_drawer, *g_overlay_drawer);
+  // The renderer asks the UI system for an overlay frame (overlay.h), so the first-launch dialogs (profile name,
+  // ISO wizard, shader build) are drawn by it before the guest exists.
+  g_overlay_channel = std::make_shared<OverlayChannel>();
+  g_overlay_host = std::make_shared<OverlayHost>(ui, g_overlay_channel);
 
   Renderer::Options options;
   options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
@@ -1855,8 +1835,8 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     // The app closes next, with the log as the only word of why: say it here, in plain terms, with
     // what each backend said when it was refused (Device::refusals).
     const std::string& refusals = g_renderer->device().refusals();
-    rex::ShowSimpleMessageBox(
-        rex::SimpleMessageBoxType::Error,
+    rex::ShowMessageBox(
+        rex::MessageType::kError,
         "LARecomp could not start on this PC's graphics card.\n\n" +
             (refusals.empty() ? std::string("The reason is in the log.\n\n") : refusals + "\n\n") +
             "The game needs a graphics card and driver with Direct3D 12 (shader model 6.0 and "
@@ -1873,8 +1853,8 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   } else if (g_renderer->device().fell_back()) {
     // The log has the reason; the player chose the API in the menu and would
     // otherwise never learn that another one runs.
-    rex::ShowSimpleMessageBox(
-        rex::SimpleMessageBoxType::Warning,
+    rex::ShowMessageBox(
+        rex::MessageType::kWarning,
         std::string(BackendName(g_renderer->device().requested_backend())) +
             " could not be started on this machine, so the game runs on " + BackendName() +
             ". The reason is in the log. The API is chosen in the pause menu: RENDERER, "
@@ -1903,35 +1883,6 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     }
   }
 
-  // F11. The SDK's bind requests the capture from an IGraphicsSystem, which
-  // this mode does not have. A second bind on the same key would never fire
-  // (ProcessKeyEvent stops at the first match), so the SDK's is unregistered
-  // first, as the legacy runtime does.
-  rex::ui::UnregisterBind("bind_renderdoc_capture");
-  rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
-                        "Capture the next frame with RenderDoc (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestCapture();
-                          }
-                        });
-  // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
-  // frame counter cannot be aimed at (menus, pause, photo mode).
-  rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
-                        "Write a raw trace of the next guest frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTrace();
-                            REXLOG_INFO("[gpu] trace: the frame after the next present will be "
-                                        "written");
-                          }
-                        });
-  // F2: every texture of the next frame to the dump folder, named after the
-  // game's texture and its dictionary, for texture mods (textures.h).
-  rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
-                        "Dump the textures of the next frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTextureDump();
-                          }
-                        });
   return true;
 }
 
@@ -2150,6 +2101,31 @@ void NoteGuestFenceWait(uint64_t wait_ns) {
 void RequestResize() {
   if (Renderer* r = g_active.load(std::memory_order_acquire)) {
     r->RequestResize();
+  }
+}
+
+// The hotkeys (LarecompApp::StartOverlays binds F11 / F10 / F2 as ui.bind.gpu_renderdoc_capture, gpu_trace_next and
+// gpu_texture_dump). The SDK has no bind of its own on these keys any more, so nothing is unregistered first.
+void RequestRenderDocCapture() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestCapture();
+  }
+}
+
+// F10: raw trace of the next guest frame (frame_trace.h), for any scene the frame counter cannot be aimed at (menus,
+// pause, photo mode).
+void RequestFrameTrace() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTrace();
+    REXLOG_INFO("[gpu] trace: the frame after the next present will be written");
+  }
+}
+
+// F2: every texture of the next frame to the dump folder, named after the game's texture and its dictionary, for
+// texture mods (textures.h).
+void RequestTextureDump() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTextureDump();
   }
 }
 

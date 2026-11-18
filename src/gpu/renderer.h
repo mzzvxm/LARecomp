@@ -101,8 +101,8 @@
 #include "validation.h"
 #include "vram_budget.h"
 
-namespace rex::ui {
-class Window;
+namespace rex {
+struct NativeWindow;
 }
 
 namespace mcla::gpu {
@@ -128,7 +128,7 @@ class Renderer final : public RenderThread::Executor {
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
 
-  bool Initialize(rex::ui::Window* window, const Options& options,
+  bool Initialize(const rex::NativeWindow& window, const Options& options,
                   std::shared_ptr<OverlayChannel> overlay_channel,
                   std::shared_ptr<OverlayHost> overlay_host);
 

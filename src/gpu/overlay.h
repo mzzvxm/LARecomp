@@ -2,33 +2,38 @@
 // ===========================================================================
 // MCLA GPU renderer -- the SDK overlays (Dear ImGui dialogs, F3, toasts)
 // ===========================================================================
-// The SDK draws its overlays through a rex::ui::ImmediateDrawer the app
-// provides in detached mode (ReXApp::OnCreateImmediateDrawer). reblue and
-// reeot record that drawer's commands from inside their Present, with the
-// render (or guest) thread blocked while the UI thread fills its list. MCLA
-// keeps F3 and the achievement toasts up during gameplay, so that would stall
-// every frame with an overlay on the UI thread waking up, and the guest waits
-// in Present behind it. Here the two sides only exchange CPU data:
+// rexglue 0.11 draws its overlays through IUISystem::DrawOverlays(IOverlayRenderer&): the UI thread
+// builds the ImGui frame, and the renderer's RenderOverlays(ImDrawData&) draws it on the thread that
+// called. The SDK's own present thread does that for its Xenia drivers; this renderer presents on a
+// render thread of its own (the "larecomp" driver's BeginPresent says "no image"), so it asks.
 //
-//   UI thread                                render thread
-//   OverlayHost::RunPass                     OverlayRenderer::Prepare / Draw
-//     ImGuiDrawer::Draw(AppUIDrawContext)      takes texture uploads, deaths and
-//       OverlayDrawer records an                the newest OverlayFrame from the
-//       OverlayFrame in CPU memory              channel; creates textures, frees
-//       and publishes it to the channel         dead ones, draws the frame it
-//   OverlayDrawer::CreateTexture                retains over the back buffer
-//     returns at once; pixels queued          OverlayHost::RequestPass
-//   ~OverlayTexture: id queued as dead          asks the UI thread for the next
-//                                               frame (never waits for it)
+// MCLA keeps F3 and the achievement toasts up during gameplay. A DrawOverlays call made on the render
+// thread waits for the UI thread to build the frame (RunSynchronous), which would put a UI-thread wake-up
+// into every presented frame, and a UI thread that is busy (the save wait of a close, a nested loop) would
+// stall the picture. So the call is made on the UI thread instead, and the two sides only exchange CPU data:
 //
-// One frame of overlay latency; the render thread never waits on the UI, and
-// the render thread stays the only thread that records GPU commands.
+//   render thread                            UI thread
+//   OverlayHost::RequestPass                 OverlayHost::RunPass (a PostTask)
+//     posts one pass, never waits              IUISystem::DrawOverlays(OverlayCapture)
+//   OverlayRenderer::Prepare / Draw              OverlayCapture::RenderOverlays copies the ImDrawData
+//     takes texture uploads, deaths and          into an OverlayFrame in CPU memory, turns the
+//     the newest OverlayFrame from the           ImTextureData requests (the font atlas, icons the dialogs
+//     channel; creates textures, frees           register) into queued pixels, and publishes both
+//     dead ones, draws the frame it
+//     retains over the back buffer
 //
-// Lifetime: the channel is shared (shared_ptr) by the drawer, which the SDK
-// owns and creates before the renderer exists, the renderer, and the module.
-// The host is shared by the module and every pass posted to the UI thread,
-// and is switched off on the UI thread before the SDK destroys its ImGui
-// drawer (gpu::Shutdown runs from OnWindowCloseRequested / OnShutdown).
+// One frame of overlay latency; the render thread never waits on the UI, and the render thread stays the
+// only thread that records GPU commands. DrawOverlays itself holds the SDK's frame lock and returns at
+// once on the UI thread (RunSynchronous runs inline there).
+//
+// Textures: ImGui 1.92 owns them. Every ImTextureData in ImDrawData::Textures (the font atlas, and each
+// texture a dialog made with ImGui::RegisterUserTexture, ui/overlay_texture.h) with a status other than OK
+// is created, replaced or destroyed here, and gets its TexID (a channel id) before the draw commands that
+// name it are read. A texture that leaves the list is destroyed too.
+//
+// Lifetime: the channel is shared (shared_ptr) by the capture, the renderer and the module. The host is
+// shared by the module and every pass posted to the UI thread, and is switched off on the UI thread before
+// the UI system stops (gpu::Shutdown runs from LarecompApp::OnStop).
 // ===========================================================================
 
 #include <atomic>
@@ -44,10 +49,11 @@
 
 #include "hdr.h"
 
+struct ImDrawData;
+struct ImTextureData;
+
 namespace rex::ui {
-class ImGuiDrawer;
-class Window;
-class WindowedAppContext;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace mcla::gpu {
@@ -63,16 +69,22 @@ inline constexpr uint32_t kOverlayNoTexture = 0xFFFFFFFFu;
 // CPU side
 // ---------------------------------------------------------------------------
 
+// ImDrawVert as the pipeline reads it: position, texture coordinate, RGBA8 colour.
+struct OverlayVertex {
+  float x = 0.0f;
+  float y = 0.0f;
+  float u = 0.0f;
+  float v = 0.0f;
+  uint32_t color = 0;
+};
+static_assert(sizeof(OverlayVertex) == 20);
+
 struct OverlayDraw {
-  // Indexed: `count` indices from `first_index`, added to `base_vertex`.
-  // Not indexed: `count` vertices from `base_vertex`.
+  // `count` indices from `first_index` (16-bit, relative to the draw's vertices), added to `base_vertex`.
   uint32_t count = 0;
   uint32_t first_index = 0;
   int32_t base_vertex = 0;
   uint32_t texture_id = kOverlayNoTexture;
-  bool indexed = false;
-  bool lines = false;
-  bool scissor = false;
   // Scissor in the frame's coordinate space (converted to back-buffer pixels
   // when drawn, so a frame recorded at another size still clips right).
   float scissor_left = 0.0f;
@@ -83,9 +95,9 @@ struct OverlayDraw {
 
 struct OverlayFrame {
   uint64_t sequence = 0;
-  float width = 0.0f;   // coordinate space
+  float width = 0.0f;   // coordinate space (ImDrawData::DisplaySize)
   float height = 0.0f;
-  std::vector<rex::ui::ImmediateVertex> vertices;
+  std::vector<OverlayVertex> vertices;
   std::vector<uint16_t> indices;  // relative to each draw's base_vertex
   std::vector<OverlayDraw> draws;
 
@@ -115,6 +127,10 @@ class OverlayChannel {
   // UI thread.
   uint32_t CreateTexture(uint32_t width, uint32_t height, bool linear, bool repeat,
                          const uint8_t* rgba);
+  // New pixels (and size) for an id that exists: the render thread makes a new GPU texture under the same
+  // id and retires the old one, so a frame still in flight keeps reading what it was recorded with.
+  void ReplaceTexture(uint32_t id, uint32_t width, uint32_t height, bool linear, bool repeat,
+                      const uint8_t* rgba);
   void DestroyTexture(uint32_t id);
   std::unique_ptr<OverlayFrame> AcquireFrame();
   void Publish(std::unique_ptr<OverlayFrame> frame);
@@ -127,7 +143,7 @@ class OverlayChannel {
   bool PeekNewFrame(bool* has_draws);
   void Recycle(std::unique_ptr<OverlayFrame> frame);
   // The renderer is gone: drop queued pixels and stop queueing more. Ids are
-  // still handed out, so the SDK's textures stay valid objects.
+  // still handed out, so a texture the UI thread holds stays a valid object.
   void Close();
 
  private:
@@ -141,74 +157,52 @@ class OverlayChannel {
   bool closed_ = false;
 };
 
-// The ImmediateTexture the SDK holds: an id into the channel.
-class OverlayTexture final : public rex::ui::ImmediateTexture {
+// The IOverlayRenderer the UI system draws into: copies one ImDrawData into a frame of the channel and
+// serves its texture requests. UI thread only (RenderOverlays runs on the thread that called
+// IUISystem::DrawOverlays).
+class OverlayCapture final : public rex::IOverlayRenderer {
  public:
-  OverlayTexture(uint32_t width, uint32_t height, uint32_t id,
-                 std::shared_ptr<OverlayChannel> channel)
-      : ImmediateTexture(width, height), id_(id), channel_(std::move(channel)) {}
-  ~OverlayTexture() override { channel_->DestroyTexture(id_); }
-  uint32_t id() const { return id_; }
+  explicit OverlayCapture(std::shared_ptr<OverlayChannel> channel) : channel_(std::move(channel)) {}
+
+  void RenderOverlays(ImDrawData& draw_data) override;
+
+  // Around one DrawOverlays call: it returns without a RenderOverlays when no dialog is open, and then the
+  // frame the last pass left must be replaced by an empty one (PublishEmpty), or a closed dialog stays on.
+  void Begin() { called_ = false; }
+  bool called() const { return called_; }
+  void PublishEmpty();
 
  private:
-  uint32_t id_;
+  void ServeTextures(ImDrawData& draw_data);
+
   std::shared_ptr<OverlayChannel> channel_;
+  // The ImGui-owned textures that have a channel id, and the pass that last saw each.
+  struct Tracked {
+    uint32_t id = 0;
+    uint64_t seen = 0;
+  };
+  std::unordered_map<ImTextureData*, Tracked> tracked_;
+  uint64_t pass_ = 0;
+  bool called_ = false;
 };
 
-// The drawer handed to the SDK. Records frames; never touches the GPU.
-class OverlayDrawer final : public rex::ui::ImmediateDrawer {
- public:
-  explicit OverlayDrawer(std::shared_ptr<OverlayChannel> channel);
-
-  std::unique_ptr<rex::ui::ImmediateTexture> CreateTexture(uint32_t width, uint32_t height,
-                                                           rex::ui::ImmediateTextureFilter filter,
-                                                           bool is_repeated,
-                                                           const uint8_t* data) override;
-  void Begin(rex::ui::UIDrawContext& ui_draw_context, float space_width,
-             float space_height) override;
-  void BeginDrawBatch(const rex::ui::ImmediateDrawBatch& batch) override;
-  void Draw(const rex::ui::ImmediateDraw& draw) override;
-  void EndDrawBatch() override;
-  void End() override;
-
-  // Publishes a frame with nothing in it, for a UI pass in which the ImGui
-  // drawer drew nothing (it returns before Begin when it has no dialog).
-  void PublishEmpty(float width, float height);
-  uint64_t ended_passes() const { return ended_passes_; }
-
- private:
-  std::shared_ptr<OverlayChannel> channel_;
-  std::unique_ptr<OverlayFrame> frame_;  // between Begin and End
-  uint32_t batch_vertex_base_ = 0;
-  uint32_t batch_index_base_ = 0;
-  uint32_t batch_vertex_count_ = 0;
-  uint32_t batch_index_count_ = 0;
-  bool batch_open_ = false;
-  bool batch_indexed_ = false;
-  uint64_t ended_passes_ = 0;
-  bool reported_bad_draw_ = false;
-};
-
-// Runs the SDK's ImGui drawer on the UI thread when the render thread asks.
+// Asks the UI thread for the next overlay frame. Never waits for it.
 class OverlayHost : public std::enable_shared_from_this<OverlayHost> {
  public:
-  OverlayHost(rex::ui::WindowedAppContext& app_context, rex::ui::Window& window,
-              rex::ui::ImGuiDrawer& imgui_drawer, OverlayDrawer& drawer);
+  OverlayHost(rex::ui::IUISystem& ui, std::shared_ptr<OverlayChannel> channel);
 
   // Any thread. Posts one pass to the UI thread unless one is pending.
   void RequestPass();
-  // After this no pass touches the SDK objects again. Called on the UI thread
-  // before the SDK destroys them.
+  // After this no pass touches the UI system again. Called on the UI thread
+  // before the UI system stops.
   void Disconnect();
 
  private:
   void RunPass();  // UI thread
 
-  rex::ui::WindowedAppContext& app_context_;
-  // Read on the UI thread only, and only while connected_.
-  rex::ui::Window* window_;
-  rex::ui::ImGuiDrawer* imgui_drawer_;
-  OverlayDrawer* drawer_;
+  // Read on the UI thread only, and only while connected_ (PostTask itself is any-thread).
+  rex::ui::IUISystem* ui_;
+  OverlayCapture capture_;
   std::atomic<bool> pass_pending_{false};
   std::atomic<bool> connected_{true};
 };
@@ -247,7 +241,7 @@ class OverlayRenderer {
   // content. Used to decide idle presents.
   bool HasNewContent();
 
-  // Outside a render pass: creates the textures queued since the last call
+  // Outside a render pass: creates (or replaces) the textures queued since the last call
   // (uploads recorded on `list`), frees dead ones the retained frame no longer
   // uses, and retains the newest frame.
   void Prepare(plume::RenderCommandList* list, uint32_t slot);
@@ -288,12 +282,10 @@ class OverlayRenderer {
     bool built = false;
     std::unique_ptr<plume::RenderShader> pixel_shader;
     std::unique_ptr<plume::RenderPipeline> triangle_pipeline;
-    std::unique_ptr<plume::RenderPipeline> line_pipeline;
   };
   Target targets_[2];
   // The set in use (owned by targets_).
   plume::RenderPipeline* triangle_pipeline_ = nullptr;
-  plume::RenderPipeline* line_pipeline_ = nullptr;
   bool hdr_ = false;  // the target is HDR10: the pixel shader is overlay_hdr_ps
   HdrLevels hdr_levels_;
 
