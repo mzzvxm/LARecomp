@@ -33,6 +33,7 @@
 #include "hooks.h"
 #include "larecomp_log.h"
 #include "../camera_look.h"
+#include "../sdk_access.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (GuestRead32, ...)
 
 // Shared by the two open probes: read the path the call was handed off the
@@ -665,7 +666,7 @@ void MCLA_StreamBufferProbe(PPCRegister& r3) {
                       name, stream, buffer, count, hash);
 }
 
-// Started once the runtime exists. One thread asks the InputSystem for every user's state twice a second.
+// Started once the runtime exists. One thread asks the input system for every user's state four times a second.
 void MCLA_StartInputProbe() {
     if (!larecomp::settings::input_probe.Get()) return;
     static std::atomic<bool> started{false};
@@ -679,25 +680,28 @@ void MCLA_StartInputProbe() {
         } seen[4];
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            auto* rt = rex::Runtime::instance();
-            auto* sys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+            auto* sys = larecomp::sdk::Input();
             if (!sys) continue;
             for (uint32_t user = 0; user < 4; ++user) {
-                rex::input::X_INPUT_STATE state{};
-                const uint32_t status = uint32_t(sys->GetState(user, &state));
-                const uint16_t buttons = state.gamepad.buttons;
+                // 0.10 answered a Win32 status and filled an X_INPUT_STATE; 0.11 answers a Result (kNotFound for no pad). The status
+                // keeps its old meaning in the log: 0 a pad, 0x48F no pad (ERROR_DEVICE_NOT_CONNECTED).
+                const auto reading = sys->GetState(user);
+                const uint32_t status = reading ? 0u : 0x48Fu;
+                const rex::hid::PadState state = reading ? reading->state : rex::hid::PadState{};
+                const uint32_t packet = reading ? reading->packet : 0u;
+                const uint16_t buttons = state.buttons;
                 Seen& s = seen[user];
-                if (status != s.status || (status == 0 && (buttons != s.buttons || uint32_t(state.packet_number) != s.packet))) {
+                if (status != s.status || (status == 0 && (buttons != s.buttons || packet != s.packet))) {
                     if (status == 0 || s.any || user == 0) {
                         LARECOMP_APP_INFO("[input-probe] user {}: status {:#x} packet {} buttons {:#06x} triggers {}/{} left stick {},{} right stick {},{}",
-                                          user, status, uint32_t(state.packet_number), buttons,
-                                          state.gamepad.left_trigger, state.gamepad.right_trigger,
-                                          int16_t(state.gamepad.thumb_lx), int16_t(state.gamepad.thumb_ly),
-                                          int16_t(state.gamepad.thumb_rx), int16_t(state.gamepad.thumb_ry));
+                                          user, status, packet, buttons,
+                                          state.left_trigger, state.right_trigger,
+                                          int16_t(state.thumb_lx), int16_t(state.thumb_ly),
+                                          int16_t(state.thumb_rx), int16_t(state.thumb_ry));
                     }
                     s.status = status;
                     s.buttons = buttons;
-                    s.packet = uint32_t(state.packet_number);
+                    s.packet = packet;
                     s.any = s.any || status == 0;
                 }
             }

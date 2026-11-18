@@ -106,6 +106,21 @@ inline std::string BindText(std::string_view name, const char* fallback) {
   return fallback;
 }
 
+// Whether a key press is one of the keys the UI system binds (ui.bind.*: LARecomp's F-key overlays and hotkeys and
+// the SDK's console key). 0.10 ran the binds before the window's layer-0 listeners and marked such an event handled, so
+// the listeners of the game's keyboard (keyboard_native.cpp) and of the device state (input_state.cpp) never saw F3 or
+// F9; 0.11 delivers the event to the listeners first and runs the binds after. Those listeners ask this and skip the
+// press. UI thread (the key events); reads the settings, so it is for key-down events only.
+inline bool IsBoundKey(rex::VirtualKey key, rex::KeyModifiers modifiers) {
+  for (rex::SettingBase* setting : REX_SETTINGS().Enumerate("ui.bind")) {
+    auto chord = rex::ParseKeyChord(setting->GetText());
+    if (chord && chord->key != rex::VirtualKey::kNone && chord->key == key && chord->modifiers == modifiers) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // While held, the pads read neutral for the title (IInputSystem::AcquireUIBlock; calls nest), which is what the
 // 0.10 UI system did for any open dialog: the SDK's 0.11 overlays do it for themselves only when they say
 // WantsExclusiveInput. The dialogs of LARecomp read the pads themselves (ui/gamepad.h), which the block does not

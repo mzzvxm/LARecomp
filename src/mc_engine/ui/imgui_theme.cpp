@@ -2,6 +2,7 @@
 #include "fonts/larecomp_embedded_fonts.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cstring>
 #include <filesystem>
@@ -405,18 +406,26 @@ void EnsureMclaTheme() {
 
 namespace {
 
+std::atomic<bool> g_wants_mouse{false};
+std::atomic<bool> g_wants_keyboard{false};
+
 // Drawn first every frame (it is the first dialog added): puts the fonts and the style in place before any other
 // dialog, the SDK's toast included, draws.
 class ThemeKeeper final : public rex::ui::DialogBase {
  public:
-  bool Draw(ImGuiIO&) override {
+  bool Draw(ImGuiIO& io) override {
     EnsureMclaTheme();
+    g_wants_mouse.store(io.WantCaptureMouse, std::memory_order_relaxed);
+    g_wants_keyboard.store(io.WantCaptureKeyboard, std::memory_order_relaxed);
     return true;
   }
   bool NeedsContinuousPaint() const override { return false; }
 };
 
 }  // namespace
+
+bool OverlayWantsMouse() { return g_wants_mouse.load(std::memory_order_relaxed); }
+bool OverlayWantsKeyboard() { return g_wants_keyboard.load(std::memory_order_relaxed); }
 
 void InstallMclaTheme(rex::ui::IUISystem& ui) {
   // The SDK's Style (its overlays' colours and the toast's size) and ImGui's own style, which the UI system applies

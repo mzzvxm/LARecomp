@@ -14,8 +14,11 @@
 #include <rex/ppc/call.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
+#include <rex/input_keys.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/window.h>
+
+#include "sdk_access.h"
+#include "ui_events.h"
 
 namespace {
 
@@ -252,48 +255,31 @@ std::atomic<bool> g_map_wants_pointer{false};
 float g_zoom_target = 0.0f;
 bool g_zoom_running = false;
 
-class MapMouseListener final : public rex::ui::WindowInputListener {
- public:
-    void OnMouseMove(rex::ui::MouseEvent& e) override { Record(e); }
-    void OnMouseDown(rex::ui::MouseEvent& e) override { Record(e); }
-    void OnMouseUp(rex::ui::MouseEvent& e) override { Record(e); }
+// The wheel's detent in the units of g_wheel_accum. 0.10 gave integer wheel units (MouseEvent::kScrollPerDetent, 120 on
+// Windows); 0.11 gives detents, fractional for a smooth wheel, so the sum keeps the old units.
+constexpr int32_t kScrollPerDetent = 120;
 
-    void OnMouseWheel(rex::ui::MouseEvent& e) override {
-        Record(e);
-        if (e.scroll_y())
-            g_wheel_accum.fetch_add(e.scroll_y(), std::memory_order_relaxed);
+// The UI system's input events (ui_events.h): layer 0 like before, it never marks an event handled, and an overlay that
+// wants the mouse gets first refusal, so a console that is capturing the mouse stops the map cursor from chasing it.
+void OnInput(rex::InputEvent& e) {
+    using Type = rex::InputEvent::Type;
+    if (e.type != Type::kMotion && e.type != Type::kButtonDown && e.type != Type::kButtonUp && e.type != Type::kWheel) return;
+    uint64_t packed = (uint64_t(uint32_t(int32_t(e.x))) << 32) | uint32_t(int32_t(e.y));
+    g_mouse_xy.store(packed, std::memory_order_relaxed);
+    g_mouse_seq.fetch_add(1, std::memory_order_relaxed);
+    if (e.type == Type::kWheel) {
+        const int32_t units = int32_t(std::lround(e.scroll_y * float(kScrollPerDetent)));
+        if (units) g_wheel_accum.fetch_add(units, std::memory_order_relaxed);
     }
-
- private:
-    static void Record(rex::ui::MouseEvent& e) {
-        uint64_t packed = (uint64_t(uint32_t(e.x())) << 32) | uint32_t(e.y());
-        g_mouse_xy.store(packed, std::memory_order_relaxed);
-        g_mouse_seq.fetch_add(1, std::memory_order_relaxed);
-    }
-};
-
-MapMouseListener g_listener;
-
-rex::ui::Window* GetWindow() {
-    auto* rt = rex::Runtime::instance();
-    if (!rt) return nullptr;
-    auto* isys = static_cast<rex::input::InputSystem*>(rt->input_system());
-    return isys ? isys->window() : nullptr;
 }
 
 void AttachListener() {
     if (g_listener_attached.load(std::memory_order_relaxed)) return;
-    rex::ui::Window* window = GetWindow();
-    if (!window) return;
-    // Layer 0, the same one the app and the mnk driver use. Listeners in a
-    // layer run in reverse order of registration and this one is added last,
-    // so it sees the event first -- which costs nothing, because it never
-    // marks anything handled. Anything registered above layer 0 (the ImGui
-    // overlays) still gets first refusal, so a console that is capturing the
-    // mouse stops the map cursor from chasing it.
-    window->AddInputListener(&g_listener, 0);
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow()) return;
+    larecomp::uievents::AddInputHandler(&OnInput);
     g_listener_attached.store(true, std::memory_order_relaxed);
-    MC_INFO("[map-mouse] mouse listener attached to the window");
+    MC_INFO("[map-mouse] mouse handler attached to the UI system's input events");
 }
 
 // Hands the pointer back: the OS cursor becomes visible again and any scroll
@@ -301,18 +287,12 @@ void AttachListener() {
 // zoom the map the moment it closes.
 void ReleaseMouse();
 
-// Cursor visibility has to be applied on the UI thread -- SDL video calls are
-// not safe from the guest threads the hook runs on.
+// The pointer mode is the input system's (one for the whole window): the arbiter in sdk_access.h keeps the strongest wish
+// of mouse look, this file and the cursor hide, and the UI system applies it on the UI thread.
 void SetOsCursorHidden(bool hidden) {
     if (g_cursor_hidden.load(std::memory_order_relaxed) == hidden) return;
-    rex::ui::Window* window = GetWindow();
-    if (!window) return;
     g_cursor_hidden.store(hidden, std::memory_order_relaxed);
-    window->app_context().CallInUIThreadDeferred([window, hidden]() {
-        window->SetCursorVisibility(hidden
-            ? rex::ui::Window::CursorVisibility::kHidden
-            : rex::ui::Window::CursorVisibility::kVisible);
-    });
+    larecomp::pointer::Want(larecomp::pointer::Owner::kMap, hidden ? rex::PointerMode::kHidden : rex::PointerMode::kFree);
 }
 
 // ── The unprojection ───────────────────────────────────────────────────
@@ -422,7 +402,7 @@ bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
 
     // Take whole detents and put the remainder back, so a wheel that reports
     // in fractions still adds up to a step instead of being rounded away.
-    constexpr int32_t kPerDetent = int32_t(rex::ui::MouseEvent::kScrollPerDetent);
+    constexpr int32_t kPerDetent = kScrollPerDetent;
     int32_t units = g_wheel_accum.load(std::memory_order_relaxed);
     int32_t detents = units / kPerDetent;
     if (detents) {
@@ -651,13 +631,19 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
         }
     }
 
-    rex::ui::Window* window = GetWindow();
-    if (!window) {
+    rex::hid::IInputSystem* input = larecomp::sdk::Input();
+    if (!input) {
         ReleaseMouse();
         return;
     }
-    uint32_t width = window->GetActualPhysicalWidth();
-    uint32_t height = window->GetActualPhysicalHeight();
+    // The window's client size in physical pixels, from the last resize event the input system saw (0 before the first).
+    const rex::PointerState pointer = input->GetPointer();
+    uint32_t width = pointer.window_width;
+    uint32_t height = pointer.window_height;
+    if (width == 0 || height == 0) {
+        ReleaseMouse();
+        return;
+    }
 
     uint64_t packed = g_mouse_xy.load(std::memory_order_relaxed);
     int32_t mx = int32_t(uint32_t(packed >> 32));

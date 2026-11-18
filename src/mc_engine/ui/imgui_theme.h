@@ -78,6 +78,14 @@ void ApplyMclaTheme(ImGuiStyle& style, rex::ui::Style* ui_style = nullptr);
 // any other) loads the fonts on its first draw and puts the theme back whenever the style is not ours.
 void InstallMclaTheme(rex::ui::IUISystem& ui);
 
+// Whether an ImGui window wants the mouse / the keyboard as of the last frame the UI system drew, from any thread.
+// ImGui's own flags (ImGui::GetIO().WantCaptureMouse) can only be read on the UI thread with the context current,
+// which the game thread never has (IUISystem::GetImGuiIO makes the context current: not safe off the UI thread
+// while a frame builds), so the theme keeper publishes them once a frame. cursor_hide, mouse_look and
+// keyboard_native read these.
+bool OverlayWantsMouse();
+bool OverlayWantsKeyboard();
+
 // UI thread, inside a dialog's Draw (the ImGui context is current): the same check by hand, for a dialog that is
 // not a PanelDialog (overlay_support.h; PanelDialog::Draw calls it).
 void EnsureMclaTheme();

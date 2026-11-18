@@ -89,7 +89,9 @@
 #else
 #include <SDL3/SDL.h>
 #include <rex/hid/input_system.h>
-#include <rex/ui/window.h>
+#include <rex/ui/ui_system.h>
+
+#include "sdk_access.h"
 #include "trigger_sdl.h"
 #endif
 
@@ -147,16 +149,14 @@ bool WindowInFront() {
     if (front) GetWindowThreadProcessId(front, &pid);
     return pid == GetCurrentProcessId();
 #else
-    // The SDK's window keeps its focus flag from SDL's focus events (the same flag the cursor hiding
-    // reads). A compositor that is showing something over the game (Steam's overlay or its Quick
+    // The UI system keeps a focus flag from the driver's focus events (IUISystem::IsFocused, the same flag the cursor
+    // hiding reads). A compositor that is showing something over the game (Steam's overlay or its Quick
     // Access menu under gamescope, another window) takes the keyboard focus, so the triggers go
     // slack then. No window yet (or none to ask) counts as in front: nothing is driven without one.
     // CHECK: that the flag follows a click on another window under X11 and Wayland, and the Steam
     // overlay on a Steam Deck; a flag that stays false would keep the triggers slack for good.
-    rex::Runtime* rt = rex::Runtime::instance();
-    auto* input = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
-    rex::ui::Window* window = input ? input->window() : nullptr;
-    return window ? window->HasFocus() : true;
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    return ui && ui->HasWindow() ? ui->IsFocused() : true;
 #endif
 }
 
