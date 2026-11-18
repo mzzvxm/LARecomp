@@ -58,7 +58,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool RunSetupFrame();
 
   // The six folders, from the settings (valid from OnInit on).
-  larecomp::Paths CurrentPaths() const;
+  larecomp::Paths CurrentPaths();  // not const: GetTitleRuntime() is not
 
  protected:
   rex::AppSysRequirements GetRequirements() const override;

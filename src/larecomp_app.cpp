@@ -3,6 +3,11 @@
 
 #include "larecomp_app.h"
 
+// The generated image of the game (generated/larecomp_init.cpp). Declared here as that file does instead of including the
+// whole generated surface (larecomp_init.h pulls in every recompiled function's declaration).
+#include <rex/ppc/image.h>
+extern const rex::ppc::PPCImage kPPCImageConfig;
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -42,6 +47,7 @@
 #include "mc_engine/config_save.h"
 #include "mc_engine/debug_menu.h"
 #include "mc_engine/device_watch.h"
+#include "mc_engine/guest_profiler.h"
 #include "mc_engine/display_mode.h"
 #include "mc_engine/hooks/hooks.h"
 #include "mc_engine/impulse_triggers.h"
@@ -593,7 +599,7 @@ void LarecompApp::MoveUserDataIfNeeded() {
                           "\ninstead, and the ones already there were copied over. Nothing else to do.");
 }
 
-larecomp::Paths LarecompApp::CurrentPaths() const {
+larecomp::Paths LarecompApp::CurrentPaths() {
   larecomp::Paths p;
   rex::PathSettings& ps = rex::GetPathSettings();
   p.user_root = ps.user_root.Get();
