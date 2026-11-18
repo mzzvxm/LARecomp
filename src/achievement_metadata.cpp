@@ -9,6 +9,7 @@
 #include <toml++/toml.hpp>
 
 #include "settings/larecomp_settings.h"
+#include <rex/title.h>
 #include <rex/xam/achievement_manager.h>
 
 #include "larecomp_log.h"
@@ -48,7 +49,7 @@ std::string CurrentLanguageName() {
 
 }  // namespace
 
-size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
+size_t LoadAchievementMetadata(rex::xam::IAchievementManager& manager,
                                std::string_view toml_text, std::string_view source_name) {
   toml::table table;
   try {
@@ -67,6 +68,12 @@ size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
 
   const std::string language = CurrentLanguageName();
 
+  // What the title's XDBF table already registered (IAchievementManager lists the catalog; it has no lookup by id).
+  std::map<uint32_t, rex::Achievement> registered;
+  for (rex::Achievement& existing : manager.ListAchievements()) {
+    registered.emplace(existing.id, std::move(existing));
+  }
+
   size_t loaded = 0;
   for (const auto& node : *entries) {
     const auto* entry = node.as_table();
@@ -74,12 +81,12 @@ size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
       continue;
     }
 
-    rex::system::AchievementInfo info;
+    rex::Achievement info;
     info.id = static_cast<uint32_t>((*entry)["id"].value_or<int64_t>(0));
 
     // Layer onto what the title's XDBF table already registered.
-    if (auto existing = manager.FindAchievement(info.id)) {
-      info = *existing;
+    if (auto existing = registered.find(info.id); existing != registered.end()) {
+      info = existing->second;
     }
 
     auto assign = [&](const toml::table& src) {

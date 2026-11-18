@@ -163,33 +163,20 @@ bool SaveLocked() {
     return ok;
 }
 
-// The id of the profile folder: the SDK's per-profile XUID (profile.xuid), or
-// the profile name on an SDK that has none (every profile there has the
-// legacy XUID).
-template <typename Profile>
-std::string ProfileIdFor(const Profile* p) {
+// The id of the profile folder: the SDK's per-profile XUID (UserProfile::GetXUID), or the profile name for a profile
+// that still has the legacy XUID.
+std::string ProfileIdFor(const rex::xam::UserProfile* p) {
     char buf[17];
-    std::snprintf(buf, sizeof(buf), "%016llX", static_cast<unsigned long long>(p->xuid()));
-    if (p->xuid() != kLegacyXuid) return buf;
-    return "name_" + p->name();
-}
-
-// Only the fork SDK lets the XUID be set; the stock one keeps its constant.
-template <typename Profile>
-bool SetGuestXuid(Profile* p, uint64_t xuid) {
-    if constexpr (requires { p->set_xuid(xuid); }) {
-        p->set_xuid(xuid);
-        return true;
-    } else {
-        return false;
-    }
+    std::snprintf(buf, sizeof(buf), "%016llX", static_cast<unsigned long long>(p->GetXUID()));
+    if (p->GetXUID() != kLegacyXuid) return buf;
+    return "name_" + p->GetName();
 }
 
 }  // namespace
 
 void ApplyProfileIdentity() {
-    auto* ks = rex::system::kernel_state();
-    auto* profile = ks ? ks->user_profile() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* profile = rt ? &rt->GetUserProfile() : nullptr;
     if (!profile) {
         LARECOMP_APP_WARN("[identity] no profile; online identity off");
         return;
@@ -197,7 +184,7 @@ void ApplyProfileIdentity() {
     std::lock_guard<std::mutex> lk(g_mtx);
     if (g.loaded) return;
     g.profile_id = ProfileIdFor(profile);
-    g.nick = profile->name();
+    g.nick = profile->GetName();
 
     // An SDK without per-profile XUIDs files the key by name; once the SDK
     // has them, that key is this profile's and moves to the new id.
@@ -236,9 +223,10 @@ void ApplyProfileIdentity() {
     }
     DeriveFromSeed(g);
     g.loaded = true;
-    const bool set = SetGuestXuid(profile, g.xuid);
-    LARECOMP_APP_INFO("[identity] '{}' key {} XUID {:016X}{}", g.nick, Fingerprint(g.keys.pub), g.xuid,
-                      set ? "" : " (this SDK keeps its own XUID)");
+    // The guest's XUID comes from the identity: the title is loaded and has not asked for it yet (UserProfile::set_xuid is
+    // for exactly this, a front end deriving the XUID from its own key).
+    profile->set_xuid(g.xuid);
+    LARECOMP_APP_INFO("[identity] '{}' key {} XUID {:016X}", g.nick, Fingerprint(g.keys.pub), g.xuid);
 }
 
 bool Loaded() {

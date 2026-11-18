@@ -14,6 +14,7 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/kernel/title_runtime.h>
+#include <rex/xam/content_manager.h>
 #include <rex/xam/user_profile.h>
 
 #include "larecomp_log.h"
@@ -53,28 +54,14 @@ fs::path UserRoot() {
   return root;
 }
 
-// The profile directory the identity key sits in, named the way the SDK names
-// the profile's content directory. The fork's SDK uses the configured profile
-// name (the static UserProfile::ConfiguredName, from the user_name cvar); the
-// stock SDK has no name setting and keys content by the profile's hex XUID.
-// Detected at compile time so one source builds against both.
-template <typename Profile>
-std::string ProfileNameFor() {
-  if constexpr (requires { Profile::ConfiguredName(); }) {
-    std::string name = Profile::ConfiguredName();
-    return name.empty() ? std::string("default") : name;
-  } else {
-    auto* ks = rex::system::kernel_state();
-    const Profile* profile = ks ? ks->user_profile() : nullptr;
-    if (!profile) return "default";
-    char xuid[17];
-    std::snprintf(xuid, sizeof(xuid), "%016llX",
-                  static_cast<unsigned long long>(profile->xuid()));
-    return xuid;
-  }
+// The profile directory the identity key sits in, named the way the SDK names the profile's content directory
+// (IContentManager::ProfileDirName: the sanitized user_name, from the user_name setting).
+std::string ProfileName() {
+  auto* rt = REX_RUNTIME();
+  std::string name = rt ? rt->GetContentManager().ProfileDirName(rt->GetUserProfile().GetXUID())
+                        : rex::xam::UserProfile::ConfiguredName();
+  return name.empty() ? std::string("default") : name;
 }
-
-std::string ProfileName() { return ProfileNameFor<rex::xam::UserProfile>(); }
 
 Target ResolveTarget() {
   Target t;

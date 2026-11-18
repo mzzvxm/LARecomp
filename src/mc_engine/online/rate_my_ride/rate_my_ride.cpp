@@ -238,14 +238,13 @@ Me LocalPlayer(Memory* mem) {
     me.gamertag = GuestCStr(mem, gamer + kGamerTag, 16);
   }
   if (!me.valid) {
-    // The game's own handle is {1, profile XUID} (kSharedGuestXuid on SDKs
-    // without per-profile XUIDs); the chain above only confirms it.
-    auto* ks = rex::system::kernel_state();
-    const auto* profile = ks ? ks->user_profile() : nullptr;
+    // The game's own handle is {1, profile XUID} (kSharedGuestXuid before the title is loaded); the chain above
+    // only confirms it.
+    auto* rt = REX_RUNTIME();
     me.handle.fill(0);
     me.handle[0] = 1;
     StoreBe64(me.handle.data() + kRecHandleId,
-              profile ? profile->xuid() : rmr::kSharedGuestXuid);
+              rt ? rt->GetUserProfile().GetXUID() : rmr::kSharedGuestXuid);
     me.valid = true;
   }
   return me;

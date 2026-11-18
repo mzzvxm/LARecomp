@@ -238,9 +238,8 @@ std::unordered_map<uint64_t, uint64_t> g_owner_by_xuid;  // made-up XUID -> owne
 
 // The XUID the game itself signed in with.
 uint64_t LocalXuid() {
-  auto* ks = rex::system::kernel_state();
-  const auto* profile = ks ? ks->user_profile() : nullptr;
-  return profile ? profile->xuid() : kLegacyLocalXuid;
+  auto* rt = REX_RUNTIME();
+  return rt ? rt->GetUserProfile().GetXUID() : kLegacyLocalXuid;
 }
 
 uint64_t XuidForOwner(uint64_t owner) {

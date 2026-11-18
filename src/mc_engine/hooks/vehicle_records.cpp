@@ -39,6 +39,7 @@
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 #include <rex/kernel/title_runtime.h>
+#include <rex/xam/content_manager.h>
 #include <rex/xam/user_profile.h>
 #include <rex/path_settings.h>
 
@@ -188,27 +189,18 @@ struct SidecarHeader {
 };
 static_assert(sizeof(SidecarHeader) == 32);
 
-// The directory the content store files this profile under: the fork names it
-// after the configured profile (UserProfile::ConfiguredName), the stock SDK
-// after the hex XUID.
-template <typename Profile>
+// The directory the content store files the signed in profile under (the sanitized profile name, the hex XUID for any
+// other): the content manager's own answer.
 std::string ProfileDirFor() {
-    if constexpr (requires { Profile::ConfiguredName(); }) {
-        std::string name = Profile::ConfiguredName();
-        if (!name.empty()) return name;
-    }
-    auto* ks = rex::system::kernel_state();
-    const Profile* profile = ks ? ks->user_profile() : nullptr;
-    if (!profile) return {};
-    char xuid[17];
-    std::snprintf(xuid, sizeof(xuid), "%016llX", static_cast<unsigned long long>(profile->xuid()));
-    return xuid;
+    auto* rt = REX_RUNTIME();
+    if (!rt) return {};
+    return rt->GetContentManager().ProfileDirName(rt->GetUserProfile().GetXUID());
 }
 
 fs::path SidecarPath() {
     auto* rt = REX_RUNTIME();
     const fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
-    const std::string dir = ProfileDirFor<rex::xam::UserProfile>();
+    const std::string dir = ProfileDirFor();
     if (root.empty() || dir.empty()) return {};
     return root / dir / "545407F8" / "mc4_vehicle_records.bin";
 }
