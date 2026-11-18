@@ -10,6 +10,7 @@
 #include <utility>
 
 #include <rex/cvar.h>
+#include <rex/hash.h>
 #include <rex/logging.h>
 
 #include "guest_memory.h"
@@ -19,7 +20,9 @@ REXCVAR_DEFINE_BOOL(
     "Debug: logs one line under [car frame] whenever the player's car changes in the draw list the car effects share (its "
     "stencil ID, how many draws it has, how many are rigid parts and how many skinned): what was found, how it was found and what "
     "was left out. With this on the list is collected in every frame, whether a car effect (the car shadow map, the car ray tracing) "
-    "asks for it or not, so the line shows by itself. Never saved. Live.")
+    "asks for it or not, so the line shows by itself. A second line, 'keys', says when the car's meshes get new keys (a new key is a "
+    "mesh the car effects read or build again): a few seconds after the car appears there should be none in a parked car; at most one "
+    "line every few seconds. Never saved. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -34,8 +37,10 @@ constexpr size_t kPendingCap = 64;
 // Meshes read for their model-space box in one frame (a read is the whole mesh's indices and vertices: the car's ~200 draws are read
 // over a few frames after it appears, then never again while their keys are seen).
 constexpr uint32_t kBoxBudget = 32;
-// Frames a box is kept after its key was last seen.
+// Frames a box is kept after its key was last seen (the fingerprints behind the keys are kept as long).
 constexpr uint64_t kBoxKeepFrames = 900;
+// Guest frames between two 'keys' log lines.
+constexpr uint64_t kKeyLogFrames = 300;
 // How often the box cache is swept.
 constexpr uint64_t kBoxSweepFrames = 128;
 // Frames before a vertex shader whose microcode could not be verified is tried again.
@@ -83,6 +88,8 @@ void CarFrame::Shutdown() {
   recipes_.clear();
   layouts_.clear();
   boxes_.clear();
+  contents_.Clear();
+  key_window_ = KeyWindow{};
   reads_.Clear();
   unreadable_logged_.clear();
   palette_pool_.clear();
@@ -140,6 +147,7 @@ void CarFrame::OnPresent() {
         ++it;
       }
     }
+    contents_.Sweep(guest_frame_, kBoxKeepFrames);
   }
 }
 
@@ -179,6 +187,7 @@ void CarFrame::FinishFrame() {
   if (!log_) {
     return;
   }
+  LogKeys();
   Summary now;
   now.valid = frame_.valid;
   now.id = frame_.player_id;
@@ -553,9 +562,20 @@ void CarFrame::FillPalette(const ConstantBanks::Banks& banks, std::vector<float>
   palette_cache_version_ = banks.vs_version;
 }
 
-// The mesh key of a rigid draw: where its position stream, its index range and its declaration are, what it draws from them, and the
-// geometry cache's stamp of the two guest ranges (car_frame_rules.h MeshKeyOf).
-uint64_t CarFrame::ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout) const {
+// The mesh key of a rigid draw: where its position stream, its index range and its declaration are, what it draws from them, and a
+// fingerprint of the guest bytes it draws (car_frame_rules.h MeshKeyOf).
+//
+// The key was once made from the geometry cache's stamp of the two guest ranges. That stamp only says "may have changed" (it moves when
+// anything in a page the range touches was written, when the region is watched or hashed, when it is made again), and in a parked
+// car's frames about a dozen keys moved every frame (the box cache read those meshes again, the ray tracing built them again). The
+// stamp now only decides WHEN the bytes are looked at again: the indices are scanned once, the vertices the indices name are hashed
+// once, both again only when the stamp has moved, and the key follows what they say. Per draw in a steady frame: the stamps (an
+// exact-range lookup each), the fingerprint cache's lookups, the key's mixing; no heap allocation, no guest read.
+// CHECK: the cost is estimated, not measured (about 5 microseconds for a mesh of ~1.4k indices and ~7 KB of vertices when its stamp
+// moved; one such pass over all of a car's ~195 draws, ~1 ms, in the frame the car appears): the 'keys' line's KiB figure and the
+// render thread's time in a run say. What the guest writes to make the stamps move (writes beside the meshes, the same bytes
+// again, or other bytes) is not known from the logs; the 'keys' line splits it: "again with the same bytes" against "other bytes".
+uint64_t CarFrame::ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout) {
   const DrawRecord& r = d.view->record();
   if (r.kind == DrawKind::kInline) {
     return 0;  // the vertices are in the draw's own record
@@ -564,44 +584,178 @@ uint64_t CarFrame::ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout) c
   if (!position.ok) {
     return 0;
   }
-  const auto stamp = [&](uint32_t address, uint32_t size) -> uint64_t { return d.cache ? d.cache->RangeStamp(address, size) : 0; };
-  car_frame_rules::MeshKeyParts parts;
-  parts.position = car_frame_rules::StreamKey{position.address, position.size, position.stride, layout.position_offset,
-                                              uint32_t(layout.position_format), stamp(position.address, position.size)};
-  if (layout.normal) {
-    if (layout.normal_stream != layout.position_stream) {
-      const car_mesh::StreamRef normal = car_mesh::ResolveStream(*d.view, r, layout.normal_stream);
-      if (!normal.ok) {
-        return 0;
-      }
-      parts.normal = car_frame_rules::StreamKey{normal.address, normal.size, normal.stride, layout.normal_offset,
-                                                uint32_t(layout.normal_format), stamp(normal.address, normal.size)};
-    } else {
-      parts.normal.offset = layout.normal_offset;
-      parts.normal.format = uint32_t(layout.normal_format);
+  car_mesh::StreamRef normal;  // the NORMAL element's own stream, when it is another one
+  const bool own_normal = layout.normal && layout.normal_stream != layout.position_stream;
+  if (own_normal) {
+    normal = car_mesh::ResolveStream(*d.view, r, layout.normal_stream);
+    if (!normal.ok) {
+      return 0;
     }
   }
-  parts.indexed = r.kind == DrawKind::kIndexed ? 1u : 0u;
+  car_frame_rules::MeshKeyParts parts;
+  parts.position = car_frame_rules::StreamKey{position.address, position.size, position.stride, layout.position_offset,
+                                              uint32_t(layout.position_format), 0};
+  if (own_normal) {
+    parts.normal = car_frame_rules::StreamKey{normal.address, normal.size, normal.stride, layout.normal_offset,
+                                              uint32_t(layout.normal_format), 0};
+  } else if (layout.normal) {
+    parts.normal.offset = layout.normal_offset;
+    parts.normal.format = uint32_t(layout.normal_format);
+  }
+  const bool indexed = r.kind == DrawKind::kIndexed;
+  parts.indexed = indexed ? 1u : 0u;
   parts.primitive = r.primitive;
   parts.count = r.count;
   parts.start = r.start;
   parts.base_vertex = r.base_vertex;
-  if (r.kind == DrawKind::kIndexed) {
+  // A draw with more indices than a car has is not fingerprinted (car_mesh::ReadTriangles does not read it either).
+  const bool fingerprint = d.cache != nullptr && r.count <= car_mesh::kMaxIndices;
+  IndexInfo index;
+  if (indexed) {
     const bool index32 = (r.index_dword0 & 0x80000000u) != 0;
     const uint32_t size = index32 ? 4u : 2u;
     parts.index_address = GuestMemory::ToPhysical(r.index_address) + r.start * size;
     parts.index_bytes = r.count * size;
     parts.index32 = index32 ? 1u : 0u;
     parts.endian = (r.index_dword0 >> 29) & 3u;
-    if (d.primitive.conversion == PrimitiveConversion::kNone) {
-      parts.index_stamp = stamp(parts.index_address, parts.index_bytes);  // the cache holds a region of the range only then
-    }
+    bool order_free = false, skip_reset = false;
     if (d.primitive.topology == plume::RenderPrimitiveTopology::TRIANGLE_STRIP) {
       parts.reset = d.state->sc_mode.multi_prim_ib_ena != 0 ? 1u : 0u;
       parts.reset_index = d.state->reset_index & (index32 ? 0xFFFFFFFFu : 0xFFFFu);
+      skip_reset = parts.reset != 0;
+    } else {
+      order_free = d.primitive.topology == plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+    }
+    // The geometry cache holds a region of the index range only when the draw's indices went to the host as they are; a draw that
+    // converts them (quads, fans) has no stamp to tell a change by, and its indices stay out of the key.
+    if (fingerprint && d.primitive.conversion == PrimitiveConversion::kNone) {
+      index = IndexContent(d, parts.index_address, parts.index_bytes, r.count, index32, parts.endian, order_free, skip_reset,
+                           parts.reset_index);
+      parts.index_content = index.content;
+    }
+  }
+  if (fingerprint) {
+    // The vertices the draw uses: those its indices name (plus the base vertex), or its own run of an auto draw. The rest of the fetch
+    // window is other meshes' (or other data) and does not belong in the key.
+    const auto own = [&](const car_mesh::StreamRef& s) {
+      return car_frame_rules::OwnVertices(indexed, r.start, r.count, r.base_vertex, index.have_range, index.lo, index.hi,
+                                          s.stride != 0 ? s.size / s.stride : 0u);
+    };
+    parts.position.content = StreamContent(d, position, own(position));
+    if (own_normal) {
+      parts.normal.content = StreamContent(d, normal, own(normal));
     }
   }
   return car_frame_rules::MeshKeyOf(parts);
+}
+
+// CHECK: a range the geometry cache holds no region of (a draw that has not been through Prepare, a vertex stream built from the resolve
+// memory) has no stamp: its bytes stay out of the key, as the stamp did before. Not seen in a run: the log's 'keys' line would show a
+// mesh whose key never moves while its bytes do, if any.
+CarFrame::IndexInfo CarFrame::IndexContent(const MainDraw& d, uint32_t address, uint32_t bytes, uint32_t count, bool index32, uint32_t endian,
+                                           bool order_free, bool skip_reset, uint32_t reset_index) {
+  IndexInfo out;
+  const uint64_t stamp = d.cache->RangeStamp(address, bytes);
+  if (stamp == 0 || bytes == 0) {
+    return out;
+  }
+  car_frame_rules::ContentCache::Outcome outcome = car_frame_rules::ContentCache::Outcome::kHit;
+  const car_frame_rules::ContentEntry entry = contents_.Get(
+      car_frame_rules::IndexSlot(address, bytes, index32, endian, order_free, skip_reset, reset_index), stamp, guest_frame_,
+      [&](car_frame_rules::ContentEntry* made) {
+        counts_.content_bytes += bytes;
+        const uint8_t* raw = memory_->Read(address, bytes);
+        if (!raw) {
+          return;  // not committed guest memory: no fingerprint (0), nothing is read from it
+        }
+        const car_frame_rules::IndexSummary summary =
+            car_frame_rules::SummarizeIndices(raw, count, index32, endian, order_free, skip_reset, reset_index);
+        made->content = summary.fingerprint;
+        made->has_range = summary.any;
+        made->lo = summary.lo;
+        made->hi = summary.hi;
+      },
+      &outcome);
+  NoteOutcome(outcome);
+  out.content = entry.content;
+  out.have_range = entry.has_range;
+  out.lo = entry.lo;
+  out.hi = entry.hi;
+  return out;
+}
+
+// The fingerprint of the bytes of the vertices of one stream that the draw uses (`span`), made again when the geometry cache's stamp of
+// the stream's whole fetch window has moved. 0: not known (no region of that window in the geometry cache, or unreadable memory).
+uint64_t CarFrame::StreamContent(const MainDraw& d, const car_mesh::StreamRef& stream, const car_frame_rules::VertexSpan& span) {
+  if (stream.size == 0 || stream.inline_data) {
+    return 0;
+  }
+  const uint64_t stamp = d.cache->RangeStamp(stream.address, stream.size);
+  if (stamp == 0) {
+    return 0;
+  }
+  car_frame_rules::ContentCache::Outcome outcome = car_frame_rules::ContentCache::Outcome::kHit;
+  const car_frame_rules::ContentEntry entry = contents_.Get(
+      car_frame_rules::VertexSlot(stream.address, stream.size, stream.stride, span), stamp, guest_frame_,
+      [&](car_frame_rules::ContentEntry* made) {
+        uint32_t offset = 0, length = stream.size;
+        if (!span.whole && stream.stride != 0) {
+          offset = span.first * stream.stride;
+          length = span.count * stream.stride;
+        }
+        counts_.content_bytes += length;
+        if (length == 0) {
+          made->content = car_frame_rules::VertexContent(0, span);  // the draw names no vertex the window holds
+          return;
+        }
+        const uint8_t* bytes = memory_->Read(stream.address + offset, length);
+        if (bytes) {
+          made->content = car_frame_rules::VertexContent(uint64_t(XXH3_64bits(bytes, length)), span);
+        }
+      },
+      &outcome);
+  NoteOutcome(outcome);
+  return entry.content;
+}
+
+void CarFrame::NoteOutcome(car_frame_rules::ContentCache::Outcome outcome) {
+  using Outcome = car_frame_rules::ContentCache::Outcome;
+  switch (outcome) {
+    case Outcome::kNew: ++counts_.content_new; break;
+    case Outcome::kChanged: ++counts_.content_changed; break;
+    case Outcome::kSame: ++counts_.content_same; break;
+    case Outcome::kHit: break;
+  }
+}
+
+// What the meshes' keys did, as one line at most every kKeyLogFrames guest frames (and only when something happened: a new key, a
+// fingerprint made again). In a parked car, a few seconds after it appears, "new mesh keys" must be 0 and the line must stop; "again
+// with the same bytes" is the write watch's stamp moving over a mesh that did not change (the key stayed: that is the fix at work).
+void CarFrame::LogKeys() {
+  KeyWindow& w = key_window_;
+  ++w.frames;
+  w.frames_with_new += counts_.new_keys != 0;
+  w.max_new = std::max(w.max_new, counts_.new_keys);
+  w.new_keys += counts_.new_keys;
+  w.content_new += counts_.content_new;
+  w.content_changed += counts_.content_changed;
+  w.content_same += counts_.content_same;
+  w.content_bytes += counts_.content_bytes;
+  if (!w.Active() || (w.since != 0 && guest_frame_ - w.since < kKeyLogFrames)) {
+    return;
+  }
+  uint32_t body = 0;
+  for (const car_frame::Draw& draw : frame_.draws) {
+    body += draw.part == car_frame::Part::kBody;
+  }
+  REXLOG_INFO("{} keys: frame {} (the last of {} collected since the last 'keys' line): {} new mesh keys ({} of those frames had some, at most {} in "
+              "one; this frame lists {} body draws); behind the keys {} meshes' ranges fingerprinted for the first time, {} again with other bytes "
+              "(another key), {} again with the same bytes (the write watch's stamp moved, the key stayed); {:.1f} KiB of guest bytes read for "
+              "them; {} fingerprints held",
+              kPrefix, guest_frame_, w.frames, w.new_keys, w.frames_with_new, w.max_new, body, w.content_new, w.content_changed, w.content_same,
+              double(w.content_bytes) / 1024.0, contents_.size());
+  w = KeyWindow{};
+  w.since = guest_frame_;
 }
 
 // ---------------------------------------------------------------------------
@@ -622,34 +776,33 @@ void CarFrame::NoteCamera(const uint8_t* vs_bank, const temporal::Mat4& world) {
   }
 }
 
-// The model-space box of a rigid draw's mesh, from the cache by key; a key not seen yet is read (the whole mesh: the draw's call is
-// the only time the guest's bytes are held still), at most a few a frame.
+// The model-space box of a rigid draw's mesh, from the cache by key; a key not seen yet is a NEW key (counted) and is read (the whole
+// mesh: the draw's call is the only time the guest's bytes are held still), at most a few a frame, the rest in the frames after.
 void CarFrame::NoteBox(car_frame::Draw* out) {
   if (out->mesh_key == 0) {
     return;
   }
-  const auto found = boxes_.find(out->mesh_key);
-  if (found != boxes_.end()) {
-    found->second.seen = guest_frame_;
-    if (found->second.valid) {
-      out->has_box = true;
-      std::memcpy(out->box_min, found->second.lo, sizeof(out->box_min));
-      std::memcpy(out->box_max, found->second.hi, sizeof(out->box_max));
-    }
-    return;
+  auto found = boxes_.find(out->mesh_key);
+  if (found == boxes_.end()) {
+    MeshBox fresh;
+    fresh.pending = true;
+    found = boxes_.emplace(out->mesh_key, fresh).first;
+    ++counts_.new_keys;
   }
-  if (boxes_read_ >= kBoxBudget) {
-    out->box_deferred = true;
-    return;
-  }
-  ++boxes_read_;
-  ++counts_.boxes_read;
-  MeshBox box;
+  MeshBox& box = found->second;
   box.seen = guest_frame_;
-  if (LoadMesh()) {
-    box.valid = car_frame_rules::BoxOfMesh(mesh_.local.data(), mesh_.local.size() / 3, mesh_.tri.data(), mesh_.tri.size(), box.lo, box.hi);
+  if (box.pending) {
+    if (boxes_read_ >= kBoxBudget) {
+      out->box_deferred = true;
+      return;
+    }
+    ++boxes_read_;
+    ++counts_.boxes_read;
+    box.pending = false;
+    if (LoadMesh()) {
+      box.valid = car_frame_rules::BoxOfMesh(mesh_.local.data(), mesh_.local.size() / 3, mesh_.tri.data(), mesh_.tri.size(), box.lo, box.hi);
+    }
   }
-  boxes_.emplace(out->mesh_key, box);
   if (box.valid) {
     out->has_box = true;
     std::memcpy(out->box_min, box.lo, sizeof(out->box_min));

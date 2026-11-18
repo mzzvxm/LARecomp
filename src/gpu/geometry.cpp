@@ -321,7 +321,10 @@ GeometryCache::Region* GeometryCache::FindOrCreateRegion(uint32_t start, uint32_
   return &r;
 }
 
-// CHECK: that a mesh streamed in again at the same address changes the stamp relies on the write watch seeing the guest's write (watched
+// The stamp is a "look again" signal (geometry.h): it moves on every write notification of a page the range touches, on every switch
+// between watched and hashed (the hash term below appears and goes), and when the region is made again. It must NOT be used as the
+// identity of the bytes: a car's meshes moved it about a dozen times a frame while parked (2026-11-18), see CarFrame::ComputeMeshKey.
+// CHECK: that a mesh streamed in again at the same address moves the stamp relies on the write watch seeing the guest's write (watched
 // region: version bump; hashed: the hash) and on the region being the one the draw used (an eviction makes a new serial). Not run.
 uint64_t GeometryCache::RangeStamp(uint32_t start, uint32_t length) const {
   const RegionIndex::Id id = index_.Find(start, length);

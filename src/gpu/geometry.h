@@ -151,10 +151,12 @@ class GeometryCache {
                  HostPrimitive primitive, bool computed_fetch, DrawGeometry& out,
                  std::string* detail, plume::RenderCommandList* list);
 
-  // A number that changes when the guest's bytes of the exact range [start, start + length) may have changed since a draw last used it
-  // (a write the watch saw; for a hashed region the bytes' own hash) and when the range's region was dropped and made again; the same
-  // number otherwise (car_frame.h mesh_key). 0: the cache holds no region of exactly that range (nothing drew from it yet). Valid
-  // right after the range was used by Prepare.
+  // A number that changes when the guest's bytes of the exact range [start, start + length) MAY have changed since a draw last used it:
+  // a write the watch saw in any page the range touches (so also a write NEXT to the range, or over it with the same bytes), a switch
+  // of the region between watched and hashed, a hashed region's whole-range hash, and the range's region being dropped and made again;
+  // the same number otherwise. It is a "look again" signal, never an identity of the bytes: car_frame.cpp fingerprints the bytes
+  // themselves when it moves (car_frame.h mesh_key). 0: the cache holds no region of exactly that range (nothing drew from it yet).
+  // Valid right after the range was used by Prepare.
   uint64_t RangeStamp(uint32_t start, uint32_t length) const;
 
   // Regions unused for this many frames give their device memory back.

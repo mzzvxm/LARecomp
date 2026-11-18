@@ -7,7 +7,8 @@
 // recipe of a draw, the bank's matrices, the skin blend and the triangle set that this one builds on):
 //
 //   - the mesh key: one number for "the same triangles in model space" (MeshKeyOf), made from where the position stream, the
-//     index range and the declaration are, the draw's primitive and counts, and the geometry cache's stamp of the guest ranges;
+//     index range and the declaration are, the draw's primitive and counts, and a fingerprint of the mesh's own guest bytes (the
+//     indices and the vertices they name: SummarizeIndices, OwnVertices, ContentCache);
 //   - which draw is the player's: the stencil ID a car's draws write is handed out per frame (a car has no fixed ID), so the
 //     player's ID is the one whose gWorld is nearest to the player's vehicle in the game's memory, and the one it had in the
 //     frame before stands in for the draws that come first (IdentityTracker);
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 
 #include "car_dump_rules.h"
 #include "temporal_math.h"
@@ -51,7 +53,7 @@ struct StreamKey {
   uint32_t stride = 0;
   uint32_t offset = 0;   // of the element in a vertex
   uint32_t format = 0;   // the host's format code of the element (plume::RenderFormat)
-  uint64_t stamp = 0;    // GeometryCache::RangeStamp(address, size): changes when the guest bytes are written again
+  uint64_t content = 0;  // a fingerprint of the guest bytes of the vertices THIS draw uses (VertexContent); 0: not known
 };
 
 // What makes two draws give the same triangles in model space.
@@ -67,7 +69,7 @@ struct MeshKeyParts {
   uint32_t index_bytes = 0;
   uint32_t index32 = 0;
   uint32_t endian = 0;
-  uint64_t index_stamp = 0;
+  uint64_t index_content = 0;  // a fingerprint of the draw's own index bytes (SummarizeIndices); 0: not known
   uint32_t reset = 0;          // strips: the guest's primitive reset is on, and its index
   uint32_t reset_index = 0;
 };
@@ -76,7 +78,7 @@ inline uint64_t MixStream(uint64_t h, const StreamKey& s) {
   h = Mix(h, (uint64_t(s.address) << 32) | s.size);
   h = Mix(h, (uint64_t(s.stride) << 32) | s.offset);
   h = Mix(h, s.format);
-  return Mix(h, s.stamp);
+  return Mix(h, s.content);
 }
 
 // Never 0 (0 means "no key").
@@ -89,13 +91,223 @@ inline uint64_t MeshKeyOf(const MeshKeyParts& p) {
   h = Mix(h, uint64_t(uint32_t(p.base_vertex)));
   h = Mix(h, (uint64_t(p.index_address) << 32) | p.index_bytes);
   h = Mix(h, (uint64_t(p.index32) << 32) | p.endian);
-  h = Mix(h, p.index_stamp);
+  h = Mix(h, p.index_content);
   h = Mix(h, (uint64_t(p.reset) << 32) | p.reset_index);
   return h != 0 ? h : 1;
 }
 
 // A cached box (or any per-key record) that was last seen more than `keep` frames ago is dropped.
 inline bool Stale(uint64_t last_seen, uint64_t now, uint64_t keep) { return now > last_seen && now - last_seen > keep; }
+
+// ---------------------------------------------------------------------------
+// what a mesh's own bytes say
+// ---------------------------------------------------------------------------
+// The geometry cache's stamp of a guest range (GeometryCache::RangeStamp) says only that the range MAY have changed: it moves on any
+// write the watch saw in a page the range touches (the range's neighbours in the page, rewritten), when the region goes from watched to
+// hashed and back, and when the region is made again; a hashed region's stamp also carries the hash of the WHOLE fetch window. A key
+// made from the stamp therefore changed about a dozen times a frame for a parked car (measured 2026-11-18: 56731 meshes built over
+// 4700 frames for ~195 draws). The key is made from what the mesh IS instead: a fingerprint of the bytes of its own vertices and its
+// own indices, made again only when the stamp has moved (ContentCache).
+//
+// The indices: SummarizeIndices reads the draw's index bytes once and gives the smallest and the largest index (which vertices of the
+// stream are the mesh's own: OwnVertices) and a fingerprint. For a triangle list the fingerprint does not depend on the order of the
+// triangles (a game that sorts a translucent part's triangles every frame leaves the same triangles), for a strip it does.
+
+// A cheap hash of one triangle's three vertex numbers, in order (a rotation of the corners is another hash: the winding is part of it).
+inline uint64_t TriangleHash(uint32_t a, uint32_t b, uint32_t c) {
+  uint64_t h = ((uint64_t(a) << 32) | b) * 0x9E3779B97F4A7C15ull;
+  h ^= (uint64_t(c) + 0x632BE59BD9B4E019ull) * 0xC2B2AE3D27D4EB4Full;
+  h ^= h >> 29;
+  h *= 0xBF58476D1CE4E5B9ull;
+  h ^= h >> 32;
+  return h;
+}
+
+struct IndexSummary {
+  bool any = false;              // at least one index that is not a primitive reset
+  uint32_t lo = 0;               // the smallest and the largest index of those (the guest's own numbers, without the base vertex)
+  uint32_t hi = 0;
+  uint64_t fingerprint = 0;      // never 0
+};
+
+// `count` guest indices at `raw` (the guest's bytes; 16 or 32 bit, swapped by `endian` as the renderer does). `order_free`: a triangle
+// list, whose fingerprint is the sum of its triangles' hashes (the same triangles in any order give the same fingerprint, and a
+// triangle that appears twice counts twice); otherwise the fingerprint follows the indices in order. `skip_reset`: an index equal to
+// `reset_index` is a strip's cut, not a vertex (it stays in the order-bound fingerprint, and out of lo and hi).
+inline IndexSummary SummarizeIndices(const uint8_t* raw, uint32_t count, bool index32, uint32_t endian, bool order_free, bool skip_reset,
+                                     uint32_t reset_index) {
+  // A block is a multiple of 3 (whole triangles) and of 2 (the 8in32 and 16in32 swaps work on dwords, 16-bit indices come in pairs).
+  constexpr uint32_t kBlock = 96;
+  const uint32_t size = index32 ? 4u : 2u;
+  uint8_t swapped[kBlock * 4];
+  IndexSummary out;
+  uint64_t sum = 0;
+  uint64_t chain = 0x1DC0FFEE5ull;
+  uint32_t triangles = 0;
+  uint32_t lo = 0xFFFFFFFFu, hi = 0;
+  for (uint32_t done = 0; done < count; done += kBlock) {
+    const uint32_t n = std::min(kBlock, count - done);
+    std::memset(swapped, 0, size_t(n) * size);
+    car_dump::SwapEndian(swapped, raw + size_t(done) * size, n * size, endian);
+    uint32_t v[kBlock];
+    for (uint32_t i = 0; i < n; ++i) {
+      if (index32) {
+        uint32_t x;
+        std::memcpy(&x, swapped + size_t(i) * 4, 4);
+        v[i] = x;
+      } else {
+        uint16_t x;
+        std::memcpy(&x, swapped + size_t(i) * 2, 2);
+        v[i] = x;
+      }
+      if (!(skip_reset && v[i] == reset_index)) {
+        lo = std::min(lo, v[i]);
+        hi = std::max(hi, v[i]);
+        out.any = true;
+      }
+    }
+    if (order_free) {
+      for (uint32_t i = 0; i + 3 <= n; i += 3) {
+        sum += TriangleHash(v[i], v[i + 1], v[i + 2]);
+        ++triangles;
+      }
+    } else {
+      for (uint32_t i = 0; i < n; ++i) {
+        chain = Mix(chain, v[i]);
+      }
+    }
+  }
+  if (out.any) {
+    out.lo = lo;
+    out.hi = hi;
+  }
+  uint64_t h = order_free ? Mix(sum, (uint64_t(triangles) << 1) | 1u) : Mix(chain, uint64_t(count) << 1);
+  h = Mix(h, (uint64_t(index32 ? 1u : 0u) << 1) | (order_free ? 1u : 0u));
+  out.fingerprint = h != 0 ? h : 1;
+  return out;
+}
+
+// The vertices of a stream that a draw uses: `count` vertices from vertex `first` of the stream's window. `whole`: not known (hash the
+// window).
+struct VertexSpan {
+  bool whole = true;
+  uint32_t first = 0;
+  uint32_t count = 0;  // 0 with whole == false: the draw names nothing the window holds
+};
+
+// An indexed draw uses the vertices lo + base_vertex .. hi + base_vertex (`have_indices`: SummarizeIndices found some); an auto draw uses
+// `start` .. start + draw_count - 1. Both are clipped to the window's `window_vertices` (the renderer's draw reads past it as zeros).
+inline VertexSpan OwnVertices(bool indexed, uint32_t start, uint32_t draw_count, int32_t base_vertex, bool have_indices, uint32_t lo,
+                              uint32_t hi, uint32_t window_vertices) {
+  VertexSpan out;
+  int64_t first = 0, last = -1;
+  if (indexed) {
+    if (!have_indices) {
+      return out;  // an index buffer with nothing but resets, or one that is not read: the whole window
+    }
+    first = int64_t(lo) + int64_t(base_vertex);
+    last = int64_t(hi) + int64_t(base_vertex);
+  } else {
+    if (draw_count == 0) {
+      return out;
+    }
+    first = int64_t(start);
+    last = int64_t(start) + int64_t(draw_count) - 1;
+  }
+  out.whole = false;
+  first = std::max<int64_t>(first, 0);
+  last = std::min<int64_t>(last, int64_t(window_vertices) - 1);
+  if (first <= last) {
+    out.first = uint32_t(first);
+    out.count = uint32_t(last - first + 1);
+  }
+  return out;
+}
+
+// The fingerprint of a stream's own vertices from the hash of their bytes. Never 0 (0 means "not known").
+inline uint64_t VertexContent(uint64_t bytes_hash, const VertexSpan& span) {
+  uint64_t h = Mix(bytes_hash, (uint64_t(span.first) << 32) | span.count);
+  h = Mix(h, span.whole ? 1u : 0u);
+  return h != 0 ? h : 1;
+}
+
+// Where a fingerprint is kept: the range it was made from and how it was read.
+inline uint64_t IndexSlot(uint32_t address, uint32_t bytes, bool index32, uint32_t endian, bool order_free, bool skip_reset,
+                          uint32_t reset_index) {
+  uint64_t h = Mix(0x1D5EC0DE1ull, (uint64_t(address) << 32) | bytes);
+  h = Mix(h, (uint64_t(endian) << 8) | (index32 ? 4u : 0u) | (order_free ? 2u : 0u) | (skip_reset ? 1u : 0u));
+  return Mix(h, skip_reset ? reset_index : 0u);
+}
+
+inline uint64_t VertexSlot(uint32_t address, uint32_t size, uint32_t stride, const VertexSpan& span) {
+  uint64_t h = Mix(0x7E47E8ull, (uint64_t(address) << 32) | size);
+  h = Mix(h, (uint64_t(stride) << 32) | span.first);
+  return Mix(h, (uint64_t(span.count) << 1) | (span.whole ? 1u : 0u));
+}
+
+// The fingerprints made so far, by slot (IndexSlot, VertexSlot), each with the stamp of the range it was made at: Get returns it while
+// the stamp is the same and makes it again (compute) when the stamp has moved or the slot is new. The stamp is only a "may have changed"
+// signal, so a made-again fingerprint tells which it was: kSame (the stamp moved, the bytes did not: the mesh keeps its key), kChanged.
+struct ContentEntry {
+  uint64_t stamp = 0;
+  uint64_t content = 0;
+  bool has_range = false;  // index entries: lo and hi hold the smallest and largest index
+  uint32_t lo = 0;
+  uint32_t hi = 0;
+  uint64_t seen = 0;       // the frame it was last asked for
+};
+
+class ContentCache {
+ public:
+  enum class Outcome : uint8_t {
+    kHit,      // the stamp is the one the fingerprint was made at: nothing read
+    kNew,      // a slot not seen before (or since it was dropped): made
+    kSame,     // the stamp moved, the bytes did not: made again, the same fingerprint
+    kChanged,  // the stamp moved and the bytes did too
+  };
+
+  // `compute(ContentEntry*)` fills content, has_range, lo and hi; Get sets stamp and seen. Returns a copy.
+  template <typename Compute>
+  ContentEntry Get(uint64_t slot, uint64_t stamp, uint64_t frame, Compute&& compute, Outcome* outcome) {
+    const auto found = entries_.find(slot);
+    if (found != entries_.end() && found->second.stamp == stamp) {
+      found->second.seen = frame;
+      if (outcome) {
+        *outcome = Outcome::kHit;
+      }
+      return found->second;
+    }
+    ContentEntry made;
+    compute(&made);
+    made.stamp = stamp;
+    made.seen = frame;
+    if (outcome) {
+      *outcome = found == entries_.end() ? Outcome::kNew : (found->second.content == made.content ? Outcome::kSame : Outcome::kChanged);
+    }
+    if (found != entries_.end()) {
+      found->second = made;
+    } else {
+      entries_.emplace(slot, made);
+    }
+    return made;
+  }
+
+  // Drops the entries last asked for more than `keep` frames before `now`.
+  void Sweep(uint64_t now, uint64_t keep) {
+    for (auto it = entries_.begin(); it != entries_.end();) {
+      if (Stale(it->second.seen, now, keep)) {
+        it = entries_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  void Clear() { entries_.clear(); }
+  size_t size() const { return entries_.size(); }
+
+ private:
+  std::unordered_map<uint64_t, ContentEntry> entries_;
+};
 
 // ---------------------------------------------------------------------------
 // which draw is the player's

@@ -24,7 +24,10 @@
 //     geometry, the host position element, the mesh key) and the listeners get OnPlayerDraw inside the draw's own call. Draws seen
 //     before the ID is known are held (at most a few dozen) and join the Frame once it is.
 // Guest memory is read in MeshReader::ReadTriangles (by a listener) and once per new mesh_key for its model-space box (a few
-// per frame at most, then cached by key and dropped when the key has not been seen for a long while).
+// per frame at most, then cached by key and dropped when the key has not been seen for a long while). The mesh_key itself is made
+// from a fingerprint of the mesh's own indices and vertices (car_frame_rules.h): those bytes are read again only when the geometry
+// cache's stamp of their range has moved, so a mesh the guest did not change keeps its key whatever happens around it in memory.
+// With mcla_gpu_car_frame_log on, a 'keys' line says when new keys appear (a parked car should make none).
 // ===========================================================================
 
 #include <array>
@@ -71,9 +74,11 @@ struct Draw {
   temporal::Mat4 model_to_world;
 
   // Same key = the same triangles in model space (kBody), so a cache by key never reads guest memory twice for a mesh. Made
-  // from the position stream's and the index buffer's guest addresses, sizes and formats, the primitive, the counts and the
-  // geometry cache's version of those ranges (a mesh streamed in again at the same address is another key). 0: not known
-  // (inline vertices; and always for kSkinned, whose vertices are blended afresh in every frame).
+  // from the position stream's and the index buffer's guest addresses, sizes and formats, the primitive, the counts and a
+  // fingerprint of the mesh's OWN guest bytes: the indices of the draw (in any order, for a triangle list) and the vertices they
+  // name (car_frame_rules.h). A mesh streamed in again over the same address with other bytes is another key; a write the guest
+  // makes next to it, or over it with the same bytes, is not. 0: not known (inline vertices; and always for kSkinned, whose
+  // vertices are blended afresh in every frame).
   uint64_t mesh_key = 0;
   // kBody: the model-space box of the draw's mesh (the vertices its triangles name; read once per mesh_key, kept while it is
   // seen). has_box false: not known; box_deferred: it will be known in a frame or two (a frame reads a few boxes at most).
@@ -156,7 +161,9 @@ class CarFrame {
     const DrawGeometry* geometry = nullptr;
     HostPrimitive primitive;
     uint32_t stencil_ids = 0;  // vehicle_motion.h StencilIdsWritten
-    const GeometryCache* cache = nullptr;  // for the mesh key: its stamp of the guest ranges (GeometryCache::RangeStamp); may be null
+    // For the mesh key: its stamp of the guest ranges (GeometryCache::RangeStamp), which says when a range MAY have changed and so
+    // when its bytes are fingerprinted again; may be null (the key then has no fingerprints).
+    const GeometryCache* cache = nullptr;
   };
 
   CarFrame() = default;
@@ -214,6 +221,7 @@ class CarFrame {
     float lo[3] = {};
     float hi[3] = {};
     bool valid = false;  // false: the mesh could not be read (not tried again)
+    bool pending = false;  // the key was met and the box is not read yet (a frame reads a few at most)
     uint64_t seen = 0;   // the guest frame it was last used in
   };
   // What a frame's log line says, to log only a change.
@@ -234,6 +242,29 @@ class CarFrame {
     uint32_t pending_full = 0;    // ... held back before the ID was known, and no room
     uint32_t boxes_read = 0;      // meshes read for their box
     uint32_t listener_reads = 0;  // MeshReader calls
+    // The mesh keys (car_frame_rules.h ContentCache): how many keys this frame had never been made before, and what the fingerprints
+    // behind the keys did.
+    uint32_t new_keys = 0;         // keys not in the box cache: a mesh seen for the first time, or one whose own bytes changed
+    uint32_t content_new = 0;      // fingerprints made for a range not fingerprinted before (a new mesh)
+    uint32_t content_changed = 0;  // ... made again because the stamp moved, and the bytes had changed: another key
+    uint32_t content_same = 0;     // ... made again because the stamp moved, and the bytes were the same: the key stayed
+    uint64_t content_bytes = 0;    // guest bytes hashed or scanned for them
+  };
+  // What the keys did since the last [car frame] keys line.
+  struct KeyWindow {
+    uint64_t since = 0;            // the guest frame the window began after (0: nothing logged yet)
+    uint32_t frames = 0;           // frames collected in it
+    uint32_t frames_with_new = 0;  // ... that had a new key
+    uint32_t max_new = 0;          // the most new keys in one of them
+    uint32_t new_keys = 0, content_new = 0, content_changed = 0, content_same = 0;
+    uint64_t content_bytes = 0;
+    bool Active() const { return new_keys != 0 || content_changed != 0 || content_same != 0; }
+  };
+  // The fingerprint of the draw's own indices (what ComputeMeshKey takes from the guest): the number, and the smallest and largest index.
+  struct IndexInfo {
+    uint64_t content = 0;  // 0: not known
+    bool have_range = false;
+    uint32_t lo = 0, hi = 0;
   };
   // The draw being handled, for the MeshReader (valid inside the draw's own call only).
   struct Context {
@@ -260,7 +291,12 @@ class CarFrame {
   void FillDraw(const MainDraw& d, uint32_t order, uint32_t id, const RecipeEntry& recipe, const LayoutInfo& layout,
                 const car_frame_rules::ModelDecode& model, car_frame::Draw* out);
   void FillPalette(const ConstantBanks::Banks& banks, std::vector<float>* out);
-  uint64_t ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout) const;
+  uint64_t ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout);
+  IndexInfo IndexContent(const MainDraw& d, uint32_t address, uint32_t bytes, uint32_t count, bool index32, uint32_t endian, bool order_free,
+                         bool skip_reset, uint32_t reset_index);
+  uint64_t StreamContent(const MainDraw& d, const car_mesh::StreamRef& stream, const car_frame_rules::VertexSpan& span);
+  void NoteOutcome(car_frame_rules::ContentCache::Outcome outcome);
+  void LogKeys();
   void NoteBox(car_frame::Draw* out);
   void NoteCamera(const uint8_t* vs_bank, const temporal::Mat4& world);
   void AddToBounds(const car_frame::Draw& draw);
@@ -311,6 +347,8 @@ class CarFrame {
   std::unordered_map<uint64_t, RecipeEntry> recipes_;
   std::unordered_map<uint32_t, LayoutInfo> layouts_;
   std::unordered_map<uint64_t, MeshBox> boxes_;
+  car_frame_rules::ContentCache contents_;  // the fingerprints of the meshes' own bytes, by range, each with the stamp it was made at
+  KeyWindow key_window_;
   std::unordered_set<uint64_t> unreadable_logged_;
   std::vector<std::vector<float>> palette_pool_;
   std::vector<float> palette_cache_;
