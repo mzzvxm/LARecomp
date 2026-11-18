@@ -151,6 +151,12 @@ class GeometryCache {
                  HostPrimitive primitive, bool computed_fetch, DrawGeometry& out,
                  std::string* detail, plume::RenderCommandList* list);
 
+  // A number that changes when the guest's bytes of the exact range [start, start + length) may have changed since a draw last used it
+  // (a write the watch saw; for a hashed region the bytes' own hash) and when the range's region was dropped and made again; the same
+  // number otherwise (car_frame.h mesh_key). 0: the cache holds no region of exactly that range (nothing drew from it yet). Valid
+  // right after the range was used by Prepare.
+  uint64_t RangeStamp(uint32_t start, uint32_t length) const;
+
   // Regions unused for this many frames give their device memory back.
   static constexpr uint64_t kEvictFrames = 600;
 
@@ -178,6 +184,7 @@ class GeometryCache {
   };
   struct Region {
     bool live = false;
+    uint64_t serial = 0;          // which region this is, ever (RangeStamp): a region made again has another
     Mode mode = Mode::kWatched;
     bool watchable = true;
     bool armed = false;
@@ -274,6 +281,7 @@ class GeometryCache {
   std::vector<uint8_t> scratch_convert_;  // a view's bytes before they go to the ring
   std::vector<uint8_t> scratch_rects_;
 
+  uint64_t region_serial_ = 0;  // Region::serial of the last region made
   uint32_t slot_ = 0;
   uint64_t frame_ = 1;  // frame serial; views stamped with it are in this frame's ring
   uint32_t evict_cursor_ = 0;

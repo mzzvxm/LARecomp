@@ -313,11 +313,29 @@ GeometryCache::Region* GeometryCache::FindOrCreateRegion(uint32_t start, uint32_
   Region& r = regions_[found];
   r = Region{};
   r.live = true;
+  r.serial = ++region_serial_;
   r.watchable = memory_->IsWatchable(start, length);
   r.mode = r.watchable ? Mode::kWatched : Mode::kHashed;
   ++stats_.new_regions;
   *id = found;
   return &r;
+}
+
+// CHECK: that a mesh streamed in again at the same address changes the stamp relies on the write watch seeing the guest's write (watched
+// region: version bump; hashed: the hash) and on the region being the one the draw used (an eviction makes a new serial). Not run.
+uint64_t GeometryCache::RangeStamp(uint32_t start, uint32_t length) const {
+  const RegionIndex::Id id = index_.Find(start, length);
+  if (id == RegionIndex::kNone || id >= regions_.size() || !regions_[id].live) {
+    return 0;
+  }
+  const Region& r = regions_[id];
+  // The serial says which region (made again after an eviction: another number), the version what the watch has seen written since
+  // (a hashed region is not armed, so its bytes' hash from the last frame it was used in stands for them).
+  uint64_t stamp = r.serial * 0x9E3779B97F4A7C15ull + r.version;
+  if (r.mode == Mode::kHashed && r.last_hash_valid) {
+    stamp ^= r.last_hash * 0xFF51AFD7ED558CCDull;
+  }
+  return stamp != 0 ? stamp : 1;
 }
 
 void GeometryCache::Convert(const Interpretation& how, const uint8_t* src, uint32_t length,
