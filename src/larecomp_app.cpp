@@ -844,8 +844,8 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
 // What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
-// twice, and OnStop does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
-// runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (OnStop).
+// twice, and StopBeforeTitleEnds does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
+// runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
 void LarecompApp::FinishWindowCloseWork() {
   if (close_work_started_.exchange(true, std::memory_order_acq_rel)) return;
   larecomp::RequestBootBuildCancel();
@@ -869,18 +869,30 @@ void LarecompApp::FinishWindowCloseWork() {
   }).detach();
 }
 
-// App::Shutdown has already called IUISystem BeginStop (DrawOverlays builds nothing from here on) and now stops the title: first what
-// LARecomp must do before the guest ends (the close work, for a shutdown that did not come from the window: the pause menu's QUIT, a
-// restart, a setup failure), then the renderer. The render thread never waits for the UI thread (overlay.h: it posts a pass and takes
-// the last frame), so joining it here cannot deadlock against a pass that never runs. It stops BEFORE the title unloads: it reads the
-// guest's memory and the GPU state the title owns.
-void LarecompApp::OnStop() {
+// What LARecomp must do before the guest ends: the close work (for a shutdown that did not come from the window: the pause menu's QUIT,
+// a restart, a setup failure), the release of the achievement manager, then the renderer. The render thread never waits for the UI
+// thread (overlay.h: it posts a pass and takes the last frame), so joining it here cannot deadlock against a pass that never runs. It
+// stops BEFORE the title unloads: it reads the guest's memory and the GPU state the title owns. Latched (OnRun's end and OnShutdown
+// both call it).
+void LarecompApp::StopBeforeTitleEnds() {
+  if (before_title_end_done_.exchange(true, std::memory_order_acq_rel)) return;
   FinishWindowCloseWork();
   mcla::ui::SetAchievementManager(nullptr);  // the manager goes with the title
 #if defined(LARECOMP_HAS_GPU)
   mcla::gpu::Shutdown();  // the render thread stops, the GPU drains, the swap chain is given back
 #endif
-  TitleApp::OnStop();
+}
+
+// rexglue 0.11 made TitleApp::OnStop final (0.10's ReXApp could override it), and App::Shutdown calls it right after IUISystem
+// BeginStop, so the pre-stop work moves to the end of the run: Run() returns on every path that ends the title (the window's close, the
+// pause menu's QUIT, a restart, the guest's own exit) and main calls Shutdown at once. A path that never reaches Run (Init or LaunchTitle
+// failed, a batch action) takes the latch in OnShutdown, after the title stopped.
+// CHECK: DrawOverlays is still served here (BeginStop comes later in Shutdown): the renderer's last overlay passes may post to a UI
+// thread that no longer runs frames; the 0.10 order stopped the renderer after BeginStop. Run a quit from the pause menu and from the
+// window's close and look for a hang at exit (the 5 s watchdog in FinishWindowCloseWork would end the process with a log line).
+void LarecompApp::OnRun() {
+  TitleApp::OnRun();
+  StopBeforeTitleEnds();
 }
 
 // After the title stopped, before the drivers shut down (logging and settings still work).
@@ -888,7 +900,7 @@ void LarecompApp::OnShutdown() {
   // The UI system's event guard and the cached interface pointers go before rex::Stop takes the systems away.
   ui_listener_ = {};
   larecomp::sdk::Reset();
-  FinishWindowCloseWork();  // also reached by a RequestShutdown that did not come from the window (restart, setup failure)
+  StopBeforeTitleEnds();  // the latched work of OnRun's end, for a path that never ran (restart, setup failure, batch actions)
   larecomp::RequestBootBuildCancel();
   larecomp::WaitForBootBuild();
   LARECOMP_Discord_Shutdown();

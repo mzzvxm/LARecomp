@@ -29,7 +29,7 @@ namespace mcla {
 
 using rex::xenos::FormatInfo;
 using rex::xenos::FormatType;
-namespace texture_conversion = rex::graphics::texture_conversion;
+namespace texture_conversion = rex::xenos;  // 0.11: Untile and CopySwapBlock moved into rex::xenos (texture.h)
 
 // "textures" is the value this cvar had by default before the dumps moved
 // into the mod folder; a toml the game rewrote still carries it.
@@ -139,7 +139,7 @@ static_assert(sizeof(DdsHeaderDX10) == 20);
 // came from the caller, not from a guest-controlled fetch constant.
 static void UntileBlocks(const uint8_t* src, uint8_t* dst, uint32_t width_blocks,
                          uint32_t height_blocks, uint32_t pitch_blocks, const FormatInfo* fi) {
-  texture_conversion::UntileInfo info{};
+  texture_conversion::UntileRegion info{};
   info.offset_x = 0;
   info.offset_y = 0;
   info.width = width_blocks;
@@ -369,7 +369,7 @@ bool DumpGuestTextureTo(const std::filesystem::path& dest, uint32_t width, uint3
   if (!IsDumpableFormat(format))
     return false;
 
-  const uint32_t bpb = fi->bytes_per_block();
+  const uint32_t bpb = fi->GetBytesPerBlock();
   const uint32_t w_blocks = (width + fi->block_width - 1) / fi->block_width;
   const uint32_t h_blocks = (height + fi->block_height - 1) / fi->block_height;
   // pitch_blocks is in units of 32 texels, convert to block units

@@ -22,7 +22,7 @@
 //   the first frame ticks. Sampling only the frame thread produced reports
 //   that were 70% "blocked in a wait" and said nothing about who it waited on.
 //
-// - Guest addresses come from the codegen function table (PPCFuncMappings),
+// - Guest addresses come from the codegen function table (kPPCFuncMappings),
 //   not from symbols, so they are correct on a machine that has no PDB next to
 //   the exe. That is the normal case for a profile taken by somebody else.
 //

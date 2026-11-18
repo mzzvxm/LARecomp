@@ -1,5 +1,5 @@
 // Frame-time instrumentation (MCLA_TIMING_LOG=1): per-second frame, GPU and
-// guest counters plus a frame-time histogram in logs/timing_*.log, and the GPU
+// guest counters plus a frame-time histogram in timing_*.log next to the log, and the GPU
 // interrupt probe it reports.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
@@ -20,6 +20,7 @@
 #include "hooks_internal.h"
 #include "../draw_stats.h"
 #include "larecomp_guest.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 
 
 // ── Frame-time instrumentation ─────────────────────────────────────────
@@ -191,8 +192,10 @@ void RecordFrameTime() {
     // One file per run: a fixed name opened with "w" would destroy the
     // previous capture on the next launch.
     static std::FILE* log = [] () -> std::FILE* {
+        // Next to the SDK's log file (app.log_root), not a "logs" folder of the working directory: the logger decides where.
+        const std::filesystem::path log_dir = LarecompLogFolder();
         std::error_code ec;
-        std::filesystem::create_directories("logs", ec);
+        std::filesystem::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
 #if defined(_WIN32)
@@ -202,11 +205,15 @@ void RecordFrameTime() {
 #endif
         char name[160];
         std::snprintf(name, sizeof(name),
-                      "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
+                      "timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                       tm.tm_hour, tm.tm_min, tm.tm_sec,
                       int(larecomp::settings::fps_limit.Get()));
-        return std::fopen(name, "w");
+#if defined(_WIN32)
+        return _wfopen((log_dir / name).c_str(), L"w");
+#else
+        return std::fopen((log_dir / name).c_str(), "w");
+#endif
     }();
     if (!log) return;
 

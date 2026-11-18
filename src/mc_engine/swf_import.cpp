@@ -415,7 +415,7 @@ bool Load(Import& im) {
     WriteGuestU32(base, rsc + 8, name);
 
     auto* ts = rex::kernel::ThreadState::Get();
-    const uint32_t r13 = ts && ts->context() ? ts->context()->r13.u32 : 0;
+    const uint32_t r13 = ts && ts->GetContext() ? ts->GetContext()->r13.u32 : 0;
     const uint32_t tls = r13 ? ReadGuestU32(base, r13) : 0;
     if (!tls) {
         MC_ERROR("[swf-import] {}: no thread block to fix up under", im.path);

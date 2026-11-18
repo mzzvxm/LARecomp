@@ -305,27 +305,31 @@ uint32_t PromptSettingsGen() {
     return g_prompt_settings_gen.load(std::memory_order_relaxed);
 }
 
+// One key-list setting as a getter. The 0.10 tables held the cvar's storage accessor (std::string& (*)()); a 0.11 setting
+// gives its value by copy, so the tables hold a function that reads it.
+#define KB_SETTING(name) (+[]() -> std::string { return larecomp::settings::name.Get(); })
+
 struct DriveBinding {
     const char* action;
-    std::string& (*cvar)();
+    std::string (*cvar)();
 };
 const DriveBinding kDriveBindings[] = {
-    {"GAS", &FLAGS_kb_drive_gas_storage_},
-    {"BRAKE", &FLAGS_kb_drive_brake_storage_},
-    {"HANDBRAKE", &FLAGS_kb_drive_handbrake_storage_},
-    {"WEIGHT_XFER", &FLAGS_kb_drive_weight_storage_},
-    {"NITRO", &FLAGS_kb_drive_nitro_storage_},
-    {"HEADLIGHTS", &FLAGS_kb_drive_headlights_storage_},
-    {"HORN", &FLAGS_kb_drive_horn_storage_},
-    {"CAM_UP", &FLAGS_kb_drive_camera_storage_},
-    {"LOOKBACK", &FLAGS_kb_drive_lookback_storage_},
-    {"MAP", &FLAGS_kb_drive_map_storage_},
-    {"TALK", &FLAGS_kb_drive_talk_storage_},
-    {"SHIFT_UP", &FLAGS_kb_drive_shift_up_storage_},
-    {"SHIFT_DOWN", &FLAGS_kb_drive_shift_down_storage_},
-    {"PAUSE", &FLAGS_kb_drive_pause_storage_},
-    {"POPUP_SELECT", &FLAGS_kb_drive_popup_select_storage_},
-    {"POPUP_BACK", &FLAGS_kb_drive_popup_back_storage_},
+    {"GAS", KB_SETTING(kb_drive_gas)},
+    {"BRAKE", KB_SETTING(kb_drive_brake)},
+    {"HANDBRAKE", KB_SETTING(kb_drive_handbrake)},
+    {"WEIGHT_XFER", KB_SETTING(kb_drive_weight)},
+    {"NITRO", KB_SETTING(kb_drive_nitro)},
+    {"HEADLIGHTS", KB_SETTING(kb_drive_headlights)},
+    {"HORN", KB_SETTING(kb_drive_horn)},
+    {"CAM_UP", KB_SETTING(kb_drive_camera)},
+    {"LOOKBACK", KB_SETTING(kb_drive_lookback)},
+    {"MAP", KB_SETTING(kb_drive_map)},
+    {"TALK", KB_SETTING(kb_drive_talk)},
+    {"SHIFT_UP", KB_SETTING(kb_drive_shift_up)},
+    {"SHIFT_DOWN", KB_SETTING(kb_drive_shift_down)},
+    {"PAUSE", KB_SETTING(kb_drive_pause)},
+    {"POPUP_SELECT", KB_SETTING(kb_drive_popup_select)},
+    {"POPUP_BACK", KB_SETTING(kb_drive_popup_back)},
 };
 
 // ── driving mapper ──────────────────────────────────────────────────────
@@ -475,17 +479,17 @@ namespace {
 // ── menus (the FlashNavigator mapper) ───────────────────────────────────
 struct UiBind {
     uint32_t button;
-    std::string& (*cvar)();
+    std::string (*cvar)();
 };
 const UiBind kUiBinds[] = {
-    {kBtnA, &FLAGS_kb_ui_accept_storage_},   {kBtnB, &FLAGS_kb_ui_back_storage_},
-    {kBtnX, &FLAGS_kb_ui_x_storage_},        {kBtnY, &FLAGS_kb_ui_y_storage_},
-    {kBtnLB, &FLAGS_kb_ui_lb_storage_},      {kBtnRB, &FLAGS_kb_ui_rb_storage_},
-    {kBtnLT, &FLAGS_kb_ui_lt_storage_},      {kBtnRT, &FLAGS_kb_ui_rt_storage_},
-    {kBtnUp, &FLAGS_kb_ui_up_storage_},      {kBtnDown, &FLAGS_kb_ui_down_storage_},
-    {kBtnLeft, &FLAGS_kb_ui_left_storage_},  {kBtnRight, &FLAGS_kb_ui_right_storage_},
-    {kBtnBack, &FLAGS_kb_ui_select_storage_},
-    {kBtnStart, &FLAGS_kb_ui_start_storage_},
+    {kBtnA, KB_SETTING(kb_ui_accept)},   {kBtnB, KB_SETTING(kb_ui_back)},
+    {kBtnX, KB_SETTING(kb_ui_x)},        {kBtnY, KB_SETTING(kb_ui_y)},
+    {kBtnLB, KB_SETTING(kb_ui_lb)},      {kBtnRB, KB_SETTING(kb_ui_rb)},
+    {kBtnLT, KB_SETTING(kb_ui_lt)},      {kBtnRT, KB_SETTING(kb_ui_rt)},
+    {kBtnUp, KB_SETTING(kb_ui_up)},      {kBtnDown, KB_SETTING(kb_ui_down)},
+    {kBtnLeft, KB_SETTING(kb_ui_left)},  {kBtnRight, KB_SETTING(kb_ui_right)},
+    {kBtnBack, KB_SETTING(kb_ui_select)},
+    {kBtnStart, KB_SETTING(kb_ui_start)},
 };
 
 uint32_t g_nav_mapper = 0;
@@ -1323,19 +1327,19 @@ bool PaintKey(uint8_t* b, const char* tex_name, const std::string& key) {
 // ── which art a glyph shows ─────────────────────────────────────────────
 struct KeyCvar {
     std::string_view name;
-    std::string& (*value)();
+    std::string (*value)();
 };
 const KeyCvar kKeyCvars[] = {
-    {"kb_ui_accept", &FLAGS_kb_ui_accept_storage_},             {"kb_ui_back", &FLAGS_kb_ui_back_storage_},
-    {"kb_ui_x", &FLAGS_kb_ui_x_storage_},                       {"kb_ui_y", &FLAGS_kb_ui_y_storage_},
-    {"kb_ui_lb", &FLAGS_kb_ui_lb_storage_},                     {"kb_ui_rb", &FLAGS_kb_ui_rb_storage_},
-    {"kb_ui_lt", &FLAGS_kb_ui_lt_storage_},                     {"kb_ui_rt", &FLAGS_kb_ui_rt_storage_},
-    {"kb_ui_start", &FLAGS_kb_ui_start_storage_},               {"kb_ui_select", &FLAGS_kb_ui_select_storage_},
-    {"kb_drive_handbrake", &FLAGS_kb_drive_handbrake_storage_}, {"kb_drive_weight", &FLAGS_kb_drive_weight_storage_},
-    {"kb_drive_nitro", &FLAGS_kb_drive_nitro_storage_},         {"kb_drive_headlights", &FLAGS_kb_drive_headlights_storage_},
-    {"kb_drive_camera", &FLAGS_kb_drive_camera_storage_},       {"kb_drive_brake", &FLAGS_kb_drive_brake_storage_},
-    {"kb_drive_gas", &FLAGS_kb_drive_gas_storage_},             {"kb_drive_pause", &FLAGS_kb_drive_pause_storage_},
-    {"kb_drive_map", &FLAGS_kb_drive_map_storage_},
+    {"kb_ui_accept", KB_SETTING(kb_ui_accept)},             {"kb_ui_back", KB_SETTING(kb_ui_back)},
+    {"kb_ui_x", KB_SETTING(kb_ui_x)},                       {"kb_ui_y", KB_SETTING(kb_ui_y)},
+    {"kb_ui_lb", KB_SETTING(kb_ui_lb)},                     {"kb_ui_rb", KB_SETTING(kb_ui_rb)},
+    {"kb_ui_lt", KB_SETTING(kb_ui_lt)},                     {"kb_ui_rt", KB_SETTING(kb_ui_rt)},
+    {"kb_ui_start", KB_SETTING(kb_ui_start)},               {"kb_ui_select", KB_SETTING(kb_ui_select)},
+    {"kb_drive_handbrake", KB_SETTING(kb_drive_handbrake)}, {"kb_drive_weight", KB_SETTING(kb_drive_weight)},
+    {"kb_drive_nitro", KB_SETTING(kb_drive_nitro)},         {"kb_drive_headlights", KB_SETTING(kb_drive_headlights)},
+    {"kb_drive_camera", KB_SETTING(kb_drive_camera)},       {"kb_drive_brake", KB_SETTING(kb_drive_brake)},
+    {"kb_drive_gas", KB_SETTING(kb_drive_gas)},             {"kb_drive_pause", KB_SETTING(kb_drive_pause)},
+    {"kb_drive_map", KB_SETTING(kb_drive_map)},
 };
 
 // The key a binding cvar draws as on a width x height glyph: the first key of its list that has a cap, else the first key (the blank cap), else "" (the art stays).

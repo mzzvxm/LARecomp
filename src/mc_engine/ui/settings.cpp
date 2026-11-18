@@ -494,7 +494,7 @@ class SettingsDialog final : public PanelDialog {
           }
         } else {
           char buf[256];
-          rex::string::copy_truncating(buf, current, sizeof(buf));
+          rex::string::CopyTruncating(buf, current, sizeof(buf));
           ImGui::SetNextItemWidth(-FLT_MIN);
           if (ImGui::InputText("##v", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
             larecomp::cvar::SetFlagByName(entry.name, buf);
