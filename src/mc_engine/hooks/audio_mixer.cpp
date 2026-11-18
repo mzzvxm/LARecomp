@@ -191,7 +191,7 @@ void LogAudioDropoutSummary() {
     } else {
         LARECOMP_APP_INFO("[Audio] session: no gap over 20 ms in {:.1f} min counted", minutes);
     }
-    rex::FlushLogging();  // the window's close ends the process without flushing
+    REX_LOGGER().Flush();  // the window's close ends the process without flushing
 }
 
 // Runs on the mixer thread, once, as it starts.

@@ -145,7 +145,7 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, 
     uint32_t i = 0;
     for (const uint32_t a : args) Put32(base, g_block.args + 4 * i++, a);
 
-    if (flush_log) rex::FlushLogging();  // a line written before the call is on disk if the call takes the game down
+    if (flush_log) REX_LOGGER().Flush();  // a line written before the call is on disk if the call takes the game down
     const auto t0 = std::chrono::steady_clock::now();
     larecomp::guest::Call<void>(fn, g_block.ctx);
     const auto t1 = std::chrono::steady_clock::now();

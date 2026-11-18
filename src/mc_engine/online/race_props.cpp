@@ -55,6 +55,7 @@
 #include "larecomp_guest.h"
 #include <rex/memory/virtual_memory.h>
 #include <rex/kernel/guest_memory.h>
+#include <format>
 
 namespace {
 
@@ -109,7 +110,7 @@ std::string ChainText(const std::array<uint32_t, 8>& chain) {
     for (uint32_t lr : chain) {
         if (!lr) break;
         if (!s.empty()) s += " <- ";
-        s += fmt::format("{:08X}", lr);
+        s += std::format("{:08X}", lr);
     }
     return s.empty() ? std::string("?") : s;
 }
@@ -117,9 +118,9 @@ std::string ChainText(const std::array<uint32_t, 8>& chain) {
 std::string HexDump(rex::kernel::GuestAddressSpace* mem, uint32_t from, uint32_t len) {
     std::string out;
     for (uint32_t a = from; a < from + len; a += 16) {
-        out += fmt::format("\n    {:08X}:", a);
+        out += std::format("\n    {:08X}:", a);
         for (uint32_t k = 0; k < 16; k += 4) {
-            out += Readable(mem, a + k, 4) ? fmt::format(" {:08X}", GuestRead32(mem, a + k)) : std::string(" ????????");
+            out += Readable(mem, a + k, 4) ? std::format(" {:08X}", GuestRead32(mem, a + k)) : std::string(" ????????");
         }
     }
     return out;
@@ -177,9 +178,9 @@ bool OwnerBroken(uint32_t inst, uint32_t owner, const char* site) {
         {
             std::lock_guard<std::mutex> lock(g_mu);
             if (auto it = g_live.find(owner); it != g_live.end()) {
-                state = fmt::format("live, made for inst {:08X}", it->second);
+                state = std::format("live, made for inst {:08X}", it->second);
             } else if (auto f = g_freed.find(owner); f != g_freed.end()) {
-                state = fmt::format("FREED (was inst {:08X}), freed via {}", f->second.inst,
+                state = std::format("FREED (was inst {:08X}), freed via {}", f->second.inst,
                                     ChainText(f->second.chain));
             }
         }
