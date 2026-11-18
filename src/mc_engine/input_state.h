@@ -43,6 +43,8 @@
 //
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace larecomp::input {
 
@@ -64,6 +66,33 @@ uint32_t Generation();
 // after registering.
 using InputListener = void (*)(void* arg);
 bool AddInputListener(InputListener fn, void* arg);
+
+// ---- the controllers the SDK lists (the controller toast, KBM P7) -------------------------------------------------
+//
+// One controller of the SDK's device list. The SDK's NOP stand-in and the keyboard-and-mouse pad of mnk_mode are not
+// controllers and are not here.
+struct ControllerInfo {
+  uint64_t id = 0;   // the SDK's handle: never reused within a run, so a pad that comes back is a new one
+  std::string name;  // the SDK's name for it ("PS5 Controller"); empty when the driver gave none
+};
+
+// The controllers as of the last time the SDK's list changed, in connection order; a copy, any thread. Empty before
+// the game's first input poll (the list is read there, on the thread that polls the pad: the SDK says to).
+std::vector<ControllerInfo> Controllers();
+
+// Called when that set changes (a controller came or went; the first list too, when it holds one), on the thread that
+// polls the pad, with Controllers() already updated. Same rules as AddInputListener: cheap (set a flag), for the life
+// of the process, at most 8, returns false when the table is full, not from inside a listener. Nothing polls: the
+// call comes from the SDK's device counter moving.
+bool AddControllerListener(InputListener fn, void* arg);
+
+// An overlay that reads the pads itself while it is open (the browsers' dialogs, ui/gamepad.h ReadOverlayPads) tells the
+// state what it read, once per frame it draws: the SDK answers the game with a pad at rest while such an overlay is
+// open, so the poll of the game's own state cannot see the player pick up a pad inside it. The same rules decide
+// whether that was activity (a button going down, a stick across its dead zone); the pad's family is not known here
+// and stays what it was. `buttons` are XInput's bits, sticks -1..1 with up and right positive, `connected` is false when
+// no pad answered. UI thread.
+void NoteOverlayPad(bool connected, uint16_t buttons, float lx, float ly, float rx, float ry);
 
 // Per game frame (hooks.cpp, Patch_DeltaTimePre): attaches the window listener on the first frame the
 // window exists, nothing else. Not for other phases.

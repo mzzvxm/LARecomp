@@ -1,16 +1,21 @@
 // A check that needs no game: the active-device state machine (input_state_core.h) with a fake clock, the rules
 // of KBM-DESIGN.md 2.2 / 2.3: what counts as activity (pad, keys, mouse), the hysteresis (jitter, drift, held
 // sticks, key repeats, key-ups, trigger noise), the cross rules (a recent controller blocks mouse motion, the
-// anti-flap time), hot-plug (start, removal, arrival), mixed input, the glyph setting and the generation counter.
+// anti-flap time), hot-plug (start, removal, arrival), mixed input, the glyph setting and the generation counter;
+// and (KBM P7) what the ImGui overlays use: the pad an overlay reads itself, the CLOSE word per glyph family
+// (ui/overlay_input_core.h) and the controller toast's roster of connects and disconnects.
 // Build: cmake --build <build dir> --target larecomp_input_state_test, then run it; exit 0 = passed. The glue
 // (the window listener, the SDK's device list, the XamInputGetState wrapper) is not in here: it needs the game,
 // see perf\scripts\chain-kbm-p2.ps1.
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <string>
+#include <vector>
 
 #include "input_state_core.h"
+#include "ui/overlay_input_core.h"
 
 using namespace larecomp::input;
 
@@ -947,6 +952,143 @@ void TestPadLossWithTheStateMachine() {
     CHECK(k.OnList(nullptr, 0, kc.Get().device, true, false, 4000) == LossVerdict::KeyboardActive);
 }
 
+// ---- the ImGui overlays (KBM P7): the pad an overlay reads, the close word, the controller toast ----------------
+
+void TestOverlayAxis() {
+    CHECK(OverlayAxis(0.0f) == 0);
+    CHECK(OverlayAxis(1.0f) == 32767);
+    CHECK(OverlayAxis(-1.0f) == -32767);
+    CHECK(OverlayAxis(2.5f) == 32767 && OverlayAxis(-9.0f) == -32767);  // past either end is clamped, not wrapped
+    CHECK(OverlayAxis(0.5f) == 16384);
+    CHECK(OverlayAxis(std::numeric_limits<float>::quiet_NaN()) == 0);  // a bad reading is no stick movement
+    // The stick rule of the game's own state, on an overlay's -1..1: 0.25 (the overlays' own dead zone) is past 7849, 0.2 is not.
+    PadFilter f;
+    CHECK(f.Feed(OverlayPadSample(0, 0.2f, 0.0f, 0.0f, 0.0f)) == PadCause::None);
+    CHECK(f.Feed(OverlayPadSample(0, 0.25f, 0.0f, 0.0f, 0.0f)) == PadCause::Stick);
+    PadFilter g;
+    CHECK(g.Feed(OverlayPadSample(0, 0.0f, 0.0f, 0.0f, -0.3f)) == PadCause::Stick);  // the right stick, down
+    CHECK(OverlayPadSample(0x2000, 0, 0, 0, 0).buttons == 0x2000);
+}
+
+void TestOverlayPadMakesThePadActive() {
+    ActiveInputCore c;
+    OneXboxPad(c);
+    c.OnKeyDown(0x41, false, 1000);  // the keyboard has it: the player opened a dialog with it
+    CHECK(c.Get().device == InputDevice::KeyboardMouse && c.Get().Family() == GlyphFamily::Keyboard);
+    // The game's own polls see a pad at rest while the overlay is open (the SDK answers neutral): nothing there.
+    CHECK(!c.OnPadFrame(PadSample{}, kUnknown, 1100).changed);
+    // The player picks up the pad inside the overlay: A goes down.
+    Change ch = c.OnOverlayPadFrame(Buttons(kA), 1200);
+    CHECK(ch.changed && ch.looked == Cause::PadButton && ch.after.device == InputDevice::Pad);
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().Family() == GlyphFamily::Xbox);
+    // Held, with the game's neutral polls in between: the overlay's filter is its own, no second "activity".
+    c.OnPadFrame(PadSample{}, kUnknown, 1210);
+    ch = c.OnOverlayPadFrame(Buttons(kA), 1216);
+    CHECK(!ch.changed && ch.looked == Cause::None);
+    // Released and another button pressed: looked at and counted, the device is the pad already.
+    c.OnOverlayPadFrame(Buttons(0), 1300);
+    ch = c.OnOverlayPadFrame(Buttons(kB), 1316);
+    CHECK(!ch.changed && ch.looked == Cause::PadButton);
+}
+
+void TestOverlayPadKeepsTheFamily() {
+    // A PlayStation pad is listed; the keyboard was used; the pad picked up inside an overlay: the pad's family is back (the strip
+    // was kept while the keyboard had the device); the overlay never says which pad it was.
+    ActiveInputCore c;
+    const GlyphFamily pads[] = {GlyphFamily::PlayStation};
+    c.OnDevices(pads, 1, 0);
+    c.OnFocus(true, 0, /*initial=*/true);
+    c.OnKeyDown(0x41, false, 1000);
+    CHECK(c.Get().Family() == GlyphFamily::Keyboard && c.Get().PromptStrip() == GlyphFamily::PlayStation);
+    c.OnOverlayPadFrame(Buttons(kA), 2000);
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().Family() == GlyphFamily::PlayStation);
+    // The keyboard again, then a stick inside the overlay.
+    c.OnKeyDown(0x42, false, 3000);
+    CHECK(c.Get().Family() == GlyphFamily::Keyboard);
+    c.OnOverlayPadFrame(Left(20000), 4000);
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().Family() == GlyphFamily::PlayStation);
+}
+
+void TestOverlayPadGoneForgetsTheSample() {
+    ActiveInputCore c;
+    OneXboxPad(c);
+    c.OnOverlayPadFrame(Buttons(kA), 1000);
+    CHECK(c.OnOverlayPadFrame(Buttons(kA), 1016).looked == Cause::None);  // held: nothing
+    c.OnOverlayPadGone();                                                 // the dialog closed: its next reading starts from a pad at rest
+    CHECK(c.OnOverlayPadFrame(Buttons(kA), 5000).looked == Cause::PadButton);
+}
+
+void TestOverlayPadHoldsOffTheMouse() {
+    // A pad used in an overlay counts as a recent controller: a trackpad under a thumb does not take the device within a second.
+    ActiveInputCore c;
+    OneXboxPad(c);
+    c.OnKeyDown(0x41, false, 1000);
+    c.OnOverlayPadFrame(Buttons(kA), 5000);
+    CHECK(c.Get().device == InputDevice::Pad);
+    c.OnMouseMove(30.0f, 0.0f, 5300);  // past the 250 ms anti-flap time, still within a second of the pad
+    c.OnMouseMove(30.0f, 0.0f, 5350);
+    CHECK(c.Get().device == InputDevice::Pad);
+    c.OnMouseMove(30.0f, 0.0f, 6100);  // a second after the pad: the mouse takes it
+    c.OnMouseMove(30.0f, 0.0f, 6150);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse);
+}
+
+void TestCloseKeyWord() {
+    using mcla::ui::CloseKeyWord;
+    CHECK(std::string(CloseKeyWord(GlyphFamily::Xbox)) == "B");
+    CHECK(std::string(CloseKeyWord(GlyphFamily::PlayStation)) == "CIRCLE");
+    CHECK(std::string(CloseKeyWord(GlyphFamily::Keyboard)) == "ESC");
+    // What a dialog shows follows the state's glyph family, and with it the last device and the button_prompts setting.
+    ActiveInputCore c;
+    const GlyphFamily ps[] = {GlyphFamily::PlayStation};
+    c.OnDevices(ps, 1, 0);
+    c.OnFocus(true, 0, /*initial=*/true);
+    CHECK(std::string(CloseKeyWord(c.Get().Family())) == "CIRCLE");  // before any input: the pad that is plugged in
+    c.OnKeyDown(0x1B, false, 1000);
+    CHECK(std::string(CloseKeyWord(c.Get().Family())) == "ESC");     // the keyboard took over, a pad is still plugged in
+    c.OnOverlayPadFrame(Buttons(kB), 2000);
+    CHECK(std::string(CloseKeyWord(c.Get().Family())) == "CIRCLE");  // and the pad took it back inside the dialog
+    c.SetOverride(PromptOverride::Xbox);
+    CHECK(std::string(CloseKeyWord(c.Get().Family())) == "B");       // the setting forces the family
+    c.SetOverride(PromptOverride::Keyboard);
+    CHECK(std::string(CloseKeyWord(c.Get().Family())) == "ESC");
+    // No pad at all: the keyboard's word.
+    ActiveInputCore none;
+    none.OnDevices(nullptr, 0, 0);
+    CHECK(std::string(CloseKeyWord(none.Get().Family())) == "ESC");
+}
+
+void TestControllerRoster() {
+    using mcla::ui::ControllerEvent;
+    using mcla::ui::ControllerRoster;
+    ControllerRoster r;
+    CHECK(r.Update({}).empty() && r.Count() == 0);
+    // The first list: every controller there toasts as connected, in the SDK's order.
+    std::vector<ControllerEvent> ev = r.Update({{11, "Xbox Controller"}, {12, "PS5 Controller"}});
+    CHECK(ev.size() == 2 && ev[0].connected && ev[0].name == "Xbox Controller" && ev[1].connected && ev[1].name == "PS5 Controller");
+    CHECK(r.Count() == 2);
+    // The same list again (the SDK's counter moved for another reason): nothing.
+    CHECK(r.Update({{11, "Xbox Controller"}, {12, "PS5 Controller"}}).empty());
+    // One leaves: a disconnect, named as it was.
+    ev = r.Update({{12, "PS5 Controller"}});
+    CHECK(ev.size() == 1 && !ev[0].connected && ev[0].name == "Xbox Controller" && r.Count() == 1);
+    // It comes back: a new handle, a new connect.
+    ev = r.Update({{12, "PS5 Controller"}, {13, "Xbox Controller"}});
+    CHECK(ev.size() == 1 && ev[0].connected && ev[0].name == "Xbox Controller");
+    // A swap in one look: the arrival first, then the departures in the order they had come.
+    ev = r.Update({{14, "Switch Pro Controller"}});
+    CHECK(ev.size() == 3 && ev[0].connected && ev[0].name == "Switch Pro Controller");
+    CHECK(!ev[1].connected && ev[1].name == "PS5 Controller" && !ev[2].connected && ev[2].name == "Xbox Controller");
+    // All gone.
+    ev = r.Update({});
+    CHECK(ev.size() == 1 && !ev[0].connected && r.Count() == 0);
+    // A driver that gave no name.
+    ev = r.Update({{15, ""}});
+    CHECK(ev.size() == 1 && ev[0].connected && ev[0].name == "Controller");
+    ev = r.Update({});
+    CHECK(ev.size() == 1 && !ev[0].connected && ev[0].name == "Controller");
+}
+
 }  // namespace
 
 int main() {
@@ -977,6 +1119,13 @@ int main() {
     TestPadLossWindowIsBounded();
     TestPadLossTestHook();
     TestPadLossWithTheStateMachine();
+    TestOverlayAxis();
+    TestOverlayPadMakesThePadActive();
+    TestOverlayPadKeepsTheFamily();
+    TestOverlayPadGoneForgetsTheSample();
+    TestOverlayPadHoldsOffTheMouse();
+    TestCloseKeyWord();
+    TestControllerRoster();
     std::printf("input_state_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

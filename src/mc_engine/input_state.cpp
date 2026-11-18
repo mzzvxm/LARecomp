@@ -23,6 +23,10 @@
 //   [input] pad lost: ...                                 the controller in the player's hands was removed: the game is told "not connected" for a few polls so
 //                                                         that it pauses, or why not (keyboard active, not driving, wheel); PadLossRule in input_state_core.h
 //   [input] pad loss over: ...                            the window ended; the SDK's stand-in answers again
+//
+// Also here (KBM P7): the SDK's controllers as a list another thread may read (Controllers(), AddControllerListener(): the controller toast),
+// published from CheckDevices, which already looks at the SDK's list whenever its counter moves; and the pads an overlay reads while it is
+// open (NoteOverlayPad), because the SDK hands the game a pad at rest then.
 
 #include "input_state.h"
 #include "input_state_core.h"
@@ -37,6 +41,8 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/input/device.h>
@@ -107,15 +113,65 @@ struct ListenerTable {
   std::atomic<int> count{0};
 };
 
+// Never destroyed, like the state machine: a thread may still be inside a notification at exit.
 ListenerTable& Listeners() {
   static ListenerTable* table = new ListenerTable();
   return *table;
 }
 
-void NotifyListeners() {
-  ListenerTable& table = Listeners();
+// The listeners of the controller list (AddControllerListener).
+ListenerTable& ControllerListeners() {
+  static ListenerTable* table = new ListenerTable();
+  return *table;
+}
+
+void Notify(ListenerTable& table) {
   const int count = table.count.load(std::memory_order_acquire);
   for (int i = 0; i < count; ++i) table.slots[size_t(i)].fn(table.slots[size_t(i)].arg);
+}
+
+void NotifyListeners() { Notify(Listeners()); }
+
+bool AddTo(ListenerTable& table, InputListener fn, void* arg) {
+  if (!fn) return false;
+  std::lock_guard<std::mutex> lock(table.mutex);
+  const int count = table.count.load(std::memory_order_relaxed);
+  if (count >= int(table.slots.size())) return false;
+  table.slots[size_t(count)] = {fn, arg};
+  table.count.store(count + 1, std::memory_order_release);
+  return true;
+}
+
+// ---- the controllers, for another thread ----------------------------------------------------------------------
+
+struct ControllerStore {
+  std::mutex mutex;
+  std::vector<ControllerInfo> list;
+};
+
+ControllerStore& Store() {
+  static ControllerStore* store = new ControllerStore();
+  return *store;
+}
+
+bool SameControllers(const std::vector<ControllerInfo>& a, const std::vector<ControllerInfo>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (a[i].id != b[i].id || a[i].name != b[i].name) return false;
+  }
+  return true;
+}
+
+// The SDK's list was just read (CheckDevices): when the set of controllers differs from the last one published, publish it and tell the
+// listeners (after the lock is let go: a listener may read Controllers()).
+void PublishControllers(std::vector<ControllerInfo> fresh) {
+  ControllerStore& store = Store();
+  {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (SameControllers(store.list, fresh)) return;
+    store.list = std::move(fresh);
+  }
+  Notify(ControllerListeners());
 }
 
 // A change of the state: one log line, then the listeners (not while the state is first set up in Init(): nothing has seen it yet,
@@ -203,9 +259,12 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
   size_t count = 0;
   size_t synthetic = 0;  // the SDK's NOP stand-in (always there) and, with mnk_mode, its keyboard-and-mouse pad: not controllers
   std::string names;
+  std::vector<ControllerInfo> listed;  // the same controllers for Controllers() (the toast), not capped at 16
   for (const rex::input::DeviceInfo& d : isys->Devices()) {
     if (d.synthetic) ++synthetic;
-    if (d.synthetic || count >= pads.size()) continue;
+    if (d.synthetic) continue;
+    listed.push_back({static_cast<uint64_t>(d.id), d.name});
+    if (count >= pads.size()) continue;
     ids[count] = static_cast<uint64_t>(d.id);
     pads[count++] = d.pad_kind == rex::input::PadKind::kPlayStation ? GlyphFamily::PlayStation : GlyphFamily::Xbox;
     names += (names.empty() ? "" : ", ");
@@ -222,6 +281,7 @@ void CheckDevices(rex::input::InputSystem* isys, int64_t now) {
           synthetic, gen, mcla::ui::PlayStationControllerPresent() ? "yes" : "no");
   LogLoss(loss);
   Apply(ch);
+  PublishControllers(std::move(listed));
 #else
   (void)isys;
   (void)now;
@@ -340,15 +400,29 @@ uint32_t Generation() {
   return Core().Get().generation;
 }
 
-bool AddInputListener(InputListener fn, void* arg) {
-  if (!fn) return false;
-  ListenerTable& table = Listeners();
-  std::lock_guard<std::mutex> lock(table.mutex);
-  const int count = table.count.load(std::memory_order_relaxed);
-  if (count >= int(table.slots.size())) return false;
-  table.slots[size_t(count)] = {fn, arg};
-  table.count.store(count + 1, std::memory_order_release);
-  return true;
+bool AddInputListener(InputListener fn, void* arg) { return AddTo(Listeners(), fn, arg); }
+
+std::vector<ControllerInfo> Controllers() {
+  ControllerStore& store = Store();
+  std::lock_guard<std::mutex> lock(store.mutex);
+  return store.list;
+}
+
+bool AddControllerListener(InputListener fn, void* arg) { return AddTo(ControllerListeners(), fn, arg); }
+
+// An overlay's own reading of the pads (the browsers' dialogs): the same rules as the game's poll, a filter of its own. UI thread.
+void NoteOverlayPad(bool connected, uint16_t buttons, float lx, float ly, float rx, float ry) {
+  Init();
+  if (!connected) {
+    Core().OnOverlayPadGone();
+    return;
+  }
+  const Change ch = Core().OnOverlayPadFrame(OverlayPadSample(buttons, lx, ly, rx, ry), NowMs());
+  if (ch.looked != Cause::None && VerboseOpen()) {
+    MC_INFO("[input] ev overlay pad {} buttons=0x{:04X} l=({:.2f},{:.2f}) r=({:.2f},{:.2f}) -> {}", CauseText(ch.looked), unsigned(buttons), lx, ly, rx, ry,
+            ch.note);
+  }
+  Apply(ch);
 }
 
 void Tick() {
@@ -437,6 +511,9 @@ GlyphFamily ActiveGlyphFamily() { return GlyphFamily::Xbox; }
 GlyphFamily PromptStrip() { return GlyphFamily::Xbox; }
 uint32_t Generation() { return 0; }
 bool AddInputListener(InputListener, void*) { return false; }
+std::vector<ControllerInfo> Controllers() { return {}; }
+bool AddControllerListener(InputListener, void*) { return false; }
+void NoteOverlayPad(bool, uint16_t, float, float, float, float) {}
 void Tick() {}
 InputActivityScope::~InputActivityScope() {}
 void PadLossCaps(uint8_t*, uint32_t, uint32_t, uint64_t&) {}

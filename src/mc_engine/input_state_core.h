@@ -69,6 +69,26 @@ struct PadSample {
   int16_t ry = 0;
 };
 
+// A stick axis as an overlay reads it (-1..1, past either end clamped) in the game's 16-bit counts.
+inline int16_t OverlayAxis(float v) {
+  if (!(v == v)) return 0;  // NaN
+  if (v > 1.0f) v = 1.0f;
+  if (v < -1.0f) v = -1.0f;
+  return static_cast<int16_t>(v * 32767.0f + (v < 0.0f ? -0.5f : 0.5f));
+}
+
+// What an overlay's reading of the pads (XInput's button bits, sticks -1..1 with up and right positive, no triggers)
+// looks like to the rules above.
+inline PadSample OverlayPadSample(uint16_t buttons, float lx, float ly, float rx, float ry) {
+  PadSample s;
+  s.buttons = buttons;
+  s.lx = OverlayAxis(lx);
+  s.ly = OverlayAxis(ly);
+  s.rx = OverlayAxis(rx);
+  s.ry = OverlayAxis(ry);
+  return s;
+}
+
 enum class PadCause : uint8_t { None, Button, Trigger, Stick, StickMove };
 
 // One pad's samples, one call per poll. Holds the previous sample and which triggers and sticks are
@@ -405,21 +425,30 @@ class ActiveInputCore {
     std::lock_guard<std::mutex> lock(mutex_);
     const PadCause pad = pad_.Feed(sample);
     if (pad == PadCause::None) return Change();
-    Cause cause = Cause::PadButton;
-    switch (pad) {
-      case PadCause::Trigger: cause = Cause::PadTrigger; break;
-      case PadCause::Stick: cause = Cause::PadStick; break;
-      case PadCause::StickMove: cause = Cause::PadStickMove; break;
-      case PadCause::Button:
-      case PadCause::None: break;
-    }
-    return Activity(InputDevice::Pad, cause, pad == PadCause::StickMove, family_of(), now);
+    return PadActivity(pad, family_of(), now);
   }
 
   // The pad did not answer (or is not the game's): the next sample is compared with a pad at rest.
   void OnPadGone() {
     std::lock_guard<std::mutex> lock(mutex_);
     pad_.Reset();
+  }
+
+  // One reading of the pads by an overlay that takes them itself while it is open (the browsers' dialogs): the
+  // SDK hands the game a pad at rest then, so OnPadFrame never sees what the player does inside the overlay.
+  // The same rules, a filter of its own (the game's polls of that pad at rest between two readings do not reset
+  // the comparison), the pad's family not known (it stays what it was).
+  Change OnOverlayPadFrame(const PadSample& sample, int64_t now) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const PadCause pad = overlay_pad_.Feed(sample);
+    if (pad == PadCause::None) return Change();
+    return PadActivity(pad, -1, now);
+  }
+
+  // No pad answered the overlay: its next reading is compared with a pad at rest.
+  void OnOverlayPadGone() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    overlay_pad_.Reset();
   }
 
   // A key went down (`repeat`: the key was already down, an auto-repeat). Key-up never counts: not called.
@@ -461,6 +490,18 @@ class ActiveInputCore {
   }
 
  private:
+  Change PadActivity(PadCause pad, int family, int64_t now) {
+    Cause cause = Cause::PadButton;
+    switch (pad) {
+      case PadCause::Trigger: cause = Cause::PadTrigger; break;
+      case PadCause::Stick: cause = Cause::PadStick; break;
+      case PadCause::StickMove: cause = Cause::PadStickMove; break;
+      case PadCause::Button:
+      case PadCause::None: break;
+    }
+    return Activity(InputDevice::Pad, cause, pad == PadCause::StickMove, family, now);
+  }
+
   bool HasFamily(GlyphFamily strip) const { return (pad_mask_ & (1u << (strip == GlyphFamily::PlayStation ? 1 : 0))) != 0; }
 
   static Change Unchanged(const Snapshot& s, const char* note) {
@@ -527,6 +568,7 @@ class ActiveInputCore {
   GlyphFamily seed_strip_ = GlyphFamily::Xbox;  // the device watcher's last guess
   uint8_t pad_mask_ = 0;  // bit 0 an Xbox-family pad is connected, bit 1 a PlayStation one
   PadFilter pad_;
+  PadFilter overlay_pad_;  // the pads as an overlay read them (OnOverlayPadFrame)
   MotionFilter motion_;
 };
 
