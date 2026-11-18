@@ -14,7 +14,7 @@
 //     runtime's action as `prev`:
 //       - SIGSEGV and SIGILL: FaultWrapper runs on the signal stack, calls the runtime's handler
 //         and returns. Nothing is reported here: a fault the runtime handles must stay invisible.
-//         crash_handler.cpp also registers a rex::arch::ExceptionHandler AFTER the runtime's own
+//         crash_handler.cpp also registers a rex::platform::ExceptionHandler AFTER the runtime's own
 //         (the runtime calls them in the order installed and stops at the first that says
 //         "handled"), so it is reached only when every one of them declined, and then calls
 //         ReportUnconsumed(). The runtime's handler never chains and never restores the default
@@ -747,7 +747,7 @@ inline void FaultWrapper(int sig, siginfo_t* info, void* uctx) {
 }
 
 // Reached when every handler of the runtime declined a SIGSEGV or SIGILL (crash_handler.cpp's
-// rex::arch::ExceptionHandler callback). `from_runtime` is what the runtime's Exception said, used
+// rex::platform::ExceptionHandler callback). `from_runtime` is what the runtime's Exception said, used
 // when this thread is not inside FaultWrapper. The caller returns false afterwards: the
 // instruction runs again and the default action ends the process.
 inline void ReportUnconsumed(const Fault& from_runtime) {

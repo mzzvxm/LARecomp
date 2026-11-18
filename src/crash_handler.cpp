@@ -262,7 +262,7 @@ std::filesystem::path ExeDir() {
 // fault handling is chained with, std::terminate, the exit marker and the crash test.
 //
 // How it chains with the runtime. The runtime handles SIGSEGV and SIGILL itself (write watches on
-// guest memory, MMIO): rex::arch::ExceptionHandler keeps a list of callbacks and calls them in the
+// guest memory, MMIO): rex::platform::ExceptionHandler keeps a list of callbacks and calls them in the
 // order they were installed until one returns true. Its signal handler never chains and never
 // restores the default action, so a fault no callback takes would run again and fault again for
 // ever. InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the
@@ -316,37 +316,37 @@ void FlushLogsOnHelperThread() {
 // The SDK's seh_initialize handlers for SIGBUS and SIGFPE belong to the code that asked for SEH
 // protection (nothing in the game does today): leave a fault inside such a region to it.
 bool SehRegionActive(int) {
-    return rex::platform::seh_active();
+    return rex::platform::GetSEHThreadState().top != nullptr;  // an open REX_SEH_TRY scope on this thread (POSIX)
 }
 
 // Registered after the runtime's own callbacks (see the top of the section): reached only when
 // every one of them declined this fault.
-bool OnUnconsumedFault(rex::arch::Exception* ex, void*) {
+bool OnUnconsumedFault(rex::platform::Exception* ex, void*) {
     lx::Fault f;
-    switch (ex->code()) {
-        case rex::arch::Exception::Code::kAccessViolation:
+    switch (ex->GetCode()) {
+        case rex::platform::Exception::Code::kAccessViolation:
             f.signo = SIGSEGV;
             f.has_addr = true;
-            f.addr = ex->fault_address();
-            switch (ex->access_violation_operation()) {
-                case rex::arch::Exception::AccessViolationOperation::kRead:
+            f.addr = ex->GetFaultAddress();
+            switch (ex->GetAccessViolationOperation()) {
+                case rex::platform::Exception::AccessViolationOperation::kRead:
                     f.op = 1;
                     break;
-                case rex::arch::Exception::AccessViolationOperation::kWrite:
+                case rex::platform::Exception::AccessViolationOperation::kWrite:
                     f.op = 2;
                     break;
                 default:
                     break;
             }
             break;
-        case rex::arch::Exception::Code::kIllegalInstruction:
+        case rex::platform::Exception::Code::kIllegalInstruction:
             f.signo = SIGILL;
             break;
         default:
             return false;
     }
 #if REX_ARCH_AMD64
-    if (const rex::arch::HostThreadContext* c = ex->thread_context()) {
+    if (const rex::platform::HostThreadContext* c = ex->GetThreadContext()) {
         f.has_pc = true;
         f.pc = c->rip;
         f.has_regs = true;
@@ -494,7 +494,7 @@ void InstallCrashLoggerAfterRuntime() {
 
     // After the runtime's own callback (MMIOHandler::Install, in Memory::Initialize, which
     // Runtime::Setup has run by the time OnPostSetup calls this): called in the order installed.
-    rex::arch::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
+    rex::platform::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
     lx::InstallLate();
     LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFilePath());
 
