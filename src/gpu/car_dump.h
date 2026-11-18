@@ -73,6 +73,7 @@
 #include <plume_render_interface.h>
 
 #include "car_dump_rules.h"
+#include "car_mesh_read.h"
 #include "constants.h"
 #include "draw_decode.h"
 #include "draw_state.h"
@@ -128,49 +129,23 @@ class CarDump {
   void OnPresent();
 
  private:
-  enum class Problem : uint8_t {
-    kNone,
-    kComputedFetch,  // the vertex shader's fetch index is computed (the rain's quads): no triangles of a car
-    kPrimitive,      // a primitive the renderer does not draw as triangles (rectangle list, unsupported)
-    kNotTriangles,   // lines
-    kNoPosition,     // the declaration has no POSITION0
-    kPositionFormat, // a position that does not fit its stride or has no format here
-    kFetch,          // the stream's fetch constant is no vertex fetch, or has no stride
-    kUnreadable,     // a range is not committed guest memory
-    kNoTriangles,    // nothing left after the index expansion
-  };
+  // Why a draw has no triangles, where the player's vehicle is in the game's own memory (read when the dump frame opens), and what
+  // the microcode of a vertex shader was found to read: car_mesh_read.h, which the car frame (car_frame.h) shares.
+  using Problem = car_mesh::Problem;
+  using PlayerVehicle = car_mesh::PlayerVehicle;
+  using ShaderReads = car_mesh::ShaderReads;
 
-  // Where the player's vehicle is in the game's own memory (read when the dump frame opens).
-  struct PlayerVehicle {
-    bool valid = false;       // the position was read
-    uint32_t vehicle = 0;     // dword_8288DCF8: the vehicle the local player drives
-    uint32_t entity = 0;      // vehicle + 0x14
-    double position[3] = {};  // row 3 of the entity's world matrix (entity + 0x90 + 0x30)
-    std::string note;         // what was found, for the log
-  };
-
-  // What the microcode of a vertex shader was found to read (cached by shader identity, verified microcode only).
-  struct ShaderReads {
-    car_dump::ConstantReads reads;
-    bool verified = false;  // the microcode was readable and hashes to the shader's identity
-  };
-
-  // One vehicle draw of the dump frame, as a small record, and what the dump frame made of it.
-  struct Draw {
+  // One vehicle draw of the dump frame, as a small record, and what the dump frame made of it. Its triangles (Triangles: the problem, the
+  // primitive's shape, the position element's place, the model-space positions and the triangle list) are car_mesh::ReadTriangles'.
+  struct Draw : car_mesh::Triangles {
     uint32_t id = 0;       // the lowest vehicle ID the draw writes (stencil reference >> 2)
     uint32_t id_mask = 0;  // every vehicle ID it writes
     uint64_t vs = 0;
     uint64_t ps = 0;
     uint32_t primitive = 0;  // xenos::PrimitiveType
     DrawKind kind = DrawKind::kIndexed;
-    bool index32 = false;
-    bool strip = false;      // the host topology is a strip (expanded here)
     uint32_t count = 0;      // the draw's indices or vertices
     uint32_t world_before = 0;  // main-view draws that wrote no vehicle ID, before this one, in the frame
-    car_dump::PositionFormat format = car_dump::PositionFormat::kNone;
-    uint32_t stream = 0;
-    uint32_t offset = 0;
-    uint32_t stride = 0;
     bool damage = false;   // bool b0 (enableVertDamage) is on
     bool skinned = false;  // the vertex shader reads BLENDINDICES (the declaration says so)
     uint32_t colour_mask = 0;  // the write masks of the bound colour targets, or-ed
@@ -179,21 +154,13 @@ class CarDump {
     car_dump::RecipeSource recipe_source = car_dump::RecipeSource::kDefault;
     car_dump::Role role = car_dump::Role::kBody;
     bool ucode_read = false;   // the recipe comes from the microcode of this shader
-    Problem problem = Problem::kNone;
     car_dump::CarMatrices matrices;
     temporal::Mat4 model;      // the recipe's model-to-world (car_dump_rules.h ModelMatrix)
     car_dump::SkinStats skin;  // the blend of a skinned draw: vertices, bones outside the palette, weight sums
     std::string skin_note;     // why a skinned draw has no blended positions
-    uint32_t triangles = 0;
-    uint32_t degenerate = 0;
-    uint32_t out_of_range = 0;
-    uint32_t vertices = 0;       // distinct vertices the triangles name
-    uint32_t first_vertex = 0;   // `local` starts at this vertex of the stream
-    std::vector<float> local;    // model-space positions of the vertices first_vertex..first_vertex + span, 3 floats each
     std::vector<float> blended;  // a skinned draw: the blended local positions of the same vertices (empty when not done)
     const float* Positions() const { return recipe == car_dump::Recipe::kSkinned ? blended.data() : local.data(); }
     size_t PositionCount() const { return (recipe == car_dump::Recipe::kSkinned ? blended.size() : local.size()) / 3; }
-    std::vector<uint32_t> tri;   // 3 numbers a triangle, relative to first_vertex
   };
 
   // The history image's distances, once read back.
@@ -211,8 +178,6 @@ class CarDump {
   void Refresh();
   void Open();
   void Expand(const MainDraw& draw, Draw* out);
-  void ReadPlayerVehicle();
-  const ShaderReads& ReadsOf(const DrawRecord& record);
   bool SkinDraw(const MainDraw& draw, uint32_t first, uint32_t span, Draw* out);
   void Finish();
   void Summarise(car_dump::IdSummary (&ids)[car_dump::kIdSlots]) const;
@@ -243,11 +208,10 @@ class CarDump {
   PlayerVehicle player_;      // read when the frame opens
 
   // The microcode scans, by vertex shader identity (verified ones only: a failed read is tried again).
-  std::unordered_map<uint64_t, ShaderReads> reads_;
+  car_mesh::ShaderReadsCache reads_;
 
   // Scratch of Expand.
-  std::vector<uint32_t> guest_indices_;
-  std::vector<uint32_t> list_;
+  car_mesh::Scratch scratch_;
   std::vector<ShaderStore::VertexElement> elements_;
 
   Device* device_ = nullptr;

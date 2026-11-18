@@ -67,19 +67,6 @@ constexpr const char* kPrefix = "[car dump]";
 // How far a draw's pixels may be from the image's distance, relative, to count as the same surface (the half float image is
 // within 0.05% of the distance; 1% is 5 cm at 5 m).
 constexpr double kFitTolerance = 0.01;
-// A draw with more indices than this is not a car's.
-constexpr uint32_t kMaxIndices = 8u * 1024u * 1024u;
-// D3DDECLUSAGE_BLENDINDICES (native_gfx/vertex_declaration.h).
-constexpr uint32_t kUsageBlendIndices = 2;
-constexpr uint32_t kUsageBlendWeight = 1;
-constexpr uint32_t kUsagePosition = 0;
-// The vehicle the local player drives, in the game's memory (mc_engine/squash_stretch.cpp, read off the game's code): the global
-// dword_8288DCF8 holds the vehicle, vehicle + 0x14 its entity, entity + 0x90 the entity's world Matrix44 (row vectors, floats, big endian;
-// row 3, at +0x30, is the translation).
-constexpr uint32_t kPlayerVehicleGlobal = 0x8288DCF8u;
-constexpr uint32_t kVehicleEntityOffset = 0x14;
-constexpr uint32_t kEntityMatrixOffset = 0x90;
-constexpr uint32_t kMatrixTranslationOffset = 0x30;
 static_assert(car_dump::kIdSlots == temporal::kVehicleIds, "the dump's ID slots are the renderer's");
 
 // The key of one group of the census.
@@ -112,74 +99,10 @@ double Distance3(const double a[3], const double b[3]) {
 
 double Relative(double a, double b) { return std::fabs(a - b) / std::max(1.0, std::fabs(b)); }
 
-// A vertex stream of a draw: where its bytes are and how they are laid out.
-struct StreamRef {
-  bool ok = false;
-  bool inline_data = false;      // the draw's own inline vertices
-  uint32_t address = 0;          // physical, from the stream's vertex fetch constant
-  uint32_t size = 0;             // bytes
-  uint32_t stride = 0;           // bytes
-  const uint8_t* inline_base = nullptr;
-};
-
-// The stream `stream` of a draw: a vertex fetch constant (the address, the size in bytes, the endian 8in32 that geometry.cpp
-// StreamSource accepts) and the device's stride, or the inline vertices. Not ok when the constant is no vertex fetch.
-StreamRef ResolveStream(const DrawView& view, const DrawRecord& r, uint32_t stream) {
-  StreamRef out;
-  if (r.kind == DrawKind::kInline) {
-    out.inline_data = true;
-    out.stride = r.inline_stride;
-    out.size = r.inline_bytes;
-    out.inline_base = view.inline_data();
-    out.ok = true;
-    return out;
-  }
-  const uint32_t slot = nfx::FetchSlotForStream(stream);
-  if (slot >= guest::kFetchGroupCount * 3 || stream >= guest::kStreamCount) {
-    return out;
-  }
-  uint32_t d0 = 0, d1 = 0;
-  view.VertexFetch(slot, &d0, &d1);
-  if ((d0 & 3u) != 3u || (d1 & 3u) != car_dump::kEndian8in32) {
-    return out;
-  }
-  out.address = d0 & 0xFFFFFFFCu;
-  out.size = d1 & 0x03FFFFFCu;
-  out.stride = uint32_t(r.stream_strides[stream]) * 4u;
-  out.ok = true;
-  return out;
-}
-
-// The element `usage` / index 0 of the draw's declaration (the first, as the input layout takes it); false when there is none.
-bool FindElement(const DrawView& view, const DrawRecord& r, uint32_t usage, nfx::DeclarationElement* out) {
-  for (uint32_t i = 0; i < r.decl_count && i < guest::kMaxDeclElements; ++i) {
-    const nfx::DeclarationElement e = nfx::ReadDeclarationElement(view.decl_records(), i);
-    if (e.stream == 0xFF) {
-      break;
-    }
-    if (e.usage == usage && e.usage_index == 0) {
-      *out = e;
-      return true;
-    }
-  }
-  return false;
-}
-
 }  // namespace
 
 const char* CarDump::ProblemName(Problem problem) {
-  switch (problem) {
-    case Problem::kNone: return "none";
-    case Problem::kComputedFetch: return "computed vertex fetch";
-    case Problem::kPrimitive: return "primitive not drawn as triangles";
-    case Problem::kNotTriangles: return "not triangles";
-    case Problem::kNoPosition: return "no POSITION0";
-    case Problem::kPositionFormat: return "position format";
-    case Problem::kFetch: return "no vertex fetch";
-    case Problem::kUnreadable: return "unreadable";
-    case Problem::kNoTriangles: return "no triangles";
-  }
-  return "?";
+  return car_mesh::ProblemName(problem);
 }
 
 CarDump::~CarDump() = default;
@@ -227,87 +150,10 @@ void CarDump::Open() {
   open_ = true;
   dump_frame_ = frame_;
   chosen_ = 0;
-  ReadPlayerVehicle();
+  car_mesh::ReadPlayerVehicle(&player_, true);
   REXLOG_INFO("{} frame {}: the first draw that writes a vehicle ID comes after {} main-view draws that write none; dumping this "
               "frame; player's vehicle: {}",
               kPrefix, dump_frame_, world_draws_, player_.note);
-}
-
-// The player's vehicle in the game's own memory: dword_8288DCF8 -> vehicle, +0x14 -> entity, +0x90 its world matrix (see the constants).
-// Every pointer is checked with IsGuestRangeReadable before it is read. The guest runs on while the render thread works, so this is the
-// state of a frame or a few after the draws (a car at 25 m/s moves 0.4 m a frame; ChoosePlayerId takes up to 5 m).
-void CarDump::ReadPlayerVehicle() {
-  player_ = PlayerVehicle{};
-  auto* runtime = rex::Runtime::instance();
-  const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
-  if (!base) {
-    player_.note = "no guest memory";
-    return;
-  }
-  const auto bytes = [&](uint32_t address, uint32_t size) -> const uint8_t* {
-    if (address < 0x1000u || (address & 3u) != 0 || !nfx::IsGuestRangeReadable(address, size)) {
-      return nullptr;
-    }
-    return rex::memory::GuestPtr<const uint8_t*>(const_cast<uint8_t*>(base), address);
-  };
-  const uint8_t* global = bytes(kPlayerVehicleGlobal, 4);
-  if (!global) {
-    player_.note = std::format("the global {:#010x} is not readable", kPlayerVehicleGlobal);
-    return;
-  }
-  player_.vehicle = car_dump::LoadBe32(global);
-  const uint8_t* vehicle = bytes(player_.vehicle + kVehicleEntityOffset, 4);
-  if (player_.vehicle == 0 || !vehicle) {
-    player_.note = std::format("the global {:#010x} holds {:#010x}: no vehicle", kPlayerVehicleGlobal, player_.vehicle);
-    return;
-  }
-  player_.entity = car_dump::LoadBe32(vehicle);
-  const uint8_t* matrix = bytes(player_.entity + kEntityMatrixOffset, 64);
-  if (player_.entity == 0 || !matrix) {
-    player_.note = std::format("vehicle {:#010x} holds entity {:#010x}: no matrix", player_.vehicle, player_.entity);
-    return;
-  }
-  for (uint32_t c = 0; c < 3; ++c) {
-    const uint32_t bits = car_dump::LoadBe32(matrix + kMatrixTranslationOffset + 4 * c);
-    float value;
-    std::memcpy(&value, &bits, 4);
-    player_.position[c] = double(value);
-  }
-  player_.valid = std::isfinite(player_.position[0]) && std::isfinite(player_.position[1]) && std::isfinite(player_.position[2]);
-  player_.note = player_.valid ? std::format("vehicle {:#010x}, entity {:#010x}, world position ({:.2f}, {:.2f}, {:.2f})",
-                                             player_.vehicle, player_.entity, player_.position[0], player_.position[1], player_.position[2])
-                               : std::format("vehicle {:#010x}, entity {:#010x}: its matrix has no finite translation", player_.vehicle,
-                                             player_.entity);
-}
-
-// What the vertex shader of `record` reads, from its microcode: the draw record names the microcode in guest memory (a virtual address,
-// as the capture reads it), and a read counts only when it hashes to the draw's shader identity (the guest may have loaded another
-// shader there since). Only verified scans are kept.
-const CarDump::ShaderReads& CarDump::ReadsOf(const DrawRecord& record) {
-  const auto found = reads_.find(record.vs_identity);
-  if (found != reads_.end()) {
-    return found->second;
-  }
-  static const ShaderReads kNone;
-  auto* runtime = rex::Runtime::instance();
-  const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
-  const uint32_t address = record.vs_ucode_address;
-  const uint32_t size = record.vs_ucode_size;
-  if (!base || record.vs_identity == 0 || size < 12 || size > nfx::kMaxUcodeBytes || (address & 3u) != 0 ||
-      !nfx::IsGuestRangeReadable(address, size)) {
-    return kNone;
-  }
-  const uint8_t* ucode = rex::memory::GuestPtr<const uint8_t*>(const_cast<uint8_t*>(base), address);
-  if (nfx::ShaderIdentity(ucode, size) != record.vs_identity) {
-    return kNone;
-  }
-  ShaderReads out;
-  out.reads = car_dump::ScanConstantReads(ucode, size);
-  out.verified = out.reads.valid;
-  if (!out.verified) {
-    return kNone;
-  }
-  return reads_.emplace(record.vs_identity, out).first->second;
 }
 
 void CarDump::OnMainDraw(const MainDraw& draw) {
@@ -341,7 +187,7 @@ void CarDump::Expand(const MainDraw& d, Draw* out) {
   if (d.shaders && d.vs) {
     d.shaders->GetVertexElements(*d.vs, elements_);
     for (const ShaderStore::VertexElement& e : elements_) {
-      out->skinned |= e.usage == kUsageBlendIndices;
+      out->skinned |= e.usage == car_mesh::kUsageBlendIndices;
     }
   }
 
@@ -352,7 +198,7 @@ void CarDump::Expand(const MainDraw& d, Draw* out) {
     }
   }
   out->proxy = car_dump::WheelProxyOf(r.vs_identity, r.ps_identity, out->colour_mask);
-  const ShaderReads& reads = ReadsOf(r);
+  const ShaderReads& reads = reads_.Of(r);
   out->ucode_read = reads.verified;
   const car_dump::RecipeChoice choice = car_dump::ChooseRecipe(reads.reads, out->skinned, r.vs_identity);
   out->recipe = choice.recipe;
@@ -360,129 +206,15 @@ void CarDump::Expand(const MainDraw& d, Draw* out) {
   out->role = car_dump::RoleOf(out->proxy, out->recipe);
   out->model = car_dump::ModelMatrix(out->matrices, out->recipe);
 
-  // What the renderer draws: lists and strips as they are, quads and fans as lists of triangles (topology.h).
-  const PrimitiveConversion conversion = d.primitive.conversion;
-  const plume::RenderPrimitiveTopology topology = d.primitive.topology;
-  if ((r.flags & kDrawVsComputedFetchIndex) != 0 || (d.vs && (d.vs->flags & ShaderStore::kComputedFetchIndex) != 0)) {
-    out->problem = Problem::kComputedFetch;
-    return;
-  }
-  if (conversion == PrimitiveConversion::kUnsupported || conversion == PrimitiveConversion::kRectList) {
-    out->problem = Problem::kPrimitive;
-    return;
-  }
-  const bool strip = topology == plume::RenderPrimitiveTopology::TRIANGLE_STRIP;
-  if (topology != plume::RenderPrimitiveTopology::TRIANGLE_LIST && !strip) {
-    out->problem = Problem::kNotTriangles;
-    return;
-  }
-  out->strip = strip;
-  if (r.count > kMaxIndices) {
-    out->problem = Problem::kUnreadable;
-    return;
-  }
-
-  // The POSITION element of the declaration: the first one with usage 0 and index 0, as the input layout takes it.
-  nfx::DeclarationElement position;
-  if (!FindElement(view, r, kUsagePosition, &position)) {
-    out->problem = Problem::kNoPosition;
-    return;
-  }
-  out->format = car_dump::PositionFormatOf(position.type);
-  out->stream = position.stream;
-  out->offset = position.offset;
-
-  // Its stream: a vertex fetch constant (the address, the size in bytes, the endian) and the device's stride, or the inline vertices.
-  const StreamRef source = ResolveStream(view, r, position.stream);
-  if (!source.ok) {
-    out->problem = Problem::kFetch;
-    return;
-  }
-  const uint32_t stride = source.stride;
-  out->stride = stride;
-  const uint32_t bytes = car_dump::PositionBytes(out->format);
-  if (bytes == 0 || stride == 0 || position.offset + bytes > stride) {
-    out->problem = Problem::kPositionFormat;
-    return;
-  }
-  const uint32_t available = source.size / stride;
-
-  // The indices, expanded to a triangle list by the renderer's own functions (geometry.cpp PrepareDraw does the same).
-  const uint32_t count = r.count;
-  int64_t vertex_base = 0;
-  bool reset = false;
-  uint32_t reset_index = 0;
-  if (r.kind == DrawKind::kIndexed) {
-    const bool index32 = (r.index_dword0 & 0x80000000u) != 0;
-    const uint32_t endian = (r.index_dword0 >> 29) & 3u;
-    const uint32_t index_size = index32 ? 4u : 2u;
-    const uint32_t index_address = GuestMemory::ToPhysical(r.index_address) + r.start * index_size;
-    const uint8_t* raw = memory_->Read(index_address, count * index_size);
-    if (!raw) {
-      out->problem = Problem::kUnreadable;
-      return;
-    }
-    out->index32 = index32;
-    car_dump::DecodeIndices(raw, count, index32, endian, &guest_indices_);
-    vertex_base = r.base_vertex;
-    reset = d.state->sc_mode.multi_prim_ib_ena != 0;
-    reset_index = d.state->reset_index & (index32 ? 0xFFFFFFFFu : 0xFFFFu);
-  } else {
-    guest_indices_.resize(count);
-    for (uint32_t i = 0; i < count; ++i) {
-      guest_indices_[i] = i;
-    }
-    vertex_base = r.kind == DrawKind::kAuto ? int64_t(r.start) : 0;
-  }
-  list_.clear();
-  if (conversion == PrimitiveConversion::kNone) {
-    if (strip) {
-      list_.resize(size_t(count) * 3);
-      const uint32_t n = StripToList(true, guest_indices_.data(), count, reset, reset_index, list_.data());
-      list_.resize(n);
-    } else {
-      list_ = guest_indices_;
-    }
-  } else {
-    const uint32_t n = ConvertedIndexCount(conversion, count);
-    list_.resize(n);
-    if (n != 0) {
-      ConvertIndices(conversion, guest_indices_.data(), count, list_.data());
-    }
-  }
-  car_dump::TriangleSet set;
-  car_dump::CollectTriangles(list_.data(), uint32_t(list_.size()), vertex_base, available, &set);
-  out->degenerate = set.degenerate;
-  out->out_of_range = set.out_of_range;
-  if (set.triangles() == 0) {
-    out->problem = Problem::kNoTriangles;
-    return;
-  }
-
-  // The positions of the vertices the triangles name (one range of the stream).
-  const uint32_t first = set.first_vertex;
-  const uint32_t span = set.span();
-  const uint8_t* base = source.inline_data ? source.inline_base + size_t(first) * stride
-                                           : memory_->Read(source.address + first * stride, span * stride);
-  if (!base) {
-    out->problem = Problem::kUnreadable;
-    return;
-  }
-  out->first_vertex = first;
-  out->local.resize(size_t(span) * 3);
-  for (uint32_t v = 0; v < span; ++v) {
-    car_dump::DecodePosition(base + size_t(v) * stride + position.offset, out->format, &out->local[size_t(v) * 3]);
-  }
-  out->tri = std::move(set.tri);
-  std::vector<uint8_t> seen(span, 0);
-  for (uint32_t& n : out->tri) {
-    n -= first;
-    seen[n] = 1;
-  }
-  out->triangles = uint32_t(out->tri.size() / 3);
-  out->vertices = uint32_t(std::count(seen.begin(), seen.end(), uint8_t(1)));
-  if (out->recipe == car_dump::Recipe::kSkinned) {
-    SkinDraw(d, first, span, out);
+  // The draw's triangles out of guest memory (car_mesh_read.h: the same code the car frame reads a draw with).
+  car_mesh::DrawInputs inputs;
+  inputs.view = d.view;
+  inputs.state = d.state;
+  inputs.vs = d.vs;
+  inputs.primitive = d.primitive;
+  car_mesh::ReadTriangles(*memory_, inputs, scratch_, out);
+  if (out->problem == Problem::kNone && out->recipe == car_dump::Recipe::kSkinned) {
+    SkinDraw(d, out->first_vertex, uint32_t(out->local.size() / 3), out);
   }
 }
 
@@ -490,55 +222,8 @@ void CarDump::Expand(const MainDraw& d, Draw* out) {
 // the span of vertices `first`.. of their streams, the palette of the draw's bank. False, with out->skin_note saying why, when it cannot be
 // done (the draw then has no placed positions).
 bool CarDump::SkinDraw(const MainDraw& d, uint32_t first, uint32_t span, Draw* out) {
-  const DrawView& view = *d.view;
-  const DrawRecord& r = view.record();
-  nfx::DeclarationElement indices, weights;
-  if (!FindElement(view, r, kUsageBlendIndices, &indices) || !FindElement(view, r, kUsageBlendWeight, &weights)) {
-    out->skin_note = "the declaration has no BLENDINDICES / BLENDWEIGHT";
-    return false;
-  }
-  const car_dump::BlendFormat index_format = car_dump::BlendFormatOf(indices.type);
-  const car_dump::BlendFormat weight_format = car_dump::BlendFormatOf(weights.type);
-  if (index_format == car_dump::BlendFormat::kNone || weight_format == car_dump::BlendFormat::kNone) {
-    out->skin_note = std::format("blend formats not handled (BLENDINDICES decltype {:08X}, BLENDWEIGHT {:08X})", uint32_t(indices.type),
-                                 uint32_t(weights.type));
-    return false;
-  }
-  const uint32_t index_bytes = car_dump::BlendBytes(index_format);
-  const uint32_t weight_bytes = car_dump::BlendBytes(weight_format);
-  const StreamRef index_stream = ResolveStream(view, r, indices.stream);
-  const StreamRef weight_stream = ResolveStream(view, r, weights.stream);
-  if (!index_stream.ok || !weight_stream.ok || index_stream.stride == 0 || weight_stream.stride == 0 ||
-      indices.offset + index_bytes > index_stream.stride || weights.offset + weight_bytes > weight_stream.stride) {
-    out->skin_note = "the blend elements do not fit their streams";
-    return false;
-  }
-  if (uint64_t(first + span) * index_stream.stride > index_stream.size ||
-      uint64_t(first + span) * weight_stream.stride > weight_stream.size) {
-    out->skin_note = "the blend streams are shorter than the position stream";
-    return false;
-  }
-  const auto window = [&](const StreamRef& stream) -> const uint8_t* {
-    return stream.inline_data ? stream.inline_base + size_t(first) * stream.stride
-                              : memory_->Read(stream.address + first * stream.stride, span * stream.stride);
-  };
-  const uint8_t* index_base = window(index_stream);
-  const uint8_t* weight_base = window(weight_stream);
-  if (!index_base || !weight_base) {
-    out->skin_note = "the blend streams are not readable";
-    return false;
-  }
-  const auto palette = std::make_unique<car_dump::SkinPalette>();
-  car_dump::LoadPalette(d.banks->vs.data(), palette.get());
-  out->blended.resize(size_t(span) * 3);
-  out->skin = car_dump::SkinStats{};
-  for (uint32_t v = 0; v < span; ++v) {
-    const car_dump::SkinInfluence influence =
-        car_dump::ReadInfluence(index_base + size_t(v) * index_stream.stride + indices.offset, index_format,
-                                weight_base + size_t(v) * weight_stream.stride + weights.offset, weight_format);
-    car_dump::SkinBlend(*palette, influence, &out->local[size_t(v) * 3], &out->blended[size_t(v) * 3], &out->skin);
-  }
-  return true;
+  return car_mesh::SkinPositions(*memory_, *d.view, d.banks->vs.data(), first, span, out->local, &out->blended, &out->skin,
+                                 &out->skin_note);
 }
 
 void CarDump::OnAnchor(const ConstantBanks::Banks& banks) {
