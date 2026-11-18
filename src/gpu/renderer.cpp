@@ -285,6 +285,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
+    ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
     scene_.SetSunShafts(&shafts_);
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
