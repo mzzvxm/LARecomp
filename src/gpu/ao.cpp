@@ -21,6 +21,7 @@
 #include "ao_halo.h"
 #include "ao_paint.h"
 #include "ao_stable.h"
+#include "car_shadow_map.h"
 #include "contact_trace.h"
 #include "descriptors.h"
 #include "device.h"
@@ -243,9 +244,21 @@ REXCVAR_DEFINE_INT32(
     "(only while they are on, and instead of mcla_gpu_ao_view): 1 the factor the picture is "
     "multiplied by (white: none), 2 the contact visibility (black where the ray is hidden), 3 the "
     "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
-    "4 the sun's share of the light. 0: off. Live.")
+    "4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where "
+    "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
+    "near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.")
     .debug_only()
-    .range(0, 4)
+    .range(0, 5)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_contact_shadows_car_map_march, false, "MCLA/GPU",
+    "Diagnostic: with the player's car's own sun shadow map in the frame (car_shadow_map.h), the short march that "
+    "the car's own pixels (and any vehicle's) take also runs on the pixels the map covers, and the pixel gets the darker "
+    "of the two. False: where the map holds a part of the car at a vehicle's pixel the map is the truth about the car's "
+    "own parts (a wing's plate and its posts, a mirror, a sill), which the march only guesses from the picture's depth "
+    "(a thin part has no thickness there), so that pixel takes no march steps and its contact shadow is the map's. "
+    "For comparing the two on the wing and the mirrors (view 5 shows the map's term). Live.")
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ssgi, "auto", "MCLA/GPU",
@@ -533,6 +546,9 @@ constexpr uint32_t kContactFilterFlag = 1u << 25;
 // The debug views of the contact shadows are 8 to 11 in the apply pass's view field (the occlusion's
 // are 1 to 6).
 constexpr uint32_t kContactViewBase = 7;
+// mcla_gpu_contact_shadows_view 5: the car's shadow map's term alone. The contact march writes it in place of the visibility (flag
+// contact_trace.h kCarMapViewFlag) and the apply shows it as its view 9, the contact visibility.
+constexpr int kContactViewCarMap = 5;
 // The apply's debug view of the pixels the depth pass took for vehicles (the setting's 8: the contact
 // shadows' views are 8 to 11 in the shader).
 constexpr uint32_t kVehicleView = 12;
@@ -1926,9 +1942,11 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
   }
   if (contact) {
-    const uint32_t contact_view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, 4));
+    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewCarMap);
     if (contact_view != 0) {
-      plan.view = kContactViewBase + contact_view;  // instead of the occlusion's
+      // instead of the occlusion's; 5 (the car's shadow map's term) is shown as the contact visibility, which the march then holds
+      plan.contact.car_map_view = contact_view == kContactViewCarMap;
+      plan.view = kContactViewBase + uint32_t(plan.contact.car_map_view ? 2 : contact_view);
     }
   }
   PlanGi(&plan);
@@ -3478,9 +3496,45 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   }
   const bool stat_wanted = REXCVAR_GET(mcla_gpu_contact_skip_stat) > 0 && c.fast && in_apply && mask_slot != kNoSlot && !debug_picture;
   Push stat_push = push;  // the march's push as it is: the statistics pass is the same shader, the flag and the mask's slot added
+  // The player's car's own sun shadow map (car_shadow_map.h; contact_trace.h "the player's car's own sun shadow map"): in a frame that has
+  // one the march reads it for the pixels it covers (the push block has no room for the matrix: the shader reads its three rows from the
+  // 4 x 1 matrix texture; slots.w the map's slot, slots2.x the matrix's, flag bit 28 = a map is there). Without one, the pass is as it was.
+  uint32_t map_flags = 0;
+  if (car_shadow_map_ != nullptr) {
+    // CHECK: CarShadowMap::View() is the contract's accessor (car_shadow_map.h): the map of THIS frame's player car, recorded on this list
+    // before the AO's passes, left in the shader-read layout (the map and its matrix texture), valid == false when none was drawn.
+    const CarShadowMapView& map = car_shadow_map_->View();
+    if (map.valid && map.slot != kNoSlot && map.matrix_slot != kNoSlot && map.size >= 2 && map.texel_m > 0.0f && map.depth_m > 0.0f) {
+      push.slots[3] = map.slot;
+      push.slots2[0] = map.matrix_slot;
+      map_flags = contact_trace::kCarMapFlag;
+      if (plan.contact.car_map_view) {
+        map_flags |= contact_trace::kCarMapViewFlag;
+      }
+      if (REXCVAR_GET(mcla_gpu_contact_shadows_car_map_march)) {
+        map_flags |= contact_trace::kCarMapKeepMarchFlag;
+      }
+      push.slots2[2] |= map_flags;
+      if (!car_map_logged_) {
+        car_map_logged_ = true;
+        REXLOG_INFO("[gpu] contact shadows: the march reads the player's car's sun shadow map (slot {}, matrix slot {}, {}x{} texels of {:.1f} mm, "
+                    "depth range {:.2f} m): the car's own parts shadow the car and the road near it exactly, a vehicle's pixel the map covers takes "
+                    "no march steps{} (contact_trace.h; mcla_gpu_contact_shadows_view 5 shows the map's term; logged once)",
+                    map.slot, map.matrix_slot, map.size, map.size, double(map.texel_m) * 1000.0, double(map.depth_m),
+                    (map_flags & contact_trace::kCarMapKeepMarchFlag) != 0u ? " (kept by mcla_gpu_contact_shadows_car_map_march)" : "");
+      }
+    }
+  }
+  if (map_flags == 0u && plan.contact.car_map_view) {
+    push.extra[1] = 0.0f;  // the debug view of the map's term in a frame without a map: nothing is computed, every pixel is white
+  }
   DrawPass(list, contact_raw, march, push);
   push.shape[2] = base.shape[2];
   push.extra[3] = base_extra_w;
+  push.extra[1] = c.fade_end;
+  push.slots[3] = base.slots[3];
+  push.slots2[0] = base.slots2[0];
+  push.slots2[2] &= ~(contact_trace::kCarMapFlag | contact_trace::kCarMapViewFlag | contact_trace::kCarMapKeepMarchFlag);
   if (in_apply) {
     if (stat_wanted) {
       RecordContactStat(list, plan, stat_push, mask_slot, skip ? skip_limit : -1.0f);

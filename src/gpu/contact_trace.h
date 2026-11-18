@@ -32,7 +32,8 @@
 //
 // Used by ao.cpp: LengthGrow (the ray's length for a low sun), the default fade, CostModel and CostModelFast (the log lines),
 // MaskSkipOn and kSkipFlag (the march's skip under the game's own shadow), UnderCastDistance (the player's car and the cars the
-// game's sun shadow map holds are left out of the ground-under-a-vehicle term); the rest is mirrored in the shader and run by the check.
+// game's sun shadow map holds are left out of the ground-under-a-vehicle term), kCarMapFlag, kCarMapViewFlag and kCarMapKeepMarchFlag (the
+// push block's bits of the car's own shadow map); the rest is mirrored in the shader and run by the check.
 // ===========================================================================
 
 #include <algorithm>
@@ -599,6 +600,243 @@ inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end
   return want >= float(max_steps) ? max_steps : std::max(uint32_t(want), low);
 }
 
+// ---------------------------------------------------------------------------
+// the player's car's own sun shadow map (car_shadow_map.h; hlsl/ao_contact_ps.hlsl "THE CAR'S SHADOW MAP")
+// ---------------------------------------------------------------------------
+//
+// WHAT IT IS FOR. A screen-space march cannot see a part's thickness, and the game's own sun shadow map holds the player's car at a forced low level
+// of detail in cascades whose texels are 1 to 25 cm. car_shadow_map.h draws the car again, depth only, from the sun, at full detail, into a small
+// square map fitted to the car: the exact shadow of the wing, the mirrors, the sills and the wheels on the car and on the road near it. The march
+// reads it (CarMapShadow below, mirrored in the shader) and the pixel takes the DARKER of the two. The apply pass still puts contact shadows only on
+// the sun's share where the game's own mask says lit, so a map shadow never darkens what the game's mask already shadows twice.
+//
+// THE LOOKUP (car_shadow_map.h CarShadowMapView). The view position of the pixel goes through the three rows of the map's matrix: u, v (0 to 1, v
+// down) and the depth (0 nearest the sun) as stored, `depth_m` metres over the whole range, `texel_m` the side of a texel in metres, `size` texels a
+// side. Everything is done in metres along the sun's ray.
+//   - Bias. The receiver's depth is not the stored depth: the map's texels are point samples of the car's surface at their centres, and the
+//     receiver is at a point of its own in between. On a surface that is not square to the sun the stored depth changes by up to texel * tan(angle)
+//     from one texel to the next (and a PCF tap that is r texels away by r times that), so a constant bias, or one that scales with the slope but
+//     not with the tap's distance, either leaves acne on the lit side of every face or takes the contact out of the shadow (the check:
+//     contact_trace_test.cpp CarMapNoAcne). The receiver's own PLANE is used instead: the pixel's normal gives, per texel of the map, how much the
+//     surface's depth changes along u and along v (the plane's gradient), and every tap compares the stored depth with the receiver's depth AT THE
+//     TAP's position on that plane. What remains is a constant (kCarMapBiasFloor, 1 cm: the producer's advice), a quarter of a texel and a few
+//     footprints of the pixel (its position is that of the pixel's centre on the ray, while the depth image holds sample 0). The producer's own
+//     pipeline also pushes every stored depth away from the sun by a slope scaled bias (kCarMapProducerSlope: twice the surface's depth change per
+//     texel, a few millimetres on a flat face and centimetres on one nearly edge-on), which is what keeps a lit face from shadowing itself at the
+//     steps of the receiver's extended plane; the check builds its maps with the same bias. The reader does not depend on it: on maps made without it
+//     the plane reader still has no acne, where a nearest texel and constant 1 cm reader has 3141 acne pixels in 501329 lit ones (CarMapNoAcne).
+//   - Normal offset. The sample point is also moved off the surface along its normal by half a texel times the sine of the angle to the sun, which
+//     is the common cure for the contact at a concave crease (a post's foot on a lid) being cut off by the plane's own bias; at a crease the cost is a
+//     lift of less than half a texel.
+//   - Penumbra. The sun covers half a degree, so a shadow's edge is d * 0.0088 wide at a blocker distance d (the distance along the ray from the
+//     blocker to the receiver). A blocker search (the centre and four taps on a ring that is the penumbra of the farthest blocker the map can hold,
+//     kCarMapSearchMetres, wide) finds the mean blocker distance; the filter is then the centre and a ring of four bilinear (2 x 2 texel) taps at the
+//     penumbra's half width, blocker distance times the sun's angular radius, at least kCarMapMinFilterTexels and at most kCarMapMaxFilterTexels. The
+//     ring is turned per pixel by the march's noise (a quarter turn is the whole pattern); the apply's 3x3 filter averages it. No blocker in the
+//     search: no shadow, 5 gathers. A wing 28 cm over the lid has a penumbra of 2.5 mm: the minimum (a texel and a half) is what sets its edge. The
+//     roof's shadow on the road at a low sun, blocker distance several metres, has centimetres.
+//   - The edge. The map's border fades the term out over kCarMapEdgeTexels texels (a shadow that crosses it is the game's from there on), and a
+//     point outside has none.
+//   - Authority. A pixel is "covered" when one of the four centre texels holds a part of the car that is at the pixel's own depth or in front of it
+//     (not deeper than the bias): the map saw the surface at that place in the sun's view, so the map is the truth about the car's own parts
+//     there. A pixel nearer to the sun than the car's part behind it (a traffic car between the sun and the player's car) is not. On a covered
+//     pixel of a VEHICLE the short vehicle march is dropped (below).
+//
+// WHAT THE VEHICLE MARCH STILL ADDS, AND WHY IT GOES ON THE PLAYER'S CAR'S OWN PIXELS. The short vehicle march (kVehicleReceiver*) was made to be
+// right for the small things on a car, and its only job on the car's own surface was the car's own parts: a mirror on a door, a wing on its posts.
+// The map has those exactly, at a texel's resolution (4 to 8 mm for the producer's 8 m window at 2048 or 1024) where the march had a 6 cm slab guess
+// (contact_trace.h "a car's own pixels": a thin plate seen from a grazing angle has no depth in a depth image) and only a 30 cm ray: on the wing rig
+// at 17.7 degrees (CarMapFalseShadowOnTheWing) the march alone leaves 31205 of the 34106 pixels inside the car's own shadows light (92%), the map
+// none, and the false shadow the march still makes in the light (beyond 3 cm of a shadow's edge) is 43 pixels in 610609 against none. What the march
+// alone could add on those pixels is the contact of something that is not the car with the car within 30 cm (a wall, a pole, a kerb beside the
+// door): the game's cascades hold the big ones and what is left of the march's is a band about a centimetre wide, which the occlusion's own darkening
+// at a crease cannot be told from. So where the map covers a vehicle pixel the march takes no steps (12 steps fewer on 5 to 15% of the picture:
+// cheaper) and the pixel's shadow is the map's. NOT SEEN IN A RUN: the first run compares the two with mcla_gpu_contact_shadows_car_map_march. The march stays everywhere the map is not the authority: every
+// pixel that is not a vehicle's (the road beside the car, the walls: the contact the map's shadow is combined with by the darker of the two), a
+// vehicle pixel outside the map or whose four texels hold nothing (a traffic car: the map holds the player's car alone), and every pixel in a
+// frame without a map, to the bit. kCarMapKeepMarchFlag (mcla_gpu_contact_shadows_car_map_march) restores the march on the covered pixels as well,
+// for the comparison.
+//
+// COST. A pixel that faces the sun reads the matrix (four loads of a 4 x 1 texture, one cache line); one the map's window holds then makes five
+// gathers, nine where a blocker is near (5 to 9 gathers a pixel; 5.3 to 5.8 on average over the check's pictures, which include the road round
+// the car); a pixel turned from the sun (facing under kSunFacingLow) reads nothing. A vehicle pixel that the map covers saves 12 steps of the march.
+// NOT MEASURED on a GPU.
+//
+// Push fields (hlsl/ao_contact_ps.hlsl): slots.w the map's bindless slot (R32_FLOAT or R16_FLOAT: the depth, 1 where no part of the car is), slots2.x
+// the matrix texture's slot (R32G32B32A32_FLOAT, 4 x 1: the three rows, then (texel_m, depth_m, size, 1)); flags bit 28 a map is bound, bit 29 the
+// debug view (the map's term alone), bit 30 the vehicle march also on the covered pixels. Without bit 28 the pass is as it was.
+inline constexpr uint32_t kCarMapFlag = 1u << 28;
+inline constexpr uint32_t kCarMapViewFlag = 1u << 29;
+inline constexpr uint32_t kCarMapKeepMarchFlag = 1u << 30;
+
+inline constexpr float kCarMapSunRadius = 0.0044f;         // tan of the sun's angular radius (a quarter of a degree): the penumbra's half width per metre of blocker distance
+inline constexpr float kCarMapMinFilterTexels = 0.75f;     // the filter's half width is at least this (a bilinear tap alone is soft by a texel)
+inline constexpr float kCarMapMaxFilterTexels = 6.0f;
+inline constexpr float kCarMapSearchMetres = 0.03f;        // the blocker search's radius in metres: the penumbra of a blocker about 7 m away
+inline constexpr float kCarMapSearchMinTexels = 1.5f;
+inline constexpr float kCarMapNormalOffsetTexels = 0.5f;   // along the normal, times the sine of the angle between the normal and the sun
+inline constexpr float kCarMapBiasFloor = 0.01f;           // m: the constant bias (the producer's advice: 1 to 2 cm)
+inline constexpr float kCarMapBiasTexels = 0.25f;
+inline constexpr float kCarMapFootprintBias = 2.0f;        // footprints of the pixel
+// The map's own depth is already pushed away from the sun by its pipeline's slope scaled bias (car_shadow_map_rules.h kSlopeScaledDepthBias, the
+// same number): kCarMapProducerSlope times the larger of the surface's depth changes per texel along u and along v. A receiver on the car's own
+// surface is therefore that much nearer the sun than the map says, which is what keeps it lit; the pixel is still "covered" by it (below).
+inline constexpr float kCarMapProducerSlope = 2.0f;
+inline constexpr float kCarMapMaxTan = 8.0f;               // the plane's gradient (texels of depth per texel) is held to this: a surface edge-on to the sun has none of the sun's light anyway
+inline constexpr float kCarMapEdgeTexels = 4.0f;
+inline constexpr float kCarMapEmpty = 0.9999f;             // a stored depth at or above this is "no part of the car here"
+
+// The map's blocker test at one texel: the receiver's depth at the texel (metres along the sun's ray, on the receiver's plane) is deeper than the
+// stored depth by more than the bias, and the texel holds a part of the car.
+inline float CarMapBiasMetres(float texel_m, float footprint) {
+  return kCarMapBiasFloor + kCarMapBiasTexels * texel_m + kCarMapFootprintBias * footprint;
+}
+// The filter's half width in texels for a mean blocker distance in metres.
+inline float CarMapFilterTexels(float blocker_m, float texel_m) {
+  return std::clamp(blocker_m * kCarMapSunRadius / texel_m, kCarMapMinFilterTexels, kCarMapMaxFilterTexels);
+}
+inline float CarMapSearchTexels(float texel_m) {
+  return std::clamp(kCarMapSearchMetres / texel_m, kCarMapSearchMinTexels, kCarMapMaxFilterTexels);
+}
+
+// The map as the twin sees it: the contract's view (car_shadow_map.h) and the depths themselves (the shader reads the texture).
+struct CarMapView {
+  float to_map[3][4] = {};
+  float texel_m = 0.0f;
+  float depth_m = 0.0f;
+  int size = 0;
+  const float* texels = nullptr;  // size * size stored depths, rows downward (v down)
+  float At(int tx, int ty) const {
+    tx = std::clamp(tx, 0, size - 1);  // the sampler's clamp to edge
+    ty = std::clamp(ty, 0, size - 1);
+    return texels[size_t(ty) * size_t(size) + size_t(tx)];
+  }
+};
+struct CarMapResult {
+  float shadow = 0.0f;       // 0 lit to 1 in the car's shadow (before the facing weight)
+  bool covered = false;      // the four texels at the pixel hold a part of the car
+  int gathers = 0;           // texture gathers made (the cost)
+  int loads = 0;             // loads of the matrix texture
+};
+
+// One gather of the map (the shader's GatherRed): the four texels whose centres surround the texel position (tx, ty) (centres at +0.5), in the
+// gather's order: (i0, j1), (i1, j1), (i1, j0), (i0, j0).
+struct CarMapQuad {
+  float s[4];           // stored depths
+  float over[4];        // the receiver's depth at the texel minus the stored one, metres
+  float weight[4];      // the bilinear weights of a sample at (tx, ty)
+};
+inline CarMapQuad CarMapGather(const CarMapView& m, float tx, float ty, float cx, float cy, float receiver_m, float grad_u, float grad_v) {
+  const float bx = std::floor(tx - 0.5f), by = std::floor(ty - 0.5f);
+  const float fx = tx - 0.5f - bx, fy = ty - 0.5f - by;
+  const int i0 = int(bx), j0 = int(by);
+  const float ix[4] = {float(i0), float(i0 + 1), float(i0 + 1), float(i0)};
+  const float jy[4] = {float(j0 + 1), float(j0 + 1), float(j0), float(j0)};
+  const int ci[4] = {i0, i0 + 1, i0 + 1, i0};
+  const int cj[4] = {j0 + 1, j0 + 1, j0, j0};
+  CarMapQuad q;
+  for (int k = 0; k < 4; ++k) {
+    q.s[k] = m.At(ci[k], cj[k]);
+    const float plane = grad_u * (ix[k] + 0.5f - cx) + grad_v * (jy[k] + 0.5f - cy);
+    q.over[k] = receiver_m + plane - q.s[k] * m.depth_m;
+  }
+  q.weight[0] = (1.0f - fx) * fy;
+  q.weight[1] = fx * fy;
+  q.weight[2] = fx * (1.0f - fy);
+  q.weight[3] = (1.0f - fx) * (1.0f - fy);
+  return q;
+}
+
+// The car's shadow at the view position `pc` whose normal (facing the camera) is `normal`; `footprint` the world size of the pixel there,
+// `noise` the pixel's 0 to 1 (the ring's turn). The angle to the sun is the map's own (its depth axis: the sun's direction). Twin of the
+// shader's CarMapShadow.
+inline CarMapResult CarMapShadow(const CarMapView& m, Vec3 pc, Vec3 normal, float footprint, float noise) {
+  CarMapResult out;
+  out.loads = 4;
+  if (!(m.texel_m > 0.0f && m.depth_m > 0.0f && m.size >= 2) || m.texels == nullptr) {
+    return out;
+  }
+  const float size = float(m.size);
+  const Vec3 row_u{m.to_map[0][0], m.to_map[0][1], m.to_map[0][2]};
+  const Vec3 row_v{m.to_map[1][0], m.to_map[1][1], m.to_map[1][2]};
+  const Vec3 row_d{m.to_map[2][0], m.to_map[2][1], m.to_map[2][2]};
+  // The map's axes in view space, unit: u and v across the map (the rows are 1 / side long), the depth away from the sun.
+  const float side = size * m.texel_m;
+  const Vec3 axis_u = row_u * side, axis_v = row_v * side, axis_d = row_d * m.depth_m;
+  const float facing_map = std::max(-Dot(normal, axis_d), 1.0f / kCarMapMaxTan);
+  const float sin_t = std::sqrt(Saturate(1.0f - facing_map * facing_map));
+  const Vec3 p = pc + normal * (kCarMapNormalOffsetTexels * m.texel_m * sin_t);
+  const float u = Dot(p, row_u) + m.to_map[0][3], v = Dot(p, row_v) + m.to_map[1][3];
+  const float edge = std::min(std::min(u, 1.0f - u), std::min(v, 1.0f - v)) * size;  // texels to the border
+  if (edge <= 0.0f) {
+    return out;
+  }
+  const float receiver_m = (Dot(p, row_d) + m.to_map[2][3]) * m.depth_m;
+  // The plane's gradient: metres of depth per texel along u and along v, held to kCarMapMaxTan texels per texel.
+  const float limit = kCarMapMaxTan * m.texel_m;
+  const float grad_u = std::clamp(m.texel_m * Dot(normal, axis_u) / facing_map, -limit, limit);
+  const float grad_v = std::clamp(m.texel_m * Dot(normal, axis_v) / facing_map, -limit, limit);
+  const float bias = CarMapBiasMetres(m.texel_m, footprint);
+  // How far the map's own surface at this slope is pushed deeper by the producer's bias: a pixel on that surface is nearer the sun than the map by about this.
+  const float cover = bias + kCarMapProducerSlope * std::max(std::fabs(grad_u), std::fabs(grad_v));
+  const float cx = u * size, cy = v * size;
+  const float angle = noise * 1.57079632679f;
+  const float ax = std::cos(angle), ay = std::sin(angle);  // the ring's axis; its quarter turns are the other three taps
+  const float ox[4] = {ax, -ay, -ax, ay}, oy[4] = {ay, ax, -ay, -ax};
+  const float r0 = CarMapSearchTexels(m.texel_m);
+  // The blocker search: the centre and the ring at the search radius.
+  float blocker_sum = 0.0f, blocker_count = 0.0f;
+  float share = 0.0f;
+  {
+    const CarMapQuad q = CarMapGather(m, cx, cy, cx, cy, receiver_m, grad_u, grad_v);
+    ++out.gathers;
+    for (int k = 0; k < 4; ++k) {
+      if (q.s[k] < kCarMapEmpty) {
+        // covered: the map holds a part of the car at this texel that is not behind the receiver's surface (a pixel that is nearer to the sun
+        // than the car's part, a traffic car in front of the player's car, is not the map's to judge)
+        out.covered = out.covered || q.over[k] > -cover;
+        if (q.over[k] > bias) {
+          blocker_sum += q.over[k];
+          blocker_count += 1.0f;
+          share += q.weight[k];
+        }
+      }
+    }
+  }
+  for (int t = 0; t < 4; ++t) {
+    const CarMapQuad q = CarMapGather(m, cx + r0 * ox[t], cy + r0 * oy[t], cx, cy, receiver_m, grad_u, grad_v);
+    ++out.gathers;
+    for (int k = 0; k < 4; ++k) {
+      if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+        blocker_sum += q.over[k];
+        blocker_count += 1.0f;
+      }
+    }
+  }
+  if (blocker_count < 0.5f) {
+    return out;
+  }
+  // The filter: the centre's share again (above) and the ring at the penumbra's half width, turned an eighth.
+  const float r1 = CarMapFilterTexels(blocker_sum / blocker_count, m.texel_m);
+  const float c8 = 0.70710678118f;
+  const float fx[4] = {(ax - ay) * c8, (-ax - ay) * c8, (-ax + ay) * c8, (ax + ay) * c8};
+  const float fy[4] = {(ay + ax) * c8, (ax - ay) * c8, (-ay - ax) * c8, (-ax + ay) * c8};
+  float total = share;
+  for (int t = 0; t < 4; ++t) {
+    const CarMapQuad q = CarMapGather(m, cx + r1 * fx[t], cy + r1 * fy[t], cx, cy, receiver_m, grad_u, grad_v);
+    ++out.gathers;
+    float tap = 0.0f;
+    for (int k = 0; k < 4; ++k) {
+      if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+        tap += q.weight[k];
+      }
+    }
+    total += tap;
+  }
+  out.shadow = Saturate(total * 0.2f) * Saturate(edge / kCarMapEdgeTexels);
+  return out;
+}
+
 struct Trace {
   Camera camera;
   Vec3 to_sun;            // unit, view space
@@ -619,6 +857,10 @@ struct Trace {
   bool vehicle_rule = true;    // a vehicle's own pixels march a short, thin ray (kVehicleReceiver*); false: the march as it was (the check's control)
   bool sun_column = true;      // the ground under a vehicle also needs the column along the sun's ray; false: the vertical column alone, as it was
   mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
+  const CarMapView* car_map = nullptr;  // the player's car's sun shadow map (CarMapShadow); null: no map, the march as it was
+  bool car_map_keep_march = false;      // kCarMapKeepMarchFlag: the vehicle march also runs on the pixels the map covers
+  bool car_map_only = false;            // kCarMapViewFlag: the debug view, March returns 1 minus the map's term alone
+  mutable CarMapResult car_result;      // out: what the map gave for the last March (zero where it was not asked)
 };
 
 // One probe of the term: the weight of the point `p` (view space): 0 when it is behind the lens or off the picture or
@@ -689,6 +931,7 @@ template <class DepthAt>
 float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const Camera& cam = t.camera;
   t.steps_used = 0;
+  t.car_result = CarMapResult{};
   const float tc = depth_at(x, y);
   if (tc >= t.sky * 0.5f || tc >= t.max_distance) {
     return 1.0f;
@@ -713,6 +956,22 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     length = std::min(length, kVehicleReceiverLength);
     thickness = std::min(thickness, kVehicleReceiverThickness);
     steps = std::min(steps, kVehicleReceiverSteps);
+  }
+  // The player's car's sun shadow map (CarMapShadow): the pixel's shadow from the car's own parts, exact. Where it covers a vehicle pixel the
+  // short vehicle march has nothing left to add (the map holds the car's own parts; "what the vehicle march still adds" above): no steps.
+  // A surface this nearly edge-on to the sun gets no contact shadow whatever made it (the weight below is 0): the map is not read there.
+  t.car_result = CarMapResult{};
+  if (!t.classic && t.car_map) {
+    if (facing > kSunFacingLow) {
+      t.car_result = CarMapShadow(*t.car_map, pc, normal, footprint_unit * tc, t.noise);
+    }
+    if (t.car_map_only) {
+      t.steps_used = 0;
+      return 1.0f - t.car_result.shadow * Smoothstep(kSunFacingLow, kSunFacingHigh, facing);
+    }
+    if (t.car_result.covered && DepthIsVehicle(tc) && !t.car_map_keep_march) {
+      steps = 0;
+    }
   }
   // The ground under a vehicle starts the shadow (0 when the term is off or the pixel is not that).
   float shadow = t.classic ? 0.0f : UnderVehicle(t, depth_at, tc, pc, normal);
@@ -754,6 +1013,9 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     if (shadow >= 0.99f) {
       break;
     }
+  }
+  if (!t.classic && t.car_map) {
+    shadow = std::max(shadow, t.car_result.shadow);  // the darker of the march and the map
   }
   if (!t.classic) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);

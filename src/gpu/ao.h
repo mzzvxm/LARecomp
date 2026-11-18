@@ -154,6 +154,17 @@
 // writes what each pixel did (skipped, sky or past the fade, faces away from the sun, marches) with the mask's stored value at its
 // centre; the CPU counts the picture and the log says what share the skip took, how the mask's values spread (does the game's shade
 // store exactly 0?) and the model's march time for that share. It costs one extra march and a 16 MB readback in that frame.
+// THE CAR'S OWN SUN SHADOW MAP (SetCarShadowMap; car_shadow_map.h makes it, contact_trace.h "the player's car's own sun shadow map" has the story and
+// the check): the game's sun shadow map holds the player's car at a low level of detail, and a march over the picture's depth cannot see a thin
+// part's thickness, so the wing, the mirrors, the sills and the wheels cast no shadow of their own shape. In a frame that has the map (View().valid)
+// the contact march reads it (slots.w, slots2.x: the map and its 4 x 1 matrix texture; flag bit 28) for every pixel whose view position falls
+// inside it, with a receiver-plane bias and a filter as wide as the sun's penumbra at the blocker's distance (5 to 9 gathers), and the pixel takes the
+// darker of that and the march's. The apply pass still puts contact shadows only on the sun's share where the game's own mask says lit, so a map
+// shadow never darkens what the game already shadows. A vehicle pixel the map covers takes no march steps (the map holds the car's own parts exactly;
+// the short vehicle march was a guess from the depth); every other pixel, and every pixel without a map, marches as before, to the bit
+// (mcla_gpu_contact_shadows_car_map_march keeps the vehicle march too, for the comparison). mcla_gpu_contact_shadows_view 5 shows the map's term
+// alone. CHECK: the map and its matrix texture are in the shader-read layout when this pass runs (car_shadow_map.h records them on the list before
+// the AO's passes).
 // CHECK: (none of this could be run) (1) the mask's polarity and range: the collector writes
 // max(x) with x = z + (0.5 - z) * lit (PS_ShadowBlend, c253.x = 0.5, ShaderGlobals.z = PS c63.z), so 1 is
 // lit and a lit pixel stores up to 0.5; the lit shaders' own use (x2) is from AO-DESIGN, not read in
@@ -367,6 +378,7 @@
 namespace mcla::gpu {
 
 class BindlessHeap;
+class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
 class Device;
 class FrameRing;
 class PassTiming;
@@ -463,6 +475,11 @@ class AmbientOcclusion {
   // The levels in force for the line: the occlusion's, the contact shadows' and the bounce light's, "off" when
   // one is (the bounce light's is "test" under the debug override).
   void Levels(std::string* occlusion, std::string* contact, std::string* bounce) const;
+
+  // The player's car's own sun shadow map (car_shadow_map.h), which the contact march reads in a frame that has one: the exact shadow of
+  // the car's own parts on the car and on the road near it (contact_trace.h "the player's car's own sun shadow map"). Not owned; may be
+  // null (no map: the contact shadows are as they were). Render thread, before the first frame.
+  void SetCarShadowMap(const CarShadowMap* map) { car_shadow_map_ = map; }
 
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
@@ -645,6 +662,7 @@ class AmbientOcclusion {
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
     float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
+    bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
@@ -989,6 +1007,8 @@ class AmbientOcclusion {
   uint32_t contact_cost_logged_[4] = {};  // the size (x, y), the steps and the lever's state (bit 0 fast, bit 1 filter in the apply) the cost model line was last logged for
   bool mask_why_logged_ = false;
   bool contact_skip_logged_ = false;  // the skip under the game's own shadow was logged once
+  const CarShadowMap* car_shadow_map_ = nullptr;  // the player's car's own sun shadow map (SetCarShadowMap), not owned
+  bool car_map_logged_ = false;       // the first frame the contact march read the car's map was logged
 
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
   // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave
