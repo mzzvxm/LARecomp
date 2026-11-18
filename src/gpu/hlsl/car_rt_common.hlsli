@@ -1,6 +1,6 @@
 // MCLA GPU renderer -- the player's car as ray tracing structures, the shader side (car_rt_scene.h).
 //
-// CONTRACT (2026-11-18): feat/car-rt-scene implements this file; feat/car-rt-refl includes it. The names below are fixed.
+// The ray traced self-reflection (car_rt_refl_cs.hlsl) and the check pass (car_rt_check_cs.hlsl) include it.
 // Shader Model 6.5 (inline ray queries). The includer defines CAR_RT_SPACE (the register space its pipeline layout gives the
 // set) before including this file.
 //

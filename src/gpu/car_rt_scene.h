@@ -11,9 +11,8 @@
 // D3D12 with DXR tier 1.1 (inline ray queries, Shader Model 6.5) first. Vulkan: off until Plume enables VK_KHR_ray_query
 // (separate Plume branch); keep the decision in ONE function, CarRtSupported.
 //
-// CONTRACT (2026-11-18): feat/car-rt-scene implements CarRtScene (car_rt_scene.cpp), hlsl/car_rt_common.hlsli and the
-// CMake function larecomp_gpu_host_shader_rt; feat/car-rt-refl uses View(), the descriptor set and the .hlsli. The names
-// below are fixed; the class may grow.
+// car_rt_scene.cpp implements CarRtScene, hlsl/car_rt_common.hlsli its shader side and src/gpu/CMakeLists.txt the function
+// larecomp_gpu_host_shader_rt; the ray traced self-reflection (car_rt_refl.h) uses View(), the descriptor set and the .hlsli.
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread.
 //
