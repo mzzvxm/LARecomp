@@ -926,7 +926,7 @@ private:
 
 }  // namespace
 
-void StartServerBrowser(rex::ui::IUISystem& ui) {
+void StartServerBrowser(rex::ui::IUISystem& ui, rex::hid::IInputSystem*) {
     if (g_dialog) return;
     // The UI system owns the dialogs; they are always in its list and draw nothing while closed (as on 0.10).
     ui.AddDialog(std::make_unique<BrowserDialog>(ui));
