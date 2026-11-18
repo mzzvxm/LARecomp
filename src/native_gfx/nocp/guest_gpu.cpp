@@ -91,11 +91,11 @@ struct State {
   rex::ScopeGuard worker;  // StartHostThread's guard: destroyed = stopped and joined
 };
 
-// The host base of the title's guest memory: valid from TitleRuntime::Load until Unload.
-// CHECK: GuestMembase's accessor name (rex/memory/mapped_ptr.h line ~412).
+// The host base of the title's guest memory: valid from TitleRuntime::Load until Unload (GuestMembase::GetBase, in
+// rex/memory/mapped_ptr.h).
 uint8_t* GuestMembaseNow() {
   rex::kernel::TitleRuntime* runtime = rex::kernel::GetProcessRuntime();
-  return runtime ? runtime->GetMembase().Get() : nullptr;
+  return runtime ? runtime->GetMembase().GetBase() : nullptr;
 }
 
 State& state() {
@@ -265,9 +265,15 @@ void RetireRingConsumption(uint8_t* base, uint32_t device_va) {
 // Delivers one vblank to the guest: the SDK calls the graphics interrupt callback the title registered
 // (VdSetGraphicsInterruptCallback: sub_82411478 with the D3DDevice as its context, the same pair this file used
 // to call by hand) on this thread, source 0 = vblank, on guest CPU 2, as the SDK's own vsync thread does.
-// CHECK: that the guest registers 0x82411478 with the device pointer (it did in the 0.10 dispatch below).
-// CHECK: KernelThread::SetActiveCPU(2) on a PC with fewer than 6 logical processors logs once or on every call
-// (it flooded the log in 0.10, which is why the old code pinned the CPU only once).
+// The guest does register the pair: D3DDevice_InitializeEngines (sub_82426468) calls VdSetGraphicsInterruptCallback(
+// sub_82411478, device) (native_gfx/hooks.cpp), the kernel export stores both unconditionally
+// (FunctionDispatcher::SetGraphicsInterrupt, src/kernel/xboxkrnl/xboxkrnl_video.cpp: no graphics system is involved any
+// more, which 0.10 needed), and RaiseGraphicsInterrupt calls callback(source, user_data) = sub_82411478(0, device) on this
+// thread: the same call the old dispatch made with the constant address. Until the guest has registered, it does nothing.
+// KernelThread::SetActiveCPU(2) (RaiseGraphicsInterrupt does it on every call) logs "Too few processor cores" only ONCE
+// (REXSYS_WARN_ONCE) on a PC with fewer than 6 logical processors, so the 0.10 log flood is gone; with 6 or more it sets the
+// thread affinity mask on every call, up to 1000 syscalls a second with vsync off. CHECK: measure that against the 0.10
+// pin-once (the SDK's own vsync thread pays the same).
 void DispatchVblank() {
   State& s = state();
   if (!s.interrupts) {

@@ -610,11 +610,12 @@ void LarecompApp::RunBatchMode() {
 // the progress popup, then the hooks.
 rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   title_ = &title;
-  g_guest_mem = title.GetMembase().Get();  // CHECK: GuestMembase accessor
+  g_guest_mem = title.GetMembase().GetBase();
   LARECOMP_APP_INFO("by @mzzvxm. base memory: 0x{:016X}", reinterpret_cast<std::uintptr_t>(g_guest_mem));
 
   // The achievement labels from the resource embedded in the exe, layered over the XDBF ones by id.
-  // CHECK (L4): LoadAchievementMetadata takes rex::xam::IAchievementManager& (title.GetAchievementManager()).
+  // (LoadAchievementMetadata works on rex::xam::IAchievementManager: it lists the catalog the XDBF filled and registers
+  // the layered entries back.)
 #ifdef _WIN32
   if (HMODULE mod = GetModuleHandleW(nullptr)) {
     if (HRSRC res = FindResourceA(mod, "ACHIEVEMENTS_TOML", RT_RCDATA)) {
@@ -637,13 +638,16 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   }
 #endif
 
-  // The identity's XUID has to reach the profile before the guest first asks for it (title.GetUserProfile(), WP-C3).
-  larecomp::identity::ApplyProfileIdentity();  // CHECK (L4): UserProfile::set_xuid through TitleRuntime::GetUserProfile()
+  // The identity's XUID has to reach the profile before the guest first asks for it: ApplyProfileIdentity calls
+  // UserProfile::set_xuid on TitleRuntime::GetUserProfile() (REX_RUNTIME() is set from the end of Load, so it is valid here).
+  larecomp::identity::ApplyProfileIdentity();
 
   // The stub safety net of 0.10 (about 1.7 million unmapped addresses registered as logging no-ops, so an unmapped indirect
   // call is a logged no-op rather than a crash) needs FunctionDispatcher::SetFunction, which a TitleRuntime does not give
   // out. It was a debug net (stubs.txt stays empty in practice); the one functional entry, the disc error handler, is a
-  // manifest hook now (MCLA_DiscErrorBypass). CHECK: how an unmapped call behaves on 0.11 (it may already be a logged no-op).
+  // manifest hook now (MCLA_DiscErrorBypass). On 0.11 an unmapped indirect call is NOT a logged no-op: ResolveFunction hands
+  // back InvalidFunctionTrap, which logs "Call to invalid or unregistered function at guest address 0x..." as a fatal
+  // (REXCPU_FATAL: flush and abort). Accepted: the net never caught anything, and the log names the address.
 
   // The F3 overlay's "Guest: FPS": nothing in the SDK counts guest frames without a command processor, so the swap hook
   // supplies them (nocp_app.h GuestFrameStats; IGraphicsSystem::GetFrameStats counts the same swaps through WaitForFrame).
@@ -666,7 +670,7 @@ bool LarecompApp::RunBootBuild(rex::kernel::TitleRuntime& title) {
   bool force = false;
   for (;;) {
     auto shaders = std::make_shared<larecomp::shaderbuild::Phase>(rex::kernel::GetTitlePaths().game_root.Get(),
-                                                                   title.GetMembase().Get(), force);
+                                                                   title.GetMembase().GetBase(), force);
     std::atomic<bool> finished{false};
     larecomp::StartBootBuildWithOverlay(
         GetUI(),  // CHECK (L5): the popup is an IDialog added to IUISystem
