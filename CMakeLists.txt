@@ -687,17 +687,34 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include")
     target_link_libraries(larecomp PRIVATE larecomp_tomlplusplus)
 
-    # SDL3: LARecomp calls it itself (the controller list, the pad's rumble and hints). rexglue 0.11 installs the shared SDL3
-    # its modules load (bin/SDL3.dll, lib/SDL3.lib, include/SDL3) but exports no target for it, so LARecomp links that copy:
-    # one SDL in the process, the SDK's.
-    find_path(LARECOMP_SDL3_INCLUDE_DIR SDL3/SDL.h HINTS "${rexglue_DIR}/../../../include" NO_DEFAULT_PATH)
-    find_library(LARECOMP_SDL3_LIBRARY NAMES SDL3 HINTS "${rexglue_DIR}/../.." NO_DEFAULT_PATH)
-    if(NOT LARECOMP_SDL3_INCLUDE_DIR OR NOT LARECOMP_SDL3_LIBRARY)
-        message(FATAL_ERROR "SDL3 not found in the rexglue install (${rexglue_DIR}/../../..): the SDK installs it with its modules")
-    endif()
+    # SDL3: LARecomp calls it itself (the controller list, the pad's rumble and hints). One SDL in the process, the SDK's.
+    # The SDK has the target SDL3::SDL3-shared in both layouts, and it is what the SDK's own staging of SDL3 tests
+    # (_rexglue_stage_sdl): a REXSDK_DIR build gets it from thirdparty/sdl3 (add_subdirectory), a package gets it from SDL3's own
+    # config file, which rexglueConfig.cmake finds with find_dependency(SDL3 CONFIG) (Windows: <prefix>/cmake/SDL3Config.cmake,
+    # Linux: <prefix>/lib/cmake/SDL3/SDL3Config.cmake). It carries the headers, the import library (SDL3.lib) or the library and its
+    # soname (libSDL3.so.0 on Linux), wherever the SDK put them.
     add_library(larecomp_sdl3 INTERFACE)
-    target_include_directories(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_INCLUDE_DIR}")
-    target_link_libraries(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_LIBRARY}")
+    if(TARGET SDL3::SDL3-shared)
+        target_link_libraries(larecomp_sdl3 INTERFACE SDL3::SDL3-shared)
+    else()
+        # A package that exports no SDL3 target: look in the install tree it came from (rexglue_DIR is <prefix>/lib/cmake/rexglue)
+        # and in the prefixes the build was given. Linux: the dev link libSDL3.so, else the library by its soname (libSDL3.so.0): a
+        # kit that stages only the soname still links.
+        set(_larecomp_sdl3_hints ${CMAKE_PREFIX_PATH})
+        if(rexglue_DIR)
+            list(APPEND _larecomp_sdl3_hints "${rexglue_DIR}/../../..")
+        endif()
+        find_path(LARECOMP_SDL3_INCLUDE_DIR SDL3/SDL.h HINTS ${_larecomp_sdl3_hints} PATH_SUFFIXES include NO_DEFAULT_PATH)
+        find_library(LARECOMP_SDL3_LIBRARY NAMES SDL3 libSDL3.so.0 HINTS ${_larecomp_sdl3_hints}
+                     PATH_SUFFIXES lib lib64 NO_DEFAULT_PATH)
+        if(NOT LARECOMP_SDL3_INCLUDE_DIR OR NOT LARECOMP_SDL3_LIBRARY)
+            message(FATAL_ERROR "SDL3 not found: there is no target SDL3::SDL3-shared and the SDK install has no include/SDL3/SDL.h "
+                                "with lib/SDL3.lib or lib/libSDL3.so (searched: ${_larecomp_sdl3_hints}). A build from the SDK's "
+                                "sources (-DREXSDK_DIR=...) or an installed SDK (-DCMAKE_PREFIX_PATH=...) brings it with it.")
+        endif()
+        target_include_directories(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_INCLUDE_DIR}")
+        target_link_libraries(larecomp_sdl3 INTERFACE "${LARECOMP_SDL3_LIBRARY}")
+    endif()
     target_link_libraries(larecomp PRIVATE larecomp_sdl3)
 
     # libmspack (LGPL-2.1, https://github.com/kyz/libmspack, v1.11): lzxd.c only, the LZX decoder of the modloader's
