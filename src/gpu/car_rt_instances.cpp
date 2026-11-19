@@ -30,6 +30,14 @@ REXCVAR_DEFINE_BOOL(
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_rt_cars_match, 0.0, "MCLA/GPU",
+    "Debug: how near, in metres, the centre of a car the camera sees must be to a car of the game's own list to be that car, for the cars the camera does not see "
+    "(mcla_gpu_car_rt_cars_memory). 0, the default: 3 m. A fast car's draws lag its record, so a larger number matches it; cars side by side are 3.5 m apart. Live.")
+    .debug_only()
+    .range(0.0, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_rt_cars_radius, 0.0, "MCLA/GPU",
     "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
     "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.")
@@ -56,6 +64,10 @@ ci::Limits CarRtInstances::CurrentLimits() const {
 
 bool CarRtInstances::RememberedOn() const {
   return REXCVAR_GET(mcla_gpu_car_rt_cars_memory);
+}
+
+double CarRtInstances::MatchMetres() const {
+  return double(REXCVAR_GET(mcla_gpu_car_rt_cars_match));
 }
 
 const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::Limits& limits, bool flip_z, bool glass_rule, const FindMesh& find,

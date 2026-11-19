@@ -35,6 +35,8 @@ class CarRtInstances {
   car_rt_instances::Limits CurrentLimits() const;
   // Whether the cars the camera does not see are placed from memory (mcla_gpu_car_rt_cars_memory, debug, live).
   bool RememberedOn() const;
+  // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
+  double MatchMetres() const;
 
   // This frame's list. `flip_z` and `glass_rule` as the scene decided them for the player's car (the other cars' instances all take the mask
   // CAR_RT_MASK_OTHERS, and CAR_RT_MASK_OTHER_CHROME as well for a draw of the chrome's shader; flagged when drawn after the world). `find(key, &ref)` says whether a mesh has a structure and where its indices and

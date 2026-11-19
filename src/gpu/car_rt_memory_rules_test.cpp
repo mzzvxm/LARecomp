@@ -244,7 +244,7 @@ void TestSeenAndMatch() {
   cm::NoteSeen(&three, 1, far_car);
   cm::NoteSeen(&three, 2, left);
   cm::NoteSeen(&three, 3, right);
-  cm::MatchSeen(three, vehicles, cm::kMatchMetres, &of, &taken);
+  cm::MatchSeen(three, vehicles, 2.0, &of, &taken);
   Check(of[0] == -1, "a car with no vehicle within the tolerance matches none");
   Check(of[1] == 1 && of[2] == -1, "two cars near one vehicle: the nearer takes it, the other none");
 
@@ -408,6 +408,60 @@ void TestPrediction() {
   Check(!cm::Describe(out.stats).empty() && cm::Describe(out.stats).find("no kit was compared") != std::string::npos, "the log's words say so");
   const cm::Totals& totals = memory.totals();
   Check(totals.predicted_draws == 20 && totals.prediction_worst > 0.04, "the totals add up the frames");
+}
+
+// A fast car: its draws lag its record by more than the strict tolerance. The loose pass keeps it from being placed again ahead of itself.
+void TestLooseCoverage() {
+  const ci::Limits limits = High();
+  const std::vector<Part> parts = BodyParts(1000, 10);
+  cm::CarMemory memory;
+  cm::CarMemory::Output out;
+  Frame f1;
+  f1.guest_frame = 10;
+  const cm::VehicleRead v1 = Vehicle(100, 6.0, 0.3, 0.0);
+  f1.vehicles = {v1};
+  f1.Draw(2, v1, parts);
+  memory.Update(InputOf(f1, limits), Resident{}, &out);
+  Check(out.stats.kits == 1 && out.stats.loose_covered == 0, "a kit from a car drawn at its vehicle");
+  // Frame 2: the car is drawn 4 m behind where the game's record puts it (a lag of a frame or two at speed), so the strict pass (3 m) does not match it.
+  Frame f2;
+  f2.guest_frame = 11;
+  const cm::VehicleRead v2 = Vehicle(100, 6.0, 0.3, 4.0);
+  f2.vehicles = {v2};
+  f2.Draw(5, Vehicle(100, 6.0, 0.3, 0.0), parts);
+  memory.Update(InputOf(f2, limits), Resident{}, &out);
+  Check(out.stats.matched == 0 && out.stats.loose_covered == 1 && out.stats.recorded == 0, "4 m of lag: not matched strictly, covered loosely, the kit is not refreshed from it");
+  Check(out.cars.empty() && out.stats.covered == 1, "... so the car is not placed as a second car ahead of itself");
+  // The strict tolerance can be raised (the debug setting): the same frame is then matched and the kit refreshed.
+  Frame f3 = f2;
+  f3.guest_frame = 12;
+  cm::CarMemory::Input in = InputOf(f3, limits);
+  in.match_metres = 4.5;
+  memory.Update(in, Resident{}, &out);
+  Check(out.stats.matched == 1 && out.stats.recorded == 1 && out.stats.loose_covered == 0, "with a tolerance of 4.5 m the same frame is matched and the kit refreshed");
+
+  // The loose pass is for vehicles that hold a kit, and takes only what the strict pass left: a neighbour 3.35 m away is still placed beside a drawn car.
+  cm::CarMemory beside;
+  const cm::VehicleRead a = Vehicle(100, 3.35, 0.3, 0.0), b = Vehicle(101, -3.35, 0.3, 0.0);
+  Frame g1;
+  g1.guest_frame = 20;
+  g1.vehicles = {a, b};
+  g1.Draw(2, a, parts);
+  g1.Draw(3, b, BodyParts(2000, 10));
+  beside.Update(InputOf(g1, limits), Resident{}, &out);
+  Frame g2;
+  g2.guest_frame = 21;
+  g2.vehicles = {a, b};
+  g2.Draw(2, a, parts);
+  beside.Update(InputOf(g2, limits), Resident{}, &out);
+  Check(out.cars.size() == 1 && out.stats.loose_covered == 0, "a car drawn beside a culled neighbour's vehicle (3.35 m) matches its own vehicle: the neighbour is placed");
+  // The price, as documented: a drawn car of no list (a police car) within 5 m of a culled car's vehicle hides it.
+  Frame g3;
+  g3.guest_frame = 22;
+  g3.vehicles = {b};
+  g3.Draw(9, Vehicle(300, -3.35, 0.3, 4.0), BodyParts(3000, 10));
+  beside.Update(InputOf(g3, limits), Resident{}, &out);
+  Check(out.cars.empty() && out.stats.loose_covered == 1, "a drawn car of no list 4 m from a culled car's vehicle covers it (the price of the loose pass)");
 }
 
 void TestNeverSeen() {
@@ -816,6 +870,7 @@ int main() {
   TestPlacement();
   TestPlacedWhenCulled();
   TestPrediction();
+  TestLooseCoverage();
   TestNeverSeen();
   TestCoverage();
   TestClassCaps();

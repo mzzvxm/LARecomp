@@ -569,6 +569,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     car_rt_memory::CarMemory::Input memory_in;
     memory_in.guest_frame = frame.guest_frame;
     memory_in.limits = &car_frame_->other_limits();
+    memory_in.match_metres = instances_.MatchMetres();
     memory_in.player_known = frame.player_vehicle_known;
     for (int c = 0; c < 3; ++c) {
       memory_in.player[c] = frame.player_vehicle[c];

@@ -56,11 +56,16 @@ namespace tp = temporal;
 // the numbers
 // ---------------------------------------------------------------------------
 
-// How near the mean of a drawn car's draw origins must be to a vehicle's position (metres) to be that vehicle. A lane is 3.5 m wide and a car's origins
-// are about its root, so cars side by side are farther apart than this; the assignment takes the nearest pairs first, so a wrong near miss is rare.
-// CHECK: the offset between a car's draws' mean and its vehicle's position (the log's "worst match offset"): the draw's gWorld translation is "about the
-// car's root" (car_frame_rules.h IdentityTracker takes 1.5 to 5 m); a model whose root is not near its vehicle's position would never be matched (no kit).
-inline constexpr double kMatchMetres = 2.0;
+// How near the mean of a drawn car's draw origins (the draws' gWorld translation: the car's root, as the player's own draws are 0.00 m from his vehicle when
+// parked) must be to a vehicle's position (metres) to be that vehicle, and so to make or refresh its kit. The draws come from a frame or more before the game's
+// own record of the car is read, so a fast car is ahead of its draws by its speed times that lag (car_frame_rules.h IdentityTracker takes 5 m for the player at
+// 250 km/h). A lane is 3.5 m wide and the pairs are assigned nearest first, so for cars driving side by side the true pair (the lag) is nearer than the wrong
+// one (the lag and the lane): the tolerance is no risk to them. CHECK: the log's "worst match offset" and "the kits' prediction" lines.
+inline constexpr double kMatchMetres = 3.0;
+// A SECOND, looser match for what the strict one left: a vehicle that holds a kit and has a drawn car within this many metres is covered (not placed), but the
+// car is not matched to it (no kit is made or refreshed from a loose match). It keeps a very fast car, whose draws lag its record by more than kMatchMetres, from
+// being placed again ahead of itself as a second car; its price is that a drawn car of no list (a police car) within this of a culled car with a kit hides it.
+inline constexpr double kLooseMatchMetres = 5.0;
 // A vehicle within this of the player's own is the player's (the player's racer may be in the opponent manager's list).
 inline constexpr double kOwnMetres = 1.0;
 // The scan radius of the vehicle lists: the class's radius times this plus the extra. A kit whose vehicle leaves the scan is dropped.
@@ -250,6 +255,47 @@ inline double MatchSeen(const std::vector<SeenCar>& seen, const std::vector<Vehi
   return worst;
 }
 
+// The second, looser pass over what MatchSeen left (see kLooseMatchMetres): the cars of `seen` with no vehicle (`vehicle_of_seen[i] < 0`) against the vehicles that
+// are not `taken` and are `eligible` (the ones that hold a kit), nearest pairs first. Marks the vehicles taken; returns how many it took.
+inline uint32_t MatchLoose(const std::vector<SeenCar>& seen, const std::vector<VehicleRead>& vehicles, double tolerance, const std::vector<int32_t>& vehicle_of_seen,
+                           const std::vector<uint8_t>& eligible, std::vector<uint8_t>* taken) {
+  struct Pair {
+    double distance;
+    uint32_t car;
+    uint32_t vehicle;
+  };
+  std::vector<Pair> pairs;
+  for (uint32_t i = 0; i < seen.size(); ++i) {
+    double centre[3];
+    if (vehicle_of_seen[i] >= 0 || !seen[i].Centre(centre)) {
+      continue;
+    }
+    for (uint32_t j = 0; j < vehicles.size(); ++j) {
+      if ((*taken)[j] != 0 || eligible[j] == 0) {
+        continue;
+      }
+      double position[3];
+      vehicles[j].Position(position);
+      const double d = Distance(centre, position);
+      if (d <= tolerance) {
+        pairs.push_back(Pair{d, i, j});
+      }
+    }
+  }
+  std::stable_sort(pairs.begin(), pairs.end(), [](const Pair& a, const Pair& b) { return a.distance < b.distance; });
+  std::vector<uint8_t> car_used(seen.size(), 0);
+  uint32_t took = 0;
+  for (const Pair& p : pairs) {
+    if (car_used[p.car] != 0 || (*taken)[p.vehicle] != 0) {
+      continue;
+    }
+    car_used[p.car] = 1;
+    (*taken)[p.vehicle] = 1;
+    ++took;
+  }
+  return took;
+}
+
 // ---------------------------------------------------------------------------
 // the kit: a car's draws relative to its vehicle
 // ---------------------------------------------------------------------------
@@ -309,6 +355,7 @@ struct Stats {
   uint32_t vehicles = 0;        // the game's vehicles read near the player
   uint32_t seen = 0;            // stencil IDs of other cars the frame drew
   uint32_t matched = 0;         // ... matched to a vehicle
+  uint32_t loose_covered = 0;   // vehicles with a kit that a drawn car within kLooseMatchMetres covers (a fast car whose draws lag its record)
   double worst_offset = 0.0;    // the largest match offset, metres
   uint32_t recorded = 0;        // kits made or replaced
   uint32_t record_refused = 0;  // a matched car whose draws could not be made relative (bad matrix, too few draws)
@@ -358,6 +405,7 @@ class CarMemory {
   struct Input {
     uint64_t guest_frame = 0;
     const ci::Limits* limits = nullptr;
+    double match_metres = 0.0;                     // the strict match tolerance (0: kMatchMetres); the loose one is this plus 2 m
     bool player_known = false;
     double player[3] = {};                         // the player's vehicle position
     bool vehicles_valid = false;                   // the lists were read this frame (false: nothing is placed and nothing is dropped)
@@ -400,10 +448,24 @@ class CarMemory {
     // The cars the frame drew, matched to the vehicles.
     std::vector<int32_t> vehicle_of_seen;
     std::vector<uint8_t> taken;
-    stats.worst_offset = MatchSeen(*in.seen, vehicles, kMatchMetres, &vehicle_of_seen, &taken);
+    const double strict = in.match_metres > 0.0 ? in.match_metres : kMatchMetres;
+    stats.worst_offset = MatchSeen(*in.seen, vehicles, strict, &vehicle_of_seen, &taken);
     totals_.worst_offset = std::max(totals_.worst_offset, stats.worst_offset);
     for (const int32_t v : vehicle_of_seen) {
       stats.matched += v >= 0 ? 1u : 0u;
+    }
+    // What the strict pass left: a drawn car within the loose tolerance of a vehicle that holds a kit covers it (no ghost of a fast car ahead of itself).
+    {
+      std::vector<uint8_t> eligible(vehicles.size(), 0);
+      for (size_t j = 0; j < vehicles.size(); ++j) {
+        for (const Kit& k : kits_) {
+          if (k.vehicle == vehicles[j].address) {
+            eligible[j] = 1;
+            break;
+          }
+        }
+      }
+      stats.loose_covered = MatchLoose(*in.seen, vehicles, strict + (kLooseMatchMetres - kMatchMetres), vehicle_of_seen, eligible, &taken);
     }
 
     // The kits of the cars that were drawn and kept: their draws relative to their vehicles.
@@ -716,10 +778,10 @@ inline std::string Describe(const Stats& s) {
                                      ? std::format("kits placed at this frame's vehicles against the game's own draws: {} draws, mean error {:.3f} m, worst {:.3f} m",
                                                    s.predicted_draws, s.prediction_sum / double(s.predicted_draws), s.prediction_worst)
                                      : std::string("no kit was compared with the game's draws this frame");
-  return prediction + "; " + std::format("{} vehicles near the player, {} other cars drawn of which {} matched to a vehicle (worst offset {:.2f} m); {} kits held ({} made or replaced, {} refused); "
+  return prediction + "; " + std::format("{} vehicles near the player, {} other cars drawn of which {} matched to a vehicle (worst offset {:.2f} m, {} more covered loosely); {} kits held ({} made or replaced, {} refused); "
                      "{} placed from memory with {} draws ({} left out: no structure), {} kits covered by a drawn car, {} beyond the radius; dropped: {} vehicle gone, {} another model, "
                      "{} jumped, {} meshes given back, {} store full",
-                     s.vehicles, s.seen, s.matched, s.worst_offset, s.kits, s.recorded, s.record_refused, s.placed_cars, s.placed_draws, s.not_resident, s.covered,
+                     s.vehicles, s.seen, s.matched, s.worst_offset, s.loose_covered, s.kits, s.recorded, s.record_refused, s.placed_cars, s.placed_draws, s.not_resident, s.covered,
                      s.out_of_range, s.dropped_gone, s.dropped_tag, s.dropped_jump, s.dropped_meshes, s.dropped_full);
 }
 
