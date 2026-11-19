@@ -6,6 +6,9 @@
 #include "format.h"
 #include "gpu_class.h"
 #include "temporal_dlss.h"
+#include "windows_floor.h"
+
+#include <mutex>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -45,6 +48,43 @@ REXCVAR_DEFINE_UINT32(
 namespace mcla::gpu {
 
 namespace {
+
+// The Windows version and the update revision of its build (windows_floor.h); zeros where they cannot
+// be read (not Windows, or a failed call).
+windows_floor::WindowsBuild ReadWindowsBuild() {
+  windows_floor::WindowsBuild out;
+#if defined(_WIN32)
+  struct VersionInfo {
+    ULONG size, major, minor, build, platform;
+    WCHAR service_pack[128];
+  } info{};
+  info.size = sizeof(info);
+  using RtlGetVersionFn = LONG(WINAPI*)(VersionInfo*);
+  if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+    if (auto get_version = reinterpret_cast<RtlGetVersionFn>(
+            reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion")))) {
+      if (get_version(&info) == 0) {
+        out.major = info.major;
+        out.minor = info.minor;
+        out.build = info.build;
+      }
+    }
+  }
+  DWORD revision = 0;
+  DWORD size = sizeof(revision);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"UBR",
+                   RRF_RT_REG_DWORD, nullptr, &revision, &size) == ERROR_SUCCESS) {
+    out.revision = revision;
+  }
+#endif
+  return out;
+}
+
+// What a refused Direct3D 12 start says about this Windows, "" when the Windows is not the cause
+// (windows_floor.h: the game's own Direct3D 12 runtime needs Windows 10 1909 with its update).
+std::string D3D12WindowsHint() {
+  return windows_floor::Explain(ReadWindowsBuild());
+}
 
 // Why debug names are wanted (Device::object_names), or null when nothing is known to read them.
 const char* ObjectNamesReason(bool debug_layer) {
@@ -154,7 +194,13 @@ bool Device::Open(const Options& options) {
   interface_ = backend::CreateInterface();
   if (!interface_) {
     REXLOG_ERROR("[gpu] Plume could not create the {} interface", BackendName());
-    Refuse(": the graphics driver could not be started (is it installed and up to date?)");
+    const std::string windows = ActiveBackend() == Backend::kD3D12 ? D3D12WindowsHint() : std::string();
+    if (!windows.empty()) {
+      REXLOG_ERROR("[gpu] Direct3D 12 could not be started, and {}", windows);
+    }
+    Refuse(windows.empty()
+               ? std::string(": the graphics driver could not be started (is it installed and up to date?)")
+               : ": the driver could not be started, and " + windows);
     return false;
   }
 
@@ -166,7 +212,16 @@ bool Device::Open(const Options& options) {
   if (!device_) {
     REXLOG_ERROR("[gpu] Plume could not create a {} device{}", BackendName(),
                  adapter.empty() ? std::string() : " on adapter '" + adapter + "'");
-    Refuse(": no graphics card here has a driver for it");
+    // On Windows 10 before 1909 or its update the game's own Direct3D 12 runtime (the D3D12 folder next to
+    // the exe) is not accepted and the device cannot be made: say that and not "no card has a driver".
+    // CHECK: on a Windows 10 2004 before 19041.804 (or 1909 before 18363.1377) the box and the log name
+    // the update; on a current Windows 10 or 11 this branch says what it always did.
+    const std::string windows = ActiveBackend() == Backend::kD3D12 ? D3D12WindowsHint() : std::string();
+    if (!windows.empty()) {
+      REXLOG_ERROR("[gpu] Direct3D 12 could not be started, and {}", windows);
+    }
+    Refuse(windows.empty() ? std::string(": no graphics card here has a driver for it")
+                           : ": the device could not be made, and " + windows);
     interface_.reset();
     return false;
   }
@@ -176,6 +231,16 @@ bool Device::Open(const Options& options) {
                 device_->getDescription().name);
   }
   backend_info_ = backend::DescribeDevice(device_.get());
+  {
+    // Once: which Windows this log is from (the Direct3D 12 runtime's floor, windows_floor.h).
+    static std::once_flag windows_logged;
+    std::call_once(windows_logged, [] {
+      const windows_floor::WindowsBuild windows = ReadWindowsBuild();
+      if (windows.build != 0) {
+        REXLOG_INFO("[gpu] {}", windows_floor::Describe(windows));
+      }
+    });
+  }
   debug_layer_ = debug_layer;
   if (debug_layer_) {
     backend::InstallDebugMessageSink(device_.get());
