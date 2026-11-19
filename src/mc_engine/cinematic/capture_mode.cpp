@@ -63,7 +63,7 @@
 // gone to 0.
 //
 // THE SOUND (M2c). The take's audio is capture_audio.h's: at the take's start (BeginTake) the game's mixer is taken over, at every gate
-// (GateInTake) it is given the credits that cover the video frames so far and its frames are written to the take folder's audio.wav, at the end
+// (GateInTake) it is given the tickets that cover the video frames so far and its frames are written to the take folder's audio.wav, at the end
 // (EndTake) the real output gets its mixer back. Nothing else of the take knows about it.
 //
 // Written without a build or a run. CHECK marks what rests on reading the code and the E7 log only.
