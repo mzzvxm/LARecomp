@@ -110,6 +110,7 @@ void MsaaLevel::BeginFrame(plume::RenderCommandList* list, bool upscaling, bool 
   const bool path_driven = upscaling != last_upscaling_;
   last_upscaling_ = upscaling;
   if (wanted == level) {
+    pipelines_->NoteLevelInForce(level);  // seeds for a level that was asked for and taken back go
     Rest();
     return;
   }
@@ -130,15 +131,22 @@ void MsaaLevel::BeginFrame(plume::RenderCommandList* list, bool upscaling, bool 
   if (!staged_) {
     staged_ = true;
     staged_at_ = now;
-    const Pipelines::LevelPrebuild b = pipelines_->PrebuildForLevel(wanted);
+    const Pipelines::LevelPrebuild b = pipelines_->PrebuildForLevel(wanted, level);
     staged_total_ = b.queued;
     REXLOG_INFO("{} live change: {}x -> {}x ({}): {} pipelines of draws into the multisampled "
                 "images are known, {} of them have the new sample count already, {} are being "
                 "made in the background ({} not finished); the switch is made at the first frame "
                 "boundary after they are ready and the upscaler path has settled (at most {} s "
-                "for the pipelines) while {}x goes on",
+                "for the pipelines) while {}x goes on{}",
                 kPrefix, level, wanted, why, b.known, b.present, b.queued, b.waiting,
-                kMaxWait.count(), level);
+                kMaxWait.count(), level,
+                b.seed_sources != 0
+                    ? std::format("; {} more are made from the saved lists for the views not drawn yet, "
+                                  "at low priority and not waited for ({} listed pipelines of "
+                                  "multisampled images, {} have the new count already, {} left out by "
+                                  "the limit)",
+                                  b.seeds, b.seed_sources, b.seed_present, b.seed_limited)
+                    : std::string());
   }
   if (moved || !settled) {
     // The targets were remade this frame (the path or the render scale: one remake a frame), or a

@@ -291,9 +291,19 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // PackBlend and UnpackBlend (the blend words of a key) are in pipelines.h: the UI layer split reads
 // and changes them (frame_layers.h).
 
+// The most workers the precache starts: half the usable processors (steady_workers_), at most this many; boot
+// mode adds workers up to all the processors but one, at most this many too.
+constexpr uint32_t kMaxPrecacheWorkers = 6;
 // Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
 // how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
-constexpr uint32_t kBootBoostBelow = 8;
+// The count is where boot mode stops having workers to add: it starts clamp(usable - 1, steady,
+// kMaxPrecacheWorkers) of them against the steady clamp(usable / 2, 1, kMaxPrecacheWorkers), which is 2 more at
+// 8 and 9 usable processors, 1 more at 10 and 11, and the same number from 12 (then only the priority and the cursor
+// following the render thread differ, and those are not worth the guest's threads' time). It was 8, which left
+// a PC with 8 to 11 logical processors without boot mode: the STARTER-ROUND2 boot tour at 8 had the render
+// thread make 41 to 45 of the entries itself (550 to 600 ms in the title's first burst) against 17 to 24 at 4
+// with boot mode, and 0 at 16.
+constexpr uint32_t kBootBoostBelow = 2 * kMaxPrecacheWorkers;
 // The sample count of the main view's targets at the default MSAA setting (StartSampleCounts' level
 // when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
 constexpr uint32_t kDefaultStartSamples = 2;
@@ -708,12 +718,21 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   // make the pipelines the render thread hands them (background builds).
   // With fewer than kBootBoostBelow processors the first seconds are different
   // (boot mode, pipelines.h): up to all the processors but one, at normal priority.
+  // CHECK: written without a build or a run. Expected on the boot tour at 8 logical processors (affinity): the
+  // line "boot mode on 8 usable processors" with 6 threads (it said 4 threads and nothing about boot mode), the
+  // "boot mode over" line with the render thread's claims (41 to 45 entries before, expected near the 4
+  // processors' 17 to 24), the precache's time no longer than the 5.4 to 5.7 s it was, and no longer start of
+  // the title (the guest's load time at the same affinity). If the claims stay above 30 or the guest's start
+  // is slower by a second or more, put it back to 8.
   // The command line prebuild (setup_threads): no guest runs, so the workers are all there is.
   const uint32_t usable = UsableProcessors();
-  steady_workers_ = setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, 6u);
+  steady_workers_ =
+      setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, kMaxPrecacheWorkers);
+  seed_slots_ = level_seeds::Slots(steady_workers_);
   const bool boot = setup_threads == 0 && !precached_.empty() && usable < kBootBoostBelow;
   const uint32_t count =
-      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, 6u) : steady_workers_;
+      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, kMaxPrecacheWorkers)
+           : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   list_cursor_ = 0;
@@ -772,8 +791,18 @@ void Pipelines::StopPrecache() {
   requests_.clear();
   urgent_.clear();
   low_.clear();
+  if (seed_book_.Active()) {
+    DropSeeds("the precache stopped");  // the line that says how the seeds were used
+  }
+  seeds_by_key_.clear();  // what DropSeeds kept: the seeds that draws took
+  seed_graveyard_.clear();  // the GPU is idle
+  seed_.clear();
+  seed_active_ = 0;
+  seed_level_ = 0;
+  seed_gen_ = 0;
   prebuild_requests_.clear();
   prebuild_precached_.clear();
+  prebuild_seeds_.clear();
   list_skipped_.clear();
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
@@ -790,18 +819,19 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     Urgent urgent;
     size_t entry = 0;
     bool from_list = false;
+    bool from_seeds = false;
     {
       std::unique_lock<std::mutex> lock(work_mutex_);
       const auto leaves = [&] { return index >= steady_workers_ && !boot_mode_.load(); };
       work_cv_.wait(lock, [&] {
         return stop_precache_.load() || leaves() || !urgent_.empty() || !low_.empty() ||
-               HasListWork();
+               HasListWork() || HasSeedWork();
       });
       if (stop_precache_.load()) {
         return;
       }
       if (leaves()) {
-        if (!urgent_.empty() || !low_.empty() || HasListWork()) {
+        if (!urgent_.empty() || !low_.empty() || HasListWork() || HasSeedWork()) {
           work_cv_.notify_one();  // what woke this one goes to a worker that stays
         }
         return;
@@ -815,6 +845,14 @@ void Pipelines::PrecacheWorker(uint32_t index) {
         low_.pop_front();
       } else {
         from_list = NextListEntry(entry);
+        if (!from_list && HasSeedWork()) {
+          // The level seeds come last: nothing urgent, no copy for a switch, the list done (and not in
+          // boot mode, and not on every worker: level_seeds::MayStart).
+          urgent = std::move(seed_.front());
+          seed_.pop_front();
+          ++seed_active_;
+          from_seeds = true;
+        }
       }
     }
     // Normal priority in boot mode, below normal after: the guest's threads come first once
@@ -830,16 +868,27 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     }
     if (urgent.request) {
       BuildRequest(*urgent.request);
+    } else if (urgent.seed) {
+      BuildPrecached(*urgent.seed);
     } else if (urgent.precached) {
       BuildPrecached(*urgent.precached);
     } else if (from_list) {
       BuildPrecached(*precached_[entry]);
+    }
+    if (from_seeds) {
+      // The slot is free again; this worker goes round and takes the next seed if there is one.
+      std::lock_guard<std::mutex> lock(work_mutex_);
+      --seed_active_;
     }
   }
 }
 
 bool Pipelines::HasListWork() const {
   return list_cursor_ < list_end_ || !list_skipped_.empty();
+}
+
+bool Pipelines::HasSeedWork() const {
+  return level_seeds::MayStart(!seed_.empty(), boot_mode_.load(), seed_active_, seed_slots_);
 }
 
 bool Pipelines::NextListEntry(size_t& index) {
@@ -943,6 +992,12 @@ void Pipelines::BuildPrecached(Precached& p) {
     p.pipeline = std::move(pipeline);
     p.state = made ? kReady : kFailed;
   }
+  if (p.seed) {
+    // Not an entry of the list: outside its counts and its "precache done" line.
+    precache_done_.notify_all();
+    seed_book_.Finished(p.seed_gen, made, std::chrono::steady_clock::now());
+    return;
+  }
   ++(made ? precache_ready_ : precache_failed_);
   precache_done_.notify_all();
   NotePrecacheEntryDone();
@@ -1019,18 +1074,18 @@ bool Pipelines::MaySkip(Miss& miss) {
 
 plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& miss,
                                                 const PipelineInputs& inputs) {
-  if (precached_by_key_.empty() || !inputs.input_layout) {
+  if ((precached_by_key_.empty() && seeds_by_key_.empty()) || !inputs.input_layout) {
     return nullptr;
   }
   const uint32_t stored = StoreLayout(*inputs.input_layout);
   if (stored == kNoLayout) {
     return nullptr;
   }
-  const auto found = precached_by_key_.find(PersistentKey(key, stored));
-  if (found == precached_by_key_.end()) {
+  Precached* const listed = FindListed(PersistentKey(key, stored));
+  if (!listed) {
     return nullptr;
   }
-  Precached& p = *found->second;
+  Precached& p = *listed;
   if (p.taken) {
     // Another session key with the same persistent key went first: its
     // pipeline is this one's too.
@@ -1053,7 +1108,11 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
       ++stats_.pending_keys;
       if (state == kQueued) {
         Urgent urgent;
-        urgent.precached = &p;
+        if (p.seed) {
+          urgent.seed = p.shared_from_this();  // it is still in seed_ too: the worker that finds it begun leaves it
+        } else {
+          urgent.precached = &p;
+        }
         PushUrgent(std::move(urgent));
       }
     }
@@ -1064,8 +1123,12 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   state = kQueued;
   if (p.state.compare_exchange_strong(state, kClaimed)) {
     miss.take = Take::kMakeHere;
-    NoteClaim(p.index);
-    NotePrecacheEntryDone();
+    if (p.seed) {
+      seed_book_.Claimed(p.seed_gen);  // not an entry of the start's queue: no claim of it, no count
+    } else {
+      NoteClaim(p.index);
+      NotePrecacheEntryDone();
+    }
     ++stats_.precache_claimed;  // no worker at it yet: the caller makes it now
     p.taken = true;
     p.taken_as = key;
@@ -1097,6 +1160,9 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   plume::RenderPipeline* raw = p.pipeline.get();
   pipelines_.emplace(key, std::move(p.pipeline));
   ++stats_.precache_taken;
+  if (p.seed) {
+    seed_book_.Taken(p.seed_gen);
+  }
   if (persist_) {
     // A record is known already (nothing happens); a level copy is the pipeline of a draw now.
     // CHECK: that the cache file then holds the copies the player drew with (the log's "records
@@ -1244,6 +1310,12 @@ void Pipelines::EndFrame() {
   }
   if (!requests_.empty()) {
     TakeFinishedRequests();
+  }
+  if (seed_level_ != 0) {
+    SeedFrame();
+  }
+  for (uint32_t i = 0; i < level_seeds::kReleasePerFrame && !seed_graveyard_.empty(); ++i) {
+    seed_graveyard_.pop_back();
   }
   Autosave();
 }
@@ -1795,7 +1867,17 @@ void Pipelines::NoteLevelDependent(const PipelineKey& key, const PipelineInputs&
   level_dependent_.push_back(LevelDependent{canonical, stored});
 }
 
-Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
+Pipelines::Precached* Pipelines::FindListed(const PipelineKey& persistent) const {
+  if (const auto it = precached_by_key_.find(persistent); it != precached_by_key_.end()) {
+    return it->second;
+  }
+  if (const auto it = seeds_by_key_.find(persistent); it != seeds_by_key_.end()) {
+    return it->second.get();
+  }
+  return nullptr;
+}
+
+Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level, uint32_t from_level) {
   // CHECK: that the copies are the pipelines the first draws after the switch ask for (the same key
   // but the sample count: the log's pipeline statistics for the minute after a switch should show
   // few or no pending draws and nothing made on the render thread; a missing one shows as a draw
@@ -1808,16 +1890,22 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
   LevelPrebuild result;
   prebuild_requests_.clear();
   prebuild_precached_.clear();
+  prebuild_seeds_.clear();
   result.known = uint32_t(level_dependent_.size());
-  if (level_dependent_.empty() || workers_.empty() || stop_precache_.load() || !shaders_) {
+  if (workers_.empty() || stop_precache_.load() || !shaders_) {
     return result;
   }
   std::vector<Urgent> items;
+  // The persistent keys at `level` of the drawn pipelines: the seeds (below) leave them to the first half.
+  std::unordered_set<PipelineKey, PipelineKeyHash> covered;
+  covered.reserve(level_dependent_.size());
   for (const LevelDependent& d : level_dependent_) {
     PipelineKey key = d.key;
     // EdramTargets::HostSamplesAt: the level, which may be fewer than the guest's samples (the
     // pause menu's and the map's world view, which the game draws with 4).
     key.sample_count = level;
+    const PipelineKey persistent = PersistentKey(key, d.stored);
+    covered.insert(persistent);
     if (pipelines_.count(key) != 0 || aliases_.count(key) != 0) {
       ++result.present;
       continue;
@@ -1831,14 +1919,25 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
       }
       continue;
     }
-    if (const auto listed = precached_by_key_.find(PersistentKey(key, d.stored));
-        listed != precached_by_key_.end()) {
-      // A record of the cache file or the starter list has it: that entry is made, the first draw
-      // takes it (TakePrecached).
-      Precached& p = *listed->second;
+    if (Precached* const listed = FindListed(persistent)) {
+      // A record of the cache file or the starter list has it (or a seed of an earlier call for this
+      // level): that entry is made, the first draw takes it (TakePrecached).
+      Precached& p = *listed;
       const uint8_t state = p.state.load();
       if (p.taken || state == kReady || state == kFailed || state == kClaimed) {
         ++result.present;
+        continue;
+      }
+      if (p.seed) {
+        // Queued behind everything (seed_): moved up to the copies for this switch, which it waits for.
+        std::shared_ptr<Precached> seed = p.shared_from_this();
+        prebuild_seeds_.push_back(seed);
+        if (state == kQueued) {
+          Urgent item;
+          item.seed = std::move(seed);
+          items.push_back(std::move(item));
+          ++result.queued;
+        }
         continue;
       }
       prebuild_precached_.push_back(&p);
@@ -1879,6 +1978,7 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
     }
     work_cv_.notify_all();
   }
+  SeedForLevel(level, from_level, covered, result);
   result.waiting = PrebuildWaiting();
   return result;
 }
@@ -1893,7 +1993,139 @@ uint32_t Pipelines::PrebuildWaiting() const {
     const uint8_t state = p->state.load();
     waiting += state == kQueued || state == kBuilding;
   }
+  for (const std::shared_ptr<Precached>& p : prebuild_seeds_) {
+    const uint8_t state = p->state.load();
+    waiting += state == kQueued || state == kBuilding;
+  }
   return waiting;
+}
+
+void Pipelines::SeedForLevel(uint32_t level, uint32_t from_level,
+                             const std::unordered_set<PipelineKey, PipelineKeyHash>& covered,
+                             LevelPrebuild& result) {
+  // CHECK: written without a build or a run. Expected on a live level change: the "msaa: live change"
+  // line says how many seeds were queued; one "level seeds for Nx" line follows within a few seconds
+  // (hundreds queued, nearly all ready, the time in ms); the first views at the new level that the
+  // session had not drawn (the map, a race) take seeds ("taken by draws" in the line that is written
+  // when they are let go: the next change, a shortage, the exit) and create nothing on the render thread;
+  // the frame times of the seconds after the switch do not show the builds (they run below normal
+  // priority on all the steady workers but one, and not at all in boot mode).
+  if (records_.empty()) {
+    return;  // no cache and no list were read (mcla_gpu_pipeline_cache is off)
+  }
+  const level_seeds::Retarget what = level_seeds::Decide(seed_level_, level);
+  if (what == level_seeds::Retarget::kRestart) {
+    DropSeeds("the level changed again");  // the untaken ones of the old level: queued ones cancelled, made ones freed
+  }
+  seed_level_ = level;
+  const backend::VideoMemory memory = device_ ? device_->QueryVideoMemory() : backend::VideoMemory{};
+  const uint32_t allowed = level_seeds::AllowedCount(memory.used, memory.budget, seed_book_.Live());
+  // What needs no seed: a record, a queue entry, a seed or a drawn pipeline's copy has the key at `level`.
+  const auto present = [&](const PipelineKey& copy) {
+    return recorded_.count(copy) != 0 || precached_by_key_.count(copy) != 0 ||
+           seeds_by_key_.count(copy) != 0 || covered.count(copy) != 0;
+  };
+  level_seeds::PlanCounts counts;
+  const std::vector<uint32_t> picks =
+      level_seeds::PlanSeeds<Record, PipelineKeyHash>(records_, level, from_level, allowed, present, counts);
+  result.seed_sources = counts.sources;
+  result.seed_present = counts.same_level + counts.duplicate + counts.present;
+  result.seed_limited = counts.limited;
+  result.seeds = counts.picked;
+  if (picks.empty()) {
+    return;
+  }
+  const uint32_t picked = uint32_t(picks.size());
+  if (what == level_seeds::Retarget::kKeep && seed_gen_ != 0 && seed_book_.Active()) {
+    seed_book_.Add(seed_gen_, picked);
+  } else {
+    seed_gen_ = seed_book_.Begin(level, picked, std::chrono::steady_clock::now());
+  }
+  std::vector<Urgent> queue;
+  queue.reserve(picks.size());
+  for (const uint32_t i : picks) {
+    const Record& r = records_[i];
+    auto seed = std::make_shared<Precached>();
+    seed->key = level_seeds::AtLevel(r.key, level);
+    seed->layout = stored_layouts_[r.layout].get();  // owned by a unique_ptr: stable
+    seed->seed = true;
+    seed->seed_gen = seed_gen_;
+    seeds_by_key_.emplace(seed->key, seed);
+    Urgent item;
+    item.seed = std::move(seed);
+    queue.push_back(std::move(item));
+  }
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    for (Urgent& item : queue) {
+      seed_.push_back(std::move(item));
+    }
+  }
+  work_cv_.notify_all();
+}
+
+void Pipelines::DropSeeds(const char* why) {
+  // Seeds nobody has taken go: the queue is emptied, a seed no worker began is marked claimed so that a worker
+  // that already popped it leaves it (the same compare-exchange a draw's claim uses), a made one is freed (no
+  // command list ever held it), and one being built is let finish: its worker drops the result with its
+  // reference. Seeds a draw took stay in seeds_by_key_ as the alias marker a precache entry is.
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    seed_.clear();
+  }
+  uint32_t cancelled = 0;
+  uint32_t freed = 0;
+  for (auto it = seeds_by_key_.begin(); it != seeds_by_key_.end();) {
+    Precached& p = *it->second;
+    if (p.taken) {
+      ++it;
+      continue;
+    }
+    uint8_t state = kQueued;
+    if (p.state.compare_exchange_strong(state, kClaimed)) {
+      ++cancelled;
+    } else if (state == kReady) {
+      std::lock_guard<std::mutex> lock(precache_mutex_);
+      if (p.pipeline) {
+        seed_graveyard_.push_back(std::move(p.pipeline));  // destroyed a few a frame (EndFrame)
+        ++freed;
+      }
+    }
+    it = seeds_by_key_.erase(it);
+  }
+  if (seed_book_.Active()) {
+    seed_book_.Cancelled(seed_gen_, cancelled);
+    seed_book_.Freed(seed_gen_, freed);
+    const level_seeds::SeedBook::Report r = seed_book_.Snapshot();
+    REXLOG_INFO("[gpu] pipelines: level seeds for {}x let go ({}): {} queued, {} made, {} taken by draws "
+                "({} more made by the render thread), {} failed, {} dropped before a worker began them, "
+                "{} made and never asked for (freed, about {} MiB)",
+                r.level, why, r.queued, r.ready, r.taken, r.claimed, r.failed, r.cancelled, r.freed,
+                (uint64_t(r.freed) * level_seeds::kBytesEach) >> 20);
+    seed_book_.End();
+  }
+  seed_level_ = 0;
+  seed_gen_ = 0;
+}
+
+void Pipelines::SeedFrame() {
+  level_seeds::SeedBook::Report r;
+  if (seed_book_.TakeDone(r)) {
+    const uint32_t held = r.ready > r.taken + r.freed ? r.ready - r.taken - r.freed : 0;
+    REXLOG_INFO("[gpu] pipelines: level seeds for {}x: {} queued, {} ready, {} failed, {} taken by draws so far, "
+                "{} made by the render thread, in {:.0f} ms ({} worker(s), {} at a time); about {} MiB held",
+                r.level, r.queued, r.ready, r.failed, r.taken, r.claimed, r.build_ms, workers_.size(),
+                seed_slots_, (uint64_t(held) * level_seeds::kBytesEach) >> 20);
+  }
+  if (frame_ < seed_next_check_ || seed_book_.Live() == 0) {
+    return;
+  }
+  seed_next_check_ = frame_ + level_seeds::kCheckFrames;
+  const backend::VideoMemory memory = device_ ? device_->QueryVideoMemory() : backend::VideoMemory{};
+  if (level_seeds::ShortOfRoom(memory.used, memory.budget)) {
+    // The seeds are a luxury: they go before the caches' own response (90%) has to release anything.
+    DropSeeds("the video memory is short");
+  }
 }
 
 plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const PipelineInputs& inputs,

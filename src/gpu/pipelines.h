@@ -57,7 +57,7 @@
 // pipeline is taken only for a layout equal to its record's, byte for byte.
 // Session layouts with other ids and the same content share a persistent key,
 // and so the pipeline: the later keys alias the first one's.
-// With fewer than 8 usable processors the workers start in boot mode (boot_mode_):
+// With fewer than 12 usable processors the workers start in boot mode (boot_mode_, kBootBoostBelow):
 // more of them, at normal priority, following the render thread through the list.
 //
 // Background builds: a pipeline nobody precached cost 20 to 150 ms on the
@@ -98,6 +98,18 @@
 // pending build. A copy is taken (and recorded for the next start) by the first draw that asks for
 // it, not at the end of the frame like other background builds: copies for a level the player went
 // back from leave nothing in the cache file.
+//
+// Level seeds (level_seeds.h): the copies above are for pipelines the session has drawn. A pipeline it has
+// not drawn yet (the map, a race, a shop when the player changed the setting in free roam) first
+// appeared at the new level with no copy, and was made when its draw asked (10 to 50 ms cold). So the same
+// call also converts the records of the saved lists with more than one sample (MakeLevelCopies' rule)
+// to the new level's sample count and hands them to the builder threads as seeds: after the urgent work,
+// the copies above and the precache list (seed_), on all the steady workers but one, never in boot mode,
+// and never waited for by the switch. A draw takes a seed like a precache entry (TakePrecached through
+// seeds_by_key_) and then records it; a seed nobody asks for is recorded by nothing. Memory: one level's
+// seeds at a time (a call for another level drops the untaken ones of the old), at most
+// level_seeds::kMaxSeeds, and only while the video memory in use stays under 80% of the OS's budget; they
+// are let go above 85% (SeedFrame) and when the precache stops.
 //
 // Command line prebuild (larecomp.exe --precache_pipelines, pipeline_prebuild.h): the launcher
 // runs the same precache before the first start, with no render thread and no guest
@@ -145,6 +157,7 @@
 #include "backend.h"
 #include "draw_state.h"
 #include "input_layout.h"
+#include "level_seeds.h"
 #include "shaders.h"
 #include "sync_builds.h"
 
@@ -300,10 +313,25 @@ class Pipelines {
     uint32_t present = 0;  // ... whose copy at `level` was there already or needs nothing made
     uint32_t queued = 0;   // copies handed to the builders by this call
     uint32_t waiting = 0;  // copies, this call's or earlier ones, not finished yet
+    // The level seeds (level_seeds.h), which no switch waits for: records of the saved lists with more
+    // than one sample, converted to `level`.
+    uint32_t seed_sources = 0;  // such records
+    uint32_t seeds = 0;         // seeds handed to the builders by this call
+    uint32_t seed_present = 0;  // sources that have a copy, a twin or a pipeline at `level` already
+    uint32_t seed_limited = 0;  // copies left out by the cap or the video memory's room
   };
-  LevelPrebuild PrebuildForLevel(uint32_t level);
-  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread).
-  // 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
+  // `from_level`: the level in force (0 when not known): the seeds recorded at its sample count go first.
+  LevelPrebuild PrebuildForLevel(uint32_t level, uint32_t from_level = 0);
+  // `level` is the one in force and no change is asked for (every frame, MsaaLevel): the seeds of another
+  // level (a change that was asked for and taken back before it was made) are let go. A level that was
+  // switched to keeps its seeds.
+  void NoteLevelInForce(uint32_t level) {
+    if (seed_level_ != 0 && seed_level_ != level) {
+      DropSeeds("the level stayed");
+    }
+  }
+  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread); the seeds are
+  // not counted. 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
   // failure reported) the usual way.
   uint32_t PrebuildWaiting() const;
 
@@ -488,6 +516,9 @@ class Pipelines {
                     std::chrono::steady_clock::time_point began);
   // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
   void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
+  // The precache entry or the level seed of a persistent key, if there is one.
+  struct Precached;
+  Precached* FindListed(const PipelineKey& persistent) const;
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
@@ -530,7 +561,7 @@ class Pipelines {
   // compare-exchange (queued -> building or claimed; building -> ready or
   // failed, under precache_mutex_ for the waiter).
   enum PrecacheState : uint8_t { kQueued, kBuilding, kReady, kFailed, kClaimed };
-  struct Precached {
+  struct Precached : std::enable_shared_from_this<Precached> {
     PipelineKey key;                  // persistent
     const StoredLayout* layout = nullptr;
     std::unique_ptr<plume::RenderPipeline> pipeline;
@@ -542,6 +573,11 @@ class Pipelines {
     // (EndFrame's count); the worker is told to make it first.
     bool asked = false;
     uint64_t asked_frame = 0;
+    // A level seed (SeedForLevel): owned by seeds_by_key_ and shared with the queues and the worker
+    // building it, outside the list's numbers (no index, no claim of the start, no count of the list's
+    // end). `seed_gen` is the run it belongs to (level_seeds::SeedBook).
+    bool seed = false;
+    uint32_t seed_gen = 0;
   };
   std::vector<std::unique_ptr<Precached>> precached_;
   // Session keys served by another key's pipeline (same persistent key).
@@ -634,6 +670,7 @@ class Pipelines {
   struct Urgent {
     Precached* precached = nullptr;
     std::shared_ptr<Request> request;
+    std::shared_ptr<Precached> seed;  // a level seed: the queue and the worker keep it alive
   };
   std::unordered_map<PipelineKey, std::shared_ptr<Request>, PipelineKeyHash> requests_;
   std::deque<Urgent> urgent_;  // work_mutex_
@@ -650,9 +687,36 @@ class Pipelines {
   // The copies PrebuildForLevel waits for.
   std::vector<std::shared_ptr<Request>> prebuild_requests_;
   std::vector<Precached*> prebuild_precached_;
+  std::vector<std::shared_ptr<Precached>> prebuild_seeds_;  // seeds a drawn pipeline's copy turned out to be
+  // Level seeds. seed_ is after urgent_, low_ and the list (work_mutex_); seed_active_ the seeds being
+  // built from it and seed_slots_ the most at once (level_seeds::Slots). The rest is the render thread's:
+  // the seeds by persistent key (taken ones stay, as the alias marker of a precache entry), the level
+  // they are for (0: none), the generation of the run and the frame of the next look at the budget.
+  std::deque<Urgent> seed_;
+  uint32_t seed_active_ = 0;
+  uint32_t seed_slots_ = 1;
+  std::unordered_map<PipelineKey, std::shared_ptr<Precached>, PipelineKeyHash> seeds_by_key_;
+  // Made seeds that were let go, destroyed level_seeds::kReleasePerFrame a frame (EndFrame). No command
+  // list ever held them.
+  std::vector<std::unique_ptr<plume::RenderPipeline>> seed_graveyard_;
+  uint32_t seed_level_ = 0;
+  uint32_t seed_gen_ = 0;
+  uint64_t seed_next_check_ = 0;
+  level_seeds::SeedBook seed_book_;
   std::mutex work_mutex_;
   std::condition_variable work_cv_;
   uint64_t frame_ = 0;  // EndFrame's count, for the waits
+
+  // PrebuildForLevel's second half: the seeds (see the top of the file). `covered`: the persistent keys at
+  // `level` that the first half dealt with.
+  void SeedForLevel(uint32_t level, uint32_t from_level,
+                    const std::unordered_set<PipelineKey, PipelineKeyHash>& covered,
+                    LevelPrebuild& result);
+  // The untaken seeds go (queued ones are cancelled, made ones freed) and the run is reported.
+  void DropSeeds(const char* why);
+  // Once a frame (EndFrame): the run's line when it is done, the look at the video memory.
+  void SeedFrame();
+  bool HasSeedWork() const;  // work_mutex_ held
 
   void PushUrgent(Urgent urgent);
   // Hands `key` to the builders. False when it cannot be built in the

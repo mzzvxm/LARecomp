@@ -18,7 +18,9 @@
 //      a level the upscaler asks for does not wait, its path change has settled already);
 //   2. Pipelines::PrebuildForLevel hands the builder threads a copy of every pipeline the game has
 //      drawn into those targets at the sample count the new level gives it (1 included); the old
-//      level keeps drawing meanwhile (make before break);
+//      level keeps drawing meanwhile (make before break). The same call also queues the saved lists'
+//      multisampled records at the new count behind everything else (the level seeds, level_seeds.h)
+//      for the views not drawn yet: the switch does not wait for them;
 //   3. when the copies are made (or kMaxWait has passed: the rest are made as draws ask for them,
 //      the usual background build that leaves a draw out for a few frames) and the upscaler path
 //      has settled, EdramTargets::SetMsaaLevel makes the targets again with the new samples in one
