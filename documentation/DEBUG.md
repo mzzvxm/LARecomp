@@ -62,7 +62,7 @@ Every row is live: it takes effect at once and is never saved. A page has at mos
 
 | Page | What it is for |
 |---|---|
-| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI and dither fixes, the neon pulse held on the console's 30 Hz clock), to see whether a fix caused a bug. |
+| FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the dither fix, the neon pulse held on the console's 30 Hz clock), to see whether a fix caused a bug. |
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, cheap car shadow, foliage, break FPS floor. |
 | RENDERING | The Plume renderer's debug views (AO, HDR layers), the glow visibility choice (GLOW VISIBILITY: SOFT, the default, fades a street lamp's glow at an edge instead of letting it pop; GAME is the game's one depth test), performance markers, the ghost and memory logs, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
@@ -86,11 +86,15 @@ These only read: they change nothing in the game, they cost nothing while off, a
 
 `mcla_gpu_sync_builds` (F4 or a launch argument; live, no row) is the one setting of this section that changes what the renderer does, and it is for recording a trailer: the renderer makes the pipelines of the draws in the background, and a draw whose pipeline is not ready yet is left out for a few frames (`skipped [pipeline pending ...]` in the `[gpu] scene` lines, and the HDR scene's and the upscaler masks' second draws the same way). While the switch is on nothing is left out: the draw waits for its pipeline on the render thread, so no frame misses an object, and the frames that make a new pipeline are slow. The log says `[gpu] capture sync: on`, then the first 24 waits one by one (guest frame, time, shaders) and, beside every scene interval line, `[gpu] capture sync (interval): on | N wait(s) for a pipeline a draw would have been left out for (...), X ms in all, mean, longest | session ...` (that line is absent in a run that never had the switch on). The trailer toolkit's capture mode turns the same switch on while it records.
 
-## The compare key (F1)
+## The compare keys (F1 and F12, a developer tool)
 
-The player's compare key (`bind_mcla_compare`, F1 until it is rebound in F4; the COMPARE KEY row on GRAPHICS QUALITY) flicks one graphics effect off and on without writing its setting, so the saved value, the pause row and `larecomp.toml` stay as they were. It is a view of the settings' readers (`src/gpu/effect_compare.h`), not a setting change: `LiveText::Get()` (ambient occlusion, contact shadows, sun shafts, bounce light, car self-reflections), `shadow_filter::CurrentMode()` and the bloom variant choice in `pipelines.cpp` take the flip into account. `[compare]` lines in the log say each press.
+Two keys for looking at what a graphics effect does, at the same spot: **F1** (`bind_mcla_compare`) flicks the selected effect off and on, **F12** (`bind_mcla_compare_next`) selects the next effect (bounce light, contact shadows, sun shafts, ambient occlusion, shadow filter, self-reflections, and round to the first). A label at the top of the screen says what the picture shows ("BOUNCE LIGHT: OFF" for a flick, "COMPARE: SUN SHAFTS" over ON or OFF for a selection). Both can be rebound in F4's key bindings.
 
-Two settings are debug-only or hidden from the row. `mcla_compare_effect=bloom` (F4 or the command line; the row stops at the six graphics upgrades, because the bloom size fix is a fix and has no player row) makes the key flick the bloom size fix, the same A/B as the debug menu's BLOOM SIZE FIX row, without changing the setting. `mcla_compare_label_seconds` (debug-only, live, 0.5 to 30, default 1.5) is how long the label stays up; a test run that takes a picture a second after the press sets it higher.
+They are not in a release build and not in the pause menu. Configure with `-DLARECOMP_DEV_TOOLS=ON` (CMake option, off by default) and the build has the keys, the `mcla_compare_effect` setting and the code behind them; without it there is none of the three, and the settings' readers ask a flip that is never set (`src/gpu/effect_compare.h`, the inert `State`).
+
+A flick writes no setting, so the saved value and `larecomp.toml` stay as they were. It is a view of the settings' readers, not a setting change: `LiveText::Get()` (ambient occlusion, contact shadows, sun shafts, bounce light, car self-reflections), `shadow_filter::CurrentMode()` and the bloom variant choice in `pipelines.cpp` take the flip into account. It is dropped when the setting it flips is changed or another effect is selected. `[compare]` lines in the log say each press.
+
+`mcla_compare_effect` (debug-only, live) is the selection: F12 writes it, and F4 or the command line can set it too. `mcla_compare_effect=bloom` makes F1 flick the bloom size fix, the same A/B as the debug menu's BLOOM SIZE FIX row, without changing the setting; F12 does not walk to it (the next press goes to the bounce light). `mcla_compare_label_seconds` (debug-only, live, 0.5 to 30, default 1.5) is how long the label stays up; a test run that takes a picture a second after the press sets it higher.
 
 ## The words of the graphics settings
 
