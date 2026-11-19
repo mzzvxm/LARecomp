@@ -493,6 +493,121 @@ void TestSlab() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// the mask that sees the other cars
+// ---------------------------------------------------------------------------------------------------------------------
+void TestRayParts() {
+  // car_rt_scene_rules.h / hlsl/car_rt_common.hlsli: body 1, glass 2, tyres 4, driver 8 (the player's), others 0x10.
+  Check(ra::kRayParts == 0x05, "the player's parts the rays hit: body and tyres");
+  Check(ra::kRayPartsWithOthers == 0x15, "with the other cars: 0x15");
+  Check((ra::kRayPartsWithOthers & rr::kMaskOthers) != 0, "the mask meets an instance of another car (mask 0x10)");
+  Check((ra::kRayPartsWithOthers & rr::kMaskGlass) == 0 && (ra::kRayPartsWithOthers & rr::kMaskDriver) == 0,
+        "the player's glass and driver are still left out (0xFF would take them in)");
+  Check((0x0Fu & rr::kMaskOthers) == 0, "0x0F is the player's car alone: it never meets another car");
+  Check((ra::kRayPartsWithOthers & ~0xFFu) == 0, "the mask is an instance mask's eight bits");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the region: the player's car and the cars beside it
+// ---------------------------------------------------------------------------------------------------------------------
+ra::Box MakeBox(float x0, float y0, float z0, float x1, float y1, float z1) {
+  ra::Box b;
+  b.min[0] = x0;
+  b.min[1] = y0;
+  b.min[2] = z0;
+  b.max[0] = x1;
+  b.max[1] = y1;
+  b.max[2] = z1;
+  b.valid = true;
+  return b;
+}
+
+void TestRegion() {
+  const float tan_x = 0.9f, tan_y = 0.5f;
+  const uint32_t w = 1920, h = 1080;
+  const float sun[3] = {0.0f, 1.0f, 0.0f};
+  // The player's car 6 m ahead, a car alongside to its left and a car 14 m ahead to the right.
+  const ra::Box player = MakeBox(-0.9f, -1.0f, 5.0f, 0.9f, 0.3f, 9.5f);
+  const ra::Box beside = MakeBox(-4.4f, -1.0f, 5.5f, -2.6f, 0.3f, 10.0f);
+  const ra::Box far_car = MakeBox(2.0f, -1.0f, 18.0f, 3.8f, 0.3f, 22.5f);
+  const ra::Rect r_player = ra::ScreenRect(player, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  const ra::Rect r_beside = ra::ScreenRect(beside, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  const ra::Rect r_far = ra::ScreenRect(far_car, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+
+  // The hull of a set of boxes holds each box's rectangle and nothing else.
+  const ra::Box two[2] = {player, beside};
+  const ra::Rect hull2 = ra::RegionRect(two, 2, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(hull2.x0 == std::min(r_player.x0, r_beside.x0) && hull2.x1 == std::max(r_player.x1, r_beside.x1) &&
+            hull2.y0 == std::min(r_player.y0, r_beside.y0) && hull2.y1 == std::max(r_player.y1, r_beside.y1),
+        "the region's rectangle is the hull of the two boxes' rectangles");
+  Check(hull2.x0 <= r_player.x0 && hull2.x1 >= r_player.x1 && hull2.x0 <= r_beside.x0 && hull2.x1 >= r_beside.x1,
+        "it holds both boxes' rectangles");
+  const ra::Box three[3] = {player, beside, far_car};
+  const ra::Rect hull3 = ra::RegionRect(three, 3, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(hull3.x1 >= r_far.x1 && hull3.x0 == hull2.x0, "a third car adds its own rectangle");
+  // One box alone is its own rectangle (the old behaviour).
+  const ra::Rect alone = ra::RegionRect(&player, 1, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(alone.x0 == r_player.x0 && alone.y0 == r_player.y0 && alone.x1 == r_player.x1 && alone.y1 == r_player.y1,
+        "the player's box alone gives the rectangle it gave before");
+  // The same with the sun's extrusion.
+  const float low_sun[3] = {0.3f, 0.8f, -0.5164f};
+  const ra::Rect with_sun = ra::RegionRect(two, 2, 0.6f, low_sun, ra::kSunReach, tan_x, tan_y, w, h);
+  Check(with_sun.x0 <= hull2.x0 && with_sun.x1 >= hull2.x1 && with_sun.y0 <= hull2.y0 && with_sun.y1 >= hull2.y1,
+        "the sun's extrusion only grows the region's rectangle");
+
+  // A car behind the camera is left out: it neither empties the region nor makes it the whole picture.
+  const ra::Box behind = MakeBox(-1.0f, -1.0f, -9.0f, 1.0f, 0.3f, -4.5f);
+  Check(ra::BoxBehindCamera(behind, 0.6f, 0.0f), "a car wholly behind the camera's plane is behind it");
+  Check(!ra::BoxBehindCamera(player, 0.6f, 0.0f), "a car in front of it is not");
+  Check(!ra::BoxBehindCamera(MakeBox(-1, -1, -3.0f, 1, 0.3f, 0.2f), 0.6f, 0.0f), "a car that reaches the plane is not behind it (the whole picture, as ScreenRect says)");
+  Check(!ra::BoxBehindCamera(behind, 0.6f, 8.0f), "a car behind the camera whose shadow the sun's extrusion may carry in front is kept");
+  const ra::Box with_behind[3] = {player, behind, beside};
+  const ra::Rect hull_behind = ra::RegionRect(with_behind, 3, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(hull_behind.x0 == hull2.x0 && hull_behind.x1 == hull2.x1 && hull_behind.y0 == hull2.y0 && hull_behind.y1 == hull2.y1,
+        "a car behind the camera does not change the region");
+  const ra::Rect only_behind = ra::RegionRect(&behind, 1, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(only_behind.empty(), "a region of a car behind the camera alone has no pixel");
+  ra::Box invalid;
+  const ra::Box with_invalid[2] = {invalid, player};
+  const ra::Rect hull_invalid = ra::RegionRect(with_invalid, 2, 0.6f, sun, 0.0f, tan_x, tan_y, w, h);
+  Check(hull_invalid.x0 == r_player.x0 && hull_invalid.x1 == r_player.x1, "a box that is not valid is left out");
+  Check(ra::RegionRect(nullptr, 0, 0.6f, sun, 0.0f, tan_x, tan_y, w, h).empty(), "no boxes: no pixels");
+
+  // A union box round the three cars would trace the road between them: the pixels the region does not trace are the cars' gap.
+  const float gap[3] = {0.0f, -0.9f, 14.0f};  // on the road between the player's car and the far one
+  Check(!ra::NearAnyBox(gap, three, 3, 0.6f), "a road pixel between two cars far apart is not in the region");
+  const float between[3] = {-1.75f, -0.9f, 7.0f};  // the road between the player's car and the car alongside (1.7 m gap)
+  Check(!ra::NearBox(between, player, 0.6f) || !ra::NearBox(between, beside, 0.6f), "the lane gap is not within 0.6 m of both boxes at its middle");
+  const float near_player[3] = {-1.3f, -0.9f, 7.0f};  // 0.4 m from the player's box, 1.3 m from the other's
+  Check(ra::NearAnyBox(near_player, two, 2, 0.6f), "a pixel within the reach of the player's car is in the region");
+  const float near_other[3] = {-2.3f, -0.9f, 7.0f};  // 0.3 m from the car alongside
+  Check(ra::NearAnyBox(near_other, two, 2, 0.6f) && !ra::NearBox(near_other, player, 0.6f), "a pixel within the reach of the car alongside only is in the region");
+  Check(!ra::NearAnyBox(near_other, &player, 1, 0.6f), "... and it was not with the player's box alone (the old region)");
+  const float far_pixel[3] = {8.0f, -0.9f, 7.0f};
+  Check(!ra::NearAnyBox(far_pixel, three, 3, 0.6f), "a pixel far from every car is not");
+
+  // The sun ray: from the road behind a car, toward the sun, meeting the car alongside.
+  const float to_sun[3] = {0.7071f, 0.7071f, 0.0f};  // up and to the right
+  const float shaded[3] = {-5.0f, -1.0f, 7.0f};      // left of the car alongside: the sun ray up and to the right meets it
+  float t_exit = 0.0f;
+  Check(ra::SunMeetsAnyBox(shaded, to_sun, two, 2, 0.1f, ra::kSunReach, &t_exit) && t_exit > 0.0f, "the sun ray from the road beside a car meets a box");
+  float exit_two = 0.0f, exit_beside = 0.0f;
+  ra::SunMeetsAnyBox(shaded, to_sun, two, 2, 0.1f, ra::kSunReach, &exit_two);
+  ra::SunMeetsAnyBox(shaded, to_sun, &beside, 1, 0.1f, ra::kSunReach, &exit_beside);
+  Check(exit_two >= exit_beside, "the ray's length is the farthest exit over the boxes it meets");
+  const float other_way[3] = {-0.7071f, 0.7071f, 0.0f};
+  Check(!ra::SunMeetsAnyBox(shaded, other_way, three, 3, 0.1f, ra::kSunReach, &t_exit) && t_exit == 0.0f, "a ray that meets no box meets none (length 0)");
+  Check(!ra::SunMeetsAnyBox(shaded, to_sun, &invalid, 1, 0.1f, ra::kSunReach, nullptr), "a box that is not valid is never met");
+  // The other cars' boxes are grown by the same margin the player's is.
+  Check(ra::kOtherBoxMargin == ra::kBoxMargin, "the other cars' boxes are grown as the player's is");
+  const ra::Box grown = ra::GrownBox(player, 0.15f);
+  Check(Near(grown.min[0], -1.05, 1e-6) && Near(grown.max[2], 9.65, 1e-5) && grown.valid, "GrownBox grows every side");
+  Check(ra::kMaxBoxes == 1 + ra::kMaxOtherBoxes && ra::kMaxOtherBoxes <= 15, "the region holds the player's box and at most kMaxCars others");
+  Check(((ra::kMaxOtherBoxes << ra::kPushBoxesShift) & 0xFFFFu) >> ra::kPushBoxesShift == ra::kMaxOtherBoxes &&
+            ((ra::kPushOcclusion | ra::kPushSun | (ra::kMaxRays << ra::kPushRaysShift)) >> ra::kPushBoxesShift) == 0,
+        "the boxes' count fits bits 12-15 and overlaps no other push flag");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // the term in the main pass (the plain one and the bounce light's)
 // ---------------------------------------------------------------------------------------------------------------------
 void TestCombine() {
@@ -608,6 +723,13 @@ void CheckShader(const std::string& dir) {
 
   Check(Constant(cs, "kPushOcclusion", &v) && uint32_t(v) == ra::kPushOcclusion, "car_rt_ao_cs.hlsl kPushOcclusion is the header's");
   Check(Constant(cs, "kPushSun", &v) && uint32_t(v) == ra::kPushSun, "car_rt_ao_cs.hlsl kPushSun is the header's");
+  Check(Constant(cs, "kPushBoxesShift", &v) && uint32_t(v) == ra::kPushBoxesShift, "car_rt_ao_cs.hlsl kPushBoxesShift is the header's");
+  Check(Constant(cs, "kOtherBoxMargin", &v) && Near(v, ra::kOtherBoxMargin, 1e-6), "car_rt_ao_cs.hlsl kOtherBoxMargin is the header's");
+  Check(cs.find("(flags >> kPushBoxesShift) & 0xFu") != std::string::npos && cs.find("g_push.noise.w + (b - 1u) * 2u") != std::string::npos &&
+            cs.find("asfloat(gCarRtInstances[row].xyz) - kOtherBoxMargin") != std::string::npos &&
+            cs.find("asfloat(gCarRtInstances[row + 1u].xyz) + kOtherBoxMargin") != std::string::npos,
+        "car_rt_ao_cs.hlsl reads the other cars' boxes from the table: two rows each from noise.w, the count in bits 12-15, grown by the margin");
+  Check(cs.find("sun_exit = max(sun_exit, t_exit);") != std::string::npos, "car_rt_ao_cs.hlsl takes the farthest exit over the boxes the sun ray meets");
   Check(Constant(cs, "kMinAbove", &v) && Near(v, ra::kMinAbove, 1e-6), "car_rt_ao_cs.hlsl kMinAbove is the header's");
   Check(Constant(cs, "kSelfCos", &v) && Near(v, ra::kSelfCos, 1e-6), "car_rt_ao_cs.hlsl kSelfCos is the header's");
   Check(Constant(cs, "kSunFacingLow", &v) && Near(v, ra::kSunFacingLow, 1e-6), "car_rt_ao_cs.hlsl kSunFacingLow is the header's");
@@ -647,6 +769,8 @@ int main(int argc, char** argv) {
   TestViewBox();
   TestScreenRect();
   TestSlab();
+  TestRayParts();
+  TestRegion();
   TestCombine();
   TestCodesAndFlags();
   if (!src_dir.empty()) {

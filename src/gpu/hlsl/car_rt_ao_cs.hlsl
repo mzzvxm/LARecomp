@@ -10,10 +10,12 @@
 //   b  1 where the pixel was traced, else 0 (with r and g 1)
 //   a  1
 //
-// Only the pixels of the rectangle in the push block are looked at (the host's ScreenRect: the car's box grown by the reach, and its extrusion
-// toward the sun), and of those only the pixels whose view position is within the reach of the car's box (the occlusion rays) or whose sun ray
-// meets the box (the sun ray). Everything else is written "open" at once. The occlusion's passes read the image by its slot: the main pass takes
-// min(its own visibility, the pass's r raised to the look's power), the contact march takes the darker of its own shadow and 1 - g.
+// THE REGION. Only the pixels of the rectangle in the push block are looked at (the host's RegionRect: the hull of the boxes' rectangles, each box
+// grown by the reach and extruded toward the sun), and of those only the pixels whose view position is within the reach of a box (the occlusion rays)
+// or whose sun ray meets one (the sun ray). The boxes are the player's car's (the push) and the other cars' of the top level (the car RT table's rows
+// from noise.w, two a box, the count in bits 12-15 of the flags: car_rt_instances_rules.h List::boxes), so the road between two cars is traced too.
+// Everything else is written "open" at once. The occlusion's passes read the image by its slot: the main pass (the plain one and the bounce light's)
+// takes min(its own visibility, the pass's r raised to the look's power), the contact march takes the darker of its own shadow and 1 - g.
 //
 // THE OCCLUSION RAYS: kRays (the push's) cosine weighted directions about the pixel's normal, the radius squared stratified by the ray's number, the
 // angle turned by the golden angle a ray, the whole pattern rotated by the pixel's interleaved gradient noise and shifted by the occlusion's own
@@ -22,8 +24,11 @@
 // no answers (a first hit ends the query) average to an occlusion that falls off with distance. The ray is lifted to at least kMinAbove of cosine
 // above the tangent plane.
 //
-// THE SUN RAY: one ray, from the surface toward the sun spread over the sun's disc (the push's tangent), as long as the box's far side; it is
-// cast only for a surface that faces the sun (kSunFacingLow, as the contact march's) and whose ray meets the car's box.
+// THE SUN RAY: one ray, from the surface toward the sun spread over the sun's disc (the push's tangent), as long as the far side of the farthest box
+// it meets; it is cast only for a surface that faces the sun (kSunFacingLow, as the contact march's) and whose ray meets a box.
+//
+// THE PARTS THE RAYS HIT are the mask in noise.y (car_rt_ao_rules.h kRayPartsWithOthers: the player's body and tyres and every part of another
+// car); the primary ray that snaps a vehicle's pixel takes it too, so another car's pixels are snapped onto its own triangles.
 //
 // THE PIXEL'S SURFACE. A pixel is placed by the depth (view position, normal from the depth's neighbours, as ao_common.hlsli AoNormalFromImage),
 // lifted off its surface by a few footprints. A vehicle's pixel is first snapped onto the car's triangles by a primary ray from the camera
@@ -48,20 +53,20 @@ RWTexture2D<float4> g_output : register(u0, space1);
 struct CarRtAoPush
 {
     // x the linear depth image's bindless slot, y and z the image's width and height, w the flags (car_rt_ao_rules.h kPush*): bit 0 the occlusion
-    // rays, bit 1 the sun ray, bits 8-11 the occlusion rays a pixel (1 to 4)
+    // rays, bit 1 the sun ray, bits 8-11 the occlusion rays a pixel (1 to 4), bits 12-15 the other cars' boxes (0 to 8)
     uint4 slots;
     // the pixel rectangle that is looked at: x0, y0, x1, y1 (exclusive)
     uint4 rect;
     // x the noise code (ao_stable.h NoiseCode: the main pass's, bit 30 the lattice), y the parts the rays hit (CAR_RT_MASK_*), z the frame the sun
-    // ray's spread is shifted by (0 where it stands still on the screen), w reserved
+    // ray's spread is shifted by (0 where it stands still on the screen), w the first row of the other cars' boxes in the car RT table (gCarRtInstances)
     uint4 noise;
     // x, y tan of the half field of view (the depth image's lens), z the occlusion rays' reach in metres, w the distance beyond which nothing is traced
     float4 lens;
     // xyz the direction to the sun in view space (unit; 0 = unknown), w the tangent of the sun disc's radius
     float4 light;
-    // xyz the car's box in view space, w the sun ray's reach in metres
+    // xyz the player's car's box in view space, w the sun ray's reach in metres
     float4 box_min;
-    // xyz the car's box in view space, w reserved
+    // xyz the player's car's box in view space, w reserved
     float4 box_max;
 };
 
@@ -74,6 +79,8 @@ ConstantBuffer<CarRtAoPush> g_push : register(b0, space3);
 // car_rt_ao_rules.h: the numbers and the flags.
 static const uint kPushOcclusion = 1u << 0;
 static const uint kPushSun = 1u << 1;
+static const uint kPushBoxesShift = 12;
+static const float kOtherBoxMargin = 0.15;    // what the other cars' boxes are grown by (the player's is grown on the host)
 static const float kSky = 60000.0;            // what the depth chain holds for the sky (ao_common.hlsli kAoSky)
 static const float kTwoPi = 6.283185307179586;
 static const float kGolden = 0.6180339887;
@@ -200,8 +207,9 @@ bool Blocked(float3 origin, float3 direction, float t_max, bool own, uint own_in
     return true;
 }
 
-// A vehicle's pixel snapped onto the car's triangles: a primary ray from the camera through the pixel in a window around the depth t. True: the
-// player's car is the surface here, `position` the exact point, `normal` the mesh's normal (facing the camera).
+// A vehicle's pixel snapped onto the car's triangles: a primary ray from the camera through the pixel in a window around the depth t. True: a car of
+// the top level (the player's or another's: the push's mask) is the surface here, `position` the exact point, `normal` the mesh's normal (facing
+// the camera).
 bool Snap(float2 centre, float2 size, float t, out float3 position, out float3 normal, out uint instance, out uint primitive)
 {
     position = float3(0.0, 0.0, 0.0);
@@ -262,18 +270,38 @@ float4 TracePixel(uint2 pixel, uint2 size)
     const float2 centre = float2(pixel) + 0.5;
     float3 p = ViewPos(centre, fsize, t);
 
-    // Which terms this pixel can have: the occlusion rays when it is near the car's box, the sun ray when it meets it.
+    // Which terms this pixel can have: the occlusion rays when it is near a box of the region, the sun ray when it meets one. The region is the
+    // player's car's box (the push) and the other cars' (the car RT table, two rows each from noise.w: car_rt_instances_rules.h List::boxes).
     const uint flags = g_push.slots.w;
     const float reach = g_push.lens.z;
-    const float3 box_min = g_push.box_min.xyz;
-    const float3 box_max = g_push.box_max.xyz;
-    const bool want_ao = (flags & kPushOcclusion) != 0u && all(p >= box_min - reach) && all(p <= box_max + reach);
     const float3 to_sun = g_push.light.xyz;
+    const bool ao_wanted = (flags & kPushOcclusion) != 0u;
+    const bool sun_wanted = (flags & kPushSun) != 0u && dot(to_sun, to_sun) > 0.5;
+    const uint box_count = 1u + ((flags >> kPushBoxesShift) & 0xFu);
+    bool want_ao = false;
+    bool want_sun = false;
     float sun_exit = 0.0;
-    bool want_sun = (flags & kPushSun) != 0u && dot(to_sun, to_sun) > 0.5;
-    if (want_sun)
+    [loop]
+    for (uint b = 0u; b < box_count; ++b)
     {
-        want_sun = RayMeetsBox(p, to_sun, box_min - kBoxGrowSun, box_max + kBoxGrowSun, g_push.box_min.w, sun_exit);
+        float3 box_min = g_push.box_min.xyz;
+        float3 box_max = g_push.box_max.xyz;
+        if (b != 0u)
+        {
+            const uint row = g_push.noise.w + (b - 1u) * 2u;
+            box_min = asfloat(gCarRtInstances[row].xyz) - kOtherBoxMargin;
+            box_max = asfloat(gCarRtInstances[row + 1u].xyz) + kOtherBoxMargin;
+        }
+        want_ao = want_ao || (ao_wanted && all(p >= box_min - reach) && all(p <= box_max + reach));
+        if (sun_wanted)
+        {
+            float t_exit;
+            if (RayMeetsBox(p, to_sun, box_min - kBoxGrowSun, box_max + kBoxGrowSun, g_push.box_min.w, t_exit))
+            {
+                want_sun = true;
+                sun_exit = max(sun_exit, t_exit);
+            }
+        }
     }
     if (!want_ao && !want_sun)
     {

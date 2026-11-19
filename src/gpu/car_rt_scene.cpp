@@ -401,6 +401,7 @@ uint32_t CarRtScene::ReadAndStage(uint64_t key, const car_frame::MeshReader& rea
     }
     return 0;
   }
+  staged.has_bounds = car_rt_instances::BoundsOf(staged.positions, staged.bounds_min, staged.bounds_max);
   const uint32_t triangles = staged.triangles;
   staged_triangles_ += triangles;
   staged_order_.push_back(key);
@@ -569,6 +570,9 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         it->second.last_seen = frame_;  // a mesh of a car in this frame's list is seen (the cap does not take it back)
         ref->first_index = it->second.first_index;
         ref->first_vertex = it->second.first_vertex;
+        std::memcpy(ref->bounds_min, it->second.bounds_min, sizeof(ref->bounds_min));
+        std::memcpy(ref->bounds_max, it->second.bounds_max, sizeof(ref->bounds_max));
+        ref->has_bounds = it->second.has_bounds;
         return true;
       });
   stats_counts_.missing_mesh += cars.stats.missing_mesh;
@@ -654,6 +658,9 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.valid = true;
     view_.set = res.set.get();
     view_.instance_count = count;
+    view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
+    view_.box_count = uint32_t(cars.boxes.size());
+    view_.box_row = cars.box_row;
     stats_counts_.frames_with_tlas += 1;
     stats_counts_.instances += count;
     recorded = true;
@@ -1021,6 +1028,9 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     p.mesh.first_index = first_index;
     p.mesh.index_count = index_count;
     p.mesh.last_seen = frame_;
+    std::memcpy(p.mesh.bounds_min, staged.bounds_min, sizeof(p.mesh.bounds_min));
+    std::memcpy(p.mesh.bounds_max, staged.bounds_max, sizeof(p.mesh.bounds_max));
+    p.mesh.has_bounds = staged.has_bounds;
     placed->push_back(std::move(p));
     done.push_back(key);
   }

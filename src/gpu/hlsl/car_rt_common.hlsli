@@ -35,7 +35,9 @@
 RaytracingAccelerationStructure gCarRtTlas : register(t0, CAR_RT_SPACE_NAME);
 // Per instance (InstanceIndex()): x = its mesh's first index in gCarRtIndices (uint32 units), y = its mesh's first vertex in gCarRtNormals
 // (vertices of 12 bytes), z = the flags word, w = the draw's place in car_frame::Frame::draws; for an instance of another car (mask
-// CAR_RT_MASK_OTHERS) w is instead the ROW of the car's record in this same table (after the instances' rows): see CarRtCar.
+// CAR_RT_MASK_OTHERS) w is instead the ROW of the car's record in this same table (after the instances' rows): see CarRtCar. After the cars'
+// records the table holds two rows for the box of each other car that has an instance, in view space: xyz the minimum, then xyz the maximum, as float
+// bits (car_rt_instances_rules.h List::boxes; the ray traced occlusion reads them, car_rt_ao_cs.hlsl).
 StructuredBuffer<uint4> gCarRtInstances : register(t1, CAR_RT_SPACE_NAME);
 // Every mesh's triangle-list indices (uint32, relative to the mesh's first vertex).
 ByteAddressBuffer gCarRtIndices : register(t2, CAR_RT_SPACE_NAME);

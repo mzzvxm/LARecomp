@@ -48,6 +48,7 @@
 #include <string_view>
 
 #include "ao_stable.h"
+#include "car_rt_instances_rules.h"
 #include "car_rt_scene_rules.h"
 #include "temporal_math.h"
 
@@ -114,9 +115,15 @@ inline constexpr float kSunFacingLow = 0.03f;
 inline constexpr float kMinAbove = 0.08f;
 // A hit on the instance the primary ray found, facing within this cosine of the point's normal (32 degrees), is the panel itself.
 inline constexpr float kSelfCos = 0.85f;
-// The parts the rays hit: the body and the tyres (hlsl/car_rt_common.hlsli CAR_RT_MASK_*); glass lets the light through, the driver is not in the
-// structures. The primary ray finds the same parts.
+// The parts the rays hit: the body and the tyres of the player's car (hlsl/car_rt_common.hlsli CAR_RT_MASK_*); glass lets the light through, the
+// driver is not in the structures. The primary ray finds the same parts.
 inline constexpr uint32_t kRayParts = car_rt_rules::kMaskBody | car_rt_rules::kMaskTyres;
+// With the other cars in the top level (car_rt_instances.h: every instance of another car has the mask kMaskOthers, 0x10, whatever the part), the
+// rays see them too, so the road between two cars is darkened by both: the player's body and tyres plus the others' parts, 0x15. NOT 0xFF, which
+// would add the player's own glass (0x02) and driver (0x08) that this pass leaves out, and NOT 0x0F, which is the player's car alone. The primary
+// ray that snaps a vehicle's pixel onto its triangles takes the same mask, so another car's pixel is snapped onto its own triangles as the
+// player's is (a ray that starts under its own panel finds the panel).
+inline constexpr uint32_t kRayPartsWithOthers = kRayParts | car_rt_rules::kMaskOthers;
 
 // How far a ray's origin is lifted off its surface along the normal (metres). A pixel snapped onto the triangles by the primary ray is exactly on
 // them (the reflection pass lifts 4 mm + 2 mm a metre); a pixel placed by the depth alone is within a few footprints of its surface.
@@ -229,16 +236,18 @@ inline constexpr uint32_t kContactViewFlag = 1u << 25;
 inline constexpr uint32_t kPushOcclusion = 1u << 0;
 inline constexpr uint32_t kPushSun = 1u << 1;
 inline constexpr uint32_t kPushRaysShift = 8;  // bits 8-11: the occlusion rays a pixel
+inline constexpr uint32_t kPushBoxesShift = 12;  // bits 12-15: the other cars' boxes in the car RT table (noise.w the first row), 0 to kMaxOtherBoxes
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The car's region
 // ---------------------------------------------------------------------------------------------------------------------
-// A box in the frame's view space (x right, y up, z forward).
-struct Box {
-  float min[3] = {0, 0, 0};
-  float max[3] = {0, 0, 0};
-  bool valid = false;
-};
+// A box in the frame's view space (x right, y up, z forward): car_rt_instances_rules.h's, so that the other cars' boxes from the scene are the same type.
+using Box = car_rt_instances::ViewBox;
+
+// The boxes of the region: the player's car's and at most this many of the other cars' (car_rt_instances_rules.h kMaxCars).
+inline constexpr uint32_t kMaxOtherBoxes = car_rt_instances::kMaxCars;
+inline constexpr uint32_t kMaxBoxes = 1 + kMaxOtherBoxes;
+static_assert(kMaxOtherBoxes <= 15, "the other cars' boxes are counted in four bits of the push flags");
 
 // The radius of the stand-in box when the frame has no box of the car (car_frame.h: "a sphere of a few metres around player_world's row 3").
 inline constexpr double kFallbackRadius = 3.2;
@@ -384,6 +393,86 @@ inline bool NearBox(const float p[3], const Box& box, float reach) {
     }
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The region: the player's car and the cars beside it
+// ---------------------------------------------------------------------------------------------------------------------
+// The pass traces where the player's car or another car of the top level is: its REGION is the boxes (the player's from CarFrame's box through the
+// camera, ViewBoxFor, each other car's from the scene, CarRtView::boxes), not one box round all of them: cars of a race are spread over 14 metres of
+// road and a box round them would trace all the road between and, with a car behind the camera, the whole picture. A pixel is traced if it is near
+// ANY box (the occlusion rays) or its sun ray meets ANY (the sun ray); the pass's rectangle is the hull of the boxes' rectangles.
+
+// The other cars' boxes are grown by this when the shader reads them (the scene's boxes are the transformed boxes of the meshes listed; the
+// player's is grown by kBoxMargin in ViewBoxFor): the same number.
+inline constexpr float kOtherBoxMargin = kBoxMargin;
+
+inline Box GrownBox(const Box& box, float margin) {
+  Box out = box;
+  for (int c = 0; c < 3; ++c) {
+    out.min[c] -= margin;
+    out.max[c] += margin;
+  }
+  return out;
+}
+
+// A box (grown by `reach`, and by the sun's extrusion `sun_reach` toward -to_sun, 0: none) lying wholly at or behind the camera's plane has no pixel
+// of the picture: a car behind a chase camera. (ScreenRect would make the whole image of a box that reaches the plane.)
+inline bool BoxBehindCamera(const Box& box, float reach, float sun_reach) {
+  return box.max[2] + reach + std::max(sun_reach, 0.0f) <= kNearZ;
+}
+
+// The pixels that can hold a point near any of the boxes (grown by `reach`) or in the shadow the sun's rays carry from them (`sun_reach`): the hull
+// of the boxes' rectangles (ScreenRect), a box that is not valid or is wholly behind the camera left out. Empty when no box has pixels.
+inline Rect RegionRect(const Box* boxes, uint32_t count, float reach, const float to_sun[3], float sun_reach, float tan_x, float tan_y,
+                       uint32_t width, uint32_t height) {
+  Rect hull;
+  bool any = false;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!boxes[i].valid || BoxBehindCamera(boxes[i], reach, sun_reach)) {
+      continue;
+    }
+    const Rect r = ScreenRect(boxes[i], reach, to_sun, sun_reach, tan_x, tan_y, width, height);
+    if (r.empty()) {
+      continue;
+    }
+    if (!any) {
+      hull = r;
+      any = true;
+    } else {
+      hull.x0 = std::min(hull.x0, r.x0);
+      hull.y0 = std::min(hull.y0, r.y0);
+      hull.x1 = std::max(hull.x1, r.x1);
+      hull.y1 = std::max(hull.y1, r.y1);
+    }
+  }
+  return hull;
+}
+
+// The shader's region tests (hlsl/car_rt_ao_cs.hlsl TracePixel): the pixel is near any box, and the sun ray meets any box (`t_exit` the farthest
+// exit over the boxes it meets: the ray's length).
+inline bool NearAnyBox(const float p[3], const Box* boxes, uint32_t count, float reach) {
+  for (uint32_t i = 0; i < count; ++i) {
+    if (boxes[i].valid && NearBox(p, boxes[i], reach)) {
+      return true;
+    }
+  }
+  return false;
+}
+inline bool SunMeetsAnyBox(const float origin[3], const float to_sun[3], const Box* boxes, uint32_t count, float grow, float t_max, float* t_exit) {
+  bool met = false;
+  float farthest = 0.0f;
+  for (uint32_t i = 0; i < count; ++i) {
+    float t_leave = 0.0f;
+    if (boxes[i].valid && RayMeetsBox(origin, to_sun, boxes[i], grow, t_max, nullptr, &t_leave)) {
+      met = true;
+      farthest = std::max(farthest, t_leave);
+    }
+  }
+  if (t_exit) {
+    *t_exit = farthest;
+  }
+  return met;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

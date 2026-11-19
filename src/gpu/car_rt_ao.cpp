@@ -3,6 +3,7 @@
 #include "car_rt_ao.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -266,7 +267,8 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
     }
     return result;
   }
-  // The car's box in view space, as the top level's instances are placed.
+  // The region: the player's car's box in view space, as the top level's instances are placed, and the other cars' boxes (the scene's, from their
+  // instances' transformed mesh boxes: car_rt_instances_rules.h), each grown a little.
   const car_frame::Frame& frame = car_frame_->Current();
   rules::Box box;
   const double position[3] = {frame.player_world.m[3][0], frame.player_world.m[3][1], frame.player_world.m[3][2]};
@@ -285,8 +287,15 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   const bool sun = terms.contact && have_sun;
   const uint32_t rays = ReadRays(in.ultra);
   const float reach = ReadReach();
-  const rules::Rect rect = rules::ScreenRect(box, terms.occlusion ? reach : 0.0f, in.to_sun, sun ? rules::kSunReach : 0.0f, in.tan_x, in.tan_y,
-                                             in.depth->width, in.depth->height);
+  std::array<rules::Box, rules::kMaxBoxes> region;
+  uint32_t boxes = 0;
+  region[boxes++] = box;
+  const uint32_t others = view.boxes ? std::min(view.box_count, rules::kMaxOtherBoxes) : 0u;
+  for (uint32_t i = 0; i < others; ++i) {
+    region[boxes++] = rules::GrownBox(view.boxes[i], rules::kOtherBoxMargin);
+  }
+  const rules::Rect rect = rules::RegionRect(region.data(), boxes, terms.occlusion ? reach : 0.0f, in.to_sun, sun ? rules::kSunReach : 0.0f, in.tan_x,
+                                             in.tan_y, in.depth->width, in.depth->height);
   if (rect.empty() || (!terms.occlusion && !sun)) {
     ++no_box_;
     return result;  // the car is off the picture
@@ -300,14 +309,16 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   push.slots[0] = in.depth->slot;
   push.slots[1] = in.depth->width;
   push.slots[2] = in.depth->height;
-  push.slots[3] = (terms.occlusion ? rules::kPushOcclusion : 0u) | (sun ? rules::kPushSun : 0u) | (rays << rules::kPushRaysShift);
+  push.slots[3] = (terms.occlusion ? rules::kPushOcclusion : 0u) | (sun ? rules::kPushSun : 0u) | (rays << rules::kPushRaysShift) |
+                  (others << rules::kPushBoxesShift);
   push.rect[0] = rect.x0;
   push.rect[1] = rect.y0;
   push.rect[2] = rect.x1;
   push.rect[3] = rect.y1;
   push.noise[0] = in.noise_code;
-  push.noise[1] = rules::kRayParts;
+  push.noise[1] = rules::kRayPartsWithOthers;  // the player's body and tyres, and every part of another car
   push.noise[2] = in.sun_frame;
+  push.noise[3] = view.box_row;  // the first row of the other cars' boxes in the car RT table (two rows a box)
   push.lens[0] = in.tan_x;
   push.lens[1] = in.tan_y;
   push.lens[2] = reach;
@@ -354,27 +365,28 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   ++passes_run_;
   rect_pixels_ += rect.area();
   rays_estimated_ += uint64_t(rules::EstimatedRays(rect.area(), terms.occlusion ? rays : 0u, sun));
-  LogState(terms, in, rect, rays, reach, view.instance_count, box);
+  LogState(terms, in, rect, rays, reach, view.instance_count, box, others);
   return result;
 }
 
 void CarRtAo::LogState(const rules::Terms& terms, const Inputs& in, const rules::Rect& rect, uint32_t rays, float reach, uint32_t instances,
-                       const rules::Box& box) {
-  const uint32_t state = (terms.occlusion ? 1u : 0u) | (terms.contact ? 2u : 0u) | (rays << 4);
+                       const rules::Box& box, uint32_t other_boxes) {
+  const uint32_t state = (terms.occlusion ? 1u : 0u) | (terms.contact ? 2u : 0u) | (rays << 4) | (std::min(other_boxes, 1u) << 8);
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} (the occlusion's traced size), {} instances; occlusion {} ({} rays a pixel, reach {:.2f} m, "
                 "the visibility pass takes the darker of its own and this one's), sun ray {} (the contact march takes the darker shadow); the car's box in "
-                "view space ({:.2f} {:.2f} {:.2f}) to ({:.2f} {:.2f} {:.2f}), the pixel rectangle {}x{} at ({}, {}), about {:.2f} million rays "
-                "estimated (pass timing label \"ao rt\"; mcla_gpu_ao_rt off compares)",
+                "view space ({:.2f} {:.2f} {:.2f}) to ({:.2f} {:.2f} {:.2f}) and {} other cars' boxes, the pixel rectangle {}x{} at ({}, {}), about {:.2f} "
+                "million rays estimated (pass timing label \"ao rt\"; mcla_gpu_ao_rt off compares)",
                 kPrefix, in.frame, in.depth->width, in.depth->height, instances, terms.occlusion ? "on" : "off", rays, reach, terms.contact ? "on" : "off",
-                box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], rect.width(), rect.height(), rect.x0, rect.y0,
+                box.min[0], box.min[1], box.min[2], box.max[0], box.max[1], box.max[2], other_boxes, rect.width(), rect.height(), rect.x0, rect.y0,
                 rules::EstimatedRays(rect.area(), terms.occlusion ? rays : 0u, terms.contact) / 1.0e6);
     last_state_ = state;
   } else if (state != last_state_) {
     last_state_ = state;
-    REXLOG_INFO("{} frame {}: occlusion {} ({} rays a pixel), sun ray {} (the settings or the effects' levels changed)", kPrefix, in.frame,
-                terms.occlusion ? "on" : "off", rays, terms.contact ? "on" : "off");
+    REXLOG_INFO("{} frame {}: occlusion {} ({} rays a pixel), sun ray {}, {} (the settings, the effects' levels or the cars beside the player's changed)",
+                kPrefix, in.frame, terms.occlusion ? "on" : "off", rays, terms.contact ? "on" : "off",
+                other_boxes != 0 ? "other cars in the region" : "the player's car alone");
   }
   if (passes_run_ % kLogEvery == 0) {
     REXLOG_INFO("{} {} passes since the start, about {:.1f} million rays estimated, {} frames wanted without the car's structures, {} without its box, {} "

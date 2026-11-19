@@ -1,16 +1,17 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- ambient occlusion and contact shadows around the player's car, ray traced
+// MCLA GPU renderer -- ambient occlusion and contact shadows around the player's car and the cars beside it, ray traced
 // ===========================================================================
 // The screen-space occlusion (ao.h) and the contact march (hlsl/ao_contact_ps.hlsl) see only what the camera sees: not the far side of a wheel
-// well, not the body over a tyre, not the road at the foot of a car whose underside hides it. On a device that can trace rays against the player's
-// car (car_rt_scene.h: one top level structure of the car in the frame's view space) this pass casts a few SHORT rays from every pixel near the car,
-// and the occlusion's own passes take the answer: the main pass the occlusion term (the darker of its own visibility and this one's), the contact
-// march the sun term (the darker of its shadow, the car's shadow map's and this one's). car_rt_ao_rules.h has the design, the numbers and the
-// maths that need no device; hlsl/car_rt_ao_cs.hlsl the pass.
+// well, not the body over a tyre, not the road at the foot of a car whose underside hides it. On a device that can trace rays against the cars
+// (car_rt_scene.h: one top level structure of the player's car and the nearby cars in the frame's view space) this pass casts a few SHORT rays from
+// every pixel near them, and the occlusion's own passes take the answer: the main pass (the plain one and the bounce light's) the occlusion term (the
+// darker of its own visibility and this one's), the contact march the sun term (the darker of its shadow, the car's shadow map's and this one's).
+// car_rt_ao_rules.h has the design, the numbers and the maths that need no device; hlsl/car_rt_ao_cs.hlsl the pass.
 //
 // There is no setting of its own for a player: it belongs to the occlusion (mcla_gpu_ao) and the contact shadows (mcla_gpu_contact_shadows), runs
-// where the device can trace the car (the same decision the ray traced car self-reflection makes: CarRtSupported) and where one of the two is on, and
+// where the device can trace the car (the same decision the ray traced car self-reflection makes: CarRtSupported; D3D12 with DXR 1.1, or Vulkan with
+// ray queries) and where one of the two is on, and
 // follows their levels (the occlusion's high traces 2 rays a pixel, ultra 4) and their class defaults (an integrated GPU has neither on). The debug
 // cvars (ao.h's list):
 //
@@ -22,14 +23,17 @@
 //   mcla_gpu_ao_view 2       the occlusion's visibility (with the term in it): compare with mcla_gpu_ao_rt off.
 //
 // WHERE IT RUNS. The structures are built at the history trigger (CarRtScene::OnResolve, the game's mid-scene depth copy), and the occlusion's passes
-// run at the same copy, so the Scene calls the structures' build BEFORE the occlusion's passes in a frame that wants this pass (ao.h
-// CarRtBeforeAo; scene.cpp OnResolve) and the pass is one dispatch inside AmbientOcclusion::Run, after the depth chain and before the visibility pass:
-// it reads the occlusion's level 0 linear depth (vehicle bit in its lowest bit) and writes an image of the same size that the visibility pass
-// (slots.x, flag bit 31) and the contact march (slots.x, flag bit 31) read.
+// run at the same copy, so the Scene builds the structures BEFORE the occlusion's passes in every frame (scene.cpp OnResolve documents the order; the
+// structures' check pass, which reads the occlusion's depth, comes after). The pass is one dispatch inside AmbientOcclusion::Run, after the depth chain
+// and before the visibility pass: it reads the occlusion's level 0 linear depth (vehicle bit in its lowest bit) and writes an image of the same size
+// that the visibility pass (lin.x, flag bit 31: the plain pass and the bounce light's) and the contact march (slots.x, flag bit 31) read.
 //
-// THE CAR'S REGION. CarFrame's world box of the car (or a sphere of a few metres where the frame has none) through the frame's camera gives a box in
-// view space (car_rt_ao_rules.h ViewBoxFor); ScreenRect turns it, grown by the reach and extruded toward the sun, into the pixel rectangle the
-// dispatch looks at, and the shader traces only the pixels within the reach of the box or whose sun ray meets it. A thread outside the rectangle
+// THE REGION. The player's car's world box (CarFrame's, or a sphere of a few metres where the frame has none) through the frame's camera gives a box in
+// view space (car_rt_ao_rules.h ViewBoxFor), and each other car of the top level has its own (CarRtView::boxes: the transformed boxes of its listed
+// meshes, car_rt_instances_rules.h); the boxes, not one box round them all, are the region (RegionRect: the hull of their pixel rectangles, each
+// grown by the reach and extruded toward the sun; a car wholly behind the camera is left out). The shader traces a pixel only if it is within the
+// reach of a box (the occlusion rays) or its sun ray meets one, and the rays hit the player's body and tyres and every part of the other cars
+// (kRayPartsWithOthers, 0x15), so the road between two cars is darkened by both and a car's shadow falls on the other. A thread outside the rectangle
 // writes "open" and ends, so the image is whole every frame and the consumers read it with no rectangle of their own.
 //
 // COST (an estimate, not measured: CHECK on the first run; the pass is timed as "ao rt" by PassTiming): a chase view has the car and its
@@ -84,7 +88,7 @@ class CarRtAo {
   // The frame's start (AmbientOcclusion::BeginFrame): reads the setting. `occlusion_on` and `contact_on` are the effects' levels in this frame
   // (not off, their pipelines built). When the pass is wanted and can run, asks the scene for this frame's structures.
   void BeginFrame(bool occlusion_on, bool contact_on);
-  // True while the pass is wanted this frame: the Scene builds the structures before the occlusion's passes then.
+  // True while the pass is wanted this frame (the occlusion's passes then record it in Run, if the scene has a top level).
   bool wanted() const { return wanted_; }
 
   // What the occlusion's passes tell of this frame (AmbientOcclusion::Run).
@@ -122,9 +126,9 @@ class CarRtAo {
  private:
   // The push block of the pass (hlsl/car_rt_ao_cs.hlsl CarRtAoPush), 112 bytes.
   struct Push {
-    uint32_t slots[4];  // the depth image's slot, the image's width and height, the flags (car_rt_ao_rules.h kPush*, the rays a pixel in bits 8-11)
+    uint32_t slots[4];  // the depth image's slot, the image's width and height, the flags (car_rt_ao_rules.h kPush*: the rays a pixel in bits 8-11, the other cars' boxes 12-15)
     uint32_t rect[4];   // the pixel rectangle that is looked at: x0, y0, x1, y1
-    uint32_t noise[4];  // the noise code, the parts the rays hit, the sun ray's frame, reserved
+    uint32_t noise[4];  // the noise code, the parts the rays hit, the sun ray's frame, the first row of the other cars' boxes in the car RT table
     float lens[4];      // tan half field of view x and y, the occlusion rays' reach, the distance beyond which nothing is traced
     float light[4];     // the direction to the sun in view space, the tangent of the sun disc's radius
     float box_min[4];   // the car's box in view space, the sun ray's reach
@@ -146,7 +150,7 @@ class CarRtAo {
   bool EnsureOutput(uint32_t width, uint32_t height);
   void RetireSet();
   void LogState(const car_rt_ao::Terms& terms, const Inputs& inputs, const car_rt_ao::Rect& rect, uint32_t rays, float reach, uint32_t instances,
-                const car_rt_ao::Box& box);
+                const car_rt_ao::Box& box, uint32_t other_boxes);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;

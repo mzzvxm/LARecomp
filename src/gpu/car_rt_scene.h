@@ -40,6 +40,8 @@
 //     the SAME structure its model's other cars use (the key is the model's triangles in model space) with the mask CAR_RT_MASK_OTHERS: the
 //     reflection's rays hit it, the primary ray that finds the player's car never does. The other cars' share of the memory stops short of the
 //     cap by a reserve for the player's own car. mcla_gpu_car_rt_cars (-1 class, 0 none, N) and mcla_gpu_car_rt_cars_radius are the debug switches.
+//     Each kept car's BOX in view space (its instances' transformed mesh boxes) is kept too: CarRtView::boxes, and in the table after the cars' rows,
+//     for the ray traced occlusion's region (car_rt_ao.h), which traces round the player's car and each of them, not round one box that holds them all.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -95,13 +97,21 @@ class UploadRing;
 //                                       y = its mesh's first vertex in buffer 3, z = flags (car_rt_common.hlsli CAR_RT_*),
 //                                       w = the draw's place in car_frame::Frame::draws (an instance of another car: the row of its car's
 //                                       record, which follows the instances' rows in this table: xyz the car's body centre in view space,
-//                                       w its radius, as float bits)
+//                                       w its radius, as float bits); after the cars' records come two rows for the box of each other car
+//                                       that has an instance (CarRtView::box_row): its minimum and its maximum in view space, as float bits
 //   2  ByteAddressBuffer                every mesh's triangle-list indices (uint32, relative to the mesh's first vertex)
 //   3  ByteAddressBuffer                every mesh's vertex normals (float3, 12 bytes a vertex, model space, unit length)
 struct CarRtView {
   bool valid = false;                         // this frame's top level was built and recorded on the list before the caller's pass
   plume::RenderDescriptorSet* set = nullptr;  // bound by the caller at its own set index
   uint32_t instance_count = 0;
+  // The OTHER cars' boxes in the frame's view space (the union of each kept car's instances' transformed mesh boxes), one an other car with any
+  // instance in this top level, nearest first. `boxes` points at the scene's own list (valid until the next OnResolve or the present). The same
+  // boxes are in binding 1's table for a shader: two rows a box (minimum, maximum as float bits) from row `box_row`. Where the player's own box
+  // is (CarFrame's world box through the camera) is up to the caller: this is what the scene knows of the cars beside it.
+  const car_rt_instances::ViewBox* boxes = nullptr;
+  uint32_t box_count = 0;
+  uint32_t box_row = 0;
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
@@ -168,6 +178,9 @@ class CarRtScene final : public car_frame::Listener {
     std::vector<float> normals;
     std::vector<uint32_t> indices;
     uint32_t triangles = 0;
+    float bounds_min[3] = {};  // the mesh's box in its model space (car_rt_instances_rules.h BoundsOf)
+    float bounds_max[3] = {};
+    bool has_bounds = false;
   };
   // A mesh in the shared buffers, with its bottom-level structure once built.
   struct Mesh {
@@ -180,6 +193,9 @@ class CarRtScene final : public car_frame::Listener {
     uint64_t structure_size = 0;
     uint64_t bytes = 0;  // positions, normals, indices and structure
     uint64_t last_seen = 0;
+    float bounds_min[3] = {};  // the mesh's box in its model space, for the cars' boxes (car_rt_instances_rules.h GrowBox)
+    float bounds_max[3] = {};
+    bool has_bounds = false;
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
   };
   // A shared buffer and what its last barrier left it for (Plume tracks the D3D12 state on the buffer itself; this says whether the next
