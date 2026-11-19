@@ -74,10 +74,11 @@ REXCVAR_DEFINE_BOOL(menu_mouse_dump_new, false, "MCLA/Input",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_mouse_trust_layouts, false, "MCLA/Input",
-    "Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage, pop-ups, dialogs) for the hover and for clicks on rows. Off: those menus are read and "
+    "Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage's other pages, dialogs) for the hover and for clicks on rows. The garage's first menu and its two-row pop-ups do not need it "
+    "(their card is fitted to pictures). Off: those menus are read and "
     "logged (`[menu-mouse] menu ...: FALLBACK (the layout ... is not checked against a picture yet ...)`) but treated as a fallback menu: no hover, a left click presses the highlighted row, "
     "the wheel and the right button work. Every page of those movies is a quad in the game's 3D menu scene whose size follows its list, so a scale and offset read from the clip tree "
-    "cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); the tour kbm-menu-mouse turns this on to measure it.")
+    "cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); a page gets a card of its own when its pictures are measured.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
