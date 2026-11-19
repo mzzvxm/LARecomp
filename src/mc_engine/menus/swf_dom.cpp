@@ -12,6 +12,7 @@
 
 #include "mc_engine/hooks/hooks_internal.h"
 #include "mc_engine/core/logging.h"
+#include "mc_engine/input/menu_mouse.h"
 #include "pause_menu.h"
 #include "swf_import.h"
 #include "ui_palette.h"
@@ -273,6 +274,7 @@ extern "C" REX_FUNC(rex_sub_821FC588) {
     const uint64_t r3 = ctx.r3.u64;
     PauseMenuFormsTick();
     larecomp::UiPaletteTick(base);
+    larecomp::MenuMouseTick(base);  // the mouse in the menus: the pointer's hover / clicks / wheel (input/menu_mouse.cpp)
     ctx.r3.u64 = r3;
 }
 
