@@ -164,6 +164,9 @@ const ItemDef kDebugFixesItems[] = {
     // live; the first time it shows, the shaders are built. Needs the shader pack's variant file.
     NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp", "UI SHARPEN: ",
                    kUiSharpVals, Len(kUiSharpVals), "%g", "", "OFF")),
+    // The HUD's small render-to-texture views (the minimap's 220x220 picture, the phone screen's 256x256, a 128x128 one) drawn at the render scale instead of
+    // the game's sizes: sharper minimap and phone text at 1080p and 4K (gpu/side_view_ui_map.cpp). Live: the targets are remade at the next frame.
+    NativeOnly(Bool("PM_RxDbgUiMinimap", "mcla_ui_minimap_scale", "UI MINIMAP SIZE: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

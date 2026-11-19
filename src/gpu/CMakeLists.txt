@@ -78,6 +78,7 @@ add_library(larecomp_gpu OBJECT
     side_view_env.cpp
     side_view_reflection.cpp
     side_view_shadow.cpp
+    side_view_ui_map.cpp
     side_views.cpp
     split.cpp
     stream.cpp

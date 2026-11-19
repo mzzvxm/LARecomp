@@ -457,10 +457,10 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   }
   // The side views (side_views.h): the scale each class starts at, from the settings as they stand
   // (`auto` by the GPU class, gpu_class.h; a change while the game runs is UpdateSideViews').
-  side_scales_ = side_views::Wanted();
+  side_scales_ = side_views::Wanted(resolution_scale_);
   side_dirty_ = false;
   side_stage_ = SideStage{};
-  for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+  for (const SideView view : kAllSideViews) {
     if (!side_scales_[view].unit()) {
       REXLOG_INFO("[gpu] edram: the {} side view is made at {}x the game's size (setting '{}'); "
                   "the game's own size is 1x",
@@ -738,7 +738,8 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene,
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
   DecideScene();  // may give the host MSAA level up for an upscaler that runs from the start
-  return Retarget(output, scene, msaa_level_, side_scales_, list);
+  // The side view classes that follow the screen's scale (the HUD's small views) move with it, in the same step.
+  return Retarget(output, scene, msaa_level_, side_views::FollowOutput(side_scales_, output), list);
 }
 
 bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) {
@@ -807,7 +808,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level, const Sid
       if (scale_move_failures_logged_ < 4) {
         ++scale_move_failures_logged_;
         std::string sides;
-        for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+        for (const SideView view : kAllSideViews) {
           if (side[view] != side_scales_[view]) {
             sides += std::format("{}{} {}x to {}x", sides.empty() ? "; side views: " : ", ",
                                  side_views::Name(view), side_scales_[view], side[view]);
@@ -877,7 +878,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level, const Sid
   if (side != side_before) {
     // A side view class moved (SetSideScales), with or without the rest: one line a class. The
     // memory is that of everything remade in this step.
-    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+    for (const SideView view : kAllSideViews) {
       if (side[view] == side_before[view]) {
         continue;
       }
@@ -978,7 +979,7 @@ void EdramTargets::UpdateSideViews(plume::RenderCommandList* list) {
     }
     return;
   }
-  const SideScales wanted = side_views::Wanted();
+  const SideScales wanted = side_views::Wanted(resolution_scale_);
   if (wanted == side_scales_) {
     side_stage_ = SideStage{};
     return;
@@ -1004,7 +1005,7 @@ void EdramTargets::UpdateSideViews(plume::RenderCommandList* list) {
     if (!side_stage_.failure_logged) {
       side_stage_.failure_logged = true;
       std::string what;
-      for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+      for (const SideView view : kAllSideViews) {
         if (wanted[view] != before[view]) {
           what += std::format("{}{} {}x", what.empty() ? "" : ", ", side_views::Name(view),
                               wanted[view]);
@@ -1948,7 +1949,7 @@ std::string EdramTargets::TakeSummary() {
   {
     // The side views: each class's scale and what its targets hold now.
     std::string sides;
-    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+    for (const SideView view : kAllSideViews) {
       uint32_t members = 0;
       uint32_t samples = 0;
       uint64_t member_bytes = 0;
