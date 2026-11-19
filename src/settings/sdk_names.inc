@@ -54,7 +54,8 @@
 {"vulkan_texture_load_storage_copy", "gpu.vulkan.texture_load_storage_copy"},
 // window, video mode
 {"fullscreen", "ui.fullscreen"},
-{"fullscreen_exclusive", "ui.fullscreen_exclusive"},
+// fullscreen_exclusive is not here on purpose: LARecomp has a setting of that name (larecomp.fullscreen_exclusive, the DISPLAY MODE row's) and its own
+// meaning (display_mode.h), so the flat name is LARecomp's and the SDK's ui.fullscreen_exclusive is reached by its full name only.
 {"window_width", "ui.window_width"},
 {"window_height", "ui.window_height"},
 {"video_mode_width", "ui.video_mode_width"},
