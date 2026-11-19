@@ -34,7 +34,9 @@ int g_failed = 0;
 struct FakeLookup {
   std::set<std::string> aliases = {"d3d12_adapter",  "vulkan_device",  "texture_cache_memory_limit_soft", "vsync",
                                    "fullscreen",     "log_file",       "mcla_gpu_ao",                     "debug_menu",
-                                   "build_shader_packs_force", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit"};
+                                   "build_shader_packs_force", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit",
+                                   // the removed names (kRemovedNames in settings/larecomp_settings.cpp): an alias to "", no setting
+                                   "mcla_gpu", "mcla_native_gfx_nocp"};
   std::map<std::string, std::string> full = {
       {"d3d12_adapter", "gpu.d3d12.adapter"},
       {"vulkan_device", "gpu.vulkan.device"},
@@ -216,6 +218,24 @@ void TestLauncherFlags() {
   CHECK(Run("mcla_prepare_shaders", "true", kPlume).verdict == Verdict::kUnknown);
 }
 
+// The two renderer switches of 0.10 are not settings any more (gpu.driver chooses the renderer) but stay names the registry ignores
+// (an alias to ""): an old shortcut or launcher box with one of them must not stop the start, and must not be reported as a
+// name nothing knows. The verdict is kApply: ApplyCommandLineSettings hands the name to the registry, which answers "<name> was
+// removed and is ignored" and takes nothing.
+void TestRemovedRendererSwitches() {
+  for (const Selection* selection : {&kPlume, &kXeniaD3d12}) {
+    const Decision off = Run("mcla_gpu", "false", *selection);
+    CHECK(off.verdict == Verdict::kApply && off.set.size() == 1 && off.set[0].name == "mcla_gpu" && off.set[0].value == "false");
+    CHECK(Run("mcla_gpu", std::nullopt, *selection).verdict == Verdict::kApply);
+    CHECK(Run("no-mcla_gpu", std::nullopt, *selection).verdict == Verdict::kApply);
+    CHECK(Run("mcla_native_gfx_nocp", "false", *selection).verdict == Verdict::kApply);
+    CHECK(Run("no-mcla_native_gfx_nocp", std::nullopt, *selection).verdict == Verdict::kApply);
+  }
+  // Only the exact names: the settings that start the same way are still judged by their own rules.
+  CHECK(Run("mcla_gpu_ao", "high", kPlume).verdict == Verdict::kApply);
+  CHECK(Run("mcla_gpu_backend", "vulkan", kPlume).verdict == Verdict::kUnknown);
+}
+
 void TestSplit() {
   const std::vector<Option> options = {{"build_shader_packs", std::nullopt},
                                        {"game_data_root", "C:/Games/My Game"},
@@ -286,6 +306,7 @@ int main() {
   TestNamesNothingKnows();
   TestChangedMeaningFlags();
   TestLauncherFlags();
+  TestRemovedRendererSwitches();
   TestSplit();
   TestSelectors();
   TestNames();

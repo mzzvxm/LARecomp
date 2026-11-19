@@ -9,8 +9,10 @@
 // XENIA renderer), and then nothing of src/gpu runs: no shader pack, no pipeline cache, no Plume device. "none" is what the batch
 // actions (--precache_pipelines) leave, because they load no driver at all: the device they build on is LARecomp's own.
 //
-// Before 0.11 the choice was the pair mcla_gpu / mcla_native_gfx_nocp. Both settings still exist (their default, true, is also what
-// a XENIA run has), they no longer select anything, and nothing may read them to ask "which renderer".
+// Before 0.11 the choice was the pair mcla_gpu / mcla_native_gfx_nocp. Both are gone as settings (their default, true, was also
+// what a XENIA run had, so reading them could not tell the renderers apart): a line naming one in larecomp.toml, on the command line
+// or in the environment is ignored with a note (kRemovedNames in settings/larecomp_settings.cpp), and ApplyPlayerConfig reads the
+// two keys from the raw file only to set gpu.driver for an old file.
 #include <string_view>
 
 namespace mcla::gpu {

@@ -441,13 +441,6 @@ class NativeGfxSettings final : public rex::SettingOwner {
                     "for every pixel, blurring the player's car with the world. Off restores "
                     "the old behaviour, for A/B.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_native_gfx_nocp, true, "Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls "
-    "LoadGpuPlugin and rexgpu-xenos is never loaded: no command processor, no PM4 parser, no "
-    "register file, no EDRAM render-target cache, no shader translator. The app then supplies "
-    "what the guest still needs and what none of that was: the GPU register window, the vblank "
-    "source, and a swapchain to present on. "
-    "Decided once at startup -- whether the emulator is in the process is not a runtime setting.", rex::kDebugOnly, rex::kRestart);
-
   REX_SETTING(bool, mcla_native_gfx_nocp_vsync, false, "Frame pacing for the no-command-processor mode: on = the guest video mode's refresh rate, "
     "off = 1000 Hz, matching what the emulated path does with vsync off. "
     "This exists because the SDK's `vsync` cvar is defined in "
@@ -957,7 +950,6 @@ inline auto& mcla_native_gfx_mrt = g_nativegfx.mcla_native_gfx_mrt;
 inline auto& mcla_native_gfx_msaa = g_nativegfx.mcla_native_gfx_msaa;
 inline auto& mcla_native_gfx_msaa_depth_cs = g_nativegfx.mcla_native_gfx_msaa_depth_cs;
 inline auto& mcla_native_gfx_msaa_stencil = g_nativegfx.mcla_native_gfx_msaa_stencil;
-inline auto& mcla_native_gfx_nocp = g_nativegfx.mcla_native_gfx_nocp;
 inline auto& mcla_native_gfx_nocp_vsync = g_nativegfx.mcla_native_gfx_nocp_vsync;
 inline auto& mcla_native_gfx_overlap_index = g_nativegfx.mcla_native_gfx_overlap_index;
 inline auto& mcla_native_gfx_own_device = g_nativegfx.mcla_native_gfx_own_device;
