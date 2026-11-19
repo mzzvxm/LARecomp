@@ -72,6 +72,9 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
     list_.items.push_back(item);
     list_.rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, i));
     ++list_.stats.player_instances;
+    if (ref.has_bounds) {
+      ci::GrowBox(&list_.player_box, item.transform, ref);  // (a mesh without a box would add its origin alone: left out)
+    }
   }
   // The other cars: the nearest whole cars that fit the instance budget.
   if (limits.On() && !frame.other_cars.empty()) {

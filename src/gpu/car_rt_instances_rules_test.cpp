@@ -513,9 +513,19 @@ void TestCarBoxes() {
   Check(list.rows[0].draw == 5 || list.rows[0].draw == 4 || list.rows[0].draw == 6, "an instance names its car's row");
   Check(list.rows[2].draw >= 4 && list.rows[2].draw <= 6, "... which is before the boxes' rows");
 
+  // The player's own box (the check's scope): grown instance by instance as CarRtInstances::Build does, tight to the car's parts, empty after Clear.
+  Check(!list.player_box.valid, "no player box until an instance of the player's car is grown into it");
+  float to_view[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 8}};  // the car 8 m ahead of the camera
+  ci::GrowBox(&list.player_box, to_view, body);
+  ci::GrowBox(&list.player_box, to_view, wheel);
+  Check(list.player_box.valid && Near(list.player_box.min[0], -0.9) && Near(list.player_box.max[0], 0.9) && Near(list.player_box.min[2], 5.8) &&
+            Near(list.player_box.max[2], 10.2) && Near(list.player_box.max[1], 1.3) && Near(list.player_box.min[1], -0.3),
+        "the player's box holds the body and the wheel (x -0.9 to 0.9, y -0.3 to 1.3, z 5.8 to 10.2)");
+
   // Clear forgets the boxes too.
   list.Clear();
   Check(list.boxes.empty() && list.box_row == 0 && list.rows.empty(), "Clear empties the boxes and their row");
+  Check(!list.player_box.valid, "Clear empties the player's box");
 }
 
 }  // namespace

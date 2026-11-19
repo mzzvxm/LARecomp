@@ -435,12 +435,16 @@ struct List {
   // inside these and the player's own box (hlsl/car_rt_ao_cs.hlsl).
   std::vector<ViewBox> boxes;
   uint32_t box_row = 0;
+  // The player's own car's box in the frame's view space: its listed instances' transformed mesh boxes (the same kind of box as `boxes`, tight to what
+  // the scene holds of the car). Not valid when no listed instance has a mesh box. The check's scope (car_rt_scene_rules.h) places a pixel in it.
+  ViewBox player_box;
   ListStats stats;
   void Clear() {
     items.clear();
     rows.clear();
     boxes.clear();
     box_row = 0;
+    player_box = ViewBox{};
     stats = ListStats{};
   }
 };

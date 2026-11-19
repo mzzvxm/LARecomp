@@ -458,11 +458,11 @@ inline bool TotalsChangedMuch(uint64_t last_logged, uint64_t now) {
 // ---------------------------------------------------------------------------
 // the check pass's statistics (hlsl/car_rt_check_cs.hlsl)
 // ---------------------------------------------------------------------------
-// The shader counts into 16 words: for each vehicle pixel of the AO's linear depth image a ray from the view-space origin through the
-// pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction has z = 1) is compared with the
-// pixel's own distance.
-inline constexpr uint32_t kStatsWords = 16;
-inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image
+// The shader counts into 20 words: for each vehicle pixel of the AO's linear depth image that the scene is meant to hold (see the scope below) a
+// ray from the view-space origin through the pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction
+// has z = 1) is compared with the pixel's own distance. A vehicle pixel the scene is not meant to hold is only counted (kStatOutside).
+inline constexpr uint32_t kStatsWords = 20;    // a multiple of four: the counter buffer is a multiple of 16 bytes
+inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image the scene is meant to hold (the scope below)
 inline constexpr uint32_t kStatCovered = 1;    // ... whose ray hit a part of the car
 inline constexpr uint32_t kStatErrorSum = 2;   // the sum of |hit - image| / image over the covered, in units of kErrorUnit
 inline constexpr uint32_t kStatNearer = 3;     // covered pixels whose hit is nearer than the image's by more than kNearFarTolerance
@@ -472,15 +472,64 @@ inline constexpr uint32_t kBuckets = 8;
 inline constexpr uint32_t kStatGlass = 13;     // hits on an instance of kMaskGlass
 inline constexpr uint32_t kStatTyres = 14;     // ... of kMaskTyres
 inline constexpr uint32_t kStatBody = 15;      // ... of kMaskBody
+inline constexpr uint32_t kStatOutside = 16;   // vehicle pixels the scene is NOT meant to hold: cars outside the frame's selection (not in the scene by design)
+inline constexpr uint32_t kStatOthers = 17;    // of kStatVehicle's: the pixels in another kept car's box (the rest are in the player's box)
+// words 18 and 19 are not used
 static_assert(kStatHistogram + kBuckets == kStatGlass);
+static_assert(kStatOthers < kStatsWords);
 inline constexpr double kBucketEdges[kBuckets] = {0.0025, 0.005, 0.01, 0.02, 0.05, 0.10, 0.25, 1e30};
 inline constexpr double kErrorUnit = 1000.0;
 inline constexpr double kNearFarTolerance = 0.02;
 
+// THE SCOPE: which vehicle pixels the scene is meant to hold. The scene keeps the player's car and the nearest few other cars of the frame (by the
+// class: High up to 4 within 14 m, Mid up to 2 within 10 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
+// is not a miss but not in the scene by design. The depth image says only "vehicle" (one bit), not which car, so the shader places the pixel's
+// view-space position (the ray's direction times the image's distance) in the boxes of the kept cars: the player's car's box (the transformed mesh
+// boxes of its listed instances, grown on the host) and each kept other car's box (the same, from the top level's table, grown in the shader), both
+// by kScopeBoxMargin. A pixel outside every box is of a car outside the selection. A box is an axis aligned box in view space, so a pixel of an
+// unkept car right beside a kept one can fall in the kept car's box (it is then counted, and may show as a miss: the check errs on the strict side).
+inline constexpr float kScopeBoxMargin = 0.15f;  // what every car's box is grown by (the player's on the host, the other cars' in the shader)
+inline constexpr uint32_t kScopeMaxOtherBoxes = 8;  // car_rt_instances_rules.h kMaxCars
+inline constexpr uint32_t kScopeOutside = 0;
+inline constexpr uint32_t kScopePlayer = 1;
+inline constexpr uint32_t kScopeOther = 2;
+// bits of the check's scope flags (the push block's)
+inline constexpr uint32_t kScopeFlagPlayerBox = 1u << 0;  // the player's car's box is known
+
+struct ScopeBox {
+  float lo[3] = {0, 0, 0};
+  float hi[3] = {0, 0, 0};
+};
+
+// The host's mirror of the shader's ScopeOf: `p` is the pixel's view-space position; `player` is the player's box as the host pushes it (grown by the
+// margin already), null when no mesh of the car had a box, so that a pixel in no other car's box counts as the player's; the other cars' boxes are as the
+// scene has them (the margin is added here, as the shader adds it).
+inline uint32_t ScopeOf(const float p[3], const ScopeBox* player, const ScopeBox* others, uint32_t other_count) {
+  const auto inside = [&](const ScopeBox& b, float margin) {
+    for (int c = 0; c < 3; ++c) {
+      if (!(p[c] >= b.lo[c] - margin && p[c] <= b.hi[c] + margin)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (player && inside(*player, 0.0f)) {
+    return kScopePlayer;
+  }
+  for (uint32_t i = 0; i < other_count && i < kScopeMaxOtherBoxes; ++i) {
+    if (inside(others[i], kScopeBoxMargin)) {
+      return kScopeOther;
+    }
+  }
+  return player ? kScopeOutside : kScopePlayer;
+}
+
 struct CheckSummary {
-  uint64_t vehicle = 0;
+  uint64_t vehicle = 0;    // the vehicle pixels the scene is meant to hold: the player's car and the other cars the frame kept
+  uint64_t outside = 0;    // more vehicle pixels of cars outside the selection (the class's radius and count, the cars 0 switch): not in the scene by design
+  uint64_t others = 0;     // of `vehicle`: in another kept car's box
   uint64_t covered = 0;
-  uint64_t missed = 0;     // vehicle pixels no part of a car in the scene covers: the driver, anything not built yet, a car beyond the other cars' limits
+  uint64_t missed = 0;     // vehicle pixels no part of a car in the scene covers: the driver, anything not built yet
   double coverage = 0.0;   // covered / vehicle
   double mean_error = 0.0;  // mean |hit - image| / image over the covered
   double p50 = 0.0;        // the upper edge of the histogram's bucket holding the median and the 95th percentile (1e30: the last)
@@ -495,6 +544,8 @@ struct CheckSummary {
 inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
   CheckSummary s;
   s.vehicle = words[kStatVehicle];
+  s.outside = words[kStatOutside];
+  s.others = std::min(words[kStatOthers], words[kStatVehicle]);
   s.covered = std::min(words[kStatCovered], words[kStatVehicle]);
   s.missed = s.vehicle - s.covered;
   s.coverage = s.vehicle ? double(s.covered) / double(s.vehicle) : 0.0;

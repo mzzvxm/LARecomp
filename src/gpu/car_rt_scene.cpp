@@ -28,8 +28,9 @@ REXCVAR_DEFINE_BOOL(
     "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
-    "vehicle pixels the structures cover (the driver counts as a miss; the other cars cover their pixels while they are in the scene, "
-    "mcla_gpu_car_rt_cars) and how far the distances are apart. It "
+    "vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: "
+    "the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in "
+    "the scene by design (the driver is in the player's count and shows as a miss). It "
     "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -37,8 +38,8 @@ REXCVAR_DEFINE_BOOL(
 REXCVAR_DEFINE_INT32(
     mcla_gpu_car_rt_view, 0, "MCLA/GPU",
     "Debug: shows the car ray tracing check's picture over the scene (only while mcla_gpu_car_rt_check is on): 1 the error of each "
-    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit), 2 the hit's normal as colour (x right, y up, "
-    "z forward, times 0.5 plus 0.5). 0: off. Live.")
+    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit, grey-blue: a car outside the scene by design), "
+    "2 the hit's normal as colour (x right, y up, z forward, times 0.5 plus 0.5). 0: off. Live.")
     .debug_only()
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
@@ -55,6 +56,9 @@ REXCVAR_DEFINE_INT32(
 namespace mcla::gpu {
 
 namespace rr = car_rt_rules;
+
+// The check's scope reads as many of the other cars' boxes as the selection keeps.
+static_assert(rr::kScopeMaxOtherBoxes >= car_rt_instances::kMaxCars, "the check's scope reads every kept car's box");
 
 namespace {
 
@@ -661,6 +665,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
     view_.box_count = uint32_t(cars.boxes.size());
     view_.box_row = cars.box_row;
+    view_.player_box = cars.player_box;
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
       car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
@@ -1238,6 +1243,20 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.lens[1] = depth.tan_half_fov[1];
   push.lens[2] = kCheckTMin;
   push.lens[3] = kCheckTMax;
+  // The scope: the pixels the scene is meant to hold are those in the player's car's box (its listed instances' transformed mesh boxes, grown by the
+  // margin) or in the box of one of the other cars the top level holds (the table's rows from box_row, two a box, grown by the margin in the shader).
+  CheckScope scope;
+  scope.player_box = view_.player_box.valid;
+  if (scope.player_box) {
+    for (int c = 0; c < 3; ++c) {
+      push.box_min[c] = view_.player_box.min[c] - rr::kScopeBoxMargin;
+      push.box_max[c] = view_.player_box.max[c] + rr::kScopeBoxMargin;
+    }
+  }
+  scope.kept_cars = view_.boxes ? std::min(view_.box_count, rr::kScopeMaxOtherBoxes) : 0u;
+  push.scope[0] = view_.box_row;
+  push.scope[1] = scope.kept_cars;
+  push.scope[2] = scope.player_box ? rr::kScopeFlagPlayerBox : 0u;
   list->setComputePipelineLayout(check_layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(res.check_set.get(), 1);
@@ -1253,8 +1272,8 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
                            kCounterBytes);
     readback_busy_ = true;
     next_readback_ = frame_ + kReadbackEveryFrames;
-    frames_->RetireAction([this, frame = frame_, generation = generation_, instances = view_.instance_count, width, height] {
-      ProcessReadback(frame, generation, instances, width, height);
+    frames_->RetireAction([this, frame = frame_, generation = generation_, instances = view_.instance_count, scope, width, height] {
+      ProcessReadback(frame, generation, instances, scope, width, height);
     });
   }
   if (want_view) {
@@ -1265,7 +1284,7 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   }
 }
 
-void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, uint32_t width, uint32_t height) {
+void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, const CheckScope& scope, uint32_t width, uint32_t height) {
   readback_busy_ = false;
   if (generation != generation_ || !readback_) {
     return;
@@ -1279,17 +1298,31 @@ void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t i
   std::memcpy(words, mapped, sizeof(words));
   readback_->unmap();
   const rr::CheckSummary s = rr::DecodeCheckStats(words);
+  // The line the chain reads (perf/scripts/chain-rtint.ps1): "check of frame N: P vehicle pixels ... X% hit" and "on the other cars' parts" as before, and
+  // since the scope "O vehicle pixels not in the scene by design" and "K other kept cars". P counts only the pixels the scene is meant to hold (the player's
+  // car and the other cars the frame kept); O is the vehicle pixels of the cars outside the selection, counted apart.
+  const std::string no_player_box = scope.player_box ? std::string() : std::string("; the player's car's box was not known (none of its meshes had a box): "
+                                                                                     "every pixel in no other car's box is counted");
   if (s.vehicle == 0) {
-    REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image (no car on the screen), the top level held {} instances", kPrefix,
-                frame, width, height, instances);
+    if (s.outside == 0) {
+      REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image (no car on the screen), the top level held {} instances; check frames "
+                  "without a depth image so far: {}", kPrefix, frame, width, height, instances, stats_counts_.check_no_depth);
+    } else {
+      REXLOG_INFO("{} check of frame {}: no vehicle pixel in the {}x{} depth image that the scene is meant to hold ({} vehicle pixels not in the scene by design: "
+                  "cars outside the selection; {} other kept cars), the top level held {} instances{}; check frames without a depth image so far: {}",
+                  kPrefix, frame, width, height, s.outside, scope.kept_cars, instances, no_player_box, stats_counts_.check_no_depth);
+    }
     return;
   }
-  REXLOG_INFO("{} check of frame {}: {} vehicle pixels in the {}x{} depth image, {:.1f}% hit a part of a car in the scene ({} missed: the driver, "
-              "parts not built yet, cars beyond the other cars' limits); the hit's distance is off the image's by {:.2f}% on average, {} at the median "
-              "and {} at the 95th percentile, {:.1f}% are within 1%; nearer than the image by over 2%: {:.1f}%, farther: {:.1f}%; hits by class: {} body, "
-              "{} glass, {} tyres, {} on the other cars' parts; the top level held {} instances",
-              kPrefix, frame, s.vehicle, width, height, s.coverage * 100.0, s.missed, s.mean_error * 100.0, EdgeText(s.p50), EdgeText(s.p95),
-              s.within_1pct * 100.0, s.nearer * 100.0, s.farther * 100.0, s.body, s.glass, s.tyres, s.other, instances);
+  REXLOG_INFO("{} check of frame {}: {} vehicle pixels in the {}x{} depth image that the scene is meant to hold ({} of them in the box of {} other kept cars, "
+              "the rest in the player's car's), {:.1f}% hit a part of a car in the scene ({} missed: the driver, parts not built yet); {} vehicle pixels "
+              "not in the scene by design (cars outside the selection: beyond the class's radius or count, or the cars 0 switch); the hit's distance is "
+              "off the image's by {:.2f}% on average, {} at the median and {} at the 95th percentile, {:.1f}% are within 1%; nearer than the image by over "
+              "2%: {:.1f}%, farther: {:.1f}%; hits by class: {} body, {} glass, {} tyres, {} on the other cars' parts; the top level held {} instances{}; "
+              "check frames without a depth image so far: {}",
+              kPrefix, frame, s.vehicle, width, height, s.others, scope.kept_cars, s.coverage * 100.0, s.missed, s.outside, s.mean_error * 100.0,
+              EdgeText(s.p50), EdgeText(s.p95), s.within_1pct * 100.0, s.nearer * 100.0, s.farther * 100.0, s.body, s.glass, s.tyres, s.other,
+              instances, no_player_box, stats_counts_.check_no_depth);
 }
 
 plume::RenderPipeline* CarRtScene::ViewPipeline(uint32_t samples) {

@@ -53,9 +53,12 @@
 //     texture's): the set below is the car RT set, bound by each consumer at a set index of its own pipeline layout (SetDesc()).
 //
 // THE CHECK (mcla_gpu_car_rt_check, debug; recorded by OnAfterOcclusion): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
-// through every vehicle pixel of the occlusion's linear depth image and compares the committed hit's distance with the pixel's (hlsl/
-// car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
+// through every vehicle pixel of the occlusion's linear depth image that the scene is meant to hold and compares the committed hit's distance
+// with the pixel's (hlsl/car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
 // shows the error / the normals over the scene. This is what proves the camera space, the matrices and the meshes on the first run.
+// The pixels the scene is meant to hold are the player's car's and those of the other cars the frame's selection kept (the class's radius and count,
+// the cars 0 switch); the driver is left out of the scene (its pixels stay in the player's count: the depth image has no mask for it). A vehicle
+// pixel of any other car is counted apart as "not in the scene by design" (car_rt_scene_rules.h THE SCOPE: placed in the kept cars' boxes).
 // ===========================================================================
 
 #include <array>
@@ -112,6 +115,8 @@ struct CarRtView {
   const car_rt_instances::ViewBox* boxes = nullptr;
   uint32_t box_count = 0;
   uint32_t box_row = 0;
+  // The player's own car's box in the same space, from its listed instances' transformed mesh boxes (valid = false: none had a box). Used by the check.
+  car_rt_instances::ViewBox player_box;
   // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
   // car_rt_refl_cs.hlsl; the camera pitches, so the view's own y is not it). (0, 1, 0) where the frame's camera gave none.
   float up[3] = {0.0f, 1.0f, 0.0f};
@@ -233,12 +238,20 @@ class CarRtScene final : public car_frame::Listener {
   };
   struct Placed;
 
-  // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 32 bytes.
+  // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 80 bytes.
   struct CheckPush {
     uint32_t slots[4];  // the linear depth image's slot, its width and height, the flags (bit 0 write the picture, bits 8-15 the view mode)
     float lens[4];      // tan of the half field of view (x, y), the ray's start and end
+    uint32_t scope[4];  // the first row of the other kept cars' boxes in the car RT table, how many, the flags (car_rt_scene_rules.h kScopeFlag*)
+    float box_min[4];   // the player's car's box in view space (xyz), grown by the host
+    float box_max[4];
   };
-  static_assert(sizeof(CheckPush) == 32);
+  static_assert(sizeof(CheckPush) == 80);
+  // What the check's scope held in the frame it was recorded for, for the log line (ProcessReadback).
+  struct CheckScope {
+    uint32_t kept_cars = 0;     // the other cars with a box in the top level (the frame's selection, those with a built mesh)
+    bool player_box = false;    // the player's box was known (else only the other cars' boxes counted)
+  };
   // The display pass's push block (hlsl/car_rt_view_ps.hlsl CarRtViewPush), 32 bytes.
   struct ViewPush {
     uint32_t slots[4];
@@ -283,7 +296,7 @@ class CarRtScene final : public car_frame::Listener {
   bool RecordView(plume::RenderCommandList* list, const ResolveCache::Summary& summary, uint32_t image_slot, uint32_t image_width,
                   uint32_t image_height);
   plume::RenderPipeline* ViewPipeline(uint32_t samples);
-  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, uint32_t width, uint32_t height);
+  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, const CheckScope& scope, uint32_t width, uint32_t height);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
