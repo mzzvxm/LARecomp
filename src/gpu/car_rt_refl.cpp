@@ -21,18 +21,10 @@
 #include "device.h"
 #include "frame.h"
 #include "host_precache.h"
+#include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
-
-// The compute shader's blob: built for D3D12 only (larecomp_gpu_host_shader_rt: cs_6_5 DXIL), the one backend that traces the car.
-#if defined(LARECOMP_GPU_HAS_D3D12)
-#include "car_rt_refl_cs.hlsl.dxil.h"  // CHECK: the name and variable (g_car_rt_refl_cs_dxil) larecomp_gpu_host_shader_rt gives, as the other host shaders'
-#include "car_rt_refl_denoise_cs.hlsl.dxil.h"  // CHECK: likewise g_car_rt_refl_denoise_cs_dxil (larecomp_gpu_host_shader_rt(car_rt_refl_denoise_cs cs_6_0))
-#define MCLA_CAR_RT_REFL_HAS_SHADER 1
-#else
-#define MCLA_CAR_RT_REFL_HAS_SHADER 0
-#endif
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_car_selfrefl_rt, "auto", "MCLA/GPU",
@@ -117,8 +109,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
-  supported_ = scene != nullptr && MCLA_CAR_RT_REFL_HAS_SHADER != 0 &&
-               CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
+  supported_ = scene != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
   if (!supported_) {
     passes.precache().Note("ray traced car self-reflections: not on this graphics card or backend (the screen-space version runs)", 0);
     return;
@@ -151,7 +142,6 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
 }
 
 bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene) {
-#if MCLA_CAR_RT_REFL_HAS_SHADER
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   output_builder_.addReadWriteTexture(1);  // u1: the aux image (hit distance, instance, N.V) for the denoise
@@ -172,18 +162,12 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
   if (!layout_) {
     return false;
   }
-  shader_ = passes.CreateShader(g_car_rt_refl_cs_dxil, sizeof(g_car_rt_refl_cs_dxil), "car_rt_refl_cs");
+  const HostShaderBlob blob = CarRtReflShader();
+  shader_ = passes.CreateShader(blob.data, blob.size, blob.name);
   return shader_ != nullptr;
-#else
-  (void)device;
-  (void)passes;
-  (void)scene;
-  return false;
-#endif
 }
 
 bool CarRtRefl::MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes) {
-#if MCLA_CAR_RT_REFL_HAS_SHADER
   denoise_builder_.begin();
   denoise_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   denoise_builder_.end();
@@ -202,13 +186,9 @@ bool CarRtRefl::MakeDenoiseLayoutAndShader(Device& device, HostPasses& passes) {
   if (!denoise_layout_) {
     return false;
   }
-  denoise_shader_ = passes.CreateShader(g_car_rt_refl_denoise_cs_dxil, sizeof(g_car_rt_refl_denoise_cs_dxil), "car_rt_refl_denoise_cs");
+  const HostShaderBlob blob = CarRtReflDenoiseShader();
+  denoise_shader_ = passes.CreateShader(blob.data, blob.size, blob.name);
   return denoise_shader_ != nullptr;
-#else
-  (void)device;
-  (void)passes;
-  return false;
-#endif
 }
 
 void CarRtRefl::Shutdown() {
