@@ -23,6 +23,7 @@ add_library(larecomp_gpu OBJECT
     car_shadow_map.cpp
     car_rt_refl.cpp
     capture_readback.cpp
+    choice_box.cpp
     constants.cpp
     cut_request.cpp
     cycles.cpp

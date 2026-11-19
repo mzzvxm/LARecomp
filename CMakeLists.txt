@@ -507,6 +507,18 @@ add_executable(larecomp_renderer_choice_test EXCLUDE_FROM_ALL
     src/profile/larecomp_profile_store.cpp)
 target_include_directories(larecomp_renderer_choice_test PRIVATE src/gpu src/profile)
 
+# The two-button box of the compatibility renderer offer (src/gpu/choice_box.h, Windows: its labels fit its buttons, the action is first and the
+# default) has a check that needs no game and shows nothing on the screen (the dialog is built hidden and looked at from its own message loop):
+#   cmake --build <build dir> --target larecomp_choice_box_test, then run <build dir>/larecomp_choice_box_test [--aware] [--shot <folder>]
+# (exit 0 = passed; off Windows it passes at once). The layout numbers it relies on are checked in larecomp_renderer_choice_test.
+add_executable(larecomp_choice_box_test EXCLUDE_FROM_ALL
+    src/gpu/choice_box_test.cpp
+    src/gpu/choice_box.cpp)
+target_include_directories(larecomp_choice_box_test PRIVATE src/gpu)
+if(WIN32)
+    target_link_libraries(larecomp_choice_box_test PRIVATE user32 gdi32)
+endif()
+
 # The device watcher's table of present HID interfaces, its retry schedule and the DualSense effect worker's mailbox and write pacing
 # (src/mc_engine/input/device_watch_core.h, trigger_mailbox.h) have a check that needs no game (real threads for the mailbox):
 #   cmake --build <build dir> --target larecomp_device_watch_test, then run <build dir>/larecomp_device_watch_test (exit 0 = passed).

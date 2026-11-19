@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "choice_box_layout.h"
 #include "larecomp_profile_store.h"
 #include "renderer_choice.h"
 #include "renderer_fallback.h"
@@ -325,6 +326,90 @@ void CheckStartWatch() {
   CHECK(!nowhere.Armed());
 }
 
+
+// The layout of the two-button box (choice_box_layout.h, the arithmetic behind choice_box.h): the 2026-11-19 picture of the box had its main
+// button cut to "...compatibility re" and the action last. Every button is as wide as its own label needs, the action is first (left), the pair
+// sits at the right edge, and all of it holds at each DPI. (choice_box_test.cpp checks the real dialog.)
+void CheckBoxLayout() {
+  using namespace mcla::gpu::fallback;
+  CHECK(Dip(32, 96) == 32);
+  CHECK(Dip(32, 144) == 48);
+  CHECK(Dip(20, 192) == 40);
+  CHECK(Dip(7, 120) == 9);  // 8.75 rounds to 9
+
+  for (const int dpi : {96, 120, 144, 192, 288}) {
+    BoxMeasure m;
+    m.dpi = dpi;
+    m.icon = Dip(32, dpi);
+    m.body_w = Dip(500, dpi);
+    m.body_h = Dip(120, dpi);
+    m.label_h = Dip(16, dpi);
+    m.label_w = {Dip(210, dpi), Dip(40, dpi)};  // "Use the compatibility renderer", "Close"
+    const BoxLayout l = PlanBox(m);
+    CHECK(l.buttons.size() == 2);
+    if (l.buttons.size() != 2) {
+      continue;
+    }
+    // Neither label is cut: each button holds its label and 14 dip of room on both sides; the short one still has the minimum width.
+    CHECK(l.buttons[0].w >= m.label_w[0] + 2 * Dip(14, dpi));
+    CHECK(l.buttons[1].w >= m.label_w[1] + 2 * Dip(14, dpi));
+    CHECK(l.buttons[1].w >= Dip(88, dpi));
+    CHECK(l.buttons[0].w > l.buttons[1].w);  // the long label's button is the wider one (the old box gave both one width)
+    // The action first (left), the way out last, side by side with a gap, the pair at the right edge of the strip.
+    CHECK(l.buttons[0].x + l.buttons[0].w + Dip(8, dpi) == l.buttons[1].x);
+    CHECK(l.buttons[1].x + l.buttons[1].w == l.client_w - Dip(12, dpi));
+    CHECK(l.buttons[0].x >= Dip(12, dpi));
+    // One row, one height, under the text block, inside the box.
+    CHECK(l.buttons[0].y == l.buttons[1].y);
+    CHECK(l.buttons[0].h == l.buttons[1].h);
+    CHECK(l.buttons[0].h >= Dip(24, dpi));
+    CHECK(l.buttons[0].y >= l.text_area_h);
+    CHECK(l.client_h == l.buttons[0].y + l.buttons[0].h + Dip(12, dpi));
+    // The text block: the icon at the left, the text after it, both inside the upper area and the box.
+    CHECK(l.icon.x + l.icon.w <= l.body.x);
+    CHECK(l.body.x + l.body.w <= l.client_w);
+    CHECK(l.body.y + l.body.h <= l.text_area_h);
+    CHECK(l.icon.y + l.icon.h <= l.text_area_h);
+  }
+
+  // A short text with long buttons: the box widens to the buttons, the text stays at the left, and its one line sits beside the icon's middle.
+  {
+    BoxMeasure m;
+    m.dpi = 96;
+    m.icon = 32;
+    m.body_w = 100;
+    m.body_h = 16;
+    m.label_h = 15;
+    m.label_w = {210, 70};
+    const BoxLayout l = PlanBox(m);
+    CHECK(l.buttons.size() == 2);
+    CHECK(l.client_w == l.buttons[1].x + l.buttons[1].w + 12);
+    CHECK(l.client_w > l.body.x + l.body.w + 20);
+    CHECK(l.body.x == 20 + 32 + 14);
+    CHECK(l.body.y == 28);  // (32 - 16) / 2 below the icon's top
+  }
+
+  // No icon: the text starts at the margin. No buttons: only the strip's padding.
+  {
+    BoxMeasure m;
+    m.body_w = 300;
+    m.body_h = 40;
+    m.label_h = 15;
+    m.label_w = {100};
+    const BoxLayout l = PlanBox(m);
+    CHECK(l.body.x == 20);
+    CHECK(l.buttons.size() == 1);
+    CHECK(l.client_w == 20 + 300 + 20);
+    CHECK(PlanBox(BoxMeasure{}).buttons.empty());
+  }
+
+  // How wide the text may be: 560 dip on a big screen, less on a small one, never less than 200 dip.
+  CHECK(MaxBodyWidth(96, 1920, 32) == 560);
+  CHECK(MaxBodyWidth(96, 800, 32) == 554);
+  CHECK(MaxBodyWidth(96, 300, 32) == 200);
+  CHECK(MaxBodyWidth(192, 3840, 64) == 1120);
+}
+
 }  // namespace
 
 int main() {
@@ -333,6 +418,7 @@ int main() {
   CheckRefusalBox();
   CheckConfigWrite();
   CheckStartWatch();
+  CheckBoxLayout();
 
   std::printf("renderer choice: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

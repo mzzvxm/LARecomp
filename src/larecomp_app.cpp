@@ -16,6 +16,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 #include <rex/app/app.h>
@@ -88,6 +89,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "spdlog_console.h"
 #include "gpu/renderer_fallback.h"  // the hidden way to the XENIA renderer; standard library only, so it is here in every build
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/choice_box.h"  // the two-button box that fits its labels (Windows; its code is in the gpu library)
 #include "gpu/gpu.h"
 #include "gpu/native_window.h"
 #endif
@@ -1024,12 +1026,32 @@ bool LarecompApp::OfferCompatibilityRendererAfterCrashes() {
     return false;
   }
   LARECOMP_APP_WARN("[renderer] the last {} starts of the native renderer never finished; offering the compatibility renderer", unfinished);
-  rex::ui::ChoiceConfig box;
-  box.type = rex::MessageType::kWarning;
-  box.title = "LARecomp";
-  box.body = fb::UnfinishedStartsText(unfinished);
-  box.buttons = {std::string(fb::kButtonText), std::string(fb::kKeepTryingText)};
-  const auto answer = GetUI().ShowChoice(box);
+  // The first button is the default (Enter), the last the escape (Esc, the X). Windows: LARecomp's own box (gpu/choice_box.h), which sizes
+  // each button from its label and puts the action first; the SDK's box cut the long label and put it last.
+  std::optional<int> answer;
+#if defined(LARECOMP_HAS_GPU)
+  fb::TwoButtonBox own;
+  own.icon = fb::BoxIcon::kWarning;
+  own.title = "LARecomp";
+  own.body = fb::UnfinishedStartsText(unfinished);
+  own.action = std::string(fb::kButtonText);
+  own.way_out = std::string(fb::kKeepTryingText);
+  LARECOMP_APP_WARN("{}: {}", own.title, own.body);
+  answer = fb::ShowTwoButtonBox(own);
+  if (answer) {
+    LARECOMP_APP_INFO("[renderer] the box with the compatibility renderer button: {}", *answer == 0 ? own.action : own.way_out);
+  }
+#endif
+  if (!answer) {  // no box of ours (not Windows, no GPU part in this build, or it could not be built): the SDK's
+    rex::ui::ChoiceConfig box;
+    box.type = rex::MessageType::kWarning;
+    box.title = "LARecomp";
+    box.body = fb::UnfinishedStartsText(unfinished);
+    box.buttons = {std::string(fb::kButtonText), std::string(fb::kKeepTryingText)};
+    if (const auto sdk_answer = GetUI().ShowChoice(box)) {
+      answer = static_cast<int>(*sdk_answer);
+    }
+  }
   if (answer && *answer == 0) {
     fb::Watch().Finish();  // not a crash of this start: the file goes
     if (SwitchToCompatibilityRenderer()) {
