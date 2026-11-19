@@ -406,6 +406,13 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_pad_feed_test EXCLUDE_FROM_ALL
     src/mc_engine/ui/pad_feed_test.cpp)
 target_include_directories(larecomp_pad_feed_test PRIVATE src src/mc_engine/ui)
+# Which SDL the exe's own SDL code talks to (src/mc_engine/input/sdl_instance.h: the one-SDL rule, the wheel thread's two gates, the
+# SDL_GAMECONTROLLER_IGNORE_DEVICES list and its command-line reader) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_sdl_instance_test, then run <build dir>/larecomp_sdl_instance_test (exit 0 = passed).
+add_executable(larecomp_sdl_instance_test EXCLUDE_FROM_ALL
+    src/mc_engine/input/sdl_instance_test.cpp)
+target_include_directories(larecomp_sdl_instance_test PRIVATE src src/mc_engine)
+target_compile_definitions(larecomp_sdl_instance_test PRIVATE LARECOMP_SHARED_SDL=1)  # as the exe: one SDL here (see larecomp_sdl3 below)
 # The legacy Direct3D 12 native graphics runtime (native_gfx/d3d12, 27.8k lines, plus native_gfx.cpp, geometry.cpp,
 # telemetry.cpp, guest/sampler_state.cpp): "no longer offered" since the renderer choice was Plume or XENIA, and it sits on
 # headers that are private in rexglue 0.11 (rex/ui/d3d12/*: d3d12_api.h, d3d12_util.h, d3d12_provider.h, d3d12_presenter.h).
@@ -700,6 +707,10 @@ else()
     # Linux: <prefix>/lib/cmake/SDL3/SDL3Config.cmake). It carries the headers, the import library (SDL3.lib) or the library and its
     # soname (libSDL3.so.0 on Linux), wherever the SDK put them.
     add_library(larecomp_sdl3 INTERFACE)
+    # The exe's SDL IS the SDK's here (the 0.10 line had a second, static copy in the exe on Windows): the exe's SDL code
+    # (wheel layer, dialogs' pad reader) then leaves the pad drivers and the events on and talks to the SDK's driver, as it does
+    # on Linux. See src/mc_engine/input/sdl_instance.h.
+    target_compile_definitions(larecomp_sdl3 INTERFACE LARECOMP_SHARED_SDL=1)
     if(TARGET SDL3::SDL3-shared)
         target_link_libraries(larecomp_sdl3 INTERFACE SDL3::SDL3-shared)
     else()

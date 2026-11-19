@@ -578,7 +578,8 @@ rex::Result<void> LarecompApp::OnInit() {
   larecomp::PrepareProfileChoice(rex::GetPathSettings().user_root.Get());
   larecomp::identity::SetUserDataRoot(rex::GetPathSettings().user_root.Get());
   larecomp::impulse::EarlyInit();  // before anything starts this executable's SDK joystick layer
-  larecomp::wheel::EarlyInit();    // before the window starts SDL's joystick layer: keeps wheels out of the gamepad layer
+  larecomp::wheel::EarlyInit();    // the known wheels went into SDL_GAMECONTROLLER_IGNORE_DEVICES at process start (wheel_input.cpp: the SDK's SDL read
+                                   // the environment when it opened the window, before this); this logs it, adds a wheel named in the settings, starts the thread
 
   mc::EnableHighResTimer();
   larecomp::os::SetLogCallback([](const std::string& line) { LARECOMP_APP_INFO("{}", line); });
