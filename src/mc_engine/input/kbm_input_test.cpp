@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <thread>
@@ -207,6 +209,53 @@ void TestMouseKeyNames() {
     CHECK(FindMouseKeyByName("") == nullptr && FindMouseKeyByName("LMB ") == nullptr && FindMouseKeyByName("Mouse") == nullptr);
 }
 
+// Every mouse key has its key cap, the picture the live button prompts paint when a binding names it (KBM-RULES (c)): src/keycaps/<name in lower case>.png, 64 x 64,
+// and <name>_w.png, 64 x 32 (the round Start / Back slots); the cap is found by the key's canonical name, which is also what the player's spellings map to (Mouse1 draws lmb.png).
+// The files are read from the source tree next to this test (a build that moved the test elsewhere skips the check and says so).
+bool PngSize(const std::filesystem::path& path, uint32_t* w, uint32_t* h) {
+    std::ifstream f(path, std::ios::binary);
+    unsigned char head[24] = {};
+    if (!f.read(reinterpret_cast<char*>(head), sizeof(head))) return false;
+    static const unsigned char kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; ++i)
+        if (head[i] != kSig[i]) return false;
+    if (head[12] != 'I' || head[13] != 'H' || head[14] != 'D' || head[15] != 'R') return false;
+    *w = (uint32_t(head[16]) << 24) | (uint32_t(head[17]) << 16) | (uint32_t(head[18]) << 8) | head[19];
+    *h = (uint32_t(head[20]) << 24) | (uint32_t(head[21]) << 16) | (uint32_t(head[22]) << 8) | head[23];
+    return true;
+}
+
+std::string LowerName(const char* name) {
+    std::string out;
+    for (const char* c = name; *c; ++c) out += (*c >= 'A' && *c <= 'Z') ? char(*c - 'A' + 'a') : *c;
+    return out;
+}
+
+void TestMouseKeyCaps() {
+    const std::filesystem::path dir = std::filesystem::path(__FILE__).parent_path() / ".." / ".." / "keycaps";
+    if (!std::filesystem::exists(dir / "a.png")) {
+        std::printf("kbm_input_test: the key caps folder %s was not found next to the test; the mouse cap check is skipped\n", dir.string().c_str());
+        return;
+    }
+    for (const MouseKey& m : kMouseKeys) {
+        const std::string stem = LowerName(m.name);
+        uint32_t w = 0, h = 0;
+        CHECK(PngSize(dir / (stem + ".png"), &w, &h) && w == 64 && h == 64);
+        w = h = 0;
+        CHECK(PngSize(dir / (stem + "_w.png"), &w, &h) && w == 64 && h == 32);
+    }
+    // The player's other spellings land on the canonical name, so the same cap is drawn.
+    const struct {
+        const char* spelling;
+        const char* stem;
+    } kSpellings[] = {{"Mouse1", "lmb"}, {"LButton", "lmb"}, {"Mouse2", "rmb"}, {"RButton", "rmb"}, {"Mouse3", "mmb"}, {"MButton", "mmb"}, {"Mouse4", "mb4"}, {"XButton1", "mb4"},
+                      {"X1", "mb4"},    {"Mouse5", "mb5"},   {"XButton2", "mb5"}, {"X2", "mb5"},      {"MouseWheelUp", "wheelup"}, {"MouseWheelDown", "wheeldown"}};
+    for (const auto& sp : kSpellings) {
+        const MouseKey* m = FindMouseKeyByName(sp.spelling);
+        CHECK(m != nullptr && LowerName(m->name) == sp.stem);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -220,6 +269,7 @@ int main() {
     TestNoTapIsLostAcrossThreads();
     TestMouseKeyTable();
     TestMouseKeyNames();
+    TestMouseKeyCaps();
     std::printf("kbm_input_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

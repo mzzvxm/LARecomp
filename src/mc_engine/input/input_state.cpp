@@ -50,6 +50,7 @@
 #include "adaptive_triggers.h"
 #include "device_watch.h"
 #include "mc_engine/core/logging.h"
+#include "mc_engine/keyboard_native.h"
 #include "mc_engine/sdk_access.h"
 #include "mc_engine/ui_events.h"
 #include "mc_engine/ui/overlay_support.h"
@@ -335,9 +336,14 @@ void OnInput(rex::InputEvent& e) {
     case Type::kKeyDown: {
       if (mcla::ui::IsBoundKey(e.key, e.modifiers)) break;
       const uint16_t vk = static_cast<uint16_t>(e.key);
-      const Change ch = Core().OnKeyDown(vk, e.repeat, NowMs());
+      // What the settings say about the key: the host key of an extra pad button is the pad's, a function key counts only when a kb_* binding names it. Asked
+      // on the key's first press only (an auto-repeat is ignored whatever the key is); an atomic compare of the settings' generation, no reading of the cvars
+      // unless a binding changed. (The UI system's own binds, the F-key overlays, were skipped above.)
+      const KeyRole role = e.repeat ? KeyRole::Plain : larecomp::keyboard::RoleOfKey(vk);
+      const Change ch = Core().OnKeyDown(vk, e.repeat, NowMs(), role);
       if (ch.looked != Cause::None && VerboseOpen()) {
-        MC_INFO("[input] ev key down vk=0x{:02X} repeat={} -> {}", unsigned(vk), e.repeat ? 1 : 0, ch.note);
+        MC_INFO("[input] ev key down vk=0x{:02X} repeat={} role={} -> {}", unsigned(vk), e.repeat ? 1 : 0,
+                role == KeyRole::ExtraButton ? "extra-button" : role == KeyRole::Bound ? "bound" : "plain", ch.note);
       }
       Apply(ch);
       break;

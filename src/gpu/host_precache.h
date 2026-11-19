@@ -38,9 +38,13 @@
 // the pipelines used, never asked for, and not listed. The line the builder
 // writes when it is done gives the time it took.
 //
-// Only closed sets are listed. A variant whose format a device may refuse to
-// render to (B5G5R5A1, an optional render target in Vulkan) stays with its
-// owner: a pipeline made for a format nobody used would log a failure.
+// Only closed sets are listed. The resolve copies' list is the conversion table's own
+// (resolve_variants.h), so every destination the pass can convert into is listed, B5G5R5A1
+// (k_1_5_5_5) included: its multisampled copy was once left out as a format a device may refuse
+// to render to, and two runs of the 2026-11-17 starter verify round made it on the render thread.
+// A device that does refuse it logs one failed entry from the builder; no copy ever asks for it
+// there (the product texture is not made). The decode (resolve_memory.h) still keeps B5G5R5A1
+// for itself: no log of a measured drive has a decode into it.
 //
 // The graphics settings' passes (ambient occlusion, contact shadows, sun shafts, bounce light) are listed
 // only when the settings in force at the start use them (host_plan.h says which), and each owner says

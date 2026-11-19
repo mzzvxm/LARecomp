@@ -10,7 +10,8 @@
 //
 //   PadFilter      one pad's samples -> "that was activity" (button edge, trigger rise, stick cross or move)
 //   MotionFilter   mouse motion events -> "that was a deliberate move" (>= 8 px within 200 ms, two events)
-//   IsActivityKey  which keys count
+//   IsActivityKey  which keys count (KeyRole: F1-F12 only when a kb_* binding names them; an extra_button_* host key is the pad's)
+//   KeyRoleTable   the role of each key as the settings say it now
 //   ActiveInputCore  the device, the pad family, the setting and the generation; the cross rules; hot-plug
 //   PadLossRule    the controller in the player's hands was removed: when the game is told "not connected" so that it pauses
 //
@@ -214,21 +215,43 @@ class MotionFilter {
 
 // ---- the keyboard ----------------------------------------------------------------------------------
 
-// Windows virtual-key codes (the SDK's VirtualKey is the same numbers). A key does not count when it is
-// a modifier on its own, a lock key, Pause, Print Screen or one of F1-F12 (window and overlay hotkeys: F2
-// the screenshot hotkey, F4 the settings panel, F11 fullscreen; a binding that names one of them does
-// not make it count either: CHECK, KBM-DESIGN 2.2 allows it, v1 does not). F13 and up count.
-inline bool IsActivityKey(uint16_t vk) {
+// Windows virtual-key codes (the SDK's VirtualKey is the same numbers). KeyRole (input_state.h) is what the host's settings say about a key.
+
+inline bool IsFunctionKey(uint16_t vk) { return vk >= 0x70 && vk <= 0x7B; }  // F1 .. F12
+
+// Does this key, going down, count as KEYBOARD activity? Not when it is a modifier on its own, a lock key, Pause or Print Screen; and not when it is one of F1-F12
+// (window and overlay hotkeys: F2 the screenshot hotkey, F4 the settings panel, F11 fullscreen; F1 and F12 the effect compare keys of a developer build) unless a kb_*
+// binding names it: a player who put the handbrake on F5 does play with the keyboard. The modifiers stay out even when a binding names them (Shift and Ctrl are
+// pressed on their own all the time: nitro and the weight transfer; the W or the arrow that comes with them counts). F13 and up count. A key of an extra_button_*
+// setting is a pad button: it is not keyboard activity (ActiveInputCore::OnKeyDown counts it as the pad's).
+inline bool IsActivityKey(uint16_t vk, KeyRole role = KeyRole::Plain) {
   if (vk == 0) return false;
+  if (role == KeyRole::ExtraButton) return false;
   if (vk >= 0x01 && vk <= 0x06) return false;                      // mouse buttons: they come as mouse events
   if (vk == 0x10 || vk == 0x11 || vk == 0x12) return false;        // Shift, Ctrl, Alt
   if (vk >= 0xA0 && vk <= 0xA5) return false;                      // left / right Shift, Ctrl, Alt
   if (vk == 0x5B || vk == 0x5C) return false;                      // left / right Windows key
   if (vk == 0x14 || vk == 0x90 || vk == 0x91) return false;        // Caps, Num, Scroll lock
   if (vk == 0x13 || vk == 0x2C) return false;                      // Pause, Print Screen
-  if (vk >= 0x70 && vk <= 0x7B) return false;                      // F1 .. F12
+  if (IsFunctionKey(vk)) return role == KeyRole::Bound;            // F1 .. F12: only a binding that names one makes it a game key
   return true;
 }
+
+// Which role each key has, as the settings say it now: a plain value, built by the glue (keyboard_native.cpp RoleOfKey) whenever a binding changed and read by the window's
+// key-down handler. The caller serialises its own access. An extra button's host key stays an extra button whatever else names it (the keyboard feed takes it away from the
+// keyboard), in whatever order the keys are marked.
+class KeyRoleTable {
+ public:
+  void Mark(uint16_t vk, KeyRole role) {
+    if (vk == 0 || vk >= roles_.size() || role == KeyRole::Plain) return;
+    if (roles_[vk] == KeyRole::ExtraButton) return;
+    roles_[vk] = role;
+  }
+  KeyRole Of(uint16_t vk) const { return vk < roles_.size() ? roles_[vk] : KeyRole::Plain; }
+
+ private:
+  std::array<KeyRole, 256> roles_{};
+};
 
 // ---- the state -------------------------------------------------------------------------------------
 
@@ -299,6 +322,7 @@ enum class Cause : uint8_t {
   PadTrigger,
   PadStick,      // a stick crossed its dead zone
   PadStickMove,  // a stick past its dead zone moved a lot
+  ExtraButton,   // the host key of an extra pad button (a back paddle) went down
   Key,
   MouseClick,
   MouseWheel,
@@ -315,6 +339,7 @@ inline const char* CauseText(Cause c) {
     case Cause::PadTrigger: return "pad trigger";
     case Cause::PadStick: return "pad stick";
     case Cause::PadStickMove: return "pad stick move";
+    case Cause::ExtraButton: return "extra pad button";
     case Cause::Key: return "key";
     case Cause::MouseClick: return "mouse click";
     case Cause::MouseWheel: return "mouse wheel";
@@ -451,12 +476,15 @@ class ActiveInputCore {
     overlay_pad_.Reset();
   }
 
-  // A key went down (`repeat`: the key was already down, an auto-repeat). Key-up never counts: not called.
-  Change OnKeyDown(uint16_t vk, bool repeat, int64_t now) {
+  // A key went down (`repeat`: the key was already down, an auto-repeat). Key-up never counts: not called. `role`: what the settings say about the key (KeyRole).
+  // The host key of an extra pad button is a pad button going down: it makes the pad the active device and keeps the pad family that was in use (the paddles
+  // belong to a pad whose family is not known here), like a wheel. Any other key counts as keyboard activity when IsActivityKey says so.
+  Change OnKeyDown(uint16_t vk, bool repeat, int64_t now, KeyRole role = KeyRole::Plain) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!focused_) return Looked(Cause::Key, "ignored: the window has no focus");
     if (repeat) return Looked(Cause::Key, "ignored: key repeat");
-    if (!IsActivityKey(vk)) return Looked(Cause::Key, "ignored: modifier, lock or function key");
+    if (role == KeyRole::ExtraButton) return Activity(InputDevice::Pad, Cause::ExtraButton, false, -1, now);
+    if (!IsActivityKey(vk, role)) return Looked(Cause::Key, "ignored: modifier, lock or function key");
     return Activity(InputDevice::KeyboardMouse, Cause::Key, false, -1, now);
   }
 
