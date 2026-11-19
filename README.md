@@ -231,4 +231,6 @@ Fixes made directly in LARecomp:
 
 **AMD FidelityFX** and **AMD Anti-Lag 2**. LARecomp uses FidelityFX Super Resolution (FSR 1, FSR 3.1, FSR 4) and CAS for upscaling and sharpening, and AMD Anti-Lag 2. The FidelityFX SDK is under the MIT licence, copied next to the exe with its files (`amd_fidelityfx_license.md`). AMD FidelityFX, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.
 
+**libmspack**, by Stuart Caie (v1.11, [kyz/libmspack](https://github.com/kyz/libmspack)). LARecomp reads the game's compressed files with libmspack's LZX decoder. libmspack is under the GNU LGPL 2.1 and is a separate DLL, `larecomp_mspack.dll` (`liblarecomp_mspack.so` on Linux), next to the exe, so you can replace it with a build of your own. Its licence and a short notice are copied next to it (`larecomp_mspack_license.txt`, `larecomp_mspack_notice.txt`; the repository keeps them in `LICENSES/`), and the library's source is the submodule `thirdparty/libmspack`.
+
 **Rockstar San Diego**, who made the game.

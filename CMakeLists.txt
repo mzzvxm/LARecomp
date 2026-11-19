@@ -696,12 +696,29 @@ else()
                             "(rexglue 0.11 no longer exposes its LZX decoder)")
     endif()
     # lzxd.c is LGPL-2.1 (only): it is a shared library of its own (larecomp_mspack.dll / .so next to the executable), not
-    # linked into larecomp, so a player can replace it with a build of their own as the license asks; its license
-    # (thirdparty/libmspack/libmspack/COPYING.LIB) goes with a release.
+    # linked into larecomp, so a player can replace it with a build of their own as the license asks. Its license goes with
+    # every build, next to the library: LICENSES/larecomp_mspack_license.txt (the LGPL-2.1 text) and
+    # LICENSES/larecomp_mspack_notice.txt (what it is, its version, where the source is, that it can be replaced) are copied
+    # to the library's folder after it is linked. Whatever packages the executable's folder (the launcher's staging, an AppImage)
+    # has to carry the library and both files; keep the notice's version line the same as the submodule's commit.
+    set(LARECOMP_MSPACK_NOTICES larecomp_mspack_notice.txt larecomp_mspack_license.txt)
+    foreach(_larecomp_mspack_notice IN LISTS LARECOMP_MSPACK_NOTICES)
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}")
+            message(FATAL_ERROR "LICENSES/${_larecomp_mspack_notice} is missing: larecomp_mspack is LGPL-2.1 and its notice "
+                                "goes with the library in every build")
+        endif()
+    endforeach()
     add_library(larecomp_mspack SHARED "${LARECOMP_MSPACK_DIR}/lzxd.c")
     set_target_properties(larecomp_mspack PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
     target_include_directories(larecomp_mspack PRIVATE "${LARECOMP_MSPACK_DIR}")
     target_compile_options(larecomp_mspack PRIVATE -w)
+    foreach(_larecomp_mspack_notice IN LISTS LARECOMP_MSPACK_NOTICES)
+        add_custom_command(TARGET larecomp_mspack POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}"
+                    "$<TARGET_FILE_DIR:larecomp_mspack>/${_larecomp_mspack_notice}"
+            COMMENT "Copying ${_larecomp_mspack_notice} next to larecomp_mspack")
+    endforeach()
     set_source_files_properties(src/mc_engine/modloader/xcompress.cpp PROPERTIES
         INCLUDE_DIRECTORIES "${LARECOMP_MSPACK_DIR}")
     target_link_libraries(larecomp PRIVATE larecomp_mspack)
