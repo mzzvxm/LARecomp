@@ -19,16 +19,21 @@
 //                               is then read at the next start.
 //                  BORDERLESS   grey: the display's own size, in the label ("RESOLUTION (3840X2160)").
 //                  FULLSCREEN   the modes the display lists, one per size (the display's own refresh
-//                               rate where the size has it, else the highest it lists); the mode
-//                               nearest to a saved size the display does not list. Live. The list is
+//                               rate where the size has it, else the highest it lists; the driver's
+//                               extra modes above the monitor's own, NVIDIA DSR and AMD VSR, are
+//                               among them); the mode nearest to a saved size the display does not
+//                               list. The size is the one chosen here, kept in `fullscreen_resolution`:
+//                               entering FULLSCREEN from a window starts at the display's own size, not
+//                               at the window's. Live. The list is
 //                               the display's own, however low the size it is switched to: the display's
 //                               own mode, the mode it is in and the monitor's own size are always on it
 //                               (display_mode.h ExclusiveSizes, display_sizes.h).
 //                  Sizes are PHYSICAL pixels (the client area of the window; display_mode.h): at 150%
 //                  scaling 1600X900 is a window of 1600 by 900 pixels plus its frame.
-//                  It is written into `resolution` as "WxH" (the SDK's text, which reads "720p",
-//                  "1080p", "1440p", "4k" and "WxH"); an old value ("4k") is matched by its size.
-//                  The SDK also takes it as the game's video mode at the next start.
+//                  It is written as "WxH" (the SDK's text, which reads "720p", "1080p", "1440p", "4k" and
+//                  "WxH"; an old value ("4k") is matched by its size) into `resolution` in WINDOWED, and
+//                  into `fullscreen_resolution` in FULLSCREEN. The SDK also takes `resolution` as the
+//                  game's video mode at the next start.
 //
 // Width (pause_menu.cpp, "Page width"), in characters: DISPLAY MODE 12; RESOLUTION 10, 22 with its
 // suffix " (7680X4320)" (a display of 10240 pixels across: 23; the grey WINDOWED row of gamescope has
