@@ -15,7 +15,7 @@
 //   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres (4 by default; the weight of a hit falls to
 //                                     nothing from 0.6 of it)
 //   mcla_gpu_car_selfrefl_rt_parts    a debug override of the parts the reflection ray hits: a mask of car_rt_common.hlsli's
-//                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver; 7 by default)
+//                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver, 16 the other cars; 23 by default)
 //   mcla_gpu_car_selfrefl_rt_gloss    a debug override of the half angle, in degrees, of the cone the rays are spread over (2.5 by default; 0 = a
 //                                     perfect mirror, one ray: the first version's razor edge, for a picture to compare with)
 //   mcla_gpu_car_selfrefl_rt_denoise  a debug override of the passes of the filter that takes the cone's grain out of the image before the paint
@@ -24,6 +24,13 @@
 //                                     cyan the image has no data there (the march ran), green the ray hits nothing of the car, yellow a hit
 //                                     on a part the camera sees, orange a hit on a part it does not (the fallback colour), brighter the
 //                                     heavier the weight; red: the shaded point is not in the history (as view 4)
+//
+// OTHER CARS: the scene (car_rt_scene.h) also holds the cars driving alongside, so the paint and the chrome reflect an opponent or a car of the traffic beside
+// the player's car. The reflection ray hits them (the parts' mask, 16); the primary ray never does, so the effect stays the player's own car's. What a hit on
+// another car shows is the history's colour where the camera sees that part, and where it does not (the car's far side) the colour the camera sees of THAT
+// car: the mean of the history's vehicle texels around its body centre, darkened by the same shade (car_rt_refl_rules.h FindOtherCarColour says why that and
+// not a paint constant). mcla_gpu_car_rt_cars 0 takes them out of the scene (the player's car alone, as before), mcla_gpu_car_selfrefl_rt_parts 7 leaves
+// them in the scene and out of the reflection.
 //
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a

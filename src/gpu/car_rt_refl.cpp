@@ -59,11 +59,12 @@ REXCVAR_DEFINE_INT32(
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_selfrefl_rt_parts, 7, "MCLA/GPU",
-    "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
-    "driver. 7 (the default): the body, the glass and the tyres. Live.")
+    mcla_gpu_car_selfrefl_rt_parts, 23, "MCLA/GPU",
+    "Diagnostic: the parts the ray traced self-reflection's ray can hit, a sum of: 1 your car's body, 2 its glass, 4 its tyres, 8 its "
+    "driver, 16 the other cars beside it (opponents, traffic, parked cars; mcla_gpu_car_rt_cars says how many are in the scene). 23 (the "
+    "default): the body, the glass, the tyres and the other cars. 7 is your car alone. Live.")
     .debug_only()
-    .range(1, 15)
+    .range(1, 31)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {

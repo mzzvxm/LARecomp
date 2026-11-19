@@ -146,7 +146,10 @@ void TestMasks() {
   Check(row.first_index == 300 && row.first_vertex == 120 && row.draw == 7 && (row.flags & 0xFFu) == rr::kMaskGlass &&
             (row.flags & rr::kFlagAfterWorld) != 0,
         "a row holds the mesh's place, the mask, the flag and the draw");
-  Check(rr::kMaskBody == 1 && rr::kMaskGlass == 2 && rr::kMaskTyres == 4 && rr::kMaskDriver == 8, "the masks are the contract's");
+  Check(rr::kMaskBody == 1 && rr::kMaskGlass == 2 && rr::kMaskTyres == 4 && rr::kMaskDriver == 8 && rr::kMaskOthers == 0x10, "the masks are the contract's");
+  Check((rr::kMaskOthers & (rr::kMaskBody | rr::kMaskGlass | rr::kMaskTyres | rr::kMaskDriver)) == 0, "the others' mask is a bit of its own");
+  const rr::InstanceRow other = rr::MakeRow(10, 20, rr::kMaskOthers, true, 33);
+  Check((other.flags & 0xFFu) == rr::kMaskOthers && (other.flags & rr::kFlagAfterWorld) != 0 && other.draw == 33, "a row of another car's instance holds the others' mask and its car's row in draw");
 }
 
 void TestMesh() {
@@ -289,6 +292,11 @@ void TestStats() {
   Check(Near(s.within_1pct, 800.0 / 900.0), "within 1% is the first three buckets");
   Check(Near(s.nearer, 0.01) && Near(s.farther, 0.02), "nearer and farther are shares of the covered");
   Check(s.glass == 100 && s.body == 800 && s.tyres == 0, "the hits by class");
+  Check(s.other == 0, "the covered pixels the three classes count leave no other");
+  words[rr::kStatBody] = 600;
+  s = rr::DecodeCheckStats(words);
+  Check(s.other == 200, "covered pixels no class counts are the other cars' (and the driver's)");
+  words[rr::kStatBody] = 800;
   words[rr::kStatCovered] = 5000;  // more than the vehicle pixels: clamped, never a negative miss
   s = rr::DecodeCheckStats(words);
   Check(s.covered == 1000 && s.missed == 0, "a covered count past the vehicle pixels is clamped");
@@ -327,6 +335,8 @@ void TestShaderParity(const std::string& folder) {
   Check(ctext.find(mask) != std::string::npos, "the include's glass mask is the header's");
   std::snprintf(mask, sizeof(mask), "CAR_RT_MASK_TYRES 0x%02X", rr::kMaskTyres);
   Check(ctext.find(mask) != std::string::npos, "the include's tyre mask is the header's");
+  std::snprintf(mask, sizeof(mask), "CAR_RT_MASK_OTHERS 0x%02X", rr::kMaskOthers);
+  Check(ctext.find(mask) != std::string::npos, "the include's others mask is the header's");
   std::snprintf(mask, sizeof(mask), "CAR_RT_FLAG_AFTER_WORLD 0x%03X", rr::kFlagAfterWorld);
   Check(ctext.find(mask) != std::string::npos, "the include's after-world flag is the header's");
 }

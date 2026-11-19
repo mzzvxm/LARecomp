@@ -292,6 +292,12 @@ class ContentCache {
     return made;
   }
 
+  // Whether Get(slot, stamp, ...) would hit, so that nothing has to be made for it (a caller with a budget for new fingerprints asks first).
+  bool Fresh(uint64_t slot, uint64_t stamp) const {
+    const auto found = entries_.find(slot);
+    return found != entries_.end() && found->second.stamp == stamp;
+  }
+
   // Drops the entries last asked for more than `keep` frames before `now`.
   void Sweep(uint64_t now, uint64_t keep) {
     for (auto it = entries_.begin(); it != entries_.end();) {
@@ -317,12 +323,21 @@ class ContentCache {
 // within car_dump::kPlayerMatchMetres (the render thread reads a state a frame or a few after the draws); with the nearest ID
 // kept as the frame goes. A draw of the right car whose own gWorld is not at the root (a tyre, the driver) is told by the
 // ID alone, and before the frame's first draw near the vehicle the ID the player had in the frame before stands in.
+//
+// A car ALONGSIDE (the other cars are in the ray traced scene, car_rt_instances_rules.h) is nearer than 5 m to the player's vehicle: its root is a
+// lane's width away. When the frame before had a player's ID, a draw of ANOTHER ID takes the match only within kStrictMatchMetres, so that an
+// opponent drawn before the player's car does not take the player's place; the player's own draws carry the ID of the frame before and are
+// matched at 5 m as ever. If the player's ID changed and the car was farther than that from the vehicle in this frame (speed: the render thread
+// reads the vehicle some frames after the draws), nothing is confirmed in this frame and the next one has no prior and matches at 5 m: one
+// frame of no car, instead of a wrong car.
 // CHECK: the render thread reads the vehicle some frames after the draws were made, so while driving fast the distance of the player's own
 // root draw is not 0 (the dump measured 0.00 m parked); 5 m holds at about 250 km/h and 3 frames of lead. The car frame's log line
 // (mcla_gpu_car_frame_log) says the distance each frame: drive at speed and read it, and with a racer alongside check the ID stays right.
 class IdentityTracker {
  public:
   static constexpr uint32_t kSlots = car_dump::kIdSlots;
+  // How near an ID that is not the previous frame's must be to the vehicle to take the match when the previous frame had an ID.
+  static constexpr double kStrictMatchMetres = 1.5;
   enum class Standing : uint8_t {
     kOther,      // not the player's (as far as the frame knows)
     kTentative,  // the ID of the frame before, nothing near the vehicle seen yet in this frame
@@ -356,7 +371,8 @@ class IdentityTracker {
       const double dx = translation[0] - player[0], dy = translation[1] - player[1], dz = translation[2] - player[2];
       const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
       v.distance = d;
-      if (std::isfinite(d) && d <= car_dump::kPlayerMatchMetres && d < best_[id]) {
+      const double limit = (previous_ != 0 && id != previous_) ? kStrictMatchMetres : car_dump::kPlayerMatchMetres;
+      if (std::isfinite(d) && d <= limit && d < best_[id]) {
         best_[id] = d;
         v.improved = true;
         if (confirmed_ == 0) {
