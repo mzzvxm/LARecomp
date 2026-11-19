@@ -369,8 +369,9 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
         const size_t plus = token.rfind('+');
         if (plus != std::string::npos && plus + 1 < token.size()) token = Trim(token.substr(plus + 1));
         // The mouse buttons and the wheel are keys here (LMB, RMB, MMB, MB4, MB5, WheelUp, WheelDown): their ids are in kbm_input.h.
+        // Under its canonical name (LMB for Mouse1 or LButton): the key cap files are named by it (src/keycaps/lmb.png).
         if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByName(token)) {
-            out.push_back({token, static_cast<uint8_t>(mouse->id)});
+            out.push_back({mouse->name, static_cast<uint8_t>(mouse->id)});
             continue;
         }
         const auto vk = rex::ui::ParseVirtualKey(token);
@@ -1881,7 +1882,7 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
             if (!g_slot_key[i].empty()) continue;
             const std::string name = KeyNameOfScancode(b, static_cast<uint8_t>(key));
             if (name.empty()) break;
-            // A mouse button has no key cap yet (they come with the mouse feel work): its name as text beats a blank cap.
+            // A mouse button or the wheel has its own cap (src/keycaps/lmb.png ...; make_mouse_caps.py); a build without that file shows the name as text, which beats a blank cap.
             if (larecomp::kbm::FindMouseKeyByScancode(static_cast<uint8_t>(key)) && !CapExists(name, 32, 32)) break;
             // Not scanned yet (or the dictionary has no such texture): drawing the slot
             // would show the PlayStation button, so the text name below it is.
