@@ -238,6 +238,11 @@ add_executable(larecomp_car_rt_memory_rules_test EXCLUDE_FROM_ALL car_rt_memory_
 # with a frame's draws) likewise:
 #   cmake --build <dir> --target larecomp_car_model_walk_rules_test, then run src/gpu/larecomp_car_model_walk_rules_test (exit 0 = passed).
 add_executable(larecomp_car_model_walk_rules_test EXCLUDE_FROM_ALL car_model_walk_rules_test.cpp)
+# The ray traced scene's cars built from the cars' own model data (car_model_rt_rules.h, RT-MODEL-CARS phase 2: the game's lod rule against the first check run's
+# samples, the draw loop's part rules, the five placement hypotheses and the calibration against the draws, the view-space conversion and the error of a walked
+# instance against a draw's, the mesh read from the car's buffers and its key, the paint, which cars are staged and placed, the budgets and the cleanup) likewise:
+#   cmake --build <dir> --target larecomp_car_model_rt_rules_test, then run src/gpu/larecomp_car_model_rt_rules_test (exit 0 = passed).
+add_executable(larecomp_car_model_rt_rules_test EXCLUDE_FROM_ALL car_model_rt_rules_test.cpp)
 # The ray traced occlusion and contact shadows around the player's car (car_rt_ao_rules.h: the setting, the rays and their lengths, the cosine pattern, the
 # car's box in view space and the pixel rectangle of it, the slab test, the flags; given the src/gpu folder it also checks that hlsl/car_rt_ao_cs.hlsl,
 # ao_main_ps.hlsl and ao_contact_ps.hlsl use the header's numbers and flags) likewise:
