@@ -665,6 +665,38 @@ void TestChoose() {
   Check(!crt::PaintForRemembered(far_kit, cars, rgb), "no walked car with a paint near it: none");
   ci::OtherCar empty;
   Check(!crt::PaintForRemembered(empty, cars, rgb), "a car with no draws has no place");
+
+  // paint for a car the camera draws (RT-MODEL-CARS-3): the nearest walked car that is not the player's, within 3 m of the draws' mean origin
+  std::vector<crt::CarInfo> row;
+  const auto car_at = [](double x, double z, bool player, bool painted, float r) {
+    crt::CarInfo c;
+    c.is_player = player;
+    c.position[0] = x;
+    c.position[1] = 0.0;
+    c.position[2] = z;
+    c.paint.known = painted;
+    c.paint.rgb[0] = r;
+    c.paint.rgb[1] = r;
+    c.paint.rgb[2] = r;
+    return c;
+  };
+  row.push_back(car_at(0.0, 0.0, true, true, 0.9f));    // the player's, with a paint
+  row.push_back(car_at(3.4, 0.0, false, true, 0.2f));   // the neighbour on the right
+  row.push_back(car_at(-4.2, 0.5, false, true, 0.6f));  // the neighbour on the left
+  ci::OtherCar right, left, between, unpainted;
+  right.Add(Translation(3.3, 0.0, 0.2), 3.3);
+  left.Add(Translation(-4.1, 0.0, 0.4), 4.1);
+  between.Add(Translation(0.0, 0.0, 0.0), 0.0);  // at the player's place: within 3 m of nobody else
+  Check(crt::PaintForDrawn(right, row, rgb) && Near(rgb[0], 0.2, 1e-6), "a drawn car takes the paint of the walked car at its place (the right one)");
+  Check(crt::PaintForDrawn(left, row, rgb) && Near(rgb[0], 0.6, 1e-6), "... and the left one the left one's");
+  Check(!crt::PaintForDrawn(between, row, rgb), "the player's own car is never a drawn car's paint");
+  row.push_back(car_at(3.5, 0.0, false, false, 0.0f));  // a car with no paint, nearer to the right neighbour's draws than the painted one
+  unpainted.Add(Translation(3.5, 0.0, 0.0), 3.5);
+  Check(!crt::PaintForDrawn(unpainted, row, rgb), "the nearest walked car decides: one with no paint does not borrow its neighbour's");
+  Check(!crt::PaintForDrawn(empty, row, rgb), "a car with no draws has no place");
+  ci::OtherCar far;
+  far.Add(Translation(30.0, 0.0, 30.0), 40.0);
+  Check(!crt::PaintForDrawn(far, row, rgb), "no walked car within 3 m: none");
 }
 
 // ---------------------------------------------------------------------------

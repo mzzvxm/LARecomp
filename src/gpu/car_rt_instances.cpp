@@ -85,8 +85,10 @@ double CarRtInstances::MatchMetres() const {
 }
 
 const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::Limits& limits, bool flip_z, bool glass_rule, const FindMesh& find,
-                                      const std::vector<ci::OtherCar>* extra_cars, const std::vector<ci::OtherDraw>* extra_draws) {
+                                      const std::vector<ci::OtherCar>* extra_cars, const std::vector<ci::OtherDraw>* extra_draws,
+                                      const std::vector<car_model_rt::CarInfo>* paints) {
   list_.Clear();
+  drawn_painted_ = 0;
   if (list_.items.capacity() < rr::kMaxInstances) {
     list_.items.reserve(rr::kMaxInstances);
     list_.rows.reserve(rr::kMaxInstances + ci::kMaxCars);
@@ -119,12 +121,26 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
   // The other cars: the nearest whole cars that fit the instance budget and the class's count of cars. The cars the camera does not see this frame
   // (placed from memory) are ranked with the drawn ones by the distance to the player, not by the screen.
   const bool remembered = extra_cars && extra_draws && !extra_cars->empty();
+  const bool painted = paints && !paints->empty() && !frame.other_cars.empty();
   if (limits.On() && (!frame.other_cars.empty() || remembered)) {
-    if (remembered) {
+    if (remembered || painted) {
       merged_cars_.assign(frame.other_cars.begin(), frame.other_cars.end());
-      merged_cars_.insert(merged_cars_.end(), extra_cars->begin(), extra_cars->end());
+      // the cars the camera draws take the paint of the walked car at their place (their copies here: the frame's own list is not changed)
+      for (ci::OtherCar& car : merged_cars_) {
+        float rgb[3];
+        if (painted && !car.has_paint && !car.remembered && car_model_rt::PaintForDrawn(car, *paints, rgb)) {
+          car.has_paint = true;
+          for (int c = 0; c < 3; ++c) {
+            car.paint[c] = rgb[c];
+          }
+          ++drawn_painted_;
+        }
+      }
       merged_draws_.assign(frame.other_draws.begin(), frame.other_draws.end());
-      merged_draws_.insert(merged_draws_.end(), extra_draws->begin(), extra_draws->end());
+      if (remembered) {
+        merged_cars_.insert(merged_cars_.end(), extra_cars->begin(), extra_cars->end());
+        merged_draws_.insert(merged_draws_.end(), extra_draws->begin(), extra_draws->end());
+      }
       ci::AppendOthers(&list_, merged_draws_, merged_cars_, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars);
     } else {
       ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars);

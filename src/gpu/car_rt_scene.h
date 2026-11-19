@@ -363,6 +363,7 @@ class CarRtScene final : public car_frame::Listener {
   // cleanup set, the budget spent in the frame's walk, and what the log says.
   std::vector<car_rt_instances::OtherCar> extra_cars_;
   std::vector<car_rt_instances::OtherDraw> extra_draws_;
+  std::vector<car_model_rt::CarInfo> paint_infos_;  // the walked cars of this frame (their paint): the cars the camera draws take it (CarRtInstances::Build, PaintForDrawn)
   std::vector<uint8_t> build_plan_;                // by staged_order_: built this frame (car_model_rt::PlanBuilds)
   car_model_rt::WalkedSet walked_set_;
   car_model_rt::StageBudget walked_spent_;
@@ -375,6 +376,7 @@ class CarRtScene final : public car_frame::Listener {
     uint64_t meshes_built = 0, triangles_built = 0;  // walked meshes that got a structure
     uint64_t given_back = 0;
     uint64_t painted = 0;                           // placed cars (and remembered ones) with a paint colour
+    uint64_t painted_drawn = 0;                     // cars-frames: cars the camera draws that were given the paint of the walked car at their place (CarRtInstances::Build)
     uint64_t proof_pairs = 0;
     uint64_t held_pose = 0;                         // frames whose walked cars were held back: no hypothesis of the part matrices was confirmed by the draws
     uint64_t most_read_triangles = 0, most_read_kib = 0;  // the most read from guest memory in one frame (the class's budget, plus the first mesh of a frame)

@@ -723,7 +723,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         ref->has_bounds = it->second.has_bounds;
         return true;
       },
-      &extra_cars_, &extra_draws_);
+      &extra_cars_, &extra_draws_, instances_.ModelMode() != car_model_rt::Mode::kOff ? &paint_infos_ : nullptr);
+  walked_stats_.painted_drawn += instances_.drawn_painted();
   stats_counts_.missing_mesh += cars.stats.missing_mesh;
   stats_counts_.bad_matrix += cars.stats.bad_matrix;
   std::vector<plume::RenderTopLevelASInstance> instances;
@@ -888,6 +889,7 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
   car_model_walk::Walker& walker = car_frame_->walker();
   if (!walker.producing()) {
     walked_present_.clear();
+    paint_infos_.clear();
     return;
   }
   const car_model_walk::ProofReport proof = walker.Resolve(frame.view, flip_z);
@@ -913,6 +915,9 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     }
     infos.push_back(info);
   }
+  // the cars the camera draws take the paint of the walked car at their place (CarRtInstances::Build): the game draws a neighbour beside the door while the camera, in the gap
+  // beside it, sees none of it, so the history has no colour of it (RT-MODEL-CARS-3)
+  paint_infos_ = infos;
   const crt::Mode mode = instances_.ModelMode();
   std::vector<uint32_t> placed = crt::ChoosePlaced(infos, limits, mode, remembered_.cars);
   // No car is placed by part matrices that the draws of the cars the camera sees have not confirmed (the calibration decided, and some hypothesis fits them): a
@@ -1041,11 +1046,11 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
     const WalkedStats& w = walked_stats_;
     REXLOG_INFO("{} walked cars (car_model_rt_rules.h), frames {}..{}: walk in {} frames ({:.0f} us a frame on the render thread, {} frames with no car placed for want of a checked pose), cars placed in {} of them ({} in all, at most {} at once, {} instances, {} parts left out for want of a "
                 "structure); read from the cars' model data: {} meshes ({} triangles, {} KiB; at most {} triangles and {} KiB in a frame; {} could not be read, {} held back by the class's budget of {} triangles and {} KiB a frame, {} by the "
-                "memory share); built: {} structures ({} triangles, at most {} in a frame, the walked budget {} a frame); given back {}; cars with a paint colour {}; pose '{}' ({}), the "
+                "memory share); built: {} structures ({} triangles, at most {} in a frame, the walked budget {} a frame); given back {}; cars with a paint colour {} (and {} car-frames in which a car the game draws took the paint of the walked car at its place); pose '{}' ({}), the "
                 "placement proof of this window: {} pairs, worst {:.4f} m; last frame: {} walked cars, {} drawn by the frame (the draw path keeps those), the proof {}",
                 kPrefix, walked_log_frame_, frame_, w.walk_frames, w.walk_frames != 0 ? w.walk_us_sum / double(w.walk_frames) : 0.0, w.held_pose, w.frames_placed, w.cars_placed, w.most_cars, w.instances, w.missing_parts, w.meshes_read, w.triangles_read, w.kib_read,
                 w.most_read_triangles, w.most_read_kib, w.read_failed, w.held_budget, limits.stage_triangles, limits.content_bytes / 1024u, w.held_memory, w.meshes_built, w.triangles_built,
-                w.most_built_triangles, limits.stage_triangles, w.given_back, w.painted, crt::PoseName(walker.pose()),
+                w.most_built_triangles, limits.stage_triangles, w.given_back, w.painted, w.painted_drawn, crt::PoseName(walker.pose()),
                 walker.calibration().decided() ? (walker.calibration().fits() ? "decided against the draws: it fits" : "decided against the draws: NO hypothesis fits") : "not decided yet",
                 w.proof_pairs, w.proof_worst, proof.walked_cars, proof.drawn_cars,
                 proof.ran ? std::format("{} geometries of {} cars, mean {:.4f} m, worst {:.4f} m", proof.pairs, proof.cars, proof.mean, proof.worst) : std::string("did not run"));

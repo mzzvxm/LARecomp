@@ -34,9 +34,11 @@
 // hits like any part (the push's parts) and the primary ray never does (the paint of the player's car is what it finds). A hit on one is taken into the
 // history like any other (every vehicle's pixels are in it), so the part of another car the camera sees has its colour; a part it does not see has no
 // colour of the pixel's own surface to stand in (that is the player's paint): it takes the colour the camera sees of THAT car, the mean of the history's
-// vehicle texels around the car's body centre (OtherCarColour, the car's record in the instances' table), made dark by the same shade. A car whose
-// colour is not known (its centre is off the picture, or hidden) makes a hidden hit a miss: the environment stays there. A car placed from memory (the camera
-// does not see it: its record's radius is negative, car_rt_memory_rules.h) has no colour in the history at all and takes a fixed grey instead.
+// vehicle texels around the car's body centre (OtherCarColour, the car's record in the instances' table), made dark by the same shade. Where the history
+// shows nothing of the car (the game draws a car beside the player when its sphere reaches the view, though the camera sees none of it: its centre is behind the
+// camera or off the picture), the car's PAINT stands in, from the game's customisation record (the car's second row, given by the model walk); a car with no
+// paint colour makes a hidden hit a miss: the environment stays there. A car placed from memory or built from its own model data (the camera does not draw it:
+// its record's radius is negative, car_rt_memory_rules.h) has no colour in the history at all and takes its paint, or a fixed grey, instead.
 //
 // ANOTHER CAR'S CHROME (car_chrome_rt_rules.h): the primary ray's mask (the push's z) also has CAR_RT_MASK_OTHER_CHROME, the bit of the instances of the other cars'
 // draws of the chrome's shader (tailpipes, badges, trim). A texel whose primary hit is one of those is a pixel of that chrome: the pass traces the chrome variant's two
@@ -235,23 +237,20 @@ float3 SurfaceMean(Texture2D<float4> history, uint2 texel, float t, float nv)
     return total > 1e-6 ? sum / total : history.Load(int3(int2(texel), 0)).rgb;
 }
 
-// The colour the camera sees of another car, for a hit on it that the history does not show (car_rt_refl_rules.h FindOtherCarColour has the same
-// arithmetic and says why): nine history texels around the car's body centre, kOtherCarSpread radii apart, those that are a vehicle's within
-// kOtherCarDepth radii of the centre's distance, tent weighted. Returns the share of the taps' weights (0 .. 1; under kOtherCarMinShare: no colour).
-float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
+// The colour of another car, for a hit on it that the history does not show (car_rt_refl_rules.h FindOtherCarColour has the same arithmetic and says why).
+// Returns the share of the colour that is known (0 .. 1; under kOtherCarMinShare: no colour).
+//   a car the camera does not draw (a negative radius: placed from memory, or built from its own model data): the history holds nothing of it; its colour is its PAINT
+//   where the game's customisation record gave it (the car's second row: region 0's colour A), else a fixed mid grey; either is made darker by the shade like any hidden part.
+//   a car the camera draws: the colour the camera sees of IT, nine history texels around the car's body centre, kOtherCarSpread radii apart, those that are a vehicle's
+//   within kOtherCarDepth radii of the centre's distance, tent weighted. Where they hold too little (the car is beside or behind the camera: the game still draws a car
+//   within a few metres of the player whose sphere reaches the view, and the camera sees none of it; or its centre is off the picture) the car's PAINT stands in,
+//   where its record has one (the walk gave it): without a paint such a car's hidden hits are a miss.
+float OtherCarSeenColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
 {
     colour = float3(0.0, 0.0, 0.0);
-    if (car.radius < 0.0)
-    {
-        // A car the camera does not draw (placed from memory, car_rt_memory_rules.h, or built from its own model data, car_model_rt_rules.h): the history holds
-        // nothing of it. Its colour is its PAINT where the game's customisation record gave it (the car's second row: region 0's colour A), else a fixed mid
-        // grey; either is made darker by the shade like any hidden part.
-        colour = car.has_paint ? car.paint : float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
-        return 1.0;
-    }
     if (!(car.radius > 0.0) || !(car.centre.z > kMinDepth))
     {
-        return 0.0;
+        return 0.0;  // no centre, or the centre is behind the camera: the history shows nothing round it
     }
     const float2 ndc = clamp(float2(car.centre.x / (car.centre.z * g_push.lens.x), car.centre.y / (car.centre.z * g_push.lens.y)),
                              float2(-kOtherCarEdge, -kOtherCarEdge), float2(kOtherCarEdge, kOtherCarEdge));
@@ -282,6 +281,22 @@ float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
         colour = sum / total;
     }
     return total * 0.25;
+}
+
+float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
+{
+    if (car.radius < 0.0)
+    {
+        colour = car.has_paint ? car.paint : float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
+        return 1.0;
+    }
+    const float share = OtherCarSeenColour(history, car, colour);
+    if (share < kOtherCarMinShare && car.has_paint)
+    {
+        colour = car.paint;
+        return 1.0;
+    }
+    return share;
 }
 
 // One ray of the cone. False: a miss (nothing of the car in reach, a hit beyond the weight's fade, or the panel the ray left). True: `fade`

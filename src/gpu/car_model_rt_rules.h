@@ -768,6 +768,37 @@ inline bool PaintForRemembered(const ci::OtherCar& car, const std::vector<CarInf
   return found;
 }
 
+// The paint of a car the camera draws (RT-MODEL-CARS-3). The game draws a car near the player whenever the sphere round it reaches the view, so a neighbour beside the door
+// is DRAWN (its draws are in the scene as an ordinary other car, its +116 flag says visible) while the camera, standing beside the door, sees none of it: the history
+// holds no colour of it and its hidden hits were a miss. The walk knows the paint of every car it walks, drawn or not: the walked car nearest to the drawn car's draws
+// (their mean origin, as PaintForRemembered takes a kit's), within kSameCarMetres, and not the player's (a car beside the player is another car), if its paint is known.
+inline bool PaintForDrawn(const ci::OtherCar& car, const std::vector<CarInfo>& cars, float rgb[3]) {
+  double centre[3];
+  if (!car.Centre(centre)) {
+    return false;
+  }
+  centre[1] -= ci::kCentreRise;
+  double best = kSameCarMetres;
+  const CarInfo* found = nullptr;
+  for (const CarInfo& c : cars) {
+    if (c.is_player) {
+      continue;
+    }
+    const double d = car_rt_memory::Distance(centre, c.position);
+    if (d <= best) {  // the nearest walked car decides, whether or not its paint is known (a car with no paint must not borrow its neighbour's)
+      best = d;
+      found = &c;
+    }
+  }
+  if (!found || !found->paint.known) {
+    return false;
+  }
+  for (int k = 0; k < 3; ++k) {
+    rgb[k] = found->paint.rgb[k];
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // the budgets of a car that is new
 // ---------------------------------------------------------------------------

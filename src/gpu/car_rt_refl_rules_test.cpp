@@ -1077,7 +1077,30 @@ int main() {
     const rt::OtherCarColour painted = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint);
     Check(painted.known() && Near(painted.share, 1.0, 1e-6) && Near(painted.rgb[0], 0.063, 1e-6) && Near(painted.rgb[1], 0.349, 1e-6) && Near(painted.rgb[2], 0.071, 1e-6),
           "a car the camera does not draw, with its paint known: the paint, known in full");
-    Check(rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint).rgb[0] != 0.063f, "a car the camera draws keeps the colour of the history, whatever its paint row says");
+    // A car the camera draws (a positive radius) whose taps hold nothing (the history has no vehicle there): its paint stands in, in full (RT-MODEL-CARS-3: the neighbour
+    // the game draws beside the player while the camera looks at the player's door); with no paint, no colour, as before.
+    const rt::OtherCarColour drawn_unseen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint);
+    Check(drawn_unseen.known() && Near(drawn_unseen.share, 1.0, 1e-6) && Near(drawn_unseen.rgb[0], 0.063, 1e-6) && Near(drawn_unseen.rgb[2], 0.071, 1e-6),
+          "a car the camera draws but the history shows nothing of, with its paint known: the paint, known in full");
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f).known(), "... and with no paint known: no colour, as before");
+    // its centre behind the camera, or no centre in its record (a radius of 0): no taps are looked at, the paint or nothing
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = -3.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    Check(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint).known() && Near(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint).rgb[0], 0.063, 1e-6),
+          "a centre behind the camera: the paint");
+    Check(!rt::FindOtherCarColour(taps, -3.0f, 1.6f).known() && rt::FindOtherCarColour(taps, -3.0f, 1.6f).rgb[0] == 0.0f, "a centre behind the camera, no paint: no colour");
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 0.0f, paint).rgb[1], 0.349, 1e-6) && !rt::FindOtherCarColour(taps, 10.0f, 0.0f).known(), "a record with no centre (radius 0): the paint or nothing");
+    // where the history shows the car, its colour stays, whatever the paint row says
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    const rt::OtherCarColour seen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint);
+    Check(Near(seen.share, 1.0, 1e-5) && Near(seen.rgb[0], 0.5, 1e-5) && Near(seen.rgb[1], 0.25, 1e-5), "a car the camera draws and the history shows keeps the colour of the history, whatever its paint row says");
     // The step: kOtherCarSpread radii in texels, from one to the most.
     Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
               Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),

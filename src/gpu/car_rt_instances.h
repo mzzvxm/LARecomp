@@ -46,10 +46,16 @@ class CarRtInstances {
   // vertices are in the shared buffers; the scene marks the mesh seen in it.
   // `extra_cars` / `extra_draws`: the cars placed from memory (car_rt_memory_rules.h: cars the camera does not see this frame, their kits placed at their
   // vehicles' matrices), appended to the frame's own kept cars and ranked with them by the distance to the player, within the class's count of cars.
+  // `paints`: the cars the model walk knows (car_model_rt_rules.h CarInfo, with the paint of each from the game's customisation record): a car the camera DRAWS whose
+  // draws are at a walked car's place gets that car's paint colour in its record, so that its hidden hits show the paint where the history has no colour of the car (the
+  // neighbour beside the door: the game draws it, the camera does not see it). Null or empty: no drawn car has a paint.
   const car_rt_instances::List& Build(const car_frame::Frame& frame, const car_rt_instances::Limits& limits, bool flip_z, bool glass_rule,
                                       const FindMesh& find, const std::vector<car_rt_instances::OtherCar>* extra_cars = nullptr,
-                                      const std::vector<car_rt_instances::OtherDraw>* extra_draws = nullptr);
+                                      const std::vector<car_rt_instances::OtherDraw>* extra_draws = nullptr,
+                                      const std::vector<car_model_rt::CarInfo>* paints = nullptr);
   const car_rt_instances::List& list() const { return list_; }
+  // How many cars the camera draws got a paint colour from the walk in the last Build.
+  uint32_t drawn_painted() const { return drawn_painted_; }
 
   // What the scene did for the other cars' meshes, kept for the log (the scene adds to it as it works; the log window resets it).
   struct Work {
@@ -84,6 +90,7 @@ class CarRtInstances {
   bool started_ = false;
   bool first_cars_logged_ = false;
   bool first_remembered_logged_ = false;
+  uint32_t drawn_painted_ = 0;
 };
 
 }  // namespace mcla::gpu
