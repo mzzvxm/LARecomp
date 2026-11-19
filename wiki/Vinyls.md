@@ -49,4 +49,4 @@ Import checks:
 
 ## Other vinyl cvars
 
-`dump_vinyl_shapes` and `capture_vinyl_shapes` are development tools that write shape catalogs to `vinyls/`. Their rows are in [Settings Reference](Settings-Reference#mclagarage-6). They are not documented further here.
+`dump_vinyl_shapes` and `capture_vinyl_shapes` are development tools that write shape catalogs to `vinyls/`. Their rows are in [Settings Reference](Settings-Reference#mclagarage-7). They are not documented further here.

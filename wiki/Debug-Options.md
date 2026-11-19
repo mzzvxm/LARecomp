@@ -1,6 +1,6 @@
 # Debug Options
 
-The game's retail build keeps a table of about 540 developer command-line options, registered as inactive stubs. LARecomp reactivates them: a text file lists the ones to turn on, and some performance cvars drive a few of them. Source: `src/mc_engine/hooks/dev_options.cpp`, `src/mc_engine/debug_options_table.inc`.
+The game's retail build keeps a table of about 540 developer command-line options, registered as inactive stubs. LARecomp reactivates them: a text file lists the ones to turn on, and some performance cvars drive a few of them. Source: `src/mc_engine/hooks/dev_options.cpp`, `src/mc_engine/menus/debug_options_table.inc`.
 
 These options belong to the game, not to LARecomp, and the repository has no description for almost any of them. Names are listed below for completeness; effects are "undocumented" except where the code states one.
 
@@ -44,20 +44,22 @@ These performance cvars are backed by a developer option. When the cvar is true 
 | Cvar | Option | Menu row |
 |---|---|---|
 | `perf_no_race_shadows` | `noraceshadows` | none |
-| `perf_fast_vehicle_shadows` | `fastVehShadows` | GRAPHICS > PERFORMANCE > SHADOWS > CHEAP CAR SHADOW |
-| `perf_no_impostors` | `noimpostors` | GRAPHICS > PERFORMANCE > SHADOWS > TREE IMPOSTORS |
-| `perf_no_trees` | `notrees` | GRAPHICS > PERFORMANCE > SHADOWS > FOLIAGE |
-| `perf_no_fullscreen_blur` | `nofsblur` | GRAPHICS > PERFORMANCE > RENDERING > SCREEN BLUR |
+| `perf_fast_vehicle_shadows` | `fastVehShadows` | DEBUG > PERFORMANCE > CHEAP CAR SHADOW |
+| `perf_no_impostors` | `noimpostors` | none (launch argument) |
+| `perf_no_trees` | `notrees` | DEBUG > PERFORMANCE > FOLIAGE |
+| `perf_no_fullscreen_blur` | `nofsblur` | none (launch argument) |
+
+The rows are on the hidden DEBUG menu (see [Settings Reference](Settings-Reference#debug-menu)); the switches that are only read at start are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
 
 Notes from the code:
 
 - `noimpostors` and `notrees` are load-time: they skip creating render targets and the whole prop parse. The cvar value is kept in sync every frame, so a change applies the next time that system loads (a district change or a world reload) rather than needing a process restart.
 - `perf_no_shadows` is not in this list: it edits a render phase mask directly each frame and takes hold without a restart.
-- The option `rearview` is forced on for the whole session so the rear view mirror's meshes load; showing and hiding the mirror is the job of the `rearview` cvar. See [Settings Reference](Settings-Reference#mclacamera-37).
+- The option `rearview` is forced on for the whole session so the rear view mirror's meshes load; showing and hiding the mirror is the job of the `rearview` cvar. See [Settings Reference](Settings-Reference#mclacamera-38).
 
 ## Option names
 
-540 unique names, from `src/mc_engine/debug_options_table.inc`. The comment in that file says 541 stubs. All are undocumented in this repository apart from the six named above.
+540 unique names, from `src/mc_engine/menus/debug_options_table.inc`. The comment in that file says 541 stubs. All are undocumented in this repository apart from the six named above.
 
 ```text
 addplayerwidgets  aimodvalue  aimodvalue1  aimodvalue2  aimodvalue3  aimodvalue4  aimodvalue5

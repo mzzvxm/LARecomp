@@ -13,19 +13,19 @@ Terms as this project uses them. Each entry names where the meaning is stated.
 | Game data folder (`game_data_root`) | Folder holding `default.xex` and the `xarchive_*.rpf` archives. | [Getting Started](Getting-Started) |
 | User data root (`user_data_root`) | Folder for saves, shader cache and related user files. | `src/larecomp_app.h` |
 | cvar | A named setting registered by code, settable in the pause menu, on the command line (`--name=value`) or in `larecomp.toml`. | README, [Settings Reference](Settings-Reference) |
-| `larecomp.toml` | The saved settings file. Flat `key = value` lines; the game edits only the lines it changes. | `src/mc_engine/config_save.cpp` |
+| `larecomp.toml` | The saved settings file. Flat `key = value` lines; the game edits only the lines it changes. | `src/mc_engine/core/config_save.cpp` |
 | Hot reload / restart-only | A cvar's lifecycle: hot-reloadable cvars change while the game runs; restart-only cvars take effect on the next launch. | cvar registrations |
-| Pause menu | In-game menu: Options, then the Settings tab, with the hubs RECOMP SETTINGS, GRAPHICS, GAMEPLAY, INTERFACE and EXTRAS. | `src/mc_engine/pause_menu.cpp` |
+| Pause menu | In-game menu: Options, then the Settings tab, with the hubs RECOMP SETTINGS, GRAPHICS, GAMEPLAY, INTERFACE and EXTRAS. | `src/mc_engine/menus/pause_menu.cpp` |
 | Real frame delta | `real_frame_delta`: feed the simulation the measured frame time instead of the fixed 30 Hz timestep. Not a frame rate cap. | README |
 | FPS limit | `fps_limit`: the wall-clock frame cap. 0 is uncapped. | README, `src/mc_engine/hooks/frame_timing.cpp` |
 | Hitch clamp | Cap on how far one frame can advance the clock (`MCLA_MAX_FRAME_MS`, default 125 ms, 16 to 1000). | README |
 | vblank | The display refresh interrupt of the guest. A broken vblank timer in the SDK is behind the long-session frame rate collapse. | README |
-| Xenia renderer | The pause menu's name (XENIA) for the SDK's own GPU path. | `src/mc_engine/pause_menu.cpp` |
+| Xenia renderer | The pause menu's name (XENIA) for the SDK's own GPU path. | `src/mc_engine/menus/pause_menu.cpp` |
 | Plume renderer (NATIVE) | LARecomp's own renderer in `src/gpu`, built on the Plume rendering library; the menu calls it NATIVE. Texture mods require it. | `CMakeLists.txt`, `src/gpu/` |
-| Legacy native runtime | The older `src/native_gfx` renderer. No longer offered in the menu. | `src/mc_engine/pause_menu.cpp` |
+| Legacy native runtime | The older `src/native_gfx` renderer. The menus no longer offer it. | `src/mc_engine/menus/pause_menu.cpp` |
 | EDRAM | The console's embedded GPU memory; the renderers emulate it. `single_tile` renders in one predicated-tiling tile instead of two. | `src/mc_engine/hooks/graphics.cpp` |
-| MSAA, FXAA, SMAA | Anti-aliasing modes. `disable_msaa` turns MSAA off; `mcla_gpu_aa` selects `off`, `fxaa` or `smaa` on the Plume renderer. | `src/mc_engine/pause_menu.cpp` |
-| FSR, CAS | FidelityFX upscaling and sharpening, selected by `present_effect` (Xenia renderer) or `mcla_gpu_fsr` (Plume renderer). | `src/mc_engine/pause_menu.cpp` |
+| MSAA, FXAA, SMAA | Anti-aliasing modes. `disable_msaa` turns MSAA off; `mcla_gpu_aa` selects `off`, `fxaa` or `smaa` on the Plume renderer. | `src/mc_engine/menus/pause_menu.cpp` |
+| FSR, CAS, DLSS | Upscaling and sharpening. On the Plume renderer the UPSCALING row (`mcla_gpu_upscaler`) picks FSR1, FSR 3.1, FSR 4, DLSS or off; on the Xenia renderer the SDK presenter's `present_effect` does (debug menu only). | `src/mc_engine/menus/pause_menu.cpp` |
 | LOD | Level of detail. `lod_city_scale` and `lod_traffic_scale` scale it. | `src/mc_engine/hooks/graphics.cpp` |
 | Impostor | A flat stand-in drawn for distant trees. `perf_no_impostors` and `disable_imposter_shadows` relate to them. | `src/mc_engine/hooks/graphics.cpp`, `render_phases.cpp` |
 | Rubberband | The game's system that makes computer-controlled opponents catch up or hold back. | `src/mc_engine/hooks/rubberband.cpp` |

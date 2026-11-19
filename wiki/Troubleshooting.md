@@ -48,9 +48,8 @@ Error texts shown by the wizard (`src/isoinstaller/larecomp_iso_installer.cpp`):
 | `Config: could not write <path>; the file is as it was` | The settings file could not be replaced. It is written to a temporary file and moved over, so the old file is intact. |
 | `Config: <name> not saved, its value cannot be written as TOML` | The value is not valid TOML (for example a string that is not UTF-8). The setting is not saved. |
 | `Config: no path to save to` | No config path known. |
-| A change in the menu did nothing | Restart-only rows (renderer, graphics API, native MSAA and anisotropy, Plume render resolution, FSR1 preset) are held until the next launch. The label carries a `(RESTART)` suffix. Check the toml was written: `[pause-menu] N restart-only setting(s) written to ...`. |
+| A change in the menu did nothing | Restart-only rows (native MSAA and anisotropy, FSR1 preset and the like) are held until the next launch. The label carries a `(RESTART)` or `(NEXT START)` suffix, and leaving the menu offers RESTART NOW. A debug-only setting changed in the DEBUG menu or the F4 panel lasts one session and is not written to `larecomp.toml`. Check `logs/effective_config.txt` for the values the game actually started with. |
 | `[pause-menu] could not write the restart-only settings to <path>` | The toml could not be written. |
-| `[pause-menu] renderer '<x>' is not one this build offers; nothing changed` | The build has no Plume renderer, or the value is unknown. |
 | A command-line value is not kept | By design: values from the command line or environment are never written back (see [Getting Started](Getting-Started#when-the-game-rewrites-larecomptoml)). |
 | Rows of the other renderer are missing | The menu lists only the rows of the renderer running at launch. |
 

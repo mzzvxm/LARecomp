@@ -2,7 +2,7 @@
 
 Replace or dump game textures. This page covers the Plume renderer's texture mods (`src/gpu/texture_mods.*`, `src/gpu/textures.cpp`) and the dump helper (`src/mc_engine/texture_dump.*`). Model textures (images inside a mesh mod) are a different path; see [Mod Loader](Mod-Loader).
 
-Texture mods need the NATIVE renderer (the Plume renderer). The pause menu row TEXTURE MODS is shown only for it (`NativeOnly` in `src/mc_engine/pause_menu.cpp`).
+Texture mods need the NATIVE renderer (the Plume renderer). The pause menu row TEXTURE MODS is shown only for it (`NativeOnly` in `src/mc_engine/menus/pause_menu.cpp`).
 
 ## Options
 
@@ -12,9 +12,9 @@ Texture mods need the NATIVE renderer (the Plume renderer). The pause menu row T
 | `texture_reload` | toml / CLI; same as the RELOAD TEXTURE MODS menu row | `false` | Set true to re-index the replacement folders at the start of the next frame. It resets itself afterwards. | `src/gpu/textures.cpp` |
 | `mcla_gpu_texture_dump` | toml / CLI | `false` | Write every texture the renderer uploads, once per texture per session. | `src/gpu/textures.cpp` |
 | `bind_gpu_texture_dump` | key F2 | F2 | Dump the textures of the next frame only. | `src/gpu/renderer.cpp` |
-| `larecomp_texture_folder` | toml / CLI | `""` | Folder for the helper dump in `src/mc_engine/texture_dump.cpp`. Empty means `textures_dump/` in the mod folder. A relative path is taken from the executable folder. The old value `textures` is treated as empty. | `src/mc_engine/texture_dump.cpp` |
+| `larecomp_texture_folder` | toml / CLI | `""` | Folder for the helper dump in `src/mc_engine/core/texture_dump.cpp`. Empty means `textures_dump/` in the mod folder. A relative path is taken from the executable folder. The old value `textures` is treated as empty. | `src/mc_engine/core/texture_dump.cpp` |
 
-The menu also has two action rows: DUMP SCENE TEXTURES dumps every texture the renderer currently holds, not only the next frame's (`src/mc_engine/pause_menu.cpp`), and RELOAD TEXTURE MODS re-indexes the replacement folders.
+The menu also has two action rows: DUMP SCENE TEXTURES dumps every texture the renderer currently holds, not only the next frame's (`src/mc_engine/menus/pause_menu.cpp`), and RELOAD TEXTURE MODS re-indexes the replacement folders.
 
 ## Folders
 
@@ -40,7 +40,7 @@ A texture is replaced by its content hash, which must be the end of the file nam
 | `0x<16 hex>.dds` | `0x3f2a91c04d7e55b1.dds` |
 | `<16 hex>_<anything>.dds` | `3f2a91c04d7e55b1_512x512_k_DXT1.dds` |
 
-The last form is the name the helper dump in `src/mc_engine/texture_dump.cpp` writes (`<hash16>_<w>x<h>_<fmt>.dds`), so its files can be reused as they are. Hex digits are case-insensitive.
+The last form is the name the helper dump in `src/mc_engine/core/texture_dump.cpp` writes (`<hash16>_<w>x<h>_<fmt>.dds`), so its files can be reused as they are. Hex digits are case-insensitive.
 
 A file whose name carries no hash is ignored and logged:
 

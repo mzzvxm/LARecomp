@@ -1,6 +1,6 @@
 # Map Mods
 
-Data files a mod can ship for ground the road network does not reach: warp points, light glows, dynamic lights and breakable props. These files sit directly in the mod folder, not under `files/`, so the mod loader does not pack them into the archive. They are read by the game process. Source: `src/mc_engine/map_warp.cpp` and `src/mc_engine/modloader/features/`.
+Data files a mod can ship for ground the road network does not reach: warp points, light glows, dynamic lights and breakable props. These files sit directly in the mod folder, not under `files/`, so the mod loader does not pack them into the archive. They are read by the game process. Source: `src/mc_engine/gameplay/map_warp.cpp` and `src/mc_engine/modloader/features/`.
 
 All four are read once on first use. Restart the game after changing them. A mod folder that does not contain the file contributes nothing.
 

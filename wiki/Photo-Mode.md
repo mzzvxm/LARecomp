@@ -10,17 +10,19 @@ The album is paced separately: every Flash movie steps once per rendered frame, 
 
 ## Options
 
-All three are cvars with no pause menu row. Full rows in [Settings Reference](Settings-Reference#mclaphotomode-3).
+All of these are cvars with no pause menu row. Full rows in [Settings Reference](Settings-Reference#mclaphotomode-5).
 
 | Option | Default | Effect |
 |---|---|---|
 | `photo_auto_readback` | `true` | Fix for previews that show an old frame or garbage. Leave on. |
 | `photo_album_keep_new_preview` | `true` | While choosing the slot for a new photo, the album shows the photo just taken instead of the last saved one the cursor passed over. |
 | `photo_readback_debug` | `false` | Logs album state-machine phase transitions and the front buffer addresses the readback is armed for. |
+| `photo_album_export` | `true` | The album's PUBLISH ALBUM button becomes EXPORT ALBUM: it saves every photo in the album as a JPEG in `photo_album_export_dir` instead of uploading the album to the Social Club, which is closed. Photos already in the folder are not written twice. |
+| `photo_album_export_dir` | empty | Folder EXPORT ALBUM writes to. Empty means `Pictures\LARecomp`. |
 
-`photo_ui_trace` (default `true`, category `MCLA/Diagnostics`) logs the UI statechart while the album scene is up (photo mode, the album, the Rate My Ride snapshots). It is silent everywhere else.
+`photo_ui_trace` (default `false`, debug-only, category `MCLA/Diagnostics`) logs the UI statechart while the album scene is up (photo mode, the album, the Rate My Ride snapshots). It is silent everywhere else.
 
 ## Troubleshooting
 
 - Preview is stale or garbage: confirm `photo_auto_readback` is `true`. Turn on `photo_readback_debug` to see whether the resolve that fills the front buffer lands in the armed range.
-- Gallery plays too fast above 30 FPS: paced by `ui_movie_pacing`; see [Settings Reference](Settings-Reference#mclaui-12).
+- Gallery plays too fast above 30 FPS: paced by `ui_movie_pacing`; see [Settings Reference](Settings-Reference#mclaui-13).

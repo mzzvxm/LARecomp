@@ -1,6 +1,6 @@
 # String Replacement
 
-Dump the game's text to TOML and replace it with your own, for translations or text mods. Source: `src/mc_engine/string_dumper.h` and `.cpp`, `src/mc_engine/string_table.cpp`.
+Dump the game's text to TOML and replace it with your own, for translations or text mods. Source: `src/mc_engine/core/string_dumper.h` and `.cpp`, `src/mc_engine/menus/string_table.cpp`.
 
 ## Options
 
@@ -11,7 +11,7 @@ Dump the game's text to TOML and replace it with your own, for translations or t
 | `string_folder` | string | `""` | Override the strings folder. Empty means `strings/` under the game data folder. Needs a restart. |
 | `string_language` | string | `""` | Language code for per-language replacements, for example `pt_BR` or `es_ES`. Hot reload. |
 
-Source of all four: `src/mc_engine/string_dumper.cpp`. When the SDK in use provides its own dumper with the same cvar names, those are used instead; the file formats are the same.
+Source of all four: `src/mc_engine/core/string_dumper.cpp`. When the SDK in use provides its own dumper with the same cvar names, those are used instead; the file formats are the same.
 
 ## Folder layout
 

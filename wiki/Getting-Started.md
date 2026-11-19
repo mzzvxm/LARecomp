@@ -42,13 +42,13 @@ The ISO install wizard and the other dialogs are ImGui windows drawn before the 
 
 | Path | Contents | Source |
 |---|---|---|
-| `larecomp.toml` | Saved settings. Flat `key = value` lines. | `src/mc_engine/config_save.cpp`, README |
+| `larecomp.toml` | Saved settings. Flat `key = value` lines. | `src/mc_engine/core/config_save.cpp`, README |
 | `logs/larecomp_NNN.log` | Rolling main log. | `documentation/RUNNING.md` |
 | `logs/effective_config.txt` | Cvar values that took effect, rewritten each launch. Check it first when a setting appears to do nothing. | `src/larecomp_app.h`, README |
 | `stubs.txt` | Unregistered guest addresses hit at runtime. | `documentation/RUNNING.md` |
 | User data root | Saves, shader cache, achievements. Defaults to a `larecomp` folder under the user's Documents. If that cannot be written, data moves to a `larecomp` folder under the local application data folder, existing saves are copied, and a `.moved_from_documents` marker keeps it there. Setting `user_data_root` overrides the choice. | `src/larecomp_app.h` |
 | `<mod folder>/` | `modloader/`, `mods/` or `models/` beside the executable. See [Mod Loader](Mod-Loader). | `src/mc_engine/modloader/modloader.h` |
-| `debug_options.txt`, `menu_cameras.txt` | Read from the working directory. See [Debug Options](Debug-Options) and [Menu Cameras](Menu-Cameras). | `src/mc_engine/hooks/dev_options.cpp`, `src/mc_engine/menu_camera.cpp` |
+| `debug_options.txt`, `menu_cameras.txt` | Read from the working directory. See [Debug Options](Debug-Options) and [Menu Cameras](Menu-Cameras). | `src/mc_engine/hooks/dev_options.cpp`, `src/mc_engine/camera/menu_camera.cpp` |
 
 ## Settings: how they are set
 
@@ -62,16 +62,17 @@ Every user-facing cvar is listed in [Settings Reference](Settings-Reference), wi
 
 ### When the game rewrites `larecomp.toml`
 
-Settings changed in the pause menu apply at once and are saved when the submenu is left (`src/mc_engine/pause_menu.cpp`). Rules from `src/mc_engine/config_save.cpp` and `src/profile/larecomp_profile_store.h`:
+Settings changed in the pause menu apply at once and are saved when the submenu is left (`src/mc_engine/menus/pause_menu.cpp`). Rules from `src/mc_engine/core/config_save.cpp` and `src/profile/larecomp_profile_store.h`:
 
 - Only cvars changed at runtime (by a menu, the F4 settings panel or the console) are written. Values that came from the command line, the environment or the file itself are not.
+- A cvar tagged debug-only that was changed while the game ran is never written, and its line in the file, if there is one, is not touched: debug settings last one session. That covers the DEBUG menu, the F4 panel and the console. The F4 panel's Ctrl+S says how many it left out. To keep one, use a launch argument or write the line by hand.
 - Only the affected lines are rewritten. Other lines, comments and keys the build does not know stay as they are.
 - A changed value that returned to its default only rewrites a line the file already has.
 - Keys are looked up above the first `[table]`; new keys are added there.
 - The file is written to a temporary file and moved over the original, so a crash mid-write does not leave half a config.
 - A value that cannot be written as valid TOML is skipped with a warning in the log.
 
-Restart-only rows are different: the menu holds the new value and writes it to the file when the submenu saves, but the live value does not change until the next launch. The rows affected are renderer, graphics API, native MSAA and anisotropy, Plume render resolution and FSR1 preset (`kDeferredCvars` in `src/mc_engine/pause_menu.cpp`).
+Restart-only rows are different: the row's label carries `(RESTART)` or `(NEXT START)`, the new value is written to the file when the submenu is left, and the live value does not change until the next launch. Leaving a menu with such a change offers RESTART NOW or later. The menu writes them as they are listed in the log: `N restart-only setting(s) written to <file>; they apply on the next launch`. The renderer and the graphics API are not menu rows any more (see [Settings Reference](Settings-Reference#pause-menu-layout)).
 
 ### Environment variables
 
@@ -90,7 +91,8 @@ Non-Release builds log at `trace` by default, which the README describes as enou
 | F5 (`bind_mod_browser`) | Mod browser. See [Mod Browser](Mod-Browser). | `src/mc_engine/modloader/modsbrowser/mod_browser_ui.cpp` |
 | F6 (`bind_server_browser`) | Server browser. See [Online Play](Online-Play). | `src/mc_engine/online/server_browser/browser_ui.cpp` |
 | F8 (`bind_identity`) | Online identity window. See [Online Play](Online-Play). | `src/mc_engine/online/identity/identity_ui.cpp` |
-| F9 (`bind_map_warp`) | Warp to a mod's warp point and back. See [Map Mods](Map-Mods). | `src/mc_engine/map_warp.cpp` |
+| F9 (`bind_map_warp`) | Warp to a mod's warp point and back. See [Map Mods](Map-Mods). | `src/mc_engine/gameplay/map_warp.cpp` |
+| F1 (`bind_mcla_compare`) | Compare key (Plume renderer): flips the effect chosen in GRAPHICS QUALITY > COMPARE KEY the other way than your setting has it, with a label at the top of the screen; press again to go back. Nothing is saved. | `src/mc_engine/display/effect_compare.cpp` |
 | F2 (`bind_gpu_texture_dump`) | Dump the textures of the next frame (Plume renderer). See [Texture Modding](Texture-Modding). | `src/gpu/renderer.cpp` |
 | F10 (`bind_gpu_trace_next`) | Write a raw trace of the next guest frame (Plume renderer). | `src/gpu/renderer.cpp` |
 | F11 (`bind_gpu_renderdoc_capture`) | Capture the next frame with RenderDoc (Plume renderer). | `src/gpu/renderer.cpp` |

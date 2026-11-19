@@ -1,6 +1,6 @@
 # Menu Cameras
 
-Replace the camera shot behind the front-end menus (the city view behind the boot and initial menus) with your own. Source: `src/mc_engine/menu_camera.cpp`. The data file is not part of a mod folder: it is read from the process working directory.
+Replace the camera shot behind the front-end menus (the city view behind the boot and initial menus) with your own. Source: `src/mc_engine/camera/menu_camera.cpp`. The data file is not part of a mod folder: it is read from the process working directory.
 
 ## File
 
