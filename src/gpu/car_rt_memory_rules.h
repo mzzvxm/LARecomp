@@ -312,6 +312,11 @@ struct Stats {
   double worst_offset = 0.0;    // the largest match offset, metres
   uint32_t recorded = 0;        // kits made or replaced
   uint32_t record_refused = 0;  // a matched car whose draws could not be made relative (bad matrix, too few draws)
+  // The proof of the placement maths on the game's own data: for a car drawn this frame whose kit (made in an earlier frame) lists the same meshes in the same
+  // order, the kit placed at the vehicle's matrix of THIS frame against the draws' own origins: how far the prediction was from what the game drew.
+  uint32_t predicted_draws = 0;
+  double prediction_sum = 0.0;    // metres, over those draws
+  double prediction_worst = 0.0;
   uint32_t kits = 0;            // kits held after the frame
   uint32_t covered = 0;         // kits whose car is drawn this frame (not placed: the game's draws stand)
   uint32_t out_of_range = 0;    // kits whose vehicle is beyond the radius (kept, not placed)
@@ -332,6 +337,9 @@ struct Totals {
   uint64_t draws_placed = 0;
   uint64_t recorded = 0;
   uint64_t record_refused = 0;
+  uint64_t predicted_draws = 0;
+  double prediction_sum = 0.0;
+  double prediction_worst = 0.0;
   uint64_t dropped = 0;
   uint64_t not_resident = 0;
   uint32_t most_kits = 0;
@@ -529,6 +537,9 @@ class CarMemory {
     totals_.draws_placed += stats.placed_draws;
     totals_.recorded += stats.recorded;
     totals_.record_refused += stats.record_refused;
+    totals_.predicted_draws += stats.predicted_draws;
+    totals_.prediction_sum += stats.prediction_sum;
+    totals_.prediction_worst = std::max(totals_.prediction_worst, stats.prediction_worst);
     totals_.dropped += uint64_t(stats.dropped_gone) + stats.dropped_tag + stats.dropped_jump + stats.dropped_meshes + stats.dropped_full;
     totals_.not_resident += stats.not_resident;
     totals_.most_kits = std::max(totals_.most_kits, stats.kits);
@@ -545,6 +556,34 @@ class CarMemory {
  private:
   void Erase(size_t index) {
     kits_.erase(kits_.begin() + std::ptrdiff_t(index));
+  }
+
+  // The kit placed at the vehicle's matrix of this frame against the draws the game made of the same car in this frame (same meshes, same order): the distance
+  // between the prediction's origin and the draw's, per draw. A parked car should give about 0; a moving car shows the suspension and the lag.
+  static void Predict(const Kit& kit, const VehicleRead& v, uint32_t id, const std::vector<ci::OtherDraw>& draws, Stats* stats) {
+    const tp::Mat4 matrix = v.Matrix();
+    size_t i = 0;
+    double sum = 0.0, worst = 0.0;
+    uint32_t n = 0;
+    for (const ci::OtherDraw& d : draws) {
+      if (d.stencil_id != id || d.mesh_key == 0) {
+        continue;
+      }
+      if (i >= kit.draws.size() || kit.draws[i].mesh_key != d.mesh_key) {
+        return;  // another set of parts: no comparison
+      }
+      const tp::Mat4 predicted = Place(kit.draws[i].rel, matrix);
+      const double e = Distance(predicted.m[3], d.model_to_world.m[3]);
+      if (std::isfinite(e)) {
+        sum += e;
+        worst = std::max(worst, e);
+        ++n;
+      }
+      ++i;
+    }
+    stats->predicted_draws += n;
+    stats->prediction_sum += sum;
+    stats->prediction_worst = std::max(stats->prediction_worst, worst);
   }
 
   // The lowest slot number no kit holds.
@@ -595,6 +634,9 @@ class CarMemory {
         kit->drawn = in.guest_frame;  // the car is drawn: it is not placed on top of its own draws
       }
       return;
+    }
+    if (kit && kit->draws.size() == count && count != 0) {
+      Predict(*kit, v, car.stencil_id, *in.draws, stats);
     }
     const bool replace = !kit || double(count) >= kReplaceShare * double(kit->draws.size()) || in.guest_frame > kit->recorded + kRefreshFrames;
     if (kit && !replace) {
@@ -670,7 +712,11 @@ class CarMemory {
 // ---------------------------------------------------------------------------
 
 inline std::string Describe(const Stats& s) {
-  return std::format("{} vehicles near the player, {} other cars drawn of which {} matched to a vehicle (worst offset {:.2f} m); {} kits held ({} made or replaced, {} refused); "
+  const std::string prediction = s.predicted_draws != 0
+                                     ? std::format("kits placed at this frame's vehicles against the game's own draws: {} draws, mean error {:.3f} m, worst {:.3f} m",
+                                                   s.predicted_draws, s.prediction_sum / double(s.predicted_draws), s.prediction_worst)
+                                     : std::string("no kit was compared with the game's draws this frame");
+  return prediction + "; " + std::format("{} vehicles near the player, {} other cars drawn of which {} matched to a vehicle (worst offset {:.2f} m); {} kits held ({} made or replaced, {} refused); "
                      "{} placed from memory with {} draws ({} left out: no structure), {} kits covered by a drawn car, {} beyond the radius; dropped: {} vehicle gone, {} another model, "
                      "{} jumped, {} meshes given back, {} store full",
                      s.vehicles, s.seen, s.matched, s.worst_offset, s.kits, s.recorded, s.record_refused, s.placed_cars, s.placed_draws, s.not_resident, s.covered,

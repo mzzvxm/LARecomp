@@ -737,9 +737,11 @@ void CarRtScene::LogMemory(const car_frame::Frame& frame) {
   }
   if (t.recorded != 0 || s.vehicles != 0 || t.no_player != 0) {
     REXLOG_INFO("{} memory, frames {}..{}: {} triggers; cars placed from memory in {} of them ({} in all, {} draws, {} left out for want of a structure), most at once {}; {} kits made, {} "
-                "refused, {} dropped, most held {}; most vehicles near the player {}, worst match offset {:.2f} m, {} triggers without a readable list; last frame: {}",
+                "refused, {} dropped, most held {}; most vehicles near the player {}, worst match offset {:.2f} m, {} triggers without a readable list; the kits' prediction of "
+                "the game's own draws of the same cars (placed at the vehicle's matrix of that frame): {} draws, mean error {:.3f} m, worst {:.3f} m; last frame: {}",
                 kPrefix, memory_log_frame_, frame_, t.frames, t.frames_placed, t.cars_placed, t.draws_placed, t.not_resident, t.most_placed, t.recorded, t.record_refused,
-                t.dropped, t.most_kits, t.vehicles_max, t.worst_offset, t.no_player, car_rt_memory::Describe(s));
+                t.dropped, t.most_kits, t.vehicles_max, t.worst_offset, t.no_player, t.predicted_draws,
+                t.predicted_draws != 0 ? t.prediction_sum / double(t.predicted_draws) : 0.0, t.prediction_worst, car_rt_memory::Describe(s));
   }
   memory_.ResetTotals();
   memory_log_frame_ = frame_;

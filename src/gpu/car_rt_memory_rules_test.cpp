@@ -365,6 +365,51 @@ void TestPlacedWhenCulled() {
   Check(out.cars.empty() && out.stats.covered == 1 && out.stats.recorded == 1, "frame 4: drawn again: no duplicate, the kit refreshed");
 }
 
+// The kit placed at the vehicle's matrix against the draws of the same frame: the proof of the placement maths on the game's own data.
+void TestPrediction() {
+  const ci::Limits limits = High();
+  cm::CarMemory memory;
+  cm::CarMemory::Output out;
+  const std::vector<Part> parts = BodyParts(1000, 10);
+  const cm::VehicleRead v1 = Vehicle(100, 3.35, 0.3, 0.0, 0.4);
+  Frame f1;
+  f1.guest_frame = 10;
+  f1.vehicles = {v1};
+  f1.Draw(2, v1, parts);
+  memory.Update(InputOf(f1, limits), Resident{}, &out);
+  Check(out.stats.predicted_draws == 0, "the first sight has no kit to compare");
+  // The car drove 1.1 m and turned a little; the game draws the same parts at the same places in its frame: the prediction is right to float precision.
+  const cm::VehicleRead v2 = Vehicle(100, 3.9, 0.3, 0.9, 0.45);
+  Frame f2;
+  f2.guest_frame = 11;
+  f2.vehicles = {v2};
+  f2.Draw(7, v2, parts);
+  memory.Update(InputOf(f2, limits), Resident{}, &out);
+  Check(out.stats.predicted_draws == 10 && out.stats.prediction_worst < 1e-4 && out.stats.prediction_sum < 1e-3, "a rigid car: the kit predicts the game's draws to a tenth of a millimetre");
+  // The suspension compressed 5 cm at one wheel in the game's frame: that draw is off by 5 cm, the rest are right.
+  const cm::VehicleRead v3 = Vehicle(100, 4.4, 0.3, 1.4, 0.5);
+  Frame f3;
+  f3.guest_frame = 12;
+  f3.vehicles = {v3};
+  std::vector<Part> sunk = parts;
+  sunk[2].dy -= 0.05;
+  f3.Draw(7, v3, sunk);
+  memory.Update(InputOf(f3, limits), Resident{}, &out);
+  Check(out.stats.predicted_draws == 10 && Near(out.stats.prediction_worst, 0.05, 1e-3) && Near(out.stats.prediction_sum, 0.05, 1e-3),
+        "a wheel 5 cm lower than the kit has it: the worst error is 5 cm");
+  // Another set of parts (a car that changed LOD): no comparison.
+  const cm::VehicleRead v4 = Vehicle(100, 4.9, 0.3, 1.9, 0.5);
+  Frame f4;
+  f4.guest_frame = 13;
+  f4.vehicles = {v4};
+  f4.Draw(7, v4, BodyParts(1000, 9));
+  memory.Update(InputOf(f4, limits), Resident{}, &out);
+  Check(out.stats.predicted_draws == 0, "a different number of parts: nothing compared");
+  Check(!cm::Describe(out.stats).empty() && cm::Describe(out.stats).find("no kit was compared") != std::string::npos, "the log's words say so");
+  const cm::Totals& totals = memory.totals();
+  Check(totals.predicted_draws == 20 && totals.prediction_worst > 0.04, "the totals add up the frames");
+}
+
 void TestNeverSeen() {
   cm::CarMemory memory;
   cm::CarMemory::Output out;
@@ -770,6 +815,7 @@ int main() {
   TestSeenAndMatch();
   TestPlacement();
   TestPlacedWhenCulled();
+  TestPrediction();
   TestNeverSeen();
   TestCoverage();
   TestClassCaps();
