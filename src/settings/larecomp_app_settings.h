@@ -49,6 +49,15 @@ class AppSettings final : public rex::SettingOwner {
               "game never writes it to the file. Settings changed in the DEBUG menu are not saved either.",
               rex::kStartupOnly, rex::kDebugOnly);
 
+  // A test of the compatibility renderer offer (gpu/renderer_fallback.h), for the main session and testers: no graphics card is needed that
+  // the native renderer refuses. Read in mcla::gpu::Startup, which hands it to Device::Options, so the real failure path runs (Plume's device
+  // is refused at Device::Open for each API, the box lists the two refusals, the button writes gpu.driver and restarts).
+  REX_SETTING(bool, mcla_gpu_force_refusal, false,
+              "A test of the box that offers the compatibility renderer: both graphics APIs are refused on purpose, as if the graphics card "
+              "could not run the native renderer, so the game shows that box (with its Use the compatibility renderer button) and stops instead "
+              "of starting. Read at start. Debug only: use it as a launch argument; it is never saved.",
+              rex::kStartupOnly, rex::kDebugOnly);
+
   ValidatedString frame_step_cap{
       this, "frame_step_cap", "adaptive",
       "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
@@ -69,6 +78,7 @@ class AppSettings final : public rex::SettingOwner {
 inline AppSettings g_app;
 inline auto& graphics_backend = g_app.graphics_backend;
 inline auto& debug_menu = g_app.debug_menu;
+inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;
 inline auto& frame_step_cap = g_app.frame_step_cap;
 inline auto& rmr_server_port = g_app.rmr_server_port;
 

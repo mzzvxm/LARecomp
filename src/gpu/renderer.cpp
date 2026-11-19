@@ -29,6 +29,7 @@
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_gfx/nocp/nocp_driver.h"
 #include "renderer_choice.h"
+#include "renderer_fallback.h"
 #include "native_window.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
@@ -1776,7 +1777,9 @@ static_assert(mcla::native_gfx::nocp::kDriverName == kLarecompDriverName,
 // Which renderer runs is the SDK's gpu.driver (renderer_choice.h has the rule, and why the old mcla_gpu is not asked).
 bool ResolveEnabled(const std::string& driver) {
   if (RendererChoiceOf(driver) != RendererChoice::kLarecomp) {
-    REXLOG_INFO("[gpu] gpu.driver = {}: the SDK's Xenia GPU renders; the Plume renderer stays off", driver);
+    REXLOG_INFO("[gpu] gpu.driver = {}: the SDK's Xenia GPU renders (the compatibility renderer); the Plume renderer stays off. "
+                "The native renderer is back with gpu.driver = larecomp in larecomp.toml, or with the DEBUG menu's RENDERER row",
+                driver);
     return false;
   }
   const char* missing = nullptr;
@@ -1835,6 +1838,49 @@ std::vector<std::filesystem::path> ShaderPackSearchFolders() {
   return ShaderStore::SearchFolders(g_shader_pack_folder);
 }
 
+namespace {
+
+#if defined(_WIN32)
+constexpr bool kFallbackWindows = true;
+#else
+constexpr bool kFallbackWindows = false;
+#endif
+
+// Whether the player took the failure box's offer (StartupChoseCompatibilityRenderer). Set once, on the UI thread, before Startup returns.
+std::atomic<bool> g_compatibility_chosen{false};
+
+// The box for a native renderer that could not start: what each graphics API said, why the game needs what it needs, and one plain way on
+// (renderer_fallback.h): a button that starts the game with the compatibility renderer, or, where a button cannot do it (a launch option
+// sets gpu.driver and beats larecomp.toml; the box with buttons cannot be shown), the line to use instead. True when the player pressed
+// the button.
+bool ShowRefusalBox(rex::ui::IUISystem& ui, const std::string& refusals) {
+  namespace fb = fallback;
+  const larecomp::cvar::Source source = larecomp::cvar::GetFlagSource("gpu.driver");
+  const bool launch_sets_driver =
+      source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
+  const fb::Way way = fb::WayFor(launch_sets_driver, true);
+  if (way == fb::Way::kButton) {
+    rex::ui::ChoiceConfig box;
+    box.type = rex::MessageType::kError;
+    box.title = "LARecomp";
+    box.body = fb::RefusalText(refusals, way, kFallbackWindows);
+    box.buttons = {std::string(fb::kButtonText), "Close"};  // the first is the default, the last the escape
+    const auto answer = ui.ShowChoice(box);
+    if (answer) {
+      return *answer == 0;
+    }
+    REXLOG_WARN("[gpu] the box with the compatibility renderer button could not be shown ({})", answer.error().message);
+  }
+  // No button: the same box, with the line to use (or the option to give) in its text.
+  const fb::Way plain = way == fb::Way::kButton ? fb::Way::kLine : way;
+  rex::ShowMessageBox(rex::MessageType::kError, fb::RefusalText(refusals, plain, kFallbackWindows));
+  return false;
+}
+
+}  // namespace
+
+bool StartupChoseCompatibilityRenderer() { return g_compatibility_chosen.load(std::memory_order_acquire); }
+
 bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
   if (!Enabled()) {
     return false;
@@ -1849,6 +1895,7 @@ bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
 
   Renderer::Options options;
   options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
+  options.device.force_refusal = larecomp::settings::mcla_gpu_force_refusal.Get();  // a test of the box below (not the prebuild's)
   options.swap_chain.vsync = larecomp::settings::mcla_gpu_vsync.Get();
   options.swap_chain.present_wait = larecomp::settings::mcla_gpu_present_wait.Get();
   g_renderer = new Renderer();
@@ -1857,13 +1904,7 @@ bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
     // The app closes next, with the log as the only word of why: say it here, in plain terms, with
     // what each backend said when it was refused (Device::refusals).
     const std::string& refusals = g_renderer->device().refusals();
-    rex::ShowMessageBox(
-        rex::MessageType::kError,
-        "LARecomp could not start on this PC's graphics card.\n\n" +
-            (refusals.empty() ? std::string("The reason is in the log.\n\n") : refusals + "\n\n") +
-            "The game needs a graphics card and driver with Direct3D 12 (shader model 6.0 and "
-            "resource binding tier 2) or Vulkan (descriptor indexing and buffer device address). "
-            "Updating the graphics driver may help. The details are in the log.");
+    g_compatibility_chosen.store(ShowRefusalBox(ui, refusals), std::memory_order_release);
     g_overlay_host->Disconnect();
     return false;
   }
@@ -1879,8 +1920,8 @@ bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
         rex::MessageType::kWarning,
         std::string(BackendName(g_renderer->device().requested_backend())) +
             " could not be started on this machine, so the game runs on " + BackendName() +
-            ". The reason is in the log. The API is chosen in the pause menu: RENDERER, "
-            "GRAPHICS API (graphics_backend in larecomp.toml).");
+            ". The reason is in the log. The API is chosen in the launcher (Graphics API) or with "
+            "graphics_backend in larecomp.toml.");
   }
   g_active.store(g_renderer, std::memory_order_release);
 
@@ -2014,7 +2055,8 @@ void OnGuestFrameEnd(uint8_t* base) {
 }
 
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
-  const int64_t target = g_next_present_target.exchange(0, std::memory_order_relaxed);
+  fallback::Watch().NoteFrame();  // one load while nothing is armed; a start that presented its frames did not crash (renderer_fallback.h)
+  const int64_t target =g_next_present_target.exchange(0, std::memory_order_relaxed);
   const uint64_t tag = g_next_present_tag.exchange(0, std::memory_order_relaxed);  // capture mode
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
     c->Present(base, device, front_buffer, target, tag);

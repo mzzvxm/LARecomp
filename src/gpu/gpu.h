@@ -71,6 +71,10 @@ bool Enabled();
 // the reason is logged and the app should not start.
 bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window);
 
+// After Startup returned false: whether the player took the failure box's offer to start with the compatibility renderer (the XENIA renderer,
+// the hidden fallback: renderer_fallback.h). The box has told the player already; the app writes gpu.driver and starts the game again.
+bool StartupChoseCompatibilityRenderer();
+
 // The hotkeys the renderer answers (LarecompApp::StartOverlays binds them: ui.bind.gpu_*). Any thread;
 // no-ops while the renderer is not running.
 void RequestRenderDocCapture();  // the next frame, with RenderDoc (F11)

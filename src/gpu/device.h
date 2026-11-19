@@ -49,6 +49,9 @@ class Device {
     bool debug_layer = false;
     // The backend asked for (graphics_backend); must be compiled.
     Backend backend = kDefaultBackend;
+    // A test (mcla_gpu_force_refusal): every backend is refused on purpose, before anything is created, so the box that offers the
+    // compatibility renderer can be seen on a PC that runs the renderer. Only Startup sets it.
+    bool force_refusal = false;
   };
 
   Device() = default;

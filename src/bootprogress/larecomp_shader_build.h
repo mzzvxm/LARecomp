@@ -89,8 +89,12 @@ class Phase {
   // Quit (a cancelled build: Retry / Quit). `retry` is called on the UI thread with whether the
   // next build has to be forced; `quit` closes the app. Nothing is shown when the app is already
   // closing. Without a window a plain message says it and `quit` is called.
+  // `use_compatibility`, when given, adds a fourth choice to a build that FAILED (not to one the player stopped): the compatibility
+  // renderer (the hidden XENIA fallback, gpu/renderer_fallback.h), which needs no packs. It is called on the UI thread instead of
+  // `retry` or `quit`; it sets the choice and starts the game again, and the caller then ends this start as `quit` does.
   void ShowFailure(rex::ui::IUISystem& ui,
-                   std::function<void(bool force)> retry, std::function<void()> quit);
+                   std::function<void(bool force)> retry, std::function<void()> quit,
+                   std::function<void()> use_compatibility = {});
 
  private:
   enum class Kind { kNone, kBuilt, kCancelled, kClosing, kFailed };
