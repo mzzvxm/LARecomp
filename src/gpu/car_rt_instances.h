@@ -38,6 +38,10 @@ class CarRtInstances {
   bool RememberedOn() const;
   // How the cars built from their own model data are taken (mcla_gpu_car_rt_cars_model, debug, live; car_model_rt_rules.h Mode).
   car_model_rt::Mode ModelMode() const;
+  // RT-MODEL-PARTS: how many traffic and parked cars the walk takes besides the racers (mcla_gpu_car_rt_cars_traffic; -1: the class's count, 0: none) and whether the racers' wheels
+  // are walked (mcla_gpu_car_rt_cars_wheels). Both debug, live; read once a frame by the scene's Request.
+  uint32_t TrafficCars() const;
+  bool WheelsOn() const;
   // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
   double MatchMetres() const;
 

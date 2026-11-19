@@ -39,6 +39,24 @@ REXCVAR_DEFINE_INT32(
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_car_rt_cars_traffic, -1, "MCLA/GPU",
+    "Debug (the fix's own switch): how many TRAFFIC and PARKED cars the ray traced car effects see built from their own model data (mcla_gpu_car_rt_cars_model), besides the racers: the cars "
+    "of the game's ambient list (the renderer's traffic client) that the camera does not draw this frame, ranked by their distance to your car within the class's radius. -1 (the "
+    "default): the class's count (4 on the High class, 2 on the Mid class); 0 leaves the traffic out; 1 to 8 asks for that many. A traffic car's model is a fraction of a racer's "
+    "(one low detail drawable), so the count is cheap. A traffic car is placed only after its bone matrices have been checked against the draws of a traffic car the camera sees. Live.")
+    .debug_only()
+    .range(-1, 8)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_car_rt_cars_wheels, true, "MCLA/GPU",
+    "Debug (the fix's own switch): a racer the camera does not draw is built WITH its four wheels (the tyre and the rim from the game's wheel manager, placed by the vehicle's own wheel "
+    "matrices, steer and spin included), not the body and the parts alone. The wheels are placed only after their placement has been checked against the draws of the cars the "
+    "camera sees. off: no wheels. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_rt_cars_match, 0.0, "MCLA/GPU",
     "Debug: how near, in metres, the centre of a car the camera sees must be to a car of the game's own list to be that car, for the cars the camera does not see "
@@ -78,6 +96,14 @@ bool CarRtInstances::RememberedOn() const {
 
 car_model_rt::Mode CarRtInstances::ModelMode() const {
   return car_model_rt::Mode(std::clamp<int>(int(REXCVAR_GET(mcla_gpu_car_rt_cars_model)), 0, 2));
+}
+
+uint32_t CarRtInstances::TrafficCars() const {
+  return car_model_parts::TrafficCarsFor(CurrentLimits(), int(REXCVAR_GET(mcla_gpu_car_rt_cars_traffic)));
+}
+
+bool CarRtInstances::WheelsOn() const {
+  return REXCVAR_GET(mcla_gpu_car_rt_cars_wheels);
 }
 
 double CarRtInstances::MatchMetres() const {
