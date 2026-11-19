@@ -1019,79 +1019,79 @@ int main() {
       tap.rgb[1] = 0.25f;
       tap.rgb[2] = 0.125f;
     }
-    rt::OtherCarColour all = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    rt::OtherCarColour all = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(Near(all.share, 1.0, 1e-5) && all.known() && Near(all.rgb[0], 0.5, 1e-5) && Near(all.rgb[1], 0.25, 1e-5) && Near(all.rgb[2], 0.125, 1e-5),
           "every tap at the centre's distance: the whole share, the colour");
     // The depth window: kOtherCarDepth radii (1.92 m at a radius of 1.6): full weight to half of it, nothing at it.
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 10.0f + 0.9f;
     }
-    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 1.6f).share, 1.0, 1e-5), "within half the window every tap counts in full");
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).share, 1.0, 1e-5), "within half the window every tap counts in full");
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 10.0f + 1.92f;
     }
-    const rt::OtherCarColour edge = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    const rt::OtherCarColour edge = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(edge.share < 1e-3f && !edge.known() && edge.rgb[0] == 0.0f, "at the window's edge the taps are no longer the car's: no colour");
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 14.0f;  // the road or a car behind it: another surface
     }
-    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f).known(), "a surface far behind the car is not the car");
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).known(), "a surface far behind the car is not the car");
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 0.0f;  // no vehicle here (the history's alpha 0)
     }
-    const rt::OtherCarColour none = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    const rt::OtherCarColour none = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(none.share == 0.0f && !none.known() && none.rgb[0] == 0.0f && none.rgb[1] == 0.0f, "no vehicle texel: share 0, black");
     // The left column only (the taps 0, 3, 6 hold the car): the tent weights 1/2 x (1/2 + 1 + 1/2) over the sum 4.
     for (int k = 0; k < 9; ++k) {
       taps[k].distance = (k % 3) == 0 ? 10.0f : 0.0f;
       taps[k].rgb[0] = (k % 3) == 0 ? 0.8f : 0.0f;
     }
-    const rt::OtherCarColour column = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    const rt::OtherCarColour column = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(Near(column.share, 0.25, 1e-5) && column.known() && Near(column.rgb[0], 0.8, 1e-5), "a column of taps: a quarter of the share, the colour of those");
     // Only the middle tap (the centre's own place): 1/4 of the sum.
     for (int k = 0; k < 9; ++k) {
       taps[k].distance = k == 4 ? 10.0f : 0.0f;
       taps[k].rgb[0] = k == 4 ? 0.3f : 0.0f;
     }
-    const rt::OtherCarColour middle = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    const rt::OtherCarColour middle = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(Near(middle.share, 0.25, 1e-5) && Near(middle.rgb[0], 0.3, 1e-5), "the middle tap alone: a quarter of the share");
     // A corner alone is 1/16 of the sum: under kOtherCarMinShare, no colour.
     for (int k = 0; k < 9; ++k) {
       taps[k].distance = k == 0 ? 10.0f : 0.0f;
       taps[k].rgb[0] = k == 0 ? 0.3f : 0.0f;
     }
-    const rt::OtherCarColour corner = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    const rt::OtherCarColour corner = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
     Check(Near(corner.share, 0.0625, 1e-5) && !corner.known(), "a corner alone is too little to be the car's colour");
     // A car placed from memory (a negative radius in its record): the history holds nothing of it, whatever the taps hold; it is known in full, a fixed grey.
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 0.0f;
       tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
     }
-    const rt::OtherCarColour remembered = rt::FindOtherCarColour(taps, 10.0f, -1.6f);
+    const rt::OtherCarColour remembered = rt::FindOtherCarColour(taps, 10.0f, -1.6f, nullptr, 1.0f);
     Check(remembered.known() && Near(remembered.share, 1.0, 1e-6) && Near(remembered.rgb[0], rt::kRememberedCarColour, 1e-6) &&
               Near(remembered.rgb[1], rt::kRememberedCarColour, 1e-6) && Near(remembered.rgb[2], rt::kRememberedCarColour, 1e-6),
           "a car placed from memory (negative radius): the fixed grey, known in full, the taps not looked at");
     Check(rt::kRememberedCarColour > 0.0f && rt::kRememberedCarColour < 1.0f, "the grey is a colour");
     // the same car with its paint known (the record's second row): its hidden hits take the paint, the grey is the fallback
     const float paint[3] = {0.063f, 0.349f, 0.071f};
-    const rt::OtherCarColour painted = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint);
+    const rt::OtherCarColour painted = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint, 1.0f);
     Check(painted.known() && Near(painted.share, 1.0, 1e-6) && Near(painted.rgb[0], 0.063, 1e-6) && Near(painted.rgb[1], 0.349, 1e-6) && Near(painted.rgb[2], 0.071, 1e-6),
           "a car the camera does not draw, with its paint known: the paint, known in full");
     // A car the camera draws (a positive radius) whose taps hold nothing (the history has no vehicle there): its paint stands in, in full (RT-MODEL-CARS-3: the neighbour
     // the game draws beside the player while the camera looks at the player's door); with no paint, no colour, as before.
-    const rt::OtherCarColour drawn_unseen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint);
+    const rt::OtherCarColour drawn_unseen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, 1.0f);
     Check(drawn_unseen.known() && Near(drawn_unseen.share, 1.0, 1e-6) && Near(drawn_unseen.rgb[0], 0.063, 1e-6) && Near(drawn_unseen.rgb[2], 0.071, 1e-6),
           "a car the camera draws but the history shows nothing of, with its paint known: the paint, known in full");
-    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f).known(), "... and with no paint known: no colour, as before");
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).known(), "... and with no paint known: no colour, as before");
     // its centre behind the camera, or no centre in its record (a radius of 0): no taps are looked at, the paint or nothing
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = -3.0f;
       tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
     }
-    Check(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint).known() && Near(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint).rgb[0], 0.063, 1e-6),
+    Check(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint, 1.0f).known() && Near(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint, 1.0f).rgb[0], 0.063, 1e-6),
           "a centre behind the camera: the paint");
-    Check(!rt::FindOtherCarColour(taps, -3.0f, 1.6f).known() && rt::FindOtherCarColour(taps, -3.0f, 1.6f).rgb[0] == 0.0f, "a centre behind the camera, no paint: no colour");
-    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 0.0f, paint).rgb[1], 0.349, 1e-6) && !rt::FindOtherCarColour(taps, 10.0f, 0.0f).known(), "a record with no centre (radius 0): the paint or nothing");
+    Check(!rt::FindOtherCarColour(taps, -3.0f, 1.6f, nullptr, 1.0f).known() && rt::FindOtherCarColour(taps, -3.0f, 1.6f, nullptr, 1.0f).rgb[0] == 0.0f, "a centre behind the camera, no paint: no colour");
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 0.0f, paint, 1.0f).rgb[1], 0.349, 1e-6) && !rt::FindOtherCarColour(taps, 10.0f, 0.0f, nullptr, 1.0f).known(), "a record with no centre (radius 0): the paint or nothing");
     // where the history shows the car, its colour stays, whatever the paint row says
     for (rt::SurfaceTap& tap : taps) {
       tap.distance = 10.0f;
@@ -1099,8 +1099,43 @@ int main() {
       tap.rgb[1] = 0.25f;
       tap.rgb[2] = 0.125f;
     }
-    const rt::OtherCarColour seen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint);
+    const rt::OtherCarColour seen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, 1.0f);
     Check(Near(seen.share, 1.0, 1e-5) && Near(seen.rgb[0], 0.5, 1e-5) && Near(seen.rgb[1], 0.25, 1e-5), "a car the camera draws and the history shows keeps the colour of the history, whatever its paint row says");
+
+    // UNITS (RT-MODEL-CARS-4). The image is in the history's units (the target's: the shader's output times 2^bias), the paint's constants and the grey are in the paint's (the
+    // shader's output): at the game's bias of 4 they are multiplied by 16; what the history shows is the history's already and is not multiplied.
+    const float units = 16.0f;
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    const rt::OtherCarColour grey16 = rt::FindOtherCarColour(taps, 10.0f, -1.6f, nullptr, units);
+    Check(Near(grey16.rgb[0], rt::kRememberedCarColour * 16.0, 1e-5) && Near(grey16.rgb[2], rt::kRememberedCarColour * 16.0, 1e-5),
+          "the grey of a car placed from memory is multiplied by the units");
+    const rt::OtherCarColour paint16 = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint, units);
+    Check(Near(paint16.rgb[0], 0.063 * 16.0, 1e-5) && Near(paint16.rgb[1], 0.349 * 16.0, 1e-5) && Near(paint16.rgb[2], 0.071 * 16.0, 1e-5) && paint16.known(),
+          "the paint of a car placed from memory is multiplied by the units");
+    const rt::OtherCarColour drawn16 = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, units);
+    Check(drawn16.known() && Near(drawn16.rgb[1], 0.349 * 16.0, 1e-5), "the paint that stands in for a drawn car the history shows nothing of is multiplied by the units");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    const rt::OtherCarColour seen16 = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, units);
+    Check(Near(seen16.rgb[0], 0.5, 1e-5) && Near(seen16.rgb[1], 0.25, 1e-5), "what the history shows keeps its own units (not multiplied)");
+    // What the paint then makes of it (the reflection ray's hidden hit: kShade of the colour; the paint reads the image times 2^-bias): a neighbour of paint radiance p shows
+    // p x kShade in the paint's units, not p x kShade / 16 (the dark silhouette of the first model-data check).
+    {
+      const float white[3] = {0.35f, 0.35f, 0.35f};  // a white car's row (car_model_rt_rules.h PaintRadiance)
+      const rt::OtherCarColour hit = rt::FindOtherCarColour(taps, -3.0f, 1.6f, white, units);
+      const double image = double(hit.rgb[0]) * rt::kShade;                  // what the pass writes for the hit (hidden: the colour times the shade)
+      const double in_paint_units = image * cr::ExpBiasGain(4);    // what the paint's debug view 2 and its blend read
+      Check(Near(in_paint_units, 0.35 * rt::kShade, 1e-5), "a hidden hit on a car of paint radiance p reaches the paint as p x kShade (the units cancel)");
+      const double before = 0.35 * rt::kShade * cr::ExpBiasGain(4);  // the first model-data check: no units, so 1/16 of that
+      Check(Near(before * 16.0, in_paint_units, 1e-6) && before < 0.01, "... where it reached it as 1/16 of that before: the dark silhouette");
+    }
     // The step: kOtherCarSpread radii in texels, from one to the most.
     Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
               Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),

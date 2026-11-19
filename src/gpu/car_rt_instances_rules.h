@@ -271,8 +271,8 @@ struct OtherCar {
 struct CarRow {
   float centre[3] = {};
   // > 0: the car's colour is sampled from the history round `centre`; 0: no colour is known (the car's hidden hits are misses); < 0 (-kCarRadius): a car
-  // placed from memory (OtherCar::remembered): the camera does not see it, the history holds nothing of it, and the shader shows it in a fixed dark shade
-  // (hlsl/car_rt_refl_cs.hlsl OtherCarColour, car_rt_refl_rules.h kRememberedCarColour).
+  // placed from memory (OtherCar::remembered): the camera does not see it, the history holds nothing of it, and the shader shows it in its paint (the second row) or a fixed grey, both in the
+  // paint's units and multiplied by 2^exp_bias in the pass, then made darker by the shade (hlsl/car_rt_refl_cs.hlsl OtherCarColour, car_rt_refl_rules.h kRememberedCarColour).
   float radius = 0.0f;
 };
 static_assert(sizeof(CarRow) == sizeof(rr::InstanceRow), "a car's row is one uint4, as an instance's");
@@ -458,6 +458,20 @@ struct ListStats {
   uint32_t shared_meshes = 0;    // ... of those named by more than one instance
 };
 
+// What a car's two rows hold, for the logs (the proof of the paint: the value the CPU wrote into the table, to be matched with what the shader read back,
+// car_rt_scene_rules.h DecodeProbe): in the order of the rows, `slot` the car's place among the cars' records (its first row is car_row + slot * kCarRows).
+struct CarRecordLog {
+  uint32_t slot = 0;
+  uint32_t stencil_id = 0;
+  bool remembered = false;
+  bool walked = false;
+  bool has_paint = false;
+  float centre[3] = {};
+  float radius = 0.0f;
+  float paint[3] = {};
+  double distance = std::numeric_limits<double>::infinity();
+};
+
 // The frame's instances and the rows of the table. rows[i] belongs to items[i]; after the items come the other cars' rows (CarRow), which an
 // instance of another car names by its `draw` field.
 struct List {
@@ -468,6 +482,9 @@ struct List {
   // inside these and the player's own box (hlsl/car_rt_ao_cs.hlsl).
   std::vector<ViewBox> boxes;
   uint32_t box_row = 0;
+  // The first row of the cars' records (two rows a car, CarRow then CarPaintRow: stats.cars of them, ending at box_row) and what each holds.
+  uint32_t car_row = 0;
+  std::vector<CarRecordLog> records;
   // The player's own car's box in the frame's view space: its listed instances' transformed mesh boxes (the same kind of box as `boxes`, tight to what
   // the scene holds of the car). Not valid when no listed instance has a mesh box. The check's scope (car_rt_scene_rules.h) places a pixel in it.
   ViewBox player_box;
@@ -477,6 +494,8 @@ struct List {
     rows.clear();
     boxes.clear();
     box_row = 0;
+    car_row = 0;
+    records.clear();
     player_box = ViewBox{};
     stats = ListStats{};
   }
@@ -563,6 +582,7 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
   }
   // The cars' records follow the instances' (the table's rows are all uint4: two a car, CarRow then CarPaintRow); the instances name the first by row.
   const uint32_t car_rows = uint32_t(list->items.size());
+  list->car_row = car_rows;
   for (size_t i = first_other; i < list->rows.size(); ++i) {
     list->rows[i].draw += car_rows;
   }
@@ -590,6 +610,19 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     static_assert(sizeof(raw) == sizeof(paint));
     std::memcpy(&raw, &paint, sizeof(raw));
     list->rows.push_back(raw);
+    CarRecordLog log;
+    log.slot = list->stats.cars;
+    log.stencil_id = cars[index].stencil_id;
+    log.remembered = cars[index].remembered;
+    log.walked = cars[index].walked;
+    log.has_paint = cars[index].has_paint;
+    for (int c = 0; c < 3; ++c) {
+      log.centre[c] = row.centre[c];
+      log.paint[c] = paint.rgb[c];
+    }
+    log.radius = row.radius;
+    log.distance = cars[index].distance;
+    list->records.push_back(log);
     ++list->stats.cars;
   }
   // The boxes' rows after the cars' (a car none of whose draws is listed has no box and no rows).

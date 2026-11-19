@@ -581,6 +581,15 @@ void TestPaintRows() {
   Check((pa.flags & ci::kPaintKnown) != 0 && Near(pa.rgb[0], 0.25) && Near(pa.rgb[1], 0.5) && Near(pa.rgb[2], 0.75), "the walked car's paint is in its second row");
   Check(pb.flags == 0 && pb.rgb[0] == 0.0f, "a car with no paint: the flag is clear");
   Check(list.box_row == 3 + 2 * ci::kCarRows, "the boxes' rows follow the two records");
+  // the log of the records (RT-MODEL-CARS-4): the first row of the records and what each holds, in the order of the rows, for the probe to compare with the shader's reads
+  Check(list.car_row == 3 && list.records.size() == 2 && list.records[0].slot == 0 && list.records[1].slot == 1, "the records' first row and a log entry a car, in the rows' order");
+  Check(list.records[0].has_paint && Near(list.records[0].paint[0], 0.25) && Near(list.records[0].paint[2], 0.75) && list.records[0].walked && list.records[0].remembered &&
+            list.records[0].radius == ra.radius && list.records[0].stencil_id == a.stencil_id,
+        "the log holds the paint, the radius and the flags written for the nearer car");
+  Check(!list.records[1].has_paint && list.records[1].paint[0] == 0.0f && !list.records[1].walked && list.records[1].radius == rb.radius, "a car with no paint: none logged, zeros");
+  Check(list.car_row + list.stats.cars * ci::kCarRows == list.box_row, "the records end where the boxes begin");
+  list.Clear();
+  Check(list.records.empty() && list.car_row == 0, "Clear empties the log of the records");
 }
 
 int main() {

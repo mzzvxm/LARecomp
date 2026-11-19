@@ -388,6 +388,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.up[0] = view.up[0];
   push.up[1] = view.up[1];
   push.up[2] = view.up[2];
+  push.up[3] = car_selfrefl::ExpBiasUnits(info.exp_bias);
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -452,11 +453,12 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
-                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}",
+                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}; the colours the pass makes up from a paint constant are multiplied by "
+                "{} (the history's units over the paint's, the main target's exponent bias {})",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
                 info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
-                chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version");
+                chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version", push.up[3], info.exp_bias);
   }
   return true;
 }

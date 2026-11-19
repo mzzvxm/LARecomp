@@ -23,7 +23,14 @@
 //   1  the error as colour: green below 2%, yellow at 2%, red from 10%; magenta for a vehicle pixel with no hit; grey-blue for one not in
 //      the scene by design
 //   2  the hit's view-space normal (turned to face the ray) as colour: its x (right), y (up) and z (forward) times 0.5 plus 0.5
+//   3  another car's PAINT as the reflection pass reads it (RT-MODEL-CARS-4): a pixel whose hit is on another car's part shows the HUE of that car's record's second row
+//      (CarRtLoadCar, the table the reflection shader reads; its largest channel at 1: the picture is 8 bits, the strength is in the probe); a car whose record has no paint is
+//      purple, the player's own car dark grey
 //   a  0.85 on a vehicle's pixel (0.6 where not in the scene by design), 0 elsewhere (the display pass blends the picture into the scene)
+//
+// THE PROBE (RT-MODEL-CARS-4): the thread (0, 0) also copies the first kProbeCars cars' records (two rows each, from the row g_push.scope.w, as many as bits 16 to 23 of slots.w say)
+// as they are in the table into the words from kStatProbe, raw: the host compares them with what it wrote (car_rt_scene_rules.h DecodeProbe) and logs whether the shader read
+// the paint the host sent.
 //
 // Layout (car_rt_scene.cpp), the same shape the ray traced reflection pass has: set 0 the bindless texture set (t0, space0: the linear depth
 // image by its slot), set 1 this pass's own (u0 the picture, u1 the counters, space1), set 2 the car RT set (hlsl/car_rt_common.hlsli,
@@ -41,12 +48,13 @@ RWTexture2D<unorm float4> gView : register(u0, space1);
 RWByteAddressBuffer gStats : register(u1, space1);
 
 struct CheckPush {
-  // x the linear depth image's bindless slot, y and z its width and height, w the flags: bit 0 write the picture, bits 8-15 the view mode
+  // x the linear depth image's bindless slot, y and z its width and height, w the flags: bit 0 write the picture, bits 8-15 the view mode, bits 16-23 how many cars' records
+  // the table holds (the probe reads the first kProbeCars of them)
   uint4 slots;
   // x and y tan of the half field of view the image was made with, z the ray's start (distance), w its end
   float4 lens;
   // x the first row of the other kept cars' boxes in the car RT table, y how many boxes (0 to kScopeMaxOtherBoxes), z the flags (bit 0 the
-  // player's box is known)
+  // player's box is known), w the first row of the cars' records (two rows a car: CarRow, CarPaintRow)
   uint4 scope;
   // xyz the player's car's box in view space (grown by the host)
   float4 box_min;
@@ -59,7 +67,7 @@ ConstantBuffer<CheckPush> g_push : register(b0, space3);
 #endif
 
 // car_rt_scene_rules.h: the counters' places, the unit of the error sum and the histogram's edges.
-static const uint kStatsWords = 20;
+static const uint kStatsWords = 52;
 static const uint kStatVehicle = 0;
 static const uint kStatCovered = 1;
 static const uint kStatErrorSum = 2;
@@ -71,6 +79,10 @@ static const uint kStatTyres = 14;
 static const uint kStatBody = 15;
 static const uint kStatOutside = 16;
 static const uint kStatOthers = 17;
+// The probe (car_rt_scene_rules.h): the first cars' records as the shader reads them, 8 words a car.
+static const uint kStatProbe = 20;
+static const uint kProbeCars = 4;
+static const uint kProbeWordsPerCar = 8;
 // The scope (car_rt_scene_rules.h): what the other cars' boxes are grown by, how many there may be, the flag of the player's box.
 static const float kScopeBoxMargin = 0.15f;
 static const uint kScopeMaxOtherBoxes = 8;
@@ -123,8 +135,23 @@ void Count(uint word, uint value) {
   }
 }
 
+// The probe: the cars' records as the shader's own loads read them (CarRtLoadCar's two rows), raw, for the host to compare with what it wrote.
+void ProbeCars() {
+  const uint count = min((g_push.slots.w >> 16) & 0xFFu, kProbeCars);
+  [loop] for (uint k = 0u; k < count; ++k) {
+    const uint row = g_push.scope.w + k * 2u;
+    const uint4 centre = gCarRtInstances[row];
+    const uint4 paint = gCarRtInstances[row + 1u];
+    gStats.Store4((kStatProbe + k * kProbeWordsPerCar) * 4u, centre);
+    gStats.Store4((kStatProbe + k * kProbeWordsPerCar + 4u) * 4u, paint);
+  }
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
+  if (id.x == 0u && id.y == 0u) {
+    ProbeCars();
+  }
   const uint2 size = uint2(g_push.slots.y, g_push.slots.z);
   const bool inside = id.x < size.x && id.y < size.y;
   float depth = 0.0f;
@@ -184,7 +211,17 @@ void main(uint3 id : SV_DispatchThreadID) {
       const uint mode = (g_push.slots.w >> 8) & 0xFFu;
       color = float4(1.0f, 0.0f, 1.0f, 0.85f);  // a vehicle pixel no part of the car covers
       if (covered) {
-        if (mode == 2u) {
+        if (mode == 3u) {
+          const CarRtInstance hit_instance = CarRtLoadInstance(hit.instance_index);
+          if ((CarRtInstanceMask(hit_instance) & CAR_RT_MASK_OTHERS) != 0u) {
+            const CarRtCar car = CarRtLoadCar(hit_instance);
+            // the picture is 8 bits (0..1): the paint's HUE at full strength (its largest channel 1); its strength is in the probe's words
+            const float strongest = max(max(car.paint.x, car.paint.y), max(car.paint.z, 1e-4f));
+            color = car.has_paint ? float4(saturate(car.paint / strongest), 0.9f) : float4(0.5f, 0.0f, 0.5f, 0.9f);
+          } else {
+            color = float4(0.1f, 0.1f, 0.1f, 0.5f);  // the player's own car: not another car's paint
+          }
+        } else if (mode == 2u) {
           const float3 n = CarRtHitNormal(hit.instance_index, hit.primitive_index, hit.barycentrics, hit.object_to_world, direction);
           color = float4(n * 0.5f + 0.5f, 0.85f);
         } else {

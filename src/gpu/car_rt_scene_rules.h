@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -458,10 +459,13 @@ inline bool TotalsChangedMuch(uint64_t last_logged, uint64_t now) {
 // ---------------------------------------------------------------------------
 // the check pass's statistics (hlsl/car_rt_check_cs.hlsl)
 // ---------------------------------------------------------------------------
-// The shader counts into 20 words: for each vehicle pixel of the AO's linear depth image that the scene is meant to hold (see the scope below) a
-// ray from the view-space origin through the pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction
+// The shader counts into 20 words (and then holds the PROBE's, below): for each vehicle pixel of the AO's linear depth image that the scene is meant to hold (see the scope
+// below) a ray from the view-space origin through the pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction
 // has z = 1) is compared with the pixel's own distance. A vehicle pixel the scene is not meant to hold is only counted (kStatOutside).
-inline constexpr uint32_t kStatsWords = 20;    // a multiple of four: the counter buffer is a multiple of 16 bytes
+inline constexpr uint32_t kStatProbe = 20;     // the first word of the probe's
+inline constexpr uint32_t kProbeCars = 4;      // the first cars' records the probe reads back
+inline constexpr uint32_t kProbeWordsPerCar = 8;  // a car's two rows (CarRow, CarPaintRow) as the shader reads them: centre xyz, radius, paint rgb, flags, as bits
+inline constexpr uint32_t kStatsWords = kStatProbe + kProbeCars * kProbeWordsPerCar;  // 52: a multiple of four: the counter buffer is a multiple of 16 bytes
 inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image the scene is meant to hold (the scope below)
 inline constexpr uint32_t kStatCovered = 1;    // ... whose ray hit a part of the car
 inline constexpr uint32_t kStatErrorSum = 2;   // the sum of |hit - image| / image over the covered, in units of kErrorUnit
@@ -476,7 +480,8 @@ inline constexpr uint32_t kStatOutside = 16;   // vehicle pixels the scene is NO
 inline constexpr uint32_t kStatOthers = 17;    // of kStatVehicle's: the pixels in another kept car's box (the rest are in the player's box)
 // words 18 and 19 are not used
 static_assert(kStatHistogram + kBuckets == kStatGlass);
-static_assert(kStatOthers < kStatsWords);
+static_assert(kStatOthers < kStatProbe);
+static_assert(kStatsWords % 4 == 0);
 inline constexpr double kBucketEdges[kBuckets] = {0.0025, 0.005, 0.01, 0.02, 0.05, 0.10, 0.25, 1e30};
 inline constexpr double kErrorUnit = 1000.0;
 inline constexpr double kNearFarTolerance = 0.02;
@@ -576,6 +581,55 @@ inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
   s.nearer = double(words[kStatNearer]) / covered;
   s.farther = double(words[kStatFarther]) / covered;
   return s;
+}
+
+
+// ---------------------------------------------------------------------------
+// the probe: the paint as the shader reads it (RT-MODEL-CARS-4)
+// ---------------------------------------------------------------------------
+// The first check showed the neighbour beside the door as a dark silhouette in no colour. The CPU wrote the paint into the table (car_rt_instances_rules.h CarPaintRow), the shader
+// reads it with CarRtLoadCar (hlsl/car_rt_common.hlsli): this proves the second half. The check pass's thread (0, 0) copies the first kProbeCars cars' two rows, as the shader's
+// own loads see them, into the words from kStatProbe (the push block says where the records start and how many there are), and the host's readback decodes them and compares each
+// with the record it wrote for that frame (car_rt_instances_rules.h CarRecordLog): the same bits or not.
+struct ProbeCar {
+  bool read = false;     // the slot is one of the frame's records
+  float centre[3] = {};  // CarRow as the shader read it
+  float radius = 0.0f;
+  float paint[3] = {};   // CarPaintRow
+  uint32_t flags = 0;    // bit 0 the colour is known (car_rt_instances_rules.h kPaintKnown)
+};
+
+inline ProbeCar DecodeProbe(const uint32_t words[kStatsWords], uint32_t slot, uint32_t car_count) {
+  ProbeCar p;
+  if (slot >= kProbeCars || slot >= car_count) {
+    return p;
+  }
+  const uint32_t* w = words + kStatProbe + slot * kProbeWordsPerCar;
+  float f[kProbeWordsPerCar];
+  static_assert(sizeof(f) == sizeof(uint32_t) * kProbeWordsPerCar);
+  std::memcpy(f, w, sizeof(f));
+  p.read = true;
+  for (int c = 0; c < 3; ++c) {
+    p.centre[c] = f[c];
+    p.paint[c] = f[4 + c];
+  }
+  p.radius = f[3];
+  p.flags = w[7];
+  return p;
+}
+
+// Whether the shader read exactly the bits the host wrote for the car (the row the host sent: its radius, centre and paint; a car with no paint writes zeros and flags 0).
+inline bool ProbeMatches(const ProbeCar& read, const float centre[3], float radius, bool has_paint, const float paint[3]) {
+  if (!read.read) {
+    return false;
+  }
+  const auto same = [](float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; };
+  for (int c = 0; c < 3; ++c) {
+    if (!same(read.centre[c], centre[c]) || !same(read.paint[c], has_paint ? paint[c] : 0.0f)) {
+      return false;
+    }
+  }
+  return same(read.radius, radius) && read.flags == (has_paint ? 1u : 0u);
 }
 
 }  // namespace mcla::gpu::car_rt_rules

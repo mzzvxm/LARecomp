@@ -24,8 +24,8 @@ REXCVAR_DEFINE_BOOL(
     mcla_gpu_car_rt_cars_memory, true, "MCLA/GPU",
     "Debug (the fix's own switch): the ray traced car effects also see the cars the camera does not (the car beside yours, out of the picture): a car that was "
     "drawn while it was near is remembered, and while it is not drawn it is placed again from the game's own list of cars. The same class limits apply "
-    "(nearest cars, by distance to your car). off: only the cars drawn this frame. The reflection shows a remembered car in a fixed dark shade (its colour is "
-    "not known while the camera does not see it). Live.")
+    "(nearest cars, by distance to your car). off: only the cars drawn this frame. The reflection shows a remembered car in its paint where the model data gave it "
+    "(mcla_gpu_car_rt_cars_model), else in a fixed grey in shade (its colour is not known while the camera does not see it). Live.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 

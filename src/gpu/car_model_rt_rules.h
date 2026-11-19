@@ -30,7 +30,8 @@
 // WHAT IS NOT VERIFIED (nothing here has run; the check script h11-work/rt-model-cars-2/check-model-rt.ps1 answers each):
 //   CHECK 1  which of the five placement hypotheses is the game's (the PLACEMENT table of the first run says; until a hypothesis fits the draws within kFitMetres no walked
 //            car is placed), and that the part matrices of a car nobody draws are as fresh as a drawn car's (survey CHECK 3: the proof compares drawn cars only);
-//   CHECK 2  the paint colour as the shader shows it (PaintColourOf: region 0's colour A, the mean with B for a gradient; the numbers are the game's constants, 0..1);
+//   CHECK 2  the paint colour as the shader shows it (PaintColourOf: region 0's colour A, the mean with B for a gradient, made into its lit colour: gamma 2 and the light's 0.8,
+//            the two numbers are estimates, see the comment at kPaintGamma; the second check's rows reached the reflection 16 times too dark for want of the exponent bias);
 //   CHECK 3  the draw loop's per-part tests (PartDrawn: asm only) and the meaning of the two bytes that cut it to 44 parts (the walk logs them: `flags=`, `loop=`);
 //   CHECK 4  that a draw's primitive is a list or a strip by the geometry's counts (the loader's draw-mode number 3 is a list; strips are read by counts alone);
 //   RT-MODEL-PARTS (car_model_wheel_rules.h, car_model_traffic_rules.h, car_model_parts_rt_rules.h): the wheels (the manager's tyre and rim, the vehicle's wheel matrices), the traffic
@@ -623,16 +624,53 @@ inline Assignment AssignDraws(const std::vector<const cw::CarWalk*>& cars, const
 // the paint
 // ---------------------------------------------------------------------------
 
+// WHAT THE RECORD'S COLOUR IS, AND WHAT THE PASS IS GIVEN (RT-MODEL-CARS-4). The game's customisation record holds, for each paint region, two colours (A, B), a paint type and a
+// gradient mode. They are what the player picks (an orange is (0.90, 0.49, 0.20)): colours as they look, not as the shader lights them. Two things stood between them and the
+// reflection's colour in the first model-data check, which put them into the instance table as they were:
+//   1. GAMMA. The lit colour of the paint goes with the square of them or so (the player's R34 has A = 0.22 and is black in every picture: a linear albedo of 0.22 in the noon
+//      sun would be a mid grey; the Camaro's A = (0.90, 0.49, 0.20) shows R : G of 3.0 in a picture where 0.90 : 0.49 is 1.8 and its square 3.4). kPaintGamma = 2 is the
+//      estimate; mcla_gpu_car_rt_paint_gamma moves it.
+//   2. THE LIGHT. A surface of albedo 1 in the open is lit to about kPaintLit of the paint's output units (in the second check's wide picture the Camaro's top reads 0.5 to 0.8 of its
+//      squared colour and the white R8's top saturates, so 1.4 or more; the tone map's own curve is not known: CHECK), and the hidden hit's shade (kShade, the pass) takes the part of that the
+//      sky gives. mcla_gpu_car_rt_paint_lit moves it.
+// The row the shader reads is therefore pow(colour, gamma) x lit in the paint's units, and the pass multiplies it by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits) to be in the
+// history's. Both numbers are CHECKs: the paint's debug view 2 (mcla_gpu_car_selfrefl_view 2) shows the colour the pass hands the paint, and the check pass's view 3 and the log's
+// paint rows (car_rt_scene.cpp) show the row the shader reads.
+inline constexpr float kPaintGamma = 2.0f;
+inline constexpr float kPaintLit = 0.8f;
+inline constexpr float kPaintGammaMin = 1.0f, kPaintGammaMax = 3.5f;
+inline constexpr float kPaintLitMin = 0.02f, kPaintLitMax = 4.0f;
+
+struct PaintTuning {
+  float gamma = kPaintGamma;
+  float lit = kPaintLit;
+};
+inline PaintTuning ClampedPaintTuning(double gamma, double lit) {
+  PaintTuning t;
+  t.gamma = std::isfinite(gamma) ? std::clamp(float(gamma), kPaintGammaMin, kPaintGammaMax) : kPaintGamma;
+  t.lit = std::isfinite(lit) ? std::clamp(float(lit), kPaintLitMin, kPaintLitMax) : kPaintLit;
+  return t;
+}
+// A record's colour (0..1) as the row holds it: its lit colour in the paint's units.
+inline float PaintRadiance(float colour, const PaintTuning& tuning) {
+  return std::pow(std::clamp(colour, 0.0f, 1.0f), tuning.gamma) * tuning.lit;
+}
+
 struct PaintColour {
   bool known = false;
-  float rgb[3] = {};
+  float rgb[3] = {};   // the row the shader reads: the record's colour made into its lit colour (PaintRadiance), in the paint's units
+  float raw[3] = {};   // the record's colour as it is, clamped to 0..1 (region 0's colour A; the mean with B where the gradient mode is not 0)
+  float a[3] = {};     // the record's colours A and B as read (for the log)
+  float b[3] = {};
+  uint32_t type = 0;
+  uint32_t mode = 0;
+  uint32_t use_default = 0;
 };
 
 // The colour a car's paint shows in the reflection's hidden hits: region 0's colour A, the base of the paint's gradient (the vertex shader makes
-// lerp(DL2, DL3, f) with DL2 = A and DL3 = B), and the mean of A and B where the car's gradient mode is not 0 (the paint then runs from A to B over the body).
-// CHECK: the colours are the game's constants as they are (linear 0..1: the first check run's R34-like car reads (0.063, 0.349, 0.071) = a dark green); the
-// shader shows them darkened by the reflection's own shade like any hidden part.
-inline PaintColour PaintColourOf(const cw::Paint& region0) {
+// lerp(DL2, DL3, f) with DL2 = A and DL3 = B), and the mean of A and B where the car's gradient mode is not 0 (the paint then runs from A to B over the body), made into
+// its lit colour by `tuning` (the comment above).
+inline PaintColour PaintColourOf(const cw::Paint& region0, const PaintTuning& tuning) {
   PaintColour out;
   if (!region0.read) {
     return out;
@@ -653,8 +691,14 @@ inline PaintColour PaintColourOf(const cw::Paint& region0) {
     }
   }
   for (int k = 0; k < 3; ++k) {
-    out.rgb[k] = std::clamp(c[k], 0.0f, 1.0f);
+    out.raw[k] = std::clamp(c[k], 0.0f, 1.0f);
+    out.rgb[k] = PaintRadiance(out.raw[k], tuning);
+    out.a[k] = region0.a[k];
+    out.b[k] = std::isfinite(region0.b[k]) ? region0.b[k] : 0.0f;
   }
+  out.type = region0.type;
+  out.mode = region0.mode;
+  out.use_default = region0.use_default;
   out.known = true;
   return out;
 }
@@ -940,7 +984,9 @@ inline bool WalkStillGood(const WalkSignature& cached, const WalkSignature& now,
 // ---------------------------------------------------------------------------
 
 inline std::string Describe(const PaintColour& p) {
-  return p.known ? std::format("({:.3f}, {:.3f}, {:.3f})", p.rgb[0], p.rgb[1], p.rgb[2]) : std::string("not known");
+  return p.known ? std::format("({:.3f}, {:.3f}, {:.3f}) [record A ({:.3f}, {:.3f}, {:.3f}) B ({:.3f}, {:.3f}, {:.3f}) type {} mode {} default {}; colour {:.3f}, {:.3f}, {:.3f}]", p.rgb[0], p.rgb[1],
+                               p.rgb[2], p.a[0], p.a[1], p.a[2], p.b[0], p.b[1], p.b[2], p.type, p.mode, p.use_default, p.raw[0], p.raw[1], p.raw[2])
+                 : std::string("not known");
 }
 
 }  // namespace mcla::gpu::car_model_rt

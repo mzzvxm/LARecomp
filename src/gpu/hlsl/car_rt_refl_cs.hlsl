@@ -84,7 +84,9 @@ struct CarRtReflPush
     // x the shade (the surface's own colour in shade, 0.4), y the weight of a hit the history cannot show (0.85), z the share of the ray's
     // length where the fade starts (0.6), w the tangent of the cone's half angle (0: a mirror, one ray)
     float4 tune;
-    // xyz the WORLD's up in view space (unit: the chrome's sky probe looks that way; the camera pitches), w 0
+    // xyz the WORLD's up in view space (unit: the chrome's sky probe looks that way; the camera pitches), w the UNITS: the history's over the paint's, 2^exp_bias (16 at the
+    // game's bias of 4; car_selfrefl_rules.h ExpBiasUnits). A colour this pass makes up from a paint constant (a car's paint, the grey of a car placed from memory) is in the
+    // paint's units (a shader's output) and is multiplied by it to be in the history's, the units of the image the paint reads (it multiplies the image by 2^-bias).
     float4 up;
 };
 
@@ -285,15 +287,17 @@ float OtherCarSeenColour(Texture2D<float4> history, CarRtCar car, out float3 col
 
 float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
 {
+    // the paint and the grey are the paint's units, the history's (and so this image's) are 2^exp_bias times that (g_push.up.w; car_rt_refl_rules.h RememberedOtherCarColour)
+    const float units = g_push.up.w;
     if (car.radius < 0.0)
     {
-        colour = car.has_paint ? car.paint : float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
+        colour = (car.has_paint ? car.paint : float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour)) * units;
         return 1.0;
     }
     const float share = OtherCarSeenColour(history, car, colour);
     if (share < kOtherCarMinShare && car.has_paint)
     {
-        colour = car.paint;
+        colour = car.paint * units;
         return 1.0;
     }
     return share;
