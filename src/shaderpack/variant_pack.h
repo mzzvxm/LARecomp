@@ -35,7 +35,7 @@
 // files do. When none could be built the pack has no entries. The step fails (no pack, no stamp lines) only
 // for a problem of the build itself (no compiler worker, a file that cannot be written, a cancel). A variant
 // is compiled for spec variant 0 (no alpha test) with the pack's usual
-// dxc arguments; a draw that needs the alpha test keeps the main pack's shader. Shaders of one variant whose
+// dxc arguments; a draw that needs the alpha test keeps the main pack's shader, unless the variant has an alpha test twin (VariantDef::alpha_test_id: the UI sharpening). Shaders of one variant whose
 // edited text comes out the same share one compile (the shadow collector's 147 shaders are four texts), and
 // their blobs one copy in the file.
 //
