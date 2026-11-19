@@ -4,10 +4,17 @@
 #include "logging.h"
 
 #include "settings/larecomp_settings.h"
+#include "os/thread_yield.h"
 #include <rex/ppc/hook.h>
 #include <rex/kernel/object/kernel_thread.h>
 #include <rex/kernel/thread_registry.h>
 #include <rex/kernel/title_runtime.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <mutex>
+#include <thread>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -15,11 +22,6 @@
 #endif
 #include <Windows.h>
 #include <timeapi.h>
-#include <atomic>
-#include <chrono>
-#include <cstdlib>
-#include <mutex>
-#include <thread>
 #elif defined(__linux__)
 #include <sched.h>
 #include <unistd.h>
@@ -27,6 +29,9 @@
 
 namespace mc {
 
+// Windows only. Linux has nothing to ask for: its timers are high resolution (a sleeper wakes within the 50 us timer slack
+// of its deadline) and no process-wide setting makes them coarser, so the guest's Sleep there needs neither this nor the
+// spin after the sleep (Sleep_hook below, os/thread_yield.h).
 void EnableHighResTimer() {
 #if defined(_WIN32)
     static std::once_flag s_init;
@@ -109,10 +114,10 @@ bool FourOrFewerLogicalProcessors() {
 } // namespace mc
 
 // ---------------------------------------------------------------------------
-// PPC kernel bypass hooks (Windows only)
+// PPC kernel bypass hooks
 // ---------------------------------------------------------------------------
 
-#if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
+#if defined(_WIN32)
 
 // Sleep (0x8244FEC0)
 //
@@ -174,6 +179,40 @@ u32 Sleep_hook(u32 ms) {
 }
 REX_HOOK(mc_Sleep, Sleep_hook);
 
+#elif defined(__linux__)
+
+// Sleep (0x8244FEC0), Linux. The guest's original is `li r4,0; b SleepEx`, which ends in the SDK's
+// KernelThread::Delay (KeDelayExecutionThread). What Linux needs of it:
+//   * Sleep(0) is a yield, as SwitchToThread is on Windows. Delay turns a zero interval into a 100 us
+//     sleep for every thread whose priority is at or below the host's "below normal" value, which is
+//     -1 on Windows but 8 on POSIX, and a guest thread's own priority is 0 unless the game changes
+//     it: so each Sleep(0) cost 100 us plus the timer slack instead of a sched_yield
+//     (LINUX-AUDIT-V011 R2; the SDK side is LINUX-V011-SDK's). The guest polls with Sleep(0) (the
+//     main thread's ring wait at 0x82148AB0 and others).
+//   * Sleep(n) is a nanosleep to the deadline. Delay does the same after a sched_yield; what the
+//     Windows hook adds is not needed here: no timeBeginPeriod (hrtimers), and the bounded spin after
+//     the sleep that the 1 ms Windows tick asked for would burn a core of the Deck's four for nothing.
+//   * What Delay does after the wait is kept: a thread asked to stop, or to suspend, does so here
+//     (KernelThread::CheckStop). A suspend the SDK could not carry out at once on a POSIX thread
+//     is taken at the thread's next check, and a thread that only polls with Sleep would never
+//     reach another one.
+// CHECK: not run on Linux. Measure on the Deck: Sleep(0) and Sleep(n) calls per second in a race
+// (the load-wait census) and the frame time, with and without the hook.
+u32 Sleep_hook(u32 ms) {
+    if (ms == 0) {
+        larecomp::os::YieldThread();
+    } else {
+        larecomp::os::SleepFor(std::chrono::milliseconds(ms));
+    }
+    rex::kernel::KernelThread::CheckStop();
+    return 0;
+}
+REX_HOOK(mc_Sleep, Sleep_hook);
+
+#endif  // _WIN32 / __linux__
+
+// The two hooks below do nothing the OS has a say in, so they are the same on every OS.
+
 // BadassBaboon's Recomp Adjustments: hardware cache flush bypass with memory barrier.
 //
 // FlushDataCache (0x821D5510), signature (addr, size, flush): walks the range
@@ -202,8 +241,6 @@ u32 ResumeThread_hook(u32 handle) {
     return 0;
 }
 REX_HOOK(mc_ResumeThread, ResumeThread_hook);
-
-#endif // _WIN32
 
 #else // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
