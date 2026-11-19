@@ -25,6 +25,7 @@ add_library(larecomp_gpu OBJECT
     car_selfrefl.cpp
     car_shadow_map.cpp
     car_rt_refl.cpp
+    car_rt_opp_refl.cpp
     capture_readback.cpp
     constants.cpp
     cut_request.cpp
@@ -644,6 +645,8 @@ larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 # The ray traced half (car_rt_refl.h): one compute pass over the history image with inline ray queries against the car's structures
 # (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
+# Its opponents' variant (car_rt_opp_refl.h): the same file with CAR_RT_REFL_OPPONENTS, whose entry point (hlsl/car_rt_refl_opp.hlsli) traces the pixels of the paint of the cars beside the player.
+larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_OPPONENTS=1)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)

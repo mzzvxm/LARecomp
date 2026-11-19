@@ -31,6 +31,9 @@
 // car: the mean of the history's vehicle texels around its body centre, darkened by the same shade (car_rt_refl_rules.h FindOtherCarColour says why that and
 // not a paint constant). mcla_gpu_car_rt_cars 0 takes them out of the scene (the player's car alone, as before), mcla_gpu_car_selfrefl_rt_parts 7 leaves
 // them in the scene and out of the reflection.
+// THE OPPONENTS' OWN PAINT (car_rt_opp_refl.h): the pass below is the player's car's. The paint of another car (an instance with CAR_RT_MASK_OTHER_PAINT, the draws of the customisable paint's
+// shader) is traced by a second dispatch of the same shader file (the variant hlsl/car_rt_refl_opp.hlsli) that CarRtRefl::OnHistory records right after this one, into the same images: the paint
+// variant reads an opponent's texel like the player's, so its door shows the cars round it too. mcla_gpu_car_rt_opp_refl (debug) is the A/B.
 //
 // OTHER CARS' CHROME (car_chrome_rt_rules.h, which has the design, the cost and the test plan): the primary ray of the pass also finds the chrome parts of the other
 // cars (tailpipes, badges, trim: the instances of their draws of xChrome::PS_Chrome carry the extra bit CAR_RT_MASK_OTHER_CHROME) and for those texels the pass traces
@@ -139,6 +142,7 @@
 
 #include <plume_render_interface.h>
 
+#include "car_rt_opp_refl.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
 #include "host_passes.h"
@@ -287,6 +291,9 @@ class CarRtRefl {
   OutputSet trace_set_;   // u0 image_, u1 aux_
   OutputSet first_set_;   // u0 scratch_
   OutputSet final_set_;   // u0 image_
+
+  // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
+  CarRtOppRefl opp_;
 
   // The frame.
   bool active_ = false;

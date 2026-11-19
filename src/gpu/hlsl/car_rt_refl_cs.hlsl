@@ -88,6 +88,11 @@ struct CarRtReflPush
     // game's bias of 4; car_selfrefl_rules.h ExpBiasUnits). A colour this pass makes up from a paint constant (a car's paint, the grey of a car placed from memory) is in the
     // paint's units (a shader's output) and is multiplied by it to be in the history's, the units of the image the paint reads (it multiplies the image by 2^-bias).
     float4 up;
+#ifdef CAR_RT_REFL_OPPONENTS
+    // the opponents' variant only (car_rt_opp_refl.h, hlsl/car_rt_refl_opp.hlsli): x, y the first image texel of the rectangle the dispatch covers, z the row of the player's car's
+    // record in the instances' table (0: none), w the rays a texel casts (4, 2 or 1)
+    uint4 opp;
+#endif
 };
 
 #ifdef __spirv__
@@ -607,6 +612,9 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     return float4(colour, visibleSum >= 0.5 * weightSum ? 1.0 + weight : -(1.0 + weight));
 }
 
+#ifdef CAR_RT_REFL_OPPONENTS
+#define main CarRtReflPlayerMain  // the opponents' variant has the entry point `main` of its own, below (hlsl/car_rt_refl_opp.hlsli)
+#endif
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -627,3 +635,7 @@ void main(uint3 id : SV_DispatchThreadID)
     g_output[id.xy] = result;
     g_aux[id.xy] = aux;
 }
+#ifdef CAR_RT_REFL_OPPONENTS
+#undef main
+#include "car_rt_refl_opp.hlsli"
+#endif
