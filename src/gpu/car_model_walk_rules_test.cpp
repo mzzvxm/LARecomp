@@ -766,6 +766,8 @@ void TestMatching() {
   Check(ma.exact_words == 4 && ma.index_object_equal == 4 && ma.index_address_equal == 4 && ma.index_count_equal == 4 && ma.stride_equal == 4 && ma.position_offset_equal == 4,
         "every matched geometry equals its draw exactly (the header words are the fetch constants)");
   Check(ma.ids.size() == 1 && ma.ids[0] == 4, "A's draws carry the ID 4");
+  Check(ma.walked_by_lod[0] == 3 && ma.walked_by_lod[1] == 2 && ma.walked_by_lod[2] == 0 && ma.matched_by_lod[0] == 2 && ma.matched_by_lod[1] == 2 && ma.matched_by_lod[2] == 0,
+        "the matched geometries by lod slot say which lod the frame's draws are of: lod 0 two of three walked, lod 1 two of two");
   Check(!mb.drawn && mb.draws == 0 && mb.matched == 0 && mb.geometries == 5 && mb.in_use == 3 && mb.walked_only_in_use == 3 && mb.drawn_only == 0,
         "car B is culled: its geometries are all walked-only");
   Check(r.draws[0].hit == cw::DrawHit::kGeometry && r.draws[0].car == 0 && r.draws[5].hit == cw::DrawHit::kNone && r.draws[7].hit == cw::DrawHit::kVertexOnly,

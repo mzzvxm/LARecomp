@@ -952,6 +952,8 @@ struct CarMatch {
   uint32_t stride_equal = 0;        // the draw's stride is the vertex buffer's
   uint32_t position_offset_equal = 0;
   uint32_t shared_buffers = 0;      // geometries whose vertex window another walked car has too
+  uint32_t walked_by_lod[kLods] = {};   // by the table's lod slot (the body's and the parts'): which lod the frame's draws are of
+  uint32_t matched_by_lod[kLods] = {};
   bool drawn = false;               // some draw is one of its geometries
   std::vector<uint32_t> ids;        // the stencil IDs of those draws (sorted, unique)
 };
@@ -1003,6 +1005,9 @@ inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std:
     for (const Geometry& g : cars[c]->geometries) {
       out.cars[c].in_use += g.in_use;
       out.cars[c].empty_in_use += g.in_use && g.index_count == 0;
+      if (g.lod < kLods) {
+        ++out.cars[c].walked_by_lod[g.lod];
+      }
     }
   }
   for (uint32_t d = 0; d < draws.size(); ++d) {
@@ -1035,6 +1040,9 @@ inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std:
         ++car.matched;
         car.matched_in_use += g.in_use;
         car.matched_not_in_use += !g.in_use;
+        if (g.lod < kLods) {
+          ++car.matched_by_lod[g.lod];
+        }
         car.exact_words += draw.vertex_d0 == g.vb_w6 && draw.vertex_d1 == g.vb_w7;
         car.index_object_equal += draw.index_object != 0 && draw.index_object == g.ib_header;
         car.index_address_equal += draw.index_address == g.ib_w6;

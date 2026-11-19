@@ -509,11 +509,12 @@ void Walker::FinishFrame() {
 
     REXLOG_INFO("{} frame {}: RESULT vehicle={:#010x} kind={} drawn={} geoms={} in_use={} in_use_tris={} matched={} matched_in_use={} pct={:.1f} matched_not_in_use={} "
                 "walked_only={} drawn_only={} vertex_only={} draws={} resident={} validated={} entries_present={} loaded={} valid={} in_use_invalid={} exact={} idxobj={} idxaddr={} "
-                "cnt={} stride={} posoff={} hdr_data={}",
+                "cnt={} stride={} posoff={} hdr_data={} lodmatch={}/{}/{} lodwalk={}/{}/{} lods={}/{}/{}",
                 kPrefix, frame_, car.vehicle, kind, match.drawn ? 1 : 0, car.all.geometries, car.in_use.geometries, car.in_use.triangles, match.matched,
                 match.matched_in_use, percent, match.matched_not_in_use, match.walked_only_in_use, match.drawn_only, match.vertex_only, match.draws, car.resident_in_use,
                 car.validated_in_use, car.entries_present, car.entries_loaded, car.entries_valid, in_use_invalid, match.exact_words, match.index_object_equal,
-                match.index_address_equal, match.index_count_equal, match.stride_equal, match.position_offset_equal, header_data);
+                match.index_address_equal, match.index_count_equal, match.stride_equal, match.position_offset_equal, header_data, match.matched_by_lod[0], match.matched_by_lod[1],
+                match.matched_by_lod[2], match.walked_by_lod[0], match.walked_by_lod[1], match.walked_by_lod[2], car.body_lod, car.part_lod, car.forced_lod);
 
     REXLOG_INFO("{} frame {}:   car {:#010x} ({}, {}) at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m from the player{}: {}; seen by {} (tap phases {}); visible +116 = {}, enabled {}, "
                 "lod body {} parts {} forced {} (lod distances {:.0f} / {:.0f} m), draw slot {}; entity state {}, body state {}, lod 0 {} (info {}); "
