@@ -25,7 +25,7 @@ class AppSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, graphics_backend, "auto",
               "Graphics API of the Plume renderer: auto, d3d12, vulkan. Read at start-up. The XENIA renderer's API is "
               "the SDK's gpu.driver (d3d12 or vulkan), which also picks the renderer (larecomp, or the SDK's Xenia GPU)",
-              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart, rex::kDebugOnly);
+              rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart);
 
   // The three below were REXCVAR_DEFINE lines that cvar_convert.py cannot move (a validator, a default that is a
   // constant of another file); the script removes the old definitions (HAND_DEFINED) and rewrites their uses.
