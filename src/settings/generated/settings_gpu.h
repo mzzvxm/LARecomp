@@ -329,6 +329,14 @@ class GPUSettings final : public rex::SettingOwner {
     "(a thin part has no thickness there), so that pixel takes no march steps and its contact shadow is the map's. "
     "For comparing the two on the wing and the mirrors (view 5 shows the map's term). Live.", rex::kDebugOnly);
 
+  REX_SETTING(i32, mcla_gpu_contact_shadows_car_sun, 1, "Diagnostic: where a car's pixel takes the sun's visibility from when the contact shadows work out the "
+    "sun's share of its light. 1: from the game's own car sun image, the 256 m wide top-down image of the "
+    "ground's sun visibility that every car shader reads for its colour (contact_trace.h), so a car in a "
+    "building's shade gets no contact shadow of the sun's and a car half in it gets half; a frame without "
+    "that image (6 h, 18 h, rain, night) takes 1. 0: always 1, which is a lit car's term wherever the car "
+    "stands (the first fix for the comb under the R34's wing, for comparing). The game's screen sized mask "
+    "is never used on a car: it is made before the cars are drawn and holds the world behind them. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(f64, mcla_gpu_contact_shadows_fade, 0.6, "Diagnostic: how much of the contact shadows' ray a shadow stays fully dark over, 0.2 to 0.98: "
     "past that share of the ray's length it fades out, so that a shadow cut off by the ray's end "
     "does not end in a hard line. At 0.2 it looks like the first version's fade (a quarter of the "
@@ -373,7 +381,9 @@ class GPUSettings final : public rex::SettingOwner {
     "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
     "4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where "
     "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
-    "near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 5});
+    "near it; white everywhere in a frame without the map: car_shadow_map.h), 6 the sun's visibility the share "
+    "of the light took (the game's mask on the world, the game's car sun image on a car, 1 on a car in a frame "
+    "without that image). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
 
   REX_SETTING(i32, mcla_gpu_contact_skip_stat, 0, "Diagnostic: with mcla_gpu_contact_shadows_fast and the game's sun shadow mask in the frame, every N frames (0: never) the contact march's "
     "skip is counted: a second march pass classifies every pixel (skipped under the game's own shadow, the sky or past the fade, turned from "
@@ -1248,6 +1258,7 @@ inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;
 inline auto& mcla_gpu_class = g_gpu.mcla_gpu_class;
 inline auto& mcla_gpu_contact_shadows = g_gpu.mcla_gpu_contact_shadows;
 inline auto& mcla_gpu_contact_shadows_car_map_march = g_gpu.mcla_gpu_contact_shadows_car_map_march;
+inline auto& mcla_gpu_contact_shadows_car_sun = g_gpu.mcla_gpu_contact_shadows_car_sun;
 inline auto& mcla_gpu_contact_shadows_fade = g_gpu.mcla_gpu_contact_shadows_fade;
 inline auto& mcla_gpu_contact_shadows_fast = g_gpu.mcla_gpu_contact_shadows_fast;
 inline auto& mcla_gpu_contact_shadows_length = g_gpu.mcla_gpu_contact_shadows_length;

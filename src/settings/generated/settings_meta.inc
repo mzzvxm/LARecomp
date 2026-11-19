@@ -259,6 +259,7 @@
 {"mcla_gpu_class", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_car_map_march", "MCLA/GPU"},
+{"mcla_gpu_contact_shadows_car_sun", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_fade", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_fast", "MCLA/GPU"},
 {"mcla_gpu_contact_shadows_length", "MCLA/GPU"},

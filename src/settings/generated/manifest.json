@@ -444,10 +444,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: shows a stage of the contact shadows as a grey picture instead of applying them \"\n    \"(only while they are on, and instead of mcla_gpu_ao_view): 1 the factor the picture is \"\n    \"multiplied by (white: none), 2 the contact visibility (black where the ray is hidden), 3 the \"\n    \"sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), \"\n    \"4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where \"\n    \"the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road \"\n    \"near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.\"",
+  "help": "\"Diagnostic: shows a stage of the contact shadows as a grey picture instead of applying them \"\n    \"(only while they are on, and instead of mcla_gpu_ao_view): 1 the factor the picture is \"\n    \"multiplied by (white: none), 2 the contact visibility (black where the ray is hidden), 3 the \"\n    \"sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), \"\n    \"4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where \"\n    \"the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road \"\n    \"near it; white everywhere in a frame without the map: car_shadow_map.h), 6 the sun's visibility the share \"\n    \"of the light took (the game's mask on the world, the game's car sun image on a car, 1 on a car in a frame \"\n    \"without that image). 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 5}"
+   "rex::Range{0, 6}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -8522,6 +8522,18 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 3600}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_contact_shadows_car_sun": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: where a car's pixel takes the sun's visibility from when the contact shadows work out the \"\n    \"sun's share of its light. 1: from the game's own car sun image, the 256 m wide top-down image of the \"\n    \"ground's sun visibility that every car shader reads for its colour (contact_trace.h), so a car in a \"\n    \"building's shade gets no contact shadow of the sun's and a car half in it gets half; a frame without \"\n    \"that image (6 h, 18 h, rain, night) takes 1. 0: always 1, which is a lit car's term wherever the car \"\n    \"stands (the first fix for the comb under the R34's wing, for comparing). The game's screen sized mask \"\n    \"is never used on a car: it is made before the cars are drawn and holds the world behind them. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
   ],
   "comments": [],
   "pp_depth": 0

@@ -37,7 +37,14 @@
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
-//                    by 2), 1 where it has none (6 h, 18 h, rain, night);
+//                    by 2), 1 where it has none (6 h, 18 h, rain, night); on a vehicle's pixel not the
+//                    mask (it is made before the cars are drawn, so at a car's pixel it is the world
+//                    behind the car's, and a car's own shader does not use it: contact_trace.h
+//                    "the game's sun shadow mask is not a car's"; the R34's trunk lid under the wing
+//                    had the iron fence's bars behind it as a comb) but what the car's own shader
+//                    uses, the game's car sun image at the pixel's place on the ground (see
+//                    CarAwareSunVisibility; a car in a building's shade has vis 0 and no contact
+//                    shadow of the sun's), 1 where the frame has no such image;
 //     strength       extra.w: the setting's, times the sun's elevation gate and the wetness gate
 //                    (ao.cpp), so 0 never reaches this shader;
 //     fade           1 up to lens.z, to 0 at lens.w (smoothstep): a ray of a few tenths of a metre
@@ -94,7 +101,8 @@
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
 // of 0.04, bits 26-31 the cap in units of 0.25 (the ceiling and, in the colour chain, the radiance cap); bit 25 is
 // the contact filter flag (above: the apply does the contact filter itself), the same in both compilations.
-// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on.
+// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on; a vehicle's pixel takes 1 for it
+// there too (CarAwareSunVisibility).
 // Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
 // share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
@@ -106,8 +114,9 @@
 // black none, grey part of it), 7 the occlusion's own factor (the visibility with the ambient share, the
 // strength and the distance fade, without the contact shadows; the picture's factor when they are off),
 // 8 the contact factor, 9 the contact visibility, 10 the sun's
-// visibility (the mask, or 1), 11 the sun's share of the light, 12 the pixels the depth pass took for
-// vehicles (white); written as a grey of 0.3 of the value so
+// visibility (the game's mask as it is, or 1: a vehicle's pixel shows the world behind it there), 11 the sun's share of the light, 12 the pixels the depth pass took for
+// vehicles (white), 13 the sun's visibility the share took (the mask on the world, the game's car sun image on a vehicle, 1 on a vehicle where
+// the frame has no such image); written as a grey of 0.3 of the value so
 // that 1.0 reads below the tone map's white.
 
 #include "ao_common.hlsli"
@@ -146,9 +155,21 @@ float GiCap() { return float((g_push.slots2.z >> 26) & 0x3Fu) * 0.25f; }
 static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
 #endif
 
+// The apply's slots.x and slots.y carry two more things beside the depth plane's slot and the host sample (contact_trace.h "a car's own sun
+// visibility"): the low 16 bits of slots.x are the depth plane's bindless slot and the high 16 the car sun image's; the low 8 bits of slots.y are
+// the host sample, bit 8 says that the frame has a car sun image, and the high 16 bits are the slot of the 4x1 image that holds its lookup.
+// (ao_common.hlsli's AoLoadStored reads the whole words; the apply reads its own.)
+float ApplyLoadStored(int2 p) {
+#if AO_DEPTH_MS
+  return g_textures_ms[g_push.slots.x & 0xFFFFu].Load(p, g_push.slots.y & 0xFFu).r;
+#else
+  return g_textures[g_push.slots.x & 0xFFFFu].Load(int3(p, 0)).r;
+#endif
+}
+
 // The stored depth at `p` clamped into the target, as a linear distance.
 float LinearAt(int2 p, int2 last) {
-  return AoLinearDepth(AoLoadStored(clamp(p, int2(0, 0), last)));
+  return AoLinearDepth(ApplyLoadStored(clamp(p, int2(0, 0), last)));
 }
 
 // A visibility image (the AO's or the contact shadows') at the pixel of the picture: as it is, or,
@@ -200,6 +221,43 @@ float PaintVisibility(float ao, float vehicle) {
     return ao;
   }
   return lerp(ao, pow(ao, AoPaintPower()), on_car);
+}
+
+// Whether the depth pass marked the pixel as a vehicle's (the lowest bit of the level-0 depth): in the contact shadows' own full size depth where they
+// have one (flag bit 21), else in the occlusion's level 0 (half size where AoLow, as the debug view 12 reads it).
+bool PixelIsVehicle(int2 pixel) {
+  if (AoContactFull()) {
+    return AoIsVehicle(AoLoadLinear(ContactDepthSlot(), pixel));
+  }
+  const int2 asize = int2(g_push.sizes.zw);
+  return AoIsVehicle(AoLoadLinear(g_push.slots.w, clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1)));
+}
+
+// The game's car sun image is in this frame's push (slots.y bit 8; ao.cpp FindCarSunSlot, RecordCarSunLookup).
+bool CarSunOn() { return (g_push.slots.y & 0x100u) != 0u; }
+
+// The sun's visibility a car's shader takes at the view-space point `pc`, from the game's car sun image (contact_trace.h "a car's own sun
+// visibility", the twin CarSunUv and CarSunFromImage): a 256 m wide top-down image around the camera, one texel a metre, read at the point's world x
+// and z relative to the truncated camera, saturate(s - 0.25) * 4/3 of its stored value, with the guest's bilinear sampler. The 4x1 lookup image holds
+// the 8 numbers that take a view-space point to the world's x and z (texel 0: ax, ox; texel 1: az, oz).
+float CarSunVisibility(float3 pc) {
+  const uint lookup = g_push.slots.y >> 16;
+  const float4 a = g_textures[lookup].Load(int3(0, 0, 0));
+  const float4 b = g_textures[lookup].Load(int3(1, 0, 0));
+  const float2 uv = float2(dot(a.xyz, pc) + a.w, dot(b.xyz, pc) + b.w) * (1.0f / 256.0f) + 0.5f;
+  const float s = g_textures[g_push.slots.x >> 16].SampleLevel(g_samplers[kSamplerLinearClamp], uv, 0.0f).x;
+  return min(saturate(s - 0.25f) * 1.3333325f, 1.0f);
+}
+
+// The sun's visibility the share of the light is worked out with (contact_trace.h CarAwareSunVisibility): the game's sun shadow mask's value `mask_vis`
+// at the pixel on the world's pixels; on a vehicle's pixel (`vehicle`) not that: the game collects the mask before the cars are drawn, so at a car's pixel
+// it is the world behind the car's (the fence's bars on the R34's trunk lid: the comb under the wing), and a car's own shader does not use it. It uses the
+// car sun image (CarSunVisibility), so a vehicle's pixel takes that, and 1 where the frame has none.
+float CarAwareSunVisibility(float mask_vis, bool vehicle, float3 pc) {
+  if (!vehicle) {
+    return mask_vis;
+  }
+  return CarSunOn() ? CarSunVisibility(pc) : 1.0f;
 }
 
 #if AO_GI
@@ -299,7 +357,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   // The contact shadows: on the sun's share of the light only.
   float cs = 1.0f;
-  float sun_vis = 1.0f;
+  float sun_vis = 1.0f;      // the game's mask as it is (the debug view 10)
+  float sun_vis_used = 1.0f; // what the share takes: a vehicle's pixel has the car sun image's value, or 1 (CarAwareSunVisibility; the debug view 13)
   float sun_share = 0.0f;
   float contact_factor = 1.0f;
   if (contact_on) {
@@ -308,8 +367,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
       sun_vis = saturate(g_push.shape.x *
                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                  uv, 0.0f).x);
+      sun_vis_used = sun_vis;
     }
-    const float sun_lit = sun * sun_vis;
+    if (MaskOn() || CarSunOn()) {
+      sun_vis_used = CarAwareSunVisibility(sun_vis_used, PixelIsVehicle(pixel), pc);
+    }
+    const float sun_lit = sun * sun_vis_used;
     sun_share = (ambient + sun_lit) > 1e-6f ? sun_lit / (ambient + sun_lit) : 0.0f;
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
     const float contact_weight = g_push.extra.w * sun_share * contact_fade;
@@ -346,6 +409,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     gi_sun_vis = saturate(g_push.shape.x *
                           g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                   gi_uv, 0.0f).x);
+  }
+  if (MaskOn() || CarSunOn()) {
+    gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, PixelIsVehicle(pixel), pc);
   }
   const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
   const float luma_c = dot(gi_colour.rgb, kLuma);
@@ -411,6 +477,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
       grey = float3(sun_vis, sun_vis, sun_vis);
     } else if (view == 11u) {
       grey = float3(sun_share, sun_share, sun_share);
+    } else if (view == 13u) {
+      grey = float3(sun_vis_used, sun_vis_used, sun_vis_used);  // what the share took: the mask on the world, the car sun image on a vehicle
     }
     return float4(grey * kViewScale, 1.0f);
   }
