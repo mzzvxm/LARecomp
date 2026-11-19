@@ -195,6 +195,11 @@ add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rule
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).
 add_executable(larecomp_car_chrome_rules_test EXCLUDE_FROM_ALL car_chrome_rules_test.cpp)
+# The other cars' ray traced chrome (car_chrome_rt_rules.h: the masks, the sky probe's rays, the texel's code in the ray traced image, the chrome variant's read of it,
+# the probes over boxes: a tailpipe under a lip, in the open sun, a plane of every slope; and that hlsl/car_rt_refl_cs.hlsl, the host and the chrome variant
+# hold the header's numbers) likewise; run it with the src folder (the one that holds gpu and shaderpack) or from there:
+#   cmake --build <dir> --target larecomp_car_chrome_rt_rules_test, then run src/gpu/larecomp_car_chrome_rt_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_chrome_rt_rules_test EXCLUDE_FROM_ALL car_chrome_rt_rules_test.cpp)
 # The car dump's rules (car_dump_rules.h: the matrices out of a vertex shader bank, the positions and indices as the guest holds them, the
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).

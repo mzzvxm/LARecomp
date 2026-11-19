@@ -49,6 +49,13 @@
 // of the hemisphere, so the sky probe is always marched; the helper's CarChrSkyProbe is where a ray traced ambient occlusion replaces it.
 // Without the bit this reads exactly as written above. Until that branch is merged the bit is never set.
 //
+// ANOTHER CAR'S CHROME (version 2; src/gpu/car_chrome_rt_rules.h has the whole story): the variant is the shader's, so the chrome of every car goes through
+// it, and for another car it has marched the history image all along (the history holds every vehicle's pixels, the constants are the draw's stencil ID's).
+// Where the host traced the frame's image AND the car is in its scene (the nearest few, within a radius), the image holds, at the texels of that car's chrome,
+// a texel of a second kind: alpha 1 + the reflection probe's weight (as the first kind) and the colour's red -(1 + the sky probe's weight), a value no colour
+// has. The read tells the kinds apart by that sign (the first kind's arithmetic is the older one's, unchanged), and where the second kind covers the footprint
+// it answers BOTH probes and nothing is marched: the sky probe's answer is the only place the image has one. The debug view 4 shows it cyan.
+//
 // What the edit does, in one helper block before main and four anchored lines:
 //   `r1.xyz = tfetch2DGrad(dpFrontSampler_...).xyz;`  (once)     the environment read, followed by the setup (the probes' state and the
 //                                                               reflection probe) and `env` through CarChromeEnv
@@ -85,7 +92,8 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_chrome_version).
-inline constexpr uint32_t kCarChromeVariantVersion = 1;  // 1: reflection and sky probes of centimetre scale, the ray traced image's hook
+inline constexpr uint32_t kCarChromeVariantVersion = 2;  // 1: reflection and sky probes of centimetre scale, the ray traced image's hook;
+                                                          // 2: another car's chrome from the ray traced image (both probes: the sky's weight in the red)
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kChrome = {"xChrome__PS_Chrome", 0x2D8CA0430FF88ED7ull};
