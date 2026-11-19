@@ -3128,6 +3128,13 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
     car_shadow_->OnResolve(record, summary, list);
   }
+  // The player's car's ray tracing structures first, in a frame whose occlusion traces rays against them (ao.h CarRtBeforeAo, car_rt_ao.h): the
+  // ray traced occlusion and sun term are a pass inside the occlusion's own, which needs this frame's top level. The structures' check pass then has no
+  // linear depth to read (the occlusion has not run): it is skipped in such a frame (mcla_gpu_ao_rt off runs it).
+  const bool car_rt_first = car_rt_ && ao_ && ao_->wants_draws() && ao_->CarRtBeforeAo();
+  if (car_rt_first) {
+    car_rt_->OnResolve(record, summary, list, slot_, nullptr);
+  }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
@@ -3139,7 +3146,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // targets: the reset below forgets them too).
     shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
-  if (car_rt_) {
+  if (car_rt_ && !car_rt_first) {
     // The same depth copy builds the player's car's ray tracing structures (car_rt_scene.h): new meshes into their bottom level structures,
     // the frame's top level, and the check pass over the occlusion's linear depth. Before the car self-reflection's own pass, which may
     // trace in the top level; after the occlusion, whose depth image the check reads.
