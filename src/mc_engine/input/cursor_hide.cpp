@@ -3,6 +3,7 @@
 #include "input_state.h"
 #include "mc_engine/core/logging.h"
 #include "map_mouse.h"
+#include "menu_mouse.h"
 #include "mouse_look.h"
 #include "mc_engine/ui/settings.h"
 
@@ -126,8 +127,11 @@ void TickCursorHide() {
     // of the mouse that the rules call jitter changes neither the device nor the pointer. With the
     // keyboard and mouse in use the pointer shows while the mouse moves and hides after 3 s still.
     const bool pad_active = larecomp::input::ActiveInput() == larecomp::input::InputDevice::Pad;
+    // A menu is up and the mouse is in use (MOUSE IN MENUS): the pointer is the menu's, on screen for as long as that holds, still or not (menu_mouse.h). A controller or a
+    // key that takes over makes it false, and the pointer goes at once, as it always did.
+    const bool menu_pointer = larecomp::MenuMouseWantsPointer();
     const uint64_t seq = g_mouse_seq.load(std::memory_order_relaxed);
-    if (over_overlay || (!pad_active && (seq != last_seq || focused != was_focused))) {
+    if (over_overlay || menu_pointer || (!pad_active && (seq != last_seq || focused != was_focused))) {
         last_activity = now;
     }
     last_seq = seq;
@@ -135,7 +139,7 @@ void TickCursorHide() {
 
     // The map keeps the pointer visible when the option to hide it there is off.
     const bool want_hidden = REXCVAR_GET(hide_mouse_pointer) && focused && !over_overlay &&
-                             !MapMouseWantsPointer() &&
+                             !MapMouseWantsPointer() && !menu_pointer &&
                              (pad_active || now - last_activity >= kIdleBeforeHide);
     if (want_hidden != ours) Post(window, want_hidden);
 }

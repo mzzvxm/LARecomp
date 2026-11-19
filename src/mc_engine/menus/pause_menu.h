@@ -51,6 +51,13 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4);
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31);
 bool Hook_PopulateRedirect(PPCRegister& r3);
+
+// What the game rendered last, for the mouse in the menus (input/menu_mouse.cpp): the mcListViewFixed Hook_ListViewPopulate saw last and the UIMenu Hook_PopulateRedirect saw last
+// (0 = none yet), each with a counter that says which of the two is the later (the larger number; 0 = never). Any thread; the objects are the guest's, read on the guest thread.
+uint32_t PauseMenuLastList();
+uint32_t PauseMenuLastListSeq();
+uint32_t PauseMenuLastUiMenu();
+uint32_t PauseMenuLastUiMenuSeq();
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30);
 
 // Skip a vfunc call through a menu list whose vtable is null -- see the comment

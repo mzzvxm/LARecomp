@@ -135,12 +135,12 @@ void PageWidths() {
   Check(widestLabel + widestValue <= size_t(kPageLimit), "CONTROLLER is within 41 characters");
 
   // RECOMP SETTINGS: the suffixes count.
-  const char* recomp[] = {"HIDE MOUSE POINTER", "ORIGINAL INTRO SPEED (NEXT START)",
+  const char* recomp[] = {"HIDE MOUSE POINTER", "MOUSE IN MENUS", "ORIGINAL INTRO SPEED (NEXT START)",
                           "SKIP INTRO VIDEOS (NEXT START)"};
   size_t recompWidest = 0;
   for (const char* label : recomp) recompWidest = std::max(recompWidest, std::string(label).size());
   Check(recompWidest + 3 <= size_t(kPageLimit), "RECOMP SETTINGS is within 41 characters");
-  Check(std::string(recomp[2]).size() < std::string(recomp[1]).size(),
+  Check(std::string(recomp[3]).size() < std::string(recomp[2]).size(),
         "SKIP INTRO VIDEOS is narrower than the row that already set the page's width");
 
   // CHASE CAMERA: two rows, values "OFF" and "3.0X" at most.
