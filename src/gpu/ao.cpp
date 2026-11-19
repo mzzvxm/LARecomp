@@ -1062,6 +1062,13 @@ void AmbientOcclusion::Shutdown() {
   depth_prev_ = HostImage{};
   gi_weight_ = HostImage{};
   vehicle_table_ = HostImage{};
+  // The contact skip's block image and the statistics' image and readback: left out of this list they outlived the device, which
+  // the Vulkan validation layer reported as five leaked objects (VUID-vkDestroyDevice-device-05137: an image, its two views, a
+  // render pass and a framebuffer).
+  contact_skip_ = HostImage{};
+  contact_stat_ = HostImage{};
+  stat_buffer_.reset();
+  stat_busy_ = false;
   history_valid_ = false;
   history_gi_ = false;
   for (auto& pipeline : pipelines_) {
