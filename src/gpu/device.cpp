@@ -313,6 +313,11 @@ bool Device::Open(const Options& options) {
   // How that budget was made (which heaps or segments, the RAM cap and the floor of a shared-memory
   // GPU), once: the answer to "is the budget the caches trim against the memory the GPU can use".
   REXLOG_INFO("[gpu] {}", backend::DescribeVideoMemory(device_.get()));
+  // What a compatibility report asks of a player's log (perf/COMPAT-AUDIT.md section 9): one line.
+  if (const std::string capabilities = backend::DescribeCapabilities(device_.get());
+      !capabilities.empty()) {
+    REXLOG_INFO("[gpu] capabilities: {}", capabilities);
+  }
   // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
   // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
   gpu_class::Initialize(device_->getDescription(), caps);

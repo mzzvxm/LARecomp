@@ -172,6 +172,34 @@ std::string RequirementProblem(plume::RenderDevice* device) {
   return missing.empty() ? std::string() : "it lacks " + missing;
 }
 
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceFeatures2) {
+    return {};
+  }
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing = {};
+  indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceBufferDeviceAddressFeatures address = {};
+  address.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  indexing.pNext = &address;
+  VkPhysicalDeviceFeatures2 features = {};
+  features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features.pNext = &indexing;
+  vkGetPhysicalDeviceFeatures2(dev->physicalDevice, &features);
+  const VkPhysicalDeviceFeatures& core = features.features;
+  const VkPhysicalDeviceLimits& limits = dev->physicalDeviceProperties.limits;
+  const auto yes = [](VkBool32 value) { return value ? "yes" : "no"; };
+  return std::format(
+      "Vulkan 64-bit integers in shaders {}, buffer device address {}, descriptor indexing: partially "
+      "bound {}, variable count {}, runtime arrays {}, sampled image update after bind {}; BC textures "
+      "{}, bound descriptor sets {}, push constants {} bytes",
+      yes(core.shaderInt64), yes(address.bufferDeviceAddress),
+      yes(indexing.descriptorBindingPartiallyBound),
+      yes(indexing.descriptorBindingVariableDescriptorCount), yes(indexing.runtimeDescriptorArray),
+      yes(indexing.descriptorBindingSampledImageUpdateAfterBind), yes(core.textureCompressionBC),
+      limits.maxBoundDescriptorSets, limits.maxPushConstantsSize);
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   if (!dev) {
