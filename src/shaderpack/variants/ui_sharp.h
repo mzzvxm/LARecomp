@@ -34,6 +34,9 @@
 // what mcla_ui_sharp_census prints on the first run (the PS identity of every texture read after the composite marker): the names of the
 // shaders it finds go into kUiSharpSuffixes, by name, which is robust to a different game version.
 //
+// CHECK: that PS, PS_Blit and PS_BlitTransparent are drawn by the Flash player at all, and which other shaders it uses for text and the 3D UI (the census says);
+// CHECK: the retail game's names and identities of those, which the transform only knows for xrage_im__PS_Textured.
+//
 // Runtime: src/gpu/scene.cpp (UiSharpDraw) chooses it per draw (ps_variant kVariantUiSharp = 10) for draws in the UI phase while
 // mcla_ui_sharp is above 0; nothing else does.
 //

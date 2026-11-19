@@ -41,6 +41,13 @@
 // table kUiSharpShaders in shaderpack/variants/ui_sharp.h lists what is guessed), which textures are the
 // glyph atlases, and how large they are.
 //
+// CHECK (nothing here has run in the game): (1) that the Flash player's textured draws really use the xrage_im shaders the variant lists (the census's
+// PS column says); (2) the pictures at 1080p and 4K: no dark or coloured fringe from the Catmull-Rom lobe on bitmaps with black transparent texels, no
+// mismatch between a steepened alpha and unsteepened premultiplied colour, thin strokes not thinner, soft fades not hardened, 720p identical; (3) the first
+// use of the variant builds pipelines on the render thread (a stutter; in the multisampled pause view a draw may be left out for a frame while a builder
+// thread works, Scene::MaySkipForPipeline); (4) D3D12 against Vulkan for the coarse derivatives and GatherAlpha through a swizzled view; (5) the cost
+// (about 46 UI draws a frame, five taps and a gather only where magnified: expected well under 0.1 ms at 4K, not measured).
+//
 // This file is the pure half (ui_sharp_test.cpp): the strength's clamp and constants, the per-draw rule and
 // the census's bookkeeping. ui_sharp.cpp has the two cvars.
 // ===========================================================================
