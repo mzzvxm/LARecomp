@@ -183,6 +183,8 @@ class CarRtRefl {
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
     uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
+    int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
+                                                          // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
   };
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
@@ -205,7 +207,7 @@ class CarRtRefl {
     float image[4];     // the image's size, the picture's size
     float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length
     float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
-    float up[4];        // the world's up in view space (CarRtView::up: the chrome's sky probe), w 0
+    float up[4];        // the world's up in view space (CarRtView::up: the chrome's sky probe), w the units: the history's over the paint's (2^exp_bias)
   };
   static_assert(sizeof(Push) == 80);
   // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
