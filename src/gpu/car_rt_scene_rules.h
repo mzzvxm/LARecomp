@@ -69,6 +69,10 @@ inline constexpr uint32_t kMaskDriver = 0x08;  // skinned: not in the first vers
 // Another car (an opponent, traffic, a parked car; car_rt_instances_rules.h): hit by the effects' rays against the scene, never by the
 // primary ray that finds the player's car at a pixel.
 inline constexpr uint32_t kMaskOthers = 0x10;
+// Another car's CHROME (the tailpipes, the badges and the trim, drawn by xChrome::PS_Chrome: car_rt_instances_rules.h OtherMask). An instance of such a draw
+// carries this bit AND kMaskOthers, so every ray that hits another car still hits it; a ray whose mask is this bit alone finds another car's chrome and
+// nothing else. The reflection pass's primary ray takes it (with the player's body) to find another car's chrome at a pixel (car_chrome_rt_rules.h).
+inline constexpr uint32_t kMaskOtherChrome = 0x20;
 // The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
 inline constexpr uint32_t kFlagAfterWorld = 0x100;
 

@@ -199,6 +199,17 @@ class CarSelector {
 // a car's draws and its body centre
 // ---------------------------------------------------------------------------
 
+// The identity of xChrome::PS_Chrome on the retail game (the runtime's own: FNV-1a 64 of the microcode; shaderpack/variants/car_chrome.h kChrome has the
+// same number and car_chrome_rt_rules_test.cpp checks that it does): the pixel shader of the tailpipes, the badges and the chrome trim of EVERY car.
+inline constexpr uint64_t kChromePs = 0x2D8CA0430FF88ED7ull;
+
+// The mask of the instance of another car's draw: every part of another car has kMaskOthers (what the reflection's, the occlusion's and the
+// check's rays hit); a draw of the chrome's shader also has kMaskOtherChrome, so that the reflection pass's primary ray can find another car's chrome at a
+// pixel and the chrome's occlusion be traced for it (car_chrome_rt_rules.h). The player's own chrome is a body part (kMaskBody) as before.
+inline uint32_t OtherMask(uint64_t ps_identity) {
+  return rr::kMaskOthers | (ps_identity == kChromePs ? rr::kMaskOtherChrome : 0u);
+}
+
 // One draw of another car, as the car frame lists it: no host geometry (only the player's car is drawn again by the car shadow map), nothing
 // skinned (the other cars' drivers are left out as the player's is). `mesh_key` is never 0 in a list (car_frame.h Draw::mesh_key: the same key
 // = the same triangles in model space, so every instance of a model shares one bottom level structure).
@@ -263,6 +274,26 @@ inline bool ViewPoint(const temporal::Mat4& view, bool flip_z, const double p[3]
   }
   for (int c = 0; c < 3; ++c) {
     out[c] = float(v[c]);
+  }
+  return true;
+}
+
+// A world-space DIRECTION (no translation) in the frame's view space, as ViewPoint places a point: the chrome's sky probe needs the world's up in
+// view space (the camera pitches; the sky does not). Normalised; false where the result is not a usable vector.
+inline bool ViewVector(const temporal::Mat4& view, bool flip_z, const double v[3], float out[3]) {
+  double r[3];
+  for (int c = 0; c < 3; ++c) {
+    r[c] = v[0] * view.m[0][c] + v[1] * view.m[1][c] + v[2] * view.m[2][c];
+  }
+  if (flip_z) {
+    r[2] = -r[2];
+  }
+  const double length = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+  if (!std::isfinite(length) || !(length > 1e-9)) {
+    return false;
+  }
+  for (int c = 0; c < 3; ++c) {
+    out[c] = float(r[c] / length);
   }
   return true;
 }
@@ -385,6 +416,7 @@ struct Item {
 struct ListStats {
   uint32_t player_instances = 0;
   uint32_t other_instances = 0;
+  uint32_t other_chrome = 0;     // ... of which draws of the chrome's shader (they also carry kMaskOtherChrome)
   uint32_t cars = 0;             // other cars in the list
   uint32_t cars_cut = 0;         // kept cars left out: their draws did not fit the instance budget
   uint32_t missing_mesh = 0;     // draws left out: their mesh has no structure yet
@@ -441,7 +473,7 @@ inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_
 }
 
 // Appends the other cars to `list` (which already holds the player's instances): the nearest whole cars within `budget_instances`, each of their
-// draws whose mesh `find(mesh_key, &ref)` knows, in the draws' order, placed in the frame's view space with the mask kMaskOthers; then a row for
+// draws whose mesh `find(mesh_key, &ref)` knows, in the draws' order, placed in the frame's view space with the mask OtherMask(draw.ps) (kMaskOthers, and kMaskOtherChrome for a draw of the chrome's shader); then a row for
 // every car listed. `max_total` is the top level's own cap on instances (the player's and these). The instance of a car's draw keeps the car's row in
 // its `draw` field.
 template <typename Find>
@@ -475,15 +507,16 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     }
     Item item;
     item.mesh_key = draw.mesh_key;
-    item.mask = rr::kMaskOthers;
+    item.mask = OtherMask(draw.ps);
     if (!rr::PackInstanceTransform(draw.model_to_world, view, flip_z, item.transform)) {
       ++list->stats.bad_matrix;
       continue;
     }
     list->items.push_back(item);
-    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, rr::kMaskOthers, draw.after_world, uint32_t(slot)));
+    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot)));
     GrowBox(&car_boxes[size_t(slot)], item.transform, ref);
     ++list->stats.other_instances;
+    list->stats.other_chrome += (item.mask & rr::kMaskOtherChrome) != 0 ? 1u : 0u;
   }
   // The cars' rows follow the instances' (the table's rows are all uint4); the instances name them by row.
   const uint32_t car_rows = uint32_t(list->items.size());

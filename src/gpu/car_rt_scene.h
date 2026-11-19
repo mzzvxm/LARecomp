@@ -112,6 +112,9 @@ struct CarRtView {
   const car_rt_instances::ViewBox* boxes = nullptr;
   uint32_t box_count = 0;
   uint32_t box_row = 0;
+  // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
+  // car_rt_refl_cs.hlsl; the camera pitches, so the view's own y is not it). (0, 1, 0) where the frame's camera gave none.
+  float up[3] = {0.0f, 1.0f, 0.0f};
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is

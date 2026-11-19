@@ -661,6 +661,10 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
     view_.box_count = uint32_t(cars.boxes.size());
     view_.box_row = cars.box_row;
+    {
+      const double world_up[3] = {0.0, 1.0, 0.0};
+      car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
+    }
     stats_counts_.frames_with_tlas += 1;
     stats_counts_.instances += count;
     recorded = true;

@@ -109,7 +109,9 @@ struct CarChrState
     CarChrRay ray;
     float reflectHit;  // 0..1: the reflection probe's weight
     float skyHit;      // 0..1: the sky probe's weight
-    float state;       // debug: 0 off, 1 not in the history, 3 marched and no hit, 4 marched and hit, 5 the ray traced image answered
+    float skyKnown;    // 1: skyHit came from the ray traced image (another car's chrome): the sky probe is not marched
+    float state;       // debug: 0 off, 1 not in the history, 3 marched and no hit, 4 marched and hit, 5 the ray traced image answered (the player's car),
+                       // 6 it answered both probes (another car's chrome)
 };
 
 float4 CarChrProject(float4 m0, float4 m1, float4 m2, float4 m3, float3 p)
@@ -358,8 +360,12 @@ float CarChrProbe(Texture2D<float4> history, CarChrState s, float3 direction, in
 // alpha 0 no data, 1 the car and no ray of the cone hits it, 1 + w a hit of weight w (the share of the cone), -(1 + w) a hit on a part the
 // camera does not see. Read at the shaded point's place in the history with a 3x3 quadratic B-spline; only the texels the history shows at
 // the shaded point's own distance (the same surface) count; the image answers where the texels with data are at least half of those.
-// x = 1: it answers; y = the weight of a hit (the share of the cone, a miss's zero included).
-float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
+// TWO KINDS OF TEXEL (src/gpu/car_chrome_rt_rules.h): the player's (the colour's red is not negative: the alpha above) and another car's chrome (the colour's
+// red is -(1 + the sky probe's weight), the alpha 1 + the reflection probe's weight: the host traced both probes for it). The image answers with the first
+// kind where its texels are at least half of the matching ones, else with the second where they are (the first kind's arithmetic is exactly the older one's).
+// x = 1: it answers; y = the weight of a hit (the share of the cone, a miss's zero included, or the reflection probe's); z = 1: another car's chrome, and
+// w = the sky probe's weight (else 0).
+float4 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
 {
     Texture2D<float4> image = g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)];
     const float2 f = uv * size - 0.5;
@@ -371,6 +377,9 @@ float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float dep
     float geometry = 0.0;
     float known = 0.0;
     float weight = 0.0;
+    float knownOther = 0.0;
+    float weightOther = 0.0;
+    float skyOther = 0.0;
     [unroll]
     for (int k = 0; k < 9; ++k)
     {
@@ -381,14 +390,32 @@ float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float dep
         const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
         const float wg = wb * agree;
         geometry += wg;
-        const float code = abs(image.Load(int3(texel, 0)).a);
+        const float4 t = image.Load(int3(texel, 0));
+        const float code = abs(t.a);
         if (code >= 0.5)
         {
-            known += wg;
-            weight += wg * saturate(code - 1.0);
+            if (t.r < -0.5)
+            {
+                knownOther += wg;
+                weightOther += wg * saturate(code - 1.0);
+                skyOther += wg * saturate(-t.r - 1.0);
+            }
+            else
+            {
+                known += wg;
+                weight += wg * saturate(code - 1.0);
+            }
         }
     }
-    return (geometry > 1e-4 && known >= 0.5 * geometry) ? float2(1.0, weight / known) : float2(0.0, 0.0);
+    if (geometry > 1e-4 && known >= 0.5 * geometry)
+    {
+        return float4(1.0, weight / known, 0.0, 0.0);
+    }
+    if (geometry > 1e-4 && knownOther >= 0.5 * geometry)
+    {
+        return float4(1.0, weightOther / knownOther, 1.0, skyOther / knownOther);
+    }
+    return float4(0.0, 0.0, 0.0, 0.0);
 }
 
 )HLSL" R"HLSL(// The setup, at the environment read: is the shaded point in the history at its own view distance, and the reflection probe (the view ray
@@ -447,19 +474,32 @@ CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
     s.valid = 1.0;
     s.state = 3.0;
 
-    // 2. The reflection probe. Where the host ray traced this frame's history (g_CarReflC.w bit 0: the image at g_CarReflC.z), its answer at
-    // the shaded point's place IS the weight and the march is not made; where it has no data there the march runs.
+    // 2. The ray traced image, where the host made one for this frame's history (g_CarReflC.w bit 0: the image at g_CarReflC.z).
+    float4 rt = float4(0.0, 0.0, 0.0, 0.0);
+    if ((slots.w & 1u) != 0u)
+    {
+        rt = CarChrRtRead(history, s.ray.size, s.ray.startUv, start.w, 2.0 * (0.004 + 0.0015 * start.w + s.ray.slack), slots.z);
+    }
+    // Another car's chrome: the image has both probes' weights at the shaded point's place, and nothing is marched (the reflection probe is not made at a grazing
+    // view, as the march's is not).
+    if (rt.z > 0.5)
+    {
+        s.reflectHit = (s.nv >= kCarChrNormalMin) ? rt.y * s.agreement : 0.0;
+        s.skyHit = rt.w * s.agreement;
+        s.skyKnown = 1.0;
+        s.state = 6.0;
+        return s;
+    }
+
+    // 3. The reflection probe. Where the image has the player's texels there, its answer IS the weight and the march is not made (the sky probe is
+    // marched); where it has no data there, or no image was made, the march runs.
     if (s.nv >= kCarChrNormalMin)
     {
-        if ((slots.w & 1u) != 0u)
+        if (rt.x > 0.5)
         {
-            const float2 rt = CarChrRtRead(history, s.ray.size, s.ray.startUv, start.w, 2.0 * (0.004 + 0.0015 * start.w + s.ray.slack), slots.z);
-            if (rt.x > 0.5)
-            {
-                s.reflectHit = rt.y * s.agreement;
-                s.state = 5.0;
-                return s;
-            }
+            s.reflectHit = rt.y * s.agreement;
+            s.state = 5.0;
+            return s;
         }
         s.reflectHit = CarChrProbe(history, s, 2.0 * s.nv * s.n - v, kCarChrReflectSteps, kCarChrReflectLength);
         s.state = (s.reflectHit > 0.02) ? 4.0 : 3.0;
@@ -487,6 +527,11 @@ float3 CarChromeAmbient(float3 ambient, inout CarChrState s, float blend)
     {
         return ambient;
     }
+    if (s.skyKnown > 0.5)
+    {
+        // another car's chrome: the ray traced image has the sky probe's weight (CarChrRtRead), nothing to march
+        return ambient * (1.0 - kCarChrDark * saturate(s.skyHit * g_CarReflA.w));
+    }
     const uint4 slots = g_CarReflC;
     Texture2D<float4> history = g_Texture2DDescriptorHeap[TFETCH_INDEX(slots.x)];
     float3 sky = s.n + float3(0.0, 1.0, 0.0);
@@ -497,7 +542,8 @@ float3 CarChromeAmbient(float3 ambient, inout CarChrState s, float blend)
 }
 
 // The debug views of g_CarReflB.y: 1 the reflection probe's weight, 2 the sky probe's, 3 the baked vertex AO, 4 the state (red: the point is
-// not in the history, green: marched and no hit, yellow: a hit, blue: the ray traced image answered; brighter the heavier). The write of
+// not in the history, green: marched and no hit, yellow: a hit, blue: the ray traced image answered, cyan: it answered for another car's chrome (both probes);
+// brighter the heavier). The write of
 // the colour is scaled by the exponent bias of the target, so they are in its units.
 float3 CarChromeDebug(CarChrState s, float bakedAo)
 {
@@ -516,7 +562,11 @@ float3 CarChromeDebug(CarChrState s, float bakedAo)
         return float3(bakedAo, bakedAo, bakedAo) * unit;
     }
     float3 colour = float3(0.0, 0.0, 0.0);
-    if (s.state > 4.5)
+    if (s.state > 5.5)
+    {
+        colour = float3(0.0, 0.9, 0.9) * (0.25 + 0.75 * saturate(max(s.reflectHit, s.skyHit)));
+    }
+    else if (s.state > 4.5)
     {
         colour = float3(0.0, 0.3, 1.0) * (0.25 + 0.75 * saturate(s.reflectHit));
     }
@@ -628,6 +678,8 @@ VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::
       {"CarChrLoad(history, ray.size, uv)", 1}, {"CarChrLoad(history, s.ray.size, s.ray.startUv)", 1},
       {"g_CarReflM0 : packoffset(c38)", 1},  {"g_CarReflC : packoffset(c44)", 1},
       {"-r1.xyz + ambYPos.xyz", 0},
+      {"float4 CarChrRtRead(", 1},           {"= CarChrRtRead(", 1},
+      {"if (t.r < -0.5)", 1},                {"if (s.skyKnown > 0.5)", 1},
   };
   for (const auto& check : kChecks) {
     const size_t count = CountOccurrences(text, check.needle);
