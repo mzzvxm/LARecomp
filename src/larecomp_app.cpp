@@ -88,7 +88,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "gpu/gpu.h"
 #include "gpu/native_window.h"
 #endif
-#include "mc_engine/display/effect_compare.h"
+#include "mc_engine/display/effect_compare.h"  // developer tool: its contents are there only with LARECOMP_DEV_TOOLS
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -586,7 +586,11 @@ rex::Result<void> LarecompApp::OnInit() {
   // install (WP-C3), and both must draw. It takes the window from IUISystem::GetNativeWindow and draws the overlays
   // with IUISystem::DrawOverlays(its IOverlayRenderer) on its own render thread.
   if (mcla::native_gfx::nocp::WantNoCommandProcessor() && mcla::gpu::Enabled()) {
-    mcla::compare::Start(GetUI());  // the compare key (F1)
+#if defined(LARECOMP_DEV_TOOLS)
+    // The compare keys (a developer tool, CMake -DLARECOMP_DEV_TOOLS=ON): F1 flicks the selected graphics effect off and on to see
+    // what it does, F12 selects the next effect.
+    mcla::compare::Start(GetUI());
+#endif
     larecomp::shaderbuild::InstallStartupGate(tp.game_root.Get());
     auto window = GetUI().GetNativeWindow();
     if (!window) {
@@ -648,7 +652,10 @@ void LarecompApp::StartOverlays() {
     overlays.push_back({"gpu_texture_dump", {rex::VirtualKey::kF2}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestTextureDump>)});
     overlays.push_back({"gpu_trace_next", {rex::VirtualKey::kF10}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestFrameTrace>)});
     overlays.push_back({"gpu_renderdoc_capture", {rex::VirtualKey::kF11}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestRenderDocCapture>)});
+#if defined(LARECOMP_DEV_TOOLS)
     overlays.push_back(mcla::compare::KeyOverlayConfig());                                             // F1: the compare key
+    overlays.push_back(mcla::compare::SelectKeyOverlayConfig());                                       // F12: selects the effect it flips
+#endif
   }
 #endif
   if (auto added = ui.AddOverlays(overlays); !added) {

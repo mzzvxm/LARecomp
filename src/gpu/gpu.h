@@ -419,6 +419,13 @@ bool MsaaSwitching();
 // mcla_gpu_msaa_with_upscaler: the player's MSAA level stands while an upscaler runs (msaa_level.h).
 bool MsaaKeptUnderUpscaler();
 
+// --- the ray traced car self-reflection ----------------------------------------------------------
+// True when this device can run it: Direct3D 12 with DXR 1.1 and shader model 6.5 (CarRtSupported in
+// car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h). False
+// before the renderer has started, on Vulkan and on a card or driver that cannot ray trace. The pause menu's
+// CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
+bool CarRtReflAvailable();
+
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The
 // scene's first targets are made for the choice read once at the start: the upscaler and mode

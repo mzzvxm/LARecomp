@@ -21,17 +21,17 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, build_shader_packs_force, false, "With build_shader_packs: build even when the packs in place are current.", rex::kRestart, rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_compare_effect, "bounce", "Which graphics effect the compare key flips off and on, to see what it does: bounce (the bounce light, the "
-    "default), contact (contact shadows), shafts (sun shafts), occlusion (ambient occlusion), filter (the sun "
-    "shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow size fix: it has no row, set it "
-    "here or on the command line). The key is "
-    "F1 until it is rebound in the key bindings of F4 (bind_mcla_compare). Pressing it shows the effect the other "
-    "way than your setting has it, a label at the top of the screen says how, and the next press puts your "
-    "setting back. The flip is never saved, and it is dropped when the setting it flips is changed or this one "
-    "is. Live.", rex::Allowed("bounce", "contact", "shafts", "occlusion", "filter", "selfrefl", "bloom"));
+  REX_SETTING(std::string, mcla_compare_effect, "bounce", "Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see "
+    "what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion "
+    "(ambient occlusion), filter (the sun shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow "
+    "size fix: the select key does not walk to it, set it here or on the command line). The select key is F12 and the "
+    "compare key F1 until they are rebound in the key bindings of F4 (bind_mcla_compare_next, bind_mcla_compare). F12 "
+    "selects the next effect and shows which one in a label at the top of the screen; F1 shows the selected effect the other "
+    "way than your setting has it, the label says how, and the next press puts your setting back. The flip is never "
+    "saved, and it is dropped when the setting it flips is changed or this one is. Live.", rex::kDebugOnly, rex::Allowed("bounce", "contact", "shafts", "occlusion", "filter", "selfrefl", "bloom"));  // was inside a #if in the .cpp: check
 
   REX_SETTING(f64, mcla_compare_label_seconds, 1.5, "Diagnostic: how long the compare key's label stays up before it fades out (about 0.35 s more), 0.5 to 30. "
-    "A test run takes its pictures a second after the press and sets it higher. Live.", rex::kDebugOnly, rex::Range{0.5, 30.0});
+    "A test run takes its pictures a second after the press and sets it higher. Live.", rex::kDebugOnly, rex::Range{0.5, 30.0});  // was inside a #if in the .cpp: check
 
   // One alpha-to-mask pattern for every draw. MCLA draws its alpha-tested
   // surfaces twice over the same depth: the depth pre-pass (the ShadowBlend

@@ -1,4 +1,7 @@
-// The compare key. See effect_compare.h.
+// The compare keys (F1 flips the selected effect, F12 selects the next one). A developer tool: the whole file is
+// compiled only with LARECOMP_DEV_TOOLS (CMakeLists.txt adds it to the sources then). See effect_compare.h.
+
+#if defined(LARECOMP_DEV_TOOLS)
 
 #include "effect_compare.h"
 
@@ -31,6 +34,12 @@ namespace cmp = mcla::gpu::compare;
 
 constexpr char kBindName[] = "mcla_compare";  // ui.bind.mcla_compare (the 0.10 cvar was bind_mcla_compare)
 constexpr char kDefaultKey[] = "F1";
+constexpr char kNextBindName[] = "mcla_compare_next";  // ui.bind.mcla_compare_next (the 0.10 cvar was bind_mcla_compare_next)
+// F12 is the last of the free function keys: F2 to F11 are taken (the texture dump, the telemetry card, the settings panel, the mod
+// browser, the server browser, the achievements, the online identity, the map warp, the frame trace and the RenderDoc capture), and
+// F1 was already the compare key.
+constexpr char kNextDefaultKey[] = "F12";
+constexpr char kSettingName[] = "mcla_compare_effect";
 
 int64_t NowMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
@@ -83,10 +92,10 @@ void OnKey() {
   }
   last_press_ms = now;
 
-  const cmp::Effect effect = cmp::ParseEffect(larecomp::cvar::GetFlagByName("mcla_compare_effect"));
+  const cmp::Effect effect = cmp::ParseEffect(larecomp::cvar::GetFlagByName(kSettingName));
   cmp::State& state = cmp::Global();
   if (state.Flipped() != cmp::Effect::kNone && state.Flipped() != effect) {
-    state.Clear();  // the key was set to another effect while one was flipped
+    state.Clear();  // another effect was selected while one was flipped
   }
   const cmp::Press press = cmp::PressOf(effect, state.ForcedFor(effect), ReadSaved());
   if (!press.blocked) {
@@ -98,6 +107,26 @@ void OnKey() {
           : press.force == cmp::Force::kNone ? "back to your setting"
                                               : "for a look",
           std::string(cmp::Info(effect).cvar));
+}
+
+// The select key: the next of the six effects, written into mcla_compare_effect (the one place the selection is kept, so F4 and the
+// command line see it). The write runs the change callback below, which drops a flip that was on and hides the label; the note comes
+// after it. It says what your setting shows of the effect now, which is what F1 flips away from.
+void OnSelectKey() {
+  static int64_t last_press_ms = -1;  // the UI thread's
+  const int64_t now = NowMs();
+  if (!cmp::AcceptPress(now, last_press_ms)) {
+    return;
+  }
+  last_press_ms = now;
+
+  const cmp::Effect next = cmp::NextEffect(cmp::ParseEffect(larecomp::cvar::GetFlagByName(kSettingName)));
+  larecomp::cvar::SetFlagByName(kSettingName, cmp::Info(next).choice);
+  const cmp::Standing standing = cmp::StandingOf(next, ReadSaved());
+  Show(cmp::SelectedLabelOf(next, standing.on, standing.blocked));
+  MC_INFO("[compare] selected {} ({}={}; your setting shows it {})", std::string(cmp::Info(next).label), kSettingName,
+          std::string(cmp::Info(next).choice),
+          standing.blocked ? "with nothing to flip: it needs the ambient occlusion" : standing.on ? "on" : "off");
 }
 
 // A setting that was flipped was changed (the pause menu, F4, the console): the flip goes, and with it the label.
@@ -157,8 +186,15 @@ rex::ui::OverlayConfig KeyOverlayConfig() {
   return {kBindName, {rex::VirtualKey::kF1}, &mcla::ui::MakeHotkey<&OnKey>};
 }
 
-std::string KeyLabel() {
-  const std::string key = mcla::ui::BindText(kBindName, kDefaultKey);
+rex::ui::OverlayConfig SelectKeyOverlayConfig() {
+  return {kNextBindName, {rex::VirtualKey::kF12}, &mcla::ui::MakeHotkey<&OnSelectKey>};
+}
+
+namespace {
+
+// The key a bind is on, for the log (capitals, digits, space and '+'): the default unless it was rebound.
+std::string KeyLabel(const char* bind, const char* fallback) {
+  const std::string key = mcla::ui::BindText(bind, fallback);
   std::string out;
   for (const char c : key) {
     const unsigned char u = static_cast<unsigned char>(c);
@@ -168,8 +204,10 @@ std::string KeyLabel() {
       out += c;
     }
   }
-  return out.empty() ? std::string(kDefaultKey) : out;
+  return out.empty() ? std::string(fallback) : out;
 }
+
+}  // namespace
 
 void Start(rex::ui::IUISystem& ui) {
   if (g_started) {
@@ -177,23 +215,25 @@ void Start(rex::ui::IUISystem& ui) {
   }
   g_started = true;
   ui.AddDialog(std::make_unique<LabelDialog>());
-  // A flip ends when the setting it flips is changed, and when the key is set to another effect.
+  // A flip ends when the setting it flips is changed, and when another effect is selected.
   for (int i = 0; i < cmp::kEffectCount; ++i) {
     const cmp::Effect effect = static_cast<cmp::Effect>(i);
     larecomp::cvar::RegisterChangeCallback(cmp::Info(effect).cvar, [effect](std::string_view, std::string_view) {
       OnSettingChanged(effect);
     });
   }
-  larecomp::cvar::RegisterChangeCallback("mcla_compare_effect", [](std::string_view, std::string_view) {
+  larecomp::cvar::RegisterChangeCallback(kSettingName, [](std::string_view, std::string_view) {
     if (cmp::Global().Flipped() != cmp::Effect::kNone) {
       cmp::Global().Clear();
       Hide();
     }
   });
-  MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect), the label stays {:.1f} s",
-          KeyLabel(), kBindName,
-          std::string(cmp::Info(cmp::ParseEffect(larecomp::cvar::GetFlagByName("mcla_compare_effect"))).label),
-          larecomp::settings::mcla_compare_label_seconds.Get());
+  MC_INFO("[compare] the compare key is {} ({}): it flips {} (mcla_compare_effect); {} ({}) selects the next effect; the label stays {:.1f} s",
+          KeyLabel(kBindName, kDefaultKey), kBindName,
+          std::string(cmp::Info(cmp::ParseEffect(larecomp::cvar::GetFlagByName(kSettingName))).label),
+          KeyLabel(kNextBindName, kNextDefaultKey), kNextBindName, larecomp::settings::mcla_compare_label_seconds.Get());
 }
 
 }  // namespace mcla::compare
+
+#endif  // LARECOMP_DEV_TOOLS

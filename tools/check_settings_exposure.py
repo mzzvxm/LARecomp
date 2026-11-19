@@ -200,7 +200,9 @@ def rows_of(src, cfg, defined):
     for f in list(dict.fromkeys(normal + sorted(debug_files))):
         path = os.path.join(src, "mc_engine", f) if not os.path.exists(os.path.join(src, f)) else os.path.join(src, f)
         if not os.path.exists(path):
-            continue
+            # A menu file that moved (the folder reorganisation of 5b9af642) used to be skipped here, and every row in it
+            # then counted as missing: stop instead, naming the entry to fix.
+            sys.exit(f"check_settings_exposure: [menus] lists '{f}', which is neither src/{f} nor src/mc_engine/{f}: fix the path in the config")
         text = strip_comments(read(path))
         name_in_tree = rel(src, path)
         consts = dict(CONST.findall(text))

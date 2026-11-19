@@ -60,7 +60,8 @@ class UISettings final : public rex::SettingOwner {
     "needles, the song ticker, the menus' lists and highlights, page changes and "
     "fades glide instead of stepping. The picture is one step (up to 33 ms) behind the "
     "game; nothing is blended below about 47 FPS. Off, only the movies named in "
-    "ui_movie_pacing step at 30 a second and nothing is blended.");
+    "ui_movie_pacing step at 30 a second and nothing is blended. A developer switch (the hidden debug "
+    "menu's FIXES page): it is on for everyone and is never saved.", rex::kDebugOnly);
 
   REX_SETTING(bool, ui_interpolate_camera, true, "With ui_interpolate: also draw the pause menu's 3D between the movie's last two "
     "steps: the camera that swings in when the menu opens, between its pages and out "

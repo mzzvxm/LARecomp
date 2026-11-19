@@ -179,6 +179,7 @@
 {"bind_mcla_telemetry", "ui.bind.mcla_telemetry"},
 {"bind_mcla_achievements", "ui.bind.mcla_achievements"},
 {"bind_mcla_compare", "ui.bind.mcla_compare"},
+{"bind_mcla_compare_next", "ui.bind.mcla_compare_next"},
 {"bind_gpu_texture_dump", "ui.bind.gpu_texture_dump"},
 {"bind_gpu_trace_next", "ui.bind.gpu_trace_next"},
 {"bind_gpu_renderdoc_capture", "ui.bind.gpu_renderdoc_capture"},
