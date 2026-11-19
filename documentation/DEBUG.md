@@ -54,21 +54,32 @@ For bug reports, the log lists every debug setting that is not at its default at
 
 On the DEBUG menu, **INFO > COPY LAUNCH ARGUMENTS** puts `--debug_menu --name=value ...` for every such setting on the clipboard (and in the log). Paste it into a report, or run it to repeat the session. **SHOW CHANGED SETTINGS** writes the list to the log again. **RESET DEBUG SETTINGS** puts the live ones back to their defaults for this session; a restart-only one stays where it is.
 
-One thing is still written: a restart-only choice that a menu holds for the next start (the RENDERER row), because it cannot work any other way.
+One thing is still written: a restart-only choice that a menu holds for the next start (RENDERING > RENDERER), because it cannot work any other way. The row holds it and the next settings save (leaving the menu) writes `gpu.driver` to `larecomp.toml`.
 
 ## The pages
 
-Every row is live: it takes effect at once and is never saved. A page has at most 24 rows. Rows that only the Plume renderer has show only when it runs.
+Every row is live except RENDERER (below): it takes effect at once and is never saved. A page has at most 24 rows. Rows that only the Plume renderer has show only when it runs.
 
 | Page | What it is for |
 |---|---|
 | FIXES | Each fix of the recomp with the switch that turns it off (real frame delta, suspension fix, smooth chase cam, the UI fixes and smooth UI, the dither fix, the neon pulse held on the console's 30 Hz clock), to see whether a fix caused a bug. |
 | PERFORMANCE | Pacing and speed switches: pace at presentation, fence spin yield, FPS limit spin, single tile, shadow phases, cheap car shadow, foliage, break FPS floor. |
-| RENDERING | The Plume renderer's debug views (AO, HDR layers), the glow visibility choice (GLOW VISIBILITY: SOFT, the default, fades a street lamp's glow at an edge instead of letting it pop; GAME is the game's one depth test), performance markers, the ghost and memory logs, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
+| RENDERING | RENDERER (below), the Plume renderer's debug views (AO, HDR layers), the glow visibility choice (GLOW VISIBILITY: SOFT, the default, fades a street lamp's glow at an edge instead of letting it pop; GAME is the game's one depth test), performance markers, the ghost and memory logs, and on the Xenia renderer XENIA VSYNC (it only slows the game's pacing to the vblank; it does not stop tearing). |
 | CAMERA | The developer free camera, the free-look collision tests, the camera trace, the menu camera lock. |
 | TOOLS | Texture dump and reload for texture mods, buttons for F4 and the telemetry card, the leftover TestMovie button, squash and stretch, HUD ALPHA (the game's own UI faded, see below), FIXED STEP and CAPTURE FPS (capture mode, see below), TRAILER FREE CAMERA and RECORD FLIGHT (the pad flies a free camera and the recorder writes the flight down, see "The free camera and the flight recorder"). |
 | LOGGING | One switch per diagnostic that adds lines to the log and can be flipped while the game runs (UI colour, map mouse, wheel, music bank, warp, online and others). |
 | INFO | SHOW CHANGED SETTINGS, COPY LAUNCH ARGUMENTS, RESET DEBUG SETTINGS. |
+
+### RENDERER (the way to the compatibility renderer)
+
+The program keeps the XENIA renderer (the SDK's Xenia GPU emulation, with all the fixes it had) as a hidden fallback for a PC where the native (Plume) renderer will not run. Nothing in the launcher or the normal menus offers it; to a player it is "the compatibility renderer" (RUNNING.md). RENDERING > **RENDERER** is the tester's way, in both directions, and it is on the page whichever renderer runs:
+
+- The values are **NATIVE** (`gpu.driver = larecomp`), **XENIA D3D12** (`d3d12`) and **XENIA VULKAN** (`vulkan`). An old file's `any` shows as the API of the platform.
+- `gpu.driver` is read at start, so the row does not change the running renderer. It holds the choice; leaving the menu writes `gpu.driver = "..."` to `larecomp.toml` (the one debug row that is kept) and offers RESTART NOW. The label says `(RESTART)`. The log says `[pause-menu] cvar 'gpu.driver' -> 'd3d12' held for the next launch`, `[pause-menu] settings saved to ...` and, after the restart, `[gpu] gpu.driver = d3d12: the SDK's Xenia GPU renders (the compatibility renderer); the Plume renderer stays off`.
+- A `--gpu.driver=...` on the command line or `REX_GPU_DRIVER` in the environment beats the file (and a restart keeps the command line), so the row is grey, `RENDERER (LAUNCH OPTION)`, while one is set.
+- The XENIA renderer has no shader packs and none of the Plume renderer's effects: the NATIVE-only rows are not listed while it runs, and `[gpu]` lines are not written.
+
+Where else a player can end up on it: the box "LARecomp could not start on this PC's graphics card" has the button **Use the compatibility renderer** (it writes the same line and starts the game again; with a launch option that sets `gpu.driver` it names the option instead); the shader build's failure dialog has **COMPATIBILITY RENDERER** (the compatibility renderer needs no packs); and after two starts in a row of the native renderer that never presented 120 frames or closed by themselves (a crash, a kill: `logs/renderer_start.txt` holds the count, no file means none) the next start asks once. All three log `[renderer] the compatibility renderer is set (gpu.driver = "d3d12" in ...); starting the game again`. To go back: RENDERER > NATIVE, or `gpu.driver = "larecomp"` in `larecomp.toml`.
 
 ## Diagnostics that write to the log
 
@@ -125,7 +136,7 @@ The list, 116 names in 14 groups (the number in brackets is the group's size):
 **The legacy D3D12 runtime** (2)
 `mcla_native_gfx`, `mcla_native_gfx_continuous`
 
-Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`), which the pause menu's RENDERER row holds for the next start. `mcla_gpu` and `mcla_native_gfx_nocp` of version 0.10 are not settings any more: a line naming one (in `larecomp.toml`, on the command line) is ignored with a note in the log, and an old `larecomp.toml` that has one set to `false` still picks the Xenia renderer.
+Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; the Xenia ones are the hidden compatibility renderer), which the DEBUG menu's RENDERER row holds for the next start (see RENDERER above). `mcla_gpu` and `mcla_native_gfx_nocp` of version 0.10 are not settings any more: a line naming one (in `larecomp.toml`, on the command line) is ignored with a note in the log, and an old `larecomp.toml` that has one set to `false` still picks the Xenia renderer.
 
 **Plume renderer: timing and statistics** (7)
 `mcla_gpu_pass_timing`, `mcla_gpu_scene_profile`, `mcla_gpu_ab_interleave`, `mcla_gpu_memory_census`, `mcla_gpu_census_ps`, `mcla_gpu_census_targets`, `mcla_gpu_census_scale`
