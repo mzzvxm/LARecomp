@@ -429,6 +429,7 @@ void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister&
 // branch that draws the body (traffic_shadow.h; 0x8000, the first version, is the car's lights). The draw's own tests
 // (LOD, the item's and the car's flags) still apply. Only r4, a register, is changed: no guest memory is written.
 void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13) {
+    TrafficProbeNoteItem(uint32_t(r3.u64));  // mcla_traffic_probe (debug): reads the item's LOD for its log; one atomic load when off
 #if defined(LARECOMP_HAS_GPU)
     using Gate = ts::AmbientGate;
     ts::Gates& gates = G();
