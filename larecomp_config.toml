@@ -25013,6 +25013,15 @@ address = 0x821BDAB4
 after_instruction = true
 registers = ["f13"]
 
+# A scene ambient car's paint (cinematic/cars.cpp, scene_seed.h). sub_826DF260 gives a spawn request out of the ambient manager's queue (mgr + 8800): at 0x826DF2DC `stw r3,832(r31)`
+# stores the 31-bit number it drew from the game's generator (clrlwi r3,r11,1 at 0x826DF2D0) in the entry; the number is the seed of the new car's own generator (the request's word +288
+# at entry + 544). Before that store r3 is replaced, for the entry of one of the scene's own layout items, with the seed of the car's paint: the car's own random numbers (its look and its
+# driving personality) are the same in every run. One atomic load when no scene car has a paint.
+[[midasm_hook]]
+name = "MCLAAmbientCarSeed"
+address = 0x826DF2DC
+registers = ["r3", "r31"]
+
 # Timer precision (hooks/timer_precision.cpp).
 #
 # The engine timer adds the frame time to two float clocks, [r3+0x14] and [r3+0x18], by

@@ -177,6 +177,7 @@ void Patch_DeltaTimePre() {
     TickVibration();            // controller_vibration: stops a motor that was running when it went off
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
+    TickTrafficProbe();           // mcla_traffic_probe / mcla_traffic_probe_spawn (debug): reads the ambient cars, pools and police; one flag test when off
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live
     ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches

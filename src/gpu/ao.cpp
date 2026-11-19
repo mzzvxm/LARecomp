@@ -21,6 +21,7 @@
 #include "ao_halo.h"
 #include "ao_paint.h"
 #include "ao_stable.h"
+#include "scene_noise.h"
 #include "car_shadow_map.h"
 #include "contact_trace.h"
 #include "descriptors.h"
@@ -2329,7 +2330,8 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // 3x3 at every size is mcla_gpu_ao_stable false.
   const uint32_t denoise_radius =
       REXCVAR_GET(mcla_gpu_ao_stable) ? uint32_t(ao_stable::DenoiseRadius(plan.ao[1])) : 1u;
-  push->slots2[1] = uint32_t(frame_ & 1023);
+  // While a scene runs the noise follows the scene's update number, so the same scene frame has the same noise in every run (scene_noise.h).
+  push->slots2[1] = uint32_t(scene_noise::Index(frame_) & 1023);
   push->slots2[2] = plan.view | (slices << 8) | (steps << 12) | ((low ? 1u : 0u) << 16) |
                     (denoise_radius << 17);
 
@@ -2772,7 +2774,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.extra[0] = look_.car_reach;
     // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
     // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
-    push.slots2[1] = ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable));
+    push.slots2[1] = ao_stable::NoiseCode(scene_noise::Index(frame_), REXCVAR_GET(mcla_gpu_ao_stable));
     // The bounce light test's main pass is the same pass as a visibility bitmask: it reads the colour
     // chain too (slots.x, slots.y, slots2.w; the plain pass leaves them alone), the thickness and the
     // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the

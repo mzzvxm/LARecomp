@@ -15,6 +15,7 @@
 #include <rex/logging.h>
 
 #include "device.h"
+#include "scene_noise.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "gpu_class.h"
@@ -973,7 +974,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   plan.density = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_density), 0.3, 1.0));
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
   // The noise is a fixed pattern, shifted every frame only while a temporal upscaler averages it.
-  plan.noise_shift = upscaler_running ? float(frame_ & 1023u) : 0.0f;
+  plan.noise_shift = upscaler_running ? float(scene_noise::Index(frame_) & 1023u) : 0.0f;
   plan.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_view), 0, 3));
 
   if (!RecordSky(summary, list, plan)) {

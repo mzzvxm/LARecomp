@@ -39,6 +39,7 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
+#include "gpu/scene_noise.h"
 #endif
 
 // BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
@@ -264,6 +265,8 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
     // limiter's wait above. Every swap, timed or not: the reducer pairs swaps with the passes
     // through the engine timer itself, and a swap it has no pass for is not marked.
     mcla::gpu::latency::OnGuestSwap();
+    // A scene's repeatable noise: the frame this swap closes is tagged with the scene update it shows (gpu/scene_noise.h).
+    mcla::gpu::scene_noise::OnGuestSwap();
 #endif
     // Capture mode: gives the frame's present record the stamp its hand-over made (the update it shows, whether it is the take's).
     mc::cinematic::CaptureOnSwap();

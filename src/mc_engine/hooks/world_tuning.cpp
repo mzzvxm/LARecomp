@@ -1,6 +1,7 @@
 // City density: the ambient traffic, pedestrian and parked car tuning of every
 // ambient zone, and the fragTuneStruct overrides (breakable prop draw distance
-// and the framerate floor for new breaks).
+// and the framerate floor for new breaks). The numbers (what a zone holds, what to
+// write into it) are in ambient_density.h, which ambient_density_test.cpp checks.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include <rex/cvar.h>
@@ -12,6 +13,7 @@
 #include <mutex>
 #include <string>
 
+#include "ambient_density.h"
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
@@ -35,6 +37,16 @@ REXCVAR_DEFINE_DOUBLE(ped_density_scale, 0.5, "MCLA/Performance",
 REXCVAR_DEFINE_DOUBLE(parked_car_scale, 0.5, "MCLA/Performance",
     "Parked car density scale multiplier (0.0 = none, 0.5 = half, 1.0 = full).")
     .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(traffic_density_scale, 1.0, "MCLA/Performance",
+    "Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the "
+    "zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the "
+    "next frame on; cars already on the road stay until they leave by the unspawn radius (traffic_unspawn_dist). "
+    "Needs enable_ambient_tuning (on by default). Debug setting: trailers and repeatable tests, where the road is "
+    "to stay empty (with ped_density_scale and parked_car_scale at 0).")
+    .range(0.0, 2.0)
+    .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // ── rage::fragTuneStruct overrides ──────────────────────────────────────────
@@ -77,22 +89,12 @@ REXCVAR_DEFINE_DOUBLE(breaking_frame_rate_limit, 0.0, "MCLA/Performance",
 // Per-zone originals are captured from what the parse left behind, and every
 // override is computed from those, so re-parsing a zone never compounds the
 // scale the way the original code did.
-struct DensityTuningValues {
-    float spawn = 0.0f;
-    float unspawn = 0.0f;
-    float cull = 0.0f;
-    float ped = 0.0f;
-    float parked = 0.0f;
-};
-
-struct DensityZone {
-    DensityTuningValues orig;     // what the game itself last left in the zone
-    DensityTuningValues written;  // what this code last pushed into it
-    bool has_written = false;
-};
+using mcla::ambient::DensityWant;
+using mcla::ambient::ZoneDensity;
+using mcla::ambient::ZoneState;
 
 static std::mutex g_density_mutex;
-static std::map<uint32_t, DensityZone> g_density_zones;  // zone address -> state
+static std::map<uint32_t, ZoneState> g_density_zones;  // zone address -> state
 static uint32_t g_density_manager = 0;
 
 // The ambient manager singleton (dword_8286D8E4), built by sub_822D3D38 and
@@ -108,74 +110,61 @@ static constexpr uint32_t kAmbientZoneCount  = 31u;
 // Last cvar state pushed, so unchanged frames only compare guest floats.
 static bool g_density_logged_state = false;
 static bool g_density_last_enabled = false;
-static DensityTuningValues g_density_last_want;
+static DensityWant g_density_last_want;
 
-// Offsets verified via rage::mcAmbientDensityTuning in mcla_rage_types.h:
+// Offsets verified via rage::mcAmbientDensityTuning in mcla_rage_types.h (the parser records of sub_826F65B0 name them):
 //   +0x08 = spawn_max
 //   +0x10 = unspawn_max
 //   +0x14 = cull_max
 //   +0x5C = fPedDensity (92)   -- offset slot of the parser record in sub_826F65B0;
 //                                 read by sub_826F3038, which sets the zone's ped
 //                                 target (+0x864) from it. +0x60 is a different field.
+//   +0x84 = fDensityAtLowSpeed (132), +0x88 = fDensityAtHighSpeed (136) -- the traffic's density factor at
+//                                 low and at high speed (stock 1.5 and 1.0); the zone's update (sub_826F79F0)
+//                                 lerps them by the player's speed into zone + 960, which the spawn pass hands
+//                                 to every car type (ambient_density.h)
 //   +0x98 = fParkedCarDensityFactor (152) -- read by sub_826F23A0 (parked spawner)
-static DensityTuningValues ReadZoneValues(uint8_t* base, uint32_t a) {
-    DensityTuningValues v;
+static ZoneDensity ReadZoneValues(uint8_t* base, uint32_t a) {
+    ZoneDensity v;
     v.spawn = ReadGuestF32(base, a + 8);
     v.unspawn = ReadGuestF32(base, a + 16);   // 400.0 stock
     v.cull = ReadGuestF32(base, a + 20);
     v.ped = ReadGuestF32(base, a + 92);
     v.parked = ReadGuestF32(base, a + 152);   // 0.25 stock
+    v.dens_low = ReadGuestF32(base, a + 132);   // 1.5 stock
+    v.dens_high = ReadGuestF32(base, a + 136);  // 1.0 stock
     return v;
 }
 
-static DensityTuningValues ComputeDensity(const DensityTuningValues& orig, bool enabled,
-                                          const DensityTuningValues& want) {
-    if (!enabled) return orig;
-    DensityTuningValues out = orig;
-    if (want.unspawn > 0.0f) out.unspawn = want.unspawn;
-    out.spawn = orig.spawn > 0.0f ? orig.spawn * 0.75f : orig.spawn;
-    out.cull = orig.cull > 0.0f ? orig.cull * 0.75f : orig.cull;
-    out.ped = orig.ped * want.ped;
-    out.parked = orig.parked * want.parked;
-    return out;
-}
-
-static void WriteZoneValues(uint8_t* base, uint32_t a, const DensityTuningValues& v) {
+static void WriteZoneValues(uint8_t* base, uint32_t a, const ZoneDensity& v) {
     WriteGuestF32(base, a + 8, v.spawn);
     WriteGuestF32(base, a + 16, v.unspawn);
     WriteGuestF32(base, a + 20, v.cull);
     WriteGuestF32(base, a + 92, v.ped);
     WriteGuestF32(base, a + 152, v.parked);
+    WriteGuestF32(base, a + 132, v.dens_low);
+    WriteGuestF32(base, a + 136, v.dens_high);
 }
 
-static void ReadDensityCvars(bool& enabled, DensityTuningValues& want) {
+static void ReadDensityCvars(bool& enabled, DensityWant& want) {
     enabled = REXCVAR_GET(enable_ambient_tuning);
     want.unspawn = static_cast<float>(REXCVAR_GET(traffic_unspawn_dist));
     want.ped = static_cast<float>(REXCVAR_GET(ped_density_scale));
     want.parked = static_cast<float>(REXCVAR_GET(parked_car_scale));
+    want.traffic = static_cast<float>(REXCVAR_GET(traffic_density_scale));
 }
 
 // Brings one zone to the wanted state. If the game moved a field since our last
 // write (the XML parse, a tune reload) that value is the new original, so the
-// scale is always applied to the XML value and never compounds. Caller holds
-// g_density_mutex. Returns true when the zone was (re)captured from the game.
+// scale is always applied to the XML value and never compounds (ambient_density.h
+// StepZone). Caller holds g_density_mutex. Returns true when the zone was
+// (re)captured from the game.
 static bool ReconcileZone(uint8_t* base, uint32_t a, bool enabled,
-                          const DensityTuningValues& want, bool force) {
-    DensityZone& z = g_density_zones[a];
-    const DensityTuningValues cur = ReadZoneValues(base, a);
-    bool captured = false;
-    if (!z.has_written || cur.spawn != z.written.spawn || cur.unspawn != z.written.unspawn ||
-        cur.cull != z.written.cull || cur.ped != z.written.ped || cur.parked != z.written.parked) {
-        z.orig = cur;
-        captured = true;
-    } else if (!force) {
-        return false;
-    }
-    const DensityTuningValues out = ComputeDensity(z.orig, enabled, want);
-    WriteZoneValues(base, a, out);
-    z.written = out;
-    z.has_written = true;
-    return captured;
+                          const DensityWant& want, bool force) {
+    const mcla::ambient::ZoneStep step =
+        mcla::ambient::StepZone(g_density_zones[a], ReadZoneValues(base, a), enabled, want, force);
+    if (step.write) WriteZoneValues(base, a, step.out);
+    return step.captured;
 }
 
 // 0x826F5CA0, in the epilogue of the mcAmbientDensityTuning constructor
@@ -189,18 +178,23 @@ void MCLAAmbientDensityTuning(PPCRegister& r3) {
     if (!base) return;
 
     bool enabled = false;
-    DensityTuningValues want;
+    DensityWant want;
     ReadDensityCvars(enabled, want);
 
     std::lock_guard<std::mutex> lock(g_density_mutex);
     ReconcileZone(base, a, enabled, want, true);
 }
 
-// Global enables of the ambient spawners (bytes written by sub_826D5E20 /
-// sub_826D5EB0). sub_826F3038 (pedestrians) and sub_826F23A0 (parked cars) bail
+// Global enables of the ambient spawners (bytes written by sub_826D5D90 /
+// sub_826D5E20 / sub_826D5EB0, the AmbientMgr_Set{Traffic,Peds,ParkedCars}Enable natives).
+// sub_826F3038 (pedestrians) and sub_826F23A0 (parked cars) bail
 // out at the top when their byte is 0. The parked spawner's limit is
 // max(1..2, factor * n) for small n, so a 0 factor alone still leaves a couple of
 // cars per zone -- a scale of 0 therefore also closes the spawner outright.
+// The traffic's spawn step (sub_826F6920) and its candidate test (sub_826EE018) read the
+// traffic byte the same way; only new spawns stop (the native also sends the despawn message,
+// this gate does not), so a car already on the road drives on until it leaves.
+static constexpr uint32_t kTrafficSpawnEnable = 0x8282A7C8u;
 static constexpr uint32_t kPedSpawnEnable    = 0x8282A7C9u;
 static constexpr uint32_t kParkedSpawnEnable = 0x8282A7CAu;
 
@@ -209,6 +203,7 @@ struct SpawnGate {
     bool forcing = false;
     uint8_t saved = 1;  // what the game last had there while we were not forcing
 };
+static SpawnGate g_traffic_gate{kTrafficSpawnEnable};
 static SpawnGate g_ped_gate{kPedSpawnEnable};
 static SpawnGate g_parked_gate{kParkedSpawnEnable};
 
@@ -239,10 +234,11 @@ void ApplyAmbientDensityTuning() {
     std::lock_guard<std::mutex> lock(g_density_mutex);
     {
         bool en = false;
-        DensityTuningValues w;
+        DensityWant w;
         ReadDensityCvars(en, w);
-        UpdateSpawnGate(base, g_ped_gate, en && w.ped <= 0.0f, "pedestrian");
-        UpdateSpawnGate(base, g_parked_gate, en && w.parked <= 0.0f, "parked car");
+        UpdateSpawnGate(base, g_traffic_gate, mcla::ambient::ShutsSpawner(en, w.traffic), "traffic");
+        UpdateSpawnGate(base, g_ped_gate, mcla::ambient::ShutsSpawner(en, w.ped), "pedestrian");
+        UpdateSpawnGate(base, g_parked_gate, mcla::ambient::ShutsSpawner(en, w.parked), "parked car");
     }
     if (mgr != g_density_manager) {
         g_density_zones.clear();  // a new manager: nothing captured applies to it
@@ -251,19 +247,17 @@ void ApplyAmbientDensityTuning() {
     if (mgr == 0) return;
 
     bool enabled = false;
-    DensityTuningValues want;
+    DensityWant want;
     ReadDensityCvars(enabled, want);
 
     const bool cvars_moved = !g_density_logged_state || g_density_last_enabled != enabled ||
-                             g_density_last_want.unspawn != want.unspawn ||
-                             g_density_last_want.ped != want.ped ||
-                             g_density_last_want.parked != want.parked;
+                             g_density_last_want != want;
     g_density_logged_state = true;
     g_density_last_enabled = enabled;
     g_density_last_want = want;
 
     uint32_t recaptured = 0;
-    DensityTuningValues first{};
+    ZoneDensity first{};
     for (uint32_t i = 0; i < kAmbientZoneCount; ++i) {
         const uint32_t a = mgr + kAmbientZoneBase + i * kAmbientZoneStride;
         if (ReconcileZone(base, a, enabled, want, cvars_moved)) {
@@ -274,13 +268,15 @@ void ApplyAmbientDensityTuning() {
     if (recaptured != 0) {
         LARECOMP_APP_INFO(
             "[Ambient Tuning] {} zones captured from the game (zone 0: unspawn {:.1f}, "
-            "ped {:.4f}, parked {:.3f}); enabled={}, ped x{:.2f}, parked x{:.2f}",
-            recaptured, first.unspawn, first.ped, first.parked, enabled, want.ped, want.parked);
+            "ped {:.4f}, parked {:.3f}, traffic density {:.2f} / {:.2f}); enabled={}, ped x{:.2f}, "
+            "parked x{:.2f}, traffic x{:.2f}",
+            recaptured, first.unspawn, first.ped, first.parked, first.dens_low, first.dens_high, enabled,
+            want.ped, want.parked, want.traffic);
     } else if (cvars_moved) {
         LARECOMP_APP_INFO(
             "[Ambient Tuning] cvars applied to {} zones (enabled={}, unspawn={:.1f}, "
-            "ped x{:.2f}, parked x{:.2f})",
-            kAmbientZoneCount, enabled, want.unspawn, want.ped, want.parked);
+            "ped x{:.2f}, parked x{:.2f}, traffic x{:.2f})",
+            kAmbientZoneCount, enabled, want.unspawn, want.ped, want.parked, want.traffic);
     }
 }
 
