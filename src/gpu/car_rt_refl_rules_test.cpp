@@ -1004,6 +1004,70 @@ int main() {
     Check(cr::kMaxView == 5, "the debug view has a fifth value, the image");
   }
 
+  // the other cars (hlsl/car_rt_refl_cs.hlsl OtherCarColour; car_rt_instances_rules.h)
+  {
+    Check(rt::kPartOthers == 0x10 && rt::kPartAll == 0x1F, "the other cars' part is 16 and the parts' mask has five bits");
+    Check((rt::kPrimaryParts & rt::kPartOthers) == 0, "the primary ray never finds another car");
+    Check((rt::kDefaultReflectionParts & rt::kPartOthers) != 0 && rt::kDefaultReflectionParts == 0x17, "the reflection ray hits them by default (23)");
+    Check((rt::kDefaultReflectionParts & ~rt::kPartDriver & rt::kPartAll) == rt::kDefaultReflectionParts, "and not the driver");
+
+    // The taps: tap k at the offset (k % 3 - 1, k / 3 - 1); every texel at the centre's distance 10 holds the colour (0.5, 0.25, 0.125).
+    rt::SurfaceTap taps[9];
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    rt::OtherCarColour all = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(Near(all.share, 1.0, 1e-5) && all.known() && Near(all.rgb[0], 0.5, 1e-5) && Near(all.rgb[1], 0.25, 1e-5) && Near(all.rgb[2], 0.125, 1e-5),
+          "every tap at the centre's distance: the whole share, the colour");
+    // The depth window: kOtherCarDepth radii (1.92 m at a radius of 1.6): full weight to half of it, nothing at it.
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f + 0.9f;
+    }
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 1.6f).share, 1.0, 1e-5), "within half the window every tap counts in full");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f + 1.92f;
+    }
+    const rt::OtherCarColour edge = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(edge.share < 1e-3f && !edge.known() && edge.rgb[0] == 0.0f, "at the window's edge the taps are no longer the car's: no colour");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 14.0f;  // the road or a car behind it: another surface
+    }
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f).known(), "a surface far behind the car is not the car");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;  // no vehicle here (the history's alpha 0)
+    }
+    const rt::OtherCarColour none = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(none.share == 0.0f && !none.known() && none.rgb[0] == 0.0f && none.rgb[1] == 0.0f, "no vehicle texel: share 0, black");
+    // The left column only (the taps 0, 3, 6 hold the car): the tent weights 1/2 x (1/2 + 1 + 1/2) over the sum 4.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = (k % 3) == 0 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = (k % 3) == 0 ? 0.8f : 0.0f;
+    }
+    const rt::OtherCarColour column = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(Near(column.share, 0.25, 1e-5) && column.known() && Near(column.rgb[0], 0.8, 1e-5), "a column of taps: a quarter of the share, the colour of those");
+    // Only the middle tap (the centre's own place): 1/4 of the sum.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = k == 4 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = k == 4 ? 0.3f : 0.0f;
+    }
+    const rt::OtherCarColour middle = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(Near(middle.share, 0.25, 1e-5) && Near(middle.rgb[0], 0.3, 1e-5), "the middle tap alone: a quarter of the share");
+    // A corner alone is 1/16 of the sum: under kOtherCarMinShare, no colour.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = k == 0 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = k == 0 ? 0.3f : 0.0f;
+    }
+    const rt::OtherCarColour corner = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
+    Check(Near(corner.share, 0.0625, 1e-5) && !corner.known(), "a corner alone is too little to be the car's colour");
+    // The step: kOtherCarSpread radii in texels, from one to the most.
+    Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
+              Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),
+          "the taps' spacing follows the car's size in texels, from one texel to the most");
+  }
+
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

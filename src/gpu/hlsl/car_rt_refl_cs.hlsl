@@ -30,6 +30,13 @@
 // which the mesh's smooth normal does not know) is a miss. The texel's weight is the sum of the rays' over the number of rays, its colour
 // their weighted mean. After the first two rays (the outer pair) that found nothing the inner two are not cast.
 //
+// OTHER CARS (car_rt_instances_rules.h): the scene also holds the cars driving alongside (the instances' mask CAR_RT_MASK_OTHERS), which the reflection ray
+// hits like any part (the push's parts) and the primary ray never does (the paint of the player's car is what it finds). A hit on one is taken into the
+// history like any other (every vehicle's pixels are in it), so the part of another car the camera sees has its colour; a part it does not see has no
+// colour of the pixel's own surface to stand in (that is the player's paint): it takes the colour the camera sees of THAT car, the mean of the history's
+// vehicle texels around the car's body centre (OtherCarColour, the car's record in the instances' table), made dark by the same shade. A car whose
+// colour is not known (its centre is off the picture, or hidden) makes a hidden hit a miss: the environment stays there.
+//
 // A SECOND OUTPUT, for the denoise that follows (car_rt_refl_denoise_cs.hlsl, car_rt_refl_rules.h "The denoise"): g_aux (RGBA8_UNORM, the same
 // size) holds, for a texel with data, x the hit distance (sqrt of the mean over the rays that hit / the ray's length; 0 where none did), y the
 // instance of the primary ray's hit / 255, z N.V of the surface, w 1; all 0 where the texel has no data.
@@ -71,6 +78,11 @@ static const float kNoData = 0.0;
 static const float kMinAbove = 0.03;         // a cone ray is kept at least this far (as a cosine) above the point's tangent plane
 static const float kSelfCos = 0.85;          // a hit on the primary ray's instance that faces within 32 degrees of the point's normal is the panel itself
 static const float kSurfaceSpacing = 2.0;    // texels between the taps of the surface's mean colour
+static const float kOtherCarSpread = 0.5;    // radii of the other car between the taps of its colour (car_rt_refl_rules.h kOtherCarSpread)
+static const float kOtherCarDepth = 1.2;     // radii: the depth window around its centre's distance
+static const float kOtherCarMaxStep = 24.0;  // texels between those taps, at most
+static const float kOtherCarEdge = 0.97;     // its centre is moved into this share of the picture
+static const float kOtherCarMinShare = 0.15; // the share of the taps' weights under which the car has no colour
 static const float kTwoPi = 6.283185307179586;
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -190,16 +202,60 @@ float3 SurfaceMean(Texture2D<float4> history, uint2 texel, float t, float nv)
     return total > 1e-6 ? sum / total : history.Load(int3(int2(texel), 0)).rgb;
 }
 
+// The colour the camera sees of another car, for a hit on it that the history does not show (car_rt_refl_rules.h FindOtherCarColour has the same
+// arithmetic and says why): nine history texels around the car's body centre, kOtherCarSpread radii apart, those that are a vehicle's within
+// kOtherCarDepth radii of the centre's distance, tent weighted. Returns the share of the taps' weights (0 .. 1; under kOtherCarMinShare: no colour).
+float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
+{
+    colour = float3(0.0, 0.0, 0.0);
+    if (!(car.radius > 0.0) || !(car.centre.z > kMinDepth))
+    {
+        return 0.0;
+    }
+    const float2 ndc = clamp(float2(car.centre.x / (car.centre.z * g_push.lens.x), car.centre.y / (car.centre.z * g_push.lens.y)),
+                             float2(-kOtherCarEdge, -kOtherCarEdge), float2(kOtherCarEdge, kOtherCarEdge));
+    const float divisor = g_push.lens.z;
+    const float2 render = g_push.image.zw;
+    const float2 place = float2((ndc.x * 0.5 + 0.5) * render.x, (0.5 - ndc.y * 0.5) * render.y);
+    // texel i is centred at i * divisor + floor(divisor / 2) + 0.5 (as VisibleAt)
+    const int2 middle = int2(round((place - (floor(divisor * 0.5) + 0.5)) / divisor));
+    const float texelMeters = PixelMeters(car.centre.z, g_push.lens.y, g_push.image.y);
+    const int step = int(clamp(kOtherCarSpread * car.radius / max(texelMeters, 1e-6), 1.0, kOtherCarMaxStep));
+    const float tolerance = kOtherCarDepth * car.radius;
+    const int2 last = int2(g_push.image.xy) - 1;
+    float total = 0.0;
+    float3 sum = float3(0.0, 0.0, 0.0);
+    [unroll]
+    for (int k = 0; k < 9; ++k)
+    {
+        const int2 tapOffset = int2(k % 3, k / 3) - 1;
+        const int2 at = clamp(middle + tapOffset * step, int2(0, 0), last);
+        const float4 h = history.Load(int3(at, 0));
+        const float tent = (tapOffset.x == 0 ? 1.0 : 0.5) * (tapOffset.y == 0 ? 1.0 : 0.5);
+        const float w = tent * MatchWeight(h.a, car.centre.z, tolerance);
+        total += w;
+        sum += w * h.rgb;
+    }
+    if (total > 1e-6)
+    {
+        colour = sum / total;
+    }
+    return total * 0.25;
+}
+
 // One ray of the cone. False: a miss (nothing of the car in reach, a hit beyond the weight's fade, or the panel the ray left). True: `fade`
 // the fade of its distance, `visible` how much of its hit the history shows (0..1), `seen` the colour the history shows there, `hitDistance`
-// the distance along the ray (for the aux image).
+// the distance along the ray (for the aux image). `other` is set for a hit on another car, and `hidden` is then the colour of the part the history
+// does not show (the car's, darkened); for a hit on the player's own car the pass makes it from the pixel's own surface.
 bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float reach, uint originInstance, uint originPrimitive,
-              float3 originNormal, out float fade, out float visible, out float3 seen, out float hitDistance)
+              float3 originNormal, out float fade, out float visible, out float3 seen, out float hitDistance, out bool other, out float3 hidden)
 {
     fade = 0.0;
     visible = 0.0;
     seen = float3(0.0, 0.0, 0.0);
     hitDistance = 0.0;
+    other = false;
+    hidden = float3(0.0, 0.0, 0.0);
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;
@@ -231,8 +287,31 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     const float3 hit = origin + direction * distance;
     const float hitNv = usable ? abs(dot(hitNormal, normalize(hit))) : 1.0;
     const float coverage = VisibleAt(history, hit, hitNv, seen);
+    const float seenShare = saturate(coverage / kVisibleFullShare);
+    const CarRtInstance hitInstance = CarRtLoadInstance(instance);
+    if ((CarRtInstanceMask(hitInstance) & CAR_RT_MASK_OTHERS) != 0u)
+    {
+        // Another car: the part the history shows has its colour; the rest has the car's.
+        other = true;
+        if (seenShare < 1.0)
+        {
+            const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);
+            if (known < kOtherCarMinShare)
+            {
+                if (seenShare <= 0.0)
+                {
+                    return false;  // hidden, and the car's colour is not known: nothing (the environment stays)
+                }
+                hidden = seen * g_push.tune.x;  // partly shown: the shown colour stands in for the rest
+            }
+            else
+            {
+                hidden *= g_push.tune.x;
+            }
+        }
+    }
     fade = faded;
-    visible = saturate(coverage / kVisibleFullShare);
+    visible = seenShare;
     hitDistance = distance;
     return true;
 }
@@ -302,6 +381,8 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     float visible[4] = {0.0, 0.0, 0.0, 0.0};
     float3 seen[4] = {float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0)};
     float distances[4] = {0.0, 0.0, 0.0, 0.0};
+    float3 hidden[4] = {float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0)};
+    bool other[4] = {false, false, false, false};  // the ray hit another car: `hidden` is its colour for the part the history does not show
     bool found = false;
     [unroll]
     for (int slot = 0; slot < 4; ++slot)
@@ -320,12 +401,16 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
         float v = 0.0;
         float3 c = float3(0.0, 0.0, 0.0);
         float d = 0.0;
-        if (TraceRay(history, origin, direction2, reach, primaryInstance, primaryPrimitive, normal, f, v, c, d))
+        bool o = false;
+        float3 hc = float3(0.0, 0.0, 0.0);
+        if (TraceRay(history, origin, direction2, reach, primaryInstance, primaryPrimitive, normal, f, v, c, d, o, hc))
         {
             fade[ray] = f;
             visible[ray] = v;
             seen[ray] = c;
             distances[ray] = d;
+            other[ray] = o;
+            hidden[ray] = hc;
             found = true;
         }
     }
@@ -339,7 +424,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     [unroll]
     for (int k = 0; k < 4; ++k)
     {
-        needShade = needShade || (fade[k] > 0.0 && visible[k] < 1.0);
+        needShade = needShade || (fade[k] > 0.0 && visible[k] < 1.0 && !other[k]);
     }
     float3 shade = float3(0.0, 0.0, 0.0);
     [branch]
@@ -354,9 +439,10 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     for (int j = 0; j < 4; ++j)
     {
         const float w = fade[j] * (g_push.tune.y + (1.0 - g_push.tune.y) * visible[j]);
+        const float3 standIn = other[j] ? hidden[j] : shade;  // what a part the history does not show looks like
         weightSum += w;
         visibleSum += w * visible[j];
-        colourSum += w * (shade + (seen[j] - shade) * visible[j]);
+        colourSum += w * (standIn + (seen[j] - standIn) * visible[j]);
     }
     const float weight = min(weightSum / rays, 1.0);
     if (weight < 1.0 / 512.0)
