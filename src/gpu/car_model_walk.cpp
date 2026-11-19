@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <unordered_set>
 #include <utility>
 
@@ -40,10 +41,12 @@ REXCVAR_DEFINE_INT32(
 namespace mcla::gpu::car_model_walk {
 
 namespace nfx = mcla::native_gfx;
+namespace cw = mcla::gpu::car_model_walk;
 
 namespace {
 
 constexpr const char* kPrefix = "[car model walk]";
+constexpr const char* kProductionPrefix = "[car model rt]";
 
 // The sources a vehicle was found from.
 constexpr uint32_t kFromPlayer = 1;
@@ -75,6 +78,12 @@ constexpr uint8_t kIdleWalks = 4;
 constexpr double kRacerMetres = 3.0;
 // The most draws and geometries a sample lists.
 constexpr uint32_t kSamplesPerCar = 3;
+// Production: the frames between two calibrations of the pose once it is decided, a window of pairs after which the calibration starts over, and the log's pace.
+constexpr uint64_t kCalibrateEveryFrames = 16;
+constexpr uint32_t kCalibrationWindowPairs = 3000;
+constexpr uint64_t kProofLogFrames = 600;
+// Production: a cached walk of a vehicle nobody asked for in this many frames is given up.
+constexpr uint64_t kCacheKeepFrames = 600;
 
 const char* const kPartNames[kPartSlots] = {
     "conv_top", "conv_topup", "hood", "bumper_r", "trunk_swap", "intercooler", "bumper_f", "fenders", "skirts", "spoiler", "spoiler_b", "headlight", "taillight",
@@ -212,6 +221,27 @@ double Distance(const double a[3], const double b[3]) {
 
 uint32_t Interval() { return uint32_t(std::max<int32_t>(0, REXCVAR_GET(mcla_gpu_car_model_walk))); }
 
+// The mesh source the scene reads triangles with (inside the first vehicle draw's call of a producing frame): a fresh page cache each call, the walk's own reader.
+class Walker::Source final : public MeshSource {
+ public:
+  car_model_rt::MeshProblem Read(const CarWalk& walk, uint32_t geometry, std::vector<float>* positions, std::vector<uint32_t>* indices,
+                                 car_model_rt::MeshRead* info) const override {
+    GuestReader mem;
+    if (!mem.valid() || geometry >= walk.geometries.size()) {
+      return car_model_rt::MeshProblem::kUnreadable;
+    }
+    mem.Forget();
+    return car_model_rt::ReadGeometryMesh(mem, walk.geometries[geometry], positions, indices, info);
+  }
+};
+
+Walker::Walker() : source_(std::make_unique<Source>()) {}
+Walker::~Walker() = default;
+
+const MeshSource& Walker::mesh_source() const {
+  return *source_;
+}
+
 bool Walker::Wanted() {
   const bool on = Interval() != 0;
   tap::g_enabled.store(on, std::memory_order_relaxed);
@@ -223,6 +253,14 @@ void Walker::StartFrame(uint64_t guest_frame, bool collecting) {
   frame_ = guest_frame;
   active_ = n != 0 && collecting && guest_frame % n == 0;
   walked_ = false;
+  // production: what the scene asked for in the frame before
+  production_frame_ = collecting && production_next_.on && production_next_.limits.On() && production_next_.mode != car_model_rt::Mode::kOff;
+  production_now_ = production_frame_ ? production_next_ : Production{};
+  production_next_ = Production{};  // asked for again in every frame it is wanted
+  production_walked_ = false;
+  fresh_ = false;
+  walked_cars_.clear();
+  calibrating_ = production_frame_ && (!calibration_.decided() || guest_frame >= last_calibration_frame_ + kCalibrateEveryFrames);
   draws_.clear();
   draws_proxy_ = draws_no_key_ = draws_dropped_ = 0;
   found_.clear();
@@ -230,8 +268,11 @@ void Walker::StartFrame(uint64_t guest_frame, bool collecting) {
   racers_.clear();
   list_ = ListScan{};
   note_.clear();
-  if (active_ && draws_.capacity() < 1024) {
+  if ((active_ || production_frame_) && draws_.capacity() < 1024) {
     draws_.reserve(1024);
+  }
+  if (!production_frame_ && !cache_.empty() && guest_frame % 600 == 0) {
+    cache_.clear();  // nobody asked for a while: the cached walks go
   }
 }
 
@@ -239,6 +280,11 @@ void Walker::Shutdown() {
   tap::g_enabled.store(false, std::memory_order_relaxed);
   active_ = false;
   walked_ = false;
+  production_frame_ = false;
+  production_walked_ = false;
+  production_next_ = Production{};
+  walked_cars_.clear();
+  cache_.clear();
   draws_.clear();
   cars_.clear();
   found_.clear();
@@ -248,7 +294,7 @@ void Walker::Shutdown() {
 // the draws
 // ---------------------------------------------------------------------------
 
-void Walker::NoteDraw(const DrawView& view, const XenosState& state, uint32_t id) {
+void Walker::NoteDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world) {
   const DrawRecord& r = view.record();
   // The wheel proxies (a stencil-only draw per wheel with an ID of its own) are no model's geometry.
   uint32_t colour_mask = 0;
@@ -290,17 +336,24 @@ void Walker::NoteDraw(const DrawView& view, const XenosState& state, uint32_t id
   key.index_address = r.index_address;
   key.count = r.count;
   key.start = r.start;
+  if (world) {
+    key.has_world = true;
+    key.world = *world;
+  }
   draws_.push_back(key);
 }
 
-void Walker::OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id) {
-  if (!active_) {
+void Walker::OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world) {
+  if (!active_ && !production_frame_) {
     return;
   }
-  if (!walked_) {
+  if (active_ && !walked_) {
     RunWalk();  // the first vehicle draw of the frame: the guest is held back inside this call
   }
-  NoteDraw(view, state, id);
+  if (production_frame_ && !production_walked_) {
+    RunProduction();
+  }
+  NoteDraw(view, state, id, world);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,6 +482,357 @@ void Walker::RunWalk() {
 }
 
 // ---------------------------------------------------------------------------
+// production: the cars of the ray traced scene
+// ---------------------------------------------------------------------------
+
+namespace {
+
+namespace crt = car_model_rt;
+namespace tp = temporal;
+
+uint64_t HashBytes(const uint8_t* p, size_t n) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (size_t i = 0; i < n; ++i) {
+    h = (h ^ p[i]) * 0x100000001B3ull;
+  }
+  return h;
+}
+
+// Whether a matrix read from the guest is a car's pose (car_rt_memory_rules.h UsableRows).
+bool UsableMatrix(const tp::Mat4& m) {
+  double rows[4][3];
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      rows[r][c] = m.m[r][c];
+    }
+  }
+  return car_rt_memory::UsableRows(rows);
+}
+
+}  // namespace
+
+void Walker::RunProduction() {
+  production_walked_ = true;
+  const auto started = std::chrono::steady_clock::now();
+  GuestReader mem;
+  if (!mem.valid()) {
+    return;
+  }
+  mem.Forget();
+  if (!options_read_) {
+    ReadOptions(mem, &options_);
+    options_read_ = true;
+  }
+  const Production& prod = production_now_;
+  const double scan = car_rt_memory::ScanRadius(prod.limits.radius);
+
+  // the candidates: the player's vehicle and the renderer's list of vehicles
+  std::vector<uint32_t> vehicles;
+  const auto add = [&](uint32_t vehicle) {
+    if (std::find(vehicles.begin(), vehicles.end(), vehicle) == vehicles.end()) {
+      vehicles.push_back(vehicle);
+    }
+  };
+  uint32_t player = 0;
+  mem.Word(car_mesh::kPlayerVehicleGlobal, &player);
+  player_vehicle_ = PlausibleObject(player) ? player : 0;
+  if (player_vehicle_ != 0) {
+    add(player_vehicle_);
+  }
+  uint32_t renderer = 0, client = 0;
+  if (mem.Word(kRendererGlobal, &renderer) && PlausibleObject(renderer) && mem.Word(renderer + kRendererClients + 4u * kVehicleClientSlot, &client) && PlausibleObject(client)) {
+    uint32_t type = 0, types = 0, instances = 0;
+    mem.Word(client + kClientTypes, &type);
+    for (; PlausibleObject(type) && types < kMaxTypes; mem.Word(type + kTypeNext, &type)) {
+      ++types;
+      uint32_t instance = 0;
+      mem.Word(type + kTypeInstances, &instance);
+      for (; PlausibleObject(instance) && instances < kMaxInstances; mem.Word(instance + kInstanceNext, &instance)) {
+        ++instances;
+        add(instance);
+      }
+    }
+  }
+  car_mesh::PlayerVehicle player_state;
+  car_mesh::ReadPlayerVehicle(&player_state, false);
+  player_position_known_ = player_state.valid;
+  for (int c = 0; c < 3; ++c) {
+    player_position_[c] = player_state.position[c];
+  }
+  if (!player_state.valid) {
+    return;  // no player: nothing is ranked (the scene has no top level either)
+  }
+
+  const crt::Pose pose = this->pose();
+  const uint32_t per_car = std::max<uint32_t>(prod.limits.instances / std::max<uint32_t>(prod.limits.cars, 1u), 16u);
+  const uint32_t min_indices = std::max<uint32_t>(prod.limits.min_indices, crt::kMinPartIndices);
+  std::vector<crt::CarInfo> infos;
+  std::unordered_set<uint32_t> seen;
+  for (const uint32_t vehicle : vehicles) {
+    mem.Forget();
+    uint32_t entity = 0, info = 0, model_set = 0, custom = 0, w = 0;
+    if (!mem.Word(vehicle + cw::kVehicleEntity, &entity) || !PlausibleObject(entity) || !mem.Word(entity + cw::kEntityModelInfo, &info) || !PlausibleObject(info) ||
+        !mem.Word(info + cw::kInfoModelSet, &model_set) || !PlausibleObject(model_set)) {
+      continue;
+    }
+    mem.Word(entity + cw::kEntityCustom, &custom);
+    tp::Mat4 entity_matrix;
+    const bool has_matrix = cw::ReadMatrix(mem, entity + cw::kEntityMatrix, &entity_matrix);
+    if (!has_matrix || !UsableMatrix(entity_matrix)) {
+      continue;
+    }
+    WalkedCar car;
+    car.vehicle = vehicle;
+    car.is_player = vehicle == player_vehicle_;
+    for (int c = 0; c < 3; ++c) {
+      car.position[c] = entity_matrix.m[3][c];
+    }
+    car.distance = Distance(car.position, player_position_);
+    if (!car.is_player && car.distance > scan) {
+      continue;
+    }
+    if (mem.Half(vehicle + cw::kVehicleVisible, &w)) {
+      car.visible = w != 0;
+    }
+    // the lod floor: the cars the main view shows are walked at the game's own lod (their geometry is then the draws' and the placement can be checked against them),
+    // the others at the reflection's
+    car.min_lod = (car.is_player || car.visible) ? 0 : 1;
+
+    // the signature of the structure
+    crt::WalkSignature sig;
+    sig.model_set = model_set;
+    sig.min_lod = car.min_lod;
+    uint32_t v = 0;
+    sig.body_lod = mem.Word(vehicle + cw::kVehicleBodyLod, &v) ? int32_t(v) : -3;
+    sig.part_lod = mem.Word(vehicle + cw::kVehiclePartLod, &v) ? int32_t(v) : -3;
+    if (const uint8_t* c = cw::Plausible(custom) ? mem.Window(custom + cw::kCustomVariants, cw::kPartSlots + 4) : nullptr) {
+      sig.variants = HashBytes(c, cw::kPartSlots + 4);
+    }
+    uint32_t b = 0;
+    for (uint32_t k = 0; k < 7; ++k) {
+      static const uint32_t offsets[7] = {cw::kVehicleGhost, cw::kVehicleLoop44A, cw::kVehicleLoop44B, cw::kVehicleBumperFront, cw::kVehicleBumperRear, 0, 0};
+      if (offsets[k] != 0 && mem.Byte(vehicle + offsets[k], &b) && b != 0) {
+        sig.flags |= 1u << k;
+      }
+    }
+    sig.walked_frame = frame_;
+
+    Cached& cached = cache_[vehicle];
+    if (!cached.walk || !crt::WalkStillGood(cached.signature, sig, frame_)) {
+      cw::Options options = options_;
+      options.production = true;
+      options.validate = false;
+      options.min_lod = car.min_lod;
+      auto walk = std::make_shared<cw::CarWalk>();
+      cw::WalkVehicle(mem, vehicle, options, walk.get());
+      cached.walk = std::move(walk);
+      cached.signature = sig;
+      cached.picks = cached.walk->ok ? crt::PickGeometries(*cached.walk, min_indices, (car.is_player || car.visible) ? 0u : per_car) : std::vector<uint32_t>();
+    }
+    cached.last_frame = frame_;
+    const cw::CarWalk& walk = *cached.walk;
+    if (!walk.ok) {
+      continue;
+    }
+    car.walk = cached.walk;
+    car.paint = crt::PaintColourOf(walk.paint[0]);
+
+    // this frame's placements (a car the camera sees only when the calibration wants them: they are not placed)
+    const bool want_parts = !car.visible && !car.is_player;
+    if (want_parts || calibrating_) {
+      tp::Mat4 entity_for_pose = entity_matrix;
+      std::unordered_map<uint64_t, uint32_t> pose_index;  // (entry, bone) -> the place in car.poses
+      std::vector<crt::PoseSet> poses;
+      if (calibrating_) {
+        car.pose_of_geometry.assign(walk.geometries.size(), -1);
+      }
+      for (const uint32_t g : cached.picks) {
+        const cw::Geometry& geometry = walk.geometries[g];
+        if (geometry.entry_index >= walk.parts.size()) {
+          continue;
+        }
+        const uint64_t key = (uint64_t(geometry.entry_index) << 32) | geometry.bone;
+        auto found = pose_index.find(key);
+        if (found == pose_index.end()) {
+          const crt::BoneMatrices bone = crt::ReadBoneMatrices(mem, walk.parts[geometry.entry_index], geometry.bone);
+          poses.push_back(crt::ComposePoses(bone, &entity_for_pose));
+          found = pose_index.emplace(key, uint32_t(poses.size() - 1)).first;
+        }
+        const crt::PoseSet& set = poses[found->second];
+        if (calibrating_) {
+          car.pose_of_geometry[g] = int32_t(found->second);
+        }
+        if (want_parts && set.ok[size_t(pose)] && crt::UsablePlacement(set.m[size_t(pose)])) {
+          crt::Part part;
+          part.geometry = g;
+          part.key = crt::GeometryKey(geometry);
+          part.indices = geometry.index_count;
+          part.triangles = geometry.index_count / 3;
+          part.world = set.m[size_t(pose)];
+          part.part = geometry.part;
+          car.parts.push_back(part);
+        }
+      }
+      if (calibrating_) {
+        car.poses = std::move(poses);
+      }
+    }
+    seen.insert(vehicle);
+    walked_cars_.push_back(std::move(car));
+  }
+  // the cars to stage: near, not seen by the main view, within the class's count and a spare
+  for (const WalkedCar& car : walked_cars_) {
+    crt::CarInfo info;
+    info.vehicle = car.vehicle;
+    info.is_player = car.is_player;
+    info.visible = car.visible;
+    info.distance = car.distance;
+    info.parts = uint32_t(car.parts.size());
+    for (int c = 0; c < 3; ++c) {
+      info.position[c] = car.position[c];
+    }
+    infos.push_back(info);
+  }
+  for (const uint32_t i : crt::ChooseStaged(infos, prod.limits)) {
+    walked_cars_[i].staging = true;
+  }
+  for (auto it = cache_.begin(); it != cache_.end();) {
+    if (frame_ > it->second.last_frame + kCacheKeepFrames) {
+      it = cache_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  fresh_ = true;
+  walk_microseconds_ = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
+}
+
+// The history trigger: which walked cars the frame draws, the calibration of the pose, and the placement of the chosen pose against the draws in the view space.
+ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
+  namespace crt = car_model_rt;
+  ProofReport report;
+  if (!production_frame_ || !production_walked_) {
+    return report;
+  }
+  std::vector<const CarWalk*> usable;
+  std::vector<uint32_t> index_of;  // usable index -> walked_cars_ index
+  for (uint32_t i = 0; i < walked_cars_.size(); ++i) {
+    if (walked_cars_[i].walk && walked_cars_[i].walk->ok) {
+      usable.push_back(walked_cars_[i].walk.get());
+      index_of.push_back(i);
+    }
+  }
+  report.walked_cars = uint32_t(walked_cars_.size());
+  if (usable.empty()) {
+    return report;
+  }
+  // Which car each draw is of (car_model_rt_rules.h AssignDraws: the cars of one model name the same buffers, so the buffers alone cannot say; the draw's stencil ID
+  // and its origin do)
+  std::vector<std::array<double, 3>> positions;
+  for (const uint32_t i : index_of) {
+    positions.push_back({walked_cars_[i].position[0], walked_cars_[i].position[1], walked_cars_[i].position[2]});
+  }
+  const crt::Assignment assigned = crt::AssignDraws(usable, positions, draws_);
+  for (uint32_t u = 0; u < usable.size(); ++u) {
+    WalkedCar& car = walked_cars_[index_of[u]];
+    car.drawn = assigned.drawn[u] != 0;
+    report.drawn_cars += car.drawn ? 1u : 0u;
+  }
+
+  // the pairs: a matched (geometry, draw) whose placements were made this frame, and the draw's own matrix known
+  struct Pair {
+    uint32_t car;       // walked_cars_ index
+    int32_t pose;       // the place in its poses
+    uint32_t draw;
+    uint32_t geometry;  // into the car's walk
+  };
+  std::vector<Pair> pairs;
+  if (calibrating_) {
+    for (uint32_t d = 0; d < draws_.size(); ++d) {
+      const crt::DrawOwner& owner = assigned.draws[d];
+      if (owner.car < 0 || !draws_[d].has_world) {
+        continue;
+      }
+      const uint32_t car_index = index_of[size_t(owner.car)];
+      const WalkedCar& car = walked_cars_[car_index];
+      if (size_t(owner.geometry) >= car.pose_of_geometry.size() || car.pose_of_geometry[size_t(owner.geometry)] < 0) {
+        continue;
+      }
+      pairs.push_back({car_index, car.pose_of_geometry[size_t(owner.geometry)], d, uint32_t(owner.geometry)});
+    }
+    // The first pairs of the first calibrating frames, raw (what the log needs to find the right matrices if no hypothesis fits): the draw's origin and first row
+    // against each hypothesis'.
+    if (pair_samples_logged_ < 12) {
+      const auto fmt = [](const tp::Mat4& m) { return std::format("o({:.2f}, {:.2f}, {:.2f}) r0({:.3f}, {:.3f}, {:.3f})", m.m[3][0], m.m[3][1], m.m[3][2], m.m[0][0], m.m[0][1], m.m[0][2]); };
+      uint32_t listed = 0;
+      for (const Pair& pair : pairs) {
+        if (listed >= 4 || pair_samples_logged_ >= 12) {
+          break;
+        }
+        ++listed;
+        ++pair_samples_logged_;
+        const WalkedCar& car = walked_cars_[pair.car];
+        const cw::Geometry& geometry = car.walk->geometries[pair.geometry];
+        const crt::PoseSet& set = car.poses[size_t(pair.pose)];
+        std::string hypotheses;
+        for (uint32_t i = 0; i < crt::kPoseCount; ++i) {
+          hypotheses += std::format("{}[{}] {}", hypotheses.empty() ? "" : "; ", i, set.ok[i] ? fmt(set.m[i]) : std::string("-"));
+        }
+        REXLOG_INFO("{} frame {}: pair sample: vehicle {:#010x}{} part {} bone {}: the draw {} | {} | the entity {}", kProductionPrefix, frame_, car.vehicle, car.is_player ? " (the player's)" : "",
+                    geometry.part, geometry.bone, fmt(draws_[pair.draw].world), hypotheses, car.walk->has_entity_matrix ? fmt(car.walk->entity_matrix) : std::string("not read"));
+      }
+    }
+    for (const Pair& pair : pairs) {
+      calibration_.Add(walked_cars_[pair.car].poses[size_t(pair.pose)], draws_[pair.draw].world);
+    }
+    const bool was_decided = calibration_.decided();
+    const crt::Pose was = calibration_.chosen();
+    const bool decided = calibration_.Decide();
+    last_calibration_frame_ = frame_;
+    if (decided && (!was_decided || was != calibration_.chosen())) {
+      REXLOG_INFO("{} frame {}: the cars' part matrices are placed by '{}' ({}; {} pairs of a walked geometry and the draw of it compared). All hypotheses: {}", kProductionPrefix,
+                  frame_, crt::PoseName(calibration_.chosen()), calibration_.fits() ? "it fits the draws" : "NO HYPOTHESIS FITS THE DRAWS: the placements are not right", calibration_.samples(),
+                  calibration_.Describe());
+    }
+    if (calibration_.samples() > kCalibrationWindowPairs) {
+      REXLOG_INFO("{} frame {}: calibration window over: {}", kProductionPrefix, frame_, calibration_.Describe());
+      calibration_.NewWindow();
+    }
+  }
+
+  // THE PROOF in the top level's own space: the chosen pose's instance of each matched geometry against the draw's instance, both through the frame's view
+  const crt::Pose chosen = pose();
+  double sum = 0.0;
+  std::unordered_set<uint32_t> cars_with_pairs;
+  for (const Pair& pair : pairs) {
+    const crt::PoseSet& set = walked_cars_[pair.car].poses[size_t(pair.pose)];
+    crt::PlacementError e;
+    if (!set.ok[size_t(chosen)] || !crt::ViewError(set.m[size_t(chosen)], draws_[pair.draw].world, view, flip_z, &e)) {
+      continue;
+    }
+    ++report.pairs;
+    sum += e.translation;
+    report.worst = std::max(report.worst, e.translation);
+    report.basis_worst = std::max(report.basis_worst, e.basis);
+    cars_with_pairs.insert(pair.car);
+    report.player_included = report.player_included || walked_cars_[pair.car].is_player;
+  }
+  report.ran = report.pairs != 0;
+  report.cars = uint32_t(cars_with_pairs.size());
+  report.mean = report.pairs != 0 ? sum / double(report.pairs) : 0.0;
+  proof_pairs_total_ += report.pairs;
+  if (report.ran && (proof_logs_ < 3 || frame_ >= proof_log_frame_ + kProofLogFrames)) {
+    ++proof_logs_;
+    proof_log_frame_ = frame_;
+    REXLOG_INFO("{} frame {}: PLACEMENT PROOF (a car the camera draws: the walk's placement of each geometry, through the frame's view, against the instance of the draw "
+                "of it): {} geometries of {} cars{}, '{}': mean error {:.4f} m, worst {:.4f} m (basis {:.4f}) in the top level's view space",
+                kProductionPrefix, frame_, report.pairs, report.cars, report.player_included ? " (the player's among them)" : "", crt::PoseName(chosen), report.mean, report.worst,
+                report.basis_worst);
+  }
+  return report;
+}
+
+// ---------------------------------------------------------------------------
 // the comparison and the log
 // ---------------------------------------------------------------------------
 
@@ -510,12 +914,14 @@ void Walker::FinishFrame() {
 
     REXLOG_INFO("{} frame {}: RESULT vehicle={:#010x} kind={} drawn={} geoms={} in_use={} in_use_tris={} matched={} matched_in_use={} pct={:.1f} matched_not_in_use={} "
                 "walked_only={} drawn_only={} vertex_only={} draws={} resident={} validated={} entries_present={} loaded={} valid={} in_use_invalid={} exact={} idxobj={} idxaddr={} "
-                "cnt={} stride={} posoff={} hdr_data={} lodmatch={}/{}/{} lodwalk={}/{}/{} lods={}/{}/{}",
+                "cnt={} stride={} posoff={} hdr_data={} lodmatch={}/{}/{} lodwalk={}/{}/{} lods={}/{}/{} loop={} flags={}{}{}{}{}{}{} visible={}",
                 kPrefix, frame_, car.vehicle, kind, match.drawn ? 1 : 0, car.all.geometries, car.in_use.geometries, car.in_use.triangles, match.matched,
                 match.matched_in_use, percent, match.matched_not_in_use, match.walked_only_in_use, match.drawn_only, match.vertex_only, match.draws, car.resident_in_use,
                 car.validated_in_use, car.entries_present, car.entries_loaded, car.entries_valid, in_use_invalid, match.exact_words, match.index_object_equal,
                 match.index_address_equal, match.index_count_equal, match.stride_equal, match.position_offset_equal, header_data, match.matched_by_lod[0], match.matched_by_lod[1],
-                match.matched_by_lod[2], match.walked_by_lod[0], match.walked_by_lod[1], match.walked_by_lod[2], car.body_lod, car.part_lod, car.forced_lod);
+                match.matched_by_lod[2], match.walked_by_lod[0], match.walked_by_lod[1], match.walked_by_lod[2], car.body_lod, car.part_lod, car.forced_lod, car.loop_parts,
+                car.flags.ghost ? "G" : "-", car.flags.loop44_a ? "A" : "-", car.flags.loop44_b ? "B" : "-", car.flags.bumper_front_off ? "F" : "-", car.flags.bumper_rear_off ? "R" : "-",
+                car.flags.sub_bumpers ? "S" : "-", car.flags.intercooler ? "I" : "-", car.visible);
 
     REXLOG_INFO("{} frame {}:   car {:#010x} ({}, {}) at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m from the player{}: {}; seen by {} (tap phases {}); visible +116 = {}, enabled {}, "
                 "lod body {} parts {} forced {} (lod distances {:.0f} / {:.0f} m), draw slot {}; entity state {}, body state {}, lod 0 {} (info {}); "

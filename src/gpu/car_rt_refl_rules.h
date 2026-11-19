@@ -409,17 +409,20 @@ struct OtherCarColour {
   bool known() const { return share >= kOtherCarMinShare; }
 };
 // The colour of a car placed from memory (a record with a negative radius): known in full, a fixed grey.
-inline OtherCarColour RememberedOtherCarColour() {
+inline OtherCarColour RememberedOtherCarColour(const float* paint = nullptr) {
   OtherCarColour out;
   out.share = 1.0f;
-  out.rgb[0] = out.rgb[1] = out.rgb[2] = kRememberedCarColour;
+  for (int c = 0; c < 3; ++c) {
+    out.rgb[c] = paint ? paint[c] : kRememberedCarColour;  // the car's paint where the record has one (CarPaintRow), else the grey
+  }
   return out;
 }
 // `taps` as SurfaceMean's (tap k at the offset (k % 3 - 1, k / 3 - 1) times the step; the middle tap is the centre's own place), `centre_z` the
-// centre's view distance and `radius` the car's (a car placed from memory has a negative one: RememberedOtherCarColour, the taps are not looked at).
-inline OtherCarColour FindOtherCarColour(const SurfaceTap taps[9], float centre_z, float radius) {
+// centre's view distance and `radius` the car's (a car the camera does not draw has a negative one: RememberedOtherCarColour, the taps are not looked at;
+// `paint`: its paint colour from the record's second row, null where the flag is clear).
+inline OtherCarColour FindOtherCarColour(const SurfaceTap taps[9], float centre_z, float radius, const float* paint = nullptr) {
   if (radius < 0.0f) {
-    return RememberedOtherCarColour();
+    return RememberedOtherCarColour(paint);
   }
   OtherCarColour out;
   float sum[3] = {};

@@ -203,6 +203,15 @@ void CarFrame::StartFrame() {
   counts_ = Counts{};
   log_ = REXCVAR_GET(mcla_gpu_car_frame_log);
   ctx_ = Context{};
+  // The model walk's production for this frame: the other cars' limits of this frame (the scene asked in the frame before) and the mode it asked for.
+  {
+    car_model_walk::Production production;
+    production.on = others_on_ && model_mode_next_ != car_model_rt::Mode::kOff;
+    production.limits = other_limits_;
+    production.mode = model_mode_next_;
+    walk_.SetProduction(production);
+    model_mode_next_ = car_model_rt::Mode::kOff;
+  }
   walk_.StartFrame(guest_frame_, collecting_);
 }
 
@@ -311,7 +320,26 @@ void CarFrame::OnMainDraw(const MainDraw& d) {
 
 void CarFrame::OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id) {
   if (walk_.active()) {
-    walk_.OnVehicleDraw(*d.view, *d.state, id);  // the debug model walk: the first call of a walk frame walks the cars, every call notes the draw's buffers
+    // The draw's own model-to-world, for the check of the walk's placements (a rigid draw only: the recipe the draw path uses).
+    temporal::Mat4 world;
+    bool have_world = false;
+    if (walk_.producing() && d.banks) {
+      const RecipeEntry& recipe = RecipeOf(d);
+      if (recipe.choice.recipe != car_dump::Recipe::kSkinned) {
+        const car_frame_rules::ModelDecode model = car_frame_rules::DecodeModel(d.banks->vs.data(), recipe.choice.recipe);
+        if (model.finite) {
+          world = model.model;
+          have_world = true;
+        }
+      }
+    }
+    // the model walk: the first call of a walk frame walks the cars, every call notes the draw's buffers
+    walk_.OnVehicleDraw(*d.view, *d.state, id, have_world ? &world : nullptr);
+    if (walk_.TakeFresh()) {
+      for (car_frame::Listener* listener : listeners_) {
+        listener->OnWalkedCars(walk_.walked(), walk_.mesh_source());  // inside the draw's call: the guest is held back
+      }
+    }
   }
   HandleVehicleDraw(d, order, id);
   ctx_ = Context{};

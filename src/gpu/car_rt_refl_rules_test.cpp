@@ -1072,6 +1072,12 @@ int main() {
               Near(remembered.rgb[1], rt::kRememberedCarColour, 1e-6) && Near(remembered.rgb[2], rt::kRememberedCarColour, 1e-6),
           "a car placed from memory (negative radius): the fixed grey, known in full, the taps not looked at");
     Check(rt::kRememberedCarColour > 0.0f && rt::kRememberedCarColour < 1.0f, "the grey is a colour");
+    // the same car with its paint known (the record's second row): its hidden hits take the paint, the grey is the fallback
+    const float paint[3] = {0.063f, 0.349f, 0.071f};
+    const rt::OtherCarColour painted = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint);
+    Check(painted.known() && Near(painted.share, 1.0, 1e-6) && Near(painted.rgb[0], 0.063, 1e-6) && Near(painted.rgb[1], 0.349, 1e-6) && Near(painted.rgb[2], 0.071, 1e-6),
+          "a car the camera does not draw, with its paint known: the paint, known in full");
+    Check(rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint).rgb[0] != 0.063f, "a car the camera draws keeps the colour of the history, whatever its paint row says");
     // The step: kOtherCarSpread radii in texels, from one to the most.
     Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
               Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),

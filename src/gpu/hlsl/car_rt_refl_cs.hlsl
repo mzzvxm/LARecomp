@@ -105,7 +105,7 @@ static const float kOtherCarDepth = 1.2;     // radii: the depth window around i
 static const float kOtherCarMaxStep = 24.0;  // texels between those taps, at most
 static const float kOtherCarEdge = 0.97;     // its centre is moved into this share of the picture
 static const float kOtherCarMinShare = 0.15; // the share of the taps' weights under which the car has no colour
-static const float kRememberedCarColour = 0.45; // the colour a car placed from memory shows (car_rt_refl_rules.h kRememberedCarColour); the shade makes it darker still
+static const float kRememberedCarColour = 0.45; // the colour a car placed from memory shows when its paint is not known (car_rt_refl_rules.h kRememberedCarColour); the shade makes it darker still
 static const float kTwoPi = 6.283185307179586;
 // Another car's chrome (car_chrome_rt_rules.h: the same numbers; car_chrome_rules.h for the march's)
 static const float kChromeReflectReach = 0.25;   // m: the mirror ray (the march's reflection probe)
@@ -243,10 +243,10 @@ float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
     colour = float3(0.0, 0.0, 0.0);
     if (car.radius < 0.0)
     {
-        // A car placed from memory (car_rt_memory_rules.h: it was drawn earlier, the camera does not see it now): the history holds nothing of it, and nothing of its
-        // colour is known on this side, so it is shown in a fixed mid grey (made darker by the shade like any hidden part). Its shape, its place and its
-        // occlusion are right; its paint is not.
-        colour = float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
+        // A car the camera does not draw (placed from memory, car_rt_memory_rules.h, or built from its own model data, car_model_rt_rules.h): the history holds
+        // nothing of it. Its colour is its PAINT where the game's customisation record gave it (the car's second row: region 0's colour A), else a fixed mid
+        // grey; either is made darker by the shade like any hidden part.
+        colour = car.has_paint ? car.paint : float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
         return 1.0;
     }
     if (!(car.radius > 0.0) || !(car.centre.z > kMinDepth))

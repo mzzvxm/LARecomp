@@ -824,7 +824,7 @@ void TestInstanceList() {
   uint32_t negative = 0, positive = 0;
   for (uint32_t k = 0; k < list.stats.cars; ++k) {
     ci::CarRow row;
-    std::memcpy(&row, &list.rows[car_rows + k], sizeof(row));
+    std::memcpy(&row, &list.rows[car_rows + ci::kCarRows * k], sizeof(row));  // a car's record is two rows (CarRow, then CarPaintRow)
     negative += row.radius < 0.0f ? 1u : 0u;
     positive += row.radius > 0.0f ? 1u : 0u;
     Check(Near(std::fabs(row.radius), ci::kCarRadius, 1e-6), "the radius's size is the car's radius");
@@ -833,7 +833,7 @@ void TestInstanceList() {
   // An instance names its car's row (the remembered ones too): the draws' `draw` fields point into the cars' rows.
   bool rows_ok = true;
   for (uint32_t i = 0; i < list.items.size(); ++i) {
-    rows_ok = rows_ok && list.rows[i].draw >= car_rows && list.rows[i].draw < car_rows + list.stats.cars;
+    rows_ok = rows_ok && list.rows[i].draw >= car_rows && list.rows[i].draw < car_rows + ci::kCarRows * list.stats.cars && (list.rows[i].draw - car_rows) % ci::kCarRows == 0;
   }
   Check(rows_ok, "every instance names a car's row");
   // The boxes: one a car with an instance.

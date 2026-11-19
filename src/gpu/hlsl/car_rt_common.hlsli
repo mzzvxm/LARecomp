@@ -52,18 +52,24 @@ struct CarRtInstance {
   uint draw;
 };
 
-// The record of another car (car_rt_instances_rules.h CarRow), in the row an instance of that car names in its w: the car's body centre in the
-// frame's view space and its radius in metres (0: no centre is known: the car has no colour).
+// The record of another car (car_rt_instances_rules.h CarRow and CarPaintRow: TWO rows), in the rows an instance of that car names in its w: the car's body
+// centre in the frame's view space and its radius in metres (0: no centre is known: the car has no colour; negative: a car the camera does not draw, the history
+// holds nothing of it); then the car's paint colour (rgb as float bits) and a flags word (bit 0: the colour is known, from the game's customisation record).
 struct CarRtCar {
   float3 centre;
   float radius;
+  float3 paint;
+  bool has_paint;
 };
 
 CarRtCar CarRtLoadCar(CarRtInstance i) {
   const uint4 row = gCarRtInstances[i.draw];
+  const uint4 paint = gCarRtInstances[i.draw + 1u];
   CarRtCar c;
   c.centre = asfloat(row.xyz);
   c.radius = asfloat(row.w);
+  c.paint = asfloat(paint.xyz);
+  c.has_paint = (paint.w & 1u) != 0u;
   return c;
 }
 

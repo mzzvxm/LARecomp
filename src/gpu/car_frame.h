@@ -176,6 +176,10 @@ class Listener {
   // reader reads its triangles (model space). The car may be given up later in the frame by a nearer one (its draws leave the Frame; a mesh
   // read for it stays in the listener's cache by key).
   virtual void OnOtherCarDraw(const OtherDraw& /*draw*/, const MeshReader& /*reader*/) {}
+  // The cars of the model walk (car_model_walk.h Production, asked for with RequestOtherCars' model mode): in the first vehicle draw's call of a frame that
+  // collects them (the guest is held back), the cars near the player walked from their own model data. The listener stages the meshes of the cars marked
+  // `staging` through `source`.
+  virtual void OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& /*cars*/, const car_model_walk::MeshSource& /*source*/) {}
 };
 
 }  // namespace car_frame
@@ -211,11 +215,15 @@ class CarFrame {
   // collect. Nobody asks: the per-draw call is one flag read.
   void Request() { requested_ = true; }
   // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
-  void RequestOtherCars(const car_rt_instances::Limits& limits) {
+  // `model`: the cars the camera does not draw are also walked from their own model data (car_model_walk.h Production; Mode::kOff: not).
+  void RequestOtherCars(const car_rt_instances::Limits& limits, car_model_rt::Mode model = car_model_rt::Mode::kOff) {
     requested_ = true;
     others_requested_ = limits.On();
     other_limits_next_ = limits;
+    model_mode_next_ = model;
   }
+  // The walker of the cars' model data: the production walk's results (walked(), Resolve at the history trigger) and the debug log.
+  car_model_walk::Walker& walker() { return walk_; }
   // Listeners get OnPlayerDraw while the frames are collected (at most a few; null entries are ignored).
   void AddListener(car_frame::Listener* listener);
 
@@ -370,6 +378,7 @@ class CarFrame {
   car_frame::Frame frame_;
   // The debug walk of the cars' own model data against this frame's draws (car_model_walk.h, mcla_gpu_car_model_walk): reads only, idle while the setting is 0.
   car_model_walk::Walker walk_;
+  car_model_rt::Mode model_mode_next_ = car_model_rt::Mode::kOff;  // asked for in the frame before (RequestOtherCars)
 
   GuestMemory* memory_ = nullptr;
   std::vector<car_frame::Listener*> listeners_;

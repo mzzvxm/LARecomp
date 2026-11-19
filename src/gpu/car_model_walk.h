@@ -28,11 +28,16 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "car_model_rt_rules.h"
 #include "car_model_walk_rules.h"
 #include "car_model_walk_tap.h"
+#include "car_rt_instances_rules.h"
+#include "temporal_math.h"
 
 namespace mcla::gpu {
 
@@ -44,20 +49,99 @@ namespace car_model_walk {
 // mcla_gpu_car_model_walk: 0 = off, N = walk and log every N-th guest frame.
 uint32_t Interval();
 
+// ---------------------------------------------------------------------------
+// PRODUCTION (RT-MODEL-CARS phase 2): the cars of the ray traced scene from the cars' own model data
+// ---------------------------------------------------------------------------
+// The scene asks for it with its other cars (CarFrame::RequestModelCars): in every frame it collects, the FIRST vehicle draw of the frame walks the cars near the
+// player (the player's vehicle and the renderer's list of vehicles, within the class's radius): the structure of a car's walk is cached per vehicle and made
+// again every car_model_rt::kRewalkFrames frames or when the model set, the lods, the part variants or the draw flags change; every frame the part matrices of
+// the geometries the scene takes are read and placed (car_model_rt_rules.h: the five hypotheses, the one the calibration chose against the frame's own draws).
+// The same call hands the scene the cars to stage (WalkedCar::staging) and a MeshSource, which reads a geometry's triangles out of guest memory while the
+// guest is held back. At the history trigger the scene calls Resolve: which walked cars the frame drew (the draw path keeps those), the calibration and the proof.
+struct Production {
+  bool on = false;
+  car_rt_instances::Limits limits;
+  car_model_rt::Mode mode = car_model_rt::Mode::kOff;
+};
+
+// One car of a production walk.
+struct WalkedCar {
+  uint32_t vehicle = 0;
+  bool is_player = false;
+  bool visible = false;       // the game's +116 at the walk: the main view shows it
+  bool drawn = false;         // Resolve: a draw of the frame is one of its geometries
+  bool staging = false;       // the scene is to stage this car's meshes: near, not visible, within the class's count (and a spare)
+  double position[3] = {};    // the entity's world matrix row 3
+  double distance = 0.0;      // from the player's vehicle, metres
+  int32_t min_lod = 1;        // the lod floor it was walked with: 0 for a car the main view shows (to be checked against its draws), 1 for the others
+  car_model_rt::PaintColour paint;
+  std::shared_ptr<const CarWalk> walk;           // the cached structure (shared with the walker's cache)
+  std::vector<car_model_rt::Part> parts;         // the geometries the scene takes, largest first, with their placements of this frame
+  std::vector<car_model_rt::PoseSet> poses;      // for the calibration (only in the frames that calibrate): one per (part entry, bone)
+  std::vector<int32_t> pose_of_geometry;         // by geometry index into `walk->geometries`: the place in `poses`, -1 none
+};
+
+// What a listener may call inside CarFrame's Listener::OnWalkedCars (the guest is held back there): the triangles of a geometry of a walked car.
+class MeshSource {
+ public:
+  virtual ~MeshSource() = default;
+  virtual car_model_rt::MeshProblem Read(const CarWalk& walk, uint32_t geometry, std::vector<float>* positions, std::vector<uint32_t>* indices,
+                                         car_model_rt::MeshRead* info) const = 0;
+};
+
+// What the proof and the calibration found in one Resolve (for the scene's log).
+struct ProofReport {
+  bool ran = false;               // the pairs were compared in this call
+  uint32_t pairs = 0;             // matched (geometry, draw) pairs compared in the view space with the chosen pose
+  double mean = 0.0, worst = 0.0; // metres, in the view space of the top level
+  double basis_worst = 0.0;
+  uint32_t cars = 0;              // walked cars with pairs
+  bool player_included = false;
+  uint32_t walked_cars = 0;       // cars in this frame's walk
+  uint32_t drawn_cars = 0;        // ... that the frame draws
+};
+
 class Walker {
  public:
+  Walker();
+  ~Walker();
   // True while the debug setting is on; also publishes it to the guest-thread tap (call it once a frame: CarFrame::BeginFrame). The frames then collect.
   bool Wanted();
   // A collecting frame starts at guest frame `guest_frame` (CarFrame::StartFrame).
   void StartFrame(uint64_t guest_frame, bool collecting);
-  // This is a walk frame: OnVehicleDraw wants the draws.
-  bool active() const { return active_; }
+  // This is a walk frame (the debug log) or a producing one: OnVehicleDraw wants the draws.
+  bool active() const { return active_ || production_frame_; }
   // A main-view draw that writes the vehicle stencil ID `id`, inside the draw's call.
-  void OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id);
+  // `world`: the draw's own model-to-world where the caller made it (a rigid draw), for the placement check; null otherwise.
+  void OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world = nullptr);
   // The guest present: compare and log.
   void FinishFrame();
   // The renderer shuts down.
   void Shutdown();
+
+  // --- production ---
+  // What the scene wants for the NEXT frame (call it in every frame it is wanted, as CarFrame::RequestOtherCars): StartFrame takes it.
+  void SetProduction(const Production& wanted) { production_next_ = wanted; }
+  // This frame's draws are noted and its first vehicle draw walks the cars for the scene.
+  bool producing() const { return production_frame_; }
+  // True once after the first vehicle draw of a producing frame walked the cars (inside that draw's call): the scene stages the cars' meshes then.
+  bool TakeFresh() {
+    const bool fresh = fresh_;
+    fresh_ = false;
+    return fresh;
+  }
+  const std::vector<WalkedCar>& walked() const { return walked_cars_; }
+  const MeshSource& mesh_source() const;
+  // The history trigger: marks the walked cars the frame draws, calibrates the pose against the draws of the cars the camera sees (the player's included) and
+  // checks the chosen pose in the view space of the top level (`view`, `flip_z` as the scene's instances take them). The scene reads walked() after it.
+  ProofReport Resolve(const temporal::Mat4& view, bool flip_z);
+  // The pose the placements are made with, and how it was chosen.
+  car_model_rt::Pose pose() const { return calibration_.decided() ? calibration_.chosen() : car_model_rt::kDefaultPose; }
+  const car_model_rt::PoseCalibration& calibration() const { return calibration_; }
+  // What the last production walk cost on the render thread (microseconds).
+  double last_walk_microseconds() const { return walk_microseconds_; }
+  // The caps and the mode of this frame (as StartFrame took them).
+  const Production& production() const { return production_now_; }
 
  private:
   struct Found {
@@ -78,11 +162,34 @@ class Walker {
   };
 
   void RunWalk();
-  void NoteDraw(const DrawView& view, const XenosState& state, uint32_t id);
+  void RunProduction();
+  class Source;
+  struct Cached {
+    std::shared_ptr<CarWalk> walk;
+    car_model_rt::WalkSignature signature;
+    std::vector<uint32_t> picks;
+    uint64_t last_frame = 0;
+  };
+  void NoteDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world);
   void LogSamples(const CarWalk& car, const CarMatch& match, uint32_t car_index, const FrameMatch& frame);
 
   bool active_ = false;
   bool walked_ = false;
+  // production
+  Production production_next_, production_now_;
+  bool production_frame_ = false;
+  bool production_walked_ = false;
+  bool fresh_ = false;
+  std::vector<WalkedCar> walked_cars_;
+  std::unordered_map<uint32_t, Cached> cache_;
+  car_model_rt::PoseCalibration calibration_;
+  uint64_t last_calibration_frame_ = 0;
+  bool calibrating_ = false;
+  std::unique_ptr<Source> source_;
+  uint64_t proof_log_frame_ = 0;
+  uint64_t proof_pairs_total_ = 0;
+  uint32_t proof_logs_ = 0;
+  uint32_t pair_samples_logged_ = 0;
   uint64_t frame_ = 0;
   uint32_t walks_logged_ = 0;
   bool options_read_ = false;

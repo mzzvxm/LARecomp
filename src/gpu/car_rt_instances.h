@@ -22,6 +22,7 @@
 #include <functional>
 
 #include "car_frame.h"
+#include "car_model_rt_rules.h"
 #include "car_rt_instances_rules.h"
 
 namespace mcla::gpu {
@@ -35,6 +36,8 @@ class CarRtInstances {
   car_rt_instances::Limits CurrentLimits() const;
   // Whether the cars the camera does not see are placed from memory (mcla_gpu_car_rt_cars_memory, debug, live).
   bool RememberedOn() const;
+  // How the cars built from their own model data are taken (mcla_gpu_car_rt_cars_model, debug, live; car_model_rt_rules.h Mode).
+  car_model_rt::Mode ModelMode() const;
   // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
   double MatchMetres() const;
 

@@ -29,6 +29,16 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_car_rt_cars_model, 1, "MCLA/GPU",
+    "Debug (the fix's own switch): the ray traced car effects see the cars the camera does not draw built from the cars' OWN MODEL DATA in the game's memory (the part "
+    "table, each part's vertex and index buffers, the part matrices, the paint), not only from the draws a car once made. 0: off. 1 (the default): a car built from its "
+    "model data only where no car placed from memory (mcla_gpu_car_rt_cars_memory) stands, and the paint colour of the car for the cars placed from memory. 2: the model "
+    "data first: a car built from it wherever it is, a car placed from memory beside it is dropped. The same class limits apply (nearest cars, by distance to your car). Live.")
+    .debug_only()
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(
     mcla_gpu_car_rt_cars_match, 0.0, "MCLA/GPU",
     "Debug: how near, in metres, the centre of a car the camera sees must be to a car of the game's own list to be that car, for the cars the camera does not see "
@@ -64,6 +74,10 @@ ci::Limits CarRtInstances::CurrentLimits() const {
 
 bool CarRtInstances::RememberedOn() const {
   return REXCVAR_GET(mcla_gpu_car_rt_cars_memory);
+}
+
+car_model_rt::Mode CarRtInstances::ModelMode() const {
+  return car_model_rt::Mode(std::clamp<int>(int(REXCVAR_GET(mcla_gpu_car_rt_cars_model)), 0, 2));
 }
 
 double CarRtInstances::MatchMetres() const {

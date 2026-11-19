@@ -239,6 +239,12 @@ struct OtherCar {
   double sum[3] = {};
   uint32_t draws = 0;
   bool remembered = false;
+  // A car built from its own model data (car_model_rt_rules.h; remembered is set too: the camera does not draw it, the history holds nothing of it).
+  bool walked = false;
+  // The car's paint colour where it is known (the game's customisation record: a walked car's, or a remembered car's matched to a walked car at the same place):
+  // the hidden hits of the car show it instead of the fixed grey (hlsl/car_rt_refl_cs.hlsl OtherCarColour).
+  bool has_paint = false;
+  float paint[3] = {};
 
   void Add(const temporal::Mat4& model_to_world, double draw_distance) {
     for (int c = 0; c < 3; ++c) {
@@ -270,6 +276,16 @@ struct CarRow {
   float radius = 0.0f;
 };
 static_assert(sizeof(CarRow) == sizeof(rr::InstanceRow), "a car's row is one uint4, as an instance's");
+
+// The second row of a car's record (hlsl/car_rt_common.hlsli CarRtCar::paint): its paint colour as float bits and a flags word (bit 0: the colour is known).
+struct CarPaintRow {
+  float rgb[3] = {};
+  uint32_t flags = 0;
+};
+static_assert(sizeof(CarPaintRow) == sizeof(rr::InstanceRow), "a car's paint row is one uint4, as an instance's");
+// A listed car's record is TWO rows (CarRow, then CarPaintRow); an instance of the car names the first.
+inline constexpr uint32_t kCarRows = 2;
+inline constexpr uint32_t kPaintKnown = 1;
 
 // A world-space point in the frame's view space (the AO's: z forward): `view` is the row-vector world-to-view matrix, `flip_z` the game's own
 // view's negated z (car_rt_scene_rules.h PackInstanceTransform does the same to an instance).
@@ -433,6 +449,9 @@ struct ListStats {
   uint32_t cars_cut = 0;         // kept cars left out: their draws did not fit the instance budget (or the class's count of cars)
   uint32_t remembered_cars = 0;       // ... of `cars`: placed from memory, not drawn this frame (car_rt_memory_rules.h)
   uint32_t remembered_instances = 0;  // ... and their instances (counted in other_instances too)
+  uint32_t walked_cars = 0;           // ... of `cars` (and of the remembered ones): built from the car's own model data (car_model_rt_rules.h)
+  uint32_t walked_instances = 0;
+  uint32_t painted_cars = 0;          // cars whose record carries a paint colour
   uint32_t missing_mesh = 0;     // draws left out: their mesh has no structure yet
   uint32_t bad_matrix = 0;
   uint32_t distinct_meshes = 0;  // distinct mesh keys over all instances (one structure each, shared by every instance of it)
@@ -535,13 +554,14 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
       continue;
     }
     list->items.push_back(item);
-    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot)));
+    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot) * kCarRows));
     GrowBox(&car_boxes[size_t(slot)], item.transform, ref);
     ++list->stats.other_instances;
     list->stats.other_chrome += (item.mask & rr::kMaskOtherChrome) != 0 ? 1u : 0u;
     list->stats.remembered_instances += cars[plan[size_t(slot)]].remembered ? 1u : 0u;
+    list->stats.walked_instances += cars[plan[size_t(slot)]].walked ? 1u : 0u;
   }
-  // The cars' rows follow the instances' (the table's rows are all uint4); the instances name them by row.
+  // The cars' records follow the instances' (the table's rows are all uint4: two a car, CarRow then CarPaintRow); the instances name the first by row.
   const uint32_t car_rows = uint32_t(list->items.size());
   for (size_t i = first_other; i < list->rows.size(); ++i) {
     list->rows[i].draw += car_rows;
@@ -554,9 +574,21 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
       row.radius = 0.0f;  // no centre: the shader finds no colour for this car (its hidden hits are misses)
     }
     list->stats.remembered_cars += cars[index].remembered ? 1u : 0u;
+    list->stats.walked_cars += cars[index].walked ? 1u : 0u;
     rr::InstanceRow raw;
     static_assert(sizeof(raw) == sizeof(row));
     std::memcpy(&raw, &row, sizeof(raw));
+    list->rows.push_back(raw);
+    CarPaintRow paint;
+    if (cars[index].has_paint) {
+      for (int c = 0; c < 3; ++c) {
+        paint.rgb[c] = cars[index].paint[c];
+      }
+      paint.flags = kPaintKnown;
+      ++list->stats.painted_cars;
+    }
+    static_assert(sizeof(raw) == sizeof(paint));
+    std::memcpy(&raw, &paint, sizeof(raw));
     list->rows.push_back(raw);
     ++list->stats.cars;
   }

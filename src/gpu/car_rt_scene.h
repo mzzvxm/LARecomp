@@ -48,6 +48,16 @@
 //     a car in the list that is not drawn this frame, within the radius, is placed again from its kit at its vehicle's matrix of this frame (the meshes stay
 //     resident while it is placed: Build's find marks them seen) and goes to the instance list as another car, ranked by the distance to the player with
 //     the drawn ones within the class's count. A car never drawn has no kit and gets nothing. mcla_gpu_car_rt_cars_memory (debug) is the A/B switch.
+//   - CARS FROM THEIR OWN MODEL DATA (car_model_rt_rules.h, car_model_walk.h, perf/RT-MODEL-SURVEY.md; mcla_gpu_car_rt_cars_model): a car the camera does not draw this
+//     frame is built from the car's own model data in guest memory, not from draws it once made. CarFrame's walker walks every racer near the player in the first
+//     vehicle draw's call of the frame (the guest is held back): per part the geometries of the lod the reflection wants, their vertex and index buffers, and the
+//     part matrices of the frame. The scene (OnWalkedCars, inside that call) reads the triangles of the cars the main view does not show into CPU vectors like a
+//     draw's (one mesh per geometry, keyed by the buffers' addresses, so cars of one model share them), within the class's budget for a new car (triangles and
+//     KiB read, the same numbers as another car's draws) and its own share of the memory; at the trigger the meshes are built into bottom level structures within
+//     a budget of walked triangles a frame, and the walked cars the frame does NOT draw (the draw path keeps those) and the kits do not place (mode) are placed
+//     by the walk's part matrices through the SAME world-to-view conversion as a draw's instance (PackInstanceTransform), ranked with the other cars by the
+//     distance to the player within the class's count, with the car's paint colour in its record. The walker checks its placements against the draws of the cars the
+//     camera does draw and says the error in metres (the "PLACEMENT PROOF" line). A car that has not been placed for a while gives its meshes back.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -72,6 +82,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -84,6 +95,7 @@
 #include "shaders.h"
 #include "topology.h"
 #include "car_frame.h"
+#include "car_model_rt_rules.h"
 #include "car_rt_instances.h"
 #include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
@@ -184,6 +196,8 @@ class CarRtScene final : public car_frame::Listener {
   void OnPlayerDraw(const car_frame::Draw& draw, const car_frame::MeshReader& reader) override;
   // The same for a draw of another car the selection kept, within the budgets of the other cars (car_rt_instances_rules.h Limits, OthersMayAdd).
   void OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_frame::MeshReader& reader) override;
+  // The cars of the model walk (car_model_walk.h): reads the triangles of the cars it is to stage, inside the first vehicle draw's call of the frame.
+  void OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& cars, const car_model_walk::MeshSource& source) override;
 
  private:
   // A mesh read from guest memory, waiting for the trigger.
@@ -196,6 +210,7 @@ class CarRtScene final : public car_frame::Listener {
     float bounds_min[3] = {};  // the mesh's box in its model space (car_rt_instances_rules.h BoundsOf)
     float bounds_max[3] = {};
     bool has_bounds = false;
+    bool walked = false;  // read from a car's model data (the walk), not from a draw: it has a build budget of its own
   };
   // A mesh in the shared buffers, with its bottom-level structure once built.
   struct Mesh {
@@ -271,6 +286,14 @@ class CarRtScene final : public car_frame::Listener {
   // Reads an unseen mesh from the draw's guest memory and stages it for the trigger (the tail OnPlayerDraw and OnOtherCarDraw share). The triangles
   // it staged: 0 when it left the mesh out.
   uint32_t ReadAndStage(uint64_t key, const car_frame::MeshReader& reader);
+  // The rest of it for a mesh that is read already (a walked car's geometry): clean, box, stage. 0: left out.
+  uint32_t FinishStaged(uint64_t key, Staged&& staged);
+  // The bytes the staged meshes will take (positions, indices, structures), for the other cars' share of the memory.
+  uint64_t StagedBytes() const;
+  // The walked cars of the frame: the walker's Resolve, the choice of the cars to place, their instances (appended to the remembered cars' lists), the paint.
+  void PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z);
+  // Gives a walked mesh back (resident or staged).
+  void GiveBack(uint64_t key);
 
   // --- the shared buffers ---
   bool MakeShared(Shared& shared, uint64_t bytes, plume::RenderBufferFlags flags, const char* name);
@@ -336,6 +359,35 @@ class CarRtScene final : public car_frame::Listener {
   // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
   car_rt_memory::CarMemory memory_;
   car_rt_memory::CarMemory::Output remembered_;
+  // The cars from model data: the lists the instance list takes beside the remembered cars' (remembered_ + the walked cars), what the frame's build plan is, the
+  // cleanup set, the budget spent in the frame's walk, and what the log says.
+  std::vector<car_rt_instances::OtherCar> extra_cars_;
+  std::vector<car_rt_instances::OtherDraw> extra_draws_;
+  std::vector<uint8_t> build_plan_;                // by staged_order_: built this frame (car_model_rt::PlanBuilds)
+  car_model_rt::WalkedSet walked_set_;
+  car_model_rt::StageBudget walked_spent_;
+  std::unordered_set<uint64_t> walked_keys_;       // the meshes read from model data (resident or staged)
+  struct WalkedStats {
+    uint64_t frames = 0, frames_placed = 0;        // frames the walk produced / placed at least one car
+    uint64_t cars_placed = 0, instances = 0, missing_parts = 0;
+    uint32_t most_cars = 0;
+    uint64_t meshes_read = 0, triangles_read = 0, kib_read = 0, read_failed = 0, held_budget = 0, held_memory = 0;
+    uint64_t meshes_built = 0, triangles_built = 0;  // walked meshes that got a structure
+    uint64_t given_back = 0;
+    uint64_t painted = 0;                           // placed cars (and remembered ones) with a paint colour
+    uint64_t proof_pairs = 0;
+    uint64_t held_pose = 0;                         // frames whose walked cars were held back: no hypothesis of the part matrices was confirmed by the draws
+    uint64_t most_read_triangles = 0, most_read_kib = 0;  // the most read from guest memory in one frame (the class's budget, plus the first mesh of a frame)
+    uint64_t most_built_triangles = 0;              // the most walked triangles built into structures in one frame
+    double proof_worst = 0.0;
+    double walk_us_sum = 0.0;
+    uint32_t walk_frames = 0;
+  } walked_stats_;
+  bool walked_first_logged_ = false;
+  uint64_t walked_pose_warn_frame_ = 0;
+  std::unordered_set<uint32_t> walked_present_;   // the vehicles placed in the last frame (the log says when one comes and goes)
+  uint64_t walked_log_frame_ = 0;
+  uint64_t walked_build_triangles_frame_ = 0;       // built in the frame being recorded
   uint64_t memory_log_frame_ = 0;
   bool memory_kit_logged_ = false;
   bool memory_lists_warned_ = false;

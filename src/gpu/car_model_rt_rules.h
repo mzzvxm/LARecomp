@@ -26,6 +26,15 @@
 //     (triangles and KiB read, triangles built); the cleanup when a car leaves (WalkedSet).
 //
 // Matrices are row vectors (v' = v M) as in temporal_math.h. This header reads guest memory only through the `Mem` of car_model_walk_rules.h.
+//
+// WHAT IS NOT VERIFIED (nothing here has run; the check script h11-work/rt-model-cars-2/check-model-rt.ps1 answers each):
+//   CHECK 1  which of the five placement hypotheses is the game's (the PLACEMENT table of the first run says; until a hypothesis fits the draws within kFitMetres no walked
+//            car is placed), and that the part matrices of a car nobody draws are as fresh as a drawn car's (survey CHECK 3: the proof compares drawn cars only);
+//   CHECK 2  the paint colour as the shader shows it (PaintColourOf: region 0's colour A, the mean with B for a gradient; the numbers are the game's constants, 0..1);
+//   CHECK 3  the draw loop's per-part tests (PartDrawn: asm only) and the meaning of the two bytes that cut it to 44 parts (the walk logs them: `flags=`, `loop=`);
+//   CHECK 4  that a draw's primitive is a list or a strip by the geometry's counts (the loader's draw-mode number 3 is a list; strips are read by counts alone);
+//   NOT DONE the wheels (the wheel manager's drawables are not in the model set: a walked car has no tyres), the driver, traffic and parked cars (not vehicles: the
+//            ambient chain of the survey, section 3), a glass / chrome flag per part (every walked part is an opaque body of the others' mask).
 // ===========================================================================
 
 #include <algorithm>
