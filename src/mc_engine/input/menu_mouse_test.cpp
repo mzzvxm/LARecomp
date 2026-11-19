@@ -469,6 +469,175 @@ void TestPending() {
     CHECK(StepPending(p, 2, &done) == Act::Right && done);
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Round 2: where a movie is drawn, the world matrix, the rows a list draws, the model of the pause pages
+void TestFrameScale() {
+    // The pause movie: a 1280 x 720 frame on the 1280 x 720 screen is drawn 1:1.
+    StageScale s = FrameScale(1280, 1.0f, 720, 1.0f, 1280, 720);
+    CHECK(s.applied && Near(s.x, 1.0, 1e-6) && Near(s.y, 1.0, 1e-6));
+    // The garage: a 1920 x 1080 frame is drawn at two thirds; 35 movie units between rows are 23.3 stage pixels.
+    s = FrameScale(1280, 1.0f, 720, 1.0f, 1920, 1080);
+    CHECK(s.applied && Near(s.x, 2.0 / 3.0, 1e-5) && Near(s.y, 2.0 / 3.0, 1e-5));
+    CHECK(Near(35.0f * s.y, 23.33, 0.01));
+    // The screen's size is cut to a whole pixel count first (a k of 0.7777 on 1280 is 995 pixels).
+    s = FrameScale(1280, 0.7777f, 720, 1.0f, 1280, 720);
+    CHECK(s.applied && Near(s.x, 995.0 / 1280.0, 1e-6));
+    // Missing or absurd numbers: no scale, drawn 1:1.
+    s = FrameScale(0, 1.0f, 720, 1.0f, 1280, 720);
+    CHECK(!s.applied && s.x == 1.0f && s.y == 1.0f);
+    s = FrameScale(1280, 1.0f, 720, 1.0f, 0, 0);
+    CHECK(!s.applied);
+    s = FrameScale(1280, 0.0f, 720, 1.0f, 1280, 720);
+    CHECK(!s.applied);
+    s = FrameScale(1280, 1.0f, 720, 1.0f, 100000, 720);
+    CHECK(!s.applied);
+    s = FrameScale(1280, 1.0f, 720, 1.0f, 64, 720);  // a x scale of 20: absurd
+    CHECK(!s.applied);
+    s = FrameScale(std::nanf(""), 1.0f, 720, 1.0f, 1280, 720);
+    CHECK(!s.applied);
+
+    // A matrix to the stage: the translation and the axes are scaled, x with x and y with y.
+    Affine m;
+    m.a = 1.0f;
+    m.d = 2.0f;
+    m.tx = 600.0f;
+    m.ty = 300.0f;
+    const StageScale two_thirds = FrameScale(1280, 1.0f, 720, 1.0f, 1920, 1080);
+    const Affine st = Scaled(m, two_thirds);
+    CHECK(Near(st.tx, 400.0, 1e-3) && Near(st.ty, 200.0, 1e-3) && Near(st.a, 2.0 / 3.0, 1e-5) && Near(st.d, 4.0 / 3.0, 1e-5));
+    // A slot's origin through the scaled world matrix: the garage's first row (movie 1290, 350) lands at (860, 233).
+    Affine world;
+    world.tx = 1290.0f;
+    world.ty = 350.0f;
+    float x, y;
+    Apply(Scaled(world, two_thirds), 0, 0, &x, &y);
+    CHECK(Near(x, 860.0, 0.01) && Near(y, 233.33, 0.01));
+}
+
+void TestWorldMatrix() {
+    Affine zeros;
+    zeros.a = zeros.d = 0.0f;
+    CHECK(!WorldUsable(zeros));  // an instance that was never drawn
+    Affine ok;
+    ok.tx = 12.0f;
+    CHECK(WorldUsable(ok));
+    Affine nan = ok;
+    nan.tx = std::nanf("");
+    CHECK(!WorldUsable(nan));
+    Affine flat = ok;
+    flat.d = 0.0f;
+    CHECK(!WorldUsable(flat));
+    CHECK(ChooseMatrix(true, true) == MatrixSource::World);
+    CHECK(ChooseMatrix(true, false) == MatrixSource::World);
+    CHECK(ChooseMatrix(false, true) == MatrixSource::Fold);
+    CHECK(ChooseMatrix(false, false) == MatrixSource::None);
+}
+
+void TestListWindow() {
+    int first = -1, end = -1;
+    // A list that does not scroll draws every row.
+    ListWindow(3, false, 7, 6, &first, &end);
+    CHECK(first == 0 && end == 3);
+    // A list that scrolls: from the scroll to scroll + the rows that fit.
+    ListWindow(11, true, 2, 6, &first, &end);
+    CHECK(first == 2 && end == 8);
+    // The end is cut at the row count.
+    ListWindow(11, true, 8, 6, &first, &end);
+    CHECK(first == 8 && end == 11);
+    ListWindow(4, true, 0, 6, &first, &end);
+    CHECK(first == 0 && end == 4);
+
+    // The clip tree and the window.
+    SlotIn slots[3];
+    for (int i = 0; i < 3; ++i) slots[i] = MakeSlot(i + 2, 0, 0, 140, 331 + 25 * i, true);
+    const Layout lay = BuildLayout(slots, 3, 0.0f, 0.0f);
+    CHECK(SlotsMatchList(lay, 2, 8));        // rows 2..4 inside 2..7
+    CHECK(SlotsMatchList(lay, 0, 5));
+    CHECK(!SlotsMatchList(lay, 3, 8));       // row 2 is outside: an older list
+    CHECK(!SlotsMatchList(lay, 0, 4));       // row 4 is outside
+    CHECK(!SlotsMatchList(Layout{}, 0, 8));  // no rows shown at all
+
+    // Which kind of menu the game rendered last.
+    CHECK(ListIsLater(5, 3));
+    CHECK(!ListIsLater(3, 5));
+    CHECK(ListIsLater(4, 4));
+    CHECK(ListIsLater(0, 0));
+}
+
+void TestJudging() {
+    // Where a list's rows come from.
+    CHECK(RowSourceOf(0x40001000, 0) == RowSource::Adapter);
+    CHECK(RowSourceOf(0x40001000, 0x40002000) == RowSource::Adapter);
+    CHECK(RowSourceOf(0, 0x40002000) == RowSource::Table);
+    CHECK(RowSourceOf(0, 0) == RowSource::Packed);
+
+    // A live list: active, a count in range, a highlight inside (or none), a scroll inside when it scrolls.
+    CHECK(JudgeList(true, 3, 0, false, 0) == Verdict::Ok);
+    CHECK(JudgeList(true, 3, -1, false, 0) == Verdict::Ok);
+    CHECK(JudgeList(true, 11, 4, true, 5) == Verdict::Ok);
+    CHECK(JudgeList(false, 3, 0, false, 0) == Verdict::NotActive);  // another tab's list: not drawn
+    CHECK(JudgeList(true, 0, 0, false, 0) == Verdict::BadCount);    // the half word of a pause page (the first run's reason)
+    CHECK(JudgeList(true, -1, 0, false, 0) == Verdict::BadCount);   // no source to count
+    CHECK(JudgeList(true, 65, 0, false, 0) == Verdict::BadCount);
+    CHECK(JudgeList(true, 64, 63, false, 0) == Verdict::Ok);
+    CHECK(JudgeList(true, 3, 3, false, 0) == Verdict::BadHighlight);
+    CHECK(JudgeList(true, 3, -2, false, 0) == Verdict::BadHighlight);
+    CHECK(JudgeList(true, 3, 1, true, 3) == Verdict::BadScroll);
+    CHECK(JudgeList(true, 3, 1, true, -1) == Verdict::BadScroll);
+    CHECK(JudgeList(true, 3, 1, false, 99) == Verdict::Ok);  // a scroll that is not used is not looked at
+
+    // A UIMenu: the rows it counts, never the cap (it was still answering), never none (the garage's second menu in the first run).
+    CHECK(JudgeUiMenu(4, 0, 32) == Verdict::Ok);
+    CHECK(JudgeUiMenu(4, -1, 32) == Verdict::Ok);
+    CHECK(JudgeUiMenu(0, -1, 32) == Verdict::BadCount);
+    CHECK(JudgeUiMenu(32, 0, 32) == Verdict::BadCount);
+    CHECK(JudgeUiMenu(31, 30, 32) == Verdict::Ok);
+    CHECK(JudgeUiMenu(4, 4, 32) == Verdict::BadHighlight);
+
+    // A layout that agrees with the list's window is the one taken: a pause page of 3 rows (window 0..2), the clip tree showing three rows; an older list of two rows does not agree.
+    SlotIn three[3];
+    for (int i = 0; i < 3; ++i) three[i] = MakeSlot(i, 0, 0, 218, 331 + 25 * i, true);
+    const Layout lay = BuildLayout(three, 3, 0.0f, 0.0f);
+    int first, end;
+    ListWindow(3, false, 0, 6, &first, &end);
+    CHECK(SlotsMatchList(lay, first, end) && Plausible(lay));
+    ListWindow(2, false, 0, 6, &first, &end);
+    CHECK(!SlotsMatchList(lay, first, end));
+}
+
+void TestModelLayout() {
+    // The pause menu's first page: three rows, the tour's pointer positions (341, 365, 391) fall on rows 0, 1, 2.
+    const Layout hub = ModelLayout(0, 3, ModelPage::Hub);
+    CHECK(hub.n == 3 && Plausible(hub));
+    CHECK(Near(hub.pitch, 25.0, 1e-6) && Near(hub.width, 316.0, 1e-6));
+    CHECK(HitRow(hub, 330, 341) == 0);
+    CHECK(HitRow(hub, 330, 365) == 1);
+    CHECK(HitRow(hub, 330, 391) == 2);
+    CHECK(HitRow(hub, 330, 420) == -1);  // under the last row
+    CHECK(HitRow(hub, 700, 341) == -1);  // right of the panel
+    CHECK(HitRow(hub, 210, 341) == 0);   // the `>` marker's margin
+    // A settings page: six rows from row 0, the x of the tour's label (192) and arrows (399, 510).
+    const Layout page = ModelLayout(0, 6, ModelPage::Settings);
+    CHECK(page.n == 6 && Plausible(page));
+    CHECK(HitRow(page, 192, 369) == 1);
+    CHECK(HitRow(page, 192, 421) == 3);
+    CHECK(HitRow(page, 192, 469) == 5);
+    const RowBox* row1 = BoxOfRow(page, 1);
+    CHECK(row1 != nullptr);
+    if (row1) {
+        CHECK(ZoneOf(*row1, 192, true) == Zone::Label);
+        CHECK(ZoneOf(*row1, 399, true) == Zone::ValueLeft);
+        CHECK(ZoneOf(*row1, 510, true) == Zone::ValueRight);
+    }
+    // A scrolled page: slot 0 shows row 4.
+    const Layout scrolled = ModelLayout(4, 6, ModelPage::Settings);
+    CHECK(scrolled.rows[0].row == 4 && scrolled.rows[5].row == 9 && HitRow(scrolled, 192, 344) == 4);
+    // The count is clamped: no rows, and no more than the layout holds.
+    CHECK(ModelLayout(0, 0, ModelPage::Hub).n == 0);
+    CHECK(ModelLayout(0, 500, ModelPage::Hub).n == kMaxRows);
+    CHECK(!Plausible(ModelLayout(0, 0, ModelPage::Hub)));
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +650,11 @@ int main() {
     TestPacer();
     TestWalk();
     TestPending();
+    TestFrameScale();
+    TestWorldMatrix();
+    TestListWindow();
+    TestJudging();
+    TestModelLayout();
     std::printf("menu_mouse_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

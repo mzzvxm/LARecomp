@@ -52,12 +52,17 @@ bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31);
 bool Hook_PopulateRedirect(PPCRegister& r3);
 
-// What the game rendered last, for the mouse in the menus (input/menu_mouse.cpp): the mcListViewFixed Hook_ListViewPopulate saw last and the UIMenu Hook_PopulateRedirect saw last
+// What the game rendered last, for the mouse in the menus (input/menu_mouse.cpp): the ACTIVE mcListViewFixed Hook_ListViewPopulate saw last (one the renderer draws: the pause screen offers the
+// lists of its other tabs to the hook too) and the UIMenu Hook_PopulateRedirect saw last
 // (0 = none yet), each with a counter that says which of the two is the later (the larger number; 0 = never). Any thread; the objects are the guest's, read on the guest thread.
 uint32_t PauseMenuLastList();
 uint32_t PauseMenuLastListSeq();
 uint32_t PauseMenuLastUiMenu();
 uint32_t PauseMenuLastUiMenuSeq();
+// The list of the menu of ours that is on top of the pause screen (a settings page: its form's list, exact where the last one rendered may be older), 0 when the top form is not one of ours.
+uint32_t PauseMenuTopOurList();
+// Whether `list` is the list of one of our pages (they are 432 stage pixels wide from x 136, the game's own pages 316 from x 218: the mouse's model of a page).
+bool PauseMenuIsOurList(uint32_t list);
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30);
 
 // Skip a vfunc call through a menu list whose vtable is null -- see the comment

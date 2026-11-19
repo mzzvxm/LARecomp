@@ -193,6 +193,9 @@ constexpr uint32_t kStr_update          = 0x8201D7C4;
 // The mcListViewFixed most recently rendered (Hook_ListViewPopulate); the
 // garage carbon diagnostics read its selection.
 std::atomic<uint32_t> g_last_list{0};
+// The last list the renderer will actually draw: the active flag (+16 & 0x20, sub_8221CDD0, the first thing sub_82631FD0 asks) is set. The pause screen prepares the lists of several tabs
+// and offers the inactive ones to the render hook too; the mouse must point at the one on screen. Read by PauseMenuLastList.
+std::atomic<uint32_t> g_last_active_list{0};
 // The UIMenu FlashNavigator most recently filled into a movie's "menu" object (Hook_PopulateRedirect: the garage, the pop-ups), and which of the two lists / menus was
 // the latest (a counter: the mouse in the menus uses the later one). Read by PauseMenuLastList / PauseMenuLastUiMenu.
 std::atomic<uint32_t> g_last_ui_menu{0};
@@ -4139,7 +4142,16 @@ bool Hook_ListViewPopulate(PPCRegister& r3) {
     if (!list) return false;
 
     g_last_list.store(list, std::memory_order_relaxed);
-    g_last_list_seq.store(g_populate_seq.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    // The renderer's own question (vfunc 60 = sub_8221CDD0: the flag at +16 & 0x20), asked the way it asks; the flag itself when the slot is not there.
+    bool active = (ReadGuestBE32(list + 16) & 0x20) != 0;
+    if (const uint32_t vt = ReadGuestBE32(list)) {
+        const uint32_t is_active = ReadGuestBE32(vt + 60);
+        if (is_active >= 0x82000000u && is_active < 0x82FFFFF0u) active = (CallGuestFn1(is_active, list) & 0xFF) != 0;
+    }
+    if (active) {
+        g_last_active_list.store(list, std::memory_order_relaxed);
+        g_last_list_seq.store(g_populate_seq.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
 
     // Options > Controller gets an extra row appended into its own list. No-op
     // for every other list — the screen is recognised by its vtable.
@@ -5435,10 +5447,15 @@ bool Hook_PopulateRedirect(PPCRegister& r3) {
     return false;
 }
 
-uint32_t PauseMenuLastList() { return g_last_list.load(std::memory_order_relaxed); }
+uint32_t PauseMenuLastList() { return g_last_active_list.load(std::memory_order_relaxed); }
 uint32_t PauseMenuLastListSeq() { return g_last_list_seq.load(std::memory_order_relaxed); }
 uint32_t PauseMenuLastUiMenu() { return g_last_ui_menu.load(std::memory_order_relaxed); }
 uint32_t PauseMenuLastUiMenuSeq() { return g_last_ui_menu_seq.load(std::memory_order_relaxed); }
+uint32_t PauseMenuTopOurList() {
+    const uint32_t form = larecomp::ui::TopForm();
+    return MenuOfForm(form) >= 0 ? larecomp::ui::FormList(form) : 0;
+}
+bool PauseMenuIsOurList(uint32_t list) { return list && MenuOfList(list) >= 0; }
 
 // Null-guard for sub_82661210, which loads the list table-source pointer from
 // [list+0xC0] and dereferences it at +0xC with no null check. A list whose rows
@@ -5649,6 +5666,8 @@ uint32_t PauseMenuLastList() { return 0; }
 uint32_t PauseMenuLastListSeq() { return 0; }
 uint32_t PauseMenuLastUiMenu() { return 0; }
 uint32_t PauseMenuLastUiMenuSeq() { return 0; }
+uint32_t PauseMenuTopOurList() { return 0; }
+bool PauseMenuIsOurList(uint32_t) { return false; }
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30) { return false; }
 bool MCLA_PauseListVtableGuard(PPCRegister&) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }

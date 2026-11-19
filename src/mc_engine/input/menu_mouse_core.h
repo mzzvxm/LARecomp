@@ -239,6 +239,138 @@ inline Zone ZoneOf(const RowBox& box, float sx, bool value_row) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+// Where a movie is drawn (round 2: the first run read the garage's rows 20 stage pixels from the top-left corner and 35 apart, where the picture has them at 870 / 244 and 22.6)
+// ---------------------------------------------------------------------------------------------------------------------------------
+//
+// Two things the first reading left out. (1) The player keeps every instance's WORLD matrix in the instance (+32: a b c d tx ty, written by the draw of the last frame, sub_825FB348:
+// world = local x the parent's world), so the place a row is drawn at can be read, whatever the local matrices up the chain say (ui_smooth.cpp's header has the layout). (2) A movie is
+// not drawn 1:1: sub_825EE428 puts the movie's frame (the swfFILE's +36 / +44, floats) onto the game's screen (the display state's width x kx and height x ky), so a movie authored on a
+// bigger frame is drawn smaller (the garage's menu: 35 movie units between its rows, 22.6 on the stage). stage = world x (screen x k / frame).
+
+struct StageScale {
+    float x = 1.0f, y = 1.0f;
+    bool applied = false;  // false: the numbers were missing or absurd, the movie is taken as drawn 1:1
+};
+
+inline StageScale FrameScale(float screen_w, float kx, float screen_h, float ky, float frame_w, float frame_h) {
+    StageScale s;
+    const auto sane = [](float v, float lo, float hi) { return std::isfinite(v) && v >= lo && v <= hi; };
+    if (!sane(screen_w, 160.0f, 16384.0f) || !sane(screen_h, 90.0f, 16384.0f) || !sane(kx, 0.1f, 8.0f) || !sane(ky, 0.1f, 8.0f) || !sane(frame_w, 64.0f, 16384.0f) ||
+        !sane(frame_h, 36.0f, 16384.0f))
+        return s;
+    // The game's own arithmetic: the screen's size is cut to a whole number of pixels before the division.
+    const float sx = float(int(screen_w * kx)) / frame_w;
+    const float sy = float(int(screen_h * ky)) / frame_h;
+    if (!sane(sx, 0.2f, 5.0f) || !sane(sy, 0.2f, 5.0f)) return s;
+    s.x = sx;
+    s.y = sy;
+    s.applied = true;
+    return s;
+}
+
+// A matrix in the movie's units -> the same matrix to the stage.
+inline Affine Scaled(const Affine& m, const StageScale& s) {
+    Affine r;
+    r.a = m.a * s.x;
+    r.c = m.c * s.x;
+    r.tx = m.tx * s.x;
+    r.b = m.b * s.y;
+    r.d = m.d * s.y;
+    r.ty = m.ty * s.y;
+    return r;
+}
+
+// An instance's stored world matrix says something only if it is finite and not flat: an instance the player has not drawn yet has zeros there.
+inline bool WorldUsable(const Affine& m) {
+    if (!FiniteAffine(m)) return false;
+    const float det = m.a * m.d - m.b * m.c;
+    return std::fabs(det) > 1e-6f;
+}
+
+// Which matrix a row's place comes from: the world matrix the draw left in the instance, else the fold of the local matrices up the chain, else none.
+enum class MatrixSource : uint8_t { None, World, Fold };
+inline MatrixSource ChooseMatrix(bool world_usable, bool fold_ok) { return world_usable ? MatrixSource::World : (fold_ok ? MatrixSource::Fold : MatrixSource::None); }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Which rows are on screen, and the model of the pause menu's pages
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+// The rows a list draws: mcListViewFixed's vfuncs 660 / 664 (0x8228F4E8, 0x8228F508): from the scroll (0 when the list does not scroll) to the smaller of scroll + the rows that fit and the
+// row count (all of them when it does not scroll). Slot j of the movie shows row first + j.
+inline void ListWindow(int count, bool scrolls, int scroll, int max_rows, int* first, int* end) {
+    if (!scrolls) {
+        *first = 0;
+        *end = count;
+        return;
+    }
+    *first = scroll;
+    *end = std::min(scroll + std::max(max_rows, 0), count);
+}
+
+// The clip tree and the list agree: at least one row is shown and every shown row is one the list draws. A list the movie is not showing (an older one) shows rows outside its window or
+// none at all.
+inline bool SlotsMatchList(const Layout& l, int first, int end) {
+    if (l.n < 1) return false;
+    for (int i = 0; i < l.n; ++i)
+        if (l.rows[i].row < first || l.rows[i].row >= end) return false;
+    return true;
+}
+
+// Where a list's rows come from (sub_82631F88): a vhsm state (+196: the pause screen's own pages), a table (+192), else the row objects the half word at +180 counts (our pages). The first
+// run read only the half word.
+enum class RowSource : uint8_t { Adapter, Table, Packed };
+inline RowSource RowSourceOf(uint32_t adapter, uint32_t table) { return adapter ? RowSource::Adapter : (table ? RowSource::Table : RowSource::Packed); }
+
+// Whether what was read of a list (or UIMenu) makes sense for a live one.
+inline constexpr int kMaxListRows = 64;
+enum class Verdict : uint8_t { Ok, NotActive, BadCount, BadHighlight, BadScroll };
+inline Verdict JudgeList(bool active, int count, int highlight, bool scrolls, int scroll) {
+    if (!active) return Verdict::NotActive;
+    if (count < 1 || count > kMaxListRows) return Verdict::BadCount;
+    if (highlight < -1 || highlight >= count) return Verdict::BadHighlight;
+    if (scrolls && (scroll < 0 || scroll >= count)) return Verdict::BadScroll;
+    return Verdict::Ok;
+}
+// A UIMenu counts its rows by asking for "the child shown on row N" until none: `cap` is where it stops asking (reached = the answer is not trusted).
+inline Verdict JudgeUiMenu(int rows, int highlight, int cap) {
+    if (rows < 1 || rows >= cap) return Verdict::BadCount;
+    if (highlight < -1 || highlight >= rows) return Verdict::BadHighlight;
+    return Verdict::Ok;
+}
+
+// Which of the two kinds of menu the game rendered last: the list or the UIMenu (their counters; the larger is the later; 0 = never).
+inline bool ListIsLater(uint32_t list_seq, uint32_t ui_menu_seq) { return list_seq >= ui_menu_seq; }
+
+// The pause movie's pages as the pictures of earlier runs have them (1280 x 720 stage; GRAPHICS QUALITY and the pause menu's first page: p4-menus-gfxq tour_09, kbmp6 tour_03): the first row
+// hangs from y 331 and the rows are 25 apart; the game's own pages (the pause menu's first page, the SETTINGS list) are 316 wide from x 218, the pages of ours 432 wide from x 136. Used
+// only when the movie's clip tree cannot be read at all (no `slotN` clips) and the page's list can: hover and click then work on these numbers, and the log says so.
+enum class ModelPage : uint8_t { Hub, Settings };
+inline constexpr float kModelRow0Y = 331.0f;
+inline constexpr float kModelPitch = 25.0f;
+inline constexpr float kModelHubX = 218.0f;
+inline constexpr float kModelHubW = 316.0f;
+inline constexpr float kModelPageX = 136.0f;
+inline constexpr float kModelPageW = 432.0f;
+
+inline Layout ModelLayout(int first_row, int shown, ModelPage page) {
+    Layout l;
+    shown = std::clamp(shown, 0, kMaxRows);
+    const float x0 = page == ModelPage::Settings ? kModelPageX : kModelHubX;
+    const float w = page == ModelPage::Settings ? kModelPageW : kModelHubW;
+    l.pitch = kModelPitch;
+    l.width = w;
+    for (int i = 0; i < shown; ++i) {
+        RowBox& r = l.rows[l.n++];
+        r.row = first_row + i;
+        r.x0 = x0;
+        r.x1 = x0 + w;
+        r.y0 = kModelRow0Y + kModelPitch * float(i);
+        r.y1 = r.y0 + kModelPitch;
+    }
+    return l;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
 // What the mouse does
 // ---------------------------------------------------------------------------------------------------------------------------------
 

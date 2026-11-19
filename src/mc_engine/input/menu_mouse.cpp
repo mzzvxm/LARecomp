@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -53,8 +54,15 @@ REXCVAR_DEFINE_DOUBLE(menu_mouse_row_offset, 0.0, "MCLA/Input",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(menu_mouse_dump, false, "MCLA/Input",
-    "Debug: log the clip tree of the movie that is up (the `menu` clip, its slots and what they hold: names, alpha, place on the stage) once, and again each time this is set to "
-    "true. For a menu that falls back: this is how its rows are found.")
+    "Debug: log what the mouse sees of the menu that is up, once, and again each time this is set to true: the movie (its frame, the display state, the scale onto the stage), the candidates (the "
+    "list and the UIMenu the game rendered last, their fields and counters), the clip tree's outline and every clip that holds slot0..slotN with each slot's local, world and stage "
+    "place. For a menu that falls back: this is how its rows are found.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(menu_mouse_dump_new, false, "MCLA/Input",
+    "Debug: the same dump (menu_mouse_dump) once for every new menu the mouse meets (a new movie, list or UIMenu, or one that is read differently than before), fallbacks included, up to "
+    "24 a run. For the tours: set it before the first menu opens.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -94,6 +102,7 @@ constexpr uint32_t kSoundScrollDown = 0x82826018;
 constexpr uint32_t kInstMatrix = 8;
 constexpr uint32_t kInstAlpha = 79;
 constexpr uint32_t kInstDirty = 81;
+constexpr uint32_t kInstWorld = 32;  // the world matrix the draw of the last frame left: a b c d tx ty (sub_825FB348; ui_smooth.cpp's header has the layout)
 constexpr uint32_t kInstBaseX = 92;
 constexpr uint32_t kInstBaseY = 96;
 constexpr uint32_t kInstPropX = 116;
@@ -104,6 +113,26 @@ constexpr uint32_t kInstNext = 192;
 constexpr uint32_t kInstName = 196;
 
 constexpr int kMaxSlots = 24;  // slot0 .. slot23 (ui_palette.cpp RowSlot)
+
+// How a movie is put on the screen (sub_825EE970 -> sub_825EE428): the swfFILE's frame (+36 width, +44 height, floats) onto the game's display state, a pointer at 0x82839704 to a struct with
+// the width (+688) and height (+692) as ints and their factors (+648, +652) as floats: scale = int(width x k) / frame width.
+constexpr uint32_t kFileFrameW = 36;
+constexpr uint32_t kFileFrameH = 44;
+constexpr uint32_t kDisplayPtrCell = 0x82839704;
+constexpr uint32_t kDisplayW = 688;
+constexpr uint32_t kDisplayH = 692;
+constexpr uint32_t kDisplayKx = 648;
+constexpr uint32_t kDisplayKy = 652;
+// mcListViewFixed's other fields (sub_82631F88 / sub_82631FD0): the rows in a table (+192, its vfunc +4 = the count) or a vhsm state (+196, its vfunc +324 = the count; the pause screen's own
+// pages) instead of the row objects at +176; the rows that fit on screen (+188).
+constexpr uint32_t kObjFlags = 16;
+constexpr uint32_t kObjActive = 0x20;
+constexpr uint32_t kVfIsActive = 60;  // the question the renderer asks first (it draws nothing for an inactive list)
+constexpr uint32_t kListMaxRows = 188;
+constexpr uint32_t kListTable = 192;
+constexpr uint32_t kListAdapter = 196;
+constexpr uint32_t kVfTableCount = 4;
+constexpr uint32_t kVfAdapterCount = 324;
 
 // ── small guest helpers (guest thread) ──────────────────────────────────
 
@@ -214,7 +243,16 @@ struct MenuView {
     int count = 0;           // rows in the list (UIMenu: the rows its vfunc names)
     mm::Layout layout;       // the rows on the stage
     bool rows_known = false; // the layout is plausible and the highlight can be read: hover and click-on-row work
+    bool model = false;      // the rows are the model's (mm::ModelLayout), not the clip tree's: the movie has no slot clips
     char movie[48] = {};
+    // What the reading found, for the log (ReportMenu) and the dump.
+    mm::StageScale scale;
+    bool scale_known = false;
+    char clip[96] = {};      // the clip that holds the slots, as a path
+    int clip_slots = 0;
+    int clip_shown = 0;
+    int clip_world = 0;
+    char why[640] = {};      // what each candidate lacked
 };
 
 // What this file remembers between ticks (guest thread only).
@@ -233,9 +271,12 @@ struct State {
     uint32_t gave_up_obj = 0;          // a UIMenu whose walk stalled: it falls back until another one is on screen
     uint32_t reported_obj = 0;         // the menu the last [menu] line was about
     int reported_kind = -1;
+    int reported_state = -1;           // how it was read then (None / clip tree / model): a change is reported again
     char reported_movie[48] = {};
+    uint32_t reports_of_obj = 0;       // how many lines the same list / UIMenu has had (a menu read one way, then another, then back must not flood)
     bool dump_armed = true;
     int logged = 0;
+    int dumps = 0;
 };
 State g_state;
 
@@ -254,6 +295,19 @@ constexpr int kMaxLogLines = 800;  // hover / click / wheel lines per run: enoug
 
 uint8_t Alpha(const uint8_t* b, uint32_t inst) { return b[inst + kInstAlpha]; }
 
+// The instance's name as text, "(unnamed)" for none.
+void NameOf(const uint8_t* b, uint32_t inst, char* out, size_t cap) {
+    out[0] = 0;
+    const uint32_t np = R32(b, inst + kInstName);
+    size_t i = 0;
+    if (Plausible(np)) {
+        const char* name = reinterpret_cast<const char*>(b + np);
+        for (; i + 1 < cap && name[i] >= 0x20 && name[i] < 0x7F; ++i) out[i] = name[i];
+    }
+    out[i] = 0;
+    if (i == 0) std::snprintf(out, cap, "(unnamed)");
+}
+
 // The local matrix of an instance as the next draw will have it: a b c d as stored; the translation is base + property when a rebuild is waiting (sub_825F8C70).
 mm::Affine LocalOf(const uint8_t* b, uint32_t inst) {
     mm::Affine m;
@@ -270,20 +324,50 @@ mm::Affine LocalOf(const uint8_t* b, uint32_t inst) {
     return m;
 }
 
-// The instance's matrix to the stage: its own, then each parent's up to the root. False when the chain does not end (a loop or a broken pointer) or holds a hidden instance.
-bool ToStage(const uint8_t* b, uint32_t inst, mm::Affine* out, bool* visible) {
+// The matrix the draw of the last frame left in the instance (+32: a b c d tx ty = local x the parent's world, sub_825FB348): the instance's place in the movie's units, exactly as drawn.
+// Not usable (false) for an instance that was never drawn (zeros).
+bool WorldOf(const uint8_t* b, uint32_t inst, mm::Affine* out) {
+    out->a = ReadGuestF32(b, inst + kInstWorld + 0);
+    out->b = ReadGuestF32(b, inst + kInstWorld + 4);
+    out->c = ReadGuestF32(b, inst + kInstWorld + 8);
+    out->d = ReadGuestF32(b, inst + kInstWorld + 12);
+    out->tx = ReadGuestF32(b, inst + kInstWorld + 16);
+    out->ty = ReadGuestF32(b, inst + kInstWorld + 20);
+    return mm::WorldUsable(*out);
+}
+
+// The instance's local matrices folded up to the root, and whether it and every instance above it has alpha. False when the chain does not end (a loop or a broken pointer).
+bool FoldToRoot(const uint8_t* b, uint32_t inst, mm::Affine* out, bool* visible) {
     mm::Affine m = LocalOf(b, inst);
     bool shown = Alpha(b, inst) != 0;
     uint32_t cur = R32(b, inst + kInstParent);
     int guard = 0;
     while (cur) {
-        if (!Plausible(cur) || ++guard > 16) return false;
+        if (!Plausible(cur) || ++guard > 24) return false;
         m = mm::Then(m, LocalOf(b, cur));
         shown = shown && Alpha(b, cur) != 0;
         cur = R32(b, cur + kInstParent);
     }
     *out = m;
     *visible = shown;
+    return true;
+}
+
+// The instance's matrix to the stage: the world matrix the draw left in it (else the fold of the local ones), through the movie's scale onto the screen. `world` says which.
+bool PlaceOf(const uint8_t* b, uint32_t inst, const mm::StageScale& scale, mm::Affine* out, bool* visible, bool* world) {
+    mm::Affine fold, w;
+    bool shown = false;
+    const bool fold_ok = FoldToRoot(b, inst, &fold, &shown);
+    const bool world_ok = WorldOf(b, inst, &w);
+    const mm::MatrixSource src = mm::ChooseMatrix(world_ok, fold_ok);
+    if (src == mm::MatrixSource::None) return false;
+    if (!fold_ok) {
+        // The chain did not end, so the alpha along it is not known either: only this instance's own.
+        shown = Alpha(b, inst) != 0;
+    }
+    *out = mm::Scaled(src == mm::MatrixSource::World ? w : fold, scale);
+    *visible = shown;
+    *world = src == mm::MatrixSource::World;
     return true;
 }
 
@@ -305,59 +389,175 @@ float ChildRight(const uint8_t* b, uint32_t slot) {
     return right;
 }
 
-void DumpTree(const uint8_t* b, uint32_t inst, int depth, int* lines) {
-    if (!Plausible(inst) || depth > 4 || *lines > 160) return;
-    int guard = 0;
-    for (uint32_t c = R32(b, inst + kInstFirstChild); Plausible(c) && guard < 80; c = R32(b, c + kInstNext), ++guard) {
-        const uint32_t np = R32(b, c + kInstName);
-        const char* name = Plausible(np) ? reinterpret_cast<const char*>(b + np) : "";
-        char shown[40] = {};
-        for (int i = 0; i < 39 && name[i] >= 0x20 && name[i] < 0x7F; ++i) shown[i] = name[i];
-        mm::Affine st;
-        bool vis = false;
-        const bool ok = ToStage(b, c, &st, &vis);
-        MC_INFO("[menu-mouse] tree {:>{}}{} @0x{:08X} alpha {} stage ({:.1f}, {:.1f}){}", "", depth * 2, shown[0] ? shown : "(unnamed)", c, int(Alpha(b, c)),
-                ok ? st.tx : 0.0f, ok ? st.ty : 0.0f, vis ? "" : " hidden");
-        ++*lines;
-        DumpTree(b, c, depth + 1, lines);
-    }
+// ── where the rows are: the clip that holds slot0 .. slotN ───────────────
+
+struct ClipCand {
+    uint32_t inst = 0;
+    int depth = 0;
+    int slots = 0;  // slot0 .. slot23 clips it has
+    int shown = 0;  // of them with alpha
+};
+
+bool SlotName(int i, char* name, size_t cap) {
+    if (i < 0 || i >= kMaxSlots) return false;
+    std::snprintf(name, cap, "slot%d", i);
+    return true;
 }
 
-// The clip that holds the rows: root.screen.menu (the pause movie's, ui_palette.cpp PauseMenuClip), else root.menu, else root.screen.
-uint32_t MenuClipOf(const uint8_t* b, const larecomp::swf::Movie& mv) {
-    const uint32_t screen = larecomp::swf::FindChild(b, mv.root, "screen");
-    if (screen) {
-        if (const uint32_t menu = larecomp::swf::FindChild(b, screen, "menu")) return menu;
-    }
-    if (const uint32_t menu = larecomp::swf::FindChild(b, mv.root, "menu")) return menu;
-    return screen;
-}
-
-// The slots of the movie's menu as the layout wants them. `scroll` is added to the slot's number to give the list's row. Returns the number of slots found (shown or not).
-int ReadSlots(const uint8_t* b, const char* movie_name, int scroll, mm::SlotIn* out, bool* movie_up) {
-    *movie_up = false;
-    larecomp::swf::Movie mv;
-    if (!larecomp::swf::FindMovie(b, movie_name, mv) || !mv.enabled) return 0;
-    *movie_up = true;
-    const uint32_t menu = MenuClipOf(b, mv);
-    if (!menu) return 0;
-    const uint32_t slots_a = larecomp::swf::FindChild(b, menu, "slotsA");
-    if (!slots_a) return 0;
-    int found = 0;
+ClipCand CountSlots(const uint8_t* b, uint32_t clip) {
+    ClipCand c;
+    c.inst = clip;
     for (int i = 0; i < kMaxSlots; ++i) {
         char name[8];
-        std::snprintf(name, sizeof(name), "slot%d", i);
-        const uint32_t slot = larecomp::swf::FindChild(b, slots_a, name);
+        SlotName(i, name, sizeof(name));
+        const uint32_t slot = larecomp::swf::FindChild(b, clip, name);
+        if (!slot) continue;
+        ++c.slots;
+        if (Alpha(b, slot)) ++c.shown;
+    }
+    return c;
+}
+
+// The names from the root down to `inst` joined with dots ("screen.menu.slotsA"); the root itself is left out.
+void PathOf(const uint8_t* b, uint32_t inst, char* out, size_t cap) {
+    uint32_t chain[16];
+    int n = 0;
+    for (uint32_t cur = inst; cur && Plausible(cur) && n < 16; cur = R32(b, cur + kInstParent)) chain[n++] = cur;
+    out[0] = 0;
+    size_t used = 0;
+    for (int i = n - 2; i >= 0; --i) {  // chain[n - 1] is the root
+        char nm[40];
+        NameOf(b, chain[i], nm, sizeof(nm));
+        const int w = std::snprintf(out + used, cap - used, "%s%s", used ? "." : "", nm);
+        if (w < 0 || size_t(w) >= cap - used) break;
+        used += size_t(w);
+    }
+    if (n == 1) std::snprintf(out, cap, "(root)");
+}
+
+// Every clip of the movie (breadth first, a few levels down) that has a child called slot0: where a list's rows may be. The pause movie's is root.screen.menu.slotsA; the garage's may be
+// another (a page with tabs has its own): they are all found and every one is tried against the list or UIMenu.
+int FindSlotsClips(const uint8_t* b, uint32_t root, ClipCand* out, int cap) {
+    int n = 0;
+    constexpr int kQueue = 1536;
+    constexpr int kMaxDepth = 6;
+    static thread_local uint32_t queue[kQueue];
+    static thread_local int depth[kQueue];
+    int head = 0, tail = 0;
+    queue[tail] = root;
+    depth[tail++] = 0;
+    while (head < tail && n < cap) {
+        const uint32_t cur = queue[head];
+        const int d = depth[head++];
+        if (larecomp::swf::FindChild(b, cur, "slot0")) {
+            out[n] = CountSlots(b, cur);
+            out[n].depth = d;
+            ++n;
+        }
+        if (d >= kMaxDepth) continue;
+        int guard = 0;
+        for (uint32_t c = R32(b, cur + kInstFirstChild); Plausible(c) && guard < 256 && tail < kQueue; c = R32(b, c + kInstNext), ++guard) {
+            queue[tail] = c;
+            depth[tail++] = d + 1;
+        }
+    }
+    return n;
+}
+
+// The candidates in the order to try them: the most shown slots first (a clip whose slots are all hidden is the page that went away), then the one called slotsA, then the most slots, the
+// shallowest. Returns how many are worth trying (any with a slot), `order` holds their indexes.
+int RankClips(const uint8_t* b, const ClipCand* c, int n, int* order) {
+    int score[8];
+    int m = 0;
+    for (int i = 0; i < n && i < 8; ++i) {
+        char nm[40];
+        NameOf(b, c[i].inst, nm, sizeof(nm));
+        score[i] = c[i].shown * 100 + (std::strcmp(nm, "slotsA") == 0 ? 50 : 0) + c[i].slots - c[i].depth;
+        order[m++] = i;
+    }
+    for (int i = 1; i < m; ++i) {  // insertion sort, best first
+        const int k = order[i];
+        int j = i - 1;
+        while (j >= 0 && score[order[j]] < score[k]) {
+            order[j + 1] = order[j];
+            --j;
+        }
+        order[j + 1] = k;
+    }
+    return m;
+}
+
+// ── the movie's scale onto the screen ───────────────────────────────────
+
+struct Display {
+    float w = 0.0f, h = 0.0f, kx = 0.0f, ky = 0.0f;  // the game's display state (the width and height the movie is drawn into, and its two factors)
+    float frame_w = 0.0f, frame_h = 0.0f;            // the movie's frame
+};
+
+mm::StageScale ScaleOf(const uint8_t* b, const larecomp::swf::Movie& mv, Display* d) {
+    *d = Display{};
+    const uint32_t cell = R32(b, kDisplayPtrCell);
+    if (Plausible(cell)) {
+        d->w = float(int32_t(R32(b, cell + kDisplayW)));
+        d->h = float(int32_t(R32(b, cell + kDisplayH)));
+        d->kx = ReadGuestF32(b, cell + kDisplayKx);
+        d->ky = ReadGuestF32(b, cell + kDisplayKy);
+    }
+    if (Plausible(mv.file)) {
+        d->frame_w = ReadGuestF32(b, mv.file + kFileFrameW);
+        d->frame_h = ReadGuestF32(b, mv.file + kFileFrameH);
+    }
+    return mm::FrameScale(d->w, d->kx, d->h, d->ky, d->frame_w, d->frame_h);
+}
+
+// ── the slots ───────────────────────────────────────────────────────────
+
+struct Slots {
+    uint32_t clip = 0;       // the clip that holds them
+    char path[96] = {};
+    int found = 0;           // the slot clips read (shown or not)
+    int shown = 0;           // of them visible
+    int world = 0;           // shown ones placed by the world matrix of the last draw (the rest by the fold)
+    mm::SlotIn in[kMaxSlots];  // .row is the slot's number: the caller adds the list's scroll
+};
+
+void ReadSlotsOf(const uint8_t* b, uint32_t clip, const mm::StageScale& scale, Slots* out) {
+    *out = Slots{};
+    out->clip = clip;
+    PathOf(b, clip, out->path, sizeof(out->path));
+    for (int i = 0; i < kMaxSlots; ++i) {
+        char name[8];
+        SlotName(i, name, sizeof(name));
+        const uint32_t slot = larecomp::swf::FindChild(b, clip, name);
         if (!slot) continue;
         mm::SlotIn s;
-        s.row = i + scroll;
-        bool vis = false;
-        if (!ToStage(b, slot, &s.to_stage, &vis)) continue;
+        s.row = i;
+        bool vis = false, world = false;
+        if (!PlaceOf(b, slot, scale, &s.to_stage, &vis, &world)) continue;
         s.visible = vis;
-        s.child_right = vis ? ChildRight(b, slot) : 0.0f;
-        out[found++] = s;
+        s.child_right = vis ? ChildRight(b, slot) * std::fabs(s.to_stage.a) : 0.0f;
+        out->in[out->found++] = s;
+        if (vis) {
+            ++out->shown;
+            if (world) ++out->world;
+        }
     }
-    return found;
+}
+
+constexpr int kMaxClips = 3;  // the slot-holding clips of a movie that are tried (best ranked first)
+
+// The movie's slot-holding clips, best first, with their slots read. Returns how many.
+int ReadSlotClips(const uint8_t* b, const larecomp::swf::Movie& mv, const mm::StageScale& scale, Slots* out) {
+    ClipCand cands[8];
+    const int nc = FindSlotsClips(b, mv.root, cands, 8);
+    int order[8];
+    const int m = nc > 0 ? RankClips(b, cands, nc, order) : 0;
+    int n = 0;
+    for (int i = 0; i < m && n < kMaxClips; ++i) {
+        ReadSlotsOf(b, cands[order[i]].inst, scale, &out[n]);
+        if (out[n].found > 0) ++n;
+    }
+    return n;
 }
 
 // ── reading the menu ────────────────────────────────────────────────────
@@ -373,26 +573,94 @@ bool IsValueRow(const uint8_t* b, uint32_t list, int row) {
     return false;
 }
 
+struct ListRead {
+    bool ok = false;
+    int selected = -1;
+    int count = 0;       // the rows the list has, from the game's own count (sub_82631F88: the adapter's, the table's or the +180 half word)
+    int scroll = 0;
+    bool scrolls = false;
+    int max_rows = 0;    // the rows that fit (+188)
+    char why[96] = {};
+};
+
+// The game's own row count of a list (sub_82631F88): the vhsm state's (+196: the pause screen's own pages), else the table's (+192), else the half word at +180 (our pages). The first
+// run read only the half word, which is not the count for the pause screen's pages (CHECK: that is why the pause menu fell back).
+int RowCountOf(const uint8_t* b, uint32_t list) {
+    const uint32_t adapter = R32(b, list + kListAdapter);
+    const uint32_t table = R32(b, list + kListTable);
+    const mm::RowSource source = mm::RowSourceOf(adapter, table);
+    if (source == mm::RowSource::Packed) return int(R16(b, list + kListCount));
+    // The source's own count slot, called only if the object looks like one (a list that was freed or never filled must not be called through).
+    const uint32_t src = source == mm::RowSource::Adapter ? adapter : table;
+    const uint32_t fn = VSlot(b, src, source == mm::RowSource::Adapter ? kVfAdapterCount : kVfTableCount);
+    uint32_t n = 0;
+    if (!fn || !CallAt(fn, &n, src)) return -1;
+    return int(int32_t(n));
+}
+
 // A live mcListViewFixed: the vtable has the select slot, the counts make sense.
-bool ReadList(const uint8_t* b, uint32_t list, int* selected, int* count, int* scroll) {
-    if (!HeapLike(list) || !VSlot(b, list, kVfSelectRow)) return false;
-    const int n = int(R16(b, list + kListCount));
+bool ReadList(const uint8_t* b, uint32_t list, ListRead* out) {
+    *out = ListRead{};
+    if (!HeapLike(list)) {
+        std::snprintf(out->why, sizeof(out->why), "not a heap address");
+        return false;
+    }
+    if (!VSlot(b, list, kVfSelectRow)) {
+        std::snprintf(out->why, sizeof(out->why), "no select slot (vtable 0x%08X)", R32(b, list));
+        return false;
+    }
+    // The renderer draws only an active list (the flag at +16: sub_8221CDD0, vfunc 60): the pause screen has the lists of several tabs and only one of them is on screen.
+    bool active = (R32(b, list + kObjFlags) & kObjActive) != 0;
+    if (const uint32_t is_active = VSlot(b, list, kVfIsActive)) {
+        uint32_t r = 0;
+        if (CallAt(is_active, &r, list)) active = (r & 0xFF) != 0;
+    }
+    if (!active) {
+        std::snprintf(out->why, sizeof(out->why), "not active (flags 0x%08X)", R32(b, list + kObjFlags));
+        return false;
+    }
+    const int n = RowCountOf(b, list);
     const int sel = int(int32_t(R32(b, list + kListSelect)));
-    if (n < 1 || n > 64 || sel < -1 || sel >= n) return false;
-    *count = n;
-    *selected = sel;
-    *scroll = R32(b, list + kListScrolls) ? int(int32_t(R32(b, list + kListScroll))) : 0;
-    return *scroll >= 0 && *scroll < n;
+    const bool scrolls = R32(b, list + kListScrolls) != 0;
+    const int scroll = scrolls ? int(int32_t(R32(b, list + kListScroll))) : 0;
+    switch (mm::JudgeList(true, n, sel, scrolls, scroll)) {
+        case mm::Verdict::BadCount:
+            std::snprintf(out->why, sizeof(out->why), "row count %d (adapter 0x%08X, table 0x%08X, half word %d)", n, R32(b, list + kListAdapter), R32(b, list + kListTable), int(R16(b, list + kListCount)));
+            return false;
+        case mm::Verdict::BadHighlight: std::snprintf(out->why, sizeof(out->why), "highlight %d of %d rows", sel, n); return false;
+        case mm::Verdict::BadScroll: std::snprintf(out->why, sizeof(out->why), "scroll %d of %d rows", scroll, n); return false;
+        default: break;
+    }
+    out->count = n;
+    out->selected = sel;
+    out->scrolls = scrolls;
+    out->scroll = scroll;
+    out->max_rows = int(int32_t(R32(b, list + kListMaxRows)));
+    out->ok = true;
+    return true;
 }
 
 // A live UIMenu of the game's own class. The highlighted row comes from its vfunc; the rows are counted through "the child shown on row N" until it names none.
-bool ReadUiMenu(const uint8_t* b, uint32_t menu, int* selected, int* count) {
-    if (!HeapLike(menu) || R32(b, menu) != kUiMenuVtable) return false;
+bool ReadUiMenu(const uint8_t* b, uint32_t menu, int* selected, int* count, char* why, size_t why_cap) {
+    if (!HeapLike(menu)) {
+        std::snprintf(why, why_cap, "not a heap address");
+        return false;
+    }
+    if (R32(b, menu) != kUiMenuVtable) {
+        std::snprintf(why, why_cap, "vtable 0x%08X is not the UIMenu class 0x%08X", R32(b, menu), kUiMenuVtable);
+        return false;
+    }
     const uint32_t sel_fn = VSlot(b, menu, kUiMenuSelectedVfunc);
     const uint32_t child_fn = VSlot(b, menu, kUiMenuChildAtVfunc);
-    if (!sel_fn || !child_fn) return false;
+    if (!sel_fn || !child_fn) {
+        std::snprintf(why, why_cap, "no highlight / child slots");
+        return false;
+    }
     uint32_t sel = 0;
-    if (!CallAt(sel_fn, &sel, menu)) return false;
+    if (!CallAt(sel_fn, &sel, menu)) {
+        std::snprintf(why, why_cap, "the highlight slot cannot be called");
+        return false;
+    }
     int n = 0;
     for (; n < kMaxMenuRows; ++n) {
         uint32_t child = 0;
@@ -400,52 +668,208 @@ bool ReadUiMenu(const uint8_t* b, uint32_t menu, int* selected, int* count) {
     }
     *selected = int(int32_t(sel));
     *count = n;
-    return n >= 1 && n < kMaxMenuRows && *selected >= -1 && *selected < n;
+    switch (mm::JudgeUiMenu(n, *selected, kMaxMenuRows)) {
+        case mm::Verdict::BadCount: std::snprintf(why, why_cap, "%d rows", n); return false;
+        case mm::Verdict::BadHighlight: std::snprintf(why, why_cap, "highlight %d of %d rows", *selected, n); return false;
+        default: return true;
+    }
 }
 
-// Reads whatever menu is up. Always fills `view.movie`; `view.kind` is None when nothing readable is there (a fallback menu).
-//   PAUSEMOVIE        the list the game rendered last (the pause pages and every settings page are lists in this movie; no other movie holds one);
-//   any other movie   the UIMenu FlashNavigator filled last, and only when the movie shows slots at all (the clip tree is read first: no call is made into a menu object for a
-//                     screen that has no rows to point at).
+void Note(MenuView& v, const char* fmt, ...) {
+    const size_t used = std::strlen(v.why);
+    if (used + 2 >= sizeof(v.why)) return;
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(v.why + used, sizeof(v.why) - used, fmt, ap);
+    va_end(ap);
+}
+
+// The rows the layout names, as "a..b" (for the log).
+void RowRange(const mm::Layout& l, int* lo, int* hi) {
+    *lo = l.n ? l.rows[0].row : -1;
+    *hi = l.n ? l.rows[l.n - 1].row : -1;
+}
+
+// Reads whatever menu is up. Always fills `view.movie` and, when anything was rendered, `view.obj` (the first candidate); `view.kind` is None when nothing readable is there (a fallback menu)
+// and `view.why` says what each candidate lacked.
+//   candidates   PAUSEMOVIE: the list of the page of ours on top (exact), else the list the game rendered last (the pause screen's pages and every settings page are lists in this movie).
+//                any other movie: the list and the UIMenu FlashNavigator filled, the later one first (the garage has both: its main menu is a UIMenu, its customization pages are lists).
+//   a candidate  is taken when the clip tree shows rows the list draws (its window) or rows the UIMenu has, in a layout that passes Plausible.
+//   the model    PAUSEMOVIE only, when the movie has no slot clips at all and the list reads: the rows are put where the pictures have them (mm::ModelLayout).
 void ReadMenu(const uint8_t* b, MenuView& view) {
     view = MenuView{};
     larecomp::keyboard::CurrentMovieName(view.movie, sizeof(view.movie));
     if (!view.movie[0]) return;
 
     const bool pause_movie = std::strcmp(view.movie, "PAUSEMOVIE") == 0;
-    int selected = -1, count = 0, scroll = 0;
-    uint32_t obj = 0;
+    uint32_t list = 0, ui = 0;
     if (pause_movie) {
-        obj = PauseMenuLastList();
-        if (!obj || !ReadList(b, obj, &selected, &count, &scroll)) return;
-        view.kind = Kind::List;
+        list = PauseMenuTopOurList();
+        if (!list) list = PauseMenuLastList();
     } else {
-        obj = PauseMenuLastUiMenu();
-        if (!obj || obj == g_state.gave_up_obj) return;
-        view.kind = Kind::UiMenu;
+        list = PauseMenuLastList();
+        ui = PauseMenuLastUiMenu();
+        if (ui && ui == g_state.gave_up_obj) {
+            Note(view, "UIMenu 0x%08X was given up on (its arrows did not move the highlight); ", ui);
+            ui = 0;
+        }
     }
-    view.obj = obj;
-
-    mm::SlotIn slots[kMaxSlots];
-    bool movie_up = false;
-    const int found = ReadSlots(b, view.movie, scroll, slots, &movie_up);
-    if (!movie_up || found == 0) {
-        view.kind = Kind::None;
+    struct Cand {
+        Kind kind;
+        uint32_t obj;
+    } cands[2];
+    int nc = 0;
+    const bool list_first = mm::ListIsLater(PauseMenuLastListSeq(), PauseMenuLastUiMenuSeq());
+    const auto add = [&](Kind k, uint32_t obj) {
+        if (obj) cands[nc++] = Cand{k, obj};
+    };
+    if (list_first) {
+        add(Kind::List, list);
+        add(Kind::UiMenu, ui);
+    } else {
+        add(Kind::UiMenu, ui);
+        add(Kind::List, list);
+    }
+    if (nc == 0) {
+        Note(view, "no list or UIMenu was rendered yet");
         return;
     }
-    view.layout = mm::BuildLayout(slots, found, float(REXCVAR_GET(menu_mouse_row_width)), float(REXCVAR_GET(menu_mouse_row_offset)));
-    if (view.kind == Kind::UiMenu && view.layout.n > 0) {
-        if (!ReadUiMenu(b, obj, &selected, &count)) {
-            view.kind = Kind::None;
+    view.obj = cands[0].obj;
+
+    larecomp::swf::Movie mv;
+    if (!larecomp::swf::FindMovie(b, view.movie, mv) || !mv.enabled) {
+        Note(view, "the movie is not registered or not enabled");
+        return;
+    }
+    Display display;
+    const mm::StageScale scale = ScaleOf(b, mv, &display);
+    view.scale = scale;
+    view.scale_known = true;
+    Slots clips[kMaxClips];
+    const int nclips = ReadSlotClips(b, mv, scale, clips);
+    if (nclips > 0) {
+        Note(view, "clips:");
+        for (int i = 0; i < nclips; ++i) Note(view, " %s (%d slots, %d shown)", clips[i].path, clips[i].found, clips[i].shown);
+        Note(view, "; ");
+    } else {
+        Note(view, "no clip with slot0..slotN in the movie; ");
+    }
+    // The clip a layout was taken from, for the report.
+    const auto take_clip = [&](const Slots& sl) {
+        std::snprintf(view.clip, sizeof(view.clip), "%s", sl.path);
+        view.clip_slots = sl.found;
+        view.clip_shown = sl.shown;
+        view.clip_world = sl.world;
+    };
+
+    ListRead model_list;
+    uint32_t model_obj = 0;
+    for (int i = 0; i < nc; ++i) {
+        const Cand& c = cands[i];
+        if (c.kind == Kind::List) {
+            ListRead lr;
+            if (!ReadList(b, c.obj, &lr)) {
+                Note(view, "list 0x%08X: %s; ", c.obj, lr.why);
+                continue;
+            }
+            int first = 0, end = 0;
+            mm::ListWindow(lr.count, lr.scrolls, lr.scroll, lr.max_rows, &first, &end);
+            if (!model_obj) {
+                model_list = lr;
+                model_obj = c.obj;
+            }
+            if (nclips == 0) {
+                Note(view, "list 0x%08X reads (%d rows, highlight %d, window %d..%d) but there are no slot clips; ", c.obj, lr.count, lr.selected, first, end - 1);
+                continue;
+            }
+            // Every slot clip against this list: the one whose shown rows are rows the list draws, in a layout of text rows.
+            for (int ci = 0; ci < nclips; ++ci) {
+                const Slots& sl = clips[ci];
+                mm::SlotIn shifted[kMaxSlots];
+                for (int k = 0; k < sl.found; ++k) {
+                    shifted[k] = sl.in[k];
+                    shifted[k].row += lr.scroll;
+                }
+                const mm::Layout lay = mm::BuildLayout(shifted, sl.found, float(REXCVAR_GET(menu_mouse_row_width)), float(REXCVAR_GET(menu_mouse_row_offset)));
+                int lo, hi;
+                RowRange(lay, &lo, &hi);
+                if (!mm::SlotsMatchList(lay, first, end)) {
+                    if (ci == 0) Note(view, "list 0x%08X (%d rows, highlight %d, window %d..%d): the best clip shows rows %d..%d; ", c.obj, lr.count, lr.selected, first, end - 1, lo, hi);
+                    continue;
+                }
+                if (!mm::Plausible(lay)) {
+                    if (ci == 0)
+                        Note(view, "list 0x%08X: the layout of clip %s is not a list of text rows (%d rows, pitch %.1f, first row stage (%.1f, %.1f)); ", c.obj, sl.path, lay.n, lay.pitch,
+                            lay.n ? lay.rows[0].x0 : 0.0f, lay.n ? lay.rows[0].y0 : 0.0f);
+                    continue;
+                }
+                take_clip(sl);
+                view.kind = Kind::List;
+                view.obj = c.obj;
+                view.selected = lr.selected;
+                view.count = lr.count;
+                view.layout = lay;
+                view.rows_known = true;
+                return;
+            }
+            continue;
+        }
+        // A UIMenu: only when the movie shows slots at all (no call is made into a menu object for a screen with no rows to point at).
+        if (nclips == 0) {
+            Note(view, "UIMenu 0x%08X not read (no slot clips); ", c.obj);
+            continue;
+        }
+        int selected = -1, count = 0;
+        char why[96] = {};
+        if (!ReadUiMenu(b, c.obj, &selected, &count, why, sizeof(why))) {
+            Note(view, "UIMenu 0x%08X: %s; ", c.obj, why);
+            continue;
+        }
+        for (int ci = 0; ci < nclips; ++ci) {
+            const Slots& sl = clips[ci];
+            const mm::Layout lay = mm::BuildLayout(sl.in, sl.found, float(REXCVAR_GET(menu_mouse_row_width)), float(REXCVAR_GET(menu_mouse_row_offset)));
+            bool inside = lay.n > 0;
+            for (int k = 0; k < lay.n; ++k) inside = inside && lay.rows[k].row < count;
+            int lo, hi;
+            RowRange(lay, &lo, &hi);
+            if (!inside) {
+                if (ci == 0) Note(view, "UIMenu 0x%08X (%d rows, highlight %d): the best clip shows rows %d..%d; ", c.obj, count, selected, lo, hi);
+                continue;
+            }
+            if (!mm::Plausible(lay)) {
+                if (ci == 0)
+                    Note(view, "UIMenu 0x%08X: the layout of clip %s is not a list of text rows (%d rows, pitch %.1f, first row stage (%.1f, %.1f)); ", c.obj, sl.path, lay.n, lay.pitch,
+                        lay.n ? lay.rows[0].x0 : 0.0f, lay.n ? lay.rows[0].y0 : 0.0f);
+                continue;
+            }
+            take_clip(sl);
+            view.kind = Kind::UiMenu;
+            view.obj = c.obj;
+            view.selected = selected;
+            view.count = count;
+            view.layout = lay;
+            view.rows_known = true;
             return;
         }
     }
-    view.selected = selected;
-    view.count = count;
-    // Every row the layout names has to exist in the list.
-    bool inside = true;
-    for (int i = 0; i < view.layout.n; ++i) inside = inside && view.layout.rows[i].row < count;
-    view.rows_known = inside && mm::Plausible(view.layout);
+
+    // Nothing the clip tree confirms. The pause movie's pages with no slot clips at all: the model.
+    if (pause_movie && nclips == 0 && model_obj) {
+        int first = 0, end = 0;
+        mm::ListWindow(model_list.count, model_list.scrolls, model_list.scroll, model_list.max_rows, &first, &end);
+        const mm::ModelPage page = PauseMenuIsOurList(model_obj) ? mm::ModelPage::Settings : mm::ModelPage::Hub;
+        const mm::Layout lay = mm::ModelLayout(first, end - first, page);
+        if (mm::Plausible(lay)) {
+            view.kind = Kind::List;
+            view.obj = model_obj;
+            view.selected = model_list.selected;
+            view.count = model_list.count;
+            view.layout = lay;
+            view.rows_known = true;
+            view.model = true;
+            Note(view, "rows %d..%d from the model of a %s page; ", first, end - 1, page == mm::ModelPage::Settings ? "settings" : "pause");
+        }
+    }
 }
 
 // ── pressing ────────────────────────────────────────────────────────────
@@ -505,28 +929,213 @@ mm::HudRect HudNow(rex::ui::Window* window) {
     return mm::HudOf(mc::ultrawide::FrameFor(w, h), mc::ultrawide::UiWidthFraction(), mc::ultrawide::UiHeightFraction());
 }
 
-void ReportMenu(const MenuView& view, const mm::HudRect& hud) {
+// How a menu was read: 0 = not (the fallback), 1 = rows from the movie's clip tree, 2 = rows from the model of the pause pages.
+int ReadState(const MenuView& view) { return view.rows_known ? (view.model ? 2 : 1) : 0; }
+
+// One line per menu and per way of reading it (a menu read another way later is reported again, up to a few times): `true` when a line was due, so the dump can follow it.
+bool ReportMenu(const MenuView& view, const mm::HudRect& hud) {
     State& s = g_state;
-    if (view.obj == s.reported_obj && int(view.kind) == s.reported_kind && std::strcmp(view.movie, s.reported_movie) == 0) return;
+    const int state = ReadState(view);
+    if (view.obj == s.reported_obj && int(view.kind) == s.reported_kind && state == s.reported_state && std::strcmp(view.movie, s.reported_movie) == 0) return false;
+    s.reports_of_obj = (view.obj == s.reported_obj && std::strcmp(view.movie, s.reported_movie) == 0) ? s.reports_of_obj + 1 : 1;
     s.reported_obj = view.obj;
     s.reported_kind = int(view.kind);
+    s.reported_state = state;
     std::snprintf(s.reported_movie, sizeof(s.reported_movie), "%s", view.movie);
+    if (s.reports_of_obj > 4) return false;  // the same menu flapping between ways of reading: the first few lines say it
     static const char* const kKind[] = {"unreadable", "list", "UIMenu"};
-    if (view.kind == Kind::None) {
-        MM_LOG("[menu-mouse] menu {}: FALLBACK (no list or UIMenu to read; hover off, click = ACCEPT)", view.movie);
-        return;
-    }
-    if (!view.rows_known) {
-        MM_LOG("[menu-mouse] menu {}: FALLBACK ({} 0x{:08X} {} rows, highlight {}; the clip tree gave {} shown slot(s), pitch {:.1f}, plausible {}; hover off, click = ACCEPT)", view.movie,
-            kKind[int(view.kind)], view.obj, view.count, view.selected, view.layout.n, view.layout.pitch, mm::Plausible(view.layout) ? "yes" : "no");
-        return;
+    if (state == 0) {
+        MM_LOG("[menu-mouse] menu {} (0x{:08X}): FALLBACK ({}; hover off, click = ACCEPT)", view.movie, view.obj, view.why[0] ? view.why : "nothing to read");
+        return true;
     }
     float px0, py0, px1, py1;
     mm::StageToWindow(hud, view.layout.rows[0].x0, view.layout.rows[0].y0, &px0, &py0);
     mm::StageToWindow(hud, view.layout.rows[0].x1, view.layout.rows[0].y1, &px1, &py1);
-    MM_LOG("[menu-mouse] menu {}: {} 0x{:08X}, {} rows, highlight {}, {} on screen (rows {}..{}), pitch {:.1f}, width {:.1f}; first row stage ({:.1f}, {:.1f}) = window ({:.0f}, {:.0f})-({:.0f}, {:.0f})", view.movie,
-        kKind[int(view.kind)], view.obj, view.count, view.selected, view.layout.n, view.layout.rows[0].row, view.layout.rows[view.layout.n - 1].row, view.layout.pitch, view.layout.width,
-        view.layout.rows[0].x0, view.layout.rows[0].y0, px0, py0, px1, py1);
+    char source[200];
+    if (view.model) {
+        std::snprintf(source, sizeof(source), "from the model of the pause pages (the movie has no slot clips)");
+    } else {
+        std::snprintf(source, sizeof(source), "from clip %s: %d of %d slot(s) shown, %d placed by the draw's matrices, scale %.3f x %.3f%s", view.clip, view.clip_shown, view.clip_slots, view.clip_world,
+            view.scale.x, view.scale.y, view.scale.applied ? "" : " (not applied)");
+    }
+    MM_LOG("[menu-mouse] menu {}: {} 0x{:08X}, {} rows, highlight {}, {} on screen (rows {}..{}), pitch {:.1f}, width {:.1f}; first row stage ({:.1f}, {:.1f}) = window ({:.0f}, {:.0f})-({:.0f}, {:.0f}); {}",
+        view.movie, kKind[int(view.kind)], view.obj, view.count, view.selected, view.layout.n, view.layout.rows[0].row, view.layout.rows[view.layout.n - 1].row, view.layout.pitch, view.layout.width,
+        view.layout.rows[0].x0, view.layout.rows[0].y0, px0, py0, px1, py1, source);
+    return true;
+}
+
+// ── the dump (menu_mouse_dump, menu_mouse_dump_new): what to read if a menu still falls back ──
+
+void DumpList(const uint8_t* b, const char* label, uint32_t list, uint32_t seq) {
+    if (!list) {
+        MC_INFO("[menu-mouse] dump: {} list: none", label);
+        return;
+    }
+    if (!Plausible(list)) {
+        MC_INFO("[menu-mouse] dump: {} list 0x{:08X}: not a guest address", label, list);
+        return;
+    }
+    ListRead lr;
+    const bool ok = ReadList(b, list, &lr);
+    char read[200];
+    if (ok) {
+        int first = 0, end = 0;
+        mm::ListWindow(lr.count, lr.scrolls, lr.scroll, lr.max_rows, &first, &end);
+        std::snprintf(read, sizeof(read), "reads: %d rows, highlight %d, window %d..%d", lr.count, lr.selected, first, end - 1);
+    } else {
+        std::snprintf(read, sizeof(read), "does not read: %s", lr.why);
+    }
+    MC_INFO("[menu-mouse] dump: {} list 0x{:08X} (rendered #{}, a page of ours: {}): vtable 0x{:08X}, select slot 0x{:08X}, flags 0x{:08X}; +176 rows 0x{:08X}, +180 0x{:08X}, +184 highlight {}, "
+            "+188 rows that fit {}, +192 table 0x{:08X}, +196 vhsm state 0x{:08X}, +256 scroll {} (+260 {}); {}",
+        label, list, seq, PauseMenuIsOurList(list) ? "yes" : "no", R32(b, list), VSlot(b, list, kVfSelectRow), R32(b, list + kObjFlags), R32(b, list + kListRows), R32(b, list + kListCount),
+        int32_t(R32(b, list + kListSelect)), R32(b, list + kListMaxRows), R32(b, list + kListTable), R32(b, list + kListAdapter), int32_t(R32(b, list + kListScroll)), R32(b, list + kListScrolls), read);
+    // The vhsm state a pause page's rows come from: its name (+20) and its first children's (the state's children at +44, each next at +36, as Hook_ListViewPopulate's diagnostics walk them).
+    const uint32_t adapter = R32(b, list + kListAdapter);
+    if (Plausible(adapter)) {
+        const auto text = [&](uint32_t ea, char* out, size_t cap) {
+            out[0] = 0;
+            const uint32_t np = Plausible(ea) ? R32(b, ea + 20) : 0;
+            size_t i = 0;
+            if (Plausible(np)) {
+                const char* nm = reinterpret_cast<const char*>(b + np);
+                for (; i + 1 < cap && nm[i] >= 0x20 && nm[i] < 0x7F; ++i) out[i] = nm[i];
+            }
+            out[i] = 0;
+        };
+        char name[48], kids[240];
+        text(adapter, name, sizeof(name));
+        size_t used = 0;
+        kids[0] = 0;
+        int guard = 0;
+        for (uint32_t c = R32(b, adapter + 44); Plausible(c) && guard < 10; c = R32(b, c + 36), ++guard) {
+            char nm[40];
+            text(c, nm, sizeof(nm));
+            const int w = std::snprintf(kids + used, sizeof(kids) - used, "%s%s", used ? ", " : "", nm);
+            if (w < 0 || size_t(w) >= sizeof(kids) - used) break;
+            used += size_t(w);
+        }
+        MC_INFO("[menu-mouse] dump: {} list's vhsm state 0x{:08X} '{}', children: {}", label, adapter, name, kids);
+    }
+}
+
+void DumpUiMenu(const uint8_t* b, uint32_t ui, uint32_t seq) {
+    if (!ui) {
+        MC_INFO("[menu-mouse] dump: UIMenu: none");
+        return;
+    }
+    if (!Plausible(ui)) {
+        MC_INFO("[menu-mouse] dump: UIMenu 0x{:08X}: not a guest address", ui);
+        return;
+    }
+    int selected = -1, count = 0;
+    char why[96] = {};
+    const bool ok = ReadUiMenu(b, ui, &selected, &count, why, sizeof(why));
+    MC_INFO("[menu-mouse] dump: UIMenu 0x{:08X} (filled #{}{}): vtable 0x{:08X}; {}", ui, seq, ui == g_state.gave_up_obj ? ", given up on" : "", R32(b, ui),
+        ok ? "reads (" + std::to_string(count) + " rows, highlight " + std::to_string(selected) + ")" : std::string("does not read: ") + why);
+}
+
+// The clips of a slot, by name.
+void KidNames(const uint8_t* b, uint32_t inst, char* out, size_t cap) {
+    out[0] = 0;
+    size_t used = 0;
+    int guard = 0;
+    for (uint32_t c = R32(b, inst + kInstFirstChild); Plausible(c) && guard < 8; c = R32(b, c + kInstNext), ++guard) {
+        char nm[40];
+        NameOf(b, c, nm, sizeof(nm));
+        const int w = std::snprintf(out + used, cap - used, "%s%s%s", used ? ", " : "", nm, Alpha(b, c) ? "" : " (hidden)");
+        if (w < 0 || size_t(w) >= cap - used) break;
+        used += size_t(w);
+    }
+}
+
+void DumpSlot(const uint8_t* b, uint32_t slot, int index, const mm::StageScale& scale) {
+    char nm[40];
+    NameOf(b, slot, nm, sizeof(nm));
+    const mm::Affine loc = LocalOf(b, slot);
+    mm::Affine world, fold;
+    bool vis_fold = false;
+    const bool world_ok = WorldOf(b, slot, &world);
+    const bool fold_ok = FoldToRoot(b, slot, &fold, &vis_fold);
+    mm::Affine st;
+    bool vis = false, from_world = false;
+    const bool placed = PlaceOf(b, slot, scale, &st, &vis, &from_world);
+    char kids[160];
+    KidNames(b, slot, kids, sizeof(kids));
+    MC_INFO("[menu-mouse] dump:     {} (#{}) @0x{:08X} alpha {} dirty {}: local ({:.1f}, {:.1f}), world {} ({:.2f} {:.2f} {:.2f} {:.2f}; {:.1f}, {:.1f}), fold {} ({:.1f}, {:.1f}) -> stage {} ({:.1f}, {:.1f}){}; children: {}",
+        nm, index, slot, int(Alpha(b, slot)), int(b[slot + kInstDirty]), loc.tx, loc.ty, world_ok ? "ok" : "unusable", world.a, world.b, world.c, world.d, world.tx, world.ty,
+        fold_ok ? "ok" : "broken", fold.tx, fold.ty, placed ? (from_world ? "by world" : "by fold") : "none", st.tx, st.ty, vis ? "" : " hidden", kids);
+}
+
+// The dump: candidates, then the movie (its frame and scale, an outline of the clip tree two levels down), then every clip that holds slots with its first slots in full.
+void DumpMenu(const uint8_t* b, const MenuView& view) {
+    ++g_state.dumps;
+    MC_INFO("[menu-mouse] dump #{}: menu {} (read as {}: {}){}", g_state.dumps, view.movie, view.kind == Kind::None ? "a fallback" : (view.model ? "the model" : "the clip tree"),
+        view.kind == Kind::List ? "list" : (view.kind == Kind::UiMenu ? "UIMenu" : "nothing"), view.why[0] ? std::string("; ") + view.why : std::string());
+    DumpList(b, "top of ours", PauseMenuTopOurList(), 0);
+    DumpList(b, "last rendered", PauseMenuLastList(), PauseMenuLastListSeq());
+    DumpUiMenu(b, PauseMenuLastUiMenu(), PauseMenuLastUiMenuSeq());
+
+    larecomp::swf::Movie mv;
+    if (!view.movie[0] || !larecomp::swf::FindMovie(b, view.movie, mv)) {
+        MC_INFO("[menu-mouse] dump: movie {} is not registered", view.movie);
+        return;
+    }
+    Display d;
+    const mm::StageScale scale = ScaleOf(b, mv, &d);
+    MC_INFO("[menu-mouse] dump: movie {}: entry 0x{:08X} ctx 0x{:08X} file 0x{:08X} root 0x{:08X} enabled {}; frame {:.1f} x {:.1f}, display {:.0f} x {:.0f} (k {:.3f} x {:.3f}) -> scale {:.4f} x {:.4f}{}", view.movie,
+        mv.entry, mv.ctx, mv.file, mv.root, mv.enabled, d.frame_w, d.frame_h, d.w, d.h, d.kx, d.ky, scale.x, scale.y, scale.applied ? "" : " (not applied: numbers missing)");
+    // The file's first words around the frame, in case +36 / +44 are not the frame.
+    if (Plausible(mv.file)) {
+        char words[200];
+        size_t used = 0;
+        for (uint32_t o = 24; o <= 60 && used + 24 < sizeof(words); o += 4) {
+            const int w = std::snprintf(words + used, sizeof(words) - used, "+%u=%08X/%.1f ", o, R32(b, mv.file + o), ReadGuestF32(b, mv.file + o));
+            if (w < 0) break;
+            used += size_t(w);
+        }
+        MC_INFO("[menu-mouse] dump: swfFILE words (hex/float): {}", words);
+    }
+
+    // The outline: the root's children, theirs and theirs again, names and places only.
+    int lines = 0;
+    const auto outline = [&](auto&& self, uint32_t inst, int depth) -> void {
+        int guard = 0;
+        for (uint32_t c = R32(b, inst + kInstFirstChild); Plausible(c) && guard < 60 && lines < 150; c = R32(b, c + kInstNext), ++guard) {
+            char nm[40];
+            NameOf(b, c, nm, sizeof(nm));
+            mm::Affine st;
+            bool vis = false, from_world = false;
+            const bool placed = PlaceOf(b, c, scale, &st, &vis, &from_world);
+            MC_INFO("[menu-mouse] dump: tree {:>{}}{} @0x{:08X} alpha {} stage ({:.1f}, {:.1f}){}{}", "", depth * 2, nm, c, int(Alpha(b, c)), placed ? st.tx : 0.0f, placed ? st.ty : 0.0f,
+                placed ? (from_world ? "" : " (fold)") : " (no place)", vis ? "" : " hidden");
+            ++lines;
+            if (depth < 2) self(self, c, depth + 1);
+        }
+    };
+    outline(outline, mv.root, 0);
+
+    // The clips that hold slots.
+    ClipCand cands[8];
+    const int nc = FindSlotsClips(b, mv.root, cands, 8);
+    if (nc == 0) MC_INFO("[menu-mouse] dump: no clip of {} has a child called slot0 (searched {} levels down)", view.movie, 6);
+    int order[8] = {};
+    const int ranked = nc ? RankClips(b, cands, nc, order) : 0;
+    for (int r = 0; r < ranked; ++r) {
+        const int i = order[r];
+        char path[96];
+        PathOf(b, cands[i].inst, path, sizeof(path));
+        MC_INFO("[menu-mouse] dump: slots clip #{} {} @0x{:08X}: {} slot(s), {} shown, depth {}{}", r + 1, path, cands[i].inst, cands[i].slots, cands[i].shown, cands[i].depth,
+            r < kMaxClips ? " (tried against the list / UIMenu)" : "");
+        int shown_lines = 0;
+        for (int k = 0; k < kMaxSlots && shown_lines < 8; ++k) {
+            char name[8];
+            SlotName(k, name, sizeof(name));
+            const uint32_t slot = larecomp::swf::FindChild(b, cands[i].inst, name);
+            if (!slot) continue;
+            DumpSlot(b, slot, k, scale);
+            ++shown_lines;
+        }
+    }
 }
 
 // Moves the highlight of the list to `row`: the list's own select slot, the scroll sound when it changes. False when the call could not be made.
@@ -574,6 +1183,8 @@ void Tick(uint8_t* b) {
         if (s.queued || s.pending.active || s.walk_target >= 0 || s.wheel.Pending() != 0) ResetWork();
         s.reported_obj = 0;
         s.reported_kind = -1;
+        s.reported_state = -1;
+        s.reports_of_obj = 0;
         s.reported_movie[0] = 0;
         s.gave_up_obj = 0;
         return;
@@ -581,23 +1192,23 @@ void Tick(uint8_t* b) {
 
     s.wheel.Add(wheel_units);
     const bool dump = REXCVAR_GET(menu_mouse_dump);
+    const bool dump_new = REXCVAR_GET(menu_mouse_dump_new);
     if (!dump) s.dump_armed = true;
-    const bool work = moved || left_clicks || right_clicks || s.wheel.HasStep() || s.pending.active || s.walk_target >= 0 || s.queued || (dump && s.dump_armed);
+    // With the new-menu dump on, every menu is read when it comes up, not only when the pointer does something (a debug run).
+    const bool work = moved || left_clicks || right_clicks || s.wheel.HasStep() || s.pending.active || s.walk_target >= 0 || s.queued || (dump && s.dump_armed) || dump_new;
     if (!work) return;
 
     MenuView view;
     ReadMenu(b, view);
     const mm::HudRect hud = HudNow(window);
-    ReportMenu(view, hud);
+    const bool reported = ReportMenu(view, hud);
 
-    if (dump && s.dump_armed) {
+    // The dump: asked for (menu_mouse_dump), or a new menu was just reported (menu_mouse_dump_new, up to kMaxDumps a run). Only a movie name is needed: a menu that reads nothing is dumped too.
+    constexpr int kMaxDumps = 24;
+    const bool want_dump = (dump && s.dump_armed) || (dump_new && reported);
+    if (want_dump && (s.dumps < kMaxDumps || (dump && s.dump_armed))) {
         s.dump_armed = false;
-        larecomp::swf::Movie mv;
-        if (view.movie[0] && larecomp::swf::FindMovie(b, view.movie, mv)) {
-            MC_INFO("[menu-mouse] tree of {} (root 0x{:08X}, enabled {}):", view.movie, mv.root, mv.enabled);
-            int lines = 0;
-            DumpTree(b, mv.root, 0, &lines);
-        }
+        DumpMenu(b, view);
     }
 
     int32_t mx, my;
