@@ -82,6 +82,17 @@ constexpr uint32_t kRetryMs = 100;
 
 bool Flag(const char* name) { return rex::cvar::GetFlagByName(name) == "true"; }
 
+// The log's word on which display mode runs, once at the start and again at every change ("[display] DISPLAY
+// MODE: FULLSCREEN"): nothing else in the log says whether a run is a window, BORDERLESS or FULLSCREEN, and
+// the owner's and Mz's logs need to.
+void LogMode(Mode mode) {
+  static std::atomic<int> last{-1};
+  if (last.exchange(int(mode)) == int(mode)) return;
+  MC_INFO("[display] DISPLAY MODE: {}", mode == Mode::kWindowed     ? "WINDOWED"
+                                        : mode == Mode::kBorderless ? "BORDERLESS"
+                                                                    : "FULLSCREEN");
+}
+
 void ScheduleApply(int pass);
 
 void SettingChanged(std::string_view, std::string_view) { ScheduleApply(0); }
@@ -705,7 +716,9 @@ void ApplyNow(int pass) {
   if (!window || !hwnd) return;
   bool changed = false;
   bool not_yet = false;
-  switch (WantedMode()) {
+  const Mode mode = WantedMode();
+  LogMode(mode);
+  switch (mode) {
     case Mode::kWindowed: {
       RestoreDesktopMode("the window is a window", false);
       if (window->IsFullscreen()) {
@@ -971,6 +984,7 @@ void ApplyNow(int pass) {
   rex::ui::Window* window = g_window.load();
   if (!window) return;
   bool again = false;
+  LogMode(WantedMode());
   if (WantedMode() == Mode::kWindowed) {
     if (window->IsFullscreen()) {
       window->SetFullscreen(false);
