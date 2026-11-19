@@ -1503,7 +1503,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         ANTI-LAG 2 where the GPU has one (kVideoItems, LowLatencyMenuRows)
 //   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
-//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR (kImageQualityItems)
+//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
 //                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS (kLightItems)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
@@ -1977,10 +1977,13 @@ const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
 const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
 // IMAGE QUALITY (GRAPHICS > IMAGE QUALITY): how the picture is smoothed, filtered and focused, in this order: MSAA, POST AA, ANISOTROPIC,
-// DEPTH OF FIELD, MOTION BLUR. One ANISOTROPIC row per renderer (the same name and place), MSAA on both (the row's own mechanism per renderer,
-// kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR are the game's own switches (disable_dof, disable_motion_blur:
-// picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are on both renderers. 5 rows.
-// Width: the longest label is "POST AA (FSR 3.1 ON)" (20) and the longest value "SMAA" (4): 24 of the 41 a page can take.
+// DEPTH OF FIELD, MOTION BLUR, and then the two rows of the UI's own sharpness: SHARP UI and SHARP MINIMAP. One ANISOTROPIC row per renderer (the same
+// name and place), MSAA on both (the row's own mechanism per renderer, kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR
+// are the game's own switches (disable_dof, disable_motion_blur: picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are
+// on both renderers. SHARP UI (mcla_ui_sharp) reads the HUD's and the menus' bitmaps with a sharper filter, SHARP MINIMAP (mcla_ui_minimap_scale) draws
+// the minimap, the phone's screen and the menus' page at the render scale instead of the console's size (gpu/ui_sharp.h, side_view_ui_map.cpp). Both are
+// NATIVE only, ON by default and live, and change nothing at 720p (a render scale below 1.25x). 7 rows.
+// Width: the longest label is "POST AA (FSR 3.1 ON)" (20), then "SHARP MINIMAP" (13), and the longest value "SMAA" (4): 24 of the 41 a page can take.
 const ItemDef kImageQualityItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
@@ -1997,6 +2000,13 @@ const ItemDef kImageQualityItems[] = {
                    kXeniaAnisoVals, kXeniaAnisoNames, 7)),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",       "MOTION BLUR: ",    true),
+#if defined(LARECOMP_HAS_GPU)
+    // The HUD's and the menus' art, sharper where the render scale blows the console's 720p bitmaps up (1080p and 4K windows): the fetch of the
+    // bitmaps (SHARP UI) and the views the game draws at fixed sizes (SHARP MINIMAP: the minimap, the phone's screen, the menus' page). ON by
+    // default; the same picture as the game's at 720p. Live: the targets are remade at the next frame boundary.
+    NativeOnly(Bool("PM_RxSharpUi",      "mcla_ui_sharp",             "SHARP UI: ")),
+    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale",     "SHARP MINIMAP: ")),
+#endif
 };
 
 // LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
@@ -2546,7 +2556,7 @@ const MenuDef kMenus[] = {
      nullptr, 0,
      UpscalingPageRows, false, UpscalingMenuRelayout},
 #endif
-    {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering and blur.",
+    {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering, sharp UI.",
      "RxImageQualityMenu",
      kImageQualityItems, int(sizeof(kImageQualityItems) / sizeof(kImageQualityItems[0]))},
     {"PM_RxTabLighting", "LIGHTING AND SHADOWS", "Shadows, occlusion and bounce light.",
@@ -2929,8 +2939,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // (NOT WORKING)" (28; "RESOLUTION (7680X4320)" is 22, 23 at five digits across, display_menu.h) and its
 // widest value 10 (the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and
 // "AUTO (OFF)"): 38 together.
-// IMAGE QUALITY (kImageQualityItems, 5 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
-// FIELD" 14, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
+// IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
+// FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
 // LIGHTING AND SHADOWS (kLightItems, 11 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
 // "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO

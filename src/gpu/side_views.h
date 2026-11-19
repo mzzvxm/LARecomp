@@ -169,8 +169,14 @@ SideScales Wanted(Scale output);
 // `side` with the classes that follow the output moved to `output` (or back to the guest's size when they are not enabled): what a change of the render
 // scale makes of the scales the classes stand at, so that it is one step with the images of the screen.
 SideScales FollowOutput(const SideScales& side, Scale output);
-// The scale a class that follows the output is made at for a screen scale of `output`: never below the guest's size.
-inline Scale OutputScale(Scale output) { return output.n > Scale::kDenominator ? output : Scale{}; }
+// The screen's scale a class that follows it must reach before it leaves the guest's size, in twentieths: 1.25x, the render scale from which the UI
+// sharpening calls a bitmap magnified (ui_sharp.h kMinMagnification; side_view_ui_map.cpp asserts they agree). Round 2 took any scale above 1x; at 1.05x
+// a 220 pixel view made 231 pixels wide buys nothing and costs a remade target, and at 720p (render scale 1x) the class never moves, so that picture is the
+// game's own whatever the setting says.
+inline constexpr uint32_t kFollowMinScale = 25;
+// The scale a class that follows the output is made at for a screen scale of `output`: the screen's when that is at least kFollowMinScale, else the
+// guest's size.
+inline Scale OutputScale(Scale output) { return output.n >= kFollowMinScale ? output : Scale{}; }
 // A class's setting resolved, and its text for the pause menu's row ("AUTO (HIGH)").
 SideLevel LevelOf(SideView view);
 std::string AutoLabel(SideView view);

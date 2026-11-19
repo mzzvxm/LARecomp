@@ -97,7 +97,7 @@ constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
-// The UI sharpening (ui_sharp.h): 0 is the game's own, 1 on, 2 a harder edge. A Dbl row shows 0 as OFF.
+// The UI sharpening's strength (ui_sharp.h, mcla_ui_sharp_strength): 1 is the default, 0.5 half of it, 2 a harder edge; 0 does nothing (the Dbl row shows it as NONE).
 constexpr double kUiSharpVals[]           = {0.0, 0.5, 1.0, 1.5, 2.0};
 // The share of the game's own UI the picture shows (the trailer toolkit's HUD fade); 1 is the game's frame.
 constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
@@ -159,14 +159,10 @@ const ItemDef kDebugFixesItems[] = {
     // The auto-exposure measures the same screen area above a render scale of 1x as at 1x (its sample pass's
     // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
     NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
-    // The HUD and menu bitmaps, made for the console's 720p picture, read with a sharper filter where a 1080p or 4K window magnifies
-    // them (Catmull-Rom colour, a steeper alpha edge): a prototype, off by default (ui_sharp.h). Read at each UI draw, so the row is
-    // live; the first time it shows, the shaders are built. Needs the shader pack's variant file.
-    NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp", "UI SHARPEN: ",
-                   kUiSharpVals, Len(kUiSharpVals), "%g", "", "OFF")),
-    // The HUD's small render-to-texture views (the minimap's 220x220 picture, the phone screen's 256x256, a 128x128 one) drawn at the render scale instead of
-    // the game's sizes: sharper minimap and phone text at 1080p and 4K (gpu/side_view_ui_map.cpp). Live: the targets are remade at the next frame.
-    NativeOnly(Bool("PM_RxDbgUiMinimap", "mcla_ui_minimap_scale", "UI MINIMAP SIZE: ")),
+    // How hard the UI sharpening works (gpu/ui_sharp.h): the SHARP UI row on GRAPHICS > IMAGE QUALITY turns it on and off (mcla_ui_sharp, on by default,
+    // and SHARP MINIMAP is mcla_ui_minimap_scale); this is the strength for tuning, 1 the default, 2 a harder alpha edge. Read at each UI draw, so live.
+    NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp_strength", "UI SHARP STRENGTH: ",
+                   kUiSharpVals, Len(kUiSharpVals), "%g", "", "NONE")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
