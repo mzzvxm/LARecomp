@@ -990,9 +990,138 @@ void TestModelLayout() {
     CHECK(!Plausible(ModelLayout(0, 0, ModelPage::Hub)));
 }
 
+// The garage card against the numbers measured in run 4's pictures (2880 x 1620, stage = pixels / 2.25): the centres of the separator pairs (picture y) at three columns of the card
+// (picture x 2000 / 2200 / 2400), separators 0..4, in the two places the card rests in: A = the first visit (pictures tour_25..29), B = after a return from a sub-menu and for the pop-up
+// (tour_33..40). Each is the mean of the pair's two lines, tracked along the line to 0.1 picture pixel.
+struct SepRow {
+    float x_px;
+    float a[5];
+    float b[5];
+};
+const SepRow kSeps[] = {
+    {2000.0f, {523.8f, 573.1f, 622.2f, 671.4f, 720.4f}, {530.9f, 580.1f, 629.3f, 678.5f, 727.6f}},
+    {2200.0f, {515.6f, 566.4f, 617.1f, 667.9f, 718.5f}, {522.9f, 573.8f, 624.4f, 675.2f, 725.9f}},
+    {2400.0f, {507.6f, 560.1f, 612.1f, 664.4f, 716.5f}, {515.2f, 567.6f, 619.6f, 671.9f, 724.1f}},
+};
+
+void TestGarageCard() {
+    // Measured against the model: the model sits between the card's two resting places (3.3 stage pixels apart), so each is within 1.8 stage pixels (a row is 22.7); the two places differ from
+    // each other by what the pictures show (7.1..7.6 picture pixels).
+    double worst = 0.0;
+    for (const SepRow& r : kSeps) {
+        const float X = r.x_px / 2.25f;
+        for (int s = 0; s < 5; ++s) {
+            const float model = CardY(kGarageCard, X, kGarageRowUnit * float(s));
+            const double ea = std::fabs(double(model) - double(r.a[s]) / 2.25), eb = std::fabs(double(model) - double(r.b[s]) / 2.25);
+            worst = std::max(worst, std::max(ea, eb));
+            CHECK(ea < 1.8 && eb < 1.8);
+            CHECK(Near((r.b[s] - r.a[s]) / 2.25, 3.3, 0.35));  // the two resting places
+        }
+    }
+    CHECK(worst < 1.8);
+    // The pitch: 22.7 stage pixels at x 1000 (the log of round 1 had the picture's rows at 22.6..22.7), 21.7 at the card's left edge, 23.5 at its right.
+    CHECK(Near((kGarageCard.c + kGarageCard.d * 1000.0f) * kGarageRowUnit, 22.7, 0.1));
+    CHECK(Near((kGarageCard.c + kGarageCard.d * 868.0f) * kGarageRowUnit, 21.7, 0.1));
+    CHECK(Near((kGarageCard.c + kGarageCard.d * 1100.0f) * kGarageRowUnit, 23.5, 0.1));
+    // The inverse.
+    for (float x : {870.0f, 950.0f, 1100.0f})
+        for (float v : {0.0f, 35.0f, 105.0f, 140.0f}) CHECK(Near(CardV(kGarageCard, x, CardY(kGarageCard, x, v)), v, 1e-2));
+
+    // The first menu: four rows. Row bands at the tour's x (950) are about stage y 232..254 / 254..277 / 277..299 / 299..321: the pointer positions of the tour land in the right rows.
+    const Layout menu = GarageCardLayout(4, 0.0f);
+    CHECK(menu.n == 4 && menu.card && Plausible(menu) && Near(menu.pitch, 22.7, 0.1) && Near(menu.width, 232.5, 0.1));
+    CHECK(HitRow(menu, 950, 241) == 0);   // MANAGE VEHICLES
+    CHECK(HitRow(menu, 950, 267) == 1);   // CUSTOMIZE VEHICLE (the tour's GARAGE_Y1)
+    CHECK(HitRow(menu, 960, 290) == 2);   // VEHICLE SHOWROOM (GARAGE_Y2)
+    CHECK(HitRow(menu, 950, 310) == 3);   // EXIT GARAGE
+    CHECK(HitRow(menu, 950, 224) == -1);  // the GARAGE title
+    CHECK(HitRow(menu, 950, 326) == -1);  // under the last row
+    CHECK(HitRow(menu, 1000, 332) == -1);
+    CHECK(HitRow(menu, 840, 267) == -1);  // left of the card's rows (the bar starts at 868.4, the margin takes 14 more)
+    CHECK(HitRow(menu, 860, 267) == 1);
+    CHECK(HitRow(menu, 1090, 267) == 1);
+    CHECK(HitRow(menu, 1105, 267) == -1);  // right of the bar
+    // The card rises to the right: the top of the first row is at stage y 234.7 at x 880 and 226.3 at x 1090.
+    CHECK(HitRow(menu, 1090, 228) == 0 && HitRow(menu, 880, 228) == -1);
+    CHECK(HitRow(menu, 880, 235) == 0 && HitRow(menu, 1090, 235) == 0);
+    // The picture's row centres (tour_25, text at stage y 241 / 262 / 284 / 307 at x 1000..1050 for the text's own middle): each is inside its row.
+    CHECK(HitRow(menu, 1040, 239) == 0 && HitRow(menu, 1000, 262) == 1 && HitRow(menu, 1000, 285) == 2 && HitRow(menu, 1000, 307) == 3);
+    // A pop-up (EXIT: YES / NO) is the first two rows of the same card.
+    const Layout popup = GarageCardLayout(2, 0.0f);
+    CHECK(popup.n == 2 && Plausible(popup));
+    CHECK(HitRow(popup, 950, 244) == 0 && HitRow(popup, 950, 267) == 1);
+    CHECK(HitRow(popup, 950, 290) == -1);  // no third row
+    // The row numbers are the menu's own (0..n-1); the counts are clamped, and no rows is no layout.
+    CHECK(menu.rows[0].row == 0 && menu.rows[3].row == 3);
+    CHECK(GarageCardLayout(0, 0.0f).n == 0 && !Plausible(GarageCardLayout(0, 0.0f)));
+    CHECK(GarageCardLayout(500, 0.0f).n == kMaxRows);
+    // Calibration moves every row (menu_mouse_row_offset).
+    const Layout shifted = GarageCardLayout(4, 10.0f);
+    CHECK(HitRow(shifted, 950, 251) == 0 && HitRow(shifted, 950, 243) == 0 && HitRow(shifted, 950, 236) == -1);
+    // A hit gives a click plan on the row (hover and click work like any other card): the highlight goes there first, then A.
+    const ClickPlan plan = PlanLeftClick(true, HitRow(menu, 950, 267), Zone::Label, false);
+    CHECK(plan.row == 1 && plan.act == Act::Accept);
+    // It is believed without the debug setting (it was fitted to pictures); another movie's clip-tree layout is not.
+    CHECK(LayoutTrusted(true, false) && !LayoutTrusted(false, false));
+}
+
+void TestGarageTracker() {
+    GarageTracker t;
+    const uint32_t root = 0xBF58D620u, menu = 0xBF15C2E0u, popup = 0xBF15F2E0u, manage = 0xBF15D620u, other = 0xBF15AC50u;
+    // Nothing known: no page.
+    CHECK(t.Classify(0, menu, true, 4) == GaragePage::None && t.Classify(root, 0, true, 4) == GaragePage::None);
+    // The first base-class menu of a visit is the garage's first menu, and stays it.
+    CHECK(t.Classify(root, menu, true, 4) == GaragePage::Main && t.MainMenu() == menu);
+    CHECK(t.Classify(root, menu, true, 4) == GaragePage::Main);
+    // A pop-up of another class with two rows is a pop-up; the main menu is still the main menu after it.
+    CHECK(t.Classify(root, popup, false, 2) == GaragePage::Popup);
+    CHECK(t.Classify(root, menu, true, 4) == GaragePage::Main);
+    // MANAGE VEHICLES (another class, 12 rows) and any other base-class menu of the visit (a customization page that happens to be one) are not placed by the card.
+    CHECK(t.Classify(root, manage, false, 12) == GaragePage::None);
+    CHECK(t.Classify(root, other, true, 4) == GaragePage::None);
+    CHECK(t.Classify(root, other, false, 4) == GaragePage::None);
+    CHECK(t.Classify(root, other, false, 3) == GaragePage::None);
+    CHECK(t.Classify(root, menu, true, 4) == GaragePage::Main);  // still
+    // The row count of the first menu must be a menu's (a base-class one-row or ten-row object is not the garage's first menu).
+    GarageTracker t2;
+    CHECK(t2.Classify(root, menu, true, 1) == GaragePage::None && t2.Classify(root, menu, true, 10) == GaragePage::None && t2.MainMenu() == 0);
+    CHECK(t2.Classify(root, menu, true, 3) == GaragePage::Main);  // a garage with one row less
+    // A new movie root is a new visit: the first base-class menu of it is the main menu.
+    CHECK(t.Classify(0xBF600000u, other, true, 4) == GaragePage::Main && t.MainMenu() == other);
+    CHECK(t.Classify(0xBF600000u, menu, true, 4) == GaragePage::None);
+    // Leaving the garage forgets the visit.
+    t.Leave();
+    CHECK(t.MainMenu() == 0 && t.Classify(0xBF600000u, menu, true, 4) == GaragePage::Main);
+}
+
+void TestHookMessage() {
+    // The thread message hook counts a message once, when it is removed from the queue.
+    CHECK(HookMessageUsable(0, 1));    // HC_ACTION, PM_REMOVE
+    CHECK(!HookMessageUsable(0, 0));   // PM_NOREMOVE: a look, the message comes again
+    CHECK(!HookMessageUsable(-1, 1));  // a negative code: pass on, touch nothing
+    CHECK(!HookMessageUsable(3, 1));
+    CHECK(!HookMessageUsable(0, 2));
+    // The message ids and the place of a posted click, as the tour posts them (client (765, 821), left button, the high word of wParam 0).
+    Button b;
+    CHECK(ButtonOfMessage(0x0201, 0, &b) && b == Button::Left);
+    int32_t x, y;
+    ClientOfLParam((uint64_t(821) << 16) | 765u, &x, &y);
+    CHECK(x == 765 && y == 821);
+    ClientOfLParam((uint64_t(uint16_t(int16_t(-5))) << 16) | uint16_t(int16_t(-3)), &x, &y);
+    CHECK(x == -3 && y == -5);  // a click that is a little outside the window
+    // The place a message hook gives is the one a click takes, even when the window layer said another one 2.2 s later (the run-3 case, with the same numbers as TestClickPlaces).
+    ClickPlaces cp;
+    cp.NoteMessage(Button::Left, x = 765, y = 821, 1000);
+    const ClickPick pick = cp.TakeEvent(Button::Left, 1832, 1126, 1010);
+    CHECK(pick.from_message && pick.x == 765 && pick.y == 821);
+}
+
 }  // namespace
 
 int main() {
+    TestGarageCard();
+    TestGarageTracker();
+    TestHookMessage();
     TestWindowToStage();
     TestAffine();
     TestLayout();

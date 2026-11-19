@@ -14,7 +14,6 @@
 
 #ifdef _WIN32
 #include <Windows.h>
-#include <SDL3/SDL.h>
 #endif
 
 #include "imgui.h"
@@ -230,6 +229,9 @@ mm::Button ButtonOfEvent(rex::ui::MouseEvent::Button b) {
 #ifdef _WIN32
 std::atomic<void*> g_game_hwnd{nullptr};
 std::atomic<int> g_hook_lines{0};  // diagnostic lines the hook logged (menu_mouse_dump_new), capped
+std::atomic<bool> g_hook_seen_any{false};     // the hook has run (its first message was logged)
+std::atomic<bool> g_hook_seen_button{false};  // ... and has seen a button-down message (logged once)
+HHOOK g_message_hook = nullptr;
 constexpr int kMaxHookLines = 60;
 
 // One diagnostic line of the hook, with the place of the message and the desktop cursor in the window's client pixels. Only with menu_mouse_dump_new; a run logs 60 of them at most.
@@ -241,9 +243,13 @@ void HookLog(const char* what, const MSG* msg, bool has_place, int32_t mx, int32
     else MC_INFO("[menu-mouse] message {}; the desktop cursor was at client ({}, {}) when it was posted (SDL takes this place for the pointer on a leave or a focus change)", what, int(pt.x), int(pt.y));
 }
 
-// Runs on the thread that pumps SDL (the UI thread), before SDL looks at the message. It only reads the message: it never swallows one.
-bool SDLCALL WindowMessageHook(void*, MSG* msg) {
+// What the hook does with a message the thread's queue gave up (the UI thread, inside GetMessage / PeekMessage, before the message is translated and dispatched). It only reads the message.
+void NoteQueuedMessage(const MSG* msg) {
     HWND game = static_cast<HWND>(g_game_hwnd.load(std::memory_order_relaxed));
+    // The proof that the hook runs at all: the first message it sees, once (run 4's SDL hook never logged anything: it was set on the exe's own copy of SDL).
+    if (!g_hook_seen_any.load(std::memory_order_relaxed) && !g_hook_seen_any.exchange(true, std::memory_order_relaxed))
+        MC_INFO("[menu-mouse] message hook: the first message it sees is 0x{:04X} for window 0x{:X}{}", uint32_t(msg->message), uint64_t(reinterpret_cast<uintptr_t>(msg->hwnd)),
+            msg->hwnd == game ? " (the game's window)" : "");
     mm::Button b;
     if (mm::ButtonOfMessage(msg->message, uint32_t(HIWORD(uint32_t(msg->wParam))), &b)) {
         if (!game || msg->hwnd == game) {
@@ -254,11 +260,13 @@ bool SDLCALL WindowMessageHook(void*, MSG* msg) {
                 g_places.NoteMessage(b, x, y, NowMs());
             }
             g_hook_buttons.fetch_add(1, std::memory_order_relaxed);
-            if (REXCVAR_GET(menu_mouse_dump_new)) HookLog(b == mm::Button::Left ? "WM_LBUTTONDOWN" : (b == mm::Button::Right ? "WM_RBUTTONDOWN" : "WM_XBUTTONDOWN"), msg, true, x, y);
+            const char* what = b == mm::Button::Left ? "WM_LBUTTONDOWN" : (b == mm::Button::Right ? "WM_RBUTTONDOWN" : "WM_XBUTTONDOWN");
+            if (!g_hook_seen_button.exchange(true, std::memory_order_relaxed)) MC_INFO("[menu-mouse] message hook: the first button-down message is {} at client ({}, {})", what, x, y);
+            if (REXCVAR_GET(menu_mouse_dump_new)) HookLog(what, msg, true, x, y);
         }
-        return true;
+        return;
     }
-    // What may move SDL's pointer without a motion of the mouse (run 3's stale click): the messages around it, for the next run's log.
+    // What may move SDL's pointer without a motion of the mouse (run 3's stale click): the messages around it, for the log.
     switch (msg->message) {
         case WM_MOUSELEAVE:
         case WM_CAPTURECHANGED:
@@ -294,7 +302,18 @@ bool SDLCALL WindowMessageHook(void*, MSG* msg) {
         }
         default: break;
     }
-    return true;
+}
+
+// WH_GETMESSAGE, a hook of the UI thread's own message queue: Windows calls it for every message GetMessage / PeekMessage hands to that thread, the posted ones (a tour's
+// PostMessageW) and the real mouse's alike, whoever calls them (SDL's pump inside rexruntime.dll, a dialog, a driver). A message that is only looked at (PM_NOREMOVE) is not noted: it
+// comes again when it is removed. Never swallows a message; the hooks that were there before are called on (CallNextHookEx).
+//
+// Why not SDL_SetWindowsMessageHook, which the first version of this used: larecomp.exe and rexruntime.dll each carry their own copy of SDL3 (SDL3-static.lib is linked into both; the DLL
+// exports no C symbol of SDL). The window, its message loop and the hook variable that loop reads are the DLL's; the exe's call set the exe's copy, which nothing ever runs. Run 4's log
+// shows it: every click `[no click message was seen]`, and no line from the hook though menu_mouse_dump_new was on.
+LRESULT CALLBACK GetMessageHook(int code, WPARAM wparam, LPARAM lparam) {
+    if (mm::HookMessageUsable(code, uint64_t(wparam)) && lparam) NoteQueuedMessage(reinterpret_cast<const MSG*>(lparam));
+    return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 #endif
 
@@ -349,11 +368,17 @@ void EnsureListener(rex::ui::Window* window) {
         g_listener_attached.store(true, std::memory_order_relaxed);
         MC_INFO("[menu-mouse] mouse listener attached to the window");
 #ifdef _WIN32
-        // The click's own place (see g_places). One hook for the process; nothing else of ours or the SDK's uses SDL_SetWindowsMessageHook (CHECK: a build that adds one would replace this:
-        // the click line then says "no click message was seen" and the event's place is used, as before).
-        g_game_hwnd.store(window->GetNativeWindowHandle(), std::memory_order_relaxed);
-        SDL_SetWindowsMessageHook(&WindowMessageHook, nullptr);
-        MC_INFO("[menu-mouse] click places come from the button messages themselves (SDL message hook)");
+        // The click's own place (see g_places): a WH_GETMESSAGE hook on the thread that owns the window (this one: the lambda runs on the UI thread). Nothing is replaced: Windows chains it with any
+        // hook already there. If the hook cannot be set, the click line says "no click message was seen" and the event's place is used, as before.
+        HWND hwnd = static_cast<HWND>(window->GetNativeWindowHandle());
+        g_game_hwnd.store(hwnd, std::memory_order_relaxed);
+        const DWORD window_thread = hwnd ? GetWindowThreadProcessId(hwnd, nullptr) : 0;
+        const DWORD thread_id = window_thread ? window_thread : GetCurrentThreadId();
+        if (!g_message_hook) g_message_hook = SetWindowsHookExW(WH_GETMESSAGE, &GetMessageHook, nullptr, thread_id);
+        if (g_message_hook)
+            MC_INFO("[menu-mouse] click places come from the button messages themselves (message hook on thread {}, window 0x{:X}; it logs its first message)", uint32_t(thread_id),
+                uint64_t(reinterpret_cast<uintptr_t>(hwnd)));
+        else MC_WARN("[menu-mouse] the message hook could not be set (error {}): clicks take the window layer's place", uint32_t(GetLastError()));
 #endif
     });
     if (!queued) g_listener_posted.store(false);
@@ -377,6 +402,7 @@ struct MenuView {
     float card_prompt_y = 0.0f;
     bool relaxed = false;    // the layout passed only the opened-up plausibility test (a clip called slotsA with shown slots)
     bool unverified = false; // a movie other than PAUSEMOVIE: the layout was read but is not trusted (menu_mouse_trust_layouts): rows_known is false
+    mm::GaragePage garage = mm::GaragePage::None;  // the garage's card (mm::GarageCardLayout): the first menu or a two-row pop-up; its layout is fitted to pictures, so it is trusted
     char movie[48] = {};
     // What the reading found, for the log (ReportMenu) and the dump.
     mm::StageScale scale;
@@ -397,6 +423,7 @@ struct State {
     mm::PressPacer pacer{2};
     mm::PendingClick pending;
     mm::WalkWatch walk{8};
+    mm::GarageTracker garage;          // which UIMenu is the garage's first menu (mm::GarageTracker)
     int walk_target = -1;
     uint32_t walk_obj = 0;
     mm::Act queue[8] = {};
@@ -812,15 +839,32 @@ bool ReadList(const uint8_t* b, uint32_t list, ListRead* out) {
     return true;
 }
 
-// A live UIMenu of the game's own class. The highlighted row comes from its vfunc; the rows are counted through "the child shown on row N" until it names none.
-bool ReadUiMenu(const uint8_t* b, uint32_t menu, int* selected, int* count, char* why, size_t why_cap) {
+// The slot `slot` of a vtable (by its address) as a callable guest function; 0 when it is not one.
+uint32_t VtableSlot(const uint8_t* b, uint32_t vtable, uint32_t slot) {
+    if (!VtableLike(vtable)) return 0;
+    const uint32_t fn = R32(b, vtable + slot);
+    return VtableLike(fn) ? fn : 0;
+}
+
+// A live UIMenu of the game's own class. The highlighted row comes from its vfunc; the rows are counted through "the child shown on row N" until it names none. A menu of another class
+// (the garage's pop-ups have 0x8208FD84) is read too when its highlight and row slots ARE the UIMenu class's (the same two functions: calling them is calling the base class's code on an
+// object that has its layout); `*base_class` says which it was. A class whose slots differ is refused, and the reason names both pairs of functions for the log.
+bool ReadUiMenu(const uint8_t* b, uint32_t menu, int* selected, int* count, char* why, size_t why_cap, bool* base_class = nullptr) {
     if (!HeapLike(menu)) {
         std::snprintf(why, why_cap, "not a heap address");
         return false;
     }
-    if (R32(b, menu) != kUiMenuVtable) {
-        std::snprintf(why, why_cap, "vtable 0x%08X is not the UIMenu class 0x%08X", R32(b, menu), kUiMenuVtable);
-        return false;
+    const bool is_base = R32(b, menu) == kUiMenuVtable;
+    if (base_class) *base_class = is_base;
+    if (!is_base) {
+        const uint32_t vt = R32(b, menu);
+        const uint32_t sel_base = VtableSlot(b, kUiMenuVtable, kUiMenuSelectedVfunc), child_base = VtableSlot(b, kUiMenuVtable, kUiMenuChildAtVfunc);
+        const uint32_t sel_own = VtableSlot(b, vt, kUiMenuSelectedVfunc), child_own = VtableSlot(b, vt, kUiMenuChildAtVfunc);
+        if (!sel_base || !child_base || sel_own != sel_base || child_own != child_base) {
+            std::snprintf(why, why_cap, "vtable 0x%08X is not the UIMenu class 0x%08X (highlight / row slots 0x%08X / 0x%08X, the class's are 0x%08X / 0x%08X)", vt, kUiMenuVtable, sel_own, child_own,
+                sel_base, child_base);
+            return false;
+        }
     }
     const uint32_t sel_fn = VSlot(b, menu, kUiMenuSelectedVfunc);
     const uint32_t child_fn = VSlot(b, menu, kUiMenuChildAtVfunc);
@@ -899,6 +943,7 @@ mm::Layout LayoutOfList(const uint8_t* b, uint32_t list, bool pause_movie, const
 void ReadMenuRaw(const uint8_t* b, MenuView& view) {
     view = MenuView{};
     larecomp::keyboard::CurrentMovieName(view.movie, sizeof(view.movie));
+    if (std::strcmp(view.movie, "GARAGEMOVIE") != 0) g_state.garage.Leave();
     if (!view.movie[0]) return;
 
     const bool pause_movie = std::strcmp(view.movie, "PAUSEMOVIE") == 0;
@@ -1032,7 +1077,7 @@ void ReadMenuRaw(const uint8_t* b, MenuView& view) {
                 continue;
             }
             int selected = -1, count = 0;
-            char why[96] = {};
+            char why[220] = {};
             if (!ReadUiMenu(b, c.obj, &selected, &count, why, sizeof(why))) {
                 if (!relaxed) Note(view, "UIMenu 0x%08X: %s; ", c.obj, why);
                 continue;
@@ -1073,6 +1118,39 @@ void ReadMenuRaw(const uint8_t* b, MenuView& view) {
         }
     }
 
+    // The garage's card: its first menu and its two-row pop-ups, placed by the card fitted to run 4's pictures (mm::GarageCardLayout). The garage movie's clips give no rows (no `slotN` child of its
+    // menu clip shows), so only the UIMenu is needed: its row count and highlight.
+    if (!pause_movie && ui && std::strcmp(view.movie, "GARAGEMOVIE") == 0) {
+        int selected = -1, count = 0;
+        char why[220] = {};
+        bool base_class = false;
+        if (!ReadUiMenu(b, ui, &selected, &count, why, sizeof(why), &base_class)) {
+            Note(view, "garage card: UIMenu 0x%08X: %s; ", ui, why);
+        } else {
+            // A main menu object that is gone (a new visit that reuses the root's address): forget it.
+            const uint32_t main_menu = g_state.garage.MainMenu();
+            if (main_menu && main_menu != ui && !(HeapLike(main_menu) && R32(b, main_menu) == kUiMenuVtable)) g_state.garage.Leave();
+            const mm::GaragePage page = g_state.garage.Classify(mv.root, ui, base_class, count);
+            const mm::Layout lay = mm::GarageCardLayout(count, float(REXCVAR_GET(menu_mouse_row_offset)));
+            if (page == mm::GaragePage::None) {
+                Note(view, "garage card: UIMenu 0x%08X (%d rows, %s class) is not the garage's first menu or a two-row pop-up, so it is not placed by the card; ", ui, count,
+                    base_class ? "base" : "another");
+            } else if (!mm::Plausible(lay)) {
+                Note(view, "garage card: the layout is not plausible; ");
+            } else {
+                view.kind = Kind::UiMenu;
+                view.obj = ui;
+                view.selected = selected;
+                view.count = count;
+                view.layout = lay;
+                view.rows_known = true;
+                view.card = true;
+                view.garage = page;
+                return;
+            }
+        }
+    }
+
     // Nothing the clip tree confirms. The pause movie's pages whose clips cannot be read (no slot clips, no prompt bar to hang the card from) but whose list can: the model of the card.
     if (pause_movie && model_obj) {
         int first = 0, end = 0;
@@ -1096,13 +1174,14 @@ void ReadMenuRaw(const uint8_t* b, MenuView& view) {
     }
 }
 
-// What the mouse is allowed to believe of a reading. The pause movie's rows are placed by a projection fitted to its card (rms 0.22 stage pixels over four pages). Every other movie is a
+// What the mouse is allowed to believe of a reading. The pause movie's rows are placed by a projection fitted to its card (rms 0.22 stage pixels over four pages) and the garage's first menu
+// and pop-ups by the one fitted to theirs (mm::GarageCardLayout, rms 0.06). Every other movie is a
 // clip-tree layout through the display state's scale and nothing else, and the one picture there is of such a menu (round 1, the garage) says it is wrong: a plausible-looking list at
 // the wrong place makes hover walk to the wrong row and clicks land on no row at all. Until a run measures it (the tour turns menu_mouse_trust_layouts on and the log line has the numbers
 // to hold against the picture), those menus are fallback menus.
 void ReadMenu(const uint8_t* b, MenuView& view) {
     ReadMenuRaw(b, view);
-    if (!view.rows_known || mm::LayoutTrusted(std::strcmp(view.movie, "PAUSEMOVIE") == 0, REXCVAR_GET(menu_mouse_trust_layouts))) return;
+    if (!view.rows_known || mm::LayoutTrusted(std::strcmp(view.movie, "PAUSEMOVIE") == 0 || view.garage != mm::GaragePage::None, REXCVAR_GET(menu_mouse_trust_layouts))) return;
     const mm::RowBox& first = view.layout.rows[0];
     // In front of what each candidate lacked (the reading's notes can fill the line).
     char head[260];
@@ -1177,8 +1256,8 @@ mm::HudRect HudNow(rex::ui::Window* window) {
     return mm::HudOf(mc::ultrawide::FrameFor(w, h), mc::ultrawide::UiWidthFraction(), mc::ultrawide::UiHeightFraction());
 }
 
-// How a menu was read: 0 = not (the fallback), 1 = rows from the movie's clip tree, 2 = rows from the model of the pause pages.
-int ReadState(const MenuView& view) { return view.rows_known ? (view.model ? 2 : 1) : 0; }
+// How a menu was read: 0 = not (the fallback), 1 = rows from the movie's clip tree, 2 = rows from the model of the pause pages, 3 = the garage's card (first menu / pop-up).
+int ReadState(const MenuView& view) { return view.rows_known ? (view.garage != mm::GaragePage::None ? 3 : (view.model ? 2 : 1)) : 0; }
 
 // One line per menu and per way of reading it (a menu read another way later is reported again, up to a few times): `true` when a line was due, so the dump can follow it.
 bool ReportMenu(const MenuView& view, const mm::HudRect& hud) {
@@ -1200,7 +1279,13 @@ bool ReportMenu(const MenuView& view, const mm::HudRect& hud) {
     mm::StageToWindow(hud, view.layout.rows[0].x0, view.layout.rows[0].y0, &px0, &py0);
     mm::StageToWindow(hud, view.layout.rows[0].x1, view.layout.rows[0].y1, &px1, &py1);
     char source[320];
-    if (view.model) {
+    if (view.garage != mm::GaragePage::None) {
+        std::snprintf(source, sizeof(source), "from the garage card fitted to run 4's pictures (%s: %d rows from the top of the card; rows at x 1000: stage y %.1f..%.1f; pitch there %.1f)",
+            view.garage == mm::GaragePage::Main ? "the garage's first menu" : "a two-row pop-up", view.layout.n,
+            mm::CardY(view.layout.map, 1000.0f, 0.5f * (view.layout.rows[0].v0 + view.layout.rows[0].v1)) + view.layout.shift,
+            mm::CardY(view.layout.map, 1000.0f, 0.5f * (view.layout.rows[view.layout.n - 1].v0 + view.layout.rows[view.layout.n - 1].v1)) + view.layout.shift,
+            (view.layout.map.c + view.layout.map.d * 1000.0f) * mm::kGarageRowUnit);
+    } else if (view.model) {
         std::snprintf(source, sizeof(source), "from the model of the pause card (no readable slot clips or prompt bar), %s page", view.card_wide ? "wide" : "narrow");
     } else if (view.card) {
         std::snprintf(source, sizeof(source), "from clip %s on the pause card (%s page, prompt bar world y %.1f, %.1f movie units between rows; rows at x 300: stage y %.1f..%.1f)%s", view.clip,
@@ -1282,9 +1367,11 @@ void DumpUiMenu(const uint8_t* b, uint32_t ui, uint32_t seq) {
         return;
     }
     int selected = -1, count = 0;
-    char why[96] = {};
-    const bool ok = ReadUiMenu(b, ui, &selected, &count, why, sizeof(why));
-    MC_INFO("[menu-mouse] dump: UIMenu 0x{:08X} (filled #{}{}): vtable 0x{:08X}; {}", ui, seq, ui == g_state.gave_up_obj ? ", given up on" : "", R32(b, ui),
+    char why[220] = {};
+    bool base_class = false;
+    const bool ok = ReadUiMenu(b, ui, &selected, &count, why, sizeof(why), &base_class);
+    MC_INFO("[menu-mouse] dump: UIMenu 0x{:08X} (filled #{}{}): vtable 0x{:08X}{}; {}", ui, seq, ui == g_state.gave_up_obj ? ", given up on" : "", R32(b, ui),
+        ok && !base_class ? " (not the base class, but its highlight and row slots are the base class's)" : "",
         ok ? "reads (" + std::to_string(count) + " rows, highlight " + std::to_string(selected) + ")" : std::string("does not read: ") + why);
 }
 
@@ -1430,9 +1517,11 @@ void DumpMenu(const uint8_t* b, const MenuView& view) {
         for (int k = 0; k < view.layout.n; ++k) {
             const mm::RowBox& r = view.layout.rows[k];
             const float vm = 0.5f * (r.v0 + r.v1);
-            MC_INFO("[menu-mouse] dump:     card row {}: v {:.1f} (band {:.1f}..{:.1f}), stage y at x 250 / 300 / 444 = {:.1f} / {:.1f} / {:.1f}, x {:.0f}..{:.0f}, {} row", r.row, vm, r.v0, r.v1,
-                mm::CardY(view.layout.map, 250.0f, vm) + view.layout.shift, mm::CardY(view.layout.map, 300.0f, vm) + view.layout.shift,
-                mm::CardY(view.layout.map, 444.0f, vm) + view.layout.shift, r.x0, r.x1, view.kind == Kind::List && IsValueRow(b, view.obj, r.row) ? "a value" : "a plain");
+            const bool garage = view.garage != mm::GaragePage::None;
+            const float xa = garage ? 900.0f : 250.0f, xb = garage ? 1000.0f : 300.0f, xc = garage ? 1100.0f : 444.0f;
+            MC_INFO("[menu-mouse] dump:     card row {}: v {:.1f} (band {:.1f}..{:.1f}), stage y at x {:.0f} / {:.0f} / {:.0f} = {:.1f} / {:.1f} / {:.1f}, x {:.0f}..{:.0f}, {} row", r.row, vm, r.v0, r.v1, xa, xb, xc,
+                mm::CardY(view.layout.map, xa, vm) + view.layout.shift, mm::CardY(view.layout.map, xb, vm) + view.layout.shift,
+                mm::CardY(view.layout.map, xc, vm) + view.layout.shift, r.x0, r.x1, view.kind == Kind::List && IsValueRow(b, view.obj, r.row) ? "a value" : "a plain");
         }
     }
 }

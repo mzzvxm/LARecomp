@@ -492,6 +492,88 @@ inline Layout ModelLayout(int first_row, int shown, ModelPage page) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
+// The garage card (round 5: measured in run 4's pictures, 2880 x 1620 = stage x 2.25; tools in h11-work\kbm-p6-5)
+// ---------------------------------------------------------------------------------------------------------------------------------
+//
+// The garage's first menu (GARAGE: MANAGE VEHICLES, CUSTOMIZE VEHICLE, VEHICLE SHOWROOM, EXIT GARAGE) and its pop-ups (EXIT: YES / NO) are drawn on the same kind of card as the pause menu:
+// a quad in the game's 3D menu scene, at the right of the screen, turned a little (the rows' separators rise to the right by 0.040 stage pixels per pixel at the top and by 0.010 at the bottom,
+// and the rows are 21.7 apart at the card's left edge and 23.5 at its right). The movie's clips give nothing to read here (the garage's menu clip has no `slotN` children that show: run 4's
+// dump had only the icon lists, the level meters and the cursor), so the rows are placed by the picture alone: a separator pair (two thin lines 2.4 stage pixels apart) lies between every two
+// rows, and the row's band is the space between the centres of two pairs. 520 measurements (5 separators x 52 columns x 2 resting places of the card) fit one projection,
+//     Y = a + b X + (c + d X) s,   s = the separator's number (0 = above the first row), X = stage x,
+// with rms 0.06 stage pixels (the lines were tracked to 0.1 pixel of the 2880-wide picture), worst 0.17. It is written in the pause card's form (CardMap, v = 35 s) so the same inversion
+// serves both. The card rests in two places, 3.3 stage pixels apart (the first visit to the garage and every return from a sub-menu, 7.5 of the picture's pixels: the same picture
+// shifted by exactly (0, 7) pixels, nothing else changed, in 5 pictures each): the model sits in the middle, so it is 1.6 off either (a row is 22.7). The pop-up's YES / NO are the
+// first two rows' places in the second resting place (pictures 34..40: separators at 512.3 / 564.6 / 616.7, the same as the menu's after a return).
+//
+// Left and right: the highlight bar spans picture x 1954..2477 at every row measured (rows 0 and 1, both resting places) = stage 868.4..1100.9.
+inline constexpr float kGarageRowUnit = 35.0f;  // v units per row: the pause card's units, so Plausible's v-pitch test (15..70) holds
+inline constexpr CardMap kGarageCard{269.7848f, -0.0398466f, 0.431454f, 2.17459e-4f};
+inline constexpr float kGarageX0 = 868.4f, kGarageX1 = 1100.9f;
+inline constexpr float kGaragePitchAtX = 1000.0f;
+// The card's two resting places and the model's, for the log and the tests: separator 0's stage y at x 1000.
+inline constexpr float kGarageSep0YFirst = 228.3f, kGarageSep0YReturn = 231.6f;
+
+// The first `rows` rows of the garage card (a menu or a pop-up: both hang from the top of the card). `shift` is the calibration (menu_mouse_row_offset).
+inline Layout GarageCardLayout(int rows, float shift) {
+    Layout l;
+    rows = std::clamp(rows, 0, kMaxRows);
+    l.card = true;
+    l.map = kGarageCard;
+    l.shift = shift;
+    l.v_pitch = kGarageRowUnit;
+    l.pitch = (l.map.c + l.map.d * kGaragePitchAtX) * kGarageRowUnit;
+    l.width = kGarageX1 - kGarageX0;
+    l.n = rows;
+    for (int i = 0; i < rows; ++i) {
+        RowBox& r = l.rows[i];
+        r.row = i;
+        r.v0 = kGarageRowUnit * float(i);
+        r.v1 = kGarageRowUnit * float(i + 1);
+        r.x0 = kGarageX0;
+        r.x1 = kGarageX1;
+        r.y0 = CardY(l.map, kGarageX0, r.v0) + shift;
+        r.y1 = CardY(l.map, kGarageX0, r.v1) + shift;
+    }
+    return l;
+}
+
+// Which page of the garage a UIMenu is, for the card above. Only two pages have a picture: the garage's FIRST menu (its own UIMenu, the game's base class, a few rows: the first such menu
+// the garage movie shows is it, and it stays the same object for the whole visit) and a two-row pop-up (EXIT: YES / NO). Every other page (MANAGE VEHICLES, CUSTOMIZATION, the showroom's)
+// is another size of card with other rows: it is not placed by this card, it falls back.
+enum class GaragePage : uint8_t { None, Main, Popup };
+inline constexpr int kGarageMainRowsMin = 2, kGarageMainRowsMax = 6, kGaragePopupRows = 2;
+
+class GarageTracker {
+public:
+    // Not in the garage (any other movie): forget the visit.
+    void Leave() {
+        root_ = 0;
+        main_ = 0;
+    }
+    // `root` = the garage movie's root instance (a new one is a new visit), `menu` the UIMenu filled last, `base_class` it is the game's own UIMenu class (not a class that only shares its
+    // highlight and row slots), `rows` its row count.
+    GaragePage Classify(uint32_t root, uint32_t menu, bool base_class, int rows) {
+        if (!root || !menu) return GaragePage::None;
+        if (root != root_) {
+            root_ = root;
+            main_ = 0;
+        }
+        if (base_class) {
+            if (rows < kGarageMainRowsMin || rows > kGarageMainRowsMax) return GaragePage::None;
+            if (main_ == 0) main_ = menu;
+            return menu == main_ ? GaragePage::Main : GaragePage::None;
+        }
+        return rows == kGaragePopupRows ? GaragePage::Popup : GaragePage::None;
+    }
+    uint32_t MainMenu() const { return main_; }
+
+private:
+    uint32_t root_ = 0;
+    uint32_t main_ = 0;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------------------
 // What the mouse does
 // ---------------------------------------------------------------------------------------------------------------------------------
 
@@ -526,7 +608,8 @@ inline int HoverTarget(bool enabled, bool pointer_moved, bool kbm_active, bool r
     return (hit_row >= 0 && hit_row != selected_row) ? hit_row : -1;
 }
 
-// Whether a menu's rows, as read, may be believed for hover and for clicks on rows. The pause movie's are (a projection fitted to its card, four pages, rms 0.22 stage pixels). Another
+// Whether a menu's rows, as read, may be believed for hover and for clicks on rows. The pause movie's are (a projection fitted to its card, four pages, rms 0.22 stage pixels), and so are
+// the garage card's (GarageCardLayout: the caller passes true for them). Another
 // movie's are a clip-tree layout through the display state's scale, which the one picture of such a menu (the garage, round 1) contradicts: they are believed only when the debug setting
 // menu_mouse_trust_layouts says so, until a run has measured them. A menu that is not believed is a fallback menu (hover off, a click is ACCEPT on the highlighted row).
 inline bool LayoutTrusted(bool pause_movie, bool trust_setting) { return pause_movie || trust_setting; }
@@ -681,7 +764,7 @@ inline Act StepPending(PendingClick& p, int selected, bool* done) {
 // after its move was right.
 //
 // A real mouse's WM_LBUTTONDOWN carries the click's own client position, and so does the message a tour posts. So the click takes its place from its own message: the window's message hook
-// (menu_mouse.cpp, SDL_SetWindowsMessageHook, called before SDL looks at the message) notes the position of every button-down message, and the button-down event the listener gets
+// (menu_mouse.cpp, a WH_GETMESSAGE hook on the UI thread: it sees the message before SDL does; SDL_SetWindowsMessageHook did not work, the exe has its own copy of SDL) notes the position of every button-down message, and the button-down event the listener gets
 // afterwards takes the oldest note of that button that is still fresh. No fresh note (a platform with no message hook, raw mouse input, a hook another part took over): the event's own place.
 enum class Button : uint8_t { Left, Right, Back, Other };
 inline constexpr int kButtonCount = 4;
@@ -771,5 +854,12 @@ inline void ClientOfLParam(uint64_t lparam, int32_t* x, int32_t* y) {
     *x = int32_t(int16_t(uint16_t(lparam & 0xFFFFu)));
     *y = int32_t(int16_t(uint16_t((lparam >> 16) & 0xFFFFu)));
 }
+
+// The thread message hook (WH_GETMESSAGE, menu_mouse.cpp GetMessageHook) is called with `code` HC_ACTION (0) for a message that is being handed out, and with a negative code for
+// the hook chain's own business (the proc must pass those on untouched). `wparam` says whether the message is removed from the queue (PM_REMOVE, 1) or only looked at
+// (PM_NOREMOVE, 0: SDL peeks ahead for the key messages it pairs, the same message comes again). A message counts once: when it is removed.
+inline constexpr int kHcAction = 0;
+inline constexpr uint64_t kPmRemove = 1;
+inline bool HookMessageUsable(int code, uint64_t wparam) { return code == kHcAction && wparam == kPmRemove; }
 
 }  // namespace larecomp::menumouse
