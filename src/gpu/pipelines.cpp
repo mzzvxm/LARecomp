@@ -362,6 +362,9 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
 // how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
 constexpr uint32_t kBootBoostBelow = 8;
+// The sample count of the main view's targets at the default MSAA setting (StartSampleCounts' level
+// when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
+constexpr uint32_t kDefaultStartSamples = 2;
 constexpr std::chrono::seconds kBootSeconds{40};
 constexpr size_t kFollowMinGap = 8;
 
@@ -480,6 +483,7 @@ void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
   // not an image of the screen would get a copy nobody asks for: it costs a compile, nothing else.)
   setup_copies_.clear();
   setup_copy_source_.clear();
+  start_samples_ = samples;
   std::unordered_set<PipelineKey, PipelineKeyHash> seen;
   for (size_t source = 0; source < records_.size(); ++source) {
     const Record& r = records_[source];
@@ -729,12 +733,42 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   // The level copies (MakeLevelCopies) each follow the record they were made from, so the list
   // stays in the order it was first needed in (the render thread's claims follow it, boot mode).
   // A draw takes a copy like a record; no record has the key of a copy (MakeLevelCopies).
+  //
+  // A start that draws the images of the screen at another count than the default 2 (a saved MSAA of
+  // 4 or off, an upscaler: start_samples_) never asks for the multisampled entries at the other
+  // counts first: its draws ask for the copies. Left between the entries the title's first frames
+  // ask for, they made the queue half as dense with them as the default start's, and the workers fell
+  // behind the render thread (2026-11-19 starter verify, D3D12 on 16 threads: 46 to 85 entries the
+  // render thread made itself at the start with MSAA off or DLSS saved, 0 at the default). Those
+  // entries now follow all the others, in their old order; the default start keeps the order above.
+  // What a draw does ask for from there is made as any list entry not reached yet: a draw that may
+  // be skipped makes the worker take it first, another is made by the render thread.
+  // CHECK: written without a build or a run; expected: "the render thread made N entries itself"
+  // (below) drops to a handful for a first start with MSAA off, 4x or DLSS saved, and the default
+  // start's precache line and time do not change.
+  const uint32_t target = start_samples_.empty() ? 0u : start_samples_.back();
+  const bool defer = setup_threads == 0 && target != 0 && target != kDefaultStartSamples;
+  const auto later = [&](const Record& r) {
+    return defer && r.key.sample_count > 1 && r.key.sample_count != target;
+  };
+  std::vector<const Record*> after;
   size_t next_copy = 0;
   for (size_t i = 0; i < records_.size(); ++i) {
-    add(records_[i]);
-    for (; next_copy < setup_copies_.size() && setup_copy_source_[next_copy] == i; ++next_copy) {
-      add(setup_copies_[next_copy]);
+    if (later(records_[i])) {
+      after.push_back(&records_[i]);
+    } else {
+      add(records_[i]);
     }
+    for (; next_copy < setup_copies_.size() && setup_copy_source_[next_copy] == i; ++next_copy) {
+      if (later(setup_copies_[next_copy])) {
+        after.push_back(&setup_copies_[next_copy]);
+      } else {
+        add(setup_copies_[next_copy]);
+      }
+    }
+  }
+  for (const Record* r : after) {
+    add(*r);
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
   // a pipeline made here is one the render thread does not stop for later.
@@ -758,6 +792,11 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   precache_finished_ = 0;
   boot_claims_ = 0;
   boot_waits_ = 0;
+  precache_claims_ = 0;
+  precache_first_claim_index_ = 0;
+  precache_last_claim_index_ = 0;
+  precache_first_claim_us_ = -1;
+  precache_last_claim_us_ = -1;
   boot_deadline_ = precache_start_ + kBootSeconds;
   boot_mode_ = boot;
   for (uint32_t i = 0; i < count; ++i) {
@@ -891,6 +930,17 @@ bool Pipelines::NextListEntry(size_t& index) {
 }
 
 void Pipelines::NoteClaim(size_t index) {
+  // Every claim, in any mode, for the line that ends the precache: which entries the render thread
+  // had to make and when, to tell the title's first burst from a queue the workers fall behind in.
+  const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - precache_start_)
+                         .count();
+  if (precache_claims_.fetch_add(1, std::memory_order_relaxed) == 0) {
+    precache_first_claim_index_.store(uint32_t(index), std::memory_order_relaxed);
+    precache_first_claim_us_.store(us, std::memory_order_relaxed);
+  }
+  precache_last_claim_index_.store(uint32_t(index), std::memory_order_relaxed);
+  precache_last_claim_us_.store(us, std::memory_order_relaxed);
   if (!boot_mode_.load()) {
     return;
   }
@@ -1001,6 +1051,17 @@ void Pipelines::NotePrecacheEntryDone() {
                            .count()) /
                     1000.0,
                 precache_ready_.load(), precache_failed_.load());
+    // A separate line: the one above is read by the run tools (run_misses.py, the starter chains).
+    if (const uint32_t claims = precache_claims_.load(std::memory_order_relaxed); claims != 0) {
+      REXLOG_INFO("[gpu] pipelines: the render thread made {} of the {} entries itself (they were "
+                  "not reached by a worker when a draw that may not be skipped asked): entries {} "
+                  "to {} of the queue, the first {:.0f} ms and the last {:.0f} ms after the start",
+                  claims, precached_.size(),
+                  precache_first_claim_index_.load(std::memory_order_relaxed),
+                  precache_last_claim_index_.load(std::memory_order_relaxed),
+                  double(precache_first_claim_us_.load(std::memory_order_relaxed)) / 1000.0,
+                  double(precache_last_claim_us_.load(std::memory_order_relaxed)) / 1000.0);
+    }
     EndBootMode("the list is done");
   }
 }

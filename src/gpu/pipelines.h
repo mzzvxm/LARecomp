@@ -583,7 +583,18 @@ class Pipelines {
   // it is recorded only then (TakePrecached). Both are set before the workers start.
   std::vector<Record> setup_copies_;
   std::vector<uint32_t> setup_copy_source_;
+  // The counts MakeLevelCopies was given (what this start draws the images of the screen at,
+  // StartSampleCounts); StartPrecache orders the queue by them. Set before the workers start.
+  std::vector<uint32_t> start_samples_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
+  // The entries the render thread made itself, in any mode (NoteClaim): how many, which entries
+  // of the queue (first and last) and when (microseconds after the start; -1 for none). Written
+  // by the render thread, read once by whichever thread logs "precache done".
+  std::atomic<uint32_t> precache_claims_{0};
+  std::atomic<uint32_t> precache_first_claim_index_{0};
+  std::atomic<uint32_t> precache_last_claim_index_{0};
+  std::atomic<int64_t> precache_first_claim_us_{-1};
+  std::atomic<int64_t> precache_last_claim_us_{-1};
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
   std::atomic<uint32_t> boot_waits_{0};   // ... and builds under way it waited for
