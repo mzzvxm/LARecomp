@@ -9,6 +9,9 @@
 // 16:9 block of the frame, the way the UI is drawn), and what the pointer does goes in through the game's own menu buttons (keyboard_native.h PressMenuKey), so a click is exactly A. The
 // one direct call is the list's own "select row" slot for the hover.
 //
+// The pause movie is the exception to "put through the movie's scale": the game draws it on a card in a 3D scene, turned away a little, so its rows are placed by a measured projection from
+// the slots' world y and the prompt bar's (menu_mouse_core.h "The pause card"). Every other movie is scaled onto the stage.
+//
 // Two kinds of menu can be read (the one the game rendered last is tried first, and is taken only if the clip tree shows the rows it has):
 //   lists    the pause menu's pages and every settings page, some of the garage's pages (an mcListViewFixed: highlight, scroll and row count are read from the list, whose rows may be
 //            row objects, a table or a vhsm state; the hover sets the highlight directly). The pause movie with no slot clips at all gets a model of its pages (the pictures' numbers);

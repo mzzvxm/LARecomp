@@ -118,21 +118,38 @@ struct SlotIn {
     Affine to_stage;         // slot -> stage
     bool visible = false;    // the slot and every instance above it have alpha
     float child_right = 0.0f;  // the right-most start of anything inside the slot (local x of its children, 0 = none found)
+    float mx = 0.0f, my = 0.0f;  // the slot's origin in the movie's own units (the matrix before the movie's scale): the pause card's projection works from these
 };
 
 // A row on the stage: from the slot's own origin, `width` wide and `pitch` tall (a Fillmenu row is a bar that hangs from its origin).
 struct RowBox {
     int row = -1;
     float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+    float v0 = 0.0f, v1 = 0.0f;  // a card layout only: the row's band in the movie's own vertical units (see "The pause card")
     bool Contains(float x, float y, float margin_left) const { return x >= x0 - margin_left && x < x1 && y >= y0 && y < y1; }
     float Width() const { return x1 - x0; }
+};
+
+// How a card-drawn movie's units become stage points (the pause menu; see "The pause card" below): the rows' y is not a straight scaling of the movie's y, it depends on the x it is
+// read at (the card is turned away from the player).
+struct CardMap {
+    float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;  // Y = a + b X + (c + d X) v, v = the slot's world y minus the prompt bar's
 };
 
 struct Layout {
     int n = 0;
     RowBox rows[kMaxRows];
-    float pitch = 0.0f;
+    float pitch = 0.0f;  // stage pixels between rows (a card layout: at x = 300)
     float width = 0.0f;
+    // A card layout (CardLayout): rows are hit in v, not in stage y.
+    bool card = false;
+    bool wide = false;       // a page with `< value >` rows (the wide card) as against a plain list (the narrow one)
+    CardMap map;
+    float shift = 0.0f;      // calibration, stage pixels (menu_mouse_row_offset)
+    float v_pitch = 0.0f;    // movie units between rows
+    // Where a value row's label ends and its `<` ends, as stage x (0 = not known: ZoneOf works from the row's width).
+    float zone_label_end = 0.0f;
+    float zone_split = 0.0f;
 };
 
 // What a row's height is when only one row shows (the pause menu's rows are 25 stage pixels apart in the pictures of its pages).
@@ -202,7 +219,11 @@ inline Layout BuildLayout(const SlotIn* slots, int count, float width_override, 
 // the pitch of a text row. Anything else and the menu falls back (the numbers are logged once per movie).
 inline bool Plausible(const Layout& l) {
     if (l.n < 1) return false;
-    if (!(l.pitch >= 8.0f && l.pitch <= 90.0f)) return false;
+    if (l.card) {
+        if (!(l.v_pitch >= 15.0f && l.v_pitch <= 70.0f)) return false;
+    } else if (!(l.pitch >= 8.0f && l.pitch <= 90.0f)) {
+        return false;
+    }
     for (int i = 0; i < l.n; ++i) {
         const RowBox& r = l.rows[i];
         if (!std::isfinite(r.x0) || !std::isfinite(r.y0)) return false;
@@ -212,8 +233,32 @@ inline bool Plausible(const Layout& l) {
     return true;
 }
 
+// The same test with the limits opened up, for the one clip the pause movie and the garage call `slotsA` when the strict one refused it: rows still one strictly under the other and
+// finite, a pitch of text rows at any scale, the place anywhere near the stage. A menu read this way is logged as such.
+inline bool PlausibleRelaxed(const Layout& l) {
+    if (l.n < 1) return false;
+    if (!(l.pitch >= 6.0f && l.pitch <= 140.0f)) return false;
+    for (int i = 0; i < l.n; ++i) {
+        const RowBox& r = l.rows[i];
+        if (!std::isfinite(r.x0) || !std::isfinite(r.y0) || !std::isfinite(r.x1) || !std::isfinite(r.y1)) return false;
+        if (r.x0 < -400.0f || r.x0 > kStageW + 400.0f || r.y0 < -200.0f || r.y1 > kStageH + 300.0f) return false;
+        if (i > 0 && !(r.y0 > l.rows[i - 1].y0 && r.row > l.rows[i - 1].row)) return false;
+    }
+    return true;
+}
+
 // The row under a stage point, -1 for none. The result is the list's row index (RowBox::row), not the position in the layout.
+inline float CardV(const CardMap& m, float x, float y);  // (below)
 inline int HitRow(const Layout& l, float sx, float sy) {
+    if (l.card) {
+        // The pointer's place in the movie's vertical units at its own x, then the row whose band holds it.
+        const float v = CardV(l.map, sx, sy - l.shift);
+        for (int i = 0; i < l.n; ++i) {
+            const RowBox& r = l.rows[i];
+            if (sx >= r.x0 - kMarginLeft && sx < r.x1 && v >= r.v0 && v < r.v1) return r.row;
+        }
+        return -1;
+    }
     for (int i = 0; i < l.n; ++i)
         if (l.rows[i].Contains(sx, sy, kMarginLeft)) return l.rows[i].row;
     return -1;
@@ -236,6 +281,12 @@ inline Zone ZoneOf(const RowBox& box, float sx, bool value_row) {
     const float rel = (sx - box.x0) / box.Width();
     if (rel < kValueStart) return Zone::Label;
     return rel < kValueSplit ? Zone::ValueLeft : Zone::ValueRight;
+}
+// A layout that knows where the arrows are (the pause card's) says so in stage x; any other goes by the row's width as above.
+inline Zone ZoneOf(const Layout& l, const RowBox& box, float sx, bool value_row) {
+    if (!value_row || l.zone_label_end <= 0.0f || l.zone_split <= l.zone_label_end) return ZoneOf(box, sx, value_row);
+    if (sx < l.zone_label_end) return Zone::Label;
+    return sx < l.zone_split ? Zone::ValueLeft : Zone::ValueRight;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -341,33 +392,102 @@ inline Verdict JudgeUiMenu(int rows, int highlight, int cap) {
 // Which of the two kinds of menu the game rendered last: the list or the UIMenu (their counters; the larger is the later; 0 = never).
 inline bool ListIsLater(uint32_t list_seq, uint32_t ui_menu_seq) { return list_seq >= ui_menu_seq; }
 
-// The pause movie's pages as the pictures of earlier runs have them (1280 x 720 stage; GRAPHICS QUALITY and the pause menu's first page: p4-menus-gfxq tour_09, kbmp6 tour_03): the first row
-// hangs from y 331 and the rows are 25 apart; the game's own pages (the pause menu's first page, the SETTINGS list) are 316 wide from x 218, the pages of ours 432 wide from x 136. Used
-// only when the movie's clip tree cannot be read at all (no `slotN` clips) and the page's list can: hover and click then work on these numbers, and the log says so.
-enum class ModelPage : uint8_t { Hub, Settings };
-inline constexpr float kModelRow0Y = 331.0f;
-inline constexpr float kModelPitch = 25.0f;
-inline constexpr float kModelHubX = 218.0f;
-inline constexpr float kModelHubW = 316.0f;
-inline constexpr float kModelPageX = 136.0f;
-inline constexpr float kModelPageW = 432.0f;
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The pause card (round 3: the numbers below are measured in the pictures of the run kbmp6-kbm-menu-mouse, 2026-11-19)
+// ---------------------------------------------------------------------------------------------------------------------------------
+//
+// The pause movie is not drawn onto the screen: the game draws it into a texture and shows that on a card in its own 3D scene (the script's `menu_group` / `screen_mesh`: ui_smooth.cpp), seen
+// through the menu camera. So there is no scaling that takes a slot's place in the movie to a place on the screen, and the display state's factors (what rounds 1 and 2 read, and
+// what changes with every movie drawn: 1.0, 0.4, 0.2, 0.356 were all logged for this one) are the texture's, not the card's. Measured in the pictures: the card is turned away a little, so
+// its right side is farther: rows converge toward the right (a row 25 stage pixels apart at x 250 is 22.8 apart at x 444) and tilt (the top row falls to the right, the bottom one rises,
+// the row in between stays level). Everything fits ONE projection (Y = a + b X + (c + d X) v, 0.2 stage pixels rms, 0.5 at worst over 8 rows of 4 pages: the pause page, the
+// SETTINGS tab, the GRAPHICS list and the UPSCALING page) when v is the slot's WORLD y in the movie minus the world y of `prompt_bg` (the prompt bar; the card hangs from its bottom
+// edge, so the page's height does not matter: the lists with a title and a description have it 23 units lower). X is the stage x of the point. The row's band in v is its slot's v
+// plus or minus half the pitch (35 movie units; the centre of the bar is the slot's world y, whatever the pitch is on screen).
+//
+// The x of a row is no use for hit testing: the pages slide in from the side (slot x -129 at the start of a page change, 23.2 at rest, +20 on the highlighted row), and the card is
+// wider for the pages with `< value >` rows. The list's left edge and right edge are measured per kind: the plain lists (pause page, tabs, the GRAPHICS list) 218..553, the value pages
+// 156..574. The `<` of a value row is at stage x 398 on both value pages measured (the UPSCALING page now and the old GRAPHICS QUALITY page), the `>` follows the value's text (453 .. 512).
 
-inline Layout ModelLayout(int first_row, int shown, ModelPage page) {
+inline constexpr CardMap kPauseCard{551.0626f, -0.0801920f, 0.806185f, -3.55484e-4f};
+inline constexpr float kCardNarrowX0 = 218.0f, kCardNarrowX1 = 553.0f;
+inline constexpr float kCardWideX0 = 156.0f, kCardWideX1 = 574.0f;
+inline constexpr float kCardLabelEnd = 386.0f;  // a value row: left of this is the label (the `<` begins at 388)
+inline constexpr float kCardArrowSplit = 411.0f;  // between the `<` (center 398) and the value's text (412 .. 438 for OFF); the text and the `>` after it step forward
+inline constexpr float kCardPitchAtX = 300.0f;  // where Layout::pitch is worked out
+
+inline float CardY(const CardMap& m, float x, float v) { return m.a + m.b * x + (m.c + m.d * x) * v; }
+
+// The other way: the v a stage point has at its own x. A huge number when the card's scale there is not positive (a point far off to the right).
+inline float CardV(const CardMap& m, float x, float y) {
+    const float s = m.c + m.d * x;
+    return s > 0.05f ? (y - m.a - m.b * x) / s : 1.0e9f;
+}
+
+// One `slotN` of the pause movie as the glue read it: its WORLD origin in the movie's units (what the last draw left in the instance), whether it is shown, and the row it shows.
+struct CardSlot {
+    int row = -1;
+    float x = 0.0f, y = 0.0f;
+    bool visible = false;
+};
+
+inline constexpr float kCardDefaultPitch = 35.0f;  // the movie's units between slots (Fillmenu's list_interline)
+
+// The slots -> a card layout. `prompt_y` is the world y of `prompt_bg`; `wide` is the page kind; `shift` moves every row (calibration, stage pixels). Slots in row order.
+inline Layout CardLayout(const CardSlot* slots, int count, float prompt_y, bool wide, float shift) {
     Layout l;
-    shown = std::clamp(shown, 0, kMaxRows);
-    const float x0 = page == ModelPage::Settings ? kModelPageX : kModelHubX;
-    const float w = page == ModelPage::Settings ? kModelPageW : kModelHubW;
-    l.pitch = kModelPitch;
-    l.width = w;
-    for (int i = 0; i < shown; ++i) {
-        RowBox& r = l.rows[l.n++];
-        r.row = first_row + i;
+    l.card = true;
+    l.map = kPauseCard;
+    l.wide = wide;
+    l.shift = shift;
+    float vs[kMaxRows];
+    int idx[kMaxRows];
+    int n = 0;
+    for (int i = 0; i < count && n < kMaxRows; ++i) {
+        if (!slots[i].visible || !std::isfinite(slots[i].y) || !std::isfinite(prompt_y)) continue;
+        vs[n] = slots[i].y - prompt_y;
+        idx[n] = slots[i].row;
+        l.rows[n].row = slots[i].row;
+        ++n;
+    }
+    l.n = n;
+    l.v_pitch = MedianPitch(vs, idx, n, kCardDefaultPitch);
+    l.pitch = (l.map.c + l.map.d * kCardPitchAtX) * l.v_pitch;
+    const float x0 = wide ? kCardWideX0 : kCardNarrowX0;
+    const float x1 = wide ? kCardWideX1 : kCardNarrowX1;
+    l.width = x1 - x0;
+    if (wide) {
+        l.zone_label_end = kCardLabelEnd;
+        l.zone_split = kCardArrowSplit;
+    }
+    for (int i = 0; i < n; ++i) {
+        RowBox& r = l.rows[i];
+        r.v0 = vs[i] - 0.5f * l.v_pitch;
+        r.v1 = vs[i] + 0.5f * l.v_pitch;
         r.x0 = x0;
-        r.x1 = x0 + w;
-        r.y0 = kModelRow0Y + kModelPitch * float(i);
-        r.y1 = r.y0 + kModelPitch;
+        r.x1 = x1;
+        r.y0 = CardY(l.map, x0, r.v0) + shift;
+        r.y1 = CardY(l.map, x0, r.v1) + shift;
     }
     return l;
+}
+
+// The pause pages when the movie's clips cannot be read at all but the list can: the first page's slots (world y 78.9, 35 apart) under a prompt bar at 344.7 (the numbers of every page
+// with no title; a page with one has both 23 lower, which moves the rows 3 stage pixels). Used only then, and the log says so.
+enum class ModelPage : uint8_t { Hub, Settings };
+inline constexpr float kModelSlot0Y = 78.9f;
+inline constexpr float kModelPromptY = 344.7f;
+
+inline Layout ModelLayout(int first_row, int shown, ModelPage page) {
+    shown = std::clamp(shown, 0, kMaxRows);
+    CardSlot slots[kMaxRows];
+    for (int i = 0; i < shown; ++i) {
+        slots[i].row = first_row + i;
+        slots[i].x = 23.2f;
+        slots[i].y = kModelSlot0Y + kCardDefaultPitch * float(i);
+        slots[i].visible = true;
+    }
+    return CardLayout(slots, shown, kModelPromptY, page == ModelPage::Settings, 0.0f);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------

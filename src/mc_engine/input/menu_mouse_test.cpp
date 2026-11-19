@@ -605,33 +605,199 @@ void TestJudging() {
     CHECK(!SlotsMatchList(lay, first, end));
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Round 3: the pause card. Every number below was measured in the pictures of the run kbmp6-kbm-menu-mouse (2880 x 1620, so stage = pixels / 2.25) and the dumps of its log (slot world y,
+// prompt_bg world y). A measured point is the centre of the highlight bar of a row at a given x (a column of the picture).
+
+struct Meas {
+    const char* what;
+    int row;        // the list's row the bar was on
+    float x_px, y_px;
+};
+
+// A page of the pause movie: slot j's world y = first_y + 35 j for rows 0..n-1, the prompt bar at prompt_y.
+Layout PageLayout(int n, float first_y, float prompt_y, bool wide) {
+    CardSlot slots[kMaxRows];
+    for (int i = 0; i < n; ++i) {
+        slots[i].row = i;
+        slots[i].x = 23.2f;
+        slots[i].y = first_y + 35.0f * float(i);
+        slots[i].visible = true;
+    }
+    return CardLayout(slots, n, prompt_y, wide, 0.0f);
+}
+
+void TestCardFixtures() {
+    // The pause page: 3 rows, slot 0 at 78.9, prompt bar 344.7. Bar centres: row 0 (tour_02), row 1 (tour_07), row 2 (tour_06).
+    const Layout p0 = PageLayout(3, 78.9f, 344.7f, false);
+    CHECK(p0.card && p0.n == 3 && Plausible(p0) && Near(p0.v_pitch, 35.0, 1e-4));
+    const Meas p0m[] = {{"p0 row 0", 0, 560, 765.5f}, {"p0 row 0", 0, 800, 769.0f}, {"p0 row 0", 0, 1000, 772.0f}, {"p0 row 1", 1, 560, 822.5f}, {"p0 row 1", 1, 800, 823.5f},
+        {"p0 row 1", 1, 1000, 823.0f}, {"p0 row 2", 2, 560, 879.0f}, {"p0 row 2", 2, 800, 877.0f}, {"p0 row 2", 2, 1000, 874.5f}};
+    for (const Meas& m : p0m) {
+        const float X = m.x_px / 2.25f, Y = m.y_px / 2.25f;
+        CHECK(HitRow(p0, X, Y) == m.row);
+        // The bar's own centre is within a stage pixel of the model's row centre at that x.
+        const RowBox* box = BoxOfRow(p0, m.row);
+        CHECK(box != nullptr);
+        if (box) CHECK(Near(CardY(p0.map, X, 0.5f * (box->v0 + box->v1)), Y, 1.0));
+        // And 10 stage pixels (under half a row) off its centre still hits it, 14 off hits the neighbour or nothing.
+        CHECK(HitRow(p0, X, Y - 10.0f) == m.row);
+        CHECK(HitRow(p0, X, Y + 10.0f) == m.row);
+        CHECK(HitRow(p0, X, Y + 14.0f) != m.row);
+        CHECK(HitRow(p0, X, Y - 14.0f) != m.row);
+    }
+    // Rows converge to the right (25.2 apart at x 249, 22.8 at x 444: measured) and the first row falls to the right.
+    {
+        const RowBox& r0 = p0.rows[0];
+        const RowBox& r1 = p0.rows[1];
+        const float v0 = 0.5f * (r0.v0 + r0.v1), v1 = 0.5f * (r1.v0 + r1.v1);
+        CHECK(Near(CardY(p0.map, 249.0f, v1) - CardY(p0.map, 249.0f, v0), 25.2, 0.3));
+        CHECK(Near(CardY(p0.map, 444.0f, v1) - CardY(p0.map, 444.0f, v0), 22.8, 0.3));
+        CHECK(CardY(p0.map, 500.0f, v0) > CardY(p0.map, 250.0f, v0));
+    }
+    // The tour's pointer positions on the pause page (330, 341) (330, 365) (330, 391): rows 0, 1, 2; 420 is under the last row; right of the card and left of it: none.
+    CHECK(HitRow(p0, 330, 341) == 0);
+    CHECK(HitRow(p0, 330, 365) == 1);
+    CHECK(HitRow(p0, 330, 391) == 2);
+    CHECK(HitRow(p0, 330, 420) == -1);
+    CHECK(HitRow(p0, 700, 341) == -1);
+    CHECK(HitRow(p0, 150, 341) == -1);
+    CHECK(HitRow(p0, 210, 341) == 0);  // the `>` marker's margin
+
+    // The GRAPHICS list (hub): title and description, so slot 0 at 106.9 and the prompt bar at 367.7; row 1 highlighted (tour_20).
+    const Layout hub = PageLayout(6, 106.9f, 367.7f, false);
+    CHECK(Plausible(hub));
+    for (float xp : {560.0f, 800.0f, 1000.0f}) {
+        const float yp = xp == 560.0f ? 830.0f : (xp == 800.0f ? 831.5f : 830.5f);
+        CHECK(HitRow(hub, xp / 2.25f, yp / 2.25f) == 1);
+    }
+    // The SETTINGS tab: 11 rows, the first 6 shown (slot 0 at 78.9, prompt bar 344.7), row 5 highlighted (tour_21); the bar rises to the right: 1048.5, 1036.5, 1027 px at x 560, 800, 1000.
+    const Layout settings = PageLayout(6, 78.9f, 344.7f, false);
+    CHECK(HitRow(settings, 560.0f / 2.25f, 1048.5f / 2.25f) == 5);
+    CHECK(HitRow(settings, 800.0f / 2.25f, 1036.5f / 2.25f) == 5);
+    CHECK(HitRow(settings, 1000.0f / 2.25f, 1027.0f / 2.25f) == 5);
+    // At the left end the rows are 56 px apart (51 at the right): the row above is at about 992 px there.
+    CHECK(HitRow(settings, 560.0f / 2.25f, 992.0f / 2.25f) == 4);
+
+    // The UPSCALING page (value rows, the wide card): slot 0 at 106.9, prompt bar 367.7. Bar centres at x 1000 px: row 0 779, row 4 983.5, row 5 1033.5 (tour_10, _12, _15); x 1200: 781.5, 976.5, 1025.
+    const Layout ups = PageLayout(6, 106.9f, 367.7f, true);
+    CHECK(ups.wide && Plausible(ups));
+    CHECK(HitRow(ups, 1000.0f / 2.25f, 779.0f / 2.25f) == 0);
+    CHECK(HitRow(ups, 1000.0f / 2.25f, 983.5f / 2.25f) == 4);
+    CHECK(HitRow(ups, 1000.0f / 2.25f, 1033.5f / 2.25f) == 5);
+    CHECK(HitRow(ups, 1200.0f / 2.25f, 781.5f / 2.25f) == 0);
+    CHECK(HitRow(ups, 1200.0f / 2.25f, 976.5f / 2.25f) == 4);
+    CHECK(HitRow(ups, 1200.0f / 2.25f, 1025.0f / 2.25f) == 5);
+    // The wide card begins further left than the plain one.
+    CHECK(HitRow(ups, 170, 346) == 0);
+    CHECK(HitRow(hub, 170, 346) == -1);
+}
+
+void TestCardClicksOfTheRun() {
+    // The clicks and hovers of the run, at the stage points the log gave, on the UPSCALING page (value rows).
+    const Layout ups = PageLayout(6, 106.9f, 367.7f, true);
+    // "left click at window (922, 675) = stage (409.8, 300.0): row -1 -> none": the description line above row 0 still does nothing.
+    CHECK(HitRow(ups, 409.8f, 300.0f) == -1);
+    // "(1147, 832) = stage (509.8, 369.8)" and "(897, 832) = stage (398.7, 369.8)": row 1 (RENDER SCALE), on its `>` side and on its `<`.
+    CHECK(HitRow(ups, 509.8f, 369.8f) == 1);
+    CHECK(HitRow(ups, 398.7f, 369.8f) == 1);
+    const RowBox* row1 = BoxOfRow(ups, 1);
+    CHECK(row1 != nullptr);
+    if (row1) {
+        CHECK(ZoneOf(ups, *row1, 509.8f, true) == Zone::ValueRight);
+        CHECK(ZoneOf(ups, *row1, 398.7f, true) == Zone::ValueLeft);
+        // The label side (the tour's 192, the row's label text begins at 162), the `<` at 391..404 (measured on the highlighted row), the value text at 412..438, the `>` at 447..460 and 464.
+        CHECK(ZoneOf(ups, *row1, 192.0f, true) == Zone::Label);
+        CHECK(ZoneOf(ups, *row1, 385.0f, true) == Zone::Label);
+        CHECK(ZoneOf(ups, *row1, 391.0f, true) == Zone::ValueLeft);
+        CHECK(ZoneOf(ups, *row1, 404.0f, true) == Zone::ValueLeft);
+        CHECK(ZoneOf(ups, *row1, 425.0f, true) == Zone::ValueRight);
+        CHECK(ZoneOf(ups, *row1, 453.0f, true) == Zone::ValueRight);
+        CHECK(ZoneOf(ups, *row1, 464.0f, true) == Zone::ValueRight);
+        // A row that is not a value row is all label, wherever it is clicked.
+        CHECK(ZoneOf(ups, *row1, 398.7f, false) == Zone::Label);
+    }
+    // "(1832, 1126) = stage (814.2, 500.4)": far right of the card: none (the first runs read it as the row under 500 and still said -1).
+    CHECK(HitRow(ups, 814.2f, 500.4f) == -1);
+    // The tour's hover over the page's rows (pointer x 200, row y 369 = row 1, 421 = row 3, 469 = row 5): "hover: row 4 (was 0)" and "row 5 (was 4)" in the log were rows 1 and 3.
+    CHECK(HitRow(ups, 200, 369) == 1);
+    CHECK(HitRow(ups, 200, 421) == 3);
+    CHECK(HitRow(ups, 200, 469) == 5);
+    // The plan for those clicks: a value row's `>` side steps the value, the label side presses A, a click on no row does nothing.
+    CHECK(PlanLeftClick(true, 1, Zone::ValueRight, true).act == Act::Right);
+    CHECK(PlanLeftClick(true, 1, Zone::ValueLeft, true).act == Act::Left);
+    CHECK(PlanLeftClick(true, -1, Zone::Label, false).act == Act::None);
+}
+
+void TestCardShape() {
+    // The map and its inverse.
+    for (float x : {160.0f, 250.0f, 400.0f, 550.0f})
+        for (float v : {-270.0f, -230.0f, -90.0f})
+            CHECK(Near(CardV(kPauseCard, x, CardY(kPauseCard, x, v)), v, 1e-2));
+    CHECK(CardV(kPauseCard, 4000.0f, 300.0f) > 1.0e8f);  // far right of the card: no scale there: never a row
+    // Scrolled lists: slot j shows row scroll + j; the hit gives the list's row, not the slot's.
+    CardSlot slots[6];
+    for (int i = 0; i < 6; ++i) {
+        slots[i].row = 4 + i;
+        slots[i].x = 23.2f;
+        slots[i].y = 78.9f + 35.0f * float(i);
+        slots[i].visible = true;
+    }
+    const Layout scrolled = CardLayout(slots, 6, 344.7f, false, 0.0f);
+    CHECK(scrolled.rows[0].row == 4 && scrolled.rows[5].row == 9);
+    CHECK(HitRow(scrolled, 330, 341) == 4);
+    CHECK(HitRow(scrolled, 330, 465) == 9);
+    // Hidden slots are left out and do not break the pitch (a hidden one between two shown is two rows of distance).
+    slots[2].visible = false;
+    const Layout gap = CardLayout(slots, 6, 344.7f, false, 0.0f);
+    CHECK(gap.n == 5 && Near(gap.v_pitch, 35.0, 1e-4) && Plausible(gap));
+    CHECK(HitRow(gap, 330, 389) == -1);  // the hidden row's own band belongs to nobody (row 6 would be at 390)
+    // The page sliding in: the slots' x is -129 at its start; the rows are the same (hit testing does not use the slot's x).
+    for (int i = 0; i < 6; ++i) slots[i].x = -106.4f, slots[i].visible = true;
+    const Layout sliding = CardLayout(slots, 6, 344.7f, false, 0.0f);
+    CHECK(Plausible(sliding) && HitRow(sliding, 330, 341) == 4);
+    // Calibration: the shift moves every row.
+    const Layout shifted = CardLayout(slots, 6, 344.7f, false, 10.0f);
+    CHECK(HitRow(shifted, 330, 351) == 4 && HitRow(shifted, 330, 341) == 4 && HitRow(shifted, 330, 330) == -1);
+    // Plausible refuses a card layout whose pitch is not a text row's; the relaxed test opens the stage limits for the rows of the old reading (the log's pitch 17.5 at x -170).
+    CardSlot odd[3];
+    for (int i = 0; i < 3; ++i) odd[i] = CardSlot{i, 23.2f, 78.9f + 150.0f * float(i), true};
+    CHECK(!Plausible(CardLayout(odd, 3, 344.7f, false, 0.0f)));
+    SlotIn flat[6];
+    for (int i = 0; i < 6; ++i) {
+        flat[i].row = i;
+        flat[i].to_stage = Slot(0, 0, -170.0f + 0.0f, 89.0f + 17.5f * float(i));
+        flat[i].visible = true;
+    }
+    const Layout old_read = BuildLayout(flat, 6, 0.0f, 0.0f);
+    CHECK(!Plausible(old_read));
+    CHECK(PlausibleRelaxed(old_read));
+    CHECK(!PlausibleRelaxed(Layout{}));
+}
+
 void TestModelLayout() {
-    // The pause menu's first page: three rows, the tour's pointer positions (341, 365, 391) fall on rows 0, 1, 2.
+    // The model of the card for a page whose clips cannot be read: the pause page's three rows (tour pointer (330, 341) (330, 365) (330, 391)).
     const Layout hub = ModelLayout(0, 3, ModelPage::Hub);
-    CHECK(hub.n == 3 && Plausible(hub));
-    CHECK(Near(hub.pitch, 25.0, 1e-6) && Near(hub.width, 316.0, 1e-6));
+    CHECK(hub.n == 3 && Plausible(hub) && hub.card);
     CHECK(HitRow(hub, 330, 341) == 0);
     CHECK(HitRow(hub, 330, 365) == 1);
     CHECK(HitRow(hub, 330, 391) == 2);
     CHECK(HitRow(hub, 330, 420) == -1);  // under the last row
     CHECK(HitRow(hub, 700, 341) == -1);  // right of the panel
-    CHECK(HitRow(hub, 210, 341) == 0);   // the `>` marker's margin
-    // A settings page: six rows from row 0, the x of the tour's label (192) and arrows (399, 510).
+    // The wide kind has the arrows' zones.
     const Layout page = ModelLayout(0, 6, ModelPage::Settings);
-    CHECK(page.n == 6 && Plausible(page));
-    CHECK(HitRow(page, 192, 369) == 1);
-    CHECK(HitRow(page, 192, 421) == 3);
-    CHECK(HitRow(page, 192, 469) == 5);
+    CHECK(page.n == 6 && Plausible(page) && page.wide);
+    CHECK(HitRow(page, 192, 346) == 0);
     const RowBox* row1 = BoxOfRow(page, 1);
     CHECK(row1 != nullptr);
     if (row1) {
-        CHECK(ZoneOf(*row1, 192, true) == Zone::Label);
-        CHECK(ZoneOf(*row1, 399, true) == Zone::ValueLeft);
-        CHECK(ZoneOf(*row1, 510, true) == Zone::ValueRight);
+        CHECK(ZoneOf(page, *row1, 192, true) == Zone::Label);
+        CHECK(ZoneOf(page, *row1, 399, true) == Zone::ValueLeft);
+        CHECK(ZoneOf(page, *row1, 510, true) == Zone::ValueRight);
     }
     // A scrolled page: slot 0 shows row 4.
     const Layout scrolled = ModelLayout(4, 6, ModelPage::Settings);
-    CHECK(scrolled.rows[0].row == 4 && scrolled.rows[5].row == 9 && HitRow(scrolled, 192, 344) == 4);
+    CHECK(scrolled.rows[0].row == 4 && scrolled.rows[5].row == 9 && HitRow(scrolled, 200, 344) == 4);
     // The count is clamped: no rows, and no more than the layout holds.
     CHECK(ModelLayout(0, 0, ModelPage::Hub).n == 0);
     CHECK(ModelLayout(0, 500, ModelPage::Hub).n == kMaxRows);
@@ -655,6 +821,9 @@ int main() {
     TestListWindow();
     TestJudging();
     TestModelLayout();
+    TestCardFixtures();
+    TestCardClicksOfTheRun();
+    TestCardShape();
     std::printf("menu_mouse_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
