@@ -68,6 +68,7 @@
 #include "host_passes.h"
 #include "records.h"
 #include "region_index.h"
+#include "resolve_variants.h"
 #include "textures.h"
 
 namespace mcla::gpu {
@@ -242,19 +243,9 @@ class ResolveCache {
   uint64_t HeldBytes() const;
 
  private:
-  // Conversions, as resolve_ps.hlsl numbers them.
-  enum Mode : uint32_t {
-    kModeUnorm8888 = 0,
-    kModeUnorm1555 = 1,
-    kModeUnorm8 = 2,
-    kModeFloat = 3,
-    kModeRed32 = 4,
-    kModeDepthFloat = 5,
-    kModeDepthRaw8888 = 6,
-    kModeDepthFloatBits = 7,
-    kModeFloat32 = 8,  // k_32_32_FLOAT: X and Y as 32-bit floats
-    kModeCount,
-  };
+  // Conversions, as resolve_ps.hlsl numbers them (resolve_variants.h holds the table that picks one).
+  using Mode = resolve_variants::Mode;
+  using enum resolve_variants::Mode;
   enum ModeFlags : uint32_t {
     kFlagSwapRedBlue = 1u << 8,
     kFlagGammaSource = 1u << 9,
