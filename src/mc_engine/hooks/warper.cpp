@@ -71,7 +71,7 @@
 #include <cstring>
 #include <string>
 
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REX_EXTERN(__imp__rex_sub_8221BE98);  // mcWarper::Update
 REX_EXTERN(__imp__rex_sub_8221B790);  // mcWarper finalize

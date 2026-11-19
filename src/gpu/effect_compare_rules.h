@@ -5,7 +5,7 @@
 // What a press of the compare key does and says, from the settings' texts: whether the chosen effect is
 // on now, which way the flip goes, whether anything could show it, the words of the label, how often a
 // press counts and how the label fades. No renderer, no cvars, no clock: effect_compare_test.cpp checks
-// every effect against every value, and mc_engine/effect_compare.cpp only reads the settings and the
+// every effect against every value, and mc_engine/display/effect_compare.cpp only reads the settings and the
 // time and calls these. The flip itself (effect_compare.h) is read by the settings' own readers.
 // ===========================================================================
 

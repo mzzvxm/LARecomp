@@ -42,7 +42,7 @@
 #include "rsc5.h"
 #include "texture.h"
 #include "xcompress.h"
-#include "mc_engine/boot_progress.h"
+#include "mc_engine/core/boot_progress.h"
 #include "mc_engine/music/custom_music.h"
 #include "larecomp_guest.h"
 

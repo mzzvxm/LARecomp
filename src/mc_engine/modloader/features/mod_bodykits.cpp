@@ -37,7 +37,7 @@
 
 #include <cstdint>
 
-#include "../../logging.h"
+#include "mc_engine/core/logging.h"
 #include "larecomp_log.h"
 
 REX_EXTERN(__imp__rex_sub_82391EA8);

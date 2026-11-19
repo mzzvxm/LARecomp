@@ -11,7 +11,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 #include "larecomp_guest.h"
 
 // ---------------------------------------------------------------------------

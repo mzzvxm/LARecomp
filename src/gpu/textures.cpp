@@ -26,7 +26,7 @@
 #include "constants.h"
 #include "device.h"
 #include "frame.h"
-#include "mc_engine/texture_dump.h"
+#include "mc_engine/core/texture_dump.h"
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "texture_decode.h"

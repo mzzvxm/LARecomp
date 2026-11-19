@@ -18,7 +18,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../draw_stats.h"
+#include "mc_engine/core/draw_stats.h"
 #include "larecomp_guest.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 

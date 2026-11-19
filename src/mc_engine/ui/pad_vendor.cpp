@@ -1,7 +1,7 @@
 // Which controller family is attached, for button_prompts = auto (hooks/ui.cpp).
 #include "pad_vendor.h"
 
-#include "../device_watch.h"
+#include "mc_engine/input/device_watch.h"
 
 namespace mcla::ui {
 

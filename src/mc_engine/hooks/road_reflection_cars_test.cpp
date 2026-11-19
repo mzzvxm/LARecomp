@@ -53,7 +53,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-#include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/input/adaptive_triggers.h"
 
 namespace {
 

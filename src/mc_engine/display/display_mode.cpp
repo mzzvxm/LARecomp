@@ -1,0 +1,1175 @@
+// The game window's display mode. See display_mode.h.
+
+#include "display_mode.h"
+#include "display_sizes.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "settings/larecomp_settings.h"
+#include <rex/ui/ui_system.h>
+#include <rex/platform/native_window.h>
+
+#include "mc_engine/core/logging.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#else
+// The SDK's window is SDL's, and since 0.11 it says which one (rex::NativeWindow::sdl); see display_mode.h (Linux).
+#include <SDL3/SDL.h>
+#endif
+
+namespace mcla::display {
+
+namespace {
+
+// The game's own screen: no display mode or window below this is offered.
+constexpr uint32_t kMinWidth = 1280;
+constexpr uint32_t kMinHeight = 720;
+
+// The UI system, set once in Initialize: rexglue 0.11 has no Window object to hold (0.10 held a rex::ui::Window*).
+std::atomic<rex::ui::IUISystem*> g_ui{nullptr};
+// Set once, on the UI thread, with the window: the HWND on Windows, the SDL_Window* elsewhere (null
+// when it was not found).
+std::atomic<void*> g_native{nullptr};
+// A change is queued for the UI thread (the settings that decide it are read when it runs).
+std::atomic<bool> g_pending{false};
+#if !defined(_WIN32)
+// The compositor decides the window's size (gamescope). Set once, with the window.
+std::atomic<bool> g_size_fixed{false};
+#endif
+
+// How many times after the first the settings are looked at again while the window is still catching
+// up (the passes stop at the first one that finds nothing to do). Windows: the next event loop turn;
+// elsewhere every kRetryMs, for the compositor answers later than that.
+#if defined(_WIN32)
+constexpr int kLastPass = 3;
+#else
+constexpr int kLastPass = 10;
+constexpr uint32_t kRetryMs = 100;
+#endif
+
+bool Flag(const char* name) { return larecomp::cvar::GetFlagByName(name) == "true"; }
+
+// The window is what the UI system holds: its fullscreen state is the setting it applies (ui.fullscreen), its work goes to the UI thread
+// through PostTask, and its native handles come from GetNativeWindow.
+bool WindowIsFullscreen() { return Flag("fullscreen"); }
+
+// Queues a function for the UI thread. False when there is no UI system (yet, or any more).
+bool PostToUi(rex::MoveOnlyFunction<void()> fn) {
+  rex::ui::IUISystem* ui = g_ui.load();
+  if (!ui) return false;
+  ui->PostTask(std::move(fn));
+  return true;
+}
+
+// A resolution preset as the UI system reads ui.resolution ("1920x1080", "1080p", "4k": spaces, underscores, hyphens and case ignored). The
+// SDK's TryParseResolutionPreset (rex::graphics::video_mode_util in 0.10) is private since 0.11 (src/ui/resolution_preset.h; Xenia, Ben Vanik,
+// BSD-3-Clause), so this is a copy.
+bool TryParsePositiveInt32(std::string_view value, int32_t& out) {
+  if (value.empty()) return false;
+  int32_t parsed = 0;
+  const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+  if (error != std::errc() || end != value.data() + value.size() || parsed <= 0) return false;
+  out = parsed;
+  return true;
+}
+
+bool TryParseResolutionPreset(std::string_view text, int32_t& width_out, int32_t& height_out) {
+  std::string normalized;
+  for (char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) || c == '_' || c == '-') continue;
+    normalized.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  if (normalized.empty()) return false;
+  const size_t x = normalized.find('x');
+  if (x != std::string::npos && x > 0 && x + 1 < normalized.size()) {
+    int32_t w = 0, h = 0;
+    if (!TryParsePositiveInt32(std::string_view(normalized).substr(0, x), w) ||
+        !TryParsePositiveInt32(std::string_view(normalized).substr(x + 1), h)) {
+      return false;
+    }
+    width_out = w;
+    height_out = h;
+    return true;
+  }
+  static const struct { const char* name; int32_t w, h; } kPresets[] = {
+      {"480p", 640, 480},   {"540p", 960, 540},   {"720p", 1280, 720},   {"900p", 1600, 900},
+      {"1080p", 1920, 1080}, {"1440p", 2560, 1440}, {"1800p", 3200, 1800}, {"2160p", 3840, 2160}, {"4k", 3840, 2160},
+  };
+  for (const auto& p : kPresets) {
+    if (normalized == p.name) {
+      width_out = p.w;
+      height_out = p.h;
+      return true;
+    }
+  }
+  return false;
+}
+
+// What the SDK's window keeps for its state while it is not a window: its configured size, in logical pixels (ui.window_width / ui.window_height,
+// the video mode's size when those are 0), times the window's scale. Defined with the platform parts below.
+double WindowScaleFactor();
+
+void ScheduleApply(int pass);
+
+void SettingChanged(std::string_view, std::string_view) { ScheduleApply(0); }
+
+}  // namespace
+
+// ── Settings, sizes (every platform) ───────────────────────────────────────────────────────────
+
+bool ExclusiveSupported() {
+#if defined(_WIN32)
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool LiveResize() {
+#if defined(_WIN32)
+  return true;
+#else
+  // SDL_SetWindowSize needs the SDK's SDL window (Initialize found it), and a compositor that lets
+  // the window have a size.
+  return g_native.load(std::memory_order_acquire) != nullptr && !g_size_fixed.load();
+#endif
+}
+
+bool WindowSizeFixed() {
+#if defined(_WIN32)
+  return false;
+#else
+  return g_size_fixed.load();
+#endif
+}
+
+Mode WantedMode() {
+  if (!Flag("fullscreen")) return Mode::kWindowed;
+  return Flag("fullscreen_exclusive") && ExclusiveSupported() ? Mode::kExclusive : Mode::kBorderless;
+}
+
+bool ParseSize(std::string_view text, Size* out) {
+  int32_t width = 0;
+  int32_t height = 0;
+  if (!TryParseResolutionPreset(text, width, height)) return false;
+  if (width <= 0 || height <= 0) return false;
+  out->width = uint32_t(width);
+  out->height = uint32_t(height);
+  return true;
+}
+
+std::string SizeText(Size size) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%ux%u", size.width, size.height);
+  return buf;
+}
+
+std::string SizeLabel(Size size) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%uX%u", size.width, size.height);
+  return buf;
+}
+
+namespace {
+
+// The size `resolution` asks for the window, in PHYSICAL pixels (the client area; see display_mode.h
+// for the units). False when `resolution` is empty or no size: the window is then left as it is.
+//
+// window_width and window_height are not looked at here. They are the SDK's start-up size in LOGICAL
+// pixels (kRequiresRestart; at 150% scaling 1280 is a window of 1920 pixels), they win over
+// `resolution` where the SDK makes the window, and until this was written they won here too: a
+// harness that starts the game with window_width=1280 had every later write of `resolution` answered
+// with 1280x720, and the window then already was that size, so no write did anything.
+bool AskedWindowedSize(Size* out) {
+  Size asked;
+  if (!ParseSize(larecomp::cvar::GetFlagByName("resolution"), &asked)) return false;
+  *out = asked;
+  return true;
+}
+
+}  // namespace
+
+Size WantedWindowedSize() {
+  Size asked;
+  if (AskedWindowedSize(&asked)) return asked;
+  // No size asked: the window's own, in physical pixels, for the row to show what is true. Its client
+  // area while it is a window; while it is not (fullscreen on the way to a window), the size the SDK
+  // keeps for the window state (its logical size, at the window's DPI).
+  rex::ui::IUISystem* ui = g_ui.load();
+  if (ui && !WindowIsFullscreen()) {
+    const Size own = OutputSize();
+    if (!own.empty()) return own;
+  }
+  if (ui) {
+    rex::ui::UISettings& settings = ui->GetSettings();
+    int32_t width = settings.window_width.Get();
+    int32_t height = settings.window_height.Get();
+    if (width <= 0 || height <= 0) {
+      const rex::VideoMode mode = ui->GetVideoMode();
+      width = int32_t(mode.width);
+      height = int32_t(mode.height);
+    }
+    const double scale = WindowScaleFactor();
+    const Size kept = {uint32_t(std::lround(width * scale)), uint32_t(std::lround(height * scale))};
+    if (!kept.empty()) return kept;
+  }
+  return {kMinWidth, kMinHeight};
+}
+
+namespace {
+
+// The listed size closest to `want` (the sum of the two differences); the first when `want` is empty.
+Size Nearest(const std::vector<Size>& sizes, Size want) {
+  Size best = sizes.empty() ? want : sizes.front();
+  int64_t best_distance = INT64_MAX;
+  for (const Size& s : sizes) {
+    const int64_t distance =
+        std::abs(int64_t(s.width) - int64_t(want.width)) + std::abs(int64_t(s.height) - int64_t(want.height));
+    if (distance < best_distance) {
+      best_distance = distance;
+      best = s;
+    }
+  }
+  return best;
+}
+
+// The sizes a window can have: the 16:9 steps from 1280x720 up whose window (the client area plus
+// `frame`) fits `work`, the display's usable area. A display too small for the game's own screen still
+// gets the smallest window.
+std::vector<Size> WindowSteps(Size work, Size frame) {
+  constexpr Size kSteps[] = {{1280, 720},  {1600, 900},  {1920, 1080}, {2560, 1440},
+                             {3200, 1800}, {3840, 2160}, {5120, 2880}, {7680, 4320}};
+  std::vector<Size> sizes;
+  for (const Size& s : kSteps) {
+    if (s.width + frame.width <= work.width && s.height + frame.height <= work.height) {
+      sizes.push_back(s);
+    }
+  }
+  if (sizes.empty()) sizes.push_back(kSteps[0]);
+  return sizes;
+}
+
+}  // namespace
+
+Size WantedExclusiveSize() {
+  Size want;
+  if (!ParseSize(larecomp::cvar::GetFlagByName("resolution"), &want)) want = DesktopSize();
+  const std::vector<Size> sizes = ExclusiveSizes();
+  return sizes.empty() ? want : Nearest(sizes, want);
+}
+
+#if defined(_WIN32)
+
+// ── Windows ────────────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// What the display lists, as the rules of display_sizes.h fold it: every look at the driver is added to
+// the Book, none replaces it. The list is asked of the driver (a few milliseconds), and the menu asks
+// every frame it is open, so it is looked at again at most every few seconds, per display (ListedModes).
+struct DisplayInfo {
+  std::wstring device;
+  sizes::Book book;
+  // The size of the display's work area (its own size less the taskbar), as the monitor said it while
+  // the display was in its own mode. Empty when that was not asked.
+  Size work;
+  // What the log last said of the book (it says it again only when it changed).
+  std::string logged;
+  ULONGLONG when = 0;
+};
+constexpr ULONGLONG kInfoLifetimeMs = 5000;
+
+std::mutex g_info_mutex;
+// The books kept, by display, and the display this game has switched to another mode, from before the
+// switch is asked for to after the display's own mode is back (empty: none). Both under g_info_mutex:
+// the menu reads them from any thread, the UI thread changes the mode.
+std::map<std::wstring, DisplayInfo> g_infos;
+std::wstring g_switched_device;
+
+// The monitor's own size (its preferred timing; display configuration API, below ReadDisplay).
+Size PreferredSize(const std::wstring& device);
+
+std::string Narrow(const std::wstring& text) {
+  if (text.empty()) return {};
+  const int bytes =
+      WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0, nullptr, nullptr);
+  if (bytes <= 0) return {};
+  std::string out(size_t(bytes), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), out.data(), bytes, nullptr, nullptr);
+  return out;
+}
+
+// One look at the display's driver, added to `info`'s book. `switched`: this game has the display in a
+// mode of its own choosing, so the driver's list is for that mode: whatever it lacks stays as it was and
+// the display's own mode is not read from it.
+void ReadDisplay(DisplayInfo* info, bool switched) {
+  const wchar_t* device = info->device.c_str();
+  sizes::Look look;
+  // The display's own mode: what the player set in Windows (the registry settings), which a mode this
+  // game switched to does not change.
+  DEVMODEW dm = {};
+  dm.dmSize = sizeof(DEVMODEW);
+  if (EnumDisplaySettingsExW(device, ENUM_REGISTRY_SETTINGS, &dm, 0)) {
+    look.desktop = {dm.dmPelsWidth, dm.dmPelsHeight};
+    look.desktop_hz = dm.dmDisplayFrequency;
+    look.desktop_is_registry = true;
+  }
+  // The mode it is in now.
+  dm = {};
+  dm.dmSize = sizeof(DEVMODEW);
+  if (EnumDisplaySettingsExW(device, ENUM_CURRENT_SETTINGS, &dm, 0)) {
+    look.current = {dm.dmPelsWidth, dm.dmPelsHeight};
+    look.current_hz = dm.dmDisplayFrequency;
+    if (!look.desktop_is_registry) {
+      look.desktop = look.current;
+      look.desktop_hz = look.current_hz;
+    }
+  }
+  // Every mode the display lists (not the raw ones it can be driven at); the book keeps the 32 bit,
+  // not interlaced ones from the game's own screen up.
+  for (DWORD i = 0;; ++i) {
+    dm = {};
+    dm.dmSize = sizeof(DEVMODEW);
+    if (!EnumDisplaySettingsExW(device, i, &dm, 0)) break;
+    sizes::RawMode mode;
+    mode.size = {dm.dmPelsWidth, dm.dmPelsHeight};
+    mode.hz = dm.dmDisplayFrequency;
+    mode.bits = dm.dmBitsPerPel;
+    mode.interlaced = (dm.dmFields & DM_DISPLAYFLAGS) && (dm.dmDisplayFlags & DM_INTERLACED);
+    look.modes.push_back(mode);
+  }
+  look.preferred = PreferredSize(info->device);
+  // The driver's list depends on the mode the display is in (see display_sizes.h): the display's own
+  // mode, the mode it is in and the monitor's own size are in the book whether it listed them or not.
+  info->book.Add(look, switched, {kMinWidth, kMinHeight});
+  info->when = GetTickCount64();
+}
+
+HWND NativeWindow() { return static_cast<HWND>(g_native.load(std::memory_order_acquire)); }
+
+bool MonitorOf(HWND hwnd, MONITORINFOEXW* info) {
+  if (!hwnd) return false;
+  HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+  if (!monitor) return false;
+  *info = {};
+  info->cbSize = sizeof(MONITORINFOEXW);
+  return GetMonitorInfoW(monitor, reinterpret_cast<MONITORINFO*>(info)) != 0;
+}
+
+// What a display lists, as the book (display_sizes.h) has it from the looks at the driver so far. Windows
+// answers for the mode the display is in, so a look can be a wrong one (the sizes above that mode are
+// missing, the display's own among them: the owner's logs of 2026-11-07 and 2026-11-13, Mz's of
+// 2026-11-13). Two rules keep a wrong look from mattering:
+//   - a look only ADDS to the book (it is never replaced by one), and the display's own mode and the
+//     monitor's own size are in it whether the driver listed them or not;
+//   - while this game has the display in a mode of its own choosing, from before the switch is asked for
+//     (EnterDesktopMode) to after the display's own mode is back (RestoreDesktopMode), the driver is not
+//     asked at all: the book from before is used, whatever its age. The switch used to be marked after the
+//     call that makes it returned, so the menu thread (which asks every frame it is open) could look at
+//     the driver in the second or two the switch takes and take the new mode's list for the display's.
+// SetSwitchedDevice makes the next ask look again once the display's own mode is back. `monitor`, when
+// it is the display's, also gives the work area (only while the display is in its own mode: a switched
+// display reports the smaller one).
+// CHECK: that the list in FULLSCREEN at 1280x720 stays what it was in BORDERLESS (the same sizes,
+// 3840x2160 and every other one, however long the menu stays on the row), and comes back after the
+// display's own mode is back; the log's "FULLSCREEN sizes of ..." line (one per change of the list)
+// names the native size on a display at its own mode and again on one the game has switched.
+DisplayInfo ListedModes(const std::wstring& device, const MONITORINFOEXW* monitor) {
+  std::lock_guard lock(g_info_mutex);
+  const auto kept = g_infos.find(device);
+  const bool have = kept != g_infos.end();
+  const bool switched = !g_switched_device.empty() && g_switched_device == device;
+  const bool fresh = have && GetTickCount64() - kept->second.when <= kInfoLifetimeMs;
+  if (have && (fresh || switched)) return kept->second;
+  DisplayInfo info = have ? kept->second : DisplayInfo{};
+  info.device = device;
+  ReadDisplay(&info, switched);
+  if (!switched && monitor && device == monitor->szDevice) {
+    info.work = {uint32_t(monitor->rcWork.right - monitor->rcWork.left),
+                 uint32_t(monitor->rcWork.bottom - monitor->rcWork.top)};
+  }
+  const std::string text = info.book.Describe();
+  if (text != info.logged) {
+    info.logged = text;
+    MC_INFO("[display] FULLSCREEN sizes of {}: {}", Narrow(device), text);
+  }
+  g_infos[device] = info;
+  return info;
+}
+
+// The display the window is on.
+DisplayInfo CurrentDisplay() {
+  MONITORINFOEXW monitor;
+  if (!MonitorOf(NativeWindow(), &monitor)) return {};
+  return ListedModes(monitor.szDevice, &monitor);
+}
+
+// This game is switching `device` to another mode (set BEFORE the call that does it: see ListedModes), or
+// (empty) has put the display's own mode back, or the switch did not happen.
+void SetSwitchedDevice(const std::wstring& device) {
+  std::lock_guard lock(g_info_mutex);
+  g_switched_device = device;
+  if (device.empty()) {
+    // The display is in its own mode: what it lists now is asked again at the next ask.
+    for (auto& entry : g_infos) entry.second.when = 0;
+  }
+}
+
+template <typename Fn>
+Fn User32(const char* name) {
+  const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+  const FARPROC proc = user32 ? GetProcAddress(user32, name) : nullptr;
+  return reinterpret_cast<Fn>(reinterpret_cast<void*>(proc));
+}
+
+// The monitor's own size on the display `device` (a GDI name, "\\.\DISPLAY1"): its preferred timing,
+// from the display configuration API. Unlike the mode list it does not depend on the mode the display is
+// in, nor on the DPI the process sees. Empty where it cannot be asked (a remote session, an old Windows).
+// CHECK: on the test PC it is 3840x2160 for the 4K display; on a laptop panel with a lower mode set it is
+// the panel's own; the log's "the monitor's own size" says it.
+Size PreferredSize(const std::wstring& device) {
+  using GetSizesFn = LONG(WINAPI*)(UINT32, UINT32*, UINT32*);
+  using QueryFn = LONG(WINAPI*)(UINT32, UINT32*, DISPLAYCONFIG_PATH_INFO*, UINT32*,
+                                DISPLAYCONFIG_MODE_INFO*, DISPLAYCONFIG_TOPOLOGY_ID*);
+  using InfoFn = LONG(WINAPI*)(DISPLAYCONFIG_DEVICE_INFO_HEADER*);
+  static const GetSizesFn get_sizes = User32<GetSizesFn>("GetDisplayConfigBufferSizes");
+  static const QueryFn query = User32<QueryFn>("QueryDisplayConfig");
+  static const InfoFn get_info = User32<InfoFn>("DisplayConfigGetDeviceInfo");
+  if (!get_sizes || !query || !get_info) return {};
+
+  std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+  std::vector<DISPLAYCONFIG_MODE_INFO> modes;
+  UINT32 path_count = 0;
+  UINT32 mode_count = 0;
+  LONG result = ERROR_INSUFFICIENT_BUFFER;
+  // The topology can change between the two calls: asked again a few times.
+  for (int attempt = 0; attempt < 3 && result == ERROR_INSUFFICIENT_BUFFER; ++attempt) {
+    if (get_sizes(QDC_ONLY_ACTIVE_PATHS, &path_count, &mode_count) != ERROR_SUCCESS) return {};
+    paths.assign(path_count, DISPLAYCONFIG_PATH_INFO{});
+    modes.assign(mode_count, DISPLAYCONFIG_MODE_INFO{});
+    result = query(QDC_ONLY_ACTIVE_PATHS, &path_count, paths.data(), &mode_count, modes.data(), nullptr);
+  }
+  if (result != ERROR_SUCCESS) return {};
+  paths.resize(path_count);
+
+  for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+    DISPLAYCONFIG_SOURCE_DEVICE_NAME source = {};
+    source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+    source.header.size = sizeof(source);
+    source.header.adapterId = path.sourceInfo.adapterId;
+    source.header.id = path.sourceInfo.id;
+    if (get_info(&source.header) != ERROR_SUCCESS) continue;
+    if (device != source.viewGdiDeviceName) continue;
+
+    DISPLAYCONFIG_TARGET_PREFERRED_MODE preferred = {};
+    preferred.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE;
+    preferred.header.size = sizeof(preferred);
+    preferred.header.adapterId = path.targetInfo.adapterId;
+    preferred.header.id = path.targetInfo.id;
+    if (get_info(&preferred.header) != ERROR_SUCCESS) continue;
+    // A size no monitor has is a garbage answer: not used.
+    if (preferred.width == 0 || preferred.height == 0 || preferred.width > 16384 ||
+        preferred.height > 16384) {
+      return {};
+    }
+    return {preferred.width, preferred.height};
+  }
+  return {};
+}
+
+UINT WindowDpi(HWND hwnd) {
+  using Fn = UINT(WINAPI*)(HWND);
+  static const Fn fn = User32<Fn>("GetDpiForWindow");
+  const UINT dpi = fn ? fn(hwnd) : 0;
+  return dpi ? dpi : 96;
+}
+
+// How the process sees pixels: the window's coordinates (GetClientRect, SetWindowPos) are physical
+// pixels only when it is DPI aware. SDL3 declares per-monitor awareness when it starts its video
+// system (and the window's size at 150% scaling, 1920 pixels for 1280 logical, says it did); this asks
+// instead of assuming, for the log line of a resize. 0 unaware, 1 system, 2 per monitor, -1 not known.
+int DpiAwareness(HWND hwnd) {
+  using GetContext = HANDLE(WINAPI*)(HWND);
+  using GetAwareness = int(WINAPI*)(HANDLE);
+  static const GetContext get_context = User32<GetContext>("GetWindowDpiAwarenessContext");
+  static const GetAwareness get_awareness =
+      User32<GetAwareness>("GetAwarenessFromDpiAwarenessContext");
+  if (!get_context || !get_awareness) return -1;
+  return get_awareness(get_context(hwnd));
+}
+
+const char* DpiAwarenessText(int awareness) {
+  switch (awareness) {
+    case 0:  return "DPI unaware: sizes are NOT physical pixels";
+    case 1:  return "system DPI aware";
+    case 2:  return "per-monitor DPI aware";
+    default: return "DPI awareness not known";
+  }
+}
+
+// The outer rectangle for a client rectangle, at the window's DPI where Windows can say it
+// (Windows 10 1607 and later).
+void AdjustForWindow(HWND hwnd, RECT* rc, DWORD style, DWORD ex_style) {
+  using Fn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+  static const Fn fn = User32<Fn>("AdjustWindowRectExForDpi");
+  if (fn) {
+    fn(rc, style, FALSE, ex_style, WindowDpi(hwnd));
+  } else {
+    AdjustWindowRectEx(rc, style, FALSE, ex_style);
+  }
+}
+
+// What the window's frame takes from the display's work area, for the window SDL makes (a titled,
+// sizable window).
+Size FrameOf(HWND hwnd) {
+  RECT rc = {0, 0, 0, 0};
+  AdjustForWindow(hwnd, &rc, WS_OVERLAPPEDWINDOW, 0);
+  return {uint32_t(rc.right - rc.left), uint32_t(rc.bottom - rc.top)};
+}
+
+// ── Changing the display's mode (UI thread) ────────────────────────────────────────────────────
+
+bool g_mode_changed = false;     // this game switched the display to g_changed_to
+std::wstring g_changed_device;   // the display it did that on
+Size g_changed_to;
+
+// The frameless window of a fullscreen state covers the display. SDL follows a change of the display's
+// mode by itself (it listens for WM_DISPLAYCHANGE); this only makes sure of it.
+// CHECK: that SDL resizes its borderless fullscreen window to the new desktop size after
+// ChangeDisplaySettingsEx (SDL_windowsevents.c WM_DISPLAYCHANGE -> WIN_RefreshDisplays); if it does
+// not, this call does it and the window's size in SDL is as wrong as the log's "window moved" says.
+void FitFullscreenWindow(HWND hwnd) {
+  MONITORINFOEXW monitor;
+  if (!MonitorOf(hwnd, &monitor)) return;
+  RECT now = {};
+  GetWindowRect(hwnd, &now);
+  const RECT& area = monitor.rcMonitor;
+  if (now.left == area.left && now.top == area.top && now.right == area.right &&
+      now.bottom == area.bottom) {
+    return;
+  }
+  MC_INFO("[display] the fullscreen window ({}x{} at {},{}) did not follow the display ({}x{}): moved",
+          now.right - now.left, now.bottom - now.top, now.left, now.top, area.right - area.left,
+          area.bottom - area.top);
+  SetWindowPos(hwnd, nullptr, area.left, area.top, area.right - area.left, area.bottom - area.top,
+               SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// Puts the display's own mode back. True when there was one to put back.
+bool RestoreDesktopMode(const char* why, bool fit_window) {
+  if (!g_mode_changed) return false;
+  g_mode_changed = false;
+  const LONG result = ChangeDisplaySettingsExW(g_changed_device.c_str(), nullptr, nullptr, 0, nullptr);
+  // The list is asked of the driver again from now on, whether or not the display went back (a list
+  // that is kept for good would be stale after any change the player makes in Windows).
+  SetSwitchedDevice({});
+  if (result != DISP_CHANGE_SUCCESSFUL) {
+    MC_WARN("[display] the display's own mode could not be put back ({}): code {}", why, result);
+    return true;
+  }
+  MC_INFO("[display] the display's own mode is back ({})", why);
+  if (fit_window && g_ui.load() && WindowIsFullscreen()) FitFullscreenWindow(NativeWindow());
+  return true;
+}
+
+// Switches the display to `want` (a listed size; the display's own size means no switch). True when
+// something changed.
+// CHECK: ChangeDisplaySettingsExW with CDS_FULLSCREEN on the display of the window while SDL has the
+// window in its borderless fullscreen; the mode reverts with the process (docs: "temporary in
+// nature"), and RestoreDesktopMode runs at every exit this game has (display_mode.h).
+bool EnterDesktopMode(HWND hwnd, Size want) {
+  MONITORINFOEXW monitor;
+  if (!MonitorOf(hwnd, &monitor)) return false;
+  // The display this game already switched stays the one, wherever the window is now.
+  const std::wstring device = g_mode_changed ? g_changed_device : std::wstring(monitor.szDevice);
+  const DisplayInfo info = ListedModes(device, &monitor);
+  const Size own = info.book.desktop();
+  if (want.empty()) want = own;
+  if (want == own) {
+    if (!g_mode_changed) {
+      MC_INFO("[display] FULLSCREEN: {} is the display's own size: the display's mode is left as it is",
+              SizeText(want));
+    }
+    return RestoreDesktopMode("the display's own size is the choice", true);
+  }
+  if (g_mode_changed && g_changed_to == want) return false;
+
+  // Its refresh rate: the display's own when the size has it, else the highest the size lists. The
+  // row has no rate of its own; the FPS limit and V-SYNC say how fast the game runs. 0 for a size whose
+  // rate is not known (the monitor's own size when the driver did not list it): the driver chooses.
+  const uint32_t hz = info.book.RefreshFor(want);
+
+  DEVMODEW dm = {};
+  dm.dmSize = sizeof(DEVMODEW);
+  dm.dmPelsWidth = want.width;
+  dm.dmPelsHeight = want.height;
+  dm.dmBitsPerPel = 32;
+  dm.dmDisplayFrequency = hz;
+  dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | (hz ? DM_DISPLAYFREQUENCY : 0);
+  // The display is marked as switched BEFORE the call: the switch takes a second or two, and a look at
+  // the driver in it (the menu asks every frame) would see the new mode (ListedModes).
+  const bool was_switched = g_mode_changed;
+  SetSwitchedDevice(device);
+  const LONG result = ChangeDisplaySettingsExW(device.c_str(), &dm, nullptr, CDS_FULLSCREEN, nullptr);
+  if (result != DISP_CHANGE_SUCCESSFUL) {
+    // Still in the mode it was in (the display's own, or the one this game had switched it to: the
+    // restore below puts that one back).
+    if (!was_switched) SetSwitchedDevice({});
+    MC_WARN("[display] FULLSCREEN: the display would not switch to {} at {} Hz (code {}); staying "
+            "borderless",
+            SizeText(want), hz, result);
+    return RestoreDesktopMode("the switch failed", true);
+  }
+  g_mode_changed = true;
+  g_changed_device = device;
+  g_changed_to = want;
+  MC_INFO("[display] FULLSCREEN: the display is now {} at {} Hz (its own mode is {} at {} Hz)",
+          SizeText(want), hz, SizeText(own), info.book.desktop_hz());
+  FitFullscreenWindow(hwnd);
+  return true;
+}
+
+// ── Changing the window's size (UI thread) ─────────────────────────────────────────────────────
+
+// A size the window was asked and Windows would not give (a window larger than the display), and the
+// size it kept instead: the same ask is not made again, and not logged again, while the window is still
+// at that size. UI thread only.
+Size g_refused_want;
+Size g_refused_got;
+
+// What ResizeWindow found.
+enum class Resized {
+  kAlready,  // the client area already is that size (or there is nothing to size: no window, minimised)
+  kDone,     // the window was sized
+  kNotYet,   // the window has no frame to size yet (SDL has not given it back since fullscreen)
+};
+
+// The client area of the window made `want` (PHYSICAL pixels: the units of GetClientRect, of
+// SetWindowPos and of the swap chain), the whole window centred on the work area of its display. The
+// frame is added at the window's own DPI (AdjustWindowRectExForDpi), so at 150% scaling a client area of
+// 1600x900 is 1600x900 pixels plus the frame at that DPI, never 2400x1350. The result is read back and
+// corrected once if Windows made the client area anything else (a frame that is not the one asked
+// for), and a size it will not give is said in the log instead of being left silent.
+// CHECK: SetWindowPos in the pixels SDL reports (the process is per-monitor DPI aware once SDL has
+// started its video system; the SDK makes the first window with SizeToPhysical the same way). The first
+// run (next3-window) shows it: 1280x720 asked at 150% scaling made a client area of exactly 1280x720
+// ("the window 1280x720 (1x)" in the render scale line). The log line below says the DPI awareness and
+// the scaling; "DPI unaware" there would mean every size in this file is virtualised.
+Resized ResizeWindow(HWND hwnd, Size want) {
+  if (!hwnd || want.empty() || IsIconic(hwnd)) return Resized::kAlready;
+  LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  if (!(style & WS_CAPTION)) return Resized::kNotYet;
+  if (style & WS_MAXIMIZE) {
+    ShowWindow(hwnd, SW_RESTORE);
+    style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+  }
+  RECT client = {};
+  GetClientRect(hwnd, &client);
+  if (uint32_t(client.right) == want.width && uint32_t(client.bottom) == want.height) {
+    return Resized::kAlready;
+  }
+  const Size have = {uint32_t(client.right), uint32_t(client.bottom)};
+  if (want == g_refused_want && have == g_refused_got) return Resized::kAlready;
+
+  const LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+  RECT outer = {0, 0, LONG(want.width), LONG(want.height)};
+  AdjustForWindow(hwnd, &outer, DWORD(style), DWORD(ex_style));
+  LONG outer_width = outer.right - outer.left;
+  LONG outer_height = outer.bottom - outer.top;
+
+  LONG x = 0;
+  LONG y = 0;
+  MONITORINFOEXW monitor;
+  if (MonitorOf(hwnd, &monitor)) {
+    const RECT& work = monitor.rcWork;
+    x = std::max(work.left, work.left + ((work.right - work.left) - outer_width) / 2);
+    y = std::max(work.top, work.top + ((work.bottom - work.top) - outer_height) / 2);
+  }
+  const UINT dpi = WindowDpi(hwnd);
+  MC_INFO("[display] WINDOWED: the window's client area is now {}x{} physical pixels (was {}x{}; "
+          "{}% scaling, {})",
+          want.width, want.height, client.right, client.bottom, (dpi * 100 + 48) / 96,
+          DpiAwarenessText(DpiAwareness(hwnd)));
+  SetWindowPos(hwnd, nullptr, x, y, outer_width, outer_height, SWP_NOZORDER | SWP_NOACTIVATE);
+
+  RECT now = {};
+  GetClientRect(hwnd, &now);
+  if (uint32_t(now.right) != want.width || uint32_t(now.bottom) != want.height) {
+    outer_width += LONG(want.width) - now.right;
+    outer_height += LONG(want.height) - now.bottom;
+    SetWindowPos(hwnd, nullptr, x, y, outer_width, outer_height, SWP_NOZORDER | SWP_NOACTIVATE);
+    GetClientRect(hwnd, &now);
+    if (uint32_t(now.right) != want.width || uint32_t(now.bottom) != want.height) {
+      MC_WARN("[display] WINDOWED: asked for a client area of {}x{}, the window has {}x{} (a size "
+              "the display or its frame does not allow)",
+              want.width, want.height, now.right, now.bottom);
+      g_refused_want = want;
+      g_refused_got = {uint32_t(now.right), uint32_t(now.bottom)};
+    }
+  }
+  return Resized::kDone;
+}
+
+}  // namespace
+
+Size OutputSize() {
+  const HWND hwnd = NativeWindow();
+  RECT rc = {};
+  if (!hwnd || !GetClientRect(hwnd, &rc)) return {};
+  return {uint32_t(rc.right), uint32_t(rc.bottom)};
+}
+
+namespace {
+double WindowScaleFactor() {
+  const HWND hwnd = NativeWindow();
+  return hwnd ? double(WindowDpi(hwnd)) / 96.0 : 1.0;
+}
+}  // namespace
+
+Size DesktopSize() { return CurrentDisplay().book.desktop(); }
+
+std::vector<Size> ExclusiveSizes() { return CurrentDisplay().book.Sizes(); }
+
+// UI thread, from Initialize: the first look at the display (the log's "FULLSCREEN sizes of ..." line)
+// and what a window can be on it.
+void LookAtDisplay() {
+  const Size own = DesktopSize();
+  const std::vector<Size> steps = WindowedSizes();
+  std::string text;
+  for (const Size& s : steps) text += " " + SizeText(s);
+  MC_INFO("[display] WINDOWED offers {} sizes:{} (the display's own mode is {})", steps.size(), text,
+          own.empty() ? std::string("not known") : SizeText(own));
+}
+
+std::vector<Size> WindowedSizes() {
+  const HWND hwnd = NativeWindow();
+  std::vector<Size> sizes;
+  MONITORINFOEXW monitor;
+  if (!MonitorOf(hwnd, &monitor)) return sizes;
+  const Size frame = FrameOf(hwnd);
+  // The display's work area as it is in its own mode: while this game has the display switched to
+  // another mode (the menu is on WINDOWED for a moment before the display is put back) the monitor
+  // reports the smaller one, and the steps of a window would be cut to it.
+  const Size own_work = ListedModes(monitor.szDevice, &monitor).work;
+  const RECT& work = monitor.rcWork;
+  const uint32_t work_width = own_work.empty() ? uint32_t(work.right - work.left) : own_work.width;
+  const uint32_t work_height = own_work.empty() ? uint32_t(work.bottom - work.top) : own_work.height;
+  return WindowSteps({work_width, work_height}, frame);
+}
+
+namespace {
+
+// UI thread: makes the window what the settings say. Idempotent; reads the settings when it runs, so a
+// write that comes while one is queued is seen by it, and one that comes after it is queued again.
+// The mode the window was last put in (the UI system applies the fullscreen settings by itself, so this file only notes the
+// change, to keep the second and third look that finish what SDL does with the events that follow). It opens borderless for a saved
+// `fullscreen`, as the SDK made it.
+std::atomic<int> g_last_mode{-1};
+
+bool NoteMode(Mode now) {
+  int before = g_last_mode.load();
+  if (before < 0) before = WindowIsFullscreen() ? int(Mode::kBorderless) : int(Mode::kWindowed);
+  g_last_mode.store(int(now));
+  return before != int(now);
+}
+
+void ApplyNow(int pass) {
+  const HWND hwnd = NativeWindow();
+  if (!g_ui.load() || !hwnd) return;
+  bool changed = false;
+  bool not_yet = false;
+  switch (WantedMode()) {
+    case Mode::kWindowed: {
+      RestoreDesktopMode("the window is a window", false);
+      changed |= NoteMode(Mode::kWindowed);
+      // The size comes from `resolution` alone (see AskedWindowedSize); with none the window keeps
+      // the size it has, which SDL also puts back when the window leaves fullscreen.
+      Size asked;
+      if (AskedWindowedSize(&asked)) {
+        const Resized resized = ResizeWindow(hwnd, asked);
+        changed |= resized == Resized::kDone;
+        not_yet = resized == Resized::kNotYet;
+      }
+      break;
+    }
+    case Mode::kBorderless:
+      changed |= RestoreDesktopMode("BORDERLESS", false);
+      changed |= NoteMode(Mode::kBorderless);
+      break;
+    case Mode::kExclusive:
+      // The window is borderless (the UI system's ui.fullscreen); the display's own mode switch is ours.
+      changed |= NoteMode(Mode::kExclusive);
+      changed |= EnterDesktopMode(hwnd, WantedExclusiveSize());
+      break;
+  }
+  // SDL finishes some of this with the events that follow (the frame it gives back when the window
+  // leaves fullscreen, the size it takes for the display): the settings are looked at again, up to
+  // kLastPass times, while something changed or the window had no frame to size yet.
+  // CHECK: in the log, "[display] WINDOWED: the window's client area is now ..." comes from a later
+  // look when SDL had not given the frame back by the first (leaving FULLSCREEN or BORDERLESS with a
+  // `resolution` that is not the size SDL puts back), and a window that SDL moves or sizes after this
+  // (WM_DPICHANGED on another display, the restore of its old rectangle) is brought back to the asked
+  // size by the look that follows, not left at SDL's.
+  if ((changed || not_yet) && pass < kLastPass) ScheduleApply(pass + 1);
+}
+
+}  // namespace
+
+void Shutdown() {
+  RestoreDesktopMode("the game is closing", false);
+}
+
+// CHECK: Alt+Tab out of FULLSCREEN and back: the display has its own mode while another window has the
+// focus and the chosen one again afterwards, once each way (the mode change itself must not cause
+// focus events that switch it back and forth); the log has one "[display] ... is back (the window
+// lost the focus)" and one "[display] FULLSCREEN: the display is now ..." per round trip.
+void OnFocusChanged(bool focused) {
+  if (WantedMode() != Mode::kExclusive) return;
+  if (focused) {
+    ScheduleApply(0);
+  } else {
+    // Another window has the focus: the display gets its own mode back so that window is usable.
+    RestoreDesktopMode("the window lost the focus", true);
+  }
+}
+
+#else  // not Windows
+
+// ── Elsewhere: SDL (see display_mode.h, Linux) ─────────────────────────────────────────────────
+
+namespace {
+
+SDL_Window* SdlWindow() { return static_cast<SDL_Window*>(g_native.load(std::memory_order_acquire)); }
+
+// SDL's window coordinates times this are the window's pixels (1 on X11 and Windows; the display's
+// scale on Wayland and macOS).
+float PixelDensity(SDL_Window* sdl) {
+  const float density = SDL_GetWindowPixelDensity(sdl);
+  return density > 0.0f ? density : 1.0f;
+}
+
+uint32_t ToPixels(int coordinates, float density) {
+  return coordinates > 0 ? uint32_t(std::lround(double(coordinates) * double(density))) : 0u;
+}
+
+// The window's client area in pixels, as SDL has it this instant (the SDK's own copy of it follows
+// from SDL's events).
+Size PixelSizeOf(SDL_Window* sdl) {
+  int width = 0;
+  int height = 0;
+  if (!SDL_GetWindowSizeInPixels(sdl, &width, &height)) return {};
+  return {uint32_t(std::max(width, 0)), uint32_t(std::max(height, 0))};
+}
+
+// The SDK's window among SDL's: since 0.11 the UI system says which it is (NativeWindow::sdl), so the title no longer has to
+// tell it from another SDL's window. Null when the window is not open or is not SDL's.
+SDL_Window* FindSdlWindow(rex::ui::IUISystem& ui) {
+  auto native = ui.GetNativeWindow();
+  return native ? static_cast<SDL_Window*>(native->sdl) : nullptr;
+}
+
+// What SDL says about the display the window is on. SDL's video calls belong to the UI thread and the
+// menu asks from another, so the answers are kept here, read on the UI thread (RefreshView).
+struct DisplayView {
+  Size desktop;  // the display's own mode
+  Size work;     // its usable area (the display less panels and docks; all of it where SDL has no idea)
+  Size frame;    // what the window's frame takes from it (nothing where the compositor draws the frame)
+};
+std::mutex g_view_mutex;
+DisplayView g_view;
+std::atomic<int64_t> g_view_asked_ms{0};
+
+DisplayView View() {
+  std::lock_guard lock(g_view_mutex);
+  return g_view;
+}
+
+// UI thread.
+void RefreshView() {
+  SDL_Window* sdl = SdlWindow();
+  if (!sdl) return;
+  DisplayView view;
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
+  if (display) {
+    float density = 1.0f;
+    if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(display)) {
+      if (mode->pixel_density > 0.0f) density = mode->pixel_density;
+      view.desktop = {ToPixels(mode->w, density), ToPixels(mode->h, density)};
+    }
+    SDL_Rect area = {};
+    if (SDL_GetDisplayUsableBounds(display, &area)) {
+      view.work = {ToPixels(area.w, density), ToPixels(area.h, density)};
+    }
+  }
+  int top = 0;
+  int left = 0;
+  int bottom = 0;
+  int right = 0;
+  if (SDL_GetWindowBordersSize(sdl, &top, &left, &bottom, &right)) {
+    const float density = PixelDensity(sdl);
+    view.frame = {ToPixels(left + right, density), ToPixels(top + bottom, density)};
+  }
+  std::lock_guard lock(g_view_mutex);
+  g_view = view;
+}
+
+// Any thread: the menu asks every frame it is open; SDL is asked again at most once a second.
+void AskForFreshView() {
+  if (!g_ui.load()) return;
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  int64_t last = g_view_asked_ms.load();
+  if (now - last < 1000 || !g_view_asked_ms.compare_exchange_strong(last, now)) return;
+  PostToUi([]() { RefreshView(); });
+}
+
+}  // namespace
+
+Size OutputSize() {
+  return g_ui.load() && SdlWindow() ? PixelSizeOf(SdlWindow()) : Size{};
+}
+
+namespace {
+double WindowScaleFactor() {
+  SDL_Window* sdl = SdlWindow();
+  return sdl ? double(PixelDensity(sdl)) : 1.0;
+}
+}  // namespace
+
+Size DesktopSize() {
+  AskForFreshView();
+  return View().desktop;
+}
+
+std::vector<Size> ExclusiveSizes() { return {}; }
+
+std::vector<Size> WindowedSizes() {
+  AskForFreshView();
+  const DisplayView view = View();
+  if (view.work.empty()) return {};  // SDL has not said: the menu offers its own steps
+  return WindowSteps(view.work, view.frame);
+}
+
+namespace {
+
+// A size the window was asked and kept refusing (a compositor that decides, or a window larger than the
+// display allows), and the size it stayed at: the same ask is not made again while the window is at that
+// size. The last size SDL was asked for, so that a look that follows does not log it again. UI thread.
+Size g_refused_want;
+Size g_refused_got;
+Size g_asked;
+
+// The window of `want` physical pixels centred on the display's usable area, where the platform lets
+// a client place its window (X11; SDL says no on Wayland and nothing happens).
+void CentreWindow(SDL_Window* sdl, int client_width, int client_height) {
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl);
+  SDL_Rect area = {};
+  if (!display || !SDL_GetDisplayUsableBounds(display, &area)) return;
+  int top = 0;
+  int left = 0;
+  int bottom = 0;
+  int right = 0;
+  SDL_GetWindowBordersSize(sdl, &top, &left, &bottom, &right);
+  const int x = area.x + std::max(0, (area.w - (client_width + left + right)) / 2) + left;
+  const int y = area.y + std::max(0, (area.h - (client_height + top + bottom)) / 2) + top;
+  SDL_SetWindowPosition(sdl, x, y);
+}
+
+// UI thread. Asks SDL for a window whose client area is `want` (physical pixels). SDL ignores a resize
+// while the window is fullscreen or maximised (the SDL_SetWindowSize documentation), and answers
+// after the compositor has: so this says whether the window should be looked at again, and on the
+// last look says what became of the ask. False: the window has the size, or there is nothing to do.
+// CHECK: SDL_SetWindowSize on X11 and Wayland (WSLg has both): the first run shows the window's size
+// following the RESOLUTION row, and its SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED reaching the renderer's
+// swap chain rebuild.
+bool ResizeWindow(SDL_Window* sdl, Size want, bool last_look) {
+  if (!sdl || want.empty()) return false;
+  const SDL_WindowFlags flags = SDL_GetWindowFlags(sdl);
+  if (flags & SDL_WINDOW_MINIMIZED) return false;
+  const Size have = PixelSizeOf(sdl);
+  const bool giving_back = (flags & (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED)) != 0;
+  // SDL's coordinates are whole numbers: at a pixel density of 1.5 a size in pixels is reached to within
+  // a pixel or two, and that counts as reached.
+  const uint32_t slack = uint32_t(std::ceil(PixelDensity(sdl)));
+  const auto reached = [slack](uint32_t a, uint32_t b) { return (a > b ? a - b : b - a) <= slack; };
+  if (!giving_back && reached(have.width, want.width) && reached(have.height, want.height)) {
+    g_asked = {};
+    return false;
+  }
+  if (!giving_back && want == g_refused_want && have == g_refused_got) return false;
+  if (last_look) {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    MC_WARN("[display] WINDOWED: asked for a client area of {}x{}, the window has {}x{} ({}: the "
+            "window manager or compositor keeps it there)",
+            want.width, want.height, have.width, have.height, driver ? driver : "no video driver");
+    g_refused_want = want;
+    g_refused_got = have;
+    return false;
+  }
+  if (flags & SDL_WINDOW_FULLSCREEN) return true;  // not given back yet
+  if (flags & SDL_WINDOW_MAXIMIZED) {
+    SDL_RestoreWindow(sdl);
+    return true;
+  }
+  const float density = PixelDensity(sdl);
+  const int width = std::max(1, int(std::lround(double(want.width) / double(density))));
+  const int height = std::max(1, int(std::lround(double(want.height) / double(density))));
+  if (!(g_asked == want)) {
+    g_asked = want;
+    const char* driver = SDL_GetCurrentVideoDriver();
+    MC_INFO("[display] WINDOWED: the window's client area is now {}x{} physical pixels (was {}x{}; "
+            "pixel density {:.2f}, SDL video driver {})",
+            want.width, want.height, have.width, have.height, density, driver ? driver : "none");
+  }
+  SDL_SetWindowSize(sdl, width, height);
+  CentreWindow(sdl, width, height);
+  return true;
+}
+
+// The mode the window was last put in: the UI system applies the fullscreen setting by itself, so this only notes the change (to look again).
+std::atomic<int> g_last_mode{-1};
+
+void ApplyNow(int pass) {
+  if (!g_ui.load()) return;
+  bool again = false;
+  const int wanted = WantedMode() == Mode::kWindowed ? 0 : 1;
+  const int before = g_last_mode.exchange(wanted);
+  const int opened_as = WindowIsFullscreen() ? 1 : 0;
+  if (WantedMode() == Mode::kWindowed) {
+    if ((before < 0 ? opened_as : before) != wanted) again = true;
+    // The size comes from `resolution` alone (see AskedWindowedSize). Not asked of a compositor that
+    // sets it (gamescope), nor when the SDK's SDL window was not found.
+    Size asked;
+    if (LiveResize() && AskedWindowedSize(&asked)) {
+      again |= ResizeWindow(SdlWindow(), asked, pass >= kLastPass);
+    }
+  }
+  if (again && pass < kLastPass) ScheduleApply(pass + 1);
+}
+
+// The timer's thread only hands the pass to the UI thread, as the SDK's cursor auto-hide timer does.
+Uint32 SDLCALL RetryTimerCallback(void* userdata, SDL_TimerID, Uint32) {
+  const int pass = int(reinterpret_cast<intptr_t>(userdata));
+  const bool queued = PostToUi([pass]() {
+    g_pending.store(false);
+    ApplyNow(pass);
+  });
+  if (!queued) g_pending.store(false);
+  return 0;  // one shot
+}
+
+// A look that follows another waits for the compositor, which answers an SDL call a few frames later
+// (kRetryMs). False when no timer could be made; the look is then queued at once.
+bool StartRetryTimer(int pass) {
+  return SDL_AddTimer(kRetryMs, RetryTimerCallback, reinterpret_cast<void*>(intptr_t(pass))) != 0;
+}
+
+// UI thread, from Initialize: finds the SDK's SDL window and what SDL says about its display.
+void InitSdl(rex::ui::IUISystem& ui) {
+  SDL_Window* sdl = FindSdlWindow(ui);
+  g_native.store(sdl, std::memory_order_release);
+  // gamescope puts its own Wayland socket's name in this variable for the clients it starts (Steam in
+  // Game Mode, or a game run under it by hand); it sets the size of a client's window and answers
+  // any other with the size it wants.
+  // CHECK: the variable is set for the game under gamescope on a Steam Deck and a desktop (the log's
+  // "gamescope:" ending of the SDL window line); when it is not, the window manager's refusal is the
+  // log's "asked for a client area of ..., the window has ..." line and the row stays live.
+  const char* gamescope = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+  g_size_fixed.store(gamescope && *gamescope);
+  if (!sdl) {
+    MC_WARN("[display] the UI system's window is not an SDL window (NativeWindow::sdl is null): "
+            "the window's size is read at the next start");
+    return;
+  }
+  RefreshView();
+  const DisplayView view = View();
+  const Size own = PixelSizeOf(sdl);
+  const char* driver = SDL_GetCurrentVideoDriver();
+  MC_INFO("[display] the SDK's SDL window found (video driver {}): {}x{} pixels at density {:.2f}; "
+          "display {}x{}, usable {}x{}, frame {}x{}{}",
+          driver ? driver : "none", own.width, own.height, PixelDensity(sdl), view.desktop.width,
+          view.desktop.height, view.work.width, view.work.height, view.frame.width,
+          view.frame.height,
+          g_size_fixed.load() ? "; gamescope: the compositor sets the window's size, RESOLUTION is grey"
+                              : "");
+}
+
+}  // namespace
+
+void Shutdown() {}
+void OnFocusChanged(bool) {}
+
+#endif  // _WIN32
+
+namespace {
+
+void ScheduleApply(int pass) {
+  if (!g_ui.load()) return;
+  if (g_pending.exchange(true)) return;  // one is queued: it reads the settings when it runs
+#if !defined(_WIN32)
+  if (pass > 0 && StartRetryTimer(pass)) return;
+#endif
+  const bool queued = PostToUi([pass]() {
+    g_pending.store(false);
+    ApplyNow(pass);
+  });
+  if (!queued) g_pending.store(false);
+}
+
+}  // namespace
+
+void Initialize(rex::ui::IUISystem& ui) {
+  g_ui.store(&ui);
+#if defined(_WIN32)
+  if (auto native = ui.GetNativeWindow(); native && native->type == rex::NativeWindow::Type::kWin32) {
+    g_native.store(native->window, std::memory_order_release);
+  }
+#else
+  InitSdl(ui);
+#endif
+  // 0.10: the SDK's callback for `fullscreen` called Window::SetFullscreen on the thread that set the setting, with the
+  // settings registry locked, and the pause menu's thread then waited for the UI thread, which waited for that lock (the
+  // game hung for good): the app took the callback over and only queued the change. 0.11's UI system does the same itself
+  // (its handlers PostTask to the UI thread), so these are only ours: they queue a look at the settings, on the UI thread,
+  // once the registry is unlocked.
+  larecomp::cvar::RegisterChangeCallback("fullscreen", SettingChanged);
+  larecomp::cvar::RegisterChangeCallback("fullscreen_exclusive", SettingChanged);
+  larecomp::cvar::RegisterChangeCallback("resolution", SettingChanged);
+#if defined(_WIN32)
+  // The first look at the display, before this game changes anything about it: the book starts from the
+  // display in its own mode, and the log has the sizes the rows will offer.
+  LookAtDisplay();
+#endif
+  // The window the SDK made is the start of it: borderless for a saved `fullscreen` (FULLSCREEN is
+  // ours to finish), and a window of `resolution` read as LOGICAL pixels, which at 150% scaling is 1.5
+  // times as many physical ones as the RESOLUTION row says. One look now makes the window the physical
+  // size the setting means, and does nothing where it already is (100% scaling, or no `resolution`).
+  // CHECK: at a scaling other than 100% with a `resolution` saved (1600x900 at 150%), the window opens
+  // at 2400x1350 and settles at 1600x900 in the first moments: the log has one "[display] WINDOWED: the
+  // window's client area is now 1600x900 physical pixels (was 2400x1350; 150% scaling, ...)" and the
+  // renderers one swap chain rebuild, before the game's first picture or just after it.
+  ScheduleApply(0);
+}
+
+}  // namespace mcla::display

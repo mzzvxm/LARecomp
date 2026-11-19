@@ -75,7 +75,7 @@ struct ConfigEdit {
 // mid-write cannot leave half a config, and writers in this process take turns.
 // The SDK's SaveConfig is no substitute: it serializes every cvar that differs
 // from its default, whatever set it, and drops the lines of cvars this process
-// never registered. SaveCvarsToConfig (mc_engine/config_save.h) builds the edits
+// never registered. SaveCvarsToConfig (mc_engine/core/config_save.h) builds the edits
 // for a whole save from the cvar registry.
 bool EditConfig(const fs::path& config, const std::vector<ConfigEdit>& edits);
 

@@ -32,7 +32,7 @@
 
 #include "hooks.h"
 #include "larecomp_log.h"
-#include "../camera_look.h"
+#include "mc_engine/camera/camera_look.h"
 #include "../sdk_access.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (GuestRead32, ...)
 #include "larecomp_guest.h"

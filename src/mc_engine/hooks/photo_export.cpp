@@ -83,7 +83,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REX_EXTERN(__imp__rex_sub_82289AB0);  // net.AuthenticateGamer(netui, kind)
 REX_EXTERN(__imp__rex_sub_821FA230);  // mcUIManager::FindElement(name)

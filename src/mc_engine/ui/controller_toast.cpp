@@ -2,7 +2,7 @@
 #include "imgui_theme.h"
 #include "overlay_input_core.h"
 #include "overlay_support.h"
-#include "mc_engine/input_state.h"
+#include "mc_engine/input/input_state.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>

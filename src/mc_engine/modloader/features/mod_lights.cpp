@@ -70,7 +70,7 @@
 #include <string>
 #include <vector>
 
-#include "../../logging.h"
+#include "mc_engine/core/logging.h"
 #include "larecomp_guest.h"
 #include "mod_data.h"
 

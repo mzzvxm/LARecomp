@@ -29,7 +29,7 @@
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
-#include "mc_engine/ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 #include "watch.h"
 
 
@@ -614,7 +614,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
     case RecordType::kComposite: {
       // Ultrawide: the guest's hooks around the draw of the world icons, and around each piece of
       // the HUD, use the composite record as a one-way message to the render thread
-      // (mc_engine/ultrawide.h, IsUiMessage): not a composition, no list to open.
+      // (mc_engine/display/ultrawide.h, IsUiMessage): not a composition, no list to open.
       const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
       if (mc::ultrawide::IsUiMessage(bucket)) {
         scene_.OnUiMessage(bucket);
@@ -1093,12 +1093,12 @@ void Renderer::UpdateDisplayAspect() {
   // photo mode, the rear-view mirror inside play): one that has none is shown 16:9 with its picture
   // still squeezed.
   // At 16:9 nothing is asked: the fit is the front buffer's own, to the pixel. A taller picture (16:10, 4:3,
-  // a portrait window: Vert+, mc_engine/ultrawide.h) is asked for the same way as a wider one: the guest drew
+  // a portrait window: Vert+, mc_engine/display/ultrawide.h) is asked for the same way as a wider one: the guest drew
   // it stretched sideways into the 16:9 image and the present squeezes it into the frame.
   present_.SetDisplayAspect(scene_.last_frame_had_scene() && mc::ultrawide::Active()
                                 ? mc::ultrawide::DisplayAspect()
                                 : 0.0);
-  // The frame the picture lies in (the ASPECT RATIO setting, mc_engine/frame_fit.h): the window itself
+  // The frame the picture lies in (the ASPECT RATIO setting, mc_engine/display/frame_fit.h): the window itself
   // while the setting follows it, a smaller one in the middle with black around it for a shape the
   // window is not. A 3D picture fills the frame, any other keeps its own shape inside it.
   present_.SetFrameAspect(mc::ultrawide::DisplayAspect());

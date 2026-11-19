@@ -175,7 +175,7 @@ class Scene {
   void OnComposite(const CompositeRecord& record, plume::RenderCommandList* list);
 
   // Ultrawide: one of the messages the guest sends through a composite record's bucket
-  // (mc_engine/ultrawide.h, IsUiMessage), in order with the draws around it. Either the bracket of
+  // (mc_engine/display/ultrawide.h, IsUiMessage), in order with the draws around it. Either the bracket of
   // the UI pass's world icons, 3D movies drawn with the (widened) camera's own projection
   // (NoteWorldIcons): their draws are not squeezed. Or the bracket of one piece of the HUD
   // (NoteUiPiece): its draws are moved toward the left or the right screen edge (the top or the bottom one
@@ -186,7 +186,7 @@ class Scene {
   void OnPresent();
   // The last guest frame that presented had a 3D scene in it: the end of the post chain (the
   // composite marker) came in it. False for a movie, a loading screen or a menu on a flat background,
-  // which draw no scene. The present shows such a frame as it is (mc_engine/ultrawide.h).
+  // which draw no scene. The present shows such a frame as it is (mc_engine/display/ultrawide.h).
   bool last_frame_had_scene() const { return last_frame_had_scene_; }
   // Final report (at renderer shutdown).
   void Finish();
@@ -380,7 +380,7 @@ class Scene {
   // it changed: the world, how it is drawn (the host's samples and scale, the upscaler, HDR) and the effects in
   // it. At the end of the frame, before the effects forget it.
   void NoteMenuWorld();
-  // Ultrawide (mc_engine/ultrawide.h): the UI the game draws after the scene is composed is made for
+  // Ultrawide (mc_engine/display/ultrawide.h): the UI the game draws after the scene is composed is made for
   // a 16:9 screen, and the present stretches the whole image over a wider window. The factor (below 1)
   // a draw's screen-space x is squeezed by around the screen's centre so that the stretch brings it
   // back to 16:9 in the middle of the window; 1 for a draw that keeps its place: before the marker,

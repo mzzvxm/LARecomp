@@ -14,7 +14,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-#include "../ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 #include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -22,7 +22,7 @@
 #endif
 
 // The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
-// force (mc_engine/ultrawide.h). Called at startup and whenever it changes.
+// force (mc_engine/display/ultrawide.h). Called at startup and whenever it changes.
 void ApplyAspectRatioPatch() {
     auto* rt = REX_RUNTIME();
     if (!rt) return;

@@ -62,7 +62,7 @@
 #include <mutex>
 #include <vector>
 
-#include "../../logging.h"
+#include "mc_engine/core/logging.h"
 #include "mod_breakables.h"
 #include "mod_data.h"
 #include "mod_glows.h"

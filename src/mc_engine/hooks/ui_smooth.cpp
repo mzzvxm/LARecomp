@@ -45,7 +45,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "../cinematic/capture_mode.h"
-#include "../swf_dom.h"
+#include "mc_engine/menus/swf_dom.h"
 
 namespace {
 // The swf context the player is advancing or drawing: both write it (sub_825EDC08 and

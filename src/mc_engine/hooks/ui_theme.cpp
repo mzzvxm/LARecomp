@@ -46,8 +46,8 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
-#include "../swf_dom.h"
+#include "mc_engine/core/logging.h"
+#include "mc_engine/menus/swf_dom.h"
 #include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_82720908);  // 2D draw phase of one movie

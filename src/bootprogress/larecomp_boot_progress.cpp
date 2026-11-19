@@ -15,7 +15,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "larecomp_dialog.h"
-#include "mc_engine/boot_progress.h"
+#include "mc_engine/core/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 
 namespace larecomp {

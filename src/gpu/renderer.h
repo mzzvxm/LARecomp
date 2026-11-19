@@ -211,7 +211,7 @@ class Renderer final : public RenderThread::Executor {
   // display's metadata when the peak moved.
   void UpdateHdr();
   // Before each present: the aspect ratio the picture is shown at. A guest frame that had a 3D scene
-  // is shown at the window's (mc_engine/ultrawide.h), the game's own 16:9 stays for the others; an
+  // is shown at the window's (mc_engine/display/ultrawide.h), the game's own 16:9 stays for the others; an
   // idle present shows the last guest frame, so it keeps that frame's choice.
   void UpdateDisplayAspect();
 

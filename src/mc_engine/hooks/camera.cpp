@@ -22,8 +22,8 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../menu_camera.h"
-#include "../mouse_look.h"
+#include "mc_engine/camera/menu_camera.h"
+#include "mc_engine/input/mouse_look.h"
 #include "larecomp_guest.h"
 #include "../sdk_access.h"
 

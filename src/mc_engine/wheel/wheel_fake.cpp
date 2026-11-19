@@ -63,7 +63,7 @@
 #endif
 
 #include "../cinematic/freecam_runtime.h"
-#include "../input_state.h"
+#include "mc_engine/input/input_state.h"
 #include "../keyboard_native.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"

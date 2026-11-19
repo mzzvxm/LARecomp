@@ -24,7 +24,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
-#include "../texture_dump.h"
+#include "mc_engine/core/texture_dump.h"
 #include "larecomp_guest.h"
 
 namespace {

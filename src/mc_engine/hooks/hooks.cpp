@@ -12,25 +12,25 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "discord_rpc/discord_rpc.h"
-#include "../adaptive_triggers.h"
-#include "../impulse_triggers.h"
-#include "../input_state.h"
-#include "../camera_look.h"
-#include "../camera_trace.h"
+#include "mc_engine/input/adaptive_triggers.h"
+#include "mc_engine/input/impulse_triggers.h"
+#include "mc_engine/input/input_state.h"
+#include "mc_engine/camera/camera_look.h"
+#include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/cars.h"
 #include "../cinematic/scene_runtime.h"
-#include "../cursor_hide.h"
-#include "../cutscene_gallery.h"
-#include "../hud_units.h"
-#include "../map_mouse.h"
-#include "../map_warp.h"
+#include "mc_engine/input/cursor_hide.h"
+#include "mc_engine/gameplay/cutscene_gallery.h"
+#include "mc_engine/gameplay/hud_units.h"
+#include "mc_engine/input/map_mouse.h"
+#include "mc_engine/gameplay/map_warp.h"
 #include "../online/server_browser/browser_join.h"
 #include "../modloader/features/mod_breakables.h"
 #include "../modloader/features/mod_glows.h"
 #include "../modloader/modloader.h"
 #include "../mp3custom/mp3custom.h"
 #include "../online/race_props.h"
-#include "../ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 
 // See hooks.h: the manifest hook at sub_82130678 returns right after this call.
 void MCLA_DiscErrorBypass() {}
@@ -44,7 +44,7 @@ void InitHooks() {
     // mcMusicManager later, from the ctor hook MCLA_CustomMusic_Install.
     InitCustomMusic();
 
-    // The aspect ratio: the setting and the window's shape (mc_engine/ultrawide.h).
+    // The aspect ratio: the setting and the window's shape (mc_engine/display/ultrawide.h).
     mc::ultrawide::Init();
 
     ApplyVinylLayerCaps();

@@ -21,7 +21,7 @@
 
 #include <rex/platform/thread.h>
 
-#include "mc_engine/threading.h"
+#include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
 
 namespace mcla::gpu {

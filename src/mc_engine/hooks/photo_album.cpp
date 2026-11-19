@@ -92,7 +92,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 REX_EXTERN(__imp__rex_sub_8263CB78);  // snapshot vhsm update
 REX_EXTERN(__imp__rex_sub_8263C9C8);  // decode a slot's photo into PreviewPicture

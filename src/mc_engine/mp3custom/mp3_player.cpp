@@ -1,7 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3_player.h"
 
-#include "../logging.h"
+#include "mc_engine/core/logging.h"
 
 #if defined(_WIN32)
 

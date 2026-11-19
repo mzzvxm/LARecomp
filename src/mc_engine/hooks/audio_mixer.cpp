@@ -51,10 +51,10 @@
 #include <string>
 
 #include "hooks.h"
-#include "mc_engine/threading.h"
+#include "mc_engine/core/threading.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-#include "mc_engine/adaptive_triggers.h"
+#include "mc_engine/input/adaptive_triggers.h"
 #include "os/thread_priority.h"
 
 REX_EXTERN(__imp__rex_sub_823EC8C8);  // the mixer thread's body

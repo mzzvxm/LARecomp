@@ -35,7 +35,7 @@
 #include "format.h"
 #include "gpu.h"
 #include "layout.h"
-#include "mc_engine/ultrawide.h"
+#include "mc_engine/display/ultrawide.h"
 #include "native_gfx/vertex_declaration.h"
 #include "occlusion.h"
 #include "pass_timing.h"
@@ -502,7 +502,7 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
   *clip = 1.0f;
   ui_phone_draw_ = false;
   ui_hide_draw_ = false;
-  // The picture's shape (mc_engine/ultrawide.h): a wide one squeezes the UI sideways, a tall one vertically.
+  // The picture's shape (mc_engine/display/ultrawide.h): a wide one squeezes the UI sideways, a tall one vertically.
   ui_vertical_ = mc::ultrawide::Tall();
   if (!ui_phase_) {
     return 1.0f;
@@ -532,7 +532,7 @@ float Scene::UiSqueezeOf(const DrawView& view, const XenosState& state, const Pi
     }
   }
   // The world icons: the game's own 3D view put them where their points are on the widened picture,
-  // and their depth test needs the position unmoved (mc_engine/ultrawide.h).
+  // and their depth test needs the position unmoved (mc_engine/display/ultrawide.h).
   // CHECK: the icons of a race (racers, checkpoints, places) are drawn inside the bracket the hooks
   // make (ultrawide.cpp, Patch_UiWorldIcons_*); one drawn outside it is squeezed with the HUD.
   if (ui_world_) {
