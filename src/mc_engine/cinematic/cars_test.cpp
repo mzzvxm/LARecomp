@@ -1910,49 +1910,109 @@ void TestPaintDirector() {
     }
 }
 
-// The renderer's noise frame follows the scene (gpu/scene_noise.h): the k-th guest swap's tag is read by the renderer's k-th frame.
+// The renderer's noise frame follows the scene (gpu/scene_noise.h). The game thread: SetUpdate at the update's tick, OnHandOver when the update is handed to the guest's
+// render thread, OnGuestSwap at the swap that closes the frame; the render thread: BeginFrame when a list opens, OnPresent after the present record. The tests play both
+// sides in the orders the game has, including the ones that broke the first version (it paired the k-th swap with the k-th list: det1 never paired at all).
 void TestSceneNoise() {
     namespace sn = mcla::gpu::scene_noise;
     Check(!sn::Active(), "no scene noise at the start");
     Check(sn::Index(77) == 77, "outside a scene the renderer's own count is the noise frame");
-    // swap 0 is before the scene
+    // THE LEGAL SCREENS AND THE LOADING LOOPS: more swaps than the ring holds, each a present record, none a list (an idle present) and none a hand-over
+    for (int i = 0; i < 700; ++i) {
+        sn::OnGuestSwap();
+        sn::OnPresent();
+    }
+    // a game frame before the scene: handed over with no scene, drawn, swapped
+    sn::OnHandOver();
+    Check(!sn::BeginFrame(), "a frame before the scene carries no tag");
+    Check(sn::Index(500) == 500 && sn::CurrentUpdate() == -1, "...so it keeps the renderer's own count");
     sn::OnGuestSwap();
-    // the scene begins: update 0 draws, its swap tags the frame
+    sn::OnPresent();
+    // the scene begins: update 0 is handed over, drawn, swapped
     sn::Rearm();
     sn::SetUpdate(0);
     Check(sn::Active(), "a scene holds the noise");
-    sn::OnGuestSwap();
-    sn::SetUpdate(1);
-    sn::OnGuestSwap();
-    sn::SetUpdate(2);
-    sn::OnGuestSwap();
-    // the renderer runs behind: three swaps are waiting, plus the one before the scene
-    Check(!sn::BeginFrame(), "frame 0 (before the scene) carries no tag");
-    Check(sn::Index(500) == 500 && sn::CurrentUpdate() == -1, "...so it keeps the renderer's own count");
-    Check(sn::BeginFrame(), "frame 1 is the first tagged frame (the log line)");
+    sn::OnHandOver();
+    Check(sn::BeginFrame(), "the first frame of the scene is the first tagged frame (the log line), after 700 idle presents");
     Check(sn::Index(501) == 0 && sn::CurrentUpdate() == 0, "...and shows update 0, whatever the renderer's count");
-    Check(!sn::BeginFrame() && sn::Index(502) == 1, "frame 2 shows update 1 and is not the first");
-    Check(!sn::BeginFrame() && sn::Index(503) == 2, "frame 3 shows update 2");
+    sn::OnGuestSwap();
+    // the game runs ahead of the renderer by one frame: update 1 is handed over and swapped before the renderer has presented frame 0
+    sn::SetUpdate(1);
+    sn::OnHandOver();
+    sn::OnGuestSwap();
+    sn::OnPresent();  // frame 0's present record is executed
+    Check(!sn::BeginFrame() && sn::Index(502) == 1, "the next frame shows update 1 and is not the first");
+    // a flush in the middle of a guest frame opens a second list: the same frame, the same number
+    Check(!sn::BeginFrame() && sn::Index(503) == 1, "a second list of the same guest frame reads the same tag");
+    sn::OnPresent();
+    // an idle present inside the scene (a swap that no hand-over came before): its slot has no tag, and the frames after it are right again
+    sn::OnGuestSwap();
+    Check(!sn::BeginFrame() && sn::Index(600) == 600, "a frame with no hand-over in the middle of the scene keeps the renderer's count");
+    sn::OnPresent();
+    sn::SetUpdate(2);
+    sn::OnHandOver();
+    Check(!sn::BeginFrame() && sn::Index(504) == 2, "an idle present in the middle does not shift the pairing: update 2");
+    sn::OnGuestSwap();
+    sn::OnPresent();
     // the scene ends
     sn::SetUpdate(-1);
-    sn::OnGuestSwap();
+    sn::OnHandOver();
     Check(!sn::Active(), "the scene is over");
-    Check(!sn::BeginFrame() && sn::Index(9) == 9, "a frame after the scene keeps the renderer's count");
-    // the same scene again, with another renderer count: the same numbers
+    Check(!sn::BeginFrame() && sn::Index(9) == 9 && sn::CurrentUpdate() == -1, "a frame after the scene keeps the renderer's count");
+    sn::OnGuestSwap();
+    sn::OnPresent();
+    const sn::Summary s = sn::GetSummary();
+    Check(s.stamped == 3 && s.found == 4 && s.missed == 1, "the scene's counters: 3 hand-overs carried an update, 4 frames found a tag, 1 (the one with no hand-over) did not");
+    // the same scene again, with another renderer count and another swap count: the same numbers
     sn::Rearm();
     sn::SetUpdate(0);
+    sn::OnHandOver();
     sn::OnGuestSwap();
     sn::SetUpdate(1);
+    sn::OnHandOver();
     sn::OnGuestSwap();
     Check(sn::BeginFrame() && sn::Index(123456) == 0, "the second run: update 0 again");
+    sn::OnPresent();
     Check(!sn::BeginFrame() && sn::Index(123457) == 1, "...and update 1");
+    sn::OnPresent();
     sn::SetUpdate(-1);
     // a renderer more than the ring behind loses the tag of the frames it overran (the fallback), never a wrong number
     sn::SetUpdate(5);
-    for (int i = 0; i < 300; ++i) sn::OnGuestSwap();
+    for (int i = 0; i < 300; ++i) {
+        sn::OnHandOver();
+        sn::OnGuestSwap();
+    }
     sn::SetUpdate(-1);
-    sn::BeginFrame();
-    Check(sn::Index(42) == 42, "a frame the ring has overwritten keeps the renderer's count");
+    Check(!sn::BeginFrame() && sn::Index(42) == 42, "a frame the ring has overwritten keeps the renderer's count");
+}
+
+// A still (mcla_scene_t): the update number is the pinned time's, so every frame of the still, and every later still of the same time, has the same one.
+void TestStillUpdates() {
+    using namespace mc::cinematic::seed;
+    SceneUpdateCounter c;
+    bool running_ok = true;
+    for (uint64_t k = 0; k < 400; ++k) running_ok = running_ok && c.Take(false, double(k) / 60.0) == k;
+    Check(running_ok, "a running scene counts its updates one by one from 0");
+    Check(StillUpdate(6.5) == 390 && StillUpdate(0.0) == 0 && StillUpdate(-1.0) == 0 && StillUpdate(std::nan("")) == 0, "a still's number at 60 a second: 6.5 s is 390; no time is 0");
+    // the harness pins 6.5 s while the running clock stands at update 390 or just past it, and holds it for a few hundred updates
+    SceneUpdateCounter p;
+    for (uint64_t k = 0; k < 391; ++k) p.Take(false, double(k) / 60.0);
+    bool held_ok = true;
+    for (int i = 0; i < 500; ++i) held_ok = held_ok && p.Take(true, 6.5) == 390;
+    Check(held_ok, "500 updates pinned at 6.5 s all carry number 390, however long the hold lasts");
+    Check(p.Take(false, 6.5 + 1.0 / 60.0) == 391 && p.Take(false, 6.5 + 2.0 / 60.0) == 392, "let go, the count goes on from the pinned time's number");
+    // the clock ran on 12 updates and the same time is pinned again: the same number
+    for (int i = 0; i < 10; ++i) p.Take(false, 6.6 + double(i) / 60.0);
+    Check(p.Take(true, 6.5) == 390, "pinned again at the same time after the clock ran on: 390 again");
+    // two runs that held a still for a different number of updates number every later update alike
+    SceneUpdateCounter x, y;
+    for (uint64_t k = 0; k < 390; ++k) {
+        x.Take(false, double(k) / 60.0);
+        y.Take(false, double(k) / 60.0);
+    }
+    for (int i = 0; i < 363; ++i) x.Take(true, 6.5);
+    for (int i = 0; i < 371; ++i) y.Take(true, 6.5);
+    Check(x.Take(false, 6.5 + 1.0 / 60.0) == y.Take(false, 6.5 + 1.0 / 60.0), "a hold of 363 updates and a hold of 371 leave the same numbers behind");
 }
 
 int main() {
@@ -1981,6 +2041,7 @@ int main() {
     TestSeeds();
     TestPaintDirector();
     TestSceneNoise();
+    TestStillUpdates();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

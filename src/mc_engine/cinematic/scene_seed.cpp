@@ -28,10 +28,12 @@
 #include "gpu/scene_noise.h"
 #endif
 
+REXCVAR_DECLARE(double, mcla_scene_t);  // scene_runtime.cpp: the clock's still (-1 = it runs)
+
 REXCVAR_DEFINE_INT32(mcla_scene_seed, 1, "MCLA/Cinematic",
     "TRAILER TOOLKIT repeatable scenes: while a scene runs, the game's random generators (the simulation's, the cosmetic one, the car configuration's) are given a state "
     "from this seed and the scene's update number at the start of every update, and the renderer's noise (the occlusion's, the contact shadows', the sun shafts', "
-    "the shadow filter's, the temporal upscalers' jitter) follows the scene's update number: the same scene gives the same pictures in every run. 0: off, the "
+    "the shadow filter's, the temporal upscalers' jitter) follows the scene's update number (while the clock is held by mcla_scene_t, the number of the held time): the same scene gives the same pictures in every run. 0: off, the "
     "game's own random numbers and the renderer's frame count. Read at every update of a scene.")
     .range(0, 2147483647)
     .lifecycle(rex::cvar::Lifecycle::kHotReload)
@@ -79,7 +81,9 @@ void WriteGenerator(uint8_t* base, uint32_t at, const seed::Generator& g, bool c
 struct Runner {
     bool on = false;
     uint32_t world_seed = 1;
-    uint64_t updates = 0;       // the next update's number (the scene's, from 0)
+    seed::SceneUpdateCounter counter;  // the update numbers: one per running update, the pinned time's own number during a still
+    uint64_t ticks = 0;                // updates of the scene seen
+    uint64_t still_ticks = 0;          // ... of them with the clock pinned (a still: mcla_scene_t)
     bool pinned_once = false;
     uint64_t pins = 0;
     bool config_seen = false;
@@ -112,8 +116,14 @@ void ApplierBegin(const Scene& scene) {
 }
 
 // The settings are read at every update, so that a scene's own `set mcla_scene_seed ...` line counts too. The update's number is the scene's, whether the seed is on or not.
-void ApplierApply(const Scene&, double) {
-    const uint64_t update = g.updates++;
+void ApplierApply(const Scene&, double t) {
+    // A still (mcla_scene_t >= 0, the harness's scene_at / scene_shot) holds the scene clock while the game goes on updating, for as long as the picture takes (a window
+    // grab comes at a wall-clock moment inside the hold: det1's updates per run were 1852 and 1860 for the same 720 of the scene). Its update number is the pinned time's,
+    // not a count, so that every frame of a still gets the same generators and the same renderer noise, and a still taken again after the clock ran on gets them again.
+    const bool still = REXCVAR_GET(mcla_scene_t) >= 0.0;
+    const uint64_t update = g.counter.Take(still, t);
+    ++g.ticks;
+    if (still) ++g.still_ticks;
     const int32_t seed_value = REXCVAR_GET(mcla_scene_seed);
     if (seed_value <= 0) {
         if (g.on) {
@@ -136,7 +146,7 @@ void ApplierApply(const Scene&, double) {
                           REXCVAR_GET(mcla_scene_seed_each_frame) ? "at every update" : "once");
     }
 #if defined(LARECOMP_HAS_GPU)
-    mcla::gpu::scene_noise::SetUpdate(static_cast<int64_t>(update));  // the frame this update draws carries this number
+    mcla::gpu::scene_noise::SetUpdate(static_cast<int64_t>(update));  // the frame this update draws carries this number (stamped at the hand-over: scene_noise.h)
 #endif
     uint8_t* base = Membase();
     if (!base) return;
@@ -151,8 +161,16 @@ void ApplierEnd() {
     mcla::gpu::scene_noise::SetUpdate(-1);
 #endif
     if (!g.on) return;
-    LARECOMP_APP_INFO("[seed] the scene is over: {} update(s), {} pin(s) of the generators, the car configuration's generator {}", g.updates, g.pins,
-                      g.config_seen ? "was found" : "was never found");
+    LARECOMP_APP_INFO("[seed] the scene is over: {} update(s) ({} of them a still: the clock pinned), {} pin(s) of the generators, the car configuration's generator {}", g.ticks, g.still_ticks,
+                      g.pins, g.config_seen ? "was found" : "was never found");
+#if defined(LARECOMP_HAS_GPU)
+    {
+        // How the renderer's frames found the scene update they show (gpu/scene_noise.h THE TAG). The renderer is a few frames behind: about, not exact. `found` close to
+        // `stamped` and `missed` near 0 = the noise followed the scene; `found` 0 = it never paired (the first version's fault).
+        const mcla::gpu::scene_noise::Summary s = mcla::gpu::scene_noise::GetSummary();
+        LARECOMP_APP_INFO("[seed] renderer noise: {} hand-over(s) carried a scene update, {} renderer frame(s) found theirs, {} did not", s.stamped, s.found, s.missed);
+    }
+#endif
     g.on = false;
 }
 

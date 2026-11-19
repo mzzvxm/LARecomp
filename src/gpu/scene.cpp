@@ -3359,6 +3359,9 @@ void Scene::OnPresent() {
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;
+  // The next list the renderer opens is the frame that the next guest swap closes (scene_noise.h: the tag is found by the present records executed, not by the
+  // lists opened: an idle present has no list and a flush opens a second one).
+  scene_noise::OnPresent();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }

@@ -44,6 +44,7 @@
 // pool's order (hooks/job_workers.cpp); the audio. The renderer's per-frame noise follows the scene's update number (gpu/scene_noise.h).
 //
 
+#include <cmath>
 #include <cstdint>
 
 namespace mc::cinematic::seed {
@@ -111,6 +112,30 @@ inline uint32_t PaintSeed(int paint) {
     const uint32_t h = Mix32(0xA11CE000u ^ (static_cast<uint32_t>(paint) * 0x9E3779B9u)) & 0x7FFFFFFFu;
     return h == 0 ? 1u : h;
 }
+
+// A still (mcla_scene_t, the test harness's `scene_at`: the clock is held at a time while the game goes on updating): the update's number is a function of the
+// pinned time alone, so that the generators, the renderer's noise and the temporal jitter are the same for every frame of the still, however long it is held
+// (the grab of a picture comes at a wall-clock moment inside the hold) and however often it is taken (pinned again after the clock ran on): the number the
+// running scene has at that time at the usual 60 updates a second. A scene that runs at another fixed step still counts its updates one by one while it runs;
+// only a still takes this number, and the count goes on from it when the clock is let go (SceneUpdateCounter).
+inline constexpr double kStillRate = 60.0;
+inline uint64_t StillUpdate(double t) {
+    return t > 0.0 && std::isfinite(t) ? static_cast<uint64_t>(std::llround(t * kStillRate)) : 0u;
+}
+
+// The number of a scene's updates, one per update of the running clock, with the still's own number while the clock is pinned. Pure, so cars_test.cpp checks it.
+struct SceneUpdateCounter {
+    uint64_t next = 0;  // the number the next running update gets
+    // `pinned`: the clock is held at `t` by a still. Returns this update's number.
+    uint64_t Take(bool pinned, double t) {
+        if (pinned) {
+            const uint64_t n = StillUpdate(t);
+            next = n + 1;
+            return n;
+        }
+        return next++;
+    }
+};
 
 // The paint a scene car has when the scene does not say: its place among the scene's cars that take one (0 for the first), wrapped into 0 .. 9999.
 inline int DefaultPaint(int ordinal) {
