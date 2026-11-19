@@ -68,6 +68,9 @@ Copy `server.toml.example` next to the relay executable as `server.toml`. The pa
 | `identity_master` | `""` | | `host[:port]` where players get their proof. Empty means the `master` above. |
 | `identity_names` | `""` | 1023 characters | Comma-separated `host:port` names players use to reach the relay, besides `public_address` and the machine's own IPs. A proof is only accepted for a name the relay knows as its own. |
 | `identity_grace_sec` | `20` | 0 to 120 | Seconds a new game session plays before its gamertag must be proved. |
+| `limit_peer_pps` | `5000` | 0 = no limit | Relayed packets one player may send per second, to anyone. Over it they are dropped. |
+| `limit_discovery_pps` | `50` | 0 = no limit | Of those, LAN searches (broadcasts on port 1001, which reach every player). |
+| `limit_unanswered_pps` | `200` | 0 = no limit | Of those, packets to a player who has not answered the sender. |
 
 The example file ships with sample text in Portuguese ("Meu Servidor"); replace it.
 
@@ -121,6 +124,16 @@ Rules from the code:
 HTTP paths, public (no key): `GET /mods/manifest` and `GET /mods/file/<mod>/<path>`.
 
 Log lines: `mods: N required, M optional, K files, <size> (crc ........)`, `mods: none (<dir>/ next to the exe)`, `mods: required mod "<name>" is not in <dir>/`, `mods: required mod "<name>" listed, but <dir>/ does not exist`, `mods: could not read <path>; skipped`.
+
+## Forged and flooding peers
+
+The relay is exposed on a public UDP port, so it checks who it forwards for (`src/mc_engine/online/relay_server/relay_server.cpp`):
+
+- A register from an address the relay has not seen only becomes a peer once that address echoes a ping the relay sends back. A forged source address can therefore neither take a vip nor pose as someone else. Unproven addresses wait in a pending table: at most 4096 in all and 256 per IP, each for 5 seconds, with at most one ping per pending address every 250 ms.
+- The peer table holds 4096 peers.
+- A session id moves to a new address only after the old address has stayed silent.
+- Relayed traffic has token buckets in three classes, set by `limit_peer_pps`, `limit_discovery_pps` and `limit_unanswered_pps` (above). Over the limit, packets are dropped and counted in `dropped=`.
+- The dashboard's `/api/state` carries each player's busiest second, `peak_pps`, `peak_disc_pps` and `peak_cold_pps`, to tune the three limits from. The limits and the rest of `server.toml` are re-read every few seconds, so a change needs no restart.
 
 ## Nick check
 
