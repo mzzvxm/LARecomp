@@ -1,5 +1,5 @@
 // Check of the traffic and the parked cars as walk sources (car_model_traffic_rules.h, car_model_parts_rt_rules.h; RT-MODEL-PARTS): the items of the renderer's ambient client (its
-// vtable, the list's links, a cycle, the cap), an item's car and model and the gates the draw's own tests make, the walk of the model's drawable at a lod (the order of the fallbacks),
+// vtable, the list's TWO levels (the client's model nodes, each with its items), the links, a cycle, the caps, a flat list, a foreign node), an item's car and model and the gates the draw's own tests make, the walk of the model's drawable at a lod (the order of the fallbacks),
 // the raw palette colour, the pose block's root and bones by the render buffer, the hypotheses for a bone's placement (the transposed rows, the root, the bone alone, the car's own
 // matrix) and the calibration against the draws, the traffic's count, and the racers' and the traffic's cars chosen apart and merged. The memory is made up. A program of its own: it
 // needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
@@ -97,6 +97,7 @@ Item MakeItem(FakeMemory& m, double x, double y, double z, int32_t lod = -1, uin
   }
 
   it.item = m.Alloc(96);
+  m.P32(it.item, cw::kAmbItemVtable);
   m.P32(it.item + cw::kAmbItemCar, it.car);
   m.P32(it.item + cw::kAmbItemModel, it.model);
   m.P32(it.item + cw::kAmbItemBlocks, it.blocks);
@@ -107,21 +108,47 @@ Item MakeItem(FakeMemory& m, double x, double y, double z, int32_t lod = -1, uin
   return it;
 }
 
-// The client with a list of items; the renderer, the client's vtable and the render buffer.
-uint32_t MakeClient(FakeMemory& m, const std::vector<Item>& items, uint32_t buffer = 1) {
+// The client: the renderer, the client's vtable and the render buffer, and its list of MODEL NODES, one for each group of items (the items of a group hang under the model of the
+// group's first item; an empty group is a model with no car: the game keeps a node for every type it has loaded). `MakeClient(items)` is one model for each item.
+uint32_t MakeClientGroups(FakeMemory& m, const std::vector<std::vector<Item>>& groups, uint32_t buffer = 1, std::vector<uint32_t>* models_out = nullptr) {
   const uint32_t renderer = m.Alloc(400);
   const uint32_t client = m.Alloc(64);
   m.P32(kRendererAddress, renderer);
   m.P32(renderer + cw::kAmbRendererClients + 4 * cw::kAmbClientSlot, client);
   m.P32(client, cw::kAmbClientVtable);
   m.P32(kBufferAddress, buffer);
-  uint32_t head = 0;
-  for (size_t i = items.size(); i-- > 0;) {
-    m.P32(items[i].item + cw::kAmbItemNext, head);
-    head = items[i].item;
+  std::vector<uint32_t> models;
+  for (const std::vector<Item>& group : groups) {
+    models.push_back(!group.empty() && group.front().model != 0 ? group.front().model : m.Alloc(320));
   }
-  m.P32(client + cw::kAmbClientItems, head);
+  uint32_t head = 0;
+  for (size_t g = groups.size(); g-- > 0;) {
+    const uint32_t model = models[g];
+    m.P32(model, cw::kAmbModelVtable);
+    m.P32(model + cw::kAmbModelNext, head);
+    m.P32(model + 16, client);  // the parent: the client
+    uint32_t first = 0;
+    for (size_t i = groups[g].size(); i-- > 0;) {
+      m.P32(groups[g][i].item + cw::kAmbItemSibling, first);
+      m.P32(groups[g][i].item + cw::kAmbItemModel, model);
+      first = groups[g][i].item;
+    }
+    m.P32(model + cw::kAmbModelItems, first);
+    head = model;
+  }
+  m.P32(client + cw::kAmbClientModels, head);
+  if (models_out) {
+    *models_out = models;
+  }
   return client;
+}
+
+uint32_t MakeClient(FakeMemory& m, const std::vector<Item>& items, uint32_t buffer = 1) {
+  std::vector<std::vector<Item>> groups;
+  for (const Item& it : items) {
+    groups.push_back({it});
+  }
+  return MakeClientGroups(m, groups, buffer);
 }
 
 void ItemTests() {
@@ -131,12 +158,18 @@ void ItemTests() {
     const uint32_t client = MakeClient(m, items);
     cw::AmbientScan scan;
     const std::vector<uint32_t> list = cw::ListAmbientItems(m, &scan);
-    Check(scan.renderer && scan.client && scan.client_object == client && scan.items == 3 && !scan.truncated, "the client is found by its vtable and its three items are listed");
+    Check(scan.renderer && scan.client && scan.client_object == client && scan.items == 3 && scan.models == 3 && !scan.truncated, "the client is found by its vtable and its three items are listed under three models");
+    Check(scan.flat_items == 0 && scan.foreign_nodes == 0 && scan.mismatched == 0, "a list of models and items has no flat item, foreign node or mismatched item");
     Check(list.size() == 3 && list[0] == items[0].item && list[1] == items[1].item && list[2] == items[2].item, "in the game's order");
-    // a cycle: the last item's next is the first
-    m.P32(items[2].item + cw::kAmbItemNext, items[0].item);
+    // a cycle in the model list: the last model's next is the first
+    std::vector<uint32_t> models;
+    for (const Item& it : items) {
+      models.push_back(it.model);
+    }
+    m.P32(models[2] + cw::kAmbModelNext, models[0]);
     cw::AmbientScan cyc;
-    Check(cw::ListAmbientItems(m, &cyc).size() == 3, "a cycle in the list ends at the first repeat");
+    Check(cw::ListAmbientItems(m, &cyc).size() == 3 && cyc.models == 3, "a cycle in the list of models ends at the first repeat");
+    m.P32(models[2] + cw::kAmbModelNext, 0);
     // a client of another kind
     m.P32(client, 0x82047B14u);
     cw::AmbientScan other;
@@ -148,18 +181,80 @@ void ItemTests() {
     Check(cw::ListAmbientItems(m, &scan).empty() && !scan.renderer, "no renderer: nothing, and it says so");
   }
   {
-    // the cap
+    // the items' cap: 130 models of 4 items
     FakeMemory m(1u << 22);
-    std::vector<Item> items;
-    for (uint32_t i = 0; i < 520; ++i) {
-      Item it;
-      it.item = m.Alloc(32);
-      items.push_back(it);
+    std::vector<std::vector<Item>> groups;
+    for (uint32_t g = 0; g < 130; ++g) {
+      std::vector<Item> group;
+      for (uint32_t i = 0; i < 4; ++i) {
+        Item it;
+        it.item = m.Alloc(32);
+        group.push_back(it);
+      }
+      groups.push_back(group);
     }
-    MakeClient(m, items);
+    MakeClientGroups(m, groups);
     cw::AmbientScan scan;
     const std::vector<uint32_t> list = cw::ListAmbientItems(m, &scan);
-    Check(list.size() == cw::kAmbMaxItems && scan.truncated, "a list longer than the cap is cut and says so");
+    Check(list.size() == cw::kAmbMaxItems && scan.truncated, "a list of more items than the cap is cut and says so");
+  }
+  {
+    // the models' cap
+    FakeMemory m(1u << 22);
+    std::vector<std::vector<Item>> groups(cw::kAmbMaxModels + 10);
+    MakeClientGroups(m, groups);
+    cw::AmbientScan scan;
+    const std::vector<uint32_t> list = cw::ListAmbientItems(m, &scan);
+    Check(list.empty() && scan.models == cw::kAmbMaxModels && scan.truncated, "more model nodes than the cap: cut and said");
+  }
+  {
+    // the game's shape: models shared by several cars, a model with no car, the order of the models then of the cars under each, an item cycle, a mismatched item
+    FakeMemory m;
+    Item a = MakeItem(m, 0, 0, 0), b = MakeItem(m, 5, 0, 0), c = MakeItem(m, 10, 0, 0), d = MakeItem(m, 15, 0, 0);
+    std::vector<uint32_t> models;
+    const uint32_t client = MakeClientGroups(m, {{a, b}, {}, {c}, {d}}, 1, &models);
+    cw::AmbientScan scan;
+    std::vector<uint32_t> list = cw::ListAmbientItems(m, &scan);
+    Check(scan.client_object == client && scan.models == 4 && scan.items == 4 && scan.mismatched == 0, "four model nodes (one with no car), four items");
+    Check(list.size() == 4 && list[0] == a.item && list[1] == b.item && list[2] == c.item && list[3] == d.item, "the cars of one model, then the next model's");
+    // the items of one model: a cycle in the siblings ends at the first repeat
+    m.P32(b.item + cw::kAmbItemSibling, a.item);
+    cw::AmbientScan cyc;
+    Check(cw::ListAmbientItems(m, &cyc).size() == 4, "a cycle among one model's items ends at the first repeat");
+    m.P32(b.item + cw::kAmbItemSibling, 0);
+    // an item whose +20 is another model: listed, counted
+    m.P32(d.item + cw::kAmbItemModel, models[0]);
+    cw::AmbientScan mism;
+    Check(cw::ListAmbientItems(m, &mism).size() == 4 && mism.mismatched == 1, "an item whose model word is another node is listed and counted");
+    m.P32(d.item + cw::kAmbItemModel, models[3]);
+    // the same car under two models is listed once
+    m.P32(models[2] + cw::kAmbModelItems, a.item);
+    cw::AmbientScan twice;
+    Check(cw::ListAmbientItems(m, &twice).size() == 3, "an item reached twice is listed once");
+  }
+  {
+    // the first version's reading, now refused: a node of the client's list that is no model (its first child does not point back, its vtable is another's) lists nothing
+    FakeMemory m;
+    const Item a = MakeItem(m, 0, 0, 0);
+    const uint32_t client = MakeClientGroups(m, {{a}});
+    const uint32_t foreign = m.Alloc(64);
+    m.P32(foreign, 0x82047EE0u);                  // some other node class
+    m.P32(foreign + cw::kAmbModelItems, a.car);   // a pointer that is no item's back pointer
+    m.P32(client + cw::kAmbClientModels, foreign);
+    cw::AmbientScan scan;
+    Check(cw::ListAmbientItems(m, &scan).empty() && scan.foreign_nodes == 1 && scan.models == 1, "a node that is no model lists nothing and is counted");
+  }
+  {
+    // a flat list (nodes that are items by their vtable): taken as items
+    FakeMemory m;
+    const Item a = MakeItem(m, 0, 0, 0), b = MakeItem(m, 5, 0, 0);
+    const uint32_t client = MakeClientGroups(m, {{a}});
+    m.P32(client + cw::kAmbClientModels, a.item);
+    m.P32(a.item + cw::kAmbModelNext, b.item);
+    m.P32(b.item + cw::kAmbModelNext, 0);
+    cw::AmbientScan scan;
+    const std::vector<uint32_t> list = cw::ListAmbientItems(m, &scan);
+    Check(list.size() == 2 && scan.flat_items == 2 && list[0] == a.item && list[1] == b.item, "nodes that are items by their vtable are listed as items");
   }
   // reading an item
   {
@@ -429,6 +524,75 @@ void CalibrationTests() {
   }
 }
 
+// the self-check of a pose block against the car's own matrix (no draw)
+void SelfCheckTests() {
+  FakeMemory m;
+  const Item it = MakeItem(m, 100, 2, -50, -1, 1);
+  MakeClient(m, {it}, 1);
+  const cw::AmbientItem info = cw::ReadAmbientItem(m, it.item);
+  const cw::TrafficPoseData pose = cw::ReadTrafficPose(m, info, 5);
+  {
+    const cmp::TrafficSelfCheck c = cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, pose.car_render);
+    Check(c.placed && c.ok && Near(c.metres, 0.25, 1e-4) && c.basis < 1e-5, "the body bone at the root: the car's own render-copy matrix (a quarter of a metre on in this world) is where the block puts the body");
+    const cmp::TrafficSelfCheck u = cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, info.matrix);
+    Check(u.ok && Near(u.metres, 0.0, 1e-4), "... and the update copy the same here");
+  }
+  {
+    tp::Mat4 moved = pose.car_render;
+    moved.m[3][0] += 1.0;
+    Check(cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, moved).ok, "1.25 m between the block and the car is within the check's 1.5 m (a car that moved between the two copies)");
+    moved.m[3][0] += 1.0;
+    const cmp::TrafficSelfCheck far = cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, moved);
+    Check(far.placed && !far.ok && far.metres > cmp::kSelfCheckMetres, "2.25 m between them: not the car's block (a stale block)");
+  }
+  {
+    tp::Mat4 turned = tp::Identity();
+    turned.m[0][0] = 0.0;
+    turned.m[0][2] = 1.0;
+    turned.m[2][0] = -1.0;
+    turned.m[2][2] = 0.0;
+    for (int c = 0; c < 3; ++c) {
+      turned.m[3][c] = pose.car_render.m[3][c];
+    }
+    const cmp::TrafficSelfCheck t = cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, turned);
+    Check(t.placed && !t.ok && t.basis > cmp::kSelfCheckBasis, "a car a quarter turn from the body bone: not accepted (the rows are read the wrong way, or the block is another car's)");
+  }
+  {
+    // the block without the root: the root-less hypothesis puts the body at the model's origin, far from the car
+    const cmp::TrafficSelfCheck alone = cmp::CheckTrafficBlock(pose, cw::TrafficPose::kBoneOnly, pose.car_render);
+    Check(alone.placed && !alone.ok && alone.metres > 50.0, "the root-less hypothesis puts the body far from the car: not accepted");
+    tp::Mat4 nan = pose.car_render;
+    nan.m[3][1] = std::nan("");
+    Check(!cmp::CheckTrafficBlock(pose, cw::TrafficPose::kRootBone, nan).ok, "a NaN car matrix: not accepted");
+    const cw::TrafficPoseData none;
+    Check(!cmp::CheckTrafficBlock(none, cw::TrafficPose::kRootBone, pose.car_render).placed, "no pose block: nothing to check");
+  }
+}
+
+// reading an item: why it failed
+void FailTests() {
+  FakeMemory m;
+  const Item it = MakeItem(m, 1, 2, 3, 0);
+  MakeClient(m, {it});
+  Check(cw::ReadAmbientItem(m, it.item).fail == cw::AmbientFail::kNone && cw::ReadAmbientItem(m, it.item).ok, "an item that reads has no failure");
+  Check(cw::ReadAmbientItem(m, 0).fail == cw::AmbientFail::kItem, "no item");
+  m.P32(it.item + cw::kAmbItemCar, 0);
+  Check(cw::ReadAmbientItem(m, it.item).fail == cw::AmbientFail::kCar, "no car pointer");
+  m.P32(it.item + cw::kAmbItemCar, it.car);
+  m.P32(it.item + cw::kAmbItemModel, 0);
+  Check(cw::ReadAmbientItem(m, it.item).fail == cw::AmbientFail::kModel, "no model pointer");
+  m.P32(it.item + cw::kAmbItemModel, it.model);
+  m.PF(it.car + cw::kAmbCarMatrix + 0, std::nanf(""));
+  Check(cw::ReadAmbientItem(m, it.item).fail == cw::AmbientFail::kMatrixRead, "a NaN in the matrix: not readable as a matrix");
+  m.PF(it.car + cw::kAmbCarMatrix + 0, 0.0f);
+  Check(cw::ReadAmbientItem(m, it.item).fail == cw::AmbientFail::kMatrixPose, "an axis of no length: not a pose");
+  // the first version's mistake: the client read for a car (its +128 is no matrix)
+  const uint32_t client = m.Alloc(600);
+  m.P32(it.item + cw::kAmbItemCar, client);
+  Check(!cw::ReadAmbientItem(m, it.item).ok, "a car pointer that is the client: refused (nothing there is a pose)");
+  Check(std::string(cw::AmbientFailName(cw::AmbientFail::kMatrixPose)).find("pose") != std::string::npos && cw::kAmbientFailCount == 6, "the failures have names");
+}
+
 // the cars chosen
 crt::CarInfo Car(uint32_t id, bool traffic, double distance, uint32_t parts = 10) {
   crt::CarInfo c;
@@ -516,6 +680,8 @@ int main() {
   WalkTests();
   PoseTests();
   CalibrationTests();
+  SelfCheckTests();
+  FailTests();
   SelectionTests();
   std::printf("car_model_traffic_rules_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

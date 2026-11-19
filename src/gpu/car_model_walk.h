@@ -171,11 +171,14 @@ class Walker {
   const car_model_parts::TrafficCalibration& traffic_calibration() const { return traffic_calibration_; }
   struct TrafficScan {
     bool renderer = false, client = false;
-    uint32_t items = 0;         // render items in the client's list
+    uint32_t models = 0;        // model nodes in the client's list (one a car type; the items hang under them)
+    uint32_t items = 0;         // render items in the client's lists
+    uint32_t unreadable = 0;    // ... that were not read (their car or model word, or the car's matrix)
     uint32_t in_range = 0;      // ... whose car is within the scan radius
     uint32_t rejected = 0;      // ... of those the draw would not take (disabled, flags) or whose car has no pose
     uint32_t visible = 0;       // ... of those the main view shows (the item's lod is not negative)
     uint32_t block_missing = 0; // near cars the main view does not show whose bone block could not be read
+    uint32_t self_checked = 0;  // cars placed by the check against the car's own matrix (no draw has confirmed the pose; car_model_parts_rt_rules.h TrafficSelfCheck)
   };
   const TrafficScan& traffic_scan() const { return traffic_scan_; }
   // What the last production walk cost on the render thread (microseconds).
@@ -201,6 +204,9 @@ class Walker {
     uint32_t client_object = 0, client_mask = 0;
     bool ambient_renderer = false, ambient_client = false, ambient_truncated = false;  // the traffic client (RT-MODEL-PARTS)
     uint32_t ambient_items = 0, ambient_unreadable = 0;
+    uint32_t ambient_models = 0, ambient_flat = 0, ambient_foreign = 0, ambient_mismatched = 0;  // the client's list: model nodes, items that are nodes themselves, nodes that are neither, items whose model word is another node
+    uint32_t ambient_fail[car_model_walk::kAmbientFailCount] = {};  // the unreadable items by AmbientFail
+    std::vector<std::string> ambient_samples;                       // the words of the first unreadable items (for the log)
   };
 
   void RunWalk();
@@ -238,6 +244,8 @@ class Walker {
   TrafficScan traffic_scan_;
   uint64_t wheel_proof_log_frame_ = 0, traffic_proof_log_frame_ = 0;
   uint32_t wheel_proof_logs_ = 0, traffic_proof_logs_ = 0;
+  uint64_t traffic_selfcheck_log_frame_ = 0;
+  uint32_t traffic_selfcheck_logs_ = 0;
   uint64_t last_calibration_frame_ = 0;
   bool calibrating_ = false;
   std::unique_ptr<Source> source_;

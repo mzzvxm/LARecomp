@@ -8,8 +8,12 @@
 // car_model_walk_rules.h); car_model_traffic_rules_test.cpp feeds it made-up bytes.
 //
 // THE CHAIN   (offsets decimal; every word big endian)
-//   renderer R = [0x8287E064];  client C = [R + 128 + 4 * 9]  (its first word is the vtable 0x820D8C0C);  the items: I = [C + 8], next = [I + 12]
-//   item I     +16  the car object (mcAmbientCar)         +20  the MODEL           +24  -> the item's blocks table
+//   renderer R = [0x8287E064];  client C = [R + 128 + 4 * 9]  (its first word is the vtable 0x820D8C0C)
+//   THE LIST IS TWO LEVELS (found 2026-11-19 from the first check's "41 render items, 41 with no readable car"): C + 8 is the list of the client's MODEL nodes (one a car type: the
+//              object whose vtable is 0x820D9084, vtbl+8 = sub_822E6CB8 = the generic "draw my children"), next at +12; a model node's +16 is its parent, the client; a model node's
+//              +20 is the head of ITS ITEMS (the cars of that type), the next sibling of an item at +8 (sub_822E6CB8: `lwz r31,20(r3)` ... `lwz r31,8(r31)`, calling vtbl+8 of each
+//              child = the item draw sub_82793360). The first version took the model nodes for items and read a car out of the client (+16) of each: every one failed.
+//   item I     +8   the next item of the same model   +16  the car object (mcAmbientCar)         +20  the MODEL (the node it hangs under)          +24  -> the item's blocks table
 //              +28  i32 lod: negative = outside the main view or deeper than 500 m (the draw skips it); 0..2; 2 = the coarsest (the body phase returns)
 //              +32  float: the view depth + the car's radius (the lod update's frustum test)   +36 u8 enabled   +52 u16 colour index (into the model's palette)
 //   car        +128 the world Matrix44, the update copy (rows right, up, back, position; row 3 at +176); the render thread's copy is at +(buffer + 4) * 64
@@ -45,8 +49,12 @@ inline constexpr uint32_t kAmbRenderer = 0x8287E064u;
 inline constexpr uint32_t kAmbRendererClients = 128;
 inline constexpr uint32_t kAmbClientSlot = 9;
 inline constexpr uint32_t kAmbClientVtable = 0x820D8C0Cu;
-inline constexpr uint32_t kAmbClientItems = 8;
-inline constexpr uint32_t kAmbItemNext = 12;
+inline constexpr uint32_t kAmbClientModels = 8;      // client + 8: the list of the model nodes
+inline constexpr uint32_t kAmbModelNext = 12;        // a model node's next in the client's list
+inline constexpr uint32_t kAmbModelItems = 20;       // a model node's first item
+inline constexpr uint32_t kAmbItemSibling = 8;       // an item's next item under the same model
+inline constexpr uint32_t kAmbModelVtable = 0x820D9084u;  // the model node's vtable (the retail image): the discriminator of a node
+inline constexpr uint32_t kAmbItemVtable = 0x820D9254u;   // the item's vtable (vtbl+8 = the item draw sub_82793360)
 inline constexpr uint32_t kAmbItemCar = 16;
 inline constexpr uint32_t kAmbItemModel = 20;
 inline constexpr uint32_t kAmbItemBlocks = 24;
@@ -67,6 +75,7 @@ inline constexpr uint32_t kAmbBlockBones = 32;
 inline constexpr uint32_t kAmbBoneBytes = 48;
 inline constexpr uint32_t kAmbMaxBones = 64;          // the palette holds 64 bones (c64..c255, three registers a bone)
 inline constexpr uint32_t kAmbMaxItems = 512;
+inline constexpr uint32_t kAmbMaxModels = 256;        // the most model nodes walked (the retail game has about forty)
 inline constexpr uint32_t kAmbPaletteEntries = 256;   // the most colour indices read
 
 // ---------------------------------------------------------------------------
@@ -76,11 +85,16 @@ inline constexpr uint32_t kAmbPaletteEntries = 256;   // the most colour indices
 struct AmbientScan {
   bool renderer = false, client = false;
   uint32_t client_object = 0;
-  uint32_t items = 0;           // nodes walked
-  bool truncated = false;       // the cap was hit
+  uint32_t models = 0;          // the client's model nodes walked
+  uint32_t items = 0;           // items listed (under all the models)
+  uint32_t flat_items = 0;      // nodes of the client's own list that are items themselves (a flat list: none expected)
+  uint32_t foreign_nodes = 0;   // nodes that are neither a model nor an item (left out)
+  uint32_t mismatched = 0;      // items whose +20 (their model) is not the node they hang under (listed all the same: the item draw reads +20)
+  bool truncated = false;       // a cap was hit
 };
 
-// The items of the traffic client, in the game's order. A list read while the game changes it gives an odd line at worst: bounded by kAmbMaxItems and by readable memory.
+// The items of the traffic client, in the game's order: the client's model nodes, and under each the items of that model. A list read while the game changes it gives an odd
+// line at worst: bounded by kAmbMaxModels, kAmbMaxItems and by readable memory, and a node or an item seen twice ends its list.
 template <class Mem>
 std::vector<uint32_t> ListAmbientItems(const Mem& mem, AmbientScan* scan) {
   std::vector<uint32_t> items;
@@ -94,30 +108,87 @@ std::vector<uint32_t> ListAmbientItems(const Mem& mem, AmbientScan* scan) {
   }
   scan->client = true;
   scan->client_object = client;
-  uint32_t item = 0;
-  if (!mem.Word(client + kAmbClientItems, &item)) {
+  uint32_t node = 0;
+  if (!mem.Word(client + kAmbClientModels, &node)) {
     return items;
   }
-  std::unordered_set<uint32_t> seen;
-  while (Plausible(item) && seen.insert(item).second) {
-    if (items.size() >= kAmbMaxItems) {
-      scan->truncated = true;
-      break;
+  std::unordered_set<uint32_t> seen_nodes, seen_items;
+  const auto add_item = [&](uint32_t item, uint32_t model) {
+    uint32_t back = 0;
+    if (model != 0 && mem.Word(item + kAmbItemModel, &back) && back != model) {
+      ++scan->mismatched;
     }
     items.push_back(item);
     ++scan->items;
-    uint32_t next = 0;
-    if (!mem.Word(item + kAmbItemNext, &next)) {
+  };
+  while (Plausible(node) && seen_nodes.insert(node).second) {
+    if (scan->models >= kAmbMaxModels) {
+      scan->truncated = true;
       break;
     }
-    item = next;
+    ++scan->models;
+    uint32_t node_vtable = 0, first = 0, next = 0;
+    mem.Word(node, &node_vtable);
+    if (node_vtable == kAmbItemVtable) {
+      // a node that is an item itself: taken as one (and no children walked)
+      if (seen_items.insert(node).second) {
+        if (items.size() >= kAmbMaxItems) {
+          scan->truncated = true;
+          break;
+        }
+        ++scan->flat_items;
+        add_item(node, 0);
+      }
+    } else if (!mem.Word(node + kAmbModelItems, &first)) {
+      ++scan->foreign_nodes;
+    } else {
+      // the model's items; a node whose first child does not point back to it is not a model node (nothing of its list is taken)
+      uint32_t back = 0;
+      const bool model = first == 0 || (Plausible(first) && mem.Word(first + kAmbItemModel, &back) && back == node) || node_vtable == kAmbModelVtable;
+      if (!model) {
+        ++scan->foreign_nodes;
+      } else {
+        for (uint32_t item = first; Plausible(item) && seen_items.insert(item).second;) {
+          if (items.size() >= kAmbMaxItems) {
+            scan->truncated = true;
+            break;
+          }
+          add_item(item, node);
+          uint32_t sibling = 0;
+          if (!mem.Word(item + kAmbItemSibling, &sibling)) {
+            break;
+          }
+          item = sibling;
+        }
+      }
+    }
+    if (scan->truncated || !mem.Word(node + kAmbModelNext, &next)) {
+      break;
+    }
+    node = next;
   }
   return items;
+}
+
+// Why an item could not be read (the walker counts them: the check's first look at a list that gave no car was "41 with no readable car" and nothing to say which link failed).
+enum class AmbientFail : uint8_t { kNone, kItem, kCar, kModel, kMatrixRead, kMatrixPose };
+inline constexpr uint32_t kAmbientFailCount = 6;
+inline const char* AmbientFailName(AmbientFail f) {
+  switch (f) {
+    case AmbientFail::kNone: return "readable";
+    case AmbientFail::kItem: return "no item";
+    case AmbientFail::kCar: return "item+16 is no car pointer";
+    case AmbientFail::kModel: return "item+20 is no model pointer";
+    case AmbientFail::kMatrixRead: return "the car's matrix is not readable";
+    case AmbientFail::kMatrixPose: return "the car's matrix is not a pose";
+  }
+  return "?";
 }
 
 // What the item and its car say before a walk.
 struct AmbientItem {
   bool ok = false;               // the chain item -> car and item -> model was readable and the car's matrix is a car's pose
+  AmbientFail fail = AmbientFail::kNone;
   std::string why;
   uint32_t item = 0, car = 0, model = 0, blocks = 0, type = 0;
   int32_t lod = -1;              // item+28: negative = the main view does not show the car
@@ -185,15 +256,18 @@ AmbientItem ReadAmbientItem(const Mem& mem, uint32_t item) {
   AmbientItem out;
   out.item = item;
   if (!Plausible(item)) {
+    out.fail = AmbientFail::kItem;
     out.why = "no item";
     return out;
   }
   uint32_t value = 0;
   if (!mem.Word(item + kAmbItemCar, &out.car) || !Plausible(out.car)) {
+    out.fail = AmbientFail::kCar;
     out.why = "item+16 holds no car";
     return out;
   }
   if (!mem.Word(item + kAmbItemModel, &out.model) || !Plausible(out.model)) {
+    out.fail = AmbientFail::kModel;
     out.why = "item+20 holds no model";
     return out;
   }
@@ -218,7 +292,13 @@ AmbientItem ReadAmbientItem(const Mem& mem, uint32_t item) {
   if (const uint8_t* d = mem.Window(out.car + kAmbCarRadius, 4)) {
     out.radius = BeFloat(d);
   }
-  if (!ReadMatrix(mem, out.car + kAmbCarMatrix, &out.matrix) || !UsableCarMatrix(out.matrix)) {
+  if (!ReadMatrix(mem, out.car + kAmbCarMatrix, &out.matrix)) {
+    out.fail = AmbientFail::kMatrixRead;
+    out.why = "the car's matrix is not readable";
+    return out;
+  }
+  if (!UsableCarMatrix(out.matrix)) {
+    out.fail = AmbientFail::kMatrixPose;
     out.why = "the car's matrix is not a pose";
     return out;
   }

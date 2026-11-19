@@ -298,6 +298,35 @@ class TrafficCalibration {
   bool fits_ = false;
 };
 
+// THE SELF-CHECK. A traffic car's draws give the calibration no pairs where the draw's vertex shader has no recipe (the xAmbient* shaders skin by the car's palette: the car frame
+// takes such a draw for a skinned one and decodes no model-to-world from it), so the calibration above may never decide. Without a draw, the pose block is checked against the car's
+// OWN matrix: the body bone (bone 0) places the car's body, so its model-to-world must be the car's matrix (the game builds the bone from it): the origin within kSelfCheckMetres
+// and the 3x3 within kSelfCheckBasis. A block that passes is trusted for the default hypothesis (the shader's own recipe: root + the bone); a block that does not pass places nothing.
+// It checks the block's freshness and the transposed-rows reading, not the wheels' bones (a wheel is a bone of its own); the draw-based calibration, where it has pairs, decides instead.
+inline constexpr double kSelfCheckMetres = 1.5;
+inline constexpr double kSelfCheckBasis = 0.25;
+
+struct TrafficSelfCheck {
+  bool ok = false;
+  bool placed = false;     // the block could be turned into a placement at all
+  double metres = 0.0;     // the body bone's origin from the car's matrix' origin
+  double basis = 0.0;      // the largest difference of the 3x3
+};
+
+inline TrafficSelfCheck CheckTrafficBlock(const cw::TrafficPoseData& pose, cw::TrafficPose hypothesis, const tp::Mat4& car_matrix) {
+  TrafficSelfCheck out;
+  tp::Mat4 body;
+  if (!cw::PlaceTraffic(pose, 0, hypothesis, &body) || !crt::UsablePlacement(body) || !tp::Finite(car_matrix)) {
+    return out;
+  }
+  out.placed = true;
+  const crt::PlacementError e = crt::ComparePlacements(body, car_matrix);
+  out.metres = e.translation;
+  out.basis = e.basis;
+  out.ok = e.translation <= kSelfCheckMetres && e.basis <= kSelfCheckBasis;
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // which cars
 // ---------------------------------------------------------------------------

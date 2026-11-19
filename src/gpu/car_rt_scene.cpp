@@ -1162,12 +1162,13 @@ void CarRtScene::NotePartsKinds(car_model_walk::Walker& walker, const std::vecto
     const car_model_walk::Walker::TrafficScan& scan = walker.traffic_scan();
     REXLOG_INFO("{} walked parts by kind, frames {}..{}: a walked car placed in {} frames; instances a frame (mean, most): body {:.1f} ({}), wheels {:.1f} ({}; {:.1f} tyre + {:.1f} rim), a traffic "
                 "car's model {:.1f} ({}), driver 0 (skinned: left out as the draw path leaves it); racers placed in {} frames, traffic cars in {} frames (at most {} at once, {:.2f} a frame); "
-                "racer car-frames whose wheels waited for a wheel pose that fits the draws {}; traffic scan (last frame): client {}, {} render items, {} "
-                "with the car within the radius, {} of those rejected by the draw's own gates, {} shown by the main view, {} not shown by it with no usable bone block; wheel pose: tyres '{}' ({}), rims '{}' ({}); traffic pose '{}' ({}); "
+                "racer car-frames whose wheels waited for a wheel pose that fits the draws {}; traffic scan (last frame): client {}, {} model nodes, {} render items ({} unreadable), "
+                "{} with the car within the radius, {} of those rejected by the draw's own gates, {} shown by the main view, {} not shown by it with no usable bone block, {} placed by the "
+                "block's check against the car's own matrix (no draw confirmed the pose); wheel pose: tyres '{}' ({}), rims '{}' ({}); traffic pose '{}' ({}); "
                 "proofs of the last calibrating frame: wheels tyres {} pairs worst {:.4f} m, rims {} pairs worst {:.4f} m; traffic {} pairs worst {:.4f} m ({} traffic cars walked, {} drawn by the frame)",
                 kPrefix, parts_log_frame_, frame_, s.frames, double(s.body_sum) / n, s.body_max, double(s.wheels_sum) / n, s.wheels_max, double(s.tyres_sum) / n, double(s.rims_sum) / n,
                 double(s.model_sum) / n, s.model_max, s.racer_frames, s.traffic_frames, s.traffic_most, double(s.traffic_car_frames) / n, s.wheels_held, scan.client ? "found" : "NOT FOUND",
-                scan.items, scan.in_range, scan.rejected, scan.visible, scan.block_missing, car_model_walk::WheelPoseName(walker.wheel_calibration().chosen(false)),
+                scan.models, scan.items, scan.unreadable, scan.in_range, scan.rejected, scan.visible, scan.block_missing, scan.self_checked, car_model_walk::WheelPoseName(walker.wheel_calibration().chosen(false)),
                 walker.wheel_calibration().fits(false) ? "fits" : walker.wheel_calibration().decided(false) ? "NO FIT" : "not decided", car_model_walk::WheelPoseName(walker.wheel_calibration().chosen(true)),
                 walker.wheel_calibration().fits(true) ? "fits" : walker.wheel_calibration().decided(true) ? "NO FIT" : "not decided", car_model_walk::TrafficPoseName(walker.traffic_calibration().chosen()),
                 walker.traffic_calibration().fits() ? "fits" : walker.traffic_calibration().decided() ? "NO FIT" : "not decided", proof.wheel_pairs[0], proof.wheel_worst[0], proof.wheel_pairs[1],

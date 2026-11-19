@@ -100,6 +100,36 @@ const char* const kPartNames[kPartSlots] = {
 
 const char* PartName(uint32_t part) { return part < kPartSlots ? kPartNames[part] : part == kBodyPart ? "body" : "?"; }
 
+// The words of a render item for the log (when an item could not be read: which link is wrong): its vtable, +8, +12, +16, +20 and, of the word at +16 taken for the car,
+// its flags byte (+500) and the translation row of its matrix (+176).
+template <class Mem>
+std::string ItemWords(const Mem& mem, uint32_t item) {
+  uint32_t w[6] = {};
+  const uint32_t at[6] = {0, 8, 12, 16, 20, 24};
+  bool ok[6] = {};
+  for (int i = 0; i < 6; ++i) {
+    ok[i] = mem.Word(item + at[i], &w[i]);
+  }
+  std::string text = std::format("item {:#010x}: +0 {:#010x} +8 {:#010x} +12 {:#010x} +16 {:#010x} +20 {:#010x} +24 {:#010x}{}", item, w[0], w[1], w[2], w[3], w[4], w[5],
+                                 (ok[0] && ok[1] && ok[2] && ok[3] && ok[4] && ok[5]) ? "" : " (some of them not readable)");
+  uint32_t flags = 0;
+  if (cw::Plausible(w[3]) && mem.Byte(w[3] + cw::kAmbCarFlags, &flags)) {
+    text += std::format("; the +16 object's byte +500 {:#04x}", flags);
+    uint32_t t[3] = {};
+    if (mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation, &t[0]) && mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation + 4, &t[1]) &&
+        mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation + 8, &t[2])) {
+      float f[3];
+      for (int i = 0; i < 3; ++i) {
+        std::memcpy(&f[i], &t[i], 4);
+      }
+      text += std::format(", its row +176 ({:.1f}, {:.1f}, {:.1f}) as floats", f[0], f[1], f[2]);
+    }
+  } else {
+    text += "; the +16 word is not a readable object";
+  }
+  return text;
+}
+
 const uint8_t* GuestBase() {
   auto* runtime = rex::Runtime::instance();
   return runtime ? runtime->virtual_membase() : nullptr;
@@ -479,6 +509,10 @@ void Walker::RunWalk() {
     list_.ambient_renderer = items_scan.renderer;
     list_.ambient_client = items_scan.client;
     list_.ambient_items = items_scan.items;
+    list_.ambient_models = items_scan.models;
+    list_.ambient_flat = items_scan.flat_items;
+    list_.ambient_foreign = items_scan.foreign_nodes;
+    list_.ambient_mismatched = items_scan.mismatched;
     list_.ambient_truncated = items_scan.truncated;
     struct Near {
       cw::AmbientItem info;
@@ -491,6 +525,10 @@ void Walker::RunWalk() {
         cw::AmbientItem info = cw::ReadAmbientItem(mem, item);
         if (!info.ok) {
           ++list_.ambient_unreadable;
+          ++list_.ambient_fail[size_t(info.fail)];
+          if (list_.ambient_samples.size() < 2) {
+            list_.ambient_samples.push_back(std::format("{} ({})", ItemWords(mem, item), info.why));
+          }
           continue;
         }
         const double distance = Distance(info.position, player_position_);
@@ -847,16 +885,25 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
   const std::vector<uint32_t> items = cw::ListAmbientItems(mem, &list);
   traffic_scan_.renderer = list.renderer;
   traffic_scan_.client = list.client;
+  traffic_scan_.models = list.models;
   traffic_scan_.items = uint32_t(items.size());
   (void)prod;
   for (const uint32_t item : items) {
     // the car's position first: the cars far from the player are left alone (an item list has up to a few hundred)
     double at[3];
-    if (!cw::ReadAmbientPosition(mem, item, at) || !(Distance(at, player_position_) <= scan)) {
+    if (!cw::ReadAmbientPosition(mem, item, at)) {
+      ++traffic_scan_.unreadable;
+      continue;
+    }
+    if (!(Distance(at, player_position_) <= scan)) {
       continue;
     }
     ++traffic_scan_.in_range;
     const cw::AmbientItem info = cw::ReadAmbientItem(mem, item);
+    if (!info.ok) {
+      ++traffic_scan_.unreadable;
+      continue;
+    }
     if (!info.Eligible()) {
       ++traffic_scan_.rejected;
       continue;
@@ -910,7 +957,25 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
       if (want_parts && !car.traffic_pose.Usable()) {
         ++traffic_scan_.block_missing;
       }
-      if (want_parts && traffic_calibration_.fits()) {
+      // A car is placed by the calibration against the draws where one fits them; where none has decided (no traffic draw gave it a pair: the draws of the xAmbient* shaders decode
+      // no model-to-world), by the block's check against the car's own matrix (car_model_parts_rt_rules.h TrafficSelfCheck). A calibration that decided and does NOT fit places nothing.
+      bool by_self_check = false;
+      if (want_parts && !traffic_calibration_.fits() && !traffic_calibration_.decided() && car.traffic_pose.Usable()) {
+        const tp::Mat4& reference = car.traffic_pose.car_render_ok ? car.traffic_pose.car_render : info.matrix;
+        const car_model_parts::TrafficSelfCheck check = car_model_parts::CheckTrafficBlock(car.traffic_pose, traffic_calibration_.chosen(), reference);
+        by_self_check = check.ok;
+        if (traffic_selfcheck_logs_ < 8 || frame_ >= traffic_selfcheck_log_frame_ + kProofLogFrames) {
+          ++traffic_selfcheck_logs_;
+          traffic_selfcheck_log_frame_ = frame_;
+          REXLOG_INFO("{} frame {}: TRAFFIC SELF-CHECK (no draw has given the traffic calibration a pair: {} samples): item {:#010x}, car {:#010x}: the body bone of the block places the car "
+                      "{:.3f} m from its own {} matrix, largest 3x3 difference {:.3f}: {} (the limits are {:.2f} m and {:.2f})",
+                      kProductionPrefix, frame_, traffic_calibration_.samples(), item, info.car, check.metres, car.traffic_pose.car_render_ok ? "render-copy" : "update-copy", check.basis,
+                      !check.placed ? "the block could not be turned into a placement" : check.ok ? "accepted: the car is placed by it" : "NOT accepted: the car is not placed",
+                      car_model_parts::kSelfCheckMetres, car_model_parts::kSelfCheckBasis);
+        }
+      }
+      if (want_parts && (traffic_calibration_.fits() || by_self_check)) {
+        traffic_scan_.self_checked += by_self_check ? 1u : 0u;
         for (const uint32_t g : cached.picks) {
           const cw::Geometry& geometry = walk.geometries[g];
           tp::Mat4 placed;
@@ -1274,10 +1339,22 @@ void Walker::FinishFrame() {
               kVehicleClientSlot, list_.client_mask, list_.types, list_.instances, tap_vehicles_, tap_calls_total_, tap_dropped_, draws_.size(), draws_proxy_, draws_no_key_,
               draws_dropped_, frame.draws_matched, frame.draws_vertex_only, frame.draws_unowned, double(bytes) / (1024.0 * 1024.0),
               note_.empty() ? std::string() : " [" + note_ + "]");
-  REXLOG_INFO("{} frame {}: TRAFFIC ambient client {} (renderer {}), {} render items in its list{}, {} of them with no readable car, {} walked here (the nearest within {:.0f} m of the player; "
-              "kind=traffic in the RESULT lines)",
-              kPrefix, frame_, list_.ambient_client ? "found" : "NOT FOUND", list_.ambient_renderer ? "readable" : "NOT READABLE", list_.ambient_items,
-              list_.ambient_truncated ? " (the cap was hit)" : "", list_.ambient_unreadable, traffic_walked, kTrafficWalkMetres);
+  {
+    std::string reasons;
+    for (uint32_t f = 1; f < cw::kAmbientFailCount; ++f) {
+      if (list_.ambient_fail[f] != 0) {
+        reasons += std::format("{}{} {}", reasons.empty() ? "" : "; ", list_.ambient_fail[f], cw::AmbientFailName(cw::AmbientFail(f)));
+      }
+    }
+    REXLOG_INFO("{} frame {}: TRAFFIC ambient client {} (renderer {}), {} model nodes ({} flat items, {} foreign nodes), {} render items under them{} ({} whose model word is another node), "
+                "{} of them with no readable car{}, {} walked here (the nearest within {:.0f} m of the player; kind=traffic in the RESULT lines)",
+                kPrefix, frame_, list_.ambient_client ? "found" : "NOT FOUND", list_.ambient_renderer ? "readable" : "NOT READABLE", list_.ambient_models, list_.ambient_flat,
+                list_.ambient_foreign, list_.ambient_items, list_.ambient_truncated ? " (a cap was hit)" : "", list_.ambient_mismatched, list_.ambient_unreadable,
+                reasons.empty() ? std::string() : " [" + reasons + "]", traffic_walked, kTrafficWalkMetres);
+    for (const std::string& sample : list_.ambient_samples) {
+      REXLOG_INFO("{} frame {}:     unreadable {}", kPrefix, frame_, sample);
+    }
+  }
 
   uint32_t failed_logged = 0;
   for (uint32_t i = 0; i < cars_.size(); ++i) {
