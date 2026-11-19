@@ -23,7 +23,7 @@
 //   binds it to the item (+76, +80) [V]. With +128 = 0 the car has no authored path, so the expectation is a PARKED car at the placement ([I]); the trigger path
 //   (Trigger_AddEventAmbient, sub_82687F58) is what drives a layout car along a path. Whether a runtime-added item is found by the parked spawner's pick (it walks the layout
 //   the zone's cell lists name) is CHECK: the follow-up of a spawn says (does an ambient appear, in which class, does it move, does it go).
-//   AmbientMgr_SetTrafficEnable(false) (sub_826D67F0) stores 0 in 0x8282A7C8 and sends the despawn message 0x60 (sub_826D56F0 now, or queued when [mgr+0x4259] is set), so it
+//   AmbientMgr_SetTrafficEnable(false) (sub_826D67F0) stores 0 in 0x8282A7C8 and sends the despawn message 0x60 (sub_826D56F0 now, or queued when [mgr+0x64259] is set), so it
 //   gates new traffic spawns (sub_826F6920 and its candidate test sub_826EE018 return at once when it is 0) and removes the ambients the message names [V]; the traffic spawner picks a rail
 //   of the railnet (survey), and was not seen to read the layout.
 //
@@ -59,7 +59,7 @@
 //     pm+16); a police car: +872 alive, +1072 active, +1073 allowed to patrol, +1152 non-zero = not counted                        [V sub_82701080, sub_827010E8,
 //     sub_82703240 (SetAllPoliceActive(b) sets +1072 and +1073 of every police with +872 set), sub_82708F30 (a police with +1072 clear is not stepped)]
 //   The enable bytes 0x8282A7C8 / 9 / A (traffic / peds / parked): AmbientMgr_SetTrafficEnable(b) stores the first, and for b = 0 sends the
-//     despawn message 0x60 (queued when [mgr+0x4259] is set, otherwise applied at once by sub_826D56F0); SetAllPoliceActive(false) is as above. [V]
+//     despawn message 0x60 (queued when [mgr+0x64259] is set, otherwise applied at once by sub_826D56F0); SetAllPoliceActive(false) is as above. [V]
 //
 // Threads: the tick runs on the game thread (Patch_DeltaTimePre). The ambient task thread changes the same lists, so a walk can see a list
 // in the middle of a change: it is bounded by a count and by readable-memory checks, and an odd line is only a diagnostic.
@@ -307,6 +307,19 @@ LodSeen FindNote(uint32_t car, uint64_t now_frame) {
         return out;
     }
     return out;
+}
+
+// How many different cars the draw hook has seen within `max_age` updates: a census that does not depend on the pool walk (if the walk finds
+// nothing and this finds cars, the pool reading is wrong), and how many of them are drawn at all (a LOD of 0 or more).
+void CountNotes(uint64_t now_frame, uint64_t max_age, uint32_t* seen, uint32_t* inview) {
+    *seen = *inview = 0;
+    for (const NoteSlot& s : g_notes) {
+        if (s.car.load(std::memory_order_relaxed) == 0) continue;
+        const uint64_t f = s.frame.load(std::memory_order_relaxed);
+        if (now_frame < f || now_frame - f > max_age) continue;
+        ++*seen;
+        if (s.lod.load(std::memory_order_relaxed) >= 0 && s.enabled.load(std::memory_order_relaxed) != 0) ++*inview;
+    }
 }
 
 // ---------------------------------------------------------------- pools
@@ -743,11 +756,13 @@ void Sample(const Guest& g, const ManagerView& m, const Pose& player, double now
     s.census.End();
     tot.parked = amb[1].read ? amb[1].live : 0;
     tot.peds = amb[2].read ? amb[2].live : 0;
+    uint32_t drawn_seen = 0, drawn_inview = 0;
+    CountNotes(frame, 120, &drawn_seen, &drawn_inview);
     LARECOMP_APP_INFO(
         "[traffic-probe] census: {} cars read from the class 0 live list (its live count {}), parked(class 1 live) {}, peds(class 2 live) {}; new since the last sample "
-        "{}, gone {}; moving (>1 m/s) {}, still {}, speed unknown {}; within 100 m {}, within 250 m {}; nearest {:.0f} m, farthest {:.0f} m",
+        "{}, gone {}; moving (>1 m/s) {}, still {}, speed unknown {}; within 100 m {}, within 250 m {}; nearest {:.0f} m, farthest {:.0f} m; the traffic draw saw {} different cars in the last 120 updates ({} of them in view with the item on)",
         tot.cars, amb[0].live, tot.parked, tot.peds, s.census.New(), s.census.Gone(), tot.moving, tot.still, tot.unknown, tot.w100, tot.w250, tot.nearest,
-        tot.farthest);
+        tot.farthest, drawn_seen, drawn_inview);
 
     const int detail = REXCVAR_GET(mcla_traffic_probe_detail);
     if (detail > 0 && !cars.empty()) {
@@ -762,9 +777,11 @@ void Sample(const Guest& g, const ManagerView& m, const Pose& player, double now
 
     LARECOMP_APP_INFO(
         "[traffic-probe] SUMMARY sample={} update={} scale={:.2f} traffic_byte={} cars={} parked={} peds={} new={} gone={} moving={} still={} w100={} w250={} "
-        "amb_free={} amb_live={} amb_pend={} amb_used={} layout_free={} layout_live={} layout_pend={} layout_used={} opp_active={} opp_free={} racers={} police={}",
+        "amb_free={} amb_live={} amb_pend={} amb_used={} layout_free={} layout_live={} layout_pend={} layout_used={} opp_active={} opp_free={} racers={} police={} "
+        "drawn={} inview={}",
         s.sample_no, frame, scale, unsigned(b_traffic), tot.cars, tot.parked, tot.peds, s.census.New(), s.census.Gone(), tot.moving, tot.still, tot.w100, tot.w250,
-        amb[0].free, amb[0].live, amb[0].pending, amb[0].used, lay[0].free, lay[0].live, lay[0].pending, lay[0].used, opp_active, opp_free, racers, police);
+        amb[0].free, amb[0].live, amb[0].pending, amb[0].used, lay[0].free, lay[0].live, lay[0].pending, lay[0].used, opp_active, opp_free, racers, police,
+        drawn_seen, drawn_inview);
 }
 
 // ---------------------------------------------------------------- the spawn test
