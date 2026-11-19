@@ -20,25 +20,17 @@
 #include "device.h"
 #include "frame.h"
 #include "host_precache.h"
+#include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-// The compute shader's blob: built for D3D12 only for now (larecomp_gpu_host_shader_rt: cs_6_5 DXIL), the one backend that traces the car.
-// CHECK: when feat/rt-vulkan is merged the blob comes from host_shaders.h's active backend as car_rt_refl.cpp's does (and the SPIR-V one is built
-// by the same function); this is the only place that names it.
-#if defined(LARECOMP_GPU_HAS_D3D12)
-#include "car_rt_ao_cs.hlsl.dxil.h"  // CHECK: the name and variable (g_car_rt_ao_cs_dxil) larecomp_gpu_host_shader_rt gives, as the other host shaders'
-#define MCLA_CAR_RT_AO_HAS_SHADER 1
-#else
-#define MCLA_CAR_RT_AO_HAS_SHADER 0
-#endif
-
 REXCVAR_DEFINE_STRING(
     mcla_gpu_ao_rt, "auto", "MCLA/GPU",
     "Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray "
-    "tracing 1.1): a few short rays from the pixels near your car, against the car's real shape, darken what the camera does not see (the far side "
-    "of a wheel well, the body over a tyre, the road at the foot of the car) and shadow the car's own parts and the road from the sun exactly. "
+    "tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
+    "darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) "
+    "and shadow the cars' own parts and the road from the sun exactly. "
     "auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; "
     "ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this "
     "says. Live.")
@@ -110,7 +102,7 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   ready_ = false;
   listed_ = false;
   pipeline_failed_ = false;
-  supported_ = scene != nullptr && scene->ready() && car_frame != nullptr && MCLA_CAR_RT_AO_HAS_SHADER != 0 &&
+  supported_ = scene != nullptr && scene->ready() && car_frame != nullptr &&
                CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
   if (!supported_) {
     passes.precache().Note("ray traced ambient occlusion and contact shadows: not on this graphics card or backend (the screen-space passes run)", 0);
@@ -134,7 +126,6 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
 }
 
 bool CarRtAo::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene) {
-#if MCLA_CAR_RT_AO_HAS_SHADER
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);  // u0: the image the pass writes
   output_builder_.end();
@@ -154,14 +145,9 @@ bool CarRtAo::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene
   if (!layout_) {
     return false;
   }
-  shader_ = passes.CreateShader(g_car_rt_ao_cs_dxil, sizeof(g_car_rt_ao_cs_dxil), "car_rt_ao_cs");
+  const HostShaderBlob blob = CarRtAoShader();  // the active backend's: DXIL, or SPIR-V 1.5 (the car RT passes' blobs, host_shaders.h)
+  shader_ = passes.CreateShader(blob.data, blob.size, blob.name);
   return shader_ != nullptr;
-#else
-  (void)device;
-  (void)passes;
-  (void)scene;
-  return false;
-#endif
 }
 
 void CarRtAo::Shutdown() {

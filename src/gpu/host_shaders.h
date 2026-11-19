@@ -46,6 +46,7 @@
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
+#include "car_rt_ao_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
@@ -128,6 +129,7 @@
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
+#include "car_rt_ao_cs.hlsl.spirv.h"
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
@@ -432,12 +434,16 @@ inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
 }
 
 // The player's car as ray tracing structures (car_rt_scene.h): the check pass, a compute shader with inline ray queries (Shader Model 6.5,
-// SPIR-V 1.5 for Vulkan 1.2; built with larecomp_gpu_host_shader_rt), and the ray traced self-reflection's trace (car_rt_refl.h, the same kind)
-// and its denoise (plain compute). The renderer creates the ones with ray queries only where CarRtSupported said yes (VK_KHR_ray_query on
-// Vulkan): a device without the feature refuses the SPIR-V module. The other, a pixel shader that puts the check's picture over the scene, is an
-// ordinary host shader.
+// SPIR-V 1.5 for Vulkan 1.2; built with larecomp_gpu_host_shader_rt), the ray traced self-reflection's trace (car_rt_refl.h, the same kind) and
+// its denoise (plain compute), and the ray traced occlusion and sun term around the car (car_rt_ao.h, the same kind as the trace). The renderer
+// creates the ones with ray queries only where CarRtSupported said yes (VK_KHR_ray_query on Vulkan): a device without the feature refuses the
+// SPIR-V module. The other, a pixel shader that puts the check's picture over the scene, is an ordinary host shader.
 inline HostShaderBlob CarRtCheckShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_check_cs);
+}
+
+inline HostShaderBlob CarRtAoShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_ao_cs);
 }
 
 inline HostShaderBlob CarRtReflShader() {
