@@ -410,7 +410,8 @@ inline bool ListIsLater(uint32_t list_seq, uint32_t ui_menu_seq) { return list_s
 // 156..574. The `<` of a value row is at stage x 398 on both value pages measured (the UPSCALING page now and the old GRAPHICS QUALITY page), the `>` follows the value's text (453 .. 512).
 
 inline constexpr CardMap kPauseCard{551.0626f, -0.0801920f, 0.806185f, -3.55484e-4f};
-inline constexpr float kCardNarrowX0 = 218.0f, kCardNarrowX1 = 553.0f;
+// The plain lists' bar spans 218..553; the row begins at 204 (the panel's margin to the left of the bar is the row's too, and a value page read as a plain one by mistake still takes a pointer on its labels).
+inline constexpr float kCardNarrowX0 = 204.0f, kCardNarrowX1 = 553.0f;
 inline constexpr float kCardWideX0 = 156.0f, kCardWideX1 = 574.0f;
 inline constexpr float kCardLabelEnd = 386.0f;  // a value row: left of this is the label (the `<` begins at 388)
 inline constexpr float kCardArrowSplit = 411.0f;  // between the `<` (center 398) and the value's text (412 .. 438 for OFF); the text and the `>` after it step forward
