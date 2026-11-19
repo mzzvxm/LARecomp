@@ -105,6 +105,10 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool RunBootBuild(rex::kernel::TitleRuntime& title);
   void RunBatchMode();
   void SetXeniaHostDefaults();
+  // The hidden fallback to the XENIA renderer, called the compatibility renderer wherever a player sees it (gpu/renderer_fallback.h).
+  bool LaunchSetsRendererDriver() const;           // a command line option or an environment variable sets gpu.driver: a saved choice cannot win
+  bool SwitchToCompatibilityRenderer();            // writes gpu.driver into larecomp.toml and starts the game again; false (with a box) if it could not
+  bool OfferCompatibilityRendererAfterCrashes();   // OnInit: arms the start watch; true when the player took the offer made after two unfinished starts
 
   BatchMode batch_ = BatchMode::kNone;
   std::vector<std::string> path_notes_;
@@ -117,6 +121,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   std::atomic<bool> step_done_{false};
   std::atomic<bool> close_work_started_{false};
   std::atomic<bool> boot_build_ended_by_player_{false};  // RunBootBuild returned false: the window closed or QUIT was pressed (ReportError)
+  std::atomic<bool> start_told_player_{false};  // OnInit failed after a box of its own told the player why (ReportError shows no second one)
   std::atomic<bool> before_title_end_done_{false};
   rex::ScopeGuard ui_listener_;
   rex::ScopeGuard exit_listener_;

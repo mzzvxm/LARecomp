@@ -60,6 +60,7 @@
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
+#include "gpu/renderer_choice.h"
 #include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
 #endif
@@ -832,12 +833,10 @@ uint32_t CreateUIMenuState(const char* name) {
 // A choice in g_deferred is not the live cvar's value: CvarGet answers with it,
 // and a save (SaveSettingsNow, WriteDeferredCvars) writes it. What is held today
 // is the ONLINE choice (SYSTEM LINK, below), which system_link.cpp applies
-// itself. The RENDERER and GRAPHICS API rows, which were held here too (a
-// restart-only cvar changes its live value with SetFlagByName), are not in the
-// pause menu any more (SETTINGS-REVIEW.md, SX-G5): the launcher's
-// Troubleshooting section sets them (the renderer is the SDK's gpu.driver:
-// larecomp, or any / d3d12 / vulkan for the XENIA renderer; --gpu.driver works
-// on the command line). The render scale (mcla_gpu_resolution_scale,
+// itself, and the RENDERER choice of the hidden DEBUG menu (below). The GRAPHICS API
+// row, which was held here too (a restart-only cvar changes its live value with
+// SetFlagByName), is not in the pause menu any more (SETTINGS-REVIEW.md, SX-G5):
+// the launcher's Graphics API row sets it. The render scale (mcla_gpu_resolution_scale,
 // mcla_gpu_fsr_preset) and the upscaler modes (mcla_gpu_fsr31_mode, _fsr4_mode,
 // _dlss_mode) were never held: the renderer makes its targets again at the new
 // size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
@@ -853,6 +852,20 @@ void SetDeferred(const char* name, const char* value) {
         }
     }
     g_deferred.emplace_back(name, value);
+}
+
+// Settings a menu row only HOLDS for the next launch (CvarSet below): never written to the live cvar, which would either be refused or
+// change under the code that read it at start. gpu.driver is the SDK's renderer choice (renderer_choice.h): startup-only, so the SDK
+// refuses a write once the app runs ("can no longer change"). The RENDERER row of the hidden DEBUG menu holds it; the next save writes
+// it to larecomp.toml, and the "restart now?" prompt offers the restart (the row's label says "(RESTART)").
+const char* const kDeferredCvars[] = {
+    "gpu.driver",
+};
+
+bool IsDeferredCvar(std::string_view name) {
+    for (const char* d : kDeferredCvars)
+        if (name == d) return true;
+    return false;
 }
 
 // The held values on their own: only these lines of the toml change, the live
@@ -915,6 +928,11 @@ void CvarSet(const char* name, const char* value) {
     NoteMenuWrite(name);
     if (std::string_view(name) == kHdrTestPatternCvar)
         g_hdr_pattern_by_menu.store(std::string_view(value) == "true", std::memory_order_relaxed);
+    if (IsDeferredCvar(name)) {
+        MC_INFO("[pause-menu] cvar '{}' -> '{}' held for the next launch", name, value);
+        SetDeferred(name, value);
+        return;
+    }
     // Logged before the write, not after: a cvar's change callbacks run
     // synchronously on this (guest) thread with the cvar registry mutex held,
     // so an apply that hangs used to leave no trace at all -- the last line in
@@ -1539,7 +1557,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         (kWorldDetailItems)
 // On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
 // ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS) and WORLD DETAIL.
-// CHECK: on XENIA (started with the XENIA renderer: the launcher's Troubleshooting section) the hub lists those five pages in that
+// CHECK: on XENIA (started with the XENIA renderer: the hidden fallback, gpu/renderer_fallback.h) the hub lists those five pages in that
 // order and no page is empty. MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
 // 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of those two offers "Restart now?".
 // ANISOTROPIC is live and writes anisotropic_override. On NATIVE VSYNC writes mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC,
@@ -2302,6 +2320,43 @@ const ItemDef kLangItems[] = {
                  &kLangRowDynamics),
 };
 
+#if defined(LARECOMP_HAS_GPU)
+// RENDERER (the hidden DEBUG menu, RENDERING page: debug_menu_pages.cpp): which renderer the NEXT start runs. NATIVE is LARecomp's own
+// (Plume), XENIA D3D12 and XENIA VULKAN are the SDK's Xenia GPU, which stays in the program as a hidden fallback for a PC where the native
+// renderer will not run (gpu/renderer_fallback.h). The choice is the SDK's gpu.driver, which is startup-only, so the row HOLDS it
+// (kDeferredCvars): the next save writes it to larecomp.toml, leaving the menu offers RESTART NOW (the label says "(RESTART)"), and the
+// running renderer does not change. gpu/renderer_choice.h has the mapping (PickOfDriver / DriverOfPick). Not a row of any normal menu and
+// not in the launcher. A launch option or an environment variable that sets gpu.driver beats the file, so the row is grey then.
+// Width: "RENDERER (LAUNCH OPTION)" 24; "RENDERER: XENIA VULKAN (RESTART)" 32, under the 41 a page takes.
+constexpr const char* kRendererCvar = "gpu.driver";
+#if defined(_WIN32)
+constexpr bool kRendererOnWindows = true;
+#else
+constexpr bool kRendererOnWindows = false;
+#endif
+int RendererCount() { return mcla::gpu::kRendererPickCount; }
+std::string RendererLabel(int i) {
+    return i >= 0 && i < RendererCount() ? std::string(mcla::gpu::PickLabel(mcla::gpu::PickAt(i))) : std::string();
+}
+// The held choice if there is one, else what runs now.
+int RendererIndex() { return int(mcla::gpu::PickOfDriver(CvarGet(kRendererCvar), kRendererOnWindows)); }
+void RendererSet(int i, CvarWriter write) {
+    if (i < 0 || i >= RendererCount()) return;
+    const mcla::gpu::RendererPick pick = mcla::gpu::PickAt(i);
+    // Back on the renderer that runs now: its own word ("any" stays "any"), so the restart prompt sees no change.
+    const std::string live = larecomp::cvar::GetFlagByName(kRendererCvar);
+    const std::string value = mcla::gpu::PickOfDriver(live, kRendererOnWindows) == pick ? live
+                                                                                          : std::string(mcla::gpu::DriverOfPick(pick));
+    write(kRendererCvar, value.c_str());
+}
+bool RendererLaunchSets() {
+    const larecomp::cvar::Source source = larecomp::cvar::GetFlagSource(kRendererCvar);
+    return source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
+}
+bool RendererEnabled() { return !RendererLaunchSets(); }
+const char* RendererSuffix() { return RendererLaunchSets() ? " (LAUNCH OPTION)" : " (RESTART)"; }
+#endif
+
 // Cutscene gallery. One value row walking the whole table plus the button
 // that plays it -- the row's value window is only ever three wide (see
 // BuildRowValueSet), so a list this long costs nothing extra.
@@ -2495,8 +2550,8 @@ struct MenuDef {
 bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMenuUnlocked(); }
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
-// restart-only choice (the SDK's gpu.driver; the launcher's Troubleshooting
-// section sets it), so it cannot change under an open menu and the rows listed
+// restart-only choice (the SDK's gpu.driver; the hidden DEBUG menu's RENDERER row, the box
+// of a start that failed, or larecomp.toml sets it), so it cannot change under an open menu and the rows listed
 // never move. mcla::gpu::Enabled() is the one answer to "does LARecomp's own
 // renderer run": the old mcla_gpu setting (gone on rexglue 0.11) was true under
 // the XENIA renderer too, so it could not tell them apart.
@@ -3905,6 +3960,16 @@ void EnsureControllerButtonRow(uint32_t list) {
 namespace mcla_menu {
 
 bool NativeRendererRuns() { return RunningRendererMask() == kRendNative; }
+
+#if defined(LARECOMP_HAS_GPU)
+// The RENDERER row of the hidden DEBUG menu (debug_menu_pages.cpp lists it; RendererSet and the rest are above, with the language row).
+extern const RowDynamics kDebugRendererDynamics = {.str_label = RendererLabel,
+                                                   .enabled = RendererEnabled,
+                                                   .suffix = RendererSuffix,
+                                                   .value_count = RendererCount,
+                                                   .value_index = RendererIndex,
+                                                   .set_value = RendererSet};
+#endif
 
 }  // namespace mcla_menu
 

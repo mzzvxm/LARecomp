@@ -38,6 +38,7 @@
 #include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
 #include "bootprogress/larecomp_boot_progress.h"
+#include "gpu/renderer_fallback.h"  // the words of the compatibility renderer offer (standard library only)
 #include "mc_engine/core/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
@@ -199,17 +200,20 @@ sp::BuildResult BuildGuarded(const sp::BuildRequest& request) {
 }
 
 // The dialog after a build that failed or was cancelled: the short reason, and what can be done.
-// Retry runs the build again from the start; the game cannot draw without the packs.
+// Retry runs the build again from the start; the game cannot draw without the packs. After a build that FAILED (not one the player
+// stopped) a fourth choice may be there, `use_compatibility`: the compatibility renderer (the hidden XENIA fallback, renderer_fallback.h),
+// which needs none of the packs; the app sets it and starts the game again.
 class FailureDialog final : public ui::ImGuiDialog {
  public:
   FailureDialog(bool cancelled, std::string reason,
                 std::filesystem::path log_folder, std::function<void()> retry,
-                std::function<void()> quit)
+                std::function<void()> quit, std::function<void()> use_compatibility)
       : cancelled_(cancelled),
         reason_(std::move(reason)),
         log_folder_(std::move(log_folder)),
         retry_(std::move(retry)),
-        quit_(std::move(quit)) {
+        quit_(std::move(quit)),
+        use_compatibility_(std::move(use_compatibility)) {
     // The first paragraph is for the player (the panel's large face); the rest is the build's own
     // message, with paths and the compiler's words, in the small dim text.
     if (const size_t split = reason_.find("\n\n"); split != std::string::npos) {
@@ -220,7 +224,9 @@ class FailureDialog final : public ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const float width = std::min(640.0f, std::max(420.0f, io.DisplaySize.x - 64.0f));
+    // The offer is only for a build that failed; it makes the footer longer, so the panel is wider (the prompts sit on one line).
+    const bool offer = !cancelled_ && static_cast<bool>(use_compatibility_);
+    const float width = std::min(offer ? 760.0f : 640.0f, std::max(420.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
@@ -230,12 +236,20 @@ class FailureDialog final : public ui::ImGuiDialog {
         {"LOG FOLDER", "L", mcla::ui::kPromptX},
         {"QUIT", "ESC", mcla::ui::kPromptBack},
     };
+    // RETRY and LOG FOLDER keep their places (0 and 1); the new choice sits before QUIT, which stays last.
+    const mcla::ui::Prompt failed_offer_prompts[] = {
+        {"RETRY", "ENTER", mcla::ui::kPromptAccept},
+        {"LOG FOLDER", "L", mcla::ui::kPromptX},
+        {mcla::gpu::fallback::kShaderDialogPrompt, "C", mcla::ui::kPromptNeutral},
+        {"QUIT", "ESC", mcla::ui::kPromptBack},
+    };
     const mcla::ui::Prompt cancelled_prompts[] = {
         {"RETRY", "ENTER", mcla::ui::kPromptAccept},
         {"QUIT", "ESC", mcla::ui::kPromptBack},
     };
     const std::span<const mcla::ui::Prompt> prompts =
         cancelled_ ? std::span<const mcla::ui::Prompt>(cancelled_prompts)
+        : offer    ? std::span<const mcla::ui::Prompt>(failed_offer_prompts)
                    : std::span<const mcla::ui::Prompt>(failed_prompts);
 
     if (mcla::ui::BeginPanel("##larecomp_shader_build_failed",
@@ -259,6 +273,10 @@ class FailureDialog final : public ui::ImGuiDialog {
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         ImGui::TextWrapped("Details: %s", PathUtf8(log_folder_ / "shader_build.txt").c_str());
       }
+      if (offer) {
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::TextWrapped("%s", mcla::gpu::fallback::kShaderDialogText);
+      }
       ImGui::PopStyleColor();
     }
     const int clicked = mcla::ui::EndPanel();
@@ -269,6 +287,8 @@ class FailureDialog final : public ui::ImGuiDialog {
                        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
     if (clicked == 0 || enter) {
       Finish(retry_);
+    } else if (offer && (clicked == 2 || ImGui::IsKeyPressed(ImGuiKey_C, false))) {
+      Finish(use_compatibility_);
     } else if (clicked == quit_index || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
       Finish(quit_);
     } else if (!cancelled_ && (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_L, false))) {
@@ -289,6 +309,7 @@ class FailureDialog final : public ui::ImGuiDialog {
   std::filesystem::path log_folder_;
   std::function<void()> retry_;
   std::function<void()> quit_;
+  std::function<void()> use_compatibility_;  // empty: no such choice (a build the player stopped, a launch option sets gpu.driver)
   bool done_ = false;
 };
 
@@ -610,7 +631,8 @@ bool Phase::Finish() {
 }
 
 void Phase::ShowFailure(rex::ui::IUISystem& ui,
-                        std::function<void(bool force)> retry, std::function<void()> quit) {
+                        std::function<void(bool force)> retry, std::function<void()> quit,
+                        std::function<void()> use_compatibility) {
   if (kind_ == Kind::kClosing) return;  // the app is going away: nobody to ask
   const bool cancelled = kind_ == Kind::kCancelled;
   LARECOMP_APP_WARN("[shaderpack] the game cannot start: {}", reason_);
@@ -635,7 +657,7 @@ void Phase::ShowFailure(rex::ui::IUISystem& ui,
       later([retry = std::move(retry), force]() {
         if (retry) retry(force);
       }),
-      later(std::move(quit)));
+      later(std::move(quit)), later(std::move(use_compatibility)));
 }
 
 }  // namespace larecomp::shaderbuild

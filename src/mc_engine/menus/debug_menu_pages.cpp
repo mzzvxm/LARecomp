@@ -205,6 +205,13 @@ const ItemDef kDebugPerformanceItems[] = {
 // RENDERING: the Plume renderer's debug views and logs, and the picture's shape.
 const ItemDef kDebugRenderingItems[] = {
 #if defined(LARECOMP_HAS_GPU)
+    // RENDERER: NATIVE (LARecomp's own, Plume), XENIA D3D12 or XENIA VULKAN (the SDK's Xenia GPU, which stays in the program as a hidden
+    // fallback: if the native renderer will not run on a PC, this is how a tester or a player who was told to gets the game going; the
+    // launcher and the normal menus do not offer it). The choice is gpu.driver, which is read at start: the row HOLDS it, the next save
+    // writes it to larecomp.toml (the one debug row that is kept) and leaving the menu offers RESTART NOW. Both renderers list it. Grey
+    // while a command line option or an environment variable sets gpu.driver (it beats the file). Its words are pause_menu.cpp's
+    // (kDebugRendererDynamics); the mapping is gpu/renderer_choice.h.
+    WithDynamics(Str("PM_RxDbgRenderer", "gpu.driver", "RENDERER: ", nullptr, nullptr, 0), &kDebugRendererDynamics),
     NativeOnly(Str("PM_RxDbgAoView",     "mcla_gpu_ao_view",       "AO VIEW: ",
                    kAoViewVals, kAoViewNames, Len(kAoViewVals))),
     NativeOnly(Dbl("PM_RxDbgAoHistory",  "mcla_gpu_ao_history",    "AO HISTORY: ",

@@ -83,8 +83,10 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "os/appimage_env.h"
 #include "os/thread_priority.h"
 #include "profile/larecomp_profile_picker.h"
+#include "profile/larecomp_profile_store.h"
 #include "saveporter/larecomp_save_porter.h"
 #include "spdlog_console.h"
+#include "gpu/renderer_fallback.h"  // the hidden way to the XENIA renderer; standard library only, so it is here in every build
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/native_window.h"
@@ -422,8 +424,9 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
   // system that does not start) into the SDK's own silent mix (audio_output.h); mcla_audio_output = null forces the silence.
   def("apu.driver", std::string(mcla::audio::kDriverName));
 
-  // The renderer: the SDK's gpu.driver. Plume with no emulated GPU is the default; a player (or the pause menu's
-  // RENDERER row, or MigrateLegacyConfig) picks the SDK's Xenia GPU with any / d3d12 / vulkan.
+  // The renderer: the SDK's gpu.driver. Plume with no emulated GPU is the default; larecomp.toml, the command line, the hidden
+  // DEBUG menu's RENDERER row, the compatibility renderer buttons (renderer_fallback.h) or the migration of an old file
+  // (ApplyPlayerConfig) pick the SDK's Xenia GPU with any / d3d12 / vulkan.
   def("gpu.driver", std::string(mcla::native_gfx::nocp::kDriverName));
 
   // vsync false by default for maximum throughput (about 30% higher frame rate, no 15.625 ms quantization grid);
@@ -596,6 +599,11 @@ rex::Result<void> LarecompApp::OnInit() {
   // install (WP-C3), and both must draw. It takes the window from IUISystem::GetNativeWindow and draws the overlays
   // with IUISystem::DrawOverlays(its IOverlayRenderer) on its own render thread.
   if (mcla::native_gfx::nocp::WantNoCommandProcessor() && mcla::gpu::Enabled()) {
+    // Two starts in a row that never got going (ended from outside: a crash, a kill) offer the compatibility renderer, once. The watch
+    // counts this start as unfinished until the game has presented its frames or closes by itself (renderer_fallback.h StartWatch).
+    if (OfferCompatibilityRendererAfterCrashes()) {
+      return rex::Err(rex::ErrorCategory::kRuntime, "the compatibility renderer was chosen at the start; the game starts again");
+    }
 #if defined(LARECOMP_DEV_TOOLS)
     // The compare keys (a developer tool, CMake -DLARECOMP_DEV_TOOLS=ON): F1 flicks the selected graphics effect off and on to see
     // what it does, F12 selects the next effect.
@@ -608,6 +616,13 @@ rex::Result<void> LarecompApp::OnInit() {
     }
     // CHECK (L5/L6): mcla::gpu::Startup(IUISystem&, const NativeWindow&) is the new signature (was window, app_context, drawer).
     if (!mcla::gpu::Startup(GetUI(), *window)) {
+      // The box (renderer.cpp Startup) has told the player why: no second one from the SDK, and this is not a crash. A player who took
+      // its offer gets the compatibility renderer set and the game started again; this process only has to end.
+      mcla::gpu::fallback::Watch().Finish();
+      start_told_player_.store(true, std::memory_order_release);
+      if (mcla::gpu::StartupChoseCompatibilityRenderer()) {
+        SwitchToCompatibilityRenderer();
+      }
       return rex::Err(rex::ErrorCategory::kRuntime, "the Plume renderer could not start");
     }
   }
@@ -887,9 +902,10 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
 }
 
 // The SDK shows an error of a lifecycle step in a modal box (TitleApp::ReportError). After the player ended the boot build themselves
-// (OnTitleLaunch above) the log line is all there is: the dialog they chose QUIT on already said what went wrong.
+// (OnTitleLaunch above) the log line is all there is: the dialog they chose QUIT on already said what went wrong. The same after a start
+// that has told the player itself (OnInit: the box of a native renderer that could not start, the offer after two unfinished starts).
 void LarecompApp::ReportError(std::string_view message) {
-  if (boot_build_ended_by_player_.load(std::memory_order_acquire)) {
+  if (boot_build_ended_by_player_.load(std::memory_order_acquire) || start_told_player_.load(std::memory_order_acquire)) {
     rex::app::App::ReportError(message);
     return;
   }
@@ -923,7 +939,17 @@ bool LarecompApp::RunBootBuild(rex::kernel::TitleRuntime& title) {
     }
     if (shaders->Finish()) break;
     bool retry = false, decided = false;
-    shaders->ShowFailure(GetUI(), [&](bool f) { force = f; retry = true; decided = true; }, [&] { decided = true; });
+    // A third way out for a build that failed (not for one the player stopped): the compatibility renderer, which needs no shader packs.
+    // It ends this start like QUIT does (retry stays false), after it set the choice and started the game again.
+    std::function<void()> compatibility;
+    if (!LaunchSetsRendererDriver()) {
+      compatibility = [&] {
+        SwitchToCompatibilityRenderer();
+        decided = true;
+      };
+    }
+    shaders->ShowFailure(GetUI(), [&](bool f) { force = f; retry = true; decided = true; }, [&] { decided = true; },
+                         std::move(compatibility));
     while (!decided) {
       if (!RunFrame()) return false;
     }
@@ -939,6 +965,82 @@ bool LarecompApp::RunBootBuild(rex::kernel::TitleRuntime& title) {
   InitStringTableTools();
   InitHooks();  // its own modloader::Init call is a no-op after the build
   return true;
+}
+
+// -----------------------------------------------------------------------------------------------------------------
+// The hidden fallback to the XENIA renderer (gpu/renderer_fallback.h): the compatibility renderer.
+
+// True when a command line option or an environment variable sets gpu.driver: they beat larecomp.toml, and a restart keeps the command
+// line, so a saved choice could not win (renderer_fallback.h WayFor).
+bool LarecompApp::LaunchSetsRendererDriver() const {
+  const larecomp::cvar::Source source = larecomp::cvar::GetFlagSource("gpu.driver");
+  return source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
+}
+
+// Writes gpu.driver for the compatibility renderer into larecomp.toml and starts the game again (the new game waits for this one to end:
+// restart.h). True when the new game is on its way; the caller ends this one. When the file cannot be written, or the new game cannot be
+// started, the player gets a box that says what to do by hand, and this returns false.
+// CHECK: from OnInit and from the boot build's failure dialog (both on the UI thread, the window open); the new process waits up to 30 s for
+// this one to be gone, and this one ends through the SDK's failed-start path.
+bool LarecompApp::SwitchToCompatibilityRenderer() {
+  namespace fb = mcla::gpu::fallback;
+#if defined(_WIN32)
+  constexpr bool kWindows = true;
+#else
+  constexpr bool kWindows = false;
+#endif
+  const std::string driver(mcla::gpu::FallbackDriver(kWindows));
+  const fb::DriverEdit edit = fb::EditFor(driver);
+  const std::filesystem::path config =
+      settings_config_path_.empty() ? rex::GetPathSettings().config_file.Get() : settings_config_path_;
+  const bool written = !config.empty() && larecomp::profiles::EditConfig(config, {{edit.key, edit.value, false}});
+  if (!written) {
+    LARECOMP_APP_ERROR("[renderer] could not write {} to {}: the compatibility renderer is not set", fb::ConfigLine(driver),
+                       larecomp::profiles::Utf8FromPath(config));
+    GetUI().ShowMessage(rex::MessageType::kError, "LARecomp", fb::ManualText(driver, false));
+    return false;
+  }
+  LARECOMP_APP_INFO("[renderer] the compatibility renderer is set ({} in {}); starting the game again", fb::ConfigLine(driver),
+                    larecomp::profiles::Utf8FromPath(config));
+  if (!mcla::RelaunchGame()) {
+    LARECOMP_APP_ERROR("[renderer] the compatibility renderer is set, but the game could not be started again");
+    GetUI().ShowMessage(rex::MessageType::kError, "LARecomp", fb::ManualText(driver, true));
+    return false;
+  }
+  return true;
+}
+
+// After two starts in a row that never got going: the box that offers the compatibility renderer (the first button, the default) or "keep
+// trying". Arms the watch for this start first. True when the player took the offer and the game is on its way again: OnInit then ends this
+// start. Not asked when the launch sets gpu.driver itself (the offer could not win). CHECK: the first start after two crashes at start.
+bool LarecompApp::OfferCompatibilityRendererAfterCrashes() {
+  namespace fb = mcla::gpu::fallback;
+  const std::filesystem::path start_file = LarecompLogFolder() / std::string(fb::kStartFileName);
+  const int unfinished = fb::Watch().Arm(start_file);
+  if (unfinished > 0) {
+    LARECOMP_APP_WARN("[renderer] {} start(s) of the native renderer before this one never finished ({})", unfinished,
+                      larecomp::profiles::Utf8FromPath(start_file));
+  }
+  if (!fb::OfferAfter(unfinished) || LaunchSetsRendererDriver()) {
+    return false;
+  }
+  LARECOMP_APP_WARN("[renderer] the last {} starts of the native renderer never finished; offering the compatibility renderer", unfinished);
+  rex::ui::ChoiceConfig box;
+  box.type = rex::MessageType::kWarning;
+  box.title = "LARecomp";
+  box.body = fb::UnfinishedStartsText(unfinished);
+  box.buttons = {std::string(fb::kButtonText), std::string(fb::kKeepTryingText)};
+  const auto answer = GetUI().ShowChoice(box);
+  if (answer && *answer == 0) {
+    fb::Watch().Finish();  // not a crash of this start: the file goes
+    if (SwitchToCompatibilityRenderer()) {
+      start_told_player_.store(true, std::memory_order_release);
+      return true;
+    }
+    return false;  // the box said what to do by hand: the native renderer is tried again, uncounted
+  }
+  fb::Watch().CountAgain();
+  return false;
 }
 
 // -----------------------------------------------------------------------------------------------------------------
@@ -1018,6 +1120,7 @@ void LarecompApp::FinishWindowCloseWork() {
 // both call it).
 void LarecompApp::StopBeforeTitleEnds() {
   if (before_title_end_done_.exchange(true, std::memory_order_acq_rel)) return;
+  mcla::gpu::fallback::Watch().Finish();  // the game closes by itself: that start did not crash (renderer_fallback.h StartWatch)
   FinishWindowCloseWork();
   mcla::ui::SetAchievementManager(nullptr);  // the manager goes with the title
 #if defined(LARECOMP_HAS_GPU)

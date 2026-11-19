@@ -15,12 +15,24 @@
 // A feature that wants a debug row of its own adds it to one of the tables in debug_menu_pages.cpp (or a
 // page's own row function), with a key that starts with PM_RxDbg and a cvar tagged .debug_only().
 //
+// The one exception is the RENDERER row (RENDERING page): the way to the XENIA renderer, which stays in the
+// program as a hidden fallback (owner, 2026-11-19; gpu/renderer_fallback.h). Its setting is the SDK's gpu.driver,
+// which is startup-only and not LARecomp's to tag, so the row HOLDS the choice (pause_menu.cpp kDeferredCvars)
+// instead of applying it: the next settings save writes it to larecomp.toml and leaving the menu offers RESTART
+// NOW. It is the only debug row that is kept. check_settings_exposure.py does not see it (a dotted name is not
+// one of its rows, and the SDK's setting is no definition of ours); settings_exposure.toml says so.
+//
 
 #include <string>
 
 #include "menu_items.h"
 
 namespace mcla_menu {
+
+#if defined(LARECOMP_HAS_GPU)
+// The RENDERER row's labels, list and write (pause_menu.cpp, next to the language row, which holds its choice the same way).
+extern const RowDynamics kDebugRendererDynamics;
+#endif
 
 // The rows of the DEBUG hub (one Submenu row per page) and of each page, for MenuDef::extra. The rows
 // that only one renderer has (the Plume renderer's views and logs) are tagged NativeOnly.

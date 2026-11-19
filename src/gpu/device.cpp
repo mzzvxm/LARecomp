@@ -159,6 +159,12 @@ bool Device::Initialize(const Options& options) {
 }
 
 bool Device::Open(const Options& options) {
+  if (options.force_refusal) {
+    // The test of the compatibility renderer offer: the failure path as a PC that cannot run the renderer takes it, nothing created.
+    REXLOG_WARN("[gpu] mcla_gpu_force_refusal: {} is refused on purpose (a test of the compatibility renderer offer)", BackendName());
+    Refuse(": refused on purpose (mcla_gpu_force_refusal, a test)");
+    return false;
+  }
   // After nothing, before the interface: the debug layer has to be enabled
   // before the first D3D12 device of the process exists.
   const bool debug_layer = options.debug_layer && backend::EnableDebugLayer();

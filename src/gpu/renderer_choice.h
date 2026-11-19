@@ -36,4 +36,65 @@ constexpr RendererChoice RendererChoiceOf(std::string_view gpu_driver) {
   return RendererChoice::kXenia;
 }
 
+// ---------------------------------------------------------------------------
+// The way back to the XENIA renderer (the hidden fallback)
+// ---------------------------------------------------------------------------
+// The XENIA renderer stays in the program as a fallback for a PC where the native renderer will not run (owner, 2026-11-19). It is
+// not offered anywhere a player looks: the debug menu's RENDERER row (RENDERING page) and, when the native renderer cannot start, the
+// box that says so (renderer_fallback.h) call it "the compatibility renderer". Both only write gpu.driver into larecomp.toml, which
+// applies at the next start (gpu.driver is startup-only). What the row lists, in this order:
+enum class RendererPick : int {
+  kNative = 0,       // gpu.driver = larecomp
+  kXeniaD3d12 = 1,   // gpu.driver = d3d12
+  kXeniaVulkan = 2,  // gpu.driver = vulkan
+};
+inline constexpr int kRendererPickCount = 3;
+
+// The value gpu.driver gets for a pick (what the row writes).
+constexpr std::string_view DriverOfPick(RendererPick pick) {
+  switch (pick) {
+    case RendererPick::kXeniaD3d12: return "d3d12";
+    case RendererPick::kXeniaVulkan: return "vulkan";
+    case RendererPick::kNative: break;
+  }
+  return kLarecompDriverName;
+}
+
+// The pick for a stored gpu.driver, what the row shows. "any" is the SDK's d3d12 on Windows and vulkan elsewhere; "null" (the SDK's
+// driver that draws nothing) and a word nothing knows count as the Xenia renderer of this platform, the closest row there is; an
+// empty value (no setting yet) and "none" (the batch actions) are the native renderer, as RendererChoiceOf says.
+constexpr RendererPick PickOfDriver(std::string_view gpu_driver, bool windows) {
+  if (RendererChoiceOf(gpu_driver) != RendererChoice::kXenia) {
+    return RendererPick::kNative;
+  }
+  if (gpu_driver == "d3d12") {
+    return RendererPick::kXeniaD3d12;
+  }
+  if (gpu_driver == "vulkan") {
+    return RendererPick::kXeniaVulkan;
+  }
+  return windows ? RendererPick::kXeniaD3d12 : RendererPick::kXeniaVulkan;
+}
+
+// The text of a pick on the row. Only A-Z, 0-9 and spaces: the row's value text is also the name of a Flash element.
+constexpr std::string_view PickLabel(RendererPick pick) {
+  switch (pick) {
+    case RendererPick::kXeniaD3d12: return "XENIA D3D12";
+    case RendererPick::kXeniaVulkan: return "XENIA VULKAN";
+    case RendererPick::kNative: break;
+  }
+  return "NATIVE";
+}
+
+// The pick the row steps to from index i, clamped to the list.
+constexpr RendererPick PickAt(int i) {
+  return i <= 0 ? RendererPick::kNative : (i == 1 ? RendererPick::kXeniaD3d12 : RendererPick::kXeniaVulkan);
+}
+
+// The driver the box's compatibility renderer button writes: the API this platform has Xenia code for first (Direct3D 12 on
+// Windows, which also runs on a card that only has shader model 5.1 and binding tier 1; Vulkan elsewhere).
+constexpr std::string_view FallbackDriver(bool windows) {
+  return DriverOfPick(windows ? RendererPick::kXeniaD3d12 : RendererPick::kXeniaVulkan);
+}
+
 }  // namespace mcla::gpu
