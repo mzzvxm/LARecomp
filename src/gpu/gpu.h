@@ -6,11 +6,11 @@
 // Vulkan from the same code, one backend per build. Design, references and
 // milestones:.
 //
-// The mode is mcla_gpu. It owns the window's presentation, so it excludes the
-// SDK's D3D12Presenter and the legacy D3D12 runtime (mcla_native_gfx), and it
-// needs the no-command-processor mode (mcla_native_gfx_nocp) for a process
-// with no emulated GPU in it. Enabled() checks all of that once and says what
-// is missing.
+// The mode is the SDK's gpu.driver = larecomp (rexglue 0.11; before it, mcla_gpu with
+// mcla_native_gfx_nocp, which no longer choose anything). It owns the window's presentation, so it
+// excludes the SDK's own Xenia GPU (the XENIA renderer: gpu.driver any / d3d12 / vulkan) and the
+// legacy D3D12 runtime (mcla_native_gfx), and it runs with no emulated GPU in the process.
+// Enabled() is the one test of which renderer runs; every caller asks it, none reads the settings.
 //
 // Milestone M3 (this code): on top of M2's presentation (bindless heap, upload
 // memory, host shaders, SDK overlays, idle presents, GPU timestamps, RenderDoc)
@@ -60,8 +60,9 @@ class IUISystem;
 
 namespace mcla::gpu {
 
-// mcla_gpu is set and every prerequisite holds. Decided on the first call and
-// fixed for the process (the cvars it reads all require a restart).
+// gpu.driver names LARecomp's renderer and every prerequisite holds; false under the XENIA renderer.
+// Valid from LarecompApp::OnInit on (before the settings exist it answers false without deciding).
+// Decided on the first call and fixed for the process (gpu.driver is startup-only).
 bool Enabled();
 
 // Creates the device, the swap chain on `window` (IUISystem::GetNativeWindow), the renderer's

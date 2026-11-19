@@ -21,10 +21,10 @@ class AppSettings final : public rex::SettingOwner {
   // The fork SDK defined this (src/ui/rex_app.cpp). In 0.11 the renderer CHOICE is the SDK's `gpu.driver`:
   // "larecomp" (the default: LARecomp's no-command-processor driver, nocp_driver.h, which carries the Plume
   // renderer) or "any" / "d3d12" / "vulkan" (the SDK's Xenia GPU emulation, the old XENIA renderer). This setting
-  // stays the graphics API of the Plume renderer.
+  // stays the graphics API of the Plume renderer; the XENIA renderer's API is the gpu.driver value itself.
   REX_SETTING(std::string, graphics_backend, "auto",
-              "Graphics API: auto, d3d12, vulkan. Read at start-up by the Plume renderer (and, for the XENIA renderer, "
-              "it picks the SDK's d3d12 or vulkan driver)",
+              "Graphics API of the Plume renderer: auto, d3d12, vulkan. Read at start-up. The XENIA renderer's API is "
+              "the SDK's gpu.driver (d3d12 or vulkan), which also picks the renderer (larecomp, or the SDK's Xenia GPU)",
               rex::Allowed("auto", "d3d12", "vulkan"), rex::kRestart, rex::kDebugOnly);
 
   // The three below were REXCVAR_DEFINE lines that cvar_convert.py cannot move (a validator, a default that is a

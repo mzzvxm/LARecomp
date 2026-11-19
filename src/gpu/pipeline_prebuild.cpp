@@ -219,7 +219,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
 
   if (!Enabled()) {
     return Fail(result, PrebuildStatus::kNotNeeded,
-                "The Plume renderer is not in use (mcla_gpu is off), so there are no pipelines to "
+                "The Plume renderer is not in use (gpu.driver names the XENIA renderer), so there are no pipelines to "
                 "prepare.");
   }
   if (!larecomp::settings::mcla_gpu_pipeline_cache.Get()) {

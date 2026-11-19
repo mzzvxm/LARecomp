@@ -15,7 +15,7 @@
 //                                                runs it, so the first start has nothing to build),
 //                                                then the program ends
 //
-// Nothing here applies when the Xenia backend runs (mcla_gpu off): it needs no pack.
+// Nothing here applies when the XENIA renderer runs (gpu.driver = any / d3d12 / vulkan, mcla::gpu::Enabled() false): it needs no pack.
 
 #include <cstdint>
 #include <filesystem>

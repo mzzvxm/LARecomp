@@ -38,7 +38,21 @@ bool CategoryIsPathOrChild(std::string_view category, std::string_view path) {
          category[path.size()] == '/';
 }
 
+// The graphics API this launch runs. With the XENIA renderer that is the SDK driver gpu.driver names ("any" is d3d12 on Windows
+// and vulkan elsewhere, as the SDK resolves it): graphics_backend picks the API of LARecomp's own renderer only, so reading it
+// here would hide the settings of the driver that is really running.
 std::string EffectiveGraphicsBackend() {
+  const std::string driver = larecomp::cvar::GetFlagByName("gpu.driver");
+  if (driver == "d3d12" || driver == "vulkan") {
+    return driver;
+  }
+  if (driver == "any") {
+#if defined(_WIN32)
+    return "d3d12";
+#else
+    return "vulkan";
+#endif
+  }
   const std::string backend = larecomp::cvar::GetFlagByName("graphics_backend");
   if (backend == "d3d12" || backend == "vulkan") {
     return backend;

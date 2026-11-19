@@ -551,8 +551,9 @@ int RunCommandLine(const std::filesystem::path& game_root) {
 Phase::Phase(const std::filesystem::path& game_root, const uint8_t* guest_memory, bool force)
     : game_root_(game_root), guest_memory_(guest_memory), force_(force) {
 #if defined(LARECOMP_HAS_GPU)
-  // The Xenia backend (mcla_gpu off) needs no pack. With the Plume renderer a pack that is
-  // attached is in use and is left alone.
+  // The XENIA renderer (gpu.driver = any / d3d12 / vulkan) needs no pack: nothing here runs, and nothing can fail,
+  // so the start goes on to the mods and the music. With LARecomp's own renderer a pack that is attached is in use
+  // and is left alone. mcla::gpu::Enabled() is the one test of which renderer runs.
   if (mcla::gpu::Enabled() && !mcla::gpu::ShaderPacksAttached()) {
     needed_ = true;
     formats_ = AllFormats();

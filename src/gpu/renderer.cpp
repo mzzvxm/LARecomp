@@ -4,9 +4,11 @@
 #include "renderer.h"
 
 #include <algorithm>
+#include <atomic>
 #include <functional>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "settings/larecomp_settings.h"
@@ -25,6 +27,8 @@
 #include "native_gfx/guest/occlusion.h"
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
+#include "native_gfx/nocp/nocp_driver.h"
+#include "renderer_choice.h"
 #include "native_window.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
@@ -1766,25 +1770,28 @@ Backend RequestedBackend() {
   return backend;
 }
 
-bool ResolveEnabled() {
-  if (!larecomp::settings::mcla_gpu.Get()) {
+static_assert(mcla::native_gfx::nocp::kDriverName == kLarecompDriverName,
+              "renderer_choice.h and the driver of nocp_driver.h name the same driver");
+
+// Which renderer runs is the SDK's gpu.driver (renderer_choice.h has the rule, and why the old mcla_gpu is not asked).
+bool ResolveEnabled(const std::string& driver) {
+  if (RendererChoiceOf(driver) != RendererChoice::kLarecomp) {
+    REXLOG_INFO("[gpu] gpu.driver = {}: the SDK's Xenia GPU renders; the Plume renderer stays off", driver);
     return false;
   }
   const char* missing = nullptr;
-  if (!larecomp::settings::mcla_native_gfx_nocp.Get()) {
-    missing = "mcla_native_gfx_nocp = true (no emulated GPU in the process)";
-  } else if (larecomp::settings::mcla_native_gfx.Get()) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     missing = "mcla_native_gfx = false (the legacy runtime would present into the same window)";
   }
   // No user_name is fine: the SDK's first-launch profile dialog is drawn by the
   // overlay drawer and presented by the idle tick before the guest exists
   // (tested on a scratch config).
   if (missing) {
-    REXLOG_ERROR("[gpu] mcla_gpu is set but needs {}; staying on the existing renderer", missing);
+    REXLOG_ERROR("[gpu] gpu.driver = {} but the Plume renderer needs {}; it stays off", driver, missing);
     return false;
   }
   g_requested_backend = RequestedBackend();
-  REXLOG_INFO("[gpu] mcla_gpu: the Plume renderer ({}) owns presentation",
+  REXLOG_INFO("[gpu] gpu.driver = {}: the Plume renderer ({}) owns presentation", driver,
               BackendName(g_requested_backend));
   return true;
 }
@@ -1792,7 +1799,23 @@ bool ResolveEnabled() {
 }  // namespace
 
 bool Enabled() {
-  static const bool enabled = ResolveEnabled();
+  // -1: not decided. Decided on the first call that finds gpu.driver, and fixed for the process; the answer is read at the rate of
+  // the guest's hooks, so the settled path is one load.
+  static std::atomic<int> state{-1};
+  if (const int known = state.load(std::memory_order_acquire); known >= 0) {
+    return known == 1;
+  }
+  static std::mutex decide;
+  std::lock_guard lock(decide);
+  if (const int known = state.load(std::memory_order_relaxed); known >= 0) {
+    return known == 1;
+  }
+  const std::string driver = larecomp::cvar::GetFlagByName("gpu.driver");
+  if (RendererChoiceOf(driver) == RendererChoice::kNotSet) {
+    return false;  // asked before the settings exist (not a decision: ask again later)
+  }
+  const bool enabled = ResolveEnabled(driver);
+  state.store(enabled ? 1 : 0, std::memory_order_release);
   return enabled;
 }
 
