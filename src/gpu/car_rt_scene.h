@@ -42,6 +42,12 @@
 //     cap by a reserve for the player's own car. mcla_gpu_car_rt_cars (-1 class, 0 none, N) and mcla_gpu_car_rt_cars_radius are the debug switches.
 //     Each kept car's BOX in view space (its instances' transformed mesh boxes) is kept too: CarRtView::boxes, and in the table after the cars' rows,
 //     for the ray traced occlusion's region (car_rt_ao.h), which traces round the player's car and each of them, not round one box that holds them all.
+//   - CARS THE CAMERA DOES NOT SEE (car_rt_memory_rules.h): the cars above come from the frame's DRAWS, and the game culls a car that is
+//     out of the picture (the one beside the player, level with him) so it has none. CarFrame reads the game's own lists of vehicles each frame (the opponent
+//     manager's racers, the ambient manager's live cars) and CarMemory keeps, for each car that WAS drawn, its draws relative to its vehicle's matrix (a kit);
+//     a car in the list that is not drawn this frame, within the radius, is placed again from its kit at its vehicle's matrix of this frame (the meshes stay
+//     resident while it is placed: Build's find marks them seen) and goes to the instance list as another car, ranked by the distance to the player with
+//     the drawn ones within the class's count. A car never drawn has no kit and gets nothing. mcla_gpu_car_rt_cars_memory (debug) is the A/B switch.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -79,6 +85,7 @@
 #include "topology.h"
 #include "car_frame.h"
 #include "car_rt_instances.h"
+#include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
 #include "frame.h"
 #include "host_passes.h"
@@ -287,6 +294,8 @@ class CarRtScene final : public car_frame::Listener {
   bool EnsureSlot(SlotResources& slot, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
                   uint64_t table_bytes);
   void LogTotals(const char* why);
+  // The cars-from-memory lines of the log: the first kit, a vehicle list that cannot be read, and a line every few hundred frames.
+  void LogMemory(const car_frame::Frame& frame);
   void ReleaseAll(const char* why);
   void ReleaseSlot(SlotResources& slot);
 
@@ -324,6 +333,12 @@ class CarRtScene final : public car_frame::Listener {
   uint32_t staged_triangles_ = 0;        // read this frame
   uint32_t staged_triangles_other_ = 0;  // ... of them for other cars (their own budget inside it)
   CarRtInstances instances_;  // the frame's instance list: the player's draws and the other cars' (car_rt_instances.h)
+  // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
+  car_rt_memory::CarMemory memory_;
+  car_rt_memory::CarMemory::Output remembered_;
+  uint64_t memory_log_frame_ = 0;
+  bool memory_kit_logged_ = false;
+  bool memory_lists_warned_ = false;
 
   // The meshes.
   std::unordered_map<uint64_t, Mesh> meshes_;

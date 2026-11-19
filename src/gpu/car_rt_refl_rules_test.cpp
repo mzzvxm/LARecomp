@@ -1062,6 +1062,16 @@ int main() {
     }
     const rt::OtherCarColour corner = rt::FindOtherCarColour(taps, 10.0f, 1.6f);
     Check(Near(corner.share, 0.0625, 1e-5) && !corner.known(), "a corner alone is too little to be the car's colour");
+    // A car placed from memory (a negative radius in its record): the history holds nothing of it, whatever the taps hold; it is known in full, a fixed grey.
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    const rt::OtherCarColour remembered = rt::FindOtherCarColour(taps, 10.0f, -1.6f);
+    Check(remembered.known() && Near(remembered.share, 1.0, 1e-6) && Near(remembered.rgb[0], rt::kRememberedCarColour, 1e-6) &&
+              Near(remembered.rgb[1], rt::kRememberedCarColour, 1e-6) && Near(remembered.rgb[2], rt::kRememberedCarColour, 1e-6),
+          "a car placed from memory (negative radius): the fixed grey, known in full, the taps not looked at");
+    Check(rt::kRememberedCarColour > 0.0f && rt::kRememberedCarColour < 1.0f, "the grey is a colour");
     // The step: kOtherCarSpread radii in texels, from one to the most.
     Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
               Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),

@@ -35,7 +35,8 @@
 // history like any other (every vehicle's pixels are in it), so the part of another car the camera sees has its colour; a part it does not see has no
 // colour of the pixel's own surface to stand in (that is the player's paint): it takes the colour the camera sees of THAT car, the mean of the history's
 // vehicle texels around the car's body centre (OtherCarColour, the car's record in the instances' table), made dark by the same shade. A car whose
-// colour is not known (its centre is off the picture, or hidden) makes a hidden hit a miss: the environment stays there.
+// colour is not known (its centre is off the picture, or hidden) makes a hidden hit a miss: the environment stays there. A car placed from memory (the camera
+// does not see it: its record's radius is negative, car_rt_memory_rules.h) has no colour in the history at all and takes a fixed grey instead.
 //
 // ANOTHER CAR'S CHROME (car_chrome_rt_rules.h): the primary ray's mask (the push's z) also has CAR_RT_MASK_OTHER_CHROME, the bit of the instances of the other cars'
 // draws of the chrome's shader (tailpipes, badges, trim). A texel whose primary hit is one of those is a pixel of that chrome: the pass traces the chrome variant's two
@@ -104,6 +105,7 @@ static const float kOtherCarDepth = 1.2;     // radii: the depth window around i
 static const float kOtherCarMaxStep = 24.0;  // texels between those taps, at most
 static const float kOtherCarEdge = 0.97;     // its centre is moved into this share of the picture
 static const float kOtherCarMinShare = 0.15; // the share of the taps' weights under which the car has no colour
+static const float kRememberedCarColour = 0.45; // the colour a car placed from memory shows (car_rt_refl_rules.h kRememberedCarColour); the shade makes it darker still
 static const float kTwoPi = 6.283185307179586;
 // Another car's chrome (car_chrome_rt_rules.h: the same numbers; car_chrome_rules.h for the march's)
 static const float kChromeReflectReach = 0.25;   // m: the mirror ray (the march's reflection probe)
@@ -239,6 +241,14 @@ float3 SurfaceMean(Texture2D<float4> history, uint2 texel, float t, float nv)
 float OtherCarColour(Texture2D<float4> history, CarRtCar car, out float3 colour)
 {
     colour = float3(0.0, 0.0, 0.0);
+    if (car.radius < 0.0)
+    {
+        // A car placed from memory (car_rt_memory_rules.h: it was drawn earlier, the camera does not see it now): the history holds nothing of it, and nothing of its
+        // colour is known on this side, so it is shown in a fixed mid grey (made darker by the shade like any hidden part). Its shape, its place and its
+        // occlusion are right; its paint is not.
+        colour = float3(kRememberedCarColour, kRememberedCarColour, kRememberedCarColour);
+        return 1.0;
+    }
     if (!(car.radius > 0.0) || !(car.centre.z > kMinDepth))
     {
         return 0.0;

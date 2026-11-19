@@ -263,6 +263,19 @@ void TestPlan() {
   Check(plan == std::vector<uint32_t>({1, 0}) && cut == 1, "a small car farther away still fits where a larger one did not");
   plan = ci::PlanCars(cars, 0, &cut);
   Check(plan.empty() && cut == 3, "no room, no cars");
+  // The count of cars (the class's, with the cars placed from memory among the drawn ones): the nearest N of all, by distance.
+  cars[0].draws = 100;
+  plan = ci::PlanCars(cars, 500, &cut, 2);
+  Check(plan == std::vector<uint32_t>({1, 2}) && cut == 1, "a count of two keeps the nearest two");
+  plan = ci::PlanCars(cars, 500, &cut, 0);
+  Check(plan.size() == 3 && cut == 0, "a count of 0 is no count");
+  plan = ci::PlanCars(cars, 500, &cut, 9);
+  Check(plan.size() == 3 && cut == 0, "a count above the cars there are changes nothing");
+  // A remembered car (an ID above the game's) counts like any other and keeps its place by distance.
+  cars.push_back(MakeCar(ci::CarSelector::kSlots + 1, 2.0, 60));
+  cars.back().remembered = true;
+  plan = ci::PlanCars(cars, 500, &cut, 2);
+  Check(plan == std::vector<uint32_t>({4, 1}) && cut == 2, "a remembered car nearer than the drawn ones takes a place of the count");
 }
 
 void TestAppend() {

@@ -228,6 +228,10 @@ add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_ru
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
 add_executable(larecomp_car_rt_instances_rules_test EXCLUDE_FROM_ALL car_rt_instances_rules_test.cpp)
+# The cars the camera does not see (car_rt_memory_rules.h: the game's vehicle poses, the match of the drawn cars to the game's vehicles, a car's draws kept
+# relative to its vehicle and placed again at its matrix, which kits are placed and when one goes, and the instance list with the placed cars) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_memory_rules_test, then run src/gpu/larecomp_car_rt_memory_rules_test (exit 0 = passed).
+add_executable(larecomp_car_rt_memory_rules_test EXCLUDE_FROM_ALL car_rt_memory_rules_test.cpp)
 # The ray traced occlusion and contact shadows around the player's car (car_rt_ao_rules.h: the setting, the rays and their lengths, the cosine pattern, the
 # car's box in view space and the pixel rectangle of it, the slab test, the flags; given the src/gpu folder it also checks that hlsl/car_rt_ao_cs.hlsl,
 # ao_main_ps.hlsl and ao_contact_ps.hlsl use the header's numbers and flags) likewise:

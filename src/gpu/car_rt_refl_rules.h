@@ -393,6 +393,10 @@ inline constexpr float kOtherCarDepth = 1.2f;       // radii: the depth window a
 inline constexpr float kOtherCarMaxStep = 24.0f;    // texels between the taps, at most (a car near the camera is wide in the picture)
 inline constexpr float kOtherCarEdge = 0.97f;       // the centre's place in the picture is moved in to this share of the half width and height
 inline constexpr float kOtherCarMinShare = 0.15f;   // the share of the nine taps' weights (out of 4) under which the car has no colour
+// A car placed from memory (car_rt_memory_rules.h: drawn earlier, not seen by the camera now) has a NEGATIVE radius in its record: the history holds nothing of it,
+// so its hidden hits take this grey (each channel; the shade of the pass makes it darker like any hidden part) and count as fully known. CHECK: the grey is a
+// guess; the car's own colour is not known on this side (a remembered colour needs a persistent GPU buffer written by this pass while the car is in view).
+inline constexpr float kRememberedCarColour = 0.45f;
 
 // Texels between the taps: kOtherCarSpread radii at the centre's distance, in texels of `texel_m` metres, from one texel to kOtherCarMaxStep.
 inline float OtherCarStep(float radius, float texel_m) {
@@ -404,9 +408,19 @@ struct OtherCarColour {
   float rgb[3] = {};   // their mean colour (0 where none matches)
   bool known() const { return share >= kOtherCarMinShare; }
 };
+// The colour of a car placed from memory (a record with a negative radius): known in full, a fixed grey.
+inline OtherCarColour RememberedOtherCarColour() {
+  OtherCarColour out;
+  out.share = 1.0f;
+  out.rgb[0] = out.rgb[1] = out.rgb[2] = kRememberedCarColour;
+  return out;
+}
 // `taps` as SurfaceMean's (tap k at the offset (k % 3 - 1, k / 3 - 1) times the step; the middle tap is the centre's own place), `centre_z` the
-// centre's view distance and `radius` the car's.
+// centre's view distance and `radius` the car's (a car placed from memory has a negative one: RememberedOtherCarColour, the taps are not looked at).
 inline OtherCarColour FindOtherCarColour(const SurfaceTap taps[9], float centre_z, float radius) {
+  if (radius < 0.0f) {
+    return RememberedOtherCarColour();
+  }
   OtherCarColour out;
   float sum[3] = {};
   float total = 0.0f;

@@ -140,6 +140,17 @@ struct Frame {
   // vehicle, each draw with a mesh key. Empty where nobody asks for them. Valid together with the player's: the distances are from the vehicle.
   std::vector<OtherCar> other_cars;
   std::vector<OtherDraw> other_draws;
+  // For the cars the camera does not see (car_rt_memory_rules.h): read in the frame when the other cars are asked for, from the first vehicle draw on.
+  //   - `vehicles`: the game's own vehicles (the opponent manager's racers, the ambient manager's live cars) within the scan radius of the player's vehicle,
+  //     the player's own left out, each with its world matrix; `vehicles_valid`: the lists were read (an empty list then says nobody is near).
+  //   - `player_vehicle`: the player's vehicle position (the distance the other cars are ranked by).
+  //   - `seen_cars`: every stencil ID of another car the frame drew (kept or not) with the sum of its draws' gWorld translations, so that a car the selection
+  //     did not keep still covers its vehicle.
+  bool vehicles_valid = false;
+  bool player_vehicle_known = false;
+  double player_vehicle[3] = {};
+  std::vector<car_rt_memory::VehicleRead> vehicles;
+  std::vector<car_rt_memory::SeenCar> seen_cars;
 };
 
 // Reads one draw's triangles out of guest memory. Usable ONLY inside Listener::OnPlayerDraw (the guest is held back then).
@@ -367,6 +378,8 @@ class CarFrame {
   uint32_t previous_id_ = 0;           // the player's ID in the frame before (0: none)
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
+  bool vehicles_read_ = false;         // the game's other vehicles were read in this frame (others_on_ only)
+  car_mesh::VehicleScan vehicle_scan_;
   // The other cars (RequestOtherCars): asked for in a frame, collected in the next, under the limits of the request.
   bool others_requested_ = false;
   car_rt_instances::Limits other_limits_next_;

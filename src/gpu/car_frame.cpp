@@ -174,6 +174,12 @@ void CarFrame::StartFrame() {
   frame_.bounds_valid = false;
   frame_.other_cars.clear();
   frame_.other_draws.clear();
+  frame_.vehicles.clear();
+  frame_.seen_cars.clear();
+  frame_.vehicles_valid = false;
+  frame_.player_vehicle_known = false;
+  vehicles_read_ = false;
+  vehicle_scan_ = car_mesh::VehicleScan{};
   // The other cars asked for in the frame before are collected in this one (a request is for the next frame, as the player's draws are).
   others_on_ = collecting_ && others_requested_ && other_limits_next_.On();
   other_limits_ = others_on_ ? other_limits_next_ : car_rt_instances::Limits{};
@@ -263,13 +269,20 @@ std::string CarFrame::OthersText() const {
   for (const car_frame::OtherCar& car : frame_.other_cars) {
     cars += std::format("{}ID {} at {:.1f} m ({} draws)", cars.empty() ? "" : ", ", car.stencil_id, car.distance, car.draws);
   }
+  const std::string vehicles = vehicles_read_
+                                   ? std::format("the game's vehicles near the player: {} ({} of {} opponents read, {} traffic and {} parked cars live in all, {} not a car's pose, "
+                                                 "{} taken for the player's own){}{}",
+                                                 frame_.vehicles.size(), vehicle_scan_.opponents_read, vehicle_scan_.opponents_active, vehicle_scan_.traffic_seen,
+                                                 vehicle_scan_.parked_seen, vehicle_scan_.rejected, vehicle_scan_.own, vehicle_scan_.valid ? "" : " (lists NOT readable)",
+                                                 vehicle_scan_.note.empty() ? std::string() : " [" + vehicle_scan_.note + "]")
+                                   : std::string("the game's vehicles: not read");
   return std::format("other cars ({}): {} kept [{}]; of {} draws of other cars {} listed, {} of cars not kept, {} under {} indices, {} skinned, "
                      "{} with no triangles or no matrix, {} waiting for their fingerprints (budget {} KiB a frame), {} with no key; {} cars given up "
-                     "for a nearer one",
+                     "for a nearer one; {}",
                      car_rt_instances::Describe(other_limits_), frame_.other_cars.size(), cars, counts_.others_seen, counts_.others_listed,
                      counts_.others_far, counts_.others_small, other_limits_.min_indices, counts_.others_skinned,
                      counts_.others_no_triangles + counts_.others_not_finite, counts_.others_deferred, other_limits_.content_bytes / 1024u,
-                     counts_.others_no_key, counts_.others_evicted);
+                     counts_.others_no_key, counts_.others_evicted, vehicles);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +330,16 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   if (!player_read_) {
     player_read_ = true;  // the guest is held back inside this call: the player's vehicle is read here, once a frame
     car_mesh::ReadPlayerVehicle(&player_, log_);
+    if (others_on_ && player_.valid && !vehicles_read_) {
+      // The game's other vehicles near it, from the same call (car_rt_memory_rules.h): what places a car the camera does not see.
+      vehicles_read_ = true;
+      car_mesh::ReadOtherVehicles(player_, car_rt_memory::ScanRadius(other_limits_.radius), &frame_.vehicles, &vehicle_scan_, log_);
+      frame_.vehicles_valid = vehicle_scan_.valid;
+      frame_.player_vehicle_known = true;
+      for (int c = 0; c < 3; ++c) {
+        frame_.player_vehicle[c] = player_.position[c];
+      }
+    }
   }
   if (!player_.valid) {
     ++counts_.no_player;
@@ -350,6 +373,9 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   const bool confirmed = tracker_.confirmed() != 0;
   if (!assumed) {
     if (others_on_) {
+      if (finite) {
+        car_rt_memory::NoteSeen(&frame_.seen_cars, id, translation);  // every other car's draw, kept or not: it covers its vehicle
+      }
       // Another car's draw (the previous frame's ID is the player's until a draw near the vehicle says otherwise, and a draw of another ID that is not
       // that near the vehicle takes no match: IdentityTracker::kStrictMatchMetres): to the selection of the cars of the ray traced scene.
       HandleOtherDraw(d, order, id, verdict.distance, bank);

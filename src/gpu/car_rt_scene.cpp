@@ -562,6 +562,32 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // after the world in one view and the whole car did in another): the check's log counts the hits by class, mcla_gpu_car_rt_masks 1
   // turns the rule off.
   const bool glass_rule = REXCVAR_GET(mcla_gpu_car_rt_masks) == 0 && rr::GlassRuleInformative(after_world, body_draws);
+  // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars drawn this frame are made or refreshed, and each kit whose car is in the
+  // game's list, near the player, and not drawn is placed at its vehicle's matrix. Only meshes with a structure count (the scene gave back the others).
+  remembered_.Clear();
+  if (instances_.RememberedOn()) {
+    car_rt_memory::CarMemory::Input memory_in;
+    memory_in.guest_frame = frame.guest_frame;
+    memory_in.limits = &car_frame_->other_limits();
+    memory_in.player_known = frame.player_vehicle_known;
+    for (int c = 0; c < 3; ++c) {
+      memory_in.player[c] = frame.player_vehicle[c];
+    }
+    memory_in.vehicles_valid = frame.vehicles_valid;
+    memory_in.vehicles = &frame.vehicles;
+    memory_in.seen = &frame.seen_cars;
+    memory_in.cars = &frame.other_cars;
+    memory_in.draws = &frame.other_draws;
+    memory_.Update(
+        memory_in,
+        [&](uint64_t key) {
+          const auto it = meshes_.find(key);
+          return it != meshes_.end() && it->second.structure != nullptr;
+        },
+        &remembered_);
+  } else {
+    memory_.Clear();
+  }
   // === RT-CARS BLOCK (reconcile with feat/rt-vulkan): the instance list (car_rt_instances.h) -> the top level's instances. The player's draws and
   // the other cars' draws whose mesh has a structure come out of `instances_` as items (mesh key, transform in view space, mask) and as the table's
   // rows (one per item, then one per other car); this block only turns an item into a RenderTopLevelASInstance on the mesh's structure.
@@ -578,7 +604,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         std::memcpy(ref->bounds_max, it->second.bounds_max, sizeof(ref->bounds_max));
         ref->has_bounds = it->second.has_bounds;
         return true;
-      });
+      },
+      &remembered_.cars, &remembered_.draws);
   stats_counts_.missing_mesh += cars.stats.missing_mesh;
   stats_counts_.bad_matrix += cars.stats.bad_matrix;
   std::vector<plume::RenderTopLevelASInstance> instances;
@@ -675,10 +702,47 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     recorded = true;
   }
   instances_.NoteFrame(frame_, stats_counts_.meshes_built, car_frame_->other_limits());
+  LogMemory(frame);
   LogTotals("");
   // The check reads the occlusion's linear depth, which its passes make after this call: it is recorded by OnAfterOcclusion.
   check_due_ = REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid;
   return recorded;
+}
+
+// The cars-from-memory lines. First: the first kit made (a car that was drawn near the player and is matched to the game's list). A warning, once: the lists
+// cannot be read while the other cars are on. Then a line every kMemoryLogFrames triggers while anything is going on: the last frame's numbers and the totals.
+void CarRtScene::LogMemory(const car_frame::Frame& frame) {
+  if (!car_frame_->other_limits().On() || !instances_.RememberedOn()) {
+    return;
+  }
+  constexpr uint64_t kMemoryLogFrames = 300;
+  const car_rt_memory::Stats& s = remembered_.stats;
+  const car_rt_memory::Totals& t = memory_.totals();
+  if (frame.player_vehicle_known && !frame.vehicles_valid && !memory_lists_warned_) {
+    memory_lists_warned_ = true;
+    REXLOG_WARN("{} frame {}: the game's lists of vehicles (the opponent manager's racers, the ambient manager's live cars) cannot be read: cars the camera does not see "
+                "are not placed (CHECK the guest addresses in car_mesh_read.h; the car frame log's 'the game's vehicles' text says which list)",
+                kPrefix, frame_);
+  }
+  if (t.recorded != 0 && !memory_kit_logged_) {
+    memory_kit_logged_ = true;
+    REXLOG_INFO("{} frame {}: the first car is remembered (matched to the game's own list of vehicles, its draws kept relative to its matrix): {}", kPrefix, frame_,
+                car_rt_memory::Describe(s));
+  }
+  if (memory_log_frame_ == 0) {
+    memory_log_frame_ = frame_;
+  }
+  if (frame_ < memory_log_frame_ + kMemoryLogFrames) {
+    return;
+  }
+  if (t.recorded != 0 || s.vehicles != 0 || t.no_player != 0) {
+    REXLOG_INFO("{} memory, frames {}..{}: {} triggers; cars placed from memory in {} of them ({} in all, {} draws, {} left out for want of a structure), most at once {}; {} kits made, {} "
+                "refused, {} dropped, most held {}; most vehicles near the player {}, worst match offset {:.2f} m, {} triggers without a readable list; last frame: {}",
+                kPrefix, memory_log_frame_, frame_, t.frames, t.frames_placed, t.cars_placed, t.draws_placed, t.not_resident, t.most_placed, t.recorded, t.record_refused,
+                t.dropped, t.most_kits, t.vehicles_max, t.worst_offset, t.no_player, car_rt_memory::Describe(s));
+  }
+  memory_.ResetTotals();
+  memory_log_frame_ = frame_;
 }
 
 bool CarRtScene::OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao) {
@@ -749,6 +813,8 @@ void CarRtScene::FreeRanges(uint32_t first_vertex, uint32_t vertex_count, uint32
 
 void CarRtScene::ReleaseAll(const char* why) {
   view_ = CarRtView{};
+  memory_.Clear();
+  remembered_.Clear();
   const bool held = !meshes_.empty() || positions_.buffer || !pages_.empty() || slots_[0].tlas_buffer || slots_[1].tlas_buffer;
   if (!held) {
     return;
