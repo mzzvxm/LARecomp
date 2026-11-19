@@ -159,8 +159,9 @@
 // part's thickness, so the wing, the mirrors, the sills and the wheels cast no shadow of their own shape. In a frame that has the map (View().valid)
 // the contact march reads it (slots.w, slots2.x: the map and its 4 x 1 matrix texture; flag bit 28) for every pixel whose view position falls
 // inside it, with a receiver-plane bias and a filter as wide as the sun's penumbra at the blocker's distance (5 to 9 gathers), and the pixel takes the
-// darker of that and the march's. The apply pass still puts contact shadows only on the sun's share where the game's own mask says lit, so a map
-// shadow never darkens what the game already shadows. A vehicle pixel the map covers takes no march steps (the map holds the car's own parts exactly;
+// darker of that and the march's. The apply pass still puts contact shadows only on the sun's share where the game's own mask says lit (a vehicle's
+// pixel counts as lit: the mask is made before the cars are drawn and holds the world behind the car there, contact_trace.h "the game's sun shadow
+// mask is not a car's"), so a map shadow never darkens what the game already shadows on the world. A vehicle pixel the map covers takes no march steps (the map holds the car's own parts exactly;
 // the short vehicle march was a guess from the depth); every other pixel, and every pixel without a map, marches as before, to the bit
 // (mcla_gpu_contact_shadows_car_map_march keeps the vehicle march too, for the comparison). mcla_gpu_contact_shadows_view 5 shows the map's term
 // alone. CHECK: the map and its matrix texture are in the shader-read layout when this pass runs (car_shadow_map.h records them on the list before

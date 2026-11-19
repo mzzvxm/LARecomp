@@ -37,7 +37,11 @@
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
-//                    by 2), 1 where it has none (6 h, 18 h, rain, night);
+//                    by 2), 1 where it has none (6 h, 18 h, rain, night) and 1 on a vehicle's pixel
+//                    (the mask is made before the cars are drawn, so at a car's pixel it is the world
+//                    behind the car's, and a car's own shader does not use it: contact_trace.h
+//                    "the game's sun shadow mask is not a car's"; the R34's trunk lid under the wing
+//                    had the iron fence's bars behind it as a comb);
 //     strength       extra.w: the setting's, times the sun's elevation gate and the wetness gate
 //                    (ao.cpp), so 0 never reaches this shader;
 //     fade           1 up to lens.z, to 0 at lens.w (smoothstep): a ray of a few tenths of a metre
@@ -94,7 +98,8 @@
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
 // of 0.04, bits 26-31 the cap in units of 0.25 (the ceiling and, in the colour chain, the radiance cap); bit 25 is
 // the contact filter flag (above: the apply does the contact filter itself), the same in both compilations.
-// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on.
+// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on; a vehicle's pixel takes 1 for it
+// there too (CarAwareSunVisibility).
 // Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
 // share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
@@ -106,7 +111,7 @@
 // black none, grey part of it), 7 the occlusion's own factor (the visibility with the ambient share, the
 // strength and the distance fade, without the contact shadows; the picture's factor when they are off),
 // 8 the contact factor, 9 the contact visibility, 10 the sun's
-// visibility (the mask, or 1), 11 the sun's share of the light, 12 the pixels the depth pass took for
+// visibility (the game's mask as it is, or 1: a vehicle's pixel shows the world behind it there and takes 1 in the share), 11 the sun's share of the light, 12 the pixels the depth pass took for
 // vehicles (white); written as a grey of 0.3 of the value so
 // that 1.0 reads below the tone map's white.
 
@@ -200,6 +205,24 @@ float PaintVisibility(float ao, float vehicle) {
     return ao;
   }
   return lerp(ao, pow(ao, AoPaintPower()), on_car);
+}
+
+// Whether the depth pass marked the pixel as a vehicle's (the lowest bit of the level-0 depth): in the contact shadows' own full size depth where they
+// have one (flag bit 21), else in the occlusion's level 0 (half size where AoLow, as the debug view 12 reads it).
+bool PixelIsVehicle(int2 pixel) {
+  if (AoContactFull()) {
+    return AoIsVehicle(AoLoadLinear(ContactDepthSlot(), pixel));
+  }
+  const int2 asize = int2(g_push.sizes.zw);
+  return AoIsVehicle(AoLoadLinear(g_push.slots.w, clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1)));
+}
+
+// The sun's visibility the share of the light is worked out with, from the game's sun shadow mask's value `mask_vis` at the pixel (contact_trace.h
+// CarSunVisibility, "the game's sun shadow mask is not a car's"): the game collects the mask before the cars are drawn, so at a car's pixel it is the
+// world behind the car's (the fence's bars on the R34's trunk lid: the comb under the wing), and a car's own shader does not use it. A vehicle's
+// pixel takes 1.
+float CarAwareSunVisibility(float mask_vis, int2 pixel) {
+  return PixelIsVehicle(pixel) ? 1.0f : mask_vis;
 }
 
 #if AO_GI
@@ -299,7 +322,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   // The contact shadows: on the sun's share of the light only.
   float cs = 1.0f;
-  float sun_vis = 1.0f;
+  float sun_vis = 1.0f;      // the game's mask as it is (the debug view 10)
+  float sun_vis_used = 1.0f; // what the share takes: a vehicle's pixel has 1 (CarAwareSunVisibility)
   float sun_share = 0.0f;
   float contact_factor = 1.0f;
   if (contact_on) {
@@ -308,8 +332,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
       sun_vis = saturate(g_push.shape.x *
                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                  uv, 0.0f).x);
+      sun_vis_used = CarAwareSunVisibility(sun_vis, pixel);
     }
-    const float sun_lit = sun * sun_vis;
+    const float sun_lit = sun * sun_vis_used;
     sun_share = (ambient + sun_lit) > 1e-6f ? sun_lit / (ambient + sun_lit) : 0.0f;
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
     const float contact_weight = g_push.extra.w * sun_share * contact_fade;
@@ -343,9 +368,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float gi_sun_vis = 1.0f;
   if (MaskOn()) {
     const float2 gi_uv = (float2(pixel) + 0.5f) / size;
-    gi_sun_vis = saturate(g_push.shape.x *
-                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
-                                                                  gi_uv, 0.0f).x);
+    gi_sun_vis = CarAwareSunVisibility(saturate(g_push.shape.x *
+                                                g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                                                                                        gi_uv, 0.0f).x),
+                                       pixel);
   }
   const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
   const float luma_c = dot(gi_colour.rgb, kLuma);

@@ -72,7 +72,7 @@
 // car_shadow_map.h draws the car again from the sun, depth only, at full detail, into a small square map fitted to the car; with a map in the
 // frame (bit 28) a pixel whose view position falls inside it gets the car's own shadow from it, exact for the wing, the mirrors, the sills and
 // the wheels on the car and on the road near it, and takes the DARKER of that and the march's. The apply pass multiplies by the sun's share
-// where the game's own mask says lit, so the map never darkens what the game's mask shadows already. The lookup is CarMapShadow below: a
+// where the game's own mask says lit (a vehicle's pixel counts as lit: THE GAME'S MASK IS NOT A CAR'S below), so the map never darkens what the game's mask shadows already on the world. The lookup is CarMapShadow below: a
 // receiver-plane bias (the pixel's normal gives the depth's gradient per texel, and every tap compares at its own place on the plane), a
 // normal offset, a blocker search and a filter whose half width is the sun's penumbra at the blocker's distance (blocker distance times
 // kCarMapSunRadius, between kCarMapMinFilterTexels and kCarMapMaxFilterTexels texels), the border fading out. A vehicle pixel whose four
@@ -153,6 +153,12 @@
 // marches and 3 + v one that faces away from the sun, v the stored mask value at the pixel's own centre texel (the host's
 // histogram of v shows whether the game's shade stores 0, which the skip needs). Push: slots.x the mask's bindless slot, the rest as
 // the march's. The host counts the picture on the CPU. A pass of its own, so the march pays nothing for it.
+//
+// THE GAME'S MASK IS NOT A CAR'S (contact_trace.h has the measurements; ao_apply_ps.hlsl CarAwareSunVisibility). The game collects its sun
+// shadow mask before the cars are drawn, so at a car's pixel it holds the world behind the car (the iron fence's bars on the R34's trunk lid: the
+// comb under the wing), and a car's own shader does not use it. The apply takes a vehicle's sun visibility as 1 there, so the skip above, which is
+// exact only where the apply's weight is 0 where the mask is, is not allowed on a vehicle's pixel or on any of its 8 neighbours (VehicleInReach, asked
+// only for a pixel the mask test would skip).
 //
 // The constants below are contact_trace.h's: change them there first.
 
@@ -398,6 +404,25 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
   return saturate(total * 0.2f) * saturate(edge / kCarMapEdgeTexels);
 }
 
+// True when the pixel or one of its 8 neighbours is a vehicle's (contact_trace.h VehicleInReach: the skip is not allowed there). The apply takes
+// a vehicle's sun visibility as 1 whatever the game's mask holds at it (THE GAME'S MASK IS NOT A CAR'S above), so the skip's proof (a weight of 0
+// where the mask is 0) does not hold for it, and the filter of a vehicle's pixel reads the 8 neighbours. Asked only after the mask test said
+// skip, so a pixel in the sun pays nothing. `tc` is the pixel's own level-0 depth (with its bit); `isize` the image's size.
+bool VehicleInReach(uint depth_slot, int2 pixel, int2 isize, float tc) {
+  if (AoIsVehicle(tc)) {
+    return true;
+  }
+  [unroll] for (int dy = -1; dy <= 1; ++dy) {
+    [unroll] for (int dx = -1; dx <= 1; ++dx) {
+      if ((dx != 0 || dy != 0) &&
+          AoIsVehicle(AoLoadLinear(depth_slot, clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1)))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // The skip's block pass: the block image's texel is 1 where any of the 4 x 4 mask texels at it (clamped into the mask) is above
 // the limit, else 0. Four gathers, at the corners between the block's 2 x 2 groups: a texel's coordinate c, in texels, is the
 // corner between texels c - 1 and c, and the clamp to edge repeats the mask's border where a block hangs over it.
@@ -452,7 +477,7 @@ float4 SkipStat(float2 position) {
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
     return float4(kStatFar, 0.0f, 0.0f, 0.0f);
   }
-  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(position)) {
+  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(position) && !VehicleInReach(depth_slot, pixel, int2(size), tc)) {
     return float4(kStatSkipped, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
@@ -480,7 +505,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   // Under the game's own shadow the apply cannot use the result (THE SKIP above): before the normal's four reads.
-  if ((flags & kSkipFlag) != 0u && MaskCannotLight(position.xy)) {
+  // A vehicle's pixel, and a pixel beside one, is marched whatever the mask says (THE GAME'S MASK IS NOT A CAR'S above).
+  if ((flags & kSkipFlag) != 0u && MaskCannotLight(position.xy) && !VehicleInReach(depth_slot, pixel, isize, tc)) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);

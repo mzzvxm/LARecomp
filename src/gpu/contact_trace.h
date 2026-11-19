@@ -608,7 +608,8 @@ inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end
 // of detail in cascades whose texels are 1 to 25 cm. car_shadow_map.h draws the car again, depth only, from the sun, at full detail, into a small
 // square map fitted to the car: the exact shadow of the wing, the mirrors, the sills and the wheels on the car and on the road near it. The march
 // reads it (CarMapShadow below, mirrored in the shader) and the pixel takes the DARKER of the two. The apply pass still puts contact shadows only on
-// the sun's share where the game's own mask says lit, so a map shadow never darkens what the game's mask already shadows twice.
+// the sun's share where the game's own mask says lit (a vehicle's pixel counts as lit, "the game's sun shadow mask is not a car's" above), so a map
+// shadow never darkens what the game's mask already shadows twice on the world.
 //
 // THE LOOKUP (car_shadow_map.h CarShadowMapView). The view position of the pixel goes through the three rows of the map's matrix: u, v (0 to 1, v
 // down) and the depth (0 nearest the sun) as stored, `depth_m` metres over the whole range, `texel_m` the side of a texel in metres, `size` texels a
@@ -1122,6 +1123,53 @@ inline bool MaskSkipOn(bool fast, bool filter_in_apply, bool has_mask, bool debu
   return fast && filter_in_apply && has_mask && !debug_picture && limit >= 0.0f && scale_ok;
 }
 
+// ---------------------------------------------------------------------------
+// the game's sun shadow mask is not a car's (the comb under the R34's wing, owner, 2026-11-19)
+// ---------------------------------------------------------------------------
+//
+// THE CASE. The pause menu's picture of the player's R34 at noon: "a comb of vertical dark lines on the trunk lid under the rear wing". The lid
+// between the wing's posts is the wing's real shadow (the car's sun shadow map: the contact visibility, view 2, is 0 over all of it), a flat
+// factor of 0.19, cut by columns 3 pixels wide about every 25 pixels where the factor is 1: bright lid in a black rectangle.
+// MEASURED (ports\run\cwing1-wing-stripes-2, 2880 x 1620, lid rows 880 to 900): the columns of the bright lid are the columns where the game's
+// sun shadow mask (contact view 3) is 0, run for run (x 2228..2231, 2252..2254, 2280..2282, 2306..2308, 2332..2334, 2405..2407, 2430..2432,
+// 2454..2457: the same place and width in both), and the mask's columns are the iron fence BEHIND the car: the same bars, at the same x, run
+// unbroken from the rows where the fence is seen through the rear window (850, 860) down over the lid (890). The car is not in the mask: the game
+// collects it at phase 0x1000 and resolves it at 0x4000, "before vehicles and the world" (AO-DESIGN.md), so a car's pixel holds the mask of what
+// is behind the car, and the car's own shadow on the road is in it as a black blob. The pitch is the fence's, 25.5 pixels (6.4 cm on the lid at
+// about 2.5 mm a pixel), not the car's map's: its texel is 3.9 mm, 1.5 pixels, and a bias or acne error would run at that scale.
+//
+// THE APPLY. Its weight is strength * sun_share * fade, sun_share = Ls N.L v / (La + Ls N.L v), v the mask at the pixel: where the mask is 0
+// the pixel is under the game's own shadow and the contact term leaves it alone (nothing is shadowed twice). On a car that is the fence's shadow.
+// The map, the vehicle march and the vehicle bit are not at fault: with the mask lit everywhere the lid is one flat darkness (the check), the bit
+// is set over the whole lid (view 8), the map was off live in the map-off picture (the log's "car shadow map off (set)") and that picture shows
+// the same bright columns through the old march's stipple.
+//
+// THE GAME DOES NOT USE THE MASK ON A CAR EITHER. In the same pause picture, the game's own colours (contact shadows off) have a mean horizontal
+// step of 1.27 at the mask's edges against 1.39 elsewhere on the pixels the depth pass takes for vehicles (no relation), and 17.29 against 1.58 on
+// the world's pixels beside the car (the world's lit shaders multiply their sun by the mask). A car's shader takes the sun's visibility from its own
+// shadow lookup (FastShadowCollector). So the sun's share of a car's colour that the apply works out from the mask is the share of the world
+// behind the car. A car's pixel takes a visibility of 1 (the game's colour is not masked: the sun's share of it is Ls N.L / (La + Ls N.L)); what
+// shadows the car's own parts is the map and the vehicle march. What the cascades do to a car (a building's shade on it) is in the car's colour
+// and is not known here: a car in a building's shade gets the term of a lit one (CHECK: how that looks; the term is a small shadow of its own parts).
+inline float CarSunVisibility(bool vehicle, float mask_visibility) { return vehicle ? 1.0f : mask_visibility; }
+
+// THE SKIP FOLLOWS. The skip returns 1 where the apply's weight is at most kSkipWeight, which is proven from the mask alone (above). A vehicle's
+// pixel has a weight that is not (its visibility is 1) and the apply's filter reads the 8 neighbours' values, so a pixel is not skipped when it or
+// any of its 8 neighbours is a vehicle's: every pixel that runs the filter then still has all of its neighbours marched, and the proof stands.
+// `depth_at(x, y)` is the level-0 depth with its vehicle bit (the image the apply reads the bit from), the coordinates clamped like the shader's.
+// The shader asks only for a pixel the mask test would skip (hlsl/ao_contact_ps.hlsl VehicleInReach).
+template <class DepthAt>
+bool VehicleInReach(DepthAt&& depth_at, int width, int height, int x, int y) {
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (DepthIsVehicle(depth_at(std::clamp(x + dx, 0, width - 1), std::clamp(y + dy, 0, height - 1)))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // The mask texels (first and last, one axis) that the pixels `pixel - 1` to `pixel + 1` can sample: the bilinear taps of
 // a sample at the pixel centre (p + 0.5) / image_size are the texels floor(t) and floor(t) + 1, t = (p + 0.5) mask / image - 0.5.
 // The reference range: the skip tests at least these texels.
@@ -1245,11 +1293,13 @@ inline bool MaskCannotLightBlocks(const SkipBlockImage& blocks, int mask_w, int 
 }
 
 // What one invocation of the shader writes with the skip: the sky/distance return first, then the skip, then the march proper.
-// can_skip(x, y) is the test over the frame's mask. steps_used is 0 for a skipped pixel, as for any return before the loop.
+// can_skip(x, y) is the test over the frame's mask; a pixel with a vehicle's pixel in its 3 x 3 is not skipped (VehicleInReach; the shader
+// asks only for a pixel the mask test would skip). steps_used is 0 for a skipped pixel, as for any return before the loop.
 template <class DepthAt, class CanSkip>
 float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int x, int y) {
   const float tc = depth_at(x, y);
-  if (tc >= t.sky * 0.5f || tc >= t.max_distance || can_skip(x, y)) {
+  if (tc >= t.sky * 0.5f || tc >= t.max_distance ||
+      (can_skip(x, y) && !VehicleInReach(depth_at, t.camera.width, t.camera.height, x, y))) {
     t.steps_used = 0;
     return 1.0f;
   }
