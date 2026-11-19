@@ -1175,6 +1175,27 @@ class GPUSettings final : public rex::SettingOwner {
     "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
     "that day. Hot reload.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_ui_minimap_scale, true, "Draw the HUD's and the menus' small views (the minimap, the phone screen, and the page of the pause menu, the garage and the GPS map, which the game always draws at "
+    "fixed sizes and the screen stretches) at the render scale, as the images of the screen are, so that the minimap and the menus' text come out as sharp as the rest of the "
+    "picture at 1080p and 4K. At 720p (render scale 1x) it is the game's own either way. Off: the game's own sizes. Costs video memory while a menu is up (about 50 MiB at "
+    "4K for the pause menu and the map). Live.");
+
+  REX_SETTING(bool, mcla_ui_sharp, true, "Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p "
+    "picture: 1080p and 4K windows). The game's buttons, icons, panels and text are bitmaps made for the console's "
+    "1280x720 picture, drawn with a bilinear filter, so at 4K every texel is three pixels of soft edge. This reads them "
+    "with a sharper filter (Catmull-Rom on the colour) and steepens the alpha across a bitmap's edges so that glyphs and "
+    "icon outlines stay about one pixel soft, like a distance-field font. Off is the game's own picture, bit for bit; at "
+    "720p (render scale 1x) it is the game's either way. Needs the shader pack's variant file (ui_sharp). Live; the "
+    "first time it shows, the graphics card builds its shaders (a short stutter).");
+
+  REX_SETTING(bool, mcla_ui_sharp_census, false, "Debug: every 600 frames, log the textures the HUD and menus read (the draws after the scene is composed, the "
+    "menus' render-to-texture views, and the frames that have no scene: loading, title, movies): the pixel shader, the "
+    "texture's format, size, name and dictionary, the sampler's filters, the render scale of the target and how many "
+    "reads were magnified. What the UI sharpening (mcla_ui_sharp) is tuned from. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_ui_sharp_strength, 1.0, "Debug: how hard mcla_ui_sharp works. 1 is full Catmull-Rom on the colour and an alpha edge about one pixel wide; "
+    "0.5 is half of it; 2 doubles the edge gain (a harder edge, more aliasing). Live.", rex::kDebugOnly, rex::Range{0.0, 2.0});
+
   REX_SETTING(bool, precache_pipelines, false, "Prepares the graphics pipelines the game compiles while it starts, and closes, without "
     "starting the game: no window, no graphics output. The launcher runs this at the end of its "
     "setup (after the shader packs are built), so that the first start has no shaders to compile "
@@ -1402,6 +1423,10 @@ inline auto& mcla_gpu_watch_base = g_gpu.mcla_gpu_watch_base;
 inline auto& mcla_gpu_watch_capture = g_gpu.mcla_gpu_watch_capture;
 inline auto& mcla_gpu_watch_size = g_gpu.mcla_gpu_watch_size;
 inline auto& mcla_gpu_work_17oct = g_gpu.mcla_gpu_work_17oct;
+inline auto& mcla_ui_minimap_scale = g_gpu.mcla_ui_minimap_scale;
+inline auto& mcla_ui_sharp = g_gpu.mcla_ui_sharp;
+inline auto& mcla_ui_sharp_census = g_gpu.mcla_ui_sharp_census;
+inline auto& mcla_ui_sharp_strength = g_gpu.mcla_ui_sharp_strength;
 inline auto& precache_pipelines = g_gpu.precache_pipelines;
 inline auto& precache_pipelines_backend = g_gpu.precache_pipelines_backend;
 inline auto& precache_pipelines_force = g_gpu.precache_pipelines_force;

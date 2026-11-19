@@ -119,6 +119,12 @@ class ShaderStore {
   // The auto-exposure's sample pass (PSSampleAverageLuminance) with its nine taps spread over the screen area
   // they cover at 1x, at a render scale above 1 (shaderpack/variants/luminance_scale.h).
   static constexpr uint32_t kLuminanceVariant = larecomp::shaderpack::kVariantLuminanceScale;
+  // The Flash player's textured pixel shaders with every 2D fetch reconstructed sharper where the console's bitmaps are
+  // magnified (ui_sharp.h, shaderpack/variants/ui_sharp.h): chosen by the Scene for the UI phase's draws, not by pipelines.cpp;
+  // 16 bytes of constants follow the shared block.
+  static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::kVariantUiSharp;
+  // ... and the same text compiled with the alpha test (the main pack's spec variant 1), for the UI draws whose key is that one.
+  static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::kVariantUiSharpAlphaTest;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

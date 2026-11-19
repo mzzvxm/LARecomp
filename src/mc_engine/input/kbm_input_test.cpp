@@ -256,6 +256,41 @@ void TestMouseKeyCaps() {
     }
 }
 
+// The menu's buttons as keys (the mouse in the menus, KBM-DESIGN.md P6): ids and scancodes that nothing else uses, found both ways, and a press that reaches exactly one poll.
+void TestMenuKeys() {
+    CHECK(kMenuKeyCount == 6);
+    std::set<int> ids;
+    std::set<int> scancodes;
+    for (int i = 0; i < kMenuKeyCount; ++i) {
+        const MenuKeyDef& k = kMenuKeys[i];
+        CHECK(int(k.key) == i);  // the table is in enum order: MenuKeyId indexes it
+        CHECK(MenuKeyId(k.key) == k.id);
+        CHECK(FindMenuKeyById(k.id) == &k);
+        CHECK(ids.insert(k.id).second && scancodes.insert(k.scancode).second);
+        // Windows VK numbers nothing uses (0x97..0x9F); the SDK's VirtualKey has 0x88..0x8F as the gamepad navigation keys and 0xA0 as left shift.
+        CHECK(k.id >= 0x97 && k.id <= 0x9F);
+        // Right after the mouse keys' scancodes, inside the codes the probe found free (P0d: 67-9C), clear of the paddles (0x7B-0x7E), the camera (0x7F) and the mouse (0x80-0x86).
+        CHECK(k.scancode >= 0x87 && k.scancode <= 0x9C);
+        // not a mouse key
+        CHECK(FindMouseKeyById(k.id) == nullptr && FindMouseKeyByScancode(k.scancode) == nullptr);
+        CHECK(FindMouseKeyByName(k.name) == nullptr);
+    }
+    CHECK(FindMenuKeyById(0x01) == nullptr && FindMenuKeyById(0x0D) == nullptr && FindMenuKeyById(0x8E) == nullptr && FindMenuKeyById(0x96) == nullptr);
+    // A press is one poll: the latch's pulse, then nothing; two presses in the same poll are one.
+    KeyLatch latch;
+    latch.Pulse(MenuKeyId(MenuKey::Accept));
+    latch.Pulse(MenuKeyId(MenuKey::Accept));
+    KeySnapshot a = latch.Poll();
+    CHECK(a.Test(MenuKeyId(MenuKey::Accept)) && !a.Test(MenuKeyId(MenuKey::Back)));
+    KeySnapshot b = latch.Poll();
+    CHECK(!b.Test(MenuKeyId(MenuKey::Accept)));
+    // Different buttons in one poll are all there.
+    latch.Pulse(MenuKeyId(MenuKey::Down));
+    latch.Pulse(MenuKeyId(MenuKey::Right));
+    KeySnapshot c = latch.Poll();
+    CHECK(c.Test(MenuKeyId(MenuKey::Down)) && c.Test(MenuKeyId(MenuKey::Right)) && !c.Test(MenuKeyId(MenuKey::Up)));
+}
+
 }  // namespace
 
 int main() {
@@ -270,6 +305,7 @@ int main() {
     TestMouseKeyTable();
     TestMouseKeyNames();
     TestMouseKeyCaps();
+    TestMenuKeys();
     std::printf("kbm_input_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

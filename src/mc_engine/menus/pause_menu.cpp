@@ -187,6 +187,15 @@ constexpr uint32_t kStr_update          = 0x8201D7C4;
 // The mcListViewFixed most recently rendered (Hook_ListViewPopulate); the
 // garage carbon diagnostics read its selection.
 std::atomic<uint32_t> g_last_list{0};
+// The last list the renderer will actually draw: the active flag (+16 & 0x20, sub_8221CDD0, the first thing sub_82631FD0 asks) is set. The pause screen prepares the lists of several tabs
+// and offers the inactive ones to the render hook too; the mouse must point at the one on screen. Read by PauseMenuLastList.
+std::atomic<uint32_t> g_last_active_list{0};
+// The UIMenu FlashNavigator most recently filled into a movie's "menu" object (Hook_PopulateRedirect: the garage, the pop-ups), and which of the two lists / menus was
+// the latest (a counter: the mouse in the menus uses the later one). Read by PauseMenuLastList / PauseMenuLastUiMenu.
+std::atomic<uint32_t> g_last_ui_menu{0};
+std::atomic<uint32_t> g_populate_seq{0};
+std::atomic<uint32_t> g_last_list_seq{0};
+std::atomic<uint32_t> g_last_ui_menu_seq{0};
 
 // ── Guest memory helpers ────────────────────────────────────────────────
 
@@ -1522,7 +1531,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         ANTI-LAG 2 where the GPU has one (kVideoItems, LowLatencyMenuRows)
 //   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
-//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR (kImageQualityItems)
+//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
 //                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS (kLightItems)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
@@ -1622,6 +1631,9 @@ const ItemDef kVideoItems[] = {
 // 36 together, under the 41 characters a page can take ("Page width" above ItemRowLabel).
 const ItemDef kRecompItems[] = {
     Bool("PM_RxHidePointer", "hide_mouse_pointer",       "HIDE MOUSE POINTER: "),
+    // Live (input/menu_mouse.cpp reads it every tick). The pointer hovers, clicks, steps the settings' values and scrolls with the wheel in the game's menus; off, the
+    // mouse does nothing there. Width: "MOUSE IN MENUS" is 14, under HIDE MOUSE POINTER's 18.
+    Bool("PM_RxMenuMouse",   "menu_mouse",               "MOUSE IN MENUS: "),
     // The legal screens and logos it paces have played before this menu can be opened, so a change
     // is seen at the next start. The word is NEXT START and not RESTART on purpose: nothing needs
     // the game started again, so the "restart now?" prompt (RowSaysRestart) must not offer it.
@@ -1650,7 +1662,7 @@ const ItemDef kRecompItems[] = {
 // with QUIT now, one more than before): the cursor reaches every button including QUIT, nothing is cut
 // off the bottom of the tab's panel, and A opens a page of 10 rows in the order above with the line
 // "Vibration, triggers, sticks and buttons." under it (not cut at the right edge). RECOMP SETTINGS has
-// two rows (HIDE MOUSE POINTER, ORIGINAL INTRO SPEED); INTERFACE > UI has the three colour rows and
+// three rows (HIDE MOUSE POINTER, MOUSE IN MENUS, ORIGINAL INTRO SPEED); INTERFACE > UI has the three colour rows and
 // SPEED UNITS, the colour swatches still lined up with their rows.
 // Every row keeps the cvar it had (a value set on RECOMP SETTINGS before this change reads the same
 // here, and the page's rows write larecomp.toml as before), and with no pad connected the page lists
@@ -1996,10 +2008,13 @@ const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
 const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
 // IMAGE QUALITY (GRAPHICS > IMAGE QUALITY): how the picture is smoothed, filtered and focused, in this order: MSAA, POST AA, ANISOTROPIC,
-// DEPTH OF FIELD, MOTION BLUR. One ANISOTROPIC row per renderer (the same name and place), MSAA on both (the row's own mechanism per renderer,
-// kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR are the game's own switches (disable_dof, disable_motion_blur:
-// picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are on both renderers. 5 rows.
-// Width: the longest label is "POST AA (FSR 3.1 ON)" (20) and the longest value "SMAA" (4): 24 of the 41 a page can take.
+// DEPTH OF FIELD, MOTION BLUR, and then the two rows of the UI's own sharpness: SHARP UI and SHARP MINIMAP. One ANISOTROPIC row per renderer (the same
+// name and place), MSAA on both (the row's own mechanism per renderer, kMsaaRowDynamics); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR
+// are the game's own switches (disable_dof, disable_motion_blur: picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are
+// on both renderers. SHARP UI (mcla_ui_sharp) reads the HUD's and the menus' bitmaps with a sharper filter, SHARP MINIMAP (mcla_ui_minimap_scale) draws
+// the minimap, the phone's screen and the menus' page at the render scale instead of the console's size (gpu/ui_sharp.h, side_view_ui_map.cpp). Both are
+// NATIVE only, ON by default and live, and change nothing at 720p (a render scale below 1.25x). 7 rows.
+// Width: the longest label is "POST AA (FSR 3.1 ON)" (20), then "SHARP MINIMAP" (13), and the longest value "SMAA" (4): 24 of the 41 a page can take.
 const ItemDef kImageQualityItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     WithDynamics(Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
@@ -2016,6 +2031,13 @@ const ItemDef kImageQualityItems[] = {
                    kXeniaAnisoVals, kXeniaAnisoNames, 7)),
     Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
     Bool("PM_RxBlur",        "disable_motion_blur",       "MOTION BLUR: ",    true),
+#if defined(LARECOMP_HAS_GPU)
+    // The HUD's and the menus' art, sharper where the render scale blows the console's 720p bitmaps up (1080p and 4K windows): the fetch of the
+    // bitmaps (SHARP UI) and the views the game draws at fixed sizes (SHARP MINIMAP: the minimap, the phone's screen, the menus' page). ON by
+    // default; the same picture as the game's at 720p. Live: the targets are remade at the next frame boundary.
+    NativeOnly(Bool("PM_RxSharpUi",      "mcla_ui_sharp",             "SHARP UI: ")),
+    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale",     "SHARP MINIMAP: ")),
+#endif
 };
 
 // LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
@@ -2567,7 +2589,7 @@ const MenuDef kMenus[] = {
      nullptr, 0,
      UpscalingPageRows, false, UpscalingMenuRelayout},
 #endif
-    {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering and blur.",
+    {"PM_RxTabImageQuality", "IMAGE QUALITY", "Anti-aliasing, filtering, sharp UI.",
      "RxImageQualityMenu",
      kImageQualityItems, int(sizeof(kImageQualityItems) / sizeof(kImageQualityItems[0]))},
     {"PM_RxTabLighting", "LIGHTING AND SHADOWS", "Shadows, occlusion and bounce light.",
@@ -2950,8 +2972,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // (NOT WORKING)" (28; "RESOLUTION (7680X4320)" is 22, 23 at five digits across, display_menu.h) and its
 // widest value 10 (the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and
 // "AUTO (OFF)"): 38 together.
-// IMAGE QUALITY (kImageQualityItems, 5 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
-// FIELD" 14, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
+// IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
+// FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
 // LIGHTING AND SHADOWS (kLightItems, 11 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
 // "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
@@ -4150,6 +4172,16 @@ bool Hook_ListViewPopulate(PPCRegister& r3) {
     if (!list) return false;
 
     g_last_list.store(list, std::memory_order_relaxed);
+    // The renderer's own question (vfunc 60 = sub_8221CDD0: the flag at +16 & 0x20), asked the way it asks; the flag itself when the slot is not there.
+    bool active = (ReadGuestBE32(list + 16) & 0x20) != 0;
+    if (const uint32_t vt = ReadGuestBE32(list)) {
+        const uint32_t is_active = ReadGuestBE32(vt + 60);
+        if (is_active >= 0x82000000u && is_active < 0x82FFFFF0u) active = (CallGuestFn1(is_active, list) & 0xFF) != 0;
+    }
+    if (active) {
+        g_last_active_list.store(list, std::memory_order_relaxed);
+        g_last_list_seq.store(g_populate_seq.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
 
     // Options > Controller gets an extra row appended into its own list. No-op
     // for every other list — the screen is recognised by its vtable.
@@ -5436,12 +5468,28 @@ bool Hook_MenuKeyDispatch(PPCRegister& r31, PPCRegister& r28,
 
 // sub_82220308 (FlashNavigator populate, 0x82220314). It redirected the
 // SettingsMenu populate to the UIMenu state a submenu was pushed as; a form
-// renders its own list, so there is nothing to redirect. Kept, inert, for the
-// toml entry that names it.
+// renders its own list, so there is nothing to redirect. It only notes which
+// UIMenu is being filled into a movie's "menu" object (r3, the menu: the
+// function reads its children with sub_8268DCB0 and calls its vfunc 332): the
+// mouse in the menus (input/menu_mouse.cpp) reads the highlighted row of the
+// garage's and the pop-ups' menus from it. Always false: the call goes on.
 bool Hook_PopulateRedirect(PPCRegister& r3) {
-    (void)r3;
+    if (r3.u32) {
+        g_last_ui_menu.store(r3.u32, std::memory_order_relaxed);
+        g_last_ui_menu_seq.store(g_populate_seq.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    }
     return false;
 }
+
+uint32_t PauseMenuLastList() { return g_last_active_list.load(std::memory_order_relaxed); }
+uint32_t PauseMenuLastListSeq() { return g_last_list_seq.load(std::memory_order_relaxed); }
+uint32_t PauseMenuLastUiMenu() { return g_last_ui_menu.load(std::memory_order_relaxed); }
+uint32_t PauseMenuLastUiMenuSeq() { return g_last_ui_menu_seq.load(std::memory_order_relaxed); }
+uint32_t PauseMenuTopOurList() {
+    const uint32_t form = larecomp::ui::TopForm();
+    return MenuOfForm(form) >= 0 ? larecomp::ui::FormList(form) : 0;
+}
+bool PauseMenuIsOurList(uint32_t list) { return list && MenuOfList(list) >= 0; }
 
 // Null-guard for sub_82661210, which loads the list table-source pointer from
 // [list+0xC0] and dereferences it at +0xC with no null check. A list whose rows
@@ -5648,6 +5696,12 @@ bool Hook_LanAccept(PPCRegister& r30, PPCRegister& r28) { return false; }
 void CarbonOnStateActivate(const char* name, uint32_t state) {}
 bool Hook_FlashCommandLog(PPCRegister& r5) { return false; }
 bool Hook_PopulateRedirect(PPCRegister& r3) { return false; }
+uint32_t PauseMenuLastList() { return 0; }
+uint32_t PauseMenuLastListSeq() { return 0; }
+uint32_t PauseMenuLastUiMenu() { return 0; }
+uint32_t PauseMenuLastUiMenuSeq() { return 0; }
+uint32_t PauseMenuTopOurList() { return 0; }
+bool PauseMenuIsOurList(uint32_t) { return false; }
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30) { return false; }
 bool MCLA_PauseListVtableGuard(PPCRegister&) { return false; }
 bool Hook_RexGlueCancel(PPCRegister& r31) { return false; }

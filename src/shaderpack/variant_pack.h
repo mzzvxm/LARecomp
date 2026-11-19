@@ -35,12 +35,12 @@
 // files do. When none could be built the pack has no entries. The step fails (no pack, no stamp lines) only
 // for a problem of the build itself (no compiler worker, a file that cannot be written, a cancel). A variant
 // is compiled for spec variant 0 (no alpha test) with the pack's usual
-// dxc arguments; a draw that needs the alpha test keeps the main pack's shader. Shaders of one variant whose
+// dxc arguments; a draw that needs the alpha test keeps the main pack's shader, unless the variant has an alpha test twin (VariantDef::alpha_test_id: the UI sharpening). Shaders of one variant whose
 // edited text comes out the same share one compile (the shadow collector's 147 shaders are four texts), and
 // their blobs one copy in the file.
 //
 // The variants of this build: variants/hdr_scene.h (when the HDR curve is embedded, CMakeLists.txt),
-// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h, variants/car_selfrefl.h, variants/car_chrome.h and variants/luminance_scale.h. A package that adds one writes
+// variants/bloom_gauss.h, variants/env_map.h, variants/shadow_filter.h, variants/car_selfrefl.h, variants/car_chrome.h, variants/luminance_scale.h and variants/ui_sharp.h. A package that adds one writes
 // variants/<name>.{h,cpp} with a function that returns its VariantDef and adds it to BuiltInVariants() in
 // variant_pack.cpp.
 //
@@ -95,6 +95,11 @@ struct VariantDef {
   std::vector<VariantShader> pixel_shaders;
   std::vector<std::string_view> pixel_name_suffixes;  // every pixel shader named ...<suffix>, found by name alone
   std::vector<VariantShader> vertex_shaders;  // at most kVariantVertexShaders
+  // 0: none. Else the id of this variant's alpha test twin: every shader of the variant whose own spec mask is not 0 (it has the main pack's
+  // spec variant 1) gets a second entry under this id, the same edited text compiled with that mask (the alpha test and alpha to coverage,
+  // with SV_Coverage), for the draws whose key is spec variant 1. The two ids are one variant to the checks (the overlap, the summary
+  // line's shader count) and to the stamp (one version).
+  uint32_t alpha_test_id = 0;
   // The shader (one of pixel_shaders: its name tells two of them apart) and its translated HLSL in, the
   // variant's HLSL out. Called once per shader, on the thread that builds the step.
   std::function<VariantTransformResult(const VariantShader& shader, std::string_view hlsl)> transform;

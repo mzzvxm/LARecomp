@@ -24,6 +24,7 @@ const SideViewRule& Rule(SideView view) {
   switch (view) {
     case SideView::kShadow: return kShadowRule;
     case SideView::kEnv: return kEnvRule;
+    case SideView::kUiMap: return kUiMapRule;
     default: return kReflectionRule;
   }
 }
@@ -37,7 +38,7 @@ std::string Lower(std::string text) {
 }  // namespace
 
 SideView Classify(const EdramKey& key, uint32_t size_bits) {
-  for (const SideView view : {SideView::kReflection, SideView::kShadow, SideView::kEnv}) {
+  for (const SideView view : {SideView::kReflection, SideView::kShadow, SideView::kEnv, SideView::kUiMap}) {
     const SideViewRule& rule = Rule(view);
     if (rule.matches && rule.matches(key, size_bits)) {
       return view;
@@ -96,10 +97,14 @@ std::string AutoLabel(SideView view) {
   return gpu_class::AutoLabel(Rule(view).effect);
 }
 
-SideScales Wanted() {
+SideScales Wanted(Scale output) {
   SideScales out;
-  for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+  for (const SideView view : kAllSideViews) {
     const SideViewRule& rule = Rule(view);
+    if (rule.follows_output) {
+      out[view] = rule.enabled && rule.enabled() ? OutputScale(output) : Scale{};
+      continue;
+    }
     Scale scale = ScaleOfLevel(LevelOf(view));
     if (rule.test_scale) {
       const Scale test = rule.test_scale();
@@ -108,6 +113,17 @@ SideScales Wanted() {
       }
     }
     out[view] = scale;
+  }
+  return out;
+}
+
+SideScales FollowOutput(const SideScales& side, Scale output) {
+  SideScales out = side;
+  for (const SideView view : kAllSideViews) {
+    const SideViewRule& rule = Rule(view);
+    if (rule.follows_output) {
+      out[view] = rule.enabled && rule.enabled() ? OutputScale(output) : Scale{};
+    }
   }
   return out;
 }

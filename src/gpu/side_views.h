@@ -11,7 +11,11 @@
 //   - the environment map: a 512x256 dual paraboloid view, with its mip levels made by three small
 //     passes of the game, which the car paint reads;
 //   - the road reflection: a 256x256 image of the whole screen drawn with mirrored geometry, which
-//     every reflective city material reads with its screen position (roads, windows, water).
+//     every reflective city material reads with its screen position (roads, windows, water);
+//
+// and the HUD's and the menus' own render-to-texture views (the minimap's 220x220 picture and the 128x128 and 256x256 ones beside it, and the 960x640 page the pause
+// menu, the garage and the GPS map are drawn into, side_view_ui_map.cpp), the class that follows the render scale instead of a setting's level
+// (SideViewRule::follows_output), from 1.25x of the console's picture.
 //
 // None of them is "an image of the screen" (their sizes are not the screen's halvings), so at the
 // render scale they stay at the guest's size, and a product made at another scale than its reader
@@ -76,12 +80,15 @@ enum class SideView : uint8_t {
   kShadow,      // the sun's cascades                  side_view_shadow.cpp
   kEnv,         // the environment map (mips included) side_view_env.cpp
   kReflection,  // the road reflection                 side_view_reflection.cpp
+  kUiMap,       // the HUD's small views: minimap...   side_view_ui_map.cpp (follows the render scale)
   kCount,
 };
 inline constexpr size_t kSideViewCount = size_t(SideView::kCount) - 1;
 inline constexpr size_t SideIndex(SideView view) {
   return size_t(view) - 1;
 }
+// Every class, in the order the loops of the registry and of EdramTargets visit them.
+inline constexpr std::array<SideView, kSideViewCount> kAllSideViews = {SideView::kShadow, SideView::kEnv, SideView::kReflection, SideView::kUiMap};
 
 // The scale each class is made at. 1x each (the guest's size) until a setting says otherwise.
 struct SideScales {
@@ -123,11 +130,16 @@ struct SideViewRule {
   // The host samples of a member made at `scale` (never none), the guest drawing it with
   // `guest_samples`. A class that is at the guest's size must say the guest's.
   uint32_t (*host_samples)(Scale scale, uint32_t guest_samples) = nullptr;
+  // A class that has no level of its own: it is at the SCREEN's scale (the render scale the images of the screen are made at, never below the guest's
+  // size) while `enabled` says so, and at the guest's size otherwise. `setting` and `test_scale` are not asked for it, and it has no `auto` row.
+  bool follows_output = false;
+  bool (*enabled)() = nullptr;
 };
 
 extern const SideViewRule kShadowRule;
 extern const SideViewRule kEnvRule;
 extern const SideViewRule kReflectionRule;
+extern const SideViewRule kUiMapRule;
 
 namespace side_views {
 
@@ -152,8 +164,20 @@ const SideViewRule& RuleOf(SideView view);
 const char* Name(SideView view);
 
 // The scale every class is asked to be at now (the settings, `auto` resolved, a test scale over
-// them). Reads cvars: the render thread, once a frame.
-SideScales Wanted();
+// them; a class that follows the output at `output`, the screen's scale, when it is enabled). Reads cvars: the
+// render thread, once a frame.
+SideScales Wanted(Scale output);
+// `side` with the classes that follow the output moved to `output` (or back to the guest's size when they are not enabled): what a change of the render
+// scale makes of the scales the classes stand at, so that it is one step with the images of the screen.
+SideScales FollowOutput(const SideScales& side, Scale output);
+// The screen's scale a class that follows it must reach before it leaves the guest's size, in twentieths: 1.25x, the render scale from which the UI
+// sharpening calls a bitmap magnified (ui_sharp.h kMinMagnification; side_view_ui_map.cpp asserts they agree). Round 2 took any scale above 1x; at 1.05x
+// a 220 pixel view made 231 pixels wide buys nothing and costs a remade target, and at 720p (render scale 1x) the class never moves, so that picture is the
+// game's own whatever the setting says.
+inline constexpr uint32_t kFollowMinScale = 25;
+// The scale a class that follows the output is made at for a screen scale of `output`: the screen's when that is at least kFollowMinScale, else the
+// guest's size.
+inline Scale OutputScale(Scale output) { return output.n >= kFollowMinScale ? output : Scale{}; }
 // A class's setting resolved, and its text for the pause menu's row ("AUTO (HIGH)").
 SideLevel LevelOf(SideView view);
 std::string AutoLabel(SideView view);

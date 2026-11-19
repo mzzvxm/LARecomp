@@ -233,6 +233,7 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
 // game's table either: they get scancodes of their own (kbm_input.h, 0x80..0x86).
 uint8_t ScancodeOf(const uint8_t* base, uint8_t vk) {
     if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyById(vk)) return mouse->scancode;
+    if (const larecomp::kbm::MenuKeyDef* menu = larecomp::kbm::FindMenuKeyById(vk)) return menu->scancode;  // the menu mouse's buttons (kbm_input.h MenuKey)
     return base[kVkToScancode + vk];
 }
 
@@ -494,6 +495,17 @@ const UiBind kUiBinds[] = {
     {kBtnStart, KB_SETTING(kb_ui_start)},
 };
 
+// The menu mouse's buttons (menu_mouse.cpp): one entry each, always live, to the same output as the pad's button. They go in before the player's keys so that a long kb_ui_* list cannot
+// leave them without a slot (the mapper holds 64 entries).
+struct VirtualUiBind {
+    larecomp::kbm::MenuKey key;
+    uint32_t button;
+};
+const VirtualUiBind kVirtualUiBinds[] = {
+    {larecomp::kbm::MenuKey::Accept, kBtnA}, {larecomp::kbm::MenuKey::Back, kBtnB},      {larecomp::kbm::MenuKey::Up, kBtnUp},
+    {larecomp::kbm::MenuKey::Down, kBtnDown}, {larecomp::kbm::MenuKey::Left, kBtnLeft}, {larecomp::kbm::MenuKey::Right, kBtnRight},
+};
+
 uint32_t g_nav_mapper = 0;
 uint32_t g_nav_count_after = 0;
 uint32_t g_ui_gen_applied = 0;  // the bindings generation the menu mapper carries (0 = none built yet)
@@ -607,6 +619,15 @@ void EnsureNavKeys(uint8_t* b) {
     g_nav_keys.clear();
 
     int added = 0;
+    for (const VirtualUiBind& v : kVirtualUiBinds) {
+        const uint32_t out = UiOutputFor(b, mapper, v.button);
+        const larecomp::kbm::MenuKeyDef& def = larecomp::kbm::kMenuKeys[int(v.key)];
+        const uint32_t idx = ReadGuestU32(b, mapper);
+        if (out && MapperAppend(b, mapper, kTypeKey, def.scancode, out)) {
+            ++added;
+            g_nav_keys.push_back({idx, def.scancode, false, def.scancode});
+        }
+    }
     for (const UiBind& bind : kUiBinds) {
         const uint32_t out = UiOutputFor(b, mapper, bind.button);
         if (!out) continue;
@@ -1404,6 +1425,9 @@ larecomp::prompts::UiSignals g_ui_signals;  // what the last poll saw (PollPromp
 std::string g_ui_prev_name;                 // the movie name that went with it (for the 'was' of the log line)
 std::atomic<bool> g_screen_menu{true};      // what the last poll made of it, for larecomp::keyboard::MenuScreenUp (mouse look): a menu screen is up, or the game is not entered yet
 std::atomic<bool> g_screen_phone{false};    // ... and the Sidekick phone is the current movie (PhoneScreenUp)
+std::atomic<bool> g_entered_flag{false};    // g_game_entered for any thread (GameEntered)
+std::mutex g_movie_name_mutex;              // the current movie's name for any thread (CurrentMovieName), copied when it changes
+std::string g_movie_name_copy;
 
 larecomp::prompts::UiSignals UiSignalsOf(const uint8_t* b) {
     larecomp::prompts::UiSignals s;
@@ -1420,6 +1444,8 @@ larecomp::prompts::UiSignals UiSignalsOf(const uint8_t* b) {
     if (entry != g_ui_movie_entry) {
         g_ui_movie_entry = entry;
         g_ui_movie_name = entry ? MovieNameOf(b, entry) : std::string();
+        std::lock_guard<std::mutex> lock(g_movie_name_mutex);
+        g_movie_name_copy = g_ui_movie_name;
     }
     s.movie = entry != 0 && !larecomp::prompts::IsRoadMovieName(g_ui_movie_name);
     return s;
@@ -1511,6 +1537,7 @@ void PollPrompts(uint8_t* b) {
     const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
     g_screen_menu.store(larecomp::prompts::ContextFor(g_game_entered, ui) == larecomp::prompts::Context::Menu, std::memory_order_relaxed);
     g_screen_phone.store(g_ui_movie_name.compare(0, 8, "SIDEKICK") == 0, std::memory_order_relaxed);
+    g_entered_flag.store(g_game_entered, std::memory_order_relaxed);
     if (g_glyph_tex.empty()) return;  // no dictionary yet: stays dirty
     if (!g_art_warm) WarmArt(b);
 
@@ -1859,6 +1886,17 @@ namespace larecomp::keyboard {
 
 bool MenuScreenUp() { return g_screen_menu.load(std::memory_order_relaxed); }
 bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
+bool GameEntered() { return g_entered_flag.load(std::memory_order_relaxed); }
+
+void PressMenuKey(larecomp::kbm::MenuKey key) { g_keys.Pulse(larecomp::kbm::MenuKeyId(key)); }
+
+void CurrentMovieName(char* out, size_t capacity) {
+    if (!out || capacity == 0) return;
+    std::lock_guard<std::mutex> lock(g_movie_name_mutex);
+    const size_t n = std::min(capacity - 1, g_movie_name_copy.size());
+    std::memcpy(out, g_movie_name_copy.data(), n);
+    out[n] = 0;
+}
 
 // ── what the settings say about a key (RoleOfKey) ───────────────────────
 namespace {
@@ -1933,6 +1971,11 @@ extern "C" REX_FUNC(rex_sub_822A4B80) {
 namespace larecomp::keyboard {
 bool MenuScreenUp() { return true; }
 bool PhoneScreenUp() { return false; }
+bool GameEntered() { return false; }
+void PressMenuKey(larecomp::kbm::MenuKey) {}
+void CurrentMovieName(char* out, size_t capacity) {
+    if (out && capacity) out[0] = 0;
+}
 larecomp::input::KeyRole RoleOfKey(uint16_t) { return larecomp::input::KeyRole::Plain; }
 KeySteerScope::~KeySteerScope() {}
 }  // namespace larecomp::keyboard

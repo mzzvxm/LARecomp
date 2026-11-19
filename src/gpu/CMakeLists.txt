@@ -78,6 +78,7 @@ add_library(larecomp_gpu OBJECT
     side_view_env.cpp
     side_view_reflection.cpp
     side_view_shadow.cpp
+    side_view_ui_map.cpp
     side_views.cpp
     split.cpp
     stream.cpp
@@ -98,6 +99,7 @@ add_library(larecomp_gpu OBJECT
     topology.cpp
     uma_budget.cpp
     ui_fade.cpp
+    ui_sharp.cpp
     upload.cpp
     upscaler_masks.cpp
     validation.cpp
@@ -244,6 +246,9 @@ add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp c
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
+# The UI sharpening's rules (ui_sharp.h: the strength, the constants, which draws take the variant, the census) likewise:
+#   cmake --build <dir> --target larecomp_ui_sharp_rules_test, then run src/gpu/larecomp_ui_sharp_rules_test (exit 0 = passed).
+add_executable(larecomp_ui_sharp_rules_test EXCLUDE_FROM_ALL ui_sharp_test.cpp)
 # The before/after split's columns and spans (split.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_split_test, then run src/gpu/larecomp_split_test (exit 0 = passed).
 add_executable(larecomp_split_test EXCLUDE_FROM_ALL split_test.cpp)
@@ -262,6 +267,9 @@ add_executable(larecomp_vram_room_test EXCLUDE_FROM_ALL vram_room_test.cpp)
 #   cmake --build <dir> --target larecomp_level_seeds_test, then run src/gpu/larecomp_level_seeds_test (exit 0 = passed).
 add_executable(larecomp_level_seeds_test EXCLUDE_FROM_ALL level_seeds_test.cpp)
 target_link_libraries(larecomp_level_seeds_test PRIVATE Threads::Threads)
+# The precache queue's order and the windows the render thread's claims put in front of the workers (precache_queue.h) too:
+#   cmake --build <dir> --target larecomp_precache_queue_test, then run src/gpu/larecomp_precache_queue_test (exit 0 = passed).
+add_executable(larecomp_precache_queue_test EXCLUDE_FROM_ALL precache_queue_test.cpp)
 # The Windows builds the game's Direct3D 12 runtime needs (windows_floor.h, which only explains a refused start) likewise:
 #   cmake --build <dir> --target larecomp_windows_floor_test, then run src/gpu/larecomp_windows_floor_test (exit 0 = passed).
 add_executable(larecomp_windows_floor_test EXCLUDE_FROM_ALL windows_floor_test.cpp)

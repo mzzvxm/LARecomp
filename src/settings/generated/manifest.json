@@ -8631,5 +8631,112 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_ui_minimap_scale": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Draw the HUD's and the menus' small views (the minimap, the phone screen, and the page of the pause menu, the garage and the GPS map, which the game always draws at \"\n    \"fixed sizes and the screen stretches) at the render scale, as the images of the screen are, so that the minimap and the menus' text come out as sharp as the rest of the \"\n    \"picture at 1080p and 4K. At 720p (render scale 1x) it is the game's own either way. Off: the game's own sizes. Costs video memory while a menu is up (about 50 MiB at \"\n    \"4K for the pause menu and the map). Live.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_ui_sharp": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p \"\n    \"picture: 1080p and 4K windows). The game's buttons, icons, panels and text are bitmaps made for the console's \"\n    \"1280x720 picture, drawn with a bilinear filter, so at 4K every texel is three pixels of soft edge. This reads them \"\n    \"with a sharper filter (Catmull-Rom on the colour) and steepens the alpha across a bitmap's edges so that glyphs and \"\n    \"icon outlines stay about one pixel soft, like a distance-field font. Off is the game's own picture, bit for bit; at \"\n    \"720p (render scale 1x) it is the game's either way. Needs the shader pack's variant file (ui_sharp). Live; the \"\n    \"first time it shows, the graphics card builds its shaders (a short stutter).\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_ui_sharp_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how hard mcla_ui_sharp works. 1 is full Catmull-Rom on the colour and an alpha edge about one pixel wide; \"\n    \"0.5 is half of it; 2 doubles the edge gain (a harder edge, more aliasing). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 2.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_ui_sharp_census": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: every 600 frames, log the textures the HUD and menus read (the draws after the scene is composed, the \"\n    \"menus' render-to-texture views, and the frames that have no scene: loading, title, movies): the pixel shader, the \"\n    \"texture's format, size, name and dictionary, the sampler's filters, the render scale of the target and how many \"\n    \"reads were magnified. What the UI sharpening (mcla_ui_sharp) is tuned from. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Input",
+  "help": "\"Use the mouse in the game's menus: moving the pointer over a row highlights it, a left click is A on it (on the left or right part of a settings row, the arrow: it \"\n    \"steps the value), the right button is B, the wheel moves the highlight. The pointer stays on screen while a menu is up and the mouse is what you last used. Off, \"\n    \"the mouse does nothing in menus.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse_row_width": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/Input",
+  "help": "\"Debug: the width of a menu row for the mouse, in the 1280 x 720 stage's pixels. 0 = from what the row holds (never under 320). Rows the pointer is said to be on but \"\n    \"is not (or the reverse) at the right edge of the list: set this and look again.\"",
+  "traits": [
+   "rex::Range{0.0, 1280.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse_row_offset": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/Input",
+  "help": "\"Debug: moves every menu row's place for the mouse up or down, in the stage's pixels (a row hangs from the origin of its slot; if the highlight lands half a row off \"\n    \"from the pointer, this is the number: about -12 puts the origin in the middle of the row).\"",
+  "traits": [
+   "rex::Range{-60.0, 60.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse_dump": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Input",
+  "help": "\"Debug: log what the mouse sees of the menu that is up, once, and again each time this is set to true: the movie (its frame, the display state, the scale onto the stage), the candidates (the \"\n    \"list and the UIMenu the game rendered last, their fields and counters), the clip tree's outline and every clip that holds slot0..slotN with each slot's local, world and stage \"\n    \"place. For a menu that falls back: this is how its rows are found.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse_dump_new": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Input",
+  "help": "\"Debug: the same dump (menu_mouse_dump) once for every new menu the mouse meets (a new movie, list or UIMenu, or one that is read differently than before), fallbacks included, up to \"\n    \"24 a run. For the tours: set it before the first menu opens.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "menu_mouse_trust_layouts": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Input",
+  "help": "\"Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage's other pages, dialogs) for the hover and for clicks on rows. The garage's first menu and its two-row pop-ups do not need it \"\n    \"(their card is fitted to pictures). Off: those menus are read and \"\n    \"logged (`[menu-mouse] menu ...: FALLBACK (the layout ... is not checked against a picture yet ...)`) but treated as a fallback menu: no hover, a left click presses the highlighted row, \"\n    \"the wheel and the right button work. Every page of those movies is a quad in the game's 3D menu scene whose size follows its list, so a scale and offset read from the clip tree \"\n    \"cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); a page gets a card of its own when its pictures are measured.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

@@ -173,6 +173,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/core/string_dumper.cpp
     src/mc_engine/camera/menu_camera.cpp
     src/mc_engine/input/map_mouse.cpp
+    src/mc_engine/input/menu_mouse.cpp
     src/mc_engine/input/cursor_hide.cpp
     src/mc_engine/input/input_state.cpp
     src/mc_engine/input/mouse_look.cpp
@@ -576,6 +577,12 @@ target_include_directories(larecomp_mouse_look_test PRIVATE src src/mc_engine)
 if(Threads_FOUND)
     target_link_libraries(larecomp_mouse_look_test PRIVATE Threads::Threads)
 endif()
+# The mouse in the menus' pure part (src/mc_engine/input/menu_mouse_core.h, header only: the window -> stage mapping, the instance matrices, the row boxes and their hit test, the settings rows'
+# arrow zones, the click / hover / wheel plans, the press pacing, the highlight walk) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_menu_mouse_test, then run <build dir>/larecomp_menu_mouse_test (exit 0 = passed).
+add_executable(larecomp_menu_mouse_test EXCLUDE_FROM_ALL
+    src/mc_engine/input/menu_mouse_test.cpp)
+target_include_directories(larecomp_menu_mouse_test PRIVATE src src/mc_engine)
 # The live button prompts' pure part (src/mc_engine/input/prompt_glyphs.h, header only: the slot tables, the menu / road context, which art each glyph family shows, the PlayStation sources and
 # their override, the reading back of the game's DXT5 bitmaps) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_prompt_glyphs_test, then run <build dir>/larecomp_prompt_glyphs_test (exit 0 = passed).

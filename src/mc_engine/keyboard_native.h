@@ -61,11 +61,13 @@
 // A repaint happens on a change only (PollPrompts: the input state's listener sets a flag; a menu opening or closing with the keyboard in use, a binding, a new dictionary), on the
 // game thread, from the input poll; the art is built once when the dictionary is found (WarmArt).
 
+#include <cstddef>
 #include <cstdint>
 
 #include <rex/ppc/context.h>
 
 #include "mc_engine/input/input_state.h"
+#include "mc_engine/input/kbm_input.h"
 
 // Before `lis r30` at 0x82614CFC: the end of the keystroke poll, reached on every
 // path out of sub_82614C70, ahead of the memcpy that publishes the key table.
@@ -99,6 +101,18 @@ namespace larecomp::keyboard {
 // PhoneScreenUp: the Sidekick phone is the current movie (it is the road's, not a menu: the driving keys work with it up).
 bool MenuScreenUp();
 bool PhoneScreenUp();
+
+// The game proper has started (the player's control map has been built: the title and the sign-in steps are behind). Any thread.
+bool GameEntered();
+
+// The name of the movie the game's UI has as its current one, as of the last input poll ("PAUSEMOVIE", "GARAGEMOVIE", "POPUPMOVIE", ... ; empty for none), copied into `out` (at most `capacity`
+// bytes with the end mark). Any thread.
+void CurrentMovieName(char* out, size_t capacity);
+
+// Presses one of the menu's buttons for one input poll, as if a key mapped to it went down: the mouse in the menus (menu_mouse.cpp) does its clicks and wheel steps with this.
+// The button goes in through the game's own menu mapper (EnsureNavKeys binds an always-live entry per button), so it is exactly the pad button's press. Two calls before the same
+// poll are one press, and presses in consecutive polls merge into one held press: leave a poll between them (menu_mouse_core.h PressPacer). Any thread.
+void PressMenuKey(larecomp::kbm::MenuKey key);
 
 // What the settings say about a key that just went down, for the active-device rules (input_state.h KeyRole, KBM-DESIGN.md 2.2): ExtraButton for a host key of an
 // extra_button_* setting (the pad's paddles: the key is a pad button, the keyboard feed does not pass it on as a key), Bound for a key that a kb_ui_* / kb_drive_* binding

@@ -105,6 +105,7 @@ add_library(larecomp_shaderpack STATIC
     variants/car_selfrefl.cpp
     variants/car_chrome.cpp
     variants/luminance_scale.cpp
+    variants/ui_sharp.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -214,6 +215,14 @@ add_executable(larecomp_luminance_scale_test EXCLUDE_FROM_ALL
     variants/luminance_scale.cpp)
 target_compile_features(larecomp_luminance_scale_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_luminance_scale_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The UI sharpening variant's text transform (variants/ui_sharp_test.cpp): cmake --build <dir> --target larecomp_ui_sharp_variant_test,
+# then run it [<translated xrage_im__PS_Textured.hlsl> [<folder for the transformed text>]] (exit 0 = passed).
+add_executable(larecomp_ui_sharp_variant_test EXCLUDE_FROM_ALL
+    variants/ui_sharp_test.cpp
+    variants/ui_sharp.cpp)
+target_compile_features(larecomp_ui_sharp_variant_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_ui_sharp_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).

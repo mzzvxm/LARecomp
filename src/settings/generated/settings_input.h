@@ -110,6 +110,29 @@ class InputSettings final : public rex::SettingOwner {
     "world under a pointer that has not moved and drags the cursor towards "
     "the centre on every detent.", rex::kDebugOnly);
 
+  REX_SETTING(bool, menu_mouse, true, "Use the mouse in the game's menus: moving the pointer over a row highlights it, a left click is A on it (on the left or right part of a settings row, the arrow: it "
+    "steps the value), the right button is B, the wheel moves the highlight. The pointer stays on screen while a menu is up and the mouse is what you last used. Off, "
+    "the mouse does nothing in menus.");
+
+  REX_SETTING(bool, menu_mouse_dump, false, "Debug: log what the mouse sees of the menu that is up, once, and again each time this is set to true: the movie (its frame, the display state, the scale onto the stage), the candidates (the "
+    "list and the UIMenu the game rendered last, their fields and counters), the clip tree's outline and every clip that holds slot0..slotN with each slot's local, world and stage "
+    "place. For a menu that falls back: this is how its rows are found.", rex::kDebugOnly);
+
+  REX_SETTING(bool, menu_mouse_dump_new, false, "Debug: the same dump (menu_mouse_dump) once for every new menu the mouse meets (a new movie, list or UIMenu, or one that is read differently than before), fallbacks included, up to "
+    "24 a run. For the tours: set it before the first menu opens.", rex::kDebugOnly);
+
+  REX_SETTING(f64, menu_mouse_row_offset, 0.0, "Debug: moves every menu row's place for the mouse up or down, in the stage's pixels (a row hangs from the origin of its slot; if the highlight lands half a row off "
+    "from the pointer, this is the number: about -12 puts the origin in the middle of the row).", rex::Range{-60.0, 60.0}, rex::kDebugOnly);
+
+  REX_SETTING(f64, menu_mouse_row_width, 0.0, "Debug: the width of a menu row for the mouse, in the 1280 x 720 stage's pixels. 0 = from what the row holds (never under 320). Rows the pointer is said to be on but "
+    "is not (or the reverse) at the right edge of the list: set this and look again.", rex::Range{0.0, 1280.0}, rex::kDebugOnly);
+
+  REX_SETTING(bool, menu_mouse_trust_layouts, false, "Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage's other pages, dialogs) for the hover and for clicks on rows. The garage's first menu and its two-row pop-ups do not need it "
+    "(their card is fitted to pictures). Off: those menus are read and "
+    "logged (`[menu-mouse] menu ...: FALLBACK (the layout ... is not checked against a picture yet ...)`) but treated as a fallback menu: no hover, a left click presses the highlighted row, "
+    "the wheel and the right button work. Every page of those movies is a quad in the game's 3D menu scene whose size follows its list, so a scale and offset read from the clip tree "
+    "cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); a page gets a card of its own when its pictures are measured.", rex::kDebugOnly);
+
   REX_SETTING(std::string, prompts_glyph_dump, "", "Debug: a folder; when the UI's texture dictionary is first found, every small DXT5 bitmap in it is written there as raw RGBA (<name>_<w>x<h>.rgba, plus index.txt), "
     "to see which bitmap is which glyph. Empty = off. Read once at start.", rex::kDebugOnly);
 
@@ -165,6 +188,12 @@ inline auto& map_mouse_zoom = g_input.map_mouse_zoom;
 inline auto& map_mouse_zoom_smooth = g_input.map_mouse_zoom_smooth;
 inline auto& map_mouse_zoom_step = g_input.map_mouse_zoom_step;
 inline auto& map_mouse_zoom_to_cursor = g_input.map_mouse_zoom_to_cursor;
+inline auto& menu_mouse = g_input.menu_mouse;
+inline auto& menu_mouse_dump = g_input.menu_mouse_dump;
+inline auto& menu_mouse_dump_new = g_input.menu_mouse_dump_new;
+inline auto& menu_mouse_row_offset = g_input.menu_mouse_row_offset;
+inline auto& menu_mouse_row_width = g_input.menu_mouse_row_width;
+inline auto& menu_mouse_trust_layouts = g_input.menu_mouse_trust_layouts;
 inline auto& prompts_glyph_dump = g_input.prompts_glyph_dump;
 inline auto& prompts_ps_map = g_input.prompts_ps_map;
 inline auto& right_stick_deadzone = g_input.right_stick_deadzone;

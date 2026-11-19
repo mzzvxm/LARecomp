@@ -77,6 +77,7 @@
 #include "shaders.h"
 #include "shadow_filter.h"
 #include "topology.h"
+#include "ui_sharp.h"
 #include "upload.h"
 #include "upscaler_masks.h"
 #include "viewport.h"
@@ -235,6 +236,9 @@ class Scene {
     UploadSpan vs_constants;
     UploadSpan ps_constants;
     UploadSpan shared_constants;
+    // The UI sharpening: the fetch slots of the draw's pixel shader the variant sharpens (ui_sharp.h UiSharpConstants::slots), for the draws that
+    // took it.
+    uint32_t ui_sharp_slots = 0;
     Scale scale;  // the resolution scale its targets are (or are made) at
     // The declared size of the surface its targets are bound through (DrawRecord::target_size_bits, as
     // SizeBits; 0 when not known): what tells a class's use of an identity from another pass's
@@ -368,6 +372,17 @@ class Scene {
   // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
   // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
   bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the UI sharpening variant (ShaderStore::kUiSharpVariant) reads 16 bytes after the shared constants
+  // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
+  // kept for the next draw when neither changed.
+  bool UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d);
+  // The UI sharpening (ui_sharp.h): the variant id the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
+  // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
+  // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
+  uint32_t UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale);
+  // Where the draw stands as far as the UI sharpening goes (ui_sharp.h Context): after the marker, into one of the menus' render-to-texture views
+  // (the UI map views side view), an inline draw of a frame with no scene, or not a UI draw at all.
+  ui_sharp::Context UiSharpContext(const DrawView& view, const XenosState& state) const;
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
@@ -462,6 +477,10 @@ class Scene {
   SharedConstants last_shadow_shared_{};
   shadow_filter::ShadowFilterConstants last_shadow_block_{};
   UploadSpan last_shadow_span_;
+  ui_sharp::UiSharpConstants last_ui_sharp_block_{};
+  SharedConstants last_ui_sharp_shared_{};
+  UploadSpan last_ui_sharp_span_;
+  ui_sharp::Census ui_sharp_census_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).
   struct ListState {
