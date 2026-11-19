@@ -174,12 +174,14 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
 // a moment for the upscaler probe): this hook runs once, when the game makes
 // its renderer, so that wait is the game thread's and not the renderer's.
 static bool MsaaOff() {
-    if (larecomp::cvar::GetFlagByName("mcla_gpu") == "true") {
 #if defined(LARECOMP_HAS_GPU)
+    // Whether the native renderer runs is the SDK's gpu.driver (gpu.h Enabled); the old mcla_gpu
+    // setting stays true under the XENIA renderer on rexglue 0.11 and says nothing.
+    if (mcla::gpu::Enabled()) {
         (void)mcla::gpu::GetStartUpscale();
-#endif
         return false;
     }
+#endif
     return larecomp::settings::disable_msaa.Get();
 }
 

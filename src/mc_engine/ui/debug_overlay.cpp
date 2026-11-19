@@ -107,8 +107,8 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     ImGui::PopStyleColor();
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
-    // The test the menus use to list a renderer's rows (NativeRendererRuns: the Plume renderer is
-    // mcla_gpu), with the names the menus and the docs give the two renderers.
+    // The test the menus use to list a renderer's rows (NativeRendererRuns: LARecomp's own Plume
+    // renderer runs, gpu.driver = larecomp), with the names the menus and the docs give the two renderers.
     const bool native = mcla_menu::NativeRendererRuns();
     StatRow("RENDERER", native ? "NATIVE" : "XENIA");
 

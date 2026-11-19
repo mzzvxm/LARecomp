@@ -825,9 +825,9 @@ uint32_t CreateUIMenuState(const char* name) {
 // itself. The RENDERER and GRAPHICS API rows, which were held here too (a
 // restart-only cvar changes its live value with SetFlagByName), are not in the
 // pause menu any more (SETTINGS-REVIEW.md, SX-G5): the launcher's
-// Troubleshooting section sets them (the renderer is four cvars, mcla_gpu and
-// the mcla_native_gfx ones, written together; --graphics_backend works on the
-// command line). The render scale (mcla_gpu_resolution_scale,
+// Troubleshooting section sets them (the renderer is the SDK's gpu.driver:
+// larecomp, or any / d3d12 / vulkan for the XENIA renderer; --gpu.driver works
+// on the command line). The render scale (mcla_gpu_resolution_scale,
 // mcla_gpu_fsr_preset) and the upscaler modes (mcla_gpu_fsr31_mode, _fsr4_mode,
 // _dlss_mode) were never held: the renderer makes its targets again at the new
 // size at a frame boundary (TemporalSystem::UpdatePath, EdramTargets::SetScales).
@@ -2450,13 +2450,15 @@ struct MenuDef {
 bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMenuUnlocked(); }
 
 // The renderer this launch runs, as a RendererMask. The renderer is a
-// restart-only choice (the launcher's Troubleshooting section sets it), so it
-// cannot change under an open menu and the rows listed never move. Read from
-// the live cvar.
+// restart-only choice (the SDK's gpu.driver; the launcher's Troubleshooting
+// section sets it), so it cannot change under an open menu and the rows listed
+// never move. mcla::gpu::Enabled() is the one answer to "does LARecomp's own
+// renderer run": the old mcla_gpu setting is true under the XENIA renderer too
+// on rexglue 0.11, so it must not be read for this.
 uint8_t RunningRendererMask() {
     static const uint8_t mask = [] {
 #if defined(LARECOMP_HAS_GPU)
-        if (larecomp::cvar::GetFlagByName("mcla_gpu") == "true")
+        if (mcla::gpu::Enabled())
             return uint8_t(mcla_menu::kRendNative);
 #endif
         return uint8_t(mcla_menu::kRendXenia);

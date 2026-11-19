@@ -61,7 +61,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
 
   if (!mcla::gpu::Enabled()) {
     return finish(0, "not needed",
-                  "The Plume renderer is not in use (mcla_gpu is off), so there are no pipelines to "
+                  "The Plume renderer is not in use (gpu.driver names the XENIA renderer), so there are no pipelines to "
                   "prepare.");
   }
   // Pipelines are made from the packs the game will use. Packs the game would rebuild first (the
