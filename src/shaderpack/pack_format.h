@@ -118,7 +118,8 @@ inline constexpr uint32_t kVariantVertexShaders = 4;
 // The variant ids. They are the numbers PipelineKey::ps_variant carries: 0 and 1 are the main pack's
 // spec variants (no alpha test / the alpha test and alpha to coverage one), the others are the variant
 // pack's, one id per kind of change. A variant is compiled for spec variant 0 only (the draws that
-// use it have no alpha test). Ids are never reused for another change: a pipeline cache holds them.
+// use it have no alpha test), except the UI sharpening's second id (VariantDef::alpha_test_id). Ids are never
+// reused for another change: a pipeline cache holds them.
 inline constexpr uint32_t kFirstPackedVariant = 2;  // 0 and 1 are the main pack's
 inline constexpr uint32_t kVariantHdrScene = 2;    // the tone map continued above white, into a float image
 inline constexpr uint32_t kVariantBloomGauss = 3;  // the bloom's two Gaussians: taps at the render scale
@@ -135,6 +136,9 @@ inline constexpr uint32_t kVariantCarChrome = 9;
 // The UI's textured pixel shaders (xrage_im's, the Flash player's bitmaps, text and panels) with each 2D fetch reconstructed sharper where the
 // console's 720p bitmaps are magnified: Catmull-Rom colour and a steeper alpha edge (16 bytes of constants; shaderpack/variants/ui_sharp.h).
 inline constexpr uint32_t kVariantUiSharp = 10;
+// The same variant compiled with the shader's ALPHA_TEST spec constants (the main pack's spec variant 1: the alpha test and alpha to coverage; it
+// declares SV_Coverage), for the UI draws that have one of them on: a draw whose key is spec variant 1 cannot take id 10, which is spec variant 0's.
+inline constexpr uint32_t kVariantUiSharpAlphaTest = 11;
 inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

@@ -236,6 +236,9 @@ class Scene {
     UploadSpan vs_constants;
     UploadSpan ps_constants;
     UploadSpan shared_constants;
+    // The UI sharpening: the fetch slots of the draw's pixel shader the variant sharpens (ui_sharp.h UiSharpConstants::slots), for the draws that
+    // took it.
+    uint32_t ui_sharp_slots = 0;
     Scale scale;  // the resolution scale its targets are (or are made) at
     // The declared size of the surface its targets are bound through (DrawRecord::target_size_bits, as
     // SizeBits; 0 when not known): what tells a class's use of an identity from another pass's
@@ -373,9 +376,10 @@ class Scene {
   // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
   // kept for the next draw when neither changed.
   bool UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d);
-  // The UI sharpening (ui_sharp.h): whether the draw in the UI phase takes the variant (the key's ps_variant is then
-  // already set by the caller), and the census of what the UI phase reads when mcla_ui_sharp_census is on.
-  bool UiSharpDraw(const DrawView& view, const XenosState& state, const PreparedDraw& d, Scale scale);
+  // The UI sharpening (ui_sharp.h): the variant id the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
+  // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
+  // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
+  uint32_t UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).

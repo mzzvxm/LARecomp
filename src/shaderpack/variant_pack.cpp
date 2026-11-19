@@ -190,6 +190,54 @@ void AddLeftOutLine(const VariantDef& def, std::string_view why, std::vector<Sta
   lines->push_back({StampKey(def, kStampVariantLeftOut), std::string(why)});  // informational
 }
 
+// One compile of a variant's text for the formats asked (spec: the XENOS_SPEC_CONSTANTS value, 0 for spec variant 0), and what the runtime relies
+// on, read back from the blobs: the colour output is there, and the coverage output (SV_Coverage / the sample mask) exactly when the draw is
+// the alpha test one (spec != 0), no specialization constant. Once per text: the same text gives the same blobs. False with *error.
+bool CompileChecked(DxcWorker& worker, ProgressSink& sink, uint32_t formats, const std::string& hlsl, uint32_t spec, const std::string& label,
+                    std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
+  CompileRequest request;
+  request.hlsl = hlsl;
+  request.stage = ShaderStage::kPixel;
+  request.spec_constants = spec;
+  request.name = label;
+  DxcStatus status;
+  if ((formats & kDxil) != 0) {
+    status = worker.CompileDxil(request, dxil);
+    if (!status.ok()) {
+      *error = status.message;
+      return false;
+    }
+  }
+  if (sink.Cancelled()) {
+    *error = "The shader build was cancelled.";
+    return false;
+  }
+  if ((formats & kSpirv) != 0) {
+    status = worker.CompileSpirv(request, spirv);
+    if (!status.ok()) {
+      *error = status.message;
+      return false;
+    }
+  }
+  if (!dxil->empty() && !BytesContain(*dxil, "SV_Target")) {
+    *error = label + ": the DXIL has no SV_Target";
+    return false;
+  }
+  Problems problems;
+  BlobContractInput blob;
+  blob.name = label;
+  blob.stage = ShaderStage::kPixel;
+  blob.variant = spec != 0 ? 1 : 0;
+  blob.writes_oc0 = spec != 0;
+  blob.dxil = *dxil;
+  blob.spirv = *spirv;
+  if (!CheckBlobContract(blob, &problems)) {
+    *error = JoinProblems(problems);
+    return false;
+  }
+  return true;
+}
+
 class VariantStepImpl final : public VariantStep {
  public:
   explicit VariantStepImpl(std::vector<VariantDef> variants) : variants_(std::move(variants)) {}
@@ -304,7 +352,8 @@ class VariantStepImpl final : public VariantStep {
       std::vector<uint8_t> dxil;
       std::vector<uint8_t> spirv;
     };
-    std::unordered_map<std::string, Compiled> compiled;  // by the variant's HLSL
+    std::unordered_map<std::string, Compiled> compiled;        // by the variant's HLSL
+    std::unordered_map<std::string, Compiled> compiled_alpha;  // the alpha test twins: by the HLSL and the spec mask
     std::map<std::string, size_t> skipped;               // why a shader was left out -> how many
     std::vector<PackEntry> made;
     for (const Target& target : targets) {
@@ -340,64 +389,48 @@ class VariantStepImpl final : public VariantStep {
       auto found = compiled.find(variant.hlsl);
       if (found == compiled.end()) {
         Compiled blobs;
-        const std::string label = std::format("{} [{}] ({} variant)", pixel->name, Hex64(pixel->key), def.name);
-        CompileRequest request;
-        request.hlsl = variant.hlsl;
-        request.stage = ShaderStage::kPixel;
-        request.spec_constants = 0;
-        request.name = label;
-        DxcStatus status;
-        if ((formats & kDxil) != 0) {
-          status = worker.CompileDxil(request, &blobs.dxil);
-          if (!status.ok()) {
-            *error = status.message;
-            return false;
-          }
-        }
-        if (sink.Cancelled()) {
-          *error = "The shader build was cancelled.";
-          return false;
-        }
-        if ((formats & kSpirv) != 0) {
-          status = worker.CompileSpirv(request, &blobs.spirv);
-          if (!status.ok()) {
-            *error = status.message;
-            return false;
-          }
-        }
-
-        // 3. What the runtime relies on, read back from the blobs: the colour output is there, and no
-        // coverage output, sample mask or specialization constant (this is the draw without alpha to
-        // coverage). Once per text: the same text gives the same blobs.
-        if (!blobs.dxil.empty() && !BytesContain(blobs.dxil, "SV_Target")) {
-          *error = label + ": the DXIL has no SV_Target";
-          return false;
-        }
-        Problems problems;
-        BlobContractInput blob;
-        blob.name = label;
-        blob.stage = ShaderStage::kPixel;
-        blob.variant = 0;
-        blob.writes_oc0 = false;
-        blob.dxil = blobs.dxil;
-        blob.spirv = blobs.spirv;
-        if (!CheckBlobContract(blob, &problems)) {
-          *error = JoinProblems(problems);
+        if (!CompileChecked(worker, sink, formats, variant.hlsl, 0, std::format("{} [{}] ({} variant)", pixel->name, Hex64(pixel->key), def.name),
+                            &blobs.dxil, &blobs.spirv, error)) {
           return false;
         }
         found = compiled.emplace(variant.hlsl, std::move(blobs)).first;
       }
       entry.dxil = found->second.dxil;
       entry.spirv = found->second.spirv;
-      sink.Step(pixel->name);
       made.push_back(std::move(entry));
+      // The alpha test twin (VariantDef::alpha_test_id): the same text compiled with the shader's own spec mask, for the draws that have the
+      // alpha test or alpha to coverage on. A shader with no spec mask has no spec variant 1 in the main pack either, so it has no twin.
+      if (def.alpha_test_id != 0 && translated.spec_mask != 0) {
+        const std::string twin_key = variant.hlsl + std::format("\n//spec {}", translated.spec_mask);
+        auto twin = compiled_alpha.find(twin_key);
+        if (twin == compiled_alpha.end()) {
+          Compiled blobs;
+          if (!CompileChecked(worker, sink, formats, variant.hlsl, translated.spec_mask,
+                              std::format("{} [{}] ({} variant, alpha test)", pixel->name, Hex64(pixel->key), def.name), &blobs.dxil, &blobs.spirv,
+                              error)) {
+            return false;
+          }
+          twin = compiled_alpha.emplace(twin_key, std::move(blobs)).first;
+        }
+        PackEntry at;
+        at.variant = def.alpha_test_id;
+        at.ps_key = pixel->key;
+        at.vs_keys = vs_keys;
+        at.dxil = twin->second.dxil;
+        at.spirv = twin->second.spirv;
+        made.push_back(std::move(at));
+      }
+      sink.Step(pixel->name);
     }
     if (made.empty()) {
       *error = std::format("none of its {} pixel shaders is one its edits are for", targets.size());
       return false;
     }
-    if (!skipped.empty() || compiled.size() != made.size()) {
-      *note = std::format("{} compile{}", compiled.size(), compiled.size() == 1 ? "" : "s");
+    const size_t shader_entries = size_t(std::count_if(made.begin(), made.end(), [&](const PackEntry& e) { return e.variant == def.id; }));
+    if (!skipped.empty() || compiled.size() != shader_entries || !compiled_alpha.empty()) {
+      const size_t compiles = compiled.size() + compiled_alpha.size();
+      *note = std::format("{} compile{}", compiles, compiles == 1 ? "" : "s");
+      if (!compiled_alpha.empty()) *note += std::format(", {} of them for the alpha test", compiled_alpha.size());
       for (const auto& [why, count] : skipped) *note += std::format("; {} left out: {}", count, why);
     }
     for (PackEntry& entry : made) entries->push_back(std::move(entry));
@@ -454,9 +487,12 @@ class VariantStepImpl final : public VariantStep {
       if (BuildVariant(input, *worker, def, formats, &made, &note, &error)) {
         AddVariantLines(def, &variant_lines);
         std::string keys;
+        size_t shader_count_made = 0;  // the shaders, not the entries (an alpha test twin is the same shader)
         for (const PackEntry& entry : made) {
+          if (entry.variant != def.id) continue;
           if (!keys.empty()) keys += ',';
           keys += Hex64(entry.ps_key);
+          ++shader_count_made;
         }
         variant_lines.push_back({StampKey(def, "shaders"), keys});  // informational
         if (!made.empty() && made.front().vs_keys[0] != 0) {
@@ -469,7 +505,7 @@ class VariantStepImpl final : public VariantStep {
           variant_lines.push_back({StampKey(def, "vs_keys"), vertex_keys});  // informational
         }
         if (!built_text.empty()) built_text += ", ";
-        built_text += std::format("{} ({} shader{}{}{})", def.name, made.size(), made.size() == 1 ? "" : "s",
+        built_text += std::format("{} ({} shader{}{}{})", def.name, shader_count_made, shader_count_made == 1 ? "" : "s",
                                   note.empty() ? "" : "; ", note);
         for (PackEntry& entry : made) {
           made_targets.push_back({def.name, entry.ps_key});

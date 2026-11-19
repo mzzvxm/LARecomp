@@ -2,7 +2,7 @@
 // needs no renderer, no ReXGlue, no compiler and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_ui_sharp_variant_test     (src/shaderpack/CMakeLists.txt)
-//   <build dir>/src/shaderpack/larecomp_ui_sharp_variant_test [<translated xrage_im__PS_Textured.hlsl> [<folder for the transformed text>]]
+//   <build dir>/src/shaderpack/larecomp_ui_sharp_variant_test [<a translated shader .hlsl, or a folder of them> [<folder for the transformed text>]]
 //
 // Without arguments it runs on a small text made here (the definition of tfetch2D, the two declarations of the shared constants,
 // main and one call) and on texts it must refuse or skip, and on a model of the helper's arithmetic (the same formulas as its HLSL):
@@ -17,6 +17,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "shaderpack/variants/ui_sharp.h"
 
@@ -54,12 +55,15 @@ size_t Count(std::string_view text, std::string_view needle) {
 // ---------------------------------------------------------------------------
 
 // What every translated shader holds around the call, as the translator writes it (shader_common.h pasted in), cut to what the edits read.
-std::string Fixture(int calls, int definitions = 1, bool with_main = true, bool with_declarations = true) {
+std::string Fixture(int calls, int definitions = 1, bool with_main = true, bool with_declarations = true, const std::string& sampler = "TextureSampler",
+                    const std::string& define_offset = "0") {
   std::string text = "#define g_InvResolutionScale      vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)\n";
   if (!with_declarations) text.clear();
   text += "#else\n#define DEFINE_SHARED_CONSTANTS() \\\n    float4 g_PosOffset : packoffset(c36); \\\n"
           "    float2 g_InvResolutionScale : packoffset(c37.x);\n";
   if (!with_declarations) text = "#else\n";
+  // The texture's descriptor macro, as the translator writes it in the SPIR-V block: the slot is the byte offset over 4.
+  text += "#define " + sampler + "_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + " + define_offset + ")\n";
   for (int i = 0; i < definitions; ++i) {
     text += "float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)\n{\n"
             "    return 0.0;\n}\n\n";
@@ -69,8 +73,8 @@ std::string Fixture(int calls, int definitions = 1, bool with_main = true, bool 
   // The calls are in main (the helper goes before it); without main they are in a function of their own.
   std::string calls_text;
   for (int i = 0; i < calls; ++i) {
-    calls_text += "\tr" + std::to_string(i % 2) + ".xyzw = tfetch2D(TextureSampler_Texture2DDescriptorIndex, "
-                  "TextureSampler_SamplerDescriptorIndex, r0.xy, float2(0, 0)).xyzw;\n";
+    calls_text += "\tr" + std::to_string(i % 2) + ".xyzw = tfetch2D(" + sampler + "_Texture2DDescriptorIndex, " + sampler +
+                  "_SamplerDescriptorIndex, r0.xy, float2(0, 0)).xyzw;\n";
   }
   if (with_main) {
     text += "#ifndef __spirv__\n[shader(\"pixel\")]\n#endif\nvoid main(\n\tin float4 iPos : SV_Position\n)\n{\n"
@@ -89,6 +93,8 @@ void TestTransform() {
     Check(r.ok && !r.skip, "one call: " + r.error);
     if (r.ok) {
       Check(Count(r.hlsl, "tfetch2DUiSharp(") == 2, "one call: its definition and the renamed call");
+      Check(Count(r.hlsl, "= tfetch2DUiSharp(0u, TextureSampler_Texture2DDescriptorIndex") == 1, "the call carries its fetch slot (0) in front");
+      Check(Count(r.hlsl, "uint(settings.w + 0.5) >> slot") == 1, "the helper tests the slot's bit of g_UiSharp.w");
       Check(Count(r.hlsl, "tfetch2D(") == 2, "one call: the game's definition and the helper's own call stay");
       Check(Count(r.hlsl, "float4 tfetch2D(uint resourceDescriptorIndex") == 1, "the game's definition is still there, once");
       Check(Count(r.hlsl, "tfetch2DLod(") == 1, "the explicit level fetch is not touched");
@@ -105,6 +111,45 @@ void TestTransform() {
   {
     const sp::VariantTransformResult r = sp::TransformUiSharpHlsl(shader, Fixture(3));
     Check(r.ok && Count(r.hlsl, "tfetch2DUiSharp(") == 4, "three calls: all renamed, plus the definition");
+  }
+  {
+    // A shader with a depth fetch beside its colour bitmap (xUnlitRuntimeAlpha__PS_TexturedAlternateDepth): only the bitmap is renamed, with its slot (1).
+    std::string text = Fixture(1, 1, true, true, "DiffuseSampler", "4");
+    text.insert(text.find("#define DiffuseSampler_Texture2DDescriptorIndex"),
+                "#define DepthSampler_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 0)\n");
+    const std::string depth_call = "\tr2.x = tfetch2D(DepthSampler_Texture2DDescriptorIndex, DepthSampler_SamplerDescriptorIndex, r1.yz, float2(0, 0)).x;\n";
+    text.insert(text.find("\toC0.xyzw"), depth_call);
+    const sp::VariantTransformResult r = sp::TransformUiSharpHlsl(sp::VariantShader{"xUnlitRuntimeAlpha__PS_TexturedAlternateDepth", 0}, text);
+    Check(r.ok && !r.skip, "a depth fetch beside the bitmap: " + r.error);
+    if (r.ok) {
+      Check(Count(r.hlsl, "= tfetch2DUiSharp(1u, DiffuseSampler_Texture2DDescriptorIndex") == 1, "the bitmap is renamed, slot 1 (byte offset 4)");
+      Check(Count(r.hlsl, "tfetch2D(DepthSampler_Texture2DDescriptorIndex") == 1, "the depth fetch stays the game's");
+      Check(Count(r.hlsl, "tfetch2DUiSharp(") == 2, "one renamed call and the helper's definition");
+      Check(Count(r.hlsl, "tfetch2D(") == 3, "the game's definition, the helper's own call and the depth fetch");
+    }
+  }
+  {
+    // Only fetches that are not colour bitmaps (a depth, a bump map): nothing to sharpen, skipped without an error.
+    const sp::VariantTransformResult r = sp::TransformUiSharpHlsl(shader, Fixture(2, 1, true, true, "DepthSampler"));
+    Check(!r.ok && r.skip, "only a depth fetch: skipped, not an error");
+    const sp::VariantTransformResult b = sp::TransformUiSharpHlsl(shader, Fixture(1, 1, true, true, "BumpSampler"));
+    Check(!b.ok && b.skip, "only a bump map: skipped");
+  }
+  {
+    // The slot comes from the byte offset: 28 is slot 7 (the last of the descriptor block's first 32 is 124); an offset that is no slot is refused.
+    const sp::VariantTransformResult ok7 = sp::TransformUiSharpHlsl(shader, Fixture(1, 1, true, true, "TextureSampler", "28"));
+    Check(ok7.ok && Count(ok7.hlsl, "tfetch2DUiSharp(7u, ") == 1, "byte offset 28 is slot 7");
+    const sp::VariantTransformResult last = sp::TransformUiSharpHlsl(shader, Fixture(1, 1, true, true, "TextureSampler", "124"));
+    Check(last.ok && Count(last.hlsl, "tfetch2DUiSharp(31u, ") == 1, "byte offset 124 is slot 31");
+    const sp::VariantTransformResult odd = sp::TransformUiSharpHlsl(shader, Fixture(1, 1, true, true, "TextureSampler", "6"));
+    Check(!odd.ok && !odd.skip && !odd.error.empty(), "a byte offset that is not a multiple of 4: refused");
+    const sp::VariantTransformResult far = sp::TransformUiSharpHlsl(shader, Fixture(1, 1, true, true, "TextureSampler", "128"));
+    Check(!far.ok && !far.skip, "byte offset 128 (the 3D texture block) is not a 2D slot: refused");
+    std::string no_macro = Fixture(1);
+    const size_t at = no_macro.find("#define TextureSampler_Texture2DDescriptorIndex");
+    no_macro.erase(at, no_macro.find('\n', at) + 1 - at);
+    const sp::VariantTransformResult none = sp::TransformUiSharpHlsl(shader, no_macro);
+    Check(!none.ok && !none.skip, "a bitmap call whose descriptor macro is not defined: refused");
   }
   {
     // CRLF text (the translator's files on Windows): the same result.
@@ -146,7 +191,18 @@ void TestTransform() {
           "xrage_im PS_Textured by its verified identity");
     Check(def.pixel_name_suffixes.size() == std::size(sp::kUiSharpSuffixes) && def.vertex_shaders.empty() && bool(def.transform),
           "the others by name, no vertex shader, a transform");
-    Check(sp::kVariantUiSharp == 10, "the id never changes: a pipeline cache holds it");
+    Check(sp::kVariantUiSharp == 10 && sp::kVariantUiSharpAlphaTest == 11, "the ids never change: a pipeline cache holds them");
+    Check(def.alpha_test_id == sp::kVariantUiSharpAlphaTest && def.alpha_test_id < sp::kVariantSlots, "the alpha test twin is id 11");
+    Check(sp::kUiSharpVariantVersion >= 2, "version 2 or later: the pack of round 1 (version 1) is rebuilt");
+    // The census's six "ui" category shaders are in the name list, each name once and as a whole name.
+    for (const sp::VariantShader& retail : sp::kUiSharpRetail) {
+      int found = 0;
+      for (const std::string_view suffix : sp::kUiSharpSuffixes) found += suffix == retail.name;
+      Check(found == 1, std::string(retail.name) + " is in the name list once");
+      Check(retail.key != 0 && retail.key != sp::kUiSharpTextured.key, std::string(retail.name) + " has its own retail identity");
+    }
+    Check(std::size(sp::kUiSharpRetail) == 6, "the six shaders of the census");
+    Check(std::size(sp::kUiSharpBitmapSamplers) == 3, "three bitmap sampler names");
   }
 }
 
@@ -239,25 +295,53 @@ int main(int argc, char** argv) {
   TestTransform();
   TestArithmetic();
 
+  // With the game's translated HLSL: <file or folder> [<folder for the transformed text>]. A folder is read for every xrage_im / ui shader the variant names
+  // (the files are named <group>__<entry>.hlsl); each must transform (or be skipped for having no colour bitmap) and its calls must be as expected.
   if (argc >= 2) {
-    std::ifstream in(argv[1], std::ios::binary);
-    if (!in) {
-      std::printf("FAILED: cannot read %s\n", argv[1]);
-      ++g_failed;
+    namespace fs = std::filesystem;
+    std::vector<fs::path> files;
+    std::error_code ec;
+    if (fs::is_directory(argv[1], ec)) {
+      for (const fs::directory_entry& entry : fs::directory_iterator(argv[1], ec)) {
+        if (entry.path().extension() != ".hlsl") continue;
+        const std::string stem = entry.path().stem().string();
+        bool named = false;
+        named = stem == sp::kUiSharpTextured.name;
+        for (const std::string_view suffix : sp::kUiSharpSuffixes) named |= stem.ends_with(suffix);
+        if (named) files.push_back(entry.path());
+      }
     } else {
+      files.push_back(argv[1]);
+    }
+    for (const fs::path& file : files) {
+      std::ifstream in(file, std::ios::binary);
+      if (!in) {
+        std::printf("FAILED: cannot read %s\n", file.string().c_str());
+        ++g_failed;
+        continue;
+      }
       const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-      const sp::VariantTransformResult r = sp::TransformUiSharpHlsl(sp::kUiSharpTextured, text);
-      Check(r.ok, std::string("the game's translated text transforms: ") + r.error);
-      if (r.ok) {
-        Check(Count(r.hlsl, "= tfetch2DUiSharp(") >= 1, "the game's call is renamed");
-        if (argc >= 3) {
-          std::error_code ec;
-          std::filesystem::create_directories(argv[2], ec);
-          const std::filesystem::path out = std::filesystem::path(argv[2]) / std::filesystem::path(argv[1]).filename();
-          std::ofstream file(out, std::ios::binary);
-          file << r.hlsl;
-          std::printf("wrote %s (%zu bytes)\n", out.string().c_str(), r.hlsl.size());
-        }
+      const std::string stem = file.stem().string();
+      const sp::VariantShader shader{stem, 0};
+      const sp::VariantTransformResult r = sp::TransformUiSharpHlsl(shader, text);
+      Check(r.ok, stem + ": the game's translated text transforms: " + r.error);
+      if (!r.ok) continue;
+      const size_t calls = Count(text, "tfetch2D(") - 1;
+      const size_t sharpened = Count(r.hlsl, "tfetch2DUiSharp(") - 1;
+      std::printf("%s: %zu fetch(es), %zu sharpened\n", stem.c_str(), calls, sharpened);
+      Check(sharpened >= 1 && sharpened <= calls, stem + ": at least one call renamed, none made up");
+      // the colour bitmap's calls are renamed and the others are not
+      for (const char* other : {"tfetch2DUiSharp(0u, DepthSampler", "tfetch2DUiSharp(1u, DepthSampler", "tfetch2DUiSharp(0u, dpFrontSampler", "tfetch2DUiSharp(1u, dpFrontSampler",
+                                "tfetch2DUiSharp(0u, BumpSampler", "tfetch2DUiSharp(4u, BumpSampler", "tfetch2DUiSharp(2u, GlossSampler", "tfetch2DUiSharp(3u, SpecSampler"}) {
+        Check(Count(r.hlsl, other) == 0, stem + ": " + other + " is not renamed");
+      }
+      if (argc >= 3) {
+        std::error_code ec2;
+        fs::create_directories(argv[2], ec2);
+        const fs::path out = fs::path(argv[2]) / file.filename();
+        std::ofstream outfile(out, std::ios::binary);
+        outfile << r.hlsl;
+        std::printf("wrote %s (%zu bytes)\n", out.string().c_str(), r.hlsl.size());
       }
     }
   }

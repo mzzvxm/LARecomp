@@ -123,6 +123,8 @@ class ShaderStore {
   // magnified (ui_sharp.h, shaderpack/variants/ui_sharp.h): chosen by the Scene for the UI phase's draws, not by pipelines.cpp;
   // 16 bytes of constants follow the shared block.
   static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::kVariantUiSharp;
+  // ... and the same text compiled with the alpha test (the main pack's spec variant 1), for the UI draws whose key is that one.
+  static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::kVariantUiSharpAlphaTest;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
