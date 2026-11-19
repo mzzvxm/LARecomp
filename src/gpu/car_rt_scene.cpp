@@ -1191,7 +1191,8 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
     ++stats_counts_.check_no_depth;
     if (stats_counts_.check_no_depth == 1) {
       REXLOG_WARN("{} the check needs the ambient occlusion's linear depth image and this frame has none (the occlusion and the contact "
-                  "shadows are off, or their passes did not run); it is asked again every frame", kPrefix);
+                  "shadows are off, or their passes did not run): this frame has no check, and a frame that has the image is checked again; the "
+                  "frames without one so far are counted at the end of every check line (this warning is said once)", kPrefix);
     }
     return;
   }
