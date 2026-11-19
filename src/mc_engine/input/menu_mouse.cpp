@@ -3,12 +3,19 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+
+#ifdef _WIN32
+#include <Windows.h>
+#include <SDL3/SDL.h>
+#endif
 
 #include "imgui.h"
 #include <rex/cvar.h>
@@ -64,6 +71,14 @@ REXCVAR_DEFINE_BOOL(menu_mouse_dump, false, "MCLA/Input",
 REXCVAR_DEFINE_BOOL(menu_mouse_dump_new, false, "MCLA/Input",
     "Debug: the same dump (menu_mouse_dump) once for every new menu the mouse meets (a new movie, list or UIMenu, or one that is read differently than before), fallbacks included, up to "
     "24 a run. For the tours: set it before the first menu opens.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(menu_mouse_trust_layouts, false, "MCLA/Input",
+    "Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage, pop-ups, dialogs) for the hover and for clicks on rows. Off: those menus are read and "
+    "logged (`[menu-mouse] menu ...: FALLBACK (the layout ... is not checked against a picture yet ...)`) but treated as a fallback menu: no hover, a left click presses the highlighted row, "
+    "the wheel and the right button work. Every page of those movies is a quad in the game's 3D menu scene whose size follows its list, so a scale and offset read from the clip tree "
+    "cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); the tour kbm-menu-mouse turns this on to measure it.")
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -174,8 +189,10 @@ void PlayScrollSound(const uint8_t* b, bool up) {
 
 std::atomic<uint64_t> g_pos{0};          // the last pointer position, window pixels, x in the high half
 std::atomic<uint64_t> g_move_seq{0};     // bumped by every motion event
-std::atomic<uint64_t> g_click_pos{0};    // the pointer where the last left button went down
-std::atomic<uint64_t> g_motion_pos{0};   // the pointer at the last MOTION event (a click that came with another place is logged with both: a tour's posted button message carried the desktop cursor's place twice in the first runs)
+std::atomic<uint64_t> g_click_pos{0};    // where the last left click was: its own message's place (mm::ClickPlaces), else the event's
+std::atomic<uint64_t> g_click_event_pos{0};  // the place the window layer put on the same button-down event (SDL's last pointer position: not necessarily where the click was)
+std::atomic<bool> g_click_from_message{false};  // g_click_pos came from the click's own message
+std::atomic<uint64_t> g_motion_pos{0};   // the pointer at the last MOTION event
 std::atomic<uint32_t> g_left_downs{0};   // button-down counts
 std::atomic<uint32_t> g_right_downs{0};
 std::atomic<uint32_t> g_back_downs{0};   // the back button (X1)
@@ -190,6 +207,97 @@ void Unpack(uint64_t v, int32_t* x, int32_t* y) {
     *y = int32_t(uint32_t(v & 0xFFFFFFFFu));
 }
 
+uint64_t NowMs() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// The click's own place (menu_mouse_core.h "Where a click was"). The window's message hook (Windows) notes where each button-down MESSAGE was; the button-down EVENT the listener gets
+// afterwards takes it, because SDL's place on that event is the pointer's last place, which the desktop cursor can replace without a motion. Both run on the UI thread; the lock is for
+// a second thread that pumps SDL.
+std::mutex g_places_mutex;
+mm::ClickPlaces g_places;
+std::atomic<uint32_t> g_hook_buttons{0};  // button-down messages the hook saw: 0 with clicks arriving = the hook is not installed or was replaced (always 0 off Windows)
+
+mm::Button ButtonOfEvent(rex::ui::MouseEvent::Button b) {
+    switch (b) {
+        case rex::ui::MouseEvent::Button::kLeft: return mm::Button::Left;
+        case rex::ui::MouseEvent::Button::kRight: return mm::Button::Right;
+        case rex::ui::MouseEvent::Button::kX1: return mm::Button::Back;
+        default: return mm::Button::Other;
+    }
+}
+
+#ifdef _WIN32
+std::atomic<void*> g_game_hwnd{nullptr};
+std::atomic<int> g_hook_lines{0};  // diagnostic lines the hook logged (menu_mouse_dump_new), capped
+constexpr int kMaxHookLines = 60;
+
+// One diagnostic line of the hook, with the place of the message and the desktop cursor in the window's client pixels. Only with menu_mouse_dump_new; a run logs 60 of them at most.
+void HookLog(const char* what, const MSG* msg, bool has_place, int32_t mx, int32_t my) {
+    if (g_hook_lines.fetch_add(1, std::memory_order_relaxed) >= kMaxHookLines) return;
+    POINT pt = msg->pt;
+    if (HWND hwnd = static_cast<HWND>(g_game_hwnd.load(std::memory_order_relaxed))) ScreenToClient(hwnd, &pt);
+    if (has_place) MC_INFO("[menu-mouse] message {}: client ({}, {}); the desktop cursor was at client ({}, {}) when it was posted", what, mx, my, int(pt.x), int(pt.y));
+    else MC_INFO("[menu-mouse] message {}; the desktop cursor was at client ({}, {}) when it was posted (SDL takes this place for the pointer on a leave or a focus change)", what, int(pt.x), int(pt.y));
+}
+
+// Runs on the thread that pumps SDL (the UI thread), before SDL looks at the message. It only reads the message: it never swallows one.
+bool SDLCALL WindowMessageHook(void*, MSG* msg) {
+    HWND game = static_cast<HWND>(g_game_hwnd.load(std::memory_order_relaxed));
+    mm::Button b;
+    if (mm::ButtonOfMessage(msg->message, uint32_t(HIWORD(uint32_t(msg->wParam))), &b)) {
+        if (!game || msg->hwnd == game) {
+            int32_t x, y;
+            mm::ClientOfLParam(uint64_t(msg->lParam), &x, &y);
+            {
+                std::lock_guard<std::mutex> lock(g_places_mutex);
+                g_places.NoteMessage(b, x, y, NowMs());
+            }
+            g_hook_buttons.fetch_add(1, std::memory_order_relaxed);
+            if (REXCVAR_GET(menu_mouse_dump_new)) HookLog(b == mm::Button::Left ? "WM_LBUTTONDOWN" : (b == mm::Button::Right ? "WM_RBUTTONDOWN" : "WM_XBUTTONDOWN"), msg, true, x, y);
+        }
+        return true;
+    }
+    // What may move SDL's pointer without a motion of the mouse (run 3's stale click): the messages around it, for the next run's log.
+    switch (msg->message) {
+        case WM_MOUSELEAVE:
+        case WM_CAPTURECHANGED:
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+        case WM_ACTIVATE:
+            if ((!game || msg->hwnd == game) && REXCVAR_GET(menu_mouse_dump_new)) {
+                const char* name = msg->message == WM_MOUSELEAVE ? "WM_MOUSELEAVE" : msg->message == WM_CAPTURECHANGED ? "WM_CAPTURECHANGED"
+                                 : msg->message == WM_SETFOCUS ? "WM_SETFOCUS" : msg->message == WM_KILLFOCUS ? "WM_KILLFOCUS" : "WM_ACTIVATE";
+                HookLog(name, msg, false, 0, 0);
+            }
+            break;
+        case WM_MOUSEMOVE: {
+            // A motion message whose own place is the desktop cursor's place (posted by the system, not by a tour) and not where the last posted one was: the desktop cursor moved
+            // or the system made a motion of its own. Logged only when it is not the place of the last motion message of the other kind.
+            static int32_t last_posted_x = -1, last_posted_y = -1;
+            if (game && msg->hwnd == game && REXCVAR_GET(menu_mouse_dump_new)) {
+                int32_t x, y;
+                mm::ClientOfLParam(uint64_t(msg->lParam), &x, &y);
+                POINT pt = msg->pt;
+                ScreenToClient(game, &pt);
+                const bool from_os = std::abs(int(pt.x) - x) <= 1 && std::abs(int(pt.y) - y) <= 1;
+                if (!from_os) {
+                    last_posted_x = x;
+                    last_posted_y = y;
+                } else if (std::abs(x - last_posted_x) > 3 || std::abs(y - last_posted_y) > 3) {
+                    HookLog("WM_MOUSEMOVE from the system", msg, true, x, y);
+                    last_posted_x = x;
+                    last_posted_y = y;
+                }
+            }
+            break;
+        }
+        default: break;
+    }
+    return true;
+}
+#endif
+
 class MenuMouseListener final : public rex::ui::WindowInputListener {
 public:
     void OnMouseMove(rex::ui::MouseEvent& e) override {
@@ -198,14 +306,24 @@ public:
         g_move_seq.fetch_add(1, std::memory_order_relaxed);
     }
     void OnMouseDown(rex::ui::MouseEvent& e) override {
-        g_pos.store(Pack(e.x(), e.y()), std::memory_order_relaxed);
-        switch (e.button()) {
-            case rex::ui::MouseEvent::Button::kLeft:
-                g_click_pos.store(Pack(e.x(), e.y()), std::memory_order_relaxed);
-                g_left_downs.fetch_add(1, std::memory_order_relaxed);
+        const mm::Button button = ButtonOfEvent(e.button());
+        mm::ClickPick pick;
+        pick.x = e.x();
+        pick.y = e.y();
+        if (button != mm::Button::Other) {
+            std::lock_guard<std::mutex> lock(g_places_mutex);
+            pick = g_places.TakeEvent(button, e.x(), e.y(), NowMs());
+        }
+        g_pos.store(Pack(pick.x, pick.y), std::memory_order_relaxed);
+        switch (button) {
+            case mm::Button::Left:
+                g_click_pos.store(Pack(pick.x, pick.y), std::memory_order_relaxed);
+                g_click_event_pos.store(Pack(e.x(), e.y()), std::memory_order_relaxed);
+                g_click_from_message.store(pick.from_message, std::memory_order_relaxed);
+                g_left_downs.fetch_add(1, std::memory_order_release);
                 break;
-            case rex::ui::MouseEvent::Button::kRight: g_right_downs.fetch_add(1, std::memory_order_relaxed); break;
-            case rex::ui::MouseEvent::Button::kX1: g_back_downs.fetch_add(1, std::memory_order_relaxed); break;
+            case mm::Button::Right: g_right_downs.fetch_add(1, std::memory_order_relaxed); break;
+            case mm::Button::Back: g_back_downs.fetch_add(1, std::memory_order_relaxed); break;
             default: break;
         }
     }
@@ -230,6 +348,13 @@ void EnsureListener(rex::ui::Window* window) {
         window->AddInputListener(&g_listener, 0);
         g_listener_attached.store(true, std::memory_order_relaxed);
         MC_INFO("[menu-mouse] mouse listener attached to the window");
+#ifdef _WIN32
+        // The click's own place (see g_places). One hook for the process; nothing else of ours or the SDK's uses SDL_SetWindowsMessageHook (CHECK: a build that adds one would replace this:
+        // the click line then says "no click message was seen" and the event's place is used, as before).
+        g_game_hwnd.store(window->GetNativeWindowHandle(), std::memory_order_relaxed);
+        SDL_SetWindowsMessageHook(&WindowMessageHook, nullptr);
+        MC_INFO("[menu-mouse] click places come from the button messages themselves (SDL message hook)");
+#endif
     });
     if (!queued) g_listener_posted.store(false);
 }
@@ -251,6 +376,7 @@ struct MenuView {
     bool card_wide = false;  // ... for a page with `< value >` rows
     float card_prompt_y = 0.0f;
     bool relaxed = false;    // the layout passed only the opened-up plausibility test (a clip called slotsA with shown slots)
+    bool unverified = false; // a movie other than PAUSEMOVIE: the layout was read but is not trusted (menu_mouse_trust_layouts): rows_known is false
     char movie[48] = {};
     // What the reading found, for the log (ReportMenu) and the dump.
     mm::StageScale scale;
@@ -770,7 +896,7 @@ mm::Layout LayoutOfList(const uint8_t* b, uint32_t list, bool pause_movie, const
 //                any other movie: the list and the UIMenu FlashNavigator filled, the later one first (the garage has both: its main menu is a UIMenu, its customization pages are lists).
 //   a candidate  is taken when the clip tree shows rows the list draws (its window) or rows the UIMenu has, in a layout that passes Plausible.
 //   the model    PAUSEMOVIE only, when the movie has no slot clips at all and the list reads: the rows are put where the pictures have them (mm::ModelLayout).
-void ReadMenu(const uint8_t* b, MenuView& view) {
+void ReadMenuRaw(const uint8_t* b, MenuView& view) {
     view = MenuView{};
     larecomp::keyboard::CurrentMovieName(view.movie, sizeof(view.movie));
     if (!view.movie[0]) return;
@@ -968,6 +1094,30 @@ void ReadMenu(const uint8_t* b, MenuView& view) {
             Note(view, "rows %d..%d from the model of a %s page; ", first, end - 1, values ? "value (wide)" : "plain (narrow)");
         }
     }
+}
+
+// What the mouse is allowed to believe of a reading. The pause movie's rows are placed by a projection fitted to its card (rms 0.22 stage pixels over four pages). Every other movie is a
+// clip-tree layout through the display state's scale and nothing else, and the one picture there is of such a menu (round 1, the garage) says it is wrong: a plausible-looking list at
+// the wrong place makes hover walk to the wrong row and clicks land on no row at all. Until a run measures it (the tour turns menu_mouse_trust_layouts on and the log line has the numbers
+// to hold against the picture), those menus are fallback menus.
+void ReadMenu(const uint8_t* b, MenuView& view) {
+    ReadMenuRaw(b, view);
+    if (!view.rows_known || mm::LayoutTrusted(std::strcmp(view.movie, "PAUSEMOVIE") == 0, REXCVAR_GET(menu_mouse_trust_layouts))) return;
+    const mm::RowBox& first = view.layout.rows[0];
+    // In front of what each candidate lacked (the reading's notes can fill the line).
+    char head[260];
+    const int hn = std::snprintf(head, sizeof(head),
+        "the layout of this movie's rows (%d rows, first row stage (%.1f, %.1f), pitch %.1f) is not checked against a picture yet, so it is not used for hover or clicks on rows "
+        "(menu_mouse_trust_layouts reads it anyway); ",
+        view.layout.n, first.x0, first.y0, view.layout.pitch);
+    const size_t len = size_t(std::max(0, std::min<int>(hn, int(sizeof(head)) - 1)));
+    const size_t cur = std::strlen(view.why);
+    const size_t keep = std::min(cur, sizeof(view.why) - 1 - len);
+    std::memmove(view.why + len, view.why, keep);
+    std::memcpy(view.why, head, len);
+    view.why[len + keep] = 0;
+    view.rows_known = false;
+    view.unverified = true;
 }
 
 // ── pressing ────────────────────────────────────────────────────────────
@@ -1309,7 +1459,7 @@ void Tick(uint8_t* b) {
     const uint64_t move_seq = g_move_seq.load(std::memory_order_relaxed);
     const bool moved = move_seq != s.last_move_seq;
     s.last_move_seq = move_seq;
-    const uint32_t lefts = g_left_downs.load(std::memory_order_relaxed);
+    const uint32_t lefts = g_left_downs.load(std::memory_order_acquire);
     const uint32_t rights = g_right_downs.load(std::memory_order_relaxed);
     const uint32_t backs = g_back_downs.load(std::memory_order_relaxed);
     const int left_clicks = int(lefts - s.last_left);
@@ -1386,12 +1536,25 @@ void Tick(uint8_t* b) {
         Unpack(g_click_pos.load(std::memory_order_relaxed), &cx, &cy);
         float csx = 0.0f, csy = 0.0f;
         mm::WindowToStage(hud, float(cx), float(cy), &csx, &csy);
-        // Where the last motion event was, when it is not where the button went down (a real mouse: the same place; a tour's posted messages: not always).
-        char motion_note[96] = {};
+        // Where the click's place came from. A click takes its own message's place; when SDL's place on the same event is somewhere else (the case of run 3: the desktop cursor's place, the click
+        // 2.2 s after the pointer's last move) the line says both, so the next run shows how often it happens. The last motion event's place is named too when it is not the click's.
+        char motion_note[240] = {};
         {
-            int32_t mox, moy;
+            size_t used = 0;
+            const auto add = [&](const char* fmt, int a, int b) {
+                if (used + 2 < sizeof(motion_note)) used += size_t(std::max(0, std::snprintf(motion_note + used, sizeof(motion_note) - used, fmt, a, b)));
+            };
+            int32_t ex, ey, mox, moy;
+            Unpack(g_click_event_pos.load(std::memory_order_relaxed), &ex, &ey);
             Unpack(g_motion_pos.load(std::memory_order_relaxed), &mox, &moy);
-            if (std::abs(mox - cx) > 3 || std::abs(moy - cy) > 3) std::snprintf(motion_note, sizeof(motion_note), " [the last motion event was at window (%d, %d)]", int(mox), int(moy));
+            if (!g_click_from_message.load(std::memory_order_relaxed)) {
+                std::snprintf(motion_note, sizeof(motion_note), "%s",
+                    g_hook_buttons.load(std::memory_order_relaxed) == 0 ? " [no click message was seen: the event's place]" : " [the click's message was not fresh: the event's place]");
+                used = std::strlen(motion_note);
+            } else if (std::abs(ex - cx) > 3 || std::abs(ey - cy) > 3) {
+                add(" [SDL's event said window (%d, %d): not used]", ex, ey);
+            }
+            if (std::abs(mox - cx) > 3 || std::abs(moy - cy) > 3) add(" [the last motion event was at window (%d, %d)]", mox, moy);
         }
         const bool rows_known = view.rows_known && view.selected >= -1;
         const int hit = rows_known ? mm::HitRow(view.layout, csx, csy) : -1;

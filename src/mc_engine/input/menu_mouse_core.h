@@ -526,6 +526,11 @@ inline int HoverTarget(bool enabled, bool pointer_moved, bool kbm_active, bool r
     return (hit_row >= 0 && hit_row != selected_row) ? hit_row : -1;
 }
 
+// Whether a menu's rows, as read, may be believed for hover and for clicks on rows. The pause movie's are (a projection fitted to its card, four pages, rms 0.22 stage pixels). Another
+// movie's are a clip-tree layout through the display state's scale, which the one picture of such a menu (the garage, round 1) contradicts: they are believed only when the debug setting
+// menu_mouse_trust_layouts says so, until a run has measured them. A menu that is not believed is a fallback menu (hover off, a click is ACCEPT on the highlighted row).
+inline bool LayoutTrusted(bool pause_movie, bool trust_setting) { return pause_movie || trust_setting; }
+
 // The pointer is wanted on screen: a menu is up, the keyboard and mouse are the device in use, the window has the focus, the setting is on.
 inline bool WantsPointer(bool setting_on, bool menu_up, bool kbm_active, bool focused) { return setting_on && menu_up && kbm_active && focused; }
 
@@ -662,6 +667,109 @@ inline Act StepPending(PendingClick& p, int selected, bool* done) {
         p.active = false;
     }
     return Act::None;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Where a click was
+// ---------------------------------------------------------------------------------------------------------------------------------
+//
+// The window layer reports a button going down with a place, and that place is NOT the click's own: SDL's Windows backend throws away the position of WM_LBUTTONDOWN (its lParam) and
+// puts the pointer position it last had, from the last motion it took, on the event. That position is replaced by the desktop cursor's own at several moments that have nothing to do
+// with the click (WM_MOUSELEAVE and a focus change read the message's cursor position; a captured mouse is polled with GetCursorPos on every pump while no leave is being tracked), so
+// a click that comes a while after the last motion can land where the desktop cursor is, not where the pointer was moved to. The tour of run 3 had exactly that: the click on GO TO
+// GARAGE came 2.2 s after the pointer's last move and was read at the same window point (1832, 1126) in three runs, the desktop cursor's resting place, while every click 0.25 s
+// after its move was right.
+//
+// A real mouse's WM_LBUTTONDOWN carries the click's own client position, and so does the message a tour posts. So the click takes its place from its own message: the window's message hook
+// (menu_mouse.cpp, SDL_SetWindowsMessageHook, called before SDL looks at the message) notes the position of every button-down message, and the button-down event the listener gets
+// afterwards takes the oldest note of that button that is still fresh. No fresh note (a platform with no message hook, raw mouse input, a hook another part took over): the event's own place.
+enum class Button : uint8_t { Left, Right, Back, Other };
+inline constexpr int kButtonCount = 4;
+inline constexpr int kClickNotes = 4;                   // button-down messages kept per button until their events arrive (a double click is two)
+inline constexpr uint64_t kClickNoteMaxAgeMs = 250;     // the message and its event are handled within one pump of the UI thread; a note older than this belongs to an event that never came
+
+struct ClickPick {
+    int32_t x = 0, y = 0;     // the place the click takes
+    bool from_message = false;  // from the click's own message (false: the event's place, no fresh note)
+};
+
+class ClickPlaces {
+public:
+    // A button-down MESSAGE was seen (the window's message hook, UI thread), at this client place.
+    void NoteMessage(Button b, int32_t x, int32_t y, uint64_t now_ms) {
+        const int i = int(b);
+        if (i < 0 || i >= kButtonCount) return;
+        Queue& q = q_[i];
+        if (q.n == kClickNotes) {  // full: the oldest goes
+            for (int k = 1; k < q.n; ++k) q.e[k - 1] = q.e[k];
+            --q.n;
+        }
+        q.e[q.n++] = Entry{x, y, now_ms};
+        ++noted_;
+    }
+    // A button-down EVENT arrived (the window listener, UI thread) with the event's own place: the place the click takes.
+    ClickPick TakeEvent(Button b, int32_t event_x, int32_t event_y, uint64_t now_ms) {
+        ClickPick pick;
+        pick.x = event_x;
+        pick.y = event_y;
+        const int i = int(b);
+        if (i >= 0 && i < kButtonCount) {
+            Queue& q = q_[i];
+            int drop = 0;  // notes too old to be this event's (their event never came)
+            while (drop < q.n && now_ms - q.e[drop].t > kClickNoteMaxAgeMs) ++drop;
+            if (drop) {
+                for (int k = drop; k < q.n; ++k) q.e[k - drop] = q.e[k];
+                q.n -= drop;
+                stale_ += drop;
+            }
+            if (q.n > 0) {
+                pick.x = q.e[0].x;
+                pick.y = q.e[0].y;
+                pick.from_message = true;
+                for (int k = 1; k < q.n; ++k) q.e[k - 1] = q.e[k];
+                --q.n;
+            }
+        }
+        (pick.from_message ? from_message_ : from_event_) += 1;
+        return pick;
+    }
+    uint32_t Noted() const { return noted_; }
+    uint32_t FromMessage() const { return from_message_; }
+    uint32_t FromEvent() const { return from_event_; }
+    uint32_t Stale() const { return stale_; }
+
+private:
+    struct Entry {
+        int32_t x = 0, y = 0;
+        uint64_t t = 0;
+    };
+    struct Queue {
+        Entry e[kClickNotes];
+        int n = 0;
+    };
+    Queue q_[kButtonCount];
+    uint32_t noted_ = 0, from_message_ = 0, from_event_ = 0, stale_ = 0;
+};
+
+// A button-down message of the window: which button it is (WM_LBUTTONDOWN / WM_LBUTTONDBLCLK, WM_RBUTTON..., WM_XBUTTON... with XBUTTON1 = the back button), false for any other
+// message. `msg` is the message id and `wparam_hi` the high word of its wParam (the X button number). The ids are Windows' (winuser.h) and written here so the rules need no Windows header.
+inline constexpr uint32_t kWmLButtonDown = 0x0201, kWmLButtonDblClk = 0x0203, kWmRButtonDown = 0x0204, kWmRButtonDblClk = 0x0206, kWmXButtonDown = 0x020B, kWmXButtonDblClk = 0x020D;
+inline bool ButtonOfMessage(uint32_t msg, uint32_t wparam_hi, Button* out) {
+    switch (msg) {
+        case kWmLButtonDown:
+        case kWmLButtonDblClk: *out = Button::Left; return true;
+        case kWmRButtonDown:
+        case kWmRButtonDblClk: *out = Button::Right; return true;
+        case kWmXButtonDown:
+        case kWmXButtonDblClk: *out = wparam_hi == 1 ? Button::Back : Button::Other; return true;
+        default: return false;
+    }
+}
+
+// A message's lParam as a client place (two signed 16-bit halves: GET_X_LPARAM / GET_Y_LPARAM).
+inline void ClientOfLParam(uint64_t lparam, int32_t* x, int32_t* y) {
+    *x = int32_t(int16_t(uint16_t(lparam & 0xFFFFu)));
+    *y = int32_t(int16_t(uint16_t((lparam >> 16) & 0xFFFFu)));
 }
 
 }  // namespace larecomp::menumouse

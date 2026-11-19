@@ -729,6 +729,192 @@ void TestCardClicksOfTheRun() {
     CHECK(PlanLeftClick(true, -1, Zone::Label, false).act == Act::None);
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Round 4: where a click was. Run 3's click on GO TO GARAGE came 2.2 s after the pointer's last move and was read at window (1832, 1126) (the desktop cursor's place), so it chose no row.
+// The model below is the stack as the sources say it is: SDL's Windows backend keeps its own last pointer position, puts THAT on a button-down event and ignores the position in the
+// WM_LBUTTONDOWN message; the desktop cursor can replace SDL's position without any motion (a mouse leave, a focus change, a polled capture). The code under test is what the glue
+// calls: ClickPlaces (the hook notes the message's own place, the listener takes it at the event).
+
+struct FakeStack {
+    int os_x = 1832, os_y = 1126;      // the desktop cursor, in the window's client pixels: it never moves in a tour (nothing of the harness moves the real cursor)
+    int sdl_x = 1832, sdl_y = 1126;    // SDL's last pointer position
+    bool shown = true;
+    uint64_t t = 100000;               // ms
+    bool hook = true;                  // the message hook is installed
+    ClickPlaces places;
+    ClickPick last;
+    int event_x = 0, event_y = 0;      // the place SDL put on the last button-down event
+
+    void HidePointer() { shown = false; }  // SDL_HideCursor: the pointer's place is untouched
+    void ShowPointer() { shown = true; }
+    // The harness's motion: WM_MOUSEMOVE messages in six steps. SDL takes every one as the pointer's new place; the hook has no use for them.
+    void PostMove(int x, int y) {
+        const int fx = sdl_x, fy = sdl_y;
+        for (int i = 1; i <= 6; ++i) {
+            sdl_x = fx + (x - fx) * i / 6;
+            sdl_y = fy + (y - fy) * i / 6;
+        }
+    }
+    // Time passes; `desktop_takes_over` = one of the moments that put the desktop cursor's place into SDL's pointer position.
+    void Idle(uint64_t ms, bool desktop_takes_over) {
+        t += ms;
+        if (desktop_takes_over) {
+            sdl_x = os_x;
+            sdl_y = os_y;
+        }
+    }
+    // A left button-down: the message (its own place in lParam), then SDL's event for it a moment later with SDL's own place on it.
+    ClickPick Click(int x, int y) {
+        if (hook) places.NoteMessage(Button::Left, x, y, t);
+        event_x = sdl_x;
+        event_y = sdl_y;
+        last = places.TakeEvent(Button::Left, event_x, event_y, t + 1);
+        return last;
+    }
+};
+
+void TestLayoutTrust() {
+    // The pause movie is believed; the garage and the pop-ups are a fallback menu until the debug setting says otherwise.
+    CHECK(LayoutTrusted(true, false));
+    CHECK(LayoutTrusted(true, true));
+    CHECK(!LayoutTrusted(false, false));
+    CHECK(LayoutTrusted(false, true));
+    // What a fallback menu does with a click: ACCEPT on the highlighted row, wherever the pointer is (the layout is not consulted), and no hover.
+    CHECK(PlanLeftClick(false, -1, Zone::Label, false).act == Act::Accept && PlanLeftClick(false, -1, Zone::Label, false).row == -1);
+    CHECK(HoverTarget(true, true, true, false, 2, 0) == -1);
+}
+
+void TestClickPlaces() {
+    const mc::frame::Layout l = mc::frame::LayoutOf(mc::frame::Choice::kAuto, 2880, 1620);
+    const HudRect hud = HudOf(l.frame, l.ui_fraction, l.ui_height_fraction);
+    const Layout pause = PageLayout(3, 78.9f, 344.7f, false);  // the pause menu's first page: CONTINUE, GO TO GARAGE, SAVE GAME
+
+    // The run's sequence (log lines 2681-2692): the pad hid the pointer, the mouse moved to (742, 821) and (765, 821) = stage (330, 365) / (340, 365) with the pointer shown in between,
+    // 2.2 s went by (the tour's picture holds 1.5 s) and the left button went down at (765, 821). Something put the desktop cursor's place into SDL's position meanwhile.
+    {
+        FakeStack s;
+        s.HidePointer();
+        s.PostMove(742, 821);
+        s.ShowPointer();
+        s.PostMove(765, 821);
+        CHECK(s.sdl_x == 765 && s.sdl_y == 821);
+        s.Idle(2236, true);
+        CHECK(s.sdl_x == 1832 && s.sdl_y == 1126);  // what the old code would have read
+        const ClickPick pick = s.Click(765, 821);
+        CHECK(s.event_x == 1832 && s.event_y == 1126);  // SDL's event still says so
+        CHECK(pick.from_message && pick.x == 765 && pick.y == 821);  // the click takes its own place
+        float sx, sy;
+        CHECK(WindowToStage(hud, float(pick.x), float(pick.y), &sx, &sy));
+        CHECK(Near(sx, 340.0, 0.25) && Near(sy, 365.0, 0.25));  // whole window pixels: 821 / 2.25 = 364.9
+        CHECK(HitRow(pause, sx, sy) == 1);
+        const ClickPlan plan = PlanLeftClick(true, HitRow(pause, sx, sy), Zone::Label, false);
+        CHECK(plan.act == Act::Accept && plan.row == 1);
+        // The stale place of the run: far right of the card, row -1, "none": what the click did before.
+        float ox, oy;
+        WindowToStage(hud, float(s.event_x), float(s.event_y), &ox, &oy);
+        CHECK(Near(ox, 814.2, 0.1) && Near(oy, 500.4, 0.1));
+        CHECK(HitRow(pause, ox, oy) == -1);
+    }
+    // The same without the desktop cursor taking over: the same place (a click 0.25 s after its move, the ones that worked).
+    {
+        FakeStack s;
+        s.HidePointer();
+        s.PostMove(765, 821);
+        s.ShowPointer();
+        s.Idle(250, false);
+        const ClickPick pick = s.Click(765, 821);
+        CHECK(pick.from_message && pick.x == 765 && pick.y == 821 && s.event_x == 765 && s.event_y == 821);
+    }
+    // A real mouse: the desktop cursor IS the pointer, so the message and the event agree; hiding and showing the pointer between the last move and the click changes nothing.
+    {
+        FakeStack s;
+        s.os_x = 600;
+        s.os_y = 700;
+        s.PostMove(600, 700);
+        s.HidePointer();
+        s.ShowPointer();
+        s.Idle(5000, true);  // SDL's position is the desktop cursor's, which is where the pointer is
+        const ClickPick pick = s.Click(600, 700);
+        CHECK(pick.from_message && pick.x == 600 && pick.y == 700 && s.event_x == 600 && s.event_y == 700);
+    }
+    // A click that moves the pointer in the same breath (a real mouse: motion, then the button, one pump): the message's place wins over a SDL position that is one motion behind.
+    {
+        FakeStack s;
+        s.PostMove(300, 300);
+        const ClickPick pick = s.Click(305, 302);
+        CHECK(pick.from_message && pick.x == 305 && pick.y == 302);
+    }
+    // No hook (another platform, a hook another part took over): the event's own place, marked as not from a message.
+    {
+        FakeStack s;
+        s.hook = false;
+        s.PostMove(765, 821);
+        const ClickPick pick = s.Click(765, 821);
+        CHECK(!pick.from_message && pick.x == 765 && pick.y == 821);
+        CHECK(s.places.Noted() == 0 && s.places.FromEvent() == 1 && s.places.FromMessage() == 0);
+    }
+    // A note is used once, and only while it is fresh: its event came at once (1 ms) or never (a click an overlay took first: the next click, long after, has its own message).
+    {
+        ClickPlaces p;
+        p.NoteMessage(Button::Left, 10, 20, 1000);
+        ClickPick a = p.TakeEvent(Button::Left, 99, 99, 1001);
+        CHECK(a.from_message && a.x == 10 && a.y == 20);
+        ClickPick b = p.TakeEvent(Button::Left, 99, 98, 1002);  // no second note: the event's place
+        CHECK(!b.from_message && b.x == 99 && b.y == 98);
+        p.NoteMessage(Button::Left, 1, 2, 2000);
+        ClickPick c = p.TakeEvent(Button::Left, 7, 8, 2000 + kClickNoteMaxAgeMs);  // exactly the limit: still the note's
+        CHECK(c.from_message && c.x == 1 && c.y == 2);
+        p.NoteMessage(Button::Left, 3, 4, 3000);
+        ClickPick d = p.TakeEvent(Button::Left, 7, 8, 3000 + kClickNoteMaxAgeMs + 1);  // one ms past it: dropped
+        CHECK(!d.from_message && d.x == 7 && d.y == 8 && p.Stale() == 1);
+        // A note that went stale does not serve the next event either.
+        p.NoteMessage(Button::Left, 5, 6, 4000);
+        p.NoteMessage(Button::Left, 50, 60, 4400);
+        ClickPick e = p.TakeEvent(Button::Left, 0, 0, 4401);  // the first is 401 ms old: dropped, the second is its
+        CHECK(e.from_message && e.x == 50 && e.y == 60 && p.Stale() == 2);
+    }
+    // Two clicks in one pump (a double click): two notes, two events, in order. A full queue drops the oldest.
+    {
+        ClickPlaces p;
+        p.NoteMessage(Button::Left, 1, 1, 100);
+        p.NoteMessage(Button::Left, 2, 2, 101);
+        ClickPick a = p.TakeEvent(Button::Left, 0, 0, 102);
+        ClickPick b = p.TakeEvent(Button::Left, 0, 0, 103);
+        CHECK(a.x == 1 && b.x == 2 && a.from_message && b.from_message);
+        for (int i = 0; i < kClickNotes + 1; ++i) p.NoteMessage(Button::Left, 10 + i, 0, 200);
+        ClickPick c = p.TakeEvent(Button::Left, 0, 0, 201);
+        CHECK(c.x == 11);  // the note of 10 was pushed out
+    }
+    // The buttons keep their own notes: a right button note does not serve a left event, and the back button is X button 1.
+    {
+        ClickPlaces p;
+        p.NoteMessage(Button::Right, 40, 50, 100);
+        ClickPick a = p.TakeEvent(Button::Left, 9, 9, 101);
+        CHECK(!a.from_message && a.x == 9);
+        ClickPick b = p.TakeEvent(Button::Right, 9, 9, 102);
+        CHECK(b.from_message && b.x == 40 && b.y == 50);
+        Button which = Button::Other;
+        CHECK(ButtonOfMessage(kWmLButtonDown, 0, &which) && which == Button::Left);
+        CHECK(ButtonOfMessage(kWmLButtonDblClk, 0, &which) && which == Button::Left);
+        CHECK(ButtonOfMessage(kWmRButtonDown, 0, &which) && which == Button::Right);
+        CHECK(ButtonOfMessage(kWmXButtonDown, 1, &which) && which == Button::Back);
+        CHECK(ButtonOfMessage(kWmXButtonDown, 2, &which) && which == Button::Other);
+        CHECK(!ButtonOfMessage(0x0200 /* WM_MOUSEMOVE */, 0, &which));
+        CHECK(!ButtonOfMessage(0x0202 /* WM_LBUTTONUP */, 0, &which));
+        CHECK(!ButtonOfMessage(0x0207 /* WM_MBUTTONDOWN */, 0, &which));
+    }
+    // lParam = two signed 16-bit halves: (765, 821); a window left of or above the main screen has negative client places.
+    {
+        int32_t x = 0, y = 0;
+        ClientOfLParam((uint64_t(821) << 16) | 765u, &x, &y);
+        CHECK(x == 765 && y == 821);
+        ClientOfLParam((uint64_t(uint16_t(int16_t(10))) << 16) | uint16_t(int16_t(-5)), &x, &y);
+        CHECK(x == -5 && y == 10);
+        ClientOfLParam(0xFFFFFFFFFFFF0003ull, &x, &y);  // the upper 32 bits of a 64-bit LPARAM are not part of the place
+        CHECK(x == 3 && y == -1);
+    }
+}
+
 void TestCardShape() {
     // The map and its inverse.
     for (float x : {160.0f, 250.0f, 400.0f, 550.0f})
@@ -824,6 +1010,8 @@ int main() {
     TestCardFixtures();
     TestCardClicksOfTheRun();
     TestCardShape();
+    TestClickPlaces();
+    TestLayoutTrust();
     std::printf("menu_mouse_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

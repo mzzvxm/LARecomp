@@ -21,6 +21,10 @@
 // click is ACCEPT on the highlighted row wherever the pointer is, the wheel and the right button work as always. The log says which menus were which and why (`[menu-mouse] menu ...`);
 // the debug settings menu_mouse_dump / menu_mouse_dump_new log the candidates and the clip tree.
 //
+// A click takes the place of its own message (the window's message hook notes where each button-down message was; SDL's own place on the event can be the desktop cursor's: menu_mouse_core.h
+// "Where a click was"). A movie other than the pause menu is a fallback menu unless the debug setting menu_mouse_trust_layouts is on: its layout is a clip-tree scale nobody has checked
+// against a picture (menu_mouse_core.h LayoutTrusted).
+//
 // Not handled: the pause menu's tab strip (LB / RB on the keyboard), the full map (map_mouse.cpp has its own), the Sidekick phone, the title and the sign-in screens.
 
 #include <cstdint>
