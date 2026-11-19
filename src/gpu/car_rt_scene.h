@@ -70,8 +70,11 @@
 //
 // THE CHECK (mcla_gpu_car_rt_check, debug; recorded by OnAfterOcclusion): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
 // through every vehicle pixel of the occlusion's linear depth image that the scene is meant to hold and compares the committed hit's distance
-// with the pixel's (hlsl/car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
-// shows the error / the normals over the scene. This is what proves the camera space, the matrices and the meshes on the first run.
+// with the pixel's (hlsl/car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2/3
+// shows the error / the normals / another car's paint row over the scene. This is what proves the camera space, the matrices and the meshes on the first run.
+// THE PAINT PROBE (RT-MODEL-CARS-4): the same pass's thread (0, 0) copies the first four cars' records (the two rows each, CarRow and CarPaintRow) out of the table with the shader's own
+// loads, and the host compares them, bit for bit, with the rows it wrote that frame (car_rt_instances_rules.h CarRecordLog): the "[car rt] paint probe of frame N" line says IDENTICAL
+// for each car or DIFFERENT. That is the proof that the paint colour the reflection pass uses is the one the host sent (car_rt_scene_rules.h DecodeProbe).
 // The pixels the scene is meant to hold are the player's car's and those of the other cars the frame's selection kept (the class's radius and count,
 // the cars 0 switch); the driver is left out of the scene (its pixels stay in the player's count: the depth image has no mask for it). A vehicle
 // pixel of any other car is counted apart as "not in the scene by design" (car_rt_scene_rules.h THE SCOPE: placed in the kept cars' boxes).
@@ -134,6 +137,10 @@ struct CarRtView {
   const car_rt_instances::ViewBox* boxes = nullptr;
   uint32_t box_count = 0;
   uint32_t box_row = 0;
+  // The other cars' records in the same table (two rows a car, CarRow then CarPaintRow, from row `car_row`) and what the host wrote in each (the check's probe compares them).
+  uint32_t car_row = 0;
+  uint32_t car_count = 0;
+  std::vector<car_rt_instances::CarRecordLog> records;
   // The player's own car's box in the same space, from its listed instances' transformed mesh boxes (valid = false: none had a box). Used by the check.
   car_rt_instances::ViewBox player_box;
   // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
@@ -262,9 +269,9 @@ class CarRtScene final : public car_frame::Listener {
 
   // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 80 bytes.
   struct CheckPush {
-    uint32_t slots[4];  // the linear depth image's slot, its width and height, the flags (bit 0 write the picture, bits 8-15 the view mode)
+    uint32_t slots[4];  // the linear depth image's slot, its width and height, the flags (bit 0 write the picture, bits 8-15 the view mode, bits 16-23 the cars' records the table holds)
     float lens[4];      // tan of the half field of view (x, y), the ray's start and end
-    uint32_t scope[4];  // the first row of the other kept cars' boxes in the car RT table, how many, the flags (car_rt_scene_rules.h kScopeFlag*)
+    uint32_t scope[4];  // the first row of the other kept cars' boxes in the car RT table, how many, the flags (car_rt_scene_rules.h kScopeFlag*), the first row of the cars' records
     float box_min[4];   // the player's car's box in view space (xyz), grown by the host
     float box_max[4];
   };
@@ -273,6 +280,8 @@ class CarRtScene final : public car_frame::Listener {
   struct CheckScope {
     uint32_t kept_cars = 0;     // the other cars with a box in the top level (the frame's selection, those with a built mesh)
     bool player_box = false;    // the player's box was known (else only the other cars' boxes counted)
+    uint32_t car_count = 0;     // the cars' records in the table that frame (the probe read the first car_rt_rules::kProbeCars)
+    std::vector<car_rt_instances::CarRecordLog> records;  // what the host wrote for each (the probe's words are compared with it)
   };
   // The display pass's push block (hlsl/car_rt_view_ps.hlsl CarRtViewPush), 32 bytes.
   struct ViewPush {

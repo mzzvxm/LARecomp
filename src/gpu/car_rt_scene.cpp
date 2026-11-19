@@ -14,6 +14,7 @@
 #include <rex/logging.h>
 
 #include "ao.h"
+#include "car_rt_refl_rules.h"
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
@@ -39,9 +40,11 @@ REXCVAR_DEFINE_INT32(
     mcla_gpu_car_rt_view, 0, "MCLA/GPU",
     "Debug: shows the car ray tracing check's picture over the scene (only while mcla_gpu_car_rt_check is on): 1 the error of each "
     "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit, grey-blue: a car outside the scene by design), "
-    "2 the hit's normal as colour (x right, y up, z forward, times 0.5 plus 0.5). 0: off. Live.")
+    "2 the hit's normal as colour (x right, y up, z forward, times 0.5 plus 0.5), 3 another car's paint as the reflection pass reads it from the instance table (the "
+    "hue of the car's paint row on its pixels; purple: the car has no paint row). With the check on the log also says whether the shader read the paint rows the host wrote "
+    "(\"paint probe\"). 0: off. Live.")
     .debug_only()
-    .range(0, 2)
+    .range(0, 3)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_INT32(
@@ -811,6 +814,9 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
     view_.box_count = uint32_t(cars.boxes.size());
     view_.box_row = cars.box_row;
+    view_.car_row = cars.car_row;
+    view_.car_count = uint32_t(cars.records.size());
+    view_.records = cars.records;
     view_.player_box = cars.player_box;
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
@@ -1054,6 +1060,22 @@ void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
                 walker.calibration().decided() ? (walker.calibration().fits() ? "decided against the draws: it fits" : "decided against the draws: NO hypothesis fits") : "not decided yet",
                 w.proof_pairs, w.proof_worst, proof.walked_cars, proof.drawn_cars,
                 proof.ran ? std::format("{} geometries of {} cars, mean {:.4f} m, worst {:.4f} m", proof.pairs, proof.cars, proof.mean, proof.worst) : std::string("did not run"));
+    // THE PAINT ROWS (RT-MODEL-CARS-4): for every car near the player, the game's customisation record (colours A and B, paint type, gradient mode) and the row made of it (the
+    // colour raised to the gamma and times the light, in the paint's units); the reflection pass multiplies the row by 2^exp_bias and its shade, so a hidden hit on the car reaches the
+    // paint as row x shade. The paint probe (the check's line) says the shader reads these rows as written.
+    {
+      const crt::PaintTuning tuning = car_model_walk::CurrentPaintTuning();
+      std::string rows;
+      for (const crt::CarInfo& info : infos) {
+        if (info.distance > 25.0 && !info.is_player) {
+          continue;
+        }
+        rows += std::format("{}{:#010x} ({}, {}, at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m): paint {}", rows.empty() ? "" : "; ", info.vehicle, info.is_player ? "the player's" : "another car",
+                            info.drawn ? "drawn" : "not drawn", info.position[0], info.position[1], info.position[2], info.distance, crt::Describe(info.paint));
+      }
+      REXLOG_INFO("{} paint rows, frame {} (row = record colour ^ {:.2f} x {:.2f}, in the paint's units; the pass multiplies it by 2^exp_bias and by its shade {}): {}", kPrefix, frame_, tuning.gamma,
+                  tuning.lit, car_rt_refl::kShade, rows.empty() ? std::string("no car") : rows);
+    }
     walked_stats_ = WalkedStats{};
     walked_log_frame_ = frame_;
   }
@@ -1632,7 +1654,7 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.slots[0] = depth.image->slot;
   push.slots[1] = width;
   push.slots[2] = height;
-  push.slots[3] = (want_view ? 1u : 0u) | (uint32_t(view_mode) << 8);
+  push.slots[3] = (want_view ? 1u : 0u) | (uint32_t(view_mode) << 8) | (std::min(view_.car_count, 0xFFu) << 16);
   push.lens[0] = depth.tan_half_fov[0];
   push.lens[1] = depth.tan_half_fov[1];
   push.lens[2] = kCheckTMin;
@@ -1651,6 +1673,9 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.scope[0] = view_.box_row;
   push.scope[1] = scope.kept_cars;
   push.scope[2] = scope.player_box ? rr::kScopeFlagPlayerBox : 0u;
+  push.scope[3] = view_.car_row;
+  scope.car_count = view_.car_count;
+  scope.records = view_.records;  // what the host wrote for each car this frame: the probe's words are compared with it when the readback comes
   list->setComputePipelineLayout(check_layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(res.check_set.get(), 1);
@@ -1692,6 +1717,25 @@ void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t i
   std::memcpy(words, mapped, sizeof(words));
   readback_->unmap();
   const rr::CheckSummary s = rr::DecodeCheckStats(words);
+  // THE PAINT PROBE (RT-MODEL-CARS-4): the first cars' records as the shader's own loads read them from the table, against what the host wrote there that frame. This is the proof
+  // that the paint the reflection pass hands the paint reaches the shader unchanged (the units and the mapping are the pass's and the rules'; the log's paint rows say what they are).
+  if (scope.car_count != 0) {
+    std::string cars_text;
+    uint32_t checked = 0, same = 0;
+    for (uint32_t k = 0; k < rr::kProbeCars && k < scope.car_count && k < scope.records.size(); ++k) {
+      const rr::ProbeCar p = rr::DecodeProbe(words, k, scope.car_count);
+      const car_rt_instances::CarRecordLog& w = scope.records[k];
+      const bool match = rr::ProbeMatches(p, w.centre, w.radius, w.has_paint, w.paint);
+      ++checked;
+      same += match ? 1u : 0u;
+      cars_text += std::format("{}slot {} (car {}{}{}, {:.1f} m): the shader read paint {} ({:.4f}, {:.4f}, {:.4f}), radius {:.2f}, centre ({:.2f}, {:.2f}, {:.2f}); the host wrote paint {} ({:.4f}, {:.4f}, {:.4f}), radius {:.2f} -> {}",
+                               cars_text.empty() ? "" : "; ", w.slot, w.stencil_id, w.remembered ? ", not drawn" : "", w.walked ? ", built from model data" : "", w.distance,
+                               (p.flags & 1u) != 0 ? "known" : "none", p.paint[0], p.paint[1], p.paint[2], p.radius, p.centre[0], p.centre[1], p.centre[2],
+                               w.has_paint ? "known" : "none", w.paint[0], w.paint[1], w.paint[2], w.radius, match ? "IDENTICAL" : "DIFFERENT");
+    }
+    REXLOG_INFO("{} paint probe of frame {}: {} of the first {} cars' records (of {}) read by the shader are the bits the host wrote [{}]", kPrefix, frame, same, checked, scope.car_count,
+                cars_text);
+  }
   // The line the chain reads (perf/scripts/chain-rtint.ps1): "check of frame N: P vehicle pixels ... X% hit" and "on the other cars' parts" as before, and
   // since the scope "O vehicle pixels not in the scene by design" and "K other kept cars". P counts only the pixels the scene is meant to hold (the player's
   // car and the other cars the frame kept); O is the vehicle pixels of the cars outside the selection, counted apart.
