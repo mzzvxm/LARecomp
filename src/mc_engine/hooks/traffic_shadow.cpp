@@ -523,6 +523,7 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
 
 #else  // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves the codegen calls.
+#include <rex/ppc/context.h>
 void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r28, PPCRegister& r30) {}
 void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister& r31) {}
 void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13) {}
