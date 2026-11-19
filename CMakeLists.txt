@@ -47,6 +47,17 @@ if(LARECOMP_CPU_LEVEL STREQUAL "x86-64-v3")
     endif()
 endif()
 
+# Developer tools: code for the people who work on the game, never in a release. OFF by default: with it off there is no key, no
+# setting and no code of them in the build (the compile definition LARECOMP_DEV_TOOLS is not set). Configure with
+#   -DLARECOMP_DEV_TOOLS=ON
+# for a test or play build. It is set for every target of this project (the renderer reads one of the tools' state too).
+#   the compare keys (src/mc_engine/display/effect_compare.cpp): F1 turns the selected graphics effect off and on to see what it does,
+#   F12 selects the next effect (bounce light, contact shadows, sun shafts, ambient occlusion, shadow filter, self-reflections).
+option(LARECOMP_DEV_TOOLS "Developer tools: the compare keys (F1 flips an effect, F12 picks the effect). Not for a release build" OFF)
+if(LARECOMP_DEV_TOOLS)
+    add_compile_definitions(LARECOMP_DEV_TOOLS=1)
+endif()
+
 if(MINGW)
     # llvm-mingw (Clang with lld, libc++ and mingw-w64 on the UCRT): the build for a PC
     # without Visual Studio. The SDK has to be built with the same toolchain (libc++ and the

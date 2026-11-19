@@ -608,8 +608,11 @@ rex::Result<void> LarecompApp::OnInit() {
 //   * the theme (fonts, style) goes in first: InstallMclaTheme adds the dialog that keeps it (imgui_theme.h);
 //   * the SDK's own overlays that sit on the keys of LARecomp's (debug F3, settings F4, achievements F7) are unbound: their
 //     bind is the setting ui.bind.<name> and an empty text is "no key". A player's own value for them (the file, the command
-//     line) is a higher layer and still wins. The SDK's console (the grave accent key) keeps its key: CHECK with the owner,
-//     it is a developer tool that every player now has;
+//     line) is a higher layer and still wins;
+//   * the SDK's console (the grave accent key, ui.bind.console) is a developer tool: only a build with LARECOMP_DEV_TOOLS
+//     (the CMake option, off by default) keeps its key. Any other build locks the bind to "no key" at the lock layer, which
+//     no file, environment or command-line value can replace, so a player has no console. The overlay itself is still made
+//     by the SDK (it registers its standard overlays itself), but nothing can open it;
 //   * LARecomp's overlays and hotkeys are OverlayConfig entries: the name makes the setting ui.bind.<name>, which is the old
 //     bind_<name> cvar (sdk_names.inc maps the three overlays; the rows for the others are listed in the report of WP-L2B).
 void LarecompApp::StartOverlays() {
@@ -622,6 +625,11 @@ void LarecompApp::StartOverlays() {
       LARECOMP_APP_WARN("[ui] the SDK's key {} could not be freed for LARecomp's overlay: {}", name, set.error().GetDescription());
     }
   }
+#if !defined(LARECOMP_DEV_TOOLS)
+  if (auto locked = settings.SetText(rex::SettingLayer::kLock, "ui.bind.console", ""); !locked) {
+    LARECOMP_APP_WARN("[ui] the SDK's console key could not be removed: {}", locked.error().GetDescription());
+  }
+#endif
 
   mcla::ui::SetSettingsConfigPath(settings_config_path_);
   using Hotkey = std::unique_ptr<rex::ui::IDialog> (*)(rex::ui::IUISystem&);
