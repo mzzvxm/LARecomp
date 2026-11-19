@@ -77,3 +77,12 @@ names = ["graphics_backend"]
 # No [[pending]] list: SX-G5 took every DEBUG and REMOVE row out of the normal pause-menu tables, so a `.debug_only()` cvar that a
 # normal row names fails the check outright. (A row that names a key that is not a cvar, like the old RENDERER row, would be a
 # [[virtual_row]] entry: `rows` is the constructor's key, `names` the cvars it writes. None is left.)
+
+# gpu.driver (the renderer: larecomp, or d3d12 / vulkan / any for the XENIA renderer) is the SDK's own startup-only setting, so no source of ours
+# defines it and the check never lists it: it needs no entry above (a name here that no source defines is only a warning, and it is not an
+# exception, a launcher row or a pause-menu row). It has ONE row, on the hidden DEBUG menu: RENDERING > RENDERER (debug_menu_pages.cpp,
+# PM_RxDbgRenderer), the way to the XENIA renderer that stays in the program as a fallback (owner, 2026-11-19; gpu/renderer_fallback.h). That row
+# breaks the rule of the other debug rows on purpose: it is not live, it HOLDS the choice (pause_menu.cpp kDeferredCvars) and the next save writes
+# it to larecomp.toml, and the check does not see it (a dotted name does not match its row pattern). Nothing in the normal pause menus or in
+# the launcher offers it. The box that says the native renderer could not start, the shader build's failure dialog and the offer after two
+# starts that never got going write the same setting (renderer_fallback.h).
