@@ -851,9 +851,23 @@ rex::Result<void> LarecompApp::OnTitleLaunch(rex::kernel::TitleRuntime& title) {
   exit_listener_ = title.OnTitleExit([this](rex::kernel::TitleExitReason reason) { (void)reason; });
 
   if (!RunBootBuild(title)) {
+    // RunBootBuild ends this way only when the player closed the window or pressed QUIT on the dialog that said why the build
+    // failed (ShowFailure): the start has to stop, with nothing more to tell. The SDK reports an Err from here in a modal box, which a
+    // player had to click away after choosing QUIT (and which held the process open until the close watchdog ended it).
+    boot_build_ended_by_player_.store(true, std::memory_order_release);
     return rex::Err(rex::ErrorCategory::kRuntime, "the boot build was cancelled or failed");
   }
   return rex::Ok();
+}
+
+// The SDK shows an error of a lifecycle step in a modal box (TitleApp::ReportError). After the player ended the boot build themselves
+// (OnTitleLaunch above) the log line is all there is: the dialog they chose QUIT on already said what went wrong.
+void LarecompApp::ReportError(std::string_view message) {
+  if (boot_build_ended_by_player_.load(std::memory_order_acquire)) {
+    rex::app::App::ReportError(message);
+    return;
+  }
+  TitleApp::ReportError(message);
 }
 
 // The boot work behind the progress popup: first the shader packs, when the renderer has none (LARecomp builds them from
@@ -944,6 +958,20 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 // runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
+// Ends the process at once, with nothing of the program's own or the DLLs' exit code. std::_Exit is not that on Windows: the UCRT's
+// _Exit still ends in ExitProcess, which sends DLL_PROCESS_DETACH to every loaded DLL and so runs the static destructors of the
+// SDK's DLLs. rexgpu.dll's graphics module is one of them (the `static ModuleClass instance` of REX_DECLARE_MODULE, graphics_module.cpp):
+// when the exit comes before the app's own shutdown ended, it still owns the SDK's graphics driver and its destructor runs the driver's
+// teardown with the other threads gone and the GPU driver's own DLL already detached. 2026-11-18, XENIA on Vulkan: the 5 s watchdog
+// below fired while the UI thread sat in the SDK's modal error box, and ~VulkanGraphicsDriver called a null function of nvoglv64.dll
+// (ACCESS_VIOLATION executing address 0, from the watchdog thread). TerminateProcess runs none of it.
+[[noreturn]] static void EndProcessNow(int code) {
+#if defined(_WIN32)
+  TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
+#endif
+  std::_Exit(code);  // where TerminateProcess does not exist (it does not return on Windows)
+}
+
 // What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
 // twice, and StopBeforeTitleEnds does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
 // runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
@@ -967,7 +995,7 @@ void LarecompApp::FinishWindowCloseWork() {
     std::this_thread::sleep_for(std::chrono::seconds(5));
     LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
     if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
-    std::_Exit(0);
+    EndProcessNow(0);
   }).detach();
 }
 

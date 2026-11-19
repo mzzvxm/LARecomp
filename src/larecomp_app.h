@@ -26,6 +26,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <rex/app/title_app.h>
@@ -81,6 +82,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   rex::Result<void> OnInit() override;
   rex::Result<void> OnTitleLaunch(rex::kernel::TitleRuntime& title) override;
   void OnTitleExit(rex::kernel::TitleExitReason reason) override;
+  void ReportError(std::string_view message) override;  // TitleApp's modal error box, except after the player ended the boot build
   void OnRun() override;   // TitleApp::OnRun, then StopBeforeTitleEnds (TitleApp::OnStop is final in 0.11)
   void OnShutdown() override;
   rex::platform::CrashReporterOptions GetCrashOptions() override;
@@ -114,6 +116,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   bool step_started_ = false;
   std::atomic<bool> step_done_{false};
   std::atomic<bool> close_work_started_{false};
+  std::atomic<bool> boot_build_ended_by_player_{false};  // RunBootBuild returned false: the window closed or QUIT was pressed (ReportError)
   std::atomic<bool> before_title_end_done_{false};
   rex::ScopeGuard ui_listener_;
   rex::ScopeGuard exit_listener_;
