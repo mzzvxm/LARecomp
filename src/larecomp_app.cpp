@@ -47,6 +47,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/core/logging.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/music/audio_output.h"
+#include "process_exit.h"
 #include "mc_engine/core/config_save.h"
 #include "mc_engine/menus/debug_menu.h"
 #include "mc_engine/input/device_watch.h"
@@ -966,20 +967,6 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
 // runs its own binds (so a handler skips a key a bind owns: ui/overlay_support.h IsBoundKey).
 void LarecompApp::OnInputEvent(rex::InputEvent& event) { larecomp::uievents::DispatchInput(event); }
 
-// Ends the process at once, with nothing of the program's own or the DLLs' exit code. std::_Exit is not that on Windows: the UCRT's
-// _Exit still ends in ExitProcess, which sends DLL_PROCESS_DETACH to every loaded DLL and so runs the static destructors of the
-// SDK's DLLs. rexgpu.dll's graphics module is one of them (the `static ModuleClass instance` of REX_DECLARE_MODULE, graphics_module.cpp):
-// when the exit comes before the app's own shutdown ended, it still owns the SDK's graphics driver and its destructor runs the driver's
-// teardown with the other threads gone and the GPU driver's own DLL already detached. 2026-11-18, XENIA on Vulkan: the 5 s watchdog
-// below fired while the UI thread sat in the SDK's modal error box, and ~VulkanGraphicsDriver called a null function of nvoglv64.dll
-// (ACCESS_VIOLATION executing address 0, from the watchdog thread). TerminateProcess runs none of it.
-[[noreturn]] static void EndProcessNow(int code) {
-#if defined(_WIN32)
-  TerminateProcess(GetCurrentProcess(), static_cast<UINT>(code));
-#endif
-  std::_Exit(code);  // where TerminateProcess does not exist (it does not return on Windows)
-}
-
 // What the close needs before the title ends: shader build told to stop, saves finished, devices released. Latched: the event can come
 // twice, and StopBeforeTitleEnds does it again for a shutdown that did not come from the window. The renderer is NOT stopped here (0.10 did): this
 // runs inside the delivery of the close event, on the UI thread, and the renderer stops with the UI loop still served (StopBeforeTitleEnds).
@@ -1003,7 +990,7 @@ void LarecompApp::FinishWindowCloseWork() {
     std::this_thread::sleep_for(std::chrono::seconds(5));
     LARECOMP_APP_ERROR("[quit] the process was still running 5 s after the window was asked to close; exiting");
     if (auto* logger = rex::AppInterfaces::Get<rex::ILogger>()) logger->Flush();
-    EndProcessNow(0);
+    larecomp::EndProcessNow(0);  // not std::_Exit: process_exit.h says why (the 2026-11-18 Vulkan crash at exit)
   }).detach();
 }
 

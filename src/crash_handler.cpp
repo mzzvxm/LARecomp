@@ -5,6 +5,7 @@
 
 #include "crash_handler.h"
 #include "larecomp_log.h"
+#include "process_exit.h"
 
 #include <filesystem>
 
@@ -186,12 +187,14 @@ void OnTerminate() {
     LogCurrentStack("std::terminate", detail.c_str());
     // Exit without running the default terminate handler, which would abort
     // into Windows Error Reporting and can hang on a machine with no debugger.
-    std::_Exit(3);
+    // Not std::_Exit: that still ends in ExitProcess, whose DLL detach destroys a
+    // live graphics driver (process_exit.h), a second failure behind this one.
+    larecomp::EndProcessNow(3);
 }
 
 void OnAbortSignal(int) {
     LogCurrentStack("abort()");
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 void OnInvalidParameter(const wchar_t* expression, const wchar_t* function, const wchar_t* file,
@@ -201,12 +204,12 @@ void OnInvalidParameter(const wchar_t* expression, const wchar_t* function, cons
                   expression ? expression : L"<no expression>", function ? function : L"<unknown>",
                   file ? file : L"<no file>", line);
     LogCurrentStack("CRT invalid parameter", detail);
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 void OnPureCall() {
     LogCurrentStack("pure virtual call");
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 }  // namespace
@@ -232,8 +235,8 @@ void InstallCrashLogger() {
     _set_purecall_handler(&OnPureCall);
 
     // Separates "the process crashed" from "the process exited on purpose":
-    // std::_Exit (used by the shutdown paths) skips this, a normal exit does
-    // not, and a crash reaches neither.
+    // EndProcessNow (the shutdown watchdog and the crash paths above) skips this,
+    // a normal exit does not, and an unhandled exception reaches neither.
     std::atexit([]() {
         LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
         FlushLogs();
