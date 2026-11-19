@@ -68,6 +68,8 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 
+#include "gpu/car_model_walk_tap.h"
+
 REXCVAR_DEFINE_BOOL(rearview, false, "MCLA/HUD",
     "Show the rear view mirror at the top right of the screen (a feature the retail game "
     "ships switched off). Takes effect immediately.")
@@ -381,6 +383,11 @@ static void SaveCarVisibility(uint8_t* base, uint32_t item) {
 }
 
 void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
+    // The debug car model walk (gpu/car_model_walk.h, mcla_gpu_car_model_walk) learns which vehicles the game has from every call of Vehicle::Draw, in any
+    // phase and for any vehicle, culled or not: the entry itself carries Hook_SquashSelectVehicle (one hook per address), and this is the next instruction.
+    // One relaxed atomic load while the setting is off; reads and writes no guest memory.
+    mcla::gpu::car_model_walk::tap::NoteVehicle(static_cast<uint32_t>(r3.u64), static_cast<uint32_t>(r4.u64));
+
     auto* base = rex::Runtime::instance()->virtual_membase();
     if (!base) return;
     const uint32_t item = static_cast<uint32_t>(r3.u64);

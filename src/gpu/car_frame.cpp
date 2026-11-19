@@ -81,6 +81,7 @@ void CarFrame::Initialize(GuestMemory& memory) {
 }
 
 void CarFrame::Shutdown() {
+  walk_.Shutdown();
   ReleaseDraws(frame_.draws);
   ReleaseDraws(pending_);
   frame_ = car_frame::Frame{};
@@ -121,8 +122,9 @@ void CarFrame::AddListener(car_frame::Listener* listener) {
 void CarFrame::BeginFrame() {
   // A request made since the last present (any time in the frame before) starts the collecting here at the latest: the frame's first
   // draw has not been issued yet.
-  if (!collecting_ && REXCVAR_GET(mcla_gpu_car_frame_log)) {
-    requested_ = true;  // the debug line asks for the list itself
+  const bool walk = walk_.Wanted();  // also tells the guest-thread tap whether to note vehicles
+  if (!collecting_ && (REXCVAR_GET(mcla_gpu_car_frame_log) || walk)) {
+    requested_ = true;  // the debug line (and the model walk's comparison) ask for the list themselves
   }
   if (requested_ && memory_ && !collecting_) {
     collecting_ = true;
@@ -137,8 +139,8 @@ void CarFrame::OnPresent() {
     FinishFrame();
   }
   ++guest_frame_;
-  if (REXCVAR_GET(mcla_gpu_car_frame_log)) {
-    requested_ = true;  // the debug line asks for the list itself
+  if (REXCVAR_GET(mcla_gpu_car_frame_log) || walk_.Wanted()) {
+    requested_ = true;  // the debug line (and the model walk's comparison) ask for the list themselves
   }
   collecting_ = requested_ && memory_ != nullptr;
   requested_ = false;
@@ -201,11 +203,13 @@ void CarFrame::StartFrame() {
   counts_ = Counts{};
   log_ = REXCVAR_GET(mcla_gpu_car_frame_log);
   ctx_ = Context{};
+  walk_.StartFrame(guest_frame_, collecting_);
 }
 
 void CarFrame::FinishFrame() {
   const uint32_t before = tracker_.previous();  // the ID the frame started from
   previous_id_ = tracker_.confirmed();
+  walk_.FinishFrame();  // the debug model walk's comparison with this frame's draws (a walk frame only)
   if (!log_) {
     return;
   }
@@ -306,6 +310,9 @@ void CarFrame::OnMainDraw(const MainDraw& d) {
 }
 
 void CarFrame::OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id) {
+  if (walk_.active()) {
+    walk_.OnVehicleDraw(*d.view, *d.state, id);  // the debug model walk: the first call of a walk frame walks the cars, every call notes the draw's buffers
+  }
   HandleVehicleDraw(d, order, id);
   ctx_ = Context{};
   SyncPlayer();

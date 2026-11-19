@@ -50,6 +50,7 @@
 #include "car_dump_rules.h"
 #include "car_frame_rules.h"
 #include "car_mesh_read.h"
+#include "car_model_walk.h"
 #include "car_rt_instances_rules.h"
 #include "constants.h"
 #include "geometry.h"
@@ -367,6 +368,8 @@ class CarFrame {
   bool requested_ = false;
   bool collecting_ = false;
   car_frame::Frame frame_;
+  // The debug walk of the cars' own model data against this frame's draws (car_model_walk.h, mcla_gpu_car_model_walk): reads only, idle while the setting is 0.
+  car_model_walk::Walker walk_;
 
   GuestMemory* memory_ = nullptr;
   std::vector<car_frame::Listener*> listeners_;
