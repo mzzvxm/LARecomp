@@ -35,6 +35,7 @@
 #include "larecomp_dialog.h"
 
 #include "larecomp_log.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "mc_engine/core/boot_progress.h"
@@ -93,17 +94,6 @@ sp::VariantStep* VariantStepForBuild() {
 std::string PathUtf8(const std::filesystem::path& path) {
   const std::u8string u8 = path.u8string();
   return std::string(u8.begin(), u8.end());
-}
-
-// Where the logs are: next to the file the logger writes (LARECOMP_LOG_FILE), else ./logs, as
-// InitLarecompLogging does.
-std::filesystem::path LogFolder() {
-  std::error_code ec;
-  if (const char* file = std::getenv("LARECOMP_LOG_FILE"); file && *file) {
-    const std::filesystem::path parent = std::filesystem::path(file).parent_path();
-    if (!parent.empty()) return std::filesystem::absolute(parent, ec);
-  }
-  return std::filesystem::absolute("logs", ec);
 }
 
 void OpenFolder(const std::filesystem::path& folder) {
@@ -493,7 +483,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   // (a cache folder the player named), else <program folder>\cache\shaders, else the local
   // application data folder. Needs no renderer, so it is the same here as at the game's start.
   const std::filesystem::path folder = mcla::gpu::ShaderPackFolder();
-  CommandLineSink sink(LogFolder() / "shader_build.txt");
+  CommandLineSink sink(LarecompLogFolder() / "shader_build.txt");
   Emit("@shaderpack|folder|" + Field(PathUtf8(folder), 1000));
   sink.Line("command line: building the shader packs into " + PathUtf8(folder) + " from " + PathUtf8(game_root));
 
@@ -558,7 +548,7 @@ Phase::Phase(const std::filesystem::path& game_root, const uint8_t* guest_memory
     needed_ = true;
     formats_ = AllFormats();
     folder_ = mcla::gpu::ShaderPackFolder();
-    log_file_ = LogFolder() / "shader_build.txt";
+    log_file_ = LarecompLogFolder() / "shader_build.txt";
     std::error_code ec;
     first_start_ = !std::filesystem::exists(folder_ / sp::kStampFileName, ec);
   }
@@ -629,7 +619,7 @@ void Phase::ShowFailure(rex::ui::IUISystem& ui,
     // Nothing to draw a dialog with: say it plainly and quit (ShowMessage logs it when there is no window).
     ui.ShowMessage(rex::MessageType::kError, "LARecomp",
                    reason_ + "\n\nThe game needs these shaders to draw. Details: " +
-                       PathUtf8(LogFolder() / "shader_build.txt"));
+                       PathUtf8(LarecompLogFolder() / "shader_build.txt"));
     if (quit) quit();
     return;
   }
@@ -641,7 +631,7 @@ void Phase::ShowFailure(rex::ui::IUISystem& ui,
   };
   const bool force = retry_forces_;
   (void)ui::ShowDialog<FailureDialog>(
-      ui, cancelled, reason_, LogFolder(),
+      ui, cancelled, reason_, LarecompLogFolder(),
       later([retry = std::move(retry), force]() {
         if (retry) retry(force);
       }),

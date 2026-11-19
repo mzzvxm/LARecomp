@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "settings/larecomp_settings.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 #include <rex/logging/log_category.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -140,29 +141,6 @@ std::wstring ExeDirectory() {
   std::wstring dir(path, length);
   const size_t slash = dir.find_last_of(L"\\/");
   return slash == std::wstring::npos ? std::wstring() : dir.substr(0, slash + 1);
-}
-
-// Where LARecomp keeps its logs: next to the file the logger writes (LARECOMP_LOG_FILE), else
-// ./logs (InitLarecompLogging; the same rule as LogFolder in bootprogress/larecomp_shader_build.cpp).
-// Streamline's full log (sl.log: every line it writes, with NGX's) goes into it, which is what a
-// bug report about DLSS needs. Empty, and no log file, when the folder cannot be had.
-std::wstring StreamlineLogFolder() {
-  std::error_code ec;
-  std::filesystem::path folder;
-  if (const char* file = std::getenv("LARECOMP_LOG_FILE"); file && *file) {
-    const std::filesystem::path parent = std::filesystem::path(file).parent_path();
-    if (!parent.empty()) {
-      folder = std::filesystem::absolute(parent, ec);
-    }
-  }
-  if (folder.empty()) {
-    folder = std::filesystem::absolute("logs", ec);
-  }
-  if (ec || folder.empty()) {
-    return {};
-  }
-  std::filesystem::create_directories(folder, ec);
-  return ec ? std::wstring() : folder.wstring();
 }
 
 bool FileExists(const std::wstring& path) {
@@ -641,7 +619,17 @@ bool InitLocked(Runtime& rt, sl::RenderAPI api, bool frame_gen, std::string* why
 #else
   (void)frame_gen;
 #endif
-  const std::wstring logs = StreamlineLogFolder();
+  // Streamline's full log (sl.log: every line it writes, with NGX's) goes next to LARecomp's own log
+  // (LarecompLogFolder), which is what a bug report about DLSS needs. No folder, no log file.
+  std::wstring logs;
+  {
+    std::error_code logs_ec;
+    const std::filesystem::path log_folder = LarecompLogFolder();
+    if (!log_folder.empty()) {
+      std::filesystem::create_directories(log_folder, logs_ec);
+      if (!logs_ec) logs = log_folder.wstring();
+    }
+  }
   sl::Preferences pref;
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
