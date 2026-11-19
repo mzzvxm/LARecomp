@@ -211,9 +211,10 @@ inline constexpr uint64_t kChromePs = 0x2D8CA0430FF88ED7ull;
 
 // The mask of the instance of another car's draw: every part of another car has kMaskOthers (what the reflection's, the occlusion's and the
 // check's rays hit); a draw of the chrome's shader also has kMaskOtherChrome, so that the reflection pass's primary ray can find another car's chrome at a
-// pixel and the chrome's occlusion be traced for it (car_chrome_rt_rules.h). The player's own chrome is a body part (kMaskBody) as before.
+// pixel and the chrome's occlusion be traced for it (car_chrome_rt_rules.h), and a draw of the paint's shader has kMaskOtherPaint, so that the opponents' reflection
+// pass finds the pixels the paint variant reads (car_rt_opp_refl.h). The player's own chrome is a body part (kMaskBody) as before.
 inline uint32_t OtherMask(uint64_t ps_identity) {
-  return rr::kMaskOthers | (ps_identity == kChromePs ? rr::kMaskOtherChrome : 0u);
+  return rr::kMaskOthers | (ps_identity == kChromePs ? rr::kMaskOtherChrome : 0u) | (ps_identity == car_dump::kCarPaintPs ? rr::kMaskOtherPaint : 0u);
 }
 
 // One draw of another car, as the car frame lists it: no host geometry (only the player's car is drawn again by the car shadow map), nothing
@@ -377,6 +378,8 @@ struct ViewBox {
   float min[3] = {0, 0, 0};
   float max[3] = {0, 0, 0};
   bool valid = false;
+  // Some instance of the car this box is of is another car's draw of the paint's shader (car_rt_opp_refl_rules.h MarkPaintBoxes): the opponents' reflection pass looks at the box.
+  bool paint = false;
   void Add(const float p[3]) {
     for (int c = 0; c < 3; ++c) {
       if (!valid) {
@@ -488,6 +491,11 @@ struct List {
   // The player's own car's box in the frame's view space: its listed instances' transformed mesh boxes (the same kind of box as `boxes`, tight to what
   // the scene holds of the car). Not valid when no listed instance has a mesh box. The check's scope (car_rt_scene_rules.h) places a pixel in it.
   ViewBox player_box;
+  // The opponents' reflection pass (car_rt_opp_refl.h): how many instances of other cars carry kMaskOtherPaint (the pixels the paint variant reads), and the row of the
+  // PLAYER's own car's record (a CarRow and a CarPaintRow, as another car's) in `rows`, after the boxes' rows: what a reflection from another car's paint that hits the
+  // player's car shows where the history has no colour of it. 0: no such record this frame (CarRtOppRefl asks for it only with paint instances in the list).
+  uint32_t other_paint_instances = 0;
+  uint32_t player_row = 0;
   ListStats stats;
   void Clear() {
     items.clear();
@@ -497,6 +505,8 @@ struct List {
     car_row = 0;
     records.clear();
     player_box = ViewBox{};
+    other_paint_instances = 0;
+    player_row = 0;
     stats = ListStats{};
   }
 };
@@ -568,6 +578,9 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     Item item;
     item.mesh_key = draw.mesh_key;
     item.mask = OtherMask(draw.ps);
+    if (cars[plan[size_t(slot)]].remembered) {
+      item.mask &= ~rr::kMaskOtherPaint;  // a car the camera does not draw has no pixel in the history: nothing for the opponents' reflection pass to find (car_rt_opp_refl_rules.h)
+    }
     if (!rr::PackInstanceTransform(draw.model_to_world, view, flip_z, item.transform)) {
       ++list->stats.bad_matrix;
       continue;

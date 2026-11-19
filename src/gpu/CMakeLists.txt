@@ -199,6 +199,10 @@ add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_ru
 # the camera cannot see, the paint's edge-aware read) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_refl_rules_test, then run src/gpu/larecomp_car_rt_refl_rules_test (exit 0 = passed).
 add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rules_test.cpp)
+# The opponents' ray traced reflection's rules (car_rt_opp_refl_rules.h: the paint mask, the budget, the cars' rectangles in the image and the plan, the aux image's instance codes, the player's record,
+# the decision for a hit on the player's car; and that hlsl/car_rt_refl_opp.hlsli, car_rt_refl_cs.hlsl and the host hold the header's numbers) likewise; run it with the src folder or from there:
+#   cmake --build <dir> --target larecomp_car_rt_opp_refl_rules_test, then run src/gpu/larecomp_car_rt_opp_refl_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_refl_rules_test.cpp)
 # The car chrome's rules (car_chrome_rules.h: the numbers of the two short probes of the chrome variant and a reference march of them over
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).

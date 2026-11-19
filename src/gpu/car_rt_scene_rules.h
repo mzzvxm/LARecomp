@@ -74,6 +74,9 @@ inline constexpr uint32_t kMaskOthers = 0x10;
 // carries this bit AND kMaskOthers, so every ray that hits another car still hits it; a ray whose mask is this bit alone finds another car's chrome and
 // nothing else. The reflection pass's primary ray takes it (with the player's body) to find another car's chrome at a pixel (car_chrome_rt_rules.h).
 inline constexpr uint32_t kMaskOtherChrome = 0x20;
+// Another car's PAINT (the instance of a draw of xCarPaintCustomizable::PS_CarPaint of another car: car_rt_instances_rules.h OtherMask). It also carries kMaskOthers. The
+// opponents' reflection pass (car_rt_opp_refl.h) gives its primary ray this bit alone, to find the pixels of another car that the paint variant reads.
+inline constexpr uint32_t kMaskOtherPaint = 0x40;
 // The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
 inline constexpr uint32_t kFlagAfterWorld = 0x100;
 
