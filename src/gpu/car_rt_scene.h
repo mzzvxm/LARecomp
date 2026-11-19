@@ -1,10 +1,11 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the player's car as ray tracing acceleration structures
+// MCLA GPU renderer -- the player's car (and the cars beside it) as ray tracing acceleration structures
 // ===========================================================================
-// For ray traced car-only effects (first: the car's reflections of itself, car_rt_refl). One bottom-level structure per mesh
-// of the player's car, built ONCE from guest memory when the mesh is first seen (car_frame.h MeshReader) and kept while its
-// key lives; every frame one top-level structure with one instance per draw of the car, placed by the draw's matrix. The
+// For ray traced car effects (first: the car's reflections of itself and of the cars driving alongside, car_rt_refl). One bottom-level structure per
+// mesh of the player's car and of the other cars the selection keeps (car_rt_instances.h), built ONCE from guest memory when the mesh is first seen
+// (car_frame.h MeshReader) and kept while its key lives; every instance of a model names the same structure. Every frame one top-level structure
+// with one instance per draw of the cars, placed by the draw's matrix. The
 // instances are in the frame's VIEW space (the AO's: x right, y up, z forward = the linear depth t; ao_common.hlsli
 // AoViewPos), so a pass at the history trigger traces rays in the same space as the depth image and the history image.
 //
@@ -32,6 +33,13 @@
 //     the GPU is done with the frame that gave it back (FrameRing::RetireAction). The log says the totals the first time and
 //     whenever they change by a quarter. A car is about 91,000 triangles and 77,000 vertices: about 1 MiB of positions, 1 MiB of
 //     normals, 1.1 MiB of indices and 5 to 8 MiB of structures.
+//   - OTHER CARS (car_rt_instances.h, perf/RT-CARS-DESIGN.md): the cars driving alongside (opponents, traffic, parked cars) are in the same top level.
+//     CarFrame recognises their draws (the same recipe of the vertex shader's microcode as the player's, told apart by their stencil IDs) and keeps
+//     the nearest few within a radius of the player's vehicle, by graphics class (Mid 2 cars within 10 m, High 4 within 14 m); OnOtherCarDraw reads
+//     the triangles of a mesh the scene has not seen within a budget of its own, and the instance list adds a draw of such a car as an instance of
+//     the SAME structure its model's other cars use (the key is the model's triangles in model space) with the mask CAR_RT_MASK_OTHERS: the
+//     reflection's rays hit it, the primary ray that finds the player's car never does. The other cars' share of the memory stops short of the
+//     cap by a reserve for the player's own car. mcla_gpu_car_rt_cars (-1 class, 0 none, N) and mcla_gpu_car_rt_cars_radius are the debug switches.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -65,6 +73,7 @@
 #include "shaders.h"
 #include "topology.h"
 #include "car_frame.h"
+#include "car_rt_instances.h"
 #include "car_rt_scene_rules.h"
 #include "frame.h"
 #include "host_passes.h"
@@ -84,7 +93,9 @@ class UploadRing;
 //   0  RaytracingAccelerationStructure  the frame's top level
 //   1  StructuredBuffer<uint4>          per instance (InstanceIndex()): x = its mesh's first index in buffer 2 (uint32 units),
 //                                       y = its mesh's first vertex in buffer 3, z = flags (car_rt_common.hlsli CAR_RT_*),
-//                                       w = the draw's place in car_frame::Frame::draws
+//                                       w = the draw's place in car_frame::Frame::draws (an instance of another car: the row of its car's
+//                                       record, which follows the instances' rows in this table: xyz the car's body centre in view space,
+//                                       w its radius, as float bits)
 //   2  ByteAddressBuffer                every mesh's triangle-list indices (uint32, relative to the mesh's first vertex)
 //   3  ByteAddressBuffer                every mesh's vertex normals (float3, 12 bytes a vertex, model space, unit length)
 struct CarRtView {
@@ -143,6 +154,8 @@ class CarRtScene final : public car_frame::Listener {
 
   // car_frame::Listener: reads the triangles of an unseen mesh into CPU vectors (no GPU work here).
   void OnPlayerDraw(const car_frame::Draw& draw, const car_frame::MeshReader& reader) override;
+  // The same for a draw of another car the selection kept, within the budgets of the other cars (car_rt_instances_rules.h Limits, OthersMayAdd).
+  void OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_frame::MeshReader& reader) override;
 
  private:
   // A mesh read from guest memory, waiting for the trigger.
@@ -213,6 +226,9 @@ class CarRtScene final : public car_frame::Listener {
 
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   bool Wants() const { return requested_ || requested_prev_; }
+  // Reads an unseen mesh from the draw's guest memory and stages it for the trigger (the tail OnPlayerDraw and OnOtherCarDraw share). The triangles
+  // it staged: 0 when it left the mesh out.
+  uint32_t ReadAndStage(uint64_t key, const car_frame::MeshReader& reader);
 
   // --- the shared buffers ---
   bool MakeShared(Shared& shared, uint64_t bytes, plume::RenderBufferFlags flags, const char* name);
@@ -269,7 +285,9 @@ class CarRtScene final : public car_frame::Listener {
   bool trigger_seen_ = false;
   CarRtView view_;
   int flip_state_ = 0;  // 1: the frame's camera has z backward (the game's own) and is flipped; -1: z forward already; 0 not decided yet
-  uint32_t staged_triangles_ = 0;  // read this frame
+  uint32_t staged_triangles_ = 0;        // read this frame
+  uint32_t staged_triangles_other_ = 0;  // ... of them for other cars (their own budget inside it)
+  CarRtInstances instances_;  // the frame's instance list: the player's draws and the other cars' (car_rt_instances.h)
 
   // The meshes.
   std::unordered_map<uint64_t, Mesh> meshes_;
