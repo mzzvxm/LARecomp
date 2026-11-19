@@ -32,6 +32,15 @@ REXCVAR_DEFINE_BOOL(
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DECLARE(bool, mcla_gpu_perf_markers);  // perf_markers.cpp
+REXCVAR_DEFINE_UINT32(
+    mcla_gpu_vram_budget_mb, 0, "MCLA/GPU",
+    "Test (debug): pretend the video memory budget is this many MiB when the adapter's own is larger "
+    "(0: the adapter's). Everything that asks the budget sees the smaller number against the real use: "
+    "the caches' trimming (vram_budget.h), the room checks of frame generation and of the FidelityFX "
+    "upscaler's contexts (vram_room.h). The way to see the NO ROOM paths and the trimming on a card "
+    "that has plenty (a 4 GB card is 3900). Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -550,7 +559,14 @@ void Device::ReportCreationFailure(const char* what, const char* name) {
 }
 
 backend::VideoMemory Device::QueryVideoMemory() const {
-  return device_ ? backend::QueryVideoMemory(device_.get()) : backend::VideoMemory{};
+  backend::VideoMemory memory =
+      device_ ? backend::QueryVideoMemory(device_.get()) : backend::VideoMemory{};
+  // mcla_gpu_vram_budget_mb (debug): a smaller budget than the adapter's, for the tests of a small card.
+  const uint64_t pretend = uint64_t(REXCVAR_GET(mcla_gpu_vram_budget_mb)) << 20;
+  if (pretend != 0 && memory.budget > pretend) {
+    memory.budget = pretend;
+  }
+  return memory;
 }
 
 namespace {
