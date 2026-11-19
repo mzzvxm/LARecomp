@@ -16,6 +16,14 @@
 // LookupCar, LocalOptions_*, Racer_GetLoadState / IsCarStreamed / GetPosition and the car table of the game's memory (the name
 // string of a car). No guest memory is poked. The scene's end deletes what the scene spawned and puts the player's car back.
 //
+// AMBIENT CARS. `car <id> ambient <model> at <x,y,z> [heading <deg>]` makes a real traffic-class car through AmbientMgr_AddAmbientToLayout (the layout item the game's
+// parked spawner turns into a car within a second; ambient_car.h has what the traffic probe proved and what the removal does). The same Director hands out the add and,
+// at the end of the scene or on `car <id> delete`, AmbientMgr_RemoveAmbientFromLayout(the item's id), one native an update, and only while the guards of ambient_car.h hold
+// (free roam, a layout slot to spare, the world up for 120 updates; the manager and the player's car exist, the game is not paused). The model is looked up in the
+// ambient manager's type list first (its own spelling goes to the native) and the point must be within a kilometre of the player. The car's matrix is read through its layout
+// item (the walk of the layout pool's lists by id, then item+76 the bound car, car+128 the update copy of its matrix) so that the registry, the camera's `car:<id>` and
+// the state log see it; the first read is logged beside what the scene asked for.
+//
 // PATHS (M4c). `car <id> path <route> [speed <x>] [mode brain|kinematic]` and `car <id> stop`. The route file is read when the scene starts (beside the
 // scene file, or in a `routes` folder beside it). Kinematic: every update, for each car that has a path and is ready, one Racer_Teleport(racer, place,
 // heading, speed) at the place the route has at the PATH CLOCK (the scene's time with the scene's time scale applied, integrated here: a car follows a
@@ -73,6 +81,7 @@
 #endif
 
 #include "car_spawn.h"
+#include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
 #include "larecomp_log.h"
 #include "native_call.h"
 #include "scene_runtime.h"
@@ -108,6 +117,25 @@ constexpr uint32_t kEntityMatrixAt = 28;
 constexpr uint32_t kBrainDestAt = 1656;   // BrainCruising: the index of the destination it heads for (-1: none); sub_82746340
 constexpr uint32_t kBrainStateAt = 1708;  // ... and its state (0 idle with the brake held, 4 no lane, 6 goal reached)
 
+// The ambient manager (0x8286D8E4): +4 the type list, +410144 (0x64220) the layout object, whose [+0] is the layout data and [data+32] the layout's pool: 52-byte
+// descriptors, one a class (class 0 = the cars); a descriptor's +16 is its free count, +8 the head of the live list and +32 of the used list (nodes: item, next at +4).
+// A layout item: +76 the car bound to it, +136 its id; a live ambient car: +128 the update copy of its matrix (right, up, back, position). The traffic probe's reading of the same.
+constexpr uint32_t kMgrTypeListAt = 4;
+constexpr uint32_t kMgrLayoutAt = 410144;
+constexpr uint32_t kPoolDescBytes = 52;
+constexpr uint32_t kDescLiveHead = 8;
+constexpr uint32_t kDescFreeCount = 16;
+constexpr uint32_t kDescUsedHead = 32;
+constexpr uint32_t kTypeNameAt = 172;
+constexpr uint32_t kTypeNextAt = 20;
+constexpr uint32_t kItemBound = 76;
+constexpr uint32_t kItemId = 136;
+constexpr uint32_t kItemBytes = 144;
+constexpr uint32_t kAmbientMatrixAt = 128;
+constexpr uint32_t kAmbientCarBytes = 192;
+constexpr uint32_t kListCap = 600;  // nodes walked in one list at the most
+constexpr uint32_t kTypeCap = 512;
+
 constexpr int kSettleTicks = 10;           // updates the world must have been ready before a native is called
 constexpr int kWorldCheckEvery = 15;       // updates between looking for lost cars in the opponent manager
 constexpr int64_t kPoseLogEveryMs = 2000;
@@ -142,6 +170,8 @@ constexpr NativeDef kNatives[] = {
     {Native::kBrainReached, 0x82745830},          // BrainCruising_HasReachedGoal
     {Native::kBrainStop, 0x827457F0},             // BrainCruising_RemoveFromTraffic
     {Native::kDeleteBrain, 0x82742AD8},           // BrainFactory_DeleteBrain
+    {Native::kAddAmbient, 0x826D6850},            // AmbientMgr_AddAmbientToLayout
+    {Native::kRemoveAmbient, 0x826D5CD8},         // AmbientMgr_RemoveAmbientFromLayout
 };
 
 uint32_t WrapperFor(Native n) {
@@ -337,6 +367,8 @@ struct State {
     double last_scene_t = 0.0;
     bool have_scene_t = false;
     std::map<std::string, ReadHealth> reads;  // how each scene car's matrix reads (for the log only)
+    uint32_t ambient_manager = 0;               // the ambient manager the item cache belongs to
+    std::map<int32_t, uint32_t> ambient_items;  // layout item id -> the item's address (found by a walk of the layout pool's lists, then kept while the id still reads there)
 };
 State g;
 std::atomic<bool> g_active{false};  // anything to do: the one flag TickCars tests
@@ -364,6 +396,121 @@ std::string Triple(double x, double y, double z) {
     char buf[96];
     std::snprintf(buf, sizeof(buf), "(%.2f, %.2f, %.2f)", x, y, z);
     return buf;
+}
+
+// ---------------------------------------------------------------- ambient cars (the layout)
+
+bool PlausiblePtr(uint32_t p) {
+    return p >= 0x10000u && p < 0xE0000000u;
+}
+
+// The layout's pool of the ambient manager `mgr`, or 0.
+uint32_t LayoutPool(const uint8_t* base, uint32_t mgr) {
+    if (!PlausiblePtr(mgr) || !Mapped(mgr + kMgrLayoutAt, 4)) return 0;
+    const uint32_t data = R32(base, mgr + kMgrLayoutAt);
+    if (!PlausiblePtr(data) || !Mapped(data + 32, 4)) return 0;
+    const uint32_t pool = R32(base, data + 32);
+    return PlausiblePtr(pool) && Mapped(pool, kPoolDescBytes) ? pool : 0;
+}
+
+// What the game side saw this update, for the guards of ambient_car.h.
+AmbientGate ReadAmbientGate(const uint8_t* base, uint32_t player, bool paused, int ready_ticks) {
+    AmbientGate gate;
+    const uint32_t mgr = R32(base, kAmbientMgrPtr);
+    gate.manager = PlausiblePtr(mgr) && Mapped(mgr, 16);
+    gate.manager_addr = gate.manager ? mgr : 0;
+    gate.player = player != 0;
+    gate.free_roam = RpcInFreeRoam();
+    gate.not_paused = !paused;
+    gate.world_updates = ready_ticks > 0 ? static_cast<uint32_t>(ready_ticks) : 0;
+    const uint32_t pool = gate.manager ? LayoutPool(base, mgr) : 0;
+    if (pool) {
+        const uint32_t free_slots = R32(base, pool + kDescFreeCount);
+        if (free_slots < 100000) {  // a count that is not a count: the pool is not where it was taken to be
+            gate.layout_pool = true;
+            gate.layout_free = free_slots;
+        }
+    }
+    return gate;
+}
+
+// A name the game keeps at `ptr`: printable ASCII up to a NUL, 47 characters at the most; "" when it is not a name.
+std::string GuestName(const uint8_t* base, uint32_t ptr) {
+    if (!PlausiblePtr(ptr)) return std::string();
+    for (uint32_t span : {48u, 24u, 12u}) {  // a name at the end of a mapped region: a shorter span
+        if (!Mapped(ptr, span)) continue;
+        std::string s;
+        for (uint32_t i = 0; i < span; ++i) {
+            const uint8_t ch = base[ptr + i];
+            if (ch == 0) return s;
+            if (ch <= 0x20 || ch >= 0x7F) return std::string();
+            s.push_back(static_cast<char>(ch));
+        }
+        return std::string();
+    }
+    return std::string();
+}
+
+char LowerAscii(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+bool EqualNoCase(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (LowerAscii(a[i]) != LowerAscii(b[i])) return false;
+    }
+    return true;
+}
+
+// The game's own spelling of an ambient type's name (the manager's full type list: [mgr+4] -> [+0] the first type, a type's name pointer at +172, its next link at +20 -> [+0]),
+// or "" when the manager has no such type. The layout item's car is made from the type with this name.
+std::string AmbientTypeSpelling(const uint8_t* base, uint32_t mgr, const std::string& model) {
+    if (!PlausiblePtr(mgr) || !Mapped(mgr + kMgrTypeListAt, 4)) return std::string();
+    const uint32_t head = R32(base, mgr + kMgrTypeListAt);
+    if (!PlausiblePtr(head) || !Mapped(head, 4)) return std::string();
+    uint32_t t = R32(base, head);
+    for (uint32_t n = 0; PlausiblePtr(t) && n < kTypeCap && Mapped(t, kTypeNameAt + 4); ++n) {
+        const std::string name = GuestName(base, R32(base, t + kTypeNameAt));
+        if (!name.empty() && EqualNoCase(name, model)) return name;
+        const uint32_t link = R32(base, t + kTypeNextAt);
+        if (!PlausiblePtr(link) || !Mapped(link, 4)) break;
+        t = R32(base, link);
+    }
+    return std::string();
+}
+
+// The layout item with this id, in the pool's used and live lists (the add puts it in the used list, the spawner moves it to the live list when it makes the car).
+uint32_t FindLayoutItem(const uint8_t* base, uint32_t pool, int32_t id) {
+    for (uint32_t head_at : {kDescUsedHead, kDescLiveHead}) {
+        uint32_t node = R32(base, pool + head_at);
+        for (uint32_t n = 0; PlausiblePtr(node) && n < kListCap && Mapped(node, 12); ++n) {
+            const uint32_t item = R32(base, node);
+            if (PlausiblePtr(item) && Mapped(item, kItemBytes) && static_cast<int32_t>(R32(base, item + kItemId)) == id) return item;
+            node = R32(base, node + 4);
+        }
+    }
+    return 0;
+}
+
+// The matrix of the car the layout item `id` made (rows right, up, back, position), or false: no item, no car bound yet (the spawner makes it within a second), or its memory
+// does not read. The item's address is kept while its id still reads there.
+bool ReadAmbientMatrix(const uint8_t* base, int32_t id, float out[16]) {
+    const uint32_t mgr = R32(base, kAmbientMgrPtr);
+    const uint32_t pool = LayoutPool(base, mgr);
+    if (!pool) return false;
+    uint32_t item = 0;
+    const auto cached = g.ambient_items.find(id);
+    if (cached != g.ambient_items.end() && Mapped(cached->second, kItemBytes) && static_cast<int32_t>(R32(base, cached->second + kItemId)) == id) item = cached->second;
+    if (!item) {
+        item = FindLayoutItem(base, pool, id);
+        if (!item) return false;
+        g.ambient_items[id] = item;
+    }
+    const uint32_t car = R32(base, item + kItemBound);
+    if (!PlausiblePtr(car) || !Mapped(car, kAmbientCarBytes)) return false;
+    for (uint32_t i = 0; i < 16; ++i) out[i] = RF(base, car + kAmbientMatrixAt + 4 * i);
+    return true;
 }
 
 // ---------------------------------------------------------------- the poses
@@ -419,6 +566,10 @@ void UpdatePoses(const uint8_t* base, uint32_t player) {
         const bool read = ReadCarMatrix(base, r.racer, m, &info);
         NoteRead(r.id, r.racer, read, info, m);
         if (read) reg.UpdatePose(r.id, m, g.frame);
+    }
+    for (const Director::AmbientReader& r : g.dir.AmbientReaders()) {
+        float m[16];
+        if (ReadAmbientMatrix(base, r.layout_id, m)) g.dir.NoteAmbientPose(r.id, m, g.frame);
     }
     if (CarEntry* pe = reg.Find("player")) {
         pe->racer = player;
@@ -556,7 +707,8 @@ std::string Describe(const Call& c) {
     }
     if (c.native == Native::kBrainAppendDest) s += " #" + std::to_string(c.index) + " at " + Triple(c.position[0], c.position[1], c.position[2]);
     if (c.native == Native::kGetProfile || c.native == Native::kHostCarName) s += " index " + std::to_string(c.index);
-    if (c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kTeleport) {
+    if (c.native == Native::kRemoveAmbient) s += " layout item " + std::to_string(c.index);
+    if (c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kTeleport || c.native == Native::kAddAmbient) {
         s += " at " + Triple(c.position[0], c.position[1], c.position[2]) + " heading " + std::to_string(static_cast<int>(std::lround(c.heading_native))) + " (native)";
         if (c.native == Native::kTeleport && c.speed != 0.0) {
             char buf[48];
@@ -641,6 +793,31 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         case Native::kLookupCar:
             args = {GuestPutString(c.text.c_str())};
             break;
+        case Native::kAddAmbient: {
+            // The model must be one of the ambient manager's types (the name goes to the native in the game's own spelling) and the point near the player: the probe's checks.
+            const std::string spelled = AmbientTypeSpelling(base, R32(base, kAmbientMgrPtr), c.text);
+            if (spelled.empty()) {
+                LARECOMP_APP_ERROR("[cars] {} {}: '{}' is not in the ambient manager's type list (the traffic probe's `types:` lines name them, e.g. va_gmc_yukon_05): not placed", n.car,
+                                   NativeName(c.native), c.text);
+                g.dir.Report(out);  // not called
+                return;
+            }
+            if (const CarEntry* pe = g.dir.registry().Find("player"); pe && pe->have_pose) {
+                const double dx = c.position[0] - pe->pose.position[0], dy = c.position[1] - pe->pose.position[1], dz = c.position[2] - pe->pose.position[2];
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) > kAmbientMaxFromPlayerM) {
+                    LARECOMP_APP_ERROR("[cars] {} {}: the point {} is more than {:.0f} m from the player's car: not placed (the layout is read around the player)", n.car,
+                                       NativeName(c.native), Triple(c.position[0], c.position[1], c.position[2]), kAmbientMaxFromPlayerM);
+                    g.dir.Report(out);  // not called
+                    return;
+                }
+            }
+            args = {GuestPutString(spelled.c_str()),
+                    GuestPutVec(static_cast<float>(c.position[0]), static_cast<float>(c.position[1]), static_cast<float>(c.position[2]), 0.0f), heading_bits};
+            break;
+        }
+        case Native::kRemoveAmbient:
+            args = {static_cast<uint32_t>(c.index)};
+            break;
         case Native::kGetProfile:
             args = {static_cast<uint32_t>(c.index)};
             break;
@@ -691,7 +868,7 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
     }
     // a pointer argument the shim could not make (no block): not called
     for (size_t i = 0; i < args.size(); ++i) {
-        const bool pointer = (c.native == Native::kLookupCar && i == 0) || ((c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig) && i == 2) ||
+        const bool pointer = (c.native == Native::kLookupCar && i == 0) || (c.native == Native::kAddAmbient && (i == 0 || i == 1)) || ((c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig) && i == 2) ||
                              (c.native == Native::kTeleport && i == 1) || (c.native == Native::kGetPosition && i == 1) || (c.native == Native::kBrainAppendDest && i == 1);
         if (pointer && args[i] == 0) {
             LARECOMP_APP_ERROR("[cars] {} {}: no guest memory for the argument (no guest thread, or the call block could not be made)", n.car, NativeName(c.native));
@@ -879,6 +1056,7 @@ void ApplierBegin(const Scene& scene) {
     g.last_scene_t = 0.0;
     g.have_scene_t = false;
     g.reads.clear();
+    g.ambient_items.clear();
     for (const Event& e : scene.events) {
         if (e.track != Track::kCar) continue;
         CarCommand cmd;
@@ -888,7 +1066,7 @@ void ApplierBegin(const Scene& scene) {
                 g.keys.push_back({e.t, e.line, cmd});
                 break;
             case CarParse::kOtherVerb:
-                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, delete, profile, path and stop", e.line,
+                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, ambient, delete, profile, path and stop", e.line,
                                   e.words.empty() ? std::string() : e.words[0], e.words.size() > 1 ? e.words[1] : std::string());
                 break;
             case CarParse::kError:
@@ -988,6 +1166,15 @@ void TickCars() {
         }
     }
 
+    if (g.dir.HasAmbientCars()) {
+        g.dir.SetAmbientGate(ReadAmbientGate(base, player, GamePaused(base), g.ready_ticks));
+        // The ambient manager is rebuilt under the scene (a new world: its address changes): the placements went with the old one. The machine notices at the remove;
+        // the item cache is of the old manager.
+        if (g.ambient_manager != R32(base, kAmbientMgrPtr)) {
+            g.ambient_manager = R32(base, kAmbientMgrPtr);
+            g.ambient_items.clear();
+        }
+    }
     const bool calls_ok = world && g.ready_ticks >= kSettleTicks;
     if (calls_ok && !g.was_ready) LARECOMP_APP_INFO("[cars] the world is ready for native calls (a car on the road, not paused, the opponent manager at {})", Hex(mgr));
     g.was_ready = calls_ok;

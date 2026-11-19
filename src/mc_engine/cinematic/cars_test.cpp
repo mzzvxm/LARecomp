@@ -6,7 +6,7 @@
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
 //   clang++ -std=c++23 -Wall -Wextra src/mc_engine/cinematic/cars_test.cpp src/mc_engine/cinematic/car_registry.cpp \
-//       src/mc_engine/cinematic/car_spawn.cpp src/mc_engine/cinematic/path_follow.cpp -o cars_test.exe
+//       src/mc_engine/cinematic/car_spawn.cpp src/mc_engine/cinematic/ambient_car.cpp src/mc_engine/cinematic/path_follow.cpp -o cars_test.exe
 
 #include <algorithm>
 #include <cmath>
@@ -1308,6 +1308,463 @@ void TestDeleteIsNotLost() {
     Check(lost.InWorld().empty() && lost.failed() == 1, "a car the game lost counts as failed");
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------- ambient cars
+
+// `car <id> ambient <model> at <x,y,z> [heading <deg>]` (car_verbs.h), the layout's angle, the guards and the machine of one car.
+void TestAmbientVerbs() {
+    {
+        const Parsed p = P("a1 ambient va_gmc_yukon_05 at 817.0,17.2,-797.3 heading 45");
+        Check(p.status == CarParse::kOk, "ambient parses");
+        Check(p.cmd.verb == CarVerb::kAmbient && p.cmd.id == "a1" && p.cmd.source == CarSource::kModel, "ambient: verb, id, source");
+        Check(p.cmd.model == "va_gmc_yukon_05", "ambient: the model");
+        CheckNum(p.cmd.position[0], 817.0, "ambient x");
+        CheckNum(p.cmd.position[1], 17.2, "ambient y");
+        CheckNum(p.cmd.position[2], -797.3, "ambient z");
+        CheckNum(p.cmd.heading, 45.0, "ambient heading");
+        Check(p.cmd.has_heading, "ambient has_heading");
+    }
+    {
+        const Parsed p = P("a2 AMBIENT VA_MB_ECLIPSE_04 AT 1 2 3");  // upper case, three numbers; no heading = 0, not given
+        Check(p.status == CarParse::kOk && p.cmd.model == "va_mb_eclipse_04" && !p.cmd.has_heading && p.cmd.heading == 0.0, "ambient: upper case lowered, no heading");
+        CheckNum(p.cmd.position[2], 3.0, "ambient: three-number position");
+    }
+    CheckNum(P("a3 ambient x at 0,0,0 heading -90").cmd.heading, 270.0, "ambient heading -90 is 270");
+    CheckNum(P("a3 ambient x at 0,0,0 heading 360").cmd.heading, 0.0, "ambient heading 360 is 0");
+    Check(P("a3 ambient va_cad_escalade_03 at 0,0,0").status == CarParse::kOk, "a name of 24 characters is fine");
+    // the same words say the same with `spawn`: the old error texts are unchanged
+    CheckError("p1 spawn vp_x at 1,2,3 at 4,5,6", "spawn: a second 'at'");
+    CheckError("p1 ambient vp_x at 1,2,3 at 4,5,6", "ambient: a second 'at'");
+    CheckError("p1 ambient vp_x at 1,2,3 heading 1 heading 2", "ambient: a second 'heading'");
+    CheckError("p1 ambient vp_x at 1,2,3 colour red", "ambient: unknown option 'colour'");
+    CheckError("p1 ambient", "ambient what?");
+    CheckError("p1 ambient vp_x", "ambient needs a place");
+    CheckError("p1 ambient vp_x at", "at needs x,y,z");
+    CheckError("p1 ambient vp_x at 1,2", "bad position");
+    CheckError("p1 ambient vp_x at 999999,0,0", "outside the world");
+    CheckError("p1 ambient profile 3 at 1,2,3", "not an ambient type");
+    CheckError("p1 ambient garage:3 at 1,2,3", "not an ambient type");
+    CheckError("p1 ambient car:3 at 1,2,3", "not an ambient type");
+    CheckError("p1 ambient Vp.Bad/Name at 1,2,3", "not an ambient type name");
+    CheckError("p1 ambient abcdefghijklmnopqrstuvwxyz_01234 at 1,2,3", "up to 31");  // 32 characters: the layout item's name buffer holds 31 and a NUL
+    Check(P("p1 ambient abcdefghijklmnopqrstuvwxyz_0123 at 1,2,3").status == CarParse::kOk, "31 characters fit the layout item's name buffer");
+    CheckError("player ambient vp_x at 1,2,3", "'player' is the player's own car");
+    Check(P("p1 spawn abcdefghijklmnopqrstuvwxyz_012345 at 1,2,3").status == CarParse::kOk, "a spawn's name may be longer (47): only the layout's buffer is 32 bytes");
+    // a path or a stop on an ambient car is the Director's refusal (the parser sees only the words)
+    Check(P("a1 path street.route").status == CarParse::kOk, "path parses for any id");
+    Check(P("a1 delete").cmd.verb == CarVerb::kDelete, "delete works for the id of an ambient car too (the Director finds which kind it is)");
+    Check(DescribeCarCommand(P("a1 ambient va_gmc_yukon_05 at 1,2,3 heading 90").cmd) == "a1 ambient va_gmc_yukon_05 at (1.00, 2.00, 3.00) heading 90.00", "the log line");
+    Check(DescribeCarCommand(P("p1 spawn vp_x at 1,2,3 heading 90").cmd) == "p1 spawn vp_x at (1.00, 2.00, 3.00) heading 90.00", "a spawn's log line is as it was");
+}
+
+// The layout's angle. The traffic probe (TRAFFICPROBE.txt) passed 272 (the player's Racer_Teleport angle: his nose was at the scene heading 92) to
+// AmbientMgr_AddAmbientToLayout, and the car stood at the scene heading 92: the layout's angle is the scene's plus 180, like Racer_Teleport's.
+void TestLayoutHeading() {
+    CheckNum(LayoutHeadingDeg(92.0), 272.0, "the probe's run: the scene heading 92 is the layout angle 272");
+    CheckNum(SceneHeadingFromLayoutDeg(272.0), 92.0, "...and back");
+    CheckNum(LayoutHeadingDeg(0.0), 180.0, "heading 0 (along +Z) is the layout angle 180");
+    CheckNum(LayoutHeadingDeg(45.0), 225.0, "heading 45 is 225");
+    CheckNum(LayoutHeadingDeg(90.0), 270.0, "heading 90 is 270");
+    CheckNum(LayoutHeadingDeg(135.0), 315.0, "heading 135 is 315");
+    CheckNum(LayoutHeadingDeg(180.0), 0.0, "heading 180 wraps to 0");
+    CheckNum(LayoutHeadingDeg(270.0), 90.0, "heading 270 is 90");
+    CheckNum(LayoutHeadingDeg(-45.0), 135.0, "a negative heading wraps");
+    for (double h : {0.0, 17.0, 45.0, 92.0, 135.0, 271.5, 359.0}) {
+        CheckNum(SceneHeadingFromLayoutDeg(LayoutHeadingDeg(h)), h, "the two conversions undo each other at " + std::to_string(h), 1e-9);
+    }
+    CheckNum(LayoutHeadingDeg(1.0), NativeHeadingDeg(1.0), "the layout's angle is Racer_Teleport's");
+    // the stored item: radians, as the log of the probe showed (272 degrees = 4.747 rad; the log read 4.742 for 271.7)
+    CheckNum(LayoutHeadingDeg(92.0) * 3.14159265358979323846 / 180.0, 4.7473, "272 degrees are 4.7473 radians in the item", 1e-3);
+}
+
+AmbientGate OpenGate() {
+    AmbientGate g;
+    g.manager = true;
+    g.manager_addr = 0xA92D0000u;
+    g.player = true;
+    g.free_roam = true;
+    g.not_paused = true;
+    g.world_updates = 500;
+    g.layout_pool = true;
+    g.layout_free = 377;  // the probe's first sample: free 377 live 135 of 512
+    g.placed_so_far = 0;
+    return g;
+}
+
+void TestAmbientGuards() {
+    Check(DecideAmbientAdd(OpenGate()) == AmbientRefusal::kNone, "an open gate lets the call through");
+    {
+        AmbientGate g = OpenGate();
+        g.placed_so_far = kAmbientMaxPerScene;
+        g.manager = false;
+        Check(DecideAmbientAdd(g) == AmbientRefusal::kCapReached, "the cap is checked first (the probe's order)");
+    }
+    struct Case {
+        const char* what;
+        void (*make)(AmbientGate&);
+        AmbientRefusal want;
+        bool passes;
+    };
+    const Case cases[] = {
+        {"no manager", [](AmbientGate& g) { g.manager = false; }, AmbientRefusal::kNoManager, true},
+        {"no player", [](AmbientGate& g) { g.player = false; }, AmbientRefusal::kNoPlayer, true},
+        {"not free roam", [](AmbientGate& g) { g.free_roam = false; }, AmbientRefusal::kNotFreeRoam, true},
+        {"paused", [](AmbientGate& g) { g.not_paused = false; }, AmbientRefusal::kNotDriving, true},
+        {"too soon", [](AmbientGate& g) { g.world_updates = kAmbientMinWorldUpdates - 1; }, AmbientRefusal::kTooSoon, true},
+        {"no layout pool", [](AmbientGate& g) { g.layout_pool = false; }, AmbientRefusal::kNoLayoutPool, true},
+        {"pool full", [](AmbientGate& g) { g.layout_free = kAmbientMinFreeLayoutSlots - 1; }, AmbientRefusal::kPoolFull, false},
+    };
+    for (const Case& c : cases) {
+        AmbientGate g = OpenGate();
+        c.make(g);
+        const AmbientRefusal r = DecideAmbientAdd(g);
+        Check(r == c.want, std::string("the gate refuses: ") + c.what);
+        Check(AmbientRefusalPasses(r) == c.passes, std::string("a refusal that ") + (c.passes ? "passes: " : "is final: ") + c.what);
+        Check(std::string(AmbientRefusalText(r)).size() > 8, std::string("it has a sentence: ") + c.what);
+    }
+    {
+        AmbientGate g = OpenGate();
+        g.world_updates = kAmbientMinWorldUpdates;
+        g.layout_free = kAmbientMinFreeLayoutSlots;
+        Check(DecideAmbientAdd(g) == AmbientRefusal::kNone, "120 updates and two free slots are enough (the probe's numbers)");
+    }
+    Check(DecideAmbientAdd(AmbientGate{}) == AmbientRefusal::kNoManager, "a gate nobody set refuses: nothing is placed until the game side says the world is up");
+    Check(AmbientRefusalPasses(AmbientRefusal::kCapReached) == false && AmbientRefusalPasses(AmbientRefusal::kNone) == false, "the cap and `none` do not pass");
+}
+
+CarCommand Ambient(const std::string& id, const std::string& model, double x = 817.0, double z = -797.3, double heading = 0.0) {
+    CarCommand c;
+    c.id = id;
+    c.verb = CarVerb::kAmbient;
+    c.source = CarSource::kModel;
+    c.model = model;
+    c.position[0] = x;
+    c.position[1] = 17.2;
+    c.position[2] = z;
+    c.heading = heading;
+    c.has_heading = true;
+    return c;
+}
+
+// Plays the machine of one car against a pretend game: Add returns the item's id, Remove returns nothing.
+struct AmbientGame {
+    int32_t next_id = 135;
+    int32_t add_returns = 0;      // nonzero: the id AddAmbientToLayout answers instead (-1 = the game's refusal)
+    bool uncallable = false;
+    std::vector<Call> adds;
+    std::vector<int32_t> removed;
+    Outcome Run(const Call& c) {
+        Outcome o;
+        o.called = !uncallable;
+        if (c.native == Native::kAddAmbient) {
+            adds.push_back(c);
+            o.ret_written = true;
+            o.ret = static_cast<uint32_t>(add_returns != 0 ? add_returns : next_id++);
+        } else if (c.native == Native::kRemoveAmbient) {
+            removed.push_back(c.index);
+        }
+        return o;
+    }
+};
+
+void TestAmbientMachine() {
+    {
+        AmbientCar car;
+        AmbientGame game;
+        car.Start(Ambient("a1", "va_gmc_yukon_05", 817.0, -797.3, 45.0));
+        Check(car.stage() == AmbientCar::Stage::kAdd && !car.Finished() && !car.Placed(), "a started car waits to be added");
+        const Call c = car.Poll(1000, OpenGate());
+        Check(c.native == Native::kAddAmbient && c.text == "va_gmc_yukon_05", "the first poll with an open gate hands out the add of the model");
+        CheckNum(c.position[0], 817.0, "the add's x");
+        CheckNum(c.position[2], -797.3, "the add's z");
+        CheckNum(c.heading_native, 225.0, "the add's angle is the layout's: the scene's 45 plus 180");
+        Check(car.Poll(1016, OpenGate()).native == Native::kNone, "one call in flight: nothing more is handed out");
+        car.Report(game.Run(c));
+        Check(car.Placed() && car.layout_id() == 135 && car.EverPlaced() && car.ok(), "the report with an id places it: layout item 135");
+        Check(car.Poll(1032, OpenGate()).native == Native::kNone, "a placed car asks for nothing");
+        car.RequestDelete();
+        Check(car.stage() == AmbientCar::Stage::kRemove, "a delete after the placement goes to the remove");
+        const Call r = car.Poll(1048, OpenGate());
+        Check(r.native == Native::kRemoveAmbient && r.index == 135, "the remove names the layout item's id");
+        car.Report(game.Run(r));
+        Check(car.Finished() && car.ok() && game.removed == std::vector<int32_t>{135}, "removed, and finished without a fault");
+        bool placed_line = false;
+        for (const CarEvent& e : car.TakeEvents()) placed_line = placed_line || (!e.warning && e.text.find("layout item 135") != std::string::npos);
+        Check(placed_line, "the log line says which layout item");
+    }
+    {  // a delete before anything was called drops the car
+        AmbientCar car;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.RequestDelete();
+        Check(car.Finished() && car.ok() && !car.EverPlaced(), "a delete before the add: dropped, nothing called");
+    }
+    {  // a delete while the add is in flight: the remove follows the report
+        AmbientCar car;
+        AmbientGame game;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        const Call c = car.Poll(0, OpenGate());
+        car.RequestDelete();
+        Check(!car.Finished(), "the add is in flight: the car is not finished");
+        car.Report(game.Run(c));
+        Check(car.stage() == AmbientCar::Stage::kRemove && car.EverPlaced(), "after the report the remove is next (a placement that exists is never left behind)");
+        const Call r = car.Poll(16, OpenGate());
+        Check(r.native == Native::kRemoveAmbient && r.index == 135, "...and it names the item");
+        car.Report(game.Run(r));
+        Check(car.Finished() && car.ok(), "gone");
+    }
+    {  // waiting: the world is not up yet, then it is
+        AmbientCar car;
+        AmbientGate g = OpenGate();
+        g.free_roam = false;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        Check(car.Poll(0, g).native == Native::kNone && !car.Finished(), "not free roam: waits");
+        g.free_roam = false;
+        Check(car.Poll(16, g).native == Native::kNone, "still waits");
+        int lines = 0;
+        for (const CarEvent& e : car.TakeEvents()) lines += e.text.find("waits") != std::string::npos ? 1 : 0;
+        Check(lines == 1, "the wait is logged once, not every update");
+        g.free_roam = true;
+        Check(car.Poll(32, g).native == Native::kAddAmbient, "free roam: the add goes");
+    }
+    {  // a wait that never ends fails
+        AmbientCar car;
+        AmbientGate g = OpenGate();
+        g.free_roam = false;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.Poll(0, g);
+        car.Poll(kAmbientGiveUpMs + 1, g);
+        Check(car.Finished() && !car.ok() && car.failure().find("gave up waiting") != std::string::npos, "after 90 s of waiting the car fails and says why");
+    }
+    {  // a final refusal fails at once
+        AmbientCar car;
+        AmbientGate g = OpenGate();
+        g.layout_free = 1;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.Poll(0, g);
+        Check(car.Finished() && !car.ok() && car.failure().find("no free slot") != std::string::npos, "a full layout pool fails at once");
+    }
+    {  // the game's refusal (-1) and a call that could not be made
+        AmbientCar car;
+        AmbientGame game;
+        game.add_returns = -1;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.Report(Outcome{});  // nothing in flight: ignored
+        const Call c = car.Poll(0, OpenGate());
+        car.Report(game.Run(c));
+        Check(car.Finished() && !car.ok() && car.failure().find("returned -1") != std::string::npos && !car.EverPlaced(), "an id of -1 is the game's refusal");
+        AmbientCar car2;
+        AmbientGame game2;
+        game2.uncallable = true;
+        car2.Start(Ambient("a2", "va_gmc_yukon_05"));
+        car2.Report(game2.Run(car2.Poll(0, OpenGate())));
+        Check(car2.Finished() && !car2.ok() && car2.failure().find("was not called") != std::string::npos, "a call that could not be made fails the car");
+    }
+    {  // the ambient manager changed under it: nothing is called on the old item
+        AmbientCar car;
+        AmbientGame game;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.Report(game.Run(car.Poll(0, OpenGate())));
+        car.RequestDelete();
+        AmbientGate other = OpenGate();
+        other.manager_addr = 0xA9990000u;
+        Check(car.Poll(16, other).native == Native::kNone && car.Finished() && car.ok(), "a rebuilt manager: the placement went with it, nothing is called, no fault");
+        Check(game.removed.empty(), "no remove was made on the stale id");
+    }
+    {  // the world rebuilt while the car stands
+        AmbientCar car;
+        AmbientGame game;
+        car.Start(Ambient("a1", "va_gmc_yukon_05"));
+        car.Report(game.Run(car.Poll(0, OpenGate())));
+        car.MarkLost();
+        Check(car.Finished() && !car.ok(), "a placement the game lost is a fault");
+    }
+}
+
+// A Director with ambient cars: one call an update, the cap, the ids, the end of the scene, the pose.
+void TestAmbientDirector() {
+    {
+        Director dir;
+        AmbientGame game;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        Check(dir.Apply(Ambient("a1", "va_gmc_yukon_05", 810.0, -800.0, 0.0)).ok, "ambient a1 applies");
+        Check(dir.Apply(Ambient("a2", "va_mb_eclipse_04", 817.0, -800.0, 45.0)).ok, "ambient a2 applies");
+        Check(dir.Apply(Ambient("a3", "va_dge_caravan_07", 824.0, -800.0, 90.0)).ok, "ambient a3 applies");
+        Check(dir.Apply(Ambient("a4", "va_golfr32_04", 831.0, -800.0, 135.0)).ok, "ambient a4 applies");
+        Check(dir.registry().Find("a1") != nullptr && dir.registry().Find("a4") != nullptr, "the cars are in the registry (the camera and the state log find them by id)");
+        Check(dir.Active() && dir.SceneCarCount() == 4, "active, four scene cars");
+        int max_calls = 0;
+        int64_t t = 0;
+        for (; t < 2000; t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) {
+                Director::Next again = dir.Poll(t, 0xBF33C450u);
+                if (again.call.native != Native::kNone) ++max_calls;
+                dir.Report(game.Run(n.call));
+            }
+        }
+        Check(max_calls == 0, "one native an update, never two");
+        Check(game.adds.size() == 4, "four adds");
+        Check(game.adds.size() == 4 && game.adds[0].text == "va_gmc_yukon_05" && game.adds[3].text == "va_golfr32_04", "in the order of the file");
+        double angles[4] = {};
+        for (size_t i = 0; i < game.adds.size() && i < 4; ++i) angles[i] = game.adds[i].heading_native;
+        CheckNum(angles[0], 180.0, "heading 0 goes in as the layout angle 180");
+        CheckNum(angles[1], 225.0, "45 as 225");
+        CheckNum(angles[2], 270.0, "90 as 270");
+        CheckNum(angles[3], 315.0, "135 as 315");
+        Check(dir.spawned() == 4 && dir.AmbientReaders().size() == 4, "four placed, four to read poses of");
+        Check(dir.AmbientReaders()[0].layout_id == 135 && dir.AmbientReaders()[3].layout_id == 138, "their layout ids are the game's answers");
+        // a pose: the first one is logged with what the scene asked for
+        float m[16] = {0};
+        m[0] = 1; m[5] = 1; m[10] = 1;      // right, up, back = identity: nose along -z... heading 180 in the scene's convention
+        m[12] = 810.2f; m[13] = 17.6f; m[14] = -800.3f;
+        dir.TakeEvents();
+        dir.NoteAmbientPose("a1", m, 10);
+        bool line = false;
+        for (const CarEvent& e : dir.TakeEvents()) line = line || (e.text.find("car a1 (ambient va_gmc_yukon_05) stands at (810.20, 17.60, -800.30)") != std::string::npos && e.text.find("layout angle 180.0") != std::string::npos);
+        Check(line, "the first pose is logged beside what was asked for (and the layout angle)");
+        dir.NoteAmbientPose("a1", m, 11);
+        Check(dir.TakeEvents().empty(), "...and only the first");
+        // the end of the scene removes every one of them
+        dir.EndScene();
+        Check(dir.Active(), "the scene is over, the cars are still to go");
+        Check(dir.registry().Find("a1") == nullptr, "out of the registry at once");
+        int removes = 0;
+        for (; t < 6000 && dir.Active(); t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) {
+                if (n.call.native == Native::kRemoveAmbient) ++removes;
+                dir.Report(game.Run(n.call));
+            }
+        }
+        Check(removes == 4 && game.removed == (std::vector<int32_t>{135, 136, 137, 138}), "every layout item was removed by its id, once");
+        Check(!dir.Active() && dir.deleted() == 4 && dir.failed() == 0, "nothing left, four removed, none failed");
+    }
+    {  // ids are one namespace across the kinds; a path on an ambient car is refused; delete by id
+        Director dir;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        Check(dir.Apply(Ambient("a1", "va_gmc_yukon_05")).ok, "a1 ambient");
+        Check(!dir.Apply(Ambient("a1", "va_mb_eclipse_04")).ok, "a second ambient with the same id is refused");
+        Check(!dir.Apply(Spawn("a1", "vp_lam_murcielago_06")).ok, "a spawn with an ambient's id is refused");
+        dir.Apply(Spawn("p1", "vp_lam_murcielago_06"));
+        Check(!dir.Apply(Ambient("p1", "va_mb_eclipse_04")).ok, "an ambient with a spawn's id is refused");
+        CarCommand path;
+        path.id = "a1";
+        path.verb = CarVerb::kPath;
+        path.route = "street.route";
+        const Director::Applied pa = dir.Apply(path);
+        Check(!pa.ok && pa.message.find("ambient car") != std::string::npos, "a path on an ambient car is refused with a reason");
+        CarCommand stop;
+        stop.id = "a1";
+        stop.verb = CarVerb::kStop;
+        Check(!dir.Apply(stop).ok, "a stop on an ambient car is refused");
+        const Director::Applied del = dir.Apply(Delete("a1"));
+        Check(del.ok && del.message.find("not placed yet: dropped") != std::string::npos, "a delete before the add is a drop");
+        Check(dir.registry().Find("a1") == nullptr, "...and takes it out of the registry");
+        Check(!dir.Apply(Delete("a1")).ok, "a second delete: no such car");
+        Check(dir.Apply(Ambient("a1", "va_mb_eclipse_04")).ok, "the id is free again after the delete");
+    }
+    {  // the gate decides: nothing is called while the world is not up, the call goes when it is
+        Director dir;
+        AmbientGame game;
+        dir.BeginScene();
+        dir.Apply(Ambient("a1", "va_gmc_yukon_05"));
+        Check(dir.Poll(0, 0xBF33C450u).call.native == Native::kNone, "a gate nobody set: no call");
+        AmbientGate g = OpenGate();
+        g.world_updates = 50;
+        dir.SetAmbientGate(g);
+        Check(dir.Poll(16, 0xBF33C450u).call.native == Native::kNone, "50 updates up: still too soon");
+        g.world_updates = 120;
+        dir.SetAmbientGate(g);
+        const Director::Next n = dir.Poll(32, 0xBF33C450u);
+        Check(n.call.native == Native::kAddAmbient && n.car == "a1", "120 updates: the add");
+        dir.Report(game.Run(n.call));
+        Check(dir.Poll(48, 0xBF33C450u).call.native == Native::kNone, "nothing more to do for a placed car");
+        // not allowed to call (a menu): the books are kept, nothing is handed out, even a remove
+        dir.EndScene();
+        Check(dir.Poll(64, 0xBF33C450u, false).call.native == Native::kNone, "no calls while the world is not ready");
+        const Director::Next r = dir.Poll(80, 0xBF33C450u);
+        Check(r.call.native == Native::kRemoveAmbient, "the remove goes when the world is ready again");
+        dir.Report(game.Run(r.call));
+        dir.Poll(96, 0xBF33C450u);
+        Check(!dir.Active(), "done");
+    }
+    {  // the cap: a scene makes at most eight
+        Director dir;
+        AmbientGame game;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        for (int i = 0; i < 10; ++i) dir.Apply(Ambient("c" + std::to_string(i), "va_gmc_yukon_05", 800.0 + 7.0 * i, -800.0));
+        for (int64_t t = 0; t < 4000; t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) dir.Report(game.Run(n.call));
+        }
+        Check(game.adds.size() == kAmbientMaxPerScene, "the ninth and tenth are not placed");
+        Check(dir.failed() == 2, "...they fail, and say so");
+        bool cap = false;
+        for (const CarEvent& e : dir.TakeEvents()) cap = cap || (e.warning && e.text.find("as many ambient cars as one scene may") != std::string::npos);
+        Check(cap, "the warning names the cap");
+    }
+    {  // racers and ambient cars together: the racer's delete first, one native an update
+        Director dir;
+        FakeGame game;
+        AmbientGame agame;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        dir.Apply(Spawn("p1", "vp_lam_murcielago_06"));
+        dir.Apply(Ambient("a1", "va_gmc_yukon_05"));
+        int64_t t = 0;
+        int adds = 0;
+        for (; t < 12000; t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native == Native::kNone) continue;
+            if (n.call.native == Native::kAddAmbient) {
+                ++adds;
+                dir.Report(agame.Run(n.call));
+            } else {
+                dir.Report(game.Run(n.call, t));
+            }
+        }
+        Check(adds == 1 && dir.spawned() == 2, "a racer and an ambient car both made");
+        dir.EndScene();
+        for (; t < 30000 && dir.Active(); t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native == Native::kNone) continue;
+            if (n.call.native == Native::kRemoveAmbient) dir.Report(agame.Run(n.call));
+            else dir.Report(game.Run(n.call, t));
+        }
+        Check(!dir.Active() && dir.deleted() == 2 && dir.failed() == 0, "both gone, none failed");
+        Check(agame.removed.size() == 1 && game.N("OpponentManager_DeleteOpponent") == 1, "one remove and one delete");
+    }
+    {  // an ambient car the game refuses fails; a scene that ends mid-wait leaves nothing behind
+        Director dir;
+        AmbientGame game;
+        game.add_returns = -1;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        dir.Apply(Ambient("a1", "va_gmc_yukon_05"));
+        for (int64_t t = 0; t < 200; t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) dir.Report(game.Run(n.call));
+        }
+        dir.TakeEvents();
+        Check(dir.failed() == 1 && dir.spawned() == 0, "a refused placement counts as failed, not made");
+        dir.EndScene();
+        dir.Poll(300, 0xBF33C450u);
+        Check(!dir.Active(), "nothing is left to remove");
+    }
+    {  // the scene ends while a car still waits for the world: dropped
+        Director dir;
+        dir.BeginScene();
+        dir.Apply(Ambient("a1", "va_gmc_yukon_05"));
+        dir.Poll(0, 0xBF33C450u);
+        dir.EndScene();
+        dir.Poll(16, 0xBF33C450u);
+        Check(!dir.Active() && dir.failed() == 0, "dropped before it was placed, no fault");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1327,6 +1784,11 @@ int main() {
     TestPathBrain();
     TestLost();
     TestDeleteIsNotLost();
+    TestAmbientVerbs();
+    TestLayoutHeading();
+    TestAmbientGuards();
+    TestAmbientMachine();
+    TestAmbientDirector();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

@@ -19,12 +19,17 @@
 //                                                         whole scene, so no time; the CSV goes to <folder>\state.csv (default: the
 //                                                         take folder when one is set, else statelogs\ next to the game)
 //   world <key> <value> ...                               a bundle at time 0 of: hour <h> [hold], weather <w>,
-//                                                         traffic|peds|parked|police on|off, timescale <x>
+//                                                         traffic|peds|parked|police on|off, peds|parked <scale>, timescale <x>
 //   at T hour <h>                                         the world sits at that hour (0..24) until the next key
 //   at T hour <a>..<b> over <s> [ease <e>]                the hour moves from a to b (a value over 24 wraps)
 //   at T hour free                                        the game's own day cycle again
 //   at T weather nice|cloudy|stormy|foggy|game            game = the game's own weather again
-//   at T traffic|peds|parked|police on|off                the ambient switches (police: every cop active or not)
+//   at T traffic|peds|parked|police on|off                the ambient switches (police: every cop active or not): the game's own script
+//                                                         natives. traffic off ALSO holds the setting traffic_density_scale at 0 (new traffic
+//                                                         stops whatever writes the enable byte; the native clears the road); on gives both back
+//   at T peds|parked <scale>                              the density SETTING (ped_density_scale / parked_car_scale), a number from 0 to 2:
+//                                                         held for the scene, the old value comes back when it ends (a 0 or 1 here is a scale,
+//                                                         not off or on: the switches are the words on and off)
 //   at T timescale <x> [over <s>] [ease <e>]              the game's time scale; a ramp starts from the value before it
 //   at T timescale <a>..<b> over <s> [ease <e>]
 //   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends); not one that names a
@@ -108,6 +113,9 @@ enum class Track : uint8_t {
 };
 const char* TrackName(Track track);
 
+// Event::state of a peds or parked key that carries a density scale (Event::to) instead of on or off.
+inline constexpr int kStateScale = 2;
+
 struct Event {
     double t = 0.0;  // scene time of the key, seconds
     int line = 0;    // where it was written
@@ -123,7 +131,7 @@ struct Event {
     bool release = false;  // hour free / weather game: the game's own again
 
     int index = -1;  // weather: 0 nice, 1 cloudy, 2 stormy, 3 foggy; capture fps: statelog 1 on, 0 off, -1 not given
-    int state = 0;   // traffic, peds, parked, police: 1 on, 0 off
+    int state = 0;   // traffic, peds, parked, police: 1 on, 0 off; peds, parked: kStateScale = a density scale, in `to`
 
     std::string name;                // cvar name; mark name; car id; capture fps: the take's name
     std::string text;                // cvar value; label text; capture fps: the sink
@@ -209,9 +217,11 @@ struct WorldState {
     double hour = 0.0;      // 0..24 (a value of 24 or more wraps)
     int weather = -1;       // 0..3, -1 = the game's own
     int traffic = -1;       // -1 = not touched, 0 off, 1 on
-    int peds = -1;
+    int peds = -1;          // the game's switch: -1 = not touched, 0 off, 1 on
     int parked = -1;
     int police = -1;
+    double peds_scale = -1.0;    // the density setting (ped_density_scale / parked_car_scale): -1 = not touched, else 0..2; a switch key and a scale key
+    double parked_scale = -1.0;  // of one track replace each other (the later key wins, and clears the other)
     bool timescale_set = false;
     double timescale = 1.0;
     bool operator==(const WorldState&) const = default;

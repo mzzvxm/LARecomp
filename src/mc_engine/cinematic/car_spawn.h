@@ -23,6 +23,10 @@
 // THE PLAYER'S CAR (E4, e4-changecar): LocalOptions_GetVehicleProfile(slot) and Racer_ChangeCarByConfig(player, config) dress it
 // live; the profile it wore before comes back through the same calls when the scene ends.
 //
+// AN AMBIENT CAR (`car <id> ambient`, ambient_car.h has what the game does): AmbientMgr_AddAmbientToLayout(model, position, layout angle) -> the layout item's id,
+// the game's parked spawner makes the car within a second; AmbientMgr_RemoveAmbientFromLayout(id) takes it back (the clean-up of every placement, also at the end of
+// the scene). One call each, through the same Director as the racers' steps, only while the guards of ambient_car.h hold (free roam, slots, 120 updates up).
+//
 // A PATH (package M4c): `car <id> path <route> [speed <x>] [mode brain|kinematic]` on a car that is ready, and `car <id> stop`.
 //   kinematic   the car is put on the route at every update with Racer_Teleport(racer, position, heading, speed): the place is a function
 //               of the path clock (the scene's time as the game's time scale makes it), the heading is the route's and the speed is the
@@ -41,6 +45,7 @@
 #include <string>
 #include <vector>
 
+#include "ambient_car.h"
 #include "car_registry.h"
 #include "car_verbs.h"
 #include "path_follow.h"
@@ -76,6 +81,9 @@ enum class Native : uint8_t {
     kBrainReached,         // BrainCruising_HasReachedGoal(brain) -> bool
     kBrainStop,            // BrainCruising_RemoveFromTraffic(brain): back to idle, brake held
     kDeleteBrain,          // BrainFactory_DeleteBrain(racer)
+    // an ambient car (the layout, ambient_car.h)
+    kAddAmbient,           // AmbientMgr_AddAmbientToLayout(model name*, position*, angle in degrees) -> the layout item's id, -1 = refused
+    kRemoveAmbient,        // AmbientMgr_RemoveAmbientFromLayout(id)
 };
 const char* NativeName(Native native);
 
@@ -90,6 +98,7 @@ struct Call {
     double heading_native = 0.0;  // the angle Racer_Teleport and the loader take (NativeHeadingDeg)
     double speed = 0.0;           // kTeleport: the car's speed along its nose after it is put there (m/s); the brain's speed natives: the value
     uint32_t brain = 0;           // the brain natives: the brain (racer is the car it drives)
+    // kAddAmbient: text = the model, position = the place, heading_native = the layout's angle (LayoutHeadingDeg); kRemoveAmbient: index = the layout item's id.
 };
 
 struct Outcome {
@@ -179,6 +188,57 @@ class Spawner {
     uint32_t opp_ = 0;
     int32_t index_ = -1;
     std::string failure_;
+};
+
+// ---------------------------------------------------------------------------------------------------------------- an ambient car
+
+class AmbientCar {
+  public:
+    enum class Stage : uint8_t {
+        kAdd,     // not placed yet: waits for the guards, then the add
+        kPlaced,  // the layout item exists; the game's spawner makes the car and keeps it
+        kRemove,  // the remove is to be called
+        kGone,    // finished: ok() says whether the car was ever placed without a fault
+    };
+
+    explicit AmbientCar(const CarTiming& timing = {}) : timing_(timing) {}
+
+    void Start(const CarCommand& cmd);
+    void RequestDelete();  // at once when nothing was placed; after the add's report when its call is in flight
+    void MarkLost();       // the game no longer has the placement: finished, nothing more is called
+
+    // `gate`: what the game side saw this update.
+    Call Poll(int64_t now_ms, const AmbientGate& gate);
+    void Report(const Outcome& outcome);
+
+    Stage stage() const { return stage_; }
+    bool Finished() const { return stage_ == Stage::kGone; }
+    bool Placed() const { return stage_ == Stage::kPlaced; }
+    bool EverPlaced() const { return placed_ever_; }
+    bool ok() const { return failure_.empty(); }
+    const std::string& failure() const { return failure_; }
+    int32_t layout_id() const { return layout_id_; }
+    const CarCommand& command() const { return cmd_; }
+    bool delete_requested() const { return want_delete_; }
+    std::vector<CarEvent> TakeEvents();
+
+  private:
+    void Fail(const std::string& why);
+    void Event(bool warning, std::string text);
+
+    CarTiming timing_;
+    CarCommand cmd_;
+    Stage stage_ = Stage::kGone;
+    bool waiting_ = false;       // a call was handed out and not reported yet
+    bool want_delete_ = false;
+    bool placed_ever_ = false;
+    int64_t first_poll_ms_ = -1;
+    AmbientRefusal last_wait_ = AmbientRefusal::kNone;
+    int32_t layout_id_ = -1;
+    uint32_t manager_ = 0;       // the ambient manager the item was made in
+    uint32_t manager_at_add_ = 0;
+    std::string failure_;
+    std::vector<CarEvent> events_;
 };
 
 // ---------------------------------------------------------------------------------------------------------------- the player's car
@@ -350,7 +410,7 @@ class Director {
     void EndScene();
 
     // Anything to do or to keep track of.
-    bool Active() const { return scene_on_ || !cars_.empty() || dresser_.Busy(); }
+    bool Active() const { return scene_on_ || !cars_.empty() || !ambient_.empty() || dresser_.Busy(); }
 
     struct Next {
         std::string car;  // the id, or "player"
@@ -393,11 +453,25 @@ class Director {
     // The racers that should be in the opponent manager's list (added, not gone): the game side checks them.
     std::vector<Reader> InWorld() const;
 
+    // ---- ambient cars. The game side sets the gate every update before Poll (all false until it does: nothing is placed).
+    void SetAmbientGate(const AmbientGate& gate) { gate_ = gate; }
+    bool HasAmbientCars() const { return !ambient_.empty(); }
+    struct AmbientReader {
+        std::string id;
+        int32_t layout_id = -1;
+    };
+    // The cars that are placed and not ended: the game side finds each one's car through its layout item and reads its matrix.
+    std::vector<AmbientReader> AmbientReaders() const;
+    // The matrix of an ambient car as read (rows right, up, back, position); the first one is logged with what the scene asked for.
+    void NoteAmbientPose(const std::string& id, const float matrix[16], uint64_t frame);
+    // The ambient manager changed under the scene (a rebuilt world): every placement was lost with it, nothing is called on them.
+    void MarkAmbientLost();
+
     CarRegistry& registry() { return registry_; }
     const CarRegistry& registry() const { return registry_; }
     std::vector<CarEvent> TakeEvents();
 
-    size_t SceneCarCount() const { return cars_.size(); }
+    size_t SceneCarCount() const { return cars_.size() + ambient_.size(); }
     int spawned() const { return spawned_; }
     int deleted() const { return deleted_; }
     int failed() const { return failed_; }
@@ -412,12 +486,24 @@ class Director {
         bool was_ready = false;
         explicit SceneCar(const CarTiming& t) : spawner(t), path(t) {}
     };
+    struct AmbientEntry {
+        std::string id;
+        AmbientCar car;
+        bool ended = false;  // its scene is over (or it was deleted): it is no longer reachable by id
+        bool was_placed = false;
+        explicit AmbientEntry(const CarTiming& t) : car(t) {}
+    };
     SceneCar* FindLive(const std::string& id);
+    AmbientEntry* FindLiveAmbient(const std::string& id);
     void Collect(SceneCar& car);
 
     CarTiming timing_;
     CarRegistry registry_;
     std::vector<std::unique_ptr<SceneCar>> cars_;
+    std::vector<std::unique_ptr<AmbientEntry>> ambient_;
+    AmbientGate gate_;
+    uint32_t ambient_calls_ = 0;  // adds handed out in this scene (the cap)
+    AmbientEntry* pending_ambient_ = nullptr;
     Dresser dresser_;
     bool scene_on_ = false;
     // Which machine the call handed out last came from.

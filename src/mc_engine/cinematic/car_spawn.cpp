@@ -37,6 +37,8 @@ const char* NativeName(Native native) {
         case Native::kBrainReached: return "BrainCruising_HasReachedGoal";
         case Native::kBrainStop: return "BrainCruising_RemoveFromTraffic";
         case Native::kDeleteBrain: return "BrainFactory_DeleteBrain";
+        case Native::kAddAmbient: return "AmbientMgr_AddAmbientToLayout";
+        case Native::kRemoveAmbient: return "AmbientMgr_RemoveAmbientFromLayout";
     }
     return "?";
 }
@@ -798,14 +800,29 @@ Director::SceneCar* Director::FindLive(const std::string& id) {
 
 void Director::BeginScene() {
     scene_on_ = true;
+    ambient_calls_ = 0;
     if (!registry_.Find("player")) registry_.Add("player", true);
 }
 
 Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Route* route) {
     Applied a;
     switch (cmd.verb) {
+        case CarVerb::kAmbient: {
+            if (FindLive(cmd.id) || FindLiveAmbient(cmd.id)) {
+                a.ok = false;
+                a.message = "car " + cmd.id + " already exists: a second ambient of it is ignored";
+                return a;
+            }
+            auto entry = std::make_unique<AmbientEntry>(timing_);
+            entry->id = cmd.id;
+            entry->car.Start(cmd);
+            ambient_.push_back(std::move(entry));
+            registry_.Add(cmd.id, false);
+            a.message = "placing " + DescribeCarCommand(cmd) + " (an ambient car: the game's parked spawner makes it from the layout item)";
+            return a;
+        }
         case CarVerb::kSpawn: {
-            if (FindLive(cmd.id)) {
+            if (FindLive(cmd.id) || FindLiveAmbient(cmd.id)) {
                 a.ok = false;
                 a.message = "car " + cmd.id + " already exists: a second spawn of it is ignored";
                 return a;
@@ -819,6 +836,14 @@ Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Rou
             return a;
         }
         case CarVerb::kDelete: {
+            if (AmbientEntry* amb = FindLiveAmbient(cmd.id)) {
+                const bool placed = amb->car.Placed() || amb->car.stage() == AmbientCar::Stage::kRemove;
+                amb->ended = true;
+                amb->car.RequestDelete();
+                registry_.Remove(cmd.id);
+                a.message = "removing ambient car " + cmd.id + (placed ? " (AmbientMgr_RemoveAmbientFromLayout)" : " (it was not placed yet: dropped)");
+                return a;
+            }
             SceneCar* car = FindLive(cmd.id);
             if (!car) {
                 a.ok = false;
@@ -836,6 +861,11 @@ Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Rou
             a.message = "the player's car to garage slot " + std::to_string(cmd.slot);
             return a;
         case CarVerb::kPath: {
+            if (FindLiveAmbient(cmd.id)) {
+                a.ok = false;
+                a.message = "car " + cmd.id + " is an ambient car: it stands where it was placed and takes no route (spawn a car for a path)";
+                return a;
+            }
             SceneCar* car = FindLive(cmd.id);
             if (!car) {
                 a.ok = false;
@@ -857,6 +887,11 @@ Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Rou
             return a;
         }
         case CarVerb::kStop: {
+            if (FindLiveAmbient(cmd.id)) {
+                a.ok = false;
+                a.message = "car " + cmd.id + " is an ambient car: it has no route to stop (it stands where it was placed)";
+                return a;
+            }
             SceneCar* car = FindLive(cmd.id);
             if (!car) {
                 a.ok = false;
@@ -877,13 +912,20 @@ Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Rou
 }
 
 void Director::EndScene() {
-    if (!scene_on_ && cars_.empty() && !dresser_.Busy() && !dresser_.Changed()) return;
+    if (!scene_on_ && cars_.empty() && ambient_.empty() && !dresser_.Busy() && !dresser_.Changed()) return;
     int n = 0;
     for (auto& c : cars_) {
         if (c->ended) continue;
         c->ended = true;
         c->spawner.RequestDelete();
         registry_.Remove(c->id);
+        ++n;
+    }
+    for (auto& a : ambient_) {
+        if (a->ended) continue;
+        a->ended = true;
+        a->car.RequestDelete();
+        registry_.Remove(a->id);
         ++n;
     }
     registry_.Remove("player");
@@ -906,7 +948,7 @@ void Director::Collect(SceneCar& car) {
 
 Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_calls) {
     Next out;
-    if (pending_car_ || pending_dresser_ || pending_path_car_) return out;  // a call is in flight: its Report comes first
+    if (pending_car_ || pending_dresser_ || pending_path_car_ || pending_ambient_) return out;  // a call is in flight: its Report comes first
 
     // Finished spawns leave: the log lines first, then the registry.
     for (auto it = cars_.begin(); it != cars_.end();) {
@@ -925,6 +967,29 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
             }
             if (!car.ended) registry_.Remove(car.id);
             it = cars_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // Finished ambient cars leave the same way. (A failure was logged by the machine as it happened.)
+    for (auto it = ambient_.begin(); it != ambient_.end();) {
+        AmbientEntry& a = **it;
+        for (CarEvent& e : a.car.TakeEvents()) events_.push_back(std::move(e));
+        if (a.car.EverPlaced() && !a.was_placed) {
+            a.was_placed = true;
+            ++spawned_;
+        }
+        if (a.car.Finished()) {
+            if (!a.car.ok()) {
+                ++failed_;
+            } else if (a.was_placed) {
+                ++deleted_;
+                events_.push_back({false, "car " + a.id + " (ambient) is removed: layout item " + std::to_string(a.car.layout_id()) + " given back"});
+            } else {
+                events_.push_back({false, "car " + a.id + " (ambient) was dropped before it was placed"});
+            }
+            if (!a.ended) registry_.Remove(a.id);
+            it = ambient_.erase(it);
         } else {
             ++it;
         }
@@ -957,6 +1022,19 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
         }
         if (take(*c)) return out;
     }
+    auto take_ambient = [&](AmbientEntry& a) {
+        Call c = a.car.Poll(now_ms, gate_);
+        if (c.native == Native::kNone) return false;
+        out.car = a.id;
+        out.call = std::move(c);
+        pending_ambient_ = &a;
+        if (out.call.native == Native::kAddAmbient) ++ambient_calls_;
+        return true;
+    };
+    gate_.placed_so_far = ambient_calls_;
+    for (auto& a : ambient_) {
+        if (a->car.delete_requested() && take_ambient(*a)) return out;
+    }
     {
         Call c = dresser_.Poll(now_ms, player_racer);
         if (c.native != Native::kNone) {
@@ -980,6 +1058,9 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
             return out;
         }
     }
+    for (auto& a : ambient_) {
+        if (!a->car.delete_requested() && take_ambient(*a)) return out;
+    }
     return out;
 }
 
@@ -991,8 +1072,11 @@ void Director::Report(const Outcome& outcome) {
         else pending_path_car_->path.ReportBrain(outcome);
     } else if (pending_car_) {
         pending_car_->spawner.Report(outcome);
+    } else if (pending_ambient_) {
+        pending_ambient_->car.Report(outcome);
     }
     pending_car_ = nullptr;
+    pending_ambient_ = nullptr;
     pending_path_car_ = nullptr;
     pending_path_delete_ = false;
     pending_dresser_ = false;
@@ -1000,6 +1084,7 @@ void Director::Report(const Outcome& outcome) {
 
 void Director::CancelPending() {
     pending_car_ = nullptr;
+    pending_ambient_ = nullptr;
     pending_path_car_ = nullptr;
     pending_path_delete_ = false;
     pending_dresser_ = false;
@@ -1089,6 +1174,9 @@ std::vector<Director::Reader> Director::InWorld() const {
 std::vector<CarEvent> Director::TakeEvents() {
     for (auto& c : cars_) {
         for (CarEvent& e : c->path.TakeEvents()) events_.push_back(std::move(e));
+    }
+    for (auto& a : ambient_) {
+        for (CarEvent& e : a->car.TakeEvents()) events_.push_back(std::move(e));
     }
     std::vector<CarEvent> out;
     out.swap(events_);
