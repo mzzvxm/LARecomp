@@ -1,29 +1,43 @@
-**[Home](Home)**
+**LARecomp**
 
-**Players**
-
+- [Home](Home)
 - [Getting Started](Getting-Started)
-- [Settings Reference](Settings-Reference)
-- [Settings Renderer Advanced](Settings-Renderer-Advanced)
-- [Online Play](Online-Play)
-- [Online Tournament](Online-Tournament)
-- [Custom Music](Custom-Music)
-- [Mod Browser](Mod-Browser)
-- [Photo Mode](Photo-Mode)
 - [Troubleshooting](Troubleshooting)
 - [Glossary](Glossary)
 
-**Modders**
+**Settings**
 
+- [Settings Reference](Settings-Reference)
+- [Settings Renderer Advanced](Settings-Renderer-Advanced)
+- [Debug Options](Debug-Options)
+
+**Game Features**
+
+- [Photo Mode](Photo-Mode)
+- [Custom Music](Custom-Music)
+- [Menu Cameras](Menu-Cameras)
+
+**Mods**
+
+- [Mod Browser](Mod-Browser)
 - [Mod Loader](Mod-Loader)
-- [Texture Modding](Texture-Modding)
+
+**Content Modding**
+
 - [Car Mods](Car-Mods)
 - [Wheel Mods](Wheel-Mods)
+- [Texture Modding](Texture-Modding)
 - [Map Mods](Map-Mods)
-- [Menu Cameras](Menu-Cameras)
 - [Vinyls](Vinyls)
 - [String Replacement](String-Replacement)
-- [Debug Options](Debug-Options)
+
+**Online**
+
+- [Online Play](Online-Play)
+- [Online Tournament](Online-Tournament)
+
+**Server Hosting**
+
 - [Relay Server](Relay-Server)
 - [Master Server](Master-Server)
 - [Rate My Ride Server](Rate-My-Ride-Server)

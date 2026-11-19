@@ -1,6 +1,6 @@
 # Getting Started
 
-Setup, build and credits live in the project [README](../README.md). This page only adds what the source says about first launch and where settings live. Run notes are in `documentation/RUNNING.md`.
+Setup, build and credits live in the project [README](https://github.com/mzzvxm/LARecomp#readme). This page only adds what the source says about first launch and where settings live. Run notes are in `documentation/RUNNING.md`.
 
 ## Requirements
 
