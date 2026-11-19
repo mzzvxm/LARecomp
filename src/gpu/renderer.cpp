@@ -29,6 +29,7 @@
 #include "native_gfx/nocp/guest_gpu.h"
 #include "native_gfx/nocp/nocp_driver.h"
 #include "renderer_choice.h"
+#include "choice_box.h"
 #include "renderer_fallback.h"
 #include "native_window.h"
 #include "temporal_dlss.h"
@@ -1860,11 +1861,24 @@ bool ShowRefusalBox(rex::ui::IUISystem& ui, const std::string& refusals) {
       source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
   const fb::Way way = fb::WayFor(launch_sets_driver, true);
   if (way == fb::Way::kButton) {
-    rex::ui::ChoiceConfig box;
+    // The first button is the default (Enter), the last the escape (Esc, the X). Windows: LARecomp's own box (choice_box.h), which
+    // sizes each button from its label and puts the action first; the SDK's box cut the long label and put it last.
+    fb::TwoButtonBox own;
+    own.icon = fb::BoxIcon::kError;
+    own.title = "LARecomp";
+    own.body = fb::RefusalText(refusals, way, kFallbackWindows);
+    own.action = std::string(fb::kButtonText);
+    own.way_out = "Close";
+    REXLOG_ERROR("{}: {}", own.title, own.body);
+    if (const std::optional<int> picked = fb::ShowTwoButtonBox(own)) {
+      REXLOG_INFO("[gpu] the box with the compatibility renderer button: {}", *picked == 0 ? own.action : own.way_out);
+      return *picked == 0;
+    }
+    rex::ui::ChoiceConfig box;  // no box of ours here (not Windows, or it could not be built): the SDK's
     box.type = rex::MessageType::kError;
-    box.title = "LARecomp";
-    box.body = fb::RefusalText(refusals, way, kFallbackWindows);
-    box.buttons = {std::string(fb::kButtonText), "Close"};  // the first is the default, the last the escape
+    box.title = own.title;
+    box.body = own.body;
+    box.buttons = {own.action, own.way_out};  // the first is the default, the last the escape
     const auto answer = ui.ShowChoice(box);
     if (answer) {
       return *answer == 0;
