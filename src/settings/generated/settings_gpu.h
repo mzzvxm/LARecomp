@@ -846,7 +846,7 @@ class GPUSettings final : public rex::SettingOwner {
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
     "was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps "
     "each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the "
-    "default): off on every graphics card for now, until its cost is measured. The pause menu and the "
+    "default): high on the High class of graphics card (gpu_class.h), off on the others. The pause menu and the "
     "launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is "
     "ignored and the setting runs as auto. Costs graphics card time, "
     "ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.", rex::Allowed("auto", "off", "high", "ultra"));
@@ -1051,8 +1051,17 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_traffic_shadows_cascades, 0, "Diagnostic: the cars are drawn into the first this many of the four sun shadow cascades "
     "(each one costs the cars' draws again). 0 or 4 is all four. Live.", rex::kDebugOnly, rex::Range{0, 4});
 
+  REX_SETTING(i32, mcla_gpu_traffic_shadows_log, 0, "Diagnostic: every this many frames print, for each traffic car drawn into the sun shadow map, a "
+    "`[traffic-shadows] yaw:` line (the body's heading, the heading of the transform the shadow draw used, their "
+    "difference and the car's turn rate) and, for each soft decal made, a `[traffic-shadows] decal:` line. "
+    "0 is off. Live.", rex::kDebugOnly, rex::Range{0, 3600});
+
   REX_SETTING(f64, mcla_gpu_traffic_shadows_radius, 0.0, "Diagnostic: how far from the camera a car may be and still cast into the sun shadow map, in "
     "metres. 0 is the setting's own (near 40, all 150). Live.", rex::kDebugOnly, rex::Range{0.0, 1000.0});
+
+  REX_SETTING(bool, mcla_gpu_traffic_shadows_rotation, true, "Diagnostic (the fix's own switch): the sun shadow of a traffic car is turned with its car. The game's shadow "
+    "shader draws a car without its bone matrices, so the shadow of a car it was never meant to draw kept the "
+    "model's own heading and only followed the car's position. off: the game's transform, as before the fix. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_upscaler, "off", "Upscaling of the 3D scene: off, fsr31 (AMD FSR 3.1), fsr4 (AMD FSR 4, only where the "
     "graphics card and driver run it) or dlss (NVIDIA DLSS, only on an NVIDIA RTX card, with "
@@ -1363,7 +1372,9 @@ inline auto& mcla_gpu_trace_frame = g_gpu.mcla_gpu_trace_frame;
 inline auto& mcla_gpu_traffic_shadows = g_gpu.mcla_gpu_traffic_shadows;
 inline auto& mcla_gpu_traffic_shadows_cars = g_gpu.mcla_gpu_traffic_shadows_cars;
 inline auto& mcla_gpu_traffic_shadows_cascades = g_gpu.mcla_gpu_traffic_shadows_cascades;
+inline auto& mcla_gpu_traffic_shadows_log = g_gpu.mcla_gpu_traffic_shadows_log;
 inline auto& mcla_gpu_traffic_shadows_radius = g_gpu.mcla_gpu_traffic_shadows_radius;
+inline auto& mcla_gpu_traffic_shadows_rotation = g_gpu.mcla_gpu_traffic_shadows_rotation;
 inline auto& mcla_gpu_upscaler = g_gpu.mcla_gpu_upscaler;
 inline auto& mcla_gpu_upscaler_lazy_load = g_gpu.mcla_gpu_upscaler_lazy_load;
 inline auto& mcla_gpu_upscaler_mask_test = g_gpu.mcla_gpu_upscaler_mask_test;

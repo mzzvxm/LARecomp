@@ -95,10 +95,13 @@ List ResolutionList() {
     }
     case Mode::kExclusive: {
       list.sizes = mcla::display::ExclusiveSizes();
-      // The mode the setting comes to: the saved size when the display lists it, else the nearest; the
-      // display's own for no setting. A saved size that is not listed keeps its text and shows as
-      // the mode that runs.
+      // The mode the setting comes to: the size saved for FULLSCREEN (fullscreen_resolution) when the
+      // display lists it, else the nearest; the display's own for no setting, which is also what a window's
+      // size (`resolution`) never changes. A saved size that is not listed keeps its text and shows as the
+      // mode that runs. Where the display's own mode is not known the row shows the size of the picture
+      // (nothing is switched then), never the smallest mode.
       Size want = mcla::display::WantedExclusiveSize();
+      if (want.empty()) want = mcla::display::OutputSize();
       if (want.empty()) want = Size{1280, 720};
       int at = IndexOf(list.sizes, want);
       if (at < 0) {
@@ -147,8 +150,12 @@ void ResolutionSet(int i, CvarWriter write) {
   if (i < 0 || i >= int(list.sizes.size())) return;
   // The size is physical pixels (display_mode.h). window_width and window_height, which the SDK reads
   // for the first window and which win over `resolution` there, are not looked at once the game runs:
-  // `resolution` alone sizes the window, so there is nothing else to write.
-  Put(write, "resolution", mcla::display::SizeText(list.sizes[size_t(i)]));
+  // `resolution` alone sizes the window, so there is nothing else to write. FULLSCREEN has a setting of
+  // its own (fullscreen_resolution): the display mode is not the window's size, and a size chosen in a
+  // window must not become the mode the display is switched to.
+  const char* name =
+      mcla::display::WantedMode() == Mode::kExclusive ? "fullscreen_resolution" : "resolution";
+  Put(write, name, mcla::display::SizeText(list.sizes[size_t(i)]));
 }
 
 // Grey in BORDERLESS, which has the display's own size: the label says it (the movie draws no value

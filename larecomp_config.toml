@@ -25481,6 +25481,29 @@ name = "Patch_AmbientCascadeDraw"
 registers = ["r3", "r4", "r13"]
 after_instruction = false
 
+# 0x827917C0: the `bl sub_8217D918` in sub_827914B8 (the body draw of mcAmbientCarRenderClass's model, vtbl+28), the call that
+# makes the four rows at r1+144 the current viewport's World matrix. The rows are the unit axes and the item's root translation
+# ([block+16]; r18 = the block, r27 = the item): a pure translation, because the game's cars carry their heading in the bone
+# matrices of the block (block+32, 48 bytes a bone) which the colour pass's vertex shader applies and the shadow technique of every
+# ambient shader group (VS_ShadowDepthLocal: gWorldViewProj only, no bones) does not. So a traffic car raised into the sun cascades
+# by the hooks above was drawn there as its bind-pose model at its position, never turned. In a cascade phase the hook writes bone 0's
+# rotation into the rows (its own stack copy; nothing persistent): gpu/traffic_shadow_pose.h. Off switch (debug only):
+# mcla_gpu_traffic_shadows_rotation. traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x827917C0
+name = "Patch_AmbientCascadeWorld"
+registers = ["r3", "r18", "r27"]
+after_instruction = false
+
+# 0x82793608: the `bl sub_82795960` of sub_82793360 in phase 0x10000, which makes the car's soft decal from the matrix at r1+160 (the
+# body bone's axes as rows, the position in row 3; r4 = that matrix, r31 = the item). Log only (mcla_gpu_traffic_shadows_log): the
+# decal's heading against the body's. Writes nothing. traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x82793608
+name = "Patch_AmbientDecalPose"
+registers = ["r4", "r31"]
+after_instruction = false
+
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
 #
 # sub_8230D988 hunts for the next impostor to refresh with two nested loops that

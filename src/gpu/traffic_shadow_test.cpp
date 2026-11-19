@@ -7,6 +7,8 @@
 //
 //   cmake --build <build dir> --target larecomp_traffic_shadow_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_traffic_shadow_test
+// The turn of the shadow (traffic_shadow_pose.h: the World matrix of a raised traffic car's cascade draw, the headings, the turn rate) is
+// checked here as well.
 // or by hand: clang++ -std=c++23 -I src/gpu src/gpu/traffic_shadow_test.cpp -o traffic_shadow_test
 
 #include <cmath>
@@ -18,6 +20,7 @@
 
 #include "traffic_shadow.h"
 #include "traffic_shadow_gates.h"
+#include "traffic_shadow_pose.h"
 
 using namespace mcla::gpu;
 using namespace mcla::gpu::traffic_shadow;
@@ -718,6 +721,128 @@ void CostRule() {
   Check(ExtraDraws(kNearCars, 4) < ExtraDraws(kAllCars, 4), "near costs less than all");
 }
 
+// --- the turn of the shadow (traffic_shadow_pose.h) ----------------------------------------------------------------------
+
+// A bone: rotation about y by `degrees` (a column-vector matrix: a row is an output component, the fourth column the translation).
+void MakeBone(float bone[3][4], float degrees, float tx, float ty, float tz) {
+  const float a = degrees / kRadiansToDegrees;
+  const float c = std::cos(a), s = std::sin(a);
+  const float m[3][4] = {{c, 0.0f, s, tx}, {0.0f, 1.0f, 0.0f, ty}, {-s, 0.0f, c, tz}};
+  for (int r = 0; r < 3; ++r)
+    for (int k = 0; k < 4; ++k) bone[r][k] = m[r][k];
+}
+
+// The game's World for the body draw: the unit axes and the root translation in row 3 (sub_827914B8 before sub_8217D918).
+void MakeGameWorld(float world[4][4], float rx, float ry, float rz) {
+  const float m[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {rx, ry, rz, 1}};
+  for (int r = 0; r < 4; ++r)
+    for (int k = 0; k < 4; ++k) world[r][k] = m[r][k];
+}
+
+// What the colour pass computes for a local point: the bone, then the root translation (the game's World).
+void ColourPass(const float bone[3][4], const float game_world[4][4], const float p[3], float out[3]) {
+  for (int r = 0; r < 3; ++r) {
+    out[r] = bone[r][0] * p[0] + bone[r][1] * p[1] + bone[r][2] * p[2] + bone[r][3] + game_world[3][r];
+  }
+}
+
+// What the shadow technique computes: the point as a row vector times the World matrix (the world part of gWorldViewProj), nothing else.
+void ShadowPass(const float world[4][4], const float p[3], float out[3]) {
+  for (int c = 0; c < 3; ++c) out[c] = p[0] * world[0][c] + p[1] * world[1][c] + p[2] * world[2][c] + world[3][c];
+}
+
+void ShadowTurnsWithTheCar() {
+  const float points[5][3] = {{0, 0, 0}, {0, 0, 2.2f}, {1.0f, 0.4f, -2.0f}, {-0.9f, 0.5f, 1.5f}, {3.0f, 1.0f, 4.0f}};
+  for (float degrees : {0.0f, 15.0f, 90.0f, 135.0f, 180.0f, -37.5f, -90.0f, 270.0f}) {
+    float bone[3][4], game[4][4], used[4][4];
+    MakeBone(bone, degrees, 0.0f, 0.0f, 0.0f);
+    MakeGameWorld(game, 120.0f, 17.5f, -340.0f);
+    Check(BodyBoneWorld(game, bone, used), Num("a bone of %.1f degrees is used", degrees));
+    // The fix: the shadow's point is the colour pass's point, for every point of the model.
+    float worst = 0.0f;
+    float worst_game = 0.0f;
+    for (const auto& p : points) {
+      float want[3], got[3], old[3];
+      ColourPass(bone, game, p, want);
+      ShadowPass(used, p, got);
+      ShadowPass(game, p, old);
+      for (int i = 0; i < 3; ++i) {
+        worst = std::max(worst, std::fabs(want[i] - got[i]));
+        worst_game = std::max(worst_game, std::fabs(want[i] - old[i]));
+      }
+    }
+    Check(worst < 1.0e-3f, Num("the shadow's point is the colour pass's point (worst %.5f m)", worst));
+    // The bug: the game's World alone leaves the model at its bind heading, so once the car is turned the shadow is elsewhere.
+    if (std::fabs(WrapDegrees(degrees)) > 1.0f) {
+      Check(worst_game > 0.5f, Num("the game's own World puts the shadow off the car at %.1f degrees", degrees));
+    }
+    // The headings: the body's, the shadow's and the game's.
+    const float body = BodyYaw(bone);
+    Check(YawError(body, WrapDegrees(degrees)) < 0.01f, Num("the body's heading is the rotation (%.1f)", degrees));
+    Check(YawError(body, WorldYaw(used)) < 0.01f, Num("the fixed World has the body's heading (%.1f)", degrees));
+    Check(WorldYaw(game) == 0.0f, "the game's World has the model's heading (0)");
+    Check((std::fabs(WrapDegrees(degrees)) < 0.01f) == (YawError(body, WorldYaw(game)) < 0.01f),
+          Num("only a car at the model's heading has the game's World right (%.1f)", degrees));
+  }
+}
+
+void BoneRefusals() {
+  float bone[3][4], game[4][4], out[4][4];
+  MakeGameWorld(game, 1, 2, 3);
+  MakeBone(bone, 40.0f, 0, 0, 0);
+  bone[1][2] = std::numeric_limits<float>::quiet_NaN();
+  Check(!BodyBoneWorld(game, bone, out), "a NaN bone is refused");
+  bool same = true;
+  for (int r = 0; r < 4; ++r)
+    for (int c = 0; c < 4; ++c) same = same && out[r][c] == game[r][c];
+  Check(same, "a refused bone leaves the game's World");
+  MakeBone(bone, 40.0f, 0, 0, 0);
+  for (int r = 0; r < 3; ++r) bone[r][0] = 0.0f;
+  Check(!BodyBoneWorld(game, bone, out), "an axis of no length is refused");
+  MakeBone(bone, 40.0f, 0, 0, 0);
+  bone[0][3] = 2.0e6f;
+  Check(!BodyBoneWorld(game, bone, out), "a translation beyond a million metres is refused");
+  MakeBone(bone, 40.0f, 0, 0, 0);
+  for (int r = 0; r < 3; ++r) bone[r][1] *= 5000.0f;
+  Check(!BodyBoneWorld(game, bone, out), "an enormous axis is refused");
+  // The bone's own translation adds to the root, the w column of the game's rows stays.
+  MakeBone(bone, 0.0f, 0.5f, 0.25f, -0.75f);
+  MakeGameWorld(game, 10, 20, 30);
+  Check(BodyBoneWorld(game, bone, out) && out[3][0] == 10.5f && out[3][1] == 20.25f && out[3][2] == 29.25f && out[3][3] == 1.0f &&
+            out[0][3] == 0.0f && out[1][3] == 0.0f && out[2][3] == 0.0f,
+        "the bone's translation is added to the root; the w column is the game's");
+}
+
+void YawRules() {
+  Check(YawOfDirection(0, 1) == 0.0f, "along +z is 0");
+  Check(std::fabs(YawOfDirection(1, 0) - 90.0f) < 1.0e-4f, "along +x is 90");
+  Check(std::fabs(YawOfDirection(0, -1)) > 179.99f, "along -z is 180");
+  Check(std::fabs(YawOfDirection(-1, 0) + 90.0f) < 1.0e-4f, "along -x is -90");
+  Check(YawOfDirection(0, 0) == 0.0f && YawOfDirection(std::numeric_limits<float>::quiet_NaN(), 1) == 0.0f, "no direction, no heading");
+  Check(WrapDegrees(190.0f) == -170.0f && WrapDegrees(-190.0f) == 170.0f && WrapDegrees(180.0f) == 180.0f && WrapDegrees(-180.0f) == 180.0f &&
+            WrapDegrees(720.0f) == 0.0f,
+        "angles wrap into (-180, 180]");
+  Check(YawError(179.0f, -179.0f) == 2.0f && YawError(10.0f, 10.0f) == 0.0f, "the error is the short way round");
+  Check(std::fabs(TurnRate(10.0f, 0.0f, 0.1) - 100.0f) < 0.01f, "10 degrees in 0.1 s is 100 a second");
+  Check(std::fabs(TurnRate(-179.0f, 179.0f, 0.5) - 4.0f) < 0.01f, "a turn across 180 degrees takes the short way (2 degrees in 0.5 s)");
+  Check(TurnRate(10.0f, 0.0f, 0.0) == 0.0f && TurnRate(10.0f, 0.0f, 2.0) == 0.0f, "no rate for no time or for a gap over half a second");
+
+  YawHistory history;
+  Check(history.Note(0x1000, 10.0f, 1'000'000'000) == 0.0f, "the first reading has no rate");
+  const float rate = history.Note(0x1000, 14.0f, 1'100'000'000);
+  Check(std::fabs(rate - 40.0f) < 0.01f, Num("4 degrees in 0.1 s is 40 a second (%.3f)", rate));
+  Check(history.Note(0x2000, 50.0f, 1'100'000'000) == 0.0f, "another car starts its own history");
+  Check(history.Note(0x1000, 18.0f, 3'000'000'000) == 0.0f, "a car not seen for 1.9 s starts again");
+  // A full table replaces in turn and keeps answering.
+  for (uint32_t i = 0; i < 2 * YawHistory::kCapacity; ++i) history.Note(0x3000 + i, float(i), 5'000'000'000);
+  const uint32_t last = 0x3000 + 2 * YawHistory::kCapacity - 1;
+  Check(std::fabs(history.Note(last, float(2 * YawHistory::kCapacity - 1) + 1.0f, 5'100'000'000) - 10.0f) < 0.01f,
+        "a full table still gives the rate of the car it kept");
+  history.Reset();
+  Check(history.Note(0x1000, 1.0f, 9'000'000'000) == 0.0f, "reset forgets the cars");
+  Check(kYawToleranceDegrees == 2.0f, "the judged tolerance");
+}
+
 }  // namespace
 
 int main() {
@@ -744,6 +869,9 @@ int main() {
   ResetAndNearAllSwitch();
   Published_();
   CostRule();
+  ShadowTurnsWithTheCar();
+  BoneRefusals();
+  YawRules();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

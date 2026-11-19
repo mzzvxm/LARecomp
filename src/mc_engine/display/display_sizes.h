@@ -20,11 +20,19 @@
 //   - the monitor's own size (its preferred timing, from the display configuration API: the answer does
 //     not depend on the mode the display is in, nor on the DPI the process sees);
 // and what the driver listed: 32 bit, not interlaced, every aspect ratio, one entry per size whatever
-// its refresh rates. Sorted by area (then width), no size twice, in physical pixels.
+// its refresh rates. Sorted by area (then width), no size twice, in physical pixels. Modes ABOVE the
+// display's own (NVIDIA DSR, AMD VSR: the driver lists 2560x1440 or 3840x2160 for a 1920x1080 monitor
+// while the feature is on) are listed like any other: they are never taken for the display's own mode,
+// which is the registry's, nor the monitor's own size, which is its preferred timing.
+//
+// Also here, because they too need no Windows: which size FULLSCREEN is asked to switch to (ChooseExclusive:
+// the display's own unless the player chose another in FULLSCREEN), what the game does about it
+// (PlanExclusive), and the per-display books with the rule of when the driver is looked at (Displays).
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -94,9 +102,16 @@ class Book {
         desktop_ = look.desktop;
         desktop_hz_ = look.desktop_hz;
       }
-    } else if (desktop_.empty() && !switched && !look.desktop.empty()) {
-      desktop_ = look.desktop;
-      desktop_hz_ = look.desktop_hz;
+    } else if (desktop_.empty() && !switched) {
+      // No registry settings (the call failed, or it answered a size of nothing): the mode the display is
+      // in now is its own, unless this game has it switched.
+      if (!look.desktop.empty()) {
+        desktop_ = look.desktop;
+        desktop_hz_ = look.desktop_hz;
+      } else if (!look.current.empty()) {
+        desktop_ = look.current;
+        desktop_hz_ = look.current_hz;
+      }
     }
     if (!look.preferred.empty()) preferred_ = Oriented(look.preferred, desktop_);
 
@@ -205,6 +220,120 @@ class Book {
   Size preferred_;
   std::vector<Mode> listed_;  // what the driver listed, every look together
   std::vector<Mode> extra_;   // the display's own mode, the modes it was in, the monitor's own size
+};
+
+// ── What FULLSCREEN switches the display to ────────────────────────────────────────────────────
+
+// The listed size closest to `want` (the sum of the two differences); the first (the smallest) when `want`
+// is empty or the list has no other.
+inline Size Nearest(const std::vector<Size>& sizes, Size want) {
+  Size best = sizes.empty() ? want : sizes.front();
+  if (want.empty()) return best;
+  int64_t best_distance = INT64_MAX;
+  for (const Size& s : sizes) {
+    const int64_t distance = (s.width > want.width ? int64_t(s.width - want.width) : int64_t(want.width - s.width)) +
+                             (s.height > want.height ? int64_t(s.height - want.height) : int64_t(want.height - s.height));
+    if (distance < best_distance) {
+      best_distance = distance;
+      best = s;
+    }
+  }
+  return best;
+}
+
+// The size FULLSCREEN is asked to switch the display to. `saved` is what the player chose IN FULLSCREEN
+// (fullscreen_resolution; empty when none was): the nearest listed mode. With none it is the display's
+// own mode (`own`, the registry settings), which is no switch at all: entering FULLSCREEN from a window or
+// from BORDERLESS leaves the display as it is. It is never the smallest mode of the list: a display whose
+// own mode is not known yet (empty `own`) is asked for nothing (empty), not for 1280x720.
+// A window's size (`resolution`) is not a `saved` here: that was the way the display was once switched to
+// 1280x720 by a player who had only ever used a window of that size (Mz, 2026-11-16).
+inline Size ChooseExclusive(const std::vector<Size>& sizes, Size own, Size saved) {
+  if (saved.empty()) return own;
+  return sizes.empty() ? saved : Nearest(sizes, saved);
+}
+
+// What the game does for a FULLSCREEN choice `want` (empty: the display's own), the display being `own`
+// in its own mode, and this game having switched it to `switched_to` or not (`switched`).
+enum class Plan {
+  kOwn,     // `want` is the display's own size: its own mode is put back (when this game had switched it)
+  kKeep,    // the display already is in `want`: nothing to do
+  kSwitch,  // switch the display to `want`
+};
+inline Plan PlanExclusive(Size want, Size own, bool switched, Size switched_to) {
+  if (want.empty()) want = own;
+  if (want == own) return Plan::kOwn;
+  if (switched && switched_to == want) return Plan::kKeep;
+  return Plan::kSwitch;
+}
+
+// ── The books of the displays ──────────────────────────────────────────────────────────────────
+
+// What is kept of one display.
+struct Info {
+  Book book;
+  // The size of the display's work area (its own size less the taskbar), as the monitor said it while
+  // the display was in its own mode. Empty when that was not asked.
+  Size work;
+  // What the log last said of the book (it says it again only when it changed).
+  std::string logged;
+  uint64_t when = 0;  // the clock (ms) at the last look at the driver
+};
+
+// The books by display, and the display this game has switched to a mode of its own choosing, from before
+// the switch is asked for to after the display's own mode is back (empty: none). Not locked: the caller
+// holds one lock around every call (the menu asks from any thread, the UI thread changes the mode).
+//
+// The driver is looked at when the display has no book yet, and again at most every kLifetimeMs; never
+// while the display is switched, however old the book is: the driver then answers for the mode the display
+// is in (see the top of this file), and the book from before is what the menu uses. The mark is set BEFORE
+// the call that switches (the switch takes a second or two, and the menu asks every frame it is open).
+class Displays {
+ public:
+  static constexpr uint64_t kLifetimeMs = 5000;
+
+  // The book of `device` as it stands: kept while it is fresh or the display is switched, else `read` looks
+  // at the driver first (void(Info*, bool switched): adds to info->book, may set work and logged).
+  template <class Read>
+  Info Listed(const std::string& device, uint64_t now, Read&& read) {
+    latest_ = device;
+    const auto kept = infos_.find(device);
+    const bool have = kept != infos_.end();
+    const bool switched = IsSwitched(device);
+    const bool fresh = have && now - kept->second.when <= kLifetimeMs;
+    if (have && (fresh || switched)) return kept->second;
+    Info info = have ? kept->second : Info{};
+    read(&info, switched);
+    info.when = now;
+    infos_[device] = info;
+    return info;
+  }
+
+  // The book kept for `device`, with no look at the driver; false when there is none.
+  bool Peek(const std::string& device, Info* out) const {
+    const auto kept = infos_.find(device);
+    if (kept == infos_.end()) return false;
+    *out = kept->second;
+    return true;
+  }
+
+  // The display looked at last (empty when none was).
+  const std::string& latest() const { return latest_; }
+
+  // This game is switching `device` to another mode, or (empty) has put the display's own mode back, or the
+  // switch did not happen: what the display lists is then asked again at the next ask.
+  void SetSwitched(const std::string& device) {
+    switched_ = device;
+    if (device.empty()) {
+      for (auto& entry : infos_) entry.second.when = 0;
+    }
+  }
+  bool IsSwitched(const std::string& device) const { return !switched_.empty() && switched_ == device; }
+
+ private:
+  std::map<std::string, Info> infos_;
+  std::string switched_;
+  std::string latest_;
 };
 
 }  // namespace mcla::display::sizes

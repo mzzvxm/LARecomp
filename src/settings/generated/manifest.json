@@ -467,7 +467,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and \"\n    \"the walls beside it, found from the picture, so a red wall tints the pavement by it and a street \"\n    \"lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient \"\n    \"occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it \"\n    \"was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps \"\n    \"each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the \"\n    \"default): off on every graphics card for now, until its cost is measured. The pause menu and the \"\n    \"launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is \"\n    \"ignored and the setting runs as auto. Costs graphics card time, \"\n    \"ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.\"",
+  "help": "\"Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and \"\n    \"the walls beside it, found from the picture, so a red wall tints the pavement by it and a street \"\n    \"lamp's pool lights the wall next to it. It takes the place of part of the sky light the ambient \"\n    \"occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it \"\n    \"was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps \"\n    \"each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the \"\n    \"default): high on the High class of graphics card (gpu_class.h), off on the others. The pause menu and the \"\n    \"launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is \"\n    \"ignored and the setting runs as auto. Costs graphics card time, \"\n    \"ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -2978,7 +2978,7 @@
   "type": "bool",
   "default": "false",
   "category": "UI/Window",
-  "help": "\"With fullscreen on: exclusive fullscreen. The display is switched to the size of `resolution` \"\n    \"(the nearest mode it lists; the display's own size when `resolution` is empty) while the game \"\n    \"has the focus, and put back when the game loses it or closes. Off is borderless fullscreen: a \"\n    \"window without a frame the size of the display, the display left as it is. Windows only.\"",
+  "help": "\"With fullscreen on: exclusive fullscreen. The display is switched to the size of \"\n    \"`fullscreen_resolution` (the nearest mode it lists; the display's own size when it is empty) \"\n    \"while the game has the focus, and put back when the game loses it or closes. Off is borderless \"\n    \"fullscreen: a window without a frame the size of the display, the display left as it is. \"\n    \"Windows only.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0
@@ -8490,6 +8490,38 @@
   "help": "\"Test (debug): pretend the video memory budget is this many MiB when the adapter's own is larger \"\n    \"(0: the adapter's). Everything that asks the budget sees the smaller number against the real use: \"\n    \"the caches' trimming (vram_budget.h), the room checks of frame generation and of the FidelityFX \"\n    \"upscaler's contexts (vram_room.h). The way to see the NO ROOM paths and the trimming on a card \"\n    \"that has plenty (a 4 GB card is 3900). Live.\"",
   "traits": [
    "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "fullscreen_resolution": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "UI/Window",
+  "help": "\"With fullscreen and fullscreen_exclusive on: the size the display is switched to, as \\\"WxH\\\" \"\n    \"(the nearest mode the display lists). Empty, the default: the display's own size, no switch. The \"\n    \"window's size is `resolution`, which FULLSCREEN does not use: a size chosen for a window was once \"\n    \"taken as the display mode and put the display in 1280x720. Windows only.\"",
+  "traits": [],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_traffic_shadows_rotation": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the fix's own switch): the sun shadow of a traffic car is turned with its car. The game's shadow \"\n    \"shader draws a car without its bone matrices, so the shadow of a car it was never meant to draw kept the \"\n    \"model's own heading and only followed the car's position. off: the game's transform, as before the fix. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_traffic_shadows_log": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: every this many frames print, for each traffic car drawn into the sun shadow map, a \"\n    \"`[traffic-shadows] yaw:` line (the body's heading, the heading of the transform the shadow draw used, their \"\n    \"difference and the car's turn rate) and, for each soft decal made, a `[traffic-shadows] decal:` line. \"\n    \"0 is off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3600}"
   ],
   "comments": [],
   "pp_depth": 0

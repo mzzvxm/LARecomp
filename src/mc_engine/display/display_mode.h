@@ -10,11 +10,15 @@
 //   fullscreen            the SDK's: off is a window, on is fullscreen
 //   fullscreen_exclusive  new, with `fullscreen` on: off is BORDERLESS (the SDK's fullscreen: a window
 //                         without a frame the size of the display, the display left as it is), on is
-//                         FULLSCREEN (exclusive: the display is switched to the size of `resolution`)
+//                         FULLSCREEN (exclusive: the display is switched to `fullscreen_resolution`)
 //   resolution            the SDK's text ("720p", "1080p", "1440p", "4k", "1920x1080" or empty): the
-//                         window's size in WINDOWED, the display's mode in FULLSCREEN, not used in
-//                         BORDERLESS (the display's own size). Empty: a window keeps the size it has,
-//                         FULLSCREEN uses the display's size.
+//                         window's size in WINDOWED; not used in BORDERLESS (the display's own size)
+//                         nor in FULLSCREEN. Empty: a window keeps the size it has.
+//   fullscreen_resolution new: the display mode FULLSCREEN switches to, the same text. Empty, the default:
+//                         the display's own size, so no switch. It is not `resolution` because that is the
+//                         window's size: a player who had only ever used a 1280x720 window (the default
+//                         size) found the display switched to 1280x720 on entering FULLSCREEN, and the
+//                         list of sizes was no way back to the display's own (Mz, 2026-11-16).
 //
 // Units. Every size here, in the RESOLUTION row, in `resolution` and in the log is in PHYSICAL pixels:
 // the window's client area as the swap chain and the picture see it (what GetClientRect says), the
@@ -145,8 +149,9 @@ std::vector<Size> ExclusiveSizes();
 std::vector<Size> WindowedSizes();
 
 // What the window is asked to be, in physical pixels: in a window, `resolution`; with none, the size the
-// window has now (what the row shows). In FULLSCREEN, the listed mode nearest to `resolution`, or the
-// display's own for empty text.
+// window has now (what the row shows). In FULLSCREEN, the listed mode nearest to `fullscreen_resolution`,
+// or the display's own for empty text (never the smallest mode: empty when the display's own mode is not
+// known either, which switches nothing).
 Size WantedWindowedSize();
 Size WantedExclusiveSize();
 
