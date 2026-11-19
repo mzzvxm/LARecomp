@@ -103,6 +103,11 @@ inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants)
 // car_selfrefl::CarSelfReflConstants (Scene::UploadCarSelfReflConstants).
 inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
 
+// The UI sharpening variant (ui_sharp.h, shaders.h kUiSharpVariant) reads 16 bytes at the same place: `float4
+// g_UiSharp` at byte 608 (c38 of the block), in the draws of the UI phase that take the variant, which upload
+// SharedConstants followed by ui_sharp::UiSharpConstants (Scene::UploadUiSharpConstants).
+inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {

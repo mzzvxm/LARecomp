@@ -47,6 +47,7 @@
 #include "shafts.h"
 #include "sync_builds.h"
 #include "temporal.h"
+#include "texture_names.h"
 #include "textures.h"
 #include "thread_load.h"
 #include "upscaler_math.h"
@@ -925,6 +926,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
   last_shadow_span_ = UploadSpan{};
+  last_ui_sharp_span_ = UploadSpan{};  // round 1 never reset it: a span of the previous frame's slot could be handed out again
   draws_since_flush_ = 0;
 }
 
@@ -948,6 +950,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
   last_shadow_span_ = UploadSpan{};
+  last_ui_sharp_span_ = UploadSpan{};  // round 1 never reset it: a span of the previous frame's slot could be handed out again
   draws_since_flush_ = 0;
 }
 
@@ -1650,6 +1653,14 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
     d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
   }
+  // The UI sharpening (ui_sharp.h): a draw in the UI phase that magnifies the console's bitmaps through a bilinear fetch takes
+  // the variant of its pixel shader that reconstructs them sharper (and the census, when asked for, notes what it reads). In
+  // the key only: the memo keeps the game's, as for the layer split above.
+  if (ui_phase_ && d.key.color_count != 0 && d.ps) {
+    if (const uint32_t variant = UiSharpDraw(view, s, d, scale)) {
+      d.key.ps_variant = variant;
+    }
+  }
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
@@ -1774,6 +1785,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // constants.
   if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
       !UploadCarSelfReflConstants(shared, d)) {
+    return Skip::kUpload;
+  }
+  // The UI sharpening variant reads 16 bytes after the shared constants.
+  if ((d.key.ps_variant == ShaderStore::kUiSharpVariant || d.key.ps_variant == ShaderStore::kUiSharpAlphaVariant) &&
+      !UploadUiSharpConstants(shared, d)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
@@ -2352,6 +2368,120 @@ bool Scene::UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDr
   window_.upload_bytes += kCarSelfReflConstantsOffset + sizeof(block);
   d.shared_constants = span;
   return true;
+}
+
+bool Scene::UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kUiSharpConstantsOffset == sizeof(SharedConstants));
+  const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength(), d.ui_sharp_slots);
+  if (last_ui_sharp_span_ && std::memcmp(&last_ui_sharp_shared_, &shared, sizeof(shared)) == 0 &&
+      last_ui_sharp_block_ == block) {
+    d.shared_constants = last_ui_sharp_span_;
+    return true;
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kUiSharpConstantsOffset + sizeof(ui_sharp::UiSharpConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kUiSharpConstantsOffset, &block, sizeof(block));
+  last_ui_sharp_shared_ = shared;
+  last_ui_sharp_block_ = block;
+  last_ui_sharp_span_ = span;
+  ++window_.shared_uploads;
+  window_.upload_bytes += kUiSharpConstantsOffset + sizeof(block);
+  d.shared_constants = span;
+  return true;
+}
+
+uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale) {
+  const double strength = ui_sharp::Strength();
+  const bool census = ui_sharp::CensusOn();
+  if (strength <= 0.0 && !census) {
+    return 0;
+  }
+  ui_sharp::DrawFacts facts;
+  facts.ui_phase = ui_phase_;
+  const ColorTargetState& color = state.color[0];
+  facts.eight_bit_colour = color.bound && (color.format == xe::ColorRenderTargetFormat::k_8_8_8_8 ||
+                                           color.format == xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA);
+  facts.target_scale = float(scale.value());
+  facts.has_variant = d.ps && (d.ps->variants & (1u << ShaderStore::kUiSharpVariant)) != 0;
+  facts.has_alpha_variant = d.ps && (d.ps->variants & (1u << ShaderStore::kUiSharpAlphaVariant)) != 0;
+  facts.ps_variant = d.key.ps_variant;
+  // What the draw reads: every fetch the pixel shader makes. The helper sharpens only the slots that are linearly filtered 2D colour bitmaps
+  // (a depth fetch is point filtered, an environment map is 16 bit float: the same draw has them beside its bitmap); the others stay the game's.
+  struct Read {
+    TextureFetch fetch;
+    xe::xe_gpu_texture_fetch_t raw;
+    uint32_t slot = 0;
+    bool bitmap = false;
+  };
+  Read reads[32];
+  uint32_t read_count = 0;
+  const uint32_t fetch_mask = d.ps ? d.ps->texture_fetch_mask : 0u;
+  for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+    const uint32_t slot = uint32_t(std::countr_zero(mask));
+    uint32_t dwords[6];
+    view.FetchGroup(slot, dwords);
+    Read& read = reads[read_count++];
+    read.fetch = ReadTextureFetch(dwords);
+    std::memcpy(&read.raw, dwords, sizeof(read.raw));
+    read.slot = slot;
+    if (!read.fetch.is_texture) {
+      continue;
+    }
+    read.bitmap = slot < ui_sharp::kMaskSlots &&
+                  ui_sharp::IsBitmapFetch(read.fetch.is_texture,
+                                          read.fetch.key.dimension == uint8_t(xe::DataDimension::k2DOrStacked) && !read.fetch.key.stacked,
+                                          read.raw.mag_filter == xe::TextureFilter::kLinear, read.fetch.key.format);
+    if (read.bitmap) {
+      facts.bitmap_slots |= 1u << slot;
+    }
+  }
+  const ui_sharp::Decision decision = ui_sharp::Decide(facts);
+  const bool take = strength > 0.0 && decision.taken();
+  if (census) {
+    for (uint32_t i = 0; i < read_count; ++i) {
+      const Read& read = reads[i];
+      if (!read.fetch.is_texture) {
+        continue;
+      }
+      ui_sharp::CensusSample sample;
+      sample.ps = view.record().ps_identity;
+      const std::string described = read.fetch.key.Describe();
+      sample.format = described.substr(0, described.find(' '));
+      sample.width = read.fetch.key.width;
+      sample.height = read.fetch.key.height;
+      sample.levels = read.fetch.key.levels();
+      sample.base_page = read.fetch.key.base_page ? read.fetch.key.base_page : read.fetch.key.mip_page;
+      texture_names::Name name;
+      if (texture_names::Lookup(sample.base_page, &name)) {
+        sample.name = name.texture;
+        sample.dictionary = name.dictionary;
+      }
+      sample.mag_filter = uint8_t(read.raw.mag_filter);
+      sample.min_filter = uint8_t(read.raw.min_filter);
+      sample.mip_filter = uint8_t(read.raw.mip_filter);
+      sample.clamp_x = uint8_t(read.raw.clamp_x);
+      sample.clamp_y = uint8_t(read.raw.clamp_y);
+      sample.aniso = uint8_t(read.raw.aniso_filter);
+      sample.lod_bias = int32_t(read.raw.lod_bias);
+      sample.target_scale = facts.target_scale;
+      sample.target_format = uint32_t(color.format);
+      sample.slot = read.slot;
+      sample.bitmap = read.bitmap;
+      sample.ps_variant = d.key.ps_variant;
+      sample.why = decision.why;
+      sample.took_variant = take;
+      ui_sharp_census_.Note(sample);
+    }
+  }
+  if (!take) {
+    return 0;
+  }
+  d.ui_sharp_slots = facts.bitmap_slots;
+  return decision.alpha_test ? ShaderStore::kUiSharpAlphaVariant : ShaderStore::kUiSharpVariant;
 }
 
 uint32_t Scene::NoteEdramAccess(const PreparedDraw& d, const DrawRecord& r,
@@ -3321,6 +3451,14 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (ui_sharp::CensusOn()) {
+    ui_sharp_census_.OnFrame();
+    if (ui_sharp_census_.Due()) {
+      for (const std::string& line : ui_sharp_census_.TakeReport()) {
+        REXLOG_INFO("[gpu] {}", line);
+      }
+    }
+  }
   last_frame_had_scene_ = scene_marker_seen_;
   scene_marker_seen_ = false;
   ui_phase_ = false;

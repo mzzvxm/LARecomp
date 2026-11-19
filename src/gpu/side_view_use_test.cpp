@@ -311,6 +311,20 @@ void CheckSource(const std::string& dir) {
   }
   const std::string edram = ReadFile(dir + "/edram.cpp");
   Check(Has(edram, "side_views::IsForeignUse(depth, size_bits)"), "EdramTargets::DepthLayer applies the rule");
+
+  // The HUD's small views (side_view_ui_map.cpp): the five identities of the 3x logs (colour k_8_8_8_8 at tile 224 pitch 160 and 280, tile 168 pitch 240;
+  // depth kD24FS8 at tile 0 pitch 160 and 280; 4 samples; declared 128, 256 and 220), the guest's samples at any scale, layer 0 only, and a class that follows
+  // the screen's scale: EdramTargets asks for the output's scale (Wanted(resolution_scale_)) and every loop over the classes is the one list.
+  const std::string ui_map = ReadFile(dir + "/side_view_ui_map.cpp");
+  Check(!ui_map.empty(), "side_view_ui_map.cpp is readable");
+  Check(Has(ui_map, "{false, 224, 160, 128}") && Has(ui_map, "{true, 0, 160, 128}") && Has(ui_map, "{false, 224, 280, 256}") &&
+            Has(ui_map, "{true, 0, 280, 256}") && Has(ui_map, "{false, 168, 240, 220}") && Has(ui_map, "kSamples = 4"),
+        "side_view_ui_map.cpp has the five identities of the census");
+  Check(Has(ui_map, "key.reserved != 0") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
+        "the UI map rule matches layer 0 only, keeps the guest's samples and follows the output");
+  Check(Has(edram, "side_views::Wanted(resolution_scale_)") && Has(edram, "side_views::FollowOutput(side_scales_, output)"),
+        "EdramTargets asks for the classes at the screen's scale, and a change of the render scale moves the followers with it");
+  Check(!Has(edram, "{SideView::kShadow, SideView::kEnv, SideView::kReflection}"), "no loop over the classes names three of them any more");
 }
 
 }  // namespace
