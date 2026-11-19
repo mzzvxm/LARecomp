@@ -41,7 +41,8 @@
 // What it is not: a shadow of anything that is not on screen, and nothing thinner than the step
 // (the start of the ray is moved per pixel by interleaved gradient noise plus the frame's R2 shift;
 // there is no history for it, so the shift is 0 (a fixed pattern) unless a temporal upscaler
-// averages the frames).
+// averages the frames). On a car's own pixels that noise is a stipple a plate's shadow shows (THE VEHICLE
+// MARCH'S STIPPLE below); the filter takes it out.
 //
 // The apply pass (ao_apply_ps) puts it on the picture: only on the sun's share of the light, so it
 // cannot darken what the game already shadows (the game's mask says that) or the ambient.
@@ -53,6 +54,14 @@
 // them, a broad black band across the trunk under the wing, and a post hid the ray of the pixels 0.1 to 0.3 m behind it, the streaks and blobs
 // from the side. The game's own sun shadow map holds the player's car; what matters on a car's own surfaces is small (a mirror on its door).
 // The shadows on the road (a car's sills, its tyres) are not a car's pixels: those march as they did.
+//
+// THE VEHICLE MARCH'S STIPPLE (contact_trace.h has the story, the measurements and the check). A car's own pixel marches 12 steps of a thin ray from a start the
+// pixel's noise moves, and a thin plate over it (the wing over the trunk lid) is hit by some starts and missed by others: the pixel is 0 or 1 where the mean over
+// the noise is a fraction, and without the car's map (CAR SHADOWS = OFF) nothing else is there, no history either, in the pause view or in play. The filter
+// (ao_common.hlsli AoBilateralEdge, and the apply's folded copy) keeps a 0 and the 1 beside it apart, as it keeps a shadow's edge. A vehicle pixel that took steps
+// therefore stores its visibility MARKED (v - kVehicleMarkOffset, a value no other pixel stores) and the filter weighs two marked pixels by position and depth alone,
+// which averages the nine starts of a 3 x 3. The pixels the map covers take no steps and are not marked: the map's shadow keeps its crisp edge, and every other
+// pixel is filtered as it was. Nothing else reads this image.
 //
 // THE GROUND UNDER A VEHICLE (the shadow starts as `Under` before the march). The game's sun shadow
 // map holds the player's car only, so the ground under a traffic car is as lit as an open road, and the
@@ -574,6 +583,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   const float inv_steps = 1.0f / float(steps);
+  // A vehicle pixel that marches (the map did not take its steps) stores the marked value: THE VEHICLE MARCH'S STIPPLE above.
+  const bool marked = AoIsVehicle(tc) && steps > 0u;
   // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
   float shadow = Under(depth_slot, tc, pc, normal, to_sun, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
@@ -612,5 +623,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
     shadow = max(shadow, car_shadow);  // the darker of the march and the car's map
   }
   shadow *= smoothstep(kSunFacingLow, kSunFacingHigh, facing);
-  return float4(1.0f - shadow, 0.0f, 0.0f, 0.0f);
+  const float visibility = 1.0f - shadow;
+  return float4(marked ? visibility - kVehicleMarkOffset : visibility, 0.0f, 0.0f, 0.0f);
 }

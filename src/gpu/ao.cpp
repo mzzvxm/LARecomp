@@ -3633,7 +3633,9 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.extra[3] = under ? contact_trace::UnderCastDistance(traffic_shadow::CastDistance()) : 0.0f;
   // The ray start's noise has no history here, only the filter below. Moved every frame it would make
   // the edge of every contact shadow crawl; it is a fixed pattern (frame 0) unless a temporal upscaler
-  // runs and averages the frames, as the shadow filter's and the sun shafts' are.
+  // runs and averages the frames, as the shadow filter's and the sun shafts' are. A vehicle's pixel that marches stores a marked value so that the filter
+  // averages its noise whatever the pixels beside it hold (contact_trace.h "the vehicle march's stipple"): a view with no upscaler history (the pause view
+  // in the owner's pictures) or a player who runs without an upscaler has nothing else to average it.
   push.slots2[1] = plan.upscaler ? base.slots2[1] : 0u;
   // The adaptive step count (contact_trace.h AdaptiveSteps): the end gap in pixels in shape.z, which the march
   // does not otherwise read; 0 is every step, as the setting says, and above 1080 lines of picture (kAdaptMaxHeight) the

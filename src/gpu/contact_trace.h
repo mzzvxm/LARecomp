@@ -141,6 +141,15 @@ inline float EdgeRangeWeight(float difference) {
   const float x = difference / kEdgeRangeSigma;
   return std::exp(-0.5f * x * x);
 }
+// THE MARK. A vehicle pixel that marched its short ray (March's `marked`) stores its visibility v as v - kVehicleMarkOffset, a value in -2 to -1
+// that no other pixel stores (they hold 0 to 1; the image is R16_FLOAT, so the mark costs half a unit of 2^-10 in the value). The filter reads
+// it as the one fact it needs about a neighbour, "this value came from the noisy march" ("the vehicle march's stipple" below), and takes the
+// value back out before it weighs or sums it, so the filter's output is a plain visibility. Only the march writes the mark and only the two
+// filters (ao_common.hlsli AoBilateralEdge and AoBilateralEdgeFolded) read the image.
+inline constexpr float kVehicleMarkOffset = 2.0f;
+inline float MarkedVisibility(float v) { return v - kVehicleMarkOffset; }
+inline bool IsMarked(float stored) { return stored < -0.5f; }
+inline float UnmarkedVisibility(float stored) { return IsMarked(stored) ? stored + kVehicleMarkOffset : stored; }
 // The apply pass does the filter itself with mcla_gpu_contact_shadows_fast and leaves out a pixel the contact shadows
 // change the picture's factor by less than this (hlsl/ao_apply_ps.hlsl kFoldedFilterSkip): the factor is
 // 1 - weight (1 - cs) with cs in 0 to 1, so it moves by at most the weight.
@@ -345,13 +354,16 @@ Vec3 NormalFromDepth(const Camera& c, DepthAt&& depth_at, int x, int y, float tc
 
 // The filter's twin: the denoise pass's AoBilateralEdge, and, with `cross` (the four neighbours' depths left, right,
 // top, bottom, each at the position clamped into the image, as the apply pass reads them for its normal), the apply's
-// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value.
+// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value. `vis_at` gives the image's stored
+// value, marked or not (THE MARK above); the result is a plain visibility. Between two marked pixels the visibility's weight is 1.
 template <class DepthAt, class VisAt>
 float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int y, float tc, Vec3 pc, Vec3 normal,
                  const float* cross = nullptr) {
   const float footprint = FootprintUnit(c.tan_y, float(c.height)) * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = vis_at(x, y);
+  const float centre_stored = vis_at(x, y);
+  const bool centre_marked = IsMarked(centre_stored);
+  const float centre = UnmarkedVisibility(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   for (int dy = -1; dy <= 1; ++dy) {
@@ -372,8 +384,10 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
       const float off_plane = Dot(normal, pq - pc) / plane_sigma;
       const float w_depth = std::exp(-0.5f * off_plane * off_plane);
       const float w_space = std::exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = vis_at(qx, qy);
-      const float w = w_depth * w_space * EdgeRangeWeight(value - centre);
+      const float stored = vis_at(qx, qy);
+      const bool marked = IsMarked(stored);
+      const float value = UnmarkedVisibility(stored);
+      const float w = w_depth * w_space * ((centre_marked && marked) ? 1.0f : EdgeRangeWeight(value - centre));
       sum += value * w;
       weights += w;
     }
@@ -417,6 +431,45 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
 //   - a car's tyres and sills on the road, 8 suns: every road pixel is as it was, and 98% of the pixels shadowed within 15 cm are dark.
 // COST. A vehicle's pixel is a fixed share of the picture (5 to 15% in a chase view) and gets 12 steps instead of 16: 4 x 79 DXIL instructions
 // fewer on 1490 (-20%); the others pay the vehicle test and two minimums (about 9 instructions). The adaptive step count sees the short ray too.
+
+// ---------------------------------------------------------------------------
+// the vehicle march's stipple
+// ---------------------------------------------------------------------------
+//
+// Owner's pictures, 2026-11-19 (the run ports\run\wroot1-wing-stripes-2, tour_07 pause-map-off, and tour_12 pause-map-march, which keeps the march on the pixels the
+// map covers): with CAR SHADOWS = OFF and CONTACT SHADOWS on, the R34's trunk lid under the wing shows a fine stipple, every other pixel dark over a band. The
+// car's map is not at fault (with it the lid's pixels take no steps and the lid is flat: tour_05, tour_13): the vehicle rule above is.
+// WHERE THE NOISE COMES FROM. A vehicle pixel's 12 steps start at (i + noise) / 12 of the 0.3 m ray, the noise being the pixel's interleaved gradient noise
+// (ao_common.hlsli AoNoise; ao.cpp passes frame 0, so it is the same pattern every frame, unless a temporal upscaler runs). The plate that shades the lid is 4 cm
+// thick and 18 to 30 cm above it; a step counts as hidden only where the depth image shows a surface about 1 to 12 cm in front of it along the view ray, and from a
+// camera 10 to 25 degrees above the lid that is a band a few centimetres high under the plate, as wide as the steps are apart at the ray's end (2 t L / n = 4.5 cm). Whether a pixel's
+// ray puts a step in the band depends on its noise: the pixel is hit or missed (0 or 1) where the mean over the noise is a fraction (0.1 to 0.9), and the pixel
+// next to it has another noise. THERE IS NO HISTORY to average it, in the pause view or in play: the contact term keeps none of its own (the occlusion's history
+// is not read for it); the noise turns every frame only while a temporal upscaler runs (ao.cpp RecordContact) and the upscaler averages it; without one
+// (the player's choice, or a view it does not run in) the stipple is a fixed pattern of the picture, which is what the pause view shows. The 3 x 3 filter kept it:
+// its visibility weight is 0.2 wide, so a hit (0) and the miss next to it (1) are not averaged (the filter keeps a shadow's edge, and cannot tell a stipple from one).
+// WHAT WAS MEASURED, on the twin of this march (VehicleStippleIsFiltered: the wing rig, 3 cameras, the plate 28 and 18 cm above the lid, the sun at 55 and 70 degrees
+// from 3 sides, 1080 lines, the 2 million pixels of the lid; "stipple energy" is the mean of |pixel - mean of its 4 neighbours|; the reference is the mean of 16
+// noises, the picture a history of frames would show):
+//   - the reference: 0.0027; the march filtered as it was: 0.0317 (12 times), 0.149 in the worst scenario;
+//   (an earlier sweep of 96 scenarios of the same rig, the noise's energy 0.0187 and the reference's 0.0028:)
+//   - a fixed start (no noise, 0.5): 0.0029 on the rig, but on the real R34's mesh (a car dump, local only, a pause-like camera, 64 scenarios) 0.013 against the
+//     reference's 0.0046 and the noise's 0.046: the 12 steps sample a 4 cm band, and with no noise the pixels that miss it form bands and rings along the plate's
+//     shadow instead of dots, and its darkness is short of the reference's (26% in the rig's worst case, plate 18 cm, sun 65 degrees; 1.6% over the R34's scenarios);
+//   - more steps (16, the setting's: 0.037 on the R34) and an ordered 2 x 2 or 4 x 4 start (0.0190 and 0.0175 on the rig): no better than the noise;
+//   - the filter without the visibility's weight, on every vehicle pixel: 0.0046 on the R34, the reference's own roughness, and the lowest distance from the
+//     reference (0.009 against 0.037), at no cost in the march; but the car map's shadow has crisp edges that the same filter widens to 2.4 times their
+//     width (the check's control: 34005 soft pixels against 14272), and softness of the contact shadows is a complaint the owner has made.
+// THE CHANGE (THE MARK above): the march marks a vehicle pixel that took steps (the pixels the map covers took none, so the map's shadow is not marked) and the
+// two filters weigh two marked pixels by position and depth alone. The noise stays (it is what makes the mean right), the 3 x 3 of marked pixels is the average of nine
+// noises, and everything else is filtered exactly as before. Measured on the same rig (the check): the stipple energy 0.0033 (1.2 times the reference's, 0.10 of
+// the old filter's, 0.010 against 0.149 in the worst scenario), the distance from the reference 0.0053 against 0.0225, the total darkness unchanged (0.0566
+// against 0.0559, the reference's 0.0567); with the map in the frame nothing of the lid is marked but the grazing pixels (769 of 588,732, whose weight is 0), the
+// filtered lid is the old one to the half's last unit and the map's edges keep their width; the road beside a car differs from the old filter by 0.00017 at most
+// (the marked neighbours' decode); the mirror on a door keeps its darkness (14315 against 14314). The march's own values are the old ones to the bit.
+// COST (DXIL 6.0 static instructions, dxc 1.9.2609): the march +4 (2004 to 2008: a vehicle test it had, a compare and a subtract); the apply's folded filter +51 on
+// every variant (1044 to 1095 for the plain one: about 6 a tap and 3 for the pixel's own; they run for every pixel the contact term can darken, vehicle or not,
+// as the filter did); the denoise pass's filter +9 (334 to 343, a loop). A vehicle pixel pays the same filter as any other and +4 in the march.
 
 // ---------------------------------------------------------------------------
 // the ground under a vehicle
@@ -848,6 +901,7 @@ struct Trace {
   float adapt_pixels = 0.0f;   // the adaptive step count's end gap in pixels (AdaptiveSteps); 0: every step, as before
   uint32_t adapt_min_steps = kAdaptMinSteps;
   mutable uint32_t steps_used = 0;  // out: the number of steps the last March took (0: it returned before the loop)
+  mutable bool marked = false;      // out: the last March was a vehicle pixel's short march (it stores MarkedVisibility of its result: THE MARK)
   float noise = 0.5f;     // the pixel's start offset, 0 to 1
   float sky = 60000.0f;   // depth values at or above sky * 0.5 are the sky
   float max_distance = 80.0f;
@@ -932,6 +986,7 @@ template <class DepthAt>
 float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const Camera& cam = t.camera;
   t.steps_used = 0;
+  t.marked = false;
   t.car_result = CarMapResult{};
   const float tc = depth_at(x, y);
   if (tc >= t.sky * 0.5f || tc >= t.max_distance) {
@@ -982,6 +1037,8 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
                           t.adapt_min_steps);
   }
   t.steps_used = steps;
+  // A vehicle pixel that marches (the map did not take its steps) writes the marked value: the noise of its ray's start is in it.
+  t.marked = !t.classic && t.vehicle_rule && DepthIsVehicle(tc) && steps > 0;
   for (uint32_t i = 0; i < steps; ++i) {
     if (shadow >= 0.99f) {
       break;
@@ -1022,6 +1079,13 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);
   }
   return 1.0f - shadow;
+}
+
+// What the march's pass stores for the pixel (x, y): March's visibility, marked when it was a vehicle pixel's short march (THE MARK).
+template <class DepthAt>
+float MarchStored(const Trace& t, DepthAt&& depth_at, int x, int y) {
+  const float v = March(t, depth_at, x, y);
+  return t.marked ? MarkedVisibility(v) : v;
 }
 
 // ---------------------------------------------------------------------------

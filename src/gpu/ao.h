@@ -101,7 +101,8 @@
 // by one pass of the occlusion's denoise shader in its contact mode (a 3x3 bilateral whose weights
 // also fall with the difference of the visibility, so noise goes and edges stay; the contact term has
 // no history of its own: the noise rotates every frame while a temporal upscaler runs and averages
-// it, and is a fixed pattern without one), and the
+// it, and is a fixed pattern without one; a car's own pixel that marches stores its result marked, and the filter
+// averages the noise of two marked pixels outright: contact_trace.h "the vehicle march's stipple"), and the
 // apply pass darkens only the SUN's share of the light by it:
 //   sun_share = Ls * N.L * vis / (La + Ls * N.L * vis)
 //   factor    = 1 - sun_share * strength * (1 - contact) * distance_fade

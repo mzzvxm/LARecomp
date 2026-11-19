@@ -1249,7 +1249,7 @@ struct SkipFrame {
     float& slot = vis[size_t(y) * size_t(cam.width) + size_t(x)];
     if (std::isnan(slot)) {
       trace.noise = PixelNoise(x, y);
-      slot = March(trace, [&](int a, int b) { return im.At(a, b); }, x, y);
+      slot = MarchStored(trace, [&](int a, int b) { return im.At(a, b); }, x, y);
     }
     return slot;
   }
@@ -3557,6 +3557,369 @@ void SkipWithACarSunImage() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// the vehicle march's stipple (contact_trace.h "the vehicle march's stipple")
+// ---------------------------------------------------------------------------
+
+// A value through the image's R16_FLOAT: the nearest half (ties to even) as a float, for 2^-24 and up.
+float HalfRound(float v) {
+  if (v == 0.0f || !std::isfinite(v)) {
+    return v;
+  }
+  int e = 0;
+  std::frexp(std::fabs(v), &e);  // |v| = m 2^e, m in [0.5, 1): a half keeps 11 significant bits, and nothing below 2^-24
+  const float step = std::ldexp(1.0f, std::max(e - 11, -24));
+  return std::copysign(std::nearbyint(std::fabs(v) / step) * step, v);
+}
+
+// The wing rig of MakeWingRig with the plate `plate` metres above the lid, at `height` lines.
+Rig MakeWingRigAt(Vec3 eye, Vec3 target, float plate, int height) {
+  Rig r;
+  r.cam = MakeCamera(height);
+  r.eye = eye;
+  r.boxes.push_back({-0.75f, 0.75f, 0.97f, 1.0f, 0.0f, 1.1f, true});                  // the lid
+  r.boxes.push_back({-0.8f, 0.8f, 0.35f, 0.97f, 0.0f, 2.5f, true});                   // the body below it and the rear window's deck
+  r.boxes.push_back({-0.8f, 0.8f, 1.0f + plate, 1.04f + plate, 0.15f, 0.45f, true});  // the plate
+  for (const float x : {-0.5f, 0.5f}) {
+    r.boxes.push_back({x - 0.03f, x + 0.03f, 1.0f, 1.0f + plate, 0.25f, 0.31f, true});  // the posts
+  }
+  r.Aim(target);
+  return r;
+}
+
+// The march's picture of a rig over a box of pixels, as the pass stores it (through the half), without and with the mark, and the picture the
+// noise stands for: the mean of 16 starts of the ray (the noise 1/32, 3/32, ...), which is what a history of many frames would show.
+struct StipplePictures {
+  int x0 = 0, y0 = 0, x1 = -1, y1 = -1, w = 0;
+  std::vector<float> plain, marked, ref;
+  float At(const std::vector<float>& image, int x, int y) const { return image[size_t(y) * size_t(w) + size_t(x)]; }
+};
+StipplePictures MakeStipplePictures(const Rig& rig, const RigImage& im, const Trace& base, int lid_x0, int lid_y0, int lid_x1, int lid_y1, bool with_ref) {
+  StipplePictures p;
+  p.w = rig.cam.width;
+  p.x0 = std::max(lid_x0 - 3, 2);
+  p.y0 = std::max(lid_y0 - 3, 2);
+  p.x1 = std::min(lid_x1 + 3, rig.cam.width - 3);
+  p.y1 = std::min(lid_y1 + 3, rig.cam.height - 3);
+  const size_t n = size_t(rig.cam.width) * size_t(rig.cam.height);
+  p.plain.assign(n, 1.0f);
+  p.marked.assign(n, 1.0f);
+  p.ref.assign(n, 1.0f);
+  const auto depth = [&](int x, int y) { return im.depth.At(x, y); };
+  for (int y = p.y0 - 1; y <= p.y1 + 1; ++y) {
+    for (int x = p.x0 - 1; x <= p.x1 + 1; ++x) {
+      if (im.depth.At(x, y) >= 30000.0f) {
+        continue;
+      }
+      Trace t = base;
+      t.noise = PixelNoise(x, y);
+      const size_t at = size_t(y) * size_t(rig.cam.width) + size_t(x);
+      p.plain[at] = HalfRound(March(t, depth, x, y));
+      p.marked[at] = HalfRound(MarchStored(t, depth, x, y));
+      if (with_ref) {
+        double sum = 0.0;
+        for (int k = 0; k < 16; ++k) {
+          t.noise = (float(k) + 0.5f) / 16.0f;
+          sum += double(March(t, depth, x, y));
+        }
+        p.ref[at] = float(sum / 16.0);
+      }
+    }
+  }
+  return p;
+}
+// The filter of the apply (the twin) over one of the pictures at (x, y).
+float FilterOf(const Rig& rig, const RigImage& im, const std::vector<float>& image, int x, int y) {
+  const auto depth = [&](int a, int b) { return im.depth.At(a, b); };
+  const auto vis = [&](int a, int b) { return image[size_t(b) * size_t(rig.cam.width) + size_t(a)]; };
+  const float tc = im.depth.At(x, y);
+  const Vec3 pc = ViewPos(rig.cam, float(x) + 0.5f, float(y) + 0.5f, tc);
+  Vec3 normal = NormalFromDepth(rig.cam, depth, x, y, tc, pc);
+  if (Dot(normal, pc) > 0.0f) {
+    normal = normal * -1.0f;
+  }
+  return EdgeFilter(rig.cam, depth, vis, x, y, tc, pc, normal);
+}
+
+struct StippleTally {
+  double energy_old = 0.0, energy_new = 0.0, energy_ref = 0.0;  // sums of |a pixel minus the mean of its four neighbours| over the lid's pixels
+  double err_old = 0.0, err_new = 0.0;                          // sums of |the filtered pixel minus the reference|
+  double dark_old = 0.0, dark_new = 0.0, dark_ref = 0.0;        // sums of 1 - the pixel
+  long pixels = 0, scenarios = 0;
+  double worst_old = 0.0, worst_new = 0.0, worst_ref = 0.0;     // the largest mean energy of one scenario
+};
+
+// The lid of a wing rig: its pixels and their box.
+struct LidPixels {
+  std::vector<uint8_t> lid;
+  int x0, y0, x1, y1;
+};
+LidPixels FindLid(const Rig& rig, const RigImage& im) {
+  LidPixels r;
+  const int w = rig.cam.width, h = rig.cam.height;
+  r.lid.assign(size_t(w) * size_t(h), 0);
+  r.x0 = w;
+  r.x1 = -1;
+  r.y0 = h;
+  r.y1 = -1;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const float tc = im.depth.At(x, y);
+      if (tc >= 30000.0f || !DepthIsVehicle(tc)) {
+        continue;
+      }
+      const Vec3 p = RigPoint(rig, im, x, y);
+      if (std::fabs(p.y - 1.0f) > 0.004f || p.z < 0.02f || p.z > 1.08f || std::fabs(p.x) > 0.7f) {
+        continue;  // the lid's top face
+      }
+      r.lid[size_t(y) * size_t(w) + size_t(x)] = 1;
+      r.x0 = std::min(r.x0, x);
+      r.x1 = std::max(r.x1, x);
+      r.y0 = std::min(r.y0, y);
+      r.y1 = std::max(r.y1, y);
+    }
+  }
+  return r;
+}
+
+void VehicleStippleIsFiltered() {
+  // 1. The mark itself: a marked value is outside 0 to 1 whatever the visibility, comes back through the half to within half a unit of its 2^-10, and an
+  //    unmarked value is never read as marked.
+  {
+    int unmarked = 0, wrongly_marked = 0;
+    double worst = 0.0;
+    for (int i = 0; i <= 4096; ++i) {
+      const float v = float(i) / 4096.0f;
+      const float stored = HalfRound(MarkedVisibility(v));
+      unmarked += IsMarked(stored) ? 0 : 1;
+      worst = std::max(worst, double(std::fabs(UnmarkedVisibility(stored) - v)));
+      wrongly_marked += IsMarked(HalfRound(v)) ? 1 : 0;
+    }
+    Check(unmarked == 0 && wrongly_marked == 0 && worst <= 0.0005,
+          Num("the mark survives the R16_FLOAT image: %.0f marked values read as unmarked, %.0f plain values read as marked, the value back to within %.6f", double(unmarked),
+              double(wrongly_marked), worst));
+  }
+  // 2. The lid under a wing seen from three places with the sun at two heights and three sides, the plate 28 and 18 cm above the lid, the car's map off (a player
+  //    who chose CAR SHADOWS = OFF with CONTACT SHADOWS on): every pixel of the lid is a vehicle's and marches the short ray with the noise of its start and no
+  //    history. The filter before this change kept the stipple (the visibility's weight is 0.2 wide: a pixel the ray hit and the next one it missed do not mix);
+  //    the marked pixels mix (weight 1 between two of them), and the 3 x 3 of the start's noise is the smooth answer a history of frames would give.
+  StippleTally t;
+  long marked_pixels = 0, lid_pixels = 0;
+  struct Eye {
+    Vec3 eye, target;
+  };
+  const Eye eyes[] = {{{-3.0f, 1.6f, -3.0f}, {0.0f, 1.0f, 0.5f}}, {{-4.0f, 1.4f, 0.4f}, {0.0f, 1.1f, 0.4f}}, {{0.0f, 2.2f, -4.5f}, {0.0f, 1.1f, 0.5f}}};
+  for (const float plate : {0.28f, 0.18f}) {
+    for (const Eye& e : eyes) {
+      const Rig rig = MakeWingRigAt(e.eye, e.target, plate, 1080);
+      const RigImage im = RenderRig(rig);
+      const int w = rig.cam.width, h = rig.cam.height;
+      const LidPixels l = FindLid(rig, im);
+      Check(l.x1 > l.x0 && l.y1 > l.y0, "the wing rig shows the lid");
+      for (const double elevation : {55.0, 70.0}) {
+        for (const double azimuth : {0.0, 120.0, 240.0}) {
+          const Vec3 sun = Sun(elevation, azimuth);
+          Trace base = LowSunTrace(elevation);
+          base.camera = rig.cam;
+          base.to_sun = rig.ToView(sun);
+          const StipplePictures p = MakeStipplePictures(rig, im, base, l.x0, l.y0, l.x1, l.y1, true);
+          double ref_dark = 0.0;
+          for (int y = p.y0; y <= p.y1; ++y) {
+            for (int x = p.x0; x <= p.x1; ++x) {
+              ref_dark += l.lid[size_t(y) * size_t(w) + size_t(x)] ? 1.0 - double(p.At(p.ref, x, y)) : 0.0;
+            }
+          }
+          if (ref_dark < 20.0) {
+            continue;  // no shadow of the plate within the ray on this lid from this sun: nothing to smooth
+          }
+          std::vector<float> f_old(size_t(w) * size_t(h), 1.0f), f_new(size_t(w) * size_t(h), 1.0f);
+          for (int y = p.y0; y <= p.y1; ++y) {
+            for (int x = p.x0; x <= p.x1; ++x) {
+              if (im.depth.At(x, y) < 30000.0f) {
+                f_old[size_t(y) * size_t(w) + size_t(x)] = FilterOf(rig, im, p.plain, x, y);
+                f_new[size_t(y) * size_t(w) + size_t(x)] = FilterOf(rig, im, p.marked, x, y);
+              }
+            }
+          }
+          StippleTally one;
+          const auto lap = [&](const std::vector<float>& a, size_t i) {
+            return double(a[i]) - 0.25 * (double(a[i - 1]) + double(a[i + 1]) + double(a[i - size_t(w)]) + double(a[i + size_t(w)]));
+          };
+          for (int y = p.y0 + 1; y < p.y1; ++y) {
+            for (int x = p.x0 + 1; x < p.x1; ++x) {
+              const size_t i = size_t(y) * size_t(w) + size_t(x);
+              if (!l.lid[i]) {
+                continue;
+              }
+              ++lid_pixels;
+              marked_pixels += IsMarked(p.marked[i]) ? 1 : 0;
+              if (!l.lid[i - 1] || !l.lid[i + 1] || !l.lid[i - size_t(w)] || !l.lid[i + size_t(w)]) {
+                continue;
+              }
+              one.energy_old += std::fabs(lap(f_old, i));
+              one.energy_new += std::fabs(lap(f_new, i));
+              one.energy_ref += std::fabs(lap(p.ref, i));
+              one.err_old += std::fabs(double(f_old[i]) - double(p.ref[i]));
+              one.err_new += std::fabs(double(f_new[i]) - double(p.ref[i]));
+              one.dark_old += 1.0 - double(f_old[i]);
+              one.dark_new += 1.0 - double(f_new[i]);
+              one.dark_ref += 1.0 - double(p.ref[i]);
+              ++one.pixels;
+            }
+          }
+          if (one.pixels == 0) {
+            continue;
+          }
+          t.energy_old += one.energy_old;
+          t.energy_new += one.energy_new;
+          t.energy_ref += one.energy_ref;
+          t.err_old += one.err_old;
+          t.err_new += one.err_new;
+          t.dark_old += one.dark_old;
+          t.dark_new += one.dark_new;
+          t.dark_ref += one.dark_ref;
+          t.pixels += one.pixels;
+          ++t.scenarios;
+          t.worst_old = std::max(t.worst_old, one.energy_old / double(one.pixels));
+          t.worst_new = std::max(t.worst_new, one.energy_new / double(one.pixels));
+          t.worst_ref = std::max(t.worst_ref, one.energy_ref / double(one.pixels));
+        }
+      }
+    }
+  }
+  const double n = double(std::max(t.pixels, 1L));
+  std::printf("the lid under a wing, car map off, %ld scenarios, %ld pixels (%ld of the lid's %ld marked): stipple energy (mean |pixel - mean of its 4 neighbours|): "
+              "old filter %.5f, marked filter %.5f, the noise's mean (what a history would show) %.5f; worst scenario %.5f, %.5f, %.5f; "
+              "mean |filtered - mean| %.5f, %.5f; mean darkness %.5f, %.5f, mean's %.5f\n",
+              t.scenarios, t.pixels, marked_pixels, lid_pixels, t.energy_old / n, t.energy_new / n, t.energy_ref / n, t.worst_old, t.worst_new, t.worst_ref, t.err_old / n,
+              t.err_new / n, t.dark_old / n, t.dark_new / n, t.dark_ref / n);
+  Check(t.scenarios >= 20 && t.pixels > 500000, Num("the sample is large enough (%.0f scenarios, %.0f lid pixels)", double(t.scenarios), double(t.pixels)));
+  Check(marked_pixels > 0 && marked_pixels * 10 >= lid_pixels * 9, Num("the lid's pixels march with no map and are marked (%.0f of %.0f)", double(marked_pixels), double(lid_pixels)));
+  Check(t.energy_old > 5.0 * t.energy_ref, Num("the old filter leaves the stipple: its energy is %.1f times the noise's mean's", t.energy_old / std::max(t.energy_ref, 1e-12)));
+  Check(t.energy_new * 3.0 <= t.energy_old, Num("the marked filter takes the stipple out: its energy is %.2f of the old one's", t.energy_new / std::max(t.energy_old, 1e-12)));
+  Check(t.energy_new <= 1.5 * t.energy_ref, Num("and leaves no more roughness than the noise's mean has by itself (%.2f times)", t.energy_new / std::max(t.energy_ref, 1e-12)));
+  Check(t.worst_new * 4.0 <= t.worst_old, Num("in the worst scenario too (%.4f against %.4f)", t.worst_new, t.worst_old));
+  Check(t.err_new * 2.0 <= t.err_old, Num("the filtered picture is nearer to the noise's mean than it was: %.5f against %.5f", t.err_new / n, t.err_old / n));
+  Check(std::fabs(t.dark_new - t.dark_old) <= 0.03 * t.dark_old, Num("the shadow's total darkness stays (%.5f against %.5f a pixel)", t.dark_new / n, t.dark_old / n));
+  // 3. With the car's map in the frame the lid's pixels are covered by it and take no steps: nothing is marked, and the filter is the old filter to the half's
+  //    last unit, so the map's crisp shadow keeps its edge (a filter without the visibility's weight on every vehicle pixel would widen the map's edges to twice
+  //    their width, which is why the mark is there).
+  {
+    long lid_n = 0, marked_n = 0, soft_old = 0, soft_new = 0, soft_all = 0, changed = 0;
+    double worst = 0.0;
+    const Rig rig = MakeWingRigAt(eyes[0].eye, eyes[0].target, 0.28f, 1080);
+    const RigImage im = RenderRig(rig);
+    const int w = rig.cam.width;
+    const LidPixels l = FindLid(rig, im);
+    for (const double elevation : {40.0, 55.0, 70.0}) {
+      for (const double azimuth : {0.0, 90.0, 180.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, azimuth);
+        const CarMapRig map = BuildCarMap(rig, sun, 1024, 2.0f);
+        Trace base = LowSunTrace(elevation);
+        base.camera = rig.cam;
+        base.to_sun = rig.ToView(sun);
+        base.car_map = &map.view;
+        const StipplePictures p = MakeStipplePictures(rig, im, base, l.x0, l.y0, l.x1, l.y1, false);
+        // The control: every vehicle pixel marked, as if the filter took the visibility's weight away between all of a car's pixels.
+        std::vector<float> all = p.plain;
+        for (size_t i = 0; i < all.size(); ++i) {
+          all[i] = DepthIsVehicle(im.depth.d[i]) && im.depth.d[i] < 30000.0f ? HalfRound(MarkedVisibility(p.plain[i])) : p.plain[i];
+        }
+        for (int y = p.y0; y <= p.y1; ++y) {
+          for (int x = p.x0; x <= p.x1; ++x) {
+            const size_t i = size_t(y) * size_t(w) + size_t(x);
+            if (!l.lid[i]) {
+              continue;
+            }
+            ++lid_n;
+            const float c = FilterOf(rig, im, all, x, y);
+            soft_all += (c > 0.05f && c < 0.95f) ? 1 : 0;
+            marked_n += IsMarked(p.marked[i]) ? 1 : 0;
+            const float a = FilterOf(rig, im, p.plain, x, y), b = FilterOf(rig, im, p.marked, x, y);
+            soft_old += (a > 0.05f && a < 0.95f) ? 1 : 0;
+            soft_new += (b > 0.05f && b < 0.95f) ? 1 : 0;
+            worst = std::max(worst, double(std::fabs(a - b)));
+            changed += std::fabs(a - b) > 0.002f ? 1 : 0;
+          }
+        }
+      }
+    }
+    std::printf("the lid with the car's map in the frame, 12 suns: %ld lid pixels, %ld marked, soft pixels (0.05 to 0.95) old %ld, new %ld, with every vehicle pixel marked %ld; pixels the filter changes by more than 0.002: %ld, the most %.5f\n",
+                lid_n, marked_n, soft_old, soft_new, soft_all, changed, worst);
+    Check(lid_n > 500000 && marked_n * 200 <= lid_n, Num("with the map the lid takes no march steps and is not marked (%.0f of %.0f)", double(marked_n), double(lid_n)));
+    Check(changed * 500 <= lid_n && soft_new <= soft_old + soft_old / 50,
+          Num("and the map's shadow keeps its edge: %.0f of the lid's pixels change by more than 0.002, the soft pixels are %.0f against %.0f", double(changed), double(soft_new),
+              double(soft_old)));
+    Check(soft_all * 2 >= soft_old * 3, Num("(control) with every vehicle pixel marked the map's edges are %.2f times as wide", double(soft_all) / double(std::max(soft_old, 1L))));
+  }
+  // 4. Everything that is not a vehicle's pixel is filtered as it was: the road around a car (the tyres' and sills' shadows on it) reads the car's marked pixels
+  //    beside it and takes them back out, so it differs only by the half's last unit.
+  {
+    const Rig rig = MakeTyreRig();
+    const RigImage im = RenderRig(rig);
+    long road = 0, differing = 0;
+    double worst = 0.0;
+    for (const double elevation : {15.0, 30.0}) {
+      for (const double azimuth : {0.0, 90.0, 180.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, azimuth);
+        Trace base = LowSunTrace(elevation);
+        base.camera = rig.cam;
+        base.to_sun = rig.ToView(sun);
+        const StipplePictures p = MakeStipplePictures(rig, im, base, 2, 2, rig.cam.width - 3, rig.cam.height - 3, false);
+        for (int y = 4; y < rig.cam.height - 4; y += 2) {
+          for (int x = 4; x < rig.cam.width - 4; x += 2) {
+            if (im.depth.At(x, y) >= 30000.0f || DepthIsVehicle(im.depth.At(x, y))) {
+              continue;
+            }
+            ++road;
+            const double d = std::fabs(double(FilterOf(rig, im, p.plain, x, y)) - double(FilterOf(rig, im, p.marked, x, y)));
+            worst = std::max(worst, d);
+            differing += d > 0.001 ? 1 : 0;
+          }
+        }
+      }
+    }
+    std::printf("the road around a car, 8 suns: %ld pixels filtered, the most the marks change one: %.6f\n", road, worst);
+    Check(road > 100000 && differing == 0, Num("a pixel that is not a vehicle's is filtered as it was, to the half's last unit (%.0f of %.0f differ by more than 0.001)", double(differing), double(road)));
+  }
+  // 5. A small shadow that must stay (the mirror on a door, a vehicle's pixels marching with the map off): the filter spreads it by a pixel but keeps it dark.
+  {
+    const Rig rig = MakeMirrorRig();
+    const RigImage im = RenderRig(rig);
+    long real = 0, dark_old = 0, dark_new = 0;
+    double sum_old = 0.0, sum_new = 0.0;
+    for (const double elevation : {20.0, 40.0}) {
+      for (const double azimuth : {135.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, azimuth);
+        Trace base = LowSunTrace(elevation);
+        base.camera = rig.cam;
+        base.to_sun = rig.ToView(sun);
+        const StipplePictures p = MakeStipplePictures(rig, im, base, 2, 2, rig.cam.width - 3, rig.cam.height - 3, false);
+        for (int y = 4; y < rig.cam.height - 4; ++y) {
+          for (int x = 4; x < rig.cam.width - 4; ++x) {
+            if (im.depth.At(x, y) >= 30000.0f || !DepthIsVehicle(im.depth.At(x, y))) {
+              continue;
+            }
+            const Vec3 q = RigPoint(rig, im, x, y) + sun * 0.012f;
+            if (rig.Nearest(q, sun, 0.0f, 0.15f) < 0.0f) {
+              continue;
+            }
+            ++real;
+            const float a = FilterOf(rig, im, p.plain, x, y), b = FilterOf(rig, im, p.marked, x, y);
+            dark_old += a < 0.5f ? 1 : 0;
+            dark_new += b < 0.5f ? 1 : 0;
+            sum_old += 1.0 - double(a);
+            sum_new += 1.0 - double(b);
+          }
+        }
+      }
+    }
+    std::printf("the mirror on a door, 4 suns: %ld pixels with a shadow within 15 cm; filtered darker than 0.5: old %ld, new %ld; total darkness old %.0f, new %.0f\n", real, dark_old, dark_new,
+                sum_old, sum_new);
+    Check(real > 2000 && sum_new * 100.0 >= sum_old * 95.0, Num("the mirror's shadow on the door keeps its darkness (%.0f of %.0f)", sum_new, sum_old));
+  }
+}
+
 // The shaders repeat the header's constants as `static const float kName = value;`: read them and compare.
 bool ReadFile(const std::string& path, std::string* out) {
   std::ifstream f(path, std::ios::binary);
@@ -3615,7 +3978,7 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kCarMapBiasFloor", kCarMapBiasFloor}, {&contact, "kCarMapBiasTexels", kCarMapBiasTexels},
       {&contact, "kCarMapFootprintBias", kCarMapFootprintBias}, {&contact, "kCarMapProducerSlope", kCarMapProducerSlope},
       {&contact, "kCarMapMaxTan", kCarMapMaxTan}, {&contact, "kCarMapEdgeTexels", kCarMapEdgeTexels},
-      {&contact, "kCarMapEmpty", kCarMapEmpty},
+      {&contact, "kCarMapEmpty", kCarMapEmpty},       {&common, "kVehicleMarkOffset", kVehicleMarkOffset},
   };
   for (const Row& r : rows) {
     double got = 0.0;
@@ -3673,6 +4036,24 @@ void ShaderConstantsMatch(const std::string& dir) {
             contact.find("thickness = min(thickness, kVehicleThickness);") != std::string::npos &&
             contact.find("steps = min(steps, uint(kVehicleSteps));") != std::string::npos && contact.find("if (AoIsVehicle(tc)) {") != std::string::npos,
         "the shader's vehicle rule is the twin's (a car's pixel: the length, the thickness and the steps clamped)");
+  // The mark (contact_trace.h "the vehicle march's stipple"): the march marks a vehicle pixel that took steps and stores nothing marked otherwise; both filters
+  // read it the same way (decode, and no visibility weight between two marked pixels).
+  {
+    size_t filters = 0, at = 0;
+    const std::string weight = "const float off_range = (centre_marked && marked) ? 0.0f : (value - centre) / kEdgeRangeSigma;";
+    while ((at = common.find(weight, at)) != std::string::npos) {
+      ++filters;
+      at += weight.size();
+    }
+    Check(contact.find("const bool marked = AoIsVehicle(tc) && steps > 0u;") != std::string::npos &&
+              contact.find("return float4(marked ? visibility - kVehicleMarkOffset : visibility, 0.0f, 0.0f, 0.0f);") != std::string::npos &&
+              common.find("bool AoIsMarked(float stored) { return stored < -0.5f; }") != std::string::npos &&
+              common.find("float AoUnmarked(float stored) { return AoIsMarked(stored) ? stored + kVehicleMarkOffset : stored; }") != std::string::npos &&
+              filters == 2 && common.find("const bool centre_marked = AoIsMarked(centre_stored);") != std::string::npos &&
+              common.find("const float centre = AoUnmarked(centre_stored);") != std::string::npos &&
+              common.find("const float value = AoUnmarked(stored);") != std::string::npos,
+          "the shaders' mark is the twin's (the march marks a vehicle pixel that took steps; the filter and its folded twin decode, and weigh two marked pixels by position and depth alone)");
+  }
   // The comb fix (contact_trace.h "the game's sun shadow mask is not a car's"): the apply takes a vehicle's sun visibility as 1 in both its uses of
   // the mask, and the march's skip (and the statistics' twin of it) is not allowed on a vehicle's pixel or beside one.
   Check(apply.find("float CarAwareSunVisibility(float mask_vis, bool vehicle, float3 pc) {") != std::string::npos &&
@@ -3741,6 +4122,12 @@ int main(int argc, char** argv) {
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
   }
+  if (argc > 2 && std::string(argv[2]) == "stipple") {  // only the vehicle march's stipple checks and the shaders' text
+    VehicleStippleIsFiltered();
+    ShaderConstantsMatch(argv[1]);
+    std::printf("%d checks, %d failed\n", g_checks, g_failed);
+    return g_failed == 0 ? 0 : 1;
+  }
   if (argc > 2 && std::string(argv[2]) == "carsun") {  // only the car sun image's checks and the shaders' text (the quickest to run while working on them)
     CarSunLookupIsTheGames();
     CarSunVisibilityOnTheLid();
@@ -3788,6 +4175,7 @@ int main(int argc, char** argv) {
   CarSunLookupIsTheGames();
   CarSunVisibilityOnTheLid();
   SkipWithACarSunImage();
+  VehicleStippleIsFiltered();
   if (argc > 1) {
     ShaderConstantsMatch(argv[1]);
   } else {

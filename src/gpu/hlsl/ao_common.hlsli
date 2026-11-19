@@ -216,12 +216,21 @@ static const float kEdgeRangeSigma = 0.2f;
 static const float kEdgeSpatialSigma = 0.9f;
 static const float kEdgePlanePixels = 4.0f;
 static const float kEdgePlaneFloor = 0.01f;
+// THE MARK (contact_trace.h "the vehicle march's stipple"): a vehicle pixel that marched its short ray stores its visibility v as
+// v - kVehicleMarkOffset, a value in -2 to -1 (the others store 0 to 1). Between two marked pixels the visibility's weight is 1: the noise
+// of the march's start is in both values, and the average of the 3 x 3 is the smooth answer the noise stands for. The filter's output is a
+// plain visibility. Only ao_contact_ps writes a marked value and only the two filters below read the image.
+static const float kVehicleMarkOffset = 2.0f;
+bool AoIsMarked(float stored) { return stored < -0.5f; }
+float AoUnmarked(float stored) { return AoIsMarked(stored) ? stored + kVehicleMarkOffset : stored; }
 float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
                       float3 normal) {
   const float2 size = float2(isize);
   const float footprint = 2.0f * g_push.lens.y / size.y * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const float centre_stored = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const bool centre_marked = AoIsMarked(centre_stored);
+  const float centre = AoUnmarked(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   for (int dy = -1; dy <= 1; ++dy) {
@@ -236,8 +245,10 @@ float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, fl
       const float w_depth = exp(-0.5f * off_plane * off_plane);
       const float w_space =
           exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
-      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float stored = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const bool marked = AoIsMarked(stored);
+      const float value = AoUnmarked(stored);
+      const float off_range = (centre_marked && marked) ? 0.0f : (value - centre) / kEdgeRangeSigma;
       const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
       sum += value * w;
       weights += w;
@@ -256,7 +267,9 @@ float AoBilateralEdgeFolded(uint vis_slot, uint depth_slot, int2 pixel, int2 isi
   const float2 size = float2(isize);
   const float footprint = 2.0f * g_push.lens.y / size.y * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const float centre_stored = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const bool centre_marked = AoIsMarked(centre_stored);
+  const float centre = AoUnmarked(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   [unroll] for (int dy = -1; dy <= 1; ++dy) {
@@ -278,8 +291,10 @@ float AoBilateralEdgeFolded(uint vis_slot, uint depth_slot, int2 pixel, int2 isi
       const float w_depth = exp(-0.5f * off_plane * off_plane);
       const float w_space =
           exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
-      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float stored = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const bool marked = AoIsMarked(stored);
+      const float value = AoUnmarked(stored);
+      const float off_range = (centre_marked && marked) ? 0.0f : (value - centre) / kEdgeRangeSigma;
       const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
       sum += value * w;
       weights += w;
