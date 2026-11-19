@@ -72,7 +72,7 @@
 // car_shadow_map.h draws the car again from the sun, depth only, at full detail, into a small square map fitted to the car; with a map in the
 // frame (bit 28) a pixel whose view position falls inside it gets the car's own shadow from it, exact for the wing, the mirrors, the sills and
 // the wheels on the car and on the road near it, and takes the DARKER of that and the march's. The apply pass multiplies by the sun's share
-// where the game's own mask says lit (a vehicle's pixel counts as lit: THE GAME'S MASK IS NOT A CAR'S below), so the map never darkens what the game's mask shadows already on the world. The lookup is CarMapShadow below: a
+// where the game's own mask says lit (a vehicle's pixel takes the game's car sun image instead: THE GAME'S MASK IS NOT A CAR'S below), so the map never darkens what the game's mask shadows already on the world. The lookup is CarMapShadow below: a
 // receiver-plane bias (the pixel's normal gives the depth's gradient per texel, and every tap compares at its own place on the plane), a
 // normal offset, a blocker search and a filter whose half width is the sun's penumbra at the blocker's distance (blocker distance times
 // kCarMapSunRadius, between kCarMapMinFilterTexels and kCarMapMaxFilterTexels texels), the border fading out. A vehicle pixel whose four
@@ -156,9 +156,9 @@
 //
 // THE GAME'S MASK IS NOT A CAR'S (contact_trace.h has the measurements; ao_apply_ps.hlsl CarAwareSunVisibility). The game collects its sun
 // shadow mask before the cars are drawn, so at a car's pixel it holds the world behind the car (the iron fence's bars on the R34's trunk lid: the
-// comb under the wing), and a car's own shader does not use it. The apply takes a vehicle's sun visibility as 1 there, so the skip above, which is
-// exact only where the apply's weight is 0 where the mask is, is not allowed on a vehicle's pixel or on any of its 8 neighbours (VehicleInReach, asked
-// only for a pixel the mask test would skip).
+// comb under the wing), and a car's own shader does not use it. The apply takes a vehicle's sun visibility from the game's car sun image (1 where the frame has none), never from the mask, so the skip above, which
+// is exact only where the apply's weight is 0 where the mask is, is not allowed on a vehicle's pixel or on any of its 8 neighbours (VehicleInReach, asked
+// only for a pixel the mask test would skip): the image can be lit where the mask is 0.
 //
 // The constants below are contact_trace.h's: change them there first.
 

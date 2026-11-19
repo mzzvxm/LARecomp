@@ -608,7 +608,7 @@ inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end
 // of detail in cascades whose texels are 1 to 25 cm. car_shadow_map.h draws the car again, depth only, from the sun, at full detail, into a small
 // square map fitted to the car: the exact shadow of the wing, the mirrors, the sills and the wheels on the car and on the road near it. The march
 // reads it (CarMapShadow below, mirrored in the shader) and the pixel takes the DARKER of the two. The apply pass still puts contact shadows only on
-// the sun's share where the game's own mask says lit (a vehicle's pixel counts as lit, "the game's sun shadow mask is not a car's" above), so a map
+// the sun's share where the game's own mask says lit (a vehicle's pixel takes the car sun image's visibility, "the game's sun shadow mask is not a car's" above), so a map
 // shadow never darkens what the game's mask already shadows twice on the world.
 //
 // THE LOOKUP (car_shadow_map.h CarShadowMapView). The view position of the pixel goes through the three rows of the map's matrix: u, v (0 to 1, v
@@ -1151,7 +1151,97 @@ inline bool MaskSkipOn(bool fast, bool filter_in_apply, bool has_mask, bool debu
 // behind the car. A car's pixel takes a visibility of 1 (the game's colour is not masked: the sun's share of it is Ls N.L / (La + Ls N.L)); what
 // shadows the car's own parts is the map and the vehicle march. What the cascades do to a car (a building's shade on it) is in the car's colour
 // and is not known here: a car in a building's shade gets the term of a lit one (CHECK: how that looks; the term is a small shadow of its own parts).
+// (That last sentence is CarSunFromImage's below: a frame that has the game's car sun image uses it; this is the rule of a frame without.)
 inline float CarSunVisibility(bool vehicle, float mask_visibility) { return vehicle ? 1.0f : mask_visibility; }
+
+// ---------------------------------------------------------------------------
+// a car's own sun visibility: the game's car sun image (CAR-SUNVIS, 2026-11-19)
+// ---------------------------------------------------------------------------
+//
+// THE QUESTION. A car in a building's shade got the contact term of a lit car (the line above). The game's own colour knows better: every car shader
+// takes the sun's visibility at the pixel from a lookup of its own, so the host can take it from the same place.
+//
+// WHAT THE CAR SHADERS READ (the game's translated HLSL, native\work\hlsl-head\cars: 33 pixel shaders fetch FastShadowCollectorSampler, which is slot 13,
+// and 29 of them build the coordinate with `trunc(gViewInverse(3).xz)`, e.g. xCarPaintCustomizable__PS_CarPaint.hlsl:759-774, xCarPaint, xBumpSpec,
+// xRimMain, xCarGlass, xChrome, xUnderbody, xLicensePlate, xGrill, xInteriorTrim, xWheelRubber ...). It is NOT the screen sized mask (that one is for the
+// world: the lit road shaders read it at the screen position, and it is made before the cars are drawn) but a 256 m wide TOP-DOWN image of the ground's
+// sun visibility around the camera, one texel a metre:
+//     u = (world.x - trunc(camera.x)) / 256 + 0.5      v = (world.z - trunc(camera.z)) / 256 + 0.5      (c249.x = 0x3B800000 = 1/256, c253.x = 0.5;
+//     the world's y is up, gViewInverse(3) the camera's position; trunc is toward 0, so the image's centre moves a whole metre at a time)
+//     the car's sun term = saturate(s - 0.25) * 1.3333325                                                  (c250.z = 0xBE800000 = -0.25, c249.y = 0x3FAAAA8F)
+// s the image's .x, bilinear (the guest's sampler: min and mag linear, GFX-UPGRADES-DESIGN.md 6B.2 item 3). The image by day is the 256x256
+// k_8_8_8_8 product at guest page 0x0329E000, resolved once a frame before the main scene (census: 22 collector draws of PS 2cdea0e25045ad9e into a
+// 256x256 target, then two draws and the resolve into 0329e: after the screen mask's resolve, before the first car is drawn); at night that page holds a
+// 512x512 k_8 shadow, in rain the cars read an 8x8 stand-in at 0329d (a constant 0.5), and at 6 h, 18 h and in rain the cascades are not drawn: a frame
+// without a 256x256 k_8_8_8_8 resolve into that page has no image and the visibility is 1, as before. The image has no height (G8A-CAR-SELFREFL.md 1.3:
+// "world-space, no height: the car's own parts are not in it"), so a car's roof and its flank and its wheels read the same place of it, which is the
+// ground under them: a car standing half in a building's shade is lit on the half that is over lit ground. That is the game's own colour; the apply
+// now agrees with it. The cascades themselves (the 1280x1280 k_24_8 atlas at 06E65000 and the matrices c64-c79 of the collector) are reachable the same
+// way (a resolve product by page, the constants of the collector's draws are frame constants), but no car shader reads them: the collector's car draws
+// all come before the cars, so the cascades would only give the host a second guess at what this image already says, with a cascade's choice and a PCF
+// of its own to copy.
+//
+// THE HOST gives the apply the image (its bindless slot) and the lookup: world x and z of a view-space point (x right, y up, z forward, the AO's)
+// are  ax . p + ox  and  az . p + oz  with ax = (right.x, up.x, forward.x), az = (right.z, up.z, forward.z) (the rows of the camera's view inverse, the
+// game's convention: forward is minus row 2) and (ox, oz) = the camera's position minus its truncation: the game's own world coordinate relative to
+// trunc(camera). The pose is the frame's own when the main view's vertex constants are trusted for it (ao.cpp vs_pose_trusted_), else the last frame's.
+// The 8 numbers go to the apply in a 4x1 RGBA32F image of their own (the push block has no room left: the apply reads every field) drawn with the
+// vehicle table's pass: texel 0 (ax, ox), texel 1 (az, oz).
+//
+// CHECKS the first run settles (the scene car-shade.scene): (1) the stored value of a lit car's ground is 1 (visibility 1 on a lit car, a flat
+// view 13 on the car), a shaded one 0.25 or below; (2) the image's .x is the red channel of the host's RGBA view (the mask's is); (3) the player's own
+// cast shadow is not in the image under him (the sun's side of a lit car reads 1), else a lit car reads dark over its own footprint.
+inline constexpr float kCarSunWindow = 256.0f;  // metres a side of the image
+inline constexpr float kCarSunFloor = 0.25f;    // saturate(s - 0.25)
+inline constexpr float kCarSunGain = 1.3333325f;  // c249.y = 0x3FAAAA8F: a hair under 4/3, so a lit car (stored 1) reads 0.9999994
+
+// The sun's visibility a car shader makes of the image's stored value.
+inline float CarSunFromImage(float stored) { return std::min(Saturate(stored - kCarSunFloor) * kCarSunGain, 1.0f); }
+
+// The lookup's 8 numbers: world x and z (relative to the truncated camera) of the view-space point p are Dot(ax, p) + ox and Dot(az, p) + oz.
+struct CarSunLookup {
+  Vec3 ax;
+  Vec3 az;
+  float ox = 0.0f;
+  float oz = 0.0f;
+};
+
+// From the camera's view inverse rows (right = row 0, up = row 1, forward = minus row 2, position = row 3), the game's world with y up.
+inline CarSunLookup MakeCarSunLookup(const double right[3], const double up[3], const double forward[3], const double position[3]) {
+  CarSunLookup l;
+  l.ax = {float(right[0]), float(up[0]), float(forward[0])};
+  l.az = {float(right[2]), float(up[2]), float(forward[2])};
+  l.ox = float(position[0] - std::trunc(position[0]));
+  l.oz = float(position[2] - std::trunc(position[2]));
+  return l;
+}
+
+// The image's coordinates of the view-space point `pc` (the shader's CarSunVisibility).
+inline void CarSunUv(const CarSunLookup& l, Vec3 pc, float* u, float* v) {
+  *u = (Dot(l.ax, pc) + l.ox) * (1.0f / kCarSunWindow) + 0.5f;
+  *v = (Dot(l.az, pc) + l.oz) * (1.0f / kCarSunWindow) + 0.5f;
+}
+
+// What the game computes for the same point: the world position `world` (x, y, z) and the camera's `position`.
+inline void CarSunUvOfWorld(const double world[3], const double position[3], float* u, float* v) {
+  *u = float((world[0] - std::trunc(position[0])) / double(kCarSunWindow) + 0.5);
+  *v = float((world[2] - std::trunc(position[2])) / double(kCarSunWindow) + 0.5);
+}
+
+// The apply's visibility at a pixel (hlsl/ao_apply_ps.hlsl CarAwareSunVisibility): the world's pixel takes the mask's, a vehicle's pixel the car sun
+// image's value at its place when the frame has one, else 1 (CarSunVisibility). `image_at(u, v)` is the bilinear .x of the image.
+template <class ImageAt>
+inline float CarAwareSunVisibility(bool vehicle, float mask_visibility, bool have_image, const CarSunLookup& l, Vec3 pc, ImageAt&& image_at) {
+  if (!vehicle) {
+    return mask_visibility;
+  }
+  if (!have_image) {
+    return 1.0f;
+  }
+  float u = 0.0f, v = 0.0f;
+  CarSunUv(l, pc, &u, &v);
+  return CarSunFromImage(image_at(u, v));
+}
 
 // THE SKIP FOLLOWS. The skip returns 1 where the apply's weight is at most kSkipWeight, which is proven from the mask alone (above). A vehicle's
 // pixel has a weight that is not (its visibility is 1) and the apply's filter reads the 8 neighbours' values, so a pixel is not skipped when it or

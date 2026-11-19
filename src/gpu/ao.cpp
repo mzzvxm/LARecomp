@@ -246,9 +246,23 @@ REXCVAR_DEFINE_INT32(
     "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
     "4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where "
     "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
-    "near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.")
+    "near it; white everywhere in a frame without the map: car_shadow_map.h), 6 the sun's visibility the share "
+    "of the light took (the game's mask on the world, the game's car sun image on a car, 1 on a car in a frame "
+    "without that image). 0: off. Live.")
     .debug_only()
-    .range(0, 5)
+    .range(0, 6)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_contact_shadows_car_sun, 1, "MCLA/GPU",
+    "Diagnostic: where a car's pixel takes the sun's visibility from when the contact shadows work out the "
+    "sun's share of its light. 1: from the game's own car sun image, the 256 m wide top-down image of the "
+    "ground's sun visibility that every car shader reads for its colour (contact_trace.h), so a car in a "
+    "building's shade gets no contact shadow of the sun's and a car half in it gets half; a frame without "
+    "that image (6 h, 18 h, rain, night) takes 1. 0: always 1, which is a lit car's term wherever the car "
+    "stands (the first fix for the comb under the R34's wing, for comparing). The game's screen sized mask "
+    "is never used on a car: it is made before the cars are drawn and holds the world behind them. Live.")
+    .debug_only()
+    .range(0, 1)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_contact_shadows_car_map_march, false, "MCLA/GPU",
@@ -549,6 +563,10 @@ constexpr uint32_t kContactViewBase = 7;
 // mcla_gpu_contact_shadows_view 5: the car's shadow map's term alone. The contact march writes it in place of the visibility (flag
 // contact_trace.h kCarMapViewFlag) and the apply shows it as its view 9, the contact visibility.
 constexpr int kContactViewCarMap = 5;
+// mcla_gpu_contact_shadows_view 6: the sun's visibility the apply's share of the light took (the mask on the world, the game's car sun image on a
+// car), the apply's view 13 (hlsl/ao_apply_ps.hlsl).
+constexpr int kContactViewCarSun = 6;
+constexpr uint32_t kVehicleSunView = 13;
 // The apply's debug view of the pixels the depth pass took for vehicles (the setting's 8: the contact
 // shadows' views are 8 to 11 in the shader).
 constexpr uint32_t kVehicleView = 12;
@@ -558,6 +576,16 @@ constexpr uint32_t kVehicleView = 12;
 constexpr uint32_t kMaskPage = 0x06ACD000u >> 12;
 constexpr uint8_t kTextureFormat8888 = 6;  // xenos::TextureFormat::k_8_8_8_8
 constexpr uint32_t kMaskMinWidth = 640;
+// The game's car sun image (contact_trace.h "a car's own sun visibility"): the page the day's 256x256 k_8_8_8_8 top-down image is resolved into
+// (the same page holds a 512x512 k_8 shadow at night, which the format tells apart), a square image of 128 to 1024 texels.
+constexpr uint32_t kCarSunPage = 0x0329E000u >> 12;
+constexpr uint32_t kCarSunMinSize = 128;
+constexpr uint32_t kCarSunMaxSize = 1024;
+// The apply's slots.x and slots.y carry the car sun image's slot and its lookup's (hlsl/ao_apply_ps.hlsl ApplyLoadStored): the high 16 bits of
+// slots.x are the image's slot, slots.y bit 8 says the frame has one and its high 16 bits are the lookup image's slot.
+constexpr uint32_t kCarSunOnFlag = 1u << 8;
+constexpr uint32_t kCarSunSlotShift = 16;
+static_assert(kBindlessTextureCount <= (1u << kCarSunSlotShift), "a bindless slot must fit the high half of slots.x and slots.y");
 // The sun's elevation gate: no contact shadows at this many degrees and below (the night's light
 // points up, 19 h is at 2.5 degrees with a grey sun), all of them from kGateFullDegrees.
 constexpr double kGateOffDegrees = 3.0;
@@ -1040,6 +1068,7 @@ void AmbientOcclusion::Shutdown() {
   depth_prev_ = HostImage{};
   gi_weight_ = HostImage{};
   vehicle_table_ = HostImage{};
+  car_sun_lookup_ = HostImage{};
   // The contact skip's block image and the statistics' image and readback: left out of this list they outlived the device, which
   // the Vulkan validation layer reported as five leaked objects (VUID-vkDestroyDevice-device-05137: an image, its two views, a
   // render pass and a framebuffer).
@@ -1478,6 +1507,7 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(depth_prev_);
   add(gi_weight_);
   add(vehicle_table_);
+  add(car_sun_lookup_);
   return bytes;
 }
 
@@ -1501,6 +1531,7 @@ void AmbientOcclusion::ReleaseImages() {
   passes_->ReleaseImage(weight_);
   ReleaseGiImages();
   passes_->ReleaseImage(vehicle_table_);
+  passes_->ReleaseImage(car_sun_lookup_);
   history_valid_ = false;
   history_cut_ = false;
   ++generation_;
@@ -1857,6 +1888,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
                                  plume::RenderCommandList* list, bool upscaler_running) {
   if (contact_mode_ != Mode::kOff || gi_active_) {
     NoteMaskResolve(record);  // the bounce light reads the sun's shadow mask too (the albedo estimate)
+    NoteCarSunResolve(record);  // and takes a car's sun from the car sun image, as the contact shadows do
   }
   if (!summary.depth_copy) {
     ++other_resolves_;
@@ -1949,11 +1981,13 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
   }
   if (contact) {
-    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewCarMap);
+    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewCarSun);
     if (contact_view != 0) {
-      // instead of the occlusion's; 5 (the car's shadow map's term) is shown as the contact visibility, which the march then holds
+      // instead of the occlusion's; 5 (the car's shadow map's term) is shown as the contact visibility, which the march then holds; 6 (the sun's
+      // visibility the share took) is the apply's view 13
       plan.contact.car_map_view = contact_view == kContactViewCarMap;
-      plan.view = kContactViewBase + uint32_t(plan.contact.car_map_view ? 2 : contact_view);
+      plan.view = contact_view == kContactViewCarSun ? kVehicleSunView
+                                                     : kContactViewBase + uint32_t(plan.contact.car_map_view ? 2 : contact_view);
     }
   }
   PlanGi(&plan);
@@ -2945,12 +2979,35 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     mask_slot = FindMaskSlot();  // the bounce light's albedo estimate takes the sun's shadow into account
   }
   const bool contact_applied = contact_slot != kNoSlot;
+  // The game's car sun image, for the apply's vehicle pixels (contact_trace.h "a car's own sun visibility"): the image's slot and the lookup that takes a
+  // view-space point to its place in it. A frame without the image (night, rain, 6 h, 18 h), without a pose or with the setting at 0 leaves
+  // kNoSlot, and a vehicle's pixel takes a sun visibility of 1.
+  uint32_t car_sun_slot = kNoSlot;
+  uint32_t car_sun_lookup_slot = kNoSlot;
+  if (plan.apply && (contact_applied || plan.gi.apply) && REXCVAR_GET(mcla_gpu_contact_shadows_car_sun) != 0) {
+    car_sun_slot = FindCarSunSlot();
+    float lookup_columns[12];
+    if (car_sun_slot != kNoSlot && CarSunLookupColumns(lookup_columns)) {
+      car_sun_lookup_slot = RecordCarSunLookup(list, lookup_columns);
+    }
+    if (car_sun_lookup_slot == kNoSlot) {
+      car_sun_slot = kNoSlot;
+    }
+  }
   bool applied = false;
   if (plan.apply) {
     // The apply into the scene colour: the occlusion's term and the contact shadows' in one factor.
     push = base;
     push.slots[2] = ao_slot;
     push.slots[3] = depth_[0].slot;
+    // The apply's slots.x and slots.y: the depth plane's slot and the host sample as the base push has them, and in their high halves the car sun
+    // image's slot and its lookup's (hlsl/ao_apply_ps.hlsl ApplyLoadStored).
+    push.slots[0] = base.slots[0] & 0xFFFFu;
+    push.slots[1] = base.slots[1] & 0xFFu;
+    if (car_sun_slot != kNoSlot) {
+      push.slots[0] |= car_sun_slot << kCarSunSlotShift;
+      push.slots[1] |= kCarSunOnFlag | (car_sun_lookup_slot << kCarSunSlotShift);
+    }
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);
     push.sizes[2] = float(plan.ao[0]);
@@ -3056,6 +3113,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   }
   if (contact_applied) {
     contact_mask_ = mask_slot != kNoSlot;
+    ++(car_sun_slot != kNoSlot ? car_sun_frames_ : car_sun_none_frames_);
+    if (car_sun_slot != kNoSlot && !car_sun_logged_) {
+      car_sun_logged_ = true;
+      REXLOG_INFO("[gpu] contact shadows: a vehicle's pixel takes the sun's visibility from the game's car sun image ({}x{} texels at page {:#x}, the 256 m "
+                  "top-down image every car shader reads; the lookup from {} pose; mcla_gpu_contact_shadows_car_sun 1, view 6 shows it): a car in a "
+                  "building's shade gets no sun contact shadow; a frame without the image takes 1 (reported once)",
+                  car_sun_key_.width, car_sun_key_.height, car_sun_key_.base_page << 12,
+                  vs_pose_trusted_ && vs_view_inverse_draws_ != 0 ? "the frame's own" : "the last frame's");
+    }
     if (contact_runs_ == 0) {
       REXLOG_INFO("[gpu] contact shadows: the first frame: {} at {}x{} (images {}x{}), {} steps over "
                   "{:.2f} m (thickness {:.2f} m, full over the first {:.0f}% of the ray), strength "
@@ -3402,6 +3468,122 @@ uint32_t AmbientOcclusion::FindMaskSlot() {
   mask_dims_[0] = product->scale.Edge(mask_key_.width);
   mask_dims_[1] = product->scale.Edge(mask_key_.height);
   return slot == kInvalidBindlessSlot ? kNoSlot : slot;
+}
+
+void AmbientOcclusion::NoteCarSunResolve(const ResolveRecord& record) {
+  // A colour copy (not a depth one, not a clear alone) into the car sun image's page, as the car shaders fetch it: k_8_8_8_8, square, level 0. The
+  // same page holds the night's k_8 512x512 shadow (another format: not this) and, in a frame without either, the last frame's content.
+  const uint32_t source = record.resolve_flags & 7;
+  if (source >= 4 || (record.resolve_flags & 0x2000) != 0 || record.dest_level != 0 ||
+      !(record.flags & kEventHasDest) || (record.flags & kEventDestUnreadable)) {
+    return;
+  }
+  uint32_t dwords[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    dwords[i] = LoadBe32(record.dest_header + guest::kTextureFetchOffset + 4 * i);
+  }
+  const TextureFetch dest = ReadTextureFetch(dwords);
+  if (!dest.is_texture || dest.key.base_page != kCarSunPage || dest.key.format != kTextureFormat8888 ||
+      dest.key.width != dest.key.height || dest.key.width < kCarSunMinSize || dest.key.width > kCarSunMaxSize) {
+    return;
+  }
+  car_sun_key_ = dest.key;
+  car_sun_frame_ = frame_;
+}
+
+uint32_t AmbientOcclusion::FindCarSunSlot() {
+  // As FindMaskSlot: only a resolve of this frame made the image; at night, at 6 h and 18 h and in rain the page holds something else or the last
+  // frame's content, and a vehicle's pixel then takes a visibility of 1.
+  if (!resolve_ || car_sun_frame_ != frame_) {
+    return kNoSlot;
+  }
+  ResolveCache::Product* product = resolve_->Find(car_sun_key_, car_sun_key_.base_page);
+  if (!product || !product->texture || product->depth_source ||
+      product->layout != plume::RenderTextureLayout::SHADER_READ) {
+    if (!car_sun_why_logged_) {
+      car_sun_why_logged_ = true;
+      REXLOG_INFO("[gpu] contact shadows: a resolve into the car sun image's page came this frame but the "
+                  "product is {}: no car sun image, a car's sun visibility is 1 (reported once)",
+                  !product ? "not found"
+                           : (!product->texture ? "without a texture"
+                              : (product->depth_source ? "a depth copy"
+                                                       : "not in the shader-read layout")));
+    }
+    return kNoSlot;
+  }
+  const uint32_t slot =
+      product->views.Slot(*device_, *heap_, *product->texture, product->format,
+                          car_sun_key_.levels(), format::kHostSwizzleRGBA, "ao car sun image view");
+  return slot == kInvalidBindlessSlot ? kNoSlot : slot;
+}
+
+bool AmbientOcclusion::CarSunLookupColumns(float columns[12]) const {
+  // The pose the world's x and z of a pixel are worked out with: the frame's own view inverse when the vertex constants of this frame's draws are trusted
+  // for it (FrameMotion's rule), else the last frame's camera (previous_). The game's own lookup truncates the camera's position of this frame, so
+  // the frame's own pose is worth having: a metre of error is a texel of the image.
+  temporal::Mat4 world = previous_.view_inverse;
+  if (vs_pose_trusted_ && vs_view_inverse_draws_ != 0) {
+    temporal::Mat4 own;
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        own.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+      }
+    }
+    if (PoseSane(own)) {
+      world = own;
+    }
+  }
+  if (!PoseSane(world)) {
+    return false;
+  }
+  // right = row 0, up = row 1, forward = minus row 2, position = row 3 (temporal_camera.h).
+  const double right[3] = {world.m[0][0], world.m[0][1], world.m[0][2]};
+  const double up[3] = {world.m[1][0], world.m[1][1], world.m[1][2]};
+  const double forward[3] = {-world.m[2][0], -world.m[2][1], -world.m[2][2]};
+  const double position[3] = {world.m[3][0], world.m[3][1], world.m[3][2]};
+  const contact_trace::CarSunLookup lookup = contact_trace::MakeCarSunLookup(right, up, forward, position);
+  const float values[12] = {lookup.ax.x, lookup.ax.y, lookup.ax.z, lookup.ox, lookup.az.x, lookup.az.y,
+                            lookup.az.z, lookup.oz,   0.0f,        0.0f,      0.0f,        0.0f};
+  for (int i = 0; i < 12; ++i) {
+    if (!std::isfinite(values[i])) {
+      return false;
+    }
+    columns[i] = values[i];
+  }
+  return true;
+}
+
+uint32_t AmbientOcclusion::RecordCarSunLookup(plume::RenderCommandList* list, const float columns[12]) {
+  // The vehicle table's pass (hlsl/temporal_vehicle_table_ps.hlsl: texels 0 to 2 the three push columns, texel 3 a flag) into an image of its own, one
+  // draw over the four texels; the same sequence as RecordVehicleTable (host pass layout, a 4 x 1 viewport and scissor, a clear every frame).
+  plume::RenderPipeline* pipeline = Pipeline(kVVehicleTable);
+  if (!pipeline ||
+      !passes_->EnsureImage(car_sun_lookup_, kVehicleTableWidth, 1, kVehicleTableFormat, "ao car sun lookup")) {
+    return kNoSlot;
+  }
+  HostImage& image = car_sun_lookup_;
+  if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image.texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image.framebuffer.get());
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  passes_->Bind(list);
+  list->setPipeline(pipeline);
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(kVehicleTableWidth), 1.0f};
+  list->setViewports(&viewport, 1);
+  const plume::RenderRect scissor(0, 0, int32_t(kVehicleTableWidth), 1);
+  list->setScissors(&scissor, 1);
+  list->setGraphicsPushConstants(0, columns, 0, 12 * sizeof(float));
+  list->drawInstanced(3, 1, 0, 0);
+  list->setFramebuffer(nullptr);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(image.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  image.layout = plume::RenderTextureLayout::SHADER_READ;
+  return image.slot == kInvalidBindlessSlot ? kNoSlot : image.slot;
 }
 
 uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const Plan& plan,
@@ -4378,6 +4560,10 @@ void AmbientOcclusion::Census() {
                 contact_gate_wet_, contact_strength_,
                 mask_frame_ == frame_ ? "came" : "did not come", contact_mask_frames_,
                 contact_no_mask_frames_, contact_runs_);
+    REXLOG_INFO("{}   contact shadows on cars: a vehicle's pixel takes the sun's visibility from the game's car sun image (a resolve into its page {} this "
+                "frame; mcla_gpu_contact_shadows_car_sun {}); frames so far: {} with the image, {} with 1",
+                kPrefix, car_sun_frame_ == frame_ ? "came" : "did not come", REXCVAR_GET(mcla_gpu_contact_shadows_car_sun), car_sun_frames_,
+                car_sun_none_frames_);
   }
   if (gi_active_ || gi_runs_ != 0) {
     REXLOG_INFO("{}   bounce light: {} (mcla_gpu_ssgi), the test {} (mcla_gpu_ssgi_test), frames recorded "
