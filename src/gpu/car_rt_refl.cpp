@@ -66,6 +66,17 @@ REXCVAR_DEFINE_INT32(
     .debug_only()
     .range(1, 31)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_car_chrome_rt_others, true, "MCLA/GPU",
+    "Diagnostic: where the graphics card can ray trace and the car self-reflection runs, the chrome of the OTHER cars (opponents, traffic: the tailpipes, "
+    "badges and trim) is darkened under their own bodies from their real shape, as your own car's chrome is (mcla_gpu_car_chrome_occlusion): two "
+    "short rays a chrome pixel against the cars in the ray traced scene (mcla_gpu_car_rt_cars), traced where the picture of the frame before shows "
+    "the chrome. Off: their chrome takes the marched version (the picture of the car of the frame before), as before this. Needs "
+    "mcla_gpu_car_chrome_occlusion and the other cars in the scene. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// pipelines.cpp: the chrome variant's own switch (the pass leaves another car's chrome alone where the variant is not drawn).
+REXCVAR_DECLARE(bool, mcla_gpu_car_chrome_occlusion);
 
 namespace mcla::gpu {
 
@@ -354,10 +365,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     }
   }
 
+  // Another car's chrome (car_chrome_rt_rules.h): found by the primary ray too, and its probes traced, where the chrome variant is drawn at all and the switch for
+  // this is on; else the primary ray is the player's body alone, as it was (no instance of the scene has the chrome's bit then that a ray here would take).
+  const bool chrome_others = REXCVAR_GET(mcla_gpu_car_chrome_occlusion) && REXCVAR_GET(mcla_gpu_car_chrome_rt_others);
   Push push = {};
   push.slots[0] = history.slot;
   push.slots[1] = parts;
-  push.slots[2] = car_rt_refl::kPrimaryParts;
+  push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   push.slots[3] = info.pattern_phase & 7u;
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
@@ -371,6 +385,9 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.tune[1] = car_rt_refl::kHiddenWeight;
   push.tune[2] = car_rt_refl::kFadeFrom;
   push.tune[3] = tan_half;
+  push.up[0] = view.up[0];
+  push.up[1] = view.up[1];
+  push.up[2] = view.up[2];
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -435,10 +452,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
-                "parts {}, {} rays over a cone of {} degrees{}",
+                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
-                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "");
+                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
+                chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version");
   }
   return true;
 }

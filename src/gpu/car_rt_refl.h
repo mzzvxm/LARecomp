@@ -32,6 +32,12 @@
 // not a paint constant). mcla_gpu_car_rt_cars 0 takes them out of the scene (the player's car alone, as before), mcla_gpu_car_selfrefl_rt_parts 7 leaves
 // them in the scene and out of the reflection.
 //
+// OTHER CARS' CHROME (car_chrome_rt_rules.h, which has the design, the cost and the test plan): the primary ray of the pass also finds the chrome parts of the other
+// cars (tailpipes, badges, trim: the instances of their draws of xChrome::PS_Chrome carry the extra bit CAR_RT_MASK_OTHER_CHROME) and for those texels the pass traces
+// the chrome variant's two short probes as rays, writing a texel of a kind of its own (alpha 1 + the reflection probe's weight, red -(1 + the sky probe's weight)) that
+// the chrome variant (version 2) reads in place of its march. The paint never takes the other cars' own paint from here: it has no data there, as before.
+// mcla_gpu_car_chrome_rt_others (debug) is the A/B; it needs mcla_gpu_car_chrome_occlusion. Nothing changes for the player's own car, nor on a device that cannot trace.
+//
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a
 // vehicle's pixel casts a primary ray from the camera against the car's opaque parts in a narrow window around the pixel's distance: a hit
@@ -193,14 +199,15 @@ class CarRtRefl {
   std::string CensusText();
 
  private:
-  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 64 bytes.
+  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 80 bytes.
   struct Push {
     uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, the cone pattern's phase
     float image[4];     // the image's size, the picture's size
     float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length
     float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
+    float up[4];        // the world's up in view space (CarRtView::up: the chrome's sky probe), w 0
   };
-  static_assert(sizeof(Push) == 64);
+  static_assert(sizeof(Push) == 80);
   // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
   struct DenoisePush {
     uint32_t slots[4];  // history slot, the image to filter, the aux image, the pass (0: taps one texel apart, 1: two)

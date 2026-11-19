@@ -37,6 +37,12 @@
 // vehicle texels around the car's body centre (OtherCarColour, the car's record in the instances' table), made dark by the same shade. A car whose
 // colour is not known (its centre is off the picture, or hidden) makes a hidden hit a miss: the environment stays there.
 //
+// ANOTHER CAR'S CHROME (car_chrome_rt_rules.h): the primary ray's mask (the push's z) also has CAR_RT_MASK_OTHER_CHROME, the bit of the instances of the other cars'
+// draws of the chrome's shader (tailpipes, badges, trim). A texel whose primary hit is one of those is a pixel of that chrome: the pass traces the chrome variant's two
+// probes for it as rays (ChromeTexel: the mirror ray 0.25 m, four sky rays 0.20 m, against every part of another car) and writes a texel of a kind of its own: alpha 1 + the
+// reflection probe's weight, the colour's red -(1 + the sky probe's weight) (no colour is negative: that is how the chrome variant tells it from the player's texels), and
+// an aux texel with no aux (so that the denoise copies it as it is). The paint of the other car (mask 0x10 alone) is not found by the primary ray: no data, its march.
+//
 // A SECOND OUTPUT, for the denoise that follows (car_rt_refl_denoise_cs.hlsl, car_rt_refl_rules.h "The denoise"): g_aux (RGBA8_UNORM, the same
 // size) holds, for a texel with data, x the hit distance (sqrt of the mean over the rays that hit / the ray's length; 0 where none did), y the
 // instance of the primary ray's hit / 255, z N.V of the surface, w 1; all 0 where the texel has no data.
@@ -63,7 +69,8 @@ RWTexture2D<float4> g_aux : register(u1, space1);
 
 struct CarRtReflPush
 {
-    // x the history image's bindless slot, y the reflection ray's parts (CAR_RT_MASK_*), z the primary ray's parts, w the pattern's phase
+    // x the history image's bindless slot, y the reflection ray's parts (CAR_RT_MASK_*), z the primary ray's parts (the player's body, and another car's chrome),
+    // w the pattern's phase
     // (0, or 0 .. 7 by the frame where a temporal upscaler runs)
     uint4 slots;
     // xy the image's size in texels, zw the render size in pixels
@@ -74,6 +81,8 @@ struct CarRtReflPush
     // x the shade (the surface's own colour in shade, 0.4), y the weight of a hit the history cannot show (0.85), z the share of the ray's
     // length where the fade starts (0.6), w the tangent of the cone's half angle (0: a mirror, one ray)
     float4 tune;
+    // xyz the WORLD's up in view space (unit: the chrome's sky probe looks that way; the camera pitches), w 0
+    float4 up;
 };
 
 #ifdef __spirv__
@@ -96,6 +105,16 @@ static const float kOtherCarMaxStep = 24.0;  // texels between those taps, at mo
 static const float kOtherCarEdge = 0.97;     // its centre is moved into this share of the picture
 static const float kOtherCarMinShare = 0.15; // the share of the taps' weights under which the car has no colour
 static const float kTwoPi = 6.283185307179586;
+// Another car's chrome (car_chrome_rt_rules.h: the same numbers; car_chrome_rules.h for the march's)
+static const float kChromeReflectReach = 0.25;   // m: the mirror ray (the march's reflection probe)
+static const float kChromeSkyReach = 0.2;        // m: the sky rays (the march's sky probe)
+static const float kChromeFadeFrom = 0.3;        // the share of the reach up to which a hit weighs 1
+static const float kChromeFadeTo = 0.9;          // ... and from which it weighs 0
+static const int kChromeSkyRays = 4;             // the centre ray and three on a cone around it
+static const float kChromeSkySpread = 0.6;       // tan of the half angle of that cone
+static const float kChromeSkyUpMin = 0.2;        // |n + up| under this: the centre ray takes up
+static const float kChromeLift = 0.002;          // m: the rays start this far off the surface ...
+static const float kChromeLiftPerMetre = 0.0005; // ... plus this a metre of the point's view distance
 
 // ---------------------------------------------------------------------------------------------------------------------
 // the aux image (EncodeHitDistance, EncodeInstance of car_rt_refl_rules.h)
@@ -329,6 +348,83 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// another car's chrome (car_chrome_rt_rules.h)
+// ---------------------------------------------------------------------------------------------------------------------
+
+// One probe of the chrome's: the weight (0 a miss, up to 1) of the first hit within `reach` against every part of another car. A hit on the point's own triangle,
+// or on its own instance on a surface that faces the way the point's normal does, is the panel itself (the ray ran under its own surface): a miss, as TraceRay.
+float ChromeProbe(float3 origin, float3 direction, float reach, uint originInstance, uint originPrimitive, float3 originNormal)
+{
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = direction;
+    ray.TMin = 0.0;
+    ray.TMax = reach;
+    RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
+    query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, CAR_RT_MASK_OTHERS, ray);
+    while (query.Proceed())
+    {
+    }
+    if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    {
+        return 0.0;
+    }
+    const uint instance = query.CommittedInstanceIndex();
+    const uint primitive = query.CommittedPrimitiveIndex();
+    const float3 hitNormal = CarRtHitNormal(instance, primitive, query.CommittedTriangleBarycentrics(), query.CommittedObjectToWorld3x4(), direction);
+    if (dot(hitNormal, hitNormal) > 0.25 && instance == originInstance && (primitive == originPrimitive || dot(hitNormal, originNormal) > kSelfCos))
+    {
+        return 0.0;
+    }
+    return 1.0 - smoothstep(kChromeFadeFrom * reach, kChromeFadeTo * reach, query.CommittedRayT());
+}
+
+// The sky probe: the share of kChromeSkyRays rays that hit (each weighted by its distance): the centre ray along normalize(n + up) (up if the normal points straight
+// down), and three on a cone of tan kChromeSkySpread around it 120 degrees apart, the cone's frame from the world's up (the x axis where the centre is within 25
+// degrees of it), each kept at least kMinAbove above the surface's tangent plane (as ConeDirection).
+float ChromeSky(float3 origin, float3 normal, float3 up, uint instance, uint primitive)
+{
+    float3 centre = normal + up;
+    const float centreLength = length(centre);
+    centre = centreLength < kChromeSkyUpMin ? up : centre / centreLength;
+    const float3 helper = abs(dot(centre, up)) < 0.9 ? up : float3(1.0, 0.0, 0.0);
+    const float3 t = normalize(cross(helper, centre));
+    const float3 b = cross(centre, t);
+    float sum = 0.0;
+    [unroll]
+    for (int k = 0; k < kChromeSkyRays; ++k)
+    {
+        float3 d = centre;
+        if (k > 0)
+        {
+            const float angle = kTwoPi * float(k - 1) / 3.0;
+            d = normalize(centre + (t * cos(angle) + b * sin(angle)) * kChromeSkySpread);
+        }
+        const float above = dot(d, normal);
+        if (above < kMinAbove)
+        {
+            d = normalize(d + (kMinAbove - above) * normal);
+        }
+        sum += ChromeProbe(origin, d, kChromeSkyReach, instance, primitive, normal);
+    }
+    return sum / float(kChromeSkyRays);
+}
+
+// The texel of a pixel of another car's chrome, found by the primary ray at `hitPoint` (view space) with the mesh's unit normal facing the camera and N.V `nv`: alpha
+// 1 + the mirror ray's weight (not cast at a grazing view: the paint's and the march's rule), the red -(1 + the sky probe's weight).
+float4 ChromeTexel(float3 hitPoint, float3 viewDirection, float3 normal, float nv, uint instance, uint primitive)
+{
+    const float3 origin = hitPoint + normal * (kChromeLift + kChromeLiftPerMetre * hitPoint.z);
+    float reflection = 0.0;
+    if (nv >= kMinNv)
+    {
+        reflection = ChromeProbe(origin, reflect(viewDirection, normal), kChromeReflectReach, instance, primitive, normal);
+    }
+    const float sky = ChromeSky(origin, normal, g_push.up.xyz, instance, primitive);
+    return float4(-(1.0 + sky), 0.0, 0.0, 1.0 + reflection);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // one texel
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -374,6 +470,13 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     if (abs(hitT - t) > Tolerance(t, pixelMeters, 0.75, nv))
     {
         return float4(0.0, 0.0, 0.0, kNoData);  // a surface of the car, but not the one the picture shows here
+    }
+    // Another car's chrome (the primary ray's mask has the bit of its instances): the chrome's two probes, in a texel of a kind of its own and no aux for the denoise
+    // (w 0: it copies the texel as it is; the instance 255 is no instance of the player's car, so no tap of the player's takes it for its own).
+    if ((CarRtInstanceMask(CarRtLoadInstance(primaryInstance)) & CAR_RT_MASK_OTHER_CHROME) != 0u)
+    {
+        aux = float4(0.0, 1.0, 0.0, 0.0);
+        return ChromeTexel(direction * hitT, viewDirection, normal, nv, primaryInstance, primaryPrimitive);
     }
     // the texel has data from here on: what the denoise needs to know about it (its hit distance below, where a ray hit)
     aux = float4(0.0, EncodeInstance(primaryInstance), saturate(nv), 1.0);
