@@ -74,3 +74,7 @@ void RpcOnDistrictChanged(int district_idx);
 // presence can name the race being run and, in a series or tournament, how the
 // player stands in it. Self-throttled; a no-op outside a race.
 void RpcOnRaceTick();
+
+// True while the game's own state machine is in its Cruising state (free roam, the last "Cruising" / "Racing" / "Garage" / "Loading" /
+// "Intro" activation: a pause menu in free roam is still free roam). The traffic probe's spawn test asks it.
+bool RpcInFreeRoam();

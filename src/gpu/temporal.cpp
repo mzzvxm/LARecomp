@@ -13,6 +13,7 @@
 #include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "scene_noise.h"
 #include "constants.h"
 #include "device.h"
 #include "format.h"
@@ -1606,7 +1607,8 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
                        ? double(last_output_size_[0]) / double(last_render_size_[0])
                        : 1.0;
     frame_.phase_count = JitterPhases(frame_.ratio, ready && backend ? backend->JitterPhaseCount() : 0u);
-    frame_.jitter_index = jitter_index_ % frame_.phase_count;
+    // While a scene runs the sequence follows the scene's update number (scene_noise.h): the same scene frame has the same jitter in every run.
+    frame_.jitter_index = static_cast<uint32_t>(scene_noise::Active() ? scene_noise::Index(jitter_index_) % frame_.phase_count : jitter_index_ % frame_.phase_count);
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
     // While the history restarts in every frame the upscaler cannot take the jitter out: held at zero (temporal_menu.h).

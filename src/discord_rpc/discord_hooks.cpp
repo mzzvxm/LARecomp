@@ -553,3 +553,13 @@ void RpcOnRaceTick() {
   ApplyAreaPresence();
 #endif
 }
+
+// True while the game's state machine is in "Cruising" (free roam): the last of the "Cruising" / "Racing" / "Garage" / "Loading" / "Intro"
+// activations RpcHook_StateActivate saw. Read by the traffic probe's spawn test (traffic_probe.cpp), which makes its one call in free roam only.
+bool RpcInFreeRoam() {
+#ifndef REXGLUE_HAS_XEO3_TARGET
+  return g_activity == LarecompDiscordState::FreeRoam;
+#else
+  return false;
+#endif
+}

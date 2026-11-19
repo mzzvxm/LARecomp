@@ -43,6 +43,7 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "scene_noise.h"
 #include "shafts.h"
 #include "sync_builds.h"
 #include "temporal.h"
@@ -821,6 +822,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   watch::BeginFrame(frame_serial_);
+  if (scene_noise::BeginFrame()) {
+    REXLOG_INFO("[gpu] scene noise: the first guest frame of a scene carries update {} (renderer frame {}): the noise follows the scene's updates from here", scene_noise::CurrentUpdate(), frame_serial_);
+  }
   const uint64_t targets_before = edram_->change_serial();
   if (temporal_) {
     // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
@@ -2249,7 +2253,7 @@ bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedD
   // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
   // averages it out); without one the pattern stays where it is.
   const shadow_filter::ShadowFilterConstants block =
-      shadow_filter::CurrentConstants(UpscalerRunning(), frame_serial_);
+      shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::Index(frame_serial_));
   if (last_shadow_span_ && std::memcmp(&last_shadow_shared_, &shared, sizeof(shared)) == 0 &&
       std::memcmp(&last_shadow_block_, &block, sizeof(block)) == 0) {
     d.shared_constants = last_shadow_span_;
@@ -3295,6 +3299,9 @@ void Scene::OnPresent() {
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;
+  // The next list the renderer opens is the frame that the next guest swap closes (scene_noise.h: the tag is found by the present records executed, not by the
+  // lists opened: an idle present has no list and a flush opens a second one).
+  scene_noise::OnPresent();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }

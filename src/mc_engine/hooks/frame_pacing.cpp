@@ -84,6 +84,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/scene_noise.h"
 #endif
 
 
@@ -358,6 +359,11 @@ extern "C" REX_FUNC(rex_sub_82305B38) {
     // Capture mode: the frame is stamped with the update that just ran, and whether it belongs to the take, here, where the render thread is
     // idle: the swap that follows takes the stamp, so a frame's identity cannot be late or early whatever the threads do.
     mc::cinematic::CaptureOnHandOver();
+#if defined(LARECOMP_HAS_GPU)
+    // A running scene's repeatable noise (gpu/scene_noise.h): the frame is tagged with the scene update that just ran, here, for the same reason: the swap that
+    // follows is too late (the renderer opens the frame's list at its first draw) and counting the renderer's lists drifts (idle presents, flushes).
+    mcla::gpu::scene_noise::OnHandOver();
+#endif
     __imp__rex_sub_82305B38(ctx, base);
 }
 

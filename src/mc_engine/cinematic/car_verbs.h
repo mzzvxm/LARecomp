@@ -4,9 +4,11 @@
 // nothing of the game, so cars_test.cpp builds it on its own, and scene.cpp uses it to report a bad car line with its line number
 // when the file is parsed. Header only (inline), so that every program that links scene.cpp can do so without another source.
 //
-//   car <id> spawn <model> at <x,y,z> [heading <deg>]      a car of that model (the game's vehicle name, vp_lam_murcielago_06)
+//   car <id> spawn <model> at <x,y,z> [heading <deg>] [paint <n>]      a car of that model (the game's vehicle name, vp_lam_murcielago_06)
 //   car <id> spawn profile <N> at <x,y,z> [heading <deg>]  a car from garage slot N of the player's save, dressed as the owner left it
-//   car <id> delete                                        the car goes (every car a scene spawned goes when it ends)
+//   car <id> ambient <model> at <x,y,z> [heading <deg>] [paint <n>]    a REAL ambient (traffic-class) car, placed through AmbientMgr_AddAmbientToLayout (ambient_car.h);
+//                                                          it stands still where it is put, with no route, and goes when the scene ends
+//   car <id> delete                                        the car goes (every car a scene spawned or placed goes when it ends)
 //   car player profile <N>                                 the player's own car becomes garage slot N (the old one comes back at the end)
 //   car <id> path <route file> [speed <x>] [mode brain|kinematic]   the car drives a route (work package M4c; path_follow.h has the file)
 //   car <id> stop                                          the car stops where it is (a path ends; the car stays)
@@ -20,6 +22,18 @@
 // slash). `speed` is metres a second (`speed 12`) or a factor of the route's own speeds (`speed x1.5`); without it the route's own
 // speeds are used. `mode kinematic` (the default) puts the car on the route at every update, exactly; `mode brain` hands the route to the
 // game's own AI driver as destinations and leaves the driving to it.
+//
+// `ambient` takes a model name only (no garage slot): the name is one of the game's ambient types, up to 31 characters (the layout item's
+// name buffer), and the game says whether it knows it when the car is placed. Its `heading` is the same scene heading as a spawned car's;
+// the layout's own angle is 180 degrees from it (LayoutHeadingDeg).
+//
+// `paint <n>` (also `colour <n>` and `color <n>`; n a whole number from 0 to 9999) is the car's PAINT. It is not a colour name: it is a
+// number that always gives the same look to the same model, so two runs of a scene (or two builds) show the same car. Without it a scene
+// car takes the paint its place in the scene file gives it (the first ambient car 0, the next 1, and so on: scene_seed.h, DefaultPaint),
+// never a random one. What it does in the game: for an ambient car it replaces the random seed the game gives the car's own generator
+// when it makes the car (scene_seed.h has the reading of the game's code and the CHECK); for a racer-class car (`spawn <model>`) the
+// game's generators are held while the car is loaded. A garage car (`spawn profile N`) is dressed as the owner left it: `paint` there
+// is an error.
 //
 // Any other verb is not this file's: ParseCarCommand says kOtherVerb and the scene parser lets it through (the runner warns).
 //
@@ -35,7 +49,7 @@
 
 namespace mc::cinematic {
 
-enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile, kPath, kStop };
+enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile, kPath, kStop, kAmbient };
 enum class PathMode : uint8_t { kKinematic, kBrain };
 enum class CarSource : uint8_t { kModel, kGarage };  // spawn: a vehicle name, or a garage slot
 
@@ -52,6 +66,10 @@ struct CarCommand {
     std::string route;                  // the route file as written
     SpeedSpec speed;                    // how fast
     PathMode mode = PathMode::kKinematic;
+    // spawn, ambient: the paint (see the header), from `paint <n>`; without it the Director gives the car the next default one (paint_default).
+    bool has_paint = false;
+    int paint = 0;
+    bool paint_default = false;  // set by the Director: the paint was not written in the scene
 };
 
 enum class CarParse : uint8_t { kOk, kOtherVerb, kError };
@@ -70,6 +88,18 @@ inline double NativeHeadingDeg(double scene_heading) {
     return NormalizeDegrees(scene_heading + 180.0);
 }
 
+// The angle AmbientMgr_AddAmbientToLayout takes (the layout item stores it as radians in +132) for a scene heading: the same angle as Racer_Teleport's,
+// that is 180 degrees from the scene's. The traffic probe's run (TRAFFICPROBE.txt): a car placed with the angle 272 stood at the scene heading 92, the
+// heading the player's own car had when the angle was taken from it (back row (sin a, 0, cos a), nose at a - 180).
+inline double LayoutHeadingDeg(double scene_heading) {
+    return NativeHeadingDeg(scene_heading);
+}
+
+// The scene heading of a car the layout placed with the angle `layout_heading`.
+inline double SceneHeadingFromLayoutDeg(double layout_heading) {
+    return NormalizeDegrees(layout_heading - 180.0);
+}
+
 // The scene heading of a car whose nose points along (forward_x, forward_z): atan2(x, z), in [0, 360).
 inline double SceneHeadingDeg(double forward_x, double forward_z) {
     return NormalizeDegrees(std::atan2(forward_x, forward_z) * 180.0 / 3.14159265358979323846);
@@ -79,7 +109,9 @@ namespace car_verbs_detail {
 
 constexpr double kMaxCoordinate = 100000.0;
 constexpr int kMaxSlot = 999;
+constexpr int kMaxPaint = 9999;
 constexpr size_t kMaxModelChars = 47;  // the game keeps a vehicle name in a 64-byte buffer
+constexpr size_t kMaxAmbientModelChars = 31;  // the layout item's name buffer is 32 bytes (sub_826E1418: snprintf(item + 40, 32, "%s", name))
 
 inline std::string Lower(const std::string& s) {
     std::string out = s;
@@ -106,6 +138,18 @@ inline bool ParseSlot(const std::string& s, int* v) {
         x = x * 10 + (c - '0');
     }
     if (x > kMaxSlot) return false;
+    *v = x;
+    return true;
+}
+
+inline bool ParsePaint(const std::string& s, int* v) {
+    if (s.empty() || s.size() > 4) return false;
+    int x = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;
+        x = x * 10 + (c - '0');
+    }
+    if (x > kMaxPaint) return false;
     *v = x;
     return true;
 }
@@ -139,19 +183,32 @@ inline std::string Num(double v) {
     return buf;
 }
 
-constexpr const char* kSpawnUsage = "car <id> spawn <model|profile N> at <x,y,z> [heading <deg>]";
+constexpr const char* kSpawnUsage = "car <id> spawn <model|profile N> at <x,y,z> [heading <deg>] [paint <n>]";
+constexpr const char* kAmbientUsage = "car <id> ambient <model> at <x,y,z> [heading <deg>] [paint <n>]";
 
 inline CarParse Fail(std::string* error, const std::string& message) {
     *error = message;
     return CarParse::kError;
 }
 
-inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, std::string* error) {
-    out->verb = CarVerb::kSpawn;
-    if (w.size() < 3) return Fail(error, std::string("spawn what? ") + kSpawnUsage);
+// `ambient` true: the words of `car <id> ambient ...`: a model only (an ambient type of the game), the same `at` and `heading`.
+inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, std::string* error, bool ambient = false) {
+    const char* verb = ambient ? "ambient" : "spawn";
+    const char* usage = ambient ? kAmbientUsage : kSpawnUsage;
+    out->verb = ambient ? CarVerb::kAmbient : CarVerb::kSpawn;
+    if (w.size() < 3) return Fail(error, std::string(ambient ? "ambient what? " : "spawn what? ") + usage);
     size_t i = 3;
     const std::string what = Lower(w[2]);
-    if (what == "profile") {
+    if (ambient) {
+        if (what == "profile" || what.find(':') != std::string::npos) {
+            return Fail(error, "'" + w[2] + "' is not an ambient type: an ambient car is made from a vehicle name of the game's traffic list (va_gmc_yukon_05), not a garage car");
+        }
+        if (!IsModelName(what) || what.size() > kMaxAmbientModelChars) {
+            return Fail(error, "'" + w[2] + "' is not an ambient type name (lower case letters, digits and _ - ., up to 31)");
+        }
+        out->source = CarSource::kModel;
+        out->model = what;
+    } else if (what == "profile") {
         if (w.size() < 4 || !ParseSlot(w[3], &out->slot)) {
             return Fail(error, "spawn profile needs a garage slot, a whole number from 0 (car <id> spawn profile 2 at ...)");
         }
@@ -173,7 +230,7 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
     while (i < w.size()) {
         const std::string key = Lower(w[i]);
         if (key == "at") {
-            if (have_at) return Fail(error, "spawn: a second 'at'");
+            if (have_at) return Fail(error, std::string(verb) + ": a second 'at'");
             if (i + 1 >= w.size()) return Fail(error, "at needs x,y,z");
             if (w[i + 1].find(',') != std::string::npos) {
                 if (!ParseTriple(w[i + 1], out->position)) return Fail(error, "bad position '" + w[i + 1] + "' (x,y,z: three numbers)");
@@ -192,17 +249,27 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
             }
             have_at = true;
         } else if (key == "heading") {
-            if (out->has_heading) return Fail(error, "spawn: a second 'heading'");
+            if (out->has_heading) return Fail(error, std::string(verb) + ": a second 'heading'");
             double h = 0.0;
             if (i + 1 >= w.size() || !ParseNumber(w[i + 1], &h)) return Fail(error, "heading needs degrees (heading 270)");
             out->heading = NormalizeDegrees(h);
             out->has_heading = true;
             i += 2;
+        } else if (key == "paint" || key == "colour" || key == "color") {
+            if (out->has_paint) return Fail(error, std::string(verb) + ": a second 'paint'");
+            if (out->source == CarSource::kGarage) {
+                return Fail(error, "a garage car (spawn profile N) keeps the paint the owner gave it: paint is for a model name or an ambient car");
+            }
+            int p = 0;
+            if (i + 1 >= w.size() || !ParsePaint(w[i + 1], &p)) return Fail(error, "paint needs a whole number from 0 to 9999 (paint 3)");
+            out->paint = p;
+            out->has_paint = true;
+            i += 2;
         } else {
-            return Fail(error, "spawn: unknown option '" + w[i] + "' (at, heading)");
+            return Fail(error, std::string(verb) + ": unknown option '" + w[i] + "' (at, heading, paint)");
         }
     }
-    if (!have_at) return Fail(error, std::string("spawn needs a place: ") + kSpawnUsage);
+    if (!have_at) return Fail(error, std::string(verb) + " needs a place: " + usage);
     return CarParse::kOk;
 }
 
@@ -281,6 +348,10 @@ inline CarParse ParseCarCommand(const std::vector<std::string>& w, CarCommand* o
         if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` applies to it)");
         return ParseSpawn(w, out, error);
     }
+    if (verb == "ambient") {
+        if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` applies to it)");
+        return ParseSpawn(w, out, error, true);
+    }
     if (verb == "delete" || verb == "despawn") {
         if (player) return Fail(error, "'player' is the player's own car: it cannot be deleted");
         if (w.size() != 2) return Fail(error, "car <id> delete takes nothing after it");
@@ -323,11 +394,13 @@ inline std::string DescribeCarCommand(const CarCommand& c) {
         case CarVerb::kPath:
             return c.id + " path " + c.route + " at " + DescribeSpeed(c.speed) + " (" + (c.mode == PathMode::kBrain ? "brain" : "kinematic") + ")";
         case CarVerb::kSpawn:
+        case CarVerb::kAmbient:
             break;
     }
-    std::string out = c.id + " spawn ";
+    std::string out = c.id + (c.verb == CarVerb::kAmbient ? " ambient " : " spawn ");
     out += c.source == CarSource::kGarage ? "profile " + std::to_string(c.slot) : c.model;
     out += " at (" + Num(c.position[0]) + ", " + Num(c.position[1]) + ", " + Num(c.position[2]) + ") heading " + Num(c.heading);
+    if (c.has_paint) out += " paint " + std::to_string(c.paint) + (c.paint_default ? " (the default)" : "");
     return out;
 }
 

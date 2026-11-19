@@ -24,6 +24,7 @@
 #include "live_text.h"
 #include "menu_world.h"
 #include "pass_timing.h"
+#include "scene_noise.h"
 #include "texture_bytes.h"
 
 
@@ -550,7 +551,8 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
     info.frame = frame_;
     info.upscaler = upscaler_running_;
-    info.pattern_phase = upscaler_running_ ? uint32_t(frame_ & 7u) : 0u;
+    // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
+    info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
     rt_->OnHistory(list, info);
   }
   return true;

@@ -136,6 +136,12 @@ uint32_t VibrationDriven(uint32_t user);
 void ApplyAmbientDensityTuning();
 void ApplyFragTuneOverrides();
 
+// traffic_probe.cpp: mcla_traffic_probe / mcla_traffic_probe_spawn (debug): the log of the ambient cars, the pools and the police, and the one-call
+// spawn test. TickTrafficProbe runs once a frame (Patch_DeltaTimePre); TrafficProbeNoteItem is called at the entry of the traffic item draw
+// (traffic_shadow.cpp's Patch_AmbientCascadeDraw, r3 = the item) and only reads.
+void TickTrafficProbe();
+void TrafficProbeNoteItem(uint32_t item);
+
 // rubberband.cpp
 void ApplyRubberBandLevel();
 void SetRubberBandLevelOption(int level);  // dev_options.cpp

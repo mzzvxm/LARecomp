@@ -151,6 +151,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/photo_export.cpp
     src/mc_engine/hooks/rear_view.cpp
     src/mc_engine/hooks/traffic_shadow.cpp
+    src/mc_engine/hooks/traffic_probe.cpp
     src/mc_engine/hooks/road_reflection_cars_test.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
@@ -211,7 +212,9 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/car_registry.cpp
     src/mc_engine/cinematic/path_follow.cpp
     src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/ambient_car.cpp
     src/mc_engine/cinematic/cars.cpp
+    src/mc_engine/cinematic/scene_seed.cpp
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
 
@@ -541,6 +544,7 @@ add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/cars_test.cpp
     src/mc_engine/cinematic/car_registry.cpp
     src/mc_engine/cinematic/car_spawn.cpp
+    src/mc_engine/cinematic/ambient_car.cpp
     src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_cars_test PRIVATE src src/mc_engine/cinematic)
 # A scene car's route (path_follow.h: the file, the speed along it, the heading, the cut into the AI's destinations: pure) has a check that needs no game:

@@ -8537,5 +8537,99 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_scene_seed": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT repeatable scenes: while a scene runs, the game's random generators (the simulation's, the cosmetic one, the car configuration's) are given a state \"\n    \"from this seed and the scene's update number at the start of every update, and the renderer's noise (the occlusion's, the contact shadows', the sun shafts', \"\n    \"the shadow filter's, the temporal upscalers' jitter) follows the scene's update number (while the clock is held by mcla_scene_t, the number of the held time): the same scene gives the same pictures in every run. 0: off, the \"\n    \"game's own random numbers and the renderer's frame count. Read at every update of a scene.\"",
+  "traits": [
+   "rex::Range{0, 2147483647}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_scene_seed_each_frame": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT repeatable scenes: true: the generators are given their state at every update of the scene (a thread that draws a different number of times in \"\n    \"one run cannot carry the difference into the next update); false: once, at the scene's first update. Read at every update of a scene.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_traffic_probe": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Debug, live, never saved: every this many updates log the ambient (traffic) cars one by one (model, position, heading, speed, the rail, \"\n    \"the LOD), the ambient and layout pools (capacity, live count, free slots), the opponent and racer pools and the police patrols, and one \"\n    \"SUMMARY line, all as '[traffic-probe]' lines. It reads the game and changes nothing. 0 = off.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 36000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_traffic_probe_detail": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Debug: how much of each traffic probe sample is logged. 0 = the pools, the census and the SUMMARY line; 1 = and the 20 nearest cars; 2 = \"\n    \"and every car (up to 200). The census always counts all of them.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_traffic_probe_spawn": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Debug, live, never saved: a set to a number other than 0 (and other than the last one acted on) makes ONE call to the game's \"\n    \"AmbientMgr_AddAmbientToLayout, asking it to place an ambient car of mcla_traffic_probe_model mcla_traffic_probe_ahead metres in front \"\n    \"of the player, and follows what comes of it in the log for two minutes. Free roam only, with a layout slot free, at most three calls \"\n    \"in a run of the game; a refusal is logged with its reason. 0 = off and re-arms (the same number again does nothing).\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1000000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_traffic_probe_model": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Debug: the ambient type (the car's model name in the game's own list, logged by the traffic probe as 'types') the spawn test asks for. \"\n    \"Empty = the first regular car type of the game's list.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_traffic_probe_ahead": {
+  "type": "f64",
+  "default": "25.0",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Debug: how far in front of the player's car, in metres, the spawn test places the car.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{5.0, 100.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "traffic_density_scale": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/Performance",
+  "help": "\"Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the \"\n    \"zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the \"\n    \"next frame on; cars already on the road stay until they leave by the unspawn radius (traffic_unspawn_dist). \"\n    \"Needs enable_ambient_tuning (on by default). Debug setting: trailers and repeatable tests, where the road is \"\n    \"to stay empty (with ped_density_scale and parked_car_scale at 0).\"",
+  "traits": [
+   "rex::Range{0.0, 2.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

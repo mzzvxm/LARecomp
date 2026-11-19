@@ -24,7 +24,17 @@
 //               native_call.h: the native stores the enable byte (0x8282A7C8 + 0, 1, 2) and does what a script's call does. The
 //               byte is read back to see whether it took; a byte the game put back is written again (three times at most).
 //               E1b measured that the byte alone only stops NEW spawns; whether the native also clears what is on the road is
-//               what the first run says (CHECK).
+//               what the first run says (CHECK). The traffic native (SetTrafficEnable(false)) is read in the generated code to send the
+//               despawn message 0x60 as well, which clears the road.
+//   traffic off ALSO holds the setting traffic_density_scale at 0 (world_tuning.cpp: the zones' traffic density 0, and its gate holds the enable
+//               byte at 0 every update whatever writes it); `traffic on` and the scene's end give both back. ORDER: that gate saves the byte it finds when it
+//               closes, and puts it back when it opens, so the native is called one update AFTER the setting was taken (the gate runs at the top of
+//               every update, before this code): called before, the gate would save the 0 the native wrote and "restore" it at the end. The byte the
+//               game had before the scene is read when the setting is taken, so the end gives the native the right value.
+//   peds <scale>, parked <scale>
+//               the settings ped_density_scale / parked_car_scale held for the scene (the old value and its origin come back, as for `set`): the
+//               timeline's numbers, 0 to 2. (A 0 closes that spawner for new spawns; what is on the road stays until it leaves: `peds off` also
+//               calls the native.) A world key holds a setting through the same list as a `set` key and lets go of it when the key does.
 //   police      PoliceManager_SetAllPoliceActive (a native: no byte to read back).
 //   timescale   MCLATimeScaleOverride (the global function at the end of this file, a midasm hook in larecomp_config.toml): after
 //               `lfs f13,84(r3)` in the engine timer sub_821BDA90 it puts the scene's scale into f13, the register the timer
@@ -208,9 +218,12 @@ std::string Describe(const Event& e) {
         case Track::kWeather:
             if (e.release) return out + "game (the game's own weather)";
             return out + (Weather_IndexToName(e.index) ? Weather_IndexToName(e.index) : "?");
-        case Track::kTraffic:
         case Track::kPeds:
         case Track::kParked:
+            if (e.state == kStateScale) return out + Fmt(e.to) + " (the setting " + (e.track == Track::kPeds ? "ped_density_scale" : "parked_car_scale") + ", held for the scene)";
+            return out + (e.state ? "on" : "off");
+        case Track::kTraffic:
+            return out + (e.state ? "on" : "off (the native, and the setting traffic_density_scale held at 0)");
         case Track::kPolice:
             return out + (e.state ? "on" : "off");
         case Track::kTimeScale:
@@ -253,6 +266,11 @@ struct SavedCvar {
     std::string before;
 };
 
+// The density settings a world key holds (WantedScale): the cvar, a name for the log.
+constexpr size_t kScaleCount = 3;
+constexpr const char* kScaleCvars[kScaleCount] = {"traffic_density_scale", "ped_density_scale", "parked_car_scale"};
+constexpr const char* kScaleKeys[kScaleCount] = {"traffic off", "peds", "parked"};
+
 struct ToggleState {
     int orig = -1;     // the byte before the scene touched it (police: on)
     int applied = -1;  // what the scene made it, -1 = untouched
@@ -292,6 +310,12 @@ struct Runner {
     int ts_unfollowed = 0;        // updates in a row in which the engine's step ratio was not that scale
     bool ts_warned = false;
     ToggleState toggles[kToggleCount];
+    // The density settings the timeline holds (traffic_density_scale, ped_density_scale, parked_car_scale): the value held (-1 = not held), whether the
+    // cvar took it, and the update that took it (the traffic native waits one update after it).
+    double scale_applied[kScaleCount] = {-1.0, -1.0, -1.0};
+    bool scale_held[kScaleCount] = {false, false, false};
+    uint64_t scale_tick[kScaleCount] = {0, 0, 0};
+    uint64_t world_tick = 0;  // updates run with the world in force
     std::vector<SavedCvar> saved;
     int unapplied[32] = {};  // keys of tracks nobody applies, by Track (a bit each in TrackBit: 32 at most)
     double next_state_log = 0.0;
@@ -417,6 +441,66 @@ void StandDownTimeScale() {
     g.ts_unfollowed = 0;
 }
 
+// What the timeline wants a density setting at: -1 = not held. `traffic off` holds traffic_density_scale at 0 (the world's traffic key has no scale of its own).
+double WantedScale(size_t i, const WorldState& w) {
+    switch (i) {
+        case 0: return w.traffic == 0 ? 0.0 : -1.0;
+        case 1: return w.peds_scale;
+        default: return w.parked_scale;
+    }
+}
+
+// A setting held for a world key, through the same hold as a `set` key's (SetCvarForScene: the old value and where it came from are kept; a save in the middle
+// of the scene does not write the scene's value). False when this build has no such setting, or it does not take the value.
+bool HoldCvar(const char* name, const std::string& value, const char* why) {
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+    if (!info) {
+        LARECOMP_APP_WARN("[scene] {}: no setting called '{}' in this build: only the switch applies", why, name);
+        return false;
+    }
+    if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
+        LARECOMP_APP_WARN("[scene] {}: '{}' is read only at start; the scene cannot hold it", why, name);
+        return false;
+    }
+    const std::string before = larecomp::cvar::GetFlagByName(name);
+    const bool known = std::any_of(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == name; });
+    if (!larecomp::SetCvarForScene(name, value)) {
+        LARECOMP_APP_WARN("[scene] {}: '{}' did not take '{}' (a value out of its range, or not of its kind)", why, name, value);
+        return false;
+    }
+    if (!known) g.saved.push_back({name, before});
+    LARECOMP_APP_INFO("[scene] {}: {} = {} (was {})", why, name, larecomp::cvar::GetFlagByName(name), before);
+    return true;
+}
+
+void ReleaseCvar(const char* name, const char* why) {
+    const auto it = std::find_if(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == name; });
+    if (it == g.saved.end()) return;
+    if (larecomp::RestoreCvarForScene(name)) LARECOMP_APP_INFO("[scene] {}: {} back to {}", why, name, it->before);
+    else LARECOMP_APP_WARN("[scene] {}: {} could not be put back to {}", why, name, it->before);
+    g.saved.erase(it);
+}
+
+// The density settings the world keys hold: taken when a key asks, given back when it lets go (and by RestoreCvars at the end).
+void ApplyScales(const WorldState& w, const uint8_t* base) {
+    for (size_t i = 0; i < kScaleCount; ++i) {
+        const double want = WantedScale(i, w);
+        if (want == g.scale_applied[i]) continue;
+        if (want >= 0.0) {
+            if (i == 0 && g.toggles[0].orig < 0 && base) {
+                g.toggles[0].orig = static_cast<int>(base[kToggles[0].byte] != 0);  // the game's own byte, before the setting's gate can close and zero it
+            }
+            g.scale_held[i] = HoldCvar(kScaleCvars[i], Fmt(want, "%.6g"), kScaleKeys[i]);
+            g.scale_applied[i] = want;
+            g.scale_tick[i] = g.world_tick;
+        } else {
+            if (g.scale_held[i]) ReleaseCvar(kScaleCvars[i], kScaleKeys[i]);
+            g.scale_held[i] = false;
+            g.scale_applied[i] = -1.0;
+        }
+    }
+}
+
 // The world tracks as they should be now. `w` all unset hands everything back. budget: natives to call this update.
 void ApplyWorld(const WorldState& w, uint8_t* base, int budget) {
     if (w.hour_set) {
@@ -436,7 +520,14 @@ void ApplyWorld(const WorldState& w, uint8_t* base, int budget) {
         LARECOMP_APP_INFO("[scene] weather: the game's own again");
     }
     ApplyTimeScale(w, base);
-    for (size_t i = 0; i < kToggleCount; ++i) ApplyToggle(i, w.*(kToggles[i].field), base, budget);
+    ApplyScales(w, base);
+    for (size_t i = 0; i < kToggleCount; ++i) {
+        const int want = w.*(kToggles[i].field);
+        // traffic off: the setting was taken in this update or an earlier one; the native comes one update after it, when the setting's gate has closed and saved the
+        // game's own byte (see the header). Not held (a build without the setting): no wait.
+        if (i == 0 && want == 0 && g.scale_held[0] && g.world_tick <= g.scale_tick[0]) continue;
+        ApplyToggle(i, want, base, budget);
+    }
 }
 
 void ApplyCvar(const Event& e) {
@@ -480,6 +571,10 @@ void RestoreCvars() {
         }
     }
     g.saved.clear();
+    for (size_t i = 0; i < kScaleCount; ++i) {  // every setting a world key held went back with the list
+        g.scale_applied[i] = -1.0;
+        g.scale_held[i] = false;
+    }
 }
 
 void EndAppliers() {
@@ -541,11 +636,12 @@ void LogState(double t, const uint8_t* base, const WorldState& w) {
     // What the engine really did with the time scale: the frame's scaled step over its unscaled one. "game" is the scale the game's own
     // code gave the timer (the scene's replaces it inside the timer, so the two differ while a scene's time scale runs).
     const double ratio = EngineStepRatio(RF(base, kGuestScaledDelta), RF(base, kGuestUnscaledDelta));
+    const auto scale = [](double s) { return s >= 0.0 ? " x" + Fmt(s) : std::string(); };  // " x0.30" while a density setting is held
     LARECOMP_APP_INFO("[scene] t={:.2f} state: hour {} (game {:.2f}), weather {} (game {}), timescale {} (game {:.3f}, engine step ratio {:.3f}), "
-                      "traffic {} peds {} parked {} police {}",
+                      "traffic {} peds {}{} parked {}{} police {}",
                       t, w.hour_set ? Fmt(w.hour) : std::string("-"), hour, w.weather >= 0 ? w.weather : -1, Weather_GetIndex(),
                       w.timescale_set ? Fmt(w.timescale, "%.3f") : std::string("-"), RF(base, kGuestTimeScale), ratio, w.traffic, w.peds,
-                      w.parked, w.police);
+                      scale(w.peds_scale), w.parked, scale(w.parked_scale), w.police);
 }
 
 // Writes the state line the last update queued, if there is one.
@@ -557,6 +653,7 @@ void FlushState(const uint8_t* base) {
 
 // One update of a running scene (the world is there): the keys that came due, the world tracks, the other packages' tracks.
 void RunAt(double t, uint8_t* base) {
+    ++g.world_tick;
     std::vector<const Event*> due;
     g.cursor.Take(g.scene, t, &due);
     for (const Event* e : due) {

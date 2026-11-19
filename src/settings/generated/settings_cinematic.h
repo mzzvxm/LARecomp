@@ -113,6 +113,14 @@ class CinematicSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_scene_restart, 0, "TRAILER TOOLKIT: a change of this number runs the armed scene again from its start.", rex::kDebugOnly);
 
+  REX_SETTING(i32, mcla_scene_seed, 1, "TRAILER TOOLKIT repeatable scenes: while a scene runs, the game's random generators (the simulation's, the cosmetic one, the car configuration's) are given a state "
+    "from this seed and the scene's update number at the start of every update, and the renderer's noise (the occlusion's, the contact shadows', the sun shafts', "
+    "the shadow filter's, the temporal upscalers' jitter) follows the scene's update number (while the clock is held by mcla_scene_t, the number of the held time): the same scene gives the same pictures in every run. 0: off, the "
+    "game's own random numbers and the renderer's frame count. Read at every update of a scene.", rex::Range{0, 2147483647}, rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_scene_seed_each_frame, true, "TRAILER TOOLKIT repeatable scenes: true: the generators are given their state at every update of the scene (a thread that draws a different number of times in "
+    "one run cannot carry the difference into the next update); false: once, at the scene's first update. Read at every update of a scene.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_scene_t, -1.0, "TRAILER TOOLKIT: 0 or more holds the scene's clock at this many seconds on every update (stills, scrubbing); -1 lets "
     "it run.", rex::Range{-1.0, 86400.0}, rex::kDebugOnly);
 
@@ -156,6 +164,8 @@ inline auto& mcla_freecam_record = g_cinematic.mcla_freecam_record;
 inline auto& mcla_freecam_speed = g_cinematic.mcla_freecam_speed;
 inline auto& mcla_scene = g_cinematic.mcla_scene;
 inline auto& mcla_scene_restart = g_cinematic.mcla_scene_restart;
+inline auto& mcla_scene_seed = g_cinematic.mcla_scene_seed;
+inline auto& mcla_scene_seed_each_frame = g_cinematic.mcla_scene_seed_each_frame;
 inline auto& mcla_scene_t = g_cinematic.mcla_scene_t;
 inline auto& mcla_state_log = g_cinematic.mcla_state_log;
 

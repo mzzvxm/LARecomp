@@ -883,6 +883,89 @@ void TestCaptureOptions() {
     CheckError("at 1 capture fps 60 speed 2", "(fps, step, name, sink, statelog)");
 }
 
+
+// The ambient world keys of ambient-scenes: peds and parked take a density scale as well as on and off; an ambient car needs the parked spawner.
+void TestAmbientWorld() {
+    {
+        const ParseResult r = ParseScene("scene a\nworld hour 17 hold weather nice traffic off police off peds 0 parked 0.25\nend 5\n");
+        Check(r.Ok(), "world ... peds 0 parked 0.25 parses");
+        const Event* peds = First(r.scene, Track::kPeds);
+        const Event* parked = First(r.scene, Track::kParked);
+        Check(peds && peds->state == kStateScale && peds->to == 0.0, "peds 0 is a scale of 0, not off");
+        Check(parked && parked->state == kStateScale && parked->to == 0.25, "parked 0.25 is a scale");
+        const WorldState w = EvaluateWorld(r.scene, 0.0);
+        Check(w.traffic == 0 && w.police == 0, "traffic and police off in the bundle");
+        Check(w.peds == -1 && w.peds_scale == 0.0, "peds 0: the density setting held at 0, the switch untouched");
+        Check(w.parked == -1 && w.parked_scale == 0.25, "parked 0.25: the setting at 0.25");
+    }
+    {  // the words are still the switches, and the bare 0 and 1 of the other tracks
+        const ParseResult r = ParseScene("at 1 peds off\nat 2 parked on\nat 3 peds true\nat 4 parked false\nat 5 traffic 1\nat 6 police 0\nend 7\n");
+        Check(r.Ok(), "on, off, true and false still parse for peds and parked");
+        const Event* p = First(r.scene, Track::kPeds);
+        Check(p && p->state == 0, "peds off is the switch");
+        Check(EvaluateWorld(r.scene, 1.5).peds == 0 && EvaluateWorld(r.scene, 1.5).peds_scale < 0.0, "the switch key leaves the scale alone");
+        Check(EvaluateWorld(r.scene, 3.5).peds == 1, "peds true is on");
+        Check(EvaluateWorld(r.scene, 4.5).parked == 0, "parked false is off");
+        Check(EvaluateWorld(r.scene, 5.5).traffic == 1 && EvaluateWorld(r.scene, 6.5).police == 0, "traffic and police keep 1 and 0 as on and off");
+    }
+    {  // a switch and a scale of one track replace each other
+        const ParseResult r = ParseScene("at 1 peds off\nat 2 peds 0.5\nat 3 peds on\nat 4 peds 1.5\nat 5 peds off\nend 6\n");
+        Check(r.Ok(), "mixed peds keys parse");
+        WorldState w = EvaluateWorld(r.scene, 1.5);
+        Check(w.peds == 0 && w.peds_scale < 0.0, "off: the switch");
+        w = EvaluateWorld(r.scene, 2.5);
+        Check(w.peds == -1 && w.peds_scale == 0.5, "then a scale: the switch is let go (the game's own again), the setting held");
+        w = EvaluateWorld(r.scene, 3.5);
+        Check(w.peds == 1 && w.peds_scale < 0.0, "then on: the switch, the setting let go");
+        w = EvaluateWorld(r.scene, 4.5);
+        Check(w.peds == -1 && w.peds_scale == 1.5, "then 1.5");
+        w = EvaluateWorld(r.scene, 5.5);
+        Check(w.peds == 0 && w.peds_scale < 0.0, "then off again");
+    }
+    {  // a scale at its limits
+        Check(ParseScene("at 1 peds 0\nat 2 parked 2\nat 3 peds 2.0\nat 4 parked 0.0\nend 5\n").Ok(), "0 and 2 are the ends");
+    }
+    CheckError("at 1 peds 2.5", "bad peds '2.5'");
+    CheckError("at 1 parked -0.1", "bad parked '-0.1'");
+    CheckError("at 1 peds lots", "bad peds 'lots'");
+    CheckError("at 1 peds", "peds on|off, or a density scale");
+    CheckError("at 1 parked 1 2", "parked on|off, or a density scale");
+    CheckError("at 1 parked nan", "bad parked 'nan'");
+    CheckError("world peds", "world: 'peds' needs a value");
+    CheckError("at 1 peds maybe", "ped_density_scale");
+    CheckError("at 1 parked maybe", "parked_car_scale");
+    CheckError("at 1 traffic 0.5", "traffic on|off");  // traffic has no scale key: set traffic_density_scale for that
+
+    // an ambient car and the parked spawner
+    {
+        const ParseResult ok = ParseScene("scene a\nworld traffic off peds 0\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(ok.Ok() && ok.WarningCount() == 0, "traffic off, peds 0 and an ambient car: nothing to say");
+        const ParseResult off = ParseScene("scene a\nworld parked off\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        const Diagnostic* d = Find(off, "parked spawner is closed");
+        Check(off.Ok() && d && d->severity == Severity::kWarning && d->line == 3, "parked off before an ambient car: a warning on the car's line");
+        Check(d && d->message.find("line 2") != std::string::npos, "...naming the line that closed it");
+        const ParseResult zero = ParseScene("scene a\nworld parked 0\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(zero, "parked spawner is closed") != nullptr, "a parked scale of 0 closes it too");
+        const ParseResult later = ParseScene("scene a\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nat 3 parked off\nend 9\n");
+        Check(Find(later, "parked spawner is closed") == nullptr, "closing it after the car was asked for is not the warning's business");
+        const ParseResult reopen = ParseScene("scene a\nworld parked off\nat 1 parked 0.5\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(reopen, "parked spawner is closed") == nullptr, "a scale above 0 opens it again");
+        const ParseResult reopen2 = ParseScene("scene a\nworld parked 0\nat 1 parked on\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(reopen2, "parked spawner is closed") == nullptr, "on opens it again");
+        const ParseResult spawn = ParseScene("scene a\nworld parked off\nat 2 car a1 spawn vp_lam_murcielago_06 at 1,2,3\nend 9\n");
+        Check(Find(spawn, "parked spawner is closed") == nullptr, "a spawned (racer) car has nothing to do with the parked spawner");
+    }
+    // the car verb through the scene parser: a bad ambient line is an error with its line number
+    CheckError("at 1 car a1 ambient va_gmc_yukon_05", "ambient needs a place");
+    CheckError("at 1 car a1 ambient profile 3 at 1,2,3", "not an ambient type");
+    Check(ParseScene("at 1 car a1 ambient va_gmc_yukon_05 at 1,2,3 heading 45\nend 5\n").Ok(), "a good ambient line parses and its words are kept");
+    {
+        const ParseResult r = ParseScene("at 1 car a1 ambient va_gmc_yukon_05 at 1,2,3 heading 45\nend 5\n");
+        const Event* c = First(r.scene, Track::kCar);
+        Check(c && c->words.size() == 7 && c->words[1] == "ambient", "the car key keeps the words for the cars package");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -904,6 +987,7 @@ int main(int argc, char** argv) {
     TestCapture();
     TestCvarRefusal();
     TestCaptureOptions();
+    TestAmbientWorld();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

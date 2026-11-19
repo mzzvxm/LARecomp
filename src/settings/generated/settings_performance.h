@@ -181,6 +181,12 @@ class PerformanceSettings final : public rex::SettingOwner {
     "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
     "default) applies instead; not measured here, so it is left alone.", rex::kDebugOnly, rex::kRestart);
 
+  REX_SETTING(f64, traffic_density_scale, 1.0, "Moving traffic density scale (0.0 = no new traffic cars, 1.0 = the game's own, 2.0 = double). It scales the "
+    "zones' density at low and at high speed, so it holds at every speed. Live, for the cars that spawn from the "
+    "next frame on; cars already on the road stay until they leave by the unspawn radius (traffic_unspawn_dist). "
+    "Needs enable_ambient_tuning (on by default). Debug setting: trailers and repeatable tests, where the road is "
+    "to stay empty (with ped_density_scale and parked_car_scale at 0).", rex::Range{0.0, 2.0}, rex::kDebugOnly);
+
   REX_SETTING(f64, traffic_unspawn_dist, 250.0, "Traffic vehicle unspawn radius in meters (default 400.0, lower = higher FPS in city).", rex::Range{100.0, 600.0});
 
   REX_SETTING(bool, vsync_fast_poll, true, "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
@@ -212,6 +218,7 @@ inline auto& perf_shadow_phase_bits = g_performance.perf_shadow_phase_bits;
 inline auto& pump_wake_on_demand = g_performance.pump_wake_on_demand;
 inline auto& single_tile = g_performance.single_tile;
 inline auto& submit_on_primary_buffer_end = g_performance.submit_on_primary_buffer_end;
+inline auto& traffic_density_scale = g_performance.traffic_density_scale;
 inline auto& traffic_unspawn_dist = g_performance.traffic_unspawn_dist;
 inline auto& vsync_fast_poll = g_performance.vsync_fast_poll;
 

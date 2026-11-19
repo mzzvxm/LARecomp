@@ -27,6 +27,23 @@ class DiagnosticsSettings final : public rex::SettingOwner {
   REX_SETTING(bool, lzx_native_check_all, false, "Run the recompiled LZX decoder next to the native one for every stream, not only the first few, "
     "and compare every call. Slower than either alone: for validating a whole session. Read at start.", rex::kDebugOnly, rex::kRestart);
 
+  REX_SETTING(i32, mcla_traffic_probe, 0, "Debug, live, never saved: every this many updates log the ambient (traffic) cars one by one (model, position, heading, speed, the rail, "
+    "the LOD), the ambient and layout pools (capacity, live count, free slots), the opponent and racer pools and the police patrols, and one "
+    "SUMMARY line, all as '[traffic-probe]' lines. It reads the game and changes nothing. 0 = off.", rex::kDebugOnly, rex::Range{0, 36000});
+
+  REX_SETTING(f64, mcla_traffic_probe_ahead, 25.0, "Debug: how far in front of the player's car, in metres, the spawn test places the car.", rex::kDebugOnly, rex::Range{5.0, 100.0});
+
+  REX_SETTING(i32, mcla_traffic_probe_detail, 1, "Debug: how much of each traffic probe sample is logged. 0 = the pools, the census and the SUMMARY line; 1 = and the 20 nearest cars; 2 = "
+    "and every car (up to 200). The census always counts all of them.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(std::string, mcla_traffic_probe_model, "", "Debug: the ambient type (the car's model name in the game's own list, logged by the traffic probe as 'types') the spawn test asks for. "
+    "Empty = the first regular car type of the game's list.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_traffic_probe_spawn, 0, "Debug, live, never saved: a set to a number other than 0 (and other than the last one acted on) makes ONE call to the game's "
+    "AmbientMgr_AddAmbientToLayout, asking it to place an ambient car of mcla_traffic_probe_model mcla_traffic_probe_ahead metres in front "
+    "of the player, and follows what comes of it in the log for two minutes. Free roam only, with a layout slot free, at most three calls "
+    "in a run of the game; a refusal is logged with its reason. 0 = off and re-arms (the same number again does nothing).", rex::kDebugOnly, rex::Range{0, 1000000});
+
   REX_SETTING(bool, photo_ui_trace, false, "Log the UI statechart while the photo album scene is up (photo mode, the album, "
     "the Rate My Ride snapshots): events posted and dispatched, delayed events, the "
     "UI.* and photoAlbum.* commands with the states they touch, and the paced movies' "
@@ -55,6 +72,11 @@ inline DiagnosticsSettings g_diagnostics;
 inline auto& cam_trace = g_diagnostics.cam_trace;
 inline auto& lowcpu_probe = g_diagnostics.lowcpu_probe;
 inline auto& lzx_native_check_all = g_diagnostics.lzx_native_check_all;
+inline auto& mcla_traffic_probe = g_diagnostics.mcla_traffic_probe;
+inline auto& mcla_traffic_probe_ahead = g_diagnostics.mcla_traffic_probe_ahead;
+inline auto& mcla_traffic_probe_detail = g_diagnostics.mcla_traffic_probe_detail;
+inline auto& mcla_traffic_probe_model = g_diagnostics.mcla_traffic_probe_model;
+inline auto& mcla_traffic_probe_spawn = g_diagnostics.mcla_traffic_probe_spawn;
 inline auto& photo_ui_trace = g_diagnostics.photo_ui_trace;
 inline auto& tune_field_probe = g_diagnostics.tune_field_probe;
 inline auto& ui_color_log = g_diagnostics.ui_color_log;
