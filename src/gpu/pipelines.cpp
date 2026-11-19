@@ -364,8 +364,7 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // The most workers the precache starts: half the usable processors (steady_workers_), at most this many; boot
 // mode adds workers up to all the processors but one, at most this many too.
 constexpr uint32_t kMaxPrecacheWorkers = 6;
-// Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
-// how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
+// Boot mode (pipelines.h): the processor count below which it runs and the longest it lasts.
 // The count is where boot mode stops having workers to add: it starts clamp(usable - 1, steady,
 // kMaxPrecacheWorkers) of them against the steady clamp(usable / 2, 1, kMaxPrecacheWorkers), which is 2 more at
 // 8 and 9 usable processors, 1 more at 10 and 11, and the same number from 12 (then only the priority and the cursor
@@ -378,7 +377,6 @@ constexpr uint32_t kBootBoostBelow = 2 * kMaxPrecacheWorkers;
 // when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
 constexpr uint32_t kDefaultStartSamples = 2;
 constexpr std::chrono::seconds kBootSeconds{40};
-constexpr size_t kFollowMinGap = 8;
 
 }  // namespace
 
@@ -758,28 +756,11 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   // CHECK: written without a build or a run; expected: "the render thread made N entries itself"
   // (below) drops to a handful for a first start with MSAA off, 4x or DLSS saved, and the default
   // start's precache line and time do not change.
-  const uint32_t target = start_samples_.empty() ? 0u : start_samples_.back();
-  const bool defer = setup_threads == 0 && target != 0 && target != kDefaultStartSamples;
-  const auto later = [&](const Record& r) {
-    return defer && r.key.sample_count > 1 && r.key.sample_count != target;
-  };
-  std::vector<const Record*> after;
-  size_t next_copy = 0;
-  for (size_t i = 0; i < records_.size(); ++i) {
-    if (later(records_[i])) {
-      after.push_back(&records_[i]);
-    } else {
-      add(records_[i]);
-    }
-    for (; next_copy < setup_copies_.size() && setup_copy_source_[next_copy] == i; ++next_copy) {
-      if (later(setup_copies_[next_copy])) {
-        after.push_back(&setup_copies_[next_copy]);
-      } else {
-        add(setup_copies_[next_copy]);
-      }
-    }
-  }
-  for (const Record* r : after) {
+  // The order itself is precache_queue::Order (checked alone by precache_queue_test.cpp).
+  for (const Record* r : precache_queue::Order(records_, setup_copies_, setup_copy_source_,
+                                               precache_queue::DeferTarget(setup_threads != 0,
+                                                                           start_samples_,
+                                                                           kDefaultStartSamples))) {
     add(*r);
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
@@ -805,9 +786,7 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
            : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
-  list_cursor_ = 0;
-  list_end_ = precached_.size();
-  list_skipped_.clear();
+  list_.Reset(precached_.size());
   precache_ready_ = 0;
   precache_failed_ = 0;
   precache_finished_ = 0;
@@ -873,7 +852,7 @@ void Pipelines::StopPrecache() {
   prebuild_requests_.clear();
   prebuild_precached_.clear();
   prebuild_seeds_.clear();
-  list_skipped_.clear();
+  list_.Reset(0);
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
   aliases_.clear();
@@ -954,7 +933,7 @@ void Pipelines::PrecacheWorker(uint32_t index) {
 }
 
 bool Pipelines::HasListWork() const {
-  return list_cursor_ < list_end_ || !list_skipped_.empty();
+  return list_.HasWork();
 }
 
 bool Pipelines::HasSeedWork() const {
@@ -962,22 +941,9 @@ bool Pipelines::HasSeedWork() const {
 }
 
 bool Pipelines::NextListEntry(size_t& index) {
-  for (;;) {
-    while (list_cursor_ >= list_end_) {
-      if (list_skipped_.empty()) {
-        return false;
-      }
-      list_cursor_ = list_skipped_.front().begin;
-      list_end_ = list_skipped_.front().end;
-      list_skipped_.pop_front();
-    }
-    const size_t i = list_cursor_++;
-    // One the render thread made or a worker has is left alone.
-    if (precached_[i]->state.load() == kQueued) {
-      index = i;
-      return true;
-    }
-  }
+  // The windows of the render thread's claims, then the cursor (precache_queue.h). One the render
+  // thread made or a worker has is left alone.
+  return list_.Next(index, [this](size_t i) { return precached_[i]->state.load() == kQueued; });
 }
 
 void Pipelines::NoteClaim(size_t index) {
@@ -1000,17 +966,19 @@ void Pipelines::NoteClaim(size_t index) {
 }
 
 void Pipelines::FollowRenderThread(size_t index) {
-  // The render thread had to make entry `index` because no worker had reached it. It asks in
-  // about the order the list was recorded in, so the next entries are the ones it will want:
-  // the workers go on after it, and what lies between them and it (not asked for yet) waits
-  // until the run is over. A claim behind the cursor or beyond the run changes nothing.
+  // The render thread had to make entry `index` because no worker had reached it. It asks in about
+  // the order the list was recorded in within a block (the title's first frames ask for the next
+  // entries of the block they are in), so the workers make the entries after it first, a window of
+  // them. The cursor stays where it is: the render thread does not ask for the blocks in the list's
+  // order (a one-sample block at 1789 before the world's entries at 1347 to 1390: 44 claims when
+  // the cursor jumped to the first and parked the others, sr3v-boot-4), so what the cursor has
+  // still to make is the next place it asks.
+  // CHECK: written without a build or a run. Expected on the boot tour at 4 logical processors
+  // (chain-boot4.ps1): the "render thread made N of" line with a handful of claims (the old cursor: 17
+  // and 44 in two runs) and a precache time near 7.5 s; at 8 logical processors still 0 claims. The
+  // model in precache_queue_test.cpp reproduces the old 44 with a jump; it is not a measurement.
   std::lock_guard<std::mutex> lock(work_mutex_);
-  const size_t next = index + 1;
-  if (next <= list_cursor_ || next > list_end_ || next - list_cursor_ < kFollowMinGap) {
-    return;
-  }
-  list_skipped_.push_back(ListRange{list_cursor_, index});
-  list_cursor_ = next;
+  list_.Follow(index);
 }
 
 void Pipelines::EndBootMode(const char* why) {

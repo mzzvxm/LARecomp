@@ -263,6 +263,9 @@ add_executable(larecomp_vram_room_test EXCLUDE_FROM_ALL vram_room_test.cpp)
 #   cmake --build <dir> --target larecomp_level_seeds_test, then run src/gpu/larecomp_level_seeds_test (exit 0 = passed).
 add_executable(larecomp_level_seeds_test EXCLUDE_FROM_ALL level_seeds_test.cpp)
 target_link_libraries(larecomp_level_seeds_test PRIVATE Threads::Threads)
+# The precache queue's order and the windows the render thread's claims put in front of the workers (precache_queue.h) too:
+#   cmake --build <dir> --target larecomp_precache_queue_test, then run src/gpu/larecomp_precache_queue_test (exit 0 = passed).
+add_executable(larecomp_precache_queue_test EXCLUDE_FROM_ALL precache_queue_test.cpp)
 # The Windows builds the game's Direct3D 12 runtime needs (windows_floor.h, which only explains a refused start) likewise:
 #   cmake --build <dir> --target larecomp_windows_floor_test, then run src/gpu/larecomp_windows_floor_test (exit 0 = passed).
 add_executable(larecomp_windows_floor_test EXCLUDE_FROM_ALL windows_floor_test.cpp)
