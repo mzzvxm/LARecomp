@@ -222,8 +222,7 @@ bool Listed() {
 
 }  // namespace
 
-const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int picture_count,
-                                          int& count) {
+const mcla_menu::ItemDef* UpscalingPageRows(int& count) {
     int upscaling_count = 0;
     const mcla_menu::ItemDef* upscaling = UpscalingMenuRows(upscaling_count);
     bool frame_generation = false;
@@ -233,18 +232,16 @@ const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int
     multiplier = frame_generation && MultiplierListed();
 #endif
     if (upscaling_count == 0 && !frame_generation) {
-        // No Plume renderer in this build: the page's rows are the picture's alone.
-        count = picture_count;
-        return picture;
+        // No Plume renderer in this build: the page has no rows.
+        count = 0;
+        return nullptr;
     }
-    // One table per combination of the upscaler's row set (a pointer the upscaling menu keeps), the
-    // picture rows and the frame generation rows (the multiplier row only for a card that has a
-    // choice), made on first use and never changed after: the menu holds pointers into it.
+    // One table per combination of the upscaler's row set (a pointer the upscaling menu keeps) and the
+    // frame generation rows (the multiplier row only for a card that has a choice), made on first use
+    // and never changed after: the menu holds pointers into it.
     struct Combined {
         const mcla_menu::ItemDef* upscaling = nullptr;
         int upscaling_count = 0;
-        const mcla_menu::ItemDef* picture = nullptr;
-        int picture_count = 0;
         bool frame_generation = false;
         bool multiplier = false;
         std::vector<mcla_menu::ItemDef> rows;
@@ -254,7 +251,6 @@ const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int
     std::lock_guard lock(mutex);
     for (const std::unique_ptr<Combined>& t : tables) {
         if (t->upscaling == upscaling && t->upscaling_count == upscaling_count &&
-            t->picture == picture && t->picture_count == picture_count &&
             t->frame_generation == frame_generation && t->multiplier == multiplier) {
             count = int(t->rows.size());
             return t->rows.data();
@@ -263,12 +259,9 @@ const mcla_menu::ItemDef* DisplayMenuRows(const mcla_menu::ItemDef* picture, int
     auto made = std::make_unique<Combined>();
     made->upscaling = upscaling;
     made->upscaling_count = upscaling_count;
-    made->picture = picture;
-    made->picture_count = picture_count;
     made->frame_generation = frame_generation;
     made->multiplier = multiplier;
     for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);
-    for (int i = 0; i < picture_count; ++i) made->rows.push_back(picture[i]);
 #if defined(LARECOMP_HAS_GPU)
     if (frame_generation) {
         made->rows.push_back(kFrameGenerationRow);

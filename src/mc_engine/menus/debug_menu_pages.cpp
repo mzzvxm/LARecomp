@@ -136,6 +136,9 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgKeyRepeat",  "ui_input_repeat_30hz",      "MENU KEY REPEAT: "),
     Bool("PM_RxDbgMenuInput",  "ui_advance_on_input",       "MENU INPUT: "),
     Bool("PM_RxDbgMenu3d",     "ui_interpolate_camera",     "SMOOTH MENU 3D: "),
+    // Smooth UI: every menu, pop-up, map panel and the HUD steps at the console's 30 a second and is drawn between
+    // its last two steps (hooks/ui_smooth.cpp). It was a row of DISPLAY; it is a switch to look for a UI bug with now.
+    Bool("PM_RxDbgSmoothUi",   "ui_interpolate",            "SMOOTH UI: "),
     // The neon underglow's pulse held on the console's 30 Hz clock (hooks/neon_pulse.cpp).
     Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
     // The native keyboard (keyboard_native.cpp) is always on; this turns it off to tell whether a bug is its (off = the keyboard does nothing).

@@ -1,8 +1,8 @@
 #pragma once
 //
-// The pause menu's upscaling rows (DISPLAY tab), next to nothing but themselves: the rows, what
-// greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, the rows
-// after SHARPNESS on the same page) say while an upscaler does its job.
+// The pause menu's upscaling rows (UPSCALING page), next to nothing but themselves: the rows, what
+// greys them, and what the POST AA / MSAA rows (the NATIVE renderer's own anti-aliasing, on the IMAGE
+// QUALITY page) say while an upscaler does its job.
 //
 // Three rows, always the same three (what changes is each one's list, live):
 //
@@ -87,14 +87,14 @@
 
 #include "menu_items.h"
 
-// The rows the DISPLAY tab appends after its own (MenuDef::extra). 0 and a null pointer without the
-// Plume renderer's code in the build.
+// The first rows of the UPSCALING page (MenuDef::extra, through UpscalingPageRows in frame_generation_menu.h,
+// which puts frame generation's after them). 0 and a null pointer without the Plume renderer's code in the build.
 const mcla_menu::ItemDef* UpscalingMenuRows(int& count);
 
 // Whether the rows UpscalingMenuRows returns are not the ones the page was built with (MenuDef::
 // relayout). They never are: the three rows are the same whatever the PC can run, and what changes
 // (the choices UPSCALING lists, a mode row's list) is read each time a row is drawn. Kept as the
-// DISPLAY page's hook for a row set that does change.
+// UPSCALING page's hook for a row set that does change.
 bool UpscalingMenuRelayout(bool apply);
 
 namespace mcla_menu {

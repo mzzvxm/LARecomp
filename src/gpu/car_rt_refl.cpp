@@ -3,6 +3,7 @@
 #include "car_rt_refl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -52,7 +53,12 @@ LiveText& Setting() {
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
 uint64_t DenoiseKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 1); }
 
+// CarRtReflAvailable()'s answer: set once the layout and the shader exist and the car's structures can be built.
+std::atomic<bool> g_available{false};
+
 }  // namespace
+
+bool CarRtReflAvailable() { return g_available.load(std::memory_order_relaxed); }
 
 CarRtRefl::~CarRtRefl() = default;
 
@@ -69,6 +75,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   pass_timing_ = &pass_timing;
   scene_ = scene;
   ready_ = false;
+  g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
   supported_ = scene != nullptr && MCLA_CAR_RT_REFL_HAS_SHADER != 0 &&
@@ -83,6 +90,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
     return;
   }
   ready_ = true;
+  g_available.store(scene->ready(), std::memory_order_relaxed);
   // The denoise is optional: the trace runs, and its raw image is read, where its layout or shader could not be made.
   denoise_ready_ = MakeDenoiseLayoutAndShader(device, passes);
   denoise_failed_ = false;
@@ -184,6 +192,7 @@ void CarRtRefl::Shutdown() {
   denoise_layout_.reset();
   denoise_ready_ = false;
   ready_ = false;
+  g_available.store(false, std::memory_order_relaxed);
   recorded_ = false;
   active_ = false;
   device_ = nullptr;

@@ -1,23 +1,31 @@
 #pragma once
 // ===========================================================================
-// The compare key: flick one graphics effect off and on to see what it does
+// The compare keys: flick one graphics effect off and on to see what it does (a developer tool)
 // ===========================================================================
-// One key (F1 until it is rebound in F4's key bindings, "bind_mcla_compare") flips the effect that the setting
-// COMPARE KEY (GRAPHICS QUALITY, `mcla_compare_effect`) names: the bounce light, the contact shadows, the sun
-// shafts, the ambient occlusion, the shadow filter, or (from F4 or the command line only) the bloom size fix.
-// A small label at the top of the screen says what the picture shows now ("BOUNCE LIGHT: OFF") and fades out
-// after about a second and a half. The key works anywhere the game takes keys; what it shows is what the view
-// draws: the pause menu's, the map's and the garage's world (the 4x view) does not draw the bounce light, so
-// flipping it there changes nothing until that view gets it.
+// Two keys, for the people who work on the game. They are in a build only with LARECOMP_DEV_TOOLS (the CMake option
+// -DLARECOMP_DEV_TOOLS=ON, off by default): a release build has no key, no setting and no code of them, and the pause
+// menu has no row for them.
 //
-// The flip is not a setting: it writes no cvar and is never saved (the saved setting, the pause row and the
-// launcher keep what the player chose), it is dropped when the setting it flips is changed or the key is set
-// to another effect, and it is gone at the next start. The readers of the settings take it into account
-// (gpu/effect_compare.h); what a press does, and says, is gpu/effect_compare_rules.h (checked without a game
+//   F1   (ui.bind.mcla_compare)       flips the SELECTED effect: off if your setting has it on, on if it has it off. The next press puts your
+//                                    setting back. A small label at the top of the screen says what the picture shows now ("BOUNCE LIGHT:
+//                                    OFF") and fades out after about a second and a half.
+//   F12  (ui.bind.mcla_compare_next)  selects the next effect: the bounce light, the contact shadows, the sun shafts, the ambient
+//                                    occlusion, the shadow filter, the car self-reflections, and round to the bounce light again. The label says
+//                                    which one is selected and whether your setting has it on ("COMPARE: SUN SHAFTS", "ON"). A flip that was on is
+//                                    dropped by it. The selection is the setting `mcla_compare_effect` (F4 and the command line see it too; they
+//                                    can also select the bloom size fix, which the keys do not walk to).
+//
+// Both keys can be rebound in F4's key bindings. They work anywhere the game takes keys; what they show is what the view draws: the pause
+// menu's, the map's and the garage's world (the 4x view) does not draw the bounce light, so flipping it there changes nothing until that view
+// gets it.
+//
+// The flip is not a setting: it writes no cvar and is never saved (the saved setting, the pause row and the launcher keep what the player
+// chose), it is dropped when the setting it flips is changed or another effect is selected, and it is gone at the next start. The readers of
+// the settings take it into account (gpu/effect_compare.h); what a press does, and says, is gpu/effect_compare_rules.h (checked without a game
 // by gpu/effect_compare_test.cpp).
 // ===========================================================================
 
-#include <string>
+#if defined(LARECOMP_DEV_TOOLS)
 
 #include <rex/ui/ui_system.h>
 
@@ -27,10 +35,12 @@ namespace mcla::compare {
 // LarecompApp::StartOverlays (UI thread, the window is open); the UI system owns the label dialog.
 void Start(rex::ui::IUISystem& ui);
 
-// The key: the overlay "mcla_compare" (ui.bind.mcla_compare, F1), a hotkey that runs the flip and shows nothing.
+// The compare key: the overlay "mcla_compare" (ui.bind.mcla_compare, F1), a hotkey that runs the flip and shows nothing.
 rex::ui::OverlayConfig KeyOverlayConfig();
 
-// The key's own name for the pause row ("F1" unless it was rebound; capitals, digits, space and '+').
-std::string KeyLabel();
+// The select key: the overlay "mcla_compare_next" (ui.bind.mcla_compare_next, F12), a hotkey that selects the next effect.
+rex::ui::OverlayConfig SelectKeyOverlayConfig();
 
 }  // namespace mcla::compare
+
+#endif  // LARECOMP_DEV_TOOLS

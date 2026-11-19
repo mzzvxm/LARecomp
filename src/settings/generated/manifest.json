@@ -2999,12 +2999,13 @@
   "type": "std::string",
   "default": "\"bounce\"",
   "category": "MCLA/GPU",
-  "help": "\"Which graphics effect the compare key flips off and on, to see what it does: bounce (the bounce light, the \"\n    \"default), contact (contact shadows), shafts (sun shafts), occlusion (ambient occlusion), filter (the sun \"\n    \"shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow size fix: it has no row, set it \"\n    \"here or on the command line). The key is \"\n    \"F1 until it is rebound in the key bindings of F4 (bind_mcla_compare). Pressing it shows the effect the other \"\n    \"way than your setting has it, a label at the top of the screen says how, and the next press puts your \"\n    \"setting back. The flip is never saved, and it is dropped when the setting it flips is changed or this one \"\n    \"is. Live.\"",
+  "help": "\"Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see \"\n    \"what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion \"\n    \"(ambient occlusion), filter (the sun shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow \"\n    \"size fix: the select key does not walk to it, set it here or on the command line). The select key is F12 and the \"\n    \"compare key F1 until they are rebound in the key bindings of F4 (bind_mcla_compare_next, bind_mcla_compare). F12 \"\n    \"selects the next effect and shows which one in a label at the top of the screen; F1 shows the selected effect the other \"\n    \"way than your setting has it, the label says how, and the next press puts your setting back. The flip is never \"\n    \"saved, and it is dropped when the setting it flips is changed or this one is. Live.\"",
   "traits": [
+   "rex::kDebugOnly",
    "rex::Allowed(\"bounce\", \"contact\", \"shafts\", \"occlusion\", \"filter\", \"selfrefl\", \"bloom\")"
   ],
   "comments": [],
-  "pp_depth": 0
+  "pp_depth": 1
  },
  "mcla_compare_label_seconds": {
   "type": "f64",
@@ -3016,7 +3017,7 @@
    "rex::Range{0.5, 30.0}"
   ],
   "comments": [],
-  "pp_depth": 0
+  "pp_depth": 1
  },
  "fma_float_fast": {
   "type": "bool",
@@ -5728,8 +5729,10 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/UI",
-  "help": "\"Smooth UI. Every UI movie (menus, pop-ups, map panels and the HUD) steps at the \"\n    \"console's 30 a second, so they run at the console's speed at any frame rate, and \"\n    \"what moved in the last step is drawn between where it was and where it is: \"\n    \"needles, the song ticker, the menus' lists and highlights, page changes and \"\n    \"fades glide instead of stepping. The picture is one step (up to 33 ms) behind the \"\n    \"game; nothing is blended below about 47 FPS. Off, only the movies named in \"\n    \"ui_movie_pacing step at 30 a second and nothing is blended.\"",
-  "traits": [],
+  "help": "\"Smooth UI. Every UI movie (menus, pop-ups, map panels and the HUD) steps at the \"\n    \"console's 30 a second, so they run at the console's speed at any frame rate, and \"\n    \"what moved in the last step is drawn between where it was and where it is: \"\n    \"needles, the song ticker, the menus' lists and highlights, page changes and \"\n    \"fades glide instead of stepping. The picture is one step (up to 33 ms) behind the \"\n    \"game; nothing is blended below about 47 FPS. Off, only the movies named in \"\n    \"ui_movie_pacing step at 30 a second and nothing is blended. A developer switch (the hidden debug \"\n    \"menu's FIXES page): it is on for everyone and is never saved.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
   "comments": [],
   "pp_depth": 0
  },
