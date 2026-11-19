@@ -835,7 +835,8 @@ class LarecompApp : public rex::ReXApp {
     // Before anything starts this executable's SDL joystick layer (the wheel thread starts it):
     // the GameInput driver for the Xbox trigger rumble.
     larecomp::impulse::EarlyInit();
-    // Before the window starts SDL's joystick layer: keeps known wheels out of the gamepad layer.
+    // The known wheels went into SDL_GAMECONTROLLER_IGNORE_DEVICES at process start (wheel_input.cpp: the SDK's SDL read the
+    // environment when it opened the window, before this). This logs it, adds a wheel named in the settings, starts the wheel thread.
     larecomp::wheel::EarlyInit();
     return true;
   }

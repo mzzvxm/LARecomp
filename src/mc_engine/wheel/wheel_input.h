@@ -24,7 +24,11 @@ struct PadIn {
 
 // Before SDL's joystick layer starts: keeps the wheel out of the gamepad layer
 // (the SDK's SDL input driver would otherwise map it as a stick and merge it into
-// user 0 next to ours). Called once from main().
+// user 0 next to ours). The known wheel models go into SDL_GAMECONTROLLER_IGNORE_DEVICES
+// from a static initialiser of the executable, before wWinMain: the SDK's SDL reads the
+// environment when it opens the window, long before the app exists. EarlyInit adds a
+// wheel the settings name, logs what was done and starts the wheel thread. Called once
+// at the start of the app.
 void EarlyInit();
 
 // True while a wheel is connected, open and the mode allows it (wheel_mode is not
