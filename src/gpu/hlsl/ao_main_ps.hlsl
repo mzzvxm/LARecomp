@@ -73,13 +73,15 @@
 // from the near samples' mask alone (occupied_near), so the occlusion looks as it did. ssgi_light.h has the
 // same maths in C++.
 
-// THE TRACED TERM (the plain pass only; car_rt_ao.h, car_rt_ao_rules.h). Where the device can trace rays against the player's car, a compute pass
-// (car_rt_ao_cs.hlsl) has cast a few short rays from the pixels near the car before this pass and left an image the size of this one (R8G8B8A8_UNORM:
-// r the open share of the pixel's hemisphere within the rays' reach, 1 where nothing was traced). With the flag kRtOcclusionFlag in the flags (bit 31;
-// the bounce light's pass takes slots.x for its colour chain, so it has no traced term) slots.x is that image's bindless slot and the visibility
+// THE TRACED TERM (both variants, the plain pass and the bounce light's; car_rt_ao.h, car_rt_ao_rules.h). Where the device can trace rays against the
+// cars of the top level (the player's and the ones beside it), a compute pass (car_rt_ao_cs.hlsl) has cast a few short rays from the pixels near them
+// before this pass and left an image the size of this one (R8G8B8A8_UNORM: r the open share of the pixel's hemisphere within the rays' reach, 1 where
+// nothing was traced). With the flag kRtOcclusionFlag in the flags (bit 31) the image's bindless slot is in lin.x, as a number (the main pass does
+// not read the projection rows lin holds for the depth pass, and every uint of the bounce light's push is taken by its chains), and the visibility
 // is the smaller of the screen-space one and the traced one raised to the same power with the same floor: what the camera does not see (the far
-// side of a wheel well, the body over a tyre, the road at the foot of a car) darkens by the car's own triangles. The pass is the same to the bit
-// without the flag.
+// side of a wheel well, the body over a tyre, the road at the foot of a car, between two cars) darkens by the cars' own triangles. In the bounce
+// light's variant that is its x channel, the one the denoise and the history read; the bounce itself (yzw) is the screen's. The pass is the same
+// to the bit without the flag.
 //
 // COMPILE-TIME COUNTS. The same source is compiled for the counts of a quality (ao.cpp: 3 slices of 3 steps, or 2 of 2; the
 // bounce light adds the far ring's steps a side, 2 or 1): with AO_SLICES and AO_STEPS defined, and in the bounce light's
@@ -130,8 +132,14 @@ static const float kMinOffsetPixels = 1.3f;
 // The farthest a sample may reach on screen, as a share of the image height (a surface almost at
 // the camera would ask for the whole screen).
 static const float kMaxRadiusShare = 0.3f;
-// The traced term's flag (the flags word's bit 31, car_rt_ao_rules.h kMainFlag): slots.x is the traced image's slot.
+// The traced term's flag (the flags word's bit 31, car_rt_ao_rules.h kMainFlag): lin.x is the traced image's slot, as a number.
 static const uint kRtOcclusionFlag = 1u << 31;
+
+// The traced term's visibility at `pixel` (the flag is set): the traced open share shaped as the visibility is (the final power and the floor).
+float AoTracedVisibility(int2 pixel) {
+  const float traced = g_textures[uint(g_push.lin.x)].Load(int3(pixel, 0)).x;
+  return max(pow(traced, g_push.shape.x), g_push.shape.y);
+}
 
 // The linear depth at the continuous pixel position `p` (level-0 pixels), from `level` of the
 // chain, nearest texel. Each level's slot comes straight from the push constants (never a computed
@@ -426,6 +434,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float inv_open = 1.0f / max(open_sum, 1e-3f);
   visibility = saturate(visibility * inv_open);
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
+  if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
+    // THE TRACED TERM (above): the plain pass's rule on the visibility channel, the darker of the two.
+    visibility = min(visibility, AoTracedVisibility(pixel));
+  }
   // A half float keeps 65504; the chain's colours are capped well under that, and a NaN counts as none.
   bounce = min(max(bounce * inv_open, 0.0f), 60000.0f);
   return float4(visibility, bounce);
@@ -555,8 +567,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
     // THE TRACED TERM (above): the open share the rays found, shaped as the visibility is, the darker of the two.
-    const float traced = g_textures[g_push.slots.x].Load(int3(pixel, 0)).x;
-    visibility = min(visibility, max(pow(traced, g_push.shape.x), g_push.shape.y));
+    visibility = min(visibility, AoTracedVisibility(pixel));
   }
   return float4(visibility, 0.0f, 0.0f, 0.0f);
 }

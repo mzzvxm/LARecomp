@@ -2742,9 +2742,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
   }
 
-  // The ray traced occlusion and sun terms around the player's car (car_rt_ao.h): one compute pass over the level 0 depth, against this frame's
-  // top level structure (built before these passes: the Scene calls CarRtScene::OnResolve first in a frame this wants, CarRtBeforeAo), into an image
-  // the visibility pass (the plain one: the bounce light's has no slot for it) and the contact march read. Nothing recorded: they are as they were.
+  // The ray traced occlusion and sun terms around the player's car and the cars beside it (car_rt_ao.h): one compute pass over the level 0 depth,
+  // against this frame's top level structure (built before these passes: scene.cpp OnResolve calls CarRtScene::OnResolve first), into an image the
+  // visibility pass (the plain one and the bounce light's) and the contact march read. Nothing recorded: they are as they were.
   CarRtAo::Result rt;
   rt_contact_slot_ = kNoSlot;
   if (rt_ao_ && rt_ao_->wanted()) {
@@ -2753,7 +2753,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     in.tan_x = base.lens[0];
     in.tan_y = base.lens[1];
     in.fade_end = base.extra[1];
-    in.occlusion = plan.occlusion && !plan.gi.on;
+    in.occlusion = plan.occlusion;  // the plain visibility pass and the bounce light's both take the traced term (hlsl/ao_main_ps.hlsl)
     in.contact = contact;
     in.ultra = plan.mode == Mode::kUltra;
     for (int i = 0; i < 3; ++i) {
@@ -2790,6 +2790,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
     // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
     push.slots2[1] = ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable));
+    // The traced occlusion (hlsl/ao_main_ps.hlsl THE TRACED TERM), for the plain pass and the bounce light's alike: flag bit 31 says so and lin.x carries the
+    // image's bindless slot as a number (the depth pass's projection rows are not read by the main pass; every uint of the bounce light's push is taken).
+    if (rt.recorded && rt.occlusion) {
+      push.lin[0] = float(rt.slot);
+      push.slots2[2] |= car_rt_ao::kMainFlag;
+    }
     // The bounce light test's main pass is the same pass as a visibility bitmask: it reads the colour
     // chain too (slots.x, slots.y, slots2.w; the plain pass leaves them alone), the thickness and the
     // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the
@@ -2810,16 +2816,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       DrawPass(list, gi_, MainGiPipeline(plan.gi), gi_push);
       main_out = &gi_;
     } else {
-      if (rt.recorded && rt.occlusion) {
-        // The traced term (hlsl/ao_main_ps.hlsl THE TRACED TERM): slots.x is the image, bit 31 of the flags says so. The plain pass does not read slots.x
-        // otherwise (the depth plane's slot the base push holds is for the depth pass).
-        push.slots[0] = rt.slot;
-        push.slots2[2] |= car_rt_ao::kMainFlag;
-      }
       DrawPass(list, raw_, main_pipeline, push);
-      push.slots[0] = base.slots[0];  // the denoise passes below take the push as it was
-      push.slots2[2] &= ~car_rt_ao::kMainFlag;
     }
+    push.lin[0] = base.lin[0];  // the denoise passes below take the push as it was
+    push.slots2[2] &= ~car_rt_ao::kMainFlag;
     // The history this frame can lean on, and the camera's motion into it.
     const HistoryUse use = ChooseHistory(plan);
     NoteHistory(use);

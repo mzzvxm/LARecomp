@@ -232,7 +232,7 @@ void CarRtAo::BeginFrame(bool occlusion_on, bool contact_on) {
   }
   setting_ = rules::SettingOf(Setting().Get());
   // The coarse decision, from the effects' levels: the frame's own gates (the contact shadows' sun and rain, the bounce light) come with Record.
-  const rules::Terms coarse = rules::Wanted(setting_, true, occlusion_on, false, contact_on);
+  const rules::Terms coarse = rules::Wanted(setting_, true, occlusion_on, contact_on);
   if (!coarse.any()) {
     return;
   }
@@ -250,7 +250,7 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
   if (!list || !wanted_ || !ready_ || !in.depth || !in.depth->texture || in.depth->slot == kNoSlot) {
     return result;
   }
-  const rules::Terms terms = rules::Wanted(setting_, true, in.occlusion, false, in.contact);
+  const rules::Terms terms = rules::Wanted(setting_, true, in.occlusion, in.contact);
   if (!terms.any()) {
     return result;
   }

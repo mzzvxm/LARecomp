@@ -1,7 +1,9 @@
 // Check of the ray traced occlusion and contact shadows' rules (car_rt_ao_rules.h): the setting and what it asks for, the rays and the reach, the
 // cosine weighted pattern and the distribution of the rays' lengths (the expected occlusion of a blocker at a distance, and of a plane over the
 // surface), the sun ray's cone, the car's box in view space (the camera's z whichever way it looks) and the pixel rectangle that holds it, the slab
-// test, the image's codes and the flags. Given the src/gpu folder it also checks that the shaders repeat the header's numbers and flags. A program of
+// test, the region of several cars (the boxes' rectangle, the pixel and sun tests over them, the mask that sees the other cars), the rule that puts the
+// traced term into the main pass (the plain one and the bounce light's), the image's codes and the flags. Given the src/gpu folder it also checks that the
+// shaders repeat the header's numbers and flags. A program of
 // its own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_car_rt_ao_rules_test     (src/gpu/CMakeLists.txt)
@@ -78,22 +80,20 @@ void TestSetting() {
   Check(ra::SettingOf("") == ra::Setting::kAuto && ra::SettingOf("ultra") == ra::Setting::kAuto && ra::SettingOf("OFF") == ra::Setting::kAuto,
         "a word that is none of them is auto (the settings' rule)");
 
-  // Wanted(setting, device, occlusion, bounce, contact)
-  Check(!ra::Wanted(ra::Setting::kAuto, false, true, false, true).any(), "a device that cannot trace the car: nothing");
-  Check(!ra::Wanted(ra::Setting::kOff, true, true, false, true).any(), "off: nothing");
-  const ra::Terms both = ra::Wanted(ra::Setting::kAuto, true, true, false, true);
-  Check(both.occlusion && both.contact, "auto with both effects on: both terms");
-  const ra::Terms occlusion_only = ra::Wanted(ra::Setting::kAuto, true, true, false, false);
+  // Wanted(setting, device, occlusion, contact): the bounce light does not change it (its pass takes the traced term too)
+  Check(!ra::Wanted(ra::Setting::kAuto, false, true, true).any(), "a device that cannot trace the car: nothing");
+  Check(!ra::Wanted(ra::Setting::kOff, true, true, true).any(), "off: nothing");
+  const ra::Terms both = ra::Wanted(ra::Setting::kAuto, true, true, true);
+  Check(both.occlusion && both.contact, "auto with both effects on: both terms (with or without the bounce light)");
+  const ra::Terms occlusion_only = ra::Wanted(ra::Setting::kAuto, true, true, false);
   Check(occlusion_only.occlusion && !occlusion_only.contact, "auto, the contact shadows off or gated: the occlusion term only");
-  const ra::Terms contact_only = ra::Wanted(ra::Setting::kAuto, true, false, false, true);
+  const ra::Terms contact_only = ra::Wanted(ra::Setting::kAuto, true, false, true);
   Check(!contact_only.occlusion && contact_only.contact, "auto, the occlusion off: the sun ray only");
-  const ra::Terms bounce = ra::Wanted(ra::Setting::kAuto, true, true, true, true);
-  Check(!bounce.occlusion && bounce.contact, "the bounce light's visibility pass has no traced term, the contact march does");
-  const ra::Terms ao_setting = ra::Wanted(ra::Setting::kOcclusion, true, true, false, true);
+  const ra::Terms ao_setting = ra::Wanted(ra::Setting::kOcclusion, true, true, true);
   Check(ao_setting.occlusion && !ao_setting.contact, "ao: the occlusion term only even with the contact shadows on");
-  const ra::Terms contact_setting = ra::Wanted(ra::Setting::kContact, true, true, false, true);
+  const ra::Terms contact_setting = ra::Wanted(ra::Setting::kContact, true, true, true);
   Check(!contact_setting.occlusion && contact_setting.contact, "contact: the sun ray only even with the occlusion on");
-  Check(!ra::Wanted(ra::Setting::kAuto, true, false, false, false).any(), "both effects off: nothing");
+  Check(!ra::Wanted(ra::Setting::kAuto, true, false, false).any(), "both effects off: nothing");
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -493,6 +493,38 @@ void TestSlab() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// the term in the main pass (the plain one and the bounce light's)
+// ---------------------------------------------------------------------------------------------------------------------
+void TestCombine() {
+  const float power = 3.6f, floor = 0.1f;
+  // An open share of 1 leaves the screen-space visibility as it is, whatever that is.
+  bool open_keeps = true, never_lighter = true, monotonic = true;
+  for (int i = 0; i <= 20; ++i) {
+    const float screen = float(i) / 20.0f;
+    open_keeps = open_keeps && ra::CombineVisibility(screen, 1.0f, power, floor) == screen;
+    float previous = -1.0f;
+    for (int j = 0; j <= 20; ++j) {
+      const float traced = float(j) / 20.0f;
+      const float out = ra::CombineVisibility(screen, traced, power, floor);
+      never_lighter = never_lighter && out <= screen + 1e-7f;
+      monotonic = monotonic && out >= previous - 1e-7f;  // a more open traced share is never darker
+      previous = out;
+    }
+  }
+  Check(open_keeps, "a traced share of 1 (open, or never traced) leaves the screen-space visibility as it is");
+  Check(never_lighter, "the traced term never lightens the screen-space visibility");
+  Check(monotonic, "a more open traced share is never darker");
+  Check(Near(ra::CombineVisibility(1.0f, 0.0f, power, floor), floor, 1e-6), "a fully blocked pixel goes to the look's floor");
+  Check(Near(ra::CombineVisibility(1.0f, 0.8f, power, floor), std::pow(0.8, 3.6), 1e-5), "a mostly open pixel takes the look's power of it");
+  Check(ra::CombineVisibility(1.0f, 0.5f, power, floor) == floor, "a half open pixel's power is under the floor: the floor");
+  Check(ra::CombineVisibility(0.05f, 0.0f, power, floor) == 0.05f, "a pixel the screen-space term already darkened below the floor stays as it was");
+  // The bounce light's pass and the plain pass use the same rule on the same inputs: one function, the shader's AoTracedVisibility in both.
+  const float a = ra::CombineVisibility(0.8f, 0.7f, power, floor);
+  const float b = ra::CombineVisibility(0.8f, 0.7f, power, floor);
+  Check(a == b && a < 0.8f, "the same inputs give the same visibility in either pass, darker than the screen's where the rays found a blocker");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // the image, the flags, the cost
 // ---------------------------------------------------------------------------------------------------------------------
 void TestCodesAndFlags() {
@@ -548,9 +580,27 @@ void CheckShader(const std::string& dir) {
   Check(!main_ps.empty() && !contact_ps.empty() && !cs.empty(), "the three shaders are read");
   double v = 0.0;
   Check(Constant(main_ps, "kRtOcclusionFlag", &v) && uint32_t(v) == ra::kMainFlag, "ao_main_ps.hlsl kRtOcclusionFlag is the header's kMainFlag");
-  Check(main_ps.find("(g_push.slots2.z & kRtOcclusionFlag) != 0u") != std::string::npos &&
-            main_ps.find("g_textures[g_push.slots.x].Load(int3(pixel, 0)).x") != std::string::npos,
-        "ao_main_ps.hlsl reads the traced image in slots.x when the flag is set");
+  // The traced image's slot is in lin.x as a number, for the plain pass and the bounce light's alike (the colour chain takes slots.x, slots.y, slots2.w).
+  Check(main_ps.find("g_textures[uint(g_push.lin.x)].Load(int3(pixel, 0)).x") != std::string::npos &&
+            main_ps.find("return max(pow(traced, g_push.shape.x), g_push.shape.y);") != std::string::npos,
+        "ao_main_ps.hlsl reads the traced image in lin.x and shapes it as CombineVisibility does");
+  size_t rule_count = 0;
+  for (size_t at = main_ps.find("visibility = min(visibility, AoTracedVisibility(pixel));"); at != std::string::npos;
+       at = main_ps.find("visibility = min(visibility, AoTracedVisibility(pixel));", at + 1)) {
+    ++rule_count;
+  }
+  size_t flag_count = 0;
+  for (size_t at = main_ps.find("(g_push.slots2.z & kRtOcclusionFlag) != 0u"); at != std::string::npos;
+       at = main_ps.find("(g_push.slots2.z & kRtOcclusionFlag) != 0u", at + 1)) {
+    ++flag_count;
+  }
+  Check(rule_count == 2 && flag_count == 2, "ao_main_ps.hlsl applies the traced term in both variants: the plain pass and the bounce light's");
+  const size_t gi_begin = main_ps.find("#if AO_GI\n\nstatic const uint kSectors");
+  const size_t gi_end = main_ps.find("#else  // !AO_GI");
+  const size_t gi_rule = main_ps.find("visibility = min(visibility, AoTracedVisibility(pixel));");
+  const size_t gi_return = main_ps.find("return float4(visibility, bounce);");
+  Check(gi_begin != std::string::npos && gi_end != std::string::npos && gi_rule > gi_begin && gi_rule < gi_end && gi_return > gi_rule && gi_return < gi_end,
+        "in the bounce light's variant the rule is on the visibility before the (visibility, bounce) is returned");
   Check(Constant(contact_ps, "kRtContactFlag", &v) && uint32_t(v) == ra::kContactFlag, "ao_contact_ps.hlsl kRtContactFlag is the header's kContactFlag");
   Check(Constant(contact_ps, "kRtContactViewFlag", &v) && uint32_t(v) == ra::kContactViewFlag,
         "ao_contact_ps.hlsl kRtContactViewFlag is the header's kContactViewFlag");
@@ -597,6 +647,7 @@ int main(int argc, char** argv) {
   TestViewBox();
   TestScreenRect();
   TestSlab();
+  TestCombine();
   TestCodesAndFlags();
   if (!src_dir.empty()) {
     CheckShader(src_dir);

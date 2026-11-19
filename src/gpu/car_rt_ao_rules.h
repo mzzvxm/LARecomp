@@ -72,15 +72,15 @@ struct Terms {
   bool any() const { return occlusion || contact; }
 };
 // What the pass computes in a frame. `device_supports`: the device can trace the car (CarRtSupported) and the pass's layout and shader exist.
-// `occlusion_on`: the occlusion is on in this frame (a level other than off, and its own pipelines built). `bounce_on`: the bounce light's
-// visibility pass runs (its main pass reads its slots for the colour chain, so the traced term has no place there: the frame is the screen-space
-// one). `contact_on`: the contact shadows are active in this frame (on, and not gated off by a low sun or rain).
-inline Terms Wanted(Setting setting, bool device_supports, bool occlusion_on, bool bounce_on, bool contact_on) {
+// `occlusion_on`: the occlusion is on in this frame (a level other than off, and its own pipelines built). The bounce light's pass takes the traced
+// term too (hlsl/ao_main_ps.hlsl THE TRACED TERM: the same rule on its visibility channel), so the occlusion term does not depend on it.
+// `contact_on`: the contact shadows are active in this frame (on, and not gated off by a low sun or rain).
+inline Terms Wanted(Setting setting, bool device_supports, bool occlusion_on, bool contact_on) {
   Terms t;
   if (!device_supports || setting == Setting::kOff) {
     return t;
   }
-  t.occlusion = occlusion_on && !bounce_on && setting != Setting::kContact;
+  t.occlusion = occlusion_on && setting != Setting::kContact;
   t.contact = contact_on && setting != Setting::kOcclusion;
   return t;
 }
@@ -203,6 +203,17 @@ struct Texel {
 };
 inline uint8_t Encode8(float x) { return uint8_t(std::clamp(x, 0.0f, 1.0f) * 255.0f + 0.5f); }
 inline float Decode8(uint8_t b) { return float(b) / 255.0f; }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The occlusion term in the main pass
+// ---------------------------------------------------------------------------------------------------------------------
+// The visibility the main pass writes where the frame has a traced term (hlsl/ao_main_ps.hlsl AoTracedVisibility, the same rule in the plain pass
+// and in the bounce light's, on the channel the denoise and the history read): the darker of the screen-space visibility (the look's power and floor
+// already applied) and the traced open share shaped the same way. It never lightens what the screen-space term found, and a pixel the rays found
+// open keeps it as it was.
+inline float CombineVisibility(float screen_visibility, float traced_open, float power, float floor) {
+  return std::min(screen_visibility, std::max(std::pow(traced_open, power), floor));
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The flags the consumers read (the shaders repeat them: car_rt_ao_rules_test.cpp checks the text)
