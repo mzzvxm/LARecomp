@@ -164,6 +164,13 @@ add_executable(larecomp_ssgi_test EXCLUDE_FROM_ALL ssgi_test.cpp)
 # Which host passes a start makes pipelines for (host_plan.h: the class against the settings, the plan, the words of the log line) likewise:
 #   cmake --build <dir> --target larecomp_host_plan_test, then run src/gpu/larecomp_host_plan_test.
 add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
+# The resolve copy's conversion table and the list of its pipelines made at start (resolve_variants.h: every destination the pass can
+# convert into is listed, the copy into k_1_5_5_5 included; given the src/gpu folder it also checks that the mode numbers are the
+# shader's and that resolve.cpp keeps no table of its own) likewise. It reads Plume's types header only (the format names), and
+# includes format.cpp itself:
+#   cmake --build <dir> --target larecomp_resolve_variants_test, then run src/gpu/larecomp_resolve_variants_test <src/gpu dir>.
+add_executable(larecomp_resolve_variants_test EXCLUDE_FROM_ALL resolve_variants_test.cpp)
+target_link_libraries(larecomp_resolve_variants_test PRIVATE plume)
 # The contact shadows' trace rules and the C++ twin of their march (contact_trace.h: the depth tolerance in pixel footprints, the
 # ray's fade and steps, the filter weights, the cost model) likewise:
 #   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
