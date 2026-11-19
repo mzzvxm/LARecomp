@@ -40,6 +40,14 @@
 // SHADER_READ_ONLY_OPTIMAL, declared to FFX as COMPUTE_READ; the output in GENERAL / UNORDERED_ACCESS,
 // declared as UNORDERED_ACCESS): FFX takes its resources back to those states.
 //
+// Video memory (vram_room.h). The worker asks for room before it makes a context: the runtime's own
+// figure for the context (a size query with no context, ffxQueryDescUpscaleGetGPUMemoryUsageV2; else the
+// last context of the kind scaled by the output's pixels) plus the picture it writes, against the same line
+// frame generation keeps (VideoMemoryBudget::HasRoomFor: the use plus the need under 90% of the OS
+// budget). With no room nothing is made: the request is refused for 5 s, then 10, up to a minute (NoRoom
+// says so, and Request and Prepare leave it alone meanwhile), the log says why once per refusal, and the
+// temporal system runs the next upscaler down or none (temporal.cpp UpdatePath).
+//
 // Threads: see temporal_backend.h.
 // ===========================================================================
 
@@ -60,6 +68,7 @@ class FfxBackend final : public TemporalBackend {
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override;
+  bool NoRoom(const BackendRequest& request) const override;
   void Prepare(const BackendRequest& next) override;
   bool PreparedReady(const BackendRequest& next) const override;
   bool Commit(const BackendRequest& next) override;

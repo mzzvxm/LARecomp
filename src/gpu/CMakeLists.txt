@@ -242,6 +242,13 @@ add_executable(larecomp_upscaler_masks_test EXCLUDE_FROM_ALL upscaler_masks_test
 # The video memory budget of a GPU that shares memory with the CPU (uma_budget.h) has one too:
 #   cmake --build <dir> --target larecomp_uma_budget_test, then run src/gpu/larecomp_uma_budget_test (exit 0 = passed).
 add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
+# The room rules (vram_room.h: the line a context asks before it is made, the upscaler's need, the wait after a refusal, the upscaler
+# that fits) have one too:
+#   cmake --build <dir> --target larecomp_vram_room_test, then run src/gpu/larecomp_vram_room_test (exit 0 = passed).
+add_executable(larecomp_vram_room_test EXCLUDE_FROM_ALL vram_room_test.cpp)
+# The Windows builds the game's Direct3D 12 runtime needs (windows_floor.h, which only explains a refused start) likewise:
+#   cmake --build <dir> --target larecomp_windows_floor_test, then run src/gpu/larecomp_windows_floor_test (exit 0 = passed).
+add_executable(larecomp_windows_floor_test EXCLUDE_FROM_ALL windows_floor_test.cpp)
 # So does the text of the device-loss report (device_fault_format.h):
 #   cmake --build <dir> --target larecomp_device_fault_test, then run src/gpu/larecomp_device_fault_test.
 add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)

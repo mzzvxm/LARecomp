@@ -436,6 +436,9 @@ const char* UpscalerRowSuffix() {
     // "[gpu] upscalers: the UPSCALING row is on screen" says when it first ran).
     mcla::gpu::NoteUpscalerInterest("the UPSCALING row is on screen");
     if (DlssWaitsForRestart()) return " (RESTART)";
+    // The chosen FFX upscaler does not fit the video memory budget now (temporal_ffx.cpp asks it before the
+    // context is made); the renderer runs the next one down or none and tries again later.
+    if (a.no_room) return " (NO ROOM)";
     return a.switching ? " (APPLYING)" : "";
 }
 

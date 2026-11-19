@@ -229,6 +229,10 @@ std::string DescribeDevice(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DescribeDevice(device));
 }
 
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(DescribeCapabilities(device));
+}
+
 VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryVideoMemory(device));
 }

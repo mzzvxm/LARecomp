@@ -394,6 +394,12 @@ struct UpscalerAvailability {
   // The settings ask for another upscaler or mode than the one running and its context is being made
   // (a live change, temporal.h): the old one goes on until it is ready.
   bool switching = false;
+  // The upscaler the settings choose has no room in video memory: its context was not made because the use
+  // plus what it needs would pass the line the caches start releasing at (vram_room.h), so the renderer runs
+  // the next one down (FSR 4 -> FSR 3.1) or none, and asks again after a few seconds, less often each time.
+  // Set from the first refusal until the choice is running or changes. The pause menu's UPSCALING row says
+  // "(NO ROOM)", as frame generation's does (FrameGenerationAvailability::no_room).
+  bool no_room = false;
 };
 UpscalerAvailability GetUpscalerAvailability();
 
