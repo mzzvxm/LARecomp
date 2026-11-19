@@ -36,6 +36,7 @@
 #include "imgui.h"
 #include "hooks/hooks_internal.h"
 #include "mc_engine/input/input_state.h"
+#include "mc_engine/input/input_state_core.h"
 #include "mc_engine/input/kbm_input.h"
 #include "mc_engine/core/logging.h"
 #include "modloader/texture.h"
@@ -368,8 +369,9 @@ std::vector<KeyRef> ParseKeyList(const std::string& list) {
         const size_t plus = token.rfind('+');
         if (plus != std::string::npos && plus + 1 < token.size()) token = Trim(token.substr(plus + 1));
         // The mouse buttons and the wheel are keys here (LMB, RMB, MMB, MB4, MB5, WheelUp, WheelDown): their ids are in kbm_input.h.
+        // Under its canonical name (LMB for Mouse1 or LButton): the key cap files are named by it (src/keycaps/lmb.png).
         if (const larecomp::kbm::MouseKey* mouse = larecomp::kbm::FindMouseKeyByName(token)) {
-            out.push_back({token, static_cast<uint8_t>(mouse->id)});
+            out.push_back({mouse->name, static_cast<uint8_t>(mouse->id)});
             continue;
         }
         const auto vk = rex::ui::ParseVirtualKey(token);
@@ -1880,7 +1882,7 @@ bool Hook_ControlLabel(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
             if (!g_slot_key[i].empty()) continue;
             const std::string name = KeyNameOfScancode(b, static_cast<uint8_t>(key));
             if (name.empty()) break;
-            // A mouse button has no key cap yet (they come with the mouse feel work): its name as text beats a blank cap.
+            // A mouse button or the wheel has its own cap (src/keycaps/lmb.png ...; make_mouse_caps.py); a build without that file shows the name as text, which beats a blank cap.
             if (larecomp::kbm::FindMouseKeyByScancode(static_cast<uint8_t>(key)) && !CapExists(name, 32, 32)) break;
             // Not scanned yet (or the dictionary has no such texture): drawing the slot
             // would show the PlayStation button, so the text name below it is.
@@ -2009,6 +2011,41 @@ namespace larecomp::keyboard {
 bool MenuScreenUp() { return g_screen_menu.load(std::memory_order_relaxed); }
 bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
 
+// ── what the settings say about a key (RoleOfKey) ───────────────────────
+namespace {
+std::mutex g_roles_mutex;
+larecomp::input::KeyRoleTable g_roles;  // guarded by g_roles_mutex
+uint32_t g_roles_gen = 0;                // the BindingsGen() the table was built at (0 = not built yet; the generation starts at 1)
+
+// Every binding that names keys. kb_drive_camera_views holds camera numbers, not keys.
+void BuildRoles(larecomp::input::KeyRoleTable& table) {
+    const std::string lists[] = {
+        REXCVAR_GET(kb_ui_accept), REXCVAR_GET(kb_ui_back), REXCVAR_GET(kb_ui_x), REXCVAR_GET(kb_ui_y), REXCVAR_GET(kb_ui_lb), REXCVAR_GET(kb_ui_rb), REXCVAR_GET(kb_ui_lt),
+        REXCVAR_GET(kb_ui_rt), REXCVAR_GET(kb_ui_up), REXCVAR_GET(kb_ui_down), REXCVAR_GET(kb_ui_left), REXCVAR_GET(kb_ui_right), REXCVAR_GET(kb_ui_start), REXCVAR_GET(kb_ui_select),
+        REXCVAR_GET(kb_drive_steer_left), REXCVAR_GET(kb_drive_steer_right), REXCVAR_GET(kb_drive_gas), REXCVAR_GET(kb_drive_brake), REXCVAR_GET(kb_drive_handbrake),
+        REXCVAR_GET(kb_drive_weight), REXCVAR_GET(kb_drive_nitro), REXCVAR_GET(kb_drive_headlights), REXCVAR_GET(kb_drive_horn), REXCVAR_GET(kb_drive_camera),
+        REXCVAR_GET(kb_drive_camera_keys), REXCVAR_GET(kb_drive_lookback), REXCVAR_GET(kb_drive_map), REXCVAR_GET(kb_drive_talk), REXCVAR_GET(kb_drive_shift_up),
+        REXCVAR_GET(kb_drive_shift_down), REXCVAR_GET(kb_drive_pause), REXCVAR_GET(kb_drive_popup_select), REXCVAR_GET(kb_drive_popup_back),
+    };
+    for (const std::string& list : lists)
+        for (const KeyRef& k : ParseKeyList(list)) table.Mark(k.vk, larecomp::input::KeyRole::Bound);
+    for (int i = 0; i < kNumExtras; ++i)
+        for (const KeyRef& k : ParseKeyList(ExtraCvar(i))) table.Mark(k.vk, larecomp::input::KeyRole::ExtraButton);
+}
+}  // namespace
+
+larecomp::input::KeyRole RoleOfKey(uint16_t vk) {
+    const uint32_t gen = BindingsGen();  // the cvar change callbacks bump it; nothing is read until a binding changed
+    std::lock_guard<std::mutex> lock(g_roles_mutex);
+    if (g_roles_gen != gen) {
+        larecomp::input::KeyRoleTable fresh;
+        BuildRoles(fresh);
+        g_roles = fresh;
+        g_roles_gen = gen;
+    }
+    return g_roles.Of(vk);
+}
+
 // The XamInputGetState wrapper has finished (the SDK's state, the dead zones, the device state machine's look at it): the keyboard's steering goes into the left stick's X axis.
 KeySteerScope::~KeySteerScope() {
     const int32_t key = g_key_steer.load(std::memory_order_relaxed);
@@ -2047,6 +2084,7 @@ extern "C" REX_FUNC(rex_sub_822A4B80) {
 namespace larecomp::keyboard {
 bool MenuScreenUp() { return true; }
 bool PhoneScreenUp() { return false; }
+larecomp::input::KeyRole RoleOfKey(uint16_t) { return larecomp::input::KeyRole::Plain; }
 KeySteerScope::~KeySteerScope() {}
 }  // namespace larecomp::keyboard
 

@@ -35,6 +35,10 @@ why = "keyboard steering feel (KBM-DESIGN.md P5): the ramp's two times are F4-on
 names = ["kb_steer_rise", "kb_steer_return"]
 
 [[exception]]
+why = "photo album export (photo_export.cpp, 63312657): on by default it turns the dead PUBLISH ALBUM button (the Social Club is closed) into EXPORT ALBUM; the folder is a text path, which no pause-menu row type takes. F4 only, like the online address"
+names = ["photo_album_export", "photo_album_export_dir"]
+
+[[exception]]
 why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in F4 for now"
 names = [
   "online_master_server", "server_browser_servers", "server_browser_show_icons",
