@@ -93,33 +93,36 @@ void CarRtInstances::NoteFrame(uint64_t frame, uint64_t blas_built_total, const 
   w.frames_with_cars += s.cars != 0;
   w.player_sum += s.player_instances;
   w.other_sum += s.other_instances;
+  w.chrome_sum += s.other_chrome;
   w.cars_sum += s.cars;
   w.missing_sum += s.missing_mesh;
   w.bad_sum += s.bad_matrix;
   w.cut_sum += s.cars_cut;
   w.player_max = std::max(w.player_max, s.player_instances);
   w.other_max = std::max(w.other_max, s.other_instances);
+  w.chrome_max = std::max(w.chrome_max, s.other_chrome);
   w.cars_max = std::max(w.cars_max, s.cars);
   w.distinct_max = std::max(w.distinct_max, s.distinct_meshes);
   w.shared_max = std::max(w.shared_max, s.shared_meshes);
 
   if (s.cars != 0 && !first_cars_logged_) {
     first_cars_logged_ = true;
-    REXLOG_INFO("{} frame {}: the first other cars are in the top level: {} cars, {} instances beside the player's {}, {} distinct meshes in all of which {} are "
+    REXLOG_INFO("{} frame {}: the first other cars are in the top level: {} cars, {} instances beside the player's {} (of the others' {} are draws of the chrome's "
+                "shader: their tailpipes, badges and trim, traced for the chrome's occlusion), {} distinct meshes in all of which {} are "
                 "named by more than one instance (one structure each, shared); limits: {}",
-                kPrefix, frame, s.cars, s.other_instances, s.player_instances, s.distinct_meshes, s.shared_meshes, ci::Describe(limits));
+                kPrefix, frame, s.cars, s.other_instances, s.player_instances, s.other_chrome, s.distinct_meshes, s.shared_meshes, ci::Describe(limits));
   }
   if (frame < w.first_frame + kWindowFrames) {
     return;
   }
   const double n = double(std::max<uint32_t>(w.frames, 1));
   if (limits.On() || w.frames_with_cars != 0) {
-    REXLOG_INFO("{} cars, frames {}..{}: {} with a top level, {} of them with other cars; instances a frame: player {:.0f} (at most {}), others {:.0f} (at most {}), "
+    REXLOG_INFO("{} cars, frames {}..{}: {} with a top level, {} of them with other cars; instances a frame: player {:.0f} (at most {}), others {:.0f} (at most {}; chrome draws {:.1f}, at most {}), "
                 "other cars {:.1f} (at most {}); the most distinct meshes {} of which {} shared by several instances; left out per frame: {:.1f} draws "
                 "with no structure yet, {:.2f} with a bad matrix, {:.2f} cars over the instance budget; structures built in the window: {}; other cars' "
                 "meshes read from guest memory: {} ({} triangles), draws held back by the read budget {} and by the memory share {}; limits: {}",
                 kPrefix, w.first_frame, frame, w.frames, w.frames_with_cars, double(w.player_sum) / n, w.player_max, double(w.other_sum) / n, w.other_max,
-                double(w.cars_sum) / n, w.cars_max, w.distinct_max, w.shared_max, double(w.missing_sum) / n, double(w.bad_sum) / n, double(w.cut_sum) / n,
+                double(w.chrome_sum) / n, w.chrome_max, double(w.cars_sum) / n, w.cars_max, w.distinct_max, w.shared_max, double(w.missing_sum) / n, double(w.bad_sum) / n, double(w.cut_sum) / n,
                 blas_built_total - w.built_at_start, window_work_.meshes_read, window_work_.triangles_read, window_work_.over_stage_budget,
                 window_work_.over_memory, ci::Describe(limits));
   }
