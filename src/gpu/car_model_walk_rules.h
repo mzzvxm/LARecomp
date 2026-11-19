@@ -1193,8 +1193,12 @@ inline uint64_t VertexWindowKey(uint32_t d0, uint32_t d1) {
 
 }  // namespace detail
 
-// `cars` are the walks (not null); `draws` the frame's draws that write a vehicle ID.
-inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std::vector<DrawKey>& draws) {
+// `cars` are the walks (not null); `draws` the frame's draws that write a vehicle ID. `owner_of_draw` (by the draws given; null: none) names the car each draw is OF
+// (an index into `cars`, or -1 for none: car_model_rt_rules.h AssignDraws, which tells the cars of one model apart by the draw's stencil ID and origin). Without it a draw is credited
+// to EVERY car whose buffers it names, so a car of the same model that the frame does not draw (a racer 56 m away, culled) looks drawn when its twin is, and its in-use list
+// (another part variant: 19 geometries different) is then scored against its twin's draws: the 88.7 percent car of the first check run. With it a draw hits only its own car's
+// geometries; a draw that matched some car's vertex window but has no owner is vertex-only.
+inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std::vector<DrawKey>& draws, const std::vector<int32_t>* owner_of_draw = nullptr) {
   FrameMatch out;
   out.cars.resize(cars.size());
   out.draws.resize(draws.size());
@@ -1239,6 +1243,9 @@ inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std:
     for (const Owner& owner : found->second) {
       const Geometry& g = cars[owner.car]->geometries[owner.geometry];
       any_vertex = true;
+      if (owner_of_draw && d < owner_of_draw->size() && (*owner_of_draw)[d] != int32_t(owner.car)) {
+        continue;  // the draw is another car's (or nobody's): the buffers are the same, the car is not
+      }
       const bool index_ok = draw.indexed && g.ib_ok &&
                             ((draw.index_object != 0 && draw.index_object == g.ib_header) ||
                              PhysicalOf(draw.index_address) == PhysicalOf(g.ib_w6));

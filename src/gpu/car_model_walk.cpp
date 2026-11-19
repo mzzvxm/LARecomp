@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <memory>
 #include <unordered_set>
 #include <utility>
@@ -800,7 +801,12 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
     }
   }
 
-  // THE PROOF in the top level's own space: the chosen pose's instance of each matched geometry against the draw's instance, both through the frame's view
+  // THE PROOF in the top level's own space: the chosen pose's instance of each matched geometry against the draw's instance, both through the frame's view. Not before the
+  // calibration has chosen: until then the pose in force is the default, which is a hypothesis nobody has checked (the first check run's 1151 m line at frame 6753, logged
+  // under the wrong hypothesis one frame before the calibration decided, failed the check for a placement that was exact from the next frame on).
+  if (!calibration_.decided()) {
+    return report;
+  }
   const crt::Pose chosen = pose();
   double sum = 0.0;
   std::unordered_set<uint32_t> cars_with_pairs;
@@ -856,7 +862,19 @@ void Walker::FinishFrame() {
       index_of.push_back(i);
     }
   }
-  const FrameMatch frame = MatchFrame(usable, draws_);
+  // Which car each draw is of: the cars of one model name the same buffers (two Murcielagos: the one beside the player and a racer 56 m away that the frame does not
+  // draw), so the buffers alone would credit the near car's draws to both and the far one would look drawn with a different part list (car_model_rt_rules.h AssignDraws).
+  std::vector<std::array<double, 3>> usable_positions;
+  for (const CarWalk* walk : usable) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    usable_positions.push_back(walk->position_read ? std::array<double, 3>{walk->position[0], walk->position[1], walk->position[2]} : std::array<double, 3>{nan, nan, nan});
+  }
+  const car_model_rt::Assignment owners = car_model_rt::AssignDraws(usable, usable_positions, draws_);
+  std::vector<int32_t> owner_of_draw(draws_.size(), -1);
+  for (size_t d = 0; d < owners.draws.size() && d < owner_of_draw.size(); ++d) {
+    owner_of_draw[d] = owners.draws[d].car;
+  }
+  const FrameMatch frame = MatchFrame(usable, draws_, &owner_of_draw);
 
   uint32_t cars_ok = 0, drawn = 0, culled = 0, failed = 0;
   for (uint32_t i = 0; i < cars_.size(); ++i) {

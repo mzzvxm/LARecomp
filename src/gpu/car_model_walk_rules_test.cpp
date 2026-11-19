@@ -811,6 +811,23 @@ void TestSharedBuffers() {
   const cw::FrameMatch r = cw::MatchFrame({&wa, &wb}, {DrawOf(GeometryAt(wa, a.rigid_geometry), 2)});
   Check(r.cars[0].shared_buffers >= 1 && r.cars[1].shared_buffers >= 1, "a vertex window both cars own is counted as shared");
   Check(r.cars[0].draws == 1 && r.cars[1].draws == 1, "the draw is credited to both owners");
+  // RT-MODEL-CARS-3: with the owner of each draw (the stencil ID and the origin tell the twins apart) only that car is drawn: the first check run's 88.7 percent car was a twin 56 m
+  // away that the frame did not draw, credited with its neighbour's draws
+  const cw::DrawKey d = DrawOf(GeometryAt(wa, a.rigid_geometry), 2);
+  std::vector<int32_t> owner_b = {1};
+  const cw::FrameMatch rb = cw::MatchFrame({&wa, &wb}, {d}, &owner_b);
+  Check(!rb.cars[0].drawn && rb.cars[0].draws == 0 && rb.cars[0].matched == 0 && rb.cars[0].walked_only_in_use == rb.cars[0].in_use && rb.cars[0].ids.empty(),
+        "owned by car B: car A (the twin) is not drawn: nothing matched, every in-use geometry walked-only");
+  Check(rb.cars[1].drawn && rb.cars[1].draws == 1 && rb.cars[1].matched == 1 && rb.draws_matched == 1 && rb.draws[0].hit == cw::DrawHit::kGeometry && rb.draws[0].car == 1u,
+        "... and car B is drawn with the draw");
+  Check(rb.cars[0].shared_buffers >= 1 && rb.cars[1].shared_buffers >= 1, "the buffers are still counted as shared");
+  std::vector<int32_t> nobody = {-1};
+  const cw::FrameMatch rn = cw::MatchFrame({&wa, &wb}, {d}, &nobody);
+  Check(!rn.cars[0].drawn && !rn.cars[1].drawn && rn.draws_matched == 0 && rn.draws_vertex_only == 1 && rn.draws[0].hit == cw::DrawHit::kVertexOnly,
+        "a draw with no owner (no car within reach of its IDs' origin) is vertex-only and credits no car");
+  std::vector<int32_t> short_list;  // fewer owners than draws: the draw is credited as without a list
+  const cw::FrameMatch rs = cw::MatchFrame({&wa, &wb}, {d}, &short_list);
+  Check(rs.cars[0].draws == 1 && rs.cars[1].draws == 1, "an owner list shorter than the draws leaves the rest credited to every owner");
 }
 
 }  // namespace

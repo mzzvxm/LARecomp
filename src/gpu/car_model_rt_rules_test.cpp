@@ -845,6 +845,25 @@ void TestAssign() {
   }
   as = crt::AssignDraws(cars, positions, draws);
   Check(as.drawn[0] == 1 && as.drawn[1] == 1 && as.ids == 2 && as.ids_assigned == 2 && as.draws[0].car == 0 && as.draws[1].car == 1, "two IDs, two twins: both are drawn, each by its own draws");
+  // RT-MODEL-CARS-3: the debug comparison (car_model_walk::MatchFrame) with each draw's owner: the twin 10 m away that the frame does not draw is not credited with its twin's draws
+  // (the first check run's 88.7 percent car: a racer 56 m away of the neighbour's model, 19 part variants different, scored against the neighbour's draws)
+  {
+    draws.clear();
+    for (uint32_t g = 0; g < 4; ++g) {
+      draws.push_back(DrawOf(a, g, 3, 100.5, 0.5, 0.3));
+    }
+    const crt::Assignment one = crt::AssignDraws(cars, positions, draws);
+    std::vector<int32_t> owner(draws.size(), -1);
+    for (size_t d = 0; d < draws.size(); ++d) {
+      owner[d] = one.draws[d].car;
+    }
+    const cw::FrameMatch plain = cw::MatchFrame(cars, draws);
+    const cw::FrameMatch owned = cw::MatchFrame(cars, draws, &owner);
+    Check(plain.cars[0].drawn && plain.cars[1].drawn, "by the buffers alone both twins look drawn");
+    Check(owned.cars[0].drawn && !owned.cars[1].drawn && owned.cars[0].matched == 4 && owned.cars[1].matched == 0 && owned.cars[1].draws == 0 && owned.cars[1].ids.empty(),
+          "with the owners only the twin the draws are of is drawn: the other matched nothing");
+    Check(owned.draws_matched == 4 && owned.draws_vertex_only == 0, "the four draws are matched once");
+  }
   // an ID far from every candidate is nobody's
   draws.clear();
   draws.push_back(DrawOf(a, 0, 7, 160.0, 0.0, 0.0));
