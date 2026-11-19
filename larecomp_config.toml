@@ -5,12 +5,14 @@ out_directory_path = "generated"
 # rexglue 0.11: the 0xE0000000 view is mapped at its exact 4 KB offset by the SDK itself (placeholders
 # at a page aligned offset, Windows 10 1803 or later), so the old exact_e0_view option is gone.
 
-# The dot products of the vector unit (vmsum3fp128, vmsum4fp128) give the console's result on overflow (a quiet NaN)
-# only in "exact"; the default "fast" is a plain DPPS that returns infinity (rexglue issue 491, fixed in the fork).
+# The dot products of the vector unit (vmsum3fp128, vmsum4fp128): "fast". On LAR-RXSDK (838940ca) fast is DPPS plus one
+# exponent test and gives the console's quiet NaN on overflow (rexglue issue 491), as the fork did. Upstream's fast is a
+# plain DPPS (infinity on overflow), and "exact" (bit-exact, about 60 to 80 instructions a site, 4,365 sites) cost 10 to
+# 13 percent of the frame rate in a race (perf\out\AB011.txt, AB011V.txt, 2026-11-18).
 # The other seven [vector_math] keys stay at their defaults.
 [vector_math]
-vmsum3fp128 = "exact"
-vmsum4fp128 = "exact"
+vmsum3fp128 = "fast"
+vmsum4fp128 = "fast"
 
 [functions]
 0x8244FEC0 = { name = "mc_Sleep", size = 0x8 }
