@@ -77,7 +77,7 @@ The project overview, build instructions and credits are in the [README](https:/
 
 ## Status
 
-The pages describe the `main` branch as of 18 November 2026 (version label PATCH 10 - PREVIEW 2). The project changes quickly: when a page and the game disagree, the game's log and `logs/effective_config.txt` are the truth, and the page is out of date.
+The pages describe the `main` branch as of 18 November 2026. The project changes quickly: when a page and the game disagree, the game's log and `logs/effective_config.txt` are the truth, and the page is out of date.
 
 ## Conventions
 
