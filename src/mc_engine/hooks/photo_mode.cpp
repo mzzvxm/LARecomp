@@ -30,11 +30,12 @@
 // an address-scoped request for just the two front buffers while the photo state
 // machine winds up to the capture.
 //
-// The address-scoped request is the fork's SDK's (IGraphicsSystem::
-// RequestResolveReadback). The stock SDK has no such call, and there the shot
-// holds the global readback open instead, through the same window the vinyls
-// use (readback_window.cpp): every resolve for about a second around the shot,
-// which costs frame rate in photo mode and nowhere else.
+// The address-scoped request is LAR-RXSDK's (IGraphicsSystem::
+// RequestResolveReadback, version 2 of the interface on rexglue 0.11). It answers
+// false where no XENIA renderer runs (LARecomp's own renderer) or on a stock SDK,
+// and there the shot holds the global readback open instead, through the same
+// window the vinyls use (readback_window.cpp): every resolve for about a second
+// around the shot, which costs frame rate in photo mode and nowhere else.
 
 // Reads the base address out of a guest D3DTexture's GPU fetch constant, the
 // same field sub_82410440 feeds to LockRect: dword 1 of the fetch constant
@@ -62,14 +63,14 @@ static uint32_t GuestTextureBaseAddress(uint32_t texture_ea) {
 }
 
 // Asks the SDK to read back [base, base + span) for the next `frames` frames.
-// False when it cannot: a template so that, on an SDK without the call, the
-// requires-expression is simply false instead of a compile error.
+// False when it cannot (the SDK refuses: no XENIA renderer, or more ranges than it
+// holds): a template so that, on an SDK without the call, the requires-expression
+// is simply false instead of a compile error.
 template <typename Gfx>
 static bool RequestScopedResolveReadback(Gfx* gfx, uint32_t base, uint32_t span,
                                          uint32_t frames) {
     if constexpr (requires { gfx->RequestResolveReadback(base, span, frames); }) {
-        gfx->RequestResolveReadback(base, span, frames);
-        return true;
+        return gfx->RequestResolveReadback(base, span, frames);
     } else {
         return false;
     }
@@ -83,10 +84,8 @@ static void ArmPhotoFrontBufferReadback() {
     auto* rt = REX_RUNTIME();
     if (!rt) return;
     auto* mem = larecomp::guest::AddressSpace(rt);
-    // 0.11: the graphics system is an interface of the running app (0.10: rt->graphics_system()).
-    // CHECK: rex::gpu::IGraphicsSystem has no RequestResolveReadback in 0.11 (the 0.10 fork SDK had it), so the
-    // requires-expression below is false and the shot takes the global readback window; the scoped call needs the
-    // fork's SDK patch back on IGraphicsSystem (or a call on LARecomp's own renderer).
+    // 0.11: the graphics system is an interface of the running app (0.10: rt->graphics_system()); LAR-RXSDK gives it
+    // RequestResolveReadback again (4244ef59), and a refusal falls back to the global readback window below.
     auto* gfx = REX_INTERFACE(rex::gpu::IGraphicsSystem);
     if (!mem || !gfx) return;
 
