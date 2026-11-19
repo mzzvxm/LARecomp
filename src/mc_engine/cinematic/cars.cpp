@@ -911,10 +911,14 @@ void ApplierApply(const Scene& scene, double t) {
     // scale one update late, so a car follows the slowed-down world, not the scene's own wall time).
     if (!g.have_scene_t) {
         g.path_clock = t;
-    } else if (t > g.last_scene_t) {
-        const WorldState w = EvaluateWorld(scene, g.last_scene_t);
+    } else if (t != g.last_scene_t) {
+        // Forwards, and backwards too: a still (mcla_scene_t, the test harness's `scene_at`) pins the scene clock to a time the running clock has just passed by
+        // a fraction of a step, and a scrub goes back by more. The car must stand where its route has it at THAT scene time, so the clock follows both ways
+        // (it used to follow only forwards, and a car then stood up to a step ahead of the pinned time). The scale is the one at the earlier of the two times.
+        const WorldState w = EvaluateWorld(scene, std::min(t, g.last_scene_t));
         const double scale = w.timescale_set ? std::clamp(w.timescale, 0.0, 10.0) : 1.0;
         g.path_clock += (t - g.last_scene_t) * scale;
+        if (g.path_clock < 0.0) g.path_clock = 0.0;
     }
     g.last_scene_t = t;
     g.have_scene_t = true;
