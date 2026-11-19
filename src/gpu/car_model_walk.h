@@ -64,6 +64,7 @@ class Walker {
     uint32_t vehicle = 0;
     uint32_t sources = 0;  // kFromPlayer | kFromList | kFromTap (car_model_walk.cpp)
     uint32_t phases = 0;   // the phases the tap saw it drawn in since the last walk
+    uint32_t vtable = 0;   // [vehicle + 0]: 0x82047B14 for mcCarModel (Vehicle::Draw is its slot 2)
   };
   struct Racer {
     bool known = false;      // the nearest opponent manager racer: its matrix is this far from the vehicle's

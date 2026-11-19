@@ -330,7 +330,7 @@ void Walker::RunWalk() {
         return;
       }
     }
-    found_.push_back({vehicle, source, phases});
+    found_.push_back({vehicle, source, phases, 0});
   };
   uint32_t player = 0;
   mem.Word(car_mesh::kPlayerVehicleGlobal, &player);
@@ -404,6 +404,7 @@ void Walker::RunWalk() {
   racers_.assign(found_.size(), Racer{});
   for (uint32_t i = 0; i < found_.size(); ++i) {
     mem.Forget();
+    mem.Word(found_[i].vehicle, &found_[i].vtable);
     WalkVehicle(mem, found_[i].vehicle, options_, &cars_[i]);
     const CarWalk& car = cars_[i];
     if (!car.ok || !car.position_read) {
@@ -518,12 +519,13 @@ void Walker::FinishFrame() {
 
     REXLOG_INFO("{} frame {}:   car {:#010x} ({}, {}) at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m from the player{}: {}; seen by {} (tap phases {}); visible +116 = {}, enabled {}, "
                 "lod body {} parts {} forced {} (lod distances {:.0f} / {:.0f} m), draw slot {}; entity state {}, body state {}, lod 0 {} (info {}); "
-                "entity {:#010x}, model info {:#010x}, model set {:#010x}, customisation {:#010x}; render copy of the matrix at ({:.1f}, {:.1f}, {:.1f}), wheels {}",
+                "entity {:#010x}, model info {:#010x}, model set {:#010x}, customisation {:#010x}; vtable {:#010x}{}; render copy of the matrix at ({:.1f}, {:.1f}, {:.1f}), wheels {}",
                 kPrefix, frame_, car.vehicle, kind, racer.known ? std::format("nearest racer {:.2f} m", racer.distance) : std::string("no racer near"), car.position[0], car.position[1],
                 car.position[2], player_distance, is_player ? " (the player's)" : "", match.drawn ? "DRAWN this frame" : "CULLED (no draw of the frame is one of its geometries)",
                 SourcesText(found.sources), PhasesText(found.phases), car.visible, car.enabled, car.body_lod, car.part_lod, car.forced_lod, car.lod_distance[0],
                 car.lod_distance[1], car.draw_slot, car.entity_state, car.body_state, car.has_lod0 ? "present" : "absent", car.info_lod0 ? "present" : "absent", car.entity,
-                car.info, car.model_set, car.custom, car.render_position[0], car.render_position[1], car.render_position[2],
+                car.info, car.model_set, car.custom, found.vtable, found.vtable == kVehicleVtable ? " (mcCarModel)" : " (NOT mcCarModel's)", car.render_position[0], car.render_position[1],
+                car.render_position[2],
                 car.wheels_read ? std::format("({:.1f}, {:.1f}, {:.1f}) ({:.1f}, {:.1f}, {:.1f}) ({:.1f}, {:.1f}, {:.1f}) ({:.1f}, {:.1f}, {:.1f})", car.wheel_position[0][0],
                                               car.wheel_position[0][1], car.wheel_position[0][2], car.wheel_position[1][0], car.wheel_position[1][1], car.wheel_position[1][2],
                                               car.wheel_position[2][0], car.wheel_position[2][1], car.wheel_position[2][2], car.wheel_position[3][0], car.wheel_position[3][1],
