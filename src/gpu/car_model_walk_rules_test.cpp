@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "car_model_rt_rules.h"
 #include "car_model_walk_rules.h"
 
 namespace cw = mcla::gpu::car_model_walk;
@@ -341,6 +342,8 @@ cw::Options MakeOptions() {
     o.region_of_part[p] = 0;
   }
   o.region_of_part[2] = 2;
+  // these fixtures were made with the phase 1 rule (every part at +6008); the retail rule has its own checks in TestProduction here and in car_model_rt_rules_test.cpp
+  o.all_parts_at_part_lod = true;
   return o;
 }
 
@@ -812,6 +815,149 @@ void TestSharedBuffers() {
 
 }  // namespace
 
+
+// ---------------------------------------------------------------------------
+// the production walk (RT-MODEL-CARS phase 2): one entry a part, the lod of the reflection, the part matrices, the chain down to a mesh
+// ---------------------------------------------------------------------------
+
+void TestProduction() {
+  namespace crt = mcla::gpu::car_model_rt;
+  // The car: V+6004 = 1 (the body and the parts under 44), V+6008 = 0 (the parts from 44), the hood (part 2) at variant 3 with lods 0 and 1, the body at lod 1.
+  FakeMemory m;
+  Car car = MakeCar(m, 1, 0);
+  FixDeclarations(m, car);
+  // the arrays the draw sets gWorld from: the hood's and the body's
+  const uint32_t hood_worlds = m.Alloc(64 * 8);
+  const uint32_t body_worlds = m.Alloc(64 * 4);
+  m.P32(car.vehicle + 5740 + 4 * 2, hood_worlds);
+  m.P32(car.vehicle + 5736, body_worlds);
+  cw::Options options = MakeOptions();
+  options.all_parts_at_part_lod = false;  // the retail rule
+  options.production = true;
+  options.validate = false;
+  options.min_lod = 1;
+  cw::CarWalk w;
+  cw::WalkVehicle(m, car.vehicle, options, &w);
+  Check(w.ok && w.parts.size() == 2, "production: one entry for the body and one for the hood, not every variant and lod");
+  const cw::PartEntry* body = FindEntry(w, cw::kBodyPart, 0, 1);
+  const cw::PartEntry* hood = FindEntry(w, 2, 3, 1);
+  Check(body && body->in_use && body->valid && hood && hood->in_use && hood->valid, "the body at lod 1 and the hood's variant 3 at lod 1 (the parts under 44 follow V+6004, not V+6008)");
+  Check(hood && hood->world_matrices == hood_worlds && body && body->world_matrices == body_worlds && hood->matrices == car.hood_matrices,
+        "each entry names its two matrix arrays: the item's (+20) and the one the draw sets gWorld from (V+5740+4p, the body's V+5736)");
+  Check(w.geometries.size() == 2 && w.in_use.geometries == 2, "two geometries in all: the body's and the hood's lod 1");
+  bool entry_ok = true;
+  for (const cw::Geometry& g : w.geometries) {
+    entry_ok = entry_ok && g.entry_index < w.parts.size() && w.parts[g.entry_index].part == g.part;
+  }
+  Check(entry_ok, "a geometry names the entry whose matrices place it");
+  Check(w.validated_in_use == 0 && !w.geometries[0].validated, "production does not validate the data");
+
+  // the lod floor: a car the main view shows is walked at the game's own lod (the parts under 44 follow the body's: 1 here, so the same entries)
+  options.min_lod = 0;
+  cw::WalkVehicle(m, car.vehicle, options, &w);
+  Check(w.parts.size() == 2 && FindEntry(w, 2, 3, 1) != nullptr, "floor 0: the game's lod for the parts is the vehicle's 1, not +6008's 0");
+  // with the body at lod 0 (not loaded) and the parts' floor 0: the hood's lod 0
+  FakeMemory m2;
+  Car car2 = MakeCar(m2, 0, 0);
+  FixDeclarations(m2, car2);
+  options.min_lod = 0;
+  cw::WalkVehicle(m2, car2.vehicle, options, &w);
+  Check(FindEntry(w, 2, 3, 0) && FindEntry(w, 2, 3, 0)->in_use && FindEntry(w, 2, 3, 1) == nullptr, "V+6004 = 0, floor 0: the hood's lod 0 is the one, and only it");
+  Check(FindEntry(w, cw::kBodyPart, 0, 1) && FindEntry(w, cw::kBodyPart, 0, 1)->in_use, "the body's lod 0 is not placed: the next coarser lod that is placed takes its place");
+  options.min_lod = 1;
+  cw::WalkVehicle(m2, car2.vehicle, options, &w);
+  Check(FindEntry(w, 2, 3, 1) && FindEntry(w, 2, 3, 1)->in_use && FindEntry(w, 2, 3, 0) == nullptr, "floor 1 raises the reflection's lod to 1 whatever the game's is");
+  // a part with no entry at the wanted lod and the coarser ones takes the finer: the hood's lod 1 not loaded
+  FakeMemory m3;
+  Car car3 = MakeCar(m3, 1, 0);
+  FixDeclarations(m3, car3);
+  m3.P32(car3.set + 4 * (cw::kSetStates + cw::FlatIndex(2, 3, 1)), 0);
+  cw::WalkVehicle(m3, car3.vehicle, options, &w);
+  Check(FindEntry(w, 2, 3, 0) && FindEntry(w, 2, 3, 0)->in_use && FindEntry(w, 2, 3, 1) == nullptr, "the hood's lod 1 is not loaded: the finer lod 0 is taken (coarser first, then finer)");
+  // a part with no lod loaded: nothing of it
+  m3.P32(car3.set + 4 * (cw::kSetStates + cw::FlatIndex(2, 3, 0)), 0);
+  cw::WalkVehicle(m3, car3.vehicle, options, &w);
+  Check(FindEntry(w, 2, 3, 0) == nullptr && FindEntry(w, 2, 3, 1) == nullptr && w.parts.size() == 1, "no lod of the hood loaded: only the body is walked");
+
+  // the draw's loop: the byte that cuts it to 44 parts takes a part from 44 up out of the walk
+  FakeMemory m4;
+  Car car4 = MakeCar(m4, 1, 0);
+  FixDeclarations(m4, car4);
+  GeometrySpec interior;
+  interior.vertices = 4;
+  const uint32_t interior_geometry = MakeGeometry(m4, interior, &car4);
+  const uint32_t interior_entry = MakeEntry(m4, MakeDrawable(m4, {{interior_geometry}}, {0}));
+  SetEntry(m4, car4.set, 44, 0, 1, interior_entry);
+  const uint32_t interior_item = m4.Alloc(64);
+  m4.P32(interior_item + 20, m4.Alloc(64));
+  m4.P32(car4.vehicle + 6960 + 4 * 44, interior_item);
+  options.min_lod = 1;
+  cw::WalkVehicle(m4, car4.vehicle, options, &w);
+  Check(FindEntry(w, 44, 0, 1) && FindEntry(w, 44, 0, 1)->in_use && w.loop_parts == cw::kPartSlots, "the interior (part 44) is drawn while the loop covers all 55 parts");
+  m4.P8(car4.vehicle + 6478, 1);
+  cw::WalkVehicle(m4, car4.vehicle, options, &w);
+  Check(w.flags.loop44_b && w.loop_parts == 44 && FindEntry(w, 44, 0, 1) == nullptr, "V+6478 set: the loop covers 44 parts, the interior is not walked");
+  cw::Options debug = MakeOptions();
+  debug.all_parts_at_part_lod = false;
+  cw::WalkVehicle(m4, car4.vehicle, debug, &w);
+  const cw::PartEntry* debug_interior = FindEntry(w, 44, 0, 1);
+  Check(debug_interior && !debug_interior->in_use, "the debug walk lists the interior's entry but it is not in use while the loop is cut to 44 (the 73 percent car's missing geometries)");
+
+  // THE CHAIN: walk -> picks -> the matrices of the bones -> the poses -> the mesh. The hood's rigid geometry is in model 0 of its lod-1 drawable (bone 4).
+  FakeMemory mc;
+  Car carc = MakeCar(mc, 1, 0);
+  FixDeclarations(mc, carc);
+  const uint32_t worlds = mc.Alloc(64 * 8);
+  mc.P32(carc.vehicle + 5740 + 4 * 2, worlds);
+  const auto put = [&](uint32_t at, double yaw, double x, double y, double z) {
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 3; ++c) {
+        double v = r == c ? 1.0 : 0.0;
+        if (r == 3) {
+          v = c == 0 ? x : c == 1 ? y : z;
+        }
+        if (r == 0 && c == 0) {
+          v = std::cos(yaw);
+        } else if (r == 0 && c == 2) {
+          v = -std::sin(yaw);
+        } else if (r == 2 && c == 0) {
+          v = std::sin(yaw);
+        } else if (r == 2 && c == 2) {
+          v = std::cos(yaw);
+        }
+        mc.PF(at + 16u * uint32_t(r) + 4u * uint32_t(c), float(v));
+      }
+    }
+  };
+  put(carc.hood_matrices, 0.3, 11.0, 3.0, -29.0);              // A[0]: the first bone
+  put(carc.hood_matrices + 64 * 4, 0.3, 11.0, 3.5, -28.5);     // A[4]: the hood's bone (the fixture's test reads its translation too)
+  put(worlds + 64 * 4, 0.3, 11.0, 3.5, -28.5);                 // B[4]
+  cw::CarWalk wc;
+  cw::WalkVehicle(mc, carc.vehicle, options, &wc);
+  const std::vector<uint32_t> picks = crt::PickGeometries(wc, 3, 0);
+  Check(picks.size() == 2, "both geometries are picked (3 indices or more, rigid, in use)");
+  uint32_t hood_geometry = 0;
+  for (const uint32_t g : picks) {
+    if (wc.geometries[g].part == 2) {
+      hood_geometry = g;
+    }
+  }
+  const cw::Geometry& hg = wc.geometries[hood_geometry];
+  Check(hg.part == 2 && hg.bone == 4 && hg.index_count == 3, "the hood's lod 1 geometry: bone 4, three indices");
+  const crt::BoneMatrices bm = crt::ReadBoneMatrices(mc, wc.parts[hg.entry_index], hg.bone);
+  const mcla::gpu::temporal::Mat4 entity = wc.entity_matrix;
+  const crt::PoseSet poses = crt::ComposePoses(bm, wc.has_entity_matrix ? &entity : nullptr);
+  Check(bm.item && bm.root && bm.world && poses.ok[0] && poses.ok[1] && poses.ok[2], "the bone's matrices are read through the entry");
+  Check(std::fabs(poses.m[size_t(crt::Pose::kBoneWorld)].m[3][1] - 3.5) < 1e-6 && std::fabs(poses.m[size_t(crt::Pose::kPaletteBone)].m[3][1] - 3.5 - 0.5) < 1e-5,
+        "pose 0 is B[4]; pose 2 is the palette (A[4] minus A[0]'s translation: 0.5 up) times B[4]");
+  std::vector<float> positions;
+  std::vector<uint32_t> indices;
+  crt::MeshRead info;
+  Check(crt::ReadGeometryMesh(mc, hg, &positions, &indices, &info) == crt::MeshProblem::kNone && indices == std::vector<uint32_t>({0, 1, 2}) && positions.size() == 9,
+        "the hood geometry's mesh: one triangle of three vertices (32-bit indices, the header's endian)");
+  Check(crt::GeometryKey(hg) != 0 && crt::GeometryKey(hg) != crt::GeometryKey(wc.geometries[picks[0] == hood_geometry ? picks[1] : picks[0]]), "the two geometries have keys of their own");
+}
+
 int main() {
   TestHelpers();
   TestDeclaration();
@@ -825,6 +971,7 @@ int main() {
   TestMatching();
   TestMatchingLooseWords();
   TestSharedBuffers();
+  TestProduction();
   std::printf("car_model_walk_rules_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

@@ -62,6 +62,7 @@
 #include <vector>
 
 #include "car_dump_rules.h"
+#include "temporal_math.h"
 
 namespace mcla::gpu::car_model_walk {
 
@@ -88,6 +89,22 @@ inline constexpr uint32_t kVehicleLodDistances = 6048;
 inline constexpr uint32_t kVehicleBodyItemGate = 6732;
 inline constexpr uint32_t kVehicleBodyItem = 6736;
 inline constexpr uint32_t kVehiclePartItems = 6960;
+// The matrices the part's draw sets as gWorld, one pointer a part (asm sub_8235D500 -> sub_823252B8 -> sub_82325040: vehicle[1435 + p], the body's vehicle[1434]); an
+// array of 64-byte matrices like the item's, indexed by the same bone. Which of the two arrays (or what of both) a draw's model-to-world is made of is not
+// certain from the asm alone: car_model_rt_rules.h checks the hypotheses against the draws of the frame (Pose).
+inline constexpr uint32_t kVehiclePartWorlds = 5740;
+inline constexpr uint32_t kVehicleBodyWorlds = 5736;
+// The bytes the draw's loop reads (asm sub_8235D500): the ghost flag, the two that cut the loop to the first 44 parts, the two that say a bumper is on or off.
+inline constexpr uint32_t kVehicleGhost = 123;
+inline constexpr uint32_t kVehicleLoop44A = 6477;
+inline constexpr uint32_t kVehicleLoop44B = 6478;
+inline constexpr uint32_t kVehicleBumperFront = 6482;
+inline constexpr uint32_t kVehicleBumperRear = 6483;
+inline constexpr uint32_t kVehicleCarObject = 1020;    // -> an object whose byte +2154 lets the sub-bumpers be drawn
+inline constexpr uint32_t kCarObjectSubBumpers = 2154;
+inline constexpr uint32_t kCustomIntercooler = 2205;   // C + 2144 + 61: the intercooler is drawn only when set
+inline constexpr uint32_t kLastLodPart = 44;           // parts 0..43 draw at the vehicle's lod (+6004), 44 and up at +6008
+inline constexpr uint32_t kPartsShort = 44;            // the loop's count when the two bytes say so (else kPartSlots)
 inline constexpr uint32_t kItemMatrices = 20;
 inline constexpr uint32_t kWheelCount = 4;
 
@@ -206,6 +223,101 @@ inline int32_t GameLod(bool has_lod0, int32_t lod) {
   return std::clamp<int32_t>(lod, 1, 3);
 }
 
+// ---------------------------------------------------------------------------
+// the game's lod rule (asm sub_8235F738, read again for phase 2 and checked against the first check run's log)
+// ---------------------------------------------------------------------------
+// What the game does for EVERY vehicle every frame, drawn or not (phase 0x200), before it tests visibility:
+//   lod = the number of the two thresholds (floats at vehicle+6048 and +6052, 15 m and 100 m in the retail game) that are <= the distance from the main
+//         viewport's eye to the entity's matrix row 3 (0, 1 or 2);
+//   a car whose model info has no LOD 0 (info byte +40 is 0) is raised from 0 to 1; the lod is at most 2;
+//   a global object [0x8286D814] whose vtable slot 26 says so, or the byte [[0x8286E7FC] + 157], caps it at 1 (the cap is not read here: the walk takes the
+//   game's own answer from vehicle+6004);
+//   +5996 (not -1) overrides all of it. +6008, the lod of the second pass, is +6000 when that is not -1, else the same lod.
+// The draw (sub_8235D500) asks the model set for parts 0..43 at the vehicle's lod and for parts 44.. (the interior, the seats, the steering wheel) at +6008.
+// FIRST CHECK RUN (ts-mw30-rt-offscreen, 999 results): in every walk the geometry the frame's draws were of sat in the table's lod slot the rule picks
+// (lodmatch equal to lods in all of them): the player at slot 0, the racers (no LOD 0) at slot 1 from 3 m to 56 m, the cars 525 m away at slot 2. The one car at
+// 73 percent was not a lod mistake: for 315 of its walks (+116 = 0) the frame drew 30 fewer of its in-use geometries than in its 72 walks with +116 = 1, and all of
+// the missing ones were of parts the draw's loop leaves out in some states (the two bytes below cut it to 44 parts). PartDrawn models those.
+struct LodRuleInput {
+  double distance = 0.0;           // metres, eye to the vehicle
+  float threshold[2] = {15.0f, 100.0f};
+  bool info_has_lod0 = true;       // model info byte +40
+  int32_t forced = -1;             // vehicle+5996
+  bool capped = false;             // the global cap (read by the caller, or false)
+};
+
+inline int32_t GameBodyLod(const LodRuleInput& in) {
+  if (in.forced != -1) {
+    return in.forced;
+  }
+  int32_t lod = 0;
+  for (int i = 0; i < 2; ++i) {
+    if (in.distance >= double(in.threshold[i])) {
+      lod = i + 1;
+    } else {
+      break;
+    }
+  }
+  if (!in.info_has_lod0 && lod == 0) {
+    lod = 1;
+  }
+  lod = std::min(lod, 2);
+  if (in.capped && lod > 1) {
+    lod = 1;
+  }
+  return lod;
+}
+
+// The lod the draw asks for part `part`: the vehicle's for the first 44, the second pass's for the rest.
+inline int32_t PartLodOf(uint32_t part, int32_t body_lod, int32_t part_lod) { return part >= kLastLodPart ? part_lod : body_lod; }
+
+// The lods to try for a wanted lod, in order: the wanted one, each coarser one, then each finer one (a part may have no entry at some lod: the shipped hood has
+// lods 0 and 1 and no 2).
+inline std::array<int32_t, kLods> LodOrder(int32_t wanted) {
+  wanted = std::clamp<int32_t>(wanted, 0, int32_t(kLods) - 1);
+  std::array<int32_t, kLods> order{};
+  uint32_t n = 0;
+  for (int32_t l = wanted; l < int32_t(kLods); ++l) {
+    order[n++] = l;
+  }
+  for (int32_t l = wanted - 1; l >= 0; --l) {
+    order[n++] = l;
+  }
+  return order;
+}
+
+// The bytes of a vehicle the draw's per-part decisions read (all zero where a read failed: the draw would see the same for a null object).
+struct DrawFlags {
+  bool ghost = false;           // V+123
+  bool loop44_a = false;        // V+6477
+  bool loop44_b = false;        // V+6478
+  bool bumper_front_off = false;  // V+6482 != 0: the front bumper is not drawn, the front sub-bumper is
+  bool bumper_rear_off = false;   // V+6483 != 0
+  bool sub_bumpers = false;     // [V+1020]+2154 != 0: both sub-bumpers are drawn whatever the bumpers say
+  bool intercooler = false;     // C+2205 != 0
+};
+
+// How many parts the main pass's loop covers: 44 when the second byte is set and the car is no ghost, or when the first is set; else all 55.
+inline uint32_t LoopParts(const DrawFlags& f) { return ((f.loop44_b && !f.ghost) || f.loop44_a) ? kPartsShort : kPartSlots; }
+
+// Whether the main pass draws part `part` (its table byte `table_on` says yes and its item exists, which the caller checks): the per-part tests of
+// sub_8235D500 that depend on the vehicle: the intercooler needs C+2205, a bumper is drawn unless its byte says it is off, a sub-bumper when the car object
+// allows both or its bumper is off, and nothing past the loop's count. The convertible's top and its parts (0, 1, 22) have tests of their own that are not
+// modelled here: they stay as the table says.
+inline bool PartDrawn(uint32_t part, const DrawFlags& f) {
+  if (part >= LoopParts(f)) {
+    return false;
+  }
+  switch (part) {
+    case 5: return f.intercooler;
+    case 6: return !f.bumper_front_off;
+    case 3: return !f.bumper_rear_off;
+    case 36: return f.sub_bumpers || f.bumper_front_off;
+    case 37: return f.sub_bumpers || f.bumper_rear_off;
+    default: return true;
+  }
+}
+
 // A big-endian float vector from `p`.
 inline void LoadFloats(const uint8_t* p, uint32_t n, float* out) {
   for (uint32_t i = 0; i < n; ++i) {
@@ -293,6 +405,7 @@ struct Geometry {
   uint8_t lod = 0;                 // the table's lod slot 0..2
   uint16_t model = 0;
   uint16_t slot = 0;               // in its model
+  uint32_t entry_index = 0;        // the PartEntry (in CarWalk::parts) whose drawable it belongs to: its matrices place it
   bool in_use = false;
   bool read = false;               // the geometry object was readable
   uint32_t vertex_count = 0;       // G+52
@@ -351,6 +464,7 @@ struct PartEntry {
   int32_t count = 0;               // M[3314 + 10p+v]
   uint32_t item = 0;               // V+6960+4p (the body: V+6736)
   uint32_t matrices = 0;           // item+20
+  uint32_t world_matrices = 0;     // V+5740+4p (the body: V+5736): the array the draw sets gWorld from
   uint32_t region = 0;             // the paint region (kPaintRegions: none known)
   uint32_t models = 0;
   uint32_t bucket_mask = 0;
@@ -406,6 +520,11 @@ struct CarWalk {
   float wheel_position[kWheelCount][3] = {};
   bool wheels_read = false;
   Paint paint[kPaintRegions];
+  DrawFlags flags;                 // the bytes the draw's per-part tests read
+  uint32_t loop_parts = kPartSlots;
+  bool has_entity_matrix = false;  // the entity's world matrices (update copy at E+144, render copy at E+208), whole
+  temporal::Mat4 entity_matrix;
+  temporal::Mat4 entity_render_matrix;
   uint8_t variant_of_part[kPartSlots] = {};
   bool variants_read = false;
   uint32_t table_mode = 0;         // C+2203
@@ -436,6 +555,14 @@ struct Options {
   uint8_t draws_part_alt[kPartSlots] = {};  // the table C+2203 != 0 picks
   bool validate = true;                     // read the in-use geometries' data: the indices' range and the first and last position
   uint64_t validate_budget = kValidateBudgetBytes;
+  // PRODUCTION (the ray traced scene's cars from model data): only the entry of each part that the scene would draw is walked, not every variant and lod, and the
+  // data is not validated. The lod asked for is the game's, raised to `min_lod` (the reflection does not need a car's finest lod), and a part whose entry at that
+  // lod is not valid takes the next coarser lod that is, then a finer one.
+  bool production = false;
+  int32_t min_lod = 1;
+  // The phase 1 rule: every part at the second pass's lod (+6008). The retail loop asks the parts under 44 for the vehicle's lod (+6004), so the walker's default
+  // is that; this switch is for the fixtures that were made with the other rule.
+  bool all_parts_at_part_lod = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -479,6 +606,27 @@ inline void ScanIndices(const uint8_t* raw, uint32_t count, bool index32, uint32
 // ---------------------------------------------------------------------------
 // the walk
 // ---------------------------------------------------------------------------
+
+// A guest Matrix44 (16 big-endian floats, row vectors: rows right, up, back and position) at `address`, as a double matrix with the fourth column made
+// (0, 0, 0, 1) (the game leaves NaN there and the palette code never reads it). False when it is not readable or a number it uses is not finite.
+template <class Mem>
+bool ReadMatrix(const Mem& mem, uint32_t address, temporal::Mat4* out) {
+  const uint8_t* p = Plausible(address) ? mem.Window(address, 64) : nullptr;
+  if (!p) {
+    return false;
+  }
+  *out = temporal::Identity();
+  for (uint32_t r = 0; r < 4; ++r) {
+    for (uint32_t c = 0; c < 3; ++c) {
+      const float v = BeFloat(p + 16u * r + 4u * c);
+      if (!std::isfinite(v)) {
+        return false;
+      }
+      out->m[r][c] = double(v);
+    }
+  }
+  return true;
+}
 
 namespace detail {
 
@@ -591,7 +739,7 @@ namespace detail {
 
 // The drawable's LOD object down to the geometries, appended to `out->geometries`. Returns how many geometries were added.
 template <class Mem>
-uint32_t WalkLod(const Mem& mem, uint32_t lod_object, const PartEntry& entry, CarWalk* out) {
+uint32_t WalkLod(const Mem& mem, uint32_t lod_object, const PartEntry& entry, uint32_t entry_index, CarWalk* out) {
   const uint8_t* l = Plausible(lod_object) ? mem.Window(lod_object, 20) : nullptr;
   if (!l) {
     return 0;
@@ -630,6 +778,7 @@ uint32_t WalkLod(const Mem& mem, uint32_t lod_object, const PartEntry& entry, Ca
       geometry.model = uint16_t(m);
       geometry.slot = uint16_t(i);
       geometry.in_use = entry.in_use;
+      geometry.entry_index = entry_index;
       geometry.bone = bone;
       if (!ReadGeometry(mem, Be32(geometry_array + 4u * i), &geometry)) {
         continue;
@@ -722,6 +871,21 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     LoadFloats(m, 3, out->wheel_position[i]);
   }
 
+  out->has_entity_matrix = ReadMatrix(mem, e + kEntityMatrix, &out->entity_matrix) && ReadMatrix(mem, e + kEntityRenderMatrix, &out->entity_render_matrix);
+  // the bytes the draw's per-part tests read
+  {
+    uint32_t b = 0;
+    out->flags.ghost = mem.Byte(vehicle + kVehicleGhost, &b) && b != 0;
+    out->flags.loop44_a = mem.Byte(vehicle + kVehicleLoop44A, &b) && b != 0;
+    out->flags.loop44_b = mem.Byte(vehicle + kVehicleLoop44B, &b) && b != 0;
+    out->flags.bumper_front_off = mem.Byte(vehicle + kVehicleBumperFront, &b) && b != 0;
+    out->flags.bumper_rear_off = mem.Byte(vehicle + kVehicleBumperRear, &b) && b != 0;
+    uint32_t car_object = 0;
+    out->flags.sub_bumpers = mem.Word(vehicle + kVehicleCarObject, &car_object) && Plausible(car_object) && mem.Byte(car_object + kCarObjectSubBumpers, &b) && b != 0;
+    out->flags.intercooler = Plausible(out->custom) && mem.Byte(out->custom + kCustomVariants + 61, &b) && b != 0;
+    out->loop_parts = LoopParts(out->flags);
+  }
+
   // the paint and the variants
   if (const uint8_t* c = Plausible(out->custom) ? mem.Window(out->custom + kCustomPaint, kCustomWindowBytes) : nullptr) {
     for (uint32_t r = 0; r < kPaintRegions; ++r) {
@@ -741,8 +905,11 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     out->table_mode = c[kCustomTableMode - kCustomPaint];
   }
 
-  // the part items (the matrix sources)
+  // the part items (the matrix sources) and the arrays the draw sets gWorld from
   const uint8_t* items = mem.Window(vehicle + kVehiclePartItems, 4u * kPartSlots);
+  const uint8_t* worlds = mem.Window(vehicle + kVehiclePartWorlds, 4u * kPartSlots);
+  uint32_t body_worlds = 0;
+  mem.Word(vehicle + kVehicleBodyWorlds, &body_worlds);
 
   // what the game draws now
   const int32_t part_lod = GameLod(out->has_lod0, out->part_lod);
@@ -778,7 +945,7 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     }
     entry.first_geometry = uint32_t(out->geometries.size());
     if (entry.valid && Plausible(entry.drawable)) {
-      const auto seen = walked.find(entry.drawable);
+      const auto seen = options.production ? walked.end() : walked.find(entry.drawable);
       if (seen != walked.end()) {
         // the same drawable under another entry: its geometries are listed once; this entry shares them and passes its "in use" on
         const PartEntry& first = out->parts[seen->second];
@@ -798,7 +965,7 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
           entry.models = Be16(l + kLodModelCount);
           entry.bucket_mask = Be32(l + kLodBucketMask);
         }
-        entry.geometries = detail::WalkLod(mem, entry.lod_object, entry, out);
+        entry.geometries = detail::WalkLod(mem, entry.lod_object, entry, uint32_t(out->parts.size()), out);
       }
     }
     if (entry.valid && entry.geometries != 0) {
@@ -815,7 +982,19 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     out->parts.push_back(entry);
   };
 
-  // the body
+  // the body: in production the lod to take is the first with a placed entry among the wanted lod and then the coarser and the finer ones
+  int32_t body_pick = -1;
+  if (options.production && out->body_state == kStateLoaded) {
+    const int32_t wanted = std::clamp<int32_t>(std::max<int32_t>(body_lod, options.min_lod), 0, int32_t(kLods) - 1);
+    for (const int32_t candidate : LodOrder(wanted)) {
+      uint32_t flags = 0;
+      const uint32_t address = Be32(set + 4u * (kSetBody + uint32_t(candidate)));
+      if (address != 0 && mem.Word(address + kEntryFlags, &flags) && (flags & kPlacedMask) == kPlacedMask) {
+        body_pick = candidate;
+        break;
+      }
+    }
+  }
   for (uint32_t lod = 0; lod < kLods && !out->truncated; ++lod) {
     const uint32_t entry_address = Be32(set + 4u * (kSetBody + lod));
     if (entry_address == 0) {
@@ -830,9 +1009,17 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     if (Plausible(entry.item)) {
       mem.Word(entry.item + kItemMatrices, &entry.matrices);
     }
+    entry.world_matrices = body_worlds;
     entry.region = 0;
     const bool placed_state = out->body_state == kStateLoaded;
     entry.in_use = placed_state && kSetBody + lod == body_flat;
+    if (options.production) {
+      // Production: the one body entry the scene would draw (Options::production), nothing else of the body.
+      entry.in_use = placed_state && int32_t(lod) == body_pick;
+      if (!entry.in_use) {
+        continue;
+      }
+    }
     add_entry(entry, out->body_state, 1, true);
   }
 
@@ -844,11 +1031,37 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
       mem.Word(item + kItemMatrices, &matrices);
     }
     const uint32_t chosen = out->variants_read ? out->variant_of_part[p] : 0u;
-    const bool draws_part = !options.tables_read || draws[p] != 0;
-    const uint32_t in_use_flat = (part_lod >= 0 && chosen < kVariants) ? FlatIndex(p, chosen, uint32_t(part_lod)) : 0xFFFFFFFFu;
+    const uint32_t world_matrices = worlds ? Be32(worlds + 4u * p) : 0u;
+    const bool draws_part = (!options.tables_read || draws[p] != 0) && PartDrawn(p, out->flags);
+    const int32_t lod_of_part = options.all_parts_at_part_lod ? part_lod : PartLodOf(p, body_lod, part_lod);
+    const uint32_t in_use_flat = (lod_of_part >= 0 && chosen < kVariants) ? FlatIndex(p, chosen, uint32_t(lod_of_part)) : 0xFFFFFFFFu;
+    int32_t pick = -1;  // production: the lod of the chosen variant's entry the scene takes
+    if (options.production && Plausible(item) && draws_part && chosen < kVariants && Be32(set + 4u * (kSetCounts + 10u * p + chosen)) != 0) {
+      const int32_t wanted = std::clamp<int32_t>(std::max<int32_t>(lod_of_part, options.min_lod), 0, int32_t(kLods) - 1);
+      for (const int32_t candidate : LodOrder(wanted)) {
+        const uint32_t flat = FlatIndex(p, chosen, uint32_t(candidate));
+        const uint32_t address = Be32(set + 4u * (kSetEntries + flat));
+        uint32_t flags = 0;
+        if (address != 0 && Be32(set + 4u * (kSetStates + flat)) == kStateLoaded && mem.Word(address + kEntryFlags, &flags) && (flags & kPlacedMask) == kPlacedMask) {
+          pick = candidate;
+          break;
+        }
+      }
+      if (pick < 0) {
+        continue;  // no lod of this part is loaded: nothing of it
+      }
+    } else if (options.production) {
+      continue;
+    }
     for (uint32_t v = 0; v < kVariants && !out->truncated; ++v) {
+      if (options.production && v != chosen) {
+        continue;
+      }
       const uint32_t count = Be32(set + 4u * (kSetCounts + 10u * p + v));
       for (uint32_t lod = 0; lod < kLods && !out->truncated; ++lod) {
+        if (options.production && int32_t(lod) != pick) {
+          continue;
+        }
         const uint32_t flat = FlatIndex(p, v, lod);
         const uint32_t entry_address = Be32(set + 4u * (kSetEntries + flat));
         if (entry_address == 0) {
@@ -861,8 +1074,9 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
         entry.entry = entry_address;
         entry.item = item;
         entry.matrices = matrices;
+        entry.world_matrices = world_matrices;
         entry.region = options.tables_read ? options.region_of_part[p] : 0u;
-        entry.in_use = Plausible(item) && draws_part && flat == in_use_flat;
+        entry.in_use = Plausible(item) && draws_part && (options.production ? int32_t(lod) == pick : flat == in_use_flat);
         add_entry(entry, Be32(set + 4u * (kSetStates + flat)), count, false);
       }
     }
@@ -917,6 +1131,10 @@ struct DrawKey {
   uint32_t index_address = 0;     // its address as stored (windowed)
   uint32_t count = 0;             // the draw's indices
   uint32_t start = 0;
+  // The draw's own model-to-world (the vertex shader's recipe: palette then gWorld, or gWorld alone), when the caller could make it and the draw is rigid: what the
+  // placement of a walked geometry is checked against (car_model_rt_rules.h).
+  bool has_world = false;
+  temporal::Mat4 world;
 };
 
 enum class DrawHit : uint8_t {
