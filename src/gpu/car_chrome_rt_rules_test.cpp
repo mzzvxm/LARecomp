@@ -502,8 +502,8 @@ int main(int argc, char** argv) {
       Check(Has(scene, "car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up)"), "the scene gives the view the world's up");
       Check(Has(variant, "if (t.r < -0.5)") && Has(variant, "saturate(-t.r - 1.0)") && Has(variant, "saturate(code - 1.0)") && Has(variant, "s.state = 6.0;"),
             "the chrome variant reads the texel by the header's rule (red under -0.5 is another car's chrome, the sky weight is -red - 1)");
-      Check(Has(variant_h, "0x2D8CA0430FF88ED7ull") && Has(variant_h, "kCarChromeVariantVersion = 2"),
-            "the chrome variant's identity is the header's kChromePs, and its version is 2");
+      Check(Has(variant_h, "0x2D8CA0430FF88ED7ull") && Has(variant_h, "kCarChromeVariantVersion = 3"),
+            "the chrome variant's identity is the header's kChromePs, and its version is 3");
     }
   }
 

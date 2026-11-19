@@ -59,6 +59,9 @@ static const float kCarChrFadeTo = 0.9;           // ...to nothing at this one
 static const float kCarChrApproachSpan = 0.04;    // m: the length of ray a rise of a tenth of the thickness is measured over
 static const float kCarChrNormalMin = 0.03;       // N.V under which the reflection probe is not made
 static const int kCarChrOutlineSteps = 3;         // the halvings that find a part's outline in a segment: 1/8 of it
+static const int kCarChrSilhouetteTaps = 12;      // the texels round the shaded point's own that the self-test also tries (a part's rim)
+static const int2 kCarChrSilhouetteOffsets[12] = {int2(-1, 0), int2(0, -1), int2(1, 0), int2(0, 1), int2(-1, -1), int2(1, -1),
+                                                  int2(-1, 1), int2(1, 1), int2(-2, 0), int2(0, -2), int2(2, 0), int2(0, 2)};
 
 // What the probes need of the shaded point: the matrix to the history frame's clip space, where it is, the image's size, its place in the
 // history, the slack of a slanted surface, the thickness of "just behind a vehicle pixel" and the window made with them.
@@ -418,7 +421,37 @@ float4 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float dep
     return float4(0.0, 0.0, 0.0, 0.0);
 }
 
-)HLSL" R"HLSL(// The setup, at the environment read: is the shaded point in the history at its own view distance, and the reflection probe (the view ray
+)HLSL" R"HLSL(// The self-test's agreement of one texel's stored distance with the shaded point's: 1 within half the tolerance, 0 beyond it, 0 where the texel holds no vehicle.
+float CarChrTexelAgreement(float stored, float depth, float tolerance)
+{
+    return (stored > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(stored - depth)) : 0.0;
+}
+
+// The rim of a part: the history holds one sample of a pixel (the guest's sample 0; at 2560 pixels across and more one texel stands for a 2x2 block), the
+// shaded pixel is made at its centre, so at the silhouette of a tip the texel under the pixel can be what is behind the tip (the bumper's cavity, 3 to 7 cm
+// further; or no vehicle) and the self-test would fail on the pixel's whole 1 pixel rim: the game's chrome with its bright sky ambient, a thin bright line.
+// The texels round it (one or two steps; the offsets are car_chrome_rules.h's kSilhouetteOffsets) are tried as well: the best agreement is the pixel's. Only a
+// pixel whose own texel does not agree fully makes the 12 reads (a few percent of the chrome's pixels), and one whose neighbours do not agree either stays at
+// the 0 it had.
+float CarChrSilhouetteAgreement(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, float own)
+{
+    float best = own;
+    [branch]
+    if (own < 1.0)
+    {
+        const int2 centre = int2(clamp(uv * size, float2(0.0, 0.0), size - 1.0));
+        const int2 last = int2(size) - 1;
+        [unroll]
+        for (int k = 0; k < kCarChrSilhouetteTaps; ++k)
+        {
+            const float stored = history.Load(int3(clamp(centre + kCarChrSilhouetteOffsets[k], int2(0, 0), last), 0)).a;
+            best = max(best, CarChrTexelAgreement(stored, depth, tolerance));
+        }
+    }
+    return best;
+}
+
+// The setup, at the environment read: is the shaded point in the history at its own view distance, and the reflection probe (the view ray
 // reflected, 2 (N.V) N - V: where the chrome looks), made here because `env` is occluded at once. A point the history does not hold (the
 // first frames, a cut, a pause view the host sends mode 0 for, a disocclusion, a part that is not a vehicle pixel there) is left to the game.
 CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
@@ -448,7 +481,8 @@ CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
     s.ray.size = float2(getTexture2DDimensions(history));
 
     // 1. Is the shaded point in the history, at the distance it has now? A disocclusion, a wrong guess of the car's motion or a cut puts it
-    // elsewhere: the whole effect fades with the disagreement (the tolerance is a few centimetres: the lip beside a tube is not the tube).
+    // elsewhere: the whole effect fades with the disagreement (the tolerance is a few centimetres: the lip beside a tube is not the tube). The texels
+    // round the own one count too (CarChrSilhouetteAgreement): the rim of a tip, whose own texel is what is behind it.
     const float4 start = CarChrProject(s.ray.m0, s.ray.m1, s.ray.m2, s.ray.m3, world);
     s.state = 1.0;
     if (start.w < 0.1)
@@ -466,8 +500,8 @@ CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
     s.ray.thickness = CarChrThickness(start.w);
     s.ray.shape = CarChrWindowShape(start.w, s.ray.thickness, s.ray.slack);
     const float tolerance = 0.015 + 0.005 * start.w + s.ray.slack;
-    s.agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));
-    if (!(own.a > 0.0) || s.agreement <= 0.0)
+    s.agreement = CarChrSilhouetteAgreement(history, s.ray.size, s.ray.startUv, start.w, tolerance, CarChrTexelAgreement(own.a, start.w, tolerance));
+    if (s.agreement <= 0.0)
     {
         return s;
     }
