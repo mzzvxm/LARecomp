@@ -324,6 +324,44 @@ std::string RequirementProblem(plume::RenderDevice* device) {
   return problem;
 }
 
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return {};
+  }
+  // The highest shader model the driver takes: asked from the newest number this build can name (6.9)
+  // down, as a driver answers E_INVALIDARG for a model newer than it knows.
+  uint32_t shader_model = 0;
+  for (uint32_t model = 0x69; model >= 0x60 && shader_model == 0; --model) {
+    D3D12_FEATURE_DATA_SHADER_MODEL data = {};
+    data.HighestShaderModel = static_cast<D3D_SHADER_MODEL>(model);
+    if (SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &data, sizeof(data)))) {
+      shader_model = static_cast<uint32_t>(data.HighestShaderModel);
+    }
+  }
+  const auto answer = [](bool known, bool value) { return known ? (value ? "yes" : "no") : "?"; };
+  D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+  const bool have_options = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
+  const bool have_options1 = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS4 options4 = {};
+  const bool have_options4 = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &options4, sizeof(options4)));
+  std::string tier = "?";
+  if (have_options) {
+    tier = std::to_string(static_cast<int>(options.ResourceBindingTier));
+  }
+  return std::format(
+      "D3D12 shader model {}.{}, resource binding tier {}, wave operations {}, 16-bit shader "
+      "operations {}, rasterizer ordered views {}, typed UAV loads of more formats {}",
+      shader_model >> 4, shader_model & 0xF, tier, answer(have_options1, options1.WaveOps),
+      answer(have_options4, options4.Native16BitShaderOpsSupported),
+      answer(have_options, options.ROVsSupported),
+      answer(have_options, options.TypedUAVLoadAdditionalFormats));
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {

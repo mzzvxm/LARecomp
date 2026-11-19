@@ -8482,5 +8482,16 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_vram_budget_mb": {
+  "type": "u32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Test (debug): pretend the video memory budget is this many MiB when the adapter's own is larger \"\n    \"(0: the adapter's). Everything that asks the budget sees the smaller number against the real use: \"\n    \"the caches' trimming (vram_budget.h), the room checks of frame generation and of the FidelityFX \"\n    \"upscaler's contexts (vram_room.h). The way to see the NO ROOM paths and the trimming on a card \"\n    \"that has plenty (a 4 GB card is 3900). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

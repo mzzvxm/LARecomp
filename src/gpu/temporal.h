@@ -604,6 +604,18 @@ class TemporalSystem {
   bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
                   const BackendRequest* request, Scale output);
   void CancelStage(const char* why);
+  // Video memory (vram_room.h). `chosen` with `*mode` and `*output` is the path UpdatePath wants; when its
+  // context was refused for want of room (TemporalBackend::NoRoom: the backend's worker found the use plus
+  // the context past the line the caches release at, and waits before it asks again):
+  //   - the same upscaler is running with a context (a new mode or output asked for): the running path
+  //     stays, `*mode` and `*output` become its own (`output_now`), as a render scale that could not be made
+  //     keeps the one that runs;
+  //   - else the next upscaler down that runs and has room is taken (FSR 4 -> FSR 3.1) with its own saved
+  //     mode, else none (Native AA in `*mode`).
+  // `*held` is true when the answer is not what was asked for. Logs once per change of the answer.
+  // Render thread.
+  Upscaler FitToRoom(Upscaler chosen, UpscaleMode* mode, Scale* output, Scale output_now,
+                     const uint32_t guest[2], bool* held);
   // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
   // `quiet`: a poll (PrewarmDlss) that must not log the game's unset screen size as an error.
   bool GuestFrameSize(uint32_t out[2], bool quiet = false) const;
@@ -705,6 +717,13 @@ class TemporalSystem {
   // The answer ResolveDlssMode last logged (the mode asked for, the mode it came to, the output),
   // 0 when the mode asked for runs: a line is written when it changes.
   uint64_t dlss_refusal_key_ = 0;
+  // The upscaler the settings choose was refused for want of video memory and another path runs (FitToRoom):
+  // set at the first refusal, cleared when the choice runs or changes (published as gpu.h
+  // UpscalerAvailability::no_room: the pause menu says NO ROOM). `room_key_` is the choice it is for,
+  // `room_logged_key_` the answer last logged (0: none).
+  bool room_lowered_ = false;
+  uint64_t room_key_ = 0;
+  uint64_t room_logged_key_ = 0;
   // The render scale the settings ask for (ReadRenderScale): the scale, what it came from (for the
   // log), and when it last changed. A change is taken once it has stood for kScaleSettle.
   Scale render_wanted_ = Scale::None();

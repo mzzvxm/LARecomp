@@ -1121,6 +1121,12 @@ class GPUSettings final : public rex::SettingOwner {
     "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
     ".", rex::kDebugOnly, rex::kRestart);
 
+  REX_SETTING(u32, mcla_gpu_vram_budget_mb, 0, "Test (debug): pretend the video memory budget is this many MiB when the adapter's own is larger "
+    "(0: the adapter's). Everything that asks the budget sees the smaller number against the real use: "
+    "the caches' trimming (vram_budget.h), the room checks of frame generation and of the FidelityFX "
+    "upscaler's contexts (vram_room.h). The way to see the NO ROOM paths and the trimming on a card "
+    "that has plenty (a 4 GB card is 3900). Live.", rex::kDebugOnly);
+
   REX_SETTING(u32, mcla_gpu_vram_log, 0, "Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), "
     "log how much video memory the process uses against the budget the system gives it, and what "
     "the texture, resolve product, EDRAM target and resolve memory caches hold, whether or not "
@@ -1367,6 +1373,7 @@ inline auto& mcla_gpu_upscaler_sharpness = g_gpu.mcla_gpu_upscaler_sharpness;
 inline auto& mcla_gpu_upscaler_zero_jitter = g_gpu.mcla_gpu_upscaler_zero_jitter;
 inline auto& mcla_gpu_validate = g_gpu.mcla_gpu_validate;
 inline auto& mcla_gpu_verify_constants = g_gpu.mcla_gpu_verify_constants;
+inline auto& mcla_gpu_vram_budget_mb = g_gpu.mcla_gpu_vram_budget_mb;
 inline auto& mcla_gpu_vram_log = g_gpu.mcla_gpu_vram_log;
 inline auto& mcla_gpu_vsync = g_gpu.mcla_gpu_vsync;
 inline auto& mcla_gpu_watch_base = g_gpu.mcla_gpu_watch_base;

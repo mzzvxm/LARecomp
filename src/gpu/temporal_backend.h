@@ -300,6 +300,15 @@ class TemporalBackend {
   virtual bool PrewarmNext(UpscaleMode*) { return false; }
   virtual void Prewarm(const BackendRequest&) {}
 
+  // Video memory (vram_room.h). The runtime's context for `request` was refused for want of room: the use
+  // plus what it needs would pass the line the caches start releasing at, so it was not made (a context is
+  // the one thing here that nothing can trim to fit). True while the wait after that refusal lasts; the
+  // request is not asked of the worker meanwhile (Request and Prepare do nothing for it), and the caller
+  // runs another path (temporal.cpp UpdatePath). After the wait it is false: the next Request or Prepare
+  // asks again, and the answer is a context or a longer wait. The default is a runtime that makes no such
+  // check (DLSS: Streamline gives no figure before a feature exists). Any thread.
+  virtual bool NoRoom(const BackendRequest&) const { return false; }
+
   // GPU idle: the worker stops and every context goes.
   virtual void Shutdown() = 0;
 };
@@ -329,5 +338,8 @@ void PublishRunningUpscaler(Upscaler running);
 void PublishKeptUpscaler(Upscaler kept);
 // The settings ask for another path than the one running and its context is being made.
 void PublishUpscalerSwitching(bool switching);
+// The upscaler the settings choose was refused for want of video memory and something else runs (gpu.h
+// UpscalerAvailability::no_room).
+void PublishUpscalerNoRoom(bool no_room);
 
 }  // namespace mcla::gpu

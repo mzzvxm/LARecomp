@@ -4,15 +4,7 @@
 
 #include <utility>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include "os/thread_priority.h"
 
 namespace mcla::gpu {
 
@@ -26,10 +18,11 @@ bool BackgroundBuild::Start(std::function<void()> work) {
   }
   state_.store(kRunning, std::memory_order_relaxed);
   thread_ = std::thread([this, work = std::move(work)] {
-#if defined(_WIN32)
-    // As the host precache's builder (host_precache.cpp): the game runs meanwhile.
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#endif
+    // As the host precache's builder (host_precache.cpp): the game runs meanwhile, and nothing
+    // waits for this job (the frames until it ends are drawn without the effect). Windows: below
+    // normal, as always; Linux: SCHED_BATCH and a higher nice value (os/thread_priority.h). The
+    // thread ends with the job, so the lowering is never undone.
+    larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBackground);
     work();
     state_.store(kEnded, std::memory_order_release);
   });

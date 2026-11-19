@@ -36,6 +36,8 @@
 #include "temporal_ffx_glue.h"
 #include "upscaler_load_policy.h"
 #include "upscaler_math.h"
+#include "vram_budget.h"
+#include "vram_room.h"
 
 
 // The key numbers upscaler_math.h keeps (so that it needs no SDK) are the SDK's own.
@@ -70,6 +72,22 @@ using ffx_common::ParseVersion;
 using ffx_common::ReturnName;
 using ffx_common::Utf8;
 using ffx_common::Version;
+
+// The flags a context is made with, and a size query for it is asked with (the runtime's figure
+// depends on them).
+uint32_t ContextFlags(const BackendRequest& request) {
+  // mcla_gpu_fsr_debug_view (a part of the request): the runtime may draw its debug views into the
+  // output (more video memory); a dispatch asks for them (Upscale).
+  return FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
+         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
+         (request.debug_view ? uint32_t(FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION) : 0u);
+}
+
+uint64_t NowMs() {
+  return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+}
 
 // The runtime's messages, from whatever thread it is on.
 void FfxMessage(uint32_t type, const wchar_t* message) {
@@ -147,6 +165,14 @@ struct FfxBackend::Impl {
   std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;
   bool failed[3] = {};           // by Upscaler: a creation of that kind failed
+  // Contexts refused for want of video memory (vram_room.h): a request is not asked of the worker while
+  // its wait lasts (Request and Prepare), and NoRoom tells the caller so.
+  vram_room::RefusalBook<BackendRequest> refusals;
+
+  // ---- the worker only: what the last context of each kind took, and the pixels of its output (the
+  // estimate when the runtime does not answer the size query)
+  uint64_t measured_bytes[3] = {};
+  uint64_t measured_pixels[3] = {};
 
   // ---- render thread only
   uint64_t dispatches = 0;
@@ -158,6 +184,14 @@ struct FfxBackend::Impl {
   bool LoadRuntime(std::string* why);
   bool QueryVersions(std::string* why);
   std::shared_ptr<Context> CreateContext(const BackendRequest& request, std::string* why);
+  // Worker thread, before CreateContext: whether the video memory has room for the context (vram_room.h).
+  // False with the reason in plain words in `*problem`. True when it fits, when the runtime's figure for it is
+  // not known, and when the adapter reports no budget.
+  bool RoomForContext(const BackendRequest& request, std::string* problem);
+  // The video memory a context for `request` would take: the runtime's own answer to its size query (before
+  // any context exists), else the last context of this kind scaled by the output's pixels; 0 when neither is
+  // known. `from_runtime` says which.
+  uint64_t ContextBytesFor(const BackendRequest& request, bool* from_runtime);
   void DestroyContext(Context& context);
   // Render thread, before a dispatch: passes the test levers' values to the context when they differ
   // from what it holds (the first dispatch of a context and every change), one log line each.
@@ -438,11 +472,7 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
     *why = "the device's native objects are not available";
     return {};
   }
-  // mcla_gpu_fsr_debug_view (a part of the request): the runtime may draw its debug views into the
-  // output (more video memory); a dispatch asks for them (Upscale).
-  const uint32_t flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
-                         FFX_UPSCALE_ENABLE_AUTO_EXPOSURE |
-                         (request.debug_view ? uint32_t(FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION) : 0u);
+  const uint32_t flags = ContextFlags(request);
   context->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
   context->upscale.flags = flags;
   context->upscale.maxRenderSize = {request.render_size[0], request.render_size[1]};
@@ -505,6 +535,14 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
   }
   context->phases = phases > 0 ? uint32_t(phases) : 0u;
   context->bytes = usage_bytes;
+  {
+    const uint64_t pixels = uint64_t(request.output_size[0]) * request.output_size[1];
+    const size_t kind = size_t(request.upscaler) < 3 ? size_t(request.upscaler) : 0;
+    if (usage_bytes != 0 && pixels != 0) {
+      measured_bytes[kind] = usage_bytes;
+      measured_pixels[kind] = pixels;
+    }
+  }
   REXLOG_INFO("{} context for {} at {}x{} (output {}x{}) made in {:.0f} ms: provider '{}', about {} "
               "MB, {} jitter phases (the renderer follows that count){}",
               kPrefix, UpscalerName(request.upscaler), request.render_size[0], request.render_size[1],
@@ -514,6 +552,67 @@ std::shared_ptr<Context> FfxBackend::Impl::CreateContext(const BackendRequest& r
                                    "dispatches draw FSR's own views into the output"
                                  : "");
   return context;
+}
+
+uint64_t FfxBackend::Impl::ContextBytesFor(const BackendRequest& request, bool* from_runtime) {
+  *from_runtime = false;
+  const uint64_t id = request.upscaler == Upscaler::kFsr4 ? id4 : id31;
+  if (id != 0 && query) {
+    // The runtime answers the size of a context for sizes and flags before one exists (a query with no
+    // context; the device is named by the backend description, which has to outlive the call).
+    ffx_glue::BackendDesc backend_desc;
+    if (FillBackend(api, native, &backend_desc)) {
+      FfxApiEffectMemoryUsage usage{};
+      ffxQueryDescUpscaleGetGPUMemoryUsageV2 q{};
+      q.header.type = FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE_V2;
+      q.device = backend_desc.query_device;
+      q.maxRenderSize = {request.render_size[0], request.render_size[1]};
+      q.maxUpscaleSize = {request.output_size[0], request.output_size[1]};
+      q.flags = ContextFlags(request);
+      q.gpuMemoryUsageUpscaler = &usage;
+      ffxOverrideVersion override_version{};
+      override_version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
+      override_version.versionId = id;
+      q.header.pNext = &override_version.header;
+      if (query(nullptr, &q.header) == FFX_API_RETURN_OK && usage.totalUsageInBytes != 0) {
+        *from_runtime = true;
+        return usage.totalUsageInBytes;
+      }
+    }
+  }
+  const size_t kind = size_t(request.upscaler) < 3 ? size_t(request.upscaler) : 0;
+  return vram_room::ScaledEstimate(measured_bytes[kind], measured_pixels[kind],
+                                   uint64_t(request.output_size[0]) * request.output_size[1]);
+}
+
+// CHECK: the size query (ffxQueryDescUpscaleGetGPUMemoryUsageV2 with no context and a version override)
+// answers for FSR 3.1 on D3D12 and on Vulkan (the log line "no room ..." or, with room, the "ready" line
+// after it), and that its figure is close to what the context then reports for itself ("about N MB" in
+// the creation line); FSR 4's provider may not answer it (then the last context's size scaled by the
+// output's pixels is used, or nothing: no refusal).
+bool FfxBackend::Impl::RoomForContext(const BackendRequest& request, std::string* problem) {
+  if (!device) {
+    return true;
+  }
+  bool from_runtime = false;
+  const uint64_t context = ContextBytesFor(request, &from_runtime);
+  const uint64_t need =
+      vram_room::UpscalerNeed(context, request.output_size[0], request.output_size[1]);
+  if (need == 0) {
+    return true;  // not known: the creation is the judge, as before this check
+  }
+  const backend::VideoMemory memory = device->QueryVideoMemory();
+  if (VideoMemoryBudget::HasRoomFor(memory, need)) {
+    return true;
+  }
+  *problem = std::format(
+      "it needs about {} MiB ({} MiB for the context, {} {}, and {} MiB for the picture it "
+      "writes) and {} of {} MiB of video memory are in use",
+      need >> 20, context >> 20, from_runtime ? "the runtime's own figure from" : "an estimate from",
+      from_runtime ? "its size query" : "the last context of this kind",
+      vram_room::OutputImageBytes(request.output_size[0], request.output_size[1]) >> 20,
+      memory.used >> 20, memory.budget >> 20);
+  return false;
 }
 
 void FfxBackend::Impl::ApplyLevers(Context& context) {
@@ -589,9 +688,47 @@ void FfxBackend::Impl::WorkerMain() {
     if (for_current || WantNextLocked()) {
       const BackendRequest request = for_current ? want_request : next_request;
       lock.unlock();
+      // Video memory first (vram_room.h): a context is the one thing the caches cannot be trimmed to make
+      // room for, and making one past the budget pages the process's other allocations out to system
+      // memory. Nothing is made when there is no room; the request waits (refusals) and is asked again.
       std::string why;
-      std::shared_ptr<Context> made = CreateContext(request, &why);
+      std::string no_room;
+      const bool room = RoomForContext(request, &no_room);
+      std::shared_ptr<Context> made;
+      if (room) {
+        made = CreateContext(request, &why);
+      }
       lock.lock();
+      if (!room) {
+        const uint64_t wait_ms = refusals.Refuse(request, NowMs());
+        if (want && want_request == request) {
+          want = false;
+        }
+        if (next_want && next_request == request) {
+          next_want = false;
+        }
+        lock.unlock();
+        REXLOG_INFO("{} no room for the {} context at {}x{} to {}x{}: {}. It is not made and the picture "
+                    "goes on without it; asked again after {} s{}",
+                    kPrefix, UpscalerName(request.upscaler), request.render_size[0],
+                    request.render_size[1], request.output_size[0], request.output_size[1], no_room,
+                    wait_ms / 1000,
+                    wait_ms >= vram_room::kMaxWaitMs ? " (and every minute after that)"
+                                                     : ", then less often");
+        lock.lock();
+        continue;
+      }
+      const bool was_refused = made && refusals.Known(request);
+      if (made) {
+        refusals.Clear(request);
+      }
+      if (was_refused) {
+        lock.unlock();
+        REXLOG_INFO("{} there is room for the {} context at {}x{} to {}x{} now: making it", kPrefix,
+                    UpscalerName(request.upscaler), request.render_size[0], request.render_size[1],
+                    request.output_size[0], request.output_size[1]);
+        lock.lock();
+      }
       if (!made) {
         FailLocked(lock, request.upscaler, false, std::format("its context could not be made: {}", why));
       } else if (for_current && want && want_request == request && !ctx && !stop) {
@@ -717,6 +854,9 @@ void FfxBackend::Request(const BackendRequest& request) {
     if (i.lazy_mode && i.lazy.Need()) {
       i.StartLazyWorkerLocked();
     }
+    if (i.refusals.Blocked(request, NowMs())) {
+      return;  // refused for want of video memory a moment ago: not asked again before its wait is over
+    }
     if (i.want && i.want_request == request) {
       return;
     }
@@ -734,6 +874,12 @@ bool FfxBackend::Ready(const BackendRequest& request) const {
   const Impl& i = *impl_;
   std::lock_guard lock(i.mu);
   return i.ctx && i.ctx->request == request && !i.status.failed;
+}
+
+bool FfxBackend::NoRoom(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  return i.refusals.Blocked(request, NowMs());
 }
 
 uint32_t FfxBackend::JitterPhaseCount() const {
@@ -756,7 +902,11 @@ void FfxBackend::Prepare(const BackendRequest& request) {
     if (i.lazy_mode && i.lazy.Need()) {
       i.StartLazyWorkerLocked();
     }
-    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
+    if (i.refusals.Blocked(request, NowMs())) {
+      // Refused for want of video memory a moment ago (the worker said so): nothing is prepared, and
+      // a prepared context for another request is not wanted any more either.
+      i.RetireNextLocked(&retire);
+    } else if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
       // The current context is, or is being made as, the one asked for: nothing to prepare beside it.
       i.RetireNextLocked(&retire);
     } else if (i.next_want && i.next_request == request) {

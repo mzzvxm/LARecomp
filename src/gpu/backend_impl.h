@@ -42,6 +42,7 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
                             uint32_t sampler_count);
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
+std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
@@ -91,6 +92,7 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
                             uint32_t sampler_count);
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
+std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);

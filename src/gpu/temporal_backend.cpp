@@ -60,6 +60,7 @@ std::atomic<uint32_t> g_dlss_refused{0};
 std::atomic<uint32_t> g_running{0};
 std::atomic<uint32_t> g_kept{0};
 std::atomic<bool> g_switching{false};
+std::atomic<bool> g_no_room{false};
 
 }  // namespace
 
@@ -170,6 +171,10 @@ void PublishUpscalerSwitching(bool switching) {
   g_switching.store(switching, std::memory_order_relaxed);
 }
 
+void PublishUpscalerNoRoom(bool no_room) {
+  g_no_room.store(no_room, std::memory_order_relaxed);
+}
+
 UpscalerAvailability GetUpscalerAvailability() {
   const uint32_t v = g_availability.load(std::memory_order_relaxed);
   UpscalerAvailability a;
@@ -185,6 +190,7 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
   a.kept = Upscaler(g_kept.load(std::memory_order_relaxed) & 3u);
   a.switching = g_switching.load(std::memory_order_relaxed);
+  a.no_room = g_no_room.load(std::memory_order_relaxed);
   return a;
 }
 

@@ -9,16 +9,6 @@
 
 #include "os/thread_priority.h"
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 namespace mcla::gpu {
 
 namespace {
@@ -206,11 +196,10 @@ uint32_t HostPrecache::AddLive(std::string pass, std::vector<Item> items) {
 
 void HostPrecache::RunLive(const std::string& pass, const std::vector<Entry*>& list,
                            Clock::time_point began) {
-#if defined(_WIN32)
   // The game runs meanwhile; nothing waits for this worker (the owner draws without the pass until
-  // Ready), so there is no raising.
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-#endif
+  // Ready), so there is no raising: a plain, one-way lowering (Windows: below normal, as always;
+  // Linux: SCHED_BATCH and a higher nice value, os/thread_priority.h).
+  larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kBackground);
   uint32_t made = 0, failed = 0, left = 0;
   for (Entry* entry : list) {
     if (stop_.load(std::memory_order_acquire)) {

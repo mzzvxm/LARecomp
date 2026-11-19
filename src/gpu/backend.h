@@ -187,6 +187,14 @@ std::string DescribeDevice(plume::RenderDevice* device);
 // count as not startable, so the other one is tried.
 std::string RequirementProblem(plume::RenderDevice* device);
 
+// One plain line for the log, written once when the device opens: the numbers a compatibility report
+// needs and nothing else logs (D3D12: the highest shader model, the resource binding tier, wave
+// operations, 16-bit shader operations, rasterizer ordered views, typed UAV loads of more formats;
+// Vulkan: shaderInt64, buffer device address, the descriptor indexing features the bindless sets use,
+// the bound set limit, BC textures). The questions of perf/COMPAT-AUDIT.md section 9 are answered by it
+// from a player's log. Empty when the device cannot say.
+std::string DescribeCapabilities(plume::RenderDevice* device);
+
 // The adapter to ask Plume for when the user named none (mcla_gpu_adapter empty). D3D12: the
 // one Windows' graphics setting for this exe names (Settings > System > Display > Graphics:
 // power saving or high performance), else the first of Windows' high-performance order; software

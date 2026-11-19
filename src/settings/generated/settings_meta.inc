@@ -392,6 +392,7 @@
 {"mcla_gpu_upscaler_zero_jitter", "MCLA/GPU"},
 {"mcla_gpu_validate", "MCLA/GPU"},
 {"mcla_gpu_verify_constants", "MCLA/GPU"},
+{"mcla_gpu_vram_budget_mb", "MCLA/GPU"},
 {"mcla_gpu_vram_log", "MCLA/GPU"},
 {"mcla_gpu_vsync", "MCLA/GPU"},
 {"mcla_gpu_watch_base", "MCLA/GPU"},
