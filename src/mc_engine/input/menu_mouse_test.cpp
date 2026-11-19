@@ -1,12 +1,15 @@
 // A check of the mouse in the menus' pure rules (menu_mouse_core.h) that needs no game: the window -> stage mapping for the shapes of picture the game
 // makes, the matrix fold, the row boxes and their plausibility, the hit test, the settings rows' left / right zones, the click and hover plans, the wheel's
-// remainder, the press pacing, the highlight walk and a click waiting for the highlight.
+// remainder, the press pacing, the highlight walk and a click waiting for the highlight; and that menu_mouse.cpp (the game thread's side) makes no ImGui call.
 //   cmake --build <dir> --target larecomp_menu_mouse_test, then run it (exit 0 = passed).
 // Or by hand: clang++ -std=c++20 -I src -I src/mc_engine src/mc_engine/input/menu_mouse_test.cpp -o menu_mouse_test
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 #include "menu_mouse_core.h"
 
@@ -1116,6 +1119,47 @@ void TestHookMessage() {
     CHECK(pick.from_message && pick.x == 765 && pick.y == 821);
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// The game thread must not touch ImGui. menu_mouse.cpp's Tick runs on the game thread (the UI update hook), and ImGui belongs to the UI thread: the 0.11 UI system makes its context current only while it
+// builds a frame and sets it back to null after, so `ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse` in Tick faulted at 0xd0 (GImGui went null between the two calls; v0.11 boot run
+// 2026-11-19). The flag for any thread is mcla::ui::OverlayWantsMouse() (imgui_theme.h). This scans a source text for ImGui calls outside comments.
+int CountImGuiUses(const std::string& source) {
+    int count = 0;
+    std::istringstream lines(source);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const size_t comment = line.find("//");
+        if (comment != std::string::npos) line.erase(comment);
+        if (line.find("ImGui::") != std::string::npos || line.find("ImGui_") != std::string::npos || line.find("#include \"imgui") != std::string::npos ||
+            line.find("#include <imgui") != std::string::npos)
+            ++count;
+    }
+    return count;
+}
+
+void TestNoImGuiOnTheGameThread() {
+    // The scan itself: the old line is found, the comment and the published flag are not.
+    CHECK(CountImGuiUses("const bool over = a() || (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse);") == 1);
+    CHECK(CountImGuiUses("#include \"imgui.h\"") == 1);
+    CHECK(CountImGuiUses("// not ImGui::GetIO() here\nconst bool over = a() || mcla::ui::OverlayWantsMouse();") == 0);
+
+    // The file: menu_mouse.cpp sits beside this test (the path is this file's, so it works from the build dir and by hand from the repo root).
+    std::string path = __FILE__;
+    const size_t slash = path.find_last_of("/\\");
+    path = (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) + "menu_mouse.cpp";
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::printf("FAILED: cannot open %s (the game-thread ImGui check needs the source beside the test)\n", path.c_str());
+        ++g_checks;
+        ++g_failed;
+        return;
+    }
+    std::stringstream text;
+    text << in.rdbuf();
+    CHECK(!text.str().empty());
+    CHECK(CountImGuiUses(text.str()) == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -1141,6 +1185,7 @@ int main() {
     TestCardShape();
     TestClickPlaces();
     TestLayoutTrust();
+    TestNoImGuiOnTheGameThread();
     std::printf("menu_mouse_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }
