@@ -23,6 +23,14 @@
 //   - for a draw of the player's car with triangles the Draw is made (the matrix of its recipe from the constants, the host
 //     geometry, the host position element, the mesh key) and the listeners get OnPlayerDraw inside the draw's own call. Draws seen
 //     before the ID is known are held (at most a few dozen) and join the Frame once it is.
+// OTHER CARS (car_rt_instances_rules.h): the ray traced scene also holds the cars driving alongside, so a consumer that wants them calls
+// RequestOtherCars(limits) (the ray traced scene, in every frame it is asked for structures: nobody else asks, and where no device can trace rays
+// nobody does, so nothing below runs there). Then the draws of every ID that is not the player's go through the CarSelector: the cars within the
+// radius of the player's vehicle, the nearest few; a kept car's draws get the same treatment as the player's (the recipe, the matrix, the mesh
+// key) into Frame::other_draws, without the host geometry and without boxes, and the listeners get OnOtherCarDraw inside the draw's call, so
+// that the scene reads the triangles of a model it has not seen. The skinned parts (the drivers) and the parts under Limits::min_indices
+// are left out. A car that is new costs little in any one frame: the fingerprints of its meshes are made within Limits::content_bytes a frame
+// (a draw whose mesh has no fingerprint yet waits for the next frame) and the scene reads the triangles within Limits::stage_triangles.
 // Guest memory is read in MeshReader::ReadTriangles (by a listener) and once per new mesh_key for its model-space box (a few
 // per frame at most, then cached by key and dropped when the key has not been seen for a long while). The mesh_key itself is made
 // from a fingerprint of the mesh's own indices and vertices (car_frame_rules.h): those bytes are read again only when the geometry
@@ -42,6 +50,7 @@
 #include "car_dump_rules.h"
 #include "car_frame_rules.h"
 #include "car_mesh_read.h"
+#include "car_rt_instances_rules.h"
 #include "constants.h"
 #include "geometry.h"
 #include "input_layout.h"
@@ -53,6 +62,10 @@ namespace mcla::gpu {
 class GuestMemory;
 
 namespace car_frame {
+
+// Another car's draw and the car (car_rt_instances_rules.h).
+using OtherDraw = car_rt_instances::OtherDraw;
+using OtherCar = car_rt_instances::OtherCar;
 
 enum class Part : uint8_t {
   kBody,     // a rigid part: ONE matrix (a palette bone then gWorld, or gWorld alone: the tyres)
@@ -123,6 +136,10 @@ struct Frame {
   double bounds_min[3] = {};
   double bounds_max[3] = {};
   std::vector<Draw> draws;        // the player's car only, in draw order
+  // The other cars the selection kept (RequestOtherCars), with their draws in draw order: the nearest few within the radius of the player's
+  // vehicle, each draw with a mesh key. Empty where nobody asks for them. Valid together with the player's: the distances are from the vehicle.
+  std::vector<OtherCar> other_cars;
+  std::vector<OtherDraw> other_draws;
 };
 
 // Reads one draw's triangles out of guest memory. Usable ONLY inside Listener::OnPlayerDraw (the guest is held back then).
@@ -143,6 +160,10 @@ class Listener {
   // A draw known to be the player's car, inside the draw's own call. The ID is the one this frame confirmed, else the previous
   // frame's: a draw before the frame's first confirmed draw may be missed here (it is in the trigger's Frame all the same).
   virtual void OnPlayerDraw(const Draw& draw, const MeshReader& reader) = 0;
+  // A draw of another car that the selection kept (a listener that wants them asked with RequestOtherCars), inside the draw's own call; the
+  // reader reads its triangles (model space). The car may be given up later in the frame by a nearer one (its draws leave the Frame; a mesh
+  // read for it stays in the listener's cache by key).
+  virtual void OnOtherCarDraw(const OtherDraw& /*draw*/, const MeshReader& /*reader*/) {}
 };
 
 }  // namespace car_frame
@@ -177,10 +198,19 @@ class CarFrame {
   // A user wants the frames: call it in every frame it needs one (any time in the frame); a request in frame N makes frame N+1
   // collect. Nobody asks: the per-draw call is one flag read.
   void Request() { requested_ = true; }
+  // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
+  void RequestOtherCars(const car_rt_instances::Limits& limits) {
+    requested_ = true;
+    others_requested_ = limits.On();
+    other_limits_next_ = limits;
+  }
   // Listeners get OnPlayerDraw while the frames are collected (at most a few; null entries are ignored).
   void AddListener(car_frame::Listener* listener);
 
   bool wants_draws() const { return collecting_; }
+  // The other cars are collected in this frame (and under which limits).
+  bool others_on() const { return others_on_; }
+  const car_rt_instances::Limits& other_limits() const { return other_limits_; }
   // The Scene opened a frame's first list.
   void BeginFrame();
   // A prepared main-view draw (temporal_identities.h MatchMainView).
@@ -229,6 +259,7 @@ class CarFrame {
     bool valid = false;
     uint32_t id = 0;
     uint32_t draws = 0, body = 0, skinned = 0;
+    uint32_t other_cars = 0, other_draws = 0;
     bool operator==(const Summary&) const = default;
   };
   // The numbers of the frame being collected, for the log.
@@ -249,6 +280,17 @@ class CarFrame {
     uint32_t content_changed = 0;  // ... made again because the stamp moved, and the bytes had changed: another key
     uint32_t content_same = 0;     // ... made again because the stamp moved, and the bytes were the same: the key stayed
     uint64_t content_bytes = 0;    // guest bytes hashed or scanned for them
+    // The other cars (RequestOtherCars): draws of IDs that are not the player's, while they are collected, and what became of them.
+    uint32_t others_seen = 0;
+    uint32_t others_far = 0;          // ... of a car that is not kept: beyond the radius, or more cars nearer than the limit
+    uint32_t others_listed = 0;
+    uint32_t others_small = 0;        // ... under Limits::min_indices
+    uint32_t others_skinned = 0;      // ... a driver (not in the scene)
+    uint32_t others_no_triangles = 0; // ... lines, a computed fetch, no POSITION
+    uint32_t others_not_finite = 0;
+    uint32_t others_deferred = 0;     // ... whose mesh has no fingerprint yet and the frame's budget for them was spent: it joins in a later frame
+    uint32_t others_no_key = 0;       // ... with no mesh key at all (inline vertices, a stream that cannot be resolved)
+    uint32_t others_evicted = 0;      // cars given up for a nearer one
   };
   // What the keys did since the last [car frame] keys line.
   struct KeyWindow {
@@ -283,6 +325,9 @@ class CarFrame {
   void FinishFrame();
   void OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id);
   void HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id);
+  // A draw of another car (not the player's ID): the selection, then the recipe, the matrix and the key as the player's draws get them.
+  void HandleOtherDraw(const MainDraw& d, uint32_t order, uint32_t id, double distance, const uint8_t* bank);
+  void DropOtherCar(uint32_t id);
   void OnConfirmed(uint32_t id, bool switched);
   void SyncPlayer();
   bool HasTriangles(const MainDraw& d) const;
@@ -297,6 +342,7 @@ class CarFrame {
   uint64_t StreamContent(const MainDraw& d, const car_mesh::StreamRef& stream, const car_frame_rules::VertexSpan& span);
   void NoteOutcome(car_frame_rules::ContentCache::Outcome outcome);
   void LogKeys();
+  std::string OthersText() const;
   void NoteBox(car_frame::Draw* out);
   void NoteCamera(const uint8_t* vs_bank, const temporal::Mat4& world);
   void AddToBounds(const car_frame::Draw& draw);
@@ -321,6 +367,16 @@ class CarFrame {
   uint32_t previous_id_ = 0;           // the player's ID in the frame before (0: none)
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
+  // The other cars (RequestOtherCars): asked for in a frame, collected in the next, under the limits of the request.
+  bool others_requested_ = false;
+  car_rt_instances::Limits other_limits_next_;
+  car_rt_instances::Limits other_limits_;
+  bool others_on_ = false;
+  car_rt_instances::CarSelector selector_;
+  uint64_t content_limit_ = 0;   // the bytes of fingerprints the draw being handled may make for a new mesh (0: no limit: the player's draws)
+  uint64_t content_spent_ = 0;   // ... what the frame's other cars' draws have made so far
+  bool content_blocked_ = false; // a fingerprint was wanted that the budget did not allow: the draw's key is not made (it waits)
+  car_frame::Draw scratch_draw_; // the draw the MeshReader works for while another car's draw is handled (its part, its keys, its shaders)
   uint32_t main_draws_ = 0;            // main-view draws so far in this frame
   uint32_t world_draws_ = 0;           // ... that wrote no vehicle ID
   std::vector<car_frame::Draw> pending_;  // draws held before the player's ID is known (the ones of every ID, to be sorted out)

@@ -66,6 +66,9 @@ inline constexpr uint32_t kMaskBody = 0x01;    // the opaque rigid parts
 inline constexpr uint32_t kMaskGlass = 0x02;   // drawn after the world: glass, lights and other translucent parts
 inline constexpr uint32_t kMaskTyres = 0x04;
 inline constexpr uint32_t kMaskDriver = 0x08;  // skinned: not in the first version
+// Another car (an opponent, traffic, a parked car; car_rt_instances_rules.h): hit by the effects' rays against the scene, never by the
+// primary ray that finds the player's car at a pixel.
+inline constexpr uint32_t kMaskOthers = 0x10;
 // The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
 inline constexpr uint32_t kFlagAfterWorld = 0x100;
 
@@ -473,7 +476,7 @@ inline constexpr double kNearFarTolerance = 0.02;
 struct CheckSummary {
   uint64_t vehicle = 0;
   uint64_t covered = 0;
-  uint64_t missed = 0;     // vehicle pixels no part of the player's car covers: the other cars, the driver, anything not built yet
+  uint64_t missed = 0;     // vehicle pixels no part of a car in the scene covers: the driver, anything not built yet, a car beyond the other cars' limits
   double coverage = 0.0;   // covered / vehicle
   double mean_error = 0.0;  // mean |hit - image| / image over the covered
   double p50 = 0.0;        // the upper edge of the histogram's bucket holding the median and the 95th percentile (1e30: the last)
@@ -482,6 +485,7 @@ struct CheckSummary {
   double nearer = 0.0;       // ... with a hit nearer than the image by more than 2%
   double farther = 0.0;
   uint64_t glass = 0, tyres = 0, body = 0;
+  uint64_t other = 0;      // covered pixels none of the three classes counts: the other cars' parts (and the driver, where it is built)
 };
 
 inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
@@ -493,6 +497,8 @@ inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
   s.glass = words[kStatGlass];
   s.tyres = words[kStatTyres];
   s.body = words[kStatBody];
+  const uint64_t classed = s.glass + s.tyres + s.body;
+  s.other = s.covered > classed ? s.covered - classed : 0;
   if (s.covered == 0) {
     return s;
   }
