@@ -75,6 +75,11 @@ inline constexpr uint32_t kVariants = 10;
 inline constexpr uint32_t kLods = 3;
 inline constexpr uint32_t kPaintRegions = 6;
 inline constexpr uint32_t kBodyPart = kPartSlots;  // Geometry::part of the body's geometries
+// Geometry::part of what is not in the model set (RT-MODEL-PARTS): the wheel manager's tyre and rim (car_model_wheel_rules.h), and the whole model of a traffic car
+// (car_model_traffic_rules.h).
+inline constexpr uint32_t kTyrePart = kPartSlots + 1;
+inline constexpr uint32_t kRimPart = kPartSlots + 2;
+inline constexpr uint32_t kModelPart = kPartSlots + 3;
 inline constexpr uint32_t kNoBone = 0xFFFFFFFFu;
 
 inline constexpr uint32_t kVehicleEntity = 20;
@@ -498,6 +503,22 @@ struct Tally {
   uint32_t triangles = 0;
 };
 
+// What the walk read of a vehicle's wheels (car_model_wheel_rules.h): the wheel manager's tyre and rim (two shared resources, chosen by two ids the vehicle holds),
+// the flags the wheel draw tests, and the geometries it added to CarWalk::geometries (parts kTyrePart and kRimPart).
+struct WheelWalk {
+  bool read = false;               // the manager and the vehicle's ids were readable
+  uint32_t manager = 0;            // [0x8288E010]
+  int32_t tyre_id = -1, rim_id = -1;
+  uint32_t tyre_entry = 0, rim_entry = 0;
+  uint32_t tyre_drawable = 0, rim_drawable = 0;
+  bool tyre_ok = false, rim_ok = false;   // the game's accessors would hand out the drawable and its pack (loaded, placed, no error word)
+  bool tyre_on = false, rim_on = false;   // the wheel draw's flags: V+589; V+590 and V+6477 clear
+  bool hidden = false;                    // the object at V+1060 says the wheels are not drawn
+  bool present[kWheelCount] = {};         // the pointer of wheel w in V+4192 / V+4208 is not null
+  uint32_t tyre_geometries = 0, rim_geometries = 0;
+  uint32_t tyre_entry_index = 0xFFFFFFFFu, rim_entry_index = 0xFFFFFFFFu;  // into CarWalk::parts
+};
+
 struct CarWalk {
   uint32_t vehicle = 0;
   bool ok = false;                 // the chain down to the model set was readable
@@ -520,6 +541,7 @@ struct CarWalk {
   float wheel_position[kWheelCount][3] = {};
   bool wheels_read = false;
   Paint paint[kPaintRegions];
+  WheelWalk wheels;                // the tyre and the rim (car_model_wheel_rules.h)
   DrawFlags flags;                 // the bytes the draw's per-part tests read
   uint32_t loop_parts = kPartSlots;
   bool has_entity_matrix = false;  // the entity's world matrices (update copy at E+144, render copy at E+208), whole
@@ -563,6 +585,8 @@ struct Options {
   // The phase 1 rule: every part at the second pass's lod (+6008). The retail loop asks the parts under 44 for the vehicle's lod (+6004), so the walker's default
   // is that; this switch is for the fixtures that were made with the other rule.
   bool all_parts_at_part_lod = false;
+  // The wheels (the manager's tyre and rim: car_model_wheel_rules.h WalkWheels) are walked too. RT-MODEL-PARTS; off only for the fixtures of the earlier rounds.
+  bool wheels = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -791,6 +815,10 @@ uint32_t WalkLod(const Mem& mem, uint32_t lod_object, const PartEntry& entry, ui
 }
 
 }  // namespace detail
+
+// The wheels (car_model_wheel_rules.h, included at the end of this file): appends the tyre's and the rim's geometries to `out` and fills out->wheels.
+template <class Mem>
+void WalkWheels(const Mem& mem, uint32_t vehicle, const Options& options, CarWalk* out);
 
 // Walks the vehicle at `vehicle`: its state, its paint and variants, and every (part, variant, lod) entry of its model set that the game's own accessor would
 // hand out, down to each geometry. Writes nothing in the guest. A chain that is not readable stops the walk with `out->ok` false and `out->why` saying where.
@@ -1082,6 +1110,11 @@ void WalkVehicle(const Mem& mem, uint32_t vehicle, const Options& options, CarWa
     }
   }
 
+  // the wheels: two more entries (the manager's tyre and rim), their geometries in use by the wheel draw's flags
+  if (options.wheels && !out->truncated) {
+    WalkWheels(mem, vehicle, options, out);
+  }
+
   // the data of the geometries the game draws, within the budget; the tallies
   uint64_t budget = options.validate_budget;
   for (Geometry& g : out->geometries) {
@@ -1334,3 +1367,6 @@ inline FrameMatch MatchFrame(const std::vector<const CarWalk*>& cars, const std:
 }
 
 }  // namespace mcla::gpu::car_model_walk
+
+// The wheels' part of the walk: a template that WalkVehicle calls (declared above); it needs the types of this file, so it is included after them.
+#include "car_model_wheel_rules.h"

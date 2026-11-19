@@ -33,8 +33,9 @@
 //   CHECK 2  the paint colour as the shader shows it (PaintColourOf: region 0's colour A, the mean with B for a gradient; the numbers are the game's constants, 0..1);
 //   CHECK 3  the draw loop's per-part tests (PartDrawn: asm only) and the meaning of the two bytes that cut it to 44 parts (the walk logs them: `flags=`, `loop=`);
 //   CHECK 4  that a draw's primitive is a list or a strip by the geometry's counts (the loader's draw-mode number 3 is a list; strips are read by counts alone);
-//   NOT DONE the wheels (the wheel manager's drawables are not in the model set: a walked car has no tyres), the driver, traffic and parked cars (not vehicles: the
-//            ambient chain of the survey, section 3), a glass / chrome flag per part (every walked part is an opaque body of the others' mask).
+//   RT-MODEL-PARTS (car_model_wheel_rules.h, car_model_traffic_rules.h, car_model_parts_rt_rules.h): the wheels (the manager's tyre and rim, the vehicle's wheel matrices), the traffic
+//            and parked cars (the renderer's ambient client's items) as walk sources; NOT done: the driver (skinned), a glass / chrome flag per part (every walked part is an opaque
+//            body of the others' mask).
 // ===========================================================================
 
 #include <algorithm>
@@ -668,6 +669,7 @@ struct CarInfo {
   bool is_player = false;
   bool drawn = false;            // some draw of the frame is one of its geometries
   bool visible = false;          // the game's own flag (+116): the main view shows it
+  bool traffic = false;          // a traffic or parked car (car_model_traffic_rules.h), not a racer's vehicle (RT-MODEL-PARTS)
   double position[3] = {};
   double distance = 0.0;         // metres from the player's vehicle
   PaintColour paint;
@@ -675,17 +677,18 @@ struct CarInfo {
 };
 
 // The cars a frame stages (reads the triangles of): near the player (the radius and the class's count plus a spare), not the player's, and not shown by the
-// main view this frame (the game's visibility flag): the draw path covers the ones it draws. Nearest first.
-inline std::vector<uint32_t> ChooseStaged(const std::vector<CarInfo>& cars, const ci::Limits& limits) {
+// main view this frame (the game's visibility flag): the draw path covers the ones it draws. Nearest first. `traffic` picks the cars of that kind (the racers' and the traffic's
+// are chosen apart, each within its own count: `cap`, 0 = the class's count; car_model_parts_rt_rules.h ChooseStagedAll merges them).
+inline std::vector<uint32_t> ChooseStaged(const std::vector<CarInfo>& cars, const ci::Limits& limits, bool traffic = false, uint32_t cap = 0) {
   std::vector<uint32_t> order;
   for (uint32_t i = 0; i < cars.size(); ++i) {
     const CarInfo& c = cars[i];
-    if (!c.is_player && !c.visible && !c.drawn && c.parts != 0 && std::isfinite(c.distance) && c.distance <= limits.radius) {
+    if (!c.is_player && !c.visible && !c.drawn && c.traffic == traffic && c.parts != 0 && std::isfinite(c.distance) && c.distance <= limits.radius) {
       order.push_back(i);
     }
   }
   std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return cars[a].distance < cars[b].distance; });
-  const size_t most = std::min<size_t>(size_t(limits.cars) + kStageSpareCars, kMaxWalkedCars);
+  const size_t most = std::min<size_t>(size_t(cap != 0 ? cap : limits.cars) + kStageSpareCars, kMaxWalkedCars);
   if (order.size() > most) {
     order.resize(most);
   }
@@ -694,14 +697,16 @@ inline std::vector<uint32_t> ChooseStaged(const std::vector<CarInfo>& cars, cons
 
 // The cars a frame places, nearest first: not the player's, not drawn (the draw path keeps the cars it draws), within the radius, at most the class's count.
 // `remembered` are the cars the kits place this frame (their centres): in kGaps a walked car within kSameCarMetres of one is the same car and is left to its kit.
-inline std::vector<uint32_t> ChoosePlaced(const std::vector<CarInfo>& cars, const ci::Limits& limits, Mode mode, const std::vector<ci::OtherCar>& remembered) {
+// `traffic` and `cap` as ChooseStaged's: the racers and the traffic are chosen apart.
+inline std::vector<uint32_t> ChoosePlaced(const std::vector<CarInfo>& cars, const ci::Limits& limits, Mode mode, const std::vector<ci::OtherCar>& remembered, bool traffic = false,
+                                          uint32_t cap = 0) {
   std::vector<uint32_t> order;
   if (mode == Mode::kOff || !limits.On()) {
     return order;
   }
   for (uint32_t i = 0; i < cars.size(); ++i) {
     const CarInfo& c = cars[i];
-    if (c.is_player || c.drawn || c.parts == 0 || !(std::isfinite(c.distance) && c.distance <= limits.radius)) {
+    if (c.is_player || c.drawn || c.traffic != traffic || c.parts == 0 || !(std::isfinite(c.distance) && c.distance <= limits.radius)) {
       continue;
     }
     if (mode == Mode::kGaps) {
@@ -720,8 +725,9 @@ inline std::vector<uint32_t> ChoosePlaced(const std::vector<CarInfo>& cars, cons
     order.push_back(i);
   }
   std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return cars[a].distance < cars[b].distance; });
-  if (order.size() > std::min<size_t>(limits.cars, kMaxWalkedCars)) {
-    order.resize(std::min<size_t>(limits.cars, kMaxWalkedCars));
+  const size_t most = std::min<size_t>(cap != 0 ? cap : limits.cars, kMaxWalkedCars);
+  if (order.size() > most) {
+    order.resize(most);
   }
   return order;
 }
@@ -918,9 +924,10 @@ struct WalkSignature {
   uint64_t variants = 0;       // a hash of the part variants
   uint32_t flags = 0;          // the draw flags as bits
   int32_t min_lod = -1;        // the lod floor the walk was made with
+  uint64_t wheels = 0;         // a hash of the wheel resources' ids and the wheel draw's flags (RT-MODEL-PARTS); for a traffic car, its car type
   uint64_t walked_frame = 0;
   bool operator==(const WalkSignature& o) const {
-    return model_set == o.model_set && body_lod == o.body_lod && part_lod == o.part_lod && variants == o.variants && flags == o.flags && min_lod == o.min_lod;
+    return model_set == o.model_set && body_lod == o.body_lod && part_lod == o.part_lod && variants == o.variants && flags == o.flags && min_lod == o.min_lod && wheels == o.wheels;
   }
 };
 
