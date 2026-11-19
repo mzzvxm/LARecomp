@@ -158,6 +158,7 @@
 #include "draw_state.h"
 #include "input_layout.h"
 #include "level_seeds.h"
+#include "precache_queue.h"
 #include "shaders.h"
 #include "sync_builds.h"
 
@@ -584,16 +585,10 @@ class Pipelines {
   std::unordered_map<PipelineKey, plume::RenderPipeline*, PipelineKeyHash> aliases_;
   std::unordered_map<PipelineKey, Precached*, PipelineKeyHash> precached_by_key_;
   std::vector<std::thread> workers_;
-  // Where the workers are in the list (work_mutex_): the next entry and the end of the run they
-  // are in. The entries a jump of the cursor passed over (FollowRenderThread) wait in
-  // list_skipped_ and are made after the run.
-  struct ListRange {
-    size_t begin = 0;
-    size_t end = 0;
-  };
-  size_t list_cursor_ = 0;
-  size_t list_end_ = 0;
-  std::deque<ListRange> list_skipped_;
+  // Where the workers are in the queue (work_mutex_, precache_queue.h): the cursor, and the windows
+  // the render thread's claims in boot mode put in front of it (FollowRenderThread). No claim moves the
+  // cursor, so no entry is left behind.
+  precache_queue::Cursor list_;
   std::atomic<bool> stop_precache_{false};
   std::atomic<uint32_t> precache_ready_{0};
   std::atomic<uint32_t> precache_failed_{0};
@@ -607,7 +602,7 @@ class Pipelines {
   // at below normal priority, sharing four processors with the guest's own threads, made them
   // slower than the guest asked. Until the list is done or kBootSeconds have passed, up to all
   // the processors but one make pipelines at normal priority, and a claim by the render thread
-  // moves the workers on to the entries after it (FollowRenderThread). Then the extra workers
+  // has the workers make the entries after it first (FollowRenderThread). Then the extra workers
   // leave and the others drop to below normal, as with more processors, which never have it.
   std::atomic<bool> boot_mode_{false};
   // The command line prebuild: set before the workers start, not changed while they run. Its
@@ -635,8 +630,8 @@ class Pipelines {
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
   std::atomic<uint32_t> boot_waits_{0};   // ... and builds under way it waited for
   void EndBootMode(const char* why);
-  // The render thread made entry `index` itself in boot mode: the workers go on after it, and the
-  // entries between their place and it are made once the run is over.
+  // The render thread made entry `index` itself in boot mode: the workers make the entries after it
+  // first (a window, precache_queue.h), then go on where they were.
   void FollowRenderThread(size_t index);
   void NoteClaim(size_t index);
   bool HasListWork() const;                // work_mutex_ held
