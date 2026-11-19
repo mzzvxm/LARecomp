@@ -26,7 +26,15 @@
 // ([0x82839704]) is the cascade's own, about 100 m from the cars, so both routes measure from the eye of the main
 // viewport, [[0x8287E064] + 180 + 4 * buffer], the one the game's own LOD tests use (gpu/traffic_shadow.h).
 //
-// Every test of both hooks has a counter (gpu/traffic_shadow_gates.h) and `[traffic-shadows] gates:` / `window:` /
+// 3. The turn of the shadow (fix/traffic-shadow-rotation, gpu/traffic_shadow_pose.h): the shadow technique of every ambient
+//    shader group is rigid (no bone matrices) and the game's World matrix for the item's body draw is a translation, so a
+//    raised traffic car was drawn into the cascades at its position but never turned. The hook at 0x827917C0 (the `bl
+//    sub_8217D918` that sets the World matrix in sub_827914B8; r3 = the four rows at r1+144, r18 = the item's block, r27 =
+//    the item) puts the body bone's rotation into that stack copy in a cascade phase. A debug log (mcla_gpu_traffic_shadows_log)
+//    prints the body's heading against the shadow's and, from the hook at 0x82793608 (the `bl sub_82795960` that makes the
+//    soft decal in phase 0x10000), against the decal's.
+//
+// Every test of the first two hooks has a counter (gpu/traffic_shadow_gates.h) and `[traffic-shadows] gates:` / `window:` /
 // `census:` lines print them, so a run says which test turns the cars away and whether the distances are right.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
@@ -49,6 +57,7 @@
 #include "gpu/live_text.h"
 #include "gpu/traffic_shadow.h"
 #include "gpu/traffic_shadow_gates.h"
+#include "gpu/traffic_shadow_pose.h"
 #endif
 
 REXCVAR_DEFINE_STRING(
@@ -84,6 +93,24 @@ REXCVAR_DEFINE_INT32(
     "(each one costs the cars' draws again). 0 or 4 is all four. Live.")
     .debug_only()
     .range(0, 4)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(
+    mcla_gpu_traffic_shadows_rotation, true, "MCLA/GPU",
+    "Diagnostic (the fix's own switch): the sun shadow of a traffic car is turned with its car. The game's shadow "
+    "shader draws a car without its bone matrices, so the shadow of a car it was never meant to draw kept the "
+    "model's own heading and only followed the car's position. off: the game's transform, as before the fix. Live.")
+    .debug_only()
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(
+    mcla_gpu_traffic_shadows_log, 0, "MCLA/GPU",
+    "Diagnostic: every this many frames print, for each traffic car drawn into the sun shadow map, a "
+    "`[traffic-shadows] yaw:` line (the body's heading, the heading of the transform the shadow draw used, their "
+    "difference and the car's turn rate) and, for each soft decal made, a `[traffic-shadows] decal:` line. "
+    "0 is off. Live.")
+    .debug_only()
+    .range(0, 3600)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 #if defined(LARECOMP_HAS_GPU)
@@ -301,6 +328,63 @@ bool FindEyes(const uint8_t* base, ts::Gates& gates, bool ambient_route, Eyes& o
     const float* chosen = out.have_main ? out.main_eye : out.current_eye;
     for (int i = 0; i < 3; ++i) out.eye[i] = chosen[i];
     return out.have_main || out.have_current;
+}
+
+// --- the turn of the shadow (gpu/traffic_shadow_pose.h) --------------------------------------------------------------------
+
+ts::PoseCounts& Pose() {
+    static ts::PoseCounts counts;
+    return counts;
+}
+
+struct PoseLog {
+    std::mutex lock;
+    ts::YawHistory body;    // the turn rate of each car's body (by item)
+    ts::YawHistory decal;   // the same read at the decal
+    uint64_t logging_frame = std::numeric_limits<uint64_t>::max();  // the frame whose cars are being logged
+    uint64_t last_logged = 0;
+    bool any_logged = false;
+};
+PoseLog& PL() {
+    static PoseLog log;
+    return log;
+}
+
+// Whether this frame's cars are logged (mcla_gpu_traffic_shadows_log frames apart; every car of a chosen frame). `frame` is
+// the selector's frame counter, which advances once per rendered frame while the cascades run.
+bool LogThisFrame(uint64_t frame) {
+    const int every = REXCVAR_GET(mcla_gpu_traffic_shadows_log);
+    if (every <= 0) return false;
+    PoseLog& log = PL();
+    std::lock_guard<std::mutex> guard(log.lock);
+    if (log.logging_frame == frame) return true;
+    if (log.any_logged && frame < log.last_logged + uint64_t(every)) return false;
+    log.logging_frame = frame;
+    log.last_logged = frame;
+    log.any_logged = true;
+    return true;
+}
+
+uint64_t CurrentFrame() {
+    State& s = S();
+    std::lock_guard<std::mutex> guard(s.lock);
+    return s.selector.last().frame;
+}
+
+// The item's block, [[item+24] + (buffer + 2) * 4], as sub_82793360 finds it for the render thread; 0 if a link is not plausible.
+uint32_t ItemBlock(const uint8_t* base, uint32_t item) {
+    if (!PlausiblePtr(item)) return 0;
+    const uint32_t buffer = ReadGuestU32(base, ts::kAmbientBufferGlobal);
+    if (!ts::AmbientBufferValid(buffer)) return 0;
+    const uint32_t blocks = ReadGuestU32(base, item + kItemModels);
+    if (!PlausiblePtr(blocks)) return 0;
+    const uint32_t block = ReadGuestU32(base, blocks + 4u * (buffer + 2u));
+    return PlausiblePtr(block) ? block : 0;
+}
+
+void ReadBone(const uint8_t* base, uint32_t block, float bone[3][4]) {
+    for (uint32_t r = 0; r < 3; ++r)
+        for (uint32_t c = 0; c < 4; ++c) bone[r][c] = ReadGuestF32(base, block + ts::kBlockBones + 16u * r + 4u * c);
 }
 
 }  // namespace
@@ -557,10 +641,123 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
 #endif
 }
 
+// 0x827917C0, the `bl sub_8217D918` of sub_827914B8 (the traffic model's body draw, model vtbl+28): sub_8217D918 sets the current
+// viewport's World matrix from the four rows r3 points at (r1+144: the unit axes and block+16, a pure translation), r18 = the item's
+// block, r27 = the item. In a sun cascade phase (which only the TRAFFIC SHADOWS hook above makes this draw run in) the rows get the
+// body bone's rotation, because the ambient cars' shadow shader has no bone matrices (gpu/traffic_shadow_pose.h). The rows are the
+// draw's own stack copy: nothing persistent is written.
+void Patch_AmbientCascadeWorld(PPCRegister& r3, PPCRegister& r18, PPCRegister& r27) {
+#if defined(LARECOMP_HAS_GPU)
+    uint8_t* const base = rex::Runtime::instance() ? rex::Runtime::instance()->virtual_membase() : nullptr;
+    if (!base) return;
+    const uint32_t renderer = ReadGuestU32(base, ts::kRendererGlobal);
+    if (!PlausiblePtr(renderer)) return;
+    const uint32_t phase = ReadGuestU32(base, renderer + ts::kRendererPhaseOffset);
+    const int cascade = ts::CascadeIndex(phase);
+    if (cascade == 0) return;  // the colour pass, the lights: the game's own World
+
+    ts::PoseCounts& counts = Pose();
+    counts.calls.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t world_addr = uint32_t(r3.u64);
+    const uint32_t block = uint32_t(r18.u64);
+    const uint32_t item = uint32_t(r27.u64);
+    if (!PlausiblePtr(world_addr) || !PlausiblePtr(block)) {
+        counts.refused.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    float game_world[4][4];
+    for (uint32_t r = 0; r < ts::kWorldRows; ++r)
+        for (uint32_t c = 0; c < 4; ++c) game_world[r][c] = ReadGuestF32(base, world_addr + 16u * r + 4u * c);
+    float bone[3][4];
+    ReadBone(base, block, bone);
+
+    const bool want_turn = REXCVAR_GET(mcla_gpu_traffic_shadows_rotation);
+    float used[4][4];
+    bool turned = false;
+    if (want_turn) {
+        turned = ts::BodyBoneWorld(game_world, bone, used);
+        if (turned) {
+            for (uint32_t r = 0; r < ts::kWorldRows; ++r)
+                for (uint32_t c = 0; c < 4; ++c) WriteGuestF32(base, world_addr + 16u * r + 4u * c, used[r][c]);
+            counts.turned.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            counts.refused.fetch_add(1, std::memory_order_relaxed);
+        }
+    } else {
+        counts.switched_off.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // The debug line: once per car, in the first cascade of a logged frame.
+    if (cascade != 1 || REXCVAR_GET(mcla_gpu_traffic_shadows_log) <= 0) return;
+    const uint64_t frame = CurrentFrame();
+    if (!LogThisFrame(frame)) return;
+    const float body_yaw = ts::BodyYaw(bone);
+    const float game_yaw = ts::WorldYaw(game_world);
+    const float shadow_yaw = turned ? ts::WorldYaw(used) : game_yaw;
+    float rate = 0.0f;
+    {
+        PoseLog& log = PL();
+        std::lock_guard<std::mutex> guard(log.lock);
+        rate = log.body.Note(item, body_yaw, ts::NowNs());
+    }
+    float distance = std::numeric_limits<float>::quiet_NaN();
+    {
+        Eyes eyes;
+        ts::Gates scratch;  // FindEyes counts its failures; the log wants none of them in the run's counters
+        if (FindEyes(base, scratch, false, eyes)) {
+            const float at[3] = {game_world[3][0] + bone[0][3], game_world[3][1] + bone[1][3], game_world[3][2] + bone[2][3]};
+            distance = ts::Distance(eyes.eye, at);
+        }
+    }
+    LARECOMP_APP_INFO(
+        "[traffic-shadows] yaw: frame {} item 0x{:08X} dist {:.1f} body {:.1f} game {:.1f} shadow {:.1f} err {:.1f} rate {:.1f} "
+        "turned {} (deg, m, deg/s)",
+        frame, item, distance, body_yaw, game_yaw, shadow_yaw, ts::YawError(body_yaw, shadow_yaw), rate, turned ? 1 : 0);
+#else
+    (void)r3; (void)r18; (void)r27;
+#endif
+}
+
+// 0x82793608, the `bl sub_82795960` of sub_82793360 in phase 0x10000: the soft decal under a car is made from the matrix at r1+160
+// (r4: the bone 0 axes as rows, the position in row 3; r31 = the item). The log line only (mcla_gpu_traffic_shadows_log): the decal's
+// heading against the body's, so a run can say whether the game's own decal turns with the car.
+void Patch_AmbientDecalPose(PPCRegister& r4, PPCRegister& r31) {
+#if defined(LARECOMP_HAS_GPU)
+    if (REXCVAR_GET(mcla_gpu_traffic_shadows_log) <= 0) return;
+    uint8_t* const base = rex::Runtime::instance() ? rex::Runtime::instance()->virtual_membase() : nullptr;
+    if (!base) return;
+    const uint32_t decal = uint32_t(r4.u64);
+    const uint32_t item = uint32_t(r31.u64);
+    if (!PlausiblePtr(decal)) return;
+    const uint32_t block = ItemBlock(base, item);
+    if (block == 0) return;
+    const uint64_t frame = CurrentFrame();
+    if (!LogThisFrame(frame)) return;
+    float bone[3][4];
+    ReadBone(base, block, bone);
+    // The decal's rows 0..2 are the bone's columns; row 2 is the model's +z axis.
+    const float decal_yaw = ts::YawOfDirection(ReadGuestF32(base, decal + 32u), ReadGuestF32(base, decal + 40u));
+    const float body_yaw = ts::BodyYaw(bone);
+    float rate = 0.0f;
+    {
+        PoseLog& log = PL();
+        std::lock_guard<std::mutex> guard(log.lock);
+        rate = log.decal.Note(item, decal_yaw, ts::NowNs());
+    }
+    LARECOMP_APP_INFO("[traffic-shadows] decal: frame {} item 0x{:08X} body {:.1f} decal {:.1f} err {:.1f} rate {:.1f} (deg, deg/s)",
+                      frame, item, body_yaw, decal_yaw, ts::YawError(body_yaw, decal_yaw), rate);
+#else
+    (void)r4; (void)r31;
+#endif
+}
+
 #else  // REXGLUE_HAS_XEO3_TARGET
 // XEO3 stubs: empty implementations so the linker resolves the codegen calls.
 #include <rex/ppc.h>
 void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r28, PPCRegister& r30) {}
 void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister& r31) {}
 void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13) {}
+void Patch_AmbientCascadeWorld(PPCRegister& r3, PPCRegister& r18, PPCRegister& r27) {}
+void Patch_AmbientDecalPose(PPCRegister& r4, PPCRegister& r31) {}
 #endif  // REXGLUE_HAS_XEO3_TARGET
