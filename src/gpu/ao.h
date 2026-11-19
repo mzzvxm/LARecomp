@@ -200,6 +200,19 @@
 // the tyre's contact line, a kerb's foot, poles, the base of a wall, a car's silhouette against the road; the apply's cost (its upsample
 // reads 4 + 4 texels a pixel at half size; the "ao apply" pass label); the "ao contact depth" label (the extra depth pass).
 //
+// RAY TRACED OCCLUSION AND SUN TERM AROUND THE PLAYER'S CAR (car_rt_ao.h has the design, car_rt_ao_rules.h the numbers and the maths, hlsl/car_rt_ao_cs.hlsl the
+// pass; no setting of its own: it belongs to this occlusion and the contact shadows). Everything above works from the picture's depth, so it misses what
+// the camera does not see around the car: the far side of a wheel well, the body over a tyre, the road at the foot of the car. Where the device can trace the
+// car (car_rt_scene.h: a top level structure of the car's triangles in the frame's view space, the same decision as the ray traced self-reflection's), one
+// compute pass casts a few short rays from the pixels near the car (2 a pixel at high, 4 at ultra, 0.6 m at the most, and one toward the sun) into an image
+// of the traced size, which two passes then read: the plain visibility pass takes the darker of its own and the traced open share raised to the same power
+// (flag bit 31, slots.x; the bounce light's pass has no slot for it, so with the bounce light on the frame has no traced occlusion, only the sun term), and
+// the contact march takes the darker of its shadow, the car's shadow map's and the ray's (flag bit 31, slots.x). It runs inside Run after the depth chain, so
+// the car's structures must be built BEFORE this pass in a frame that wants it: CarRtBeforeAo says so and the Scene calls CarRtScene::OnResolve first then
+// (scene.cpp; with the car RT check pass on, which reads this pass's depth, the check has no depth in such a frame: mcla_gpu_ao_rt off). Debug cvars
+// (car_rt_ao.cpp): mcla_gpu_ao_rt auto | off | ao | contact (the A/B), mcla_gpu_ao_rt_length, mcla_gpu_ao_rt_rays; mcla_gpu_contact_shadows_view 6 shows the
+// sun term alone. CHECK: the pictures and the cost (pass timing label "ao rt"); perf/RT-AO-DESIGN.md has the list.
+//
 // SCREEN-SPACE GLOBAL ILLUMINATION, FIRST STEP (hlsl/ao_color_ps.hlsl, hlsl/ao_main_ps.hlsl compiled
 // with AO_GI; mcla_gpu_ssgi_test, off by default and debug-only: nothing of it runs for a player, and
 // with it off every pass, push block and image of the occlusion is the one above, to the bit): the
@@ -378,6 +391,9 @@
 namespace mcla::gpu {
 
 class BindlessHeap;
+class CarFrame;      // car_frame.h: the player's car's draws and box of a frame (the ray traced pass's region)
+class CarRtAo;       // car_rt_ao.h: the ray traced occlusion and sun term around the player's car
+class CarRtScene;    // car_rt_scene.h: the player's car as ray tracing structures
 class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
 class Device;
 class FrameRing;
@@ -427,7 +443,7 @@ class AmbientOcclusion {
     kRecorded,       // the passes were recorded
   };
 
-  AmbientOcclusion() = default;
+  AmbientOcclusion();
   ~AmbientOcclusion();
   AmbientOcclusion(const AmbientOcclusion&) = delete;
   AmbientOcclusion& operator=(const AmbientOcclusion&) = delete;
@@ -438,6 +454,12 @@ class AmbientOcclusion {
                   EdramTargets& edram, PassTiming& pass_timing, ResolveCache& resolve);
   // GPU idle and the FrameRing drained, before HostPasses and the BindlessHeap shut down.
   void Shutdown();
+
+  // The ray traced occlusion and sun term around the player's car (car_rt_ao.h): after CarRtScene::Initialize (its descriptor set is in the pass's layout)
+  // and before the host precache starts. Never fails the renderer: without it nothing is traced. `scene` and `car_frame` are not owned; null: none.
+  void InitializeCarRt(CarRtScene* scene, const CarFrame* car_frame);
+  // True while this frame's passes trace rays against the car's structures: the Scene builds them (CarRtScene::OnResolve) before OnResolve, not after.
+  bool CarRtBeforeAo() const;
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
@@ -671,6 +693,7 @@ class AmbientOcclusion {
     float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
     bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
+    bool rt_view = false;          // mcla_gpu_contact_shadows_view 6: ... the ray traced sun term alone (car_rt_ao.h)
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
@@ -1019,6 +1042,11 @@ class AmbientOcclusion {
   bool contact_skip_logged_ = false;  // the skip under the game's own shadow was logged once
   const CarShadowMap* car_shadow_map_ = nullptr;  // the player's car's own sun shadow map (SetCarShadowMap), not owned
   bool car_map_logged_ = false;       // the first frame the contact march read the car's map was logged
+  // The ray traced occlusion and sun term (car_rt_ao.h), made by InitializeCarRt where the device can trace the car. rt_contact_slot_ is the bindless slot of this
+  // frame's traced image for the contact march (the sun ray was traced), 0xFFFFFFFF where none was.
+  std::unique_ptr<CarRtAo> rt_ao_;
+  uint32_t rt_contact_slot_ = 0xFFFFFFFFu;
+  bool rt_contact_logged_ = false;
 
   // The vehicles. stencil_ids_: the IDs (bit k) the frame's main view wrote before the anchor.
   // vehicle_motion_ is the last anchor's own motion of them (valid bits; none after a frame that gave
