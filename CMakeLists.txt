@@ -1136,7 +1136,7 @@ else()
 
     # Floating-point contraction and the CPU level, for the targets that hold the guest code and
     # the host code it calls: larecomp (the executable's own sources and the SDK's entry point
-    # sources), larecomp_recomp (the generated code, an OBJECT library made by
+    # sources), larecomp_recompiled (the generated code, an OBJECT library made by
     # rexglue_setup_target) and larecomp_gpu (src/gpu, which the guest thread also runs). Not for
     # the SDK libraries (prebuilt), Plume, the shader pack builder, the standalone servers and the
     # start-up check: those have to run on any x86-64 CPU.
@@ -1159,7 +1159,7 @@ else()
     if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         list(TRANSFORM _larecomp_cpu_flags PREPEND "/clang:")
     endif()
-    foreach(_larecomp_cpu_target larecomp larecomp_recomp larecomp_gpu)
+    foreach(_larecomp_cpu_target larecomp larecomp_recompiled larecomp_gpu)
         if(TARGET ${_larecomp_cpu_target})
             target_compile_options(${_larecomp_cpu_target} PRIVATE
                 "$<$<COMPILE_LANGUAGE:CXX>:${_larecomp_cpu_flags}>")
