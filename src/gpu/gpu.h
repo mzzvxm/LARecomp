@@ -420,9 +420,9 @@ bool MsaaSwitching();
 bool MsaaKeptUnderUpscaler();
 
 // --- the ray traced car self-reflection ----------------------------------------------------------
-// True when this device can run it: Direct3D 12 with DXR 1.1 and shader model 6.5 (CarRtSupported in
-// car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h). False
-// before the renderer has started, on Vulkan and on a card or driver that cannot ray trace. The pause menu's
+// True when this device can run it: Direct3D 12 with DXR 1.1 and shader model 6.5, or Vulkan with VK_KHR_ray_query
+// (CarRtSupported in car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h). False
+// before the renderer has started and on a card or driver that cannot ray trace. The pause menu's
 // CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
 bool CarRtReflAvailable();
 

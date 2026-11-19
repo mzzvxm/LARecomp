@@ -28,7 +28,7 @@
 
 REXCVAR_DEFINE_STRING(
     mcla_gpu_car_selfrefl_rt, "auto", "MCLA/GPU",
-    "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of "
+    "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of "
     "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
     "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
     "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "
@@ -111,7 +111,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   pipeline_failed_ = false;
   supported_ = scene != nullptr && CarRtSupported(device.capabilities(), ActiveBackend() == Backend::kVulkan);
   if (!supported_) {
-    passes.precache().Note("ray traced car self-reflections: not on this graphics card or backend (the screen-space version runs)", 0);
+    passes.precache().Note("ray traced car self-reflections: not on this graphics card or driver (the screen-space version runs)", 0);
     return;
   }
   if (!MakeLayoutAndShader(device, passes, *scene)) {

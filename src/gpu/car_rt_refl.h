@@ -9,7 +9,7 @@
 // COLOUR of what the ray hits.
 //
 //   mcla_gpu_car_selfrefl_rt          auto | off. auto (the default) is on where the device can ray trace the car (CarRtSupported: D3D12
-//                                     with DXR 1.1 today) and the car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
+//                                     with DXR 1.1, Vulkan with VK_KHR_ray_query) and the car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
 //                                     screen-space march everywhere. Live: it applies from the next frame. Where the device cannot,
 //                                     auto is the march, so nothing changes for it.
 //   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres (4 by default; the weight of a hit falls to
@@ -111,9 +111,9 @@
 //      the geometric normal of the committed triangle): not done, CarRtScene is another branch's.
 //   6. the units of the history's colour against the paint's (the exponent bias gain), the reflection ray's reach (4 m;
 //      mcla_gpu_car_selfrefl_rt_length) and the parts it hits (mcla_gpu_car_selfrefl_rt_parts; glass in by default).
-//   7. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader header
-//      (car_rt_refl_cs.hlsl.dxil.h, g_car_rt_refl_cs_dxil) that larecomp_gpu_host_shader_rt makes: the first game run linked them (the
-//      census counted ray traced passes), so this is for a new merge only.
+//   7. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader headers
+//      (car_rt_refl_cs.hlsl.<dxil|spirv>.h, host_shaders.h CarRtReflShader) that larecomp_gpu_host_shader_rt makes: the first game run
+//      linked the DXIL ones (the census counted ray traced passes), so this is for a new merge only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipeline is made ahead on the host builder
 // thread where the effect is on at the start (host_precache.h), and in the background where it is switched on later: the pass is not
