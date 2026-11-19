@@ -2,6 +2,8 @@
 
 Setup and build instructions are in the [README](../README.md). This file covers running the game and reading what it writes.
 
+On Linux and the Steam Deck the system needs libstdc++ 13 or newer (SteamOS 3.5+, Ubuntu 24.04+, Fedora 39+, Arch). Without it the game does not start and the terminal shows `version 'GLIBCXX_3.4.xx' not found`; details in the README's [Linux and the Steam Deck](../README.md#linux-and-the-steam-deck).
+
 ---
 
 ## Quick start

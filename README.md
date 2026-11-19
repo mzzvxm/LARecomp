@@ -111,6 +111,24 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 **The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build. After it, `larecomp.exe --precache_pipelines` does the pipelines the game would otherwise compile while the title starts, for your saved MSAA and upscaler choice: it fills your graphics driver's own cache for the game's API (add `--precache_pipelines_backend=vulkan` or `d3d12` for the other one) and, when nothing changed since (same driver, graphics card, settings and files), finishes in about a second.
 
+### Linux and the Steam Deck
+
+LARecomp runs on Linux and the Steam Deck through Vulkan. Besides a Vulkan driver it needs **libstdc++ 13 or newer** on the system: it uses the C++ library of the distribution and does not carry its own. These have it:
+
+- SteamOS 3.5 or newer (the Steam Deck)
+- Ubuntu 24.04 or newer
+- Fedora 39 or newer
+- Arch Linux, kept up to date (and distributions based on it)
+
+Older ones, such as Ubuntu 22.04 and Debian 12, do not. LARecomp then refuses to start and the terminal says something like:
+
+```
+./larecomp: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.31' not found (required by ./larecomp)
+```
+
+The GLIBCXX number in that line can differ. Update the system to a version in the list above, or use a newer distribution.
+<!-- CHECK: the exact GLIBCXX number was not read from a Linux binary (none on this PC); on a Linux build, `objdump -T larecomp | grep -o 'GLIBCXX_[0-9.]*' | sort -V | tail -1` gives it. -->
+
 ---
 
 ## Settings
