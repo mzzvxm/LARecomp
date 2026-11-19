@@ -440,13 +440,14 @@ bool CarRtScene::IsTrigger(const ResolveRecord& record, const ResolveCache::Summ
 }
 
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
-                           uint32_t slot, const AmbientOcclusion* ao) {
+                           uint32_t slot) {
   if (!ready_ || !list || slot >= kFramesInFlight || !IsTrigger(record, summary)) {
     return false;
   }
   trigger_seen_ = true;
   ++stats_counts_.triggers;
   view_ = CarRtView{};
+  check_due_ = false;
   if (!Wants()) {
     return false;
   }
@@ -659,11 +660,18 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   }
   instances_.NoteFrame(frame_, stats_counts_.meshes_built, car_frame_->other_limits());
   LogTotals("");
-  if (REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid) {
-    RecordCheck(list, slot, summary, ao);
-    recorded = true;
-  }
+  // The check reads the occlusion's linear depth, which its passes make after this call: it is recorded by OnAfterOcclusion.
+  check_due_ = REXCVAR_GET(mcla_gpu_car_rt_check) && view_.valid;
   return recorded;
+}
+
+bool CarRtScene::OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao) {
+  if (!check_due_ || !ready_ || !list || slot >= kFramesInFlight || !view_.valid) {
+    return false;
+  }
+  check_due_ = false;
+  RecordCheck(list, slot, summary, ao);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,6 +1147,7 @@ void CarRtScene::OnPresent() {
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
+  check_due_ = false;
   view_ = CarRtView{};
   staged_triangles_ = 0;
   staged_triangles_other_ = 0;

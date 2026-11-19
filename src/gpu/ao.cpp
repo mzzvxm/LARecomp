@@ -993,10 +993,6 @@ void AmbientOcclusion::InitializeCarRt(CarRtScene* scene, const CarFrame* car_fr
   rt_ao_->Initialize(*device_, *frames_, *heap_, *passes_, *pass_timing_, scene, car_frame, at_start);
 }
 
-bool AmbientOcclusion::CarRtBeforeAo() const {
-  return rt_ao_ && rt_ao_->wanted();
-}
-
 bool AmbientOcclusion::EnsureGiShaders() {
   if (gi_ready_) {
     return true;

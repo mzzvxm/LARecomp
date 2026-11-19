@@ -3128,12 +3128,20 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
     car_shadow_->OnResolve(record, summary, list);
   }
-  // The player's car's ray tracing structures first, in a frame whose occlusion traces rays against them (ao.h CarRtBeforeAo, car_rt_ao.h): the
-  // ray traced occlusion and sun term are a pass inside the occlusion's own, which needs this frame's top level. The structures' check pass then has no
-  // linear depth to read (the occlusion has not run): it is skipped in such a frame (mcla_gpu_ao_rt off runs it).
-  const bool car_rt_first = car_rt_ && ao_ && ao_->wants_draws() && ao_->CarRtBeforeAo();
-  if (car_rt_first) {
-    car_rt_->OnResolve(record, summary, list, slot_, nullptr);
+  // THE FRAME'S ORDER AT THIS COPY (the game's mid-scene depth copy, 078B0000: the trigger of every pass below). Each step reads what the ones
+  // before it made:
+  //   1. the car's sun shadow map (car_shadow_map.h): the player's car drawn again from the sun; the contact march reads it;
+  //   2. the car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other
+  //      cars. FIRST, before everything that traces: the occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own
+  //      passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level;
+  //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
+  //      visibility and the contact march, the apply onto the main colour;
+  //   4. the sun shafts (shafts.h);
+  //   5. the car ray tracing check pass (mcla_gpu_car_rt_check, debug): reads the occlusion's linear depth, so after step 3;
+  //   6. the car self-reflection's history and its ray traced trace (car_selfrefl.h, car_rt_refl.h): the history is the colour step 3 made,
+  //      the trace uses step 2's top level.
+  if (car_rt_) {
+    car_rt_->OnResolve(record, summary, list, slot_);
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
@@ -3146,11 +3154,9 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // targets: the reset below forgets them too).
     shafts_->OnResolve(record, summary, list, UpscalerRunning());
   }
-  if (car_rt_ && !car_rt_first) {
-    // The same depth copy builds the player's car's ray tracing structures (car_rt_scene.h): new meshes into their bottom level structures,
-    // the frame's top level, and the check pass over the occlusion's linear depth. Before the car self-reflection's own pass, which may
-    // trace in the top level; after the occlusion, whose depth image the check reads.
-    car_rt_->OnResolve(record, summary, list, slot_, ao_);
+  if (car_rt_) {
+    // The check pass of the structures, over the occlusion's linear depth (it exists only after step 3).
+    car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;

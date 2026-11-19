@@ -458,8 +458,6 @@ class AmbientOcclusion {
   // The ray traced occlusion and sun term around the player's car (car_rt_ao.h): after CarRtScene::Initialize (its descriptor set is in the pass's layout)
   // and before the host precache starts. Never fails the renderer: without it nothing is traced. `scene` and `car_frame` are not owned; null: none.
   void InitializeCarRt(CarRtScene* scene, const CarFrame* car_frame);
-  // True while this frame's passes trace rays against the car's structures: the Scene builds them (CarRtScene::OnResolve) before OnResolve, not after.
-  bool CarRtBeforeAo() const;
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();

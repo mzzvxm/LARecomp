@@ -50,7 +50,7 @@
 //   - Nothing of the structures is kept in the bindless heap (it does not fit: an acceleration structure descriptor differs from a
 //     texture's): the set below is the car RT set, bound by each consumer at a set index of its own pipeline layout (SetDesc()).
 //
-// THE CHECK (mcla_gpu_car_rt_check, debug): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
+// THE CHECK (mcla_gpu_car_rt_check, debug; recorded by OnAfterOcclusion): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
 // through every vehicle pixel of the occlusion's linear depth image and compares the committed hit's distance with the pixel's (hlsl/
 // car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
 // shows the error / the normals over the scene. This is what proves the camera space, the matrices and the meshes on the first run.
@@ -136,11 +136,14 @@ class CarRtScene final : public car_frame::Listener {
   // The Scene's hooks, as car_selfrefl.h's: the game's motion blur draw and the composite come after the trigger, the present ends the frame.
   void OnAnchor() { anchor_seen_ = true; }
   void OnComposite() { composite_seen_ = true; }
-  // A resolve, after ResolveCache::Execute and after the ambient occlusion's passes (the check reads their linear depth image): at the
-  // frame's trigger it uploads and builds what is new, builds the top level and, with the check on, records the check. `list` is the
-  // frame's open list outside any render pass, `slot` its frame slot. True when anything was recorded (the caller's list state is gone).
-  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot,
-                 const AmbientOcclusion* ao);
+  // A resolve, after ResolveCache::Execute and BEFORE the ambient occlusion's passes (they trace rays in the top level): at the frame's trigger
+  // it uploads and builds what is new and builds the top level. `list` is the frame's open list outside any render pass, `slot` its frame
+  // slot. True when anything was recorded (the caller's list state is gone). The check pass is not recorded here: it reads the occlusion's
+  // linear depth, which the occlusion's passes make after this call (OnAfterOcclusion).
+  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot);
+  // The same resolve again, after the ambient occlusion's passes: with the check on (mcla_gpu_car_rt_check) and this frame's top level built,
+  // records the check pass over the occlusion's linear depth image (`ao`). True when anything was recorded.
+  bool OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao);
   // A guest present: the frame boundary.
   void OnPresent();
 
@@ -283,6 +286,7 @@ class CarRtScene final : public car_frame::Listener {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool trigger_seen_ = false;
+  bool check_due_ = false;  // this frame's top level was built and the check is on: OnAfterOcclusion records it
   CarRtView view_;
   int flip_state_ = 0;  // 1: the frame's camera has z backward (the game's own) and is flipped; -1: z forward already; 0 not decided yet
   uint32_t staged_triangles_ = 0;        // read this frame
