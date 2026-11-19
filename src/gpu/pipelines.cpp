@@ -359,9 +359,19 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // PackBlend and UnpackBlend (the blend words of a key) are in pipelines.h: the UI layer split reads
 // and changes them (frame_layers.h).
 
+// The most workers the precache starts: half the usable processors (steady_workers_), at most this many; boot
+// mode adds workers up to all the processors but one, at most this many too.
+constexpr uint32_t kMaxPrecacheWorkers = 6;
 // Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
 // how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
-constexpr uint32_t kBootBoostBelow = 8;
+// The count is where boot mode stops having workers to add: it starts clamp(usable - 1, steady,
+// kMaxPrecacheWorkers) of them against the steady clamp(usable / 2, 1, kMaxPrecacheWorkers), which is 2 more at
+// 8 and 9 usable processors, 1 more at 10 and 11, and the same number from 12 (then only the priority and the cursor
+// following the render thread differ, and those are not worth the guest's threads' time). It was 8, which left
+// a PC with 8 to 11 logical processors without boot mode: the STARTER-ROUND2 boot tour at 8 had the render
+// thread make 41 to 45 of the entries itself (550 to 600 ms in the title's first burst) against 17 to 24 at 4
+// with boot mode, and 0 at 16.
+constexpr uint32_t kBootBoostBelow = 2 * kMaxPrecacheWorkers;
 // The sample count of the main view's targets at the default MSAA setting (StartSampleCounts' level
 // when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
 constexpr uint32_t kDefaultStartSamples = 2;
@@ -776,13 +786,21 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   // make the pipelines the render thread hands them (background builds).
   // With fewer than kBootBoostBelow processors the first seconds are different
   // (boot mode, pipelines.h): up to all the processors but one, at normal priority.
+  // CHECK: written without a build or a run. Expected on the boot tour at 8 logical processors (affinity): the
+  // line "boot mode on 8 usable processors" with 6 threads (it said 4 threads and nothing about boot mode), the
+  // "boot mode over" line with the render thread's claims (41 to 45 entries before, expected near the 4
+  // processors' 17 to 24), the precache's time no longer than the 5.4 to 5.7 s it was, and no longer start of
+  // the title (the guest's load time at the same affinity). If the claims stay above 30 or the guest's start
+  // is slower by a second or more, put it back to 8.
   // The command line prebuild (setup_threads): no guest runs, so the workers are all there is.
   const uint32_t usable = UsableProcessors();
-  steady_workers_ = setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, 6u);
+  steady_workers_ =
+      setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, kMaxPrecacheWorkers);
   seed_slots_ = level_seeds::Slots(steady_workers_);
   const bool boot = setup_threads == 0 && !precached_.empty() && usable < kBootBoostBelow;
   const uint32_t count =
-      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, 6u) : steady_workers_;
+      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, kMaxPrecacheWorkers)
+           : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
   list_cursor_ = 0;

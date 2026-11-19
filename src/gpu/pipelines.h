@@ -57,7 +57,7 @@
 // pipeline is taken only for a layout equal to its record's, byte for byte.
 // Session layouts with other ids and the same content share a persistent key,
 // and so the pipeline: the later keys alias the first one's.
-// With fewer than 8 usable processors the workers start in boot mode (boot_mode_):
+// With fewer than 12 usable processors the workers start in boot mode (boot_mode_, kBootBoostBelow):
 // more of them, at normal priority, following the render thread through the list.
 //
 // Background builds: a pipeline nobody precached cost 20 to 150 ms on the
