@@ -17,8 +17,10 @@
 //         crash_handler.cpp also registers a rex::platform::ExceptionHandler AFTER the runtime's own
 //         (the runtime calls them in the order installed and stops at the first that says
 //         "handled"), so it is reached only when every one of them declined, and then calls
-//         ReportUnconsumed(). The runtime's handler never chains and never restores the default
-//         action, so without this the faulting instruction would run again and fault again forever.
+//         ReportUnconsumed(). On rexglue 0.11 the runtime then forwards the fault to the action
+//         under it (FatalSignalHandler here) or, with none, reports, restores SIG_DFL and
+//         re-raises (ForwardSignal); 0.10's handler did neither, so the instruction ran again and
+//         faulted again forever. The report is written once either way (State::reported).
 //       - SIGBUS, SIGFPE, SIGABRT (and any signal before InstallLate): FatalSignalHandler reports.
 //   * The report (Report) is async-signal-safe: no malloc, no locks, no stdio, no iostreams. It
 //     asks the helper thread to flush the log sink and waits for it at most 300 ms (the crashing
@@ -748,8 +750,9 @@ inline void FaultWrapper(int sig, siginfo_t* info, void* uctx) {
 
 // Reached when every handler of the runtime declined a SIGSEGV or SIGILL (crash_handler.cpp's
 // rex::platform::ExceptionHandler callback). `from_runtime` is what the runtime's Exception said, used
-// when this thread is not inside FaultWrapper. The caller returns false afterwards: the
-// instruction runs again and the default action ends the process.
+// when this thread is not inside FaultWrapper. The caller returns false afterwards: the runtime
+// forwards the fault to FatalSignalHandler (the report is written already) and the default action
+// ends the process.
 inline void ReportUnconsumed(const Fault& from_runtime) {
   State& s = S();
   const Stash& st = t_stash;

@@ -227,6 +227,12 @@ void InstallCrashLogger() {
     // The paths above kill the process without ever raising an exception, so
     // without these the log just stops mid-line with no reason recorded.
     std::set_terminate(&OnTerminate);
+    // CHECK (rexglue 0.11): rex::Init then calls std::signal(SIGABRT, AbortSignal) (src/base/crash_win.cpp,
+    // InstallPlatform), which replaces this handler and does not call it (it keeps ours only to put it back at
+    // uninstall). So an abort() writes the SDK's "SIGABRT (abort, ...)" report and the CRT ends the process
+    // (status 3), not LogCurrentStack's "ABORT DETECTED" block with symbols. The unhandled-exception filter
+    // is not affected: the SDK's filter calls ours (its g_previous_filter). If the symbols are missed, set
+    // OnAbortSignal again in OnInit; decide from a run with an abort() (no test mode on Windows).
     std::signal(SIGABRT, &OnAbortSignal);
     // Keep abort() on the signal path instead of letting the CRT fast-fail
     // straight into Windows Error Reporting, and drop the modal abort message.
@@ -262,17 +268,30 @@ std::filesystem::path ExeDir() {
 // nothing of the game or the SDK; this file is the glue: where the log is, how the runtime's own
 // fault handling is chained with, std::terminate, the exit marker and the crash test.
 //
-// How it chains with the runtime. The runtime handles SIGSEGV and SIGILL itself (write watches on
-// guest memory, MMIO): rex::platform::ExceptionHandler keeps a list of callbacks and calls them in the
-// order they were installed until one returns true. Its signal handler never chains and never
-// restores the default action, so a fault no callback takes would run again and fault again for
-// ever. InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the
-// runtime's own callback, so it is reached only for a fault that nothing consumed and then writes
-// the report, restores the default action and returns false (the instruction faults once more and
-// the process dies with the normal status and core dump), and (2) puts a wrapper on SIGSEGV and
-// SIGILL with SA_ONSTACK that calls the runtime's handler first (what makes the signal stack count)
-// and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from the early handlers.
-// A fault the runtime handles never reaches the report.
+// How it chains with the runtime (rexglue 0.11). The runtime handles SIGSEGV and SIGILL itself (write
+// watches on guest memory, MMIO): rex::platform::ExceptionHandler keeps a list of callbacks and calls them
+// in the order they were installed until one returns true. A fault that no callback takes is forwarded (ForwardSignal, src/base/exception_handler_posix.cpp) to the action that was installed
+// before the runtime's own, which here is our early FatalSignalHandler (crash_report_linux.h). With no such
+// handler (SIG_DFL or SIG_IGN), or when the same fault comes back too often, the SDK writes its own report,
+// restores the default action and re-raises. So the 0.10 trap is gone: there the handler never chained and
+// never restored the default action, and a fault nothing took ran again and faulted again for ever.
+//
+// The SDK's own crash reporter (rex::Init, src/base/crash_posix.cpp) puts its handler only on a signal that
+// still has the default action, and InstallCrashLogger() runs in the app constructor, before rex::Init:
+// on Linux our handlers already hold SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGABRT, so the SDK's reporter
+// leaves all five to us and a crash writes one report, ours. (On Windows it is the other way round for
+// SIGABRT: see InstallCrashLogger.) CHECK: not run on Linux yet: a deliberate crash of each kind
+// (mcla_test_crash) should give one report and the signal's normal exit status.
+//
+// InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the runtime's own
+// callback, so it is reached only for a fault that nothing consumed; it writes the report (with the
+// operation and address the runtime's Exception carries), restores the default action and returns false,
+// and the runtime then forwards the fault to our early handler, which finds the report written and ends
+// the process with the normal status and core dump. CHECK: that forward also reaches FatalSignalHandler with
+// the signal's own ucontext, so this callback may be redundant now; it stays until a Linux run says so.
+// And (2) puts a wrapper on SIGSEGV and SIGILL with SA_ONSTACK that calls the runtime's handler first (what
+// makes the signal stack count) and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from
+// the early handlers. A fault the runtime handles never reaches the report.
 
 #include "settings/larecomp_settings.h"
 #include <rex/platform/exception_handler.h>
@@ -368,8 +387,9 @@ void OnTerminate() {
         }
     }
     lx::ReportAbortLike("std::terminate", detail);
-    // abort() raises SIGABRT; the report is written already, the handler only ends the process
-    // with the default action (status 134, core dump).
+    // abort() raises SIGABRT; the report is written already, the handler (ours: the SDK's reporter leaves
+    // SIGABRT to it, see the top of this section) only ends the process with the default action
+    // (status 134, core dump).
     std::abort();
 }
 
