@@ -135,7 +135,7 @@ struct List {
 
 // FSR's five modes (FSR 3.1, FSR 4: AMD's names; DLSS: NVIDIA's, DLAA first), each with the share of
 // the output the scene is drawn at. The table has the vendors' full names; ULTRA PERFORMANCE is cut
-// to ULTRA PERF. to keep the DISPLAY page inside its width (pause_menu.cpp, "Page width").
+// to ULTRA PERF. to keep the UPSCALING page inside its width (pause_menu.cpp, "Page width").
 std::string ModeLabel(Upscaler upscaler, UpscaleMode mode, bool not_available) {
     const mcla::gpu::ModeInfo& info = mcla::gpu::ModeInfoOf(upscaler, mode);
     std::string name = info.name;
@@ -432,7 +432,7 @@ const char* UpscalerRowSuffix() {
     const UpscalerAvailability a = mcla::gpu::GetUpscalerAvailability();
     // The row is on screen: a switch to DLSS may come, so the renderer may start Streamline in the
     // background now (gpu.h NoteUpscalerInterest; a cheap atomic read after the first call).
-    // CHECK: this is called when the DISPLAY page's rows are drawn, not on every pause (the log line
+    // CHECK: this is called when the UPSCALING page's rows are drawn, not on every pause (the log line
     // "[gpu] upscalers: the UPSCALING row is on screen" says when it first ran).
     mcla::gpu::NoteUpscalerInterest("the UPSCALING row is on screen");
     if (DlssWaitsForRestart()) return " (RESTART)";
@@ -455,7 +455,7 @@ const char* ModeRowLabel() {
 
 // Live for every choice, with one exception: DLSS shown but not running (its files are missing, or a
 // start is needed): the row names DLSS, is grey and says why, and the mode of the upscaler the renderer
-// keeps meanwhile is not shown. Width (pause_menu.cpp "Page width", counted for DISPLAY's rows in every
+// keeps meanwhile is not shown. Width (pause_menu.cpp "Page width", counted for UPSCALING's rows in every
 // state): "DLSS MODE (RESTART)" is 19, "DLSS MODE (SETUP)" 17, and every other label of the row stays
 // bare.
 bool ModeRowEnabled() {
@@ -519,7 +519,7 @@ void SharpnessSet(int i, CvarWriter write) {
 
 // ── The rows ───────────────────────────────────────────────────────────────────────────────────
 //
-// Width: these rows are on DISPLAY, which stays within 41 characters of its widest label plus its
+// Width: these rows are on UPSCALING, which stays within 41 characters of its widest label plus its
 // widest value (pause_menu.cpp, "Page width"). Every state of each row, in characters:
 //   UPSCALING   label "UPSCALING" 9, with " (APPLYING)" 20, with " (RESTART)" 19. Values "OFF", "FSR 1",
 //               "FSR 3.1", "FSR 4", "DLSS" and "DLSS (SETUP)" 12.
@@ -533,18 +533,17 @@ void SharpnessSet(int i, CvarWriter write) {
 //               (300%)" 14.
 //   SHARPNESS   label 9, with " (FSR ONLY)" 20. Values "OFF", "0.2" to "1", an entry of its own such as
 //               "0.85" 4.
-// These rows' widest label comes to 22 (RENDER SCALE (RESTART), XENIA) and the widest value to 17. DISPLAY's
-// is 23, "RESOLUTION (10240X4320)" (display_menu.h), with 18 ("FSR 3.1 (APPLYING)", frame_generation_menu.h):
-// 41 of the page's 41 (40 at the widest real display, 7680 across).
-// CHECK: open DISPLAY at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE and MSAA
-// held ("MSAA (FSR 3.1 ON)"), and look at the right edge (nothing cut); then the same with FSR 1
-// on ULTRA QUAL.
-// CHECK: in a game, with DISPLAY open, step UPSCALING through every choice: the row under it is
+// These rows' widest label comes to 22 (RENDER SCALE (RESTART), XENIA) and the widest value to 17. With frame
+// generation's rows the page's widest value is 18 ("FSR 3.1 (APPLYING)", frame_generation_menu.h): 40 of the
+// page's 41.
+// CHECK: open UPSCALING at 1280x720 with a temporal upscaler on, the mode row on PERFORMANCE, and look at the right
+// edge (nothing cut); then the same with FSR 1 on ULTRA QUAL.
+// CHECK: in a game, with UPSCALING open, step UPSCALING through every choice: the row under it is
 // relabelled at once (RENDER SCALE, FSR 1 MODE, FSR 3.1 MODE, FSR 4 MODE, DLSS MODE) with its own
 // saved mode on the middle value and no text of another row or state left in it; left and right wrap
 // at both ends of the lists of 4 and 5 entries, and of RENDER SCALE with an entry of its own ("67%" in
 // a 1080p window with a saved scale of 1) that goes when the row steps off it; the page is not built
-// again ("[pause-menu] 'DISPLAY' native rows built" once); the render scale and the FSR 1 preset
+// again ("[pause-menu] 'UPSCALING' native rows built" once); the render scale and the FSR 1 preset
 // change the picture at a frame boundary (log "[gpu] temporal: live change").
 
 constexpr RowDynamics kUpscalerDynamics = {.str_label = UpscalerLabel,
@@ -586,8 +585,8 @@ constexpr ItemDef kRows[] = {
 // ── The AA rows (the page width is counted above) ──────────────────────────────────────────────
 
 // POST AA and MSAA while a temporal upscaler runs: grey, and the suffix names the upscaler that
-// does the anti-aliasing instead ("MSAA (FSR 3.1 ON)"). Width: both rows are on DISPLAY, "MSAA (FSR 3.1
-// ON)" is 17 and "POST AA (FSR 3.1 ON)" 20 (the page's widest label is 23, "RESOLUTION (10240X4320)").
+// does the anti-aliasing instead ("MSAA (FSR 3.1 ON)"). Width: both rows are on IMAGE QUALITY, "MSAA (FSR 3.1
+// ON)" is 17 and "POST AA (FSR 3.1 ON)" 20 (the page's widest label), with values of at most 4.
 const char* HandledSuffix() {
     switch (Active()) {
     case Upscaler::kFsr31: return " (FSR 3.1 ON)";

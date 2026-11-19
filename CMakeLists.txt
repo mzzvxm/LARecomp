@@ -885,6 +885,9 @@ else()
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD
+    # The CAR SELF-REFLECTIONS row's values and how it reads its two settings back (pause_selfrefl_row.h):
+    # cmake --build <dir> --target larecomp_pause_selfrefl_test, then run it (exit 0 = passed).
+    add_executable(larecomp_pause_selfrefl_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_selfrefl_row_test.cpp)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/src/assets"
             "$<TARGET_FILE_DIR:larecomp>/assets"
