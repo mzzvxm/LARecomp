@@ -101,7 +101,8 @@
 // by one pass of the occlusion's denoise shader in its contact mode (a 3x3 bilateral whose weights
 // also fall with the difference of the visibility, so noise goes and edges stay; the contact term has
 // no history of its own: the noise rotates every frame while a temporal upscaler runs and averages
-// it, and is a fixed pattern without one), and the
+// it, and is a fixed pattern without one; a car's own pixel that marches stores its result marked, and the filter
+// averages the noise of two marked pixels outright: contact_trace.h "the vehicle march's stipple"), and the
 // apply pass darkens only the SUN's share of the light by it:
 //   sun_share = Ls * N.L * vis / (La + Ls * N.L * vis)
 //   factor    = 1 - sun_share * strength * (1 - contact) * distance_fade
@@ -159,8 +160,9 @@
 // part's thickness, so the wing, the mirrors, the sills and the wheels cast no shadow of their own shape. In a frame that has the map (View().valid)
 // the contact march reads it (slots.w, slots2.x: the map and its 4 x 1 matrix texture; flag bit 28) for every pixel whose view position falls
 // inside it, with a receiver-plane bias and a filter as wide as the sun's penumbra at the blocker's distance (5 to 9 gathers), and the pixel takes the
-// darker of that and the march's. The apply pass still puts contact shadows only on the sun's share where the game's own mask says lit, so a map
-// shadow never darkens what the game already shadows. A vehicle pixel the map covers takes no march steps (the map holds the car's own parts exactly;
+// darker of that and the march's. The apply pass still puts contact shadows only on the sun's share where the game's own mask says lit (a vehicle's
+// pixel takes the game's own car sun image instead, 1 where the frame has none: the mask is made before the cars are drawn and holds the world behind the car there, contact_trace.h "the game's sun shadow
+// mask is not a car's" and "a car's own sun visibility"), so a map shadow never darkens what the game already shadows on the world. A vehicle pixel the map covers takes no march steps (the map holds the car's own parts exactly;
 // the short vehicle march was a guess from the depth); every other pixel, and every pixel without a map, marches as before, to the bit
 // (mcla_gpu_contact_shadows_car_map_march keeps the vehicle march too, for the comparison). mcla_gpu_contact_shadows_view 5 shows the map's term
 // alone. CHECK: the map and its matrix texture are in the shader-read layout when this pass runs (car_shadow_map.h records them on the list before
@@ -802,6 +804,18 @@ class AmbientOcclusion {
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
   // still what the page holds; kNoSlot otherwise (the frame has no mask: visibility 1).
   uint32_t FindMaskSlot();
+  // A resolve of the frame into the game's car sun image's page (0x0329E000, the 256x256 k_8_8_8_8 top-down image of the ground's sun visibility
+  // that every car shader reads, contact_trace.h "a car's own sun visibility"): remembers its texture key.
+  void NoteCarSunResolve(const ResolveRecord& record);
+  // The bindless slot of that image if this frame's resolve made it (as FindMaskSlot: a frame without one has no image and a vehicle's pixel takes a
+  // sun visibility of 1).
+  uint32_t FindCarSunSlot();
+  // The 12 floats of the lookup image's three columns (contact_trace.h CarSunLookup: texel 0 ax, ox; texel 1 az, oz; the third unused): the
+  // pose of the frame's own camera when the main view's vertex constants are trusted for it, else the last frame's. False when no sane pose exists.
+  bool CarSunLookupColumns(float columns[12]) const;
+  // Draws those 12 floats into the 4x1 image car_sun_lookup_ with the vehicle table's pass (outside a render pass); returns its slot, kNoSlot where it
+  // cannot be made.
+  uint32_t RecordCarSunLookup(plume::RenderCommandList* list, const float columns[12]);
   // The wetness the frame's main view draws carried (VS c43.x): the commonest value, to 0.1.
   bool PickWet(float* value) const;
   bool EnsureImages(const Plan& plan);
@@ -995,6 +1009,15 @@ class AmbientOcclusion {
   // copy, which must never be read as one).
   TextureKey mask_key_;
   uint64_t mask_frame_ = ~uint64_t(0);
+  // The game's car sun image (NoteCarSunResolve, FindCarSunSlot): the key of the last resolve into its page and the frame it came in, the 4x1
+  // lookup image the apply reads its pose from (RecordCarSunLookup), and what the log has said (once) and counted.
+  TextureKey car_sun_key_;
+  uint64_t car_sun_frame_ = ~uint64_t(0);
+  HostImage car_sun_lookup_;
+  bool car_sun_why_logged_ = false;
+  bool car_sun_logged_ = false;
+  uint64_t car_sun_frames_ = 0;       // contact frames whose vehicle pixels took the image
+  uint64_t car_sun_none_frames_ = 0;  // contact frames whose vehicle pixels took 1: no image came, no pose, or the setting is 0
   // What PlanContact found, for the census and the log: the state of the last trigger.
   enum class ContactState : uint8_t {
     kOff,       // the setting is off
