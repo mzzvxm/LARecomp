@@ -9,10 +9,13 @@ out_directory_path = "generated"
 # exponent test and gives the console's quiet NaN on overflow (rexglue issue 491), as the fork did. Upstream's fast is a
 # plain DPPS (infinity on overflow), and "exact" (bit-exact, about 60 to 80 instructions a site, 4,365 sites) cost 10 to
 # 13 percent of the frame rate in a race (perf\out\AB011.txt, AB011V.txt, 2026-11-18).
-# The other seven [vector_math] keys stay at their defaults.
+# vexptefp (2^x, 16 sites): "exact", the console's result for about 0.5 ns more per vector than fast (upstream's
+# measurement: 4.90 to 5.05 ns exact, 4.40 fast, on x86-64-v2).
+# The other six [vector_math] keys stay at their defaults ("fast").
 [vector_math]
 vmsum3fp128 = "fast"
 vmsum4fp128 = "fast"
+vexptefp = "exact"
 
 [functions]
 0x8244FEC0 = { name = "mc_Sleep", size = 0x8 }
