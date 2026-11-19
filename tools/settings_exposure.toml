@@ -62,6 +62,11 @@ names = [
   "wheel_mode", "wheel_ffb", "wheel_ffb_strength", "wheel_ffb_boost", "wheel_ffb_centering", "wheel_ffb_sign",
   "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
 ]
+
+[[launcher_row]]
+why = "rexglue 0.11 only: the launcher's Graphics API row (SettingsSchema.cs) writes it, the pause menu has none (a restart setting). On 0.10 it was the SDK's own setting, so this check never saw it; on 0.11 LARecomp declares it (settings/larecomp_app_settings.h) and it is a player setting again (bf515e8c)"
+names = ["graphics_backend"]
+
 # SX-G7 gave the pause menu rows for camera_shake_scale, rearview_cars, map_mouse, map_mouse_zoom, map_mouse_hide_cursor,
 # map_mouse_magnet, trigger_throttle, trigger_brake and skip_intro, so they left this list: they are rows of both surfaces now.
 
