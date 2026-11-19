@@ -101,6 +101,8 @@ set(LARECOMP_SOURCES
     # Thread priorities for every OS (os/thread_priority.h). The shader pack library and its tool
     # expect this file from whoever links them.
     src/os/thread_priority.cpp
+    # The launcher's AppImage variables are removed from the game's environment at start (os/appimage_env.h).
+    src/os/appimage_env.cpp
 
     # Steering wheel support.
     src/mc_engine/wheel/wheel_fake.cpp
@@ -1032,6 +1034,14 @@ else()
     # std::thread: glibc before 2.34 needs libpthread named at the link.
     find_package(Threads REQUIRED)
     target_link_libraries(larecomp_thread_priority_test PRIVATE Threads::Threads)
+    # The AppImage variable rule (src/os/appimage_env.h) has a check that needs no game:
+    #   cmake --build <dir> --target larecomp_appimage_env_test, then run it (exit 0 = passed).
+    add_executable(larecomp_appimage_env_test EXCLUDE_FROM_ALL
+        src/os/appimage_env_test.cpp
+        src/os/appimage_env.cpp
+    )
+    target_include_directories(larecomp_appimage_env_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_appimage_env_test PRIVATE cxx_std_23)
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/assets")
         add_custom_command(TARGET larecomp POST_BUILD

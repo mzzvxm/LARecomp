@@ -80,6 +80,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/wheel/wheel_input.h"
 #include "native_gfx/nocp/nocp_app.h"
 #include "native_gfx/nocp/nocp_driver.h"
+#include "os/appimage_env.h"
 #include "os/thread_priority.h"
 #include "profile/larecomp_profile_picker.h"
 #include "saveporter/larecomp_save_porter.h"
@@ -222,6 +223,10 @@ std::filesystem::path FindGameRoot(const std::filesystem::path& user_root, std::
 
 // -----------------------------------------------------------------------------------------------------------------
 LarecompApp::LarecompApp() : TitleApp("larecomp", kPPCImageConfig) {
+  // Before anything reads the environment (the SDK's app root and its Relaunch, RESTART GAME): the launcher is an AppImage and a
+  // game it starts inherits APPIMAGE and its siblings, which would move larecomp.toml and logs/ to ~/.config and make a restart
+  // start the launcher (os/appimage_env.h). Linux only; the log line waits until the log is open.
+  const std::string dropped_appimage_variables = larecomp::os::DropInheritedAppImageVariables();
   // First of all: the named object that says a game is running (game_marker.h). The launcher checks it instead of
   // listing processes. Before the restart wait on purpose: a restarted game holds it beside the old one, so the
   // launcher never sees a gap.
@@ -236,6 +241,10 @@ LarecompApp::LarecompApp() : TitleApp("larecomp", kPPCImageConfig) {
   LARECOMP_APP_INFO("LA Recompiled - @by mzzvxm");
   LARECOMP_APP_INFO("[cpu] built for {}; CPU: {}", larecomp::cpu::BuiltLevel(), larecomp::cpu::DescribeFeatures());
   LARECOMP_APP_INFO("[marker] {}", larecomp::marker::Describe());
+  if (!dropped_appimage_variables.empty()) {
+    LARECOMP_APP_INFO("[env] the launcher's AppImage variables ({}) are not the game's: removed from its environment",
+                      dropped_appimage_variables);
+  }
   InstallCrashLogger();
 }
 
