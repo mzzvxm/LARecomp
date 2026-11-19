@@ -3806,7 +3806,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
     if (!rt_contact_logged_) {
       rt_contact_logged_ = true;
       REXLOG_INFO("[gpu] contact shadows: the march takes the darker of its shadow and the ray traced sun ray's from the player's car's triangles "
-                  "(slot {}; car_rt_ao.h; mcla_gpu_ao_rt off or occlusion compares; mcla_gpu_contact_shadows_view 6 shows the term; logged once)",
+                  "(slot {}; car_rt_ao.h; mcla_gpu_ao_rt off or occlusion compares; mcla_gpu_contact_shadows_view 7 shows the term; logged once)",
                   rt_contact_slot_);
     }
   } else if (plan.contact.rt_view) {

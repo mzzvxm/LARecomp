@@ -213,7 +213,7 @@
 // are the screen's), and the contact march, which takes the darker of its shadow, the car's shadow map's and the ray's (flag bit 31, slots.x). It runs
 // inside Run after the depth chain, so the cars' structures are built BEFORE the occlusion's passes in every frame (scene.cpp OnResolve documents the
 // frame's order). Debug cvars (car_rt_ao.cpp): mcla_gpu_ao_rt auto | off | ao | contact (the A/B), mcla_gpu_ao_rt_length, mcla_gpu_ao_rt_rays;
-// mcla_gpu_contact_shadows_view 6 shows the sun term alone. CHECK: the pictures and the cost (pass timing label "ao rt"); perf/RT-AO-DESIGN.md has the list.
+// mcla_gpu_contact_shadows_view 7 shows the sun term alone (6 is the apply's sun visibility, which main has). CHECK: the pictures and the cost (pass timing label "ao rt"); perf/RT-AO-DESIGN.md has the list.
 //
 // SCREEN-SPACE GLOBAL ILLUMINATION, FIRST STEP (hlsl/ao_color_ps.hlsl, hlsl/ao_main_ps.hlsl compiled
 // with AO_GI; mcla_gpu_ssgi_test, off by default and debug-only: nothing of it runs for a player, and
@@ -693,7 +693,7 @@ class AmbientOcclusion {
     float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
     bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
-    bool rt_view = false;          // mcla_gpu_contact_shadows_view 6: ... the ray traced sun term alone (car_rt_ao.h)
+    bool rt_view = false;          // mcla_gpu_contact_shadows_view 7: ... the ray traced sun term alone (car_rt_ao.h)
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion

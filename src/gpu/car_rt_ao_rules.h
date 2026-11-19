@@ -227,7 +227,7 @@ inline float CombineVisibility(float screen_visibility, float traced_open, float
 // ---------------------------------------------------------------------------------------------------------------------
 // The main pass's flags word (slots2.z): bit 31, the plain pass only (the bounce light's pass reads slots.x for its colour chain); slots.x
 // is then the image's bindless slot. The contact march's flags: bit 31 the same, slots.x the image's slot; bit 25 the debug view of this term
-// alone (the march writes the image's g channel: mcla_gpu_contact_shadows_view 6). Neither bit is read by those passes otherwise.
+// alone (the march writes the image's g channel: mcla_gpu_contact_shadows_view 7). Neither bit is read by those passes otherwise.
 inline constexpr uint32_t kMainFlag = 1u << 31;
 inline constexpr uint32_t kContactFlag = 1u << 31;
 inline constexpr uint32_t kContactViewFlag = 1u << 25;

@@ -19,7 +19,7 @@
 //                            ao the occlusion term only; contact the sun ray only. Live.
 //   mcla_gpu_ao_rt_length    the occlusion rays' reach in metres (0.6 by default). Live.
 //   mcla_gpu_ao_rt_rays      the occlusion rays a pixel, 0 (the level's: 2 or 4) to 4. Live.
-//   mcla_gpu_contact_shadows_view 6   the sun term alone as the contact visibility picture (white lit, black in the car's shadow).
+//   mcla_gpu_contact_shadows_view 7   the sun term alone as the contact visibility picture (white lit, black in the car's shadow).
 //   mcla_gpu_ao_view 2       the occlusion's visibility (with the term in it): compare with mcla_gpu_ao_rt off.
 //
 // WHERE IT RUNS. The structures are built at the history trigger (CarRtScene::OnResolve, the game's mid-scene depth copy), and the occlusion's passes

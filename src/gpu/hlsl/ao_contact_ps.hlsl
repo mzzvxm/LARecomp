@@ -63,6 +63,11 @@
 // which averages the nine starts of a 3 x 3. The pixels the map covers take no steps and are not marked: the map's shadow keeps its crisp edge, and every other
 // pixel is filtered as it was. Nothing else reads this image.
 //
+// THE MARK AND THE RAY TRACED TERM (flag bit 31, below; contact_trace.h "the mark and the ray traced term"). A vehicle pixel the traced sun ray holds in a shadow
+// (traced_shadow at or above kRtUnmarkedShadow) has the ray's answer, exact and crisp, not the march's noise, and the filter must not average it with its neighbours:
+// it is stored plain, as the pixels the car's map covers are, so that the traced shadow's edge keeps its width (the 3 x 3 of marked pixels would make it as wide as
+// the map's was in the control of that check). The vehicle pixels the ray leaves lit still march and are marked, so the stipple of a false hit stays smoothed.
+//
 // THE GROUND UNDER A VEHICLE (the shadow starts as `Under` before the march). The game's sun shadow
 // map holds the player's car only, so the ground under a traffic car is as lit as an open road, and the
 // ray above finds the car only within `thickness` of itself: a pixel seen through the gap under a car
@@ -96,7 +101,7 @@
 // march's, the car's shadow map's) and 1 - g, read with the linear sampler at the pixel's own place: exact for the wing's plate on the lid, a mirror on
 // the door, the car on the road, with no map resolution, bias or peter-panning (contact_trace.h "the player's car's own sun shadow map" is the same
 // kind of term). The apply pass still puts it on the sun's share where the game's own mask says lit. Flag bit 25 is the debug view of this term
-// alone (mcla_gpu_contact_shadows_view 6; bit 25 is the contact filter's in the passes that filter, not here). Without bit 31 the pass is as it was.
+// alone (mcla_gpu_contact_shadows_view 7; bit 25 is the contact filter's in the passes that filter, not here). Without bit 31 the pass is as it was.
 //
 // Push block (ao_common.hlsli AoPush), this pass's fields:
 //   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit; slots.x, the statistics picture only: the mask's slot;
@@ -231,6 +236,8 @@ static const uint kCarMapKeepMarchFlag = 1u << 30;
 // The ray traced term (header comment; car_rt_ao_rules.h kContactFlag and kContactViewFlag).
 static const uint kRtContactFlag = 1u << 31;
 static const uint kRtContactViewFlag = 1u << 25;
+// THE MARK AND THE RAY TRACED TERM (header comment; contact_trace.h kRtUnmarkedShadow): a vehicle pixel whose traced sun term is at least this much shadow is stored plain.
+static const float kRtUnmarkedShadow = 0.5f;
 static const float kCarMapSunRadius = 0.0044f;
 static const float kCarMapMinFilterTexels = 0.75f;
 static const float kCarMapMaxFilterTexels = 6.0f;
@@ -607,8 +614,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   const float inv_steps = 1.0f / float(steps);
-  // A vehicle pixel that marches (the map did not take its steps) stores the marked value: THE VEHICLE MARCH'S STIPPLE above.
-  const bool marked = AoIsVehicle(tc) && steps > 0u;
+  // A vehicle pixel that marches (the map did not take its steps) stores the marked value: THE VEHICLE MARCH'S STIPPLE above. Not one the traced sun ray holds in a
+  // shadow: that term is exact and its edge stays crisp (THE MARK AND THE RAY TRACED TERM above). traced_shadow is 0 without the term, so the test is false then.
+  const bool marked = AoIsVehicle(tc) && steps > 0u && traced_shadow < kRtUnmarkedShadow;
   // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
   float shadow = Under(depth_slot, tc, pc, normal, to_sun, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
