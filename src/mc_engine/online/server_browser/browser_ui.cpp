@@ -27,6 +27,8 @@
 
 #include "larecomp_log.h"
 #include "profile/larecomp_profile_store.h"
+#include "../online_platform.h"
+#include "../online_toast.h"
 #include "../relay_info.h"
 #include "../system_link.h"
 #include "browser_client.h"
@@ -287,6 +289,13 @@ protected:
 
 private:
     void Open_() {
+        // Linux (online_platform.h): there is no online client to join a server with. The window stays shut and
+        // the pop-up says why.
+        if (!larecomp::kOnlineAvailable) {
+            LARECOMP_APP_INFO("[browser] not opened: {}", larecomp::kOnlineUnavailableText);
+            larecomp::OnlineToastNotice();
+            return;
+        }
         g_open.store(true);
         pad_block_.Set(true);
         first_frame_ = true;

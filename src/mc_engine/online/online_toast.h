@@ -19,4 +19,8 @@ void StartOnlineToast(rex::ui::IUISystem& ui);
 // Keeps the pop-up up for a moment longer. Any thread.
 void OnlineToastPoke();
 
+// Linux (online_platform.h): shows the pop-up for a few seconds with its one sentence, "Online play is not available on Linux
+// yet". Where online exists this is the same as OnlineToastPoke. Any thread.
+void OnlineToastNotice();
+
 }  // namespace larecomp

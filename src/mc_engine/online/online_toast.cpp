@@ -17,6 +17,7 @@
 #define LARECOMP_TOAST_HAS_ICON 1
 
 #include "larecomp_log.h"
+#include "online_platform.h"
 #include "relay_info.h"
 #include "system_link.h"
 #include "mc_engine/ui/imgui_theme.h"
@@ -30,6 +31,8 @@ using Clock = std::chrono::steady_clock;
 constexpr auto kShowOnChange = std::chrono::seconds(6);
 constexpr auto kShowOnPoke = std::chrono::milliseconds(1500);
 constexpr auto kQueryEvery = std::chrono::seconds(3);
+// How long OnlineToastNotice keeps the pop-up up.
+constexpr auto kShowNotice = std::chrono::seconds(5);
 
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -38,6 +41,13 @@ int64_t NowMs() {
 }
 
 std::atomic<int64_t> g_poke_until_ms{0};
+
+// Only ever later: a short poke never shortens a notice that is still showing.
+void PokeUntil(int64_t until_ms) {
+    int64_t current = g_poke_until_ms.load();
+    while (current < until_ms && !g_poke_until_ms.compare_exchange_weak(current, until_ms)) {
+    }
+}
 
 enum class Link { kDisconnected, kConnecting, kConnected };
 
@@ -98,6 +108,10 @@ class OnlineToastDialog final : public mcla::ui::PanelDialog {
 
  protected:
     void OnDraw(ImGuiIO& io) override {
+        if (!kOnlineAvailable) {
+            DrawUnavailable(io);
+            return;
+        }
         const Link link = CurrentLink();
         const auto now = Clock::now();
         if (link != last_link_) {
@@ -178,6 +192,24 @@ class OnlineToastDialog final : public mcla::ui::PanelDialog {
     }
 
  private:
+    // Linux: there is no connection to show. While the SYSTEM LINK menu is up, or after a press on its ONLINE row or on F6, one
+    // sentence says why, in the same card.
+    void DrawUnavailable(ImGuiIO& io) {
+        if (NowMs() >= g_poke_until_ms.load()) return;
+        const float pad = 16.0f;
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - pad, pad), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(380.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+            ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize;
+        if (mcla::ui::BeginPanel("##larecomp_online_toast", "SYSTEM LINK", mcla::ui::PanelIcon::kInfo, flags,
+                                 {}, 25.0f)) {
+            ImGui::TextColored(mcla::ui::kColorWarn, "%s.", kOnlineUnavailableText);
+        }
+        mcla::ui::EndPanel();
+    }
+
     // A new icon from the worker becomes a texture here, in the draw, on the UI thread, where the ImGui context is
     // current (an ImGui texture is made with it). Called with the mutex held.
     void TakeIcon() {
@@ -200,12 +232,15 @@ class OnlineToastDialog final : public mcla::ui::PanelDialog {
 }  // namespace
 
 void StartOnlineToast(rex::ui::IUISystem& ui) {
-    if (larecomp::cvar::GetFlagByName("mcla_online_enable").empty()) return;
+    // Linux: the card says "not available" and asks no server, so there is no worker and no cvar to wait for.
+    if (kOnlineAvailable && larecomp::cvar::GetFlagByName("mcla_online_enable").empty()) return;
     auto shared = std::make_shared<Shared>();
-    std::thread(Worker, shared).detach();
+    if (kOnlineAvailable) std::thread(Worker, shared).detach();
     ui.AddDialog(std::make_unique<OnlineToastDialog>(shared));
 }
 
-void OnlineToastPoke() { g_poke_until_ms.store(NowMs() + kShowOnPoke.count()); }
+void OnlineToastPoke() { PokeUntil(NowMs() + kShowOnPoke.count()); }
+
+void OnlineToastNotice() { PokeUntil(NowMs() + std::chrono::milliseconds(kShowNotice).count()); }
 
 }  // namespace larecomp

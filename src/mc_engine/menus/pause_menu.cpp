@@ -15,6 +15,7 @@
 #include "upscaling_menu.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
+#include "mc_engine/online/online_platform.h"
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
 #include "ui_forms.h"
@@ -991,6 +992,26 @@ std::string TomlLineValue(const std::filesystem::path& path, const std::string& 
 // --mcla_online_enable on the command line decides this run only, and must
 // not end up written into the file.
 void InitOnlineSettings() {
+    // Linux (online_platform.h): no online client exists there yet. The ONLINE row is still added, greyed
+    // and labelled, so g_online_boot is "a client exists, booted offline" for it; nothing is held and no
+    // callback is installed.
+    if (!larecomp::kOnlineAvailable) {
+        g_online_boot.store(0, std::memory_order_relaxed);
+        // An online line from a larecomp.toml made on Windows, or --mcla_online_enable, would have the SDK
+        // route the game's sockets through a relay it cannot reach: the game would find sessions it can
+        // not join, and say "Server is offline" 3 s into the start. So it is off for this run. NoteStartupCvar
+        // makes a save leave larecomp.toml's line as the player has it.
+        const bool asked = larecomp::cvar::GetFlagInfo(kOnlineEnableCvar) &&
+                           larecomp::cvar::GetFlagByName(kOnlineEnableCvar) == "true";
+        if (asked) {
+            larecomp::cvar::SetFlagByName(kOnlineEnableCvar, "false");
+            larecomp::NoteStartupCvar(kOnlineEnableCvar);
+        }
+        MC_WARN("[online] {}: the game runs offline{}", larecomp::kOnlineUnavailableText,
+                asked ? " (mcla_online_enable is ignored for this run; larecomp.toml keeps its line)"
+                      : " (the ONLINE row of the SYSTEM LINK menu says so)");
+        return;
+    }
     if (!larecomp::cvar::GetFlagInfo(kOnlineEnableCvar)) return;
 
     const bool on = larecomp::cvar::GetFlagByName(kOnlineEnableCvar) == "true";
@@ -1087,6 +1108,7 @@ constexpr uint32_t kMenuMovieVfunc    = 0x1D4;  // the movie it draws into, 0 = 
 constexpr uint32_t kMenuChildAtVfunc  = 0x1E0;  // (menu, row) -> the child shown on that row
 constexpr uint32_t kMenuEventAccept   = 52;     // A, from the menu input
 constexpr int kElementTypeCheckbox    = 4;
+constexpr int kElementTypeGreyed      = 6;     // greyed out: the ONLINE row where there is no online client
 
 std::atomic<uint32_t> g_lan_state{0};    // the SYSTEM LINK menu
 std::atomic<uint32_t> g_lan_online{0};   // its ONLINE row
@@ -1138,12 +1160,16 @@ void EnsureLanOnlineItems() {
     const uint32_t online = CreateNewMenuState(kLanOnlineKey);
     if (!online) return;
 
-    EnsureStringTableText(kLanOnlineKey, "ONLINE");
+    // Linux: the row stays, greyed (Hook_LanFillElement), and says what is missing; there is no server to
+    // browse, so the SERVER BROWSER rows are not added.
+    EnsureStringTableText(kLanOnlineKey,
+                          larecomp::kOnlineAvailable ? "ONLINE" : "ONLINE (NOT ON LINUX YET)");
     GuestAppendMenuItem(lan, online);
     g_lan_online.store(online, std::memory_order_relaxed);
     g_lan_state.store(lan, std::memory_order_relaxed);
-    MC_INFO("[online] ONLINE row added to the SYSTEM LINK menu ('{}' 0x{:08X})",
-            kLanMenuName, lan);
+    MC_INFO("[online] ONLINE row added to the SYSTEM LINK menu ('{}' 0x{:08X}){}",
+            kLanMenuName, lan, larecomp::kOnlineAvailable ? "" : ", greyed: not available on Linux yet");
+    if (!larecomp::kOnlineAvailable) return;
 
     if (const uint32_t row = CreateNewMenuState(kLanBrowserKey)) {
         EnsureStringTableText(kLanBrowserKey, "SERVER BROWSER");
@@ -5338,8 +5364,10 @@ void Hook_LanFillElement(PPCRegister& r27, PPCRegister& r28, PPCRegister& r30) {
     const uint32_t online = g_lan_online.load(std::memory_order_relaxed);
     if (!online || r30.u32 != online) return;
     const uint32_t element = r28.u32;
-    const int checked = LanOnlineChecked() ? 1 : 0;
-    SwfSetInt(element, kStr_type, kElementTypeCheckbox);
+    // Where there is no online client (Linux) the row is greyed and never ticked.
+    const int checked = larecomp::kOnlineAvailable && LanOnlineChecked() ? 1 : 0;
+    SwfSetInt(element, kStr_type,
+              larecomp::kOnlineAvailable ? kElementTypeCheckbox : kElementTypeGreyed);
     SwfSetInt(element, kStr_select, checked);
     g_lan_drawn_checked = checked;
     static std::atomic<bool> told{false};
@@ -5380,6 +5408,12 @@ bool Hook_LanAccept(PPCRegister& r30, PPCRegister& r28) {
             child && child == online ? ", ONLINE" : "");
     if (!online || child != online) return false;
 
+    if (!larecomp::kOnlineAvailable) {
+        // Taken, with no sound and no change: the pop-up beside the menu says why.
+        MC_INFO("[online] ONLINE in the SYSTEM LINK menu: {}", larecomp::kOnlineUnavailableText);
+        larecomp::OnlineToastNotice();
+        return true;
+    }
     LanOnlineToggle();
     if (const uint32_t sound = ReadGuestBE32(kMenuSelectSound))
         CallGuestFn1(kPlaySoundFn, sound);

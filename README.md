@@ -129,6 +129,8 @@ Older ones, such as Ubuntu 22.04 and Debian 12, do not. LARecomp then refuses to
 The GLIBCXX number in that line can differ. Update the system to a version in the list above, or use a newer distribution.
 <!-- CHECK: the exact GLIBCXX number was not read from a Linux binary (none on this PC); on a Linux build, `objdump -T larecomp | grep -o 'GLIBCXX_[0-9.]*' | sort -V | tail -1` gives it. -->
 
+Online play is not available on Linux yet. The ONLINE row of the SYSTEM LINK menu is greyed out and says so, the server browser (F6) does not open, and `mcla_online_enable` is ignored.
+
 ---
 
 ## Settings
