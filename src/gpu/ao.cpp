@@ -268,7 +268,7 @@ REXCVAR_DEFINE_STRING(
     "occlusion darkens, so a lit area does not get brighter overall, and a flat surface stays as it "
     "was. Needs ambient occlusion (mcla_gpu_ao) on. off, high (a coarser search: 2 directions and 2 steps "
     "each; half resolution where the occlusion is high too), ultra (3 and 3 at full resolution) or auto (the "
-    "default): off on every graphics card for now, until its cost is measured. The pause menu and the "
+    "default): high on the High class of graphics card (gpu_class.h), off on the others. The pause menu and the "
     "launcher show the same words. A value that is none of these (the low of an older larecomp.toml) is "
     "ignored and the setting runs as auto. Costs graphics card time, "
     "ultra more than high. Also drawn behind the pause menu and in the garage, not on the map. Live.")
