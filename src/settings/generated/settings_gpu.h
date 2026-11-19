@@ -33,15 +33,6 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_compare_label_seconds, 1.5, "Diagnostic: how long the compare key's label stays up before it fades out (about 0.35 s more), 0.5 to 30. "
     "A test run takes its pictures a second after the press and sets it higher. Live.", rex::kDebugOnly, rex::Range{0.5, 30.0});
 
-  REX_SETTING(bool, mcla_gpu, true, "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
-    "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
-    "neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it "
-    "draws the guest's frames: draws into the EDRAM targets, textures from guest memory and "
-    "from resolves, the front buffer through the display's gamma table. Not yet (logged when "
-    "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
-    "memory read in another shape than it was resolved in -- milestone M5. "
-    "", rex::kDebugOnly, rex::kRestart);
-
   // One alpha-to-mask pattern for every draw. MCLA draws its alpha-tested
   // surfaces twice over the same depth: the depth pre-pass (the ShadowBlend
   // shaders, whose colour becomes the shadow collector) with the solid offsets
@@ -1194,7 +1185,6 @@ inline auto& build_shader_packs = g_gpu.build_shader_packs;
 inline auto& build_shader_packs_force = g_gpu.build_shader_packs_force;
 inline auto& mcla_compare_effect = g_gpu.mcla_compare_effect;
 inline auto& mcla_compare_label_seconds = g_gpu.mcla_compare_label_seconds;
-inline auto& mcla_gpu = g_gpu.mcla_gpu;
 inline auto& mcla_gpu_a2c_dither_all = g_gpu.mcla_gpu_a2c_dither_all;
 inline auto& mcla_gpu_aa = g_gpu.mcla_gpu_aa;
 inline auto& mcla_gpu_ab_interleave = g_gpu.mcla_gpu_ab_interleave;

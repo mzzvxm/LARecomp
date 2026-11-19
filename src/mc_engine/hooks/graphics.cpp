@@ -176,7 +176,7 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
 static bool MsaaOff() {
 #if defined(LARECOMP_HAS_GPU)
     // Whether the native renderer runs is the SDK's gpu.driver (gpu.h Enabled); the old mcla_gpu
-    // setting stays true under the XENIA renderer on rexglue 0.11 and says nothing.
+    // setting is gone on rexglue 0.11 (it was true under the XENIA renderer too and said nothing).
     if (mcla::gpu::Enabled()) {
         (void)mcla::gpu::GetStartUpscale();
         return false;

@@ -7,7 +7,7 @@
 // milestones:.
 //
 // The mode is the SDK's gpu.driver = larecomp (rexglue 0.11; before it, mcla_gpu with
-// mcla_native_gfx_nocp, which no longer choose anything). It owns the window's presentation, so it
+// mcla_native_gfx_nocp, which are not settings any more). It owns the window's presentation, so it
 // excludes the SDK's own Xenia GPU (the XENIA renderer: gpu.driver any / d3d12 / vulkan) and the
 // legacy D3D12 runtime (mcla_native_gfx), and it runs with no emulated GPU in the process.
 // Enabled() is the one test of which renderer runs; every caller asks it, none reads the settings.

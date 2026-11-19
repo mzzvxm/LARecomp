@@ -1503,18 +1503,6 @@
   "comments": [],
   "pp_depth": 0
  },
- "mcla_gpu": {
-  "type": "bool",
-  "default": "true",
-  "category": "MCLA/GPU",
-  "help": "\"Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs \"\n    \"mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so \"\n    \"neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it \"\n    \"draws the guest's frames: draws into the EDRAM targets, textures from guest memory and \"\n    \"from resolves, the front buffer through the display's gamma table. Not yet (logged when \"\n    \"met): resolves written back into guest memory for the CPU to read (photos, vinyls) and \"\n    \"memory read in another shape than it was resolved in -- milestone M5. \"\n    \"\"",
-  "traits": [
-   "rex::kDebugOnly",
-   "rex::kRestart"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
  "mcla_gpu_vsync": {
   "type": "bool",
   "default": "false",
@@ -8422,18 +8410,6 @@
   "help": "\"Read-only probe of the guest's vblank and flip machinery, for the port to a runtime with no \"\n    \"command processor. Reports the vblank counter, the flip counter and the pending-flip queue \"\n    \"indices in the D3DDevice, so the offsets the replacement will drive are proven while the \"\n    \"emulated path still works. Writes nothing.\"",
   "traits": [
    "rex::kDebugOnly"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
- "mcla_native_gfx_nocp": {
-  "type": "bool",
-  "default": "true",
-  "category": "MCLA/NativeGfx",
-  "help": "\"Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls \"\n    \"LoadGpuPlugin and rexgpu-xenos is never loaded: no command processor, no PM4 parser, no \"\n    \"register file, no EDRAM render-target cache, no shader translator. The app then supplies \"\n    \"what the guest still needs and what none of that was: the GPU register window, the vblank \"\n    \"source, and a swapchain to present on. \"\n    \"Decided once at startup -- whether the emulator is in the process is not a runtime setting.\"",
-  "traits": [
-   "rex::kDebugOnly",
-   "rex::kRestart"
   ],
   "comments": [],
   "pp_depth": 0

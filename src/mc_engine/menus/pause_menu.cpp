@@ -2453,8 +2453,8 @@ bool MenuLocked(const MenuDef& md) { return md.debug_only && !larecomp::DebugMen
 // restart-only choice (the SDK's gpu.driver; the launcher's Troubleshooting
 // section sets it), so it cannot change under an open menu and the rows listed
 // never move. mcla::gpu::Enabled() is the one answer to "does LARecomp's own
-// renderer run": the old mcla_gpu setting is true under the XENIA renderer too
-// on rexglue 0.11, so it must not be read for this.
+// renderer run": the old mcla_gpu setting (gone on rexglue 0.11) was true under
+// the XENIA renderer too, so it could not tell them apart.
 uint8_t RunningRendererMask() {
     static const uint8_t mask = [] {
 #if defined(LARECOMP_HAS_GPU)

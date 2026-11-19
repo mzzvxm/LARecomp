@@ -26,9 +26,12 @@ constexpr SdkName kSdkNames[] = {
 #include "settings/sdk_names.inc"
 };
 
-// Names of SDK settings that 0.10 had and 0.11 removed (the FSR / CAS present effects belonged to the Xenia presenter,
-// D4 of UPSTREAM-0.11-PLAN.md). An old larecomp.toml that carries one is not an error: the alias to "" makes the SDK
-// ignore the value without an "unknown setting" warning.
+// Names of settings that 0.10 had and 0.11 removed (the FSR / CAS present effects belonged to the Xenia presenter,
+// D4 of UPSTREAM-0.11-PLAN.md; mcla_gpu and mcla_native_gfx_nocp were LARecomp's renderer switches, gpu.driver chooses the
+// renderer now and cvar_convert.py's DROPPED makes no setting of them). A name like this in an old larecomp.toml, on the
+// command line or in the environment is not an error and not an "unknown setting": the alias to "" makes the registry
+// ignore the value and note "<name> was removed and is ignored" in the log. The two renderer keys are still READ, from the
+// raw file, by ApplyPlayerConfig (below) to set gpu.driver for an old file, so that they need no setting to be read.
 constexpr const char* kRemovedNames[] = {
     "present_effect",
     "present_fsr_quality_mode",
@@ -36,6 +39,8 @@ constexpr const char* kRemovedNames[] = {
     "present_fsr_sharpness_reduction",
     "present_fsr_max_upsampling_passes",
     "host_present_from_non_ui_thread",
+    "mcla_gpu",
+    "mcla_native_gfx_nocp",
 };
 
 // Keys of the file ApplyPlayerConfig converts itself: their VALUE meaning changed, so applying the text to a setting of
@@ -356,7 +361,8 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   // --- values whose meaning changed ---------------------------------------------------------------
   // The renderer. The old file chose XENIA with mcla_native_gfx_nocp = false or mcla_gpu = false (the pause
   // menu wrote the four cvars together); the new choice is gpu.driver. A gpu.driver line of the new kind in the
-  // same file is a higher layer and wins.
+  // same file is a higher layer and wins. Neither old key is a setting any more (kRemovedNames): they are read here
+  // from the file's own text, and the loop below hands them to the registry, which ignores them with a note.
   const auto nocp = text_of("mcla_native_gfx_nocp");
   const auto plume = text_of("mcla_gpu");
   if ((nocp && *nocp == "false") || (plume && *plume == "false")) {
