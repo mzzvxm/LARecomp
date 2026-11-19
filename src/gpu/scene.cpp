@@ -1653,10 +1653,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
     d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
   }
-  // The UI sharpening (ui_sharp.h): a draw in the UI phase that magnifies the console's bitmaps through a bilinear fetch takes
-  // the variant of its pixel shader that reconstructs them sharper (and the census, when asked for, notes what it reads). In
-  // the key only: the memo keeps the game's, as for the layer split above.
-  if (ui_phase_ && d.key.color_count != 0 && d.ps) {
+  // The UI sharpening (ui_sharp.h): a UI draw (after the composite marker, into one of the menus' render-to-texture views, or an inline
+  // draw of a frame that has no scene) that magnifies the console's bitmaps through a bilinear fetch takes the variant of its pixel
+  // shader that reconstructs them sharper (and the census, when asked for, notes what it reads). In the key only: the memo keeps the
+  // game's, as for the layer split above.
+  if ((ui_phase_ || r.kind == DrawKind::kInline) && d.key.color_count != 0 && d.ps) {
     if (const uint32_t variant = UiSharpDraw(view, s, d, scale)) {
       d.key.ps_variant = variant;
     }
@@ -2394,6 +2395,29 @@ bool Scene::UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& 
   return true;
 }
 
+ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {
+  if (ui_phase_) {
+    return ui_sharp::Context::kPhase;
+  }
+  // Before the marker (or in a frame that has none) only the Flash player's draws can be UI: they are inline, and only into an 8-bit
+  // colour target. The scene's own draws go into float targets, and the 3D pieces of the UI are after the marker.
+  const DrawRecord& r = view.record();
+  const ColorTargetState& color = state.color[0];
+  if (r.kind != DrawKind::kInline || !color.bound ||
+      (color.format != xe::ColorRenderTargetFormat::k_8_8_8_8 && color.format != xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
+    return ui_sharp::Context::kNone;
+  }
+  // A frame that has no scene (loading, the title, the menus with no 3D view) and the one before it had none either: no marker will come.
+  if (!last_frame_had_scene_) {
+    return ui_sharp::Context::kNoScene;
+  }
+  // One of the menus' render-to-texture views (side_view_ui_map.cpp): drawn before the marker, shown as a bitmap after it.
+  if (side_views::Classify(ColorEdramKey(state, 0), r.target_size_bits) == SideView::kUiMap) {
+    return ui_sharp::Context::kMovie;
+  }
+  return ui_sharp::Context::kNone;
+}
+
 uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale) {
   const double strength = ui_sharp::Strength();
   const bool census = ui_sharp::CensusOn();
@@ -2401,7 +2425,10 @@ uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, Prepa
     return 0;
   }
   ui_sharp::DrawFacts facts;
-  facts.ui_phase = ui_phase_;
+  facts.context = UiSharpContext(view, state);
+  if (facts.context == ui_sharp::Context::kNone) {
+    return 0;
+  }
   const ColorTargetState& color = state.color[0];
   facts.eight_bit_colour = color.bound && (color.format == xe::ColorRenderTargetFormat::k_8_8_8_8 ||
                                            color.format == xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA);
@@ -2472,6 +2499,7 @@ uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, Prepa
       sample.slot = read.slot;
       sample.bitmap = read.bitmap;
       sample.ps_variant = d.key.ps_variant;
+      sample.context = facts.context;
       sample.why = decision.why;
       sample.took_variant = take;
       ui_sharp_census_.Note(sample);

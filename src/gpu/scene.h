@@ -380,6 +380,9 @@ class Scene {
   // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
   // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
   uint32_t UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale);
+  // Where the draw stands as far as the UI sharpening goes (ui_sharp.h Context): after the marker, into one of the menus' render-to-texture views
+  // (the UI map views side view), an inline draw of a frame with no scene, or not a UI draw at all.
+  ui_sharp::Context UiSharpContext(const DrawView& view, const XenosState& state) const;
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).

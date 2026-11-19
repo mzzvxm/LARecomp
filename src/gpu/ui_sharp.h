@@ -40,8 +40,12 @@
 // the alpha test draws the twin and (4) makes the census say, for every read, WHY the draw did not take the variant
 // (Why: the first condition that failed), so that a run with the variant at 0 is not a mystery again.
 //
-// Settings (debug-only, live, DEBUG > FIXES): mcla_ui_sharp, 0 = off (the default: nothing changes, no draw
-// picks the variant), 1 = on, up to 2 for more; mcla_ui_sharp_census logs what the UI phase samples (below).
+// Settings (live): mcla_ui_sharp, on by default (GRAPHICS > IMAGE QUALITY > SHARP UI; off: nothing changes, no draw picks the variant), and
+// mcla_ui_sharp_strength (debug, 0 to 2, default 1: how hard); mcla_ui_sharp_census logs what the UI draws sample (below).
+//
+// Round 3 (feat/ui-sharp-3): on by default, so the variant is built into every pack and every window above 1.25x takes it; and the rule's first
+// condition, "after the composite marker", became a Context (below): the menus' render-to-texture views and the frames that have no scene are UI draws
+// too. At a render scale below kMinMagnification (720p at 1x) no draw takes it, whatever the setting.
 //
 // The census (mcla_ui_sharp_census). For every texture a UI-phase draw reads, per window of kCensusFrames
 // guest frames: the pixel shader's identity, the texture's format, size and mips, its name and dictionary
@@ -143,9 +147,27 @@ inline bool IsBitmapFetch(bool is_texture, bool two_d, bool linear_mag, uint32_t
   return is_texture && two_d && linear_mag && IsBitmapFormat(xenos_texture_format);
 }
 
+// Where a draw stands in the frame as far as the sharpening is concerned. Round 3 widened "after the composite marker" (the only place rounds 1 and 2
+// knew): the menus' own small views are drawn before the marker, and a frame with no scene has no marker at all.
+enum class Context : uint8_t {
+  kNone,     // not a UI draw: the scene, the post chain, the 3D world of a menu
+  kPhase,    // after the composite marker: the HUD, the menus' 3D pieces, the map's icons, the phone (Scene::ui_phase_)
+  kMovie,    // into one of the menus' render-to-texture views (the UI map views side view: the minimap, the phone's screen, the pause menu's and the
+             // GPS map's 960x640 page), which the game draws before the marker and a card or the HUD then shows as a bitmap
+  kNoScene,  // an inline draw of a frame that has no scene (the one before it had none either): loading screens, the title, the menus with no 3D view
+};
+inline const char* ContextText(Context context) {
+  switch (context) {
+    case Context::kPhase: return "after the marker";
+    case Context::kMovie: return "menu view";
+    case Context::kNoScene: return "no scene";
+    default: return "not UI";
+  }
+}
+
 // What the Scene knows about a draw when it chooses (all from the prepared key and the draw's record).
 struct DrawFacts {
-  bool ui_phase = false;           // after the composite marker (Scene::ui_phase_)
+  Context context = Context::kNone;
   bool eight_bit_colour = false;   // colour 0 is k_8_8_8_8 (or its gamma variant): the UI's and the menus' targets
   float target_scale = 1.0f;       // host pixels per guest pixel of the draw's targets
   bool has_variant = false;        // the pixel shader has the variant in the variant pack (spec variant 0)
@@ -158,7 +180,7 @@ struct DrawFacts {
 // Why a draw did or did not take the variant: the first condition that failed, in this order (the census prints the names).
 enum class Why : uint8_t {
   kTaken,
-  kNotUiPhase,
+  kNotUi,
   kHidden,
   kColourNot8Bit,
   kTargetScale,       // the target is below kMinMagnification: nothing is magnified (render scale 1)
@@ -171,7 +193,7 @@ enum class Why : uint8_t {
 inline const char* WhyText(Why why) {
   switch (why) {
     case Why::kTaken: return "taken";
-    case Why::kNotUiPhase: return "not the UI phase";
+    case Why::kNotUi: return "not a UI draw";
     case Why::kHidden: return "hidden";
     case Why::kColourNot8Bit: return "colour not 8 bit";
     case Why::kTargetScale: return "target below the minimum scale";
@@ -184,7 +206,7 @@ inline const char* WhyText(Why why) {
 }
 
 struct Decision {
-  Why why = Why::kNotUiPhase;
+  Why why = Why::kNotUi;
   bool alpha_test = false;  // taken: with the alpha test twin (ps_variant kVariantUiSharpAlphaTest) rather than id 10
   bool taken() const { return why == Why::kTaken; }
 };
@@ -193,7 +215,7 @@ struct Decision {
 // evaluates the same rule with the setting off, to say what would happen).
 inline Decision Decide(const DrawFacts& f) {
   Decision d;
-  if (!f.ui_phase) { d.why = Why::kNotUiPhase; return d; }
+  if (f.context == Context::kNone) { d.why = Why::kNotUi; return d; }
   if (f.hidden) { d.why = Why::kHidden; return d; }
   if (!f.eight_bit_colour) { d.why = Why::kColourNot8Bit; return d; }
   if (!(f.target_scale >= kMinMagnification)) { d.why = Why::kTargetScale; return d; }
@@ -232,18 +254,19 @@ struct CensusSample {
   uint32_t slot = 0;              // the fetch slot of the read
   bool bitmap = false;            // the slot is a colour bitmap the helper sharpens (IsBitmapFetch)
   uint32_t ps_variant = 0;        // the key's spec variant before the choice (0, 1; 2 and up another variant)
-  Why why = Why::kNotUiPhase;     // the draw's outcome
+  Context context = Context::kPhase;  // where the draw stands (a census only notes UI draws)
+  Why why = Why::kNotUi;          // the draw's outcome
   bool took_variant = false;      // the draw drew with the UI sharpening variant
 };
 
 class Census {
  public:
   void Note(const CensusSample& s) {
-    char buffer[200];
-    std::snprintf(buffer, sizeof(buffer), "%016llX|%s|%ux%u|%u|%u%u%u|%u%u|%u|%d|%u|%u",
+    char buffer[220];
+    std::snprintf(buffer, sizeof(buffer), "%016llX|%s|%ux%u|%u|%u%u%u|%u%u|%u|%d|%u|%u|%u",
                   static_cast<unsigned long long>(s.ps), s.format.c_str(), s.width, s.height, s.levels,
                   s.mag_filter, s.min_filter, s.mip_filter, s.clamp_x, s.clamp_y, s.aniso, s.lod_bias, s.slot,
-                  s.ps_variant);
+                  s.ps_variant, unsigned(s.context));
     Entry& e = entries_[buffer];
     if (e.draws == 0) {
       e.first = s;
@@ -309,7 +332,7 @@ class Census {
     std::vector<std::string> lines;
     char head[200];
     std::snprintf(head, sizeof(head),
-                  "ui sharp census: window of %u frames, %zu (shader, texture) pairs, %llu texture reads in the UI phase, "
+                  "ui sharp census: window of %u frames, %zu (shader, texture) pairs, %llu texture reads in UI draws, "
                   "%llu at a target scale of at least %.2f, %llu of them took the variant",
                   frames_, rows.size(), static_cast<unsigned long long>(draws),
                   static_cast<unsigned long long>(magnified), double(kMinMagnification),
@@ -324,14 +347,14 @@ class Census {
       std::snprintf(line, sizeof(line),
                     "ui sharp census:   PS %016llX reads %s %ux%u %u level(s) @%08x %s%s%s%s, mag/min/mip filter %u/%u/%u, "
                     "clamp %u/%u, aniso %u, lod bias %d/32; %llu reads x%u frames, %llu magnified, %llu with the variant, "
-                    "target scale %.2f, target format %u, slot %u %s, spec variant %u",
+                    "target scale %.2f, target format %u, slot %u %s, spec variant %u, %s",
                     static_cast<unsigned long long>(s.ps), s.format.c_str(), s.width, s.height, s.levels,
                     s.base_page << 12, s.name.empty() ? "unnamed" : "named ", s.name.c_str(),
                     s.dictionary.empty() ? "" : " in ", s.dictionary.c_str(), s.mag_filter, s.min_filter,
                     s.mip_filter, s.clamp_x, s.clamp_y, s.aniso, s.lod_bias,
                     static_cast<unsigned long long>(e.draws), frames_,
                     static_cast<unsigned long long>(e.magnified), static_cast<unsigned long long>(e.variant_draws),
-                    double(e.last_scale), s.target_format, s.slot, s.bitmap ? "bitmap" : "not a bitmap", s.ps_variant);
+                    double(e.last_scale), s.target_format, s.slot, s.bitmap ? "bitmap" : "not a bitmap", s.ps_variant, ContextText(s.context));
       std::string text = line;
       text += "; outcomes: " + WhyList(e.by_why);
       lines.push_back(std::move(text));

@@ -99,7 +99,7 @@ void CheckBitmapRule() {
 
 ui_sharp::DrawFacts Facts() {
   ui_sharp::DrawFacts f;
-  f.ui_phase = true;
+  f.context = ui_sharp::Context::kPhase;
   f.eight_bit_colour = true;
   f.target_scale = 3.0f;
   f.has_variant = true;
@@ -118,8 +118,17 @@ void CheckDecide() {
   }
   {
     ui_sharp::DrawFacts f = Facts();
-    f.ui_phase = false;
-    Check(ui_sharp::Decide(f).why == Why::kNotUiPhase, "a scene draw (before the composite marker) never does");
+    f.context = ui_sharp::Context::kNone;
+    Check(ui_sharp::Decide(f).why == Why::kNotUi, "a scene draw (before the composite marker, not in a menu's view) never does");
+    // Round 3: the menus' render-to-texture views and the frames with no scene are UI draws too, and are told apart in the census.
+    f.context = ui_sharp::Context::kMovie;
+    Check(ui_sharp::Decide(f).taken(), "a draw into one of the menus' views (the pause menu's 960x640 page, the minimap) takes it");
+    f.context = ui_sharp::Context::kNoScene;
+    Check(ui_sharp::Decide(f).taken(), "an inline draw of a frame with no scene (a loading screen) takes it");
+    f.target_scale = 1.0f;
+    Check(ui_sharp::Decide(f).why == Why::kTargetScale, "... and at 720p it never does, whatever the context");
+    f.context = ui_sharp::Context::kMovie;
+    Check(ui_sharp::Decide(f).why == Why::kTargetScale, "... a menu's view at the guest's size (the class off or below 1.25x) is the game's own");
   }
   {
     ui_sharp::DrawFacts f = Facts();
@@ -172,13 +181,13 @@ void CheckDecide() {
   {
     // The order of the reasons: the first that fails is the one told.
     ui_sharp::DrawFacts f = Facts();
-    f.ui_phase = false;
+    f.context = ui_sharp::Context::kNone;
     f.eight_bit_colour = false;
     f.target_scale = 1.0f;
     f.has_variant = false;
     f.bitmap_slots = 0;
-    Check(ui_sharp::Decide(f).why == Why::kNotUiPhase, "the UI phase is asked first");
-    f.ui_phase = true;
+    Check(ui_sharp::Decide(f).why == Why::kNotUi, "whether it is a UI draw is asked first");
+    f.context = ui_sharp::Context::kPhase;
     Check(ui_sharp::Decide(f).why == Why::kColourNot8Bit, "then the colour");
     f.eight_bit_colour = true;
     Check(ui_sharp::Decide(f).why == Why::kTargetScale, "then the scale");
@@ -209,6 +218,7 @@ ui_sharp::CensusSample Sample(uint64_t ps, const char* format, uint32_t w, uint3
   s.bitmap = true;
   s.ps_variant = 0;
   s.why = took ? ui_sharp::Why::kTaken : ui_sharp::Why::kTargetScale;
+  s.context = ui_sharp::Context::kPhase;
   return s;
 }
 
@@ -264,6 +274,27 @@ void CheckCensus() {
       at_row |= row.find("spec variant 1") != std::string::npos;
     }
     Check(depth_row && at_row, "the depth slot says it is not a bitmap and the alpha test draw says its spec variant");
+  }
+
+  {
+    // Round 3: the same bitmap read after the marker, in one of the menus' views and in a frame with no scene is three rows, each naming where it stood.
+    ui_sharp::CensusSample after = Sample(0x5CA2EECD341441FFull, "k_DXT4_5", 128, 128, 3.0f, true);
+    ui_sharp::CensusSample view = after;
+    view.context = ui_sharp::Context::kMovie;
+    ui_sharp::CensusSample none = after;
+    none.context = ui_sharp::Context::kNoScene;
+    census.Note(after);
+    census.Note(view);
+    census.Note(none);
+    const std::vector<std::string> rows = census.TakeReport();
+    Check(rows.size() == 5, "three contexts make three rows: " + std::to_string(rows.size()));
+    bool a = false, m = false, n = false;
+    for (const std::string& row : rows) {
+      a |= row.find("spec variant 0, after the marker;") != std::string::npos;
+      m |= row.find("spec variant 0, menu view;") != std::string::npos;
+      n |= row.find("spec variant 0, no scene;") != std::string::npos;
+    }
+    Check(a && m && n, "each row names its context");
   }
 
   // A texture the game's hooks named is printed with its dictionary.
