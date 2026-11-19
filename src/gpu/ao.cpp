@@ -21,6 +21,7 @@
 #include "ao_halo.h"
 #include "ao_paint.h"
 #include "ao_stable.h"
+#include "car_rt_ao.h"
 #include "car_shadow_map.h"
 #include "contact_trace.h"
 #include "descriptors.h"
@@ -246,9 +247,11 @@ REXCVAR_DEFINE_INT32(
     "sun's visibility (the game's shadow mask: white lit; white everywhere where the frame has none), "
     "4 the sun's share of the light, 5 the player's car's own sun shadow map's term alone (white; black where "
     "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
-    "near it; white everywhere in a frame without the map: car_shadow_map.h). 0: off. Live.")
+    "near it; white everywhere in a frame without the map: car_shadow_map.h), 6 the ray traced sun ray's term alone (white; black "
+    "where the ray from the pixel toward the sun meets the player's car: its own parts on it, and its shadow on the road; white "
+    "everywhere in a frame without it: car_rt_ao.h). 0: off. Live.")
     .debug_only()
-    .range(0, 5)
+    .range(0, 6)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(
     mcla_gpu_contact_shadows_car_map_march, false, "MCLA/GPU",
@@ -549,6 +552,8 @@ constexpr uint32_t kContactViewBase = 7;
 // mcla_gpu_contact_shadows_view 5: the car's shadow map's term alone. The contact march writes it in place of the visibility (flag
 // contact_trace.h kCarMapViewFlag) and the apply shows it as its view 9, the contact visibility.
 constexpr int kContactViewCarMap = 5;
+// mcla_gpu_contact_shadows_view 6: the ray traced sun term alone (car_rt_ao.h), shown the same way (flag car_rt_ao::kContactViewFlag).
+constexpr int kContactViewRt = 6;
 // The apply's debug view of the pixels the depth pass took for vehicles (the setting's 8: the contact
 // shadows' views are 8 to 11 in the shader).
 constexpr uint32_t kVehicleView = 12;
@@ -825,6 +830,8 @@ void AmbientOcclusion::DecodeLight(const LightRaw& raw, float ambient[3], float 
   }
 }
 
+AmbientOcclusion::AmbientOcclusion() = default;
+
 AmbientOcclusion::~AmbientOcclusion() {
   Shutdown();
 }
@@ -974,6 +981,22 @@ void AmbientOcclusion::Initialize(Device& device, FrameRing& frames, BindlessHea
   ListPrecache(occlusion_at_start, contact_at_start_choice, bounce_at_start_choice);
 }
 
+void AmbientOcclusion::InitializeCarRt(CarRtScene* scene, const CarFrame* car_frame) {
+  if (!ready_ || !device_ || !passes_) {
+    return;  // the occlusion's own passes could not be made: there is nothing to trace for
+  }
+  if (!rt_ao_) {
+    rt_ao_ = std::make_unique<CarRtAo>();
+  }
+  // Listed with the start's precache where the occlusion or the contact shadows are on at the start (their `auto` resolved for this GPU).
+  const bool at_start = AoChoice().level != host_plan::Level::kOff || ContactChoice().level != host_plan::Level::kOff;
+  rt_ao_->Initialize(*device_, *frames_, *heap_, *passes_, *pass_timing_, scene, car_frame, at_start);
+}
+
+bool AmbientOcclusion::CarRtBeforeAo() const {
+  return rt_ao_ && rt_ao_->wanted();
+}
+
 bool AmbientOcclusion::EnsureGiShaders() {
   if (gi_ready_) {
     return true;
@@ -1012,6 +1035,9 @@ void AmbientOcclusion::Shutdown() {
   // The host builder's functions name this object's layout and shaders: stop it first.
   if (passes_) {
     passes_->precache().Stop();
+  }
+  if (rt_ao_) {
+    rt_ao_->Shutdown();  // its layout, shader and image (the car's structures are the scene's)
   }
   // The GPU is idle and the heap goes later: the slots are not handed back (PostAa::Shutdown).
   ++generation_;
@@ -1430,6 +1456,12 @@ void AmbientOcclusion::BeginFrame() {
   gi_mode_ = gi_mode;
   const bool test = REXCVAR_GET(mcla_gpu_ssgi_test);
   gi_active_ = (test || gi_mode_ != Mode::kOff) && mode_ != Mode::kOff && EnsureGiShaders();
+  if (rt_ao_) {
+    // The ray traced occlusion and sun term around the player's car (car_rt_ao.h): wanted where the occlusion or the contact shadows are on; the
+    // frame's own gates (the sun, rain, the bounce light) come with the passes.
+    // (The contact shadows' gate is the last frame's judgment: a night's frame with the occlusion off builds nothing for a term that cannot run.)
+    rt_ao_->BeginFrame(mode_ != Mode::kOff, contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
+  }
   const bool gi_test = test && gi_active_;
   if (gi_test != gi_test_) {
     gi_test_ = gi_test;
@@ -1471,6 +1503,9 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(depth_prev_);
   add(gi_weight_);
   add(vehicle_table_);
+  if (rt_ao_) {
+    bytes += rt_ao_->HeldBytes();
+  }
   return bytes;
 }
 
@@ -1942,11 +1977,12 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     plan.view = kVehicleView;  // the contact shadows' views are 8 to 11
   }
   if (contact) {
-    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewCarMap);
+    const int contact_view = std::clamp(REXCVAR_GET(mcla_gpu_contact_shadows_view), 0, kContactViewRt);
     if (contact_view != 0) {
-      // instead of the occlusion's; 5 (the car's shadow map's term) is shown as the contact visibility, which the march then holds
+      // instead of the occlusion's; 5 (the car's shadow map's term) and 6 (the ray traced term) are shown as the contact visibility, which the march then holds
       plan.contact.car_map_view = contact_view == kContactViewCarMap;
-      plan.view = kContactViewBase + uint32_t(plan.contact.car_map_view ? 2 : contact_view);
+      plan.contact.rt_view = contact_view == kContactViewRt;
+      plan.view = kContactViewBase + uint32_t(plan.contact.car_map_view || plan.contact.rt_view ? 2 : contact_view);
     }
   }
   PlanGi(&plan);
@@ -2710,6 +2746,32 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
   }
 
+  // The ray traced occlusion and sun terms around the player's car (car_rt_ao.h): one compute pass over the level 0 depth, against this frame's
+  // top level structure (built before these passes: the Scene calls CarRtScene::OnResolve first in a frame this wants, CarRtBeforeAo), into an image
+  // the visibility pass (the plain one: the bounce light's has no slot for it) and the contact march read. Nothing recorded: they are as they were.
+  CarRtAo::Result rt;
+  rt_contact_slot_ = kNoSlot;
+  if (rt_ao_ && rt_ao_->wanted()) {
+    CarRtAo::Inputs in;
+    in.depth = &depth_[0];
+    in.tan_x = base.lens[0];
+    in.tan_y = base.lens[1];
+    in.fade_end = base.extra[1];
+    in.occlusion = plan.occlusion && !plan.gi.on;
+    in.contact = contact;
+    in.ultra = plan.mode == Mode::kUltra;
+    for (int i = 0; i < 3; ++i) {
+      in.to_sun[i] = base.light[i];
+    }
+    in.noise_code = ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable));
+    in.sun_frame = plan.upscaler ? uint32_t(frame_ & 1023) : 0u;  // a fixed pattern unless a temporal upscaler averages the frames, as the march's
+    in.frame = frame_;
+    rt = rt_ao_->Record(list, in);
+    if (rt.recorded && rt.contact) {
+      rt_contact_slot_ = rt.slot;
+    }
+  }
+
   // The visibility image the apply pass reads for the occlusion's term (the depth image stands in
   // while the term is off: the apply pass does not read it then).
   uint32_t ao_slot = depth_[0].slot;
@@ -2752,7 +2814,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       DrawPass(list, gi_, MainGiPipeline(plan.gi), gi_push);
       main_out = &gi_;
     } else {
+      if (rt.recorded && rt.occlusion) {
+        // The traced term (hlsl/ao_main_ps.hlsl THE TRACED TERM): slots.x is the image, bit 31 of the flags says so. The plain pass does not read slots.x
+        // otherwise (the depth plane's slot the base push holds is for the depth pass).
+        push.slots[0] = rt.slot;
+        push.slots2[2] |= car_rt_ao::kMainFlag;
+      }
       DrawPass(list, raw_, main_pipeline, push);
+      push.slots[0] = base.slots[0];  // the denoise passes below take the push as it was
+      push.slots2[2] &= ~car_rt_ao::kMainFlag;
     }
     // The history this frame can lean on, and the camera's motion into it.
     const HistoryUse use = ChooseHistory(plan);
@@ -3533,7 +3603,29 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   if (map_flags == 0u && plan.contact.car_map_view) {
     push.extra[1] = 0.0f;  // the debug view of the map's term in a frame without a map: nothing is computed, every pixel is white
   }
+  // The ray traced sun term (car_rt_ao.h, hlsl/ao_contact_ps.hlsl THE RAY TRACED TERM): in a frame whose traced pass was recorded with its sun ray the march
+  // takes the darker of its shadow and the ray's, read from the image in slots.x (the statistics picture above has its own copy of the push: its slots.x
+  // is the mask's). Flag bit 25 is the debug view of this term alone, which this pass does not otherwise read (bit 25 is the contact filter's in the
+  // passes that filter).
+  const bool rt_sun = rt_contact_slot_ != kNoSlot;
+  if (rt_sun) {
+    push.slots[0] = rt_contact_slot_;
+    push.slots2[2] |= car_rt_ao::kContactFlag;
+    if (plan.contact.rt_view) {
+      push.slots2[2] |= car_rt_ao::kContactViewFlag;
+    }
+    if (!rt_contact_logged_) {
+      rt_contact_logged_ = true;
+      REXLOG_INFO("[gpu] contact shadows: the march takes the darker of its shadow and the ray traced sun ray's from the player's car's triangles "
+                  "(slot {}; car_rt_ao.h; mcla_gpu_ao_rt off or occlusion compares; mcla_gpu_contact_shadows_view 6 shows the term; logged once)",
+                  rt_contact_slot_);
+    }
+  } else if (plan.contact.rt_view) {
+    push.extra[1] = 0.0f;  // the debug view of the traced term in a frame without it: every pixel is white
+  }
   DrawPass(list, contact_raw, march, push);
+  push.slots[0] = base.slots[0];
+  push.slots2[2] &= ~(car_rt_ao::kContactFlag | car_rt_ao::kContactViewFlag);
   push.shape[2] = base.shape[2];
   push.extra[3] = base_extra_w;
   push.extra[1] = c.fade_end;
