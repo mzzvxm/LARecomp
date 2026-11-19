@@ -199,6 +199,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/car_spawn.cpp
     src/mc_engine/cinematic/ambient_car.cpp
     src/mc_engine/cinematic/cars.cpp
+    src/mc_engine/cinematic/scene_seed.cpp
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
 

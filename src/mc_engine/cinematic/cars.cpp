@@ -85,6 +85,7 @@
 #include "larecomp_log.h"
 #include "native_call.h"
 #include "scene_runtime.h"
+#include "scene_seed_runtime.h"
 
 #if __has_include("camera_runtime.h")
 #include "camera_runtime.h"  // M1b: SetCarResolver. Present once its branch is merged; then the registry is the camera's car source
@@ -334,6 +335,18 @@ struct CarKey {
     CarCommand cmd;
 };
 
+// What the game thread knows of a paint seed held for an ambient car (the paint section below), for the log.
+struct ForcedNote {
+    std::string car;
+    int32_t layout_id = -1;
+    int paint = 0;
+    uint32_t item = 0;
+    uint32_t seed = 0;
+    uint32_t hits_logged = 0;
+    bool stands_warned = false;
+    size_t slot = 0;
+};
+
 struct RouteEntry {
     std::shared_ptr<Route> route;
     std::string error;  // why there is none
@@ -369,6 +382,7 @@ struct State {
     std::map<std::string, ReadHealth> reads;  // how each scene car's matrix reads (for the log only)
     uint32_t ambient_manager = 0;               // the ambient manager the item cache belongs to
     std::map<int32_t, uint32_t> ambient_items;  // layout item id -> the item's address (found by a walk of the layout pool's lists, then kept while the id still reads there)
+    std::vector<ForcedNote> forced;             // the ambient cars whose paint seed is held (the table of atomics is g_forced)
 };
 State g;
 std::atomic<bool> g_active{false};  // anything to do: the one flag TickCars tests
@@ -511,6 +525,109 @@ bool ReadAmbientMatrix(const uint8_t* base, int32_t id, float out[16]) {
     if (!PlausiblePtr(car) || !Mapped(car, kAmbientCarBytes)) return false;
     for (uint32_t i = 0; i < 16; ++i) out[i] = RF(base, car + kAmbientMatrixAt + 4 * i);
     return true;
+}
+
+// ---------------------------------------------------------------- the paint: the seed of an ambient car's own generator (scene_seed.h)
+
+// The scene's ambient cars that have a paint, by the layout item the game turns into the car. The hook MCLAAmbientCarSeed (the end of this file; larecomp_config.toml) runs
+// on whichever thread the game's spawn queue is given out on (sub_826DF260), so the table is atomics only and the game thread's notes (g.forced) are kept apart.
+constexpr size_t kForcedSlots = 8;
+struct ForcedSlot {
+    std::atomic<uint32_t> item{0};   // the layout item (guest address) whose car takes the seed; 0 = free
+    std::atomic<uint32_t> seed{0};
+    std::atomic<uint32_t> hits{0};   // queue entries the hook has changed for this item
+};
+ForcedSlot g_forced[kForcedSlots];
+std::atomic<uint32_t> g_forced_live{0};     // slots in use: the hook's one load when no scene car has a paint
+std::atomic<uint32_t> g_hook_entries{0};    // queue entries given out while a slot was in use (matched or not)
+std::atomic<uint32_t> g_hook_last_item{0};  // the item word of the last entry that matched no slot (for the log: is entry + 560 an item at all?)
+
+void ClearForcedSeed(int32_t layout_id) {
+    for (auto it = g.forced.begin(); it != g.forced.end();) {
+        if (it->layout_id == layout_id) {
+            g_forced[it->slot].item.store(0, std::memory_order_release);
+            g_forced_live.fetch_sub(1, std::memory_order_relaxed);
+            it = g.forced.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void ClearAllForcedSeeds() {
+    for (ForcedSlot& s : g_forced) s.item.store(0, std::memory_order_release);
+    g_forced_live.store(0, std::memory_order_relaxed);
+    g.forced.clear();
+}
+
+// After AmbientMgr_AddAmbientToLayout returned the layout item's id: the item's queue entry will carry the paint's seed instead of the game's random number.
+void NoteAmbientPaint(const uint8_t* base, const std::string& car, const Call& c, int32_t layout_id) {
+    if (layout_id < 0 || c.paint_seed == 0) return;
+    const uint32_t pool = LayoutPool(base, R32(base, kAmbientMgrPtr));
+    const uint32_t item = pool ? FindLayoutItem(base, pool, layout_id) : 0;
+    if (!item) {
+        LARECOMP_APP_WARN("[cars] {} paint {}: the layout item {} was not found in the pool right after the add: the car keeps the game's random paint", car, c.paint, layout_id);
+        return;
+    }
+    for (size_t i = 0; i < kForcedSlots; ++i) {
+        uint32_t none = 0;
+        if (!g_forced[i].item.compare_exchange_strong(none, item, std::memory_order_acq_rel)) continue;
+        g_forced[i].seed.store(c.paint_seed, std::memory_order_relaxed);
+        g_forced[i].hits.store(0, std::memory_order_relaxed);
+        g_forced_live.fetch_add(1, std::memory_order_relaxed);
+        ForcedNote note;
+        note.car = car;
+        note.layout_id = layout_id;
+        note.paint = c.paint;
+        note.item = item;
+        note.seed = c.paint_seed;
+        note.slot = i;
+        g.forced.push_back(note);
+        LARECOMP_APP_INFO("[cars] {} paint {}: the car's own random seed will be 0x{:08X} instead of a draw (layout item {} at {}); the log says when the game's spawn queue gave it out", car,
+                          c.paint, c.paint_seed, layout_id, Hex(item));
+        return;
+    }
+    LARECOMP_APP_WARN("[cars] {} paint {}: no free slot for the seed ({} at most): the car keeps the game's random paint", car, c.paint, kForcedSlots);
+}
+
+// Once an update while a paint is held: says when the hook has fired for an item, and warns once when a car stands and the hook never did.
+void LogForcedSeeds(const uint8_t* base) {
+    if (g.forced.empty()) return;
+    for (ForcedNote& n : g.forced) {
+        const uint32_t hits = g_forced[n.slot].hits.load(std::memory_order_relaxed);
+        if (hits != n.hits_logged) {
+            n.hits_logged = hits;
+            LARECOMP_APP_INFO("[cars] {} paint {}: the game's spawn queue gave out the car's request, the seed 0x{:08X} went in ({} time(s))", n.car, n.paint, n.seed, hits);
+        }
+        if (hits == 0 && !n.stands_warned) {
+            const uint32_t car = Mapped(n.item + kItemBound, 4) ? R32(base, n.item + kItemBound) : 0;
+            if (car != 0) {
+                n.stands_warned = true;
+                LARECOMP_APP_WARN("[cars] {} paint {}: the car stands (item {} is bound to car {}) and the seed hook never fired for it: its paint is the game's random one. The hook saw {} "
+                                  "queue entr{}; the last item word it did not match was {} (CHECK: the entry + 560 layout; the car may be made before the add's result was read)",
+                                  n.car, n.paint, Hex(n.item), Hex(car), g_hook_entries.load(), g_hook_entries.load() == 1 ? "y" : "ies", Hex(g_hook_last_item.load()));
+            }
+        }
+    }
+}
+
+// The hook's work (MCLAAmbientCarSeed): `entry` is the queue entry (guest address) whose request is being given out, `seed` the 31-bit draw the game made for it and is about
+// to store at entry + 832; the answer is the seed to store.
+uint32_t AmbientQueueSeed(uint32_t entry, uint32_t seed) {
+    if (g_forced_live.load(std::memory_order_relaxed) == 0) return seed;
+    auto* rt = rex::Runtime::instance();
+    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    if (!base || entry < 0x10000u || entry > 0xBFFFF000u) return seed;
+    g_hook_entries.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t item = R32(base, entry + seed::kQueueEntryItemAt);
+    for (ForcedSlot& s : g_forced) {
+        if (item != 0 && s.item.load(std::memory_order_acquire) == item) {
+            s.hits.fetch_add(1, std::memory_order_relaxed);
+            return s.seed.load(std::memory_order_relaxed);
+        }
+    }
+    g_hook_last_item.store(item, std::memory_order_relaxed);
+    return seed;
 }
 
 // ---------------------------------------------------------------- the poses
@@ -708,6 +825,7 @@ std::string Describe(const Call& c) {
     if (c.native == Native::kBrainAppendDest) s += " #" + std::to_string(c.index) + " at " + Triple(c.position[0], c.position[1], c.position[2]);
     if (c.native == Native::kGetProfile || c.native == Native::kHostCarName) s += " index " + std::to_string(c.index);
     if (c.native == Native::kRemoveAmbient) s += " layout item " + std::to_string(c.index);
+    if (c.paint >= 0) s += " paint " + std::to_string(c.paint);
     if (c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kTeleport || c.native == Native::kAddAmbient) {
         s += " at " + Triple(c.position[0], c.position[1], c.position[2]) + " heading " + std::to_string(static_cast<int>(std::lround(c.heading_native))) + " (native)";
         if (c.native == Native::kTeleport && c.speed != 0.0) {
@@ -878,6 +996,9 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
     }
 
     LARECOMP_APP_INFO("[cars] {} {}{}", n.car, NativeName(c.native), Describe(c));
+    // A racer-class car's natives that may draw its look run with the game's generators held at the paint's seed (scene_seed.h); what was there comes back after.
+    const bool draws_look = c.native == Native::kCreateOpponent || c.native == Native::kLoadOpponent || c.native == Native::kLoadOpponentByConfig || c.native == Native::kAddOpponent;
+    const GeneratorHold hold(draws_look && c.paint >= 0 ? c.paint_seed : 0u);
     NativeResult r;
     switch (args.size()) {
         case 0: r = CallNative(wrapper, {}); break;
@@ -897,6 +1018,8 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         if (r.vec_count > 0) value += "; vec0=" + Triple(r.vec[0][0], r.vec[0][1], r.vec[0][2]);
         LARECOMP_APP_INFO("[cars] {} {} -> {} ({:.3f} ms)", n.car, NativeName(c.native), value, r.ms);
         if (c.native == Native::kGetPosition) LogPlacement(base, n, r);
+        if (c.native == Native::kAddAmbient && r.ret_written) NoteAmbientPaint(base, n.car, c, static_cast<int32_t>(r.ret));
+        if (c.native == Native::kRemoveAmbient) ClearForcedSeed(c.index);
     }
     g.dir.Report(out);
 }
@@ -1057,6 +1180,7 @@ void ApplierBegin(const Scene& scene) {
     g.have_scene_t = false;
     g.reads.clear();
     g.ambient_items.clear();
+    ClearAllForcedSeeds();
     for (const Event& e : scene.events) {
         if (e.track != Track::kCar) continue;
         CarCommand cmd;
@@ -1119,6 +1243,7 @@ void ApplierEnd() {
     g.keys.clear();
     g.next_key = 0;
     g.dir.EndScene();
+    ClearAllForcedSeeds();  // every car the scene placed exists by now or goes with its item: no queue entry of the scene is to be changed any more
     FlushEvents();
     const bool active = g.dir.Active();
     g_active.store(active, std::memory_order_relaxed);  // the cars it spawned are deleted over the next updates
@@ -1157,6 +1282,7 @@ void TickCars() {
     else g.ready_ticks = 0;
 
     UpdatePoses(base, player);
+    LogForcedSeeds(base);
 
     if (world && g.frame % kWorldCheckEvery == 0) {
         for (const Director::Reader& r : g.dir.InWorld()) {
@@ -1209,9 +1335,20 @@ size_t SceneCarCount() {
 
 }  // namespace mc::cinematic
 
+// An ambient car's own random seed (the paint, scene_seed.h). Midasm hook BEFORE the instruction at 0x826DF2DC (`stw r3,832(r31)` in sub_826DF260, the queue's give-out of a spawn
+// request): r3 is the 31-bit number the game drew from its generator for the car, r31 the queue entry. For the entry of one of the scene's layout items the number becomes the
+// paint's seed. One atomic load when no scene car has a paint.
+void MCLAAmbientCarSeed(PPCRegister& r3, PPCRegister& r31) {
+    r3.u64 = mc::cinematic::AmbientQueueSeed(static_cast<uint32_t>(r31.u64), static_cast<uint32_t>(r3.u64));
+}
+
 #else  // REXGLUE_HAS_XEO3_TARGET
 
+#include <rex/ppc/context.h>
+
 #include "cars.h"
+
+void MCLAAmbientCarSeed(PPCRegister&, PPCRegister&) {}
 
 namespace mc::cinematic {
 void TickCars() {}

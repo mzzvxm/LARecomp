@@ -49,6 +49,7 @@
 #include "car_registry.h"
 #include "car_verbs.h"
 #include "path_follow.h"
+#include "scene_seed.h"
 
 namespace mc::cinematic {
 
@@ -99,6 +100,10 @@ struct Call {
     double speed = 0.0;           // kTeleport: the car's speed along its nose after it is put there (m/s); the brain's speed natives: the value
     uint32_t brain = 0;           // the brain natives: the brain (racer is the car it drives)
     // kAddAmbient: text = the model, position = the place, heading_native = the layout's angle (LayoutHeadingDeg); kRemoveAmbient: index = the layout item's id.
+    // The paint (scene_seed.h): kAddAmbient: the number and the seed the game side puts in the car's spawn request; kCreateOpponent / kLoadOpponent / kLoadOpponentByConfig /
+    // kAddOpponent: the number whose seed the game's generators are held at for the native's duration. -1: none.
+    int32_t paint = -1;
+    uint32_t paint_seed = 0;
 };
 
 struct Outcome {
@@ -172,6 +177,12 @@ class Spawner {
 
   private:
     void Fail(const std::string& why);
+    // A model car's paint goes on the natives that may draw its look: the game side holds the generators at the paint's seed for the call.
+    void SetPaint(Call* c) const {
+        if (!cmd_.has_paint || cmd_.source != CarSource::kModel) return;
+        c->paint = cmd_.paint;
+        c->paint_seed = seed::PaintSeed(cmd_.paint);
+    }
 
     CarTiming timing_;
     CarCommand cmd_;
@@ -503,6 +514,7 @@ class Director {
     std::vector<std::unique_ptr<AmbientEntry>> ambient_;
     AmbientGate gate_;
     uint32_t ambient_calls_ = 0;  // adds handed out in this scene (the cap)
+    int paint_ordinal_ = 0;       // the scene's cars that take a paint, counted: the default paint of the next one (scene_seed.h, DefaultPaint)
     AmbientEntry* pending_ambient_ = nullptr;
     Dresser dresser_;
     bool scene_on_ = false;

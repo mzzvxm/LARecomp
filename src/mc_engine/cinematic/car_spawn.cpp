@@ -148,13 +148,16 @@ Call Spawner::Poll(int64_t now) {
             break;
         case Stage::kCreate:
             c.native = Native::kCreateOpponent;
+            SetPaint(&c);
             break;
         case Stage::kLoad:
             c.native = cmd_.source == CarSource::kModel ? Native::kLoadOpponent : Native::kLoadOpponentByConfig;
             c.ptr = cmd_.source == CarSource::kModel ? name_ptr_ : config_;
+            SetPaint(&c);
             break;
         case Stage::kAdd:
             c.native = Native::kAddOpponent;
+            SetPaint(&c);
             break;
         case Stage::kStreamState:
             c.native = Native::kGetLoadState;
@@ -801,11 +804,27 @@ Director::SceneCar* Director::FindLive(const std::string& id) {
 void Director::BeginScene() {
     scene_on_ = true;
     ambient_calls_ = 0;
+    paint_ordinal_ = 0;
     if (!registry_.Find("player")) registry_.Add("player", true);
 }
 
-Director::Applied Director::Apply(const CarCommand& cmd, double clock, const Route* route) {
+// A car that takes a paint and was not given one gets the default of its place in the scene (scene_seed.h): never the game's random pick.
+static CarCommand WithPaint(const CarCommand& in, int* ordinal) {
+    CarCommand cmd = in;
+    const bool takes_paint = cmd.verb == CarVerb::kAmbient || (cmd.verb == CarVerb::kSpawn && cmd.source == CarSource::kModel);
+    if (!takes_paint) return cmd;
+    if (!cmd.has_paint) {
+        cmd.has_paint = true;
+        cmd.paint = seed::DefaultPaint(*ordinal);
+        cmd.paint_default = true;
+    }
+    ++*ordinal;
+    return cmd;
+}
+
+Director::Applied Director::Apply(const CarCommand& in_cmd, double clock, const Route* route) {
     Applied a;
+    const CarCommand cmd = WithPaint(in_cmd, &paint_ordinal_);
     switch (cmd.verb) {
         case CarVerb::kAmbient: {
             if (FindLive(cmd.id) || FindLiveAmbient(cmd.id)) {

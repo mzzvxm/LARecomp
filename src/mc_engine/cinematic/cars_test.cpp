@@ -19,6 +19,7 @@
 #include "car_registry.h"
 #include "car_spawn.h"
 #include "car_verbs.h"
+#include "gpu/scene_noise.h"
 
 using namespace mc::cinematic;
 
@@ -134,7 +135,7 @@ void TestVerbs() {
     CheckError("p1 spawn vp_x at 1,2,3 heading", "heading needs degrees");
     CheckError("p1 spawn vp_x at 1,2,3 heading north", "heading needs degrees");
     CheckError("p1 spawn vp_x at 1,2,3 heading 1 heading 2", "a second 'heading'");
-    CheckError("p1 spawn vp_x at 1,2,3 colour red", "unknown option 'colour'");
+    CheckError("p1 spawn vp_x at 1,2,3 sparkle red", "unknown option 'sparkle'");
     CheckError("p1 spawn vp_x at 999999,0,0", "outside the world");
     CheckError("p1 spawn vp_x at nan,0,0", "bad position");
     CheckError("p1 spawn profile at 1,2,3", "garage slot");
@@ -1336,7 +1337,7 @@ void TestAmbientVerbs() {
     CheckError("p1 spawn vp_x at 1,2,3 at 4,5,6", "spawn: a second 'at'");
     CheckError("p1 ambient vp_x at 1,2,3 at 4,5,6", "ambient: a second 'at'");
     CheckError("p1 ambient vp_x at 1,2,3 heading 1 heading 2", "ambient: a second 'heading'");
-    CheckError("p1 ambient vp_x at 1,2,3 colour red", "ambient: unknown option 'colour'");
+    CheckError("p1 ambient vp_x at 1,2,3 sparkle red", "ambient: unknown option 'sparkle'");
     CheckError("p1 ambient", "ambient what?");
     CheckError("p1 ambient vp_x", "ambient needs a place");
     CheckError("p1 ambient vp_x at", "at needs x,y,z");
@@ -1767,6 +1768,193 @@ void TestAmbientDirector() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------------------------------------------- paint and the seeds (scene_seed.h)
+
+void TestPaintVerbs() {
+    {
+        const Parsed p = P("a1 ambient va_gmc_yukon_05 at 1,2,3 heading 90 paint 3");
+        Check(p.status == CarParse::kOk && p.cmd.has_paint && p.cmd.paint == 3, "ambient: paint 3");
+        Check(DescribeCarCommand(p.cmd) == "a1 ambient va_gmc_yukon_05 at (1.00, 2.00, 3.00) heading 90.00 paint 3", "the log line says the paint");
+    }
+    {
+        const Parsed p = P("a1 ambient va_gmc_yukon_05 paint 12 at 1,2,3");  // the order of the options is free
+        Check(p.status == CarParse::kOk && p.cmd.has_paint && p.cmd.paint == 12, "paint before at");
+    }
+    Check(P("p1 spawn vp_x at 1,2,3 colour 5").cmd.paint == 5, "colour is paint");
+    Check(P("p1 spawn vp_x at 1,2,3 COLOR 0").cmd.has_paint, "color, upper case; paint 0 is a paint");
+    Check(P("p1 spawn vp_x at 1,2,3 paint 9999").status == CarParse::kOk, "paint 9999 is the largest");
+    Check(!P("p1 spawn vp_x at 1,2,3").cmd.has_paint, "no paint written: none (the Director's default comes later)");
+    CheckError("p1 spawn vp_x at 1,2,3 paint", "paint needs a whole number");
+    CheckError("p1 spawn vp_x at 1,2,3 paint red", "paint needs a whole number");
+    CheckError("p1 spawn vp_x at 1,2,3 paint 10000", "paint needs a whole number");
+    CheckError("p1 spawn vp_x at 1,2,3 paint -1", "paint needs a whole number");
+    CheckError("p1 spawn vp_x at 1,2,3 paint 1.5", "paint needs a whole number");
+    CheckError("p1 spawn vp_x at 1,2,3 paint 1 paint 2", "spawn: a second 'paint'");
+    CheckError("p1 ambient vp_x at 1,2,3 paint 1 colour 2", "ambient: a second 'paint'");
+    CheckError("p1 spawn profile 2 at 1,2,3 paint 1", "keeps the paint the owner gave it");
+    CheckError("p1 spawn garage:2 at 1,2,3 paint 1", "keeps the paint the owner gave it");
+    CheckError("p1 spawn vp_x at 1,2,3 sparkle", "unknown option 'sparkle' (at, heading, paint)");
+}
+
+void TestSeeds() {
+    using namespace mc::cinematic::seed;
+    // the game's seeder (sub_821CE210): lo = seed (1 for 0), hi = rotl16(seed) ^ seed
+    Generator g = SeedGenerator(1);
+    Check(g.lo == 1u && g.hi == 0x00010001u, "seed 1: lo 1, hi 0x10001");
+    Check(SeedGenerator(0).lo == 1u, "seed 0 is lo 1");
+    Check(SeedGenerator(0x12345678u).hi == (0x56781234u ^ 0x12345678u), "hi is the seed turned by 16 bits, xor the seed");
+    // a draw: x = lo * 0x5CDCFAA7 + hi, lo = low word, hi = high word, the draw the low 31 bits of the new lo
+    const uint32_t first = Draw31(g);
+    Check(first == ((1u * 0x5CDCFAA7u + 0x00010001u) & 0x7FFFFFFFu) && g.lo == 0x5CDDFAA8u && g.hi == 0u, "the first draw from seed 1 (computed by hand)");
+    Generator h = SeedGenerator(0xFFFFFFFFu);
+    const uint64_t x = static_cast<uint64_t>(h.lo) * 0x5CDCFAA7u + h.hi;
+    Draw31(h);
+    Check(h.lo == static_cast<uint32_t>(x) && h.hi == static_cast<uint32_t>(x >> 32), "the carry goes into hi");
+    // the draws are a pure function of the state
+    Generator a = SeedGenerator(77), b = SeedGenerator(77);
+    bool same = true;
+    for (int i = 0; i < 100; ++i) same = same && Draw31(a) == Draw31(b);
+    Check(same, "the same seed gives the same draws");
+    // a scene update's seed: the same input, the same output; another update, another generator, another seed give another one; never 0
+    Check(FrameSeed(1, 40, Lane::kSim) == FrameSeed(1, 40, Lane::kSim), "FrameSeed is a function");
+    Check(FrameSeed(1, 40, Lane::kSim) != FrameSeed(1, 41, Lane::kSim), "the next update has another seed");
+    Check(FrameSeed(1, 40, Lane::kSim) != FrameSeed(1, 40, Lane::kVisual) && FrameSeed(1, 40, Lane::kSim) != FrameSeed(1, 40, Lane::kConfig), "each generator has its own");
+    Check(FrameSeed(1, 40, Lane::kSim) != FrameSeed(2, 40, Lane::kSim), "another scene seed gives another one");
+    bool nonzero = true;
+    for (uint64_t u = 0; u < 5000; ++u) nonzero = nonzero && FrameSeed(0, u, Lane::kSim) != 0 && FrameSeed(1, u, Lane::kConfig) != 0;
+    Check(nonzero, "a seed is never 0");
+    Check(PinnedState(3, 9, Lane::kVisual).lo == SeedGenerator(FrameSeed(3, 9, Lane::kVisual)).lo, "PinnedState is the game's seeding of FrameSeed");
+    // the paint's seed: 31 bits, never 0, the same every time, different for different paints
+    bool paints_ok = true;
+    for (int p = 0; p < 64; ++p) {
+        const uint32_t s = PaintSeed(p);
+        paints_ok = paints_ok && s != 0 && s <= 0x7FFFFFFFu && s == PaintSeed(p);
+        for (int q = 0; q < p; ++q) paints_ok = paints_ok && PaintSeed(q) != s;
+    }
+    Check(paints_ok, "PaintSeed: 31 bits, not 0, stable, and the first 64 are all different");
+    Check(DefaultPaint(0) == 0 && DefaultPaint(3) == 3 && DefaultPaint(10003) == 3 && DefaultPaint(-1) == 0, "the default paint is the place in the scene, wrapped");
+}
+
+void TestPaintDirector() {
+    // ambient: the default paint is the place among the scene's cars; a written paint wins and still takes its place
+    {
+        Director dir;
+        AmbientGame game;
+        dir.BeginScene();
+        dir.SetAmbientGate(OpenGate());
+        Check(dir.Apply(P("a1 ambient va_gmc_yukon_05 at 810,17,-800").cmd).ok, "a1 applies");
+        Check(dir.Apply(P("a2 ambient va_gmc_yukon_05 at 817,17,-800 paint 7").cmd).ok, "a2 applies with a paint");
+        Check(dir.Apply(P("a3 ambient va_gmc_yukon_05 at 824,17,-800").cmd).ok, "a3 applies");
+        Check(dir.Apply(P("a4 ambient va_gmc_yukon_05 at 831,17,-800").cmd).ok, "a4 applies");
+        for (int64_t t = 0; t < 2000; t += 16) {
+            Director::Next n = dir.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) dir.Report(game.Run(n.call));
+        }
+        Check(game.adds.size() == 4, "four adds");
+        if (game.adds.size() == 4) {
+            Check(game.adds[0].paint == 0 && game.adds[1].paint == 7 && game.adds[2].paint == 2 && game.adds[3].paint == 3, "paints 0, 7 (written), 2, 3: the place in the file");
+            Check(game.adds[0].paint_seed == seed::PaintSeed(0) && game.adds[1].paint_seed == seed::PaintSeed(7), "the call carries the paint's seed");
+            Check(game.adds[0].paint_seed != game.adds[2].paint_seed, "two default paints differ");
+        }
+        // the same scene again gives the same numbers
+        Director dir2;
+        AmbientGame game2;
+        dir2.BeginScene();
+        dir2.SetAmbientGate(OpenGate());
+        dir2.Apply(P("a1 ambient va_gmc_yukon_05 at 810,17,-800").cmd);
+        dir2.Apply(P("a2 ambient va_gmc_yukon_05 at 817,17,-800 paint 7").cmd);
+        for (int64_t t = 0; t < 1000; t += 16) {
+            Director::Next n = dir2.Poll(t, 0xBF33C450u);
+            if (n.call.native != Native::kNone) dir2.Report(game2.Run(n.call));
+        }
+        Check(game2.adds.size() == 2 && game.adds.size() == 4 && game2.adds[0].paint_seed == game.adds[0].paint_seed && game2.adds[1].paint_seed == game.adds[1].paint_seed,
+              "a second run of the same lines asks for the same seeds");
+        // the log line of the apply says the paint was a default
+        Director dir3;
+        dir3.BeginScene();
+        const Director::Applied ap = dir3.Apply(P("a1 ambient va_gmc_yukon_05 at 810,17,-800").cmd);
+        Check(ap.message.find("paint 0 (the default)") != std::string::npos, "the apply line names the default paint");
+    }
+    // a racer-class car: the natives that may draw its look carry the paint; the lookups and the stream polls do not
+    {
+        Director dir;
+        FakeGame game;
+        dir.BeginScene();
+        dir.Apply(P("p1 spawn vp_lam_murcielago_06 at 900,17,-850 heading 270 paint 4").cmd);
+        dir.Apply(P("p2 spawn vp_lam_murcielago_06 at 905,17,-850 heading 270").cmd);
+        int double_issue = 0;
+        Drive(dir, game, 0, 24000, 0xBF33C450u, &double_issue);
+        int p1_create = 0, p1_load = 0, p2_create = 0, with_paint_elsewhere = 0;
+        for (const Call& c : game.detail) {
+            const bool draws = c.native == Native::kCreateOpponent || c.native == Native::kLoadOpponent || c.native == Native::kAddOpponent;
+            if (!draws && c.paint >= 0) ++with_paint_elsewhere;
+            if (c.native == Native::kCreateOpponent && c.paint == 4) ++p1_create;
+            if (c.native == Native::kLoadOpponent && c.paint == 4 && c.paint_seed == seed::PaintSeed(4)) ++p1_load;
+            if (c.native == Native::kCreateOpponent && c.paint == 1) ++p2_create;  // p2 is the second car of the scene: default paint 1
+        }
+        Check(p1_create >= 1 && p1_load >= 1, "p1's create and load carry paint 4 and its seed");
+        Check(p2_create >= 1, "p2 has the default paint of its place (1)");
+        Check(with_paint_elsewhere == 0, "no other native carries a paint");
+    }
+    // a garage car has none
+    {
+        Director dir;
+        FakeGame game;
+        dir.BeginScene();
+        dir.Apply(P("g1 spawn profile 2 at 900,17,-850 heading 270").cmd);
+        int double_issue = 0;
+        Drive(dir, game, 0, 24000, 0xBF33C450u, &double_issue);
+        bool any = false;
+        for (const Call& c : game.detail) any = any || c.paint >= 0;
+        Check(!any, "a garage car's natives carry no paint");
+    }
+}
+
+// The renderer's noise frame follows the scene (gpu/scene_noise.h): the k-th guest swap's tag is read by the renderer's k-th frame.
+void TestSceneNoise() {
+    namespace sn = mcla::gpu::scene_noise;
+    Check(!sn::Active(), "no scene noise at the start");
+    Check(sn::Index(77) == 77, "outside a scene the renderer's own count is the noise frame");
+    // swap 0 is before the scene
+    sn::OnGuestSwap();
+    // the scene begins: update 0 draws, its swap tags the frame
+    sn::Rearm();
+    sn::SetUpdate(0);
+    Check(sn::Active(), "a scene holds the noise");
+    sn::OnGuestSwap();
+    sn::SetUpdate(1);
+    sn::OnGuestSwap();
+    sn::SetUpdate(2);
+    sn::OnGuestSwap();
+    // the renderer runs behind: three swaps are waiting, plus the one before the scene
+    Check(!sn::BeginFrame(), "frame 0 (before the scene) carries no tag");
+    Check(sn::Index(500) == 500 && sn::CurrentUpdate() == -1, "...so it keeps the renderer's own count");
+    Check(sn::BeginFrame(), "frame 1 is the first tagged frame (the log line)");
+    Check(sn::Index(501) == 0 && sn::CurrentUpdate() == 0, "...and shows update 0, whatever the renderer's count");
+    Check(!sn::BeginFrame() && sn::Index(502) == 1, "frame 2 shows update 1 and is not the first");
+    Check(!sn::BeginFrame() && sn::Index(503) == 2, "frame 3 shows update 2");
+    // the scene ends
+    sn::SetUpdate(-1);
+    sn::OnGuestSwap();
+    Check(!sn::Active(), "the scene is over");
+    Check(!sn::BeginFrame() && sn::Index(9) == 9, "a frame after the scene keeps the renderer's count");
+    // the same scene again, with another renderer count: the same numbers
+    sn::Rearm();
+    sn::SetUpdate(0);
+    sn::OnGuestSwap();
+    sn::SetUpdate(1);
+    sn::OnGuestSwap();
+    Check(sn::BeginFrame() && sn::Index(123456) == 0, "the second run: update 0 again");
+    Check(!sn::BeginFrame() && sn::Index(123457) == 1, "...and update 1");
+    sn::SetUpdate(-1);
+    // a renderer more than the ring behind loses the tag of the frames it overran (the fallback), never a wrong number
+    sn::SetUpdate(5);
+    for (int i = 0; i < 300; ++i) sn::OnGuestSwap();
+    sn::SetUpdate(-1);
+    sn::BeginFrame();
+    Check(sn::Index(42) == 42, "a frame the ring has overwritten keeps the renderer's count");
+}
+
 int main() {
     TestVerbs();
     TestPathVerbs();
@@ -1789,6 +1977,10 @@ int main() {
     TestAmbientGuards();
     TestAmbientMachine();
     TestAmbientDirector();
+    TestPaintVerbs();
+    TestSeeds();
+    TestPaintDirector();
+    TestSceneNoise();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

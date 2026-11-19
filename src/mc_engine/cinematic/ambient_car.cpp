@@ -119,6 +119,10 @@ Call AmbientCar::Poll(int64_t now_ms, const AmbientGate& gate) {
             c.text = cmd_.model;
             for (int i = 0; i < 3; ++i) c.position[i] = cmd_.position[i];
             c.heading_native = LayoutHeadingDeg(cmd_.heading);
+            if (cmd_.has_paint) {
+                c.paint = cmd_.paint;
+                c.paint_seed = seed::PaintSeed(cmd_.paint);
+            }
             manager_at_add_ = gate.manager_addr;
             waiting_ = true;
             return c;

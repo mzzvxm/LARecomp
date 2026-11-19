@@ -199,6 +199,10 @@ void MCLAGameClockCarry(PPCRegister& f0);
 // `lfs f13,84(r3)` loaded; the hook replaces it while a scene's time scale is on and leaves it alone otherwise.
 void MCLATimeScaleOverride(PPCRegister& f13);
 
+// A scene ambient car's paint (cinematic/cars.cpp, scene_seed.h): before the instruction at 0x826DF2DC in sub_826DF260, r3 is the number the game drew for the car's own generator and
+// r31 the spawn queue's entry; the hook replaces r3 with the paint's seed for the entry of one of the scene's layout items and leaves it alone otherwise.
+void MCLAAmbientCarSeed(PPCRegister& r3, PPCRegister& r31);
+
 // Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
 // thread; logs nothing if the game closed before the counter started.
 void LogAudioDropoutSummary();

@@ -337,8 +337,8 @@ void CheckShaders(const std::string& gpu_dir) {
   Check(has(main_ps, "0.6180339887f"), "ao_main_ps.hlsl: the step offsets' increment is the header's golden ratio");
   // ao.cpp: the radius from the header, the switch, the frame number.
   Check(has(cpp, "ao_stable::DenoiseRadius(plan.ao[1])") && has(cpp, "mcla_gpu_ao_stable"), "ao.cpp: the denoise radius comes from ao_stable.h, switchable by mcla_gpu_ao_stable");
-  Check(has(cpp, "ao_stable::NoiseCode(frame_, REXCVAR_GET(mcla_gpu_ao_stable))"), "ao.cpp: the main pass's noise code comes from ao_stable.h, switchable by mcla_gpu_ao_stable");
-  Check(has(cpp, "push->slots2[1] = uint32_t(frame_ & 1023);"), "ao.cpp: the other passes keep the frame number in slots2.y (the contact shadows' noise)");
+  Check(has(cpp, "ao_stable::NoiseCode(scene_noise::Index(frame_), REXCVAR_GET(mcla_gpu_ao_stable))"), "ao.cpp: the main pass's noise code comes from ao_stable.h, switchable by mcla_gpu_ao_stable");
+  Check(has(cpp, "push->slots2[1] = uint32_t(scene_noise::Index(frame_) & 1023);"), "ao.cpp: the other passes keep the frame number in slots2.y (the contact shadows' noise)");
 }
 
 }  // namespace
