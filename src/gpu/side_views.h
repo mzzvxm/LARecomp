@@ -13,8 +13,9 @@
 //   - the road reflection: a 256x256 image of the whole screen drawn with mirrored geometry, which
 //     every reflective city material reads with its screen position (roads, windows, water);
 //
-// and the HUD's own small render-to-texture views (the minimap's 220x220 picture and the 128x128 and 256x256 ones beside it, side_view_ui_map.cpp), the
-// class that follows the render scale instead of a setting's level (SideViewRule::follows_output).
+// and the HUD's and the menus' own render-to-texture views (the minimap's 220x220 picture and the 128x128 and 256x256 ones beside it, and the 960x640 page the pause
+// menu, the garage and the GPS map are drawn into, side_view_ui_map.cpp), the class that follows the render scale instead of a setting's level
+// (SideViewRule::follows_output), from 1.25x of the console's picture.
 //
 // None of them is "an image of the screen" (their sizes are not the screen's halvings), so at the
 // render scale they stay at the guest's size, and a product made at another scale than its reader
