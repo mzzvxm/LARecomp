@@ -16,7 +16,6 @@
 #include <string>
 
 #include "temporal_menu.h"
-#include "settings/larecomp_settings.h"
 
 using namespace mcla::gpu::temporal;
 

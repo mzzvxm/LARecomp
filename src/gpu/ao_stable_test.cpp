@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "ao_stable.h"
-#include "settings/larecomp_settings.h"
 
 using namespace mcla::gpu::ao_stable;
 

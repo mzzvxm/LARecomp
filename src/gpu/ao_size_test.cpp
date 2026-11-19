@@ -21,7 +21,6 @@
 #include "ao_size.h"
 #include "ao_stable.h"
 #include "ssgi_stable.h"
-#include "settings/larecomp_settings.h"
 
 namespace as = mcla::gpu::ao_size;
 namespace stable = mcla::gpu::ao_stable;

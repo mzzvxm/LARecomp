@@ -19,7 +19,6 @@
 
 #include "ao_paint.h"
 #include "ssgi_light.h"
-#include "settings/larecomp_settings.h"
 
 using namespace mcla::gpu;
 using namespace mcla::gpu::ao_paint;
