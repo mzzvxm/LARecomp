@@ -390,6 +390,12 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_pad_feed_test EXCLUDE_FROM_ALL
     src/mc_engine/ui/pad_feed_test.cpp)
 target_include_directories(larecomp_pad_feed_test PRIVATE src src/mc_engine/ui)
+# Which SDL the exe's own SDL code talks to (src/mc_engine/input/sdl_instance.h: the one-SDL rule, the wheel thread's two gates, the
+# SDL_GAMECONTROLLER_IGNORE_DEVICES list and its command-line reader) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_sdl_instance_test, then run <build dir>/larecomp_sdl_instance_test (exit 0 = passed).
+add_executable(larecomp_sdl_instance_test EXCLUDE_FROM_ALL
+    src/mc_engine/input/sdl_instance_test.cpp)
+target_include_directories(larecomp_sdl_instance_test PRIVATE src src/mc_engine)
 if(NOT WIN32)
     # The D3D12 native graphics runtime (native_gfx/d3d12 and the files that
     # drive it) is Windows-only; Linux renders through Plume. The guest-side
