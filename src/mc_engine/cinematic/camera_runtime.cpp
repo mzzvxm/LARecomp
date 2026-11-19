@@ -143,9 +143,15 @@ bool CarMatrix(const uint8_t* base, uint32_t racer, float out[16]) {
     const uint32_t mtx = ent ? R32(base, ent + kEntityMatrixAt) : 0;
     if (!mtx) return false;
     for (int i = 0; i < 16; ++i) out[i] = RF(base, mtx + 16 + 4 * static_cast<uint32_t>(i));
+    // Only the rows' first three words are a pose; the w words (3, 7, 11, 15) may hold anything, as cars.cpp's PoseOf says,
+    // so they are not checked but set clean. Checking all 16 refused the player's car on every frame, and a camera
+    // attached to car:player stayed at the world origin.
     for (int i = 0; i < 16; ++i) {
+        if ((i & 3) == 3) continue;
         if (!std::isfinite(out[i])) return false;
     }
+    out[3] = out[7] = out[11] = 0.0f;
+    out[15] = 1.0f;
     return true;
 }
 
