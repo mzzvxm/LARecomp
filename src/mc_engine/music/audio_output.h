@@ -26,14 +26,18 @@
 // it while apu.driver is "larecomp"): its DriverRegistration::create gives a fresh instance that this wrapper owns, initializes with
 // the context it was given and shuts down itself.
 //
-// The trailer toolkit's capture driver (the take's sound, mc_engine/cinematic/capture_audio.cpp) is not carried over: see there.
+// The trailer toolkit's take sound (mc_engine/cinematic/capture_audio.cpp) taps the mix here: OpenDevice does not give the inner driver the
+// SDK's AudioFill but one made by the MixTap of audio_tap.h, which calls the SDK's fill as it is until a take holds the tap, and gives the
+// take the SDK's fill to pull from (the device then gets silence). Outside a take the only difference is one mutex per device buffer.
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
 
 #include <rex/apu/audio_driver.h>
+#include <rex/apu/audio_system.h>
 #include <rex/driver.h>
 #include <rex/driver_context.h>
 #include <rex/driver_module.h>
@@ -41,6 +45,7 @@
 #include <rex/logging/log_category.h>
 #include <rex/module.h>
 
+#include "audio_tap.h"
 #include "larecomp_log.h"
 #include "settings/larecomp_settings.h"
 
@@ -58,6 +63,18 @@ namespace detail {
 inline rex::IInterfaceFactory*& Factory() {
   static rex::IInterfaceFactory* factory = nullptr;
   return factory;
+}
+
+// The tap in front of the real device's fill (audio_tap.h); lives for the whole process.
+inline MixTap& Tap() {
+  static MixTap tap;
+  return tap;
+}
+
+// The audio system the take reads its queue counters from: null before the app connected its modules and after it disconnected.
+inline rex::apu::IAudioSystem* AudioSystem() {
+  rex::IInterfaceFactory* factory = Factory();
+  return factory ? factory->Get<rex::apu::IAudioSystem>() : nullptr;
 }
 
 inline std::unique_ptr<rex::IDriver> CreateInnerDriver() {
@@ -95,6 +112,7 @@ class OutputDriver final : public rex::apu::IAudioDriver {
   }
 
   void Shutdown() override {
+    Tap().Detach();
     if (inner_) {
       inner_->Shutdown();
       inner_.reset();
@@ -106,7 +124,12 @@ class OutputDriver final : public rex::apu::IAudioDriver {
     if (!inner_) {
       return rex::Err<rex::u32>(rex::ErrorCategory::kPlatform, "silent output (no audio driver, or mcla_audio_output = null)");
     }
-    auto opened = Inner().OpenDevice(channels, std::move(fill));
+    // The device pulls through the tap (audio_tap.h); a device that did not open has no fill to pull from.
+    auto sdk_fill = std::make_shared<rex::apu::AudioFill>(std::move(fill));
+    MixTap::Fill device_side = Tap().Attach([sdk_fill](std::span<float> out, uint32_t ch) { (*sdk_fill)(out, ch); });
+    auto opened = Inner().OpenDevice(
+        channels, rex::apu::AudioFill([device_side = std::move(device_side)](std::span<rex::f32> out, rex::u32 ch) { device_side(out, ch); }));
+    if (!opened) Tap().Detach();
     if (!opened && !warned_) {
       warned_ = true;
       LARECOMP_APP_WARN("[audio] no output device could be opened ({}); continuing without sound, and trying again about once a second",
@@ -119,7 +142,8 @@ class OutputDriver final : public rex::apu::IAudioDriver {
   }
 
   void CloseDevice() override {
-    if (inner_) Inner().CloseDevice();
+    if (inner_) Inner().CloseDevice();  // returns once no call of the fill is running
+    Tap().Detach();
   }
 
   bool IsDeviceLost() const override { return inner_ && static_cast<rex::apu::IAudioDriver*>(inner_.get())->IsDeviceLost(); }
@@ -155,6 +179,10 @@ class Module final : public rex::IModule, public rex::IDriverModule {
 };
 
 }  // namespace detail
+
+// The tap the take's sound pulls the mix through, and the audio system whose queue it counts (null when the app has none connected).
+inline MixTap& Tap() { return detail::Tap(); }
+inline rex::apu::IAudioSystem* AudioSystem() { return detail::AudioSystem(); }
 
 // The module to hand to App::OnRegisterModules. Lives for the whole process.
 inline rex::IModule& Module() {

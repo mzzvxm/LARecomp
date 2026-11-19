@@ -27,6 +27,9 @@
 // which an unprivileged process may not do (RLIMIT_NICE or CAP_SYS_NICE allow it): then the
 // threads stay as they are and one line says why.
 //
+// The same override is the gate of a take's sound (cinematic/capture_audio.cpp): while a take runs, each call waits for a ticket before the
+// game's callback mixes its frame, so the mixer runs exactly as far as the video has.
+//
 // The same override counts audio dropouts. The callback runs for each 5.33 ms frame, but the
 // output device takes audio in 10 ms steps, so about half of the gaps between two calls are
 // ~10 ms on a healthy PC. A gap well over that means the worker or the mixer was not run in
@@ -54,6 +57,7 @@
 #include "mc_engine/core/threading.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "mc_engine/cinematic/capture_audio.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "os/thread_priority.h"
 
@@ -137,8 +141,9 @@ void CountCallbackGap() {
         return;
     }
 
-    const bool quiet =
-        larecomp::triggers::IsGamePaused() || !larecomp::triggers::IsWindowInFront();
+    // (a take's sound holds the callback at its gate between the take's frames: those gaps are no dropout either)
+    const bool quiet = larecomp::triggers::IsGamePaused() || !larecomp::triggers::IsWindowInFront() ||
+                       mc::cinematic::capture_audio::Active();
     const bool gap_is_quiet = quiet || previous_quiet;
     previous_quiet = quiet;
     if (!window_start_us) {
@@ -210,6 +215,9 @@ extern "C" REX_FUNC(sub_823F56D0) {
             "[AudioWorker] audio worker thread: first call of the callback (823F56D0)");
     }
     CountCallbackGap();
+    // While a take runs, the take's sound holds this callback here until it hands a ticket, so the mixer mixes a frame only when the take
+    // has the video for it (cinematic/capture_audio.h MixerGate); outside a take the gate only counts the call.
+    mc::cinematic::capture_audio::MixerGate gate;
     __imp__sub_823F56D0(ctx, base);
 }
 #else

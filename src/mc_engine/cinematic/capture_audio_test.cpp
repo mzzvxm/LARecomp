@@ -54,48 +54,6 @@ void CheckNum(double got, double want, const std::string& what, double tol) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------------------------- the driver's install
-
-// The off path. The capture driver is put in front of the game's audio output only when a take that records sound starts: a game with no
-// take, and a take with the sound off, leave the output exactly as it is (PlanDriver says kNone, so Begin installs and arms nothing).
-void TestInstallPlan() {
-    Check(PlanDriver(false, false) == DriverPlan::kNone, "no sound asked, no driver: nothing to do");
-    Check(PlanDriver(false, true) == DriverPlan::kNone, "no sound asked, a driver from an earlier take: still nothing is touched");
-    Check(PlanDriver(true, false) == DriverPlan::kInstallThenArm, "sound asked, no driver: install it, then arm it");
-    Check(PlanDriver(true, true) == DriverPlan::kArm, "sound asked, driver there: arm it, install nothing");
-
-    // A session in the order the game runs it, with Begin's rule applied to a model of the audio output: `wrapped` is whether the capture
-    // driver is in the path, `installs` how many times it was put there.
-    struct Output {
-        bool wrapped = false;
-        int installs = 0;
-        int armed = 0;
-        // capture_audio.cpp Begin's switch on the plan
-        bool Begin(bool records_sound) {
-            switch (PlanDriver(records_sound, wrapped)) {
-                case DriverPlan::kNone:
-                    return false;
-                case DriverPlan::kInstallThenArm:
-                    wrapped = true;
-                    ++installs;
-                    [[fallthrough]];
-                case DriverPlan::kArm:
-                    ++armed;
-                    return true;
-            }
-            return false;
-        }
-    };
-    Output o;
-    // (a game that runs no take never calls Begin, so it stays here)
-    Check(!o.wrapped && o.installs == 0, "at the start of the game the output is the real one, with no wrapper");
-    Check(!o.Begin(false) && !o.wrapped && o.installs == 0 && o.armed == 0, "a take with the sound off leaves the output alone");
-    Check(!o.Begin(false) && !o.wrapped, "and so does the next one");
-    Check(o.Begin(true) && o.wrapped && o.installs == 1 && o.armed == 1, "the first take with sound puts the driver in front of the output and arms it");
-    Check(o.Begin(true) && o.installs == 1 && o.armed == 2, "the second one arms the same driver (no second install)");
-    Check(!o.Begin(false) && o.wrapped && o.installs == 1 && o.armed == 2, "a take with the sound off after that arms nothing and installs nothing");
-}
-
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 
 void TestSamples() {
@@ -454,7 +412,6 @@ void TestFile() {
 }  // namespace
 
 int main() {
-    TestInstallPlan();
     TestSamples();
     TestTake();
     TestLate();

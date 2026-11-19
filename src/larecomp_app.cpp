@@ -43,6 +43,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "game_marker.h"
 #include "isoinstaller/larecomp_iso_installer.h"
 #include "larecomp_log.h"
+#include "mc_engine/cinematic/capture_audio.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/music/audio_output.h"
@@ -952,6 +953,7 @@ void LarecompApp::FinishWindowCloseWork() {
   const auto started = std::chrono::steady_clock::now();
   MclaWaitForSaves();  // a career save in flight finishes (10 s limit inside)
   LogAudioDropoutSummary();
+  mc::cinematic::capture_audio::Abort();  // a take's sound holds the audio worker's callback at a gate: let it go before the SDK stops the worker
   larecomp::triggers::Shutdown();  // the DualSense's triggers back to slack
   larecomp::devwatch::Stop();
   larecomp::impulse::Shutdown();   // the Xbox triggers back to still

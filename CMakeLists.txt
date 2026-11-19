@@ -173,8 +173,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/take_folder.cpp
     src/mc_engine/cinematic/capture_mode.cpp
 
-    # Trailer toolkit M2c: the take's sound. The capture driver is put in front of the game's audio output (audio_output.h) only when a take that
-    # records sound starts (nothing is installed before, so the game's audio is the stock one); the sample books and the WAV file are in capture_audio_core.
+    # Trailer toolkit M2c: the take's sound. On rexglue 0.11 a take holds the tap in front of the output device (music/audio_tap.h, made by audio_output.h),
+    # pulls the SDK's mix itself and gates the game's audio callback (hooks/audio_mixer.cpp); the sample books, the session and the WAV file are in capture_audio_core.
     src/mc_engine/cinematic/capture_audio_core.cpp
     src/mc_engine/cinematic/capture_audio.cpp
 
@@ -435,6 +435,21 @@ add_executable(larecomp_capture_audio_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/capture_audio_test.cpp
     src/mc_engine/cinematic/capture_audio_core.cpp)
 target_include_directories(larecomp_capture_audio_test PRIVATE src src/mc_engine/cinematic)
+# The take's sound session (capture_audio_core.h: Session against a MixerPort) is checked against a fake mixer with a thread of its own; the test
+# includes capture_audio_core.cpp itself: cmake --build <build dir> --target larecomp_capture_audio_session_test, then run it (exit 0 = passed).
+add_executable(larecomp_capture_audio_session_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/capture_audio_session_test.cpp)
+target_include_directories(larecomp_capture_audio_session_test PRIVATE src src/mc_engine/cinematic)
+# The audio tap in front of the output device (src/mc_engine/music/audio_tap.h) has a check that needs no game or SDK:
+#   cmake --build <build dir> --target larecomp_audio_tap_test, then run <build dir>/larecomp_audio_tap_test (exit 0 = passed).
+add_executable(larecomp_audio_tap_test EXCLUDE_FROM_ALL
+    src/mc_engine/music/audio_tap_test.cpp)
+target_include_directories(larecomp_audio_tap_test PRIVATE src/mc_engine/music)
+find_package(Threads)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_capture_audio_session_test PRIVATE Threads::Threads)
+    target_link_libraries(larecomp_audio_tap_test PRIVATE Threads::Threads)
+endif()
 # The state log's pure half (src/mc_engine/cinematic/state_log_core.h: the row, the hashes, the file's place, the bounded queue, the writer)
 # has a check that needs no game: cmake --build <build dir> --target larecomp_state_log_test, then run <build dir>/larecomp_state_log_test.
 add_executable(larecomp_state_log_test EXCLUDE_FROM_ALL

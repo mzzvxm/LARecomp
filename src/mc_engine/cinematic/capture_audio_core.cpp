@@ -5,17 +5,13 @@
 #include "capture_audio_core.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 
 namespace mc::cinematic::capture_audio {
-
-// ---------------------------------------------------------------------------------------------------------------- the driver's install
-
-DriverPlan PlanDriver(bool take_records_sound, bool driver_installed) {
-    if (!take_records_sound) return DriverPlan::kNone;
-    return driver_installed ? DriverPlan::kArm : DriverPlan::kInstallThenArm;
-}
 
 // ---------------------------------------------------------------------------------------------------------------- the timeline
 
@@ -194,6 +190,216 @@ bool WavFile::Close() {
     file_ = nullptr;
     if (!ok) failed_ = true;
     return ok;
+}
+
+// ---------------------------------------------------------------------------------------------------------------- the take's session
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+constexpr uint32_t kTimeoutsToDead = 3;
+constexpr uint32_t kWaitSliceMs = 5;  // the longest single wait for the mixer: the loop looks at the queue again after it
+
+}  // namespace
+
+bool Session::Begin(MixerPort& port, const Config& config) {
+    if (armed_) {
+        Say(1, "a take's audio was still running: closed as it was");
+        wav_.Close();
+        if (port_) port_->Disarm();
+        armed_ = false;
+    }
+    if (!(config.fps > 0.0)) return false;
+    cfg_ = config;
+    cfg_.channels = cfg_.channels >= 6 ? 6 : 2;
+    port_ = &port;
+    const int64_t thrown = port.Arm(cfg_.channels);
+    if (thrown < 0) return false;  // the port said why
+    {
+        std::error_code ec;
+        const std::filesystem::path p(cfg_.wav_path);
+        if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+    }
+    if (!wav_.Open(cfg_.wav_path, cfg_.channels, kRate)) {
+        Say(2, "cannot open " + cfg_.wav_path + ": the take has no sound");
+        port.Disarm();
+        return false;
+    }
+    book_.Begin(cfg_.fps);
+    pcm_.clear();
+    scratch_.assign(static_cast<size_t>(kMixerFrame) * cfg_.channels, 0.0f);
+    frames_ = 0;
+    last_row_frames_ = 0;
+    preroll_ = static_cast<uint32_t>(thrown);
+    late_dropped_ = 0;
+    steps_ = 0;
+    timeouts_ = 0;
+    timeouts_in_a_row_ = 0;
+    wait_sum_ms_ = 0;
+    wait_max_ms_ = 0;
+    dead_ = false;
+    wav_failed_logged_ = false;
+    step_ = StepRow{};
+    armed_ = true;
+    return true;
+}
+
+// The tickets the book wants for the frames so far, as many as the mixer may have out at once allows (what is out: handed and not yet on the
+// timeline, and the late frames still to come and be thrown away). Returns how many went.
+uint64_t Session::HandSome() {
+    const uint64_t cap = std::max<uint64_t>(port_->Cap(), 1);
+    const uint64_t busy = book_.Outstanding() + book_.Skipping();
+    if (busy >= cap) return 0;
+    const uint64_t give = std::min(book_.Wanted(frames_), cap - busy);
+    if (give > 0) {
+        port_->Hand(give);
+        book_.Released(give);
+    }
+    return give;
+}
+
+// The queue holds `queued` frames: the late ones of an earlier step are pulled and thrown away, this take's go onto the timeline.
+void Session::PullQueued(uint64_t queued) {
+    const Book::Pop p = book_.Consume(queued);
+    for (uint64_t i = 0; i < p.discard + p.use; ++i) {
+        const bool used = i >= p.discard;
+        const bool pulled = !dead_ && port_->Pull(scratch_.data(), cfg_.channels);
+        if (!pulled) {
+            if (!dead_) {
+                dead_ = true;
+                Say(2, "the mixer's output could not be read (the audio device is gone?): the rest of the take's WAV is silence");
+            }
+            std::fill(scratch_.begin(), scratch_.end(), 0.0f);
+        }
+        if (used) {
+            pcm_.insert(pcm_.end(), scratch_.begin(), scratch_.end());
+            ++step_.used;
+        } else {
+            ++late_dropped_;
+            ++step_.discarded;
+        }
+    }
+}
+
+void Session::StepBegin(uint64_t video_frames) {
+    if (!armed_) return;
+    frames_ = std::max(frames_, video_frames);
+    step_ = StepRow{};
+    if (dead_) return;
+    step_.released += HandSome();
+}
+
+void Session::StepEnd() {
+    if (!armed_) return;
+    const auto t0 = Clock::now();
+    bool timed_out = false;
+    if (!dead_) {
+        const auto deadline = t0 + std::chrono::milliseconds(std::max(cfg_.timeout_ms, 1));
+        for (;;) {
+            const uint64_t queued = port_->Queued();
+            const uint64_t before = step_.used + step_.discarded;
+            if (queued > 0) PullQueued(queued);
+            if (dead_) break;
+            const uint64_t more = HandSome();  // the rest of the video frame's mixer frames, when the mixer's room was smaller than they
+            step_.released += more;
+            if (book_.Outstanding() == 0 && book_.Wanted(frames_) == 0) break;
+            const auto now = Clock::now();
+            if (now >= deadline) {
+                timed_out = true;
+                break;
+            }
+            if (more == 0 && step_.used + step_.discarded == before) {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+                port_->Wait(static_cast<uint32_t>(std::clamp<long long>(left, 1, kWaitSliceMs)));
+            }
+        }
+        if (timed_out) {
+            const uint64_t silent = book_.GiveUp();  // what is outstanding goes onto the timeline as silence; as many frames that come later are thrown away
+            step_.silent += silent;
+            pcm_.insert(pcm_.end(), static_cast<size_t>(silent) * kMixerFrame * cfg_.channels, 0.0f);
+            ++timeouts_;
+            ++timeouts_in_a_row_;
+            char line[256];
+            std::snprintf(line, sizeof line, "video frame %llu: the mixer gave no frame in %d ms; silence in its place (%u step(s) in a row)",
+                          static_cast<unsigned long long>(frames_ > 0 ? frames_ - 1 : 0), cfg_.timeout_ms, timeouts_in_a_row_);
+            Say(1, line);
+            if (timeouts_in_a_row_ >= kTimeoutsToDead && !dead_) {
+                dead_ = true;
+                std::snprintf(line, sizeof line, "%u steps in a row without the mixer: the rest of the take's WAV is silence", timeouts_in_a_row_);
+                Say(2, line);
+            }
+        } else if (!dead_) {
+            timeouts_in_a_row_ = 0;
+        }
+    }
+    const double wait_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+    wait_sum_ms_ += wait_ms;
+    wait_max_ms_ = std::max(wait_max_ms_, wait_ms);
+    ++steps_;
+
+    // the file: exactly what the video frames so far own
+    const uint64_t shortfall = book_.Shortfall(frames_);
+    if (shortfall > 0) {
+        book_.Pad(shortfall);
+        pcm_.insert(pcm_.end(), static_cast<size_t>(shortfall) * cfg_.channels, 0.0f);
+    }
+    const uint64_t w = std::min<uint64_t>(book_.Writable(frames_), pcm_.size() / cfg_.channels);
+    const size_t floats = static_cast<size_t>(w) * cfg_.channels;
+    float peak = 0.0f;
+    for (size_t i = 0; i < floats; ++i) peak = std::max(peak, std::fabs(pcm_[i]));
+    if (w > 0) {
+        if (!wav_.Append(pcm_.data(), w) && !wav_failed_logged_) {
+            wav_failed_logged_ = true;
+            Say(2, "writing " + cfg_.wav_path + " failed (disk full, or the WAV is at its size limit): the rest of the take's sound is lost");
+        }
+        pcm_.erase(pcm_.begin(), pcm_.begin() + static_cast<std::ptrdiff_t>(floats));
+    }
+    book_.Wrote(w);
+    if (frames_ > last_row_frames_) {  // one row for each video frame (a gate that saw no new frame has nothing to say)
+        step_.frame = frames_ - 1;
+        step_.samples = w;
+        step_.cum = book_.Written();
+        step_.expected = book_.Target(frames_);
+        step_.drift = static_cast<int64_t>(step_.cum) - static_cast<int64_t>(step_.expected);
+        step_.residual = book_.Available();
+        step_.wait_ms = wait_ms;
+        step_.peak = peak;
+        last_row_frames_ = frames_;
+        if (cfg_.row) cfg_.row(step_);
+    }
+}
+
+Summary Session::Finish(uint64_t video_frames) {
+    Summary s;
+    if (!armed_) return s;
+    if (video_frames > frames_) {  // frames the gate did not cover
+        StepBegin(video_frames);
+        StepEnd();
+    }
+    s.ran = true;
+    s.wav = cfg_.wav_path;
+    s.channels = cfg_.channels;
+    s.fps = cfg_.fps;
+    s.video_frames = video_frames;
+    s.samples = book_.Written();
+    s.expected = SamplesThrough(video_frames, cfg_.fps);
+    s.mixer_frames = book_.TotalReleased();
+    s.timeouts = timeouts_;
+    s.silent_frames = book_.Silent();
+    s.late_dropped = late_dropped_;
+    s.padded_samples = book_.Padded();
+    s.preroll_frames = preroll_;
+    s.wait_ms_mean = steps_ ? wait_sum_ms_ / static_cast<double>(steps_) : 0.0;
+    s.wait_ms_max = wait_max_ms_;
+    s.dead = dead_;
+    s.wav_failed = wav_.Failed();
+    wav_.Close();
+    s.wav_failed = s.wav_failed || wav_.Failed();
+    s.ok = s.timeouts == 0 && s.samples == s.expected && !s.wav_failed && s.padded_samples == 0 && !s.dead;
+    armed_ = false;
+    port_->Disarm();
+    return s;
 }
 
 }  // namespace mc::cinematic::capture_audio
