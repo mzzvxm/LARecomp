@@ -247,7 +247,10 @@ add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
 add_executable(larecomp_device_fault_test EXCLUDE_FROM_ALL device_fault_format_test.cpp)
 # The background build's hand-over rules (background_build.h) have one too: no renderer, no GPU.
 #   cmake --build <dir> --target larecomp_background_build_test, then run src/gpu/larecomp_background_build_test.
-add_executable(larecomp_background_build_test EXCLUDE_FROM_ALL background_build_test.cpp background_build.cpp)
+add_executable(larecomp_background_build_test EXCLUDE_FROM_ALL background_build_test.cpp background_build.cpp
+    ${CMAKE_SOURCE_DIR}/src/os/thread_priority.cpp)
+# background_build.cpp lowers its worker through the priority intents (os/thread_priority.h).
+target_include_directories(larecomp_background_build_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # std::thread: glibc before 2.34 needs libpthread named at the link.
 find_package(Threads REQUIRED)
 target_link_libraries(larecomp_background_build_test PRIVATE Threads::Threads)
