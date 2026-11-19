@@ -23,7 +23,7 @@ LARecomp is a static recompilation of Midnight Club: Los Angeles (Complete Editi
 |---|---|
 | [Mod Loader](Mod-Loader) | Mod folder rules, load order, reload behavior, characters, raw files, worked example, failures. |
 | [Texture Modding](Texture-Modding) | Replace and dump textures; hash naming; formats. |
-| [Car Mods](Car-Mods) | Replace or add cars: `vehicles/<car>/`, `parts.txt`, slots, donors. |
+| [Car Mods](Car-Mods) | Replace or add cars, or add parts to a shipped car: `vehicles/<car>/`, `parts.txt`, slots, donors, garage lists. |
 | [Wheel Mods](Wheel-Mods) | Replace or add wheels: `rims/`, `.donor` sidecars. |
 | [Map Mods](Map-Mods) | `warps.txt`, `glows.bin`, `lights.bin`, `breakables.bin`. |
 | [Custom Music](Custom-Music) | Manifest format, limits, radio integration. |

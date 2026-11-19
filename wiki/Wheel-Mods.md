@@ -29,6 +29,24 @@ rims/whl_stk_bmw_740i_98.donor      contains: whl_am_bbs_ch
 
 The sidecar has the same base name as the mesh and extension `.donor`. Leading and trailing whitespace is trimmed; only the first line is read. The wheel lands under the new name, built from the donor's resources. A donor wheel's paint is written under the new name too.
 
+## How a car gets its wheels
+
+Wheels are not part of a car's model. A car's wheels are a separate resource found through its car config (`<car>.xcc`), which holds one byte (offset `0x844`) naming a rim:
+
+- The byte is an index into the rim catalog: the `rims` block of `tune/vehicle/wheel_models.list`, then those of `wheel_models0001.list` to `wheel_models0007.list`, in that order.- A byte past the end of the catalog (new cars use `0xFF`) means "the car's own wheel". The game then builds a name from the car's and looks that wheel up: drop the first three characters (`vp_`) and prefix `whl_stk_`, so `vp_bmw_740i_98` asks for `whl_stk_bmw_740i_98`. A car name with `vpd_` drops four and prefixes `whld_stk_`; a name containing `DUB` gets `whl_am_tis_tis07`.
+- That lookup only happens once the car is driven. The loader resolves it earlier: a car config shipped as a raw file (`files/...xcc`) that names its rim is written with the catalog index already filled in, so the garage shows the wheels at once. Log: `rim byte ... resolved to catalog index N`. Without it a bought car stands in the garage with no wheels until it has been on the street.
+
+So a car mod has two ways to get its own wheels:
+
+1. Ship a wheel named for the car (`rims/whl_stk_<name>.glb`, with a `.donor` sidecar as above). The car's own-wheel lookup finds it.
+2. Ship a car config whose rim byte names a shipped wheel, or one you added to the catalog. A raw file `files/tune/vehicle/wheel_models000N.list` shipped by a mod is read by the loader in place of the archive's when it counts the catalog.
+
+Wheel mods and car mods do not touch each other's files. A wheel mod changes what a named wheel looks like for every car that uses it; a car mod only picks which wheel its car asks for.
+
+### TIRE OFFSET
+
+`garage_tire_offset` (default on) adds a TIRE OFFSET row to the garage's wheels > dimensions screen. It edits the per-car `TireOffset0/1` bytes that the retail game parses and never uses, and moves the wheel sideways: `tire_offset_step` metres per notch, 17 notches from -8 to +8 (about 10 cm each way at the default 0.012). `tire_offset_targets` is a bitmask of the five per-wheel matrix blocks it moves (31 = all). It adjusts how far a wheel sits out of the body on one car; it does not change the wheel mesh or its fit on the axle, which is what `model_mods_rim_*` does.
+
 ## Orientation, size and texture
 
 Applied automatically, with restart-only cvars to adjust. Full rows in [Settings Reference](Settings-Reference#mclamods-45).

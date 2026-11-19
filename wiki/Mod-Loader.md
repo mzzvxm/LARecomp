@@ -36,7 +36,7 @@ Each direct subfolder is one mod. The folder name is the mod name used in logs. 
 | `<name>.obj`, `<name>.glb`, `<name>.gltf` | Character replacement. The file name (without extension) is the asset it replaces. | below |
 | `<name>.donor` | Optional sidecar naming the shipped asset a new asset is built from. | [Wheel Mods](Wheel-Mods) |
 | `rims/<wheel>.glb` | Wheel replacement or new wheel. | [Wheel Mods](Wheel-Mods) |
-| `vehicles/<car>/` | Car replacement or new car, with a `parts.txt`. | [Car Mods](Car-Mods) |
+| `vehicles/<car>/` | Car replacement, new car, or parts added to a shipped car, with a `parts.txt`. | [Car Mods](Car-Mods) |
 | `textures/` | Loose images, one per material name, next to a model. | below |
 | `files/<path>` | Files copied into the archive under the same relative path. | below |
 | `textures_replace/` or `files/textures_replace/` | Texture replacements for the Plume renderer. | [Texture Modding](Texture-Modding) |
