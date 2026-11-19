@@ -39,10 +39,32 @@ REXCVAR_DEFINE_INT32(
     .range(0, 3600)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_rt_paint_gamma, 2.0, "MCLA/GPU",
+    "Debug: the game's paint colours (what the player picks: an orange is 0.90, 0.49, 0.20) are raised to this power to be the colour the paint's light makes of them, for the "
+    "colour another car shows in the ray traced reflection where the camera does not see the car (its paint, from the game's customisation record). 2: about what the "
+    "game's own paint does (a car of colour 0.22 is black). 1: the colours as they are (paler, more grey). Live.")
+    .debug_only()
+    .range(1.0, 3.5)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(
+    mcla_gpu_car_rt_paint_lit, 0.8, "MCLA/GPU",
+    "Debug: how bright a paint of colour 1 is lit in the open, in the paint's units (a shader's output), for the colour another car shows in the ray traced reflection where "
+    "the camera does not see the car; the reflection's own shade (0.4) is applied to it for a part in shade. 0.8: the estimate from the pictures. Larger makes the "
+    "neighbouring cars brighter in the reflection. Live.")
+    .debug_only()
+    .range(0.02, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 namespace mcla::gpu::car_model_walk {
 
 namespace nfx = mcla::native_gfx;
 namespace cw = mcla::gpu::car_model_walk;
+
+car_model_rt::PaintTuning CurrentPaintTuning() {
+  return car_model_rt::ClampedPaintTuning(double(REXCVAR_GET(mcla_gpu_car_rt_paint_gamma)), double(REXCVAR_GET(mcla_gpu_car_rt_paint_lit)));
+}
 
 namespace {
 
@@ -636,7 +658,7 @@ void Walker::RunProduction() {
       continue;
     }
     car.walk = cached.walk;
-    car.paint = crt::PaintColourOf(walk.paint[0]);
+    car.paint = crt::PaintColourOf(walk.paint[0], CurrentPaintTuning());
 
     // this frame's placements (a car the camera sees only when the calibration wants them: they are not placed)
     const bool want_parts = !car.visible && !car.is_player;

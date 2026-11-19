@@ -101,6 +101,10 @@ struct ProofReport {
   uint32_t drawn_cars = 0;        // ... that the frame draws
 };
 
+// How the game's paint colours are made into the colour another car shows in the reflection (the settings mcla_gpu_car_rt_paint_gamma and mcla_gpu_car_rt_paint_lit, car_model_rt_rules.h
+// PaintTuning): read now, so a change applies to the next frame.
+car_model_rt::PaintTuning CurrentPaintTuning();
+
 class Walker {
  public:
   Walker();

@@ -571,7 +571,8 @@ void TestPicks() {
   Check(crt::PickGeometries(car, 200, 0) == std::vector<uint32_t>({2, 0}), "the class's minimum (Mid: 45) drops the small ones");
 
   cw::Paint paint;
-  Check(!crt::PaintColourOf(paint).known, "a paint that was not read is not known");
+  const crt::PaintTuning identity{1.0f, 1.0f};  // the record's colour as it is
+  Check(!crt::PaintColourOf(paint, identity).known, "a paint that was not read is not known");
   paint.read = true;
   paint.a[0] = 0.063f;
   paint.a[1] = 0.349f;
@@ -581,17 +582,68 @@ void TestPicks() {
   paint.b[1] = 0.541f;
   paint.b[2] = 0.0f;
   paint.mode = 0;
-  crt::PaintColour c = crt::PaintColourOf(paint);
+  crt::PaintColour c = crt::PaintColourOf(paint, identity);
   Check(c.known && Near(c.rgb[0], 0.063, 1e-6) && Near(c.rgb[1], 0.349, 1e-6) && Near(c.rgb[2], 0.071, 1e-6), "region 0's colour A (the log's green car), the NaN alpha ignored");
+  Check(Near(c.raw[1], 0.349, 1e-6) && Near(c.a[1], 0.349, 1e-6) && Near(c.b[0], 0.514, 1e-6), "the record's own colours are kept for the log");
   paint.mode = 2;
-  c = crt::PaintColourOf(paint);
-  Check(c.known && Near(c.rgb[0], 0.2885, 1e-5) && Near(c.rgb[1], 0.445, 1e-5), "a gradient: the mean of A and B");
+  c = crt::PaintColourOf(paint, identity);
+  Check(c.known && Near(c.rgb[0], 0.2885, 1e-5) && Near(c.rgb[1], 0.445, 1e-5) && c.mode == 2, "a gradient: the mean of A and B");
   paint.a[1] = std::numeric_limits<float>::quiet_NaN();
-  Check(!crt::PaintColourOf(paint).known, "a colour that is not a number is not known");
+  Check(!crt::PaintColourOf(paint, identity).known, "a colour that is not a number is not known");
   paint.a[1] = 3.0f;
   paint.mode = 0;
-  Check(Near(crt::PaintColourOf(paint).rgb[1], 1.0), "a colour is clamped to 0..1");
+  Check(Near(crt::PaintColourOf(paint, identity).rgb[1], 1.0), "a colour is clamped to 0..1");
   Check(crt::Describe(crt::PaintColour{}) == "not known" && crt::Describe(c).find("0.") != std::string::npos, "the words");
+
+  // THE ROW (RT-MODEL-CARS-4): the record's colour made into its lit colour, gamma then the light. The defaults are gamma 2 and 0.8.
+  {
+    const crt::PaintTuning defaults;
+    Check(defaults.gamma == crt::kPaintGamma && defaults.lit == crt::kPaintLit && crt::kPaintGamma == 2.0f && crt::kPaintLit == 0.8f, "the defaults");
+    cw::Paint orange;
+    orange.read = true;
+    orange.a[0] = 0.898f;
+    orange.a[1] = 0.490f;
+    orange.a[2] = 0.196f;  // the Camaro of the first check: orange in every picture
+    const crt::PaintColour row = crt::PaintColourOf(orange, defaults);
+    Check(row.known && Near(row.rgb[0], 0.898 * 0.898 * 0.8, 1e-5) && Near(row.rgb[1], 0.490 * 0.490 * 0.8, 1e-5) && Near(row.rgb[2], 0.196 * 0.196 * 0.8, 1e-5),
+          "the row is the colour squared times the light");
+    Check(row.rgb[0] > 2.5f * row.rgb[1] && row.rgb[1] > 4.0f * row.rgb[2], "an orange stays orange, more saturated than the record's colour (R:G 3.4 against 1.8)");
+    cw::Paint black;
+    black.read = true;
+    black.a[0] = black.a[1] = black.a[2] = 0.22f;  // the player's R34: black in every picture
+    Check(crt::PaintColourOf(black, defaults).rgb[0] < 0.05f, "a colour of 0.22 is near black");
+    cw::Paint white;
+    white.read = true;
+    white.a[0] = white.a[1] = white.a[2] = 0.831f;
+    const crt::PaintColour w = crt::PaintColourOf(white, defaults);
+    Check(Near(w.rgb[0], w.rgb[1], 1e-6) && Near(w.rgb[1], w.rgb[2], 1e-6) && w.rgb[0] > 0.4f && w.rgb[0] < 0.7f, "a white stays neutral and is the brightest paint");
+    Check(crt::PaintColourOf(orange, identity).rgb[0] == crt::PaintColourOf(orange, crt::ClampedPaintTuning(1.0, 1.0)).rgb[0], "the tuning's identity (gamma 1, light 1) is the record's colour");
+    // the tuning's clamps and a bad number
+    const crt::PaintTuning wild = crt::ClampedPaintTuning(100.0, -3.0);
+    Check(wild.gamma == crt::kPaintGammaMax && wild.lit == crt::kPaintLitMin, "the tuning is clamped");
+    const crt::PaintTuning nan = crt::ClampedPaintTuning(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity());
+    Check(nan.gamma == crt::kPaintGamma && nan.lit == crt::kPaintLit, "a number that is not one is the default");
+    Check(Near(crt::PaintRadiance(2.0f, defaults), 0.8, 1e-6) && Near(crt::PaintRadiance(-1.0f, defaults), 0.0, 1e-6), "the colour is clamped to 0..1 before the power");
+    // the units: the row the shader reads times the history's units over the paint's, then the pass's shade: what a hidden hit on a white car writes into the image, and what
+    // the paint reads of it. At the game's bias of 4 that is a white car in shade shown as about 0.55 x 0.4 of the paint's units: a mid grey, not the black of the second check.
+    const double image = double(w.rgb[0]) * 16.0 * 0.4;
+    const double paint_reads = image / 16.0;
+    Check(paint_reads > 0.05 && paint_reads < 0.3, "a white car's hidden hit reaches the paint as a mid grey");
+    Check(paint_reads / (0.831 * 0.4 / 16.0) > 5.0, "... against 1/16 of the record's colour times the shade before: several times brighter");
+    // the log's words carry the record and the row
+    const std::string text = crt::Describe(row);
+    Check(text.find("record A (0.898, 0.490, 0.196") != std::string::npos && text.find("type 0 mode 0") != std::string::npos, "the words say the record's colours and the row");
+    cw::Paint typed = orange;
+    typed.type = 3;
+    typed.mode = 4;
+    typed.use_default = 1;
+    typed.b[0] = 0.576f;
+    typed.b[1] = 0.565f;
+    typed.b[2] = 0.545f;
+    const crt::PaintColour t = crt::PaintColourOf(typed, defaults);
+    Check(t.type == 3 && t.mode == 4 && t.use_default == 1, "the type, the mode and the default flag are kept");
+    Check(Near(t.raw[0], 0.5f * (0.898f + 0.576f), 1e-6), "a gradient mode takes the mean of A and B before the power");
+  }
 }
 
 // ---------------------------------------------------------------------------
