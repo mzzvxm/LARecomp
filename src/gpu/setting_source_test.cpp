@@ -31,9 +31,10 @@ void Check(bool ok, const std::string& what) {
 namespace ss = setting_source;
 
 // The samples write the two macros as @DEF_ and @ROW(: tools/check_settings_exposure.py reads every source for definitions and would take the
-// samples for settings. Expand puts the names in.
+// samples for settings. The lifecycle enum is written @LC for the same kind of reason: the 0.11 conversion tools (sdk/merge-tools/wpl) rewrite
+// every rex::cvar:: name they find, a sample's included, at each main sync. Expand puts the names in.
 std::string Expand(std::string text) {
-  const std::pair<const char*, std::string> names[] = {{"@DEF_", std::string("REXCVAR_") + "DEFINE_"}, {"@ROW(", std::string("REX_") + "SETTING("}};
+  const std::pair<const char*, std::string> names[] = {{"@DEF_", std::string("REXCVAR_") + "DEFINE_"}, {"@ROW(", std::string("REX_") + "SETTING("}, {"@LC", std::string("rex::cv") + "ar::Lifecycle"}};
   for (const auto& [token, name] : names) {
     for (size_t at = text.find(token); at != std::string::npos; at = text.find(token, at + name.size())) {
       text.replace(at, std::strlen(token), name);
@@ -48,24 +49,24 @@ const std::string kOldCpp = Expand(R"CPP(
     mcla_gpu_ao_car_reach_extra, 0.9, "MCLA/GPU",
     "Not the one asked for: starts with the same words.")
     .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(@LC::kHotReload);
 @DEF_DOUBLE(
     mcla_gpu_ao_car_reach, 0.4, "MCLA/GPU",
     "Diagnostic: how far what a car blocks reaches (0.4 of the default 3 m is 1.2 m: the dark line, not a halo); the car's own "
     "body is darkened with the whole radius, as before. 1 (or 0): a wall. Live.")
     .debug_only()
     .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(@LC::kHotReload);
 @DEF_BOOL(
     mcla_gpu_ssgi_half, true, "MCLA/GPU",
     "Diagnostic: half size above 1080 lines. Live; the first frame after the change makes the images again.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .lifecycle(@LC::kRequiresRestart);
 @DEF_DOUBLE(
     mcla_gpu_ao_paint, 0.3125, "MCLA/GPU",
     "Rounded to sixteenths, 1/16 to 1. Live.")
     .debug_only()
     .range(0.0625, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    .lifecycle(@LC::kHotReload);
 )CPP");
 
 const std::string kRows = Expand(R"ROWS(
