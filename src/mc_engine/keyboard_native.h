@@ -65,6 +65,8 @@
 
 #include <rex/ppc.h>
 
+#include "mc_engine/input/input_state.h"
+
 // Before `lis r30` at 0x82614CFC: the end of the keystroke poll, reached on every
 // path out of sub_82614C70, ahead of the memcpy that publishes the key table.
 void Hook_KeyboardFeed();
@@ -97,6 +99,12 @@ namespace larecomp::keyboard {
 // PhoneScreenUp: the Sidekick phone is the current movie (it is the road's, not a menu: the driving keys work with it up).
 bool MenuScreenUp();
 bool PhoneScreenUp();
+
+// What the settings say about a key that just went down, for the active-device rules (input_state.h KeyRole, KBM-DESIGN.md 2.2): ExtraButton for a host key of an
+// extra_button_* setting (the pad's paddles: the key is a pad button, the keyboard feed does not pass it on as a key), Bound for a key that a kb_ui_* / kb_drive_* binding
+// names (the only way an F1-F12 key counts as keyboard activity), else Plain. The answer follows the settings: the lists are read again when a binding changed (the same
+// generation number the mappers use), and not otherwise. Any thread; the window's key-down handler asks.
+larecomp::input::KeyRole RoleOfKey(uint16_t vk);
 
 // Keyboard steering with a ramp (kb_steer_ramp, kb_steer_rise, kb_steer_return; mouse_look_core.h StepSteer): the input poll works out the ramped value of the steering
 // keys (left and right of kb_drive_steer_*, any key of a list counts); this object, on the stack of the XamInputGetState wrapper (wheel/wheel_fake.cpp), puts it into the left
