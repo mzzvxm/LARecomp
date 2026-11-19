@@ -171,7 +171,9 @@ bool GlowSoftSelected() {
 // GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), the car
 // paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h), the chrome's occlusion by the car's own parts
 // (kCarChromeVariant, shaderpack/variants/car_chrome.h: wherever the paint's is on, and mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass
-// mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); each is read
+// mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); the UI sharpening variant
+// (kUiSharpVariant, mcla_ui_sharp) is not chosen here: it needs the draw (the UI phase, its target's scale and its textures' filters), so the
+// Scene sets it on the key after this (Scene::UiSharpDraw); each is read
 // at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw and the picture stays
 // the game's (the environment map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one
 // of them at most.

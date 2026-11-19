@@ -97,6 +97,8 @@ constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
+// The UI sharpening (ui_sharp.h): 0 is the game's own, 1 on, 2 a harder edge. A Dbl row shows 0 as OFF.
+constexpr double kUiSharpVals[]           = {0.0, 0.5, 1.0, 1.5, 2.0};
 // The share of the game's own UI the picture shows (the trailer toolkit's HUD fade); 1 is the game's frame.
 constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 #endif
@@ -157,6 +159,11 @@ const ItemDef kDebugFixesItems[] = {
     // The auto-exposure measures the same screen area above a render scale of 1x as at 1x (its sample pass's
     // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
     NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
+    // The HUD and menu bitmaps, made for the console's 720p picture, read with a sharper filter where a 1080p or 4K window magnifies
+    // them (Catmull-Rom colour, a steeper alpha edge): a prototype, off by default (ui_sharp.h). Read at each UI draw, so the row is
+    // live; the first time it shows, the shaders are built. Needs the shader pack's variant file.
+    NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp", "UI SHARPEN: ",
+                   kUiSharpVals, Len(kUiSharpVals), "%g", "", "OFF")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
@@ -313,6 +320,10 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
     Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
+#if defined(LARECOMP_HAS_GPU)
+    // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
+    NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),
+#endif
 };
 
 // INFO: what differs from the defaults, and the way back.

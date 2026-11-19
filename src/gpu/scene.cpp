@@ -46,6 +46,7 @@
 #include "shafts.h"
 #include "sync_builds.h"
 #include "temporal.h"
+#include "texture_names.h"
 #include "textures.h"
 #include "thread_load.h"
 #include "upscaler_math.h"
@@ -1646,6 +1647,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
     d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
   }
+  // The UI sharpening (ui_sharp.h): a draw in the UI phase that magnifies the console's bitmaps through a bilinear fetch takes
+  // the variant of its pixel shader that reconstructs them sharper (and the census, when asked for, notes what it reads). In
+  // the key only: the memo keeps the game's, as for the layer split above.
+  if (ui_phase_ && d.key.color_count != 0 && d.ps && UiSharpDraw(view, s, d, scale)) {
+    d.key.ps_variant = ShaderStore::kUiSharpVariant;
+  }
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
@@ -1770,6 +1777,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // constants.
   if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
       !UploadCarSelfReflConstants(shared, d)) {
+    return Skip::kUpload;
+  }
+  // The UI sharpening variant reads 16 bytes after the shared constants.
+  if (d.key.ps_variant == ShaderStore::kUiSharpVariant && !UploadUiSharpConstants(shared, d)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
@@ -2348,6 +2359,102 @@ bool Scene::UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDr
   window_.upload_bytes += kCarSelfReflConstantsOffset + sizeof(block);
   d.shared_constants = span;
   return true;
+}
+
+bool Scene::UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kUiSharpConstantsOffset == sizeof(SharedConstants));
+  const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength());
+  if (last_ui_sharp_span_ && std::memcmp(&last_ui_sharp_shared_, &shared, sizeof(shared)) == 0 &&
+      last_ui_sharp_block_ == block) {
+    d.shared_constants = last_ui_sharp_span_;
+    return true;
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kUiSharpConstantsOffset + sizeof(ui_sharp::UiSharpConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kUiSharpConstantsOffset, &block, sizeof(block));
+  last_ui_sharp_shared_ = shared;
+  last_ui_sharp_block_ = block;
+  last_ui_sharp_span_ = span;
+  ++window_.shared_uploads;
+  window_.upload_bytes += kUiSharpConstantsOffset + sizeof(block);
+  d.shared_constants = span;
+  return true;
+}
+
+bool Scene::UiSharpDraw(const DrawView& view, const XenosState& state, const PreparedDraw& d, Scale scale) {
+  const double strength = ui_sharp::Strength();
+  const bool census = ui_sharp::CensusOn();
+  if (strength <= 0.0 && !census) {
+    return false;
+  }
+  // What the draw reads: every fetch the pixel shader makes. The variant is for textures the game filters linearly when
+  // they are magnified (a point filtered bitmap is meant to stay hard-edged).
+  ui_sharp::DrawFacts facts;
+  facts.ui_phase = ui_phase_;
+  facts.color_count = d.key.color_count;
+  const ColorTargetState& color = state.color[0];
+  facts.eight_bit_colour = color.bound && (color.format == xe::ColorRenderTargetFormat::k_8_8_8_8 ||
+                                           color.format == xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA);
+  facts.target_scale = float(scale.value());
+  facts.has_variant = d.ps && (d.ps->variants & (1u << ShaderStore::kUiSharpVariant)) != 0;
+  facts.ps_variant = d.key.ps_variant;
+  facts.all_linear = true;
+  const uint32_t fetch_mask = d.ps ? d.ps->texture_fetch_mask : 0u;
+  for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+    uint32_t dwords[6];
+    view.FetchGroup(uint32_t(std::countr_zero(mask)), dwords);
+    xe::xe_gpu_texture_fetch_t raw;
+    std::memcpy(&raw, dwords, sizeof(raw));
+    if (raw.type != xe::FetchConstantType::kTexture) {
+      continue;
+    }
+    facts.reads_textures = true;
+    if (raw.mag_filter != xe::TextureFilter::kLinear) {
+      facts.all_linear = false;
+    }
+  }
+  const bool take = ui_sharp::Wants(strength, facts);
+  if (census) {
+    for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+      uint32_t dwords[6];
+      view.FetchGroup(uint32_t(std::countr_zero(mask)), dwords);
+      const TextureFetch fetch = ReadTextureFetch(dwords);
+      if (!fetch.is_texture) {
+        continue;
+      }
+      xe::xe_gpu_texture_fetch_t raw;
+      std::memcpy(&raw, dwords, sizeof(raw));
+      ui_sharp::CensusSample sample;
+      sample.ps = view.record().ps_identity;
+      const std::string described = fetch.key.Describe();
+      sample.format = described.substr(0, described.find(' '));
+      sample.width = fetch.key.width;
+      sample.height = fetch.key.height;
+      sample.levels = fetch.key.levels();
+      sample.base_page = fetch.key.base_page ? fetch.key.base_page : fetch.key.mip_page;
+      texture_names::Name name;
+      if (texture_names::Lookup(sample.base_page, &name)) {
+        sample.name = name.texture;
+        sample.dictionary = name.dictionary;
+      }
+      sample.mag_filter = uint8_t(raw.mag_filter);
+      sample.min_filter = uint8_t(raw.min_filter);
+      sample.mip_filter = uint8_t(raw.mip_filter);
+      sample.clamp_x = uint8_t(raw.clamp_x);
+      sample.clamp_y = uint8_t(raw.clamp_y);
+      sample.aniso = uint8_t(raw.aniso_filter);
+      sample.lod_bias = int32_t(raw.lod_bias);
+      sample.target_scale = facts.target_scale;
+      sample.target_format = uint32_t(color.format);
+      sample.took_variant = take;
+      ui_sharp_census_.Note(sample);
+    }
+  }
+  return take;
 }
 
 uint32_t Scene::NoteEdramAccess(const PreparedDraw& d, const DrawRecord& r,
@@ -3317,6 +3424,14 @@ void Scene::OnPresent() {
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (ui_sharp::CensusOn()) {
+    ui_sharp_census_.OnFrame();
+    if (ui_sharp_census_.Due()) {
+      for (const std::string& line : ui_sharp_census_.TakeReport()) {
+        REXLOG_INFO("[gpu] {}", line);
+      }
+    }
+  }
   last_frame_had_scene_ = scene_marker_seen_;
   scene_marker_seen_ = false;
   ui_phase_ = false;

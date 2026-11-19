@@ -132,6 +132,9 @@ inline constexpr uint32_t kVariantLuminanceScale = 8;
 // The car's chrome (xChrome::PS_Chrome: the tailpipes, the rims, the trim) with its reflection and its sky ambient occluded by the car's
 // own parts: the same 112 bytes of constants as the paint's (id 7), centimetre scale rays (shaderpack/variants/car_chrome.h).
 inline constexpr uint32_t kVariantCarChrome = 9;
+// The UI's textured pixel shaders (xrage_im's, the Flash player's bitmaps, text and panels) with each 2D fetch reconstructed sharper where the
+// console's 720p bitmaps are magnified: Catmull-Rom colour and a steeper alpha edge (16 bytes of constants; shaderpack/variants/ui_sharp.h).
+inline constexpr uint32_t kVariantUiSharp = 10;
 inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

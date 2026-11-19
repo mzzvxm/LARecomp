@@ -77,6 +77,7 @@
 #include "shaders.h"
 #include "shadow_filter.h"
 #include "topology.h"
+#include "ui_sharp.h"
 #include "upload.h"
 #include "upscaler_masks.h"
 #include "viewport.h"
@@ -368,6 +369,13 @@ class Scene {
   // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
   // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
   bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the UI sharpening variant (ShaderStore::kUiSharpVariant) reads 16 bytes after the shared constants
+  // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
+  // kept for the next draw when neither changed.
+  bool UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d);
+  // The UI sharpening (ui_sharp.h): whether the draw in the UI phase takes the variant (the key's ps_variant is then
+  // already set by the caller), and the census of what the UI phase reads when mcla_ui_sharp_census is on.
+  bool UiSharpDraw(const DrawView& view, const XenosState& state, const PreparedDraw& d, Scale scale);
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
@@ -462,6 +470,10 @@ class Scene {
   SharedConstants last_shadow_shared_{};
   shadow_filter::ShadowFilterConstants last_shadow_block_{};
   UploadSpan last_shadow_span_;
+  ui_sharp::UiSharpConstants last_ui_sharp_block_{};
+  SharedConstants last_ui_sharp_shared_{};
+  UploadSpan last_ui_sharp_span_;
+  ui_sharp::Census ui_sharp_census_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).
   struct ListState {
