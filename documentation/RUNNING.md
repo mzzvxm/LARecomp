@@ -152,7 +152,7 @@ The GPU counters are accumulated per frame and reported per second. The sampling
 ## Regenerating code
 
 ```powershell
-E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
+E:\MCLA\rexglue-sdk-0.11.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
 cmake --build out/build/win-amd64-relwithdebinfo
 ```
 

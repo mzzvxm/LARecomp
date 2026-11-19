@@ -58,7 +58,7 @@ Full write-up in [`TECHNICAL_NOTES.md`](documentation/TECHNICAL_NOTES.md).
 
 ### You need
 
-- ReXGlue SDK 0.10.0
+- ReXGlue SDK 0.11.0 (LAR-RXSDK, branch LARecomp)
 - CMake 3.25 or newer
 - Clang, from LLVM or Visual Studio. MSVC will not build this.
 - Ninja
@@ -176,7 +176,7 @@ The hook function takes only the registers named in `registers`, by reference, w
 After changing hooks or hints:
 
 ```powershell
-E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
+E:\MCLA\rexglue-sdk-0.11.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
 cmake --build out/build/win-amd64-relwithdebinfo
 ```
 
