@@ -233,6 +233,24 @@ void TestStatementsErrors() {
     CheckError("at 1 car p1", "car <id>");
     CheckError("at 1 car player spawn x", "'player' is the player's own car");
     CheckError("at 1 car 9x spawn x", "car <id>");
+    {   // the player's place and a car near another (SCENE-PLAYER-POSE)
+        const ParseResult pose = ParseScene(
+            "scene c\n"
+            "at 0 car player at 832.19,16.9,-787.53 heading 62\n"
+            "at 0.5 car n1 spawn vp_lam_murcielago_06 near player -3.35,0.3,0\n"
+            "at 0.5 car n2 spawn vp_aud_r8_08 near player 3.35 0.3 0 heading 180\n"
+            "at 0.5 car a1 ambient va_gmc_yukon_05 near n1 0,0,-6\n"
+            "end 9\n");
+        Check(pose.Ok() && pose.WarningCount() == 0, "car player at and spawn / ambient near parse");
+        int n = 0;
+        for (const Event& e : pose.scene.events) n += e.track == Track::kCar ? 1 : 0;
+        Check(n == 4, "four car keys");
+    }
+    CheckError("at 1 car player at", "at needs x,y,z");
+    CheckError("at 1 car p1 at 1,2,3", "only the player's car is put with `at`");
+    CheckError("at 1 car p1 spawn vp_x near player", "near needs right,up,forward");
+    CheckError("at 1 car p1 spawn vp_x near player 1,2,3 at 1,2,3", "do not go together");
+    CheckError("at 1 car p1 spawn vp_x near p1 1,2,3", "cannot be near itself");
     // the car verbs of the cars package are read at parse time (car_verbs.h; cars_test.cpp has their own checks)
     CheckError("at 1 car p1 spawn vp_x", "needs a place");
     CheckError("at 1 car p1 spawn vp_x at 1,2", "bad position");
