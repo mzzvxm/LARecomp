@@ -135,6 +135,10 @@ add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_te
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ao_size_test, then run src/gpu/larecomp_ao_size_test <src/gpu dir> [--print].
 add_executable(larecomp_ao_size_test EXCLUDE_FROM_ALL ao_size_test.cpp)
+# The reader of a setting's definition that the source checks of the three occlusion tests above use (setting_source.h: the REX_SETTING row of
+# src/settings/generated, and the REXCVAR_DEFINE call of a .cpp before the conversion) has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_setting_source_test, then run src/gpu/larecomp_setting_source_test (exit 0 = passed).
+add_executable(larecomp_setting_source_test EXCLUDE_FROM_ALL setting_source_test.cpp)
 # The capture sync's counting and decision (sync_builds.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_sync_builds_test, then run src/gpu/larecomp_sync_builds_test (exit 0 = passed).
 add_executable(larecomp_sync_builds_test EXCLUDE_FROM_ALL sync_builds_test.cpp)

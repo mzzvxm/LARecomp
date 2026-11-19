@@ -18,6 +18,7 @@
 #include <string>
 
 #include "ao_paint.h"
+#include "setting_source.h"
 #include "ssgi_light.h"
 
 using namespace mcla::gpu;
@@ -265,16 +266,12 @@ void CheckSources(const std::string& gpu) {
   // The vehicle share: the same neighbourhood as the bounce light's, from the occlusion's own upsample or the pixel's own depth.
   Check(has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle)") && has(apply, "const float ao_vehicle = gi_vehicle;"),
         "ao_apply_ps.hlsl: the vehicle share is the occlusion's upsample's (the bounce light's variant: its own)");
-  // ao.cpp: the setting, its default, the clearing of the radius bits, the code into the flags, the debug-only cvar.
-  Check(has(cpp, Num("mcla_gpu_ao_paint, %.4f", double(kDefaultPower))), "ao.cpp: the cvar's default is kDefaultPower");
-  {
-    const size_t at = cpp.find("mcla_gpu_ao_paint, ");
-    const std::string block = at == std::string::npos ? std::string() : cpp.substr(at, 2500);
-    const size_t end = block.find("lifecycle(larecomp::cvar::Lifecycle::kHotReload)");
-    Check(end != std::string::npos && block.substr(0, end).find(".debug_only()") != std::string::npos &&
-              block.substr(0, end).find(".range(0.0625, 1.0)") != std::string::npos,
-          "ao.cpp: mcla_gpu_ao_paint is debug-only, live and from 1/16 to 1");
-  }
+  // The setting (a REX_SETTING row of src/settings/generated; the REXCVAR_DEFINE of ao.cpp before the conversion): its default and that it is
+  // debug-only, live and from 1/16 to 1. Then ao.cpp: the clearing of the radius bits, the code into the flags.
+  const setting_source::Info paint = setting_source::Find(gpu, cpp, "mcla_gpu_ao_paint");
+  Check(setting_source::DefaultIs(paint, double(kDefaultPower)), "mcla_gpu_ao_paint: the setting's default is kDefaultPower");
+  Check(paint.found && paint.debug_only && paint.live && paint.has_range && paint.range_lo == 0.0625 && paint.range_hi == 1.0,
+        "mcla_gpu_ao_paint is debug-only, live and from 1/16 to 1");
   Check(has(cpp, "ao_paint::CodeFor(larecomp::settings::mcla_gpu_ao_paint.Get())"), "ao.cpp: the setting's code is the header's");
   Check(has(cpp, "(push.slots2[2] & ~ao_paint::kCodeMask) | (look_.paint_code << ao_paint::kCodeShift)"), "ao.cpp: the apply's flags carry the code after the radius bits are cleared");
   Check(has(cpp, "static_assert((ao_paint::kCodeMask &"), "ao.cpp: the code's bits are asserted not to overlap the apply's flags");

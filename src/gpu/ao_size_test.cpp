@@ -20,6 +20,7 @@
 
 #include "ao_size.h"
 #include "ao_stable.h"
+#include "setting_source.h"
 #include "ssgi_stable.h"
 
 namespace as = mcla::gpu::ao_size;
@@ -426,18 +427,13 @@ void CheckSources(const std::string& gpu) {
     Check(false, "the files of src/gpu could not be read (" + gpu + ")");
     return;
   }
-  Check(Has(cpp, "mcla_gpu_ao_half_above_1080, true") && Has(cpp, "mcla_gpu_ssgi_half, true"), "ao.cpp: the cvars mcla_gpu_ao_half_above_1080 and mcla_gpu_ssgi_half exist and default to true");
+  // The two settings (REX_SETTING rows of src/settings/generated; the REXCVAR_DEFINEs of ao.cpp before the conversion)
+  const setting_source::Info half_above = setting_source::Find(gpu, cpp, "mcla_gpu_ao_half_above_1080");
+  const setting_source::Info ssgi_half = setting_source::Find(gpu, cpp, "mcla_gpu_ssgi_half");
+  Check(setting_source::DefaultIsTrue(half_above) && setting_source::DefaultIsTrue(ssgi_half), "the settings mcla_gpu_ao_half_above_1080 and mcla_gpu_ssgi_half exist and default to true");
   // both are debug-only and live
-  const auto cvar_block = [&](const char* name) {
-    const size_t at = cpp.find(name);
-    return at == std::string::npos ? std::string() : cpp.substr(at, 2500);
-  };
-  for (const char* name : {"mcla_gpu_ao_half_above_1080, true", "mcla_gpu_ssgi_half, true"}) {
-    const std::string block = cvar_block(name);
-    const size_t end = block.find("lifecycle(larecomp::cvar::Lifecycle::kHotReload)");
-    Check(end != std::string::npos && block.substr(0, end).find(".debug_only()") != std::string::npos,
-          std::string("ao.cpp: ") + name + " is debug-only and hot-reloadable");
-  }
+  Check(half_above.debug_only && half_above.live, "mcla_gpu_ao_half_above_1080 is debug-only and hot-reloadable");
+  Check(ssgi_half.debug_only && ssgi_half.live, "mcla_gpu_ssgi_half is debug-only and hot-reloadable");
   Check(Has(cpp, "larecomp::settings::mcla_gpu_ao_half_above_1080.Get()") && Has(cpp, "larecomp::settings::mcla_gpu_ssgi_half.Get()"), "ao.cpp: both cvars are read by the plan");
   Check(Has(cpp, "ao_size::Decide(in)") && Has(cpp, "ao_size::SizesOf(plan.render, choice)"), "ao.cpp: the plan takes the sizes from ao_size.h");
   Check(Has(cpp, "kApplyContactFullFlag = 1u << 21") && Has(apply, "g_push.slots2.z & (1u << 21)"), "the apply's contact-at-picture-size flag is bit 21 in ao.cpp and in the shader");
