@@ -87,7 +87,8 @@ rex::SettingBase* Find(std::string_view name);
 std::string ResolveName(std::string_view name);
 
 // The old rex::cvar shapes. "" for an unknown name. Two old names are computed, not looked up: input_backend ("sdl" or
-// "xinput", the first of hid.drivers) so the pad code that asks which backend the SDK runs keeps its test.
+// "xinput", the first of hid.drivers) so the pad code that asks which backend the SDK runs keeps its test, and
+// resolution_scale (gpu.resolution_scale_x; Set writes _x and _y), which the XENIA renderer's RENDER SCALE row uses.
 std::string Get(std::string_view name);
 // Runtime layer (a menu, the console). False for an unknown name or a value the setting refuses.
 bool Set(std::string_view name, std::string_view value);

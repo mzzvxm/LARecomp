@@ -189,11 +189,20 @@ std::string Get(std::string_view name) {
     const std::string first = drivers.substr(0, drivers.find(','));
     return first == "sdl3" ? "sdl" : first;
   }
+  if (name == "resolution_scale") {
+    // One 0.10 name, two settings: the XENIA renderer's RENDER SCALE row (upscaling_menu.cpp) still reads and writes it.
+    return Get("gpu.resolution_scale_x");
+  }
   rex::SettingBase* setting = Find(name);
   return setting ? setting->GetText() : std::string();
 }
 
 bool Set(std::string_view name, std::string_view value) {
+  if (name == "resolution_scale") {
+    rex::SettingBase* x = Find("gpu.resolution_scale_x");
+    rex::SettingBase* y = Find("gpu.resolution_scale_y");
+    return x && y && x->SetText(rex::SettingLayer::kRuntime, value) && y->SetText(rex::SettingLayer::kRuntime, value);
+  }
   rex::SettingBase* setting = Find(name);
   // Straight to the setting: the registry's by-name path would add an "old name used" notice per call.
   return setting && setting->SetText(rex::SettingLayer::kRuntime, value);
