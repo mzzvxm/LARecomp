@@ -241,6 +241,8 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/director/handlers_camera.cpp
     src/mc_engine/cinematic/director/handlers_cars.cpp
     src/mc_engine/cinematic/director/handlers_capture.cpp
+    # the Director panel's own needs: path.set (a route written again) and the camera's path in the snapshot
+    src/mc_engine/cinematic/director/handlers_panel.cpp
 
     src/mc_engine/gameplay/map_warp.cpp
     src/mc_engine/gameplay/real_weather.cpp
@@ -721,6 +723,33 @@ add_executable(larecomp_scene_edit_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/director/json.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_scene_edit_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director)
+
+# The Director panel's pure parts (src/mc_engine/ui/director_timeline.h: lanes, markers, the time axis, snapping, drags; director_gizmos.h: the projection into the window
+# and the lines of the routes and the camera's path; director_panel_core.h: every action of the panel as a command of the command layer, checked against the real SceneEdit)
+# have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_director_panel_test, then run <build dir>/larecomp_director_panel_test (exit 0 = passed).
+add_executable(larecomp_director_panel_test EXCLUDE_FROM_ALL
+    src/mc_engine/ui/director_panel_test.cpp
+    src/mc_engine/ui/director_timeline.cpp
+    src/mc_engine/ui/director_gizmos.cpp
+    src/mc_engine/ui/director_panel_core.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/command.cpp
+    src/mc_engine/cinematic/director/line_server.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/director_math.cpp
+    src/mc_engine/cinematic/director/png_writer.cpp
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
+target_include_directories(larecomp_director_panel_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director src/mc_engine/ui)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_director_panel_test PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(larecomp_director_panel_test PRIVATE ws2_32)
+endif()
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the
