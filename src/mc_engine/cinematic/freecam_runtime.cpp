@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -130,10 +131,19 @@ std::mutex g_pad_mutex;
 fc::Pad g_pad;
 
 // What the Director asks of the flight (freecam_runtime.h): a pose to start from, the game's own camera forced, a pad that is not the real one.
+// The pad the panel feeds comes from the UI thread once a drawn frame and the flight reads it once an update: the two rates differ and either may be the faster (a game at 240
+// updates a second under a UI at 60, or the other way round in a fixed step), so it holds for kExtPadHoldMs of WALL time after the last feed and not for a number of updates; the
+// mouse's look and the wheel are amounts to apply once, so they ADD UP between two updates and are taken (zeroed) by the one that reads them.
+constexpr int64_t kExtPadHoldMs = 150;
 std::atomic<uint8_t> g_override{static_cast<uint8_t>(CameraOverride::kNone)};
 std::atomic<uint32_t> g_hook_serial{0};  // hook runs so far
 fc::Pad g_ext_pad;                       // g_pad_mutex
-uint32_t g_ext_serial = 0;               // g_pad_mutex: the hook run the external pad was given in
+int64_t g_ext_fed_ms = 0;                // g_pad_mutex: steady-clock milliseconds of the last feed (0 = never)
+double g_ext_look_right = 0.0, g_ext_look_up = 0.0;  // g_pad_mutex: what the feeds added since the flight last took them
+int g_ext_speed_steps = 0;               // g_pad_mutex
+int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 bool g_pending_pose = false;             // g_pad_mutex
 fc::Pose g_pending;                      // g_pad_mutex
 FreecamEventHook g_event_hook = nullptr;  // the panel's chords (SetFreecamEventHook)
@@ -401,7 +411,14 @@ static bool FreecamApplyImpl(uint8_t* base, uint32_t sp, uint32_t mode, bool* ga
             std::lock_guard<std::mutex> lock(g_pad_mutex);
             if (frame - g_pad_frame.load(std::memory_order_relaxed) <= kPadStaleFrames) pad = g_pad;  // else at rest: no stick stuck on a stale read
             // A pad the Director's panel feeds (the mouse and the keys flying the camera) replaces the real one while it keeps coming
-            if (g_hook_serial.load(std::memory_order_relaxed) - g_ext_serial <= kPadStaleFrames) pad = g_ext_pad;
+            if (g_ext_fed_ms != 0 && SteadyMs() - g_ext_fed_ms <= kExtPadHoldMs) {
+                pad = g_ext_pad;
+                pad.look_right = g_ext_look_right;
+                pad.look_up = g_ext_look_up;
+                pad.speed_steps = g_ext_speed_steps;
+            }
+            g_ext_look_right = g_ext_look_up = 0.0;  // taken once (or dropped: a feed that is gone leaves no turn waiting)
+            g_ext_speed_steps = 0;
         }
         const fc::Events ev = g.flyer.Step(pad, dt, params);
         if (g_event_hook) g_event_hook(ev);
@@ -478,7 +495,10 @@ void SetFreecamEventHook(FreecamEventHook hook) {
 void FreecamFeedPad(const freecam::Pad& pad) {
     std::lock_guard<std::mutex> lock(g_pad_mutex);
     g_ext_pad = pad;
-    g_ext_serial = g_hook_serial.load(std::memory_order_relaxed);
+    g_ext_look_right += pad.look_right;
+    g_ext_look_up += pad.look_up;
+    g_ext_speed_steps = std::clamp(g_ext_speed_steps + pad.speed_steps, -40, 40);
+    g_ext_fed_ms = SteadyMs();
 }
 
 void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state) {

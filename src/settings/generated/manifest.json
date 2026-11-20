@@ -1201,6 +1201,30 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_gbuffer": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (G-buffer spike, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the \"\n    \"game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant \"\n    \"(for now the city's default material, by day and by night), into a second render target the main view's draws carry, cleared with the game's own clear of \"\n    \"the main colour. full: the same, the other planes are not written yet. auto: what the effects that are on ask for, which is nothing yet (so off). The \"\n    \"colour of the picture is the same with it on. Not in the 4x views behind the pause menu and the map. Live (the first frame with it on builds the \"\n    \"extra shaders and pipelines: a short stutter).\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"normals\", \"full\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gbuffer_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (G-buffer spike): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (only while mcla_gpu_gbuffer makes the plane): 1 the normal as a colour (0.5 + 0.5 n), 2 the albedo, 3 the smoothness, 4 the class \"\n    \"of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight. The planes the spike does not write \"\n    \"show as no data. The rest of the frame (particles, tone map, glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 6}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",
@@ -4820,6 +4844,17 @@
   "default": "\"\"",
   "category": "MCLA/Cinematic",
   "help": "\"TRAILER TOOLKIT DIRECTOR: the folder the Director's commands may write to, as relative paths without '..'. Empty: the game's working folder.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_director_panel": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT DIRECTOR PANEL (debug): the Director's panel over the picture: a timeline with the scene's keys to drag, the free camera's keys by framing, rigs with sliders, cars to spawn and place, routes to record or drop and edit, the take's render button, and the routes and the camera's path drawn in the world. Every action is a command of the Director and a line of the scene file. Live; the key Ctrl+F12 (ui.bind.mcla_director) flips it. Needs mcla_director (the panel offers to switch it on).\"",
   "traits": [
    "rex::kDebugOnly"
   ],

@@ -76,6 +76,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/ui/achievements.h"
 #include "mc_engine/ui/controller_toast.h"
 #include "mc_engine/ui/debug_overlay.h"
+#include "mc_engine/ui/director_panel.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "mc_engine/ui/settings.h"
 #include "mc_engine/display/ultrawide.h"
@@ -680,6 +681,7 @@ void LarecompApp::StartOverlays() {
   overlays.push_back(mcla::ui::DebugOverlayConfig());                                                  // F3: telemetry card
   overlays.push_back(mcla::ui::SettingsOverlayConfig());                                               // F4: settings
   overlays.push_back(mcla::ui::AchievementsOverlayConfig());                                           // F7: achievement list
+  overlays.push_back(mcla::ui::DirectorOverlayConfig());                                               // Ctrl+F12: the Director panel (the setting mcla_director_panel)
   overlays.push_back({"mod_browser", {rex::VirtualKey::kF5}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::ModBrowserKeyPressed>)});
   overlays.push_back({"server_browser", {rex::VirtualKey::kF6}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::ServerBrowserKeyPressed>)});
   overlays.push_back({"identity", {rex::VirtualKey::kF8}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&larecomp::IdentityKeyPressed>)});
@@ -700,6 +702,7 @@ void LarecompApp::StartOverlays() {
     LARECOMP_APP_ERROR("[ui] the overlays were not added, so no F-key menu works: {}", added.error().GetDescription());
   }
   mcla::ui::StartControllerToasts(ui);  // the connect / disconnect panels (always on the screen's list, drawing nothing between pads)
+  mcla::ui::StartDirectorPanel(ui);     // the Director panel's dialog (always on the list; draws nothing and asks for no repaint while mcla_director_panel is off)
   mcla::display::Initialize(ui);        // the DISPLAY MODE rows: follows the fullscreen / resolution settings (0.10 did this in SetupPresentation)
   mcla::display::SetWindowIcon(ui);     // Linux: the app icon on the SDL window (Windows takes it from the exe's resources, larecomp.rc)
 }

@@ -115,6 +115,11 @@ inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
 // the block), uploaded after SharedConstants by Scene::FillVariantBlock. In a composed shader (with the G-buffer's stage) its block is at the place
 // shaderpack/variant_chain.h OffsetOf gives for the draw's feature set; this constant is for a draw with no other feature only.
 inline constexpr uint64_t kHeadlightConstantsOffset = sizeof(SharedConstants);
+// The G-buffer variants (gbuffer_types.h GBufferConstants, 48 bytes: c38 to c40 of the block; shaders.h kGBufferVariant and its alpha test twin) read their
+// block at the same place when it is the draw's only feature, in the draws that take one, which upload SharedConstants followed by it (Scene::FillVariantBlock).
+// Where another variant's block is in the same shader (the headlight's 672 bytes) the chain's layout (shaderpack/variant_chain.h OffsetOf) puts it after that one, at
+// 1280; the variant's HLSL reads it through names the transform defines at that offset (gbuffer_types.h).
+inline constexpr uint64_t kGBufferConstantsOffset = sizeof(SharedConstants);
 
 class ConstantBanks {
  public:

@@ -146,6 +146,12 @@ class ShaderStore {
   // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0).
   static constexpr uint32_t kHeadlightVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureHeadlight);
   static constexpr uint32_t kHeadlightAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), 1);
+  // The game's lit pixel shaders that also write the G-buffer's planes into the sidecar targets of the main view (shaderpack/variants/gbuffer.h; gbuffer.h of this
+  // folder): chosen by Scene::GBufferKey, never by pipelines.cpp WantedFeatures; 48 bytes of constants follow the shared block (gbuffer_types.h GBufferConstants).
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0). On a shader that has the headlight's stage too the
+  // draw takes the composed word (Scene::GBufferKey asks ChooseVariant for the draw's features plus this one).
+  static constexpr uint32_t kGBufferVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureGBuffer);
+  static constexpr uint32_t kGBufferAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), 1);
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

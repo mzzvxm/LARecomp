@@ -62,6 +62,8 @@
 #include "fsr_rcas_ps.hlsl.dxil.h"
 #include "fsr_rcas_hdr_ps.hlsl.dxil.h"
 #include "fullscreen_vs.hlsl.dxil.h"
+#include "gbuffer_view_ms_ps.hlsl.dxil.h"
+#include "gbuffer_view_ps.hlsl.dxil.h"
 #include "hdr_compose_ps.hlsl.dxil.h"
 #include "layers_resolve_ps.hlsl.dxil.h"
 #include "layers_restore_ps.hlsl.dxil.h"
@@ -150,6 +152,8 @@
 #include "fsr_rcas_ps.hlsl.spirv.h"
 #include "fsr_rcas_hdr_ps.hlsl.spirv.h"
 #include "fullscreen_vs.hlsl.spirv.h"
+#include "gbuffer_view_ms_ps.hlsl.spirv.h"
+#include "gbuffer_view_ps.hlsl.spirv.h"
 #include "hdr_compose_ps.hlsl.spirv.h"
 #include "layers_resolve_ps.hlsl.spirv.h"
 #include "layers_restore_ps.hlsl.spirv.h"
@@ -259,6 +263,11 @@ inline HostShaderBlob HdrComposePixelShader() {
 
 inline HostShaderBlob FullscreenVertexShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(fullscreen_vs);
+}
+
+// The G-buffer's debug view (gbuffer.h): the planes with one sample, or the host's MSAA level.
+inline HostShaderBlob GBufferViewPixelShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(gbuffer_view_ps);
 }
 
 inline HostShaderBlob PresentPixelShader() {

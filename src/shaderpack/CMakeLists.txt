@@ -107,6 +107,7 @@ add_library(larecomp_shaderpack STATIC
     variants/luminance_scale.cpp
     variants/ui_sharp.cpp
     variants/headlight.cpp
+    variants/gbuffer.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -149,6 +150,24 @@ if(EXISTS "${_larecomp_hdr_hlsli}")
 else()
     message(STATUS "larecomp_shaderpack: ${_larecomp_hdr_hlsli} does not exist: no HDR scene variant, "
                    "the variant pack is built without it")
+endif()
+# ---- the G-buffer variant's helper -------------------------------------------------------------
+# variants/gbuffer.cpp pastes src/gpu/hlsl/gbuffer_common.hlsli (the interface's HLSL, shared with the host passes) into the game's lit shaders. Its
+# bytes are turned into an array that is compiled into the library, the same way as the HDR curve above, so the pack always matches the file of the
+# build that wrote it and the stamp carries its hash (variants_gbuffer_input). When the file does not exist BuiltInVariants() leaves the variant out.
+set(_larecomp_gb_hlsli "${LARECOMP_SHADERPACK_REPO_ROOT}/src/gpu/hlsl/gbuffer_common.hlsli")
+if(EXISTS "${_larecomp_gb_hlsli}")
+    set(_larecomp_gb_generated "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    file(READ "${_larecomp_gb_hlsli}" _larecomp_gb_hex HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _larecomp_gb_bytes "${_larecomp_gb_hex}")
+    file(GENERATE OUTPUT "${_larecomp_gb_generated}/gbuffer_hlsli_bytes.inc"
+         CONTENT "${_larecomp_gb_bytes}0x00\n")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_larecomp_gb_hlsli}")
+    target_include_directories(larecomp_shaderpack PRIVATE "${_larecomp_gb_generated}")
+    target_compile_definitions(larecomp_shaderpack PRIVATE LARECOMP_GBUFFER_HLSLI_EMBEDDED=1)
+    message(STATUS "larecomp_shaderpack: the G-buffer variant embeds ${_larecomp_gb_hlsli}")
+else()
+    message(STATUS "larecomp_shaderpack: ${_larecomp_gb_hlsli} does not exist: no G-buffer variant")
 endif()
 if(WIN32)
     target_compile_definitions(larecomp_shaderpack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
@@ -266,6 +285,14 @@ add_executable(larecomp_headlight_variant_test EXCLUDE_FROM_ALL
     variants/headlight.cpp)
 target_compile_features(larecomp_headlight_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_headlight_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The G-buffer variant's text transform (variants/gbuffer_test.cpp; xCityDefault's day and night shaders): cmake --build <dir> --target
+# larecomp_gbuffer_variant_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
+add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL
+    variants/gbuffer_test.cpp
+    variants/gbuffer.cpp
+    hash.cpp)
+target_compile_features(larecomp_gbuffer_variant_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).

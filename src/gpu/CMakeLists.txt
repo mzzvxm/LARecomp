@@ -44,6 +44,7 @@ add_library(larecomp_gpu OBJECT
     frame_layers.cpp
     frame_trace.cpp
     frame.cpp
+    gbuffer.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -250,6 +251,10 @@ add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test
 # tracker's picks and fades, the shadow views' table, the constants block) likewise:
 #   cmake --build <dir> --target larecomp_headlight_rig_test, then run src/gpu/larecomp_headlight_rig_test (exit 0 = passed).
 add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.cpp)
+# The G-buffer's frozen interface (gbuffer_types.h, gbuffer_rules.h, light_set.h; it compiles hlsl/gbuffer_common.hlsli as C++ and compares it with the twin)
+# and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
+#   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -654,6 +659,10 @@ larecomp_gpu_host_shader(upscaler_masks_ps ps_6_0)
 # The same masks from a coverage image with the samples of the game's depth (mcla_gpu_msaa_with_upscaler): the mean
 # of the samples' masks.
 larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DEFINES MASKS_MS=1)
+# The G-buffer's debug view (gbuffer.h, mcla_gpu_gbuffer_view): a plane of the sidecar images drawn over the main view's colour; once for planes with one
+# sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
+larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

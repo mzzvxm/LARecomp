@@ -26,7 +26,7 @@ double NormalizeDeg(double deg) {
 
 }  // namespace
 
-bool ParseRoute(std::string_view text, Route* out, std::string* error) {
+bool ParseRoute(std::string_view text, Route* out, std::string* error, size_t min_points) {
     *out = Route{};
     error->clear();
     size_t pos = 0;
@@ -91,8 +91,8 @@ bool ParseRoute(std::string_view text, Route* out, std::string* error) {
         }
         out->points.push_back(p);
     }
-    if (out->points.size() < 2) {
-        *error = "a route needs at least 2 points (x,z[,speed[,y]] a line), this one has " + std::to_string(out->points.size());
+    if (out->points.size() < min_points) {
+        *error = "a route needs at least " + std::to_string(min_points) + (min_points == 1 ? " point" : " points") + " (x,z[,speed[,y]] a line), this one has " + std::to_string(out->points.size());
         return false;
     }
     if (with_y != 0 && with_y != out->points.size()) {

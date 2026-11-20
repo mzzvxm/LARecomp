@@ -21,6 +21,11 @@
 //   Y                     level the horizon and bring the field of view back to where it started
 //   Back + A              start or stop the recording        Back + X   home: the game's own camera view again (a cut)
 //   Back + Y              mark a cut in the recording (the converter writes a `cut` there)
+//   The Director's panel (DIRECTOR-DESIGN.md section 3; src/mc_engine/ui/director_panel_core.h turns each into a command):
+//   Back + B              add a camera key here                     Back + RB / LB   go to the next / previous camera key
+//   Back + Start          play or pause the scene (Start itself stays the game's pause menu, and never reaches the game while Back is held)
+//   Back + D-pad right    one frame on (the fixed step)             Back + D-pad up  render the take
+//   With Back held LB / RB do not tilt the horizon, and the D-pad does not change the speed (they are chords).
 //
 // Every continuous control runs through a one-pole smoothing (the inertia) that is exact in time: the same flight at 60 and 240
 // updates a second covers the same distance.
@@ -69,12 +74,17 @@ struct Pad {
     uint16_t buttons = 0;
     double lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0;  // -1..1, right and up positive
     double lt = 0.0, rt = 0.0;                      // 0..1
+    // Only the Director's panel sets these (the mouse and the wheel; a real pad leaves them 0). They are amounts to APPLY ONCE, not states: the look is degrees to turn in this
+    // update (to the right and up positive, no smoothing: a mouse is exact), `speed_steps` the notches of the speed (+1 is a D-pad right press: x1.25).
+    double look_right = 0.0, look_up = 0.0;
+    int speed_steps = 0;
 };
 
 // The 16 bytes of the guest's X_INPUT_STATE (big endian): be32 packet, be16 buttons, u8 LT, u8 RT, be16 LX, LY, RX, RY.
 constexpr size_t kGuestPadBytes = 16;
 Pad PadFromGuest(const uint8_t* state);
-// What the camera takes from the game: buttons except Start, both triggers and all four axes become 0.
+// What the camera takes from the game: buttons except Start, both triggers and all four axes become 0. With Back held Start goes too (Back + Start is a chord of the camera:
+// play / pause the scene), so the pause menu does not open under it.
 void ClearGuestPad(uint8_t* state);
 
 // A stick through a circular dead zone and a response curve: nothing inside `zone`, then 0 to 1 from the zone's edge to the rim, bent
@@ -132,6 +142,14 @@ struct Events {
     bool home = false;           // Back + X: the caller seeds the flight from the game's own camera
     bool mark_cut = false;       // Back + Y
     bool reset_view = false;     // Y: roll and field of view done by the flight already; for the log
+    // The Director panel's chords (the caller turns them into commands: director_panel_core.h CommandsForFlyEvents)
+    bool add_key = false;        // Back + B
+    bool next_key = false;       // Back + RB
+    bool prev_key = false;       // Back + LB
+    bool play_pause = false;     // Back + Start
+    bool step_frame = false;     // Back + D-pad right
+    bool render_take = false;    // Back + D-pad up
+    bool Any() const { return toggle_record || home || mark_cut || reset_view || add_key || next_key || prev_key || play_pause || step_frame || render_take; }
 };
 
 class Flyer {
