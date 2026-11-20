@@ -201,6 +201,35 @@ inline std::array<uint32_t, kMaxLights> ShadowViewOfLight(const larecomp::gpu::L
   return of;
 }
 
+// A frame of shadow views made for one set of lights, read for a later one. A view names its light by its place in the set the producer saw
+// (light_index); the set of the frame that reads the map can have another order or another count (a car came into the four, the tracker's hysteresis
+// swapped two), so the views go by the car instead: `old_keys` is the car key of each light of the producer's set, `new_keys` of the set that reads. Each
+// view goes to the first light of its car in the new set that no other view took (a car with two lamps has two views, one for each lamp, with the same
+// matrix); a view whose car is not in the new set is dropped.
+inline larecomp::gpu::LocalShadowFrame RemapShadowViews(const larecomp::gpu::LocalShadowFrame& frame, const uint32_t* old_keys, uint32_t old_count,
+                                                        const uint32_t* new_keys, uint32_t new_count) {
+  larecomp::gpu::LocalShadowFrame out;
+  std::array<bool, kMaxLights> taken{};
+  const uint32_t views = std::min<uint32_t>(frame.count, uint32_t(frame.views.size()));
+  for (uint32_t v = 0; v < views; ++v) {
+    const larecomp::gpu::LocalShadowView& view = frame.views[v];
+    if (view.valid == 0 || view.light_index >= old_count) {
+      continue;
+    }
+    const uint32_t key = old_keys[view.light_index];
+    for (uint32_t i = 0; i < new_count && i < kMaxLights; ++i) {
+      if (new_keys[i] == key && !taken[i]) {
+        taken[i] = true;
+        larecomp::gpu::LocalShadowView moved = view;
+        moved.light_index = i;
+        out.views[out.count++] = moved;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // the block the lit shaders read
 // ---------------------------------------------------------------------------

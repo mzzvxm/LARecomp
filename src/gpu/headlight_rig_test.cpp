@@ -810,12 +810,59 @@ void CheckPoints() {
 
 }  // namespace
 
+// A frame of views made for one set of lights, read for another: by car, not by place.
+void CheckShadowRemap() {
+  larecomp::gpu::LocalShadowFrame frame;
+  frame.count = 3;
+  for (uint32_t v = 0; v < 3; ++v) {
+    frame.views[v].valid = 1;
+    frame.views[v].world_to_shadow[0] = float(v + 1);  // tells the views apart
+  }
+  frame.views[0].light_index = 0;  // the player's left lamp
+  frame.views[1].light_index = 1;  // the player's right lamp (the same matrix in the producer, here told apart by the number)
+  frame.views[2].light_index = 2;  // another car
+  const uint32_t old_keys[3] = {10, 10, 20};
+  // The same set: nothing moves.
+  {
+    const uint32_t keys[3] = {10, 10, 20};
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 3);
+    Check(out.count == 3 && out.views[0].light_index == 0 && out.views[1].light_index == 1 && out.views[2].light_index == 2, "the same set: the views stay");
+  }
+  // The other car came first (a car came into the four and the order changed): its view follows it.
+  {
+    const uint32_t keys[4] = {30, 20, 10, 10};
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 4);
+    Check(out.count == 3, "all three views find their cars");
+    Check(out.views[0].light_index == 2 && out.views[1].light_index == 3 && out.views[2].light_index == 1, "each view goes to a lamp of its own car, the two lamps to two");
+    Check(out.views[0].world_to_shadow[0] == 1.0f && out.views[2].world_to_shadow[0] == 3.0f, "the matrices go with them");
+    const auto of = hr::ShadowViewOfLight(&out, 4);
+    Check(of[0] == hr::kNoView && of[1] == 2 && of[2] == 0 && of[3] == 1, "and the host's table has the new place of every view; the new car has none");
+  }
+  // A car that is gone loses its view; a car with one lamp now has one view.
+  {
+    const uint32_t keys[2] = {10, 40};
+    const auto out = hr::RemapShadowViews(frame, old_keys, 3, keys, 2);
+    Check(out.count == 1 && out.views[0].light_index == 0 && out.views[0].world_to_shadow[0] == 1.0f, "a car that left takes its view with it; a car with one lamp keeps one");
+  }
+  // Bad input: an index past the producer's set, an invalid view, no new lights.
+  {
+    larecomp::gpu::LocalShadowFrame odd = frame;
+    odd.views[2].light_index = 9;
+    odd.views[1].valid = 0;
+    const uint32_t keys[3] = {10, 10, 20};
+    const auto out = hr::RemapShadowViews(odd, old_keys, 3, keys, 3);
+    Check(out.count == 1 && out.views[0].light_index == 0, "a view that names no light of its set, or is not valid, is dropped");
+    Check(hr::RemapShadowViews(frame, old_keys, 3, keys, 0).count == 0, "no lights, no views");
+  }
+}
+
 int main() {
   CheckTerm();
   CheckNight();
   CheckCar();
   CheckTracker();
   CheckShadow();
+  CheckShadowRemap();
   CheckBlock();
   CheckPoints();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

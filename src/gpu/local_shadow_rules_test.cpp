@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "headlight_rig.h"
+#include "headlight_types.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
 
@@ -23,14 +23,14 @@ namespace ls = mcla::gpu::local_shadow;
 namespace gc = mcla::gpu::gpu_class;
 namespace tp = mcla::gpu::temporal;
 
-// The stub of the rig's one function (src/gpu/headlight_rig.h): the test links no renderer, and the renderer's half of the feature is the
-// only caller.
-namespace larecomp::gpu {
+// The stub of the rig's one function (src/gpu/headlight_types.h, the rig's in headlight_rig.cpp): the test links no renderer, and the renderer's
+// half of the feature is the only caller.
+namespace mcla::gpu {
 const HeadlightSet& CurrentHeadlights() {
   static const HeadlightSet empty{};
   return empty;
 }
-}  // namespace larecomp::gpu
+}  // namespace mcla::gpu
 
 namespace {
 
@@ -771,6 +771,89 @@ void CheckSelection() {
   Check(ls::kMaxDrawsPerView >= 512, "the budget holds more than a street's casters");
 }
 
+void CheckViewCull() {
+  // A view from the origin looking along +z with a 76 degree field, from 1.5 m to 70 m (the usual headlight, no offset behind the lamps).
+  ls::ViewSpec spec;
+  spec.eye[0] = spec.eye[1] = spec.eye[2] = 0.0;
+  spec.dir[0] = 0.0;
+  spec.dir[1] = 0.0;
+  spec.dir[2] = 1.0;
+  spec.fov = ls::Rad(76.0);
+  spec.near_m = 1.5;
+  spec.far_m = 70.0;
+  const double ahead[3] = {0.0, 0.0, 30.0};
+  const double behind[3] = {0.0, 0.0, -30.0};
+  const double too_far[3] = {0.0, 0.0, 140.0};
+  const double beyond[3] = {0.0, 0.0, 85.0};
+  const double side[3] = {60.0, 0.0, 20.0};
+  const double edge[3] = {20.0, 0.0, 30.0};      // tan 33.7 degrees: just inside the square's side at 30 m (the half width there is 23.4 m)
+  const double corner[3] = {30.0, 10.0, 30.0};   // outside the square at 30 m (half width 23.4 m), inside the cone that holds it (33.2 m from the axis)
+  Check(ls::SphereInView(spec, ahead, 0.0), "a point ahead is in the view");
+  Check(!ls::SphereInView(spec, behind, 0.0), "a point behind the eye is out");
+  Check(ls::SphereInView(spec, behind, ls::kWorldReach), "... but not with a margin that reaches the plane of the eye");
+  Check(!ls::SphereInView(spec, behind, ls::kVehicleReach), "... and a car's margin does not reach from 30 m behind");
+  Check(!ls::SphereInView(spec, too_far, ls::kWorldReach), "a thing 140 m away is out even with the world's margin");
+  Check(ls::SphereInView(spec, beyond, ls::kWorldReach) && !ls::SphereInView(spec, beyond, ls::kVehicleReach),
+        "85 m out: a building's margin reaches the far plane, a car's does not");
+  Check(!ls::SphereInView(spec, side, ls::kVehicleReach), "60 m to the side at 20 m ahead is out for a car");
+  Check(ls::SphereInView(spec, side, ls::kWorldReach), "... and in for a thing that reaches 40 m");
+  Check(ls::SphereInView(spec, edge, 0.0), "a point at the edge of the field is in");
+  Check(ls::SphereInView(spec, corner, 0.0), "the cone holds what the square's corners reach (conservative)");
+  const double clear_miss[3] = {40.0, 40.0, 30.0};
+  Check(!ls::SphereInView(spec, clear_miss, 0.0), "... and nothing farther out");
+  // A cone is a test of angles: along a sweep of the point's side offset at 30 m the answer flips once, between the corner's reach and a clear miss.
+  int flips = 0;
+  bool last = true;
+  for (int i = 0; i <= 100; ++i) {
+    const double p[3] = {double(i), 0.0, 30.0};
+    const bool in = ls::SphereInView(spec, p, 1.0);
+    flips += in != last ? 1 : 0;
+    last = in;
+  }
+  Check(flips == 1 && !last, "the answer flips once going out sideways");
+  // The lamps sit inside the frustum, an offset behind them: the near plane is measured from the eye.
+  ls::ViewSpec offset = spec;
+  offset.near_m = 3.0;
+  offset.far_m = 75.0;
+  const double just_in_front[3] = {0.0, 0.0, 2.0};
+  Check(!ls::SphereInView(offset, just_in_front, 0.0), "a point nearer than the (offset) near plane is out");
+  Check(ls::SphereInView(offset, just_in_front, 2.0), "... with a margin it can reach past it");
+  // The same test through FitView: the cull follows the view the rules make, for a car's two lamps, and nothing in front of the car within its
+  // reach is lost.
+  ls::Light left, right;
+  const float lp[3] = {-0.6f, 0.7f, 2.0f}, rp[3] = {0.6f, 0.7f, 2.0f}, dir[3] = {0.0f, 0.0f, 1.0f};
+  Check(ls::MakeLight(lp, dir, 0.788f, 70.0f, 5, true, 0, &left) && ls::MakeLight(rp, dir, 0.788f, 70.0f, 5, true, 1, &right), "two lamps make lights");
+  ls::Light lights[2] = {left, right};
+  ls::Group groups[4];
+  const uint32_t made = ls::GroupLights(lights, 2, 2, groups);
+  ls::ViewSpec fitted;
+  Check(made == 1 && ls::FitView(lights, groups[0], &fitted), "one view for the car's lamps");
+  bool every_lit_point_is_kept = true;
+  for (double z = 4.0; z <= 69.0; z += 3.0) {  // from 2 m ahead of the lamps: the near plane takes what is nearer
+    for (double x = -30.0; x <= 30.0; x += 3.0) {
+      // A point the light's cone reaches (cos of the angle off the axis above the outer cosine, measured from the left lamp).
+      const double v[3] = {x - lp[0], 0.0 - lp[1] + 0.5, z - lp[2]};
+      const double len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+      if (len > 1.0 && len < 70.0 && v[2] / len > 0.788) {
+        const double world[3] = {x, 0.5, z};
+        every_lit_point_is_kept = every_lit_point_is_kept && ls::SphereInView(fitted, world, 0.0);
+      }
+    }
+  }
+  Check(every_lit_point_is_kept, "every point the lamp's cone reaches is inside the fitted view's cull");
+  // The published rectangle is u0 v0 u1 v1 (the shader compares the point with it), not the offset and size UvRect gives.
+  ls::AtlasLayout atlas = ls::MakeAtlas(512, 2);
+  float uv[4], rect[4];
+  ls::UvRect(atlas, 1, uv);
+  ls::PublishedRect(uv, rect);
+  CheckNear(rect[0], 0.5, 1e-6, "the second tile starts at u 0.5");
+  CheckNear(rect[1], 0.0, 1e-6, "... at v 0");
+  CheckNear(rect[2], 1.0, 1e-6, "... and ends at u 1");
+  CheckNear(rect[3], 1.0, 1e-6, "... and v 1");
+  Check(uv[2] == 0.5f, "(the uv rectangle itself is an offset and a size)");
+  Check(ls::SkipName(ls::Skip::kOutOfView)[0] != '?', "the cull has a name in the log");
+}
+
 void CheckCullAndKeys() {
   using ls::Cull;
   Check(ls::ResolveCull(0, Cull::kBack) == Cull::kFront, "front faces are culled where the game culls back faces");
@@ -814,6 +897,7 @@ int main() {
   CheckReplay();
   CheckClassification();
   CheckSelection();
+  CheckViewCull();
   CheckCullAndKeys();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

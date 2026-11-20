@@ -30,7 +30,7 @@
 // draws with (one frame of latency: a car's lamps are drawn before the world, but not every world draw is after every lamp), moved one frame ahead by the
 // track's own velocity.
 //
-// THE GAME'S OWN LIGHT POINTS (headlight_points.h, src/mc_engine/hooks/headlight_points.cpp: a midasm hook at 0x8237AFB4, which the night probe proved). The
+// THE GAME'S OWN LIGHT POINTS (headlight_points.h, src/mc_engine/hooks/headlight_points.cpp: a midasm hook at 0x8237AFB8 (one instruction after the night probe's own at 0x8237AFB4, which proved the place: two hooks at one address are one), which the night probe proved). The
 // game's light submit has every vehicle's light points by kind; the Headlight points have a world position, a racer's and the player's a direction (the car's
 // back axis) and an intensity, which is exactly the lights' on state: 2.00 at night, 0.00 by day. The hook (only while the setting is on) writes them to a
 // table; the rig matches them to the lens lamps (the nearest within 3 m): the lamp takes the points' place, the car's forward is minus their direction (the
@@ -62,47 +62,10 @@
 #include "draw_state.h"
 #include "headlight_points.h"
 #include "headlight_rig_rules.h"
+#include "headlight_types.h"
 #include "local_shadow_types.h"
 #include "shaders.h"
 #include "topology.h"
-
-// ---------------------------------------------------------------------------
-// the frozen interface
-// ---------------------------------------------------------------------------
-
-namespace mcla::gpu {
-
-// One headlight as the rig hands it over. Positions and directions are world space (the game's: y up). `dir` is a unit vector (the beam's axis, dipped a
-// little below the car's forward), `cos_outer` / `cos_inner` the cosines of the cone's outer and inner half angles, `range` the reach in metres, `color` the
-// light's colour already times the strength, the fade and the night factor (so a light that fades is a dimmer one), `car_key` a number that stays with a car from
-// frame to frame, `is_player` the player's car's.
-struct Headlight {
-  float pos[3];
-  float dir[3];
-  float cos_outer;
-  float cos_inner;
-  float range;
-  float color[3];
-  uint32_t car_key;
-  bool is_player;
-};
-
-struct HeadlightSet {
-  std::array<Headlight, 4> lights;
-  uint32_t count = 0;
-};
-
-// The set of the frame being built (empty: no light, and the game's shaders draw).
-const HeadlightSet& CurrentHeadlights();
-
-}  // namespace mcla::gpu
-
-// The same names where the shared interface's other half (local_shadow_types.h) lives.
-namespace larecomp::gpu {
-using mcla::gpu::CurrentHeadlights;
-using mcla::gpu::Headlight;
-using mcla::gpu::HeadlightSet;
-}  // namespace larecomp::gpu
 
 namespace mcla::gpu {
 
@@ -121,8 +84,10 @@ enum class Mode : uint8_t { kOff, kOn };
 // Whether the lit shaders' headlight variant is to be chosen for a draw now: the rig published a light (pipelines.cpp ChoosePackedVariant). Any thread.
 bool VariantSelected();
 
-// The shadow producer's side: this frame's views and the atlas they are in (the bindless slots of the texture and of a sampler). `frame` null: none. The
-// pointer must stay valid until the next call (the frame's end). Render thread.
+// The shadow producer's side: this frame's views and the atlas they are in (the bindless slots of the texture and of a sampler). `frame` null, or no
+// view, or no atlas slot: none (every light is lit and no atlas is read). The views are copied, and moved to the lights of the set that reads them by
+// the car (the set of the next frame can be in another order: RemapShadowViews). Call it at the producer's trigger, in the frame whose lights the
+// views were made for (the set does not change until the next present), and again when the views are given up. Render thread.
 void SetLocalShadows(const larecomp::gpu::LocalShadowFrame* frame, uint32_t atlas_texture_slot, uint32_t atlas_sampler_slot);
 
 }  // namespace headlight_rig

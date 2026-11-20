@@ -26,7 +26,7 @@ namespace {
 // cosine of the outer half angle, (3 i + 2) = the colour rgb (times the strength and the fade) and the cosine of the inner half angle;
 // g_HlShadowOf = the shadow view of each of the four lights (0xFFFFFFFF: none); g_HlAtlas.x / .y = the atlas texture's and its sampler's bindless slots
 // (0xFFFFFFFF: none, every light is lit); g_HlShadow(6 v + 0..3) = the view's world_to_shadow rows, + 4 = its atlas rectangle (u0 v0 u1 v1), + 5 = the
-// depth bias and the texel size (src/gpu/local_shadow_types.h LocalShadowView).
+// depth bias and the texel size as a share of the tile (src/gpu/local_shadow_types.h LocalShadowView).
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant headlight (src/shaderpack/variants/headlight.cpp): the cars' headlights as spot lights, one more term of the sum the shader multiplies
 // by the surface. 672 bytes after the shared constants (src/gpu/headlight_rig.h HeadlightConstants).
 static const float kHlPeak = 2.4;
@@ -61,7 +61,7 @@ float HeadlightShadow(uint view, float3 world)
         return 1.0;
     float depth = s.z - shadowParams.x;
     uint4 atlas = g_HlAtlas;
-    float t = shadowParams.y;
+    float2 t = (rect.zw - rect.xy) * shadowParams.y;  // one texel of the tile in atlas uv, on each axis (the atlas is two tiles wide, not two tall)
     float lit = 0.0;
     lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(-0.5, -0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
     lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(0.5, -0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;

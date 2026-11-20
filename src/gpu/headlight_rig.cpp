@@ -49,7 +49,11 @@ constexpr double kScreenMargin = 1.3;
 // The frame being built, as the render thread last published it.
 HeadlightSet g_set;
 std::atomic<bool> g_selected{false};
-const larecomp::gpu::LocalShadowFrame* g_shadow_frame = nullptr;
+// The shadow views of the producer (SetLocalShadows), as a copy (the producer's frame changes in place), with the car key of each light of the set they were
+// made for: the set that reads them is the next frame's and can be another (headlight_rig_rules.h RemapShadowViews).
+larecomp::gpu::LocalShadowFrame g_shadow_frame;
+std::array<uint32_t, headlight_rules::kMaxLights> g_shadow_keys{};
+uint32_t g_shadow_key_count = 0;
 uint32_t g_atlas_texture = headlight_rules::kNoSlot;
 uint32_t g_atlas_sampler = headlight_rules::kNoSlot;
 uint64_t g_shadow_serial = 0;
@@ -82,9 +86,20 @@ namespace headlight_rig {
 bool VariantSelected() { return g_selected.load(std::memory_order_relaxed); }
 
 void SetLocalShadows(const larecomp::gpu::LocalShadowFrame* frame, uint32_t atlas_texture_slot, uint32_t atlas_sampler_slot) {
-  g_shadow_frame = frame;
-  g_atlas_texture = atlas_texture_slot;
-  g_atlas_sampler = atlas_sampler_slot;
+  g_shadow_frame = larecomp::gpu::LocalShadowFrame{};
+  g_shadow_key_count = 0;
+  g_atlas_texture = headlight_rules::kNoSlot;
+  g_atlas_sampler = headlight_rules::kNoSlot;
+  if (frame && frame->count != 0 && atlas_texture_slot != headlight_rules::kNoSlot) {
+    // Made at the producer's trigger, in the frame whose set is the current one: the lights the views name are those, by place.
+    g_shadow_frame = *frame;
+    g_shadow_key_count = std::min<uint32_t>(g_set.count, uint32_t(g_shadow_keys.size()));
+    for (uint32_t i = 0; i < g_shadow_key_count; ++i) {
+      g_shadow_keys[i] = g_set.lights[i].car_key;
+    }
+    g_atlas_texture = atlas_texture_slot;
+    g_atlas_sampler = atlas_sampler_slot;
+  }
   ++g_shadow_serial;
 }
 
@@ -474,7 +489,18 @@ void HeadlightRig::Publish(const std::array<headlight_rules::Tracked, headlight_
 
 void HeadlightRig::RebuildBlock() {
   const float camera[3] = {float(camera_[0]), float(camera_[1]), float(camera_[2])};
-  block_ = headlight_rules::MakeConstants(lamps_.data(), lamp_count_, camera, g_shadow_frame, g_atlas_texture, g_atlas_sampler);
+  larecomp::gpu::LocalShadowFrame views;  // the producer's, moved to the lights of this set by their car
+  const larecomp::gpu::LocalShadowFrame* shadows = nullptr;
+  if (g_shadow_frame.count != 0) {
+    std::array<uint32_t, headlight_rules::kMaxLights> keys{};
+    const uint32_t count = std::min<uint32_t>(g_set.count, uint32_t(keys.size()));
+    for (uint32_t i = 0; i < count; ++i) {
+      keys[i] = g_set.lights[i].car_key;
+    }
+    views = headlight_rules::RemapShadowViews(g_shadow_frame, g_shadow_keys.data(), g_shadow_key_count, keys.data(), count);
+    shadows = views.count != 0 ? &views : nullptr;
+  }
+  block_ = headlight_rules::MakeConstants(lamps_.data(), lamp_count_, camera, shadows, g_atlas_texture, g_atlas_sampler);
   shadow_serial_ = g_shadow_serial;
 }
 
