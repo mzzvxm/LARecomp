@@ -188,8 +188,10 @@ bool HasNonDefaultValue(std::string_view name);
 void ResetToDefault(std::string_view name);
 bool InvokeCommand(std::string_view name, std::string_view args);
 // Called with (flat name, new text) after each change. One list per name; Unregister drops them.
+// The setting must be registered (RegisterAll, from OnConfigure on): call this on first use, NEVER from a namespace-scope initializer,
+// where the setting does not exist yet. False (and a log line) when there is no such setting: the callback was not added.
 using ChangeCallback = std::function<void(std::string_view name, std::string_view new_value)>;
-void RegisterChangeCallback(std::string_view name, ChangeCallback callback);
+bool RegisterChangeCallback(std::string_view name, ChangeCallback callback);
 void UnregisterChangeCallbacks(std::string_view name);
 template <typename T>
 T Query(std::string_view name) {
