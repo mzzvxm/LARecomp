@@ -375,10 +375,10 @@ class GPUSettings final : public rex::SettingOwner {
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
-    "this draws the scene's opaque objects again from the lights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on "
-    "ultra), and the lights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the "
+    "this draws the scene's opaque objects again from the lights, depth only, into a small map for each car (512 by 512 texels on high, 1024 by 1024 on "
+    "ultra), and the lights' light reads it. high shadows your car's headlights and the nearest other car's, ultra also the next nearest car's, and sharper. off, high, ultra or auto (the "
     "default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game "
-    "view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video "
+    "view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each car) and 4 MiB (high) or 24 MiB (ultra) of video "
     "memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_headlight_shadow_test, 0, "Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), "
@@ -396,7 +396,7 @@ class GPUSettings final : public rex::SettingOwner {
     "faces; the default), 1: both faces, 2: the game's own. A pipeline is made for each, so a change takes a moment to build. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(i32, mcla_gpu_headlight_shadow_views, 0, "Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's "
-    "own (1 on high, 2 on ultra). A change remakes the atlas. Live.", rex::kDebugOnly, rex::Range{0, 4});
+    "own (2 on high, 3 on ultra). A change remakes the atlas. Live.", rex::kDebugOnly, rex::Range{0, 4});
 
   REX_SETTING(f64, mcla_gpu_headlight_shadow_bias, 1.0, "Diagnostic: a factor on the depth bias the headlight shadows' lookup subtracts from a surface's distance from the lamps before it "
     "compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. "

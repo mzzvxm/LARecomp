@@ -1116,6 +1116,49 @@ void CheckShadowRemap() {
   }
 }
 
+// The levels of LIGHT SHADOWS (owner, 2026-11-20): high shadows two cars, ultra three, of the four the rig lights. The views of a frame are one for each lit lamp, and the
+// block holds four: a car the rig lights but that has no view is lit without a shadow.
+void CheckThreeShadowViews() {
+  Check(hr::kMaxLights >= 3 && sizeof(hr::HeadlightConstants::shadow) / sizeof(larecomp::gpu::LocalShadowView) >= 3,
+        "the rig lights and the block holds the three views ultra makes (it holds four)");
+  hr::Lamp lamps[4];
+  for (int i = 0; i < 4; ++i) {
+    lamps[i].position[0] = 10.0f * float(i);
+  }
+  const float camera[3] = {0.0f, 1.5f, 0.0f};
+  const uint32_t made_keys[4] = {11, 12, 13, 14};  // the producer's set: the player's car (11), then the cars by importance
+  for (uint32_t views = 1; views <= 4; ++views) {
+    larecomp::gpu::LocalShadowFrame frame;
+    for (uint32_t v = 0; v < views; ++v) {
+      larecomp::gpu::LocalShadowView& view = frame.views[frame.count++];
+      view.valid = 1;
+      view.light_index = v;
+      view.world_to_shadow[0] = float(v + 1);
+      view.atlas_rect[0] = float(v) / 4.0f;  // each view has its own tile in the atlas
+      view.atlas_rect[2] = float(v + 1) / 4.0f;
+    }
+    // The next frame's set is in another order (the tracker swapped the first two other cars and a car came in at the end).
+    const uint32_t next_keys[4] = {11, 13, 12, 14};
+    const larecomp::gpu::LocalShadowFrame moved = hr::RemapShadowViews(frame, made_keys, 4, next_keys, 4);
+    Check(moved.count == views, std::to_string(views) + " view(s) survive the new order");
+    const hr::HeadlightConstants block = hr::MakeConstants(lamps, 4, camera, &moved, 5, 6);
+    Check(block.header[0] == 4.0f, "all four cars stay lit");
+    Check(block.atlas[0] == 5 && block.atlas[1] == 6, "the atlas is bound while a view is");
+    const uint32_t shadowed[4] = {11, 13, 12, 14};  // by the new places: the key of each light
+    for (uint32_t light = 0; light < 4; ++light) {
+      const uint32_t key = shadowed[light];
+      const uint32_t made_at = key - 11;  // the producer's place of this car = its view's number
+      if (made_at < views) {
+        Check(block.shadow_of[light] != hr::kNoView && block.shadow[block.shadow_of[light]].world_to_shadow[0] == float(made_at + 1) &&
+                  block.shadow[block.shadow_of[light]].atlas_rect[0] == float(made_at) / 4.0f,
+              "car " + std::to_string(key) + " reads its own view and tile of " + std::to_string(views));
+      } else {
+        Check(block.shadow_of[light] == hr::kNoView, "car " + std::to_string(key) + " is lit with no shadow when only " + std::to_string(views) + " get a view");
+      }
+    }
+  }
+}
+
 // The soft lookup: a map of texels (1 lit, 0 in shadow) read as the shader reads it.
 void CheckSoftShadow() {
   // Nothing in shadow: 1. All of it: 0.
@@ -1222,6 +1265,7 @@ int main() {
   CheckShadow();
   CheckSoftShadow();
   CheckShadowRemap();
+  CheckThreeShadowViews();
   CheckBlock();
   CheckPoints();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

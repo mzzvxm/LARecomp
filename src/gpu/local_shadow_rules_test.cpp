@@ -93,7 +93,7 @@ void CheckSetting() {
   Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024,
         "the tile is 512 on high and 1024 on ultra");
   Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 3) == 0, "off draws no view, whatever the override");
-  Check(ls::MaxViews(ls::Level::kHigh, 0) == 1 && ls::MaxViews(ls::Level::kUltra, 0) == 2, "high shadows the player's lamps, ultra one car more");
+  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
   Check(ls::MaxViews(ls::Level::kHigh, 3) == 3 && ls::MaxViews(ls::Level::kUltra, 9) == 4, "the debug override takes 1 to 4 views");
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
@@ -1243,14 +1243,298 @@ void CheckVehicleCensus() {
   Check(census.draws == 0 && census.used == 0 && ls::DescribeVehicleCensus(census).empty(), "a cleared census is empty");
 }
 
+// ---------------------------------------------------------------------------
+// the levels: views, sizes, memory (owner, 2026-11-20: the levels differ by how many cars are shadowed, not only by how sharp)
+// ---------------------------------------------------------------------------
+
+void CheckLevels() {
+  Check(ls::kViewsHigh == 2 && ls::kViewsUltra == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
+  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3 && ls::MaxViews(ls::Level::kOff, 0) == 0, "the levels' view counts");
+  Check(ls::MaxViews(ls::Level::kHigh, 1) == 1 && ls::MaxViews(ls::Level::kHigh, 4) == 4 && ls::MaxViews(ls::Level::kUltra, 7) == 4 &&
+            ls::MaxViews(ls::Level::kUltra, -3) == 3,
+        "the debug override takes 1 to 4 views, a negative one is the level's");
+  // Every level draws views the published frame and the headlight variant's block can hold (a view for each lit lamp, a lamp for each car: four).
+  larecomp::gpu::LocalShadowFrame frame;
+  Check(ls::kMaxViews == frame.views.size() && ls::kViewsUltra <= ls::kMaxViews && ls::kViewsHigh < ls::kViewsUltra, "the views a level draws fit the published frame");
+
+  // The atlas of every level and every number of views, at both tile sizes: where each tile is, inside the atlas, none on another, and the memory.
+  struct Case {
+    uint32_t tile, views, width, height;
+  };
+  const Case cases[] = {{512, 1, 512, 512},   {512, 2, 1024, 512},   {512, 3, 1536, 512},   {512, 4, 1024, 1024},
+                        {1024, 1, 1024, 1024}, {1024, 2, 2048, 1024}, {1024, 3, 3072, 1024}, {1024, 4, 2048, 2048}};
+  for (const Case& c : cases) {
+    const std::string at = std::to_string(c.views) + " view(s) of " + std::to_string(c.tile);
+    const ls::AtlasLayout atlas = ls::MakeAtlas(c.tile, c.views);
+    Check(atlas.valid() && atlas.views == c.views && atlas.width() == c.width && atlas.height() == c.height, at + ": the atlas is " + std::to_string(c.width) + "x" + std::to_string(c.height));
+    std::unordered_set<uint64_t> seen;
+    for (uint32_t k = 0; k < c.views; ++k) {
+      const ls::TileRect r = ls::TileAt(atlas, k);
+      Check(r.size == c.tile && r.x % c.tile == 0 && r.y % c.tile == 0 && r.x + r.size <= atlas.width() && r.y + r.size <= atlas.height(), at + ": tile " + std::to_string(k) + " is inside the atlas, on the tile grid");
+      Check(seen.insert((uint64_t(r.x) << 32) | r.y).second, at + ": tile " + std::to_string(k) + " is a tile of its own");
+      // The published rectangle (what the shader compares a point with) is the tile, in uv, and no other tile's.
+      float uv[4], rect[4];
+      ls::UvRect(atlas, k, uv);
+      ls::PublishedRect(uv, rect);
+      CheckNear(rect[0] * atlas.width(), r.x, 1e-2, at + ": rect u0 of tile " + std::to_string(k));
+      CheckNear(rect[1] * atlas.height(), r.y, 1e-2, at + ": rect v0 of tile " + std::to_string(k));
+      CheckNear(rect[2] * atlas.width(), r.x + r.size, 1e-2, at + ": rect u1 of tile " + std::to_string(k));
+      CheckNear(rect[3] * atlas.height(), r.y + r.size, 1e-2, at + ": rect v1 of tile " + std::to_string(k));
+    }
+    // Unused texels: none for up to three views in a row; a 2x2 atlas of four is full too.
+    Check(uint64_t(atlas.width()) * atlas.height() == uint64_t(c.tile) * c.tile * c.views, at + ": no tile is left over");
+    Check(ls::AtlasBytes(atlas) == uint64_t(c.width) * c.height * 8, at + ": 8 bytes a texel (D32 float + S8)");
+  }
+  // Memory: high 4 MiB (it was 2), ultra 24 MiB (it was 16): the figures in the setting's help.
+  const ls::AtlasLayout high = ls::AtlasFor(ls::Level::kHigh, 0);
+  const ls::AtlasLayout ultra = ls::AtlasFor(ls::Level::kUltra, 0);
+  Check(high.width() == 1024 && high.height() == 512 && high.cols == 2 && high.rows == 1, "high: 1024 x 512, two tiles of 512 side by side");
+  Check(ultra.width() == 3072 && ultra.height() == 1024 && ultra.cols == 3 && ultra.rows == 1, "ultra: 3072 x 1024, three tiles of 1024 in a row");
+  CheckNear(ls::Mib(ls::AtlasBytes(high)), 4.0, 1e-9, "high holds 4 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 24.0, 1e-9, "ultra holds 24 MiB (a 2 x 2 layout of three would hold 32)");
+  Check(ls::AtlasBytes(ls::AtlasFor(ls::Level::kOff, 0)) == 0 && !ls::AtlasFor(ls::Level::kOff, 0).valid(), "off holds nothing");
+  Check(ls::AtlasFor(ls::Level::kUltra, 4).width() == 2048 && ls::AtlasFor(ls::Level::kUltra, 4).height() == 2048, "the debug override of four views is a 2 x 2 atlas");
+  Check(ls::AtlasFor(ls::Level::kHigh, 0).width() <= 3072 && ls::AtlasFor(ls::Level::kUltra, 0).width() <= 4096, "a texture a Vulkan device must support (4096)");
+  // The size follows the level, not the number of cars lit: the atlas is the same for one car or three.
+  Check(ls::AtlasFor(ls::Level::kUltra, 0).views == 3 && ls::AtlasFor(ls::Level::kHigh, 0).views == 2, "the atlas has a tile for every view of its level");
+  // What the log says.
+  const std::string text = ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "auto"), gc::GpuClass::kHigh);
+  Check(text.find("ultra") != std::string::npos && text.find("up to 3 views of 1024x1024") != std::string::npos, "Describe says three views of 1024: " + text);
+  const std::string mid = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "auto"), gc::GpuClass::kMid);
+  Check(mid.find("up to 2 views of 512x512") != std::string::npos, "Describe says two views of 512: " + mid);
+}
+
+// A point through a published view of a 3-in-a-row atlas lands in its own tile's rectangle and in no other's: what the lit shaders' rectangle test does.
+void CheckThreeViewsLand() {
+  for (uint32_t tile : {512u, 1024u}) {
+    const ls::AtlasLayout atlas = ls::MakeAtlas(tile, 3);
+    ls::Light lamps[3] = {Lamp(0.0, 0.7, 0.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(30.0, 0.7, 40.0, 0.0, 0.0, -1.0, 2, false, 1), Lamp(-20.0, 0.7, 25.0, 1.0, 0.0, 0.0, 3, false, 2)};
+    for (uint32_t k = 0; k < 3; ++k) {
+      ls::Group g;
+      ls::GroupLights(&lamps[k], 1, 1, &g);
+      ls::ViewSpec spec;
+      tp::Mat4 clip;
+      Check(ls::FitView(&lamps[k], g, &spec) && ls::LightClip(spec, true, &clip), "a view for the lamp");
+      float uv[4], rect[4], m[16];
+      ls::UvRect(atlas, k, uv);
+      ls::PublishedRect(uv, rect);
+      ls::WorldToShadow(clip, uv, 1.0, 1.0, m);
+      for (double dist : {8.0, 20.0, 35.0}) {
+        const double p[3] = {spec.eye[0] + spec.dir[0] * (spec.lamps_m + dist), spec.eye[1] + spec.dir[1] * (spec.lamps_m + dist),
+                             spec.eye[2] + spec.dir[2] * (spec.lamps_m + dist)};
+        double u, v, d;
+        const std::string at = "tile " + std::to_string(tile) + " view " + std::to_string(k) + " at " + std::to_string(int(dist)) + " m";
+        Check(ls::MapPoint(m, p, &u, &v, &d), at + ": in front of the view");
+        for (uint32_t other = 0; other < 3; ++other) {
+          float ouv[4], orect[4];
+          ls::UvRect(atlas, other, ouv);
+          ls::PublishedRect(ouv, orect);
+          const bool inside = u >= orect[0] && u <= orect[2] && v >= orect[1] && v <= orect[3];
+          Check(inside == (other == k), at + ": the axis point is in tile " + std::to_string(other) + "'s rectangle only when it is its own");
+        }
+        CheckNear(u * atlas.width(), ls::TileAt(atlas, k).x + tile * 0.5, 0.1, at + ": the axis is the middle of the tile (x)");
+        CheckNear(v * atlas.height(), tile * 0.5, 0.1, at + ": the axis is the middle of the tile (y)");
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// which cars get a view
+// ---------------------------------------------------------------------------
+
+// A car with one lamp at (x, 0.7, z).
+ls::Light CarLamp(uint32_t key, double x, double z, bool player = false, uint32_t index = 0) { return Lamp(x, 0.7, z, 0.0, 0.0, 1.0, key, player, index); }
+
+// Picks with a fresh set of lights each time (the index is the light's place in the set): the car keys in the picked order.
+std::vector<uint32_t> Keys(const ls::Group* groups, uint32_t n) {
+  std::vector<uint32_t> keys;
+  for (uint32_t i = 0; i < n; ++i) {
+    keys.push_back(groups[i].car_key);
+  }
+  return keys;
+}
+
+bool Same(const std::vector<uint32_t>& a, std::initializer_list<uint32_t> b) { return a == std::vector<uint32_t>(b); }
+
+void CheckPicking() {
+  const ls::PickContext none;
+  // The player's car first and always; the others nearest first. Four lit cars: the player's, and others at 30, 12 and 60 m from its lamps.
+  ls::Light cars[4] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 30, false, 1), CarLamp(3, 12, 0, false, 2), CarLamp(4, 0, -60, false, 3)};
+  ls::Group g[4];
+  {
+    ls::ViewPicker p;
+    uint32_t n = p.Pick(cars, 4, ls::MaxViews(ls::Level::kHigh, 0), none, g);
+    Check(n == 2 && Same(Keys(g, n), {1, 3}), "high: the player's car and the nearest other car (12 m)");
+    ls::ViewPicker q;
+    n = q.Pick(cars, 4, ls::MaxViews(ls::Level::kUltra, 0), none, g);
+    Check(n == 3 && Same(Keys(g, n), {1, 3, 2}), "ultra: the player's car and the two nearest other cars (12 m, 30 m); the 60 m car has none");
+    ls::ViewPicker r;
+    n = r.Pick(cars, 4, 4, none, g);
+    Check(n == 4 && Same(Keys(g, n), {1, 3, 2, 4}), "four views: every car, nearest first");
+    ls::ViewPicker s;
+    n = s.Pick(cars, 4, 1, none, g);
+    Check(n == 1 && g[0].is_player, "one view: the player's");
+    Check(s.Pick(cars, 4, 0, none, g) == 0 && s.held_count() == 0, "no view: none, and nobody holds one");
+    Check(s.Pick(cars, 0, 3, none, g) == 0, "no light: no view");
+  }
+  // The player's car is first even when it is the farthest from everything (the player listed last in the set, with a car that is near the camera).
+  {
+    ls::Light order[3] = {CarLamp(7, 0, 5, false, 0), CarLamp(8, 0, 9, false, 1), CarLamp(1, 0, 200, true, 2)};
+    ls::PickContext camera;
+    camera.have_reference = true;  // the camera is next to the other cars
+    camera.reference[2] = 6.0;
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(order, 3, 2, camera, g);
+    Check(n == 2 && g[0].car_key == 1 && g[0].is_player && g[1].car_key == 7, "the player's car is first whatever its place, then the nearest to the camera");
+  }
+  // No lamp of the player's: the best other cars, from the first light's place when there is no camera.
+  {
+    ls::Light others[3] = {CarLamp(5, 50, 0, false, 0), CarLamp(6, 0, 0, false, 1), CarLamp(9, 20, 0, false, 2)};
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(others, 3, 3, none, g);
+    Check(n == 3 && Same(Keys(g, n), {5, 9, 6}), "no player's lamp: the first light's car is the reference (itself, then 30 m, then 50 m)");
+  }
+  // The camera, not the player, is the reference when it is known: a car beside the camera but far from the player's car wins the second view.
+  {
+    ls::Light mix[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 20, 0, false, 1), CarLamp(3, 0, -40, false, 2)};
+    ls::PickContext camera;
+    camera.have_reference = true;
+    camera.reference[2] = -35.0;  // 5 m from car 3, 35 m from car 2
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(mix, 3, 2, camera, g);
+    Check(n == 2 && g[1].car_key == 3, "the importance is measured from the camera when it is known");
+  }
+  // The screen: a near car whose lamps are off the screen is worth 0.35 times as much as it is. A camera at the origin looking along +z, 90 degrees.
+  {
+    ls::ViewSpec view;
+    view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+    view.dir[0] = 0.0;
+    view.dir[1] = 0.0;
+    view.dir[2] = 1.0;
+    view.fov = ls::Rad(90.0);
+    view.near_m = 0.5;
+    view.far_m = 500.0;
+    tp::Mat4 vp;
+    Check(ls::LightClip(view, false, &vp), "a camera for the screen test");
+    const double on[3] = {0.0, 0.0, 10.0}, edge_in[3] = {12.0, 0.0, 10.0}, edge_out[3] = {14.0, 0.0, 10.0}, behind[3] = {0.0, 0.0, -5.0}, above[3] = {0.0, 14.0, 10.0};
+    Check(ls::OnScreen(vp, on, 1.3) && ls::OnScreen(vp, edge_in, 1.3) && !ls::OnScreen(vp, edge_out, 1.3) && !ls::OnScreen(vp, behind, 1.3) && !ls::OnScreen(vp, above, 1.3),
+          "a point is on the screen up to a third beyond the edge, never behind the camera");
+    Check(!ls::OnScreen(vp, edge_in, 1.0) && ls::OnScreen(vp, on, 1.0), "the margin is a share of the clip box");
+    ls::Light two[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, -15, false, 1), CarLamp(3, 0, 40, false, 2)};  // car 2 is behind the camera, car 3 ahead
+    ls::PickContext screen;
+    screen.have_reference = true;
+    screen.have_screen = true;
+    screen.view_projection = vp;
+    ls::ViewPicker p;
+    uint32_t n = p.Pick(two, 3, 2, screen, g);
+    Check(n == 2 && g[1].car_key == 3, "a car 15 m behind the camera loses the view to one 40 m ahead of it (0.35 x 0.74 = 0.26 against 0.28)");
+    ls::ViewPicker q;
+    n = q.Pick(two, 3, 2, none, g);  // no screen known: distance alone, car 2 first
+    Check(n == 2 && g[1].car_key == 2, "with no screen known the distance alone ranks them");
+  }
+  // The importance's numbers: a half at 25 m, 0.35 off the screen, 1.3 for the holder.
+  CheckNear(ls::ViewImportance(0.0, true, false), 1.0, 1e-12, "importance 1 at the camera");
+  CheckNear(ls::ViewImportance(25.0, true, false), 0.5, 1e-12, "... a half at 25 m");
+  CheckNear(ls::ViewImportance(25.0, false, false), 0.5 * 0.35, 1e-12, "... 0.35 of that off the screen");
+  CheckNear(ls::ViewImportance(25.0, true, true), 0.5 * 1.3, 1e-12, "... 1.3 times it for the car that holds a view");
+  Check(ls::ViewImportance(10.0, true, false) > ls::ViewImportance(20.0, true, false) && ls::ViewImportance(10.0, false, false) < ls::ViewImportance(10.0, true, false),
+        "nearer and on the screen is more important");
+}
+
+void CheckPickingHysteresis() {
+  const ls::PickContext none;
+  ls::Group g[4];
+  // Two other cars at about the same distance from the player's car that trade places with every frame (a pass, two cars side by side): with only ONE view for
+  // them (high with the player's car and one other) the picking without a memory flips every other frame, the picker keeps the holder.
+  int flips_plain = 0, flips_sticky = 0;
+  uint32_t last_plain = 0, last_sticky = 0;
+  ls::ViewPicker sticky;
+  for (int frame = 0; frame < 200; ++frame) {
+    const double wobble = (frame % 2 == 0) ? 0.5 : -0.5;                  // metres: the cars' distances cross every frame
+    ls::Light cars[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 20 + wobble, false, 1), CarLamp(3, 0, 20 - wobble, false, 2)};
+    ls::Group plain[4];
+    const uint32_t a = ls::GroupLights(cars, 3, 2, plain);
+    const uint32_t b = sticky.Pick(cars, 3, 2, none, g);
+    Check(a == 2 && b == 2, "two views");
+    if (frame > 0) {
+      flips_plain += plain[1].car_key != last_plain ? 1 : 0;
+      flips_sticky += g[1].car_key != last_sticky ? 1 : 0;
+    }
+    last_plain = plain[1].car_key;
+    last_sticky = g[1].car_key;
+  }
+  Check(flips_plain >= 190, "without a memory the view goes back and forth with every wobble (" + std::to_string(flips_plain) + " swaps in 200 frames)");
+  Check(flips_sticky == 0, "with the holder kept it never moves (" + std::to_string(flips_sticky) + " swaps)");
+  // A challenger takes the view when it is clearly more important: the holder 25 m away (0.5), the challenger nearer. 1.3 x 0.5 = 0.65 = 1 / (1 + (d/25)^2) at d = 18.3 m.
+  {
+    ls::ViewPicker p;
+    ls::Light start[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 40, false, 2)};
+    Check(p.Pick(start, 3, 2, none, g) == 2 && g[1].car_key == 2 && p.Holds(2) && p.Holds(1) && !p.Holds(3), "the nearer car gets the view first");
+    ls::Light close_a[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 20, false, 2)};  // the challenger at 20 m: 0.61 < 0.65
+    Check(p.Pick(close_a, 3, 2, none, g) == 2 && g[1].car_key == 2, "a challenger at 20 m does not take a holder's view at 25 m");
+    ls::Light close_b[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 15, false, 2)};  // 15 m: 0.735 > 0.65
+    Check(p.Pick(close_b, 3, 2, none, g) == 2 && g[1].car_key == 3, "a challenger at 15 m takes it");
+    Check(p.Holds(3) && !p.Holds(2), "... and now it holds it: the old holder must beat it by the same margin");
+    Check(p.Pick(close_a, 3, 2, none, g) == 2 && g[1].car_key == 3, "so the 20 m car (0.61) against the new holder at 15 m keeps it");
+  }
+  // A holder that leaves the set loses the view; one that comes back later (after Forget, or after another holder) starts with no bonus.
+  {
+    ls::ViewPicker p;
+    ls::Light a[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 30, false, 1), CarLamp(3, 0, 32, false, 2)};
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 2, "the nearer of two gets the view");
+    ls::Light b[2] = {CarLamp(1, 0, 0, true, 0), CarLamp(3, 0, 32, false, 1)};
+    Check(p.Pick(b, 2, 2, none, g) == 2 && g[1].car_key == 3 && !p.Holds(2), "the holder left: the other car takes the view");
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 3, "car 2 is back and 2 m nearer: the new holder keeps it (1.3 x)");
+    p.Forget();
+    Check(p.held_count() == 0 && !p.Holds(3), "Forget ends every hold");
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 2, "after Forget the nearer car wins again");
+    // A gap of no lights keeps the holders (a night's frame or two without a set); a view count of 0 ends them.
+    p.Pick(nullptr, 0, 2, none, g);
+    Check(p.Holds(2), "no light for a frame: who holds a view is kept");
+    ls::Light c[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 34, false, 1), CarLamp(3, 0, 32, false, 2)};
+    p.Pick(c, 3, 2, none, g);
+    Check(g[1].car_key == 2, "... so the holder is still ahead of a challenger 2 m nearer");
+    p.Pick(c, 3, 0, none, g);
+    Check(p.held_count() == 0, "a level with no views ends them");
+  }
+  // The holders of a level with more views: three views, three cars hold them; a fourth that comes near enough takes the farthest holder's, never the player's.
+  {
+    ls::ViewPicker p;
+    ls::Light cars[4] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 20, false, 1), CarLamp(3, 0, 30, false, 2), CarLamp(4, 0, 90, false, 3)};
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 2, 3}), "ultra: the player's, 20 m and 30 m");
+    cars[3] = CarLamp(4, 0, 10, false, 3);
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 4, 2}) && !p.Holds(3), "a car at 10 m takes the farthest holder's view (the car at 30 m), never the player's");
+    cars[3] = CarLamp(4, 0, 25, false, 3);
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 2, 4}) && p.Holds(4) && !p.Holds(3),
+          "(the car that took the view, now at 25 m, keeps it against the car at 30 m: 0.65 against 0.41; the car at 20 m is ahead of it)");
+  }
+  // The view order does not matter to the maps but is stable: the same lights and holders always give the same order (ties by car key).
+  {
+    ls::Light twins[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(9, 10, 0, false, 1), CarLamp(5, -10, 0, false, 2)};
+    ls::ViewPicker p, q;
+    p.Pick(twins, 3, 3, none, g);
+    const std::vector<uint32_t> first = Keys(g, 3);
+    q.Pick(twins, 3, 3, none, g);
+    Check(first == Keys(g, 3) && Same(first, {1, 5, 9}), "two cars at the same distance: the lower car key first");
+  }
+}
+
 }  // namespace
 
 int main() {
   CheckTypes();
   CheckSetting();
   CheckAtlas();
+  CheckLevels();
+  CheckThreeViewsLand();
   CheckLights();
   CheckGroups();
+  CheckPicking();
+  CheckPickingHysteresis();
   CheckFit();
   CheckWorldToShadow();
   CheckCamera();
