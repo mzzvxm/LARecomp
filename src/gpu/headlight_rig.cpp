@@ -259,14 +259,17 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
   }
   const DrawRecord& r = d.view->record();
   if (r.kind == DrawKind::kInline) {
+    ++lens_inline_;
     return true;
   }
   native_gfx::DeclarationElement element;
   if (!car_mesh::FindElement(*d.view, r, car_mesh::kUsagePosition, &element)) {
+    ++lens_no_element_;
     return true;
   }
   const car_mesh::StreamRef stream = car_mesh::ResolveStream(*d.view, r, element.stream);
   if (!stream.ok) {
+    ++lens_no_stream_;
     return true;
   }
   uint64_t key = car_frame_rules::Mix(uint64_t(stream.address), uint64_t(stream.size));
@@ -288,6 +291,12 @@ bool HeadlightRig::LensCentre(const MainDraw& d, const car_dump::CarMatrices& m,
     LensBox box;
     if (mesh_.problem == car_mesh::Problem::kNone) {
       box.valid = car_frame_rules::BoxOfMesh(mesh_.local.data(), mesh_.local.size() / 3, mesh_.tri.data(), mesh_.tri.size(), box.lo, box.hi);
+    }
+    // The census: a mesh whose box cannot be had puts its lens at the car's root, where it is left out (a car whose front lens cannot be read has no light).
+    if (box.valid) {
+      ++boxes_readable_;
+    } else {
+      ++boxes_unreadable_[std::min<size_t>(size_t(mesh_.problem), boxes_unreadable_.size() - 1)];
     }
     found = boxes_.emplace(key, box).first;
   }
@@ -568,6 +577,25 @@ const headlight_rules::HeadlightConstants& HeadlightRig::Block() {
   return block_;
 }
 
+uint32_t HeadlightRig::BoxesUnreadable() const {
+  uint32_t total = 0;
+  for (const uint32_t n : boxes_unreadable_) {
+    total += n;
+  }
+  return total;
+}
+
+std::string HeadlightRig::UnreadableReasons() const {
+  std::string out;
+  for (size_t i = 0; i < boxes_unreadable_.size(); ++i) {
+    if (boxes_unreadable_[i] != 0) {
+      // index 0 is kNone: a mesh that was read but holds no box (no triangles, a degenerate box)
+      out += std::format("{}{} {}", out.empty() ? "" : ", ", i == 0 ? "empty box" : car_mesh::ProblemName(car_mesh::Problem(i)), boxes_unreadable_[i]);
+    }
+  }
+  return out.empty() ? std::string("none") : out;
+}
+
 void HeadlightRig::Log(size_t picked) {
   if (frame_ - last_log_ < kLogFrames) {
     return;
@@ -581,14 +609,16 @@ void HeadlightRig::Log(size_t picked) {
   }
   REXLOG_INFO("{} frame {}: night {:.2f} (the {} sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
               "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}; {} coasting after the game stopped drawing the car; the view {}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
-              "pipeline was being made), {} lens boxes kept",
+              "pipeline was being made), {} lens boxes kept ({} meshes read since the start: {} readable, unreadable by reason [{}]; draws with no mesh to read since the last line: inline {}, no position {}, no stream {})",
               kPrefix, frame_, night_, world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames ? "world's" : "lens draw's", sun_seen_ ? "seen" : "NOT seen",
               sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
               lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, lens_no_bone_, lens_at_root_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
               pts_only_lamps_, pts_disagree_, last_cars_, last_cars_lit_, picked,
               lights.empty() ? std::string("none") : lights, tracker_.coasting_count(), last_view_ ? "known (the beams count)" : "not known",
-              variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size());
+              variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size(), boxes_readable_ + BoxesUnreadable(), boxes_readable_, UnreadableReasons(), lens_inline_,
+              lens_no_element_, lens_no_stream_);
   lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = lens_no_bone_ = lens_at_root_ = 0;
+  lens_inline_ = lens_no_element_ = lens_no_stream_ = 0;
   variant_draws_ = variant_alpha_draws_ = fallback_draws_ = 0;
 }
 

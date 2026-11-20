@@ -171,6 +171,8 @@ class HeadlightRig {
   void Publish(const std::array<headlight_rules::Tracked, headlight_rules::kMaxLights>& tracked, size_t count);
   void RebuildBlock();
   void Log(size_t picked);
+  uint32_t BoxesUnreadable() const;
+  std::string UnreadableReasons() const;
   void ClearPublished();
 
   GuestMemory* memory_ = nullptr;
@@ -216,6 +218,10 @@ class HeadlightRig {
   // The census.
   uint32_t lens_draws_ = 0, lens_player_ps_ = 0, lens_traffic_ps_ = 0, lens_no_pose_ = 0, lens_no_id_ = 0;
   uint32_t lens_no_bone_ = 0, lens_at_root_ = 0;  // left out: no bone palette in the draw (sprites), a centre at the car's root
+  // Why a lens's centre falls to the car's root (HL-EDGE-FADE census): meshes whose box could not be had by the reason (car_mesh::Problem; 0 = read but empty), and draws with no mesh to read.
+  uint32_t boxes_readable_ = 0;
+  std::array<uint32_t, 9> boxes_unreadable_{};
+  uint32_t lens_inline_ = 0, lens_no_element_ = 0, lens_no_stream_ = 0;
   uint32_t variant_draws_ = 0, variant_alpha_draws_ = 0, fallback_draws_ = 0;
   uint64_t last_log_ = 0;
   uint64_t night_frames_ = 0, frames_ = 0;
