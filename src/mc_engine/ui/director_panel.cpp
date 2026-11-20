@@ -1164,10 +1164,13 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::TextColored(ToVec4(kYellow), "%s", model_.empty() ? "(pick a model)" : dp::ModelTitle(model_).c_str());
         const std::vector<std::string> list = dp::FilterModels(models_, search_, recents_, 300);
         ImGui::BeginChild("##modellist", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, std::max(40.0f, ImGui::GetContentRegionAvail().y - 88.0f)), ImGuiChildFlags_Borders);
+        int shown_rows = 0;
         for (const std::string& name : list) {
             const bool recent = std::find(recents_.begin(), recents_.end(), name) != recents_.end();
             std::string row = dp::ModelTitle(name) + (recent ? "  (RECENT)" : "");
             if (ImGui::Selectable(row.c_str(), name == model_)) model_ = name;
+            if (shown_rows < 6) Geo("MODEL " + std::to_string(shown_rows));  // where a test clicks the first rows of the picker
+            ++shown_rows;
         }
         if (models_.empty()) ImGui::TextColored(ToVec4(kDim), "(the model list comes from the game: it fills in a moment)");
         ImGui::EndChild();
@@ -1267,6 +1270,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::SliderFloat("SPEED", &wp_speed_, 2.0f, 60.0f, "%.0f m/s");
         ImGui::SameLine();
         if (ImGui::Checkbox("DROP WAYPOINTS", &drop_mode_)) {}
+        Geo("DROP WAYPOINTS");
         ImGui::SameLine();
         if (Btn("DROP AT CAMERA")) {
             const std::string name = dp::SafeRouteName(route_name_);
