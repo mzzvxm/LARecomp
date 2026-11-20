@@ -167,6 +167,11 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
+    volumetrics_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the volumetric light (volumetrics.h)
+    volumetrics_.SetInputSource(&vol_inputs_);  // its street lamps and headlights are the producer's (volumetrics_inputs.h)
+#if __has_include("local_shadow.h")
+    vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (local_shadow.h)
+#endif
     gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
@@ -221,6 +226,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetAmbientOcclusion(&ao_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
     scene_.SetSunShafts(&shafts_);
+    scene_.SetVolumetrics(&volumetrics_);
     scene_.SetGBuffer(&gbuffer_);
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
@@ -288,6 +294,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     temporal_.Shutdown();
     ao_.Shutdown();
     shafts_.Shutdown();
+    volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
     local_shadow_.Shutdown();
     gbuffer_.Shutdown();
     car_shadow_.Shutdown();
@@ -463,6 +470,7 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   shafts_.Shutdown();
+  volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
   local_shadow_.Shutdown();
   gbuffer_.Shutdown();
   car_shadow_.Shutdown();
@@ -1643,6 +1651,7 @@ void Renderer::ReportFrameStats() {
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
+                           (volumetrics_.HeldBytes() != 0 ? ", volumetric light " + mib(volumetrics_.HeldBytes()) : std::string()) +
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +

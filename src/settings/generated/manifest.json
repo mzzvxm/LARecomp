@@ -2268,6 +2268,254 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_volumetrics": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Volumetric light: beams of light under the street lamps and the cars' headlights, a haze that light shows in, \"\n    \"and the sun's shafts between trees and buildings (through the game's own shadow cascades). It is a camera \"\n    \"aligned volume lit by compute passes and added to the scene once, so it costs the same whatever is on screen: \"\n    \"medium, high or ultra grow the volume and the number of lamps and headlights it lights. off is the game's own \"\n    \"picture (its fog, and in rain its cone meshes under the lamps). auto (the default) is medium on a mid-range \"\n    \"graphics card, high on a fast one and off on an integrated one. Nothing is added by day in clear weather with \"\n    \"no light on. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"medium\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_census": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: every Nth guest frame (and the first three frames with the main view), one log line of what the \"\n    \"volumetric light did: what became of the frame, the collector's atlas, the fog quad's colour. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 100000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_keep_cones": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: draws the game's own cone meshes under the lamps (xrage_spotlightfog, in rain) as well as the \"\n    \"volumetric light, to compare the two. Without it the cones are not drawn in a frame the volume was made. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_density": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the look's own: 0.0012 per metre in a clear night, \"\n    \"0.008 in rain, 0.010 in fog; 1: as the look has it). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 50.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_ground_height": {
+  "type": "f64",
+  "default": "40.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on the scale height of the thicker haze above the ground in the volumetric light (40: as the look has it, 0: no \"\n    \"ground layer). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 500.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_ground_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on how much thicker the look makes the haze at the ground than high above it (1: as the look has it, 0: \"\n    \"none). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 20.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_noise": {
+  "type": "f64",
+  "default": "0.35",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how much the haze's thickness varies from place to place in the volumetric light (0: even, 1: \"\n    \"patches of clear air). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_wind": {
+  "type": "f64",
+  "default": "2.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how fast, in metres a second, the haze's patches drift in the volumetric light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 50.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_g_sun": {
+  "type": "f64",
+  "default": "0.6",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter the sun forward (0.6: as the look has it; the look's value is 0.6 to 0.72, 0: evenly, toward 0.95: only toward the camera when \"\n    \"looking at the sun). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_g_lamp": {
+  "type": "f64",
+  "default": "0.25",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter a street lamp's light forward (0.25: as the look has it). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_g_head": {
+  "type": "f64",
+  "default": "0.6",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter a car's headlight forward (0.6: as the look has it; oncoming lights glare in fog). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 0.95}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_lamp_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on the street lamps' light in the volumetric light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 50.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_head_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on the cars' headlights' light in the volumetric light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 50.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_sun_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on the sun's light in the volumetric light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 50.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_extinction": {
+  "type": "f64",
+  "default": "0.25",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a multiplier on how much of the haze's own dimming the volumetric light applies to the picture (0.25: as the look has it; 0: it only adds \"\n    \"light, 1: the full physical amount; the game's own fog dims the distance already). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_far": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how far in metres the volumetric light reaches (30 to the level's own, 120 on medium and 160 on \"\n    \"high and ultra). 0: the level's. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 1000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_temporal": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: blends each frame's volume with the last frame's, moved to where the camera is now (high and \"\n    \"ultra; medium has none). Off: the volume shows its noise. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_early": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: adds the volumetric light at the game's mid-scene depth copy, before the fog and the particles, \"\n    \"instead of at the game's copy of the main colour after them, to compare the two. Without it the light goes in \"\n    \"at that copy and falls back to the mid-scene point by itself when no such copy comes. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_test": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams without the game's own \"\n    \"lights: 1 a street lamp 8 m ahead and 4.5 m up (the game's street lamps are then not read), 2 a headlight (the rig's \"\n    \"headlights are then not read), 3 both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_inputs": {
+  "type": "i32",
+  "default": "3",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: which of the game's lights the volumetric light reads: 1 the street lamps (the game's per-frame lamp list), \"\n    \"2 the cars' headlights (the headlight rig's lights and, where the shadow maps run, their shadows), 3 both (the default), \"\n    \"0 neither. A bit that mcla_gpu_vol_test uses for a test light is left to the test light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_lamp_limit": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: at most this many of the game's street lamps are put in the volumetric light (the brightest in view are \"\n    \"kept, with hysteresis); 0: as many as the level reads (12 on medium, 32 on high, 48 on ultra). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 48}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_sync_builds": {
   "type": "bool",
   "default": "false",

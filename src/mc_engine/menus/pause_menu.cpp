@@ -1890,6 +1890,22 @@ std::string HeadlightsLabel(int i) {
     }
 }
 constexpr RowDynamics kHeadlightsDynamics = {.str_label = HeadlightsLabel};
+// Volumetric light (gpu/volumetrics.h, volumetrics_level.h, live): beams of light under the street lamps and the cars' headlights, a haze that light
+// shows in, and the sun's shafts between trees and buildings. AUTO picks by the graphics card and the row says what it comes to ("AUTO (HIGH)", "AUTO
+// (OFF)" on integrated graphics: gpu/gpu_class.h); OFF is the game's own picture; then MEDIUM, HIGH and ULTRA (the volume's size and the lights it
+// lights). Nothing is called low. The row is "VOLUMETRIC LIGHT" (16 characters) with a value of at most 13 ("AUTO (MEDIUM)"): 31 of the 41 a page takes.
+const char* const kNativeVolumetricsVals[]  = {"auto", "off", "medium", "high", "ultra"};
+const char* const kNativeVolumetricsNames[] = {"AUTO", "OFF", "MEDIUM", "HIGH", "ULTRA"};
+std::string VolumetricsLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kVolumetrics);
+    case 1:  return "OFF";
+    case 2:  return "MEDIUM";
+    case 3:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kVolumetricsDynamics = {.str_label = VolumetricsLabel};
 // Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
 // stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
 // until its cost is measured (gpu/gpu_class.h); or OFF, HIGH (a coarser search) or ULTRA (the full one): the stored values
@@ -2100,10 +2116,11 @@ const ItemDef kImageQualityItems[] = {
 // graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
 // (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
-// LIGHT SHADOWS: the cars' lights, then the shadows the local lights cast). The ids and the
+// LIGHT SHADOWS, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, then the beams and the haze those lights show in). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
-// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS has no dependency. 13 rows of the 24 a page can hold.
+// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 14 rows of the 24 a page can hold.
 // Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
 const ItemDef kLightItems[] = {
@@ -2145,6 +2162,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
                                 kNativeLightShadowVals, kNativeLightShadowNames, 4),
                             &kLightShadowDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
+                                kNativeVolumetricsVals, kNativeVolumetricsNames, 5),
+                            &kVolumetricsDynamics)),
 #endif
 };
 

@@ -95,6 +95,7 @@ class HostPrecache {
     kResolveFused = 4,   // ResolveMemory::FusedPipeline: fractional << 9 | msaa << 8 | format
     kAmbientOcclusion = 5,  // AmbientOcclusion: its pass and variant (ao.h Variant)
     kSunShafts = 6,         // SunShafts: its pass and variant (shafts.h Variant)
+    kVolumetrics = 7,       // Volumetrics: its compute passes and the composite per sample count (volumetrics.h Variant)
     kCarSelfRefl = 12,      // CarSelfRefl: its history pass (car_selfrefl.h Pass); the numbers between are left for other owners
     kCarShadowMap = 13,     // CarShadowMap: its matrix pass and the depth-only pipelines of the car's vertex formats (car_shadow_map.h VariantKey)
     kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
