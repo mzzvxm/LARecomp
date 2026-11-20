@@ -1989,7 +1989,7 @@ constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
 // Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
 // cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
 // lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
-// OFF, HIGH (512x512 texels a view: your headlights) or ULTRA (1024x1024: the nearest other car's too). AUTO says what it comes to on this GPU,
+// OFF, HIGH (two views of 512x512 texels: your car's headlights and the nearest car's) or ULTRA (three of 1024x1024: also the next nearest car's, sharper). AUTO says what it comes to on this GPU,
 // like the other AUTO rows (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The
 // stored words are the shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live
 // whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 12 ("AUTO (ULTRA)").
