@@ -19,6 +19,11 @@
 //   history     the previous frame's volume at the voxel's world position (the previous camera's grid), trilinear, blended in by the weight
 //               the host gives (0: never read). The voxel's sample is jittered inside the voxel by the frame's offsets so that the history
 //               averages the noise.
+//   slice lamps VOL-STABLE: a street lamp's pool (1 / (d^2 + near^2), near^2 = 0.618 x the game's intensity: 6 to 8 m) is narrower than a slice past about
+//               40 m, so ONE sample of it per voxel pulsed as the camera moved a slice and turned into noise under the jitter. With the flag (the push's
+//               slots.w bit 0) a lamp's term is the exact AVERAGE of the kernel over the slice along the voxel's ray (an arc tangent), in up to three pieces where
+//               a piece would be wider than the pool, the cone, the window and the phase function taken at each piece's point nearest the lamp, and the lamp
+//               takes no jitter in depth (LampSlice; volumetrics_stable.h LampSliceFactor is the twin). The headlights and the sun keep their one jittered sample.
 // The shadow lookups are the stubs of the first version: a sun tap and a headlight tap; VOL-SHADERS refines them (calibration against the road's
 // pool of light, CHECK V7, and the shadow taps, V9).
 //
@@ -234,6 +239,69 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
   return c.xyz * (strength * spot * lit * LampFalloff(dist, a.w, near_sq > 0.0 ? near_sq : 0.64) * HenyeyGreenstein(dot(travel, -ray), g));
 }
 
+// --- the lamps' term averaged over a slice (volumetrics_stable.h: SliceAverageKernel, LampStretchFactor, LampSliceFactor are the twins) -----------------------------
+
+// The push's slots.w flags (volumetrics_stable.h kInjectFlag*).
+static const uint kInjectFlagSliceLamps = 1u;
+// A piece of a slice is at most this many pool widths (h = sqrt(dmin^2 + near^2)) long; a slice has at most this many pieces.
+static const float kPieceReach = 0.6;
+static const uint kMaxPieces = 3u;
+
+// What a lamp scatters toward the camera through the stretch [s0, s1] of the unit ray `ray` from `cam`, per unit of its colour x strength: 1 / (d^2 + near^2)
+// averaged over the stretch, times the window, the cone and the phase function at the stretch's point nearest the lamp. `a` = pos, range; `b` = dir, cos_outer;
+// `c` = colour, cos_inner (the lamp's three float4).
+float StretchFactor(float4 a, float4 b, float4 c, float near_sq, float3 cam, float3 ray, float s0, float s1, float g) {
+  const float3 m = a.xyz - cam;
+  const float s_c = dot(m, ray);
+  const float dmin_sq = max(dot(m, m) - s_c * s_c, 0.0);
+  const float s_near = clamp(s_c, s0, s1);
+  const float3 delta = cam + ray * s_near - a.xyz;
+  const float dist_sq = dot(delta, delta);
+  if (!(dist_sq < a.w * a.w)) {
+    return 0.0;
+  }
+  const float dist = sqrt(dist_sq);
+  const float3 travel = delta / max(dist, 1e-4);
+  const float spot = SpotFactor(dot(travel, b.xyz), b.w, c.w);
+  if (!(spot > 0.0)) {
+    return 0.0;
+  }
+  const float r = dist / a.w;
+  const float window = saturate(1.0 - r * r * r * r);
+  const float h = sqrt(dmin_sq + near_sq);
+  const float len = max(s1 - s0, 1e-6);
+  // atan(a) - atan(b) = atan2(a - b, 1 + a b): exact where the two arc tangents are nearly equal (a thin slice far from the closest approach)
+  const float ka = (s1 - s_c) / h;
+  const float kb = (s0 - s_c) / h;
+  const float kernel = atan2(len / h, 1.0 + ka * kb) / (h * len);
+  return window * window * kernel * spot * HenyeyGreenstein(dot(travel, -ray), g);
+}
+
+float3 LampSlice(uint offset, float3 cam, float3 ray, float s0, float s1, float g, float strength) {
+  const float4 a = VolF4(offset);
+  const float4 b = VolF4(offset + 16u);
+  const float4 c = VolF4(offset + 32u);
+  const float raw_near = asfloat(g_vol.Load(offset + 52u));  // the lamp's near radius squared (0: the default 0.8 m)
+  const float near_sq = raw_near > 0.0 ? raw_near : 0.64;
+  const float3 m = a.xyz - cam;
+  const float s_c = dot(m, ray);
+  // out of reach of the whole stretch: out of reach of every piece of it
+  const float3 e = cam + ray * clamp(s_c, s0, s1) - a.xyz;
+  if (!(dot(e, e) < a.w * a.w)) {
+    return 0.0;
+  }
+  const float h = sqrt(max(dot(m, m) - s_c * s_c, 0.0) + near_sq);
+  const float len = s1 - s0;
+  const uint pieces = clamp(uint(ceil(len / max(kPieceReach * h, 1e-3))), 1u, kMaxPieces);
+  float total = 0.0;
+  [loop] for (uint i = 0u; i < pieces; ++i) {
+    const float pa = s0 + len * float(i) / float(pieces);
+    const float pb = s0 + len * float(i + 1u) / float(pieces);
+    total += StretchFactor(a, b, c, near_sq, cam, ray, pa, pb, g);
+  }
+  return c.xyz * (strength * total / float(pieces));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   const uint4 grid = VolU4(kO_grid);
@@ -289,8 +357,20 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
   const uint4 counts = VolU4(kO_counts);
   float3 lights = 0.0;
-  [loop] for (uint i = 0u; i < counts.x; ++i) {
-    lights += SpotLight(kO_lamps + i * 64u, p, ray, mixv.z, scale.y, false);
+  if ((g_push.slots.w & kInjectFlagSliceLamps) != 0u) {
+    // the lamps through the voxel's slice, along the (x and y jittered) ray of the voxel: no jitter in depth, the slice's own bounds
+    const float3 dirvec = cam_right * ((2.0 * uv.x - 1.0) * tan_x) + cam_up * ((1.0 - 2.0 * uv.y) * tan_y) + cam_fwd;
+    const float dir_len = length(dirvec);
+    const float3 ray_l = dirvec / dir_len;
+    const float z0 = depth.x * exp(depth.z * float(id.z) / float(grid.z));
+    const float z1 = depth.x * exp(depth.z * float(id.z + 1u) / float(grid.z));
+    [loop] for (uint i = 0u; i < counts.x; ++i) {
+      lights += LampSlice(kO_lamps + i * 64u, cam_pos.xyz, ray_l, z0 * dir_len, z1 * dir_len, mixv.z, scale.y);
+    }
+  } else {
+    [loop] for (uint i = 0u; i < counts.x; ++i) {
+      lights += SpotLight(kO_lamps + i * 64u, p, ray, mixv.z, scale.y, false);
+    }
   }
   [loop] for (uint j = 0u; j < counts.y; ++j) {
     lights += SpotLight(kO_headlights + j * 64u, p, ray, mixv.w, scale.z, true);

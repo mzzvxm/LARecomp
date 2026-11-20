@@ -229,6 +229,7 @@ class Volumetrics {
   uint32_t off_frames_ = 0;
   bool keep_cones_ = false;
   float test_flags_ = 0.0f;
+  bool stable_ = true;      // mcla_gpu_vol_stable: the VOL-STABLE rules (volumetrics_stable.h); false is the first version, for the A/B
 
   // --- the frame ---
   uint64_t frame_ = 0;

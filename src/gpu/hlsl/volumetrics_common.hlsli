@@ -27,7 +27,7 @@ RWTexture2D<float4> g_out : register(u0, space3);
 
 struct VolPush {
   // x the history volume's bindless slot (the scatter of last frame), y the scatter volume's slot (the integrate reads it), z flags (bit 0:
-  // history in use, bit 1: shadows of the headlights in use), w unused
+  // history in use, bit 1: shadows of the headlights in use), w the inject's flags (bit 0: the lamps' term averaged over the slice, VOL-STABLE)
   uint4 slots;
   // unused for now (room for a debug view)
   float4 data;

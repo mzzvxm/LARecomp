@@ -2516,6 +2516,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vol_stable": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: keeps the volumetric light steady in motion: a street lamp's glow is averaged over each slice of the \"\n    \"light's grid instead of sampled once at a random place in it (so it no longer pulses as the camera moves and the history no longer has \"\n    \"noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, \"\n    \"the history's weight follows time, not the frame count, and the lamps fade in a real 0.35 s whatever the frame rate. False: the first version. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_sync_builds": {
   "type": "bool",
   "default": "false",
