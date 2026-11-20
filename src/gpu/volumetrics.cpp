@@ -849,6 +849,11 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if (!ComputeLight(&light)) {
     return false;
   }
+  for (int i = 0; i < 3; ++i) {
+    census_sun_[i] = light.to_sun[i];
+  }
+  census_sun_[3] = float(light.elevation);
+  census_sun_valid_ = true;
 
   vol::GridDesc grid = vol::GridFor(level_);
   if (!grid.valid()) {
@@ -1259,12 +1264,14 @@ void Volumetrics::Census() {
   }
   ++census_frames_logged_;
   REXLOG_INFO("{} frame {}: {} view, {} (level {}); {} first points, {} gated, {} without a camera, {} lost, {} composites; collector: {} (atlas slot {}, "
-              "age {} frames), fog quad: {}; history {}; camera this frame's in {} of {} volumes",
+              "age {} frames), fog quad: {}; history {}; camera this frame's in {} of {} volumes; sun {}",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", OutcomeName(outcome_), vol::Name(level_), triggers_, gated_, skipped_no_camera_, lost_,
               runs_, collector_.valid ? std::format("{} draws", collector_.draws) : std::string("none"),
               collector_.valid && collector_.atlas_slot != vol::kNoSlot ? std::to_string(collector_.atlas_slot) : std::string("none"),
               collector_.valid ? frame_ - collector_.frame : 0, fog_seen_ ? std::format("colour ({:.3f}, {:.3f}, {:.3f}), opacity {:.2f}", fog_colour_[0], fog_colour_[1], fog_colour_[2], fog_colour_[3]) : std::string("not seen"),
-              history_.valid ? "valid" : "none", current_camera_, volumes_);
+              history_.valid ? "valid" : "none", current_camera_, volumes_,
+              census_sun_valid_ ? std::format("toward ({:.3f}, {:.3f}, {:.3f}), elevation {:.1f} degrees", census_sun_[0], census_sun_[1], census_sun_[2], census_sun_[3])
+                                : std::string("not read"));
 }
 
 }  // namespace mcla::gpu

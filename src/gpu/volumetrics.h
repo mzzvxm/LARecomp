@@ -325,6 +325,9 @@ class Volumetrics {
   uint64_t skipped_no_camera_ = 0;
   uint64_t volumes_ = 0;         // the frames that made the passes (the census: how many of them had the frame's own camera)
   uint64_t current_camera_ = 0;  // ... of which the vertex constants gave the frame's own camera, not the previous frame's
+  float census_sun_[4] = {};     // the last usable light constants' direction TO the sun (x, y, z, in the game's world: heading = atan2(x, z)) and its elevation in degrees: the census says it,
+                                 // so that a scene's camera can be aimed at the sun (chain-volumetrics.ps1's dusk views)
+  bool census_sun_valid_ = false;
 };
 
 }  // namespace mcla::gpu
