@@ -2527,6 +2527,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vol_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 shows only the light the volumetric light adds, in place of the picture (to see or measure how steady \"\n    \"it is), 2 the same eight times brighter, 0 the picture. The bloom and the tone map still follow it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_sync_builds": {
   "type": "bool",
   "default": "false",

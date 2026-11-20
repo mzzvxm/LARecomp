@@ -336,6 +336,7 @@ void Volumetrics::BeginFrame() {
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
   stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
+  view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 2));
   const vol::Choice choice = ReadChoice();
   Level level = choice.level;
   if (!ready_ && vol::On(level) && !shaders_failed_ && MakeLayoutAndShaders()) {
@@ -1159,7 +1160,7 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   push.slots[0] = depth_slot;
   push.slots[1] = accum_.slot;
   push.slots[2] = g.nx | (g.ny << 8) | (g.nz << 16) | (g.tiles_x << 24);
-  push.slots[3] = plan.depth_sample;
+  push.slots[3] = vol::ApplyWord(plan.depth_sample, stable_, view_);
   push.sizes[0] = float(plan.render[0]);
   push.sizes[1] = float(plan.render[1]);
   push.sizes[2] = plan.extinction_scale;

@@ -1242,6 +1242,9 @@ class GPUSettings final : public rex::SettingOwner {
     "noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, "
     "the history's weight follows time, not the frame count, and the lamps fade in a real 0.35 s whatever the frame rate. False: the first version. Live.", rex::kDebugOnly);
 
+  REX_SETTING(i32, mcla_gpu_vol_view, 0, "Diagnostic: 1 shows only the light the volumetric light adds, in place of the picture (to see or measure how steady "
+    "it is), 2 the same eight times brighter, 0 the picture. The bloom and the tone map still follow it. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1682,6 +1685,7 @@ inline auto& mcla_gpu_vol_test = g_gpu.mcla_gpu_vol_test;
 inline auto& mcla_gpu_vol_inputs = g_gpu.mcla_gpu_vol_inputs;
 inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_vol_stable = g_gpu.mcla_gpu_vol_stable;
+inline auto& mcla_gpu_vol_view = g_gpu.mcla_gpu_vol_view;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

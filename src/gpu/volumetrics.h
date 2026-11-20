@@ -230,6 +230,7 @@ class Volumetrics {
   bool keep_cones_ = false;
   float test_flags_ = 0.0f;
   bool stable_ = true;      // mcla_gpu_vol_stable: the VOL-STABLE rules (volumetrics_stable.h); false is the first version, for the A/B
+  uint32_t view_ = 0;       // mcla_gpu_vol_view: 0 the picture, 1 the volume's light alone, 2 the same x8
 
   // --- the frame ---
   uint64_t frame_ = 0;
