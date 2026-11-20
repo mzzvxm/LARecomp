@@ -24,6 +24,7 @@
 #define CAR_RT_MASK_DRIVER 0x08   // skinned (may be absent in a first version)
 #define CAR_RT_MASK_OTHERS 0x10   // another car (an opponent, traffic, a parked car): the reflection's rays hit it, the primary ray never does
 #define CAR_RT_MASK_OTHER_CHROME 0x20  // ... and, in a draw of the chrome's shader (tailpipes, badges, trim), this bit too: the reflection pass's primary ray finds it
+#define CAR_RT_MASK_OTHER_PAINT 0x40   // ... and, in a draw of the paint's shader, this one: the opponents' reflection pass's primary ray finds it (car_rt_opp_refl.h)
 #define CAR_RT_MASK_ALL 0xFF
 #define CAR_RT_FLAG_AFTER_WORLD 0x100  // the draw came after the frame's first world draw
 

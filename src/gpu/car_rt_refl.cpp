@@ -89,6 +89,9 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   if (!denoise_ready_) {
     passes.precache().Note("ray traced car self-reflections: the denoise's layout or shader could not be made (the raw trace is read)", 0);
   }
+  // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
+  opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_,
+                  reflection_on_at_start && car_rt_refl::SettingOf(Setting().Get()) == car_rt_refl::Setting::kAuto);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
   if (reflection_on_at_start && car_rt_refl::SettingOf(Setting().Get()) == car_rt_refl::Setting::kAuto) {
@@ -158,6 +161,7 @@ void CarRtRefl::Shutdown() {
   if (passes_) {
     passes_->precache().Stop();
   }
+  opp_.Shutdown();
   // The GPU is idle and the heap goes later: the slot is not handed back (CarSelfRefl::Shutdown).
   image_ = HostImage{};
   aux_ = HostImage{};
@@ -367,6 +371,28 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   list->setComputePushConstants(0, &push, 0, sizeof(push));
   list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);
 
+  // The opponents' cars (car_rt_opp_refl.h): the same pass for the paint of the cars beside the player, a second dispatch into the same two images (nothing is recorded where no
+  // other car's paint is in the scene).
+  {
+    CarRtOppRefl::Frame opponents;
+    opponents.list = list;
+    opponents.view = &view;
+    opponents.base_push = &push;
+    opponents.base_push_bytes = sizeof(push);
+    opponents.output_set = trace_set_.set.get();
+    opponents.image = &image_;
+    opponents.aux = &aux_;
+    opponents.image_width = history.width;
+    opponents.image_height = history.height;
+    opponents.render_width = info.render_width;
+    opponents.render_height = info.render_height;
+    opponents.divisor = std::max<uint32_t>(info.divisor, 1);
+    opponents.tan_x = info.tan_x;
+    opponents.tan_y = info.tan_y;
+    opponents.frame = info.frame;
+    opp_.Record(opponents);
+  }
+
   result_in_scratch_ = false;
   if (denoise_passes == 0) {
     transition(Stage::GRAPHICS, {{&image_, Layout::SHADER_READ}});
@@ -564,7 +590,8 @@ std::string CarRtRefl::CensusText() {
   census_passes_ = passes_run_;
   return std::format("; ray traced: {} passes since the start ({} in the interval, {} denoised), {} frames wanted but without the car's structures, {} "
                      "waiting for the pipeline",
-                     passes_run_, interval, denoise_runs_, no_scene_, not_ready_);
+                     passes_run_, interval, denoise_runs_, no_scene_, not_ready_) +
+         opp_.CensusText();
 }
 
 }  // namespace mcla::gpu

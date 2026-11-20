@@ -789,6 +789,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.car_count = uint32_t(cars.records.size());
     view_.records = cars.records;
     view_.player_box = cars.player_box;
+    view_.other_paint_instances = cars.other_paint_instances;
+    view_.player_row = cars.player_row;
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
       car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays

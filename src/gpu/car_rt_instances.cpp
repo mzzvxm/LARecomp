@@ -8,6 +8,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "car_rt_opp_refl_rules.h"
 #include "gpu_class.h"
 
 namespace mcla::gpu {
@@ -109,6 +110,7 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
       ci::AppendOthers(&list_, frame.other_draws, frame.other_cars, frame.view, flip_z, limits.instances, rr::kMaxInstances, find, limits.cars);
     }
   }
+  car_rt_opp_refl::AppendPlayerRecord(&list_, paints);  // the player's record for the opponents' reflection (car_rt_opp_refl_rules.h)
   ci::CountSharing(&list_);
   return list_;
 }

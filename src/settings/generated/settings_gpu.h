@@ -270,6 +270,16 @@ class GPUSettings final : public rex::SettingOwner {
     "first draw (only in a frame where some of the car's draws are and some are not: where all are, nothing is glass), 1 every part "
     "that is no tyre is a body. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(bool, mcla_gpu_car_rt_opp_refl, true, "Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, the OPPONENTS' cars (the cars beside yours that the game draws with the same paint "
+    "shader: mcla_gpu_car_rt_cars says how many are in the scene) reflect the cars round them (yours, the other opponents and their own wings and mirrors) from their real shape, as "
+    "yours does. Off: their paint takes the screen-space version, as before. Needs the ray traced car self-reflection (mcla_gpu_car_selfrefl_rt) and the other cars in the scene. Live.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_rays, 0, "Debug: the rays a texel of an opponent's paint casts: 0 (the default) by the budget (mcla_gpu_car_rt_opp_refl_texels), 4 the whole cone, 2 the outer pair, 1 the mirror ray. Live.", rex::kDebugOnly, rex::Range{0, 4});
+
+  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_texels, 0, "Debug: the work the opponents' ray traced reflection may spend a frame, in thousands of image texels of the cars' screen rectangles at the full cone of rays (0, the default: "
+    "the graphics card's class decides: 500 on the High class, 200 on the Mid class, none on the Low class). Over it the pass casts fewer rays a texel (up to twice it: 2, over that: 1) "
+    "and leaves the smaller cars out. Live.", rex::kDebugOnly, rex::Range{0, 8000});
+
   REX_SETTING(f64, mcla_gpu_car_rt_paint_gamma, 2.0, "Debug: the game's paint colours (what the player picks: an orange is 0.90, 0.49, 0.20) are raised to this power to be the colour the paint's light makes of them, for the "
     "colour another car shows in the ray traced reflection where the camera does not see the car (its paint, from the game's customisation record). 2: about what the "
     "game's own paint does (a car of colour 0.22 is black). 1: the colours as they are (paler, more grey). Live.", rex::kDebugOnly, rex::Range{1.0, 3.5});
@@ -1340,6 +1350,9 @@ inline auto& mcla_gpu_car_rt_cars_traffic = g_gpu.mcla_gpu_car_rt_cars_traffic;
 inline auto& mcla_gpu_car_rt_cars_wheels = g_gpu.mcla_gpu_car_rt_cars_wheels;
 inline auto& mcla_gpu_car_rt_check = g_gpu.mcla_gpu_car_rt_check;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
+inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
+inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
+inline auto& mcla_gpu_car_rt_opp_refl_texels = g_gpu.mcla_gpu_car_rt_opp_refl_texels;
 inline auto& mcla_gpu_car_rt_paint_gamma = g_gpu.mcla_gpu_car_rt_paint_gamma;
 inline auto& mcla_gpu_car_rt_paint_lit = g_gpu.mcla_gpu_car_rt_paint_lit;
 inline auto& mcla_gpu_car_rt_view = g_gpu.mcla_gpu_car_rt_view;

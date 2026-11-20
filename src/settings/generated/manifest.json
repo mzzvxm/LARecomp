@@ -8903,5 +8903,40 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_opp_refl": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, the OPPONENTS' cars (the cars beside yours that the game draws with the same paint \"\n    \"shader: mcla_gpu_car_rt_cars says how many are in the scene) reflect the cars round them (yours, the other opponents and their own wings and mirrors) from their real shape, as \"\n    \"yours does. Off: their paint takes the screen-space version, as before. Needs the ray traced car self-reflection (mcla_gpu_car_selfrefl_rt) and the other cars in the scene. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_opp_refl_texels": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the work the opponents' ray traced reflection may spend a frame, in thousands of image texels of the cars' screen rectangles at the full cone of rays (0, the default: \"\n    \"the graphics card's class decides: 500 on the High class, 200 on the Mid class, none on the Low class). Over it the pass casts fewer rays a texel (up to twice it: 2, over that: 1) \"\n    \"and leaves the smaller cars out. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 8000}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_opp_refl_rays": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the rays a texel of an opponent's paint casts: 0 (the default) by the budget (mcla_gpu_car_rt_opp_refl_texels), 4 the whole cone, 2 the outer pair, 1 the mirror ray. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

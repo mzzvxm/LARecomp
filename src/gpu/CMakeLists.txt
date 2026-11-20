@@ -25,6 +25,7 @@ add_library(larecomp_gpu OBJECT
     car_selfrefl.cpp
     car_shadow_map.cpp
     car_rt_refl.cpp
+    car_rt_opp_refl.cpp
     capture_readback.cpp
     choice_box.cpp
     constants.cpp
@@ -206,6 +207,10 @@ add_executable(larecomp_car_selfrefl_rules_test EXCLUDE_FROM_ALL car_selfrefl_ru
 # the camera cannot see, the paint's edge-aware read) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_refl_rules_test, then run src/gpu/larecomp_car_rt_refl_rules_test (exit 0 = passed).
 add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rules_test.cpp)
+# The opponents' ray traced reflection's rules (car_rt_opp_refl_rules.h: the paint mask, the budget, the cars' rectangles in the image and the plan, the aux image's instance codes, the player's record,
+# the decision for a hit on the player's car; and that hlsl/car_rt_refl_opp.hlsli, car_rt_refl_cs.hlsl and the host hold the header's numbers) likewise; run it with the src folder or from there:
+#   cmake --build <dir> --target larecomp_car_rt_opp_refl_rules_test, then run src/gpu/larecomp_car_rt_opp_refl_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_refl_rules_test.cpp)
 # The car chrome's rules (car_chrome_rules.h: the numbers of the two short probes of the chrome variant and a reference march of them over
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).
@@ -691,6 +696,8 @@ larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 # The ray traced half (car_rt_refl.h): one compute pass over the history image with inline ray queries against the car's structures
 # (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
+# Its opponents' variant (car_rt_opp_refl.h): the same file with CAR_RT_REFL_OPPONENTS, whose entry point (hlsl/car_rt_refl_opp.hlsli) traces the pixels of the paint of the cars beside the player.
+larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_OPPONENTS=1)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)

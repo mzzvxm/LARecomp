@@ -146,6 +146,10 @@ struct CarRtView {
   // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
   // car_rt_refl_cs.hlsl; the camera pitches, so the view's own y is not it). (0, 1, 0) where the frame's camera gave none.
   float up[3] = {0.0f, 1.0f, 0.0f};
+  // The opponents' reflection pass (car_rt_opp_refl.h): the instances of other cars' draws of the paint's shader in this top level (car_rt_scene_rules.h kMaskOtherPaint), and the row of
+  // the player's car's record in binding 1's table (0: none; the record is added when there are such instances).
+  uint32_t other_paint_instances = 0;
+  uint32_t player_row = 0;
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
