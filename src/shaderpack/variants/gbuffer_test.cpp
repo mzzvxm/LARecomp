@@ -26,6 +26,7 @@
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
+#include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/luminance_scale.h"
 #include "shaderpack/variants/shadow_filter.h"
@@ -177,7 +178,7 @@ void CheckFixture() {
   }
   // not one of the shaders: left out, no error
   {
-    const sp::VariantShader other{"xCityDefault__PSMultiLightInterior", 0};
+    const sp::VariantShader other{"xCityDefault__PSMultiLightDebug", 0};  // the game's debug shader: not in the night family (gbuffer_night.h; Interior is)
     const sp::VariantTransformResult r = sp::TransformGBufferHlsl(other, kFixture, kHelper);
     Check(!r.ok && r.skip, "another shader of the group is left out");
   }
@@ -215,9 +216,9 @@ void CheckVariantDef() {
   Check(row && row->name == def.name && row->spec_twin && row->constants_bytes == 48 && row->composes_with == sp::chain::FeatureBit(sp::kFeatureHeadlight),
         "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage");
   Check(def.name == "gbuffer" && def.version == sp::kGBufferVariantVersion && def.needs_rpf, "the name, the version, and it reads the RPF");
-  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 && def.pixel_name_suffixes[0] == sp::kGBufferDayShader &&
-            def.pixel_name_suffixes[1] == sp::kGBufferNightShader,
-        "the two shaders are found by name");
+  Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 + std::size(sp::kGBufferNightSuffixes) && def.pixel_name_suffixes[0] == sp::kGBufferDayShader &&
+            def.pixel_name_suffixes[1] == sp::kGBufferNightShader && def.pixel_name_suffixes[2] == sp::kGBufferNightSuffixes[0],
+        "the two shaders and the night family (gbuffer_night.h) are found by name");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   const sp::VariantDef other = sp::MakeGBufferVariantFromText(std::string(kHelper) + "// changed\n");
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");

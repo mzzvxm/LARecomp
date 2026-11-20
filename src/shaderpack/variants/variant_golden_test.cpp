@@ -504,6 +504,8 @@ int main(int argc, char** argv) {
         const sp::VariantTransformResult hl_alone = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureHeadlight), named, text);
         const sp::VariantTransformResult gb_alone = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureGBuffer), named, text);
         const std::string label = "headlight + G-buffer on " + file->stem;
+        // A stage that leaves the shader out (the headlight: no light grid; the G-buffer's night stage: no normal) has no pair with the other.
+        if (hl_alone.skip || gb_alone.skip) continue;
         Check(composed.ok && hl_alone.ok && gb_alone.ok, label + ": composes (" + composed.error + hl_alone.error + gb_alone.error + ")");
         if (!composed.ok || !hl_alone.ok || !gb_alone.ok) continue;
         ++pairs;
@@ -517,7 +519,7 @@ int main(int argc, char** argv) {
                   t.find("float4 HeadlightLight(") < t.rfind("void main(") && t.find("float2 GbRt1Encode(float3 n)") < t.rfind("void main("),
               label + ": both helpers are before main (the last `void main(`: the G-buffer helper's header comment names it too), once");
         Check(CountOccurrences(t, "hlLight.") == CountOccurrences(hl_alone.hlsl, "hlLight.") && CountOccurrences(t, " = HeadlightLight(") == 1 &&
-                  CountOccurrences(t, "oC1 : SV_Target1") == 1 && CountOccurrences(t, "oC1 = GbRt1Encode(iTexCoord0.xyz);") == 1,
+                  CountOccurrences(t, "oC1 : SV_Target1") == 1 && CountOccurrences(t, "oC1 = GbRt1Encode(") == 1,
               label + ": the headlight's term and the G-buffer's output are in once");
         Check(t.size() > hl_alone.hlsl.size() && t.size() > gb_alone.hlsl.size(), label + ": more than either alone");
         if (dxc.enabled()) {
