@@ -292,6 +292,9 @@ class CarSelfRefl {
   bool no_stencil_logged_ = false;
   bool failed_logged_ = false;
   bool bias_logged_ = false;
+  // The main colour target's exponent bias as the last paint draw saw it (RT0's color_exp_bias): the ray traced pass multiplies the colours it makes up from a paint constant by
+  // 2^bias to be in the history's units. A paint draw comes after the trigger in a frame, so the pass uses the frame before's (the game keeps one bias); 4 until a draw has told.
+  int32_t exp_bias_ = car_selfrefl::kMainTargetExpBias;
   bool first_paint_logged_ = false;
   bool pause_paint_logged_ = false;
   uint32_t image_for_[2] = {};

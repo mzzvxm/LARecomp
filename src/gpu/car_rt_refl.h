@@ -9,13 +9,14 @@
 // COLOUR of what the ray hits.
 //
 //   mcla_gpu_car_selfrefl_rt          auto | off. auto (the default) is on where the device can ray trace the car (CarRtSupported: D3D12
-//                                     with DXR 1.1 today) and the car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
+//                                     with DXR 1.1; Vulkan with VK_KHR_ray_query once the Plume pin has it: Direct3D 12 only for now, car_rt_scene.h) and the
+//                                     car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
 //                                     screen-space march everywhere. Live: it applies from the next frame. Where the device cannot,
 //                                     auto is the march, so nothing changes for it.
 //   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres (4 by default; the weight of a hit falls to
 //                                     nothing from 0.6 of it)
 //   mcla_gpu_car_selfrefl_rt_parts    a debug override of the parts the reflection ray hits: a mask of car_rt_common.hlsli's
-//                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver; 7 by default)
+//                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver, 16 the other cars; 23 by default)
 //   mcla_gpu_car_selfrefl_rt_gloss    a debug override of the half angle, in degrees, of the cone the rays are spread over (2.5 by default; 0 = a
 //                                     perfect mirror, one ray: the first version's razor edge, for a picture to compare with)
 //   mcla_gpu_car_selfrefl_rt_denoise  a debug override of the passes of the filter that takes the cone's grain out of the image before the paint
@@ -24,6 +25,22 @@
 //                                     cyan the image has no data there (the march ran), green the ray hits nothing of the car, yellow a hit
 //                                     on a part the camera sees, orange a hit on a part it does not (the fallback colour), brighter the
 //                                     heavier the weight; red: the shaded point is not in the history (as view 4)
+//
+// OTHER CARS: the scene (car_rt_scene.h) also holds the cars driving alongside, so the paint and the chrome reflect an opponent or a car of the traffic beside
+// the player's car. The reflection ray hits them (the parts' mask, 16); the primary ray never does, so the effect stays the player's own car's. What a hit on
+// another car shows is the history's colour where the camera sees that part, and where it does not (the car's far side) the colour the camera sees of THAT
+// car: the mean of the history's vehicle texels around its body centre, darkened by the same shade (car_rt_refl_rules.h FindOtherCarColour says why that and
+// not a paint constant). mcla_gpu_car_rt_cars 0 takes them out of the scene (the player's car alone, as before), mcla_gpu_car_selfrefl_rt_parts 7 leaves
+// them in the scene and out of the reflection.
+// THE OPPONENTS' OWN PAINT (car_rt_opp_refl.h): the pass below is the player's car's. The paint of another car (an instance with CAR_RT_MASK_OTHER_PAINT, the draws of the customisable paint's
+// shader) is traced by a second dispatch of the same shader file (the variant hlsl/car_rt_refl_opp.hlsli) that CarRtRefl::OnHistory records right after this one, into the same images: the paint
+// variant reads an opponent's texel like the player's, so its door shows the cars round it too. mcla_gpu_car_rt_opp_refl (debug) is the A/B.
+//
+// OTHER CARS' CHROME (car_chrome_rt_rules.h, which has the design, the cost and the test plan): the primary ray of the pass also finds the chrome parts of the other
+// cars (tailpipes, badges, trim: the instances of their draws of xChrome::PS_Chrome carry the extra bit CAR_RT_MASK_OTHER_CHROME) and for those texels the pass traces
+// the chrome variant's two short probes as rays, writing a texel of a kind of its own (alpha 1 + the reflection probe's weight, red -(1 + the sky probe's weight)) that
+// the chrome variant (version 2) reads in place of its march. The paint never takes the other cars' own paint from here: it has no data there, as before.
+// mcla_gpu_car_chrome_rt_others (debug) is the A/B; it needs mcla_gpu_car_chrome_occlusion. Nothing changes for the player's own car, nor on a device that cannot trace.
 //
 // WHAT IT DOES, at the same trigger as the history image (CarSelfRefl::RecordHistory, right after it): one compute pass
 // (hlsl/car_rt_refl_cs.hlsl, cs_6_5, inline ray queries) with a thread for every texel of the history image. A texel that holds a
@@ -111,9 +128,9 @@
 //      the geometric normal of the committed triangle): not done, CarRtScene is another branch's.
 //   6. the units of the history's colour against the paint's (the exponent bias gain), the reflection ray's reach (4 m;
 //      mcla_gpu_car_selfrefl_rt_length) and the parts it hits (mcla_gpu_car_selfrefl_rt_parts; glass in by default).
-//   7. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader header
-//      (car_rt_refl_cs.hlsl.dxil.h, g_car_rt_refl_cs_dxil) that larecomp_gpu_host_shader_rt makes: the first game run linked them (the
-//      census counted ray traced passes), so this is for a new merge only.
+//   7. the names of CarRtScene's per-frame request (Request, written as CarFrame's), View(), SetDesc() and the generated shader headers
+//      (car_rt_refl_cs.hlsl.<dxil|spirv>.h, host_shaders.h CarRtReflShader) that larecomp_gpu_host_shader_rt makes: the first game run
+//      linked the DXIL ones (the census counted ray traced passes), so this is for a new merge only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipeline is made ahead on the host builder
 // thread where the effect is on at the start (host_precache.h), and in the background where it is switched on later: the pass is not
@@ -126,6 +143,7 @@
 
 #include <plume_render_interface.h>
 
+#include "car_rt_opp_refl.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
 #include "host_passes.h"
@@ -170,6 +188,8 @@ class CarRtRefl {
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
     uint32_t pattern_phase = 0;     // 0 .. 7: the pattern's step for this frame (0 where no upscaler runs: the pattern stands still on the screen)
+    int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
+                                                          // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
   };
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
@@ -186,14 +206,15 @@ class CarRtRefl {
   std::string CensusText();
 
  private:
-  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 64 bytes.
+  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 80 bytes.
   struct Push {
     uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, the cone pattern's phase
     float image[4];     // the image's size, the picture's size
     float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length
     float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
+    float up[4];        // the world's up in view space (CarRtView::up: the chrome's sky probe), w the units: the history's over the paint's (2^exp_bias)
   };
-  static_assert(sizeof(Push) == 64);
+  static_assert(sizeof(Push) == 80);
   // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
   struct DenoisePush {
     uint32_t slots[4];  // history slot, the image to filter, the aux image, the pass (0: taps one texel apart, 1: two)
@@ -271,6 +292,9 @@ class CarRtRefl {
   OutputSet trace_set_;   // u0 image_, u1 aux_
   OutputSet first_set_;   // u0 scratch_
   OutputSet final_set_;   // u0 image_
+
+  // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
+  CarRtOppRefl opp_;
 
   // The frame.
   bool active_ = false;

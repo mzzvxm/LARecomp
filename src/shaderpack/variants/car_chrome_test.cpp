@@ -120,8 +120,19 @@ void RunOnFixture() {
             Contains(text, "min(0.004 + 0.0015 * depth + slack, 0.5 * thickness - ramp)") && Contains(text, "return min(1.5 * texel * slope, 0.03);"),
         "the thickness, the window and the slack are the rules' (12 cm at 6.7 m, a bias of 14 mm, a slack capped at 3 cm)");
   Check(Contains(text, "const float tolerance = 0.015 + 0.005 * start.w + s.ray.slack;") &&
-            Contains(text, "s.agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));"),
+            Contains(text, "return (stored > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(stored - depth)) : 0.0;") &&
+            Contains(text, "CarChrTexelAgreement(own.a, start.w, tolerance)"),
         "the self-test's tolerance is the rules' (a few centimetres, not the paint's 6 cm + 2 percent)");
+  // Version 3: the rim of a tip. The twelve offsets are car_chrome_rules.h's kSilhouetteOffsets, in its order; only a pixel that does not agree fully reads them.
+  Check(Contains(text, "static const int kCarChrSilhouetteTaps = 12;") &&
+            Contains(text, "static const int2 kCarChrSilhouetteOffsets[12] = {int2(-1, 0), int2(0, -1), int2(1, 0), int2(0, 1), int2(-1, -1), int2(1, -1),\n"
+                            "                                                  int2(-1, 1), int2(1, 1), int2(-2, 0), int2(0, -2), int2(2, 0), int2(0, 2)};"),
+        "version 3: the self-test's twelve neighbour offsets are the rules' (the eight round the texel, then two steps along each axis)");
+  Check(Contains(text, "float CarChrSilhouetteAgreement(") && Contains(text, "if (own < 1.0)") && Contains(text, "best = max(best, CarChrTexelAgreement(stored, depth, tolerance));") &&
+            Contains(text, "s.agreement = CarChrSilhouetteAgreement(history, s.ray.size, s.ray.startUv, start.w, tolerance,") &&
+            Contains(text, "if (s.agreement <= 0.0)\n    {\n        return s;"),
+        "version 3: the setup takes the best agreement of the own texel and its neighbours, searched only where the own texel is not fully in, and returns where it is 0");
+  Check(!Contains(text, "abs(own.a - start.w)") && !Contains(text, "!(own.a > 0.0)"), "version 3: the old test of the own texel alone is gone");
   Check(Contains(text, "sky = (skyLength < 0.2) ? float3(0.0, 1.0, 0.0) : sky / skyLength;"), "the sky probe's direction is the rules' (n + up, or up)");
   Check(Contains(text, "env * (1.0 - kCarChrDark * saturate(s.reflectHit * g_CarReflA.w))") &&
             Contains(text, "ambient * (1.0 - kCarChrDark * saturate(s.skyHit * g_CarReflA.w))"),
@@ -129,9 +140,25 @@ void RunOnFixture() {
   Check(Contains(text, "if ((slots.w & 1u) != 0u)") && Contains(text, "CarChrRtRead(history, s.ray.size, s.ray.startUv, start.w,") &&
             Contains(text, "s.reflectHit = rt.y * s.agreement;"),
         "the ray traced image's hook: read where the frame has one, with the march left out");
-  Check(Count(text, "[loop]") == 1 && Count(text, "[unroll]") == 2,
-        "one loop over the points, one unrolled search of three halvings and one unrolled B-spline read of nine texels");
-  Check(Count(text, "history.Load(") == 2 && Count(text, "history.Sample") == 0 && Count(text, "Gather") == 0, "the history is only read as points");
+  // Version 2: another car's chrome. Two kinds of texel, told apart by the sign of the colour's red; the player's arithmetic is the older one's.
+  Check(Contains(text, "float4 CarChrRtRead(") && Contains(text, "const float4 t = image.Load(int3(texel, 0));") && Contains(text, "if (t.r < -0.5)") &&
+            Contains(text, "skyOther += wg * saturate(-t.r - 1.0);") && Contains(text, "knownOther += wg;") && Contains(text, "weightOther += wg * saturate(code - 1.0);"),
+        "version 2: the image's texels are of two kinds, told apart by a red under -0.5 (the sky weight is -(1 + w) there)");
+  Check(Contains(text, "known += wg;\n                weight += wg * saturate(code - 1.0);") &&
+            Contains(text, "if (geometry > 1e-4 && known >= 0.5 * geometry)\n    {\n        return float4(1.0, weight / known, 0.0, 0.0);"),
+        "the player's texels are read as before: the same sums, the same half of the footprint, the same weight (the answer is first)");
+  Check(Contains(text, "if (geometry > 1e-4 && knownOther >= 0.5 * geometry)") &&
+            Contains(text, "return float4(1.0, weightOther / knownOther, 1.0, skyOther / knownOther);"),
+        "another car's chrome answers where its texels are at least half of the footprint, with both weights");
+  Check(Contains(text, "if (rt.z > 0.5)") && Contains(text, "s.skyHit = rt.w * s.agreement;") && Contains(text, "s.skyKnown = 1.0;") && Contains(text, "s.state = 6.0;") &&
+            Contains(text, "s.reflectHit = (s.nv >= kCarChrNormalMin) ? rt.y * s.agreement : 0.0;"),
+        "another car's chrome: both probes' weights from the image (the reflection's not at a grazing view), the state 6, no march");
+  Check(Contains(text, "if (s.skyKnown > 0.5)") && Count(text, "CarChrProbe(history, s,") == 2,
+        "the sky probe is not marched where the image gave it, and the march is still there for the rest");
+  Check(Contains(text, "if (s.state > 5.5)") && Contains(text, "float3(0.0, 0.9, 0.9)"), "the debug view 4 shows another car's chrome cyan");
+  Check(Count(text, "[loop]") == 1 && Count(text, "[unroll]") == 3,
+        "one loop over the points, one unrolled search of three halvings, one unrolled B-spline read of nine texels and one unrolled read of the rim's twelve");
+  Check(Count(text, "history.Load(") == 3 && Count(text, "history.Sample") == 0 && Count(text, "Gather") == 0, "the history is only read as points");
   Check(Count(text, "CarChrLoad(history, ray.size, uv)") == 1 && Count(text, "CarChrLoad(history, s.ray.size, s.ray.startUv)") == 1,
         "one function reads the history for a point of a probe (the loop's and the halvings'), one read for the shaded point");
   Check(Count(text, "CarChrProbe(history, s,") == 2, "two probes: the reflection's and the sky's");
@@ -182,7 +209,7 @@ void RunNegatives() {
   Check(def.name == "car_chrome" && def.needs_rpf && def.pixel_shaders.size() == 1 && def.pixel_shaders[0].key == 0x2D8CA0430FF88ED7ull,
         "the definition: one shader, the identity of xChrome::PS_Chrome");
   Check(def.name != sp::MakeCarSelfReflVariant().name, "the chrome's name is not the paint's (the stamp lines are by name)");
-  Check(sp::kCarChromeVariantVersion == 1, "the variant's version is 1 (the stamp builds the pack's chrome)");
+  Check(sp::kCarChromeVariantVersion == 3, "the variant's version is 3 (the stamp builds the pack's chrome)");
   const std::vector<sp::VariantTarget> entries = {{"car_selfrefl", sp::kCarPaint.key}, {"car_chrome", sp::kChrome.key}};
   Check(sp::FindVariantOverlaps(entries).empty(), "the paint and the chrome are in one variant each");
 }

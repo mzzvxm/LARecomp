@@ -3918,6 +3918,112 @@ void VehicleStippleIsFiltered() {
                 sum_old, sum_new);
     Check(real > 2000 && sum_new * 100.0 >= sum_old * 95.0, Num("the mirror's shadow on the door keeps its darkness (%.0f of %.0f)", sum_new, sum_old));
   }
+  // 6. THE MARK AND THE RAY TRACED TERM (the ray tracing line, play build 11): the lid under the wing with the car's map off and the traced sun ray in the frame. The
+  //    ray's answer is made here as the pass makes it, a ray from the pixel toward the sun against the rig's own boxes (exact, 0 or 1). A pixel the ray holds in the
+  //    plate's shadow is stored plain (0), the lit ones that march are marked; the control marks every vehicle pixel that marches, as the march did before the rule.
+  {
+    long lid_n = 0, shadowed = 0, shadowed_marked = 0, lit_marching = 0, lit_marked = 0, soft_rule = 0, soft_control = 0, soft_plain = 0;
+    double energy_rule = 0.0, energy_plain = 0.0, energy_control = 0.0, lit_energy_rule = 0.0, lit_energy_plain = 0.0;
+    long lit_energy_n = 0;
+    const Rig rig = MakeWingRigAt(eyes[0].eye, eyes[0].target, 0.28f, 1080);
+    const RigImage im = RenderRig(rig);
+    const int w = rig.cam.width, h = rig.cam.height;
+    const LidPixels l = FindLid(rig, im);
+    for (const double elevation : {40.0, 55.0, 70.0}) {
+      for (const double azimuth : {0.0, 90.0, 180.0, 270.0}) {
+        const Vec3 sun = Sun(elevation, azimuth);
+        Trace base = LowSunTrace(elevation);
+        base.camera = rig.cam;
+        base.to_sun = rig.ToView(sun);
+        const int x0 = std::max(l.x0 - 3, 2), y0 = std::max(l.y0 - 3, 2), x1 = std::min(l.x1 + 3, w - 3), y1 = std::min(l.y1 + 3, h - 3);
+        const size_t n = size_t(w) * size_t(h);
+        std::vector<float> rule(n, 1.0f), plain(n, 1.0f), control(n, 1.0f);  // the rule, the pictures with no mark at all, every marching vehicle pixel marked
+        std::vector<uint8_t> in_shadow(n, 0);
+        const auto depth = [&](int a, int b) { return im.depth.At(a, b); };
+        for (int y = y0 - 1; y <= y1 + 1; ++y) {
+          for (int x = x0 - 1; x <= x1 + 1; ++x) {
+            if (im.depth.At(x, y) >= 30000.0f) {
+              continue;
+            }
+            const size_t at = size_t(y) * size_t(w) + size_t(x);
+            Trace t = base;
+            t.noise = PixelNoise(x, y);
+            // The traced sun ray: from the pixel's point, lifted a little, toward the sun, as long as the rig is tall.
+            const Vec3 q = RigPoint(rig, im, x, y) + sun * 0.012f;
+            t.traced_shadow = rig.Nearest(q, sun, 0.0f, 3.0f) >= 0.0f ? 1.0f : 0.0f;
+            in_shadow[at] = t.traced_shadow >= kRtUnmarkedShadow ? 1 : 0;
+            rule[at] = HalfRound(MarchStored(t, depth, x, y));
+            const bool marked_by_rule = t.marked;
+            const float visibility = March(t, depth, x, y);
+            plain[at] = HalfRound(visibility);
+            control[at] = HalfRound((DepthIsVehicle(im.depth.At(x, y)) && t.steps_used > 0) ? MarkedVisibility(visibility) : visibility);
+            if (l.lid[at]) {
+              ++lid_n;
+              if (in_shadow[at]) {
+                ++shadowed;
+                shadowed_marked += marked_by_rule ? 1 : 0;
+              } else {
+                ++lit_marching;
+                lit_marked += marked_by_rule ? 1 : 0;
+              }
+            }
+          }
+        }
+        const auto lap = [&](const std::vector<float>& a, size_t i) {
+          return double(a[i]) - 0.25 * (double(a[i - 1]) + double(a[i + 1]) + double(a[i - size_t(w)]) + double(a[i + size_t(w)]));
+        };
+        std::vector<float> f_rule(n, 1.0f), f_plain(n, 1.0f), f_control(n, 1.0f);
+        const auto filter_all = [&](const std::vector<float>& src, std::vector<float>& dst) {
+          for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+              if (im.depth.At(x, y) < 30000.0f) {
+                dst[size_t(y) * size_t(w) + size_t(x)] = FilterOf(rig, im, src, x, y);
+              }
+            }
+          }
+        };
+        filter_all(rule, f_rule);
+        filter_all(plain, f_plain);
+        filter_all(control, f_control);
+        for (int y = y0 + 1; y < y1; ++y) {
+          for (int x = x0 + 1; x < x1; ++x) {
+            const size_t i = size_t(y) * size_t(w) + size_t(x);
+            if (!l.lid[i]) {
+              continue;
+            }
+            soft_rule += (f_rule[i] > 0.05f && f_rule[i] < 0.95f) ? 1 : 0;
+            soft_plain += (f_plain[i] > 0.05f && f_plain[i] < 0.95f) ? 1 : 0;
+            soft_control += (f_control[i] > 0.05f && f_control[i] < 0.95f) ? 1 : 0;
+            if (!l.lid[i - 1] || !l.lid[i + 1] || !l.lid[i - size_t(w)] || !l.lid[i + size_t(w)]) {
+              continue;
+            }
+            energy_rule += std::fabs(lap(f_rule, i));
+            energy_plain += std::fabs(lap(f_plain, i));
+            energy_control += std::fabs(lap(f_control, i));
+            // The lit lid pixels alone (not next to the traced shadow): where the stipple of a false hit would show.
+            if (!in_shadow[i] && !in_shadow[i - 1] && !in_shadow[i + 1] && !in_shadow[i - size_t(w)] && !in_shadow[i + size_t(w)]) {
+              lit_energy_rule += std::fabs(lap(f_rule, i));
+              lit_energy_plain += std::fabs(lap(f_plain, i));
+              ++lit_energy_n;
+            }
+          }
+        }
+      }
+    }
+    std::printf("the lid with the ray traced sun term (exact, 0 or 1), the car's map off, 12 suns: %ld lid pixels, %ld in the traced shadow (%ld of them marked), %ld lit (%ld marked); "
+                "soft pixels (0.05 to 0.95) after the filter: with the rule %ld, no mark at all %ld, every marching vehicle pixel marked %ld; roughness %.1f / %.1f / %.1f; "
+                "roughness of the lit pixels away from the shadow, rule %.3f, no mark %.3f (%ld pixels)\n",
+                lid_n, shadowed, shadowed_marked, lit_marching, lit_marked, soft_rule, soft_plain, soft_control, energy_rule, energy_plain, energy_control, lit_energy_rule,
+                lit_energy_plain, lit_energy_n);
+    Check(lid_n > 500000 && shadowed * 20 >= lid_n && lit_marching * 4 >= lid_n,
+          Num("the sample has the plate's traced shadow on the lid and lit pixels (%.0f lid pixels, %.0f in the shadow, %.0f lit)", double(lid_n), double(shadowed), double(lit_marching)));
+    Check(shadowed_marked == 0, Num("a pixel the traced sun ray holds in a shadow is stored plain, not marked (%.0f of %.0f marked)", double(shadowed_marked), double(shadowed)));
+    Check(lit_marked * 100 >= lit_marching * 99, Num("the vehicle pixels the ray leaves lit still march and are marked (%.0f of %.0f)", double(lit_marked), double(lit_marching)));
+    Check(soft_control >= soft_plain * 5, Num("(control) marking every marching vehicle pixel widens the traced shadow's edge: %.2f times the soft pixels of the unmarked picture", double(soft_control) / double(std::max(soft_plain, 1L))));
+    Check(soft_rule * 100 <= soft_plain * 125, Num("with the rule the traced shadow keeps its edge: %.0f soft pixels against %.0f without any mark (the lit pixels beside it still average among themselves)", double(soft_rule), double(soft_plain)));
+    Check(lit_energy_n > 100000 && lit_energy_rule * 2.0 <= lit_energy_plain + 1e-9,
+          Num("and the lit pixels' stipple is still smoothed by the mark: roughness %.3f against %.3f without it", lit_energy_rule, lit_energy_plain));
+  }
 }
 
 // The shaders repeat the header's constants as `static const float kName = value;`: read them and compare.
@@ -3979,6 +4085,7 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kCarMapFootprintBias", kCarMapFootprintBias}, {&contact, "kCarMapProducerSlope", kCarMapProducerSlope},
       {&contact, "kCarMapMaxTan", kCarMapMaxTan}, {&contact, "kCarMapEdgeTexels", kCarMapEdgeTexels},
       {&contact, "kCarMapEmpty", kCarMapEmpty},       {&common, "kVehicleMarkOffset", kVehicleMarkOffset},
+      {&contact, "kRtUnmarkedShadow", kRtUnmarkedShadow},
   };
   for (const Row& r : rows) {
     double got = 0.0;
@@ -4045,14 +4152,14 @@ void ShaderConstantsMatch(const std::string& dir) {
       ++filters;
       at += weight.size();
     }
-    Check(contact.find("const bool marked = AoIsVehicle(tc) && steps > 0u;") != std::string::npos &&
+    Check(contact.find("const bool marked = AoIsVehicle(tc) && steps > 0u && traced_shadow < kRtUnmarkedShadow;") != std::string::npos &&
               contact.find("return float4(marked ? visibility - kVehicleMarkOffset : visibility, 0.0f, 0.0f, 0.0f);") != std::string::npos &&
               common.find("bool AoIsMarked(float stored) { return stored < -0.5f; }") != std::string::npos &&
               common.find("float AoUnmarked(float stored) { return AoIsMarked(stored) ? stored + kVehicleMarkOffset : stored; }") != std::string::npos &&
               filters == 2 && common.find("const bool centre_marked = AoIsMarked(centre_stored);") != std::string::npos &&
               common.find("const float centre = AoUnmarked(centre_stored);") != std::string::npos &&
               common.find("const float value = AoUnmarked(stored);") != std::string::npos,
-          "the shaders' mark is the twin's (the march marks a vehicle pixel that took steps; the filter and its folded twin decode, and weigh two marked pixels by position and depth alone)");
+          "the shaders' mark is the twin's (the march marks a vehicle pixel that took steps and that the ray traced sun term does not hold in a shadow; the filter and its folded twin decode, and weigh two marked pixels by position and depth alone)");
   }
   // The comb fix (contact_trace.h "the game's sun shadow mask is not a car's"): the apply takes a vehicle's sun visibility as 1 in both its uses of
   // the mask, and the march's skip (and the statistics' twin of it) is not allowed on a vehicle's pixel or beside one.

@@ -553,6 +553,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.upscaler = upscaler_running_;
     // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
     info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
+    info.exp_bias = exp_bias_;
     rt_->OnHistory(list, info);
   }
   return true;
@@ -594,6 +595,7 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running,
   float matrix[16];
   car_selfrefl::HistoryMatrix(history_camera_.view_projection, motion, matrix);
   const int32_t exp_bias = state.color[0].exp_bias;
+  exp_bias_ = exp_bias;  // the ray traced pass of the next frame's trigger takes it (CarRtRefl::HistoryInfo::exp_bias)
   if (!bias_logged_) {
     bias_logged_ = true;
     REXLOG_INFO("{} the first draw of the paint with a history: stencil ID {}, RT0 exponent bias {} (colour gain {}), "

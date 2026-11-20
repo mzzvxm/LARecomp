@@ -46,7 +46,11 @@
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
+#include "car_rt_ao_cs.hlsl.dxil.h"
 #include "car_rt_check_cs.hlsl.dxil.h"
+#include "car_rt_refl_cs.hlsl.dxil.h"
+#include "car_rt_refl_denoise_cs.hlsl.dxil.h"
+#include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
 #include "fg_compose_ps.hlsl.dxil.h"
 #include "dlssg_ui_hdr_ps.hlsl.dxil.h"
@@ -126,6 +130,11 @@
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
+#include "car_rt_ao_cs.hlsl.spirv.h"
+#include "car_rt_check_cs.hlsl.spirv.h"
+#include "car_rt_refl_cs.hlsl.spirv.h"
+#include "car_rt_refl_denoise_cs.hlsl.spirv.h"
+#include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
 #include "fg_compose_ps.hlsl.spirv.h"
 #include "dlssg_ui_hdr_ps.hlsl.spirv.h"
@@ -427,15 +436,29 @@ inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
 }
 
 // The player's car as ray tracing structures (car_rt_scene.h): the check pass, a compute shader with inline ray queries (Shader Model 6.5,
-// built with larecomp_gpu_host_shader_rt: DXIL only). On Vulkan the blob is EMPTY (data null): no SPIR-V is built for it, and the caller
-// leaves the pass out. The other, a pixel shader that puts the check's picture over the scene, is an ordinary host shader on both.
+// SPIR-V 1.5 for Vulkan 1.2; built with larecomp_gpu_host_shader_rt), the ray traced self-reflection's trace (car_rt_refl.h, the same kind) and
+// its denoise (plain compute), and the ray traced occlusion and sun term around the car (car_rt_ao.h, the same kind as the trace). The renderer
+// creates the ones with ray queries only where CarRtSupported said yes (VK_KHR_ray_query on Vulkan): a device without the feature refuses the
+// SPIR-V module. The other, a pixel shader that puts the check's picture over the scene, is an ordinary host shader.
 inline HostShaderBlob CarRtCheckShader() {
-#if defined(LARECOMP_GPU_HAS_D3D12)
-  if (ActiveBackend() == Backend::kD3D12) {
-    return MCLA_GPU_HOST_SHADER_DXIL(car_rt_check_cs);
-  }
-#endif
-  return HostShaderBlob{nullptr, 0, "car_rt_check_cs"};
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_check_cs);
+}
+
+inline HostShaderBlob CarRtAoShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_ao_cs);
+}
+
+inline HostShaderBlob CarRtReflShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_cs);
+}
+
+inline HostShaderBlob CarRtReflDenoiseShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_denoise_cs);
+}
+
+// The opponents' variant of the trace (car_rt_opp_refl.h): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_OPPONENTS (its own entry point, hlsl/car_rt_refl_opp.hlsli), the same kind as the trace.
+inline HostShaderBlob CarRtReflOppShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_opp_cs);
 }
 
 inline HostShaderBlob CarRtViewPixelShader() {

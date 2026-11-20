@@ -82,14 +82,25 @@ inline constexpr uint32_t kPartBody = 0x01;
 inline constexpr uint32_t kPartGlass = 0x02;
 inline constexpr uint32_t kPartTyres = 0x04;
 inline constexpr uint32_t kPartDriver = 0x08;
-inline constexpr uint32_t kPartAll = 0x0F;
+// Another car (an opponent, traffic, a parked car: car_rt_instances_rules.h): the player's paint reflects a car driving alongside. Never in the primary
+// ray's parts (the paint of the player's car is what the primary ray finds), only in the reflection ray's.
+inline constexpr uint32_t kPartOthers = 0x10;
+inline constexpr uint32_t kPartAll = 0x1F;
 // The primary ray finds the car's pixel: only the opaque rigid parts, which are the paint's (and the rims', lights' and so on: the
 // paint's own pixels are among them, and no pixel of glass, of the driver or of a tyre is read by the paint).
 inline constexpr uint32_t kPrimaryParts = kPartBody;
+// Another car's CHROME (car_rt_scene_rules.h kMaskOtherChrome: the instance of a draw of xChrome::PS_Chrome of another car has this bit and kPartOthers):
+// the primary ray also finds it, with the window around the image's distance as for the player's body, because the chrome's occlusion is traced for its pixels
+// (car_chrome_rt_rules.h). The mask is outside kPartAll: it is not a part a reflection ray can be asked for, and no other car's paint has it.
+inline constexpr uint32_t kPartOtherChrome = 0x20;
+inline constexpr uint32_t kPrimaryTraceParts = kPrimaryParts | kPartOtherChrome;
 // The reflection ray: the body, the glass (a window reflects as dark as the history shows it, or by the fallback colour where the
-// glass writes no depth), the tyres. Not the driver (skinned, seen through the glass only). The debug cvar mcla_gpu_car_selfrefl_rt_parts
-// replaces it.
-inline constexpr uint32_t kDefaultReflectionParts = kPartBody | kPartGlass | kPartTyres;
+// glass writes no depth), the tyres, and the other cars. Not the driver (skinned, seen through the glass only). The debug cvar
+// mcla_gpu_car_selfrefl_rt_parts replaces it.
+inline constexpr uint32_t kDefaultReflectionParts = kPartBody | kPartGlass | kPartTyres | kPartOthers;
+static_assert((kPrimaryParts & kPartOthers) == 0, "the primary ray never finds another car");
+static_assert((kPrimaryTraceParts & kPartOthers) == 0 && (kPartOtherChrome & kPartAll) == 0,
+              "the primary ray never finds another car's paint either: only its chrome, by a bit of its own");
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The image's codes
@@ -356,6 +367,97 @@ inline void SurfaceMean(const SurfaceTap taps[9], float t, float tolerance, floa
   for (int c = 0; c < 3; ++c) {
     out[c] = total > 1e-6f ? sum[c] / total : taps[4].rgb[c];
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Another car's colour (hlsl/car_rt_refl_cs.hlsl OtherCarColour)
+// ---------------------------------------------------------------------------------------------------------------------
+// A hit on another car's part the history does not show (the car's far side, a part another part hides) has no colour of its own: the surface's mean
+// colour of the PLAYER's pixel (SurfaceMean), which a hit on the player's own car takes, would paint the other car in the player's paint. The history
+// image holds every vehicle's pixels, though, so the car's colour is the one the camera sees of IT: the mean of the history's vehicle texels around the
+// car's body centre, where they are at about the centre's distance (the car's roof, bonnet or the side the camera sees), made dark by the same shade
+// (kShade) as any hidden hit. The centre is the mean of the origins of the car's draws, raised (car_rt_instances_rules.h OtherCar::Centre) and
+// reaches the shader as the car's record in the instances' table; its radius (kCarRadius, 1.6 m) sets the sample: nine taps kOtherCarSpread radii
+// apart in the picture, those within kOtherCarDepth radii of the centre's distance counting (tent weighted, as SurfaceMean's). A car whose
+// taps hold too little (its centre is off the picture, or another car hides it) has no colour: kOtherCarMinShare of the weights; its hidden
+// hits are then a miss, so the paint shows the environment there as it did before the other cars were in the scene. A centre outside the picture is
+// moved in to kOtherCarEdge of it, so that a car at the edge is sampled where its visible part is.
+// WHERE THE HISTORY SHOWS NOTHING OF A CAR THE GAME DRAWS (RT-MODEL-CARS-3): the game draws a car beside the player whenever the sphere round it reaches the view's
+// frustum, so a neighbour 2 to 4 m from the player's door is drawn (its draws are in the scene, its +116 flag says visible) while the camera, standing in the gap beside the
+// door and looking at it, sees none of that car: its centre is behind the camera. The history has nothing of it and, with no colour, its hidden hits were a miss: the door
+// showed no neighbour (the first model-data check's flank pictures). Such a car takes its PAINT where its record has one (the model walk read it from the game's customisation
+// record, car_model_rt_rules.h PaintForDrawn), exactly as a car placed from memory does; where the history does show it, the history's colour stays.
+// WHY THIS AND NOT A PAINT CONSTANT: the pixel constants of the car paint shader (native/work/hlsl-head/cars/xCarPaintCustomizable__PS_CarPaint.hlsl:
+// the lights DL0 to DL6, the ambient, the exposure) hold no base colour, it comes from textures; and the traffic's materials are other shaders with
+// other constants. What the camera sees of a car is the one thing every car has, it needs nothing from the guest, and it costs nine loads for a hit
+// that is not fully visible.
+// CHECK: the choice is the first guess: the picture with a car alongside shows whether the colour is the car's (view 5 orange = a hidden hit; the
+// reflection in the paint should be the car's own colour darkened) and whether the depth window takes the road or the player's own car.
+inline constexpr float kOtherCarSpread = 0.5f;      // radii of the car between the taps
+inline constexpr float kOtherCarDepth = 1.2f;       // radii: the depth window around the centre's distance (full weight within half of it)
+inline constexpr float kOtherCarMaxStep = 24.0f;    // texels between the taps, at most (a car near the camera is wide in the picture)
+inline constexpr float kOtherCarEdge = 0.97f;       // the centre's place in the picture is moved in to this share of the half width and height
+inline constexpr float kOtherCarMinShare = 0.15f;   // the share of the nine taps' weights (out of 4) under which the car has no colour
+// A car placed from memory (car_rt_memory_rules.h: drawn earlier, not seen by the camera now) has a NEGATIVE radius in its record: the history holds nothing of it,
+// so its hidden hits take this grey (each channel; the shade of the pass makes it darker like any hidden part) and count as fully known. CHECK: the grey is a
+// guess; the car's own colour is not known on this side (a remembered colour needs a persistent GPU buffer written by this pass while the car is in view).
+inline constexpr float kRememberedCarColour = 0.45f;
+
+// Texels between the taps: kOtherCarSpread radii at the centre's distance, in texels of `texel_m` metres, from one texel to kOtherCarMaxStep.
+inline float OtherCarStep(float radius, float texel_m) {
+  return texel_m > 0.0f ? std::clamp(kOtherCarSpread * radius / texel_m, 1.0f, kOtherCarMaxStep) : 1.0f;
+}
+
+struct OtherCarColour {
+  float share = 0.0f;  // 0..1: the taps' weights over their sum when all match (4)
+  float rgb[3] = {};   // their mean colour (0 where none matches), in the history's units
+  bool known() const { return share >= kOtherCarMinShare; }
+};
+// The colour of a car placed from memory (a record with a negative radius): known in full, a fixed grey. UNITS (RT-MODEL-CARS-4): the paint (the record's second row) and the
+// grey are colours of the paint's units (a shader's output: a lit surface of albedo 1 is about kPaintLit of it), the image the pass writes is in the HISTORY's (the target's
+// own: the shader's output times 2^exp_bias, 16 at the game's bias of 4; the paint reads the image times 2^-bias), so both are multiplied by `units`
+// (car_selfrefl_rules.h ExpBiasUnits). Without it every such colour was 16 times too dark: the neighbour beside the door was a dark silhouette, not in its paint.
+inline OtherCarColour RememberedOtherCarColour(const float* paint, float units) {
+  OtherCarColour out;
+  out.share = 1.0f;
+  for (int c = 0; c < 3; ++c) {
+    out.rgb[c] = (paint ? paint[c] : kRememberedCarColour) * units;  // the car's paint where the record has one (CarPaintRow), else the grey
+  }
+  return out;
+}
+// `units`: the history's units over the paint's (RememberedOtherCarColour says why); the taps' colours are the history's already and keep theirs.
+// `taps` as SurfaceMean's (tap k at the offset (k % 3 - 1, k / 3 - 1) times the step; the middle tap is the centre's own place), `centre_z` the
+// centre's view distance and `radius` the car's (a car the camera does not draw has a negative one: RememberedOtherCarColour, the taps are not looked at;
+// `paint`: its paint colour from the record's second row, null where the flag is clear). A car the camera draws takes the history's colour where the taps hold
+// enough (known()), and its paint, in full, where they do not and it has one. `centre_z` at or under kOtherCarMinDepth (the centre is behind the camera) or a
+// radius of 0 (no centre in the record) has no taps to look at: the paint or nothing.
+inline constexpr float kOtherCarMinDepth = 0.05f;  // the shader's kMinDepth
+inline OtherCarColour FindOtherCarColour(const SurfaceTap taps[9], float centre_z, float radius, const float* paint, float units) {
+  if (radius < 0.0f) {
+    return RememberedOtherCarColour(paint, units);
+  }
+  OtherCarColour out;
+  float sum[3] = {};
+  float total = 0.0f;
+  const float tolerance = kOtherCarDepth * radius;
+  for (int k = 0; k < 9 && radius > 0.0f && centre_z > kOtherCarMinDepth; ++k) {
+    const float tent = ((k % 3) == 1 ? 1.0f : 0.5f) * ((k / 3) == 1 ? 1.0f : 0.5f);
+    const float w = tent * MatchWeight(taps[k].distance, centre_z, tolerance);
+    total += w;
+    for (int c = 0; c < 3; ++c) {
+      sum[c] += w * taps[k].rgb[c];
+    }
+  }
+  out.share = total / 4.0f;
+  if (total > 1e-6f) {
+    for (int c = 0; c < 3; ++c) {
+      out.rgb[c] = sum[c] / total;
+    }
+  }
+  if (!out.known() && paint) {
+    return RememberedOtherCarColour(paint, units);  // the history shows nothing of the car: its paint stands in
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

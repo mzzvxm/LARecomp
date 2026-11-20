@@ -1427,6 +1427,8 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
+    // The bytes of a record are its identity: a -0.0 slope written by an earlier build is the +0.0 a draw asks for now.
+    r.key.slope_scaled_depth_bias = key_guard::CanonicalZero(r.key.slope_scaled_depth_bias);
     // A depth format this device has no target for (the other API's file holds D24).
     r.key.depth_format =
         uint32_t(format::HostDepthFormat(plume::RenderFormat(r.key.depth_format)));
@@ -1734,7 +1736,8 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
     bias.slope = poly_scale * xe::kPolygonOffsetScaleSubpixelUnit;
     if (!dynamic_depth_bias_) {
       key.depth_bias = bias.constant;
-      key.slope_scaled_depth_bias = bias.slope;
+      // A slope of -0.0 (a negative zero scale times the unit) is the same pipeline as +0.0 but other bytes of the key.
+      key.slope_scaled_depth_bias = key_guard::CanonicalZero(bias.slope);
     }
   }
   const bool depth_clip = !state.clip.clip_disable;

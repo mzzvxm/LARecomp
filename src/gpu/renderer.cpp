@@ -182,9 +182,14 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
-                    "structures while an effect asks for them",
-                    device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        if (vulkan) {
+          REXLOG_INFO("[gpu] car ray tracing: available (Vulkan ray queries, VK_KHR_ray_query): the player's car is built into ray tracing "
+                      "structures while an effect asks for them");
+        } else {
+          REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
+                      "structures while an effect asks for them",
+                      device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        }
       } else {
         REXLOG_WARN("[gpu] car ray tracing: the device can trace rays but the structures could not be set up: not available");
       }
@@ -193,6 +198,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // and before the precache starts.
     car_rt_refl_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, car_refl_.ListedAtStart());
     car_refl_.SetCarRtRefl(&car_rt_refl_);
+    // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
+    ao_.InitializeCarRt(&car_rt_, &car_frame_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.

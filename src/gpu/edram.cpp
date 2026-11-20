@@ -359,6 +359,9 @@ bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
 }
 
 size_t EdramTargets::FramebufferKeyHash::operator()(const FramebufferKey& k) const {
+  // Hashed as bytes (the == above is field by field): five pointers, five generations, the count: no padding, every member set.
+  static_assert(key_guard::kNoPadding<FramebufferKey>, "FramebufferKey is hashed as bytes: it must have no padding (key_guard.h)");
+  static_assert(key_guard::AllMembersSet<FramebufferKey>(), "every FramebufferKey member needs a default initializer (key_guard.h)");
   return size_t(XXH3_64bits(&k, sizeof(k)));
 }
 
