@@ -1550,8 +1550,8 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
-//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
-//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS (kLightItems)
+//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, HEADLIGHT SHADOWS,
+//                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS (kLightItems)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
@@ -1972,6 +1972,23 @@ std::string CarShadowLabel(int i) {
     }
 }
 constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
+// Headlight shadows (mcla_gpu_headlight_shadows, gpu/local_shadow.h, live): the cars' headlights cast shadows (the game has none from any light but
+// the sun): the scene's opaque objects are drawn again from the headlights into a small map the headlights' light reads. OFF, HIGH (512x512 texels
+// a view: your headlights) or ULTRA (1024x1024: the nearest other car's too). AUTO says what it comes to on this GPU, like the other AUTO rows
+// (gpu/gpu_class.h Effect::kHeadlightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The stored words are the
+// shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is.
+// The label is "HEADLIGHT SHADOWS" (17 characters) with a value of at most 12 ("AUTO (ULTRA)").
+const char* const kNativeHeadlightShadowVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeHeadlightShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string HeadlightShadowLabel(int i) {
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kHeadlightShadows);
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+constexpr RowDynamics kHeadlightShadowDynamics = {.str_label = HeadlightShadowLabel};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
 // paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
 // level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
@@ -2062,10 +2079,10 @@ const ItemDef kImageQualityItems[] = {
 // (perf_no_shadows) is on both renderers: off is the biggest single FPS win and is live (render_phases.cpp). The rest are the NATIVE renderer's
 // graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
-// (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS). The ids and the
+// (CAR SHADOWS), the cars' headlights' (HEADLIGHT SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
-// (SsgiOn). 11 rows of the 24 a page can hold.
+// (SsgiOn). 12 rows of the 24 a page can hold.
 // Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
 const ItemDef kLightItems[] = {
@@ -2086,6 +2103,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
                                 kNativeCarShadowVals, kNativeCarShadowNames, 4),
                             &kCarShadowDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuHeadlightShadows", "mcla_gpu_headlight_shadows", "HEADLIGHT SHADOWS: ",
+                                kNativeHeadlightShadowVals, kNativeHeadlightShadowNames, 4),
+                            &kHeadlightShadowDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
                                 kNativeAoVals, kNativeAoNames, 4),
                             &kAoDynamics)),
@@ -3029,8 +3049,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AUTO (OFF)"): 38 together.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 11 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
-// "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
+// LIGHTING AND SHADOWS (kLightItems, 12 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
+// "AMBIENT OCCLUSION" and "HEADLIGHT SHADOWS" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
 // REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
@@ -3187,7 +3207,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 11 rows
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 12 rows
 // (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 

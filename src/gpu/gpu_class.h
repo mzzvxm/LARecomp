@@ -77,8 +77,9 @@ enum class Effect : uint8_t {
   kTrafficShadows,        // mcla_gpu_traffic_shadows    auto, off, near, all (traffic_shadow.h)
   kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h)
   kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, high, ultra
+  kHeadlightShadows,      // mcla_gpu_headlight_shadows  auto, off, high, ultra (local_shadow.h)
 };
-inline constexpr int kEffectCount = 10;
+inline constexpr int kEffectCount = 11;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -110,6 +111,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // card (Mid), high about 1 ms, so Mid gets high and keeps a frame at 60 FPS; the Low class (shared
     // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
     {"mcla_gpu_ao", "off", "high", "ultra"},
+    // The cars' headlights cast shadows (local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 512 (high) or
+    // 1024 (ultra) texels a view; high shadows the player's headlights, ultra the nearest other car's too. Mid gets high, High gets ultra,
+    // shared memory nothing (the scene alone is 100+ ms there). The cost is the render thread's second pass over the frame's draws and a few
+    // hundredths of a millisecond of graphics card time: to be measured (perf/LOCAL-SHADOWS-SURVEY.md option A), the cells are a first guess.
+    {"mcla_gpu_headlight_shadows", "off", "high", "ultra"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

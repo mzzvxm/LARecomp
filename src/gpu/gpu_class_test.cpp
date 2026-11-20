@@ -87,6 +87,10 @@ const Row kTable[] = {
     // high about 1 ms; nothing on shared memory).
     {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)",
      "AUTO (ULTRA)"},
+    // Headlight shadows (local_shadow.h): high on Mid (a map of 512 for the player's lamps), ultra on High (1024, the nearest other car's too),
+    // nothing on shared memory.
+    {Effect::kHeadlightShadows, "mcla_gpu_headlight_shadows", "off", "high", "ultra", "AUTO (OFF)",
+     "AUTO (HIGH)", "AUTO (ULTRA)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -147,6 +151,27 @@ void CheckAmbientOcclusion() {
   }
 }
 
+// Headlight shadows' `auto` (mcla_gpu_headlight_shadows, local_shadow.h): nothing on shared memory, the small map (high) on Mid, the big one (ultra)
+// on High; a value the player holds is kept in every class, and the classes only go up.
+void CheckHeadlightShadows() {
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const char* const want[] = {"off", "high", "ultra"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
+  int last = -1;
+  for (int k = 0; k < 3; ++k) {
+    const GpuClass c = classes[k];
+    const std::string at = "headlight shadows on " + std::string(ClassName(c));
+    CheckEq(ResolveFor(c, Effect::kHeadlightShadows, "auto"), want[k], at + ": auto");
+    for (const char* v : {"off", "high", "ultra"}) {
+      CheckEq(ResolveFor(c, Effect::kHeadlightShadows, v), v, at + ": the saved '" + v + "' is kept");
+    }
+    const int now = rank(Cell(Effect::kHeadlightShadows, c));
+    Check(now >= last, at + ": not below the class under it");
+    last = now;
+  }
+  CheckEq(std::string(CvarName(Effect::kHeadlightShadows)), "mcla_gpu_headlight_shadows", "the cvar's name");
+}
+
 void CheckLabels() {
   CheckEq(AutoLabelOf("high"), "AUTO (HIGH)", "AutoLabelOf(high)");
   CheckEq(AutoLabelOf("Soft"), "AUTO (SOFT)", "AutoLabelOf(Soft)");
@@ -157,7 +182,7 @@ void CheckLabels() {
 // contact shadows and the bounce light are off / high / ultra, the car self-reflections off / on; every cell of the table is one of the
 // words its setting allows, and no cell and no label of an `auto` says low.
 void CheckWords() {
-  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi}) {
+  for (const Effect effect : {Effect::kAmbientOcclusion, Effect::kContactShadows, Effect::kSsgi, Effect::kHeadlightShadows}) {
     const std::string name(CvarName(effect));
     for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       const std::string cell(Cell(effect, c));
@@ -632,6 +657,7 @@ int main() {
   CheckTable();
   CheckSunShaftSteps();
   CheckAmbientOcclusion();
+  CheckHeadlightShadows();
   CheckLabels();
   CheckWords();
   CheckNames();
