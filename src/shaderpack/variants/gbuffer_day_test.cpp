@@ -35,6 +35,7 @@
 #include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/luminance_scale.h"
 #include "shaderpack/variants/shadow_filter.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/ui_sharp.h"
 
 namespace sp = larecomp::shaderpack;
@@ -376,6 +377,84 @@ void CheckDefinitions() {
   Check(vr.ok, "the vertex definition's transform runs");
 }
 
+// ---- composed with another stage -----------------------------------------------------------------------------------------------------------------------
+
+// A stage of this test's own, the shape of what the headlight and the lamps' shadows do to a lit shader: 32 bytes of constants, a helper before main, a local after the cube map's line
+// (the same line the derivative block follows). The day stage composes with it in either order, as the golden test (variant_golden_test.cpp) proves for the built-in stages.
+sp::VariantDef MakeProbeStage() {
+  sp::VariantDef def;
+  def.feature = 20;
+  def.name = "test_stage";
+  def.version = 1;
+  def.transform = [](const sp::VariantShader& shader, std::string_view hlsl, const sp::StageContext& ctx) {
+    using namespace sp::textedit;
+    sp::VariantTransformResult r;
+    std::string text = NormalizeNewlines(hlsl);
+    std::string error;
+    static constexpr sp::ConstantMember kMembers[] = {{"float4", "g_GbTestProbe0"}, {"uint4", "g_GbTestProbe1"}};
+    static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0), Lit("#endif"), Ws(0), Lit("void main(")};
+    static constexpr Piece kCube[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
+    if (!sp::DeclareConstants(text, ctx, "test stage", kMembers, &error) ||
+        !ReplaceOnce(text, kMain, 0, 6, "main", [](std::string_view group) { return "float GbTestHelper(float x) { return x * 2.0f; }\n\n" + std::string(group); }, &error) ||
+        !ReplaceOnce(text, kCube, 0, 0, "cube map", [](std::string_view group) { return std::string(group) + "\n\tfloat gbTestLocal = GbTestHelper(float(g_GbTestProbe1.x) + g_GbTestProbe0.x);"; }, &error)) {
+      r.error = std::string(shader.name) + ": " + error;
+      return r;
+    }
+    r.ok = true;
+    r.hlsl = std::move(text);
+    return r;
+  };
+  return def;
+}
+
+void CheckComposed(const std::filesystem::path& folder, const std::string& helper, const std::filesystem::path& out) {
+  // one shader of each kind
+  const char* const names[] = {"xCityDefault__PSCityDefault", "xCitySidewalk__PSCitySidewalk", "xPropDefault__PSPropDefault", "xCityRoad__PSCityRoad", "xCityStoreInterior__PSCityStoreInterior",
+                               "xCityBillboard__PSCityBillboard"};
+  for (const char* name : names) {
+    const std::filesystem::path file = folder / (std::string(name) + ".hlsl");
+    if (!std::filesystem::exists(file)) {
+      Check(false, std::string("the retail text is there: ") + file.string());
+      continue;
+    }
+    const std::string text = ReadFile(file);
+    const sp::GBufferDayShader* row = sp::FindGBufferDayShader(name);
+    for (const bool real_first : {true, false}) {
+      const uint32_t real_feature = real_first ? sp::kFeatureGBuffer : 25;
+      sp::VariantDef moved = sp::MakeGBufferDayStageFromText(helper);
+      moved.feature = real_feature;
+      chain::FeatureInfo real_row = *chain::Find(sp::kFeatureGBuffer);
+      real_row.feature = real_feature;
+      real_row.composes_with = chain::FeatureBit(20);
+      const chain::FeatureInfo probe = {20, "test_stage", chain::Stage::kPixel, 32, chain::FeatureBit(real_feature), true, 0};
+      std::vector<chain::FeatureInfo> table = {real_row, probe};
+      std::sort(table.begin(), table.end(), [](const chain::FeatureInfo& x, const chain::FeatureInfo& y) { return x.feature < y.feature; });
+      const char* why = nullptr;
+      Check(chain::TableIsValid(table, &why), std::string("the test table is valid: ") + (why ? why : ""));
+      const std::vector<sp::VariantDef> defs = {moved, MakeProbeStage()};
+      const uint32_t set = chain::FeatureBit(20) | chain::FeatureBit(real_feature);
+      const std::string label = std::string(name) + " + the test stage (" + (real_first ? "day stage first" : "day stage second") + ")";
+      const sp::VariantTransformResult composed = sp::ComposeStages(defs, set, {name, 0}, text, table);
+      Check(composed.ok, label + ": composes (" + composed.error + ")");
+      if (!composed.ok) continue;
+      const uint32_t real_at = chain::OffsetOf(set, real_feature, table);
+      const uint32_t test_at = chain::OffsetOf(set, 20, table);
+      Check(real_at == (real_first ? 608u : 640u) && test_at == (real_first ? 656u : 608u), label + ": the blocks follow each other at the offsets the chain gives");
+      Check(Count(composed.hlsl, "g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + " + std::to_string(real_at) + ", 0x10)") == 1 &&
+                Count(composed.hlsl, "g_GBufferMode : packoffset(c" + std::to_string(real_at / 16) + ")") == 1 &&
+                Count(composed.hlsl, "g_GbTestProbe0 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + " + std::to_string(test_at) + ", 0x10)") == 1,
+            label + ": both blocks are declared once, at their places");
+      Check(Count(composed.hlsl, "float2 GbRt1Encode(float3 n)") == 1 && Count(composed.hlsl, "float GbTestHelper(float x)") == 1 && Count(composed.hlsl, sp::GBufferDayWriteText(*row)) == 1 &&
+                Count(composed.hlsl, "float gbTestLocal = ") == 1,
+            label + ": both stages' text is in it once");
+      if (!out.empty()) {
+        std::filesystem::create_directories(out / "composed");
+        std::ofstream(out / "composed" / (std::string(name) + (real_first ? ".first" : ".second") + ".gbday.hlsl"), std::ios::binary) << composed.hlsl;
+      }
+    }
+  }
+}
+
 // No shader of the day stage or of the vertex stage is also a shader of another variant of this tree (a shader has one stage per feature and only the pairs the table composes share a
 // text: the day shaders are the headlight's neighbours, not its targets, because it edits the PSMultiLight shaders).
 void CheckNoOverlap() {
@@ -501,7 +580,10 @@ int main(int argc, char** argv) {
           "the real helper is in it once, with the derivative normal's functions");
   }
   if (argc > 2) {
-    CheckRetail(argv[2], helper.empty() ? std::string(kHelper) : helper, argc > 3 ? std::filesystem::path(argv[3]) : std::filesystem::path());
+    const std::string used_helper = helper.empty() ? std::string(kHelper) : helper;
+    const std::filesystem::path out = argc > 3 ? std::filesystem::path(argv[3]) : std::filesystem::path();
+    CheckRetail(argv[2], used_helper, out);
+    CheckComposed(argv[2], used_helper, out);
   }
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
