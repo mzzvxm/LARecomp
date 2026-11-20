@@ -162,7 +162,11 @@ bool MaskOn() { return (g_push.slots2.z & (1u << 24)) != 0u; }
 // linear depth whose slot is in the high 16 bits of slots2.y (the low 16 are the bounce light's colour chain slot). Without the flag the
 // contact image is at the passes' size and its depth is slots.w, as before.
 bool AoContactFull() { return (g_push.slots2.z & (1u << 21)) != 0u; }
-uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : g_push.slots.w; }
+// The depth image's slot (the occlusion's linear depth, level 0) is the low 16 bits of slots.w; the high 16 are the normal image's slot, at the picture's size (0: none: the pass takes
+// the normal from the depth, below). ao.cpp RecordApply, ao_gbuffer.h: the apply reads the normal image only where one has the picture's size.
+uint ApplyDepthSlot() { return g_push.slots.w & 0xFFFFu; }
+uint ApplyNormalSlot() { return g_push.slots.w >> 16; }
+uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : ApplyDepthSlot(); }
 int2 ContactImageSize() { return AoContactFull() ? int2(g_push.sizes.xy) : int2(g_push.sizes.zw); }
 uint ColourSlot() { return g_push.slots2.y & 0xFFFFu; }
 // The paint power's code (ao_paint.h): flags bits 17-20, the place of the denoise's radius, which this pass does not read (ao.cpp
@@ -202,7 +206,7 @@ float LinearAt(int2 p, int2 last) {
 // anyway, so it costs next to nothing at half size and one load of the pixel's own depth at full size.
 float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
   if (!AoLow()) {
-    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
+    vehicle = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel)) ? 1.0f : 0.0f;
     return g_textures[slot].Load(int3(pixel, 0)).x;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -216,7 +220,7 @@ float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
     for (int i = 0; i < 2; ++i) {
       const int2 c = clamp(q0 + int2(i, j), int2(0, 0), asize - 1);
       const float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
-      const float td = AoLoadLinear(g_push.slots.w, c);
+      const float td = AoLoadLinear(ApplyDepthSlot(), c);
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       sum += g_textures[slot].Load(int3(c, 0)).x * w;
@@ -253,7 +257,7 @@ bool PixelIsVehicle(int2 pixel) {
     return AoIsVehicle(AoLoadLinear(ContactDepthSlot(), pixel));
   }
   const int2 asize = int2(g_push.sizes.zw);
-  return AoIsVehicle(AoLoadLinear(g_push.slots.w, clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1)));
+  return AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1)));
 }
 
 // The game's car sun image is in this frame's push (slots.y bit 8; ao.cpp FindCarSunSlot, RecordCarSunLookup).
@@ -293,7 +297,7 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
   if (!AoLow()) {
     gi = g_textures[gi_slot].Load(int3(pixel, 0));
     colour = g_textures[colour_slot].Load(int3(pixel, 0));
-    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
+    vehicle = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel)) ? 1.0f : 0.0f;
     return;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -308,7 +312,7 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
     for (int i = 0; i < 2; ++i) {
       const int2 c = clamp(q0 + int2(i, j), int2(0, 0), asize - 1);
       const float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
-      const float td = AoLoadLinear(g_push.slots.w, c);
+      const float td = AoLoadLinear(ApplyDepthSlot(), c);
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       gi_sum += g_textures[gi_slot].Load(int3(c, 0)) * w;
@@ -351,21 +355,32 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle) : 1.0f;
 #endif
 
-  // The normal from the full resolution depth, as the main pass has it.
+  // The normal: the normal image's where the frame has one at this size (GB-E; ao_normal_ps.hlsl: the G-buffer's where a pixel has it, else the depth's), else from the full
+  // resolution depth, as the main pass has it. The four neighbours' depths below are the folded contact filter's too (they are read for it where the normal comes from the image).
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float tl = LinearAt(pixel + int2(-1, 0), last);
-  const float tr = LinearAt(pixel + int2(1, 0), last);
-  const float tt = LinearAt(pixel + int2(0, -1), last);
-  const float tb = LinearAt(pixel + int2(0, 1), last);
-  const float3 h = abs(tl - tc) < abs(tr - tc)
-                       ? pc - AoViewPos(float2(pixel + int2(-1, 0)) + 0.5f, size, tl)
-                       : AoViewPos(float2(pixel + int2(1, 0)) + 0.5f, size, tr) - pc;
-  const float3 v = abs(tt - tc) < abs(tb - tc)
-                       ? AoViewPos(float2(pixel + int2(0, -1)) + 0.5f, size, tt) - pc
-                       : pc - AoViewPos(float2(pixel + int2(0, 1)) + 0.5f, size, tb);
-  float3 normal = cross(v, h);
-  const float normal_len = length(normal);
-  normal = normal_len > 1e-20f ? normal / normal_len : float3(0.0f, 0.0f, -1.0f);
+  const uint normal_slot = ApplyNormalSlot();
+  float3 normal;
+  float tl = 0.0f;
+  float tr = 0.0f;
+  float tt = 0.0f;
+  float tb = 0.0f;
+  if (normal_slot != 0u) {
+    normal = GbOctDecode(g_textures[normal_slot].Load(int3(pixel, 0)).xy);
+  } else {
+    tl = LinearAt(pixel + int2(-1, 0), last);
+    tr = LinearAt(pixel + int2(1, 0), last);
+    tt = LinearAt(pixel + int2(0, -1), last);
+    tb = LinearAt(pixel + int2(0, 1), last);
+    const float3 h = abs(tl - tc) < abs(tr - tc)
+                         ? pc - AoViewPos(float2(pixel + int2(-1, 0)) + 0.5f, size, tl)
+                         : AoViewPos(float2(pixel + int2(1, 0)) + 0.5f, size, tr) - pc;
+    const float3 v = abs(tt - tc) < abs(tb - tc)
+                         ? AoViewPos(float2(pixel + int2(0, -1)) + 0.5f, size, tt) - pc
+                         : pc - AoViewPos(float2(pixel + int2(0, 1)) + 0.5f, size, tb);
+    normal = cross(v, h);
+    const float normal_len = length(normal);
+    normal = normal_len > 1e-20f ? normal / normal_len : float3(0.0f, 0.0f, -1.0f);
+  }
 
   // The share of the light that is ambient.
   const float ambient = g_push.light.w;
@@ -413,6 +428,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // half of kFoldedFilterSkip), which is exact only because a pixel with weight <= kFoldedFilterSkip never reads the
       // image. Change the weight (sun_share, the fade, the mask's sample position or gain) or this test and that bound
       // changes with it (contact_trace.h MaskCannotLight).
+      if (normal_slot != 0u) {
+        tl = LinearAt(pixel + int2(-1, 0), last);
+        tr = LinearAt(pixel + int2(1, 0), last);
+        tt = LinearAt(pixel + int2(0, -1), last);
+        tb = LinearAt(pixel + int2(0, 1), last);
+      }
       cs = AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }
@@ -494,7 +515,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // The pixels the depth pass marked as vehicles (white).
       const int2 asize = int2(g_push.sizes.zw);
       const int2 q = clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1);
-      const float v = AoIsVehicle(AoLoadLinear(g_push.slots.w, q)) ? 1.0f : 0.0f;
+      const float v = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), q)) ? 1.0f : 0.0f;
       grey = float3(v, v, v);
     } else if (view == 8u) {
       grey = float3(contact_factor, contact_factor, contact_factor);

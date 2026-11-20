@@ -18,6 +18,8 @@
 // the worst of it out of one frame before the accumulation over frames and the a-trous filter
 // (ao_atrous_ps) do the rest.
 //
+// The normal is the normal image's where the frame has one (slots2.w is its bindless slot, 0 for none: ao_common.hlsli AoNormalAt) and the depth's where not.
+//
 // The contact shadows use it too (flag bit 25, AoContactFilter): once, with a third weight that falls
 // with the difference of the visibility (AoBilateralEdge), so their edges stay sharp. That is the plain
 // compilation's only: the contact term's images are single channel also while the bounce light runs, and
@@ -38,7 +40,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots2.w, depth_slot, pixel, isize, tc, pc);
   return AoBilateral4(source_slot, depth_slot, pixel, isize, tc, pc, normal, AoDenoiseRadius());
 }
 
@@ -55,7 +57,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots2.w, depth_slot, pixel, isize, tc, pc);
   const float result = AoContactFilter()
                            ? AoBilateralEdge(visibility_slot, depth_slot, pixel, isize, tc, pc, normal)
                            : AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal,

@@ -145,6 +145,10 @@ add_executable(larecomp_ao_stable_noise_test EXCLUDE_FROM_ALL ao_stable_noise_te
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ao_size_test, then run src/gpu/larecomp_ao_size_test <src/gpu dir> [--print].
 add_executable(larecomp_ao_size_test EXCLUDE_FROM_ALL ao_size_test.cpp)
+# The occlusion's use of the G-buffer's normal plane (ao_gbuffer.h; GB-E: the normal image the passes read, the rules, the camera's rows, the facing of the bounce light's samples; it also
+# compiles hlsl/ao_gbuffer_normal.hlsli as C++ and compares it with the header, and reads the sources it is given) has a check that needs no renderer:
+#   cmake --build <dir> --target larecomp_ao_gbuffer_test, then run src/gpu/larecomp_ao_gbuffer_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ao_gbuffer_test EXCLUDE_FROM_ALL ao_gbuffer_test.cpp)
 # The reader of a setting's definition that the source checks of the three occlusion tests above use (setting_source.h: the REX_SETTING row of
 # src/settings/generated, and the REXCVAR_DEFINE call of a .cpp before the conversion) has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_setting_source_test, then run src/gpu/larecomp_setting_source_test (exit 0 = passed).
@@ -655,6 +659,10 @@ larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINE
 larecomp_gpu_host_shader(ao_depth_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_depth_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_mip_ps ps_6_0)
+# The normal image the passes read (ao.h, GB-E): the unit view-space normal of every pixel, from the G-buffer's normal plane where it has one and from the depth where it has not;
+# once for a plane with one sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(ao_normal_ps ps_6_0 DEFINES AO_NORMAL_MS=0)
+larecomp_gpu_host_shader(ao_normal_ms_ps ps_6_0 SOURCE ao_normal_ps DEFINES AO_NORMAL_MS=1)
 larecomp_gpu_host_shader(ao_main_ps ps_6_0)
 # The same visibility pass with the slices and steps compiled in (ao_fast.h: 3 slices of 3 steps at high, 2 of 2 at low): the loops over
 # the steps unroll and what is a function of the counts folds. ao_main_ps is the compilation that reads the counts from the push block,

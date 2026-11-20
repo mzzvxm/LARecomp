@@ -106,6 +106,7 @@
 // Push block (ao_common.hlsli AoPush), this pass's fields:
 //   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit; slots.x, the statistics picture only: the mask's slot;
 //              with flag bit 31 the traced image's slot (the statistics picture's pass has no bit 31)
+//   slots.y    the normal image's bindless slot in the high 16 bits (0: none, the depth's normal; ao_common.hlsli AoNormalAt; the low bits are the host sample, not read here)
 //   slots.w    the car's shadow map (bit 28): its bindless slot, one float channel, the depth from the sun (0 nearest, 1 where no part of the car is)
 //   slots2.x   the car's shadow map (bit 28): the slot of its matrix, a 4 x 1 R32G32B32A32_FLOAT texture, texels 0 to 2 the rows that take a
 //              view position to (u, v, depth) (car_shadow_map.h), texel 3 (texel_m, depth_m, size, the world's shadow filter: mode * 256 + the
@@ -559,7 +560,7 @@ float4 SkipStat(float2 position) {
     return float4(kStatSkipped, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  float3 normal = AoNormalFromImage(depth_slot, pixel, int2(size), tc, pc);
+  float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, int2(size), tc, pc);
   if (dot(normal, pc) > 0.0f) {
     normal = -normal;
   }
@@ -588,7 +589,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   if (dot(normal, pc) > 0.0f) {
     normal = -normal;  // facing the camera
   }

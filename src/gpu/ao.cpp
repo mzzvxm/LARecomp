@@ -29,6 +29,7 @@
 #include "device.h"
 #include "format.h"
 #include "frame.h"
+#include "gbuffer.h"
 #include "gpu_class.h"
 #include "host_plan.h"
 #include "host_shaders.h"
@@ -83,6 +84,8 @@ constexpr uint32_t kVehicleTableWidth = 4;
 // The vehicle summary line is printed every this many guest frames (and once, the first time a table
 // is drawn).
 constexpr uint64_t kVehicleLogEvery = 3600;
+// The G-buffer's normals: a summary line of the frames' use and reasons every this many frames (GB-E).
+constexpr uint64_t kNormalLogEvery = 3600;
 // The vertex constants' view inverse is taken as the frame's own camera once it matched the
 // anchor's within kVsMatch in a frame whose camera moved by at least kVsMoved (an entry of the
 // view inverse: a step of that size shows in it; a stale copy of the last frame's would not match).
@@ -102,6 +105,7 @@ constexpr uint32_t kApplyMaskFlag = 1u << 24;
 constexpr uint32_t kApplyContactFullFlag = 1u << 21;
 constexpr uint32_t kApplyHighSlotShift = 16;
 static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift), "two bindless slots must fit one 32 bit word");
+static_assert(kBindlessTextureCount <= (1u << ao_gbuffer::kSlotShift), "the normal image's slot rides in the high half of a word whose low half is another slot or a small number");
 // The power the occlusion is raised to on a car's paint rides in the apply's flags, bits 17-20 (ao_paint.h; the denoise's radius is
 // there in the base push and the apply does not read it, so the code replaces it).
 // The colour chain's level 0 takes one MSAA sample of each pixel, the host sample in slots2.x (hlsl/ao_color_ps.hlsl AoOneSample; Plan::OneSampleColour).
@@ -485,6 +489,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVTemporalGi: return "ssgi temporal";
     case kVTemporalGiMs: return "ssgi temporal (multisampled)";
     case kVAtrous: return "ssgi a-trous";
+    case kVNormal: return "ao normals";
+    case kVNormalMs: return "ao normals (multisampled)";
     default: break;
   }
   if (variant >= kVGiView && variant < kVGiView + 4) {
@@ -594,8 +600,8 @@ bool AmbientOcclusion::EnsureGiShaders() {
   // failure takes the bounce light only.
   bool ok = true;
   for (uint32_t i = kCorePassCount; i < kPassCount && ok; ++i) {
-    if (CorePass(i)) {
-      continue;  // the occlusion's own (made at the start)
+    if (CorePass(i) || NormalPass(i)) {
+      continue;  // the occlusion's own (made at the start), and the normal pass (made when a frame has the G-buffer's plane: EnsureNormalShader)
     }
     const HostShaderBlob blob = AmbientOcclusionPixelShader(i);
     shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
@@ -603,7 +609,7 @@ bool AmbientOcclusion::EnsureGiShaders() {
   }
   if (!ok) {
     for (uint32_t i = kCorePassCount; i < kPassCount; ++i) {
-      if (!CorePass(i)) {
+      if (!CorePass(i) && !NormalPass(i)) {
         shaders_[i].reset();
       }
     }
@@ -631,6 +637,8 @@ void AmbientOcclusion::Shutdown() {
   for (HostImage& image : depth_) {
     image = HostImage{};
   }
+  normal_ = HostImage{};
+  normal_full_ = HostImage{};
   raw_ = HostImage{};
   denoised_ = HostImage{};
   depth_full_ = HostImage{};
@@ -672,6 +680,9 @@ void AmbientOcclusion::Shutdown() {
   ready_ = false;
   gi_ready_ = false;
   gi_shaders_failed_ = false;
+  normal_shaders_failed_ = false;
+  normals_ = NormalPlan{};
+  gbuffer_ = nullptr;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
@@ -817,6 +828,8 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVTemporalGi: return make(kPassTemporalGi, kGiFormat, copy, 1);
     case kVTemporalGiMs: return make(kPassTemporalGiMs, kGiFormat, copy, 1);
     case kVAtrous: return make(kPassAtrous, kGiFormat, copy, 1);
+    case kVNormal: return make(kPassNormal, plume::RenderFormat::R16G16_UNORM, copy, 1);
+    case kVNormalMs: return make(kPassNormalMs, plume::RenderFormat::R16G16_UNORM, copy, 1);
     case kVVehicleTable:
       // The host pass layout (the row's 48 bytes of push constants), as the temporal system's own table.
       return vehicle_table_shader_ ? passes_->CreatePipeline(*vehicle_table_shader_,
@@ -1002,7 +1015,9 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
     REXLOG_ERROR("[gpu] ao: the pipeline '{}' could not be made: no {} this session in that "
                  "configuration",
                  VariantName(variant),
-                 variant >= kVMainGi ? "bounce light" : "ambient occlusion");
+                 (variant == kVNormal || variant == kVNormalMs) ? "G-buffer normal image (the passes take the depth's)"
+                 : variant >= kVMainGi                          ? "bounce light"
+                                                                : "ambient occlusion");
   }
   return pipelines_[variant].get();
 }
@@ -1055,6 +1070,13 @@ void AmbientOcclusion::BeginFrame() {
     // (The contact shadows' gate is the last frame's judgment: a night's frame with the occlusion off builds nothing for a term that cannot run.)
     rt_ao_->BeginFrame(mode_ != Mode::kOff, contact_mode_ != Mode::kOff && contact_state_ != ContactState::kGated);
   }
+  if (gbuffer_) {
+    // The G-buffer's normal plane (GB-E; ao_gbuffer.h): asked for while one of the effects that read it is on, so that the sidecar is made, and its writes paid for, only where they
+    // run. The setting is the A/B: off asks for nothing and the passes take the depth's normals, to the bit. Sticky in the G-buffer (it reads the wants at its next frame boundary).
+    const bool normals_setting = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
+    gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion, ao_gbuffer::PlanesWanted(normals_setting, mode_ != Mode::kOff || contact_mode_ != Mode::kOff));
+    gbuffer_->Want(gbuffer::Consumer::kBounceLight, ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_));
+  }
   const bool gi_test = test && gi_active_;
   if (gi_test != gi_test_) {
     gi_test_ = gi_test;
@@ -1074,6 +1096,8 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   for (const HostImage& image : depth_) {
     add(image);
   }
+  add(normal_);
+  add(normal_full_);
   add(raw_);
   add(denoised_);
   add(depth_full_);
@@ -1110,6 +1134,7 @@ void AmbientOcclusion::ReleaseImages() {
   for (HostImage& image : depth_) {
     passes_->ReleaseImage(image);
   }
+  ReleaseNormalImages();
   passes_->ReleaseImage(raw_);
   passes_->ReleaseImage(denoised_);
   passes_->ReleaseImage(depth_full_);
@@ -2222,6 +2247,198 @@ void AmbientOcclusion::LogVehicleSummary() {
               v.pause_max_ids);
 }
 
+// ---------------------------------------------------------------------------
+// the G-buffer's normals (GB-E; ao_gbuffer.h, hlsl/ao_normal_ps.hlsl)
+// ---------------------------------------------------------------------------
+
+ao_gbuffer::Camera AmbientOcclusion::FrameCameraRows(ao_gbuffer::Rows* rows) const {
+  ao_gbuffer::CameraFacts facts;
+  facts.have_previous = have_previous_ && previous_pause_ == trigger_pause_;
+  temporal::Mat4 bank;
+  if (vs_view_inverse_draws_ != 0) {
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < 4; ++c) {
+        bank.m[r][c] = double(vs_view_inverse_[r * 4 + c]);
+      }
+    }
+    facts.bank_present = true;
+    facts.bank_trusted = vs_pose_trusted_;
+    facts.bank_sane = PoseSane(bank);
+    if (facts.have_previous && facts.bank_sane) {
+      facts.bank_difference = ao_gbuffer::RotationDifference(bank.m, previous_.view_inverse.m);  // the rotations: the camera's position moves with the car
+    }
+  }
+  const ao_gbuffer::Camera camera = ao_gbuffer::ChooseCamera(facts);
+  if (camera == ao_gbuffer::Camera::kVertexBank) {
+    return ao_gbuffer::RowsFromViewInverse(bank.m, rows) ? camera : ao_gbuffer::Camera::kNone;
+  }
+  if (camera == ao_gbuffer::Camera::kPrevious) {
+    return ao_gbuffer::RowsFromViewInverse(previous_.view_inverse.m, rows) ? camera : ao_gbuffer::Camera::kNone;
+  }
+  return camera;
+}
+
+bool AmbientOcclusion::EnsureNormalShader(bool multisampled) {
+  const Pass pass = multisampled ? kPassNormalMs : kPassNormal;
+  if (shaders_[pass]) {
+    return true;
+  }
+  if (normal_shaders_failed_ || !passes_ || !ready_) {
+    return false;
+  }
+  // Made here on the render thread (a short call; no worker reads the slot before NormalPipelineReady lists the pipeline after this), as EnsureContactShader's.
+  const HostShaderBlob blob = AmbientOcclusionPixelShader(pass);
+  shaders_[pass] = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (!shaders_[pass]) {
+    normal_shaders_failed_ = true;
+    REXLOG_ERROR("[gpu] ao: the normal pass's shader could not be made: the passes take the depth's normals this session");
+    return false;
+  }
+  return true;
+}
+
+bool AmbientOcclusion::NormalPipelineReady(bool multisampled) {
+  const uint32_t variant = multisampled ? kVNormalMs : kVNormal;
+  if (pipelines_[variant]) {
+    return true;
+  }
+  if (pipeline_failed_[variant] || !EnsureNormalShader(multisampled)) {
+    return false;
+  }
+  if (!listed_[variant]) {
+    // The first frame that could use the plane: the pipeline is made on a worker of the host builder, and the passes take the depth's normals until it is (a frame never waits for a
+    // compile). The G-buffer's own pipelines are the Scene's.
+    listed_[variant] = true;
+    std::vector<HostPrecache::Item> fresh;
+    fresh.push_back({HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant), VariantName(variant), [this, variant] { return MakePipeline(variant); }});
+    passes_->precache().AddLive("the G-buffer's normals", std::move(fresh));
+    if (!normal_pending_logged_) {
+      normal_pending_logged_ = true;
+      REXLOG_INFO("[gpu] ao: the first frame with the G-buffer's normal plane: the normal pass's pipeline is made in the background, and the passes take the depth's normals until it is "
+                  "done (logged once)");
+    }
+  }
+  if (!passes_->precache().Ready(HostPrecache::Key(HostPrecache::kAmbientOcclusion, variant))) {
+    return false;
+  }
+  return Pipeline(variant) != nullptr;
+}
+
+ao_gbuffer::Why AmbientOcclusion::PlanNormals(const ResolveCache::Summary& summary, const Plan& plan, NormalPlan* out) {
+  *out = NormalPlan{};
+  ao_gbuffer::FrameFacts facts;
+  facts.setting = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
+  facts.gbuffer_present = gbuffer_ != nullptr;
+  facts.play_view = !trigger_pause_;
+  facts.render_width = plan.render[0];
+  facts.render_height = plan.render[1];
+  const gbuffer::GBufferFrame* frame = gbuffer_ ? &gbuffer_->frame() : nullptr;
+  if (frame) {
+    // The plane has the main colour's samples and the depth the same ones (one colour target and its depth): the sample the depth is read at is the plane's too.
+    facts.frame_has_normal = frame->Has(gbuffer::kPlaneNormal) && summary.source && frame->host_samples == summary.source->host_samples && frame->sample0 == summary.host_sample;
+    facts.plane_width = frame->width;
+    facts.plane_height = frame->height;
+  }
+  facts.camera = FrameCameraRows(&out->rows);
+  out->camera = facts.camera;
+  facts.pipeline_ready = true;
+  ao_gbuffer::Why why = ao_gbuffer::Decide(facts);
+  if (why == ao_gbuffer::Why::kUsed) {
+    // Everything else holds: the pipeline is what is asked (and listed with the host builder the first time).
+    facts.pipeline_ready = NormalPipelineReady(frame->host_samples > 1);
+    why = ao_gbuffer::Decide(facts);
+  }
+  ++normal_why_frames_[size_t(why)];
+  if (why != normal_why_) {
+    normal_why_ = why;
+    if (why == ao_gbuffer::Why::kUsed) {
+      REXLOG_INFO("[gpu] ao: the passes take the G-buffer's normals where a pixel has one (mcla_gpu_ao_gbuffer_normals, live): the plane {}x{}, {} host sample{} (read at sample {}), "
+                  "turned into view space with {}; a normal image {}x{} R16G16_UNORM is made by one pass after the depth chain{}; the depth's normal is the fallback of every pixel the "
+                  "plane holds no data for, and of every frame that has none",
+                  frame->width, frame->height, frame->host_samples, frame->host_samples == 1 ? "" : "s", frame->sample0,
+                  out->camera == ao_gbuffer::Camera::kVertexBank ? "the frame's own view inverse (the vertex constants)" : "the last frame's camera", plan.ao[0], plan.ao[1],
+                  plan.SplitContact() ? std::format(" (and one {}x{} for the contact shadows, which keep the picture's size)", plan.render[0], plan.render[1]) : std::string());
+    } else {
+      REXLOG_INFO("[gpu] ao: the passes take the depth's normals: {} (logged when it changes)", ao_gbuffer::WhyName(why));
+    }
+  }
+  if (why != ao_gbuffer::Why::kUsed) {
+    return why;
+  }
+  out->on = true;
+  out->plane_slot = frame->slot[gbuffer::kPlaneNormal];
+  out->plane_samples = frame->host_samples;
+  out->plane_sample0 = frame->sample0;
+  out->plane_size[0] = frame->width;
+  out->plane_size[1] = frame->height;
+  return why;
+}
+
+bool AmbientOcclusion::EnsureNormalImages(const Plan& plan, const NormalPlan& normals) {
+  const ao_gbuffer::Images images = ao_gbuffer::ImagesFor(normals.on, plan.ao[0], plan.ao[1], plan.render[0], plan.render[1], plan.SplitContact(), plan.apply);
+  bool ok = true;
+  if (images.ao) {
+    ok = passes_->EnsureImage(normal_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_UNORM, "ao normals");
+  }
+  if (ok && images.full) {
+    ok = passes_->EnsureImage(normal_full_, plan.render[0], plan.render[1], plume::RenderFormat::R16G16_UNORM, "ao contact normals");
+  } else if (!images.full && normal_full_.texture) {
+    passes_->ReleaseImage(normal_full_);
+  }
+  if (ok && images.ao &&
+      (normal_images_for_[0] != plan.ao[0] || normal_images_for_[1] != plan.ao[1] || normal_images_for_[2] != plan.render[0] || normal_images_for_[3] != plan.render[1])) {
+    normal_images_for_[0] = plan.ao[0];
+    normal_images_for_[1] = plan.ao[1];
+    normal_images_for_[2] = plan.render[0];
+    normal_images_for_[3] = plan.render[1];
+    REXLOG_INFO("[gpu] ao: normal images: {}x{} R16G16_UNORM{} ({:.1f} MiB; given back {} frames after the G-buffer's plane was last used)", plan.ao[0], plan.ao[1],
+                images.full ? std::format(" and {}x{} for the contact shadows", plan.render[0], plan.render[1]) : std::string(), double(images.bytes) / (1024.0 * 1024.0),
+                ao_gbuffer::kReleaseAfterFrames);
+  }
+  return ok;
+}
+
+void AmbientOcclusion::ReleaseNormalImages() {
+  if (!passes_) {
+    return;
+  }
+  passes_->ReleaseImage(normal_);
+  passes_->ReleaseImage(normal_full_);
+  normal_images_for_[0] = normal_images_for_[1] = normal_images_for_[2] = normal_images_for_[3] = 0;
+}
+
+void AmbientOcclusion::RecordNormals(plume::RenderCommandList* list, const Plan& plan, const Push& base, const NormalPlan& normals) {
+  plume::RenderPipeline* pipeline = pipelines_[normals.plane_samples > 1 ? kVNormalMs : kVNormal].get();  // made: PlanNormals asked NormalPipelineReady
+  if (!pipeline) {
+    return;
+  }
+  // The traced size image, from the depth chain's level 0 (it carries the vehicle mark and, at half size, the source of each pixel). Push fields: hlsl/ao_normal_ps.hlsl.
+  pass_timing_->Mark(list, "ao normals");
+  Push push = base;
+  push.slots[0] = normals.plane_slot;
+  push.slots[1] = normals.plane_sample0;
+  push.slots[2] = depth_[0].slot;
+  push.sizes[0] = float(plan.ao[0]);
+  push.sizes[1] = float(plan.ao[1]);
+  push.sizes[2] = float(normals.plane_size[0]);
+  push.sizes[3] = float(normals.plane_size[1]);
+  for (int k = 0; k < 4; ++k) {
+    push.lin[k] = normals.rows.x[k];
+    push.shape[k] = normals.rows.y[k];
+    push.light[k] = normals.rows.z[k];
+  }
+  DrawPass(list, normal_, pipeline, push);
+  if (plan.SplitContact() && normal_full_.texture) {
+    // The contact shadows keep the picture's size beside a half size occlusion, with their own depth: their normal image is from that (no half size block to choose from).
+    pass_timing_->Mark(list, "ao contact normals");
+    push.slots[2] = depth_full_.slot;
+    push.sizes[0] = float(plan.render[0]);
+    push.sizes[1] = float(plan.render[1]);
+    push.slots2[2] &= ~(1u << 16);
+    DrawPass(list, normal_full_, pipeline, push);
+  }
+}
+
 bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            const Plan& requested) {
   // The frame's plan, which the SSGI test may take its part out of (PrepareGi).
@@ -2291,12 +2508,44 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // that a visit to the map does not make them again.
     ReleaseGiImages();
   }
+  // The G-buffer's normal plane (GB-E): whether this frame's passes read the normal image, and the images it needs. Without it every push below carries no slot and every pass
+  // takes the depth's normal as it did.
+  normals_ = NormalPlan{};
+  {
+    NormalPlan normals;
+    // (The census's probe-only frame, which has no apply and no consumer, asks nothing of the plane.)
+    const ao_gbuffer::Why why = plan.apply ? PlanNormals(summary, plan, &normals) : ao_gbuffer::Why::kNoNormalPlane;
+    if (why == ao_gbuffer::Why::kUsed && !EnsureNormalImages(plan, normals)) {
+      normals = NormalPlan{};
+      if (!normal_images_failed_logged_) {
+        normal_images_failed_logged_ = true;
+        REXLOG_ERROR("[gpu] ao: the normal image could not be made: the passes take the depth's normals while that lasts (asked again every frame)");
+      }
+    }
+    normals_ = normals;
+    if (normals_.on) {
+      normal_idle_frames_ = 0;
+      ++normal_frames_;
+    } else if (++normal_idle_frames_ == ao_gbuffer::kReleaseAfterFrames) {
+      ReleaseNormalImages();
+    }
+  }
   LightRaw light;
   uint32_t with_it = 0;
   const bool have_light = PickLight(&light, &with_it);
   UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
+  if (normals_.on) {
+    // The slot of the image each kind of pass reads (ao_gbuffer.h ContactReads, ApplyReads): the traced size one for the occlusion's and the bounce light's passes, the contact
+    // shadows' own size one beside a half size occlusion, and for the apply the picture's size one where there is one (else it takes the depth's normal, as before).
+    const bool split = plan.SplitContact() && normal_full_.texture;
+    normals_.ao_slot = normal_.slot;
+    normals_.contact_slot = ao_gbuffer::ContactReads(split) == ao_gbuffer::Which::kFull ? normal_full_.slot : normal_.slot;
+    const ao_gbuffer::Which apply_reads = ao_gbuffer::ApplyReads(split, plan.low);
+    normals_.apply_slot = apply_reads == ao_gbuffer::Which::kFull ? normal_full_.slot : (apply_reads == ao_gbuffer::Which::kAo ? normal_.slot : 0u);
+    normals_.depth_source_bits = plan.low;
+  }
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
   if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
@@ -2315,6 +2564,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   push.sizes[3] = float(plan.render[1]);
   // The depth target's stencil plane (the vehicles' IDs): the pass marks the vehicles' pixels.
   push.slots[2] = summary.stencil_slot;
+  // At half size with the G-buffer's normals the pass also records which sample of each 2x2 block it took (slots2.w; hlsl/ao_depth_ps.hlsl, ao_gbuffer_normal.hlsli).
+  push.slots2[3] = normals_.depth_source_bits ? 1u : 0u;
   DrawPass(list, depth_[0], depth_pipeline, push);
   if (levels) {
     // The coarser levels.
@@ -2341,6 +2592,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.sizes[0] = push.sizes[2] = float(plan.render[0]);
     push.sizes[1] = push.sizes[3] = float(plan.render[1]);
     DrawPass(list, depth_full_, depth_pipeline, push);
+  }
+  if (normals_.on) {
+    RecordNormals(list, plan, base, normals_);
   }
   if (plan.gi.on) {
     RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot);
@@ -2383,6 +2637,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // The visibility from the chain.
     pass_timing_->Mark(list, plan.gi.on ? "ssgi visibility" : "ao visibility");
     push = base;
+    // The normal image's slot (0: none): in lin.y for the main pass (a number, as the traced image's in lin.x; the pass reads no projection row) and in slots2.w for the denoise passes
+    // below (hlsl/ao_common.hlsli AoPush); the bounce light's push copy sets its own slots2.w after this.
+    push.lin[1] = float(normals_.ao_slot);
+    push.slots2[3] = normals_.ao_slot;
     push.slots[2] = depth_[0].slot;
     push.slots[3] = depth_[1].slot;
     push.slots2[0] = depth_[2].slot;
@@ -2468,6 +2726,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // and where the camera's motion came from.
     pass_timing_->Mark(list, plan.gi.on ? "ssgi temporal" : "ao temporal");
     push = base;
+    push.slots[1] = ao_gbuffer::PackHigh(base.slots[1], normals_.ao_slot);  // the host sample, and the normal image's slot in the high half
     push.slots[2] = visibility->slot;
     push.slots[3] = depth_[0].slot;
     // Without a history the slot is any readable image: the shader does not read it.
@@ -2560,6 +2819,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         HostImage* scratch[2] = {&gi_dn_, &history_in};
         for (uint32_t i = 0; i < plan.gi.atrous; ++i) {
           Push filter = base;
+          filter.slots2[3] = normals_.ao_slot;
           filter.slots2[2] &= ~0xFFu;
           filter.slots[2] = gi_bounce->slot;
           filter.slots[3] = depth_[0].slot;
@@ -2628,7 +2888,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // The apply into the scene colour: the occlusion's term and the contact shadows' in one factor.
     push = base;
     push.slots[2] = ao_slot;
-    push.slots[3] = depth_[0].slot;
+    push.slots[3] = ao_gbuffer::PackHigh(depth_[0].slot, normals_.apply_slot);  // the depth image's slot, and the normal image's in the high half (0: the apply's own depth normal)
     // The apply's slots.x and slots.y: the depth plane's slot and the host sample as the base push has them, and in their high halves the car sun
     // image's slot and its lookup's (hlsl/ao_apply_ps.hlsl ApplyLoadStored).
     push.slots[0] = base.slots[0] & 0xFFFFu;
@@ -3238,6 +3498,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   // header of hlsl/ao_contact_ps.hlsl.
   pass_timing_->Mark(list, "ao contact");
   Push push = base;
+  push.slots[1] = ao_gbuffer::PackHigh(base.slots[1], normals_.contact_slot);  // the normal image's slot in the high half (the march and its statistics pass read it there)
   push.slots[2] = contact_depth.slot;
   push.sizes[0] = push.sizes[2] = float(plan.contact_size[0]);
   push.sizes[1] = push.sizes[3] = float(plan.contact_size[1]);
@@ -3402,6 +3663,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   push.slots[2] = contact_raw.slot;
   push.slots[3] = contact_depth.slot;
   push.slots2[2] |= kContactFilterFlag;
+  push.slots2[3] = normals_.contact_slot;  // the denoise pass reads the normal image's slot here
   DrawPass(list, contact_dn, denoise, push);
   return contact_dn.slot;
 }
@@ -3923,6 +4185,23 @@ void AmbientOcclusion::OnPresent() {
   }
   if (census_every_ != 0 && frame_had_main_view_) {
     Census();
+  }
+  if (frame_ != 0 && frame_ % kNormalLogEvery == 0) {
+    // What the G-buffer's normals did over the frames that ran the passes since the last line, and why the others went without (ao_gbuffer.h Why).
+    uint64_t total = 0;
+    for (const uint64_t count : normal_why_frames_) {
+      total += count;
+    }
+    if (total != 0) {
+      std::string others;
+      for (uint32_t i = 1; i < uint32_t(ao_gbuffer::Why::kCount); ++i) {
+        if (normal_why_frames_[i] != 0) {
+          others += std::format("{}{} {}", others.empty() ? "" : "; ", normal_why_frames_[i], ao_gbuffer::WhyName(ao_gbuffer::Why(i)));
+        }
+      }
+      REXLOG_INFO("[gpu] ao: the G-buffer's normals over the last {} frames that ran the passes: used in {}{}{}", total, normal_why_frames_[0], others.empty() ? "" : ", not used in: ", others);
+      normal_why_frames_.fill(0);
+    }
   }
   // Nothing to compute for a second (the occlusion off, the contact shadows off or gated to nothing):
   // the images go back (they are made again by the first trigger after).

@@ -225,6 +225,7 @@
 {"mcla_gpu_ao_census", "MCLA/GPU"},
 {"mcla_gpu_ao_fade_end", "MCLA/GPU"},
 {"mcla_gpu_ao_fast_math", "MCLA/GPU"},
+{"mcla_gpu_ao_gbuffer_normals", "MCLA/GPU"},
 {"mcla_gpu_ao_half_above_1080", "MCLA/GPU"},
 {"mcla_gpu_ao_history", "MCLA/GPU"},
 {"mcla_gpu_ao_intensity", "MCLA/GPU"},
