@@ -319,6 +319,26 @@ inline bool HoldsPointer(bool open, bool hidden) {
     return open && !hidden;
 }
 
+// ---------------------------------------------------------------------------------------------------------------- what is on show
+
+// A rectangle as min and max corners, in the dock's units.
+struct Box {
+    float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
+};
+// The part of `item` that lies inside `clip` (the clip rect of the window it was drawn in), false when none of it does (or a sliver under a unit). The geometry the panel publishes holds
+// only what a click can reach: a widget under the fold of a scrolled child is clipped away and a click on its full rectangle hits nothing (the mouse run of 2026-11-20 clicked "SPAWN HERE"
+// below the dock's edge and could not tell why nothing happened).
+inline bool VisiblePart(const Box& item, const Box& clip, Box* out) {
+    Box b;
+    b.x0 = item.x0 > clip.x0 ? item.x0 : clip.x0;
+    b.y0 = item.y0 > clip.y0 ? item.y0 : clip.y0;
+    b.x1 = item.x1 < clip.x1 ? item.x1 : clip.x1;
+    b.y1 = item.y1 < clip.y1 ? item.y1 : clip.y1;
+    if (b.x1 - b.x0 < 1.0f || b.y1 - b.y0 < 1.0f) return false;
+    if (out) *out = b;
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the dock's size
 
 // THE DOCK FOLLOWS THE WINDOW. Everything the panel draws is in ImGui's own space, io.DisplaySize: the window's LOGICAL size (the SDK's drawer sets it to the physical size times

@@ -249,6 +249,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         geom_.clear();
         if (!hidden_) {
             DrawGizmos(io);
+            DrawCrosshair();
             DrawDock(io, s);
             WorldMouse(io, s);
         }
@@ -257,9 +258,19 @@ class DirectorPanel final : public rex::ui::DialogBase {
 
     // Where the panel's things are, as an event (`ui.geometry`, in ImGui's own units: io.DisplaySize), when they move: a test that clicks and drags with the real mouse needs to know
     // where the buttons, the lanes and the keys are, and the panel is the one that knows. At most four a second; ui.open asks for one at once.
+    // The item's rectangle, cut to what is on show: an item under the fold of a scrolled child or past the dock's edge is outside the clip rect, a click on it hits nothing, and the
+    // mouse run of 2026-11-20 clicked "SPAWN HERE" at such a place and counted a miss it could not explain. A widget with nothing on show is left out of the geometry (a test says
+    // "no such widget" and scrolls or fails clearly), a half shown one reports its shown half (its centre is clickable).
     void Geo(const std::string& name) {
         const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-        geom_[name] = {std::round(a.x * 2.0f) / 2.0f, std::round(a.y * 2.0f) / 2.0f, std::round((b.x - a.x) * 2.0f) / 2.0f, std::round((b.y - a.y) * 2.0f) / 2.0f};
+        const ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 lo = dl->GetClipRectMin(), hi = dl->GetClipRectMax();
+        dp::Box seen;
+        if (!dp::VisiblePart({a.x, a.y, b.x, b.y}, {lo.x, lo.y, hi.x, hi.y}, &seen)) {
+            geom_.erase(name);
+            return;
+        }
+        geom_[name] = {std::round(seen.x0 * 2.0f) / 2.0f, std::round(seen.y0 * 2.0f) / 2.0f, std::round((seen.x1 - seen.x0) * 2.0f) / 2.0f, std::round((seen.y1 - seen.y0) * 2.0f) / 2.0f};
     }
 
     void PublishGeometry(ImGuiIO& io) {
@@ -280,6 +291,18 @@ class DirectorPanel final : public rex::ui::DialogBase {
         e.Set("display", dir::Json::Vec3(std::round(io.DisplaySize.x), std::round(io.DisplaySize.y), 0.0));
         e.Set("picture", dir::Json::Vec3(view_.picture.x, view_.picture.y, view_.picture.w));
         e.Set("selected_line", selected_line_);
+        // What the panel did last and what it last told the human (the footer's two things): a test that clicked a button and saw no change reads here whether the command went out and
+        // what it answered (a pick that missed the ground says so in the notice).
+        e.Set("last_cmd", last_cmd_.size() > 200 ? last_cmd_.substr(0, 200) : last_cmd_);
+        {
+            const std::vector<dp::Notice>& notices = disp_.notices();
+            if (!notices.empty() && now_ - notices.back().time < 10.0) {
+                dir::Json n = dir::Json::Object();
+                n.Set("text", notices.back().text);
+                n.Set("error", notices.back().error);
+                e.Set("notice", std::move(n));
+            }
+        }
         // Where ImGui has the pointer (its own units; -1, -1 when it has none) and which buttons it holds: a test that moves the real mouse checks that the pointer ARRIVED before it clicks
         // (a mouse look that held the pointer locked left it at no place at all: the first mouse run).
         const bool has_pointer = io.MousePos.x > -1000.0f && io.MousePos.y > -1000.0f;
@@ -565,6 +588,19 @@ class DirectorPanel final : public rex::ui::DialogBase {
             dl->AddText(at, t.color, t.text.c_str());
         }
         ImGui::PopFont();
+    }
+
+    // The cross in the middle of the picture while the CARS tab is up: the point of the ground SPAWN HERE and PLACE AT CROSSHAIR use (query.pick at 0.5, 0.5 of the picture).
+    void DrawCrosshair() {
+        if (tab_ != kTabCars || collapsed_ || !view_.valid) return;
+        const float cx = view_.picture.x + 0.5f * view_.picture.w, cy = view_.picture.y + 0.5f * view_.picture.h;
+        const float arm = std::max(8.0f, 11.0f * plan_.scale), gap = std::max(3.0f, 4.0f * plan_.scale);
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const ImU32 dark = IM_COL32(0, 0, 0, 170);
+        const ImVec2 from[4] = {ImVec2(cx - gap - arm, cy), ImVec2(cx + gap, cy), ImVec2(cx, cy - gap - arm), ImVec2(cx, cy + gap)};
+        const ImVec2 to[4] = {ImVec2(cx - gap, cy), ImVec2(cx + gap + arm, cy), ImVec2(cx, cy - gap), ImVec2(cx, cy + gap + arm)};
+        for (int i = 0; i < 4; ++i) dl->AddLine(from[i], to[i], dark, 4.0f);
+        for (int i = 0; i < 4; ++i) dl->AddLine(from[i], to[i], kYellow, 1.8f);
     }
 
     // The mouse in the picture, where no panel window is: pick a car, drag a car or a waypoint over the ground, drop a waypoint.
@@ -1320,15 +1356,58 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::TextColored(ToVec4(kDim), "A tripod stands where the camera is; a fly-by follows the route in the PATHS tab.");
     }
 
+    // THE ACTIONS COME FIRST, the lists take what is left. At 720p the tab body is about four rows tall: with the buttons under the lists (the lists keep 40 units at least) SPAWN HERE sat
+    // below the dock's edge, out of the clip rect, and a click on the place the geometry gave for it hit nothing (the mouse run of 2026-11-20: "SPAWN HERE did not add a spawn line").
+    // A cross is drawn in the middle of the picture while this tab is up (DrawCrosshair): that is the ground SPAWN HERE and PLACE AT CROSSHAIR use.
     void TabCars(const dir::Snapshot& s) {
         if (!models_asked_) RequestModels();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ToVec4(kCyan), "SPAWN A CAR AT THE CROSSHAIR");
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+        const std::string chosen = model_.empty() ? std::string("(pick a model)") : dp::ModelTitle(model_);
+        Gap(TextWidth(chosen.c_str()));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ToVec4(kYellow), "%s", chosen.c_str());
+        ImGui::SetNextItemWidth(std::max(S(120.0f), ImGui::GetContentRegionAvail().x * 0.34f));
         ImGui::InputTextWithHint("##modelsearch", "search models", search_, sizeof(search_));
         ImGui::SameLine();
-        ImGui::TextColored(ToVec4(kYellow), "%s", model_.empty() ? "(pick a model)" : dp::ModelTitle(model_).c_str());
+        ImGui::Checkbox("SPAWN AT 0", &spawn_zero_);
+        Geo("SPAWN AT 0");
+        ImGui::SameLine();
+        if (Btn("SPAWN HERE", !model_.empty())) SpawnHere(s);
+        const dir::SnapCar* sel = nullptr;
+        for (const dir::SnapCar& c : s.cars) {
+            if (c.id == selected_car_) sel = &c;
+        }
+        if (sel && sel->id != "player") {
+            if (FlowBtn("PLACE AT CROSSHAIR")) PlaceAtCrosshair(*sel);
+            if (FlowBtn("LOOK AT")) Send(dp::LookAtCmd("car:" + sel->id));
+            if (FlowBtn("DELETE CAR")) {
+                const std::string id = sel->id;
+                QueueEdit("delcar" + id, [id](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::DeleteCar(ctx, snap.events, id); });
+                selected_car_.clear();
+            }
+            float heading = static_cast<float>(sel->heading);
+            Gap(S(190.0f));
+            ImGui::SetNextItemWidth(S(110.0f));
+            // (written on release only: a changed spawn line makes the car again, about 4 s, so a drag must not write it on the way)
+            ImGui::SliderFloat("HEADING", &heading, 0.0f, 360.0f, "%.0f");
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                const std::string id = sel->id;
+                const double h = heading;
+                QueueEdit("head" + id, [id, h](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::SetCarHeading(ctx, snap.events, id, h); });
+            }
+            Gap(S(130.0f));
+            ImGui::SetNextItemWidth(S(70.0f));
+            ImGui::InputInt("PAINT", &paint_, 0, 0);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                const std::string id = sel->id;
+                const int p = paint_;
+                QueueEdit("paint" + id, [id, p](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::SetCarPaint(ctx, snap.events, id, p); });
+            }
+        }
         const std::vector<std::string> list = dp::FilterModels(models_, search_, recents_, 300);
-        ImGui::BeginChild("##modellist", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, std::max(40.0f, ImGui::GetContentRegionAvail().y - S(88.0f))), ImGuiChildFlags_Borders);
+        const float lists_h = std::max(40.0f, ImGui::GetContentRegionAvail().y);
+        ImGui::BeginChild("##modellist", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, lists_h), ImGuiChildFlags_Borders);
         int shown_rows = 0;
         for (const std::string& name : list) {
             const bool recent = std::find(recents_.begin(), recents_.end(), name) != recents_.end();
@@ -1340,49 +1419,13 @@ class DirectorPanel final : public rex::ui::DialogBase {
         if (models_.empty()) ImGui::TextColored(ToVec4(kDim), "(the model list comes from the game: it fills in a moment)");
         ImGui::EndChild();
         ImGui::SameLine();
-        ImGui::BeginChild("##carlist", ImVec2(0.0f, std::max(40.0f, ImGui::GetContentRegionAvail().y - S(88.0f))), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("##carlist", ImVec2(0.0f, lists_h), ImGuiChildFlags_Borders);
         ImGui::TextColored(ToVec4(kDim), "CARS (click one in the world to drag it)");
         for (const dir::SnapCar& c : s.cars) {
             std::string row = c.id + (c.ready ? "" : "  (loading)") + (c.on_path ? "  on a path" : "");
             if (ImGui::Selectable(row.c_str(), c.id == selected_car_)) selected_car_ = c.id;
         }
         ImGui::EndChild();
-        ImGui::Checkbox("SPAWN AT 0", &spawn_zero_);
-        ImGui::SameLine();
-        if (Btn("SPAWN HERE", !model_.empty())) SpawnHere(s);
-        ImGui::SameLine();
-        const dir::SnapCar* sel = nullptr;
-        for (const dir::SnapCar& c : s.cars) {
-            if (c.id == selected_car_) sel = &c;
-        }
-        if (sel && sel->id != "player") {
-            if (Btn("PLACE AT CROSSHAIR")) PlaceAtCrosshair(*sel);
-            ImGui::SameLine();
-            if (Btn("LOOK AT")) Send(dp::LookAtCmd("car:" + sel->id));
-            ImGui::SameLine();
-            if (Btn("DELETE CAR")) {
-                const std::string id = sel->id;
-                QueueEdit("delcar" + id, [id](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::DeleteCar(ctx, snap.events, id); });
-                selected_car_.clear();
-            }
-            float heading = static_cast<float>(sel->heading);
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.35f);
-            // (written on release only: a changed spawn line makes the car again, about 4 s, so a drag must not write it on the way)
-            ImGui::SliderFloat("HEADING", &heading, 0.0f, 360.0f, "%.0f");
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                const std::string id = sel->id;
-                const double h = heading;
-                QueueEdit("head" + id, [id, h](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::SetCarHeading(ctx, snap.events, id, h); });
-            }
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(S(70.0f));
-            ImGui::InputInt("PAINT", &paint_, 0, 0);
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                const std::string id = sel->id;
-                const int p = paint_;
-                QueueEdit("paint" + id, [id, p](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::SetCarPaint(ctx, snap.events, id, p); });
-            }
-        }
     }
 
     // The ground under the crosshair (the middle of the picture), the car's heading = the camera's yaw; two commands: query.pick, then car.spawn.
