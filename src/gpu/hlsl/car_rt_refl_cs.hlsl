@@ -40,6 +40,13 @@
 // paint colour makes a hidden hit a miss: the environment stays there. A car placed from memory or built from its own model data (the camera does not draw it:
 // its record's radius is negative, car_rt_memory_rules.h) has no colour in the history at all and takes its paint, or a fixed grey, instead.
 //
+// A HIT ON ANOTHER CAR the history does not show in full is SHADED from the car's own material (RT-HIT-SHADING: car_rt_hit_shade.hlsli, car_rt_material_rules.h): the paint's colour
+// by its gradient and the livery over it, the diffuse texture at the mip level of the cone's footprint, the sun's light (N.L, one visibility ray) and the ambient the cars' own draws
+// saw, the game's environment map at the reflected direction by the fresnel, the lamps' glow at night. It replaces the stand-in above (the colour the camera sees of that car, in
+// shade) wherever the instance has a material and mcla_gpu_car_rt_hit_shading is on; the history's colour is still the answer where the camera sees the part, and the two blend by
+// the share of the hit the history shows. In the opponents' variant a hit on the PLAYER's car is shaded the same way (its draws have materials too). A part with no material (class 0: a
+// shader the table does not know) keeps the stand-in.
+//
 // ANOTHER CAR'S CHROME (car_chrome_rt_rules.h): the primary ray's mask (the push's z) also has CAR_RT_MASK_OTHER_CHROME, the bit of the instances of the other cars'
 // draws of the chrome's shader (tailpipes, badges, trim). A texel whose primary hit is one of those is a pixel of that chrome: the pass traces the chrome variant's two
 // probes for it as rays (ChromeTexel: the mirror ray 0.25 m, four sky rays 0.20 m, against every part of another car) and writes a texel of a kind of its own: alpha 1 + the
@@ -99,6 +106,16 @@ struct CarRtReflPush
 [[vk::push_constant]] ConstantBuffer<CarRtReflPush> g_push;
 #else
 ConstantBuffer<CarRtReflPush> g_push : register(b0, space3);
+#endif
+
+#include "car_rt_hit_shade.hlsli"
+
+// A hit on the PLAYER's car is shaded from its material only in the opponents' variant (the player's own pass keeps the colour of the pixel's own surface for the parts the
+// camera does not see: the pixel IS the player's paint); a hit on another car is shaded in both (car_rt_hit_shade.hlsli).
+#ifdef CAR_RT_REFL_OPPONENTS
+static const bool kShadePlayerHits = true;
+#else
+static const bool kShadePlayerHits = false;
 #endif
 
 static const float kMinNv = 0.03;
@@ -354,7 +371,23 @@ bool TraceRay(Texture2D<float4> history, float3 origin, float3 direction, float 
     const float coverage = VisibleAt(history, hit, hitNv, seen);
     const float seenShare = saturate(coverage / kVisibleFullShare);
     const CarRtInstance hitInstance = CarRtLoadInstance(instance);
-    if ((CarRtInstanceMask(hitInstance) & CAR_RT_MASK_OTHERS) != 0u)
+    const bool hitsOther = (CarRtInstanceMask(hitInstance) & CAR_RT_MASK_OTHERS) != 0u;
+    // A hit on a car the history does not show in full is SHADED from the car's own material (car_rt_hit_shade.hlsli: the paint's colour, the diffuse texture, the sun, the
+    // environment map, the lamps at night) where the instance has one; the history's colour stays the answer where the camera sees the part (the blend below by `visible`).
+    float3 shaded = float3(0.0, 0.0, 0.0);
+    bool isShaded = false;
+    [branch]
+    if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))
+    {
+        const float footprint = 2.0 * (distance * g_push.tune.w + PixelMeters(hit.z, g_push.lens.y, g_push.image.y));
+        isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, g_push.tune.w, g_push.up.w, shaded);
+    }
+    if (isShaded)
+    {
+        other = true;  // `hidden` is the part's own colour, lit: no shade factor on top
+        hidden = shaded;
+    }
+    else if (hitsOther)
     {
         // Another car: the part the history shows has its colour; the rest has the car's.
         other = true;
