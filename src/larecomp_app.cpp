@@ -438,6 +438,12 @@ void LarecompApp::ApplyStartupDefaults(rex::SettingsRegistry&) {
   const char* rr = std::getenv("MCLA_REFRESH_RATE");
   def("ui.video_mode_refresh_rate", (rr && *rr) ? rr : "60");
 
+  // The window's title is the plain "LARecomp", as in 0.10. With ui.title empty the SDK (UIModule::Init, after this runs) names the
+  // window "<app name> [rexglue-v<version>-<config>]"; a non-empty title here keeps that build label out, on both renderers and
+  // every platform (the SDK's SDL window takes it at creation). A ui.title in larecomp.toml, the environment or the command line
+  // still wins, as it is a higher layer.
+  def("ui.title", "LARecomp");
+
   // Texture cache limits from the adapter's VRAM (a flat 2560/4096 is the whole of a 4 GB card): half the VRAM for the
   // hard ceiling, three quarters of that for the soft one, floored at the SDK stock and capped at 2560/4096.
   const uint32_t vram_mb = DetectVideoMemoryMB();
