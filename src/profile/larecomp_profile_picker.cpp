@@ -40,8 +40,8 @@
 #endif
 
 REXCVAR_DEFINE_BOOL(profile_auto_select, false, "MCLA",
-    "Start with the save named by user_name and never show the save picker, even when several "
-    "saves exist. The picker's 'Always use this save' box sets it; hold Shift while the game "
+    "Start with the save named by user_name and never show the save picker. Off by default: "
+    "the picker shows at every start, even with a single save. The picker's 'Always use this save' box sets it; hold Shift while the game "
     "starts to see the picker once anyway.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -88,12 +88,23 @@ bool NameGivenFromOutside() {
 }
 
 // Shift held at launch brings the picker back for a player who ticked "always".
-bool ShiftHeld() {
+bool ShiftHeldNow() {
 #if defined(_WIN32)
-  return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+  return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+         (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+         (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
 #else
   return false;
 #endif
+}
+
+// Sampled at process start, before the config, SDL and the rest of the boot take
+// seconds: a player who taps Shift while launching has let go by the time
+// PrepareProfileChoice runs. Any sample taken since counts.
+const bool g_shift_at_start = ShiftHeldNow();
+
+bool ShiftHeld() {
+  return g_shift_at_start || ShiftHeldNow();
 }
 
 bool DirExists(const fs::path& root, const std::string& name) {
@@ -630,11 +641,10 @@ void PrepareProfileChoice(const fs::path& user_data_root) {
     reason = "user_name was edited, the SDK renames the old save to it";
   } else if (remember) {
     reason = "profile_auto_select";
-  } else if (choices.size() >= 2) {
-    ask = true;
-    reason = "several saves";
   } else {
-    reason = "a single save";
+    // One save or many: the player picks, or ticks "always" to stop being asked.
+    ask = true;
+    reason = choices.size() >= 2 ? "several saves" : "a single save";
   }
 
   std::string names;
