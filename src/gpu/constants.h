@@ -76,8 +76,10 @@ static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 // A variant of the variant pack (shaders.h) that needs constants of its own reads them after the
 // SharedConstants block, and only the draw that uses the variant uploads them (SharedConstants
 // followed by its block); every other draw, and the main pack's contract (v7 and v8, 608 bytes), is
-// as it was. Contract 1 of the variant pack. The bloom's Gaussians (kBloomVariant) have none: they
-// read g_InvResolutionScale, which is in the block above.
+// as it was. Contract 2 of the variant pack: the offsets named below are where a block is when its feature is ALONE in the shader (byte
+// 608, as in contract 1); in a composed shader the blocks of the features follow one another in feature order and the place of each comes
+// from shaderpack/variant_chain.h LayoutConstants (Scene::UploadVariantConstants asks the same function the pack builder used for the
+// text). The bloom's Gaussians (kBloomVariant) have no block: they read g_InvResolutionScale, which is in the block above.
 //
 // The HDR scene variant of the game's tone map (hdr_tonemap.h, shaders.h kHdrVariant) reads 16 bytes
 // after it: src/shaderpack/variants/hdr_scene.h declares them in the variant's HLSL as `float4
@@ -94,18 +96,18 @@ inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
 // The shadow filter variant (shadow_filter.h, shaders.h kShadowFilterVariant) reads its 16 bytes at the
 // same place: `float4 g_ShadowFilter` at byte 608 (c38 of the block), in the draws that use it (every
 // draw of the sun shadow collector whose shader has the variant), which upload SharedConstants followed by
-// shadow_filter::ShadowFilterConstants (Scene::UploadShadowFilterConstants).
+// shadow_filter::ShadowFilterConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants);
 
 // The car self-reflection variant (car_selfrefl.h, shaders.h kCarSelfReflVariant; a test prototype, G8b) reads 112 bytes
 // at the same place, in every draw of the player's car paint: g_CarReflM0..M3 at byte 608, g_CarReflA at 672, g_CarReflB
 // at 688 and g_CarReflC at 704 (shaderpack/variants/car_selfrefl.h), the draw uploads SharedConstants followed by
-// car_selfrefl::CarSelfReflConstants (Scene::UploadCarSelfReflConstants).
+// car_selfrefl::CarSelfReflConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
 
 // The UI sharpening variant (ui_sharp.h, shaders.h kUiSharpVariant) reads 16 bytes at the same place: `float4
 // g_UiSharp` at byte 608 (c38 of the block), in the draws of the UI phase that take the variant, which upload
-// SharedConstants followed by ui_sharp::UiSharpConstants (Scene::UploadUiSharpConstants).
+// SharedConstants followed by ui_sharp::UiSharpConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
 
 class ConstantBanks {

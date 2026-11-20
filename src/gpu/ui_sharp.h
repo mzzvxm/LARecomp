@@ -19,7 +19,7 @@
 //            range across one texel is small) is left as the game has it.
 //
 // Where it runs. Per pixel shader: the variant "ui_sharp" of the variant pack (shaderpack/variants/ui_sharp.h,
-// ids kVariantUiSharp and kVariantUiSharpAlphaTest) replaces the fetch of the shader's colour bitmap by a helper
+// the feature kFeatureUiSharp and its alpha test twin) replaces the fetch of the shader's colour bitmap by a helper
 // that is given the texture's fetch slot, works out the magnification from the screen-space derivatives of the
 // texel coordinate (texels a pixel spans, quad uniform) and calls the game's own tfetch2D when it is below
 // kMinMagnification or when the draw did not name the slot, so a draw that does not magnify, the 1:1 copy of the
@@ -207,7 +207,7 @@ inline const char* WhyText(Why why) {
 
 struct Decision {
   Why why = Why::kNotUi;
-  bool alpha_test = false;  // taken: with the alpha test twin (ps_variant kVariantUiSharpAlphaTest) rather than id 10
+  bool alpha_test = false;  // taken: with the alpha test twin (the word with the spec bit: ShaderStore::kUiSharpAlphaVariant) rather than ShaderStore::kUiSharpVariant
   bool taken() const { return why == Why::kTaken; }
 };
 

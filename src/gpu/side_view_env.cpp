@@ -22,7 +22,7 @@
 // instead of 6%, and the level pass's taps are a pixel shader constant in the game's texel size, so two
 // variants of the game's own shaders (shaderpack/variants/env_map.h, the variant pack, kEnvVariant) put those
 // taps back: the level pass on the 2x2 texels of a pixel of the next level, the reduction as an area average
-// of the same footprint. pipelines.cpp (ChoosePackedVariant) draws them while this setting is above `game`.
+// of the same footprint. pipelines.cpp (WantedFeatures) draws them while this setting is above `game`.
 //
 // The class: both identities, at a scale of its own (the setting: 2x = 1,024x512, 3x = 1,536x768) with as
 // many host samples as keep the density of the game's four per guest pixel (HostSamples: one from 2x on, the

@@ -27,7 +27,7 @@
 //   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
 //                                the march of this file is the fallback and the other devices' version
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
-// With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
+// With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp WantedFeatures asks
 // Selected()), and no history is made. The compare key (a developer tool, effect_compare.h) flips the setting like the others.
 //
 // WHERE IT RUNS (menu_world.h): in the game view, in the pause menu's and the race pause's world and in the garage (the 4x view
@@ -155,7 +155,7 @@ class CarSelfRefl {
   static constexpr uint32_t kTriggerDestination = 0x078B0000;
 
   // True while the effect is on (the setting or the test override, and the history pass's pipelines made): the frame's own
-  // answer, latched at BeginFrame, so every draw of a frame picks the same shader. Pipelines::ChoosePackedVariant asks it
+  // answer, latched at BeginFrame, so every draw of a frame picks the same shader. pipelines.cpp WantedFeatures asks it
   // per draw of the car paint; a change of the setting shows at the next frame. Any thread.
   static bool Selected();
 
@@ -197,7 +197,7 @@ class CarSelfRefl {
   // A guest present: the frame boundary.
   void OnPresent();
 
-  // The 112 bytes a draw of the paint variant reads (Scene::UploadCarSelfReflConstants): the game's paint (mode 0) when
+  // The 112 bytes a draw of the paint variant reads (Scene::FillVariantBlock): the game's paint (mode 0) when
   // there is no history for this frame. `upscaler_running` only turns the ray traced pass's cone pattern by the frame (the march has no noise, since version 3).
   void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
 

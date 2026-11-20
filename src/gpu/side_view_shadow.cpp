@@ -31,7 +31,7 @@
 //     normalised, so the game's own filter reads the finer atlas as it is: the same width in the world
 //     (count x 1/1280 of the cascade), a smoother edge, nothing to change. The variant takes its centre and
 //     radius from the game's own tap coordinates and multiplies the radius by the constant that
-//     Scene::UploadShadowFilterConstants sets from this class's scale (shadow_filter.h AtlasRadiusScale,
+//     Scene::FillVariantBlock sets from this class's scale (shadow_filter.h AtlasRadiusScale,
 //     1 / scale): the soft filter keeps its width in ATLAS TEXELS, so its edge is 1/2 (2x) and 1/3 (3x) as
 //     wide in the world. Its Gather taps read the host texture's own size (getTexture2DDimensions). With
 //     pcss (G1c) the blocker search covers twice that radius and the kernel's floor (0.75 atlas texels) and cap

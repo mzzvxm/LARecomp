@@ -365,18 +365,17 @@ class Scene {
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
-  // A draw of the shadow filter variant (ShaderStore::kShadowFilterVariant) reads 16 bytes after the shared
-  // constants (shadow_filter.h): the draw's own copy of them and the block, in one span that replaces
-  // `shared_constants`; the last one is kept for the next draw when neither changed.
-  bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
-  // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
-  // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
-  bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
-  // A draw of the UI sharpening variant (ShaderStore::kUiSharpVariant) reads 16 bytes after the shared constants
-  // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
-  // kept for the next draw when neither changed.
-  bool UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d);
-  // The UI sharpening (ui_sharp.h): the variant id the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
+  // A draw whose key has variant pack features that read constants after the shared block (shaderpack/variant_chain.h kFeatures:
+  // the shadow filter 16 bytes (shadow_filter.h), the car paint and chrome 112 (car_selfrefl.h), the UI sharpening 16 (ui_sharp.h) ...)
+  // uploads its own copy of the shared constants and the blocks of its features, in one span that replaces `shared_constants`. Each block
+  // is at the place the chain's layout gives it for the draw's feature set (chain::LayoutConstants: dense in feature order, a feature alone
+  // at byte 608), the same function the pack builder used for the text, so the blocks of a composed shader never overlap. The last
+  // few uploads are kept for the next draws when nothing changed.
+  bool UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d);
+  // The `size` bytes of the block of `feature` for the draw `d` and its constant banks (the table's constants_bytes). A feature that is added
+  // to the chain with a block adds its case here (scene.cpp), next to its table row.
+  void FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size);
+  // The UI sharpening (ui_sharp.h): the variant word the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
   // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
   // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
   uint32_t UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale);
@@ -474,12 +473,17 @@ class Scene {
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
-  SharedConstants last_shadow_shared_{};
-  shadow_filter::ShadowFilterConstants last_shadow_block_{};
-  UploadSpan last_shadow_span_;
-  ui_sharp::UiSharpConstants last_ui_sharp_block_{};
-  SharedConstants last_ui_sharp_shared_{};
-  UploadSpan last_ui_sharp_span_;
+  // The last uploads of UploadVariantConstants, one per feature set (round robin over four): the shadow collector's draws and the UI's
+  // repeat their constants for hundreds of draws.
+  struct VariantUpload {
+    uint32_t features = 0;
+    uint32_t block_bytes = 0;
+    SharedConstants shared{};
+    std::array<uint8_t, larecomp::shaderpack::chain::MaxConstantsBytes() - sizeof(SharedConstants)> block{};
+    UploadSpan span;
+  };
+  std::array<VariantUpload, 4> variant_uploads_{};
+  uint32_t variant_upload_next_ = 0;
   ui_sharp::Census ui_sharp_census_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).

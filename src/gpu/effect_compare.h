@@ -14,7 +14,7 @@
 //   LiveText::Get() (live_text.h)      the string settings of the occlusion, the contact shadows, the sun
 //                                      shafts, the bounce light and the car self-reflections
 //   shadow_filter::CurrentMode()       the sun shadow filter
-//   ChoosePackedVariant() (pipelines)  the bloom size fix
+//   WantedFeatures() (pipelines)  the bloom size fix
 // and take `off` (or the text of an on value) while the flip says so. The flip is dropped as soon as the
 // setting it flips is changed (by the pause menu, F4 or the console), or another effect is selected.
 //

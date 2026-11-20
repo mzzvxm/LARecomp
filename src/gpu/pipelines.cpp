@@ -94,54 +94,59 @@ bool GlowSoftSelected() {
   return g_glow_soft.load(std::memory_order_relaxed);
 }
 
-// The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
-// not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
-// HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
-// mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
-// car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), the sun shadow
-// collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart; auto resolved for the
-// GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), the car
-// paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h), the chrome's occlusion by the car's own parts
-// (kCarChromeVariant, shaderpack/variants/car_chrome.h: wherever the paint's is on, and mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass
-// mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); the UI sharpening variant
-// (kUiSharpVariant, mcla_ui_sharp) is not chosen here: it needs the draw (the UI phase, its target's scale and its textures' filters), so the
-// Scene sets it on the key after this (Scene::UiSharpDraw); each is read
-// at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw and the picture stays
-// the game's (the environment map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one
-// of them at most.
-uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
+// The features of the variant pack that the settings want for a draw of pixel shader `ps`, from the features the pack has for
+// it (`ps.features`): a mask of FeatureBit, 0 for none (the game's own shader draws). ShaderStore::ChooseVariant then takes the
+// word of the pack with the most of them (a composed shader when the pack has one for the set, else a subset: shaderpack/
+// variant_chain.h), so two features that the chain composes are both on a shader that has both, and two that it does not
+// (every built-in feature today) are one at a time, the lowest feature first, which is the order the settings were asked in
+// before the chain. The HDR scene's tone map (kFeatureHdrScene) is not chosen here: the HDR output draws it again itself
+// (hdr_tonemap.cpp). One line a feature: the bloom's Gaussians follow mcla_gpu_bloom_scale, the environment map's level pass and
+// reduction (kFeatureEnvMap), which are used while the car reflections class is above the game's size (mcla_gpu_env_resolution,
+// side_views.h), the sun shadow collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart;
+// auto resolved for the GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects
+// nothing), the car paint's self-reflection mcla_gpu_car_selfrefl (kFeatureCarSelfRefl, car_selfrefl.h), the chrome's occlusion by the
+// car's own parts (kFeatureCarChrome, shaderpack/variants/car_chrome.h: wherever the paint's is on, and
+// mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass mcla_gpu_luminance_scale_fix (the same picture at render scale 1:
+// the variant makes the game's own call there); the UI sharpening variant (kFeatureUiSharp, mcla_ui_sharp) is not chosen here: it
+// needs the draw (the UI phase, its target's scale and its textures' filters), so the Scene sets it on the key after this
+// (Scene::UiSharpDraw); each is read at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders
+// draw and the picture stays the game's (the environment map's variant is the same arithmetic at the game's size, but that is not
+// asked). A feature that composes with another (variant_chain.h kFeatures composes_with) adds its line here like the others: it
+// says whether ITS setting is on, and nothing about the others.
+uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
+  namespace sp = larecomp::shaderpack;
+  uint32_t wanted = 0;
+  const auto has = [&](uint32_t feature) { return (ps.features & ShaderStore::FeatureBit(feature)) != 0; };
+  const auto want = [&](uint32_t feature) { wanted |= ShaderStore::FeatureBit(feature); };
   // (the compare key's flip, effect_compare.h, can force the bloom fix either way for a moment; the setting is not changed)
-  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 &&
-      compare::Global().Apply(compare::Effect::kBloomFix, larecomp::settings::mcla_gpu_bloom_scale.Get())) {
-    return ShaderStore::kBloomVariant;
+  if (has(sp::kFeatureBloomGauss) && compare::Global().Apply(compare::Effect::kBloomFix, larecomp::settings::mcla_gpu_bloom_scale.Get())) {
+    want(sp::kFeatureBloomGauss);
   }
-  if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&
-      side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
-    return ShaderStore::kEnvVariant;
+  if (has(sp::kFeatureEnvMap) && side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
+    want(sp::kFeatureEnvMap);
   }
-  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::VariantSelected()) {
-    return ShaderStore::kShadowFilterVariant;
+  if (has(sp::kFeatureShadowFilter) && shadow_filter::VariantSelected()) {
+    want(sp::kFeatureShadowFilter);
   }
-  if ((ps.variants & (1u << ShaderStore::kGlowVariant)) != 0 && GlowSoftSelected()) {
-    return ShaderStore::kGlowVariant;
+  if (has(sp::kFeatureGlowSoft) && GlowSoftSelected()) {
+    want(sp::kFeatureGlowSoft);
   }
   // The car paint's self-reflection (car_selfrefl.h): while mcla_gpu_car_selfrefl is on (auto picks by the class), as the
-  // frame's BeginFrame decided. The paint is in this variant alone: the shadow filter's transform leaves it out (it reads no
-  // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two variants
-  // (variant_pack.cpp), because only the first of them here would ever draw.
-  if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
-    return ShaderStore::kCarSelfReflVariant;
+  // frame's BeginFrame decided. The paint is in this feature alone: the shadow filter's transform leaves it out (it reads no
+  // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two features that the chain does
+  // not compose (variant_pack.cpp), because only one of them would ever draw.
+  if (has(sp::kFeatureCarSelfRefl) && CarSelfRefl::Selected()) {
+    want(sp::kFeatureCarSelfRefl);
   }
   // The car's chrome (the tailpipes, the rims): the same history image and constants as the paint's, a shader of its own (the pack step
-  // warns when a shader lands in two variants, and the chrome is in this one alone). The debug-only switch is its A/B.
-  if ((ps.variants & (1u << ShaderStore::kCarChromeVariant)) != 0 && CarSelfRefl::Selected() &&
-      larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
-    return ShaderStore::kCarChromeVariant;
+  // warns when a shader lands in two features that are not composed, and the chrome is in this one alone). The debug-only switch is its A/B.
+  if (has(sp::kFeatureCarChrome) && CarSelfRefl::Selected() && larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
+    want(sp::kFeatureCarChrome);
   }
-  if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
-    return ShaderStore::kLuminanceVariant;
+  if (has(sp::kFeatureLuminanceScale) && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
+    want(sp::kFeatureLuminanceScale);
   }
-  return 0;
+  return wanted;
 }
 
 // The pipeline cache file: a header, the layouts, the records.
@@ -1402,14 +1407,16 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   uint32_t zeroed = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
-    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant of the
-    // variant pack (the HDR scene's tone map, the bloom's Gaussians: ps_variant 2 and up) while that
-    // pack is not loaded or lacks the variant of that shader.
+    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant word of the
+    // variant pack (the HDR scene's tone map, the bloom's Gaussians, a composed shader: ps_variant or vs_variant 2 and up)
+    // while that pack is not loaded or lacks that word of that shader. A record that an older build wrote has the
+    // ids of version 2 of the pack in those fields (2..13, one per change); as words they name features the
+    // shader does not have (except the HDR tone map's 2, which is the same), so they are dropped here, not misread.
+    const ShaderStore::Entry* record_vs = shaders_->Find(r.key.vs);
     const ShaderStore::Entry* record_ps = r.key.ps != 0 ? shaders_->Find(r.key.ps) : nullptr;
-    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !record_ps) ||
-        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant &&
-         (!record_ps || r.key.ps_variant >= ShaderStore::kVariantSlots ||
-          (record_ps->variants & (1u << r.key.ps_variant)) == 0))) {
+    if (!record_vs || (r.key.ps != 0 && !record_ps) ||
+        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant && (!record_ps || !record_ps->HasWord(r.key.ps_variant))) ||
+        (r.key.vs_variant >= ShaderStore::kFirstPackedVariant && !record_vs->HasWord(r.key.vs_variant))) {
       ++dropped;
       continue;
     }
@@ -1576,10 +1583,16 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
       }
     }
   }
-  // A variant of the pixel shader from the variant pack, where the settings ask for one. They are built for
-  // spec variant 0, so a draw that needs the alpha test keeps the main pack's shader.
-  if (ps && key.ps_variant == 0 && ps->variants != 0) {
-    key.ps_variant = ChoosePackedVariant(*ps);
+  // A variant of the pixel shader from the variant pack, where the settings ask for one: the word with the most of the wanted
+  // features that the pack has for it (a composed shader, or a subset of the features), and the vertex shader's word when that one
+  // reads a vertex stage's export. A draw that needs the alpha test (spec variant 1) takes a variant that has the twin, else it keeps
+  // the main pack's shader.
+  if (ps && ps->features != 0) {
+    if (const uint32_t wanted = WantedFeatures(*ps)) {
+      uint32_t vs_word = key.vs_variant;
+      key.ps_variant = shaders_->ChooseVariant(*ps, wanted, key.ps_variant, vs, key.vs_variant, &vs_word);
+      key.vs_variant = vs_word;
+    }
   }
   key.input_layout = inputs.input_layout->id;
   key.topology = uint32_t(topology);

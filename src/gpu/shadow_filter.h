@@ -15,7 +15,7 @@
 //            shadow touches its caster, softer with distance. A Low class has no search: pcss is soft there.
 //     auto   gpu_class.h's table: game on Low, soft on Mid and High (pcss on High is proposed, not decided)
 //
-// Pipelines::ChoosePackedVariant asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
+// pipelines.cpp WantedFeatures asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
 // variant reads after the shared constants (ShadowFilterConstants, byte 608 of the draw's SharedConstants
 // block: `float4 g_ShadowFilter`) for the draws that use it.
 //
@@ -161,7 +161,7 @@ ShadowFilterConstants CurrentConstants(bool temporal_upscaler, uint64_t frame);
 
 // The cascade resolution package (G1a) says how much finer the atlas is than the game's: 1 / its scale
 // (AtlasRadiusScale), so the filter keeps its width in texels (and is that much narrower in the world). 1 until it
-// is set; Scene::UploadShadowFilterConstants sets it from the scale the cascades are made at now. Any thread.
+// is set; Scene::FillVariantBlock sets it from the scale the cascades are made at now. Any thread.
 void SetAtlasRadiusScale(float scale_inverse);
 
 }  // namespace mcla::gpu::shadow_filter

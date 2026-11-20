@@ -3,7 +3,7 @@
   python pipeline_list.py info FILE...
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
   python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] FILE...
-  python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v2.pack] FILE...
+  python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py selftest
 
@@ -35,8 +35,8 @@ pipelines at 4, 8 or 1 samples.
 
 check --pack: records whose vertex or pixel shader the pack does not have (the game drops them at load:
 "N dropped: a shader the pack does not have"), a spec variant on a shader with no spec mask, and with
---variant-pack the variants of the variant pack (ps_variant 2 and up: the HDR scene's tone map, the bloom's
-Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility) whose pixel shader has no entry for that variant in it. The
+--variant-pack the variants of the variant pack (ps_variant and vs_variant 2 and up: words of features, shaderpack/variant_chain.h: the HDR
+scene's tone map, the bloom's Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility, a composed shader ...) whose shader has no entry for that word in it. The
 exit status is 1 when a record has no shader or a variant has no entry.
 
 reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
@@ -67,14 +67,25 @@ SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
-VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians", 4: "environment map", 5: "shadow filter", 6: "glow visibility", 7: "car self-reflection"}  # ShaderStore::kHdrVariant, kBloomVariant, kEnvVariant, kShadowFilterVariant, kGlowVariant, kCarSelfReflVariant
+# The variant word (ps_variant, vs_variant): bit 0 the main pack's spec variant, bits 1..31 the set of features (shaderpack/variant_chain.h):
+# the names of the features by index (shaderpack/pack_format.h kFeature*, the rows of variant_chain.h kFeatures).
+FEATURE_NAMES = ["HDR scene", "bloom Gaussians", "environment map", "shadow filter", "glow visibility", "car self-reflection",
+                 "luminance scale", "car chrome", "UI sharpening", "headlights"]
+
+
+def word_name(word):
+    """\"shadow filter\", \"UI sharpening (alpha test)\", \"headlights + G-buffer ...\": the features of a variant word."""
+    names = [FEATURE_NAMES[f] if f < len(FEATURE_NAMES) else f"feature {f}" for f in range(31) if (word >> 1) & (1 << f)]
+    return " + ".join(names) + (" (spec variant 1)" if word & 1 else "")
 
 # The shader pack (src/shaderpack/pack_format.h): "MSPK", version, count, formats, 16 reserved; entries of 88
-# bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 80
-# bytes, the pixel shader's key first, the variant id (u32) at byte 40.
+# bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 88
+# bytes (version 3), the shader's key first (a pixel shader's, or a vertex shader's when the flags at byte 44
+# have bit 0), the variant word (u32) at byte 40.
 PACK_MAGIC, PACK_VERSION, PACK_HEADER, PACK_ENTRY = b"MSPK", 8, 32, 88
-VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY = b"MSHV", 2, 32, 80
+VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY = b"MSHV", 3, 32, 88
 VARIANT_AT = 40
+VARIANT_FLAGS_AT = 44
 
 
 class Bad(Exception):
@@ -154,7 +165,7 @@ def info(paths):
         for k in keys:
             if u32(k, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
                 packed[u32(k, PS_VARIANT_AT)] = packed.get(u32(k, PS_VARIANT_AT), 0) + 1
-        variants = ", ".join(f"{VARIANT_NAMES.get(v, 'variant ' + str(v))} {n}" for v, n in sorted(packed.items())) or "none"
+        variants = ", ".join(f"{word_name(v)} {n}" for v, n in sorted(packed.items())) or "none"
         print(f"{p}: {backend}, {len(records)} records, {len(layouts)} layouts, "
               f"{depth_only} depth only, {biased} with a static depth bias")
         print(f"    {len({without_bias(k) for k in keys})} distinct without the bias (what a device with the "
@@ -262,12 +273,15 @@ def reorder(base, firsts, out):
 
 
 def read_pack(path, magic, version, header, entry):
-    """The shader keys of a pack: key -> the spec mask (main pack), or (variant, key) pairs (variant pack)."""
+    """The shader keys of a pack: key -> the spec mask (main pack), or (vertex shader?, variant word, key) triples (variant pack)."""
     data = open(path, "rb").read()
     if len(data) < header or data[:4] != magic:
         raise Bad(f"{path}: not a shader pack ({magic.decode()})")
     got, count = struct.unpack_from("<2I", data, 4)
     if got != version:
+        if magic == VARIANT_PACK_MAGIC:
+            # another version's entries are another size: nothing of the file can be read (the game refuses such a pack whole, too)
+            raise Bad(f"{path}: variant pack version {got}, this tool reads version {version}: it was built by another version of the shader pack build")
         print(f"{path}: pack version {got}, this tool knows {version}", file=sys.stderr)
     if header + count * entry > len(data):
         raise Bad(f"{path}: the entries are cut short")
@@ -278,7 +292,8 @@ def read_pack(path, magic, version, header, entry):
         if magic == PACK_MAGIC:
             keys[key] = data[at + 9]
         else:
-            keys[(struct.unpack_from("<I", data, at + VARIANT_AT)[0], key)] = None
+            word, flags = struct.unpack_from("<2I", data, at + VARIANT_AT)
+            keys[(bool(flags & 1), word, key)] = None
     return keys
 
 
@@ -303,7 +318,11 @@ def check(pack, variant_pack, paths):
                 no_spec += 1
             if u32(key, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
                 variant_total += 1
-                if packed is not None and (u32(key, PS_VARIANT_AT), ps) not in packed:
+                if packed is not None and (False, u32(key, PS_VARIANT_AT), ps) not in packed:
+                    variant_missing += 1
+            if u32(key, VS_VARIANT_AT) >= FIRST_PACKED_VARIANT:  # a vertex stage's word (a pixel word that needs it)
+                variant_total += 1
+                if packed is not None and (True, u32(key, VS_VARIANT_AT), vs) not in packed:
                     variant_missing += 1
         tail = (f", {variant_missing} without an entry in the variant pack" if packed is not None
                 else (" (give --variant-pack to check them)" if variant_total else ""))
@@ -338,7 +357,7 @@ def _pack(path, magic, version, entries, entry_size):
         if magic == PACK_MAGIC:
             e[8], e[9] = ord("p"), spec
         else:
-            struct.pack_into("<I", e, VARIANT_AT, spec)
+            struct.pack_into("<I", e, VARIANT_AT, spec)  # (the word; a vertex entry's flag is not made here)
         blob += e
     with open(path, "wb") as f:
         f.write(blob)

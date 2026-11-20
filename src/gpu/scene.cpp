@@ -45,6 +45,7 @@
 #include "samplers.h"
 #include "scene_noise.h"
 #include "shafts.h"
+#include "shaderpack/variant_chain.h"
 #include "sync_builds.h"
 #include "temporal.h"
 #include "texture_names.h"
@@ -865,8 +866,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   // Uploads of the previous frame live in another slot's memory.
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
-  last_shadow_span_ = UploadSpan{};
-  last_ui_sharp_span_ = UploadSpan{};  // round 1 never reset it: a span of the previous frame's slot could be handed out again
+  for (VariantUpload& upload : variant_uploads_) {
+    upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
+  }
   draws_since_flush_ = 0;
 }
 
@@ -889,8 +891,9 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   list_ = nullptr;
   device_uploads_.clear();
   last_shared_span_ = UploadSpan{};
-  last_shadow_span_ = UploadSpan{};
-  last_ui_sharp_span_ = UploadSpan{};  // round 1 never reset it: a span of the previous frame's slot could be handed out again
+  for (VariantUpload& upload : variant_uploads_) {
+    upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
+  }
   draws_since_flush_ = 0;
 }
 
@@ -1718,19 +1721,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (cut_blur_pending_ && r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     NeutralizeAnchorBlur(banks, d);
   }
-  // The sun shadow collector's soft lookup reads 16 bytes after the shared constants.
-  if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
-    return Skip::kUpload;
-  }
-  // The car paint's self-reflection variant and the car chrome's (the same history image and numbers) read 112 bytes after the shared
-  // constants.
-  if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
-      !UploadCarSelfReflConstants(shared, d)) {
-    return Skip::kUpload;
-  }
-  // The UI sharpening variant reads 16 bytes after the shared constants.
-  if ((d.key.ps_variant == ShaderStore::kUiSharpVariant || d.key.ps_variant == ShaderStore::kUiSharpAlphaVariant) &&
-      !UploadUiSharpConstants(shared, d)) {
+  // The variant pack's features that read constants after the shared block (the sun shadow collector's soft lookup 16 bytes, the car paint's
+  // self-reflection and the chrome's 112, the UI sharpening 16 ...): one span with the shared constants and the blocks, each where the chain
+  // puts it for this draw's features.
+  if (d.key.ps_variant >= ShaderStore::kFirstPackedVariant && !UploadVariantConstants(banks, shared, d)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
@@ -1751,7 +1745,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kUpload);
 
   ++window_.conversions[size_t(d.primitive.conversion)];
-  if (d.key.ps_variant == 1) {  // the alpha test / alpha to coverage variant (2 and up are the variant pack's)
+  if (larecomp::shaderpack::chain::SpecOf(d.key.ps_variant) != 0) {  // the alpha test / alpha to coverage variant (the main pack's, or a variant pack twin of it)
     ++window_.alpha_coverage_draws;
     if (ComputeAlphaTest(s).discard) ++window_.alpha_test_draws;
   }
@@ -2258,79 +2252,94 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   return true;
 }
 
-bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d) {
-  static_assert(kShadowFilterConstantsOffset == sizeof(SharedConstants));
-  // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
-  // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
-  // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
-  // their products are at (a member that could not be made at the setting's scale lowers the whole class,
-  // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
-  shadow_filter::SetAtlasRadiusScale(
-      shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
-  // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
-  // averages it out); without one the pattern stays where it is.
-  const shadow_filter::ShadowFilterConstants block =
-      shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::Index(frame_serial_));
-  if (last_shadow_span_ && std::memcmp(&last_shadow_shared_, &shared, sizeof(shared)) == 0 &&
-      std::memcmp(&last_shadow_block_, &block, sizeof(block)) == 0) {
-    d.shared_constants = last_shadow_span_;
-    return true;
+void Scene::FillVariantBlock(uint32_t feature, [[maybe_unused]] const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size) {
+  namespace sp = larecomp::shaderpack;
+  switch (feature) {
+    case sp::kFeatureShadowFilter: {
+      static_assert(sizeof(shadow_filter::ShadowFilterConstants) == sp::chain::Find(sp::kFeatureShadowFilter)->constants_bytes);
+      // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
+      // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
+      // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
+      // their products are at (a member that could not be made at the setting's scale lowers the whole class,
+      // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
+      shadow_filter::SetAtlasRadiusScale(
+          shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
+      // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
+      // averages it out); without one the pattern stays where it is.
+      const shadow_filter::ShadowFilterConstants block =
+          shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::Index(frame_serial_));
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureCarSelfRefl:
+    case sp::kFeatureCarChrome: {
+      // The paint's and the chrome's (the same history image and numbers): the game's paint, with no history to read, until the frame has one.
+      static_assert(sizeof(car_selfrefl::CarSelfReflConstants) == sp::chain::Find(sp::kFeatureCarSelfRefl)->constants_bytes);
+      static_assert(sizeof(car_selfrefl::CarSelfReflConstants) == sp::chain::Find(sp::kFeatureCarChrome)->constants_bytes);
+      car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();
+      if (car_refl_) {
+        car_refl_->FillConstants(d.state, UpscalerRunning(), &block);
+      }
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureUiSharp: {
+      static_assert(sizeof(ui_sharp::UiSharpConstants) == sp::chain::Find(sp::kFeatureUiSharp)->constants_bytes);
+      const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength(), d.ui_sharp_slots);
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    default:
+      break;
   }
-  const UploadSpan span = upload_->Allocate(
-      slot_, kShadowFilterConstantsOffset + sizeof(shadow_filter::ShadowFilterConstants), kConstantAlignment);
-  if (!span) {
-    return false;
+  // A feature with a block of constants and no case above: the shader would read what was in the upload memory. Zero is "off" for every
+  // block the table has today; say it once.
+  std::memset(out, 0, size);
+  static uint32_t reported = 0;
+  if ((reported & sp::chain::FeatureBit(feature)) == 0) {
+    reported |= sp::chain::FeatureBit(feature);
+    REXLOG_ERROR("[gpu] scene: the feature {} of the variant pack has {} bytes of constants and Scene::FillVariantBlock has no case for it "
+                 "(zeros are uploaded; reported once)", feature, size);
   }
-  std::memcpy(span.cpu, &shared, sizeof(shared));
-  std::memcpy(span.cpu + kShadowFilterConstantsOffset, &block, sizeof(block));
-  last_shadow_shared_ = shared;
-  last_shadow_block_ = block;
-  last_shadow_span_ = span;
-  ++window_.shared_uploads;
-  window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
-  d.shared_constants = span;
-  return true;
 }
 
-bool Scene::UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d) {
-  static_assert(kCarSelfReflConstantsOffset == sizeof(SharedConstants));
-  car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();  // the game's paint, with no history to read
-  if (car_refl_) {
-    car_refl_->FillConstants(d.state, UpscalerRunning(), &block);
+bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d) {
+  namespace chain = larecomp::shaderpack::chain;
+  const uint32_t features = chain::FeaturesOf(d.key.ps_variant);
+  const chain::ConstantsLayout layout = chain::LayoutConstants(features);
+  if (layout.count == 0) {
+    return true;  // none of the draw's features reads constants of its own (the bloom's, the glow's ...): the draw's shared constants as they are
   }
-  const UploadSpan span = upload_->Allocate(
-      slot_, kCarSelfReflConstantsOffset + sizeof(car_selfrefl::CarSelfReflConstants), kConstantAlignment);
+  VariantUpload scratch;
+  scratch.features = features;
+  scratch.block_bytes = layout.total_bytes - uint32_t(sizeof(SharedConstants));
+  for (uint32_t i = 0; i < layout.count; ++i) {
+    const chain::ConstantsWindow& window = layout.windows[i];
+    FillVariantBlock(window.feature, banks, d, scratch.block.data() + (window.offset - sizeof(SharedConstants)), window.bytes);
+  }
+  // The draws of one feature set repeat their constants (the shadow collector's, the UI's): the span of the last draw that had the same
+  // shared constants and the same blocks is handed out again.
+  for (VariantUpload& kept : variant_uploads_) {
+    if (kept.span && kept.features == features && std::memcmp(&kept.shared, &shared, sizeof(shared)) == 0 &&
+        std::memcmp(kept.block.data(), scratch.block.data(), scratch.block_bytes) == 0) {
+      d.shared_constants = kept.span;
+      return true;
+    }
+  }
+  const UploadSpan span = upload_->Allocate(slot_, layout.total_bytes, kConstantAlignment);
   if (!span) {
     return false;
   }
   std::memcpy(span.cpu, &shared, sizeof(shared));
-  std::memcpy(span.cpu + kCarSelfReflConstantsOffset, &block, sizeof(block));
+  std::memcpy(span.cpu + sizeof(shared), scratch.block.data(), scratch.block_bytes);
+  VariantUpload& slot = variant_uploads_[variant_upload_next_++ % variant_uploads_.size()];
+  slot.features = features;
+  slot.block_bytes = scratch.block_bytes;
+  slot.shared = shared;
+  slot.block = scratch.block;
+  slot.span = span;
   ++window_.shared_uploads;
-  window_.upload_bytes += kCarSelfReflConstantsOffset + sizeof(block);
-  d.shared_constants = span;
-  return true;
-}
-
-bool Scene::UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d) {
-  static_assert(kUiSharpConstantsOffset == sizeof(SharedConstants));
-  const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength(), d.ui_sharp_slots);
-  if (last_ui_sharp_span_ && std::memcmp(&last_ui_sharp_shared_, &shared, sizeof(shared)) == 0 &&
-      last_ui_sharp_block_ == block) {
-    d.shared_constants = last_ui_sharp_span_;
-    return true;
-  }
-  const UploadSpan span = upload_->Allocate(
-      slot_, kUiSharpConstantsOffset + sizeof(ui_sharp::UiSharpConstants), kConstantAlignment);
-  if (!span) {
-    return false;
-  }
-  std::memcpy(span.cpu, &shared, sizeof(shared));
-  std::memcpy(span.cpu + kUiSharpConstantsOffset, &block, sizeof(block));
-  last_ui_sharp_shared_ = shared;
-  last_ui_sharp_block_ = block;
-  last_ui_sharp_span_ = span;
-  ++window_.shared_uploads;
-  window_.upload_bytes += kUiSharpConstantsOffset + sizeof(block);
+  window_.upload_bytes += layout.total_bytes;
   d.shared_constants = span;
   return true;
 }
@@ -2373,8 +2382,8 @@ uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, Prepa
   facts.eight_bit_colour = color.bound && (color.format == xe::ColorRenderTargetFormat::k_8_8_8_8 ||
                                            color.format == xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA);
   facts.target_scale = float(scale.value());
-  facts.has_variant = d.ps && (d.ps->variants & (1u << ShaderStore::kUiSharpVariant)) != 0;
-  facts.has_alpha_variant = d.ps && (d.ps->variants & (1u << ShaderStore::kUiSharpAlphaVariant)) != 0;
+  facts.has_variant = d.ps && d.ps->HasWord(ShaderStore::kUiSharpVariant);
+  facts.has_alpha_variant = d.ps && d.ps->HasWord(ShaderStore::kUiSharpAlphaVariant);
   facts.ps_variant = d.key.ps_variant;
   // What the draw reads: every fetch the pixel shader makes. The helper sharpens only the slots that are linearly filtered 2D colour bitmaps
   // (a depth fetch is point filtered, an environment map is 16 bit float: the same draw has them beside its bitmap); the others stay the game's.
