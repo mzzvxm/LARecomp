@@ -571,6 +571,82 @@ void CheckResetAndFades() {
   Check(std::fabs(r.lamps[0].colour[1] - full.colour[1]) < 1e-4f, "at full weight the colour is the lamp's");
 }
 
+// A long random walk of the camera along a street of lamps with the list changing: the pick's invariants hold every frame, and a still camera settles.
+void CheckStress() {
+  uint32_t state = 12345u;
+  auto rnd = [&]() {
+    state = state * 1664525u + 1013904223u;
+    return float(state >> 8) / float(1u << 24);
+  };
+  std::vector<vl::GameLamp> city;
+  for (int i = 0; i < 400; ++i) {
+    city.push_back(StreetLamp(((i & 1) != 0 ? 6.0f : -6.0f) + rnd() - 0.5f, -float(i) * 9.0f + 200.0f, 40.0f + 60.0f * rnd(), 5.0f + 2.0f * rnd()));
+  }
+  for (const uint32_t budget : {1u, 2u, 6u, 12u, 32u, 48u}) {
+    LampPicker picker;
+    VolCamera cam = Street();
+    PickParams p;
+    p.budget = budget;
+    p.dt = 1.0f / 60.0f;
+    PickResult r;
+    uint32_t max_count = 0;
+    bool finite = true;
+    for (int frame = 0; frame < 1500; ++frame) {
+      cam.pos[2] -= 0.4f;  // 24 m/s down the street
+      if (frame % 300 == 299) {
+        cam.pos[2] += 900.0f;  // a cut
+        p.reset = true;
+      } else {
+        p.reset = false;
+      }
+      // the game's list: the lamps within 300 m of the eye, each with the prop pass's fade
+      std::vector<vl::GameLamp> list;
+      for (const vl::GameLamp& l : city) {
+        const float dz = l.pos[2] - cam.pos[2];
+        if (std::fabs(dz) < 300.0f) {
+          vl::GameLamp g = l;
+          g.scale = std::clamp(1.0f - (std::fabs(dz) - 190.0f) / 30.0f, 0.0f, 1.0f);
+          list.push_back(g);
+        }
+      }
+      picker.Update(list, cam, p, &r);
+      max_count = std::max(max_count, r.count);
+      for (uint32_t i = 0; i < r.count; ++i) {
+        for (int k = 0; k < 3; ++k) {
+          finite = finite && std::isfinite(r.lamps[i].colour[k]) && r.lamps[i].colour[k] >= 0.0f;
+        }
+        finite = finite && std::isfinite(r.lamps[i].pos[0]) && std::isfinite(LampNearSq(r.lamps[i]));
+      }
+      if (r.count > budget || r.wanted + r.fading != r.count) {
+        Check(false, "the pick keeps to the budget and counts its lamps (budget " + std::to_string(budget) + ", frame " + std::to_string(frame) + ")");
+        break;
+      }
+    }
+    Check(finite, "every colour of the walk is finite and not negative (budget " + std::to_string(budget) + ")");
+    Check(max_count <= budget, "the walk never exceeds the budget " + std::to_string(budget));
+    // A still camera settles: after a second the same list gives the same lamps at full weight and nothing fades.
+    std::vector<vl::GameLamp> list;
+    for (const vl::GameLamp& l : city) {
+      if (std::fabs(l.pos[2] - cam.pos[2]) < 150.0f) {
+        list.push_back(l);
+      }
+    }
+    p.reset = false;
+    for (int i = 0; i < 90; ++i) {
+      picker.Update(list, cam, p, &r);
+    }
+    PickResult again;
+    picker.Update(list, cam, p, &again);
+    Check(again.fading == 0 && again.count == r.count && again.wanted == r.wanted, "a still camera settles: nothing fades (budget " + std::to_string(budget) + ")");
+    bool full = true;
+    for (uint32_t i = 0; i < again.count; ++i) {
+      full = full && std::fabs(again.lamps[i].colour[0] - r.lamps[i].colour[0]) < 1e-3f;
+    }
+    Check(full, "and the same lamps come at the same weights (budget " + std::to_string(budget) + ")");
+    Check(again.count <= budget && again.count == again.wanted, "all of them picked (budget " + std::to_string(budget) + ")");
+  }
+}
+
 // --- the headlights and the shadow atlas ----------------------------------------------------------------------------------------------------------
 
 TestHeadlight MakeHeadlight(float x, uint32_t car, bool player) {
@@ -838,6 +914,7 @@ int main(int argc, char** argv) {
   CheckPick();
   CheckHysteresis();
   CheckResetAndFades();
+  CheckStress();
   CheckHeadlights();
   CheckShadowShare();
   if (argc > 1) {
