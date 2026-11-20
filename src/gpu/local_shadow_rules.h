@@ -760,9 +760,14 @@ struct DrawFacts {
   bool alpha_tested = false;      // the pixel shader's alpha test variant (spec variant 1)
   bool vs_computed_fetch = false; // the vertex shader folds corners (impostors)
   bool vs_skinned = false;        // BLENDINDICES in the vertex shader's inputs
-  bool vehicle = false;           // the draw writes a vehicle's stencil ID
+  bool vehicle = false;           // the draw writes a vehicle's stencil ID (WritesVehicleId)
   uint64_t vs_key = 0;
 };
+
+// Whether a draw writes a vehicle's stencil ID: the IDs 1 to 23 (vehicle_motion.h StencilIdsWritten, bit k = ID k). Bit 0 is ID 0, which the WORLD's own draws write
+// (every opaque draw of the city: ground, buildings, props): a test of `!= 0` made every world draw a "vehicle" (the headlights run of 2026-11-20: 14000 maps, opaque 0,
+// alpha tested 0, vehicle 420, the atlas flat dark) with a car's 7 m reach for the cone cull and the own-car skip near the lamps.
+constexpr bool WritesVehicleId(uint32_t stencil_ids) { return (stencil_ids & ~1u) != 0; }
 
 inline Skip ClassifyDraw(const DrawFacts& f, uint32_t kind_mask, Kind* kind) {
   *kind = Kind::kOpaque;

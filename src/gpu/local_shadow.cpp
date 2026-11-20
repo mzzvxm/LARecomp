@@ -523,7 +523,7 @@ void LocalShadow::Collect(const MainDraw& d) {
   f.alpha_tested = d.key->ps_variant == 1;
   f.vs_computed_fetch = (d.vs->flags & ShaderStore::kComputedFetchIndex) != 0;
   f.vs_skinned = VsSkinned(*d.vs);
-  f.vehicle = d.stencil_ids != 0;
+  f.vehicle = rules::WritesVehicleId(d.stencil_ids);
   f.vs_key = d.vs->key;
   rules::Kind kind = rules::Kind::kOpaque;
   const rules::Skip verdict = rules::ClassifyDraw(f, uint32_t(skip_mask_), &kind);

@@ -638,6 +638,22 @@ struct Shader {
 };
 
 void CheckClassification() {
+  // The world's own draws write stencil ID 0 (bit 0 of StencilIdsWritten); only IDs 1 to 23 are vehicles (the headlights run of 2026-11-20 counted every world draw as a
+  // vehicle: opaque 0 in 14000 maps).
+  Check(!ls::WritesVehicleId(0u), "a draw with no stencil ID is no vehicle's");
+  Check(!ls::WritesVehicleId(1u), "a draw that writes ID 0 (the world's) is no vehicle's");
+  Check(ls::WritesVehicleId(1u << 1), "a draw that writes ID 1 (the player's car) is a vehicle's");
+  Check(ls::WritesVehicleId((1u << 0) | (1u << 5)), "ID 0 and ID 5 together: a vehicle's");
+  Check(ls::WritesVehicleId(1u << 23), "ID 23 is a vehicle's");
+  {
+    ls::DrawFacts world;
+    world.color_pass = true;
+    world.color_count = 1;
+    world.depth_test = world.depth_write = world.has_ps = world.triangles = true;
+    world.vehicle = ls::WritesVehicleId(1u);  // an opaque city draw: ID 0 only
+    ls::Kind kind;
+    Check(ls::ClassifyDraw(world, 0, &kind) == ls::Skip::kNone && kind == ls::Kind::kOpaque, "an opaque city draw is an opaque caster, not a vehicle's part");
+  }
   const Shader shaders[] = {
       {"xCityDefault__VSCityDefault", false, false, ls::Skip::kNone, ls::Kind::kOpaque},
       {"xCityBumpSpec__VSCityBumpSpec", false, false, ls::Skip::kNone, ls::Kind::kOpaque},
