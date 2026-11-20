@@ -890,10 +890,11 @@ class GPUSettings final : public rex::SettingOwner {
     "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
     "shows, the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
 
-  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, false, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own "
-    "sampler, which compares a depth blended from four texels (what the game's four taps do). On: "
-    "it compares the four texels one by one and blends the answers (a true percentage-closer tap); "
-    "the shadow edge is a little smoother and its bias a little different. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, true, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: "
+    "it compares the four texels one by one at the receiver's own slope and blends the answers (a true "
+    "percentage-closer tap): the shadow edge is smooth, without the grain of one compare of a blended depth. "
+    "Off: with the game's own sampler, which compares a depth blended from four texels (what the game's four "
+    "taps do): a grainy edge, as the game's. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_shadow_filter_radius, 1.0, "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter measured in "
     "texels of the shadow map (1: the edge of a shadow takes the same number of shadow map texels, so "

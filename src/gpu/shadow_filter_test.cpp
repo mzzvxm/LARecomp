@@ -108,6 +108,15 @@ void CheckConstants() {
   CheckNum(c.noise_frame, 0, "defaults: no upscaler: the frame is not used");
   CheckNum(c.mode, 0, "defaults: bilinear taps");
 
+  // The noise (the owner's "dithering", 2026-11-19): a per pixel turn of the disk is a grain on every edge unless a temporal
+  // upscaler's history averages it, so only a frame that has one gets the bit; without it the disk keeps its turn.
+  CheckNum(static_cast<uint32_t>(c.mode + 0.5f) & shadow_filter::kModeNoise, 0, "no upscaler: no noise bit (the disk is the same on every pixel)");
+  CheckNum(shadow_filter::kModeNoise, 4, "kModeNoise is 4 (the HLSL reads `& 4u`)");
+  c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77);
+  CheckNum(c.mode, shadow_filter::kModeNoise, "an upscaler: the noise bit");
+  c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, true, true, 77, true, 4.0);
+  CheckNum(c.mode, 1 + 2 + 4 + 64 * 256, "an upscaler with pcss and Gather taps: bits 0, 1 and 2 and 64 sixteenths");
+
   // A temporal upscaler: the frame number, wrapped at 1024 (exact in a float).
   c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77);
   CheckNum(c.noise_frame, 77, "an upscaler: the frame");
@@ -151,7 +160,7 @@ void CheckConstants() {
           shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, gather, false, 0, true, sun);
       const uint32_t word = static_cast<uint32_t>(k.mode + 0.5f);
       Check((word & 1u) == (gather ? 1u : 0u) && (word & 2u) == 2u && (word >> 8) == shadow_filter::SunBits(sun) &&
-                (word & 0xFCu) == 0,
+                (word & 0xF8u) == 0,
             "the mode word of pcss with sun " + std::to_string(sun) + " reads back as its bits");
     }
   }

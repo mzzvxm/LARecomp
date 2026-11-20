@@ -1861,9 +1861,9 @@
  },
  "mcla_gpu_shadow_filter_pcf": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own \"\n    \"sampler, which compares a depth blended from four texels (what the game's four taps do). On: \"\n    \"it compares the four texels one by one and blends the answers (a true percentage-closer tap); \"\n    \"the shadow edge is a little smoother and its bias a little different. Live.\"",
+  "help": "\"Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: \"\n    \"it compares the four texels one by one at the receiver's own slope and blends the answers (a true \"\n    \"percentage-closer tap): the shadow edge is smooth, without the grain of one compare of a blended depth. \"\n    \"Off: with the game's own sampler, which compares a depth blended from four texels (what the game's four \"\n    \"taps do): a grainy edge, as the game's. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

@@ -5,7 +5,7 @@
 // The game filters the sun's shadows with four taps at an angle that changes from pixel to pixel: five
 // levels of grey along an edge and a grain that the render scale blows up. The shader pack's variant
 // "shadow_filter" (src/shaderpack/variants/shadow_filter.h) has the collector's lookup with 8 to 16 taps on
-// a disk, turned by noise of the host pixel; this is its host half.
+// a disk, turned by noise of the host pixel while a temporal upscaler runs (and not at all otherwise); this is its host half.
 //
 //   mcla_gpu_shadow_filter   auto | game | soft | pcss (live; the pause menu's SHADOW FILTER row)
 //     game   the game's own shaders: nothing of the variant is selected, the picture is the game's, bit for bit
@@ -85,8 +85,9 @@ constexpr int TapsFor(gpu_class::GpuClass cls, int forced_taps) {
 }
 
 // The `mode` bits of the constants (hlsl: `uint(g_ShadowFilter.w + 0.5)`).
-inline constexpr uint32_t kModeGather = 1u;  // Gather taps (a bilinear weighted compare of 4 texels) instead of the sampler's
+inline constexpr uint32_t kModeGather = 1u;  // true PCF taps (a bilinear weighted compare of 4 texels, each at the receiver's plane) instead of the sampler's
 inline constexpr uint32_t kModePcss = 2u;    // contact hardening (G1c): the blocker search and the penumbra's kernel
+inline constexpr uint32_t kModeNoise = 4u;   // the disk is turned per pixel by noise (interleaved gradient noise + the R2 shift of noise_frame)
 // With kModePcss, bits 8 to 15 hold the sun's size, in sixteenths of its real angular radius (0.27 degrees). The real
 // sun's penumbra is under one texel of the nearest cascade for every caster lower than about 3 m (6 m at the second
 // cascade), so a sun that shows at a car's height is bigger than the real one: 4 times by default (to be decided
@@ -127,7 +128,9 @@ constexpr float AtlasRadiusScale(Scale atlas_scale) {
 
 // `atlas_scale_inverse` is what the cascade resolution package gives (AtlasRadiusScale: 1 at the game's 1280, 0.5 at
 // 2x); the tuning cvar multiplies it. `temporal_frame_valid`: a temporal upscaler works on the frame, so the noise
-// moves from frame to frame and the upscaler's history averages it; otherwise the pattern stays where it is.
+// moves from frame to frame and the upscaler's history averages it (kModeNoise); otherwise there is NO noise: a
+// per pixel turn of the disk that nothing averages is a grain on every shadow edge (the owner's "dithering", 2026-11-19),
+// so every pixel takes the same disk and the edge is smooth.
 // `pcss`: the contact hardening, with the sun `sun_tuning` times its real size; a Low class never gets the bit (the
 // search is not run there, whatever the caller says).
 constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int forced_taps, double radius_tuning,
@@ -140,6 +143,7 @@ constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int force
       static_cast<float>(std::clamp(radius_tuning, kMinRadiusTuning, kMaxRadiusTuning)) * atlas_scale_inverse;
   constants.noise_frame = temporal_frame_valid ? static_cast<float>(frame & 1023u) : 0.0f;
   uint32_t mode = gather ? kModeGather : 0u;
+  if (temporal_frame_valid) mode |= kModeNoise;
   if (pcss && PcssAvailable(cls)) mode |= kModePcss | (SunBits(sun_tuning) << kSunShift);
   constants.mode = static_cast<float>(mode);
   return constants;
