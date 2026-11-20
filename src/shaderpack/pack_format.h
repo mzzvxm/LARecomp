@@ -139,6 +139,11 @@ inline constexpr uint32_t kVariantUiSharp = 10;
 // The same variant compiled with the shader's ALPHA_TEST spec constants (the main pack's spec variant 1: the alpha test and alpha to coverage; it
 // declares SV_Coverage), for the UI draws that have one of them on: a draw whose key is spec variant 1 cannot take id 10, which is spec variant 0's.
 inline constexpr uint32_t kVariantUiSharpAlphaTest = 11;
+// The cars' headlights as spot lights in the city's lit pixel shaders (the PSMultiLight family and the traffic cars' body): one more term of the light
+// sum, from up to four lights the host hands over (672 bytes of constants after the shared block; shaderpack/variants/headlight.h). Id 13 is the same text
+// compiled with the shader's ALPHA_TEST spec constants, for the draws whose key is spec variant 1.
+inline constexpr uint32_t kVariantHeadlight = 12;
+inline constexpr uint32_t kVariantHeadlightAlphaTest = 13;
 inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack
