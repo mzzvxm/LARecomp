@@ -65,7 +65,7 @@ void FrameRing::Shutdown() {
     Abandon();
   }
   WaitIdle();
-  retired_.clear();
+  ReleaseAll();
   for (Slot& s : slots_) {
     s = Slot{};
   }
@@ -257,7 +257,7 @@ void FrameRing::WaitIdle() {
     // and no recorded-but-unsubmitted commands exist, so nothing retired can be
     // referenced -- including objects tagged next_serial_, which no submission
     // carries yet.
-    retired_.clear();
+    ReleaseAll();
     return;
   }
   // A list is open: what it already recorded may name objects retired after
@@ -269,6 +269,12 @@ void FrameRing::ReleaseCompleted() {
   // Retirements are appended with a non-decreasing serial, so the completed
   // ones are a prefix.
   while (!retired_.empty() && retired_.front().serial <= completed_serial_) {
+    retired_.pop_front();
+  }
+}
+
+void FrameRing::ReleaseAll() {
+  while (!retired_.empty()) {
     retired_.pop_front();
   }
 }
