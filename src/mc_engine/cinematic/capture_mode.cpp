@@ -116,6 +116,7 @@ extern char** environ;
 
 #include "capture_audio.h"
 #include "capture_core.h"
+#include "director/png_writer.h"
 #include "larecomp_log.h"
 #include "larecomp_version.h"
 #include "scene_runtime.h"
@@ -199,6 +200,7 @@ struct Take {
     uint64_t floor_bytes = 0;
     double ram_start_mb = -1.0, ram_min_mb = -1.0;  // free physical memory (game thread)
     bool state_log = false;
+    bool still = false;  // the Director's still (CaptureStillRequest): one frame, a PNG, no take folder
     std::string ffmpeg_command;
     // rows are appended in capture order by the render thread (g_rows_mutex)
     core::TakeBook book;
@@ -216,6 +218,23 @@ bool g_announced_no_renderer = false;
 // What a scene's `capture fps` key asked for besides the rate (CaptureSceneSpec); read when a take starts.
 std::mutex g_spec_mutex;
 CaptureSpec g_spec;
+
+// The Director (capture_mode.h): a take it asks for (take.render), the still it asks for (shot), and what became of the takes.
+std::atomic<double> g_dir_fps{0.0};  // the Director's request for a take (0: none); a scene's request outranks it
+CaptureSpec g_dir_spec;              // g_spec_mutex
+std::mutex g_still_mutex;
+bool g_still_pending = false;        // g_still_mutex: asked for, the next gate starts it
+std::string g_still_path;            // g_still_mutex
+StillResult g_still_res;             // g_still_mutex: the result of the still that ran last (done when `done`)
+std::atomic<bool> g_still_active{false};  // the running take is a still: no virtual clock
+std::mutex g_last_mutex;
+struct LastTake {
+    std::string name, folder, state, error;
+    double fps = 0.0;
+    uint64_t frames = 0;
+};
+LastTake g_last_status;              // g_last_mutex: the take that ended last
+std::atomic<uint64_t> g_takes_finished{0};
 
 // A take that cannot go on (the memory plan does not fit, the writer is stuck, the free memory is gone): the first reason is kept, the game
 // thread ends the take at its next gate, and the scene's request is not taken up again until it has gone to 0 (g_refused).
@@ -473,6 +492,30 @@ Sink& g_sink = *new Sink;  // never destroyed: the writer thread ends with its t
 bool WriteFrame(uint64_t row, const uint8_t* data, uint64_t bytes) {
     Sink& s = g_sink;
     const auto t0 = Clock::now();
+    if (g_take.still) {
+        // The Director's still: the one frame is a PNG. g_take is not changed while the writer runs (a take is begun when none runs); the game thread waits for
+        // this frame at the gate.
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            path = g_still_path;
+        }
+        std::string err;
+        const bool ok = director::WritePngFile(path, data, s.format.width, s.format.height, 0, s.format.bgra, &err);
+        std::error_code ec;
+        const uintmax_t size = ok ? std::filesystem::file_size(Path(path), ec) : 0;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            g_still_res.ok = ok;
+            g_still_res.error = err;
+            g_still_res.width = s.format.width;
+            g_still_res.height = s.format.height;
+            g_still_res.bytes = ec ? 0 : static_cast<uint64_t>(size);
+        }
+        if (!ok) TakeFail("the still could not be written: " + err);
+        g_progress.fetch_add(1, std::memory_order_relaxed);
+        return ok;
+    }
     bool ok = !s.sink_failed.load(std::memory_order_relaxed);
     if (ok) {
         if (core::SinkUsesFfmpeg(s.kind)) {
@@ -907,6 +950,8 @@ bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
 double WantedFps() {
     const double scene = g_scene_fps.load(std::memory_order_relaxed);
     if (scene > 0.0) return core::ClampFps(scene);
+    const double director = g_dir_fps.load(std::memory_order_relaxed);
+    if (director > 0.0) return core::ClampFps(director);
     return core::ClampFps(larecomp::settings::mcla_capture_fps.Get());
 }
 
@@ -950,7 +995,7 @@ void BeginTake(uint64_t u0, double fps) {
     CaptureSpec spec;
     {
         std::lock_guard<std::mutex> lock(g_spec_mutex);
-        spec = g_spec;
+        spec = (g_scene_fps.load(std::memory_order_relaxed) <= 0.0 && g_dir_fps.load(std::memory_order_relaxed) > 0.0) ? g_dir_spec : g_spec;
     }
     t.fps = fps;
     t.ticks = core::StepTicksForFps(fps);
@@ -1097,6 +1142,112 @@ void EndTake(uint64_t u_end) {
     }
     LARECOMP_APP_INFO("[cap] take folder: {} (state {}, {} frames, dropped {}, repeated {})", t.layout.folder, o.state, t.rows.size(), o.verdict.dropped,
                       o.verdict.repeated);
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        g_last_status = LastTake{};
+        g_last_status.name = t.name;
+        g_last_status.folder = t.layout.folder;
+        g_last_status.fps = t.fps;
+        g_last_status.frames = t.rows.size();
+        g_last_status.state = o.state;
+        g_last_status.error = o.error;
+    }
+    g_takes_finished.fetch_add(1, std::memory_order_release);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the Director's still: a take of one frame, with no folder, no audio and no virtual clock, that the writer turns into a PNG
+// ---------------------------------------------------------------------------------------------------------------------
+// The step of the still's one update: the fixed step already in force, else the scene's own rate, else 60.
+double StillFps() {
+    const double fixed = larecomp::settings::mcla_fixed_step_fps.Get();
+    if (fixed > 0.0) return core::ClampFps(fixed);
+    const double scene = g_scene_fps.load(std::memory_order_relaxed);
+    if (scene > 0.0) return core::ClampFps(scene);
+    return 60.0;
+}
+
+void BeginStill(uint64_t u0) {
+    Take& t = g_take;
+    {
+        std::lock_guard<std::mutex> lock(g_rows_mutex);
+        t = Take{};
+    }
+    g_take_failed.store(false, std::memory_order_release);
+    g_sink_stuck.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_fail_mutex);
+        g_fail_reason.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_still_mutex);
+        g_still_pending = false;
+        g_still_res.done = false;
+        g_still_res.ok = false;
+        g_still_res.error.clear();
+        g_still_res.width = g_still_res.height = 0;
+        g_still_res.bytes = 0;
+        g_still_res.update = u0;
+        g_still_res.path = g_still_path;
+    }
+    t.still = true;
+    t.sink = core::SinkKind::kNone;
+    t.fps = StillFps();
+    t.ticks = core::StepTicksForFps(t.fps);
+    t.step_ms = 1000.0 / t.fps;
+    t.first_update = u0;
+    t.virtual_clock = false;
+    t.lag = 0;
+    t.ring = 2;
+    t.scene_running = CurrentSceneState() == SceneState::kRunning;
+    t.first_scene_t = SceneTime() + t.step_ms / 1000.0;
+    t.cap_bytes = static_cast<uint64_t>(std::max(64, larecomp::settings::mcla_capture_memory_mb.Get())) << 20;
+    t.floor_bytes = 0;
+    t.book.Begin(u0);
+    {
+        std::lock_guard<std::mutex> lock(g_gate_mutex);
+        g_gate = core::GateBook{};
+    }
+    g_handover.BeginTake();
+    g_sink.ffmpeg_exit = -2;
+    g_sink.frame_bytes = 0;
+    t.t0 = Clock::now();
+    g_take_first.store(u0, std::memory_order_release);
+    g_take_ticks.store(t.ticks, std::memory_order_release);
+    g_state_log_on.store(false, std::memory_order_release);
+    g_still_active.store(true, std::memory_order_release);
+    g_take_active.store(true, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    ::mcla::gpu::sync_builds::SetCaptureActive(true);
+#endif
+    LARECOMP_APP_INFO("[cap] still starts at update {} (step {:.4f} ms, scene t of the frame {:.4f}): {}", u0, t.step_ms, t.first_scene_t, g_still_res.path);
+}
+
+void EndStill(uint64_t u_end) {
+    Take& t = g_take;
+    g_take_active.store(false, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    ::mcla::gpu::sync_builds::SetCaptureActive(false);
+#endif
+    CloseSink();  // the writer finishes the PNG before this returns
+    g_still_active.store(false, std::memory_order_release);
+    const std::string reason = FailReason();
+    {
+        std::lock_guard<std::mutex> lock(g_still_mutex);
+        g_still_res.done = true;
+        g_still_res.update = t.first_update;
+        g_still_res.scene_t = t.scene_running ? t.first_scene_t : -1.0;
+        if (!g_still_res.ok && g_still_res.error.empty()) {
+            g_still_res.error = !reason.empty() ? reason : std::string("the frame was not read back");
+        }
+        if (g_still_res.ok) {
+            LARECOMP_APP_INFO("[cap] still done: {} ({}x{}, {} bytes, update {})", g_still_res.path, g_still_res.width, g_still_res.height, g_still_res.bytes, t.first_update);
+        } else {
+            LARECOMP_APP_ERROR("[cap] STILL FAILED: {} ({})", g_still_res.path, g_still_res.error);
+        }
+    }
+    if (g_take_failed.load(std::memory_order_acquire)) g_refused = false;  // a failed still is not a refused take request
+    (void)u_end;
 }
 
 // The gate of update `u` while a take runs (game thread).
@@ -1114,7 +1265,7 @@ void GateInTake(uint64_t u, double want_fps) {
         }
     }
     const bool failed = g_take_failed.load(std::memory_order_acquire);
-    const bool ending = !(want_fps > 0.0) || failed;
+    const bool ending = t.still || !(want_fps > 0.0) || failed;
     if (!ending && std::fabs(want_fps - t.fps) > 1e-9 && !t.announced_rate_change) {
         t.announced_rate_change = true;  // a take keeps its rate: the log says so once
         LARECOMP_APP_WARN("[cap] a take of {:g} fps is running: the request for {:g} is ignored until it ends", t.fps, want_fps);
@@ -1122,7 +1273,7 @@ void GateInTake(uint64_t u, double want_fps) {
     const uint64_t handed = g_handover.Handed();
     const uint64_t needed = core::FramesNeeded(handed, static_cast<uint32_t>(t.lag), ending);
     const int timeout_ms = larecomp::settings::mcla_capture_gate_timeout_ms.Get();
-    capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
+    if (!t.still) capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
     const auto w0 = Clock::now();
     bool off;
     {
@@ -1153,13 +1304,16 @@ void GateInTake(uint64_t u, double want_fps) {
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         g_gate.NoteMet();
     }
-    capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
+    if (!t.still) capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
     t.gate_ms.push_back(wait_ms);
     if (const int every = larecomp::settings::mcla_capture_log_every.Get(); every > 0 && !t.gate_ms.empty()) {
         const uint64_t k_prev = t.gate_ms.size() - 1;
         if (k_prev % uint64_t(every) == 0 || k_prev < 3) LogFrame(t, static_cast<size_t>(k_prev));
     }
-    if (ending) EndTake(u);
+    if (ending) {
+        if (t.still) EndStill(u);
+        else EndTake(u);
+    }
 }
 
 }  // namespace
@@ -1171,6 +1325,27 @@ void CaptureGate() {
     const uint64_t before = g_updates.load(std::memory_order_relaxed);  // updates that ran
     const uint64_t u = before + 1;                                      // the update about to run
     if (!g_take_active.load(std::memory_order_relaxed)) {
+        bool still = false;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            still = g_still_pending;
+        }
+        if (still) {  // the Director's still: one frame, then the take that was waiting (if any) starts at the next gate
+#if defined(LARECOMP_HAS_GPU)
+            if (mcla::gpu::Enabled()) {
+                BeginStill(u);
+                g_updates.store(u, std::memory_order_release);
+                return;
+            }
+#endif
+            {
+                std::lock_guard<std::mutex> lock(g_still_mutex);
+                g_still_pending = false;
+                g_still_res.done = true;
+                g_still_res.ok = false;
+                g_still_res.error = "a still needs the native renderer";
+            }
+        }
         const double want = WantedFps();
         if (g_refused) {
             // A take failed or was refused: the request that started it has to go away before another take is tried (the log has said why).
@@ -1229,6 +1404,72 @@ void CaptureSceneSpec(const CaptureSpec& spec) {
     g_spec = spec;
 }
 
+bool CaptureStillRequest(const StillRequest& request, std::string* why) {
+    const auto refuse = [&](const char* text) {
+        if (why) *why = text;
+        return false;
+    };
+#if defined(LARECOMP_HAS_GPU)
+    if (!mcla::gpu::Enabled()) return refuse("a still needs the native renderer");
+#else
+    return refuse("a still needs the native renderer");
+#endif
+    if (g_take_active.load(std::memory_order_acquire)) return refuse("a take is running");
+    if (request.path.empty()) return refuse("no path");
+    std::lock_guard<std::mutex> lock(g_still_mutex);
+    if (g_still_pending) return refuse("another still is waiting");
+    g_still_pending = true;
+    g_still_path = request.path;
+    g_still_res = StillResult{};
+    g_still_res.id = request.id;
+    g_still_res.path = request.path;
+    return true;
+}
+
+bool CaptureStillPoll(uint64_t id, StillResult* out) {
+    std::lock_guard<std::mutex> lock(g_still_mutex);
+    if (g_still_res.id != id || !g_still_res.done) return false;
+    if (out) *out = g_still_res;
+    return true;
+}
+
+void CaptureDirectorRequest(double fps, const CaptureSpec& spec) {
+    {
+        std::lock_guard<std::mutex> lock(g_spec_mutex);
+        g_dir_spec = spec;
+    }
+    const double before = g_dir_fps.exchange(fps > 0.0 ? fps : 0.0, std::memory_order_relaxed);
+    if ((before > 0.0) != (fps > 0.0)) {
+        if (fps > 0.0) LARECOMP_APP_INFO("[cap] the Director asks for a take at {:g} fps", fps);
+        else LARECOMP_APP_INFO("[cap] the Director ends the take");
+    }
+}
+
+CaptureStatus CaptureGetStatus() {
+    CaptureStatus st;
+    st.active = g_take_active.load(std::memory_order_acquire) && !g_still_active.load(std::memory_order_acquire);
+    st.still = g_still_active.load(std::memory_order_acquire);
+    if (st.active) {
+        const Take& t = g_take;
+        st.name = t.name;
+        st.folder = t.layout.folder;
+        st.fps = t.fps;
+        st.frames = g_handover.Handed();
+        st.failed = g_take_failed.load(std::memory_order_acquire);
+        if (st.failed) st.error = FailReason();
+    }
+    st.finished = g_takes_finished.load(std::memory_order_acquire);
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        st.last_name = g_last_status.name;
+        st.last_folder = g_last_status.folder;
+        st.last_state = g_last_status.state;
+        st.last_frames = g_last_status.frames;
+        st.last_error = g_last_status.error;
+    }
+    return st;
+}
+
 void CaptureSceneRequest(double fps) {
     const double before = g_scene_fps.exchange(fps > 0.0 ? fps : 0.0, std::memory_order_relaxed);
     if ((before > 0.0) != (fps > 0.0)) {
@@ -1257,7 +1498,7 @@ bool FixedStepActive() {
 // ---------------------------------------------------------------------------------------------------------------------
 namespace {
 bool ClockWanted() {
-    return g_take_active.load(std::memory_order_acquire) && larecomp::settings::mcla_capture_virtual_clock.Get() &&
+    return g_take_active.load(std::memory_order_acquire) && !g_still_active.load(std::memory_order_acquire) && larecomp::settings::mcla_capture_virtual_clock.Get() &&
            g_take_ticks.load(std::memory_order_acquire) != 0;
 }
 }  // namespace
@@ -1526,6 +1767,13 @@ void CaptureOnSwap() {}
 bool CaptureTakeActive() { return false; }
 void CaptureSceneRequest(double) {}
 void CaptureSceneSpec(const CaptureSpec&) {}
+bool CaptureStillRequest(const StillRequest&, std::string* why) {
+    if (why) *why = "not in this build";
+    return false;
+}
+bool CaptureStillPoll(uint64_t, StillResult*) { return false; }
+void CaptureDirectorRequest(double, const CaptureSpec&) {}
+CaptureStatus CaptureGetStatus() { return CaptureStatus{}; }
 MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t) { return MemoryGrant{}; }
 uint64_t FixedStepTicks() { return 0; }
 bool FixedStepActive() { return false; }

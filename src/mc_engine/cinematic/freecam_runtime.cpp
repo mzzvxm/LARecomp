@@ -46,6 +46,7 @@
 
 #include "settings/larecomp_settings.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -60,6 +61,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "director/director_game.h"
 #include "freecam.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
@@ -126,6 +128,14 @@ std::atomic<uint32_t> g_hook_frame{0};  // the game frame of the last hook run t
 std::atomic<uint32_t> g_pad_frame{0};   // the game frame the shared pad was taken in
 std::mutex g_pad_mutex;
 fc::Pad g_pad;
+
+// What the Director asks of the flight (freecam_runtime.h): a pose to start from, the game's own camera forced, a pad that is not the real one.
+std::atomic<uint8_t> g_override{static_cast<uint8_t>(CameraOverride::kNone)};
+std::atomic<uint32_t> g_hook_serial{0};  // hook runs so far
+fc::Pad g_ext_pad;                       // g_pad_mutex
+uint32_t g_ext_serial = 0;               // g_pad_mutex: the hook run the external pad was given in
+bool g_pending_pose = false;             // g_pad_mutex
+fc::Pose g_pending;                      // g_pad_mutex
 
 struct State {
     bool armed = false;      // the cvar was on at the last hook
@@ -319,7 +329,17 @@ void Disengage(uint8_t* base, uint32_t sp, const char* why, bool forget_pose) {
 
 }  // namespace
 
-bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
+// The free camera's hook, as before the Director: the wrapper below tells the Director what the final camera is.
+static bool FreecamApplyImpl(uint8_t* base, uint32_t sp, uint32_t mode, bool* game_forced) {
+    *game_forced = false;
+    g_hook_serial.fetch_add(1, std::memory_order_relaxed);
+    if (static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed)) == CameraOverride::kGame && base && mode != kModeMenu && !GamePaused(base)) {
+        // The Director wants the game's own camera: the flight and the scene's camera stand aside. Returning true leaves the slots as the game made them and
+        // keeps the scene's camera from running after this (the caller returns).
+        if (g.flying) Disengage(base, sp, "the game's own camera is forced", false);
+        *game_forced = true;
+        return true;
+    }
     const bool armed = larecomp::settings::mcla_freecam.Get();
     if (!armed && !g.armed && !g.flying) return false;  // the one flag test
     if (!base) return false;
@@ -357,6 +377,16 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     } else if (!g.flying) {
         announce_back = true;  // out of a pause or the front end: the flight's camera comes back
     }
+    {
+        std::lock_guard<std::mutex> lock(g_pad_mutex);
+        if (g_pending_pose) {  // the Director placed the camera (camera.set, camera.look_at)
+            g_pending_pose = false;
+            g.flyer.Seed(g_pending);
+            g.seeded = true;
+            g.cut_flag = true;
+            announce_back = true;
+        }
+    }
     g.flying = true;
     g_hook_frame.store(frame, std::memory_order_relaxed);
     g_flying.store(true, std::memory_order_relaxed);
@@ -369,6 +399,8 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
         {
             std::lock_guard<std::mutex> lock(g_pad_mutex);
             if (frame - g_pad_frame.load(std::memory_order_relaxed) <= kPadStaleFrames) pad = g_pad;  // else at rest: no stick stuck on a stale read
+            // A pad the Director's panel feeds (the mouse and the keys flying the camera) replaces the real one while it keeps coming
+            if (g_hook_serial.load(std::memory_order_relaxed) - g_ext_serial <= kPadStaleFrames) pad = g_ext_pad;
         }
         const fc::Events ev = g.flyer.Step(pad, dt, params);
         g.have_frame = true;
@@ -401,6 +433,46 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     WriteCamera(base, sp, g.flyer.pose());
     if (announce_back) AnnounceCut(base, sp, "the flight's camera");
     return true;
+}
+
+bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
+    bool game_forced = false;
+    const bool wrote = FreecamApplyImpl(base, sp, mode, &game_forced);
+    if (base && director::Enabled()) {
+        director::NoteCameraHook(base, sp, mode, wrote ? (game_forced ? director::CameraSource::kGameForced : director::CameraSource::kFreecam) : director::CameraSource::kNone);
+    }
+    return wrote;
+}
+
+void FreecamSetPose(const freecam::Pose& pose) {
+    {
+        std::lock_guard<std::mutex> lock(g_pad_mutex);
+        g_pending = pose;
+        g_pending.pitch = std::clamp(g_pending.pitch, -fc::kMaxPitch, fc::kMaxPitch);
+        g_pending_pose = true;
+    }
+    if (static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed)) == CameraOverride::kGame) g_override.store(static_cast<uint8_t>(CameraOverride::kNone));
+    if (!larecomp::settings::mcla_freecam.Get()) larecomp::cvar::SetFlagByName("mcla_freecam", "true");
+}
+
+bool FreecamGetPose(freecam::Pose* out) {
+    if (!g.seeded) return false;
+    *out = g.flyer.pose();
+    return true;
+}
+
+void FreecamSetOverride(CameraOverride mode) {
+    g_override.store(static_cast<uint8_t>(mode), std::memory_order_relaxed);
+}
+
+CameraOverride FreecamOverride() {
+    return static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed));
+}
+
+void FreecamFeedPad(const freecam::Pad& pad) {
+    std::lock_guard<std::mutex> lock(g_pad_mutex);
+    g_ext_pad = pad;
+    g_ext_serial = g_hook_serial.load(std::memory_order_relaxed);
 }
 
 void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state) {
@@ -436,6 +508,11 @@ namespace mc::cinematic {
 bool FreecamApply(uint8_t*, uint32_t, uint32_t) { return false; }
 void FreecamObservePad(uint8_t*, uint32_t, uint32_t) {}
 bool FreecamActive() { return false; }
+void FreecamSetPose(const freecam::Pose&) {}
+bool FreecamGetPose(freecam::Pose*) { return false; }
+void FreecamSetOverride(CameraOverride) {}
+CameraOverride FreecamOverride() { return CameraOverride::kNone; }
+void FreecamFeedPad(const freecam::Pad&) {}
 }  // namespace mc::cinematic
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

@@ -65,6 +65,48 @@ struct CaptureSpec {
 };
 void CaptureSceneSpec(const CaptureSpec& spec);
 
+// ---------------------------------------------------------------------------------------------------------------- the Director (src/mc_engine/cinematic/director)
+
+// A still (`shot`): one frame of the game read back the way a take's frames are (1:1 with the guest picture, before the overlay: no ImGui, no F4 menu) and
+// written as a PNG at `path`, a path the Director has checked. It is a take of one frame: the next update runs at the fixed step in force (else the scene's
+// rate, else 60), the game waits for the frame, and no take folder, audio or virtual clock is made (the upscaler's history is not restarted for it). Game thread.
+struct StillRequest {
+    uint64_t id = 0;  // the caller's number for CaptureStillPoll
+    std::string path;
+};
+// False with `why` when a take is running, another still waits, or there is no native renderer. Otherwise the still starts at the next update's gate.
+bool CaptureStillRequest(const StillRequest& request, std::string* why);
+struct StillResult {
+    uint64_t id = 0;
+    bool done = false;
+    bool ok = false;
+    std::string path;
+    std::string error;
+    uint32_t width = 0, height = 0;
+    uint64_t bytes = 0;
+    uint64_t update = 0;      // the game update the frame shows
+    double scene_t = -1.0;    // the scene time it shows, -1 when no scene runs
+};
+// True (and `out` filled) once the still with that id has finished, written or failed.
+bool CaptureStillPoll(uint64_t id, StillResult* out);
+
+// A take the Director asks for (take.render): the same as a scene's `capture fps` key (a scene's own request outranks it); fps 0 ends it. `spec` names it.
+void CaptureDirectorRequest(double fps, const CaptureSpec& spec);
+
+struct CaptureStatus {
+    bool active = false;      // a take is running (not a still)
+    bool still = false;       // a still is running
+    std::string name, folder;
+    double fps = 0.0;
+    uint64_t frames = 0;      // frames handed over so far
+    bool failed = false;
+    std::string error;
+    uint64_t finished = 0;    // takes finished so far in this run: a change means `last_*` is new
+    std::string last_name, last_folder, last_state, last_error;  // the take that ended last (state: complete, inexact, failed)
+    uint64_t last_frames = 0;
+};
+CaptureStatus CaptureGetStatus();
+
 // ---------------------------------------------------------------------------------------------------------------- fixed step
 
 // The step the engine timer is to be given every update, in the game's own ticks (49.875 MHz), or 0 when none is set: the
