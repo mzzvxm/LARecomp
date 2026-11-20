@@ -245,6 +245,14 @@ uint32_t LocalShadow::PipelineFor(const MainDraw& draw, const rules::PipeKey& ke
   if (found != pipe_ids_.end()) {
     return found->second;
   }
+  if (pipes_.size() >= rules::kMaxPipelines) {
+    if (!pipe_cap_logged_) {
+      pipe_cap_logged_ = true;
+      REXLOG_WARN("{} {} pipelines of the game's vertex shaders are listed already: no new shape is listed (a draw of a shape never seen is left out of the maps)", kPrefix,
+                  pipes_.size());
+    }
+    return rules::kNoPipeline;
+  }
   const uint32_t id = uint32_t(pipes_.size());
   PipeEntry entry;
   entry.key = key;
@@ -545,6 +553,10 @@ void LocalShadow::Collect(const MainDraw& d) {
   // Every shape of draw the game's main view has is listed with the builder while the setting is on, lit headlights or not: by night the
   // pipelines are made.
   const uint32_t pipe = PipelineFor(d, key);
+  if (pipe == rules::kNoPipeline) {
+    ++counts_[size_t(rules::Skip::kPipeline)];
+    return;
+  }
   if (!collecting_) {
     return;
   }

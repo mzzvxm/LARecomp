@@ -297,6 +297,7 @@ class LocalShadow {
   uint32_t last_choice_logged_ = ~0u;
   uint32_t atlas_logged_ = 0;
   bool pending_logged_ = false;
+  bool pipe_cap_logged_ = false;  // the pipeline table reached rules::kMaxPipelines (logged once)
   bool camera_logged_ = false;
   uint64_t triggers_ = 0;
   uint64_t maps_ = 0;

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <new>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -899,6 +901,70 @@ void CheckCullAndKeys() {
   Check(set.size() == 200, "200 distinct keys stay distinct in a set");
 }
 
+// A key built the way the renderer builds it (default made, the fields set one by one) in storage that holds other bytes: its tail padding is whatever
+// the stack had there. The HEADLIGHTS runs of 2026-11-20 made 98 759 to 543 441 "different" pipelines of ~250 shapes because the key was compared as bytes.
+ls::PipeKey* MakeKeyOver(void* storage, unsigned char fill, uint64_t vs, uint32_t layout, uint32_t topology, uint8_t cull, uint64_t ps) {
+  std::memset(storage, fill, sizeof(ls::PipeKey));
+  ls::PipeKey* k = new (storage) ls::PipeKey;
+  k->vs = vs;
+  k->layout = layout;
+  k->topology = topology;
+  k->front_ccw = uint8_t(layout & 1u);
+  k->cull = cull;
+  if (ps != 0) {
+    k->ps = ps;
+    k->ps_variant = 1;
+  }
+  return k;
+}
+
+void CheckKeyPadding() {
+  alignas(ls::PipeKey) unsigned char storage[sizeof(ls::PipeKey)];
+  const unsigned char fills[] = {0x00, 0xFF, 0xAA, 0x55, 0x12, 0xC3, 0x7E};
+  // One shape over every fill: equal, one hash, one entry in a set.
+  const ls::PipeKey first = *MakeKeyOver(storage, 0x00, 0x1234567890ABCDEFull, 7, 4, 1, 0);
+  std::unordered_set<ls::PipeKey, ls::PipeKeyHash> one;
+  bool all_equal = true;
+  bool all_hash = true;
+  for (unsigned char fill : fills) {
+    const ls::PipeKey* k = MakeKeyOver(storage, fill, 0x1234567890ABCDEFull, 7, 4, 1, 0);
+    all_equal = all_equal && *k == first;
+    all_hash = all_hash && ls::PipeKeyHash()(*k) == ls::PipeKeyHash()(first);
+    one.insert(*k);
+  }
+  Check(all_equal, "the same shape of draw is the same key whatever bytes the padding holds");
+  Check(all_hash, "... and has the same hash");
+  Check(one.size() == 1, "... so a set of them holds one entry");
+  // 40 shapes made 500 times each over changing garbage: exactly 40 keys (the replay's pipeline table never grows on a repeat).
+  std::unordered_set<ls::PipeKey, ls::PipeKeyHash> shapes;
+  uint32_t lcg = 12345u;
+  for (uint32_t round = 0; round < 500; ++round) {
+    for (uint32_t shape = 0; shape < 40; ++shape) {
+      lcg = lcg * 1664525u + 1013904223u;
+      shapes.insert(*MakeKeyOver(storage, static_cast<unsigned char>(lcg >> 24), 0xABCD0000ull + shape * 977ull, shape % 9, shape % 3, uint8_t(shape % 3), (shape % 5 == 0) ? 0xFEED0000ull + shape : 0));
+    }
+  }
+  Check(shapes.size() == 40, "40 shapes seen 500 times over garbage stay 40 keys (" + std::to_string(shapes.size()) + ")");
+  Check(ls::kMaxPipelines >= 4 * 500 && ls::kMaxPipelines <= 20000 && ls::kNoPipeline == 0xFFFFFFFFu, "the pipeline table's safety cap sits above any real street and far below a runaway");
+  // every field still counts
+  ls::PipeKey a = first;
+  ls::PipeKey b = first;
+  b.vs_variant = 1;
+  Check(!(a == b) && ls::PipeKeyHash()(a) != ls::PipeKeyHash()(b), "the vertex shader's variant counts");
+  b = first;
+  b.topology = 5;
+  Check(!(a == b), "the topology counts");
+  b = first;
+  b.front_ccw = uint8_t(!first.front_ccw);
+  Check(!(a == b), "the winding counts");
+  b = first;
+  b.layout = 8;
+  Check(!(a == b), "the layout counts");
+  b = first;
+  b.ps_variant = 1;
+  Check(!(a == b), "the pixel shader's variant counts");
+}
+
 }  // namespace
 
 int main() {
@@ -915,6 +981,7 @@ int main() {
   CheckSelection();
   CheckViewCull();
   CheckCullAndKeys();
+  CheckKeyPadding();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

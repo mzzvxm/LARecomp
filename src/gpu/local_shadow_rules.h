@@ -818,6 +818,11 @@ inline Cull ResolveCull(int policy, Cull game) {
 
 // A pipeline of the replay: the game's vertex shader (and its own pixel shader, for the alpha tested draws, which the driver cuts down to the
 // alpha test: there is no colour target), the layout of the draw's vertex declaration, the topology, the faces drawn.
+//
+// THE KEY IS COMPARED AND HASHED FIELD BY FIELD, never as bytes. The struct has 4 bytes of tail padding (36 bytes of fields in 40; the two uint64
+// make it 8-aligned) that a key built on the stack never writes: a byte compare saw the stack's old contents, so the same shape of draw was
+// a new key now and then, and the replay listed 98 000 to 543 000 "different" pipelines for the background builder in a minute of a night
+// (HEADLIGHTS runs of 2026-11-20: hs-ultra 98 759, mid hs-high 472 713, against 210 to 300 on the runs that happened to have zeros there).
 struct PipeKey {
   uint64_t vs = 0;
   uint64_t ps = 0;  // 0: no pixel shader
@@ -827,17 +832,26 @@ struct PipeKey {
   uint32_t topology = 0;
   uint8_t cull = 0;
   uint8_t front_ccw = 0;
-  uint8_t pad[2] = {};
-  bool operator==(const PipeKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
+  bool operator==(const PipeKey& o) const {
+    return vs == o.vs && ps == o.ps && vs_variant == o.vs_variant && ps_variant == o.ps_variant && layout == o.layout && topology == o.topology &&
+           cull == o.cull && front_ccw == o.front_ccw;
+  }
 };
-static_assert(sizeof(PipeKey) == 40, "PipeKey has no padding: it is compared as bytes");
+
+// A safety net, not a budget: a night street has 150 to 500 shapes of draw, a whole drive a few thousand. Past this the replay stops listing new ones (a draw of a
+// shape never seen is left out of the maps, counted as "pipeline pending or failed", and the log says so once), so that a key that stops repeating can never
+// feed the background builder tens of thousands of pipelines again.
+inline constexpr uint32_t kMaxPipelines = 8192;
+inline constexpr uint32_t kNoPipeline = 0xFFFFFFFFu;
 
 struct PipeKeyHash {
   size_t operator()(const PipeKey& k) const {
-    const uint64_t* w = reinterpret_cast<const uint64_t*>(&k);
+    // The fields only (no padding byte is read): FNV-1a over 64-bit words, each field widened.
+    const uint64_t words[5] = {k.vs, k.ps, (uint64_t(k.vs_variant) << 32) | k.ps_variant, (uint64_t(k.layout) << 32) | k.topology,
+                               (uint64_t(k.cull) << 8) | k.front_ccw};
     uint64_t h = 0xCBF29CE484222325ull;
-    for (size_t i = 0; i < sizeof(PipeKey) / 8; ++i) {
-      h ^= w[i];
+    for (uint64_t w : words) {
+      h ^= w;
       h *= 0x100000001B3ull;
       h ^= h >> 29;
     }
