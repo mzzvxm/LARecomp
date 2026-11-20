@@ -175,6 +175,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
+    // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
+    local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -216,6 +218,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetCarFrame(&car_frame_);
     scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
+    scene_.SetLocalShadow(&local_shadow_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -276,6 +279,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     temporal_.Shutdown();
     ao_.Shutdown();
     shafts_.Shutdown();
+    local_shadow_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
@@ -449,6 +453,7 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   shafts_.Shutdown();
+  local_shadow_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
@@ -1631,6 +1636,8 @@ void Renderer::ReportFrameStats() {
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
                                                          : std::string()) +
+                           (local_shadow_.HeldBytes() != 0 ? ", headlight shadow atlas " + mib(local_shadow_.HeldBytes())
+                                                           : std::string()) +
                            (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())
                                                      : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())

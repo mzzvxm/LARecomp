@@ -982,6 +982,89 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlight_shadows": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Headlight shadows: the cars' headlights cast shadows. The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the headlights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on \"\n    \"ultra), and the headlights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the \"\n    \"default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game \"\n    \"view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video \"\n    \"memory. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_test": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), \"\n    \"whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own \"\n    \"point of view shows the same scene as the main view, which tells the replay's matrices are right. Nothing reads such a map: no light is shadowed \"\n    \"by it. The setting itself must not be off. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 draws the headlight shadow atlas in a rectangle in the lower right corner of the picture (grey by distance from the \"\n    \"lamps, near bright; dark blue where nothing was drawn; the tiles are framed), while the maps are drawn. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_skip": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: draws left out of the headlight shadow maps, a sum of 1 plain opaque draws, 2 alpha tested ones (foliage, fences), 4 skinned ones \"\n    \"(people), 8 vehicles' parts. 0: none left out. For finding which kind a wrong shadow comes from. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 15}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_cull": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: which faces the headlight shadow maps draw. 0: the faces turned from the light (front faces culled where the game culls back \"\n    \"faces; the default), 1: both faces, 2: the game's own. A pipeline is made for each, so a change takes a moment to build. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_views": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's \"\n    \"own (1 on high, 2 on ultra). A change remakes the atlas. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_bias": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a factor on the depth bias the headlight shadows' lookup subtracts from a surface's distance from the lamps before it \"\n    \"compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.05, 40.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_a2c_dither_all": {
   "type": "bool",
   "default": "true",

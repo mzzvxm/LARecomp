@@ -95,6 +95,7 @@ class CarDump;
 class CarFrame;
 class HeadlightRig;
 class CarShadowMap;
+class LocalShadow;
 class CarRtScene;
 class PostAa;
 class ResolveCache;
@@ -148,6 +149,9 @@ class Scene {
   // The player car's sun shadow map (car_shadow_map.h): told of the frame boundary, the anchor, the composite marker and the mid-scene
   // depth copy, where it records its map BEFORE the ambient occlusion's passes. Null: none.
   void SetCarShadowMap(CarShadowMap* car_shadow) { car_shadow_ = car_shadow; }
+  // The headlight shadow maps (local_shadow.h): offered the main view's colour pass draws while they are on, told of the frame boundary, the
+  // anchor and the composite marker, and run at the mid-scene depth copy (before the ambient occlusion's passes, as the car shadow map is). Null: none.
+  void SetLocalShadow(LocalShadow* local_shadow) { local_shadow_ = local_shadow; }
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
@@ -396,6 +400,9 @@ class Scene {
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
   void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
                             uint64_t vs_identity, uint64_t ps_identity, const DrawView& view);
+  // The headlight shadow maps' collector: a prepared draw, before it is recorded (only draws of the main view's colour pass are kept). `shared` is
+  // the draw's shared constants as Prepare made them (the span in `d` is write-combined memory and is not read).
+  void NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConstants& shared, const PreparedDraw& d);
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
@@ -459,6 +466,7 @@ class Scene {
   CarFrame* car_frame_ = nullptr;
   HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  LocalShadow* local_shadow_ = nullptr;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
