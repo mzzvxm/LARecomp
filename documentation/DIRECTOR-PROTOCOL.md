@@ -45,7 +45,7 @@ Request fields beyond `id`, `cmd`, `args`:
 Error codes (frozen): `bad_args` (missing, unknown or mistyped argument, bad JSON, a value out of range; the message names the argument), `unknown_cmd`,
 `not_ready` (the thing exists but is not usable yet), `no_world` (a menu, a loading screen or a race: there is no world to act on), `stale` (the scene's
 revision or an edit's `expect` text is not what you saw: re-read), `refused` (a path or setting the Director does not allow; a bad token), `timeout`,
-`failed` (anything else; the message says what). An error object may carry more fields (a `stale` one has `line` and `actual`).
+`failed` (anything else; the message says what). An error object may carry more fields (a `stale` edit has `line`, `actual` and `op`; a refused edit has `diagnostics`).
 
 `batch` runs several commands in one update, in order: `{"cmd":"batch","args":{"cmds":[{"cmd":"camera.set","args":{...}},{"cmd":"shot","args":{...}}]}}`
 -> `{"ok":true,"result":{"results":[{"ok":true,"result":{...}},{"ok":false,"error":{...}}]}}`; it stops at the first error unless `"stop_on_error":false`.
@@ -83,7 +83,7 @@ clock and the cars are kept, only a car whose statement changed is made again). 
 | `transport.pause` | `{}` -> same. Holds the clock and freezes the world (time scale floor). |
 | `transport.restart` | `{t?:0, wait?}` -> same. Runs the scene again from the start (the cars are made again) and, when `t` > 0, seeks there. |
 | `transport.seek` | `{t, settle_frames?:20}` -> `{t, paused:true, frozen:true, scrubbable, scrub_hint, settled}`. Pins the clock at `t` with the world frozen: exact for the camera, kinematic cars, hour, weather, hud and split; `scrubbable:false` and a hint when a brain-mode car, traffic or peds are in the scene (the world cannot rewind: use `transport.restart` and play). |
-| `transport.step` | `{frames?:1}` -> `{t, frames}`. While paused: runs exactly that many updates at the fixed step and holds again. |
+| `transport.step` | `{frames?:1}` -> `{t, frames}`. While paused: runs exactly that many updates at the fixed step and holds again. Needs the fixed step (`transport.mode {fixed:true}` first), else `not_ready`. |
 | `transport.mode` | `{fixed?:true, fps?}` -> `{mode, fps, step}`. Preview at the scene's fixed step (the take's): `fps` defaults to the scene's header `fps`. |
 
 ### scene
@@ -145,24 +145,26 @@ Always `{ok, result|error}`; `query.ground` says `not streamed` where the world 
 | Command | Args -> result |
 |---|---|
 | `shot` | `{path, size?, t?}` -> `{path, width, height, t, bytes, frame}`. A clean engine frame (no overlay, no ImGui) as a PNG, at the engine's 1:1 size (`size` is a hint: the result says the real one). With `t` it seeks there first and waits for the world to settle. |
-| `shot.schedule` | `{times:[...], dir}` -> `{count, dir}`. Stills at exact scene times during one play-through; an event `shot.done` for each. `{times:[]}` cancels. |
+| `shot.schedule` | `{times:[...], dir}` -> `{count, dir}`. Stills at exact scene times during one play-through (it plays the scene if it is paused; needs the fixed step, else `not_ready`); an event `shot.done` for each. `{times:[]}` cancels. |
 | `take.render` | `{fps, sink?, name?, from?, to?}` -> `{name, fps, sink, from, to}`. Starts a take (the scene runs from `from` to `to`, default the whole scene); events `take.progress`, `take.done`. |
 | `take.status` | `{}` -> `{active, name, folder, fps, frames, state, error?, last}` |
 
 ## Events
 | Event | Fields |
 |---|---|
-| `scene.reloaded` | `rev, by` (`agent`, `panel`, `file`, `undo`, `accept`), `changed` (new line numbers), `errors` |
+| `scene.reloaded` | `rev, by` (`agent`, `panel`, `file`, `undo`, `accept`), `changed` (new line numbers), `errors`, `soft` (loaded in place: the clock and the cars were kept) |
 | `scene.state` | `state` (`running`, `finished`, `failed`, ...), `t`, `path` |
 | `key.reached` | `t, line, track, text`: the scene's clock passed a key |
 | `car.ready` | `id` |
 | `shot.done` | `path, t, ok, error?` (and `index, total` for a schedule) |
 | `take.progress`, `take.done` | `name, frames` / `name, folder, state, frames, error?` |
 | `edit` | `rev, by, ops, lines`: what a client changed in the scene |
-| `agent` | `client, name, connected` |
+| `agent` | `client, name, connected`: an agent came or left (the one that connects does not hear about itself) |
 
 ## The pure parts' tests
 `larecomp_director_test` (JSON, the command engine, the console grammar, the paths rule, the PNG writer, the route reducer, the projection, a loopback
 round trip of the server) and `larecomp_scene_edit_test` (the ops, comments and layout kept, the stale rule, the diff) need no game. The Python side is
 `ports\scripts\director_client.py` (`python -I director_client.py selftest` runs its client against its own mock server, which answers every command above with
 plausible data so a tool can be built and tested with no game).
+`ports\scripts\director_smoke.py --info <director.json>` runs the checks of the core against a live game (hello, camera, transport, shot, reload, take); with `--mock`
+it runs them against the mock, which tests the script itself.
