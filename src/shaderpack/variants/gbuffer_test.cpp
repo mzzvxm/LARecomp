@@ -21,8 +21,15 @@
 
 #include "shaderpack/pack_format.h"
 #include "shaderpack/variant_overlap.h"
+#include "shaderpack/variants/bloom_gauss.h"
+#include "shaderpack/variants/car_chrome.h"
+#include "shaderpack/variants/car_selfrefl.h"
+#include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
+#include "shaderpack/variants/glow_soft.h"
+#include "shaderpack/variants/luminance_scale.h"
 #include "shaderpack/variants/shadow_filter.h"
+#include "shaderpack/variants/ui_sharp.h"
 
 namespace sp = larecomp::shaderpack;
 
@@ -159,8 +166,24 @@ void CheckVariantDef() {
   Check(other.input_xxh3 != def.input_xxh3, "a changed helper changes the fingerprint");
   const sp::VariantDef crlf = sp::MakeGBufferVariantFromText("float2 GbOctEncode(float3 n) { return n.xy; }\r\nfloat2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\r\n#define GB_MODE_WRITE_NORMAL 1\r\n");
   Check(crlf.input_xxh3 == def.input_xxh3, "the fingerprint does not depend on the line ends");
-  // it does not share a shader with the shadow filter's collector lookups (the one place the names could meet)
-  Check(std::string(sp::kShadowBlendSuffix) != std::string(sp::kGBufferDayShader), "the names do not meet the shadow collectors'");
+  // The two shaders are in no other variant of this branch: not named by one (bloom, environment map, glow, car paint, chrome, luminance, UI sharpening) and not
+  // under the suffixes of the two that find theirs by name (the shadow collectors, the UI). A shader has one variant (Pipelines::ChoosePackedVariant): the
+  // headlight variant of feat/headlight-light finds every ...__PSMultiLight by name and WOULD overlap on xCityDefault::PSMultiLight (ids 12 and 13 against 14 and 15):
+  // package GB-B composes them.
+  {
+    const sp::VariantShader others[] = {sp::kBloomGaussX, sp::kBloomGaussY, sp::kChrome, sp::kCarPaint, sp::kEnvMipPass, sp::kEnvReduce, sp::kGlowSoftTrail,
+                                        sp::kGlowSoftStar, sp::kLuminanceSample, sp::kUiSharpTextured};
+    bool named = false;
+    for (const sp::VariantShader& other : others) named |= other.name == sp::kGBufferDayShader || other.name == sp::kGBufferNightShader;
+    for (const sp::VariantShader& other : sp::kUiSharpRetail) named |= other.name == sp::kGBufferDayShader || other.name == sp::kGBufferNightShader;
+    Check(!named, "no other variant of this branch names xCityDefault::PSCityDefault or ::PSMultiLight");
+    bool suffixed = false;
+    for (const std::string_view mine : {sp::kGBufferDayShader, sp::kGBufferNightShader}) {
+      for (const std::string_view suffix : {sp::kShadowBlendSuffix, sp::kShadowBlendAlphaSuffix}) suffixed |= mine.ends_with(suffix);
+      for (const std::string_view suffix : sp::kUiSharpSuffixes) suffixed |= mine.ends_with(suffix);
+    }
+    Check(!suffixed, "no suffix of the shadow filter's or the UI sharpening's variant finds xCityDefault::PSCityDefault or ::PSMultiLight");
+  }
   const sp::VariantShader day{sp::kGBufferDayShader, 1}, night{sp::kGBufferNightShader, 2};
   Check(sp::FindVariantOverlaps(std::vector<sp::VariantTarget>{{"gbuffer", day.key}, {"gbuffer", night.key}, {"shadow_filter", 3}}).empty(), "no overlap with the shadow filter's shaders");
   // the transform through the definition works like the function
