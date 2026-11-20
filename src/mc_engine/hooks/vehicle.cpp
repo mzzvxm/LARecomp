@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "bound_node_guard.h"
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
@@ -128,6 +129,27 @@ bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) {
     const auto* base = larecomp::guest::Membase();
     if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 252) != 0) return false;
     NoteShaderBindRace("paint variables");
+    return true;
+}
+
+// The game's bound-node test sub_82574FF8(r3 = the query, r4 = a node of the bound pool, r5 = a mask): the query's box against the node's matrix (+16)
+// and bound (the pointer at +4, then the box through it). Its callers (sub_8256CF78, and sub_8256CEC8, which walks the node's chain until a test says
+// yes) take the node from the pool by index. A node whose bound pointer is 0 (dropped, or not filled yet) makes the first read land on guest 0xC: the
+// title died that way 3 s into a race load on a guest thread (vol3-race-vulkan, 2026-11-20; 1 of 318 logged race loads, with three game
+// instances running at once; a game-side race, the volumetric light's hook is not on that path). Such a node contains nothing: the test answers no
+// (r3 = 0, then a `blr`) and the callers take the next node. It fires only where the title would have died. See hooks/bound_node_guard.h.
+// CHECK: which thread drops the node was not seen (inferred from the race load's timing); the guard holds whichever it is.
+static std::atomic<uint32_t> g_bound_node_races{0};
+
+bool MCLA_BoundNodeTest_82574FF8(PPCRegister& r3, PPCRegister& r4) {
+    if (!mcla::hooks::BoundNodeIsDropped(larecomp::guest::Membase(), static_cast<uint32_t>(r4.u64))) return false;
+    r3.u64 = 0;
+    const uint32_t n = ++g_bound_node_races;
+    if (n <= 4) {
+        LARECOMP_APP_WARN("[bound-node] the bound test was given a node with no bound (0x{:08X}), "
+                          "probably one being dropped by another thread; it answers no ({} so far)",
+                          static_cast<uint32_t>(r4.u64), n);
+    }
     return true;
 }
 
@@ -303,4 +325,5 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) { return false; }
 bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) { return false; }
 bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) { return false; }
+bool MCLA_BoundNodeTest_82574FF8(PPCRegister& r3, PPCRegister& r4) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

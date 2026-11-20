@@ -29,8 +29,10 @@
 // outer and the inner cosine), the inverse square fall-off 1 / (1 + (d/D)^2), a wrapped surface term (saturate(w + (1 - w) N.L): a road seen at a grazing
 // angle keeps a share), a low beam's cut-off (nothing a little above the lamp), and a fade near the lamp. The numbers are
 // src/gpu/headlight_rig_rules.h's (LampScale is the CPU twin; the variant's test checks that the `kHl...` constants here are those).
-// The shadow hook: a light with a valid local shadow view (src/gpu/local_shadow_types.h) multiplies its term by a 4 tap compare in the atlas
-// (the views are in the block; the view of a light is in g_HlShadowOf; no atlas bound: lit).
+// The shadow hook: a light with a valid local shadow view (src/gpu/local_shadow_types.h) multiplies its term by the share of a box of 3 x 3 texels of the
+// atlas that is lit, each texel compared with the game's `>=` and counted by the part of it the box covers (4 x 4 texels, 16 fetches, 4 when the box's outer
+// texels agree; the views are in the block; the view of a light is in g_HlShadowOf; no atlas bound: lit). It was four point compares (five levels: a staircase
+// of texels on every edge).
 //
 // What the transform leaves out (it says `skip`, with the reason, and the renderer draws the game's own shader for it): a shader that reads no light grid
 // (the pedestrians, the road studs, the foliage's trunks and impostors, the glass ...), one whose world position is not an interpolant or a copy of one,
@@ -59,7 +61,8 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_headlight_version).
 // 2: the beam's calibration (peak 2.0, half distance 26 m: the road is lit out to 40 m; HEADLIGHT-FIX-2), a new helper text: the packs are built again.
-inline constexpr uint32_t kHeadlightVariantVersion = 2;
+// 3: the shadow lookup is a soft box of 3 x 3 texels instead of four point compares (LIGHT-SHADOW-SHAPE, 2026-11-20): a new helper text.
+inline constexpr uint32_t kHeadlightVariantVersion = 3;
 
 // The pixel shaders, found by name: every one of the lit family.
 inline constexpr std::string_view kHeadlightSuffixes[] = {"__PSMultiLight", "__PSMultiLightEnv", "__PSMultiLightInterior", "__PSMultiLightDebug",

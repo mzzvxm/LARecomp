@@ -406,6 +406,10 @@ class GPUSettings final : public rex::SettingOwner {
     "reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws "
     "every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_skirt, 1, "Diagnostic: 1 (the default) draws each vehicle part a second time into the headlight shadow maps, 0.22 m lower and 0.6 m farther "
+    "along the light, which puts the underbody on the road and closes the gap under a car that a low lamp shines through (without it the road behind a car is "
+    "lit through the ground clearance except where the tyres block: a few thin stripes instead of the car's shadow). 0 draws the car once. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
     "distribution. Empty: off.", rex::kDebugOnly, rex::kRestart);
@@ -1168,6 +1172,71 @@ class GPUSettings final : public rex::SettingOwner {
     "and the sun gives shafts): 1 the sky image the rays march over, 2 the blurred image, 3 the "
     "added light alone. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 3});
 
+  REX_SETTING(std::string, mcla_gpu_volumetrics, "auto", "Volumetric light: beams of light under the street lamps and the cars' headlights, a haze that light shows in, "
+    "and the sun's shafts between trees and buildings (through the game's own shadow cascades). It is a camera "
+    "aligned volume lit by compute passes and added to the scene once, so it costs the same whatever is on screen: "
+    "medium, high or ultra grow the volume and the number of lamps and headlights it lights. off is the game's own "
+    "picture (its fog, and in rain its cone meshes under the lamps). auto (the default) is medium on a mid-range "
+    "graphics card, high on a fast one and off on an integrated one. Nothing is added by day in clear weather with "
+    "no light on. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
+
+  REX_SETTING(i32, mcla_gpu_vol_census, 0, "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log line of what the "
+    "volumetric light did: what became of the frame, the collector's atlas, the fog quad's colour. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 100000});
+
+  REX_SETTING(bool, mcla_gpu_vol_keep_cones, false, "Diagnostic: draws the game's own cone meshes under the lamps (xrage_spotlightfog, in rain) as well as the "
+    "volumetric light, to compare the two. Without it the cones are not drawn in a frame the volume was made. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_vol_density, 1.0, "Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the look's own: 0.0012 per metre in a clear night, "
+    "0.008 in rain, 0.010 in fog; 1: as the look has it). Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_ground_height, 40.0, "Diagnostic: a multiplier on the scale height of the thicker haze above the ground in the volumetric light (40: as the look has it, 0: no "
+    "ground layer). Live.", rex::kDebugOnly, rex::Range{0.0, 500.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_ground_strength, 1.0, "Diagnostic: a multiplier on how much thicker the look makes the haze at the ground than high above it (1: as the look has it, 0: "
+    "none). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_noise, 0.35, "Diagnostic: how much the haze's thickness varies from place to place in the volumetric light (0: even, 1: "
+    "patches of clear air). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_wind, 2.0, "Diagnostic: how fast, in metres a second, the haze's patches drift in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_g_sun, 0.6, "Diagnostic: a multiplier on how strongly the look makes the haze scatter the sun forward (0.6: as the look has it; the look's value is 0.6 to 0.72, 0: evenly, toward 0.95: only toward the camera when "
+    "looking at the sun). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+
+  REX_SETTING(f64, mcla_gpu_vol_g_lamp, 0.25, "Diagnostic: a multiplier on how strongly the look makes the haze scatter a street lamp's light forward (0.25: as the look has it). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+
+  REX_SETTING(f64, mcla_gpu_vol_g_head, 0.6, "Diagnostic: a multiplier on how strongly the look makes the haze scatter a car's headlight forward (0.6: as the look has it; oncoming lights glare in fog). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+
+  REX_SETTING(f64, mcla_gpu_vol_lamp_strength, 1.0, "Diagnostic: a multiplier on the street lamps' light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_head_strength, 1.0, "Diagnostic: a multiplier on the cars' headlights' light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_sun_strength, 1.0, "Diagnostic: a multiplier on the sun's light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_extinction, 0.25, "Diagnostic: a multiplier on how much of the haze's own dimming the volumetric light applies to the picture (0.25: as the look has it; 0: it only adds "
+    "light, 1: the full physical amount; the game's own fog dims the distance already). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
+
+  REX_SETTING(f64, mcla_gpu_vol_far, 0.0, "Diagnostic: how far in metres the volumetric light reaches (30 to the level's own, 120 on medium and 160 on "
+    "high and ultra). 0: the level's. Live.", rex::kDebugOnly, rex::Range{0.0, 1000.0});
+
+  REX_SETTING(bool, mcla_gpu_vol_temporal, true, "Diagnostic: blends each frame's volume with the last frame's, moved to where the camera is now (high and "
+    "ultra; medium has none). Off: the volume shows its noise. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_vol_early, false, "Diagnostic: adds the volumetric light at the game's mid-scene depth copy, before the fog and the particles, "
+    "instead of at the game's copy of the main colour after them, to compare the two. Without it the light goes in "
+    "at that copy and falls back to the mid-scene point by itself when no such copy comes. Live.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_vol_test, 0, "Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams without the game's own "
+    "lights: 1 a street lamp 8 m ahead and 4.5 m up (the game's street lamps are then not read), 2 a headlight (the rig's "
+    "headlights are then not read), 3 both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_vol_inputs, 3, "Diagnostic: which of the game's lights the volumetric light reads: 1 the street lamps (the game's per-frame lamp list), "
+    "2 the cars' headlights (the headlight rig's lights and, where the shadow maps run, their shadows), 3 both (the default), "
+    "0 neither. A bit that mcla_gpu_vol_test uses for a test light is left to the test light. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_vol_lamp_limit, 0, "Diagnostic: at most this many of the game's street lamps are put in the volumetric light (the brightest in view are "
+    "kept, with hysteresis); 0: as many as the level reads (12 on medium, 32 on high, 48 on ultra). Live.", rex::kDebugOnly, rex::Range{0, 48});
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1456,6 +1525,7 @@ inline auto& mcla_gpu_headlight_shadow_cull = g_gpu.mcla_gpu_headlight_shadow_cu
 inline auto& mcla_gpu_headlight_shadow_views = g_gpu.mcla_gpu_headlight_shadow_views;
 inline auto& mcla_gpu_headlight_shadow_bias = g_gpu.mcla_gpu_headlight_shadow_bias;
 inline auto& mcla_gpu_headlight_shadow_cone = g_gpu.mcla_gpu_headlight_shadow_cone;
+inline auto& mcla_gpu_headlight_shadow_skirt = g_gpu.mcla_gpu_headlight_shadow_skirt;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;
@@ -1585,6 +1655,27 @@ inline auto& mcla_gpu_sun_shafts_steps = g_gpu.mcla_gpu_sun_shafts_steps;
 inline auto& mcla_gpu_sun_shafts_threshold = g_gpu.mcla_gpu_sun_shafts_threshold;
 inline auto& mcla_gpu_sun_shafts_view = g_gpu.mcla_gpu_sun_shafts_view;
 inline auto& mcla_gpu_sync_builds = g_gpu.mcla_gpu_sync_builds;
+inline auto& mcla_gpu_volumetrics = g_gpu.mcla_gpu_volumetrics;
+inline auto& mcla_gpu_vol_census = g_gpu.mcla_gpu_vol_census;
+inline auto& mcla_gpu_vol_keep_cones = g_gpu.mcla_gpu_vol_keep_cones;
+inline auto& mcla_gpu_vol_density = g_gpu.mcla_gpu_vol_density;
+inline auto& mcla_gpu_vol_ground_height = g_gpu.mcla_gpu_vol_ground_height;
+inline auto& mcla_gpu_vol_ground_strength = g_gpu.mcla_gpu_vol_ground_strength;
+inline auto& mcla_gpu_vol_noise = g_gpu.mcla_gpu_vol_noise;
+inline auto& mcla_gpu_vol_wind = g_gpu.mcla_gpu_vol_wind;
+inline auto& mcla_gpu_vol_g_sun = g_gpu.mcla_gpu_vol_g_sun;
+inline auto& mcla_gpu_vol_g_lamp = g_gpu.mcla_gpu_vol_g_lamp;
+inline auto& mcla_gpu_vol_g_head = g_gpu.mcla_gpu_vol_g_head;
+inline auto& mcla_gpu_vol_lamp_strength = g_gpu.mcla_gpu_vol_lamp_strength;
+inline auto& mcla_gpu_vol_head_strength = g_gpu.mcla_gpu_vol_head_strength;
+inline auto& mcla_gpu_vol_sun_strength = g_gpu.mcla_gpu_vol_sun_strength;
+inline auto& mcla_gpu_vol_extinction = g_gpu.mcla_gpu_vol_extinction;
+inline auto& mcla_gpu_vol_far = g_gpu.mcla_gpu_vol_far;
+inline auto& mcla_gpu_vol_temporal = g_gpu.mcla_gpu_vol_temporal;
+inline auto& mcla_gpu_vol_early = g_gpu.mcla_gpu_vol_early;
+inline auto& mcla_gpu_vol_test = g_gpu.mcla_gpu_vol_test;
+inline auto& mcla_gpu_vol_inputs = g_gpu.mcla_gpu_vol_inputs;
+inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

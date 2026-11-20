@@ -965,6 +965,284 @@ void CheckKeyPadding() {
   Check(!(a == b), "the pixel shader's variant counts");
 }
 
+// ---------------------------------------------------------------------------
+// a car between a lamp and the road (the owner's picture of 2026-11-20: four thin stripes behind a car that should shadow its whole width)
+// ---------------------------------------------------------------------------
+
+struct P2 {
+  double x, y;
+};
+struct Edge2 {
+  P2 a, b;
+  P2 n;  // outward normal (unit)
+};
+
+// Whether the open segment p -> q crosses the segment a -> b (not at the ends of p -> q).
+bool Crosses(P2 p, P2 q, P2 a, P2 b) {
+  const double rx = q.x - p.x, ry = q.y - p.y, sx = b.x - a.x, sy = b.y - a.y;
+  const double den = rx * sy - ry * sx;
+  if (std::fabs(den) < 1e-12) {
+    return false;
+  }
+  const double t = ((a.x - p.x) * sy - (a.y - p.y) * sx) / den;
+  const double u = ((a.x - p.x) * ry - (a.y - p.y) * rx) / den;
+  return t > 1e-6 && t < 1.0 - 1e-6 && u >= 0.0 && u <= 1.0;
+}
+
+// The profile of a car seen from the side, x toward the lamp, y up, the road at y = 0: the underbody 0.16 m over the road (ground clearance), a bumper, a
+// hood, a windscreen, a roof, a rear window and a trunk, 4.6 m long and 1.2 m high.
+std::vector<Edge2> CarProfile() {
+  const P2 pts[] = {{2.30, 0.16}, {2.34, 0.50}, {1.90, 0.70}, {0.90, 0.80}, {0.20, 1.20}, {-1.20, 1.20}, {-1.90, 0.95}, {-2.30, 0.92}, {-2.30, 0.16}};
+  const size_t n = sizeof(pts) / sizeof(pts[0]);
+  P2 centre{0.0, 0.0};
+  for (const P2& p : pts) {
+    centre.x += p.x / double(n);
+    centre.y += p.y / double(n);
+  }
+  std::vector<Edge2> edges;
+  for (size_t i = 0; i < n; ++i) {
+    Edge2 e;
+    e.a = pts[i];
+    e.b = pts[(i + 1) % n];
+    const double dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, len = std::sqrt(dx * dx + dy * dy);
+    e.n = {dy / len, -dx / len};
+    const double out = e.n.x * ((e.a.x + e.b.x) / 2 - centre.x) + e.n.y * ((e.a.y + e.b.y) / 2 - centre.y);
+    if (out < 0.0) {
+      e.n = {-e.n.x, -e.n.y};
+    }
+    edges.push_back(e);
+  }
+  return edges;
+}
+
+// The edges a pass over `cull` draws for a lamp at `lamp`, moved by `shift`: kFront (front faces culled) keeps the faces turned from the lamp, kBack the faces it
+// sees, kNone both.
+std::vector<Edge2> DrawnEdges(const std::vector<Edge2>& edges, P2 lamp, ls::Cull cull, P2 shift = {0.0, 0.0}) {
+  std::vector<Edge2> out;
+  for (Edge2 e : edges) {
+    const P2 mid{(e.a.x + e.b.x) / 2 + shift.x, (e.a.y + e.b.y) / 2 + shift.y};
+    const bool sees = e.n.x * (lamp.x - mid.x) + e.n.y * (lamp.y - mid.y) > 0.0;
+    if ((cull == ls::Cull::kFront && sees) || (cull == ls::Cull::kBack && !sees)) {
+      continue;
+    }
+    e.a = {e.a.x + shift.x, e.a.y + shift.y};
+    e.b = {e.b.x + shift.x, e.b.y + shift.y};
+    out.push_back(e);
+  }
+  return out;
+}
+
+bool Blocked(P2 lamp, P2 receiver, const std::vector<Edge2>& edges) {
+  for (const Edge2& e : edges) {
+    if (Crosses(lamp, receiver, e.a, e.b)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The unit way the light travels, from a lamp `distance` m from the car and `height` m high toward the middle of the car (0.9 m high), in the plane of the profile.
+void LightDirection(double distance, double height, double dir[3]) {
+  dir[0] = -distance;
+  dir[1] = 0.9 - height;
+  dir[2] = 0.0;
+  const double length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+  dir[0] /= length;
+  dir[1] /= length;
+}
+
+void CheckCarCastsItsSilhouette() {
+  using ls::Cull;
+  // The faces: the world keeps the policy's, a vehicle's part is drawn on both faces under the default one, the debug policies mean what they said.
+  Check(ls::ResolveCasterCull(0, Cull::kBack, false) == Cull::kFront, "a world draw keeps the faces turned from the lamp");
+  Check(ls::ResolveCasterCull(0, Cull::kBack, true) == Cull::kNone, "a vehicle's part is drawn on both faces");
+  Check(ls::ResolveCasterCull(0, Cull::kFront, true) == Cull::kNone, "... whichever the game culled");
+  Check(ls::ResolveCasterCull(1, Cull::kBack, true) == Cull::kNone, "policy 1 is both faces for a vehicle too");
+  Check(ls::ResolveCasterCull(2, Cull::kBack, true) == Cull::kBack && ls::ResolveCasterCull(2, Cull::kBack, false) == Cull::kBack,
+        "policy 2 is the game's own for a vehicle as for the world");
+
+  const std::vector<Edge2> car = CarProfile();
+  // The car as one solid down to the road: the reference of what "casts its whole silhouette" means (the gap under the floor filled in).
+  std::vector<Edge2> solid = car;
+  solid.push_back({{2.30, 0.0}, {2.30, 0.16}, {1.0, 0.0}});
+  solid.push_back({{-2.30, 0.0}, {-2.30, 0.16}, {-1.0, 0.0}});
+  for (const double lamp_height : {0.45, 0.65}) {
+    const double distance = 20.0;
+    const P2 lamp{distance, lamp_height};
+    double dir[3], shift3[3];
+    LightDirection(distance, lamp_height, dir);
+    ls::SkirtShift(dir, shift3);
+    const P2 shift{shift3[0], shift3[1]};
+    CheckNear(shift3[2], 0.0, 1e-12, "the skirt does not move sideways for a light along x");
+    Check(shift.x < -0.5 && shift.y < -ls::kSkirtDrop * 0.9, "the skirt's copy is lower and farther along the light");
+    const std::vector<Edge2> old_way = DrawnEdges(car, lamp, Cull::kFront);  // the faces turned from the lamp
+    const std::vector<Edge2> both = DrawnEdges(car, lamp, Cull::kNone);
+    const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, shift);
+    std::vector<Edge2> with_skirt = both;
+    with_skirt.insert(with_skirt.end(), copy.begin(), copy.end());
+    int in_umbra = 0, leaks_old = 0, leaks_both = 0, leaks_skirt = 0, dark_beyond = 0, outside = 0;
+    for (double x = -2.45; x > -12.0; x -= 0.05) {
+      const P2 receiver{x, 0.0};
+      if (Blocked(lamp, receiver, solid)) {
+        ++in_umbra;
+        leaks_old += !Blocked(lamp, receiver, old_way);
+        leaks_both += !Blocked(lamp, receiver, both);
+        leaks_skirt += !Blocked(lamp, receiver, with_skirt);
+      } else {
+        ++outside;
+        dark_beyond += Blocked(lamp, receiver, with_skirt);
+      }
+    }
+    const std::string at = " (lamp " + std::to_string(lamp_height) + " m high, " + std::to_string(int(distance)) + " m away)";
+    Check(in_umbra > 20, "the road behind the car has an umbra to check" + at);
+    Check(leaks_old > 0 && leaks_both > 0,
+          "without the skirt the light gets through under the car: " + std::to_string(leaks_old) + " and " + std::to_string(leaks_both) + " of " + std::to_string(in_umbra) +
+              " road samples lit inside the car's silhouette" + at);
+    Check(leaks_skirt == 0, "with the skirt the whole silhouette is shadow: " + std::to_string(leaks_skirt) + " of " + std::to_string(in_umbra) + " lit" + at);
+    Check(outside == 0 && dark_beyond == 0, "(a lamp this low shadows the whole road behind the car)" + at);
+  }
+  // A lamp above the roof (1.6 m, 6 m away): the shadow ends where the rays clear the roof, and the skirt moves that end by nothing.
+  {
+    const double lamp_height = 1.6, distance = 6.0;
+    const P2 lamp{distance, lamp_height};
+    double dir[3], shift3[3];
+    LightDirection(distance, lamp_height, dir);
+    ls::SkirtShift(dir, shift3);
+    const P2 shift{shift3[0], shift3[1]};
+    std::vector<Edge2> with_skirt = DrawnEdges(car, lamp, Cull::kNone);
+    const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, shift);
+    with_skirt.insert(with_skirt.end(), copy.begin(), copy.end());
+    int in_umbra = 0, outside = 0, leaks = 0, dark_beyond = 0;
+    for (double x = -2.45; x > -40.0; x -= 0.05) {
+      const P2 receiver{x, 0.0};
+      const bool skirt_blocked = Blocked(lamp, receiver, with_skirt);
+      if (Blocked(lamp, receiver, solid)) {
+        ++in_umbra;
+        leaks += !skirt_blocked;
+      } else {
+        ++outside;
+        dark_beyond += skirt_blocked;
+      }
+    }
+    Check(in_umbra > 100 && outside > 100, "a lamp above the roof has both a shadow and a lit road behind it: " + std::to_string(in_umbra) + " and " + std::to_string(outside));
+    Check(leaks == 0 && dark_beyond == 0, "the skirt changes neither end of that shadow: " + std::to_string(leaks) + " lit inside, " + std::to_string(dark_beyond) + " dark outside");
+  }
+
+  // The skirt never shadows the surfaces of its own car that the lamp lights: a point just off a face the lamp sees has no skirt edge between it and the lamp.
+  for (const double lamp_height : {0.45, 0.65, 0.9}) {
+    for (const double distance : {6.0, 20.0, 40.0}) {
+      const P2 lamp{distance, lamp_height};
+      double dir[3], shift3[3];
+      LightDirection(distance, lamp_height, dir);
+      ls::SkirtShift(dir, shift3);
+      const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, {shift3[0], shift3[1]});
+      int lit_points = 0, shadowed = 0;
+      for (const Edge2& e : car) {
+        const P2 mid{(e.a.x + e.b.x) / 2, (e.a.y + e.b.y) / 2};
+        if (e.n.x * (lamp.x - mid.x) + e.n.y * (lamp.y - mid.y) <= 0.0) {
+          continue;  // a face the lamp does not see is not lit by it
+        }
+        for (int k = 1; k < 50; ++k) {
+          const double t = double(k) / 50.0;
+          const P2 p{e.a.x + (e.b.x - e.a.x) * t + e.n.x * 1e-3, e.a.y + (e.b.y - e.a.y) * t + e.n.y * 1e-3};
+          ++lit_points;
+          shadowed += Blocked(lamp, p, copy);
+        }
+      }
+      Check(lit_points > 100 && shadowed == 0,
+            "the skirt's copy casts no shadow on its own car: " + std::to_string(shadowed) + " of " + std::to_string(lit_points) + " lit points (lamp " +
+                std::to_string(lamp_height) + " m high, " + std::to_string(int(distance)) + " m away)");
+    }
+  }
+}
+
+void CheckSkirtMatrix() {
+  const GameCamera cam = MakeCamera(-20.0, 2903.0, 14.0, -810.0);
+  const tp::Mat4 world0 = tp::Mul(RotationY(33.0), Translation(2890.0, 0.5, -820.0));
+  const ls::Camera camera = ls::DeriveCamera(MakeBank(cam, world0).data());
+  Check(camera.valid, "the camera of the skirt check");
+  ls::Light lamps[2] = {Lamp(2900.0, 1.0, -815.0, 0.3, -0.05, 0.95, 1, true, 0, std::cos(ls::Rad(30)), 45.0),
+                        Lamp(2901.4, 1.0, -815.0, 0.3, -0.05, 0.95, 1, true, 1, std::cos(ls::Rad(30)), 45.0)};
+  ls::Group g;
+  ls::GroupLights(lamps, 2, 1, &g);
+  ls::ViewSpec spec;
+  ls::FitView(lamps, g, &spec);
+  tp::Mat4 light_clip, replay, skirt;
+  Check(ls::LightClip(spec, camera.right_handed, &light_clip) && ls::ReplayMatrix(camera, light_clip, &replay), "the view's matrices");
+  double shift[3];
+  ls::SkirtShift(spec.dir, shift);
+  Check(ls::SkirtReplayMatrix(camera, light_clip, shift, &skirt), "the skirt's replay matrix");
+  CheckNear(shift[0] * spec.dir[0] + shift[1] * spec.dir[1] + shift[2] * spec.dir[2] + ls::kSkirtDrop * spec.dir[1], ls::kSkirtPush, 1e-9,
+            "the shift is the push along the light and the drop");
+  // A car's draw: c8-c11 x the skirt matrix takes a model point to the light's clip of the world point moved by the shift; the car's own matrix to the point itself.
+  const tp::Mat4 car = tp::Mul(RotationY(120.0), Translation(2902.0, 0.0, -808.0));
+  const std::vector<float> bank = MakeBank(cam, car);
+  float own[16], moved[16];
+  ls::ReplaceWvp(bank.data() + 8 * 4, replay, own);
+  ls::ReplaceWvp(bank.data() + 8 * 4, skirt, moved);
+  const double model[4][3] = {{0, 0, 0}, {0.5, 1.2, -0.3}, {-1.0, 0.2, 0.7}, {2.0, 0.0, -2.0}};
+  for (const auto& mp : model) {
+    double w[3];
+    for (int k = 0; k < 3; ++k) {
+      w[k] = mp[0] * car.m[0][k] + mp[1] * car.m[1][k] + mp[2] * car.m[2][k] + car.m[3][k];
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+      const double p[3] = {w[0] + (pass ? shift[0] : 0.0), w[1] + (pass ? shift[1] : 0.0), w[2] + (pass ? shift[2] : 0.0)};
+      const float* rows = pass ? moved : own;
+      double via[4], direct[4];
+      for (int j = 0; j < 4; ++j) {
+        via[j] = mp[0] * rows[0 * 4 + j] + mp[1] * rows[1 * 4 + j] + mp[2] * rows[2 * 4 + j] + rows[3 * 4 + j];
+        direct[j] = p[0] * light_clip.m[0][j] + p[1] * light_clip.m[1][j] + p[2] * light_clip.m[2][j] + light_clip.m[3][j];
+      }
+      const double scale = std::max(1.0, std::fabs(direct[3]));
+      for (int j = 0; j < 4; ++j) {
+        CheckNear(via[j] / scale, direct[j] / scale, 5e-3,
+                  std::string(pass ? "the skirt's copy" : "the car") + " lands where the light's clip puts the world point, component " + std::to_string(j));
+      }
+    }
+  }
+  // Without a camera there is no matrix.
+  Check(!ls::SkirtReplayMatrix(ls::Camera{}, light_clip, shift, &skirt), "no camera, no skirt matrix");
+  // The part's own ray: from the eye to its place, unit; the view's axis when it is at the eye.
+  {
+    const double eye[3] = {10.0, 2.0, -5.0}, axis[3] = {0.0, 0.0, 1.0}, place[3] = {10.0 + 30.0, 2.0, -5.0 + 40.0};
+    double dir[3];
+    ls::SkirtDirection(eye, place, axis, dir);
+    CheckNear(dir[0], 0.6, 1e-12, "the part's ray: x");
+    CheckNear(dir[1], 0.0, 1e-12, "the part's ray: y");
+    CheckNear(dir[2], 0.8, 1e-12, "the part's ray: z");
+    ls::SkirtDirection(eye, eye, axis, dir);
+    CheckNear(dir[2], 1.0, 1e-12, "a part at the eye takes the view's axis");
+    // The shift along a ray 40 degrees off the axis still lands the copy behind the part's own surface: its component along the ray is the push.
+    double shift2[3];
+    const double level[3] = {0.0, 0.0, 1.0};
+    ls::SkirtShift(level, shift2);
+    CheckNear(shift2[1], -ls::kSkirtDrop, 1e-12, "a level ray moves the copy straight down by the drop");
+    const double off[3] = {std::sin(ls::Rad(40.0)), 0.0, std::cos(ls::Rad(40.0))};
+    ls::SkirtShift(off, shift2);
+    CheckNear(shift2[0] * off[0] + shift2[1] * off[1] + shift2[2] * off[2], ls::kSkirtPush, 1e-12, "along a ray 40 degrees off the axis the push is the full push");
+  }
+}
+
+void CheckVehicleCensus() {
+  ls::VehicleCensus census;
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kNone);
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kNone);
+  census.Note(0x3B4E4762B73D5239ull, ls::Skip::kNotOpaque);
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kOutOfView);
+  Check(census.draws == 4 && census.used == 2 && census.overflow == 0, "the census counts draws and shaders");
+  const std::string text = ls::DescribeVehicleCensus(census);
+  Check(text.find("23FB35FC659D4A67: 2 drawn, 1 outside the lamps' view;") != std::string::npos, "the log names a shader's verdicts: " + text);
+  Check(text.find("3B4E4762B73D5239: 1 not opaque;") != std::string::npos, "... each shader on its own: " + text);
+  for (uint64_t i = 0; i < 40; ++i) {
+    census.Note(0x1000 + i, ls::Skip::kNone);
+  }
+  Check(census.used == ls::VehicleCensus::kRows && census.overflow == 10 && census.draws == 44, "the 33rd shader and beyond are counted, not named");
+  Check(ls::DescribeVehicleCensus(census).find("(and 10 draws of other shaders)") != std::string::npos, "... and the log says so");
+  census.Clear();
+  Check(census.draws == 0 && census.used == 0 && ls::DescribeVehicleCensus(census).empty(), "a cleared census is empty");
+}
+
 }  // namespace
 
 int main() {
@@ -982,6 +1260,9 @@ int main() {
   CheckViewCull();
   CheckCullAndKeys();
   CheckKeyPadding();
+  CheckCarCastsItsSilhouette();
+  CheckSkirtMatrix();
+  CheckVehicleCensus();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

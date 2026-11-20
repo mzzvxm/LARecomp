@@ -1116,6 +1116,102 @@ void CheckShadowRemap() {
   }
 }
 
+// The soft lookup: a map of texels (1 lit, 0 in shadow) read as the shader reads it.
+void CheckSoftShadow() {
+  // Nothing in shadow: 1. All of it: 0.
+  for (float x : {10.0f, 10.37f, 55.9f}) {
+    for (float y : {3.0f, 3.5f, 90.25f}) {
+      CheckNear(hr::SoftShadow(x, y, [](int, int) { return 1.0f; }), 1.0, 1e-6, "a lit map is lit");
+      CheckNear(hr::SoftShadow(x, y, [](int, int) { return 0.0f; }), 0.0, 1e-6, "a map in shadow is dark");
+    }
+  }
+  // A straight vertical edge between texel E - 1 (shadow) and texel E (lit): the share is the part of the box on the lit side, a ramp exactly kShadowKernel texels
+  // wide, from 0 at E - 1.5 to 1 at E + 1.5, whatever the row and the fraction of the receiver's place.
+  constexpr int E = 40;
+  const auto edge = [](int ix, int) { return ix >= E ? 1.0f : 0.0f; };
+  const float half = 0.5f * hr::kShadowKernel;
+  Check(hr::kShadowKernel == 3.0f, "the box is 3 texels wide (the shader's kHlShadowKernel)");
+  float last = -1.0f;
+  int levels = 0;
+  bool monotone = true, ramp = true;
+  float first_zero_end = -1.0f, first_one = -1.0f;
+  float previous_value = -2.0f;
+  for (int k = -400; k <= 400; ++k) {
+    const float tx = float(E) + 0.01f * float(k);
+    const float got = hr::SoftShadow(tx, 17.3f, edge);
+    const float want = std::fmin(1.0f, std::fmax(0.0f, (tx + half - float(E)) / hr::kShadowKernel));
+    ramp = ramp && std::fabs(got - want) < 1e-4f;
+    monotone = monotone && got >= last - 1e-6f;
+    if (got != previous_value) {
+      ++levels;
+      previous_value = got;
+    }
+    if (got <= 1e-6f) {
+      first_zero_end = tx;
+    }
+    if (first_one < 0.0f && got >= 1.0f - 1e-6f) {
+      first_one = tx;
+    }
+    last = got;
+  }
+  Check(ramp, "a straight edge is a linear ramp over the box's width");
+  Check(monotone, "... and never steps back");
+  Check(levels > 250, "... with a level for every step of the receiver, not five (" + std::to_string(levels) + " levels in 801 steps)");
+  CheckNear(first_zero_end, float(E) - half, 0.02, "the shadow's full dark ends 1.5 texels before the edge");
+  CheckNear(first_one, float(E) + half, 0.02, "the full light starts 1.5 texels after it");
+  // The same edge seen along y and from the other side: the answers mirror.
+  {
+    const auto flipped = [](int ix, int) { return ix >= E ? 0.0f : 1.0f; };
+    bool mirror = true;
+    for (int k = -200; k <= 200; ++k) {
+      const float tx = float(E) + 0.013f * float(k);
+      mirror = mirror && std::fabs(hr::SoftShadow(tx, 5.0f, edge) + hr::SoftShadow(tx, 5.0f, flipped) - 1.0f) < 1e-4f;
+    }
+    Check(mirror, "light and shadow swapped give the complement");
+    const auto horizontal = [](int, int iy) { return iy >= E ? 1.0f : 0.0f; };
+    bool same = true;
+    for (int k = -200; k <= 200; ++k) {
+      const float t = float(E) + 0.013f * float(k);
+      same = same && std::fabs(hr::SoftShadow(21.4f, t, horizontal) - hr::SoftShadow(t, 21.4f, edge)) < 1e-6f;
+    }
+    Check(same, "an edge along the other axis gives the same ramp");
+  }
+  // A block of shadow 7 x 5 texels (a car's shadow is wider than the box): sliding the receiver 0.02 texel changes the answer by at most 0.02 / 3 (+ rounding), so there
+  // is no step anywhere along the way, and inside the block, a box's width from its sides, it is dark.
+  {
+    const auto block = [](int ix, int iy) { return (ix >= 100 && ix < 107 && iy >= 50 && iy < 55) ? 0.0f : 1.0f; };
+    float worst = 0.0f, was = hr::SoftShadow(90.0f, 52.5f, block);
+    for (int k = 1; k <= 3000; ++k) {
+      const float got = hr::SoftShadow(90.0f + 0.01f * float(k), 52.5f, block);
+      worst = std::fmax(worst, std::fabs(got - was));
+      was = got;
+    }
+    Check(worst <= 0.01f / 3.0f + 1e-4f, "no step across a shadow's both edges: the largest change in a 0.01 texel step is " + std::to_string(worst));
+    CheckNear(hr::SoftShadow(103.5f, 52.5f, block), 0.0, 1e-6, "the middle of the block is dark");
+    Check(hr::SoftShadow(103.5f, 52.5f, [](int ix, int iy) { return (ix >= 100 && ix < 107 && iy >= 50 && iy < 55) ? 0.0f : 1.0f; }) == 0.0f,
+          "(the outer texels agree there: four fetches)");
+  }
+  // The shortcut: when the box's four outer texels agree the answer is theirs, however the middle is (a feature thinner than the box is not seen). One texel wide
+  // line of shadow, wholly inside the box: not seen; the same line at the box's edge, where an outer texel is in it: a third of the box.
+  {
+    int fetches = 0;
+    const auto line = [&fetches](int ix, int) {
+      ++fetches;
+      return ix == 41 ? 0.0f : 1.0f;
+    };
+    // The box covers texels 39 to 42 (the receiver at 40.5 + 1.5 - ... low corner 39.0): the outer columns are 39 and 42, the line is in column 41: not seen, 4 fetches.
+    const float inside = hr::SoftShadow(40.5f, 8.0f, line);
+    Check(inside == 1.0f && fetches == 4, "a line inside the box, between lit outer texels, is not seen and costs four fetches (" + std::to_string(fetches) + ")");
+    fetches = 0;
+    const float at_edge = hr::SoftShadow(42.5f, 8.0f, line);  // low corner 41.0: the outer columns are 41 and 44: the line is an outer one
+    CheckNear(at_edge, 2.0 / 3.0, 1e-5, "a line at the box's edge darkens a third of it (" + std::to_string(at_edge) + ")");
+    Check(fetches == 4 + 16, "... and takes all sixteen fetches (" + std::to_string(fetches) + " in all)");
+  }
+  // The receiver's place is a continuous value: texel k is covered by the box centred at k + 0.5 only in its middle three, and a receiver at a texel's centre on a flat
+  // edge gets the ramp's middle value, 0.5, only at the edge itself.
+  CheckNear(hr::SoftShadow(float(E), 9.0f, edge), 0.5, 1e-6, "a receiver on the edge is half lit");
+}
+
 int main() {
   CheckTerm();
   CheckCalibration();
@@ -1124,6 +1220,7 @@ int main() {
   CheckFacing();
   CheckTracker();
   CheckShadow();
+  CheckSoftShadow();
   CheckShadowRemap();
   CheckBlock();
   CheckPoints();
