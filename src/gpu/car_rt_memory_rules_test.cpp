@@ -121,6 +121,8 @@ struct Frame {
       d.vs = 7;
       d.indices = 300;
       d.after_world = p.key % 7 == 0;
+      d.material.cls = p.key % 2 == 0 ? mcla::gpu::car_rt_material::Class::kPaint : mcla::gpu::car_rt_material::Class::kGlass;  // RT-HIT-SHADING: a kit keeps what each draw's surface is made of
+      d.material.tint_a[0] = float(p.key % 10) / 10.0f;
       d.model_to_world = tp::Mul(Translation(p.dx + offset_x, p.dy, p.dz), m);
       cm::NoteSeen(&seen, id, d.model_to_world.m[3]);
       if (kept) {
@@ -344,6 +346,12 @@ void TestPlacedWhenCulled() {
     flags_ok = flags_ok && d.after_world == (d.mesh_key % 7 == 0) && d.indices == 300 && d.vs == 7 && d.stencil_id == out.cars[0].stencil_id;
   }
   Check(flags_ok, "each placed draw has its kit's flags, shaders and ID");
+  bool material_ok = true;
+  for (const ci::OtherDraw& d : out.draws) {
+    material_ok = material_ok && d.material.cls == (d.mesh_key % 2 == 0 ? mcla::gpu::car_rt_material::Class::kPaint : mcla::gpu::car_rt_material::Class::kGlass) &&
+                  Near(d.material.tint_a[0], double(d.mesh_key % 10) / 10.0, 1e-6);
+  }
+  Check(material_ok, "each placed draw keeps the material its draw had when the kit was made (a car the camera no longer draws keeps its paint and its parts' surfaces)");
   Check(out.stats.placed_cars == 1 && out.stats.placed_draws == 12 && out.stats.not_resident == 0, "the stats count them");
 
   // The car turns away (a quarter) at frame 3: the whole kit turns about the vehicle.
