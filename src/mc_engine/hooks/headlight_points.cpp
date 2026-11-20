@@ -2,7 +2,8 @@
 // The game's own headlight points, for the renderer's headlight rig (src/gpu/headlight_rig.h, headlight_points.h).
 //
 // The vehicles' lights are submitted by sub_8237AC90 (r3 the light object, r4 a flag): per light kind a set of points, and for each point, at
-// loc_8237AFB4 (one point, before the guest's intensity and cone tests; both ways in arrive there), the registers
+// loc_8237AFB4 (one point, before the guest's intensity and cone tests; both ways in arrive there; the hook is one instruction on, at 0x8237AFB8, so that
+// the night probe's own at 0x8237AFB4 can coexist: a hook is keyed by its address, and the instruction between them writes no general register), the registers
 //
 //   r26  the light object                         [r26] the owner (0: none; the points' world positions are then made by sub_8237A698, r30 points at them)
 //   r31  the address of the set's pointer = object + 16 + 4 * kind      kind 3 is the Headlight (night_probe_rules.h LightKindName)
@@ -44,7 +45,7 @@ bool PlausiblePtr(uint32_t p) { return p >= 0x10000u && p < 0xE0000000u; }
 
 }  // namespace
 
-// 0x8237AFB4, one light point of a vehicle (larecomp_config.toml). Registers as the comment at the top of the file says.
+// 0x8237AFB8, one light point of a vehicle (larecomp_config.toml). Registers as the comment at the top of the file says.
 void MCLAHeadlightPoint(PPCRegister& r17, PPCRegister& r20, PPCRegister& r26, PPCRegister& r29, PPCRegister& r30, PPCRegister& r31) {
     namespace hp = mcla::gpu::headlight_points;
     if (!hp::Wanted()) return;

@@ -25513,14 +25513,17 @@ name = "Patch_AmbientDecalPose"
 registers = ["r4", "r31"]
 after_instruction = false
 
-# 0x8237AFB4 (loc_8237AFB4): one light point of a vehicle in the light submit sub_8237AC90, before the guest's intensity and cone tests (both ways in, the
-# point read from its set and its position made by sub_8237A698, arrive here). r26 the light object ([r26] its owner), r31 the address of the set's pointer
+# 0x8237AFB8 (the instruction after loc_8237AFB4): one light point of a vehicle in the light submit sub_8237AC90, before the guest's intensity and cone tests
+# (both ways in, the point read from its set and its position made by sub_8237A698, arrive at loc_8237AFB4 and run straight on; the instruction at
+# 0x8237AFB4 is `lvlx128 v53,r0,r17`, which writes no general register). r26 the light object ([r26] its owner), r31 the address of the set's pointer
 # (object + 16 + 4 * kind), r29 4 times the point's index, r30 the position's pointer when there is no owner, r17 / r20 the pointers of the two floats whose
 # product is the intensity. Reads only (the night probe, test/night-probe 3d3bb584, read the same registers): only the Headlight points (kind 3) are noted, only
 # while the renderer's headlight rig wants them (mcla_gpu_headlights on), for gpu/headlight_points.h: their world position, a racer's direction (the car's back
-# axis) and the intensity, which is the lights' on state (2.0 at night, 0 by day). headlight_points.cpp. The test branch's MCLANightLightPoint is at the same address.
+# axis) and the intensity, which is the lights' on state (2.0 at night, 0 by day). headlight_points.cpp.
+# NOT 0x8237AFB4, on purpose: a midasm hook is keyed by its address (the SDK keeps the last of two), and the test branch's MCLANightLightPoint is at 0x8237AFB4.
+# One instruction later the two do not collide and both run, so the probe can be merged over this without taking this one's place.
 [[midasm_hook]]
-address = 0x8237AFB4
+address = 0x8237AFB8
 name = "MCLAHeadlightPoint"
 registers = ["r17", "r20", "r26", "r29", "r30", "r31"]
 after_instruction = false

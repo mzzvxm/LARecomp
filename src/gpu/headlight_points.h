@@ -9,7 +9,7 @@
 // times the object's value) that is exactly the lights' on state: the player's and the racers' Headlights read 2.00 at night and 0.00 by day (the guest's
 // own class flag and status bytes read the same at both: they are not the state). The ownerless traffic points read 3.4 at night.
 //
-// This is the table the guest hook (src/mc_engine/hooks/headlight_points.cpp, a midasm hook at 0x8237AFB4, Headlight points only, only while the rig wants
+// This is the table the guest hook (src/mc_engine/hooks/headlight_points.cpp, a midasm hook at 0x8237AFB8, one instruction after the probe's 0x8237AFB4 so that both can run, Headlight points only, only while the rig wants
 // them) writes on the game thread and the rig reads on the render thread: the latest point of each (vehicle, index) or, for a point with no owner, of each
 // place, with the time it was seen. Header only (inline functions and variables: one table for every file that includes it); pure, it includes nothing of the
 // renderer or the SDK, headlight_rig_test.cpp checks it.
