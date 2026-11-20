@@ -111,6 +111,15 @@ class GBuffer {
   void NoteDraw(gbuffer::Why why, uint64_t ps_identity);
   // A draw whose sidecar pipeline was still being made went without the sidecar (Scene: the key falls back to the guest's).
   void NoteFallbackDraw() { ++fallback_draws_; }
+  // The game's motion blur draw (the anchor) was met in a frame this class tracks: reads the frame's camera from its pixel constants (`ps_bank`: 256 registers of raw big endian
+  // bytes, as temporal::ExtractCamera takes them) and keeps it for the next frame when this one is the play view's (gbuffer_rules.h CameraKeeper). The G-buffer reads it itself, so the
+  // derivative normal's camera exists with or without a temporal upscaler.
+  void OnAnchor(const uint8_t* ps_bank);
+  // The camera the frame's draws hand their shaders (the derivative normal, a fragment's world point): the last frame's; null when there is none this frame (the first frame, a
+  // cutscene's or the pause world's before it, an anchor whose constants gave none).
+  const gbuffer::CameraAxes* camera() const { return camera_.Previous(); }
+  // A writer's constants were filled, with the camera rows (true) or without (false: the shaders that need them write "no data"); for the log.
+  void NoteCameraRows(bool had) { ++(had ? camera_rows_ : camera_missing_); }
   // Changes whenever the sidecar's textures are replaced; part of the Scene's framebuffer memo. 0 while there is no sidecar.
   uint32_t generation() const { return image_planes_ != 0 ? generation_ : 0; }
 
@@ -206,6 +215,22 @@ class GBuffer {
   std::unordered_map<uint64_t, uint32_t> masked_by_;   // ... draws of the main view's window whose shader has no variant (yet): the next families
   uint32_t window_logs_ = 0;                           // the first frames' window lines logged
   uint64_t held_bytes_ = 0;
+
+  // The view the frame's draws were of (gbuffer_rules.h ViewTally), the camera kept from the last frame's anchor, and what the log says of both.
+  void EndOfFrameView();  // folds the finished frame's tally into the pause spell's counts (BeginFrame, before the next frame's tally starts)
+  gbuffer::ViewTally tally_;
+  gbuffer::CameraKeeper camera_;
+  uint32_t pause_spell_frames_ = 0;    // frames of the pause world's spell running now (0: none)
+  uint64_t pause_spell_draws_ = 0;
+  uint64_t pause_frames_ = 0;          // this interval's
+  uint64_t pause_draws_ = 0;
+  uint64_t mixed_frames_ = 0;          // frames with draws of both kinds: the pause world and the play view in one frame (never expected)
+  bool mixed_logged_ = false;
+  uint64_t anchors_ = 0;               // this interval's anchors met, and how many gave a camera that was kept
+  uint64_t anchors_kept_ = 0;
+  uint64_t camera_rows_ = 0;           // writers' constants filled with / without the camera rows
+  uint64_t camera_missing_ = 0;
+  bool camera_logged_ = false;
 };
 
 }  // namespace mcla::gpu

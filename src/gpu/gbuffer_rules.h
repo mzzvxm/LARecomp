@@ -517,6 +517,12 @@ constexpr PlaneBlend BlendFor(PlaneMode mode) {
   return blend;
 }
 
+// The GUEST's sample count of the pause menu's, the race pause's, the garage's and the map's world (temporal::kPauseSamples). It is the guest's, not the host's: the play view has 1 or 2
+// guest samples whatever the host's MSAA level is (mcla_gpu_msaa 4 or 8 gives the same play view that many HOST samples, and the sidecar the same), so a run at host MSAA 4 is the
+// play view with a 4 sample sidecar and carries it; only the 4x guest world is the pause world (GB-INTEGRATE-1 read its dx-day-m4 run, host MSAA 4, as the pause world and was wrong).
+inline constexpr uint32_t kPauseGuestSamples = 4;
+constexpr bool IsPauseWorld(uint32_t guest_samples) { return guest_samples == kPauseGuestSamples; }
+
 // Why a main view draw did what it did (the counts of the log).
 enum class Why : uint8_t {
   kWrites,              // carried, and the pixel shader's variant writes the planes
@@ -583,7 +589,7 @@ inline DrawDecision Decide(const DrawFacts& f) {
   if (!f.active) return not_carried(Why::kOff);
   if (f.suppressed) return not_carried(Why::kSuppressed);
   if (f.main_samples == 0) return not_carried(Why::kNotMainView);
-  if (f.main_samples == 4) return not_carried(Why::kPauseView);
+  if (IsPauseWorld(f.main_samples)) return not_carried(Why::kPauseView);
   if (f.guest_color_count != 1) return not_carried(Why::kNotOneColor);
   if (!f.window_open) return not_carried(Why::kWindowClosed);
   if (!f.rt0_writes) return masked(Why::kMaskedNoColor, PlaneMode::kMask);
@@ -645,6 +651,68 @@ inline bool MakeCameraRows(Vec3 right, Vec3 up, Vec3 forward, float tan_half_x, 
   camera_to_world[3] = q.w;
   return true;
 }
+
+// A draw of the play view: the sidecar was asked about it and it is not the pause world's, a side view's or a draw before the view's own clear. (kNotOneColor and kWindowClosed are draws
+// of the main view's identity too: Decide returns them after the pause world and the side views were told apart.)
+constexpr bool IsPlayViewWhy(Why why) {
+  return why == Why::kWrites || IsMasked(why) || why == Why::kNotOneColor || why == Why::kWindowClosed;
+}
+
+// One frame's draws of the main view by kind, from the outcomes the Scene reports (GBuffer::NoteDraw): the pause world's draws (4 guest samples) and the play view's. A frame is
+// one kind or the other; the tally says which, and whether it was neither (a frame with no 3D view) or, wrongly, both.
+struct ViewTally {
+  uint32_t play = 0;
+  uint32_t pause = 0;
+  void Note(Why why) {
+    if (why == Why::kPauseView) {
+      ++pause;
+    } else if (IsPlayViewWhy(why)) {
+      ++play;
+    }
+  }
+  bool play_world() const { return play != 0 && pause == 0; }
+  bool pause_world() const { return pause != 0 && play == 0; }
+  bool mixed() const { return play != 0 && pause != 0; }
+};
+
+// The camera for the shaders that have no normal of their own (the derivative normal: store interiors, the traffic signals, the foliage fallback) and for a world point of a
+// fragment (GbWorldPoint): the previous frame's, read from the game's motion blur draw (the anchor), whose pixel constants hold the view inverse (right, up, backward), the
+// projection and the frame's size (temporal_camera.h). It is read by the G-buffer itself at every anchor of a frame it tracks, so it exists with or without a temporal upscaler (GB-
+// INTEGRATE-1's run found the derivative families writing "no data" without one: the rows came from the upscaler's own history). One frame late: a fast pan turns the world normal a
+// degree or two at most, a cut shows for one frame. Only a play frame's camera is kept: the pause world's lens differs.
+struct CameraAxes {
+  Vec3 right;
+  Vec3 up;
+  Vec3 forward;           // the direction the camera looks along (minus the view inverse's third row)
+  float tan_half_x = 0.0f;
+  float tan_half_y = 0.0f;
+  uint32_t width = 0;     // the frame's size in guest pixels (c62)
+  uint32_t height = 0;
+};
+class CameraKeeper {
+ public:
+  // The frame's serial at its start (the Scene's guest frame count: one more each frame the renderer runs).
+  void BeginFrame(uint64_t serial) { serial_ = serial; }
+  // At the frame's anchor: `camera` is what its constants gave (null: nothing sane), `tally` the frame's draws of the main view so far. The camera is kept for the next frame when
+  // this frame is the play view's; any other frame (pause world, no main view, both) leaves the next frame with none.
+  void OnAnchor(const CameraAxes* camera, const ViewTally& tally) {
+    if (camera == nullptr || !tally.play_world()) {
+      have_ = false;
+      return;
+    }
+    camera_ = *camera;
+    kept_serial_ = serial_;
+    have_ = true;
+  }
+  // The camera the draws of this frame use: the last frame's, when it gave one and this frame follows it directly (a gap of frames, a cutscene's, the pause world's: none).
+  const CameraAxes* Previous() const { return have_ && kept_serial_ + 1 == serial_ ? &camera_ : nullptr; }
+
+ private:
+  uint64_t serial_ = 0;
+  uint64_t kept_serial_ = 0;
+  bool have_ = false;
+  CameraAxes camera_;
+};
 
 // The material word of a draw that has no better one (GB-F's tables come later): world class, smoothness 0, lit by the forward lights.
 inline uint32_t DefaultMaterialWord() { return MaterialWord(0.0f, SurfaceClass::kWorld, 0u, 1.0f); }

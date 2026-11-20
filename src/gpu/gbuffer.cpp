@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <string>
@@ -17,6 +19,7 @@
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "records.h"
+#include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "texture_bytes.h"
 
@@ -25,6 +28,14 @@ namespace mcla::gpu {
 namespace {
 
 constexpr const char* kPrefix = "[gbuffer]";
+constexpr uint32_t kWidthHeightRegister = 62;  // c62.xy: the anchor's frame size in guest pixels (temporal_camera.h)
+
+// Component `comp` of register `reg` of a bank of raw big-endian bytes.
+float BankFloat(const uint8_t* bank, uint32_t reg, uint32_t comp) {
+  const uint8_t* p = bank + size_t(reg) * 16 + size_t(comp) * 4;
+  const uint32_t bits = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+  return std::bit_cast<float>(bits);
+}
 constexpr uint32_t kIntervalFrames = 600;  // the scene's own logging interval
 constexpr uint32_t kWindowLogs = 6;        // the first frames' window lines
 constexpr uint32_t kTopShaders = 6;
@@ -122,7 +133,35 @@ uint64_t GBuffer::HeldBytes() const {
   return image_planes_ != 0 ? held_bytes_ : 0;
 }
 
+void GBuffer::EndOfFrameView() {
+  if (tally_.pause != 0) {
+    ++pause_frames_;
+    pause_draws_ += tally_.pause;
+    if (tally_.mixed()) {
+      ++mixed_frames_;
+      if (!mixed_logged_) {
+        mixed_logged_ = true;
+        REXLOG_WARN("{} a frame had draws of the pause world (4 guest samples) and of the play view: {} and {} draws (the pause world must carry no sidecar; counted, logged once)", kPrefix,
+                    tally_.pause, tally_.play);
+      }
+    }
+    if (pause_spell_frames_ == 0) {
+      REXLOG_INFO("{} the pause / map / garage world (4 guest samples, whatever the host's MSAA level) is on: its draws bind the guest's own framebuffer, nothing carries the sidecar", kPrefix);
+      pause_spell_draws_ = 0;
+    }
+    ++pause_spell_frames_;
+    pause_spell_draws_ += tally_.pause;
+  } else if (tally_.play != 0 && pause_spell_frames_ != 0) {
+    REXLOG_INFO("{} the pause / map / garage world is over: a spell of {} frames, {} draws, none carried the sidecar; frames with draws of both kinds so far: {}", kPrefix,
+                pause_spell_frames_, pause_spell_draws_, mixed_frames_);
+    pause_spell_frames_ = 0;
+  }
+  tally_ = gbuffer::ViewTally{};
+}
+
 void GBuffer::BeginFrame(uint64_t frame_serial) {
+  EndOfFrameView();
+  camera_.BeginFrame(frame_serial);
   frame_serial_ = frame_serial;
   frame_ = gbuffer::GBufferFrame{};
   window_.BeginFrame();
@@ -168,8 +207,43 @@ void GBuffer::BeginFrame(uint64_t frame_serial) {
   }
 }
 
+void GBuffer::OnAnchor(const uint8_t* ps_bank) {
+  ++anchors_;
+  // The frame's camera for the NEXT frame's draws. Anything that is not the play view's (the pause world, a frame with no 3D view, both) keeps none (CameraKeeper::OnAnchor).
+  gbuffer::CameraAxes axes;
+  bool have = false;
+  const float width = BankFloat(ps_bank, kWidthHeightRegister, 0);
+  const float height = BankFloat(ps_bank, kWidthHeightRegister, 1);
+  if (width >= 16.0f && width <= 16384.0f && height >= 16.0f && height <= 16384.0f) {
+    temporal::Camera camera;
+    if (temporal::ExtractCamera(ps_bank, uint32_t(width + 0.5f), uint32_t(height + 0.5f), frame_serial_, &camera) == temporal::Reject::kNone && camera.fov_y > 0.0 && camera.aspect > 0.0) {
+      const double tan_y = std::tan(camera.fov_y * 0.5);
+      const auto axis = [](const double v[3]) { return gbuffer::Vec3{float(v[0]), float(v[1]), float(v[2])}; };
+      axes.right = axis(camera.right);
+      axes.up = axis(camera.up);
+      axes.forward = axis(camera.forward);
+      axes.tan_half_y = float(tan_y);
+      axes.tan_half_x = float(tan_y * camera.aspect);
+      axes.width = camera.width;
+      axes.height = camera.height;
+      have = camera.width != 0 && camera.height != 0;
+    }
+  }
+  camera_.OnAnchor(have ? &axes : nullptr, tally_);
+  if (have && tally_.play_world()) {
+    ++anchors_kept_;
+  }
+  if (!camera_logged_ && anchors_ >= 3) {
+    camera_logged_ = true;
+    REXLOG_INFO("{} the camera rows of the derivative normal come from the game's motion blur draw (the anchor), read here whether or not an upscaler runs: {} of the first {} anchors gave a "
+                "play view camera",
+                kPrefix, anchors_kept_, anchors_);
+  }
+}
+
 void GBuffer::NoteDraw(gbuffer::Why why, uint64_t ps_identity) {
   ++counts_[size_t(why)];
+  tally_.Note(why);
   if (why == gbuffer::Why::kWrites) {
     ++written_by_[ps_identity];
   } else if (why == gbuffer::Why::kMaskedNoVariant || why == gbuffer::Why::kMaskedOtherVariant) {
@@ -494,6 +568,18 @@ void GBuffer::LogInterval() {
               "writers cut by RT0's write mask {:.1f}; without the sidecar for want of its pipeline {:.1f}; frames without it: cutscenes {}; attach: {}",
               kPrefix, n(Why::kMaskedNoDepth), n(Why::kMaskedOtherDepth), n(Why::kMaskedSubView), n(Why::kMaskedNarrowMask), double(fallback_draws_) / frames, suppressed_frames_,
               masked_attach_ ? "all draws (the non writers clear or mask)" : "writers only");
+  // The pause world (guest 4x) and the camera of the derivative normal: the pause world never carries, so its draws are in "pause view" above and its frames here; a writer's constants
+  // have the camera rows when the last frame's anchor gave a play view camera.
+  REXLOG_INFO("{} views and camera: pause world frames {} ({} draws), frames with draws of both kinds {} (must be 0); anchors {} of which {} gave a play view camera; writers' constants with "
+              "the camera rows {}, without {}",
+              kPrefix, pause_frames_, pause_draws_, mixed_frames_, anchors_, anchors_kept_, camera_rows_, camera_missing_);
+  pause_frames_ = 0;
+  pause_draws_ = 0;
+  mixed_frames_ = 0;
+  anchors_ = 0;
+  anchors_kept_ = 0;
+  camera_rows_ = 0;
+  camera_missing_ = 0;
   interval_frames_ = 0;
   active_frames_ = 0;
   published_frames_ = 0;

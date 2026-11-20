@@ -743,6 +743,104 @@ void ViewMaskChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// the pause world is the GUEST's 4 samples, never the host's MSAA level; the frame's kind; the camera kept from the last frame's anchor (K5, K9 of the phase-1 run)
+// ---------------------------------------------------------------------------
+gb::CameraAxes MakeAxes(float yaw_degrees) {
+  gb::CameraAxes axes;
+  const float yaw = yaw_degrees * 3.14159265f / 180.0f;
+  axes.right = gb::Vec3{std::cos(yaw), 0.0f, -std::sin(yaw)};
+  axes.up = gb::Vec3{0.0f, 1.0f, 0.0f};
+  axes.forward = gb::Vec3{std::sin(yaw), 0.0f, std::cos(yaw)};
+  axes.tan_half_x = 0.7f;
+  axes.tan_half_y = 0.4f;
+  axes.width = 1280;
+  axes.height = 720;
+  return axes;
+}
+void PauseAndCameraChecks() {
+  using gb::Why;
+  // K9: the pause world is told by the guest's samples. The host's MSAA level (mcla_gpu_msaa 1, 2, 4, 8) is not an input of the decision: the play view at 2 guest samples is the
+  // play view at every host level, and a sidecar at 4 host samples (what the dx-day-m4 run had) belongs to it.
+  Check(gb::kPauseGuestSamples == 4 && gb::IsPauseWorld(4) && !gb::IsPauseWorld(1) && !gb::IsPauseWorld(2) && !gb::IsPauseWorld(8) && !gb::IsPauseWorld(0), "only the guest's 4 samples are the pause world");
+  for (uint32_t host : {1u, 2u, 4u, 8u}) {
+    gb::DrawFacts f = GoodDraw();
+    f.main_samples = 2;  // the play view of the game's MSAA: the guest's samples, whatever the host does with them
+    const gb::DrawDecision play = gb::Decide(f);
+    Check(play.why == Why::kWrites && play.attach() && gb::SidecarSamples(host) == host, Num("the play view carries the sidecar at host MSAA %.0f (a %.0f sample sidecar)", double(host), double(gb::SidecarSamples(host))));
+    f.main_samples = 4;
+    f.masked_attach = true;
+    Check(gb::Decide(f).why == Why::kPauseView && !gb::Decide(f).attach(), Num("the pause world carries nothing, with a host MSAA of %.0f and the non writers carried", double(host)));
+  }
+  for (Why why : {Why::kWrites, Why::kMaskedBlended, Why::kMaskedNoVariant, Why::kMaskedOtherVariant, Why::kMaskedNoColor, Why::kMaskedNoDepth, Why::kMaskedOtherDepth,
+                  Why::kMaskedSubView, Why::kMaskedNarrowMask, Why::kNotOneColor, Why::kWindowClosed}) {
+    Check(gb::IsPlayViewWhy(why), "an outcome of a play view draw is the play view's");
+  }
+  for (Why why : {Why::kOff, Why::kNotMainView, Why::kPauseView, Why::kSuppressed}) {
+    Check(!gb::IsPlayViewWhy(why), "off, a side view, the pause world and a cutscene's frame are not the play view's");
+  }
+  gb::ViewTally pause;
+  pause.Note(Why::kPauseView);
+  pause.Note(Why::kPauseView);
+  pause.Note(Why::kNotMainView);
+  Check(pause.pause_world() && !pause.play_world() && !pause.mixed() && pause.pause == 2 && pause.play == 0, "a frame of pause draws (and side views) is the pause world's");
+  gb::ViewTally play;
+  play.Note(Why::kWrites);
+  play.Note(Why::kMaskedBlended);
+  play.Note(Why::kNotMainView);
+  Check(play.play_world() && !play.pause_world() && !play.mixed() && play.play == 2, "a frame of play draws is the play view's");
+  gb::ViewTally both = play;
+  both.Note(Why::kPauseView);
+  Check(both.mixed() && !both.play_world() && !both.pause_world(), "a frame with both kinds is neither (and is counted)");
+  const gb::ViewTally none;
+  Check(!none.play_world() && !none.pause_world() && !none.mixed(), "a frame with no main view draw is neither");
+
+  // K5: the camera of the last frame, kept by the G-buffer itself at each anchor
+  gb::CameraKeeper keeper;
+  keeper.BeginFrame(100);
+  Check(keeper.Previous() == nullptr, "before any anchor there is no camera");
+  gb::CameraAxes a = MakeAxes(10.0f);
+  keeper.OnAnchor(&a, play);
+  Check(keeper.Previous() == nullptr, "the frame's own anchor comes after its draws: the camera is for the next frame");
+  keeper.BeginFrame(101);
+  const gb::CameraAxes* got = keeper.Previous();
+  Check(got != nullptr && got->width == 1280 && got->height == 720 && std::fabs(got->right.x - a.right.x) < 1e-6f && std::fabs(got->tan_half_x - 0.7f) < 1e-6f,
+        "the next frame has the last frame's camera, with no upscaler involved");
+  float ray[4], rot[4];
+  Check(got != nullptr && gb::MakeCameraRows(got->right, got->up, got->forward, got->tan_half_x, got->tan_half_y, 2560.0f, 1440.0f, ray, rot), "and it makes the constants' camera rows (at the draw's scale)");
+  gb::CameraAxes b = MakeAxes(12.0f);
+  keeper.OnAnchor(&b, play);
+  keeper.BeginFrame(102);
+  Check(keeper.Previous() != nullptr && std::fabs(keeper.Previous()->forward.x - b.forward.x) < 1e-6f, "every frame replaces it");
+  keeper.BeginFrame(103);  // a frame with no anchor (a cutscene's: the G-buffer does not track it): the next one has a gap
+  keeper.BeginFrame(104);
+  Check(keeper.Previous() == nullptr, "a gap of frames (a cutscene, the G-buffer off) leaves the next frame with none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(105);
+  Check(keeper.Previous() != nullptr, "and the frame after an anchor has one again");
+  keeper.OnAnchor(&a, pause);
+  keeper.BeginFrame(106);
+  Check(keeper.Previous() == nullptr, "the pause world's camera is not kept (another lens): the first play frame after it has none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(107);
+  Check(keeper.Previous() != nullptr, "the second play frame after it has one");
+  keeper.OnAnchor(&a, both);
+  keeper.BeginFrame(108);
+  Check(keeper.Previous() == nullptr, "a frame with both kinds keeps none");
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(109);
+  keeper.OnAnchor(nullptr, play);
+  keeper.BeginFrame(110);
+  Check(keeper.Previous() == nullptr, "an anchor whose constants gave no camera keeps none");
+  keeper.OnAnchor(&a, none);
+  keeper.BeginFrame(111);
+  Check(keeper.Previous() == nullptr, "a frame with no main view keeps none");
+  // the frame count wraps nothing in practice, but a repeated serial is not a "next" frame
+  keeper.OnAnchor(&a, play);
+  keeper.BeginFrame(111);
+  Check(keeper.Previous() == nullptr, "the same frame again is not the next frame");
+}
+
+// ---------------------------------------------------------------------------
 // what a writer's constants block holds
 // ---------------------------------------------------------------------------
 void ModeChecks() {
@@ -957,6 +1055,7 @@ int main(int argc, char** argv) {
   MsaaChecks();
   AttachChecks();
   ViewMaskChecks();
+  PauseAndCameraChecks();
   ModeChecks();
   CameraChecks();
   const std::string text = ReadFile(hlsli);

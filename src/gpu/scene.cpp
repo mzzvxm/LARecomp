@@ -1309,6 +1309,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (car_rt_) {
       car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
     }
+    if (gbuffer_ && gbuffer_->tracking()) {
+      gbuffer_->OnAnchor(banks.ps.data());  // ... and the next frame's G-buffer writers have the camera for the derivative normal (with or without an upscaler)
+    }
   }
 
   if (!list) {
@@ -2420,6 +2423,9 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       static_assert(sizeof(gbuffer::GBufferConstants) == sp::chain::Find(sp::kFeatureGBuffer)->constants_bytes);
       gbuffer::GBufferConstants block;
       const bool camera = FillGBufferCamera(&block, d);
+      if (gbuffer_) {
+        gbuffer_->NoteCameraRows(camera);
+      }
       const bool two_sided = (d.key.raster & 0xFu) == uint32_t(plume::RenderCullMode::NONE);
       block.mode = gbuffer::ModeBits(gbuffer_ ? gbuffer_->plan().written : gbuffer::PlaneBit(gbuffer::kPlaneNormal), camera, two_sided);
       block.material = gbuffer::DefaultMaterialWord();
@@ -2584,22 +2590,19 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
 }
 
 bool Scene::FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDraw& d) const {
-  // The camera of the frame before (the anchor's constants, temporal_camera.h) when this frame follows it directly: the view ray and the rotation the derivative normal reads
-  // (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at most, a camera cut shows for one frame (the temporal system
-  // starts again at a cut: no previous camera then).
-  // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal (no family reads it yet).
-  const temporal::Camera* camera = temporal_ && temporal_->active() ? temporal_->previous_camera() : nullptr;
-  if (!camera || camera->width == 0 || camera->height == 0 || !(camera->fov_y > 0.0) || !(camera->aspect > 0.0)) {
+  // The camera of the frame before (the anchor's constants, read by the G-buffer itself: GBuffer::OnAnchor, with or without a temporal upscaler) when this frame follows it
+  // directly: the view ray and the rotation the derivative normal reads (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at
+  // most, a camera cut shows for one frame.
+  // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal.
+  const gbuffer::CameraAxes* camera = gbuffer_ ? gbuffer_->camera() : nullptr;
+  if (!camera || camera->width == 0 || camera->height == 0) {
     return false;
   }
-  const double tan_y = std::tan(camera->fov_y * 0.5);
-  const double tan_x = tan_y * camera->aspect;
   // SV_Position is in the host pixels of the target: the guest's frame at the draw's scale.
   const float width = float(d.scale.Edge(camera->width));
   const float height = float(d.scale.Edge(camera->height));
-  const auto axis = [](const double v[3]) { return gbuffer::Vec3{float(v[0]), float(v[1]), float(v[2])}; };
   // The axes are the rows of the game's view inverse; whether they are a rotation of the view space the shaders assume depends on the world's handedness (MakeCameraRows).
-  return gbuffer::MakeCameraRows(axis(camera->right), axis(camera->up), axis(camera->forward), float(tan_x), float(tan_y), width, height, block->view_ray, block->camera_to_world);
+  return gbuffer::MakeCameraRows(camera->right, camera->up, camera->forward, camera->tan_half_x, camera->tan_half_y, width, height, block->view_ray, block->camera_to_world);
 }
 
 ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {

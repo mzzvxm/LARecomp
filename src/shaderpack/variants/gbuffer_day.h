@@ -47,9 +47,12 @@
 //   2. BuiltInVariants() (variant_pack.cpp) adds MakeGBufferVsVariant() (stamp lines variants_gbuffer_vs_*).
 //   3. Scene::GBufferKey pairs the vertex word per draw, after the pixel word was chosen (the vertex word is the renderer's to pair: no pixel word needs it, see above): when the draw's pixel
 //      word has the G-buffer's stage and its vertex shader has the word of feature kFeatureGBufferVs at the vertex shader's own spec variant, the key's vs_variant is that word.
-//   4. Scene::FillVariantBlock fills GBufferConstants::view_ray and camera_to_world from Scene::FillGBufferCamera (the temporal system's previous camera: MakeCameraRows). CHECK: the camera
-//      rows exist only while the temporal system is active (an upscaler runs); without them the derivative shaders (store interiors, the traffic signals, the skinned foliage's fallback) write
-//      "no data" (zeros make the normal NaN, which GbRt1Encode writes as 0). The mode bit kModeDerivativeNormal is not read by this stage (each shader's source is fixed by its name).
+//   4. Scene::FillVariantBlock fills GBufferConstants::view_ray and camera_to_world from Scene::FillGBufferCamera (MakeCameraRows). The camera is the previous frame's, which the G-buffer
+//      reads itself at every anchor of a frame it tracks (GBuffer::OnAnchor, gbuffer_rules.h CameraKeeper), so it exists with or without a temporal upscaler (the first phase-1 run had
+//      it only with one: the derivative shaders - store interiors, the traffic signals, the skinned foliage's fallback - wrote "no data" without). A frame that has none (the first,
+//      one after a cutscene's or the pause world's) writes "no data" on those shaders (zeros make the normal NaN, which GbRt1Encode writes as 0). CHECK: that the anchor's c12-c14 rows
+//      are the view inverse's right, up and backward as temporal::ExtractCamera takes them (the unit test cannot: the interval line "views and camera" counts the frames that had it).
+//      The mode bit kModeDerivativeNormal is not read by this stage (each shader's source is fixed by its name).
 // ===========================================================================
 
 #include <cstdint>
