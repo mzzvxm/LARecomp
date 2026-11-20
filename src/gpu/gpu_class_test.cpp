@@ -87,6 +87,8 @@ const Row kTable[] = {
     // high about 1 ms; nothing on shared memory).
     {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)",
      "AUTO (ULTRA)"},
+    // The headlights have one level, `on`: the integrated class (Low) has none.
+    {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -167,6 +169,16 @@ void CheckWords() {
   for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
     const std::string cell(Cell(Effect::kCarSelfRefl, c));
     Check(cell == "off" || cell == "on", "car self-reflections on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off or on");
+    const std::string headlights(Cell(Effect::kHeadlights, c));
+    Check(headlights == "off" || headlights == "on", "headlights on " + std::string(ClassName(c)) + ": the cell '" + headlights + "' is off or on");
+  }
+  // The headlights: on for Mid and High, off for Low (the integrated GPU), and a player's own off or on is kept in every class.
+  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kLow)), "off", "headlights: off on Low");
+  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kMid)), "on", "headlights: on on Mid");
+  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kHigh)), "on", "headlights: on on High");
+  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    CheckEq(ResolveFor(c, Effect::kHeadlights, "on"), "on", "headlights: the saved on is kept");
+    CheckEq(ResolveFor(c, Effect::kHeadlights, "off"), "off", "headlights: the saved off is kept");
   }
   // No label of an `auto` says low, in any class.
   for (int i = 0; i < kEffectCount; ++i) {

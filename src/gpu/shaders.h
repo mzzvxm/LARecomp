@@ -125,6 +125,11 @@ class ShaderStore {
   static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::kVariantUiSharp;
   // ... and the same text compiled with the alpha test (the main pack's spec variant 1), for the UI draws whose key is that one.
   static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::kVariantUiSharpAlphaTest;
+  // The city's lit pixel shaders (the PSMultiLight family and the traffic cars' body) with the cars' headlights as one more term of their light sum
+  // (shaderpack/variants/headlight.h; headlight_rig.h): chosen by pipelines.cpp while the rig has a light; 672 bytes of constants follow the shared block.
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1.
+  static constexpr uint32_t kHeadlightVariant = larecomp::shaderpack::kVariantHeadlight;
+  static constexpr uint32_t kHeadlightAlphaVariant = larecomp::shaderpack::kVariantHeadlightAlphaTest;
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

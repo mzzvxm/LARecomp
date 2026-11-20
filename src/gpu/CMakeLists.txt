@@ -48,6 +48,7 @@ add_library(larecomp_gpu OBJECT
     hdr.cpp
     hdr_scene.cpp
     hdr_tonemap.cpp
+    headlight_rig.cpp
     input_layout.cpp
     latency.cpp
     latency_streamline.cpp
@@ -211,6 +212,10 @@ add_executable(larecomp_car_chrome_rules_test EXCLUDE_FROM_ALL car_chrome_rules_
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
 add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test.cpp)
+# The headlight rig's rules (headlight_rig_rules.h: the CPU twin of the lit shaders' headlight term, the night factor, where a car's headlights are, the
+# tracker's picks and fades, the shadow views' table, the constants block) likewise:
+#   cmake --build <dir> --target larecomp_headlight_rig_test, then run src/gpu/larecomp_headlight_rig_test (exit 0 = passed).
+add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).

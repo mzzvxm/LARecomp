@@ -106,6 +106,7 @@ add_library(larecomp_shaderpack STATIC
     variants/car_chrome.cpp
     variants/luminance_scale.cpp
     variants/ui_sharp.cpp
+    variants/headlight.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -223,6 +224,13 @@ add_executable(larecomp_ui_sharp_variant_test EXCLUDE_FROM_ALL
     variants/ui_sharp.cpp)
 target_compile_features(larecomp_ui_sharp_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_ui_sharp_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The headlight variant's text transform (variants/headlight_test.cpp; the pixel shaders of the city's lit family): cmake --build <dir> --target
+# larecomp_headlight_variant_test, then run it [<folder of translated HLSL> [<folder for the transformed texts>]] (exit 0 = passed).
+add_executable(larecomp_headlight_variant_test EXCLUDE_FROM_ALL
+    variants/headlight_test.cpp
+    variants/headlight.cpp)
+target_compile_features(larecomp_headlight_variant_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_headlight_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).

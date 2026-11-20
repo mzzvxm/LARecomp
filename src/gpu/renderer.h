@@ -56,6 +56,7 @@
 #include "capture_readback.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "headlight_rig.h"
 #include "car_rt_scene.h"
 #include "car_rt_refl.h"
 #include "car_selfrefl.h"
@@ -289,6 +290,7 @@ class Renderer final : public RenderThread::Executor {
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
+  HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)

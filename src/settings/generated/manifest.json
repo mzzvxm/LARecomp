@@ -1328,6 +1328,76 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlights": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). \"\n    \"Your car, the nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a \"\n    \"time, from dusk to dawn. on is the one level; off leaves the night as the game has it. auto (the default) is on for \"\n    \"a discrete graphics card and off for an integrated one (a handheld, or the iGPU of a desktop CPU). Costs the \"\n    \"graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the \"\n    \"graphics card builds the lit shaders' variants (a short stutter).\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_range": {
+  "type": "f64",
+  "default": "70.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how far a headlight reaches, in metres (the light falls to nothing there). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{10.0, 200.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_cone": {
+  "type": "f64",
+  "default": "38.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the headlight cone's outer half angle in degrees (the full light is inside a third of it). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{10.0, 70.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_night": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: when the headlights are on. -1: from the game's own lights (each car's headlight points say whether \"\n    \"they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below \"\n    \"3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_log": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the \"\n    \"night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the \"\n    \"draws that took the variant. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_low_latency": {
   "type": "std::string",
   "default": "\"auto\"",

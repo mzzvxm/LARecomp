@@ -24,6 +24,7 @@
 #include "ao.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "headlight_rig.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
@@ -851,6 +852,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_frame_) {
     car_frame_->BeginFrame();
   }
+  if (headlights_) {
+    headlights_->BeginFrame();
+  }
   if (car_shadow_) {
     car_shadow_->BeginFrame();
   }
@@ -1309,7 +1313,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.prepared;
       if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
           (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
-          (car_frame_ && car_frame_->wants_draws())) {
+          (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws())) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
@@ -1621,6 +1625,17 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
     d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
+    if (!d.pipeline && pending &&
+        (d.key.ps_variant == ShaderStore::kHeadlightVariant || d.key.ps_variant == ShaderStore::kHeadlightAlphaVariant)) {
+      // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on): this draw is the game's own
+      // shader meanwhile, with no headlight, instead of being left out of the frame; the key stays asked for and the next frame that has it takes it.
+      d.key.ps_variant = d.key.ps_variant == ShaderStore::kHeadlightAlphaVariant ? 1u : 0u;
+      pending = false;
+      if (headlights_) {
+        headlights_->NoteFallbackDraw();
+      }
+      d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
+    }
     if (d.pipeline) {
       pipeline_memo_key_ = d.key;
       pipeline_memo_ = d.pipeline;
@@ -1726,6 +1741,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // constants.
   if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
       !UploadCarSelfReflConstants(shared, d)) {
+    return Skip::kUpload;
+  }
+  // The headlight variant (and its alpha test twin) reads 672 bytes after them: the frame's lights.
+  if ((d.key.ps_variant == ShaderStore::kHeadlightVariant || d.key.ps_variant == ShaderStore::kHeadlightAlphaVariant) &&
+      !UploadHeadlightConstants(banks, shared, d)) {
     return Skip::kUpload;
   }
   // The UI sharpening variant reads 16 bytes after the shared constants.
@@ -1950,6 +1970,16 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.stencil_ids = draw.stencil_ids;
     frame.cache = geometry_;
     car_frame_->OnMainDraw(frame);
+  }
+  if (headlights_ && headlights_->wants_draws()) {
+    HeadlightRig::MainDraw lens;
+    lens.view = &view;
+    lens.banks = &banks;
+    lens.state = &d.state;
+    lens.vs = d.vs;
+    lens.primitive = d.primitive;
+    lens.stencil_ids = draw.stencil_ids;
+    headlights_->OnMainDraw(lens);
   }
 }
 
@@ -2288,6 +2318,38 @@ bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedD
   last_shadow_span_ = span;
   ++window_.shared_uploads;
   window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
+  d.shared_constants = span;
+  return true;
+}
+
+bool Scene::UploadHeadlightConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kHeadlightConstantsOffset == sizeof(SharedConstants));
+  if (!headlights_) {
+    return false;
+  }
+  headlight_rules::HeadlightConstants block = headlights_->Block();
+  // The camera as this draw's own pixel constants say: c15 is row 3 of the view inverse (the position). A pass with another camera (a reflection map) is lit
+  // right too; a bank that holds no number keeps the frame's.
+  const uint8_t* ps_bank = banks.ps.data();
+  float camera[3];
+  bool finite = true;
+  for (uint32_t c = 0; c < 3; ++c) {
+    camera[c] = std::bit_cast<float>(LoadBe32(ps_bank + 15 * 16 + c * 4));
+    finite = finite && std::isfinite(camera[c]);
+  }
+  if (finite) {
+    std::memcpy(block.camera, camera, sizeof(camera));
+  }
+  const UploadSpan span = upload_->Allocate(
+      slot_, kHeadlightConstantsOffset + sizeof(headlight_rules::HeadlightConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kHeadlightConstantsOffset, &block, sizeof(block));
+  ++window_.shared_uploads;
+  window_.upload_bytes += kHeadlightConstantsOffset + sizeof(block);
+  headlights_->NoteVariantDraw(d.key.ps_variant == ShaderStore::kHeadlightAlphaVariant);
   d.shared_constants = span;
   return true;
 }
@@ -3455,6 +3517,9 @@ void Scene::OnPresent() {
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (headlights_) {
+    headlights_->OnPresent();  // the headlights seen in this frame become the lights of the next
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
