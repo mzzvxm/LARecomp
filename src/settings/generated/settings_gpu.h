@@ -366,8 +366,45 @@ class GPUSettings final : public rex::SettingOwner {
     "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
     "and 8 or 32 MiB of video memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
+  REX_SETTING(bool, mcla_gpu_car_shadow_map_owns, true, "Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength "
+    "(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on "
+    "the world is the car shadow map's alone and has no second edge of the game's low-detail one. Off: the game draws the "
+    "car into them as it always does. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_car_shadow_map_view, 0, "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
+    "this draws the scene's opaque objects again from the lights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on "
+    "ultra), and the lights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the "
+    "default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game "
+    "view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video "
+    "memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_test, 0, "Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), "
+    "whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own "
+    "point of view shows the same scene as the main view, which tells the replay's matrices are right. Nothing reads such a map: no light is shadowed "
+    "by it. The setting itself must not be off. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_view, 0, "Diagnostic: 1 draws the headlight shadow atlas in a rectangle in the lower right corner of the picture (grey by distance from the "
+    "lamps, near bright; dark blue where nothing was drawn; the tiles are framed), while the maps are drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_skip, 0, "Diagnostic: draws left out of the headlight shadow maps, a sum of 1 plain opaque draws, 2 alpha tested ones (foliage, fences), 4 skinned ones "
+    "(people), 8 vehicles' parts. 0: none left out. For finding which kind a wrong shadow comes from. Live.", rex::kDebugOnly, rex::Range{0, 15});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_cull, 0, "Diagnostic: which faces the headlight shadow maps draw. 0: the faces turned from the light (front faces culled where the game culls back "
+    "faces; the default), 1: both faces, 2: the game's own. A pipeline is made for each, so a change takes a moment to build. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_views, 0, "Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's "
+    "own (1 on high, 2 on ultra). A change remakes the atlas. Live.", rex::kDebugOnly, rex::Range{0, 4});
+
+  REX_SETTING(f64, mcla_gpu_headlight_shadow_bias, 1.0, "Diagnostic: a factor on the depth bias the headlight shadows' lookup subtracts from a surface's distance from the lamps before it "
+    "compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. "
+    "Live.", rex::kDebugOnly, rex::Range{0.05, 40.0});
+
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_cone, 1, "Diagnostic: 1 (the default) leaves out of each headlight shadow map the draws whose place is outside the lamps' view (the view's cone and "
+    "reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws "
+    "every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
@@ -691,6 +728,28 @@ class GPUSettings final : public rex::SettingOwner {
     "is highlighted and never saves it; set on the command line it stays on for the run. Changes at "
     "once.");
 
+  REX_SETTING(std::string, mcla_gpu_headlights, "auto", "Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). "
+    "Your car, the nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a "
+    "time, from dusk to dawn. on is the one level; off leaves the night as the game has it. auto (the default) is on for "
+    "a discrete graphics card and off for an integrated one (a handheld, or the iGPU of a desktop CPU). Costs the "
+    "graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the "
+    "graphics card builds the lit shaders' variants (a short stutter).", rex::Allowed("auto", "off", "on"));
+
+  REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
+    "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
+  REX_SETTING(f64, mcla_gpu_headlight_range, 70.0, "Diagnostic: how far a headlight reaches, in metres (the light falls to nothing there). Live.", rex::kDebugOnly, rex::Range{10.0, 200.0});
+
+  REX_SETTING(f64, mcla_gpu_headlight_cone, 38.0, "Diagnostic: the headlight cone's outer half angle in degrees (the full light is inside a third of it). Live.", rex::kDebugOnly, rex::Range{10.0, 70.0});
+
+  REX_SETTING(i32, mcla_gpu_headlight_night, -1, "Diagnostic: when the headlights are on. -1: from the game's own lights (each car's headlight points say whether "
+    "they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below "
+    "3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.", rex::kDebugOnly, rex::Range{-1, 1});
+
+  REX_SETTING(bool, mcla_gpu_headlight_log, false, "Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the "
+    "night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the "
+    "draws that took the variant. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_lock_ahead_verify, false, "Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it "
     "waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the "
     "log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the "
@@ -894,19 +953,21 @@ class GPUSettings final : public rex::SettingOwner {
     "much as without the memo.", rex::kDebugOnly, rex::kRestart);
 
   REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
-    "pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a "
-    "smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
+    "pixel to pixel, a grainy edge), soft (more taps on a disk, a "
+    "smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
     "contact hardening: a shadow is sharp where it touches what casts it and softer with the distance "
     "from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) "
-    "picks by the graphics card: game on an integrated one, soft on the rest. The sun's shadows show from "
+    "picks by the graphics card: game on an integrated one, pcss on the rest. Your car's own shadow "
+    "(CAR SHADOW MAP) is filtered the same way. The sun's shadows show from "
     "8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss "
     "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
     "shows, the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
 
-  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, false, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own "
-    "sampler, which compares a depth blended from four texels (what the game's four taps do). On: "
-    "it compares the four texels one by one and blends the answers (a true percentage-closer tap); "
-    "the shadow edge is a little smoother and its bias a little different. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, true, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: "
+    "it compares the four texels one by one at the receiver's own slope and blends the answers (a true "
+    "percentage-closer tap): the shadow edge is smooth, without the grain of one compare of a blended depth. "
+    "Off: with the game's own sampler, which compares a depth blended from four texels (what the game's four "
+    "taps do): a grainy edge, as the game's. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_shadow_filter_radius, 1.0, "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter measured in "
     "texels of the shadow map (1: the edge of a shadow takes the same number of shadow map texels, so "
@@ -1385,7 +1446,16 @@ inline auto& mcla_gpu_car_selfrefl_test = g_gpu.mcla_gpu_car_selfrefl_test;
 inline auto& mcla_gpu_car_selfrefl_thickness = g_gpu.mcla_gpu_car_selfrefl_thickness;
 inline auto& mcla_gpu_car_selfrefl_view = g_gpu.mcla_gpu_car_selfrefl_view;
 inline auto& mcla_gpu_car_shadow_map = g_gpu.mcla_gpu_car_shadow_map;
+inline auto& mcla_gpu_car_shadow_map_owns = g_gpu.mcla_gpu_car_shadow_map_owns;
 inline auto& mcla_gpu_car_shadow_map_view = g_gpu.mcla_gpu_car_shadow_map_view;
+inline auto& mcla_gpu_light_shadows = g_gpu.mcla_gpu_light_shadows;
+inline auto& mcla_gpu_headlight_shadow_test = g_gpu.mcla_gpu_headlight_shadow_test;
+inline auto& mcla_gpu_headlight_shadow_view = g_gpu.mcla_gpu_headlight_shadow_view;
+inline auto& mcla_gpu_headlight_shadow_skip = g_gpu.mcla_gpu_headlight_shadow_skip;
+inline auto& mcla_gpu_headlight_shadow_cull = g_gpu.mcla_gpu_headlight_shadow_cull;
+inline auto& mcla_gpu_headlight_shadow_views = g_gpu.mcla_gpu_headlight_shadow_views;
+inline auto& mcla_gpu_headlight_shadow_bias = g_gpu.mcla_gpu_headlight_shadow_bias;
+inline auto& mcla_gpu_headlight_shadow_cone = g_gpu.mcla_gpu_headlight_shadow_cone;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;
@@ -1438,6 +1508,12 @@ inline auto& mcla_gpu_hdr_layers_view = g_gpu.mcla_gpu_hdr_layers_view;
 inline auto& mcla_gpu_hdr_paper_white_nits = g_gpu.mcla_gpu_hdr_paper_white_nits;
 inline auto& mcla_gpu_hdr_peak_nits = g_gpu.mcla_gpu_hdr_peak_nits;
 inline auto& mcla_gpu_hdr_test_pattern = g_gpu.mcla_gpu_hdr_test_pattern;
+inline auto& mcla_gpu_headlight_cone = g_gpu.mcla_gpu_headlight_cone;
+inline auto& mcla_gpu_headlight_log = g_gpu.mcla_gpu_headlight_log;
+inline auto& mcla_gpu_headlight_night = g_gpu.mcla_gpu_headlight_night;
+inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;
+inline auto& mcla_gpu_headlight_strength = g_gpu.mcla_gpu_headlight_strength;
+inline auto& mcla_gpu_headlights = g_gpu.mcla_gpu_headlights;
 inline auto& mcla_gpu_lock_ahead_verify = g_gpu.mcla_gpu_lock_ahead_verify;
 inline auto& mcla_gpu_lock_dump = g_gpu.mcla_gpu_lock_dump;
 inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;

@@ -24,6 +24,7 @@ add_library(larecomp_gpu OBJECT
     car_rt_ao.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
+    local_shadow.cpp
     car_rt_refl.cpp
     car_rt_opp_refl.cpp
     capture_readback.cpp
@@ -53,6 +54,7 @@ add_library(larecomp_gpu OBJECT
     hdr.cpp
     hdr_scene.cpp
     hdr_tonemap.cpp
+    headlight_rig.cpp
     input_layout.cpp
     latency.cpp
     latency_streamline.cpp
@@ -230,6 +232,10 @@ add_executable(larecomp_car_chrome_rt_rules_test EXCLUDE_FROM_ALL car_chrome_rt_
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
 add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test.cpp)
+# The headlight rig's rules (headlight_rig_rules.h: the CPU twin of the lit shaders' headlight term, the night factor, where a car's headlights are, the
+# tracker's picks and fades, the shadow views' table, the constants block) likewise:
+#   cmake --build <dir> --target larecomp_headlight_rig_test, then run src/gpu/larecomp_headlight_rig_test (exit 0 = passed).
+add_executable(larecomp_headlight_rig_test EXCLUDE_FROM_ALL headlight_rig_test.cpp)
 # The G-buffer's frozen interface (gbuffer_types.h, gbuffer_rules.h, light_set.h; it compiles hlsl/gbuffer_common.hlsli as C++ and compares it with the twin)
 # and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
 #   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
@@ -242,6 +248,10 @@ add_executable(larecomp_car_frame_rules_test EXCLUDE_FROM_ALL car_frame_rules_te
 # variants) likewise:
 #   cmake --build <dir> --target larecomp_car_shadow_map_rules_test, then run src/gpu/larecomp_car_shadow_map_rules_test (exit 0 = passed).
 add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_map_rules_test.cpp)
+# The headlight shadow maps' rules (local_shadow_rules.h: the setting, the atlas, the lights' groups and views, the matrices and the replay's c8-c11,
+# the camera out of a draw's bank, which draws are casters, the face culling and the pipeline key) likewise:
+#   cmake --build <dir> --target larecomp_local_shadow_rules_test, then run src/gpu/larecomp_local_shadow_rules_test (exit 0 = passed).
+add_executable(larecomp_local_shadow_rules_test EXCLUDE_FROM_ALL local_shadow_rules_test.cpp)
 # The player's car as ray tracing structures (car_rt_scene_rules.h: the instance transform and the camera's z, the masks, the mesh clean-up, the
 # range allocator, the eviction policy, the check pass's statistics; given the src/gpu folder it also checks that hlsl/car_rt_check_cs.hlsl and
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:
@@ -703,6 +713,8 @@ larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES 
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
 larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
+# The headlight shadow atlas's debug view (local_shadow.h): the atlas in a rectangle of the picture. The replay itself uses the game's own shaders.
+larecomp_gpu_host_shader(local_shadow_view_ps ps_6_0)
 # The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5; SPIR-V 1.5 on Vulkan) and
 # the pass that shows its picture over the scene.
 larecomp_gpu_host_shader_rt(car_rt_check_cs cs_6_5)

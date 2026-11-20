@@ -58,8 +58,8 @@ void CheckChoice() {
 }
 
 void CheckModes() {
-  // The table of GFX-UPGRADES-DESIGN.md section 9: auto is game / soft / soft.
-  const Mode auto_mode[] = {Mode::kGame, Mode::kSoft, Mode::kSoft};
+  // The table of GFX-UPGRADES-DESIGN.md section 9: auto is game / pcss / pcss (decided by the owner on 2026-11-19).
+  const Mode auto_mode[] = {Mode::kGame, Mode::kPcss, Mode::kPcss};
   for (int i = 0; i < 3; ++i) {
     const std::string at = std::string(" on ") + kClassNames[i];
     Check(shadow_filter::ModeFor(kClasses[i], Choice::kAuto) == auto_mode[i], "auto" + at);
@@ -74,9 +74,12 @@ void CheckModes() {
   Check(shadow_filter::ModeOfCell("game") == Mode::kGame && shadow_filter::ModeOfCell("soft") == Mode::kSoft &&
             shadow_filter::ModeOfCell("pcss") == Mode::kPcss,
         "a cell of the table");
-  // The table stays game / soft / soft until the pictures decide (proposal: pcss on High): a cell that said pcss
-  // would be the contact hardening on High and soft (no search) on Low whatever it said there.
-  Check(gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kHigh) == "soft", "the table's High cell is soft");
+  // The table is game / pcss / pcss (owner, 2026-11-19): the contact hardening on Mid and High, the game's own on Low (a cell that said pcss
+  // there would be soft, no search, whatever it said).
+  Check(gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kHigh) == "pcss" &&
+            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kMid) == "pcss" &&
+            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kLow) == "game",
+        "the table's cells are game on Low, pcss on Mid and High");
   // The mode that is selected as a variant: soft and pcss, not game (pipelines.cpp: one shader for both).
   Check(shadow_filter::Mode::kGame != shadow_filter::Mode::kSoft && shadow_filter::Mode::kSoft != shadow_filter::Mode::kPcss,
         "three modes");
@@ -107,6 +110,15 @@ void CheckConstants() {
   CheckNum(c.radius_scale, 1.0, "defaults: the game's radius");
   CheckNum(c.noise_frame, 0, "defaults: no upscaler: the frame is not used");
   CheckNum(c.mode, 0, "defaults: bilinear taps");
+
+  // The noise (the owner's "dithering", 2026-11-19): a per pixel turn of the disk is a grain on every edge unless a temporal
+  // upscaler's history averages it, so only a frame that has one gets the bit; without it the disk keeps its turn.
+  CheckNum(static_cast<uint32_t>(c.mode + 0.5f) & shadow_filter::kModeNoise, 0, "no upscaler: no noise bit (the disk is the same on every pixel)");
+  CheckNum(shadow_filter::kModeNoise, 4, "kModeNoise is 4 (the HLSL reads `& 4u`)");
+  c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77);
+  CheckNum(c.mode, shadow_filter::kModeNoise, "an upscaler: the noise bit");
+  c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, true, true, 77, true, 4.0);
+  CheckNum(c.mode, 1 + 2 + 4 + 64 * 256, "an upscaler with pcss and Gather taps: bits 0, 1 and 2 and 64 sixteenths");
 
   // A temporal upscaler: the frame number, wrapped at 1024 (exact in a float).
   c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77);
@@ -151,7 +163,7 @@ void CheckConstants() {
           shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, gather, false, 0, true, sun);
       const uint32_t word = static_cast<uint32_t>(k.mode + 0.5f);
       Check((word & 1u) == (gather ? 1u : 0u) && (word & 2u) == 2u && (word >> 8) == shadow_filter::SunBits(sun) &&
-                (word & 0xFCu) == 0,
+                (word & 0xF8u) == 0,
             "the mode word of pcss with sun " + std::to_string(sun) + " reads back as its bits");
     }
   }

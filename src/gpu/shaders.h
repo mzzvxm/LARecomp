@@ -141,6 +141,11 @@ class ShaderStore {
   // word's bit 0 set: kUiSharpAlphaVariant.
   static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureUiSharp);
   static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureUiSharp), 1);
+  // The city's lit pixel shaders (the PSMultiLight family and the traffic cars' body) with the cars' headlights as one more term of their light sum
+  // (shaderpack/variants/headlight.h; headlight_rig.h): chosen by pipelines.cpp while the rig has a light; 672 bytes of constants follow the shared block.
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0).
+  static constexpr uint32_t kHeadlightVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureHeadlight);
+  static constexpr uint32_t kHeadlightAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), 1);
   // The game's lit pixel shaders that also write the G-buffer's planes into the sidecar targets of the main view (shaderpack/variants/gbuffer.h; gbuffer.h of this
   // folder): chosen by Scene::GBufferKey, never by pipelines.cpp WantedFeatures; 48 bytes of constants follow the shared block (gbuffer_types.h GBufferConstants).
   // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0). On a shader that has the headlight's stage too the

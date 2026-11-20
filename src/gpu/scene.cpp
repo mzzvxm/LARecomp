@@ -24,6 +24,8 @@
 #include "ao.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "headlight_rig.h"
+#include "local_shadow.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
@@ -856,8 +858,14 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_frame_) {
     car_frame_->BeginFrame();
   }
+  if (headlights_) {
+    headlights_->BeginFrame();
+  }
   if (car_shadow_) {
     car_shadow_->BeginFrame();
+  }
+  if (local_shadow_) {
+    local_shadow_->BeginFrame();
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -1295,6 +1303,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (car_shadow_) {
       car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
     }
+    if (local_shadow_) {
+      local_shadow_->OnAnchor();  // ... nor the headlight shadow maps'
+    }
     if (car_rt_) {
       car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
     }
@@ -1316,8 +1327,11 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.prepared;
       if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
           (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
-          (car_frame_ && car_frame_->wants_draws())) {
+          (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws())) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
+      }
+      if (local_shadow_ && local_shadow_->wants_draws()) {
+        NoteLocalShadow(banks, last_shared_, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1617,7 +1631,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
-  const PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;
+  PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
@@ -1631,6 +1645,30 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
     d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
+    if (!d.pipeline && pending && larecomp::shaderpack::chain::HasFeature(pipeline_key.ps_variant, larecomp::shaderpack::kFeatureHeadlight)) {
+      // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on): this draw is the same shader without
+      // the headlight meanwhile (the other features of a composed word stay when the pack has that word: the G-buffer's, else the game's own shader), with no headlight,
+      // instead of being left out of the frame; the key stays asked for and the next frame that has it takes it. It is the pipeline's key that changes (the guest's
+      // d.key has no sidecar and no G-buffer word).
+      namespace chain = larecomp::shaderpack::chain;
+      uint32_t word = chain::Word(chain::FeaturesOf(pipeline_key.ps_variant) & ~chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), chain::SpecOf(pipeline_key.ps_variant));
+      if (chain::FeaturesOf(word) != 0 && !(d.ps && d.ps->HasWord(word))) {
+        word = chain::SpecOf(word);
+      }
+      if (d.gbuffer_attached && !chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer)) {
+        // The word that is left has no G-buffer stage (the pack has no word of the G-buffer alone for this shader): the draw goes without the sidecar, as a draw
+        // the G-buffer did not take, because a shader that writes no second output must not be recorded with one.
+        pipeline_key = d.key;
+        d.gbuffer_attached = false;
+        d.gbuffer_variant = 0;
+      }
+      pipeline_key.ps_variant = word;
+      pending = false;
+      if (headlights_) {
+        headlights_->NoteFallbackDraw();
+      }
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
+    }
     if (d.pipeline) {
       pipeline_memo_key_ = pipeline_key;
       pipeline_memo_ = d.pipeline;
@@ -1952,6 +1990,46 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.cache = geometry_;
     car_frame_->OnMainDraw(frame);
   }
+  if (headlights_ && headlights_->wants_draws()) {
+    HeadlightRig::MainDraw lens;
+    lens.view = &view;
+    lens.banks = &banks;
+    lens.state = &d.state;
+    lens.vs = d.vs;
+    lens.primitive = d.primitive;
+    lens.stencil_ids = draw.stencil_ids;
+    headlights_->OnMainDraw(lens);
+  }
+}
+
+void Scene::NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConstants& shared, const PreparedDraw& d) {
+  EdramKey color;
+  EdramKey depth;
+  const EdramKey* color0 = nullptr;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth0 = &depth;
+  }
+  LocalShadow::MainDraw draw;
+  draw.match = temporal::MatchMainView(color0, depth0);
+  if (!draw.match) {
+    return;
+  }
+  draw.key = &d.key;
+  draw.vs = d.vs;
+  draw.ps = d.ps;
+  draw.input_layout = d.input_layout;
+  draw.geometry = &d.geometry;
+  draw.banks = &banks;
+  draw.shared = &shared;  // the block Prepare uploaded for this draw: UploadConstants keeps it in last_shared_
+  draw.ps_constants = d.ps_constants;
+  draw.stencil_ids = temporal::StencilIdsWritten(d.state);
+  local_shadow_->OnMainDraw(draw);
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -2259,7 +2337,7 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   return true;
 }
 
-void Scene::FillVariantBlock(uint32_t feature, [[maybe_unused]] const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size) {
+void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size) {
   namespace sp = larecomp::shaderpack;
   switch (feature) {
     case sp::kFeatureShadowFilter: {
@@ -2294,6 +2372,30 @@ void Scene::FillVariantBlock(uint32_t feature, [[maybe_unused]] const ConstantBa
       static_assert(sizeof(ui_sharp::UiSharpConstants) == sp::chain::Find(sp::kFeatureUiSharp)->constants_bytes);
       const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength(), d.ui_sharp_slots);
       std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureHeadlight: {
+      // The frame's lights (headlight_rig.h). Without a rig the block is zeros: no light, count 0.
+      static_assert(sizeof(headlight_rules::HeadlightConstants) == sp::chain::Find(sp::kFeatureHeadlight)->constants_bytes);
+      if (!headlights_) {
+        std::memset(out, 0, size);
+        return;
+      }
+      headlight_rules::HeadlightConstants block = headlights_->Block();
+      // The camera as this draw's own pixel constants say: c15 is row 3 of the view inverse (the position). A pass with another camera (a reflection map) is lit
+      // right too; a bank that holds no number keeps the frame's.
+      const uint8_t* ps_bank = banks.ps.data();
+      float camera[3];
+      bool finite = true;
+      for (uint32_t c = 0; c < 3; ++c) {
+        camera[c] = std::bit_cast<float>(LoadBe32(ps_bank + 15 * 16 + c * 4));
+        finite = finite && std::isfinite(camera[c]);
+      }
+      if (finite) {
+        std::memcpy(block.camera, camera, sizeof(camera));
+      }
+      std::memcpy(out, &block, sizeof(block));
+      headlights_->NoteVariantDraw(sp::chain::SpecOf(d.key.ps_variant) != 0);
       return;
     }
     case sp::kFeatureGBuffer: {
@@ -3338,6 +3440,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //   2. the car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other
   //      cars. FIRST, before everything that traces: the occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own
   //      passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level;
+  //   2b. the headlight shadow maps (local_shadow.h): the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas
+  //      the lit draws of the next frame read (independent of the other steps: its own pass and target);
   //   3. the ambient occlusion, the bounce light and the contact shadows (ao.h): the depth chain, the ray traced pass (car_rt_ao.h), the
   //      visibility and the contact march, the apply onto the main colour;
   //   4. the sun shafts (shafts.h);
@@ -3346,6 +3450,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      the trace uses step 2's top level.
   if (car_rt_) {
     car_rt_->OnResolve(record, summary, list, slot_);
+  }
+  if (local_shadow_) {
+    // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
+    // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
+    local_shadow_->OnResolve(record, summary, list, slot_);
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
@@ -3426,6 +3535,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (local_shadow_) {
+    local_shadow_->OnComposite();
   }
   if (car_shadow_) {
     car_shadow_->OnComposite();
@@ -3560,6 +3672,11 @@ void Scene::OnPresent() {
   }
   edram_->SetScenePhase(true);  // the next frame's scene
   NoteMenuWorld();  // before the effects forget the frame
+  if (headlights_) {
+    // The world's sun as this frame's draws carried it (the occlusion's pick, read before its OnPresent forgets the frame): the headlights' night is the world's.
+    double to_sun[3];
+    headlights_->SetWorldSun(ao_ && ao_->SunDirection(to_sun) ? to_sun : nullptr);
+  }
   if (ao_) {
     ao_->OnPresent();
   }
@@ -3574,6 +3691,9 @@ void Scene::OnPresent() {
   }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
+  }
+  if (headlights_) {
+    headlights_->OnPresent();  // the headlights seen in this frame become the lights of the next
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts

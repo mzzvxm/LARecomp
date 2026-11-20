@@ -106,6 +106,7 @@ add_library(larecomp_shaderpack STATIC
     variants/car_chrome.cpp
     variants/luminance_scale.cpp
     variants/ui_sharp.cpp
+    variants/headlight.cpp
     variants/gbuffer.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
@@ -277,6 +278,13 @@ add_executable(larecomp_ui_sharp_variant_test EXCLUDE_FROM_ALL
     variants/ui_sharp.cpp)
 target_compile_features(larecomp_ui_sharp_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_ui_sharp_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The headlight variant's text transform (variants/headlight_test.cpp; the pixel shaders of the city's lit family): cmake --build <dir> --target
+# larecomp_headlight_variant_test, then run it [<folder of translated HLSL> [<folder for the transformed texts>]] (exit 0 = passed).
+add_executable(larecomp_headlight_variant_test EXCLUDE_FROM_ALL
+    variants/headlight_test.cpp
+    variants/headlight.cpp)
+target_compile_features(larecomp_headlight_variant_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_headlight_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The G-buffer variant's text transform (variants/gbuffer_test.cpp; xCityDefault's day and night shaders): cmake --build <dir> --target
 # larecomp_gbuffer_variant_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
 add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL

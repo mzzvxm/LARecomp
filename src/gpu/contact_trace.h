@@ -748,6 +748,36 @@ inline constexpr float kCarMapMaxTan = 8.0f;               // the plane's gradie
 inline constexpr float kCarMapEdgeTexels = 4.0f;
 inline constexpr float kCarMapEmpty = 0.9999f;             // a stored depth at or above this is "no part of the car here"
 
+// THE FILTER FOLLOWS THE WORLD'S (mcla_gpu_shadow_filter; owner, 2026-11-19: the car's shadow and the world's must match). The sun's cascades are
+// filtered by the setting (shadow_filter.h: game, soft, pcss) and the car's own map had a filter of its own, a ring of four taps turned by the pixel's
+// noise at the real sun's penumbra, which is crisp (a roof a metre up has an edge 4 mm wide) beside a world shadow that is soft. The map's
+// matrix texture carries the world's mode and sun size in its last component (kCarMapFilterCode: mode * 256 + the sun in sixteenths), and
+//   game  the filter above, to the bit
+//   soft  the soft filter's disk: kCarMapFilterTaps taps on a Vogel disk (golden angle, sqrt radius, the weight 1 - r^2 / 2: the same as
+//         src/shaderpack/variants/shadow_filter.cpp) of kCarMapSoftRadiusMetres, every tap a bilinear gather (a true PCF tap, smooth over a texel)
+//   pcss  the same disk at the penumbra's width: the mean blocker distance times the sun's tangent times the sun's size (4 times the real sun by default:
+//         mcla_gpu_shadow_filter_sun), at least kCarMapMinFilterTexels and at most kCarMapFilterMaxRadii soft radii (the world's cap)
+// both with a blocker search first (the centre and 8 taps over the disk's reach, which says "no shadow here" without the 16 taps), and the disk
+// turned by the pixel's noise only while a temporal upscaler runs (the push's frame number is not 0); otherwise it keeps its angle, as the world's does
+// (the noise is a grain that nothing averages: shadow_filter.h kModeNoise).
+inline constexpr uint32_t kCarMapFilterGame = 0;
+inline constexpr uint32_t kCarMapFilterSoft = 1;
+inline constexpr uint32_t kCarMapFilterPcss = 2;
+inline constexpr float kCarMapSoftRadiusMetres = 0.03f;    // the soft disk's radius: the nearest cascade's 4 texels at the high shadow detail, about 2.5 to 3.5 cm
+inline constexpr float kCarMapSunTan = 0.0047123890f;      // tan of the sun's angular radius, 0.27 degrees (the world's: shadow_filter.cpp kShadowFilterSunTan)
+inline constexpr float kCarMapFilterMaxRadii = 2.0f;
+inline constexpr int kCarMapFilterTaps = 16;
+inline constexpr int kCarMapSearchTaps = 8;
+inline constexpr float kCarMapFixedAngle = 2.399963f;      // the disk's angle without noise
+inline constexpr float kCarMapGoldenCos = -0.7373688780783197f;
+inline constexpr float kCarMapGoldenSin = 0.6754902942615238f;
+// The matrix texture's last component: an exact integer in a float.
+constexpr float CarMapFilterCode(uint32_t mode, uint32_t sun_sixteenths) {
+  return float(mode * 256u + (mode == kCarMapFilterPcss ? (sun_sixteenths > 255u ? 255u : sun_sixteenths) : 0u));
+}
+constexpr uint32_t CarMapFilterModeOf(float code) { return uint32_t(code + 0.5f) >> 8; }
+constexpr float CarMapFilterSunOf(float code) { return float(uint32_t(code + 0.5f) & 255u) * (1.0f / 16.0f); }
+
 // The map's blocker test at one texel: the receiver's depth at the texel (metres along the sun's ray, on the receiver's plane) is deeper than the
 // stored depth by more than the bias, and the texel holds a part of the car.
 inline float CarMapBiasMetres(float texel_m, float footprint) {
@@ -766,6 +796,9 @@ struct CarMapView {
   float to_map[3][4] = {};
   float texel_m = 0.0f;
   float depth_m = 0.0f;
+  uint32_t filter_mode = kCarMapFilterGame;  // kCarMapFilter*: the world's filter (the matrix texture's last component)
+  float sun_times = 4.0f;                    // pcss: the sun's size in times the real sun's
+  bool noise_turns = false;                  // the disk turns by the pixel's noise (a temporal upscaler runs)
   int size = 0;
   const float* texels = nullptr;  // size * size stored depths, rows downward (v down)
   float At(int tx, int ty) const {
@@ -864,6 +897,58 @@ inline CarMapResult CarMapShadow(const CarMapView& m, Vec3 pc, Vec3 normal, floa
         }
       }
     }
+  }
+  if (m.filter_mode != kCarMapFilterGame) {
+    // The world's filter (kCarMapFilterSoft / kCarMapFilterPcss): the centre above, then the search over the disk's reach and the disk itself.
+    const float soft = kCarMapSoftRadiusMetres / m.texel_m;  // texels
+    const float reach = m.filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
+    float dx = std::cos(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    float dy = std::sin(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    const auto turn = [&] {
+      const float nx = dx * kCarMapGoldenCos - dy * kCarMapGoldenSin;
+      const float ny = dx * kCarMapGoldenSin + dy * kCarMapGoldenCos;
+      dx = nx;
+      dy = ny;
+    };
+    for (int j = 0; j < kCarMapSearchTaps; ++j) {
+      const float at = (float(j) + 0.5f) / float(kCarMapSearchTaps);
+      const float r = std::sqrt(at) * reach;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          blocker_sum += q.over[k];
+          blocker_count += 1.0f;
+        }
+      }
+      turn();
+    }
+    if (blocker_count < 0.5f) {
+      return out;
+    }
+    float radius = soft;
+    if (m.filter_mode == kCarMapFilterPcss) {
+      radius = std::clamp(blocker_sum / blocker_count * kCarMapSunTan * m.sun_times / m.texel_m, kCarMapMinFilterTexels, reach);
+    }
+    float sum = 0.0f, weights = 0.0f;
+    for (int i = 0; i < kCarMapFilterTaps; ++i) {
+      const float at = (float(i) + 0.5f) / float(kCarMapFilterTaps);
+      const float weight = 1.0f - 0.5f * at;
+      const float r = std::sqrt(at) * radius;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      float tap = 0.0f;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          tap += q.weight[k];
+        }
+      }
+      sum += weight * tap;
+      weights += weight;
+      turn();
+    }
+    out.shadow = Saturate(sum / weights) * Saturate(edge / kCarMapEdgeTexels);
+    return out;
   }
   for (int t = 0; t < 4; ++t) {
     const CarMapQuad q = CarMapGather(m, cx + r0 * ox[t], cy + r0 * oy[t], cx, cy, receiver_m, grad_u, grad_v);
@@ -1471,5 +1556,78 @@ float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int 
   }
   return March(t, depth_at, x, y);
 }
+
+// ---------------------------------------------------------------------------
+// the contact factor per colour channel: a shadow takes the SUN's light away, in the sun's colour
+// ---------------------------------------------------------------------------
+// The scene colour is albedo * (ambient + sun * N.L * visibility) and a contact shadow (or the car's shadow map through the contact pass) takes the sun's
+// share of it away. The first version took the share of the LUMAS (ambient 0.114, sun 0.903 at noon) and multiplied all three channels by it: the
+// luma is right, the colour is not. The sunlit road is warm (a warm sun on a cool sky's ambient) and a grey multiplier keeps its hue: under the car at noon,
+// where the car's map owns the shadow and the game's cascade no longer shades it, the shadow came out darker and WARMER than the game's own shadow beside it
+// (measured on shdith1-shd-noon-x1, rear camera: the game's own shadow, the cascade holding the car, is (20.5, 24.8, 23.3) against a lit (105.5, 101.4, 79.6),
+// the factor 0.19, 0.25, 0.29 for red, green, blue; the car map's, (21.6, 20.4, 14.8), the same 0.20 for all three). A shadow removes the sun's share of EACH
+// channel: S_c * N.L * v / (A_c + S_c * N.L * v), and what stays is albedo * A_c, the sky's colour. The share of a grey light is the old number, bit for
+// bit (the check below), so a night, a cloudy hour or a grey frame is as before.
+//
+// The apply pass takes the two lights' colours as chroma = channel / luma, red and blue of each (green follows from the luma), 7 bits each in 1/32 (0 to
+// 3.97: a dusk sky is bluer than twice its luma): one dword in shape.w of the apply's push block (the apply took 0.5 * the fade's end there: the shader makes it itself now). The dword is read as a
+// float by the GPU, so its top three bits are fixed (0, 0, 1: the exponent is never 0 or 255, never a denormal, an infinity or a NaN a copy might change).
+inline constexpr float kChromaScale = 32.0f;
+inline constexpr uint32_t kChromaMaxByte = 127;
+inline constexpr uint32_t kChromaMarker = 0x20000000u;
+inline constexpr uint32_t kNeutralChroma = kChromaMarker | 32u | (32u << 7) | (32u << 14) | (32u << 21);  // chroma 1 in red and blue, both lights: grey
+inline constexpr float kLumaRed = 0.2126f;
+inline constexpr float kLumaGreen = 0.7152f;
+inline constexpr float kLumaBlue = 0.0722f;
+
+struct Rgb {
+  float r = 0.0f, g = 0.0f, b = 0.0f;
+};
+
+inline float LumaOf(const float c[3]) {
+  const auto usable = [](float x) { return std::isfinite(x) && x > 0.0f ? x : 0.0f; };
+  return kLumaRed * usable(c[0]) + kLumaGreen * usable(c[1]) + kLumaBlue * usable(c[2]);
+}
+
+// One chroma value: channel / luma in 1/32, clamped to 0..127; a light with no luma is grey (chroma 1).
+inline uint32_t ChromaByte(float channel, float luma) {
+  if (!(luma > 1e-6f) || !std::isfinite(channel)) {
+    return uint32_t(kChromaScale);
+  }
+  return uint32_t(std::clamp(std::lround(std::max(channel, 0.0f) / luma * kChromaScale), 0L, long(kChromaMaxByte)));
+}
+
+// The code: bits 0-6 the ambient's red chroma, 7-13 its blue, 14-20 the sun's red, 21-27 its blue; bits 28-31 are the marker (kChromaMarker).
+inline uint32_t PackChroma(const float ambient[3], const float sun[3]) {
+  const float la = LumaOf(ambient), ls = LumaOf(sun);
+  return kChromaMarker | ChromaByte(ambient[0], la) | (ChromaByte(ambient[2], la) << 7) | (ChromaByte(sun[0], ls) << 14) | (ChromaByte(sun[2], ls) << 21);
+}
+
+// A light's chroma (channel / luma for the three channels) from its red and blue bytes; the green follows from the luma weights.
+inline Rgb ChromaRgb(uint32_t red_byte, uint32_t blue_byte) {
+  const float r = float(red_byte) * (1.0f / kChromaScale);
+  const float b = float(blue_byte) * (1.0f / kChromaScale);
+  return {r, std::max((1.0f - kLumaRed * r - kLumaBlue * b) / kLumaGreen, 0.0f), b};
+}
+
+// The sun's share of the light in each channel: S_c * lit / (A_c + S_c * lit), lit = N.L times the sun's visibility. The lumas are the apply's
+// light.w (ambient) and extra.x (sun); a pixel with no light at all has no share.
+inline Rgb SunShareRgb(float ambient_luma, float sun_luma, uint32_t chroma_code, float lit) {
+  const Rgb a = ChromaRgb(chroma_code & 0x7Fu, (chroma_code >> 7) & 0x7Fu);
+  const Rgb s = ChromaRgb((chroma_code >> 14) & 0x7Fu, (chroma_code >> 21) & 0x7Fu);
+  const auto share = [&](float ac, float sc) {
+    const float amb = ambient_luma * ac, sunlit = sun_luma * sc * lit;
+    return (amb + sunlit) > 1e-6f ? sunlit / (amb + sunlit) : 0.0f;
+  };
+  return {share(a.r, s.r), share(a.g, s.g), share(a.b, s.b)};
+}
+
+// The apply pass's contact factor: 1 - weight * share * (1 - cs), per channel; weight = the setting's strength times the distance fade, cs the
+// contact visibility (1 open, 0 shadowed). With cs 0 and weight 1 what is left of the lit colour is albedo * ambient, in the ambient's colour.
+inline Rgb ContactFactorRgb(const Rgb& share, float weight, float cs) {
+  const float k = Saturate(weight) * (1.0f - Saturate(cs));
+  return {1.0f - Saturate(k * share.r), 1.0f - Saturate(k * share.g), 1.0f - Saturate(k * share.b)};
+}
+
 
 }  // namespace mcla::gpu::contact_trace

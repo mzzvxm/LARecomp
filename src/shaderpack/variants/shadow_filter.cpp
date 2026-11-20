@@ -38,10 +38,12 @@ constexpr std::string_view kQuarterConstant = "0x3E800000";
 // The helper and its constants, before main. g_ShadowFilter is declared by the two edits below it.
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant shadow_filter (src/shaderpack/variants/shadow_filter.cpp): the sun shadow lookup with N taps
 // on a Vogel disk instead of the game's four. g_ShadowFilter (16 bytes after the shared constants): x the number
-// of taps, y the radius scale (1: the game's radius), z the noise frame (0: a fixed pattern; a temporal upscaler
-// gets the frame number so that its history averages the pattern out), w the mode bits (1: Gather taps, a
-// bilinear weighted compare of four texels each, instead of the sampler's own bilinear depth; 2: contact
-// hardening, a blocker search first; bits 8 to 15: the sun's size for it, in sixteenths of the real sun's).
+// of taps, y the radius scale (1: the game's radius), z the noise frame (the R2 shift of a temporal upscaler's
+// frame number), w the mode bits (1: true PCF taps, each a bilinear weighted compare of four texels taken at the
+// receiver's own plane, instead of the sampler's own bilinear depth; 2: contact hardening, a blocker search first;
+// 4: the disk is turned per pixel by noise, which only a temporal upscaler's history can average out: without
+// the bit every pixel takes the same disk, so there is no grain; bits 8 to 15: the sun's size for the contact
+// hardening, in sixteenths of the real sun's).
 static const float kShadowFilterRadiusGain = 1.05;     // the weighted disk is as wide as the game's four taps
 static const float kShadowFilterGoldenCos = -0.7373688780783197;  // cos and sin of the golden angle, 137.5 degrees
 static const float kShadowFilterGoldenSin = 0.6754902942615238;
@@ -49,6 +51,8 @@ static const float kShadowFilterSunTan = 0.0047123890;  // tan of the sun's angu
 static const float kShadowFilterMinTexels = 0.75;       // contact hardening: the smallest kernel radius, in atlas texels
 static const float kShadowFilterMaxRadii = 2.0;         // and the largest, in radii of the soft filter (the search covers it)
 static const int kShadowFilterSearchTaps = 8;
+static const float kShadowFilterFixedAngle = 2.399963;  // the disk's turn without noise (a radian count that no tap row lines up with)
+static const float kShadowFilterMaxSlope = 8.0;         // the steepest receiver plane believed: 8 metres of depth per metre across
 
 // Interleaved gradient noise of a host pixel, plus the R2 shift of the frame (as the ambient occlusion's).
 float ShadowFilterNoise(float2 pixel, float frame)
@@ -58,18 +62,54 @@ float ShadowFilterNoise(float2 pixel, float frame)
 }
 
 // 1 where the shadow map's depth at uv is not nearer than the receiver's (lit), else 0: the game's own compare.
-float ShadowFilterLookup(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 uv, float depth, bool gather)
+// `depth` is the receiver's depth at uv. `slope` is the receiver plane's depth per uv along u and v (0: no plane, as
+// the game's own taps): the Gather taps compare each of their four texels with the plane's depth at that texel, so a
+// sloped receiver (the ground under a low sun) needs no extra bias to keep it from shadowing itself: the sampler's
+// blended depth is a plane too, and this is the same compare texel by texel.
+float ShadowFilterLookup(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 uv, float depth, bool gather,
+                         float2 slope)
 {
     if (gather)
     {
         Texture2D<float4> shadowMap = g_Texture2DDescriptorHeap[TFETCH_INDEX(resourceDescriptorIndex)];
-        float2 weight = frac(uv * float2(getTexture2DDimensions(shadowMap)) - 0.5);
-        float4 lit = shadowMap.GatherRed(g_SamplerDescriptorHeap[samplerDescriptorIndex], uv) >= depth;
-        // Gather returns (x, y, z, w) = the texels (0, 1), (1, 1), (1, 0), (0, 0) from the lower left one.
+        float2 dimensions = float2(getTexture2DDimensions(shadowMap));
+        float2 weight = frac(uv * dimensions - 0.5);
+        float4 stored = shadowMap.GatherRed(g_SamplerDescriptorHeap[samplerDescriptorIndex], uv);
+        // Gather returns (x, y, z, w) = the texels (0, 1), (1, 1), (1, 0), (0, 0) from the lower left one: their
+        // centres are (0, 1, 1, 0) - weight.x and (1, 1, 0, 0) - weight.y texels from the tap.
+        float2 perTexel = slope / dimensions;
+        float4 receiver = depth + perTexel.x * (float4(0.0, 1.0, 1.0, 0.0) - weight.x) +
+                          perTexel.y * (float4(1.0, 1.0, 0.0, 0.0) - weight.y);
+        float4 lit = stored >= receiver;
         return lerp(lerp(lit.w, lit.z, weight.x), lerp(lit.x, lit.y, weight.x), weight.y);
     }
     float lit = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex, uv, float2(0.0, 0.0), 0.0).x >= depth;
     return lit;
+}
+
+// The receiver's plane in the atlas: the depth's change per uv along u and along v, from how the pixel's own centre
+// and depth change over the screen (a pixel's neighbours in its 2 x 2 block: the receiver is one surface there, or
+// the pixels that straddle two give a wild number that the limit below holds down). The limit is the steepest
+// slope that is worth believing: a receiver at kShadowFilterMaxSlope times the depth per metre over the metres per
+// uv of the cascade (the light matrix's rows, as ShadowFilterPenumbra reads them).
+float2 ShadowFilterPlane(float2 centre, float depth, int base)
+{
+    float2 uvX = ddx(centre);
+    float2 uvY = ddy(centre);
+    float2 depthXY = float2(ddx(depth), ddy(depth));
+    float determinant = uvX.x * uvY.y - uvX.y * uvY.x;
+    if (!(abs(determinant) > 1.0e-14))
+        return float2(0.0, 0.0);
+    float2 slope = float2(depthXY.x * uvY.y - uvX.y * depthXY.y, uvX.x * depthXY.y - uvY.x * depthXY.x) / determinant;
+    float4 row0 = gLightMatrixArr(0 + base);
+    float4 row1 = gLightMatrixArr(1 + base);
+    float4 row2 = gLightMatrixArr(2 + base);
+    float4 row3 = gLightMatrixArr(3 + base);
+    float2 uvPerMetre = max(float2(length(float3(row0.x, row1.x, row2.x)), length(float3(row0.y, row1.y, row2.y))),
+                            float2(1.0e-9, 1.0e-9));
+    float depthPerMetre = max(length(float3(row0.z, row1.z, row2.z)) * row3.w, 1.0e-9);
+    float2 limit = kShadowFilterMaxSlope * depthPerMetre / uvPerMetre;
+    return clamp(slope, -limit, limit);
 }
 
 // Contact hardening: the half widths, along the atlas's u and v, of the kernel that a receiver needs when the
@@ -112,9 +152,13 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     float radius = length(tap1 - tap3) * (1.0 / 1.5) * constants.y * kShadowFilterRadiusGain;
     int count = clamp(int(constants.x + 0.5), 4, 32);
     bool gather = (mode & 1u) != 0u;
-    float angle = 6.28318530718 * ShadowFilterNoise(pixel, constants.z);
+    // Noise turns the disk from pixel to pixel: a grain that a temporal upscaler's history averages out. Without one
+    // (plain MSAA, no upscaler) nothing would, so the disk keeps its turn and the edge has none.
+    float angle = (mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z) : kShadowFilterFixedAngle;
     float2 direction = float2(cos(angle), sin(angle));
     float2 kernel = float2(radius, radius);
+    // The true PCF taps (mode bit 1) read the shadow map at the receiver's plane; the blocker search does too.
+    float2 slope = gather ? ShadowFilterPlane(centre, depth, cascadeBase) : float2(0.0, 0.0);
     if ((mode & 2u) != 0u)
     {
         float maxRadius = kShadowFilterMaxRadii * radius;
@@ -124,9 +168,10 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         for (int j = 0; j < kShadowFilterSearchTaps; ++j)
         {
             float share = (float(j) + 0.5) / float(kShadowFilterSearchTaps);
+            float2 offset = direction * (sqrt(share) * maxRadius);
             float stored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
-                                       centre + direction * (sqrt(share) * maxRadius), float2(0.0, 0.0), 0.0).x;
-            if (stored < depth)
+                                       centre + offset, float2(0.0, 0.0), 0.0).x;
+            if (stored < depth + dot(slope, offset))
             {
                 blockerSum += stored;
                 blockers += 1;
@@ -149,8 +194,9 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     {
         float share = (float(i) + 0.5) / float(count);  // r^2: equal areas
         float weight = 1.0 - 0.5 * share;
-        sum += weight * ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex,
-                                           centre + direction * (sqrt(share) * kernel), depth, gather);
+        float2 offset = direction * (sqrt(share) * kernel);
+        sum += weight * ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex, centre + offset,
+                                           depth + dot(slope, offset), gather, slope);
         total += weight;
         direction = float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
                            direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
@@ -431,7 +477,8 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
       {"\tshadowTap1 = ", 1},          {"\tshadowTap2 = ", 1},
       {"\tshadowTap3 = ", 1},          {"\tshadowTap4 = ", 1},
       {"\tshadowDepth = ", 1},        {"shadowDepth, iPos.xy, a0);", 1},
-      {"gLightMatrixArr(0 + base)", 1}, {"float2 ShadowFilterPenumbra(", 1},
+      {"gLightMatrixArr(0 + base)", 2}, {"float2 ShadowFilterPenumbra(", 1},
+      {"float2 ShadowFilterPlane(", 1},
   };
   for (const auto& check : kChecks) {
     const size_t count = CountOccurrences(text, check.needle);

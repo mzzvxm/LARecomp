@@ -240,14 +240,14 @@ std::string PassTiming::TakeSummary() {
                         double(rest) / double(frames_) / 1e6);
     // The resolve memory's labels among them, which compares
     // between runs however small they get, the host post's (the scene's anti-aliasing, FSR1) and the
-    // occlusion's and the bounce light test's passes (ao.cpp: "ao ..." and "ssgi ...") and the car's ray tracing
-    // ("car rt build", "car rt refl", "car rt ao": a few tenths of a ms that the tests compare between runs).
+    // occlusion's and the bounce light test's passes (ao.cpp: "ao ..." and "ssgi ..."), the car's ray tracing
+    // ("car rt build", "car rt refl", "car rt ao": a few tenths of a ms that the tests compare between runs) and the headlight shadow maps' ("headlight shadows").
     std::string memory;
     for (size_t i = kReportedLabels; i < order.size(); ++i) {
       const std::string& name = names_[order[i]];
       if (name.starts_with("resolve memory") || name.starts_with("aa ") ||
           name.starts_with("fsr1 ") || name.starts_with("ao ") || name.starts_with("ssgi ") ||
-          name.starts_with("car rt")) {
+          name.starts_with("car rt") || name.starts_with("headlight shadow")) {
         memory += std::format("{}{} {:.3f} ms", memory.empty() ? "" : ", ", names_[order[i]],
                               double(label_ns_[order[i]]) / double(frames_) / 1e6);
       }

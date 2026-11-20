@@ -2660,6 +2660,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     push.lens[2] = plan.contact.fade_start;
     push.lens[3] = plan.contact.fade_end;
+    // shape.w of the apply is the lights' colours (hlsl/ao_apply_ps.hlsl SunShareRgb; the distance fade's start is half of extra.y): grey where the contact shadows are not planned.
+    push.shape[3] = std::bit_cast<float>((contact_applied && plan.contact.light_chroma != 0u) ? plan.contact.light_chroma : contact_trace::kNeutralChroma);
     push.shape[0] = plan.contact.mask_gain;
     push.extra[3] = plan.contact.strength;
     if (plan.gi.apply && gi_bounce) {
@@ -3044,6 +3046,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   c.fade_end = kContactFadeEnd;
   c.mask_gain = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_mask_gain.Get(), 0.5, 4.0));
   c.under_vehicle = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_vehicles.Get(), 0.0, 1.0));
+  c.light_chroma = contact_trace::PackChroma(ambient, sun);  // the shadow takes the sun's colour away, not a grey share of it (contact_trace.h)
   c.fast = larecomp::settings::mcla_gpu_contact_shadows_fast.Get();
   finish();
 }

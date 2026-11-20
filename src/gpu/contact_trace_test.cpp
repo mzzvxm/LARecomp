@@ -2605,6 +2605,111 @@ void ScoreCarMap(const Rig& rig, const RigImage& im, const CarMapRig& map, CarMa
   }, tally);
 }
 
+// THE FILTER FOLLOWS THE WORLD'S (contact_trace.h): on a straight edge of a flat blocker (the map's left half holds it at depth 0.5, the right half is empty)
+// the soft disk is a smooth ramp of the world's width, the pcss disk grows with the blocker's distance, neither turns without a temporal upscaler, and a
+// pixel far from every blocker costs the search alone. The map has 1 cm texels here (a soft radius of 3 texels).
+void CarMapWorldFilter() {
+  std::vector<float> texels(64 * 64, 1.0f);
+  for (int y = 0; y < 64; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      texels[size_t(y) * 64 + size_t(x)] = 0.5f;
+    }
+  }
+  CarMapView m;
+  m.size = 64;
+  m.texel_m = 0.01f;
+  m.depth_m = 1.0f;
+  m.texels = texels.data();
+  m.to_map[0][0] = 1.0f / (64.0f * 0.01f);
+  m.to_map[1][1] = -1.0f / (64.0f * 0.01f);
+  m.to_map[1][3] = 1.0f;
+  m.to_map[2][2] = 1.0f;
+  const float side = 0.64f;
+  const Vec3 n{0.0f, 0.0f, -1.0f};
+  // The edge is at u = 0.5 (x = 0.32 m). Walk the receiver across it in quarter texels; `depth` is the receiver's z, the blocker's is 0.5.
+  const auto ramp = [&](CarMapView view, float depth, float noise, std::vector<float>* out) {
+    out->clear();
+    for (int i = -32; i <= 32; ++i) {
+      const float x = 0.5f * side + float(i) * 0.0025f;  // quarter texels
+      out->push_back(CarMapShadow(view, {x, 0.5f * side, depth}, n, 0.0005f, noise).shadow);
+    }
+  };
+  const auto width = [&](const std::vector<float>& r) {  // the 10 to 90 percent width, in texels
+    int first = -1, last = -1;
+    for (size_t i = 0; i < r.size(); ++i) {
+      if (first < 0 && r[i] < 0.9f) first = int(i);
+      if (r[i] > 0.1f) last = int(i);
+    }
+    return first < 0 || last < first ? 0.0f : float(last - first) * 0.25f;
+  };
+  std::vector<float> a, b;
+  // soft: a smooth, monotonic ramp about 1.36 radii wide (3 texels each) at any blocker distance.
+  CarMapView soft = m;
+  soft.filter_mode = kCarMapFilterSoft;
+  ramp(soft, 0.6f, 0.37f, &a);
+  bool monotonic = true;
+  for (size_t i = 1; i < a.size(); ++i) {
+    monotonic = monotonic && a[i] <= a[i - 1] + 1e-4f;
+  }
+  Check(monotonic && a.front() > 0.97f && a.back() < 0.03f, Num("soft: a monotonic ramp from shadow to light across the edge (%.3f to %.3f)", double(a.front()), double(a.back())));
+  const float soft_width = width(a);
+  Check(soft_width > 2.5f && soft_width < 5.5f, Num("soft: the 10 to 90 percent width is about 1.4 radii of 3 texels: %.2f texels", double(soft_width)));
+  float steepest = 0.0f;
+  for (size_t i = 1; i < a.size(); ++i) {
+    steepest = std::max(steepest, a[i - 1] - a[i]);
+  }
+  Check(steepest < 0.12f, Num("soft: no step of the ramp over a quarter texel is bigger than 0.12 (16 gathers: %.3f)", double(steepest)));
+  ramp(soft, 0.95f, 0.37f, &b);
+  Check(std::fabs(width(b) - soft_width) < 0.6f, Num("soft: the width does not depend on the blocker's distance (%.2f against %.2f texels)", double(width(b)), double(soft_width)));
+  // Without a temporal upscaler the disk does not turn: the noise changes nothing. With one it does.
+  std::vector<float> c, d;
+  ramp(soft, 0.6f, 0.05f, &c);
+  ramp(soft, 0.6f, 0.83f, &d);
+  Check(c == d, "soft: no upscaler: the pixel's noise changes nothing (a fixed disk)");
+  CarMapView turning = soft;
+  turning.noise_turns = true;
+  ramp(turning, 0.6f, 0.05f, &c);
+  ramp(turning, 0.6f, 0.83f, &d);
+  float most = 0.0f;
+  for (size_t i = 0; i < c.size(); ++i) {
+    most = std::max(most, std::fabs(c[i] - d[i]));
+  }
+  Check(most > 0.01f, Num("soft: with a temporal upscaler the noise turns the disk (the ramps differ by %.3f)", double(most)));
+  // pcss: the penumbra grows with the blocker's distance (the sun 15 times the real one here, texels of 1 cm).
+  CarMapView pcss = m;
+  pcss.filter_mode = kCarMapFilterPcss;
+  pcss.sun_times = 15.0f;
+  ramp(pcss, 0.6f, 0.37f, &a);   // 10 cm behind the blocker
+  ramp(pcss, 0.95f, 0.37f, &b);  // 45 cm behind it
+  const float near_width = width(a), far_width = width(b);
+  Check(far_width > near_width + 1.0f && near_width < 2.5f,
+        Num("pcss: the penumbra grows with the blocker's distance: %.2f texels at 10 cm, %.2f at 45 cm", double(near_width), double(far_width)));
+  Check(far_width <= 1.4f * 2.0f * (kCarMapSoftRadiusMetres / m.texel_m) + 0.5f, "pcss: and never wider than twice the soft disk");
+  pcss.sun_times = 4.0f;
+  ramp(pcss, 0.95f, 0.37f, &c);
+  Check(width(c) < far_width, "pcss: a smaller sun gives a narrower penumbra");
+  // The cost: a pixel with no blocker in reach makes the centre's gather and the search's 8 (9), one at an edge 9 + 16.
+  std::vector<float> empty(64 * 64, 1.0f);
+  CarMapView none = soft;
+  none.texels = empty.data();
+  const CarMapResult nothing = CarMapShadow(none, {0.3f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(nothing.shadow == 0.0f && nothing.gathers == 1 + kCarMapSearchTaps, Num("soft: no blocker: the centre and the search alone (%.0f gathers)", double(nothing.gathers)));
+  const CarMapResult edge = CarMapShadow(soft, {0.5f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(edge.gathers == 1 + kCarMapSearchTaps + kCarMapFilterTaps && edge.shadow > 0.2f && edge.shadow < 0.8f,
+        Num("soft: at the edge: 9 gathers and the 16 taps (%.0f), a partial shadow %.2f", double(edge.gathers), double(edge.shadow)));
+  // `game` is the map's own filter, to the bit: a ring of five taps turned by the noise at the real sun's penumbra.
+  const CarMapResult game = CarMapShadow(m, {0.5f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(m.filter_mode == kCarMapFilterGame && game.gathers == 5 + 4, Num("game: the map's own ring (%.0f gathers)", double(game.gathers)));
+  // The matrix texture's last component.
+  Check(CarMapFilterModeOf(CarMapFilterCode(kCarMapFilterGame, 64)) == kCarMapFilterGame && CarMapFilterCode(kCarMapFilterSoft, 64) == 256.0f &&
+            CarMapFilterModeOf(CarMapFilterCode(kCarMapFilterPcss, 64)) == kCarMapFilterPcss && CarMapFilterSunOf(CarMapFilterCode(kCarMapFilterPcss, 64)) == 4.0f &&
+            CarMapFilterSunOf(CarMapFilterCode(kCarMapFilterPcss, 240)) == 15.0f && CarMapFilterCode(kCarMapFilterGame, 64) == 0.0f,
+        "the matrix texture's filter code: mode * 256 + the sun in sixteenths (pcss only), read back exactly");
+  Check(kCarMapSunTan == 0.0047123890f && std::fabs(kCarMapSunTan - std::tan(0.27 * 3.14159265358979323846 / 180.0)) < 1e-5 &&
+            kCarMapFilterTaps == 16 && kCarMapFilterMaxRadii == 2.0f,
+        "the car map's sun is the world's (tan 0.27 degrees), its disk 16 taps, its cap twice the soft radius");
+}
+
 void CarMapRules() {
   // The penumbra's half width is the blocker distance times the sun's angular radius, at least a texel's worth and at most kCarMapMaxFilterTexels.
   const float texel = 0.005f;
@@ -4065,6 +4170,7 @@ void ShaderConstantsMatch(const std::string& dir) {
       {&contact, "kLiftPixels", kLiftPixels},       {&contact, "kSunFacingLow", kSunFacingLow},
       {&contact, "kSunFacingHigh", kSunFacingHigh}, {&contact, "kFadeStartMax", kFadeStartMax},
       {&contact, "kNearZ", kNearZ},                 {&common, "kEdgeRangeSigma", kEdgeRangeSigma},
+      {&apply, "kChromaScale", kChromaScale},
       {&common, "kEdgeSpatialSigma", kEdgeSpatialSigma}, {&common, "kEdgePlanePixels", kEdgePlanePixels},
       {&common, "kEdgePlaneFloor", kEdgePlaneFloor},
       {&contact, "kUnderHeight", kUnderHeight},     {&contact, "kUnderStepHigh", kUnderStepHigh},
@@ -4132,6 +4238,26 @@ void ShaderConstantsMatch(const std::string& dir) {
             contact.find("return saturate(total * 0.2f) * saturate(edge / kCarMapEdgeTexels);") != std::string::npos &&
             contact.find("if (blocker_count < 0.5f) {") != std::string::npos,
         "the shader's blocker search and filter are the twin's (a ring at the search radius, the penumbra's half width, a ring an eighth turned, five taps)");
+  // The world's filter on the map (CarMapWorldFilter): the same numbers and the same loops as the twin's.
+  Check(contact.find("static const float kCarMapSoftRadiusMetres = 0.03f;") != std::string::npos && kCarMapSoftRadiusMetres == 0.03f &&
+            contact.find("static const float kCarMapSunTan = 0.0047123890f;") != std::string::npos && kCarMapSunTan == 0.0047123890f &&
+            contact.find("static const float kCarMapFilterMaxRadii = 2.0f;") != std::string::npos && kCarMapFilterMaxRadii == 2.0f &&
+            contact.find("static const int kCarMapFilterTaps = 16;") != std::string::npos && kCarMapFilterTaps == 16 &&
+            contact.find("static const int kCarMapSearchTaps = 8;") != std::string::npos && kCarMapSearchTaps == 8 &&
+            contact.find("static const float kCarMapFixedAngle = 2.399963f;") != std::string::npos && kCarMapFixedAngle == 2.399963f &&
+            contact.find("static const float kCarMapGoldenCos = -0.7373688780783197f;") != std::string::npos && kCarMapGoldenCos == -0.7373688780783197f &&
+            contact.find("static const float kCarMapGoldenSin = 0.6754902942615238f;") != std::string::npos && kCarMapGoldenSin == 0.6754902942615238f &&
+            contact.find("static const uint kCarMapFilterPcss = 2u;") != std::string::npos && kCarMapFilterPcss == 2u,
+        "the shader's world filter constants are the header's");
+  Check(contact.find("const uint filter_code = uint(info.w + 0.5f);") != std::string::npos &&
+            contact.find("const uint filter_mode = filter_code >> 8;") != std::string::npos &&
+            contact.find("const float sun_times = float(filter_code & 255u) * (1.0f / 16.0f);") != std::string::npos &&
+            contact.find("const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;") != std::string::npos &&
+            contact.find("sincos((g_push.slots2.y != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);") != std::string::npos &&
+            contact.find("radius = clamp(blocker_sum / blocker_count * kCarMapSunTan * sun_times / texel_m, kCarMapMinFilterTexels, reach);") != std::string::npos &&
+            contact.find("const float w = 1.0f - 0.5f * at;") != std::string::npos &&
+            contact.find("return saturate(sum / weights) * saturate(edge / kCarMapEdgeTexels);") != std::string::npos,
+        "the shader's world filter is the twin's (the matrix's last component, the reach, the turn only with a frame, the penumbra, the weights)");
   Check(contact.find("if (facing > kSunFacingLow) {") != std::string::npos &&
             contact.find("if (covered && AoIsVehicle(tc) && (flags & kCarMapKeepMarchFlag) == 0u) {") != std::string::npos &&
             contact.find("steps = 0u;") != std::string::npos && contact.find("shadow = max(shadow, car_shadow);") != std::string::npos &&
@@ -4212,9 +4338,134 @@ void ShaderConstantsMatch(const std::string& dir) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// THE CONTACT FACTOR PER COLOUR CHANNEL (contact_trace.h: a shadow takes the sun's light away, in the sun's colour)
+// ---------------------------------------------------------------------------
+
+// What the apply pass made of the contact factor before the fix: the share of the LUMAS, the same for all three channels.
+float OldLumaShare(float ambient_luma, float sun_luma, float lit) {
+  const float sunlit = sun_luma * lit;
+  return (ambient_luma + sunlit) > 1e-6f ? sunlit / (ambient_luma + sunlit) : 0.0f;
+}
+
+void ContactFactorPerChannel() {
+  struct Light {
+    const char* name;
+    float ambient[3];
+    float sun[3];
+  };
+  // The noon of the shdith1 runs: ambient luma 0.114 and sun luma 0.903 (PS c26 / c39); the colours are a cool sky's and a warm sun's, then the cases that must not move.
+  const Light lights[] = {
+      {"noon, cool ambient and warm sun", {0.080f, 0.112f, 0.160f}, {0.980f, 0.900f, 0.700f}},
+      {"dusk, orange sun, deep blue ambient", {0.050f, 0.090f, 0.200f}, {1.000f, 0.600f, 0.250f}},
+      {"overcast, near grey", {0.200f, 0.210f, 0.230f}, {0.520f, 0.520f, 0.540f}},
+      {"grey light", {0.114f, 0.114f, 0.114f}, {0.903f, 0.903f, 0.903f}},
+      {"night, dim and blue", {0.020f, 0.028f, 0.050f}, {0.040f, 0.044f, 0.070f}},
+  };
+  double worst_ambient_error = 0.0;     // the shadow's colour against albedo * ambient (relative, per channel)
+  double worst_grey_difference = 0.0;   // the grey light against the old luma share
+  double worst_old_error = 0.0;         // the OLD formula's: the bug, kept as a measured number
+  int code_ok = 0;
+  for (const Light& l : lights) {
+    const float la = LumaOf(l.ambient), ls = LumaOf(l.sun);
+    const uint32_t code = PackChroma(l.ambient, l.sun);
+    code_ok += ((code & 0xF0000000u) == kChromaMarker) ? 1 : 0;
+    // the float the GPU reads is never a denormal, an infinity or a NaN
+    const float as_float = std::bit_cast<float>(code);
+    Check(std::isnormal(as_float), Num("the code of the light is a normal float (%.3g)", double(as_float)) + std::string(" ") + l.name);
+    for (const float lit : {0.2f, 0.55f, 0.87f, 1.0f}) {
+      const Rgb share = SunShareRgb(la, ls, code, lit);
+      const float old_share = OldLumaShare(la, ls, lit);
+      // the pixel's lit colour is albedo * (A + S * lit) per channel; the shadow (cs 0, full weight) must leave albedo * A: the factor is A / (A + S * lit)
+      const float factor[3] = {1.0f - share.r, 1.0f - share.g, 1.0f - share.b};
+      for (int c = 0; c < 3; ++c) {
+        const float a = l.ambient[c], s_c = l.sun[c];
+        const float want = a / (a + s_c * lit);
+        worst_ambient_error = std::max(worst_ambient_error, double(std::fabs(factor[c] - want) / want));
+        const float old_factor = 1.0f - old_share;
+        worst_old_error = std::max(worst_old_error, double(std::fabs(old_factor - want) / want));
+      }
+      if (std::string(l.name) == "grey light") {
+        worst_grey_difference = std::max({worst_grey_difference, double(std::fabs(share.r - old_share)), double(std::fabs(share.g - old_share)), double(std::fabs(share.b - old_share))});
+      }
+    }
+  }
+  Check(code_ok == int(sizeof(lights) / sizeof(lights[0])), "every code carries the marker bits");
+  Check(worst_ambient_error < 0.03, Num("a full shadow leaves albedo * ambient in the ambient's own colour: worst relative error per channel %.4f (the codes are 7 bits)", worst_ambient_error));
+  Check(worst_grey_difference < 1e-6, Num("a grey light gives the old luma share, bit for bit: worst difference %.3g", worst_grey_difference));
+  Check(worst_old_error > 0.15, Num("the OLD luma share was wrong for the coloured lights (this is the bug: the shadow kept the sun's hue): worst relative error %.3f", worst_old_error));
+  std::printf("contact factor per channel: the full shadow's colour error %.4f (old luma share %.3f), grey light difference %.2g\n", worst_ambient_error, worst_old_error, worst_grey_difference);
+
+  // the noon numbers of the runs: the share of the blue channel is smaller than the red's (the sun is warm), so the shadow is bluer than the road
+  const float ambient[3] = {0.080f, 0.112f, 0.160f}, sun[3] = {0.980f, 0.900f, 0.700f};
+  const Rgb share = SunShareRgb(LumaOf(ambient), LumaOf(sun), PackChroma(ambient, sun), 0.87f);
+  Check(share.r > share.g && share.g > share.b, Num("noon: the sun's share falls from red to blue (%.3f, %.3f)", double(share.r), double(share.b)));
+  const Rgb full = ContactFactorRgb(share, 1.0f, 0.0f);
+  Check(full.b > full.r, Num("noon: a full contact shadow leaves more blue than red (%.3f against %.3f)", double(full.b), double(full.r)));
+  // the rest of the rules: open (cs 1) or no weight leaves the picture alone, the weight scales the removal, nothing goes negative or past 1
+  const Rgb open = ContactFactorRgb(share, 1.0f, 1.0f);
+  const Rgb weightless = ContactFactorRgb(share, 0.0f, 0.0f);
+  Check(open.r == 1.0f && open.g == 1.0f && open.b == 1.0f, "cs 1: factor 1 in every channel");
+  Check(weightless.r == 1.0f && weightless.g == 1.0f && weightless.b == 1.0f, "weight 0: factor 1 in every channel");
+  const Rgb half = ContactFactorRgb(share, 0.5f, 0.0f);
+  Check(std::fabs((1.0f - half.r) - 0.5f * (1.0f - full.r)) < 1e-6f, "the weight scales what is removed");
+  for (const float w : {-1.0f, 0.3f, 7.0f}) {
+    for (const float cs : {-0.5f, 0.0f, 0.4f, 1.0f, 3.0f}) {
+      const Rgb f = ContactFactorRgb(share, w, cs);
+      Check(f.r >= 0.0f && f.r <= 1.0f && f.g >= 0.0f && f.g <= 1.0f && f.b >= 0.0f && f.b <= 1.0f, "the factor stays in 0 to 1");
+    }
+  }
+  // a pixel the sun does not light (lit 0: the game's own shadow, a surface turned from the sun) has no share and no contact shadow
+  const Rgb none = SunShareRgb(0.114f, 0.903f, PackChroma(ambient, sun), 0.0f);
+  Check(none.r == 0.0f && none.g == 0.0f && none.b == 0.0f, "lit 0: no share");
+  // the neutral code is grey, and the chroma of a light with no luma is grey
+  const Rgb grey = SunShareRgb(0.114f, 0.903f, kNeutralChroma, 0.87f);
+  Check(std::fabs(grey.r - OldLumaShare(0.114f, 0.903f, 0.87f)) < 1e-6f && std::fabs(grey.b - grey.r) < 1e-6f, "the neutral code is the luma share in all channels");
+  const float black[3] = {0.0f, 0.0f, 0.0f};
+  Check(PackChroma(black, black) == kNeutralChroma, "a light with no luma packs as grey");
+  // the round trip: the chroma comes back within the quantisation (1/32, half of it at most) and the luma weights of the three channels still add up to 1
+  double worst_round = 0.0, worst_luma = 0.0;
+  for (const Light& l : lights) {
+    const float la = LumaOf(l.ambient);
+    const uint32_t code = PackChroma(l.ambient, l.sun);
+    const Rgb a = ChromaRgb(code & 0x7Fu, (code >> 7) & 0x7Fu);
+    worst_round = std::max({worst_round, double(std::fabs(a.r - l.ambient[0] / la)), double(std::fabs(a.b - l.ambient[2] / la))});
+    worst_luma = std::max(worst_luma, double(std::fabs(kLumaRed * a.r + kLumaGreen * a.g + kLumaBlue * a.b - 1.0f)));
+  }
+  Check(worst_round <= 0.5 / kChromaScale + 1e-4, Num("the chroma round trip is within half a step: worst %.4f", worst_round));
+  Check(worst_luma < 1e-5, Num("red, green (derived) and blue chroma keep the luma at 1: worst %.2g", worst_luma));
+}
+
+void ChromaShaderText(const std::string& dir) {
+  std::string apply;
+  if (!ReadFile(dir + "/ao_apply_ps.hlsl", &apply)) {
+    Check(false, "could not read ao_apply_ps.hlsl in " + dir);
+    return;
+  }
+  // the shader unpacks what the header packs: 7 bits at shifts 0, 7, 14, 21, scale 64, the fade's start made from extra.y, the picture taking the per channel factor
+  for (const char* text : {"0x7Fu", "(code >> 7) & 0x7Fu", "(code >> 14) & 0x7Fu", "(code >> 21) & 0x7Fu", "asuint(g_push.shape.w)", "smoothstep(0.5f * fade_end, fade_end, tc)",
+                           "contact_factor3 = 1.0f - saturate(", "return float4(factor3, 1.0f);", "factor3 + bounce"}) {
+    Check(apply.find(text) != std::string::npos, std::string("ao_apply_ps.hlsl has \"") + text + "\"");
+  }
+  Check(apply.find("g_push.shape.w, fade_end") == std::string::npos, "ao_apply_ps.hlsl no longer reads shape.w as the fade's start");
+  std::string host;
+  if (ReadFile(dir + "/../ao.cpp", &host)) {
+    Check(host.find("push.shape[3] = std::bit_cast<float>(") != std::string::npos && host.find("contact_trace::PackChroma(ambient, sun)") != std::string::npos,
+          "ao.cpp packs the lights' chroma into the apply's shape.w");
+  }
+}
+
 int main(int argc, char** argv) {
+  if (argc > 2 && std::string(argv[2]) == "chroma") {  // only the per channel contact factor and the shaders' text
+    ContactFactorPerChannel();
+    ChromaShaderText(argv[1]);
+    ShaderConstantsMatch(argv[1]);
+    std::printf("%d checks, %d failed\n", g_checks, g_failed);
+    return g_failed == 0 ? 0 : 1;
+  }
   if (argc > 2 && std::string(argv[2]) == "carmap") {  // only the car's shadow map checks (a second argument: quicker to run while working on them)
     CarMapRules();
+    CarMapWorldFilter();
     CarMapNoAcne();
     CarMapShadowsLandWhereGeometrySays();
     CarMapPenumbra();
@@ -4264,6 +4515,7 @@ int main(int argc, char** argv) {
   WingFromTheSide();
   SmallShadowsStay();
   CarMapRules();
+  CarMapWorldFilter();
   CarMapNoAcne();
   CarMapShadowsLandWhereGeometrySays();
   CarMapPenumbra();
@@ -4283,7 +4535,9 @@ int main(int argc, char** argv) {
   CarSunVisibilityOnTheLid();
   SkipWithACarSunImage();
   VehicleStippleIsFiltered();
+  ContactFactorPerChannel();
   if (argc > 1) {
+    ChromaShaderText(argv[1]);
     ShaderConstantsMatch(argv[1]);
   } else {
     std::printf("(no hlsl folder given: the shaders' constants were not compared)\n");
