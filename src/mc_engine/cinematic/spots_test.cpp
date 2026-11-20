@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "car_verbs.h"
 #include "scene.h"
 #include "spots.h"
 
@@ -315,6 +316,23 @@ void TestScene() {
     Check(CvarRefusal("mcla_dire").empty() && CvarRefusal("direct_mode").empty(), "names that only look like it are free");
 }
 
+// A car statement parsed on its own (a command of the Director, a test) has no table: the car parser says what a spot word is instead of "bad position".
+void TestCarVerbs() {
+    CarCommand cmd;
+    std::string why;
+    Check(ParseCarCommand(Words("p1 spawn vp_x at spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("is a spot word") != std::string::npos,
+          "a spot word in `at` that nobody resolved is named as one");
+    Check(ParseCarCommand(Words("p1 spawn vp_x at 1,2,3 heading spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("'spot:hw-lot' is a spot word") != std::string::npos,
+          "...and in `heading`");
+    Check(ParseCarCommand(Words("p1 ambient va_x at SPOT:a@1,2,3"), &cmd, &why) == CarParse::kError && why.find("is a spot word") != std::string::npos, "...in any case, for an ambient car too");
+    std::vector<std::string> w = Words("p1 spawn vp_x at spot:hw-street@-1.5,0,0 heading spot:hw-street");
+    const SpotTable t = SampleTable();
+    Check(ExpandSpotWords(&w, &t, &why) && ParseCarCommand(w, &cmd, &why) == CarParse::kOk, "expanded first, the same statement is a car statement");
+    CheckNum(cmd.heading, 62.0, "its heading is the spot's");
+    CheckNum(cmd.position[1], 16.5, "its height is the spot's");
+    CheckNum(std::hypot(cmd.position[0] - 832.19, cmd.position[2] + 787.53), 1.5, "and its place is 1.5 m from the spot, to its left", 1e-2);
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the file
 
 void TestParseSpots() {
@@ -476,6 +494,7 @@ int main(int argc, char** argv) {
     TestTable();
     TestExpand();
     TestScene();
+    TestCarVerbs();
     TestParseSpots();
     TestFiles();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);

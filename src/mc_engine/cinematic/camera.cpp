@@ -4,11 +4,17 @@
 
 #include "camera.h"
 
+#include "car_verbs.h"  // IsRoutePath: a flyby names its route the way a car's path does
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <memory>
 #include <system_error>
 #include <utility>
 
@@ -256,7 +262,7 @@ double DampedAngle::Update(double target, double dt, double smooth) {
 namespace {
 
 constexpr double kEps = 1e-9;
-constexpr const char* kCamWords = "pos, attach, orbit, yaw, pitch, look, roll, fov, near, far, follow, aimfollow, heading, ease or off";
+constexpr const char* kCamWords = "pos, attach, orbit, yaw, pitch, look, roll, fov, near, far, follow, aimfollow, heading, ease, rig or off";
 
 std::string Lower(std::string_view s) {
     std::string out(s);
@@ -310,10 +316,56 @@ bool ParseEase(std::string_view s, Ease* out) {
     return true;
 }
 
+// The route files of a scene's flybys: beside the scene file and in a `routes` folder beside it, a name with no extension also tries `.route`
+// (cars.cpp FindRouteFile, the rule of a car's `path`).
+class FileRouteSource : public RouteSource {
+  public:
+    explicit FileRouteSource(std::string dir) : dir_(std::move(dir)) {}
+
+    bool Load(const std::string& name, Route* out, std::string* error) override {
+        if (dir_.empty()) {
+            *error = "the scene's folder is not known, so route '" + name + "' cannot be looked for (the scene was parsed without ParseOptions::path)";
+            return false;
+        }
+        const auto from_utf8 = [](const std::string& s) { return std::filesystem::path(std::u8string(s.begin(), s.end())); };
+        const std::filesystem::path dir = from_utf8(dir_);
+        const std::filesystem::path rel = from_utf8(name);
+        std::vector<std::filesystem::path> candidates;
+        for (const std::filesystem::path& base : {dir, dir / "routes"}) {
+            candidates.push_back(base / rel);
+            if (!rel.has_extension()) candidates.push_back(base / from_utf8(name + ".route"));
+        }
+        std::error_code ec;
+        std::string tried;
+        for (const std::filesystem::path& c : candidates) {
+            if (!std::filesystem::is_regular_file(c, ec)) {
+                const std::u8string u = c.u8string();
+                tried += (tried.empty() ? "" : ", ") + std::string(u.begin(), u.end());
+                continue;
+            }
+            const uintmax_t size = std::filesystem::file_size(c, ec);
+            if (!ec && size > 4u * 1024 * 1024) {
+                *error = "the route file is " + std::to_string(size / 1024) + " KB: too big for a route";
+                return false;
+            }
+            std::ifstream in(c, std::ios::binary);
+            const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            return ParseRoute(text, out, error);
+        }
+        *error = "no route file '" + name + "' (looked for " + tried + ")";
+        return false;
+    }
+
+  private:
+    std::string dir_;
+};
+
 class Builder {
   public:
-    BuildResult Run(const Scene& scene) {
-        for (const Event& e : scene.events) {
+    Builder(const Scene& scene, RouteSource* routes) : scene_(scene), routes_(routes) {}
+
+    BuildResult Run() {
+        for (const Event& e : scene_.events) {
             if (e.track == Track::kCamera) Camera(e);
             else if (e.track == Track::kCut) Cut(e);
         }
@@ -330,9 +382,18 @@ class Builder {
         if (std::find(cars.begin(), cars.end(), id) == cars.end()) cars.push_back(id);
     }
 
-    // Reads the words of one `cam` statement.
+    // Reads one `cam` statement: a rig (the words are a shot in one line), or the keys it names.
     void Camera(const Event& e) {
-        const std::vector<std::string>& w = e.words;
+        if (!e.words.empty() && Lower(e.words[0]) == "rig") {
+            RigStatement(e);
+            return;
+        }
+        Keys(e, e.words, nullptr);
+    }
+
+    // Reads the words of one `cam` statement's keys (`w`: the statement's own words, or the ones a rig stands for). `flyby`: a position key a rig
+    // built (the words then hold the aim and the other channels).
+    void Keys(const Event& e, const std::vector<std::string>& w, const PosKey* flyby) {
         const int line = e.line;
         if (w.size() == 1 && Lower(w[0]) == "off") {
             if (on_) {
@@ -354,6 +415,11 @@ class Builder {
         Ease ease = Ease::kLinear;
         std::string pos_word;
         bool bad = false;
+        if (flyby) {
+            pk = *flyby;
+            has_pos = true;
+            pos_word = "rig flyby";
+        }
 
         const auto number = [&](size_t at, const char* word, double* v) {
             if (!w.empty() && at < w.size() && ParseNumber(w[at], v)) return true;
@@ -616,6 +682,458 @@ class Builder {
         r_.track.cuts.push_back(e.t);
     }
 
+    // ---------------------------------------------------------------------------------------------------------------- rigs
+
+    // A rig statement is read into the plain keys it stands for (the words of `attach`, `look`, ... that Keys reads), so every rule of those
+    // keys (ranges, the lag, the cuts, the cars it names) holds for a rig too. Only a flyby has a key of its own (a position along a route).
+    struct RigWord {
+        const char* word;
+        int arity;  // the number of words after it
+    };
+    static constexpr RigWord kChaseWords[] = {{"dist", 1}, {"height", 1}, {"side", 1}, {"lag", 1}, {"aim", 1}, {"ahead", 1}};
+    static constexpr RigWord kOrbitWords[] = {{"r", 1}, {"az", 1}, {"el", 1}, {"over", 1}, {"at", 3}, {"lag", 1}};
+    static constexpr RigWord kTripodWords[] = {{"at", 3}, {"aimlag", 1}};
+    static constexpr RigWord kFlybyWords[] = {{"path", 1}, {"speed", 1}, {"up", 1}, {"y", 1}, {"aimlag", 1}};
+    static constexpr RigWord kMountWords[] = {{"ahead", 1}, {"lag", 1}, {"shift", 3}};
+    static constexpr RigWord kCommonWords[] = {{"fov", 1}, {"roll", 1}, {"near", 1}, {"far", 1}, {"ease", 1}};  // handed on to the key
+    static constexpr RigWord kAimWords[] = {{"yaw", 1}, {"pitch", 1}};  // tripod and flyby: an aim by hand, handed on too
+    static constexpr const char* kRigKinds = "chase, orbit, tripod, flyby, hood, bumper or roof";
+
+    // The mounts of a car (x right, y up, z forward in the car's frame; the origin of a car is its middle at the ground, the scenes look at
+    // 0 1 0 for its roof). CHECK: the same offsets for every model; a per-model table needs the car's bounds (the Director's cars.list).
+    struct Mount {
+        const char* name;
+        Vec3 offset;
+        double aim_y;  // the height of the point the camera looks at, `ahead` in front of the car
+    };
+    static constexpr Mount kMounts[] = {
+        {"hood", {0.0, 1.2, 0.8}, 1.1},
+        {"bumper", {0.0, 0.45, 2.3}, 0.5},
+        {"roof", {0.0, 1.55, -0.1}, 1.1},
+    };
+
+    // What the words of a rig said.
+    struct RigArgs {
+        std::vector<std::pair<std::string, std::vector<std::string>>> given;  // the kind's own words, with their arguments, in order
+        std::vector<std::string> pass;                                         // fov, roll, near, far, ease (and yaw, pitch) for the keys
+        bool has_car = false;
+        std::string car;  // car:<id> of a chase, an orbit, a mount
+        bool has_track = false;
+        bool track_car = false;
+        std::string track_id;
+        std::vector<std::string> track_nums;  // three words: the offset in the car's frame (optional) or the place to look at
+        bool has_aim_words = false;           // yaw or pitch
+        const std::vector<std::string>* Find(const char* word) const {
+            for (const auto& g : given) {
+                if (g.first == word) return &g.second;
+            }
+            return nullptr;
+        }
+        bool Passes(const char* word) const {
+            for (const std::string& p : pass) {
+                if (Lower(p) == word) return true;
+            }
+            return false;
+        }
+    };
+
+    template <size_t N>
+    static std::string WordList(const RigWord (&words)[N]) {
+        std::string out;
+        for (const RigWord& w : words) out += (out.empty() ? "" : ", ") + std::string(w.word);
+        return out;
+    }
+
+    // Reads the words after the kind. `own`: the words this kind takes; `aim`: whether yaw and pitch are allowed; `subject`: whether a bare car:<id> is the
+    // rig's car (chase, orbit, a mount) or must follow `track` (tripod, flyby). False (reported) on a word it does not know or lacks its arguments.
+    template <size_t N>
+    bool ReadRigWords(const Event& e, const std::string& kind, const RigWord (&own)[N], bool aim, bool subject, RigArgs* a) {
+        const std::vector<std::string>& w = e.words;
+        const int line = e.line;
+        const auto fail = [&](const std::string& message) {
+            Error(line, "cam: rig " + kind + ": " + message);
+            return false;
+        };
+        const auto number = [](const std::string& s) {
+            double v = 0.0;
+            return ParseNumber(s, &v);
+        };
+        size_t i = 2;
+        while (i < w.size()) {
+            const std::string key = Lower(w[i]);
+            std::string car;
+            if (ParseCarRef(w[i], &car)) {
+                if (!subject) return fail("'" + w[i] + "' goes after track (track " + w[i] + ")");
+                if (a->has_car) return fail("two cars (" + a->car + " and " + car + ")");
+                a->has_car = true;
+                a->car = car;
+                ++i;
+                continue;
+            }
+            if (key == "track" && !subject) {
+                if (a->has_track) return fail("track twice");
+                a->has_track = true;
+                ++i;
+                if (i < w.size() && ParseCarRef(w[i], &a->track_id)) {
+                    a->track_car = true;
+                    ++i;
+                    if (i < w.size() && number(w[i])) {  // an offset in the car's frame: all three numbers
+                        if (i + 2 >= w.size() || !number(w[i + 1]) || !number(w[i + 2])) return fail("track car:<id> takes no offset or three numbers (<dx> <dy> <dz>)");
+                        a->track_nums = {w[i], w[i + 1], w[i + 2]};
+                        i += 3;
+                    }
+                } else {
+                    if (i + 2 >= w.size() || !number(w[i]) || !number(w[i + 1]) || !number(w[i + 2])) {
+                        return fail("track needs a car (track car:<id> [<dx> <dy> <dz>]) or a place (track <x> <y> <z>)");
+                    }
+                    a->track_nums = {w[i], w[i + 1], w[i + 2]};
+                    i += 3;
+                }
+                continue;
+            }
+            const RigWord* found = nullptr;
+            bool is_pass = false;
+            for (const RigWord& o : own) {
+                if (key == o.word) found = &o;
+            }
+            for (const RigWord& o : kCommonWords) {
+                if (key == o.word) {
+                    found = &o;
+                    is_pass = true;
+                }
+            }
+            if (aim) {
+                for (const RigWord& o : kAimWords) {
+                    if (key == o.word) {
+                        found = &o;
+                        is_pass = true;
+                        a->has_aim_words = true;
+                    }
+                }
+            }
+            if (!found) {
+                std::string list = WordList(own) + ", " + WordList(kCommonWords);
+                if (aim) list += ", " + WordList(kAimWords);
+                return fail("unknown word '" + w[i] + "' (" + list + (subject ? ", car:<id>" : ", track") + ")");
+            }
+            if (i + static_cast<size_t>(found->arity) >= w.size()) {
+                return fail("'" + w[i] + "' needs " + (found->arity == 3 ? "three numbers" : "a value"));
+            }
+            std::vector<std::string> args(w.begin() + static_cast<std::ptrdiff_t>(i) + 1, w.begin() + static_cast<std::ptrdiff_t>(i) + 1 + found->arity);
+            if (is_pass) {
+                a->pass.push_back(w[i]);
+                for (const std::string& s : args) a->pass.push_back(s);
+            } else {
+                for (const auto& g : a->given) {
+                    if (g.first == key) return fail("'" + w[i] + "' twice");
+                }
+                a->given.emplace_back(key, std::move(args));
+            }
+            i += 1 + static_cast<size_t>(found->arity);
+        }
+        return true;
+    }
+
+    // A number option of a rig in its range, or its default when the word was not written. False (reported) when it is out of range or not a number.
+    bool RigNumber(const Event& e, const std::string& kind, const RigArgs& a, const char* word, double lo, double hi, const char* unit, double def, double* out) {
+        *out = def;
+        const std::vector<std::string>* g = a.Find(word);
+        if (!g) return true;
+        double v = 0.0;
+        if (!ParseNumber((*g)[0], &v)) {
+            Error(e.line, "cam: rig " + kind + ": '" + word + "' needs a number (got '" + (*g)[0] + "')");
+            return false;
+        }
+        if (v < lo || v > hi) {
+            Error(e.line, "cam: rig " + kind + ": " + word + " " + Num(v) + " (" + Num(lo) + " to " + Num(hi) + unit + ")");
+            return false;
+        }
+        *out = v;
+        return true;
+    }
+
+    bool RigTriple(const Event& e, const std::string& kind, const std::vector<std::string>& words, const char* word, double limit, Vec3* out) {
+        double v[3] = {};
+        for (int k = 0; k < 3; ++k) {
+            if (!ParseNumber(words[static_cast<size_t>(k)], &v[k]) || std::fabs(v[k]) > limit) {
+                Error(e.line, "cam: rig " + kind + ": '" + word + "' needs three numbers within " + Num(limit) + " (got '" + words[static_cast<size_t>(k)] + "')");
+                return false;
+            }
+        }
+        *out = {v[0], v[1], v[2]};
+        return true;
+    }
+
+    static std::string F(double v) {
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "%.9g", v);
+        return buf;
+    }
+
+    // "a" or "a..b": the numbers; false when it is neither.
+    static bool Span(const std::string& s, double* a, double* b, bool* range) {
+        const size_t dots = s.find("..");
+        if (dots == std::string::npos) {
+            *range = false;
+            *b = 0.0;
+            return ParseNumber(s, a);
+        }
+        *range = true;
+        return ParseNumber(std::string_view(s).substr(0, dots), a) && ParseNumber(std::string_view(s).substr(dots + 2), b);
+    }
+
+    void RigStatement(const Event& e) {
+        const std::vector<std::string>& w = e.words;
+        const int line = e.line;
+        if (w.size() < 2) {
+            Error(line, std::string("cam: rig needs a kind (") + kRigKinds + ")");
+            return;
+        }
+        const std::string kind = Lower(w[1]);
+        RigArgs a;
+        std::vector<std::string> words;  // the keys' words the rig stands for
+        const auto add = [&](std::initializer_list<std::string> list) {
+            for (const std::string& s : list) words.push_back(s);
+        };
+        const auto fail = [&](const std::string& message) { Error(line, "cam: rig " + kind + ": " + message); };
+        const auto append_pass = [&]() {
+            for (const std::string& s : a.pass) words.push_back(s);
+        };
+        const auto need_car = [&]() {
+            if (!a.has_car) fail("needs a car: rig " + kind + " car:<id> (car:player is the player's)");
+            return a.has_car;
+        };
+        // the aim of a tripod and a flyby: a track, or yaw/pitch by hand
+        const auto aim_words = [&](double aimlag) {
+            if (a.has_track && a.has_aim_words) {
+                fail("track and yaw/pitch are two ways to aim: use one");
+                return false;
+            }
+            if (!a.has_track && !a.has_aim_words) {
+                fail("needs an aim: track car:<id> [<dx> <dy> <dz>], track <x> <y> <z>, or yaw <deg> pitch <deg>");
+                return false;
+            }
+            if (!a.has_track) return true;
+            if (a.track_car) {
+                Vec3 off{0.0, 0.8, 0.0};
+                if (!a.track_nums.empty() && !RigTriple(e, kind, a.track_nums, "track", 1000.0, &off)) return false;
+                add({"look", "car:" + a.track_id, F(off.x), F(off.y), F(off.z)});
+                if (aimlag > 0.0) add({"aimfollow", F(aimlag)});
+            } else {
+                Vec3 p;
+                if (!RigTriple(e, kind, a.track_nums, "track", 100000.0, &p)) return false;
+                add({"look", F(p.x), F(p.y), F(p.z)});
+                if (aimlag > 0.0) {
+                    fail("aimlag lags a track on a car (a place does not move)");
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        if (kind == "chase") {
+            if (!ReadRigWords(e, kind, kChaseWords, false, true, &a) || !need_car()) return;
+            double dist, height, side, lag, aim, ahead;
+            if (!RigNumber(e, kind, a, "dist", 0.5, 200.0, " metres", 6.0, &dist) || !RigNumber(e, kind, a, "height", -20.0, 200.0, " metres", 1.8, &height) ||
+                !RigNumber(e, kind, a, "side", -100.0, 100.0, " metres", 0.0, &side) || !RigNumber(e, kind, a, "lag", 0.0, 10.0, " seconds", 0.3, &lag) ||
+                !RigNumber(e, kind, a, "aim", -10.0, 100.0, " metres", 1.0, &aim) || !RigNumber(e, kind, a, "ahead", -200.0, 200.0, " metres", 0.0, &ahead)) {
+                return;
+            }
+            add({"attach", "car:" + a.car, F(side), F(height), F(-dist), "heading"});
+            if (lag > 0.0) add({"follow", F(lag)});
+            add({"look", "car:" + a.car, "0", F(aim), F(ahead)});
+            if (lag > 0.0) add({"aimfollow", F(lag)});
+            append_pass();
+            Keys(e, words, nullptr);
+            return;
+        }
+
+        if (kind == "orbit") {
+            if (!ReadRigWords(e, kind, kOrbitWords, false, true, &a) || !need_car()) return;
+            double r, over, lag;
+            if (!RigNumber(e, kind, a, "r", 0.1, 5000.0, " metres", 8.0, &r) || !RigNumber(e, kind, a, "over", 0.05, 3600.0, " seconds", 0.0, &over) ||
+                !RigNumber(e, kind, a, "lag", 0.0, 10.0, " seconds", 0.0, &lag)) {
+                return;
+            }
+            double az[2] = {0.0, 0.0}, el[2] = {10.0, 0.0};
+            bool az_range = false, el_range = false;
+            if (const std::vector<std::string>* g = a.Find("az")) {
+                if (!Span((*g)[0], &az[0], &az[1], &az_range) || std::fabs(az[0]) > 3600.0 || (az_range && std::fabs(az[1]) > 3600.0)) {
+                    fail("az needs degrees (az 90) or a sweep (az 20..200), got '" + (*g)[0] + "'");
+                    return;
+                }
+            }
+            if (const std::vector<std::string>* g = a.Find("el")) {
+                if (!Span((*g)[0], &el[0], &el[1], &el_range) || std::fabs(el[0]) > 89.0 || (el_range && std::fabs(el[1]) > 89.0)) {
+                    fail("el needs degrees from -89 to 89 (el 10) or a sweep (el 5..30), got '" + (*g)[0] + "'");
+                    return;
+                }
+            }
+            const bool sweep = az_range || el_range;
+            if (sweep && a.Find("over") == nullptr) {
+                fail("a sweep (" + std::string(az_range ? "az" : "el") + " a..b) needs its length: over <seconds>");
+                return;
+            }
+            if (!sweep && a.Find("over")) {
+                fail("over is the length of an az or el sweep (az 20..200 over 6)");
+                return;
+            }
+            Vec3 at{};
+            const std::vector<std::string>* atw = a.Find("at");
+            if (atw && !RigTriple(e, kind, *atw, "at", 1000.0, &at)) return;
+            const auto orbit_words = [&](double azimuth, double elevation) {
+                std::vector<std::string> o = {"orbit", "car:" + a.car, "r", F(r), "az", F(azimuth), "el", F(elevation)};
+                if (atw) {
+                    o.push_back("at");
+                    o.push_back(F(at.x));
+                    o.push_back(F(at.y));
+                    o.push_back(F(at.z));
+                }
+                if (lag > 0.0) {
+                    o.push_back("follow");
+                    o.push_back(F(lag));
+                }
+                return o;
+            };
+            words = orbit_words(az[0], el[0]);
+            append_pass();
+            Keys(e, words, nullptr);
+            if (sweep) {
+                Event end = e;
+                end.t = e.t + over;
+                Keys(end, orbit_words(az_range ? az[1] : az[0], el_range ? el[1] : el[0]), nullptr);
+            }
+            return;
+        }
+
+        if (kind == "tripod") {
+            if (!ReadRigWords(e, kind, kTripodWords, true, false, &a)) return;
+            const std::vector<std::string>* at = a.Find("at");
+            if (!at) {
+                fail("needs a place: at <x> <y> <z> (or at spot:<name>)");
+                return;
+            }
+            Vec3 p;
+            double aimlag;
+            if (!RigTriple(e, kind, *at, "at", 100000.0, &p) || !RigNumber(e, kind, a, "aimlag", 0.0, 10.0, " seconds", 0.0, &aimlag)) return;
+            add({"pos", F(p.x), F(p.y), F(p.z)});
+            if (!aim_words(aimlag)) return;
+            append_pass();
+            Keys(e, words, nullptr);
+            return;
+        }
+
+        if (kind == "flyby") {
+            if (!ReadRigWords(e, kind, kFlybyWords, true, false, &a)) return;
+            const std::vector<std::string>* path = a.Find("path");
+            if (!path) {
+                fail("needs a route: path <route file> (beside the scene or in its routes folder)");
+                return;
+            }
+            if (!car_verbs_detail::IsRoutePath((*path)[0])) {
+                fail("'" + (*path)[0] + "' is not a route file name (a name or a relative path next to the scene file or in its routes folder: letters, digits and _ - . / and "
+                     "blanks; no .. and no drive or leading slash)");
+                return;
+            }
+            SpeedSpec speed;
+            if (const std::vector<std::string>* sp = a.Find("speed")) {
+                std::string why;
+                if (!ParseSpeedWord((*sp)[0], &speed, &why)) {
+                    fail(why);
+                    return;
+                }
+            }
+            double up, aimlag, y = 0.0;
+            if (!RigNumber(e, kind, a, "up", -50.0, 500.0, " metres", 2.0, &up) || !RigNumber(e, kind, a, "aimlag", 0.0, 10.0, " seconds", 0.0, &aimlag) ||
+                !RigNumber(e, kind, a, "y", -10000.0, 10000.0, " metres", 0.0, &y)) {
+                return;
+            }
+            const bool has_y = a.Find("y") != nullptr;
+            if (has_y && a.Find("up")) {
+                fail("up (above the route's own height) and y (in the world) are two ways to give the height: use one");
+                return;
+            }
+            PosKey key;
+            key.kind = PosKind::kPath;
+            key.path_t0 = e.t;
+            key.up = up;
+            key.has_y = has_y;
+            key.y = y;
+            bool route_has_y = false;
+            if (!AddFlyRoute(line, (*path)[0], speed, &key.route, &route_has_y)) return;
+            if (a.Find("up") && !route_has_y) {
+                fail("up is above the route's own height, and route '" + (*path)[0] + "' has none: use y <metres>");
+                return;
+            }
+            if (!route_has_y && !has_y) {
+                fail("route '" + (*path)[0] + "' has no heights (x,z,speed,y): give the camera's height in the world with y <metres>");
+                return;
+            }
+            if (!aim_words(aimlag)) return;
+            append_pass();
+            Keys(e, words, &key);
+            return;
+        }
+
+        const Mount* mount = nullptr;
+        for (const Mount& m : kMounts) {
+            if (kind == m.name) mount = &m;
+        }
+        if (mount) {
+            if (!ReadRigWords(e, kind, kMountWords, false, true, &a) || !need_car()) return;
+            double ahead, lag;
+            Vec3 shift{};
+            const std::vector<std::string>* sh = a.Find("shift");
+            if (!RigNumber(e, kind, a, "ahead", 1.0, 1000.0, " metres", 30.0, &ahead) || !RigNumber(e, kind, a, "lag", 0.0, 10.0, " seconds", 0.0, &lag) ||
+                (sh && !RigTriple(e, kind, *sh, "shift", 5.0, &shift))) {
+                return;
+            }
+            add({"attach", "car:" + a.car, F(mount->offset.x + shift.x), F(mount->offset.y + shift.y), F(mount->offset.z + shift.z)});
+            if (lag > 0.0) add({"follow", F(lag)});
+            add({"look", "car:" + a.car, "0", F(mount->aim_y + shift.y), F(ahead)});
+            if (lag > 0.0) add({"aimfollow", F(lag)});
+            if (!a.Passes("near")) add({"near", "0.1"});
+            append_pass();
+            Keys(e, words, nullptr);
+            return;
+        }
+        Error(line, "cam: unknown rig '" + w[1] + "' (" + kRigKinds + ")");
+    }
+
+    // The sampler of a flyby's route, once for each name and speed: its index in the track. False (reported) when the route cannot be had.
+    bool AddFlyRoute(int line, const std::string& name, const SpeedSpec& speed, int* index, bool* has_y) {
+        for (size_t k = 0; k < r_.track.routes.size(); ++k) {
+            const FlyRoute& f = r_.track.routes[k];
+            if (f.name == name && f.speed.kind == speed.kind && f.speed.value == speed.value) {
+                *index = static_cast<int>(k);
+                *has_y = f.has_y;
+                return true;
+            }
+        }
+        if (!routes_) {
+            default_routes_ = std::make_unique<FileRouteSource>(scene_.source_dir);
+            routes_ = default_routes_.get();
+        }
+        Route route;
+        std::string why;
+        if (!routes_->Load(name, &route, &why)) {
+            Error(line, "cam: rig flyby: route '" + name + "': " + why);
+            return false;
+        }
+        FlyRoute f;
+        f.name = name;
+        f.speed = speed;
+        if (!f.sampler.Build(route, speed, &why)) {
+            Error(line, "cam: rig flyby: route '" + name + "': " + why);
+            return false;
+        }
+        f.has_y = f.sampler.has_y();
+        r_.track.routes.push_back(std::move(f));
+        *index = static_cast<int>(r_.track.routes.size()) - 1;
+        *has_y = r_.track.routes.back().has_y;
+        return true;
+    }
+
     void Finish() {
         CameraTrack& tr = r_.track;
         if (tr.gates.empty()) {
@@ -632,6 +1150,16 @@ class Builder {
         shots.erase(std::unique(shots.begin(), shots.end(), [](double a, double b) { return std::fabs(a - b) < kEps; }), shots.end());
         tr.shots = std::move(shots);
         std::sort(tr.cuts.begin(), tr.cuts.end());
+
+        // The keys are in the order the statements were read, which is time order, except where a rig's sweep put its second key (`rig orbit az a..b over s`)
+        // later than a statement that follows it: the keys of a channel run in time order, so sort them (a stable sort leaves keys of one time as written).
+        const auto by_time = [](const auto& a, const auto& b) { return a.t < b.t; };
+        std::stable_sort(tr.pos.begin(), tr.pos.end(), by_time);
+        std::stable_sort(tr.aim.begin(), tr.aim.end(), by_time);
+        std::stable_sort(tr.roll.begin(), tr.roll.end(), by_time);
+        std::stable_sort(tr.fov.begin(), tr.fov.end(), by_time);
+        std::stable_sort(tr.near_plane.begin(), tr.near_plane.end(), by_time);
+        std::stable_sort(tr.far_plane.begin(), tr.far_plane.end(), by_time);
 
         const auto assign = [&](auto& keys) {
             for (auto& k : keys) k.shot = tr.ShotAt(k.t);
@@ -662,6 +1190,9 @@ class Builder {
         }
     }
 
+    const Scene& scene_;
+    RouteSource* routes_;                              // the flyby routes' source: the caller's, or the scene's folder (made when the first is needed)
+    std::unique_ptr<FileRouteSource> default_routes_;
     BuildResult r_;
     bool on_ = false;
     int first_cam_line_ = 0;
@@ -677,20 +1208,25 @@ int BuildResult::ErrorCount() const {
     return n;
 }
 
-BuildResult BuildTrack(const Scene& scene) {
-    Builder b;
-    return b.Run(scene);
+BuildResult BuildTrack(const Scene& scene, RouteSource* routes) {
+    Builder b(scene, routes);
+    return b.Run();
 }
 
 std::string Summarize(const CameraTrack& track) {
     if (track.Empty()) return "camera: no keys";
-    size_t attach = 0, orbit = 0;
+    size_t attach = 0, orbit = 0, path = 0;
     for (const PosKey& k : track.pos) {
         attach += k.kind == PosKind::kAttach;
         orbit += k.kind == PosKind::kOrbit;
+        path += k.kind == PosKind::kPath;
     }
     std::string s = "camera: " + std::to_string(track.pos.size()) + " position keys";
-    if (attach || orbit) s += " (" + std::to_string(attach) + " attach, " + std::to_string(orbit) + " orbit)";
+    if (attach || orbit || path) {
+        s += " (" + std::to_string(attach) + " attach, " + std::to_string(orbit) + " orbit";
+        if (path) s += ", " + std::to_string(path) + " flyby";
+        s += ")";
+    }
     s += ", " + std::to_string(track.aim.size()) + " aim keys, fov " + std::to_string(track.fov.size()) + ", roll " +
          std::to_string(track.roll.size()) + ", near/far " + std::to_string(track.near_plane.size() + track.far_plane.size());
     s += "; " + std::to_string(track.cuts.size()) + " cut" + (track.cuts.size() == 1 ? "" : "s");
@@ -873,6 +1409,12 @@ Vec3 Rig::KeyPosition(const PosKey& k, CarSource& cars) {
             const Vec3 target = f.position + hf.right * k.point.x + hf.up * k.point.y + hf.forward * k.point.z;
             return OrbitPoint(target, hf, k.radius, k.azimuth, k.elevation);
         }
+        case PosKind::kPath: {
+            // a point that flies along the route: a closed form of the time since the key, so a scrub and a take agree
+            if (track_ == nullptr || k.route < 0 || static_cast<size_t>(k.route) >= track_->routes.size()) return k.point;
+            const PathSample s = track_->routes[static_cast<size_t>(k.route)].sampler.AtTime(std::max(0.0, cur_t_ - k.path_t0));
+            return {s.x, k.has_y ? k.y : s.y + k.up, s.z};
+        }
     }
     return k.point;
 }
@@ -927,6 +1469,8 @@ Basis Rig::EvalAim(const std::vector<const AimKey*>& k, double t, Vec3 camera, C
 
 View Rig::Evaluate(const CameraTrack& track, double t, CarSource& cars) {
     View v;
+    track_ = &track;
+    cur_t_ = t;
     ++frame_;
     missing_this_frame_ = 0;
     for (CarSlot& s : slots_) s.fresh = false;

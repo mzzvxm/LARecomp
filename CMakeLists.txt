@@ -575,7 +575,9 @@ endif()
 add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera_test.cpp
     src/mc_engine/cinematic/camera.cpp
-    src/mc_engine/cinematic/scene.cpp)
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/spots.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_camera_test PRIVATE src src/mc_engine/cinematic)
 # The scene's named places (src/mc_engine/cinematic/spots.h: the spot words of a statement, the spots file's reader, the lookup of the files a scene uses) and the
 # way scene.cpp turns spot words into numbers have a check that needs no game (with scene files as arguments it prints their statements, spots resolved):
@@ -641,7 +643,8 @@ add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/freecam_test.cpp
     src/mc_engine/cinematic/freecam.cpp
     src/mc_engine/cinematic/camera.cpp
-    src/mc_engine/cinematic/scene.cpp)
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_freecam_test PRIVATE src src/mc_engine/cinematic)
 # The scene's `split` track (the parser's keys and EvaluateSplit) has a check of its own, also without the game:
 #   cmake --build <build dir> --target larecomp_split_track_test, then run <build dir>/larecomp_split_track_test (exit 0 = passed).

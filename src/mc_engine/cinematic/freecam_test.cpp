@@ -11,7 +11,7 @@
 //                                                                 says how far it is from the raw track (exit 1 over a bound): the replay follows the flight
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
-//   clang++ -std=c++23 freecam_test.cpp freecam.cpp camera.cpp scene.cpp -o freecam_test.exe
+//   clang++ -std=c++23 freecam_test.cpp freecam.cpp camera.cpp scene.cpp path_follow.cpp -o freecam_test.exe
 
 #include <algorithm>
 #include <cmath>
