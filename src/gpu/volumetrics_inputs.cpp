@@ -179,9 +179,25 @@ void VolumetricsInputs::FillHeadlightInputs(vol::VolInputs* out) {
 void VolumetricsInputs::Census(const vol::VolFrameContext& frame, const vol::VolInputs& out, bool lamps_on, bool heads_on) {
   std::string lamps = "off";
   if (lamps_on) {
-    lamps = std::format("list {} (copy #{}{}, {} published), {} lit and in view, picked {} + {} fading, best score {:.3f}, {} in the volume (budget {}){}", picked_.listed,
-                        list_seq_, list_stale_ ? ", none recent" : "", vl::Global().published(), picked_.usable, picked_.wanted, picked_.fading, picked_.best_score,
-                        out.lamp_count, frame.grid.lamps, picked_.dropped != 0 ? std::format(", {} dropped at once", picked_.dropped) : std::string());
+    // The nearest picked lamp (where a pole stands: the toolkit scenes of the beam through a pole are placed by it), its distance and the game's intensity.
+    std::string nearest = "none";
+    float best = 1e30f;
+    for (uint32_t i = 0; i < picked_.count; ++i) {
+      const vol::VolLamp& l = picked_.lamps[i];
+      float d2 = 0.0f;
+      for (int k = 0; k < 3; ++k) {
+        const float d = l.pos[k] - frame.camera.pos[k];
+        d2 += d * d;
+      }
+      if (d2 < best) {
+        best = d2;
+        nearest = std::format("{:.1f} m at ({:.2f}, {:.2f}, {:.2f}), intensity {:.0f}", std::sqrt(d2), l.pos[0], l.pos[1], l.pos[2], vol::LampNearSq(l) / vol::kLampNearShare);
+      }
+    }
+    lamps = std::format("list {} (copy #{}{}, {} published), {} lit and in view, picked {} + {} fading, best score {:.3f}, {} in the volume (budget {}){}, nearest {}",
+                        picked_.listed, list_seq_, list_stale_ ? ", none recent" : "", vl::Global().published(), picked_.usable, picked_.wanted, picked_.fading,
+                        picked_.best_score, out.lamp_count, frame.grid.lamps,
+                        picked_.dropped != 0 ? std::format(", {} dropped at once", picked_.dropped) : std::string(), nearest);
   }
   std::string heads = "off";
   if (heads_on) {
