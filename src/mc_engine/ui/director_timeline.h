@@ -1,7 +1,7 @@
 #pragma once
 //
 // The Director panel's timeline: the pure half (DIRECTOR-DESIGN.md section 3, "Timeline"). The scene file's keys (the snapshot's events) become LANES and MARKERS; a time
-// axis maps seconds to pixels with zoom and pan; a hit test finds the marker under the pointer; a drag moves, or with Alt duplicates, a key and snaps to the frame grid, to
+// axis maps seconds to pixels with zoom and pan; a hit test finds the marker under the pointer; a drag moves, or with Alt duplicates, a key and snaps to a clean time grid, to
 // the other keys, to the playhead and to the ends. What a drag or a click MEANS for the file (a `move` op, an insert, an `ease` word) is built in director_panel_core.h;
 // the ImGui drawing is in director_panel.cpp. No ImGui, no game, no log: director_panel_test.cpp builds it on its own.
 //
@@ -84,12 +84,20 @@ std::vector<Tick> RulerTicks(const Axis& axis, float min_label_px = 78.0f);
 
 // ---------------------------------------------------------------------------------------------------------------- snapping
 
-enum class SnapKind : uint8_t { kNone, kFrame, kMark, kPlayhead, kStart, kEnd };
+enum class SnapKind : uint8_t { kNone, kFrame, kGrid, kMark, kPlayhead, kStart, kEnd };
 struct Snapped {
     double t = 0.0;
     SnapKind kind = SnapKind::kNone;
 };
-// `t` snapped to (nearest first within `snap_px`): another key's time, the playhead, 0, the end; then to the frame grid (`frame_step` seconds, 0 = no grid). Never negative.
+// THE GRID A DRAG LANDS ON when no key, playhead or end is near. A whole scene is some 40 pixels a second wide, so a pixel is a frame and a half: a key dragged "to 5.5" landed on 5.483
+// (a frame boundary one pixel off), a time nobody typed and nobody can read in the file (the mouse run of 2026-11-20). The step is the finest of 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30,
+// 60 and 300 seconds that is at least kGridMinPx wide on this axis (0.25 s at 40 px a second, 0.1 s from 50, 0.05 s from 100: a minor tick of the ruler), so a slip of a pixel or two
+// at either end of a drag does not change the written time and the file gets 5.5, not 5.483. Zoomed in until one frame is kFrameGridPx wide the frame grid (`frame_step`, 0 = none)
+// is the step instead: frame work wants frames. Shift lets the key go where the pointer is (to the millisecond).
+inline constexpr float kGridMinPx = 5.0f;
+inline constexpr float kFrameGridPx = 8.0f;
+double GridStep(const Axis& axis, double frame_step);
+// `t` snapped to (nearest first within `snap_px`): another key's time, the playhead, 0, the end; then to the grid (GridStep). Never negative.
 Snapped SnapTime(double t, const Axis& axis, const std::vector<double>& marks, double playhead, double end, double frame_step, float snap_px = 7.0f);
 
 // ---------------------------------------------------------------------------------------------------------------- hit test

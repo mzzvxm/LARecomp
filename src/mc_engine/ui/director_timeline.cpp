@@ -324,6 +324,16 @@ std::vector<Tick> RulerTicks(const Axis& axis, float min_label_px) {
 
 // ---------------------------------------------------------------------------------------------------------------- snapping
 
+double GridStep(const Axis& axis, double frame_step) {
+    const double pps = std::max(axis.PixelsPerSecond(), 1e-9);
+    if (frame_step > 1e-6 && frame_step * pps >= static_cast<double>(kFrameGridPx)) return frame_step;
+    static const double kSteps[] = {0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0};
+    for (double step : kSteps) {
+        if (step * pps >= static_cast<double>(kGridMinPx)) return step;
+    }
+    return 600.0;
+}
+
 Snapped SnapTime(double t, const Axis& axis, const std::vector<double>& marks, double playhead, double end, double frame_step, float snap_px) {
     Snapped best;
     best.t = std::max(0.0, t);
@@ -342,12 +352,11 @@ Snapped SnapTime(double t, const Axis& axis, const std::vector<double>& marks, d
     consider(0.0, SnapKind::kStart);
     if (end > 0.0) consider(end, SnapKind::kEnd);
     if (best.kind != SnapKind::kNone) return best;
-    if (frame_step > 1e-6) {
-        best.t = std::max(0.0, std::round(t / frame_step) * frame_step);
-        best.kind = SnapKind::kFrame;
-        return best;
-    }
-    best.t = std::max(0.0, std::round(t * 1000.0) / 1000.0);
+    const double step = GridStep(axis, frame_step);
+    const bool frames = frame_step > 1e-6 && step == frame_step;
+    best.t = std::max(0.0, std::round(t / step) * step);
+    if (!frames) best.t = std::round(best.t * 1000.0) / 1000.0;  // 0.1 * 55 is 5.500000000000001: the file gets 5.5
+    best.kind = frames ? SnapKind::kFrame : SnapKind::kGrid;
     return best;
 }
 

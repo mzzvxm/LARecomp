@@ -1545,7 +1545,8 @@ void Tick(uint8_t* b) {
     // Not ImGui::GetCurrentContext() / GetIO() here: ImGui belongs to the UI thread, and this is the game thread. The UI system makes its context current only while it builds a frame and puts it
     // back to null after (0.11: ImGuiHost's ContextScope), so a check of the pointer followed by GetIO() could see it go null in between (access violation at 0xd0, v0.11 boot run, 2026-11-19).
     // The theme keeper publishes the flag once a frame for any thread, the same one keyboard_native and cursor_hide read.
-    const bool over_overlay = mcla::ui::SettingsOpen() || mcla::ui::OverlayWantsMouse();
+    // (The Director panel's pointer is the panel's everywhere in the picture while it shows: a click on the ground is not a click on a menu.)
+    const bool over_overlay = mcla::ui::SettingsOpen() || mcla::ui::PointerHeldByPanel() || mcla::ui::OverlayWantsMouse();
     // A menu screen of the game's: the game is entered, a menu or a movie that is not the road's is up; not the phone, not the full map (it has its own mouse).
     const bool menu_up = larecomp::keyboard::GameEntered() && larecomp::keyboard::MenuScreenUp() && !larecomp::keyboard::PhoneScreenUp() && !MapMouseWantsPointer();
 

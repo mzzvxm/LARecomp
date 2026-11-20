@@ -508,11 +508,14 @@ void TestSnap() {
     Check(s.kind == SnapKind::kStart && s.t == 0.0, "to zero");
     s = SnapTime(9.96, a, marks, 6.0, 10.0, 1.0 / 60.0);
     Check(s.kind == SnapKind::kEnd && s.t == 10.0, "to the end");
-    s = SnapTime(3.0, a, marks, 6.0, 10.0, 1.0 / 60.0);
-    Check(s.kind == SnapKind::kFrame, "to the frame grid when nothing is near");
-    CheckNum(std::fmod(s.t * 60.0, 1.0) < 1e-6 || std::fmod(s.t * 60.0, 1.0) > 1 - 1e-6 ? 0.0 : 1.0, 0.0, "a whole number of frames");
+    // nothing near: the clean grid, not the frames (100 px a second: 0.05 s is 5 px, the finest step that is 5 px wide)
+    s = SnapTime(3.0123, a, marks, 6.0, 10.0, 1.0 / 60.0);
+    Check(s.kind == SnapKind::kGrid, "to the clean grid when nothing is near and a frame is a fraction of a pixel");
+    CheckNum(s.t, 3.0, "3.0123 lands on 3 (0.05 s steps at 100 px a second)");
     s = SnapTime(3.0123, a, marks, 6.0, 10.0, 0.0);
-    CheckNum(s.t, 3.012, "no grid: to the millisecond");
+    CheckNum(s.t, 3.0, "no frame grid: the clean grid still");
+    s = SnapTime(3.04, a, marks, 6.0, 10.0, 1.0 / 60.0);
+    CheckNum(s.t, 3.05, "0.04 s past 3 goes to the nearer step, 3.05");
     s = SnapTime(-1.0, a, marks, 6.0, 10.0, 0.0);
     CheckNum(s.t, 0.0, "never negative");
     // the pixel reach follows the zoom: zoomed far in, 0.05 s is many pixels and does not snap
@@ -520,6 +523,68 @@ void TestSnap() {
     a.t1 = 2.5;  // 2000 px a second
     s = SnapTime(2.1, a, marks, 6.0, 10.0, 0.0);
     CheckNum(s.t, 2.1, "zoomed in, a key 0.1 s away is far");
+    // zoomed in until a frame is 8 px wide (480 px a second): the frame grid; between, 0.01 s
+    s = SnapTime(3.0123, a, marks, 6.0, 10.0, 1.0 / 60.0);
+    Check(s.kind == SnapKind::kFrame, "zoomed in, the frame grid");
+    CheckNum(s.t * 60.0, std::round(s.t * 60.0), "a whole number of frames", 1e-9);
+}
+
+void TestVisiblePart() {
+    // a widget under the fold: not reported (a click on its full rectangle would hit nothing)
+    const Box clip{700.0f, 590.0f, 1270.0f, 690.0f};
+    Box seen;
+    Check(!VisiblePart({800.0f, 700.0f, 900.0f, 724.0f}, clip, &seen), "a button below the clip rect is not on show");
+    Check(!VisiblePart({800.0f, 600.0f, 900.0f, 600.4f}, clip, &seen), "a sliver under a unit is not on show");
+    Check(!VisiblePart({100.0f, 600.0f, 200.0f, 624.0f}, clip, &seen), "a button left of the clip rect is not on show");
+    // a half shown one reports the half
+    Check(VisiblePart({800.0f, 678.0f, 900.0f, 702.0f}, clip, &seen), "a button cut by the edge is on show");
+    CheckNum(seen.y0, 678.0, "from where it starts");
+    CheckNum(seen.y1, 690.0, "to the clip rect's edge: the centre of what shows is clickable");
+    // a whole one is untouched
+    Check(VisiblePart({800.0f, 620.0f, 900.0f, 644.0f}, clip, &seen), "a button inside is on show");
+    CheckNum(seen.x1 - seen.x0, 100.0, "whole width");
+    CheckNum(seen.y1 - seen.y0, 24.0, "whole height");
+}
+
+void TestGridStep() {
+    Axis a;
+    a.x0 = 0;
+    a.x1 = 560;
+    a.t0 = 0;
+    a.t1 = 14.0;  // 40 px a second: the whole of the mouse run's test scene
+    CheckNum(GridStep(a, 1.0 / 60.0), 0.25, "40 px a second: 0.25 s (10 px; 0.1 s would be 4)");
+    a.x1 = 392;  // 28 px a second (a 853 unit window)
+    CheckNum(GridStep(a, 1.0 / 60.0), 0.25, "28 px a second: 0.25 s");
+    a.x1 = 840;  // 60 px a second
+    CheckNum(GridStep(a, 1.0 / 60.0), 0.1, "60 px a second: 0.1 s");
+    a.x1 = 14000;  // 1000 px a second: frames are 16.7 px
+    CheckNum(GridStep(a, 1.0 / 60.0), 1.0 / 60.0, "1000 px a second: the frame grid");
+    CheckNum(GridStep(a, 0.0), 0.01, "1000 px a second, no frame grid: 0.01 s");
+    a.x1 = 140;  // 10 px a second
+    CheckNum(GridStep(a, 1.0 / 60.0), 0.5, "10 px a second: 0.5 s");
+    a.x1 = 1.0f;  // a long scene in a sliver: never a zero step
+    Check(GridStep(a, 1.0 / 60.0) >= 60.0, "a sliver of an axis has a step of minutes");
+    // THE MOUSE RUN'S FAILURE (2026-11-20, the dragged key 5.483 and not 5.5): at 40 px a second two pixels more or less on either end of the drag must still write 5.5
+    a.x0 = 100;
+    a.x1 = 660;
+    a.t0 = 0;
+    a.t1 = 14.0;
+    const std::vector<double> marks = {0.0, 8.0, 12.0};
+    for (int start_slip = -2; start_slip <= 2; ++start_slip) {
+        for (int end_slip = -2; end_slip <= 2; ++end_slip) {
+            Layout l;
+            Marker mk;
+            mk.line = 5;
+            mk.t = 4.0;
+            mk.lane = 0;
+            mk.kind = dir::EventKind::kCamera;
+            l.lanes.push_back(Lane{LaneKind::kCamera, "CAMERA", ""});
+            l.markers.push_back(mk);
+            Drag d = BeginDrag(l, 0, a, a.TimeToX(4.0) + static_cast<float>(start_slip), false);
+            UpdateDrag(&d, a, a.TimeToX(5.5) + static_cast<float>(end_slip), marks, 2.983, 14.0, 1.0 / 60.0, true);
+            CheckNum(d.t_now, 5.5, "a drag to 5.5 with up to two pixels of slip at either end writes 5.5", 1e-9);
+        }
+    }
 }
 
 void TestHitAndDrag() {
@@ -1300,6 +1365,14 @@ void TestUiUnits() {
     CheckEq(g2.labels.empty() ? "" : g2.labels[0].text, "a  vp_x", "another car: id and model");
 }
 
+void TestPointer() {
+    // the panel holds the pointer while it is up and showing: open and shown only (Tab gives it back, a closed panel never held it)
+    Check(HoldsPointer(true, false), "an open panel that is showing holds the pointer");
+    Check(!HoldsPointer(true, true), "Tab hides the panel and gives the pointer back (mouse look again)");
+    Check(!HoldsPointer(false, false), "a closed panel does not hold it");
+    Check(!HoldsPointer(false, true), "... hidden or not");
+}
+
 void TestDockPlan() {
     // the first run's dock: 250 to 400 units tall at any window and a 17 unit font = 52 % of an 853x480 window. The plan follows the window.
     const DockPlan small_window = PlanDock(853.0f, 480.0f, DockSize::kNormal, false, 0.0f);  // a 1280x720 window at 150 %
@@ -1478,6 +1551,8 @@ int main() {
     TestAxis();
     TestRuler();
     TestSnap();
+    TestGridStep();
+    TestVisiblePart();
     TestHitAndDrag();
     TestDispatcher();
     TestSceneTextAndExpect();
@@ -1489,6 +1564,7 @@ int main() {
     TestTakeAndTransport();
     TestFlying();
     TestUiUnits();
+    TestPointer();
     TestDockPlan();
     TestTabStrip();
     TestCollapsedLanes();

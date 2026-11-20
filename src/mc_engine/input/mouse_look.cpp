@@ -58,8 +58,10 @@ bool Fresh(Client c, int64_t now) {
 // The client that gets the deltas: the debug free camera when it asks, else the look.
 Client Owner(int64_t now) { return Fresh(Client::DebugCam, now) ? Client::DebugCam : Client::Look; }
 
+// The Director panel holds the pointer all the time it shows (not only over its dock: a human clicks on the ground and drags a car in the picture): with relative mouse mode on, no pointer
+// position reaches ImGui and the cursor is hidden, so the panel could not be used with a mouse (2026-11-20, 14 of 15 checks of the first mouse run).
 bool OverlayWantsMouse() {
-  return mcla::ui::SettingsOpen() || larecomp::ServerBrowserCapturesInput() || mcla::ui::OverlayWantsMouse();
+  return mcla::ui::SettingsOpen() || larecomp::ServerBrowserCapturesInput() || mcla::ui::PointerHeldByPanel() || mcla::ui::OverlayWantsMouse();
 }
 
 }  // namespace

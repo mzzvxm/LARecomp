@@ -20,6 +20,9 @@ namespace mcla::ui {
 //   with the free camera: W A S D along the view, Q E down and up, Shift fast, Ctrl slow, Z X tilt, R levels the horizon, + - zoom, the RIGHT MOUSE BUTTON looks, the wheel steps the speed
 //   the pad: the flight's own sticks, and Back + B add a key, Back + RB / LB next / previous key, Back + Start play / pause, Back + D-pad right one frame, Back + D-pad up the take
 //
+// THE POINTER is the panel's while it shows (director_panel_core.h HoldsPointer): the game's mouse look lets go of it (relative mouse mode hides and locks the pointer: no position ever
+// reached ImGui, so no click could land) and the idle hide keeps it on screen, as the F4 panel does; Tab hides the panel and gives the pointer back to mouse look.
+//
 // THE DOCK'S SIZE follows the window (director_panel_core.h PlanDock): about a third of it, its font and paddings scaled from ImGui's display size (a small window gets a small dock, a
 // 4K one a big one). SIZE in the bar steps small / normal / tall, COLLAPSE leaves the bar alone, and the transport bar wraps to a second row when the window is narrow. A click on a
 // lane's title on the timeline collapses it to a thin strip (and again to open it), the "- LANES" corner does it for every lane but CAMERA, and a scene with more lanes than the dock
