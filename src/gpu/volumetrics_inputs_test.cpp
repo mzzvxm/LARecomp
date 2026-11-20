@@ -694,16 +694,17 @@ void CheckHeadlights() {
   for (uint32_t i = 0; i < in.headlight_count; ++i) {
     ApplyHeadlightUnits(&in.headlights[i]);
   }
-  // Units: colour x 2.4 x 81, near radius squared 81 (the lit shaders' kPeak / (1 + (d / 9)^2)).
-  CheckNear(in.headlights[0].colour[0], 1.0 * 2.4 * 81.0, 1e-3, "the headlight's colour is the rig's times kPeak x D^2");
-  CheckNear(in.headlights[0].colour[1], 0.93 * 2.4 * 81.0, 1e-3, "all three channels");
-  CheckNear(LampNearSq(in.headlights[0]), 81.0, 1e-6, "its near radius squared is D^2");
+  // Units: colour x kPeak x D^2, near radius squared D^2 (the lit shaders' kPeak / (1 + (d / D)^2); the rig's own values are checked at the end).
+  constexpr double kD2 = double(kHeadlightFalloffDistance) * double(kHeadlightFalloffDistance);
+  CheckNear(in.headlights[0].colour[0], 1.0 * double(kHeadlightPeak) * kD2, 1e-3, "the headlight's colour is the rig's times kPeak x D^2");
+  CheckNear(in.headlights[0].colour[1], 0.93 * double(kHeadlightPeak) * kD2, 1e-3, "all three channels");
+  CheckNear(LampNearSq(in.headlights[0]), kD2, 1e-6, "its near radius squared is D^2");
   CheckNear(in.headlights[0].range, 70.0, 1e-6, "its range is the rig's");
   // The volume's term at the lamp: the lit shaders' (peak x 1 / (1 + (d/D)^2) x colour): the same at every distance (the window aside).
   const VolLamp& hl = in.headlights[0];
   for (const double d : {0.0, 3.0, 9.0, 20.0, 40.0}) {
     const double vol = double(hl.colour[0]) * double(LampFalloff(float(d), hl.range, LampNearSq(hl)));
-    const double shader = double(kHeadlightPeak) / (1.0 + d * d / 81.0);
+    const double shader = double(kHeadlightPeak) / (1.0 + d * d / kD2);
     const double window = std::pow(std::max(1.0 - std::pow(d / 70.0, 4.0), 0.0), 2.0);
     CheckNear(vol, shader * window, 1e-4 * shader + 1e-6, "the headlight's term in the air is the lit shaders' at " + std::to_string(d) + " m");
   }
@@ -771,7 +772,7 @@ void CheckHeadlights() {
   Check(k.counts[1] == 2, "medium reads two headlights");
   Check(k.headlights[0].shadow_view == 0 && k.headlights[1].shadow_view == 1, "with their views");
   Check(k.counts[2] == 3 && k.counts[3] == 123, "and the views and the atlas's slot");
-  CheckNear(LampNearSq(k.headlights[0]), 81.0, 1e-6, "the near radius squared reaches the constants");
+  CheckNear(LampNearSq(k.headlights[0]), kD2, 1e-6, "the near radius squared reaches the constants");
   // The rig's constants, when the tree has them.
 #if TEST_RULES_HEADER
   CheckNear(kHeadlightPeak, mcla::gpu::headlight_rules::kPeak, 1e-9, "kHeadlightPeak is the rig's kPeak");

@@ -2,17 +2,18 @@
 // ===========================================================================
 // MCLA GPU renderer -- the volumetric light's headlights: the rig's set and the shadow atlas, in the volume's units (perf/VOLUMETRICS-SURVEY.md V9)
 // ===========================================================================
-// Pure (no guest, no renderer, no GPU): volumetrics_inputs_test.cpp checks it with the real headers of feat/headlights when they are there
-// (src/gpu/headlight_types.h, local_shadow_types.h, headlight_rig_rules.h) and with their field-for-field mirrors when they are not.
+// Pure (no guest, no renderer, no GPU): volumetrics_inputs_test.cpp checks it with the real headers of the headlight rig and the shadow replay
+// (src/gpu/headlight_types.h, local_shadow_types.h, headlight_rig_rules.h) and, on a tree that lacks them, with their field-for-field mirrors.
 //
-// THE HEADLIGHTS (feat/headlights headlight_types.h): HeadlightSet = up to four Headlight {pos, dir, cos_outer, cos_inner, range, color (already times the
+// THE HEADLIGHTS (headlight_types.h): HeadlightSet = up to four Headlight {pos, dir, cos_outer, cos_inner, range, color (already times the
 // strength, the fade and the night factor), car_key, is_player}, the player's first. volumetrics_types.h FillHeadlights makes them VolLamps (a
 // light that fades is a dimmer one: the colour goes to zero). What it leaves is the UNITS: the lit shaders' headlight term is
-//   kPeak x cone x 1 / (1 + (d / D)^2) x window x ...     (headlight_rig_rules.h: kPeak 2.4, kFalloffDistance D = 9 m)
-// which is colour x 2.4 x D^2 / (d^2 + D^2): the volume's own law with the near radius squared D^2 and a colour of 2.4 x D^2 times the set's. ApplyUnits does
+//   kPeak x cone x 1 / (1 + (d / D)^2) x window x ...     (headlight_rig_rules.h: kPeak 2.0, kFalloffDistance D = 26 m since the rig's calibration of 2026-11-20, HEADLIGHT-FIX-2;
+//                                                         the first look was 2.4 and 9 m: volumetrics_inputs_test.cpp holds the two constants against the rig's)
+// which is colour x kPeak x D^2 / (d^2 + D^2): the volume's own law with the near radius squared D^2 and a colour of kPeak x D^2 times the set's. ApplyUnits does
 // exactly that, so that the beam in the air and the pool on the road are the same light (volumetrics_lamps.h says the same for the street lamps).
 //
-// THE SHADOW ATLAS (feat/headlights local_shadow.h, local_shadow_types.h). The replay draws the main view's opaque draws again from each lit car's lamps into
+// THE SHADOW ATLAS (local_shadow.h, local_shadow_types.h). The replay draws the main view's opaque draws again from each lit car's lamps into
 // a depth atlas (D32 float + S8, a bindless slot whose view is the depth plane as one float), at the first point of the frame, BEFORE the volume's passes
 // (Scene::OnResolve: car shadow, headlight replay, occlusion, sun shafts, volumetric light), so the volume reads THIS frame's maps. What it hands over:
 //   LocalShadow::AtlasInfo()  {valid, slot, width, height, tile}: the atlas as a bindless texture and its size in texels
@@ -22,11 +23,11 @@
 //                             rules' internal form; the published one is the corner and the shaders of both consumers read it so), depth_bias, texel_size (a share
 //                             of the tile), light_index (the headlight of the set), valid.
 // ATLAS STATE, which the compute pass depends on (the V9 answer):
-//   * the replay leaves the atlas in SHADER_READ with a barrier of stage GRAPHICS (local_shadow.cpp, after the pass): on D3D12 that is PIXEL_SHADER_RESOURCE only,
-//     which a compute shader may not read (NON_PIXEL_SHADER_RESOURCE is the compute state; the debug layer says so); on Vulkan the barrier's destination stage is
-//     the fragment shader only. The volume's inject is a compute pass, so the replay's last barrier has to name both stages (GRAPHICS | COMPUTE: D3D12
-//     ALL_SHADER_RESOURCE, Vulkan fragment and compute): one line in local_shadow.cpp, `list->barriers(plume::RenderBarrierStages(GRAPHICS | COMPUTE), read)`.
-//     The volume cannot do it itself: LocalShadow hands out the slot and not the texture, and Plume's D3D12 barrier needs the texture. (needs: that line.)
+//   * the replay used to leave the atlas in SHADER_READ with a barrier of stage GRAPHICS only (local_shadow.cpp, after the pass): on D3D12 that is PIXEL_SHADER_RESOURCE,
+//     which a compute shader may not read (NON_PIXEL_SHADER_RESOURCE is the compute state; the debug layer says so); on Vulkan the barrier's destination stage was
+//     the fragment shader only. The volume's inject is a compute pass, so the replay's last barrier now names both stages (GRAPHICS | COMPUTE: D3D12
+//     ALL_SHADER_RESOURCE, Vulkan fragment and compute): `list->barriers(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE, read)`.
+//     The volume cannot do it itself: LocalShadow hands out the slot and not the texture, and Plume's D3D12 barrier needs the texture.
 //   * the descriptor: the bindless heap's texture set (the same Texture2D<float4>[] the inject reads the history through); the depth plane reads as `.x`.
 //   * a point sampler's compare is the reader's (the inject uses Load and weights four compares by the texel fraction): no sampler slot is used.
 // The set and the maps are consistent within the frame (the set does not change until the next present, the maps were made for it); one frame of latency
@@ -42,8 +43,8 @@
 namespace mcla::gpu::volumetrics {
 
 // The rig's look (headlight_rig_rules.h kPeak and kFalloffDistance): the volume's headlight term has to be the same light.
-inline constexpr float kHeadlightPeak = 2.4f;
-inline constexpr float kHeadlightFalloffDistance = 9.0f;
+inline constexpr float kHeadlightPeak = 2.0f;
+inline constexpr float kHeadlightFalloffDistance = 26.0f;
 
 // A VolLamp made from a Headlight (FillHeadlights) in the volume's units: colour x kPeak x D^2 and the near radius squared D^2 (volumetrics_lamps.h
 // LampNearSq: pad[0]), so that its term is the lit shaders' kPeak / (1 + (d / D)^2) for any distance.
