@@ -53,6 +53,9 @@ inline constexpr double kMaxRadius = 60.0;        // metres: the most a debug ov
 inline constexpr float kCarRadius = 1.6f;
 // A car's body centre is the mean of its parts' origins, put this far up (the world's y) so that it is inside the body, not under it.
 inline constexpr double kCentreRise = 0.6;
+// The IDs a listed car may have: the game's stencil IDs (CarSelector::kSlots) and, above them, the cars placed from memory (car_rt_memory_rules.h
+// kRememberedIdBase = kSlots, at most kMaxCars of them at a time, with room to spare).
+inline constexpr uint32_t kRememberedIds = 16;
 
 struct Limits {
   uint32_t cars = 0;             // the most other cars in the scene (0: none, nothing of this is collected)
@@ -195,6 +198,9 @@ class CarSelector {
   uint32_t kept_ = 0;
 };
 
+// The IDs a listed car may have (AppendOthers' slot table): the game's, then those of the cars placed from memory.
+inline constexpr uint32_t kIdSpace = CarSelector::kSlots + kRememberedIds;
+
 // ---------------------------------------------------------------------------
 // a car's draws and its body centre
 // ---------------------------------------------------------------------------
@@ -226,10 +232,19 @@ struct OtherDraw {
 
 // One kept car: its ID, its distance and the running sum of the origins of its draws.
 struct OtherCar {
+  // The game's own stencil IDs are under CarSelector::kSlots; a car placed from memory (car_rt_memory_rules.h: the camera does not see it this frame, its
+  // draws are its kit placed at the vehicle's matrix) has an ID from kRememberedIdBase on and `remembered` set.
   uint32_t stencil_id = 0;
-  double distance = std::numeric_limits<double>::infinity();  // metres from the player's vehicle, its nearest draw
+  double distance = std::numeric_limits<double>::infinity();  // metres from the player's vehicle, its nearest draw (a remembered car's: its vehicle's)
   double sum[3] = {};
   uint32_t draws = 0;
+  bool remembered = false;
+  // A car built from its own model data (car_model_rt_rules.h; remembered is set too: the camera does not draw it, the history holds nothing of it).
+  bool walked = false;
+  // The car's paint colour where it is known (the game's customisation record: a walked car's, or a remembered car's matched to a walked car at the same place):
+  // the hidden hits of the car show it instead of the fixed grey (hlsl/car_rt_refl_cs.hlsl OtherCarColour).
+  bool has_paint = false;
+  float paint[3] = {};
 
   void Add(const temporal::Mat4& model_to_world, double draw_distance) {
     for (int c = 0; c < 3; ++c) {
@@ -255,9 +270,22 @@ struct OtherCar {
 // the same table as the instances' rows (the table's rows are uint4), after them; an instance of another car names it with `draw`.
 struct CarRow {
   float centre[3] = {};
+  // > 0: the car's colour is sampled from the history round `centre`; 0: no colour is known (the car's hidden hits are misses); < 0 (-kCarRadius): a car
+  // placed from memory (OtherCar::remembered): the camera does not see it, the history holds nothing of it, and the shader shows it in its paint (the second row) or a fixed grey, both in the
+  // paint's units and multiplied by 2^exp_bias in the pass, then made darker by the shade (hlsl/car_rt_refl_cs.hlsl OtherCarColour, car_rt_refl_rules.h kRememberedCarColour).
   float radius = 0.0f;
 };
 static_assert(sizeof(CarRow) == sizeof(rr::InstanceRow), "a car's row is one uint4, as an instance's");
+
+// The second row of a car's record (hlsl/car_rt_common.hlsli CarRtCar::paint): its paint colour as float bits and a flags word (bit 0: the colour is known).
+struct CarPaintRow {
+  float rgb[3] = {};
+  uint32_t flags = 0;
+};
+static_assert(sizeof(CarPaintRow) == sizeof(rr::InstanceRow), "a car's paint row is one uint4, as an instance's");
+// A listed car's record is TWO rows (CarRow, then CarPaintRow); an instance of the car names the first.
+inline constexpr uint32_t kCarRows = 2;
+inline constexpr uint32_t kPaintKnown = 1;
 
 // A world-space point in the frame's view space (the AO's: z forward): `view` is the row-vector world-to-view matrix, `flip_z` the game's own
 // view's negated z (car_rt_scene_rules.h PackInstanceTransform does the same to an instance).
@@ -418,11 +446,30 @@ struct ListStats {
   uint32_t other_instances = 0;
   uint32_t other_chrome = 0;     // ... of which draws of the chrome's shader (they also carry kMaskOtherChrome)
   uint32_t cars = 0;             // other cars in the list
-  uint32_t cars_cut = 0;         // kept cars left out: their draws did not fit the instance budget
+  uint32_t cars_cut = 0;         // kept cars left out: their draws did not fit the instance budget (or the class's count of cars)
+  uint32_t remembered_cars = 0;       // ... of `cars`: placed from memory, not drawn this frame (car_rt_memory_rules.h)
+  uint32_t remembered_instances = 0;  // ... and their instances (counted in other_instances too)
+  uint32_t walked_cars = 0;           // ... of `cars` (and of the remembered ones): built from the car's own model data (car_model_rt_rules.h)
+  uint32_t walked_instances = 0;
+  uint32_t painted_cars = 0;          // cars whose record carries a paint colour
   uint32_t missing_mesh = 0;     // draws left out: their mesh has no structure yet
   uint32_t bad_matrix = 0;
   uint32_t distinct_meshes = 0;  // distinct mesh keys over all instances (one structure each, shared by every instance of it)
   uint32_t shared_meshes = 0;    // ... of those named by more than one instance
+};
+
+// What a car's two rows hold, for the logs (the proof of the paint: the value the CPU wrote into the table, to be matched with what the shader read back,
+// car_rt_scene_rules.h DecodeProbe): in the order of the rows, `slot` the car's place among the cars' records (its first row is car_row + slot * kCarRows).
+struct CarRecordLog {
+  uint32_t slot = 0;
+  uint32_t stencil_id = 0;
+  bool remembered = false;
+  bool walked = false;
+  bool has_paint = false;
+  float centre[3] = {};
+  float radius = 0.0f;
+  float paint[3] = {};
+  double distance = std::numeric_limits<double>::infinity();
 };
 
 // The frame's instances and the rows of the table. rows[i] belongs to items[i]; after the items come the other cars' rows (CarRow), which an
@@ -435,6 +482,9 @@ struct List {
   // inside these and the player's own box (hlsl/car_rt_ao_cs.hlsl).
   std::vector<ViewBox> boxes;
   uint32_t box_row = 0;
+  // The first row of the cars' records (two rows a car, CarRow then CarPaintRow: stats.cars of them, ending at box_row) and what each holds.
+  uint32_t car_row = 0;
+  std::vector<CarRecordLog> records;
   // The player's own car's box in the frame's view space: its listed instances' transformed mesh boxes (the same kind of box as `boxes`, tight to what
   // the scene holds of the car). Not valid when no listed instance has a mesh box. The check's scope (car_rt_scene_rules.h) places a pixel in it.
   ViewBox player_box;
@@ -444,14 +494,17 @@ struct List {
     rows.clear();
     boxes.clear();
     box_row = 0;
+    car_row = 0;
+    records.clear();
     player_box = ViewBox{};
     stats = ListStats{};
   }
 };
 
-// The kept cars, nearest first, as whole cars while their draws fit `budget` instances; the rest are cut. Returns the ones kept as indices into
-// `cars`, in the order they are to be listed.
-inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_t budget, uint32_t* cut = nullptr) {
+// The kept cars, nearest first, as whole cars while their draws fit `budget` instances and there are at most `max_cars` of them (0: no count: the drawn cars'
+// own selection already holds the class's count; with the cars placed from memory among them the plan keeps the nearest `max_cars` of all, by the distance
+// to the player and not by the screen); the rest are cut. Returns the ones kept as indices into `cars`, in the order they are to be listed.
+inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_t budget, uint32_t* cut = nullptr, uint32_t max_cars = 0) {
   std::vector<uint32_t> order;
   order.reserve(cars.size());
   for (uint32_t i = 0; i < cars.size(); ++i) {
@@ -463,7 +516,7 @@ inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_
   std::vector<uint32_t> kept;
   uint32_t used = 0, dropped = 0;
   for (const uint32_t i : order) {
-    if (used + cars[i].draws <= budget) {
+    if ((max_cars == 0 || kept.size() < max_cars) && used + cars[i].draws <= budget) {
       kept.push_back(i);
       used += cars[i].draws;
     } else {
@@ -482,25 +535,28 @@ inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_
 // its `draw` field.
 template <typename Find>
 inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const std::vector<OtherCar>& cars, const temporal::Mat4& view,
-                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find) {
+                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find, uint32_t max_cars = 0) {
   const uint32_t have = uint32_t(list->items.size());
   const uint32_t room = max_total > have ? max_total - have : 0;
   uint32_t cut = 0;
-  const std::vector<uint32_t> plan = PlanCars(cars, std::min(budget_instances, room), &cut);
+  const std::vector<uint32_t> plan = PlanCars(cars, std::min(budget_instances, room), &cut, max_cars);
   list->stats.cars_cut += cut;
   if (plan.empty()) {
     return;
   }
-  // The slot of a car in the list: its place in the plan; the row of the car comes after all the items.
-  std::array<int32_t, CarSelector::kSlots> slot_of;
+  // The slot of a car in the list: its place in the plan; the row of the car comes after all the items. The IDs are the game's (under CarSelector::kSlots) and,
+  // for the cars placed from memory, kRememberedIdBase (= kSlots) up to kSlots + kRememberedIds.
+  std::array<int32_t, kIdSpace> slot_of;
   slot_of.fill(-1);
   for (uint32_t k = 0; k < plan.size(); ++k) {
-    slot_of[cars[plan[k]].stencil_id % CarSelector::kSlots] = int32_t(k);
+    if (cars[plan[k]].stencil_id < kIdSpace) {
+      slot_of[cars[plan[k]].stencil_id] = int32_t(k);
+    }
   }
   const size_t first_other = list->items.size();
   std::vector<ViewBox> car_boxes(plan.size());
   for (const OtherDraw& draw : draws) {
-    const int32_t slot = draw.stencil_id < CarSelector::kSlots ? slot_of[draw.stencil_id] : -1;
+    const int32_t slot = draw.stencil_id < kIdSpace ? slot_of[draw.stencil_id] : -1;
     if (slot < 0 || list->items.size() >= max_total) {
       continue;
     }
@@ -517,27 +573,56 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
       continue;
     }
     list->items.push_back(item);
-    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot)));
+    list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot) * kCarRows));
     GrowBox(&car_boxes[size_t(slot)], item.transform, ref);
     ++list->stats.other_instances;
     list->stats.other_chrome += (item.mask & rr::kMaskOtherChrome) != 0 ? 1u : 0u;
+    list->stats.remembered_instances += cars[plan[size_t(slot)]].remembered ? 1u : 0u;
+    list->stats.walked_instances += cars[plan[size_t(slot)]].walked ? 1u : 0u;
   }
-  // The cars' rows follow the instances' (the table's rows are all uint4); the instances name them by row.
+  // The cars' records follow the instances' (the table's rows are all uint4: two a car, CarRow then CarPaintRow); the instances name the first by row.
   const uint32_t car_rows = uint32_t(list->items.size());
+  list->car_row = car_rows;
   for (size_t i = first_other; i < list->rows.size(); ++i) {
     list->rows[i].draw += car_rows;
   }
   for (const uint32_t index : plan) {
     CarRow row;
-    row.radius = kCarRadius;
+    row.radius = cars[index].remembered ? -kCarRadius : kCarRadius;
     double centre[3];
     if (!cars[index].Centre(centre) || !ViewPoint(view, flip_z, centre, row.centre)) {
       row.radius = 0.0f;  // no centre: the shader finds no colour for this car (its hidden hits are misses)
     }
+    list->stats.remembered_cars += cars[index].remembered ? 1u : 0u;
+    list->stats.walked_cars += cars[index].walked ? 1u : 0u;
     rr::InstanceRow raw;
     static_assert(sizeof(raw) == sizeof(row));
     std::memcpy(&raw, &row, sizeof(raw));
     list->rows.push_back(raw);
+    CarPaintRow paint;
+    if (cars[index].has_paint) {
+      for (int c = 0; c < 3; ++c) {
+        paint.rgb[c] = cars[index].paint[c];
+      }
+      paint.flags = kPaintKnown;
+      ++list->stats.painted_cars;
+    }
+    static_assert(sizeof(raw) == sizeof(paint));
+    std::memcpy(&raw, &paint, sizeof(raw));
+    list->rows.push_back(raw);
+    CarRecordLog log;
+    log.slot = list->stats.cars;
+    log.stencil_id = cars[index].stencil_id;
+    log.remembered = cars[index].remembered;
+    log.walked = cars[index].walked;
+    log.has_paint = cars[index].has_paint;
+    for (int c = 0; c < 3; ++c) {
+      log.centre[c] = row.centre[c];
+      log.paint[c] = paint.rgb[c];
+    }
+    log.radius = row.radius;
+    log.distance = cars[index].distance;
+    list->records.push_back(log);
     ++list->stats.cars;
   }
   // The boxes' rows after the cars' (a car none of whose draws is listed has no box and no rows).

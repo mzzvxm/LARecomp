@@ -367,6 +367,36 @@ void TestScope() {
   Check(rr::kScopeFlagPlayerBox == 1u, "the player's box flag is bit 0");
 }
 
+
+// The probe (RT-MODEL-CARS-4): the first cars' two rows as the shader read them, against what the host wrote.
+void TestProbe() {
+  Check(rr::kStatProbe == 20 && rr::kProbeCars == 4 && rr::kProbeWordsPerCar == 8 && rr::kStatsWords == rr::kStatProbe + rr::kProbeCars * rr::kProbeWordsPerCar,
+        "the probe's words follow the counters'");
+  Check(rr::kStatsWords % 4 == 0 && rr::kStatOthers < rr::kStatProbe, "the buffer is a multiple of 16 bytes and the probe overlaps no counter");
+  uint32_t words[rr::kStatsWords] = {};
+  // car 0: centre (1, 2, 3), radius -1.6 (not drawn), paint (0.25, 0.125, 0.0625) known; car 1: a car with no paint
+  const float rows[2][8] = {{1.0f, 2.0f, 3.0f, -1.6f, 0.25f, 0.125f, 0.0625f, 0.0f}, {4.0f, 5.0f, 6.0f, 1.6f, 0.0f, 0.0f, 0.0f, 0.0f}};
+  std::memcpy(words + rr::kStatProbe, rows[0], sizeof(rows[0]));
+  std::memcpy(words + rr::kStatProbe + rr::kProbeWordsPerCar, rows[1], sizeof(rows[1]));
+  words[rr::kStatProbe + 7] = 1u;  // flags: the paint is known
+  const rr::ProbeCar a = rr::DecodeProbe(words, 0, 2);
+  const rr::ProbeCar b = rr::DecodeProbe(words, 1, 2);
+  Check(a.read && Near(a.centre[0], 1.0) && Near(a.centre[2], 3.0) && Near(a.radius, -1.6) && Near(a.paint[0], 0.25) && Near(a.paint[2], 0.0625) && a.flags == 1u,
+        "a car's two rows are decoded: centre, radius, paint, flags");
+  Check(b.read && Near(b.radius, 1.6) && b.flags == 0u && b.paint[0] == 0.0f, "a car with no paint: zeros and no flag");
+  Check(!rr::DecodeProbe(words, 2, 2).read && !rr::DecodeProbe(words, 4, 9).read, "a slot past the cars' count or past the probe's cars is not read");
+  const float centre0[3] = {1.0f, 2.0f, 3.0f};
+  const float paint0[3] = {0.25f, 0.125f, 0.0625f};
+  Check(rr::ProbeMatches(a, centre0, -1.6f, true, paint0), "the shader read exactly the bits the host wrote");
+  const float paint_off[3] = {0.25f, 0.125f, 0.0626f};
+  Check(!rr::ProbeMatches(a, centre0, -1.6f, true, paint_off), "one bit of a colour different: not the same");
+  Check(!rr::ProbeMatches(a, centre0, -1.6f, false, paint0), "the host wrote no paint but the shader read one: not the same");
+  const float centre1[3] = {4.0f, 5.0f, 6.0f};
+  const float none[3] = {0.0f, 0.0f, 0.0f};
+  Check(rr::ProbeMatches(b, centre1, 1.6f, false, none), "a car with no paint: zeros and a clear flag are the same");
+  Check(!rr::ProbeMatches(rr::ProbeCar{}, centre1, 1.6f, false, none), "a slot that was not read is never the same");
+}
+
 // The shader counts into the header's words with the header's edges and unit.
 void TestShaderParity(const std::string& folder) {
   std::ifstream in(folder + "/hlsl/car_rt_check_cs.hlsl", std::ios::binary);
@@ -407,6 +437,13 @@ void TestShaderParity(const std::string& folder) {
             has("row = g_push.scope.x + b * 2u"),
         "the shader reads the other cars' boxes as the table has them");
   Check(has("uint4 scope;") && has("float4 box_min;") && has("float4 box_max;"), "the shader's push block has the scope");
+  // the probe
+  Check(has("kStatProbe = " + std::to_string(rr::kStatProbe)) && has("kProbeCars = " + std::to_string(rr::kProbeCars)) && has("kProbeWordsPerCar = " + std::to_string(rr::kProbeWordsPerCar)),
+        "the shader's probe words are the header's");
+  Check(has("(g_push.slots.w >> 16) & 0xFFu") && has("const uint row = g_push.scope.w + k * 2u;") && has("gCarRtInstances[row + 1u]") && has("gStats.Store4((kStatProbe + k * kProbeWordsPerCar) * 4u, centre)") &&
+            has("gStats.Store4((kStatProbe + k * kProbeWordsPerCar + 4u) * 4u, paint)") && has("if (id.x == 0u && id.y == 0u)"),
+        "the shader's probe reads the cars' records from scope.w, as many as bits 16 to 23 of slots.w say, and stores them raw from word kStatProbe");
+  Check(has("mode == 3u") && has("CarRtLoadCar(hit_instance)") && has("CAR_RT_MASK_OTHERS"), "view 3 shows another car's paint row as the shader's own load reads it");
   Check(has("kScopeOutside : kScopePlayer"), "without the player's box the shader counts the pixel as the player's");
   Check(has("!outside") && has("Count(kStatOutside, WaveActiveCountBits(outside))"), "the pixels outside are counted apart and not traced");
   std::ifstream common(folder + "/hlsl/car_rt_common.hlsli", std::ios::binary);
@@ -435,6 +472,7 @@ int main(int argc, char** argv) {
   TestEviction();
   TestStats();
   TestScope();
+  TestProbe();
   if (argc > 1) {
     TestShaderParity(argv[1]);
   }

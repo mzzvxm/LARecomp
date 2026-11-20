@@ -22,6 +22,7 @@
 #include <functional>
 
 #include "car_frame.h"
+#include "car_model_rt_rules.h"
 #include "car_rt_instances_rules.h"
 
 namespace mcla::gpu {
@@ -33,13 +34,28 @@ class CarRtInstances {
   // The limits of the other cars in force now: the graphics class's cell with the two debug overrides (mcla_gpu_car_rt_cars, mcla_gpu_car_rt_cars_radius).
   // Reads the cvars: once a frame, by the scene's Request.
   car_rt_instances::Limits CurrentLimits() const;
+  // Whether the cars the camera does not see are placed from memory (mcla_gpu_car_rt_cars_memory, debug, live).
+  bool RememberedOn() const;
+  // How the cars built from their own model data are taken (mcla_gpu_car_rt_cars_model, debug, live; car_model_rt_rules.h Mode).
+  car_model_rt::Mode ModelMode() const;
+  // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
+  double MatchMetres() const;
 
   // This frame's list. `flip_z` and `glass_rule` as the scene decided them for the player's car (the other cars' instances all take the mask
   // CAR_RT_MASK_OTHERS, and CAR_RT_MASK_OTHER_CHROME as well for a draw of the chrome's shader; flagged when drawn after the world). `find(key, &ref)` says whether a mesh has a structure and where its indices and
   // vertices are in the shared buffers; the scene marks the mesh seen in it.
+  // `extra_cars` / `extra_draws`: the cars placed from memory (car_rt_memory_rules.h: cars the camera does not see this frame, their kits placed at their
+  // vehicles' matrices), appended to the frame's own kept cars and ranked with them by the distance to the player, within the class's count of cars.
+  // `paints`: the cars the model walk knows (car_model_rt_rules.h CarInfo, with the paint of each from the game's customisation record): a car the camera DRAWS whose
+  // draws are at a walked car's place gets that car's paint colour in its record, so that its hidden hits show the paint where the history has no colour of the car (the
+  // neighbour beside the door: the game draws it, the camera does not see it). Null or empty: no drawn car has a paint.
   const car_rt_instances::List& Build(const car_frame::Frame& frame, const car_rt_instances::Limits& limits, bool flip_z, bool glass_rule,
-                                      const FindMesh& find);
+                                      const FindMesh& find, const std::vector<car_rt_instances::OtherCar>* extra_cars = nullptr,
+                                      const std::vector<car_rt_instances::OtherDraw>* extra_draws = nullptr,
+                                      const std::vector<car_model_rt::CarInfo>* paints = nullptr);
   const car_rt_instances::List& list() const { return list_; }
+  // How many cars the camera draws got a paint colour from the walk in the last Build.
+  uint32_t drawn_painted() const { return drawn_painted_; }
 
   // What the scene did for the other cars' meshes, kept for the log (the scene adds to it as it works; the log window resets it).
   struct Work {
@@ -60,15 +76,21 @@ class CarRtInstances {
     uint32_t frames = 0;
     uint32_t frames_with_cars = 0;
     uint64_t player_sum = 0, other_sum = 0, chrome_sum = 0, cars_sum = 0, missing_sum = 0, bad_sum = 0, cut_sum = 0;
-    uint32_t player_max = 0, other_max = 0, chrome_max = 0, cars_max = 0, distinct_max = 0, shared_max = 0;
+    uint64_t remembered_cars_sum = 0, remembered_instances_sum = 0;
+    uint32_t frames_with_remembered = 0;
+    uint32_t player_max = 0, other_max = 0, chrome_max = 0, cars_max = 0, distinct_max = 0, shared_max = 0, remembered_max = 0;
     uint64_t built_at_start = 0;
   };
 
   car_rt_instances::List list_;
+  std::vector<car_rt_instances::OtherCar> merged_cars_;    // the frame's cars and the remembered ones, for Build
+  std::vector<car_rt_instances::OtherDraw> merged_draws_;
   Window window_;
   Work window_work_;
   bool started_ = false;
   bool first_cars_logged_ = false;
+  bool first_remembered_logged_ = false;
+  uint32_t drawn_painted_ = 0;
 };
 
 }  // namespace mcla::gpu

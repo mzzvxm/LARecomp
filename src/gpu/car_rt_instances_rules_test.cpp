@@ -263,6 +263,19 @@ void TestPlan() {
   Check(plan == std::vector<uint32_t>({1, 0}) && cut == 1, "a small car farther away still fits where a larger one did not");
   plan = ci::PlanCars(cars, 0, &cut);
   Check(plan.empty() && cut == 3, "no room, no cars");
+  // The count of cars (the class's, with the cars placed from memory among the drawn ones): the nearest N of all, by distance.
+  cars[0].draws = 100;
+  plan = ci::PlanCars(cars, 500, &cut, 2);
+  Check(plan == std::vector<uint32_t>({1, 2}) && cut == 1, "a count of two keeps the nearest two");
+  plan = ci::PlanCars(cars, 500, &cut, 0);
+  Check(plan.size() == 3 && cut == 0, "a count of 0 is no count");
+  plan = ci::PlanCars(cars, 500, &cut, 9);
+  Check(plan.size() == 3 && cut == 0, "a count above the cars there are changes nothing");
+  // A remembered car (an ID above the game's) counts like any other and keeps its place by distance.
+  cars.push_back(MakeCar(ci::CarSelector::kSlots + 1, 2.0, 60));
+  cars.back().remembered = true;
+  plan = ci::PlanCars(cars, 500, &cut, 2);
+  Check(plan == std::vector<uint32_t>({4, 1}) && cut == 2, "a remembered car nearer than the drawn ones takes a place of the count");
 }
 
 void TestAppend() {
@@ -297,10 +310,10 @@ void TestAppend() {
   std::vector<ci::OtherDraw> draws = {Draw(2, 100, 3.0, 0.0, -9.0), Draw(2, 101, 3.0, 0.0, -9.0), Draw(3, 100, -3.0, 0.0, -6.0),
                                       Draw(2, 555, 3.0, 0.0, -9.0), Draw(3, 102, -3.0, 0.0, -6.0, true)};
   ci::AppendOthers(&list, draws, cars, view, /*flip_z=*/true, 640, rr::kMaxInstances, find);
-  // The rows: the player's two, the four instances, a row for each car, then two rows (minimum, maximum) for the box of each car that has an instance.
-  Check(list.items.size() == 2 + 4 && list.rows.size() == 2 + 4 + 2 + 2 * 2,
-        "the player's two, four instances of the other cars (one had no structure), a row for each car, two rows for each car's box");
-  Check(list.box_row == 2 + 4 + 2 && list.boxes.size() == 2, "the boxes' rows start after the cars' rows, one box a car");
+  // The rows: the player's two, the four instances, TWO rows for each car (its record, then its paint), then two rows (minimum, maximum) for the box of each car that has an instance.
+  Check(list.items.size() == 2 + 4 && list.rows.size() == 2 + 4 + 2 * ci::kCarRows + 2 * 2,
+        "the player's two, four instances of the other cars (one had no structure), two rows for each car, two rows for each car's box");
+  Check(list.box_row == 2 + 4 + 2 * ci::kCarRows && list.boxes.size() == 2, "the boxes' rows start after the cars' rows, one box a car");
   Check(list.stats.other_instances == 4 && list.stats.cars == 2 && list.stats.missing_mesh == 1 && list.stats.bad_matrix == 0 && list.stats.cars_cut == 0,
         "the numbers of the list");
   // The instances keep the draws' order; every one has the others' mask.
@@ -313,16 +326,20 @@ void TestAppend() {
   Check(list.rows[3].first_index == 300 && list.rows[3].first_vertex == 120 && list.rows[5].first_index == 900 && list.rows[5].first_vertex == 400,
         "the rows say where each mesh is in the shared buffers");
   Check((list.rows[5].flags & rr::kFlagAfterWorld) != 0 && (list.rows[2].flags & rr::kFlagAfterWorld) == 0, "the after-world flag follows the draw");
-  // The cars' rows follow the instances: the nearest car (ID 3) is row 6, the farther (ID 2) row 7.
-  Check(list.rows[2].draw == 7 && list.rows[3].draw == 7 && list.rows[4].draw == 6 && list.rows[5].draw == 6, "an instance names its car's row");
+  // The cars' records follow the instances, two rows each: the nearest car (ID 3) is rows 6 and 7, the farther (ID 2) rows 8 and 9.
+  Check(list.rows[2].draw == 8 && list.rows[3].draw == 8 && list.rows[4].draw == 6 && list.rows[5].draw == 6, "an instance names its car's first row");
   Check(list.rows[0].draw == 0 && list.rows[1].draw == 1, "the player's rows are as they were");
   ci::CarRow row3, row2;
   std::memcpy(&row3, &list.rows[6], sizeof(row3));
-  std::memcpy(&row2, &list.rows[7], sizeof(row2));
+  std::memcpy(&row2, &list.rows[8], sizeof(row2));
   Check(row3.radius > 0.0f && row2.radius > 0.0f, "the cars' rows hold their cars (not the boxes')");
   // Car 3's origin at (-3, 0, -6) raised by kCentreRise; with the flipped view its z is +6.
   Check(Near(row3.centre[0], -3.0) && Near(row3.centre[1], ci::kCentreRise) && Near(row3.centre[2], 6.0) && Near(row3.radius, ci::kCarRadius), "a car's row: the centre in view space and the radius");
   Check(Near(row2.centre[0], 3.0) && Near(row2.centre[2], 9.0), "the other car's row");
+  // the second row of each record is the paint: none here (no car had a colour)
+  ci::CarPaintRow paint3;
+  std::memcpy(&paint3, &list.rows[7], sizeof(paint3));
+  Check(paint3.flags == 0 && list.stats.painted_cars == 0, "a car with no paint colour has a paint row with the known flag clear");
   // The instance's transform is the draw's model through the view, flipped.
   float expected[3][4];
   Check(rr::PackInstanceTransform(Translation(-3.0, 0.0, -6.0), view, true, expected), "the reference transform");
@@ -369,7 +386,7 @@ void TestAppendLimits() {
   bad_draws[0].model_to_world.m[0][0] = bad_draws[0].model_to_world.m[1][1] = bad_draws[0].model_to_world.m[2][2] = 0.0;  // no volume
   std::vector<ci::OtherCar> one = {MakeCar(2, 3.0, 1)};
   ci::AppendOthers(&bad, bad_draws, one, view, true, 640, rr::kMaxInstances, find);
-  Check(bad.items.empty() && bad.stats.bad_matrix == 1 && bad.stats.cars == 1 && bad.rows.size() == 1, "a matrix with no volume is no instance; the car keeps its row");
+  Check(bad.items.empty() && bad.stats.bad_matrix == 1 && bad.stats.cars == 1 && bad.rows.size() == ci::kCarRows, "a matrix with no volume is no instance; the car keeps its row");
   // No car, no draw: nothing appended.
   ci::List nothing;
   ci::AppendOthers(&nothing, draws, {}, view, true, 640, rr::kMaxInstances, find);
@@ -494,7 +511,7 @@ void TestCarBoxes() {
   Check(far_box.min[2] > 11.0 && far_box.max[2] < 16.5 && far_box.min[0] > 1.5, "the farther car's box is 14 m out, to the right");
   Check(near_box.max[0] < far_box.min[0], "the two boxes are apart: a box round both would hold the road between them");
   // The rows: [items 0..3][cars' rows 4..6][boxes' rows 7..10]; each box two rows, min then max, as float bits.
-  Check(list.box_row == 7 && list.rows.size() == 4 + 3 + 4, "the boxes' rows follow the three cars' rows");
+  Check(list.box_row == 4 + 3 * ci::kCarRows && list.rows.size() == 4 + 3 * ci::kCarRows + 4, "the boxes' rows follow the three cars' records");
   bool rows_match = true;
   for (size_t k = 0; k < list.boxes.size(); ++k) {
     float lo[4], hi[4];
@@ -510,8 +527,8 @@ void TestCarBoxes() {
   }
   Check(rows_match, "the rows hold each box's minimum and maximum as the shader reads them");
   // An instance still names its car's row (the boxes' rows came after them).
-  Check(list.rows[0].draw == 5 || list.rows[0].draw == 4 || list.rows[0].draw == 6, "an instance names its car's row");
-  Check(list.rows[2].draw >= 4 && list.rows[2].draw <= 6, "... which is before the boxes' rows");
+  Check(list.rows[0].draw >= 4 && list.rows[0].draw <= 8 && list.rows[0].draw % 2 == 0, "an instance names its car's first row");
+  Check(list.rows[2].draw >= 4 && list.rows[2].draw <= 8 && list.rows[2].draw % 2 == 0, "... which is before the boxes' rows");
 
   // The player's own box (the check's scope): grown instance by instance as CarRtInstances::Build does, tight to the car's parts, empty after Clear.
   Check(!list.player_box.valid, "no player box until an instance of the player's car is grown into it");
@@ -530,6 +547,51 @@ void TestCarBoxes() {
 
 }  // namespace
 
+// A walked car's record carries its paint in the second row, and walked / painted cars are counted.
+void TestPaintRows() {
+  const tp::Mat4 view = tp::Identity();
+  const auto find = [&](uint64_t key, ci::MeshRef* ref) {
+    *ref = ci::MeshRef{uint32_t(key) * 10u, uint32_t(key) * 4u};
+    return key != 0;
+  };
+  ci::List list;
+  ci::OtherCar a = MakeCar(ci::CarSelector::kSlots + 8, 3.0, 2, 2.0, -5.0);  // a walked car with its paint
+  a.remembered = true;
+  a.walked = true;
+  a.has_paint = true;
+  a.paint[0] = 0.25f;
+  a.paint[1] = 0.5f;
+  a.paint[2] = 0.75f;
+  ci::OtherCar b = MakeCar(ci::CarSelector::kSlots + 0, 6.0, 1, -2.0, -8.0);  // a remembered car with none
+  b.remembered = true;
+  std::vector<ci::OtherCar> cars = {a, b};
+  std::vector<ci::OtherDraw> draws = {Draw(a.stencil_id, 7, 2.0, 0.0, -5.0), Draw(a.stencil_id, 8, 2.0, 0.0, -5.0), Draw(b.stencil_id, 9, -2.0, 0.0, -8.0)};
+  ci::AppendOthers(&list, draws, cars, view, true, 640, rr::kMaxInstances, find);
+  Check(list.items.size() == 3 && list.stats.cars == 2 && list.stats.walked_cars == 1 && list.stats.walked_instances == 2 && list.stats.painted_cars == 1,
+        "two cars, one walked (two instances) and one painted");
+  // the records: car a (nearer) rows 3 and 4, car b rows 5 and 6, the boxes after
+  Check(list.rows[0].draw == 3 && list.rows[1].draw == 3 && list.rows[2].draw == 5, "the instances name the first row of their car's record");
+  ci::CarRow ra, rb;
+  ci::CarPaintRow pa, pb;
+  std::memcpy(&ra, &list.rows[3], sizeof(ra));
+  std::memcpy(&pa, &list.rows[4], sizeof(pa));
+  std::memcpy(&rb, &list.rows[5], sizeof(rb));
+  std::memcpy(&pb, &list.rows[6], sizeof(pb));
+  Check(ra.radius < 0.0f && rb.radius < 0.0f, "both cars are remembered: no history colour (a negative radius)");
+  Check((pa.flags & ci::kPaintKnown) != 0 && Near(pa.rgb[0], 0.25) && Near(pa.rgb[1], 0.5) && Near(pa.rgb[2], 0.75), "the walked car's paint is in its second row");
+  Check(pb.flags == 0 && pb.rgb[0] == 0.0f, "a car with no paint: the flag is clear");
+  Check(list.box_row == 3 + 2 * ci::kCarRows, "the boxes' rows follow the two records");
+  // the log of the records (RT-MODEL-CARS-4): the first row of the records and what each holds, in the order of the rows, for the probe to compare with the shader's reads
+  Check(list.car_row == 3 && list.records.size() == 2 && list.records[0].slot == 0 && list.records[1].slot == 1, "the records' first row and a log entry a car, in the rows' order");
+  Check(list.records[0].has_paint && Near(list.records[0].paint[0], 0.25) && Near(list.records[0].paint[2], 0.75) && list.records[0].walked && list.records[0].remembered &&
+            list.records[0].radius == ra.radius && list.records[0].stencil_id == a.stencil_id,
+        "the log holds the paint, the radius and the flags written for the nearer car");
+  Check(!list.records[1].has_paint && list.records[1].paint[0] == 0.0f && !list.records[1].walked && list.records[1].radius == rb.radius, "a car with no paint: none logged, zeros");
+  Check(list.car_row + list.stats.cars * ci::kCarRows == list.box_row, "the records end where the boxes begin");
+  list.Clear();
+  Check(list.records.empty() && list.car_row == 0, "Clear empties the log of the records");
+}
+
 int main() {
   TestLimits();
   TestSelector();
@@ -540,6 +602,7 @@ int main() {
   TestAppendLimits();
   TestBounds();
   TestCarBoxes();
+  TestPaintRows();
   std::printf("car_rt_instances_rules_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

@@ -50,6 +50,7 @@
 #include "car_dump_rules.h"
 #include "car_frame_rules.h"
 #include "car_mesh_read.h"
+#include "car_model_walk.h"
 #include "car_rt_instances_rules.h"
 #include "constants.h"
 #include "geometry.h"
@@ -140,6 +141,17 @@ struct Frame {
   // vehicle, each draw with a mesh key. Empty where nobody asks for them. Valid together with the player's: the distances are from the vehicle.
   std::vector<OtherCar> other_cars;
   std::vector<OtherDraw> other_draws;
+  // For the cars the camera does not see (car_rt_memory_rules.h): read in the frame when the other cars are asked for, from the first vehicle draw on.
+  //   - `vehicles`: the game's own vehicles (the opponent manager's racers, the ambient manager's live cars) within the scan radius of the player's vehicle,
+  //     the player's own left out, each with its world matrix; `vehicles_valid`: the lists were read (an empty list then says nobody is near).
+  //   - `player_vehicle`: the player's vehicle position (the distance the other cars are ranked by).
+  //   - `seen_cars`: every stencil ID of another car the frame drew (kept or not) with the sum of its draws' gWorld translations, so that a car the selection
+  //     did not keep still covers its vehicle.
+  bool vehicles_valid = false;
+  bool player_vehicle_known = false;
+  double player_vehicle[3] = {};
+  std::vector<car_rt_memory::VehicleRead> vehicles;
+  std::vector<car_rt_memory::SeenCar> seen_cars;
 };
 
 // Reads one draw's triangles out of guest memory. Usable ONLY inside Listener::OnPlayerDraw (the guest is held back then).
@@ -164,6 +176,10 @@ class Listener {
   // reader reads its triangles (model space). The car may be given up later in the frame by a nearer one (its draws leave the Frame; a mesh
   // read for it stays in the listener's cache by key).
   virtual void OnOtherCarDraw(const OtherDraw& /*draw*/, const MeshReader& /*reader*/) {}
+  // The cars of the model walk (car_model_walk.h Production, asked for with RequestOtherCars' model mode): in the first vehicle draw's call of a frame that
+  // collects them (the guest is held back), the cars near the player walked from their own model data. The listener stages the meshes of the cars marked
+  // `staging` through `source`.
+  virtual void OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& /*cars*/, const car_model_walk::MeshSource& /*source*/) {}
 };
 
 }  // namespace car_frame
@@ -199,11 +215,15 @@ class CarFrame {
   // collect. Nobody asks: the per-draw call is one flag read.
   void Request() { requested_ = true; }
   // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
-  void RequestOtherCars(const car_rt_instances::Limits& limits) {
+  // `model`: the cars the camera does not draw are also walked from their own model data (car_model_walk.h Production; Mode::kOff: not).
+  void RequestOtherCars(const car_rt_instances::Limits& limits, car_model_rt::Mode model = car_model_rt::Mode::kOff) {
     requested_ = true;
     others_requested_ = limits.On();
     other_limits_next_ = limits;
+    model_mode_next_ = model;
   }
+  // The walker of the cars' model data: the production walk's results (walked(), Resolve at the history trigger) and the debug log.
+  car_model_walk::Walker& walker() { return walk_; }
   // Listeners get OnPlayerDraw while the frames are collected (at most a few; null entries are ignored).
   void AddListener(car_frame::Listener* listener);
 
@@ -356,6 +376,9 @@ class CarFrame {
   bool requested_ = false;
   bool collecting_ = false;
   car_frame::Frame frame_;
+  // The debug walk of the cars' own model data against this frame's draws (car_model_walk.h, mcla_gpu_car_model_walk): reads only, idle while the setting is 0.
+  car_model_walk::Walker walk_;
+  car_model_rt::Mode model_mode_next_ = car_model_rt::Mode::kOff;  // asked for in the frame before (RequestOtherCars)
 
   GuestMemory* memory_ = nullptr;
   std::vector<car_frame::Listener*> listeners_;
@@ -367,6 +390,8 @@ class CarFrame {
   uint32_t previous_id_ = 0;           // the player's ID in the frame before (0: none)
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
+  bool vehicles_read_ = false;         // the game's other vehicles were read in this frame (others_on_ only)
+  car_mesh::VehicleScan vehicle_scan_;
   // The other cars (RequestOtherCars): asked for in a frame, collected in the next, under the limits of the request.
   bool others_requested_ = false;
   car_rt_instances::Limits other_limits_next_;

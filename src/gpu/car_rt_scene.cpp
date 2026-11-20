@@ -14,6 +14,7 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
+#include "car_rt_refl_rules.h"
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
@@ -210,6 +211,9 @@ void CarRtScene::Shutdown() {
   staged_.clear();
   staged_order_.clear();
   failed_.clear();
+  walked_keys_.clear();
+  walked_set_.Clear();
+  walked_present_.clear();
   positions_ = Shared{};
   normals_ = Shared{};
   indices_ = Shared{};
@@ -255,7 +259,7 @@ void CarRtScene::Request() {
   requested_ = true;
   if (car_frame_) {
     // The draws of the player's car and, within the class's limits, of the cars beside it (car_rt_instances_rules.h); the debug cvars are read here.
-    car_frame_->RequestOtherCars(instances_.CurrentLimits());
+    car_frame_->RequestOtherCars(instances_.CurrentLimits(), instances_.ModelMode());
   }
 }
 
@@ -355,6 +359,91 @@ void CarRtScene::OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_fram
   }
 }
 
+// The cars of the model walk (car_model_walk.h), inside the first vehicle draw's call of the frame: the triangles of the geometries of the cars it is to stage (not
+// shown by the main view, near the player, within the class's count and a spare), largest geometry first, read from the car's own buffers like a draw's mesh:
+// within the class's budget for a car that is new (the triangles and the KiB of guest data a frame: car_model_rt::MayStage, the first read of a frame always taken),
+// the other cars' share of the video memory and the frame's total. A mesh already built, staged or failed is skipped (one mesh per buffer address: the cars of one
+// model share them).
+void CarRtScene::OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& cars, const car_model_walk::MeshSource& source) {
+  walked_spent_ = car_model_rt::StageBudget{};
+  if (!ready_ || !Wants() || !car_frame_->others_on()) {
+    return;
+  }
+  const car_rt_instances::Limits& limits = car_frame_->other_limits();
+  ++walked_stats_.frames;
+  std::vector<float> positions;
+  std::vector<uint32_t> indices;
+  for (const car_model_walk::WalkedCar& car : cars) {
+    if (!car.staging || !car.walk) {
+      continue;
+    }
+    for (const car_model_rt::Part& part : car.parts) {
+      const uint64_t key = part.key;
+      if (const auto it = meshes_.find(key); it != meshes_.end()) {
+        it->second.last_seen = frame_;
+        continue;
+      }
+      if (staged_.contains(key)) {
+        continue;
+      }
+      if (const auto failed = failed_.find(key); failed != failed_.end()) {
+        if (frame_ < failed->second + rr::kRetryFailedFrames) {
+          continue;
+        }
+        failed_.erase(failed);
+      }
+      if (part.geometry >= car.walk->geometries.size()) {
+        continue;
+      }
+      const car_model_walk::Geometry& geometry = car.walk->geometries[part.geometry];
+      uint32_t triangles = 0;
+      uint64_t bytes = 0;
+      car_model_rt::CostOf(geometry, &triangles, &bytes);
+      if (staged_triangles_ >= rr::kStageTrianglesPerFrame || !car_model_rt::MayStage(walked_spent_, triangles, bytes, limits)) {
+        ++walked_stats_.held_budget;  // a later frame: the car appears in parts, the largest first
+        ++instances_.work().over_stage_budget;
+        continue;
+      }
+      if (!car_rt_instances::OthersMayAdd(resident_bytes_, StagedBytes(), car_rt_instances::EstimateMeshBytes(geometry.index_count, kStructureBytesPerTriangle))) {
+        ++walked_stats_.held_memory;
+        ++instances_.work().over_memory;
+        continue;
+      }
+      car_model_rt::MeshRead info;
+      const car_model_rt::MeshProblem problem = source.Read(*car.walk, part.geometry, &positions, &indices, &info);
+      if (problem != car_model_rt::MeshProblem::kNone) {
+        failed_[key] = frame_;
+        ++walked_stats_.read_failed;
+        if (walked_stats_.read_failed <= 8) {
+          REXLOG_WARN("{} a walked car's geometry could not be read ({}): part {} of vehicle {:#010x}, {} vertices, {} indices, stride {}", kPrefix, car_model_rt::MeshProblemName(problem),
+                      part.part, car.vehicle, geometry.vertex_count, geometry.index_count, geometry.vb_stride);
+        }
+        continue;
+      }
+      Staged staged;
+      staged.positions = std::move(positions);
+      staged.indices = std::move(indices);
+      staged.walked = true;
+      positions = std::vector<float>();
+      indices = std::vector<uint32_t>();
+      const uint32_t made = FinishStaged(key, std::move(staged));
+      if (made != 0) {
+        walked_keys_.insert(key);
+        walked_stats_.most_read_triangles = std::max<uint64_t>(walked_stats_.most_read_triangles, walked_spent_.triangles + triangles);
+        walked_stats_.most_read_kib = std::max<uint64_t>(walked_stats_.most_read_kib, (walked_spent_.bytes + info.bytes) / 1024u);
+        walked_spent_.triangles += triangles;
+        walked_spent_.bytes += info.bytes;
+        staged_triangles_other_ += made;
+        ++walked_stats_.meshes_read;
+        walked_stats_.triangles_read += made;
+        walked_stats_.kib_read += info.bytes / 1024u;
+        ++instances_.work().meshes_read;
+        instances_.work().triangles_read += made;
+      }
+    }
+  }
+}
+
 // The tail of both listeners: the triangles of an unseen mesh into CPU vectors, cleaned, staged for the trigger.
 uint32_t CarRtScene::ReadAndStage(uint64_t key, const car_frame::MeshReader& reader) {
   Staged staged;
@@ -363,6 +452,19 @@ uint32_t CarRtScene::ReadAndStage(uint64_t key, const car_frame::MeshReader& rea
     ++stats_counts_.read_failed;
     return 0;
   }
+  return FinishStaged(key, std::move(staged));
+}
+
+uint64_t CarRtScene::StagedBytes() const {
+  uint64_t bytes = 0;
+  for (const auto& [staged_key, staged] : staged_) {
+    bytes += uint64_t(staged.positions.size()) / 3 * 24 + uint64_t(staged.indices.size()) * 4 + uint64_t(staged.triangles) * kStructureBytesPerTriangle;
+  }
+  return bytes;
+}
+
+uint32_t CarRtScene::FinishStaged(uint64_t key, Staged&& staged_in) {
+  Staged staged = std::move(staged_in);
   const rr::MeshClean clean = rr::CleanMesh(&staged.positions, &staged.indices, &staged.normals);
   const uint64_t vertices = staged.positions.size() / 3;
   staged.triangles = uint32_t(staged.indices.size() / 3);
@@ -459,17 +561,23 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     }
   }
 
-  // What this frame adds, and what the cap leaves room for.
-  std::vector<uint32_t> staged_triangles;
+  // What this frame adds, and what the cap leaves room for. The meshes read from a car's model data have a build budget of their own inside the frame's: a new car
+  // of the walk never starves the player's car (car_model_rt::PlanBuilds).
+  std::vector<car_model_rt::BuildItem> build_items;
   for (const uint64_t key : staged_order_) {
-    staged_triangles.push_back(staged_.at(key).triangles);
+    const Staged& s = staged_.at(key);
+    build_items.push_back(car_model_rt::BuildItem{s.triangles, s.walked});
   }
-  const size_t take = rr::TakeWithinBudget(staged_triangles, rr::kBuildTrianglesPerFrame);
+  build_plan_ = car_model_rt::PlanBuilds(build_items, rr::kBuildTrianglesPerFrame, car_frame_->other_limits().stage_triangles);
   uint64_t need_bytes = 0;
-  for (size_t i = 0; i < take; ++i) {
+  for (size_t i = 0; i < build_plan_.size(); ++i) {
+    if (!build_plan_[i]) {
+      continue;
+    }
     const Staged& s = staged_.at(staged_order_[i]);
     need_bytes += uint64_t(s.positions.size()) / 3 * 24 + uint64_t(s.indices.size()) * 4 + uint64_t(s.triangles) * kStructureBytesPerTriangle;
   }
+  walked_build_triangles_frame_ = 0;
   Evictions(need_bytes);
 
   pass_timing_->Mark(list, "car rt build");
@@ -514,6 +622,11 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     p.node = &meshes_.emplace(p.key, std::move(m)).first->second;
     p.ok = true;
     ++stats_counts_.meshes_built;
+    if (walked_keys_.contains(p.key)) {
+      ++walked_stats_.meshes_built;
+      walked_stats_.triangles_built += p.node->index_count / 3;
+      walked_build_triangles_frame_ += p.node->index_count / 3;
+    }
   }
   if (!placed.empty() && !first_build_logged_) {
     first_build_logged_ = true;
@@ -532,6 +645,38 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // after the world in one view and the whole car did in another): the check's log counts the hits by class, mcla_gpu_car_rt_masks 1
   // turns the rule off.
   const bool glass_rule = larecomp::settings::mcla_gpu_car_rt_masks.Get() == 0 && rr::GlassRuleInformative(after_world, body_draws);
+  // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars drawn this frame are made or refreshed, and each kit whose car is in the
+  // game's list, near the player, and not drawn is placed at its vehicle's matrix. Only meshes with a structure count (the scene gave back the others).
+  remembered_.Clear();
+  if (instances_.RememberedOn()) {
+    car_rt_memory::CarMemory::Input memory_in;
+    memory_in.guest_frame = frame.guest_frame;
+    memory_in.limits = &car_frame_->other_limits();
+    memory_in.match_metres = instances_.MatchMetres();
+    memory_in.player_known = frame.player_vehicle_known;
+    for (int c = 0; c < 3; ++c) {
+      memory_in.player[c] = frame.player_vehicle[c];
+    }
+    memory_in.vehicles_valid = frame.vehicles_valid;
+    memory_in.vehicles = &frame.vehicles;
+    memory_in.seen = &frame.seen_cars;
+    memory_in.cars = &frame.other_cars;
+    memory_in.draws = &frame.other_draws;
+    memory_.Update(
+        memory_in,
+        [&](uint64_t key) {
+          const auto it = meshes_.find(key);
+          return it != meshes_.end() && it->second.structure != nullptr;
+        },
+        &remembered_);
+  } else {
+    memory_.Clear();
+  }
+  // The cars from the cars' own model data (car_model_rt_rules.h): the walker's Resolve (which of them the frame draws, the calibration and the proof of the
+  // placements), the cars to place, their instances beside the remembered cars', the paint.
+  extra_cars_.assign(remembered_.cars.begin(), remembered_.cars.end());
+  extra_draws_.assign(remembered_.draws.begin(), remembered_.draws.end());
+  PlaceWalkedCars(frame, flip_z);
   // === RT-CARS BLOCK (reconcile with feat/rt-vulkan): the instance list (car_rt_instances.h) -> the top level's instances. The player's draws and
   // the other cars' draws whose mesh has a structure come out of `instances_` as items (mesh key, transform in view space, mask) and as the table's
   // rows (one per item, then one per other car); this block only turns an item into a RenderTopLevelASInstance on the mesh's structure.
@@ -548,7 +693,9 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         std::memcpy(ref->bounds_max, it->second.bounds_max, sizeof(ref->bounds_max));
         ref->has_bounds = it->second.has_bounds;
         return true;
-      });
+      },
+      &extra_cars_, &extra_draws_, instances_.ModelMode() != car_model_rt::Mode::kOff ? &paint_infos_ : nullptr);
+  walked_stats_.painted_drawn += instances_.drawn_painted();
   stats_counts_.missing_mesh += cars.stats.missing_mesh;
   stats_counts_.bad_matrix += cars.stats.bad_matrix;
   std::vector<plume::RenderTopLevelASInstance> instances;
@@ -635,6 +782,9 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
     view_.box_count = uint32_t(cars.boxes.size());
     view_.box_row = cars.box_row;
+    view_.car_row = cars.car_row;
+    view_.car_count = uint32_t(cars.records.size());
+    view_.records = cars.records;
     view_.player_box = cars.player_box;
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
@@ -645,10 +795,258 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     recorded = true;
   }
   instances_.NoteFrame(frame_, stats_counts_.meshes_built, car_frame_->other_limits());
+  LogMemory(frame);
   LogTotals("");
   // The check reads the occlusion's linear depth, which its passes make after this call: it is recorded by OnAfterOcclusion.
   check_due_ = larecomp::settings::mcla_gpu_car_rt_check.Get() && view_.valid;
   return recorded;
+}
+
+// The cars-from-memory lines. First: the first kit made (a car that was drawn near the player and is matched to the game's list). A warning, once: the lists
+// cannot be read while the other cars are on. Then a line every kMemoryLogFrames triggers while anything is going on: the last frame's numbers and the totals.
+void CarRtScene::LogMemory(const car_frame::Frame& frame) {
+  if (!car_frame_->other_limits().On() || !instances_.RememberedOn()) {
+    return;
+  }
+  constexpr uint64_t kMemoryLogFrames = 300;
+  const car_rt_memory::Stats& s = remembered_.stats;
+  const car_rt_memory::Totals& t = memory_.totals();
+  if (frame.player_vehicle_known && !frame.vehicles_valid && !memory_lists_warned_) {
+    memory_lists_warned_ = true;
+    REXLOG_WARN("{} frame {}: the game's lists of vehicles (the opponent manager's racers, the ambient manager's live cars) cannot be read: cars the camera does not see "
+                "are not placed (CHECK the guest addresses in car_mesh_read.h; the car frame log's 'the game's vehicles' text says which list)",
+                kPrefix, frame_);
+  }
+  if (t.recorded != 0 && !memory_kit_logged_) {
+    memory_kit_logged_ = true;
+    REXLOG_INFO("{} frame {}: the first car is remembered (matched to the game's own list of vehicles, its draws kept relative to its matrix): {}", kPrefix, frame_,
+                car_rt_memory::Describe(s));
+  }
+  if (memory_log_frame_ == 0) {
+    memory_log_frame_ = frame_;
+  }
+  if (frame_ < memory_log_frame_ + kMemoryLogFrames) {
+    return;
+  }
+  if (t.recorded != 0 || s.vehicles != 0 || t.no_player != 0) {
+    REXLOG_INFO("{} memory, frames {}..{}: {} triggers; cars placed from memory in {} of them ({} in all, {} draws, {} left out for want of a structure), most at once {}; {} kits made, {} "
+                "refused, {} dropped, most held {}; most vehicles near the player {}, worst match offset {:.2f} m, {} triggers without a readable list; the kits' prediction of "
+                "the game's own draws of the same cars (placed at the vehicle's matrix of that frame): {} draws, mean error {:.3f} m, worst {:.3f} m; last frame: {}",
+                kPrefix, memory_log_frame_, frame_, t.frames, t.frames_placed, t.cars_placed, t.draws_placed, t.not_resident, t.most_placed, t.recorded, t.record_refused,
+                t.dropped, t.most_kits, t.vehicles_max, t.worst_offset, t.no_player, t.predicted_draws,
+                t.predicted_draws != 0 ? t.prediction_sum / double(t.predicted_draws) : 0.0, t.prediction_worst, car_rt_memory::Describe(s));
+  }
+  memory_.ResetTotals();
+  memory_log_frame_ = frame_;
+}
+
+// Gives a walked mesh back: staged (not built yet) or resident (its ranges and structure go back once the GPU is done with the frame).
+void CarRtScene::GiveBack(uint64_t key) {
+  if (staged_.erase(key) != 0) {
+    std::erase(staged_order_, key);
+  }
+  if (meshes_.contains(key)) {
+    Evict(key);
+  }
+  walked_keys_.erase(key);
+  ++walked_stats_.given_back;
+}
+
+// THE MODEL WALK'S CARS IN THE TOP LEVEL. The walker (car_model_walk.h) walked the cars in the frame's first vehicle draw; here, at the history trigger, its Resolve says
+// which of them the frame drew (the draw path keeps those) and checks its placements against the draws of the cars the camera sees; then the cars to place (the class's
+// count by the distance to the player, not drawn, and by the mode not where a remembered car stands) get an OtherCar and one OtherDraw per part whose mesh has a
+// structure, the draw's model-to-world being the part's placement in WORLD space: the instance list puts it through the frame's view like every draw's
+// (rr::PackInstanceTransform with the scene's own flip), which is the conversion the first memory check lacked. The remembered cars the walk can give a paint colour
+// to (a walked car at the same place) get it. extra_cars_ / extra_draws_ come in with the remembered cars' and leave with the walked ones added.
+void CarRtScene::PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z) {
+  namespace crt = car_model_rt;
+  car_model_walk::Walker& walker = car_frame_->walker();
+  if (!walker.producing()) {
+    walked_present_.clear();
+    paint_infos_.clear();
+    return;
+  }
+  const car_model_walk::ProofReport proof = walker.Resolve(frame.view, flip_z);
+  const std::vector<car_model_walk::WalkedCar>& walked = walker.walked();
+  const car_rt_instances::Limits& limits = car_frame_->other_limits();
+  ++walked_stats_.walk_frames;
+  walked_stats_.proof_pairs += proof.pairs;
+  walked_stats_.proof_worst = std::max(walked_stats_.proof_worst, proof.worst);
+
+  std::vector<crt::CarInfo> infos;
+  infos.reserve(walked.size());
+  for (const car_model_walk::WalkedCar& car : walked) {
+    crt::CarInfo info;
+    info.vehicle = car.vehicle;
+    info.is_player = car.is_player;
+    info.drawn = car.drawn;
+    info.visible = car.visible;
+    info.distance = car.distance;
+    info.paint = car.paint;
+    info.parts = uint32_t(car.parts.size());
+    for (int c = 0; c < 3; ++c) {
+      info.position[c] = car.position[c];
+    }
+    infos.push_back(info);
+  }
+  // the cars the camera draws take the paint of the walked car at their place (CarRtInstances::Build): the game draws a neighbour beside the door while the camera, in the gap
+  // beside it, sees none of it, so the history has no colour of it (RT-MODEL-CARS-3)
+  paint_infos_ = infos;
+  const crt::Mode mode = instances_.ModelMode();
+  std::vector<uint32_t> placed = crt::ChoosePlaced(infos, limits, mode, remembered_.cars);
+  // No car is placed by part matrices that the draws of the cars the camera sees have not confirmed (the calibration decided, and some hypothesis fits them): a
+  // wrong placement would put a car in the wrong place, which is worse than none.
+  const bool pose_ok = walker.calibration().fits();
+  if (!pose_ok && !placed.empty()) {
+    if (frame_ >= walked_pose_warn_frame_ + 600) {
+      walked_pose_warn_frame_ = frame_;
+      REXLOG_WARN("{} frame {}: {} walked cars are not placed: {} ({} pairs of a walked geometry and its draw compared so far: {})", kPrefix, frame_, placed.size(),
+                  walker.calibration().decided() ? "no hypothesis for the part matrices fits the draws of the cars the camera sees" : "the placement is not checked against the draws yet",
+                  walker.calibration().samples(), walker.calibration().Describe());
+    }
+    ++walked_stats_.held_pose;
+    placed.clear();
+  }
+
+  // the model data first: a remembered car at a walked car's place is the same car, and goes
+  if (mode == crt::Mode::kModelFirst && !placed.empty()) {
+    std::vector<uint32_t> drop = crt::RememberedCovered(extra_cars_, infos, placed);
+    if (!drop.empty()) {
+      std::unordered_set<uint32_t> ids;
+      for (const uint32_t k : drop) {
+        ids.insert(extra_cars_[k].stencil_id);
+      }
+      std::erase_if(extra_draws_, [&](const car_rt_instances::OtherDraw& d) { return ids.contains(d.stencil_id); });
+      std::erase_if(extra_cars_, [&](const car_rt_instances::OtherCar& c) { return ids.contains(c.stencil_id); });
+    }
+  }
+  // the paint of the remembered cars that stay (the kit knows their shapes, not their colour: the history holds nothing of a car the camera does not draw)
+  for (car_rt_instances::OtherCar& car : extra_cars_) {
+    float rgb[3];
+    if (car.remembered && !car.walked && mode != crt::Mode::kOff && crt::PaintForRemembered(car, infos, rgb)) {
+      car.has_paint = true;
+      for (int c = 0; c < 3; ++c) {
+        car.paint[c] = rgb[c];
+      }
+      ++walked_stats_.painted;
+    }
+  }
+
+  // the walked cars
+  std::vector<crt::WalkedSet::Placed> keeping;
+  std::unordered_set<uint32_t> present;
+  uint32_t slot = 0, instances = 0, left_out = 0;
+  std::string entered;
+  for (const uint32_t index : placed) {
+    const car_model_walk::WalkedCar& car = walked[index];
+    car_rt_instances::OtherCar other;
+    other.stencil_id = crt::kWalkedIdBase + slot;
+    other.remembered = true;  // the camera does not draw it: the history holds nothing of it (a negative radius in its record)
+    other.walked = true;
+    other.distance = car.distance;
+    const crt::PaintColour paint = infos[index].paint;
+    if (paint.known) {
+      other.has_paint = true;
+      for (int c = 0; c < 3; ++c) {
+        other.paint[c] = paint.rgb[c];
+      }
+      ++walked_stats_.painted;
+    }
+    crt::WalkedSet::Placed keep;
+    keep.vehicle = car.vehicle;
+    uint32_t order = 0, resident = 0;
+    for (const crt::Part& part : car.parts) {
+      keep.keys.push_back(part.key);
+      const auto mesh = meshes_.find(part.key);
+      if (mesh == meshes_.end() || !mesh->second.structure) {
+        ++left_out;
+        continue;
+      }
+      car_rt_instances::OtherDraw draw;
+      draw.stencil_id = other.stencil_id;
+      draw.order = order++;
+      draw.mesh_key = part.key;
+      draw.indices = part.indices;
+      draw.model_to_world = part.world;
+      other.Add(part.world, car.distance);
+      extra_draws_.push_back(draw);
+      ++resident;
+    }
+    keeping.push_back(std::move(keep));
+    if (resident == 0) {
+      continue;  // nothing of it is built yet (the first frames of a car that is new)
+    }
+    present.insert(car.vehicle);
+    instances += resident;
+    extra_cars_.push_back(other);
+    entered += std::format("{}{:#010x} at {:.1f} m: {} of {} parts, paint {}", entered.empty() ? "" : "; ", car.vehicle, car.distance, resident, car.parts.size(), crt::Describe(paint));
+    ++slot;
+  }
+  // the meshes of the cars that left
+  for (const uint64_t key : walked_set_.Update(frame_, keeping)) {
+    GiveBack(key);
+  }
+  if (!walked.empty()) {
+    ++walked_stats_.frames_placed;
+  }
+  walked_stats_.cars_placed += present.size();
+  walked_stats_.instances += instances;
+  walked_stats_.missing_parts += left_out;
+  walked_stats_.most_cars = std::max<uint32_t>(walked_stats_.most_cars, uint32_t(present.size()));
+  walked_stats_.walk_us_sum += walker.last_walk_microseconds();
+  walked_stats_.most_built_triangles = std::max(walked_stats_.most_built_triangles, walked_build_triangles_frame_);
+
+  // the log: a car comes or goes, and the totals every few hundred frames
+  if (present != walked_present_) {
+    std::string left;
+    for (const uint32_t v : walked_present_) {
+      if (!present.contains(v)) {
+        left += std::format("{}{:#010x}", left.empty() ? "" : ", ", v);
+      }
+    }
+    if (!present.empty() || !left.empty()) {
+      REXLOG_INFO("{} frame {}: walked cars in the top level (built from the cars' own model data, placed by '{}', {} view space z): {} [{}]{}; {} other cars with {} instances in all, "
+                  "{} of them placed from memory or from model data",
+                  kPrefix, frame_, crt::PoseName(walker.pose()), flip_z ? "flipped to the AO's" : "the AO's", present.size(), entered,
+                  left.empty() ? std::string() : std::format("; left: {}", left), extra_cars_.size(), extra_draws_.size(), extra_cars_.size());
+    }
+    walked_present_ = present;
+    walked_first_logged_ = walked_first_logged_ || !present.empty();
+  }
+  if (walked_log_frame_ == 0) {
+    walked_log_frame_ = frame_;
+  }
+  if (frame_ >= walked_log_frame_ + 300 && walked_stats_.walk_frames != 0) {
+    const WalkedStats& w = walked_stats_;
+    REXLOG_INFO("{} walked cars (car_model_rt_rules.h), frames {}..{}: walk in {} frames ({:.0f} us a frame on the render thread, {} frames with no car placed for want of a checked pose), cars placed in {} of them ({} in all, at most {} at once, {} instances, {} parts left out for want of a "
+                "structure); read from the cars' model data: {} meshes ({} triangles, {} KiB; at most {} triangles and {} KiB in a frame; {} could not be read, {} held back by the class's budget of {} triangles and {} KiB a frame, {} by the "
+                "memory share); built: {} structures ({} triangles, at most {} in a frame, the walked budget {} a frame); given back {}; cars with a paint colour {} (and {} car-frames in which a car the game draws took the paint of the walked car at its place); pose '{}' ({}), the "
+                "placement proof of this window: {} pairs, worst {:.4f} m; last frame: {} walked cars, {} drawn by the frame (the draw path keeps those), the proof {}",
+                kPrefix, walked_log_frame_, frame_, w.walk_frames, w.walk_frames != 0 ? w.walk_us_sum / double(w.walk_frames) : 0.0, w.held_pose, w.frames_placed, w.cars_placed, w.most_cars, w.instances, w.missing_parts, w.meshes_read, w.triangles_read, w.kib_read,
+                w.most_read_triangles, w.most_read_kib, w.read_failed, w.held_budget, limits.stage_triangles, limits.content_bytes / 1024u, w.held_memory, w.meshes_built, w.triangles_built,
+                w.most_built_triangles, limits.stage_triangles, w.given_back, w.painted, w.painted_drawn, crt::PoseName(walker.pose()),
+                walker.calibration().decided() ? (walker.calibration().fits() ? "decided against the draws: it fits" : "decided against the draws: NO hypothesis fits") : "not decided yet",
+                w.proof_pairs, w.proof_worst, proof.walked_cars, proof.drawn_cars,
+                proof.ran ? std::format("{} geometries of {} cars, mean {:.4f} m, worst {:.4f} m", proof.pairs, proof.cars, proof.mean, proof.worst) : std::string("did not run"));
+    // THE PAINT ROWS (RT-MODEL-CARS-4): for every car near the player, the game's customisation record (colours A and B, paint type, gradient mode) and the row made of it (the
+    // colour raised to the gamma and times the light, in the paint's units); the reflection pass multiplies the row by 2^exp_bias and its shade, so a hidden hit on the car reaches the
+    // paint as row x shade. The paint probe (the check's line) says the shader reads these rows as written.
+    {
+      const crt::PaintTuning tuning = car_model_walk::CurrentPaintTuning();
+      std::string rows;
+      for (const crt::CarInfo& info : infos) {
+        if (info.distance > 25.0 && !info.is_player) {
+          continue;
+        }
+        rows += std::format("{}{:#010x} ({}, {}, at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m): paint {}", rows.empty() ? "" : "; ", info.vehicle, info.is_player ? "the player's" : "another car",
+                            info.drawn ? "drawn" : "not drawn", info.position[0], info.position[1], info.position[2], info.distance, crt::Describe(info.paint));
+      }
+      REXLOG_INFO("{} paint rows, frame {} (row = record colour ^ {:.2f} x {:.2f}, in the paint's units; the pass multiplies it by 2^exp_bias and by its shade {}): {}", kPrefix, frame_, tuning.gamma,
+                  tuning.lit, car_rt_refl::kShade, rows.empty() ? std::string("no car") : rows);
+    }
+    walked_stats_ = WalkedStats{};
+    walked_log_frame_ = frame_;
+  }
 }
 
 bool CarRtScene::OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao) {
@@ -698,6 +1096,7 @@ void CarRtScene::Evict(uint64_t key) {
   resident_bytes_ -= std::min(resident_bytes_, m.bytes);
   resident_triangles_ -= std::min<uint64_t>(resident_triangles_, m.index_count / 3);
   meshes_.erase(it);
+  walked_keys_.erase(key);
 }
 
 void CarRtScene::FreeRanges(uint32_t first_vertex, uint32_t vertex_count, uint32_t first_index, uint32_t index_count, int64_t page,
@@ -719,6 +1118,8 @@ void CarRtScene::FreeRanges(uint32_t first_vertex, uint32_t vertex_count, uint32
 
 void CarRtScene::ReleaseAll(const char* why) {
   view_ = CarRtView{};
+  memory_.Clear();
+  remembered_.Clear();
   const bool held = !meshes_.empty() || positions_.buffer || !pages_.empty() || slots_[0].tlas_buffer || slots_[1].tlas_buffer;
   if (!held) {
     return;
@@ -733,6 +1134,9 @@ void CarRtScene::ReleaseAll(const char* why) {
   staged_.clear();
   staged_order_.clear();
   failed_.clear();
+  walked_keys_.clear();
+  walked_set_.Clear();
+  walked_present_.clear();
   resident_bytes_ = 0;
   resident_triangles_ = 0;
   for (Shared* shared : {&positions_, &normals_, &indices_}) {
@@ -933,15 +1337,21 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
   if (staged_order_.empty()) {
     return;
   }
-  std::vector<uint32_t> triangles;
-  triangles.reserve(staged_order_.size());
-  for (const uint64_t key : staged_order_) {
-    triangles.push_back(staged_.at(key).triangles);
+  if (build_plan_.size() != staged_order_.size()) {
+    // (OnResolve made the plan: this is for a caller that did not)
+    std::vector<car_model_rt::BuildItem> items;
+    for (const uint64_t key : staged_order_) {
+      items.push_back(car_model_rt::BuildItem{staged_.at(key).triangles, staged_.at(key).walked});
+    }
+    build_plan_ = car_model_rt::PlanBuilds(items, rr::kBuildTrianglesPerFrame, car_frame_->other_limits().stage_triangles);
   }
-  const size_t take = rr::TakeWithinBudget(triangles, rr::kBuildTrianglesPerFrame);
+  const size_t take = staged_order_.size();
   // One growth for the whole batch, not one for each mesh (the first frame holds the car's 195 draws).
   uint64_t total_vertices = 0, total_indices = 0;
   for (size_t i = 0; i < take; ++i) {
+    if (!build_plan_[i]) {
+      continue;
+    }
     const Staged& s = staged_.at(staged_order_[i]);
     total_vertices += s.positions.size() / 3;
     total_indices += s.indices.size();
@@ -956,6 +1366,9 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
   std::vector<uint64_t> done;
   bool upload_failed = false;
   for (size_t i = 0; i < take && !upload_failed; ++i) {
+    if (!build_plan_[i]) {
+      continue;  // over the frame's (or the walked meshes') build budget: the next frame
+    }
     const uint64_t key = staged_order_[i];
     Staged& staged = staged_.at(key);
     const uint32_t vertex_count = uint32_t(staged.positions.size() / 3);
@@ -1209,7 +1622,7 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.slots[0] = depth.image->slot;
   push.slots[1] = width;
   push.slots[2] = height;
-  push.slots[3] = (want_view ? 1u : 0u) | (uint32_t(view_mode) << 8);
+  push.slots[3] = (want_view ? 1u : 0u) | (uint32_t(view_mode) << 8) | (std::min(view_.car_count, 0xFFu) << 16);
   push.lens[0] = depth.tan_half_fov[0];
   push.lens[1] = depth.tan_half_fov[1];
   push.lens[2] = kCheckTMin;
@@ -1228,6 +1641,9 @@ void CarRtScene::RecordCheck(plume::RenderCommandList* list, uint32_t slot, cons
   push.scope[0] = view_.box_row;
   push.scope[1] = scope.kept_cars;
   push.scope[2] = scope.player_box ? rr::kScopeFlagPlayerBox : 0u;
+  push.scope[3] = view_.car_row;
+  scope.car_count = view_.car_count;
+  scope.records = view_.records;  // what the host wrote for each car this frame: the probe's words are compared with it when the readback comes
   list->setComputePipelineLayout(check_layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(res.check_set.get(), 1);
@@ -1269,6 +1685,25 @@ void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t i
   std::memcpy(words, mapped, sizeof(words));
   readback_->unmap();
   const rr::CheckSummary s = rr::DecodeCheckStats(words);
+  // THE PAINT PROBE (RT-MODEL-CARS-4): the first cars' records as the shader's own loads read them from the table, against what the host wrote there that frame. This is the proof
+  // that the paint the reflection pass hands the paint reaches the shader unchanged (the units and the mapping are the pass's and the rules'; the log's paint rows say what they are).
+  if (scope.car_count != 0) {
+    std::string cars_text;
+    uint32_t checked = 0, same = 0;
+    for (uint32_t k = 0; k < rr::kProbeCars && k < scope.car_count && k < scope.records.size(); ++k) {
+      const rr::ProbeCar p = rr::DecodeProbe(words, k, scope.car_count);
+      const car_rt_instances::CarRecordLog& w = scope.records[k];
+      const bool match = rr::ProbeMatches(p, w.centre, w.radius, w.has_paint, w.paint);
+      ++checked;
+      same += match ? 1u : 0u;
+      cars_text += std::format("{}slot {} (car {}{}{}, {:.1f} m): the shader read paint {} ({:.4f}, {:.4f}, {:.4f}), radius {:.2f}, centre ({:.2f}, {:.2f}, {:.2f}); the host wrote paint {} ({:.4f}, {:.4f}, {:.4f}), radius {:.2f} -> {}",
+                               cars_text.empty() ? "" : "; ", w.slot, w.stencil_id, w.remembered ? ", not drawn" : "", w.walked ? ", built from model data" : "", w.distance,
+                               (p.flags & 1u) != 0 ? "known" : "none", p.paint[0], p.paint[1], p.paint[2], p.radius, p.centre[0], p.centre[1], p.centre[2],
+                               w.has_paint ? "known" : "none", w.paint[0], w.paint[1], w.paint[2], w.radius, match ? "IDENTICAL" : "DIFFERENT");
+    }
+    REXLOG_INFO("{} paint probe of frame {}: {} of the first {} cars' records (of {}) read by the shader are the bits the host wrote [{}]", kPrefix, frame, same, checked, scope.car_count,
+                cars_text);
+  }
   // The line the chain reads (perf/scripts/chain-rtint.ps1): "check of frame N: P vehicle pixels ... X% hit" and "on the other cars' parts" as before, and
   // since the scope "O vehicle pixels not in the scene by design" and "K other kept cars". P counts only the pixels the scene is meant to hold (the player's
   // car and the other cars the frame kept); O is the vehicle pixels of the cars outside the selection, counted apart.

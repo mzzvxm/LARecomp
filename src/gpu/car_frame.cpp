@@ -70,6 +70,7 @@ void CarFrame::Initialize(GuestMemory& memory) {
 }
 
 void CarFrame::Shutdown() {
+  walk_.Shutdown();
   ReleaseDraws(frame_.draws);
   ReleaseDraws(pending_);
   frame_ = car_frame::Frame{};
@@ -110,8 +111,9 @@ void CarFrame::AddListener(car_frame::Listener* listener) {
 void CarFrame::BeginFrame() {
   // A request made since the last present (any time in the frame before) starts the collecting here at the latest: the frame's first
   // draw has not been issued yet.
-  if (!collecting_ && larecomp::settings::mcla_gpu_car_frame_log.Get()) {
-    requested_ = true;  // the debug line asks for the list itself
+  const bool walk = walk_.Wanted();  // also tells the guest-thread tap whether to note vehicles
+  if (!collecting_ && (larecomp::settings::mcla_gpu_car_frame_log.Get() || walk)) {
+    requested_ = true;  // the debug line (and the model walk's comparison) ask for the list themselves
   }
   if (requested_ && memory_ && !collecting_) {
     collecting_ = true;
@@ -126,8 +128,8 @@ void CarFrame::OnPresent() {
     FinishFrame();
   }
   ++guest_frame_;
-  if (larecomp::settings::mcla_gpu_car_frame_log.Get()) {
-    requested_ = true;  // the debug line asks for the list itself
+  if (larecomp::settings::mcla_gpu_car_frame_log.Get() || walk_.Wanted()) {
+    requested_ = true;  // the debug line (and the model walk's comparison) ask for the list themselves
   }
   collecting_ = requested_ && memory_ != nullptr;
   requested_ = false;
@@ -163,6 +165,12 @@ void CarFrame::StartFrame() {
   frame_.bounds_valid = false;
   frame_.other_cars.clear();
   frame_.other_draws.clear();
+  frame_.vehicles.clear();
+  frame_.seen_cars.clear();
+  frame_.vehicles_valid = false;
+  frame_.player_vehicle_known = false;
+  vehicles_read_ = false;
+  vehicle_scan_ = car_mesh::VehicleScan{};
   // The other cars asked for in the frame before are collected in this one (a request is for the next frame, as the player's draws are).
   others_on_ = collecting_ && others_requested_ && other_limits_next_.On();
   other_limits_ = others_on_ ? other_limits_next_ : car_rt_instances::Limits{};
@@ -184,11 +192,22 @@ void CarFrame::StartFrame() {
   counts_ = Counts{};
   log_ = larecomp::settings::mcla_gpu_car_frame_log.Get();
   ctx_ = Context{};
+  // The model walk's production for this frame: the other cars' limits of this frame (the scene asked in the frame before) and the mode it asked for.
+  {
+    car_model_walk::Production production;
+    production.on = others_on_ && model_mode_next_ != car_model_rt::Mode::kOff;
+    production.limits = other_limits_;
+    production.mode = model_mode_next_;
+    walk_.SetProduction(production);
+    model_mode_next_ = car_model_rt::Mode::kOff;
+  }
+  walk_.StartFrame(guest_frame_, collecting_);
 }
 
 void CarFrame::FinishFrame() {
   const uint32_t before = tracker_.previous();  // the ID the frame started from
   previous_id_ = tracker_.confirmed();
+  walk_.FinishFrame();  // the debug model walk's comparison with this frame's draws (a walk frame only)
   if (!log_) {
     return;
   }
@@ -252,13 +271,20 @@ std::string CarFrame::OthersText() const {
   for (const car_frame::OtherCar& car : frame_.other_cars) {
     cars += std::format("{}ID {} at {:.1f} m ({} draws)", cars.empty() ? "" : ", ", car.stencil_id, car.distance, car.draws);
   }
+  const std::string vehicles = vehicles_read_
+                                   ? std::format("the game's vehicles near the player: {} ({} of {} opponents read, {} traffic and {} parked cars live in all, {} not a car's pose, "
+                                                 "{} taken for the player's own){}{}",
+                                                 frame_.vehicles.size(), vehicle_scan_.opponents_read, vehicle_scan_.opponents_active, vehicle_scan_.traffic_seen,
+                                                 vehicle_scan_.parked_seen, vehicle_scan_.rejected, vehicle_scan_.own, vehicle_scan_.valid ? "" : " (lists NOT readable)",
+                                                 vehicle_scan_.note.empty() ? std::string() : " [" + vehicle_scan_.note + "]")
+                                   : std::string("the game's vehicles: not read");
   return std::format("other cars ({}): {} kept [{}]; of {} draws of other cars {} listed, {} of cars not kept, {} under {} indices, {} skinned, "
                      "{} with no triangles or no matrix, {} waiting for their fingerprints (budget {} KiB a frame), {} with no key; {} cars given up "
-                     "for a nearer one",
+                     "for a nearer one; {}",
                      car_rt_instances::Describe(other_limits_), frame_.other_cars.size(), cars, counts_.others_seen, counts_.others_listed,
                      counts_.others_far, counts_.others_small, other_limits_.min_indices, counts_.others_skinned,
                      counts_.others_no_triangles + counts_.others_not_finite, counts_.others_deferred, other_limits_.content_bytes / 1024u,
-                     counts_.others_no_key, counts_.others_evicted);
+                     counts_.others_no_key, counts_.others_evicted, vehicles);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +308,28 @@ void CarFrame::OnMainDraw(const MainDraw& d) {
 }
 
 void CarFrame::OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id) {
+  if (walk_.active()) {
+    // The draw's own model-to-world, for the check of the walk's placements (a rigid draw only: the recipe the draw path uses).
+    temporal::Mat4 world;
+    bool have_world = false;
+    if (walk_.producing() && d.banks) {
+      const RecipeEntry& recipe = RecipeOf(d);
+      if (recipe.choice.recipe != car_dump::Recipe::kSkinned) {
+        const car_frame_rules::ModelDecode model = car_frame_rules::DecodeModel(d.banks->vs.data(), recipe.choice.recipe);
+        if (model.finite) {
+          world = model.model;
+          have_world = true;
+        }
+      }
+    }
+    // the model walk: the first call of a walk frame walks the cars, every call notes the draw's buffers
+    walk_.OnVehicleDraw(*d.view, *d.state, id, have_world ? &world : nullptr);
+    if (walk_.TakeFresh()) {
+      for (car_frame::Listener* listener : listeners_) {
+        listener->OnWalkedCars(walk_.walked(), walk_.mesh_source());  // inside the draw's call: the guest is held back
+      }
+    }
+  }
   HandleVehicleDraw(d, order, id);
   ctx_ = Context{};
   SyncPlayer();
@@ -306,6 +354,16 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   if (!player_read_) {
     player_read_ = true;  // the guest is held back inside this call: the player's vehicle is read here, once a frame
     car_mesh::ReadPlayerVehicle(&player_, log_);
+    if (others_on_ && player_.valid && !vehicles_read_) {
+      // The game's other vehicles near it, from the same call (car_rt_memory_rules.h): what places a car the camera does not see.
+      vehicles_read_ = true;
+      car_mesh::ReadOtherVehicles(player_, car_rt_memory::ScanRadius(other_limits_.radius), &frame_.vehicles, &vehicle_scan_, log_);
+      frame_.vehicles_valid = vehicle_scan_.valid;
+      frame_.player_vehicle_known = true;
+      for (int c = 0; c < 3; ++c) {
+        frame_.player_vehicle[c] = player_.position[c];
+      }
+    }
   }
   if (!player_.valid) {
     ++counts_.no_player;
@@ -339,6 +397,9 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   const bool confirmed = tracker_.confirmed() != 0;
   if (!assumed) {
     if (others_on_) {
+      if (finite) {
+        car_rt_memory::NoteSeen(&frame_.seen_cars, id, translation);  // every other car's draw, kept or not: it covers its vehicle
+      }
       // Another car's draw (the previous frame's ID is the player's until a draw near the vehicle says otherwise, and a draw of another ID that is not
       // that near the vehicle takes no match: IdentityTracker::kStrictMatchMetres): to the selection of the cars of the ray traced scene.
       HandleOtherDraw(d, order, id, verdict.distance, bank);
