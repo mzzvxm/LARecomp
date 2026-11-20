@@ -94,7 +94,8 @@ LiveText& Setting() {
 
 vol::Choice ReadChoice() { return vol::Resolve(gpu_class::Current(), Setting().Get()); }
 
-float Usable(float x) { return std::isfinite(x) && x > 0.0f ? x : 0.0f; }
+// A colour constant of the game: finite and not negative; a draw whose constants were never written (the first frame) reads any bit pattern, so a huge one is capped too.
+float Usable(float x) { return std::isfinite(x) && x > 0.0f ? std::min(x, 64.0f) : 0.0f; }
 
 vol::VolCamera CameraOf(const temporal::Camera& c) {
   vol::VolCamera cam;
@@ -961,6 +962,10 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     return false;
   }
   recorded_this_frame_ = true;
+  ++volumes_;
+  if (current) {
+    ++current_camera_;
+  }
   history_.valid = true;
   history_.camera = camera;
   history_.far_m = plan.far_m;
@@ -1254,12 +1259,12 @@ void Volumetrics::Census() {
   }
   ++census_frames_logged_;
   REXLOG_INFO("{} frame {}: {} view, {} (level {}); {} first points, {} gated, {} without a camera, {} lost, {} composites; collector: {} (atlas slot {}, "
-              "age {} frames), fog quad: {}; history {}",
+              "age {} frames), fog quad: {}; history {}; camera this frame's in {} of {} volumes",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", OutcomeName(outcome_), vol::Name(level_), triggers_, gated_, skipped_no_camera_, lost_,
               runs_, collector_.valid ? std::format("{} draws", collector_.draws) : std::string("none"),
               collector_.valid && collector_.atlas_slot != vol::kNoSlot ? std::to_string(collector_.atlas_slot) : std::string("none"),
               collector_.valid ? frame_ - collector_.frame : 0, fog_seen_ ? std::format("colour ({:.3f}, {:.3f}, {:.3f}), opacity {:.2f}", fog_colour_[0], fog_colour_[1], fog_colour_[2], fog_colour_[3]) : std::string("not seen"),
-              history_.valid ? "valid" : "none");
+              history_.valid ? "valid" : "none", current_camera_, volumes_);
 }
 
 }  // namespace mcla::gpu

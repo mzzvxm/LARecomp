@@ -323,6 +323,8 @@ class Volumetrics {
   uint64_t cones_skipped_ = 0;
   uint64_t triggers_ = 0;
   uint64_t skipped_no_camera_ = 0;
+  uint64_t volumes_ = 0;         // the frames that made the passes (the census: how many of them had the frame's own camera)
+  uint64_t current_camera_ = 0;  // ... of which the vertex constants gave the frame's own camera, not the previous frame's
 };
 
 }  // namespace mcla::gpu
