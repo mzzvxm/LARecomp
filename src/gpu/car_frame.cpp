@@ -79,6 +79,12 @@ void CarFrame::Shutdown() {
   boxes_.clear();
   contents_.Clear();
   key_window_ = KeyWindow{};
+  others_requested_ = false;
+  others_on_ = false;
+  other_limits_ = car_rt_instances::Limits{};
+  other_limits_next_ = car_rt_instances::Limits{};
+  selector_ = car_rt_instances::CarSelector{};
+  scratch_draw_ = car_frame::Draw{};
   reads_.Clear();
   unreadable_logged_.clear();
   palette_pool_.clear();
@@ -155,6 +161,16 @@ void CarFrame::StartFrame() {
     frame_.bounds_max[c] = 0.0;
   }
   frame_.bounds_valid = false;
+  frame_.other_cars.clear();
+  frame_.other_draws.clear();
+  // The other cars asked for in the frame before are collected in this one (a request is for the next frame, as the player's draws are).
+  others_on_ = collecting_ && others_requested_ && other_limits_next_.On();
+  other_limits_ = others_on_ ? other_limits_next_ : car_rt_instances::Limits{};
+  others_requested_ = false;
+  selector_.Begin(other_limits_);
+  content_limit_ = 0;
+  content_spent_ = 0;
+  content_blocked_ = false;
   tracker_.BeginFrame(previous_id_);
   player_read_ = false;
   player_.valid = false;
@@ -181,6 +197,8 @@ void CarFrame::FinishFrame() {
   now.valid = frame_.valid;
   now.id = frame_.player_id;
   now.draws = uint32_t(frame_.draws.size());
+  now.other_cars = uint32_t(frame_.other_cars.size());
+  now.other_draws = uint32_t(frame_.other_draws.size());
   uint32_t after_world = 0;
   for (const car_frame::Draw& d : frame_.draws) {
     now.body += d.part == car_frame::Part::kBody;
@@ -210,7 +228,7 @@ void CarFrame::FinishFrame() {
               "says the player drives, at ({:.2f}, {:.2f}, {:.2f})): {} draws ({} body, {} skinned, {} after the first world draw), "
               "{} with a mesh key, {} with a model box ({} to come; world box {}), camera {}, sun {}; left out: {} wheel proxies, {} with "
               "no triangles, {} with a matrix that is not a number, {} of other cars; reads: {} meshes for their box, {} for listeners; "
-              "player's vehicle: {}",
+              "player's vehicle: {}; {}",
               kPrefix, guest_frame_, now.id, before, tracker_.best(now.id), t[0], t[1], t[2], now.draws, now.body, now.skinned,
               after_world, with_key, with_box, deferred,
               frame_.bounds_valid
@@ -222,7 +240,25 @@ void CarFrame::FinishFrame() {
                   ? std::format("({:.3f}, {:.3f}, {:.3f})", frame_.to_sun[0], frame_.to_sun[1], frame_.to_sun[2])
                   : std::string("none"),
               counts_.proxies, counts_.no_triangles, counts_.not_finite, counts_.other_cars, counts_.boxes_read, counts_.listener_reads,
-              player_.note.empty() ? std::string("not read") : player_.note);
+              player_.note.empty() ? std::string("not read") : player_.note, OthersText());
+}
+
+// The other cars of the frame for the log: the cars kept with their ids, distances and draws, and what became of the rest of their draws.
+std::string CarFrame::OthersText() const {
+  if (!others_on_) {
+    return "other cars: not asked for";
+  }
+  std::string cars;
+  for (const car_frame::OtherCar& car : frame_.other_cars) {
+    cars += std::format("{}ID {} at {:.1f} m ({} draws)", cars.empty() ? "" : ", ", car.stencil_id, car.distance, car.draws);
+  }
+  return std::format("other cars ({}): {} kept [{}]; of {} draws of other cars {} listed, {} of cars not kept, {} under {} indices, {} skinned, "
+                     "{} with no triangles or no matrix, {} waiting for their fingerprints (budget {} KiB a frame), {} with no key; {} cars given up "
+                     "for a nearer one",
+                     car_rt_instances::Describe(other_limits_), frame_.other_cars.size(), cars, counts_.others_seen, counts_.others_listed,
+                     counts_.others_far, counts_.others_small, other_limits_.min_indices, counts_.others_skinned,
+                     counts_.others_no_triangles + counts_.others_not_finite, counts_.others_deferred, other_limits_.content_bytes / 1024u,
+                     counts_.others_no_key, counts_.others_evicted);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +338,12 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   const bool assumed = verdict.standing != car_frame_rules::IdentityTracker::Standing::kOther;
   const bool confirmed = tracker_.confirmed() != 0;
   if (!assumed) {
+    if (others_on_) {
+      // Another car's draw (the previous frame's ID is the player's until a draw near the vehicle says otherwise, and a draw of another ID that is not
+      // that near the vehicle takes no match: IdentityTracker::kStrictMatchMetres): to the selection of the cars of the ray traced scene.
+      HandleOtherDraw(d, order, id, verdict.distance, bank);
+      return;
+    }
     if (confirmed) {
       ++counts_.other_cars;  // another car's: nothing more is done with it
       return;
@@ -343,6 +385,106 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   if (assumed) {
     CallListeners();
   }
+}
+
+// A draw of another car (the ray traced scene's other cars, car_rt_instances_rules.h): the selection by distance from the player's vehicle, then
+// what the player's draws get: the recipe, the matrix, the mesh key. Left out: the draws of cars that are not kept, the smallest parts, the skinned
+// ones (the other cars' drivers), and a draw whose mesh has no fingerprint yet while the frame's budget for them is spent (it joins in a later
+// frame: a car that is new appears in parts over a few frames, and the frame that sees it does not stall on it).
+// CHECK: the cost of a kept car's draw in a steady frame (no new fingerprints) is the layout and the recipe lookups, the matrix, the key's two
+// stamps and two fingerprint lookups, a few hundred nanoseconds; times about 140 draws a car and 2 to 4 cars. The first run's render thread
+// time with and without mcla_gpu_car_rt_cars 0 says; the log line's draw counts say how many draws were handled.
+void CarFrame::HandleOtherDraw(const MainDraw& d, uint32_t order, uint32_t id, double distance, const uint8_t* bank) {
+  ++counts_.others_seen;
+  const car_rt_instances::CarSelector::Verdict verdict = selector_.OnDraw(id, distance);
+  if (verdict.evicted != 0) {
+    DropOtherCar(verdict.evicted);
+  }
+  if (!verdict.keep) {
+    ++counts_.others_far;
+    return;
+  }
+  const DrawRecord& r = d.view->record();
+  if (r.count < other_limits_.min_indices) {
+    ++counts_.others_small;
+    return;
+  }
+  if (!d.input_layout || !d.geometry || !HasTriangles(d)) {
+    ++counts_.others_no_triangles;
+    return;
+  }
+  const LayoutInfo& layout = LayoutOf(*d.input_layout);
+  if (!layout.position) {
+    ++counts_.others_no_triangles;
+    return;
+  }
+  const RecipeEntry& recipe = RecipeOf(d);
+  if (recipe.choice.recipe == car_dump::Recipe::kSkinned) {
+    ++counts_.others_skinned;
+    return;
+  }
+  const car_frame_rules::ModelDecode model = car_frame_rules::DecodeModel(bank, recipe.choice.recipe);
+  if (!model.finite) {
+    ++counts_.others_not_finite;
+    return;
+  }
+  content_limit_ = other_limits_.content_bytes;
+  content_blocked_ = false;
+  const uint64_t key = ComputeMeshKey(d, layout);
+  content_limit_ = 0;
+  if (key == 0) {
+    ++(content_blocked_ ? counts_.others_deferred : counts_.others_no_key);
+    content_blocked_ = false;
+    return;
+  }
+
+  car_frame::OtherDraw out;
+  out.stencil_id = id;
+  out.order = order;
+  out.after_world = world_draws_ != 0;
+  out.vs = r.vs_identity;
+  out.ps = r.ps_identity;
+  out.mesh_key = key;
+  out.indices = r.count;
+  out.model_to_world = model.model;
+  frame_.other_draws.push_back(out);
+  car_frame::OtherCar* car = nullptr;
+  for (car_frame::OtherCar& c : frame_.other_cars) {
+    if (c.stencil_id == id) {
+      car = &c;
+      break;
+    }
+  }
+  if (!car) {
+    frame_.other_cars.emplace_back();
+    car = &frame_.other_cars.back();
+    car->stencil_id = id;
+  }
+  car->Add(model.model, distance);
+  ++counts_.others_listed;
+
+  // The listeners read the triangles of a mesh they have not seen, here, in the draw's own call.
+  scratch_draw_.part = car_frame::Part::kBody;
+  scratch_draw_.stencil_id = id;
+  scratch_draw_.vs = r.vs_identity;
+  scratch_draw_.ps = r.ps_identity;
+  scratch_draw_.order = order;
+  scratch_draw_.mesh_key = key;
+  scratch_draw_.model_to_world = model.model;
+  ctx_.draw_in = &d;
+  ctx_.draw = &scratch_draw_;
+  ctx_.active = true;
+  mesh_loaded_ = false;
+  for (car_frame::Listener* listener : listeners_) {
+    listener->OnOtherCarDraw(out, reader_);
+  }
+}
+
+// A car the selection gave up for a nearer one: its listed draws go.
+void CarFrame::DropOtherCar(uint32_t id) {
+  std::erase_if(frame_.other_draws, [id](const car_frame::OtherDraw& o) { return o.stencil_id == id; });
+  std::erase_if(frame_.other_cars, [id](const car_frame::OtherCar& c) { return c.stencil_id == id; });
+  ++counts_.others_evicted;
 }
 
 // The frame's first confirmed ID (or a nearer one than the confirmed): the held-back draws of that ID are the player's, in order.
@@ -635,6 +777,9 @@ uint64_t CarFrame::ComputeMeshKey(const MainDraw& d, const LayoutInfo& layout) {
       parts.normal.content = StreamContent(d, normal, own(normal));
     }
   }
+  if (content_blocked_) {
+    return 0;  // another car's mesh whose fingerprints the frame's budget did not allow: no key yet (what was made stays cached)
+  }
   return car_frame_rules::MeshKeyOf(parts);
 }
 
@@ -648,11 +793,19 @@ CarFrame::IndexInfo CarFrame::IndexContent(const MainDraw& d, uint32_t address, 
   if (stamp == 0 || bytes == 0) {
     return out;
   }
+  const uint64_t slot = car_frame_rules::IndexSlot(address, bytes, index32, endian, order_free, skip_reset, reset_index);
+  if (content_limit_ != 0 && !contents_.Fresh(slot, stamp) && !car_rt_instances::MayFingerprint(content_spent_, bytes, content_limit_)) {
+    content_blocked_ = true;  // another car's new mesh, and this frame's budget for those is spent
+    return out;
+  }
   car_frame_rules::ContentCache::Outcome outcome = car_frame_rules::ContentCache::Outcome::kHit;
   const car_frame_rules::ContentEntry entry = contents_.Get(
-      car_frame_rules::IndexSlot(address, bytes, index32, endian, order_free, skip_reset, reset_index), stamp, guest_frame_,
+      slot, stamp, guest_frame_,
       [&](car_frame_rules::ContentEntry* made) {
         counts_.content_bytes += bytes;
+        if (content_limit_ != 0) {
+          content_spent_ += bytes;
+        }
         const uint8_t* raw = memory_->Read(address, bytes);
         if (!raw) {
           return;  // not committed guest memory: no fingerprint (0), nothing is read from it
@@ -683,16 +836,24 @@ uint64_t CarFrame::StreamContent(const MainDraw& d, const car_mesh::StreamRef& s
   if (stamp == 0) {
     return 0;
   }
+  uint32_t offset = 0, length = stream.size;
+  if (!span.whole && stream.stride != 0) {
+    offset = span.first * stream.stride;
+    length = span.count * stream.stride;
+  }
+  const uint64_t slot = car_frame_rules::VertexSlot(stream.address, stream.size, stream.stride, span);
+  if (content_limit_ != 0 && !contents_.Fresh(slot, stamp) && !car_rt_instances::MayFingerprint(content_spent_, length, content_limit_)) {
+    content_blocked_ = true;
+    return 0;
+  }
   car_frame_rules::ContentCache::Outcome outcome = car_frame_rules::ContentCache::Outcome::kHit;
   const car_frame_rules::ContentEntry entry = contents_.Get(
-      car_frame_rules::VertexSlot(stream.address, stream.size, stream.stride, span), stamp, guest_frame_,
+      slot, stamp, guest_frame_,
       [&](car_frame_rules::ContentEntry* made) {
-        uint32_t offset = 0, length = stream.size;
-        if (!span.whole && stream.stride != 0) {
-          offset = span.first * stream.stride;
-          length = span.count * stream.stride;
-        }
         counts_.content_bytes += length;
+        if (content_limit_ != 0) {
+          content_spent_ += length;
+        }
         if (length == 0) {
           made->content = car_frame_rules::VertexContent(0, span);  // the draw names no vertex the window holds
           return;

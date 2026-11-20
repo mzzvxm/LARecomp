@@ -18,6 +18,7 @@ add_library(larecomp_gpu OBJECT
     car_dump.cpp
     car_frame.cpp
     car_mesh_read.cpp
+    car_rt_instances.cpp
     car_rt_scene.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
@@ -224,6 +225,10 @@ add_executable(larecomp_car_shadow_map_rules_test EXCLUDE_FROM_ALL car_shadow_ma
 # hlsl/car_rt_common.hlsli use the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_scene_rules_test, then run src/gpu/larecomp_car_rt_scene_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_rules_test.cpp)
+# The other cars in the car ray tracing scene (car_rt_instances_rules.h: the limits by class, which cars are kept, a car's body centre, the budgets of a
+# car that is new, the instance list) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
+add_executable(larecomp_car_rt_instances_rules_test EXCLUDE_FROM_ALL car_rt_instances_rules_test.cpp)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test

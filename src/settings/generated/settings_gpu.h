@@ -200,10 +200,19 @@ class GPUSettings final : public rex::SettingOwner {
     "mesh the car effects read or build again): a few seconds after the car appears there should be none in a parked car; at most one "
     "line every few seconds. Never saved. Live.", rex::kDebugOnly);
 
+  REX_SETTING(i32, mcla_gpu_car_rt_cars, -1, "Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome "
+    "reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on "
+    "the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built "
+    "once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.", rex::kDebugOnly, rex::Range{-1, 8});
+
+  REX_SETTING(f64, mcla_gpu_car_rt_cars_radius, 0.0, "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
+    "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
+
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
-    "vehicle pixels the structures cover (the other cars and the driver count as misses) and how far the distances are apart. It "
+    "vehicle pixels the structures cover (the driver counts as a miss; the other cars cover their pixels while they are in the scene, "
+    "mcla_gpu_car_rt_cars) and how far the distances are apart. It "
     "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_car_rt_masks, 0, "Debug: how the car's parts are told apart in the top level: 0 the tyres by their shader and glass by being drawn after the world's "
@@ -251,8 +260,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_car_selfrefl_rt_length, 4.0, "Diagnostic: how far the ray traced car self-reflection's ray reaches, in the game's world units (about metres); what it finds weighs "
     "less from 0.6 of it and nothing at it. Live.", rex::kDebugOnly, rex::Range{0.5, 20.0});
 
-  REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_parts, 7, "Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the "
-    "driver. 7 (the default): the body, the glass and the tyres. Live.", rex::kDebugOnly, rex::Range{1, 15});
+  REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_parts, 23, "Diagnostic: the parts the ray traced self-reflection's ray can hit, a sum of: 1 your car's body, 2 its glass, 4 its tyres, 8 its "
+    "driver, 16 the other cars beside it (opponents, traffic, parked cars; mcla_gpu_car_rt_cars says how many are in the scene). 23 (the "
+    "default): the body, the glass, the tyres and the other cars. 7 is your car alone. Live.", rex::kDebugOnly, rex::Range{1, 31});
 
   REX_SETTING(i32, mcla_gpu_car_selfrefl_steps, 12, "Diagnostic: the points on the car self-reflection's ray, 4 to 24 (the cost is one texture read each, and three more for "
     "each segment between two points that holds the outline of a part; they are closer together near the car's surface, and "
@@ -1253,6 +1263,8 @@ inline auto& mcla_gpu_car_chrome_occlusion = g_gpu.mcla_gpu_car_chrome_occlusion
 inline auto& mcla_gpu_car_dump = g_gpu.mcla_gpu_car_dump;
 inline auto& mcla_gpu_car_dump_id = g_gpu.mcla_gpu_car_dump_id;
 inline auto& mcla_gpu_car_frame_log = g_gpu.mcla_gpu_car_frame_log;
+inline auto& mcla_gpu_car_rt_cars = g_gpu.mcla_gpu_car_rt_cars;
+inline auto& mcla_gpu_car_rt_cars_radius = g_gpu.mcla_gpu_car_rt_cars_radius;
 inline auto& mcla_gpu_car_rt_check = g_gpu.mcla_gpu_car_rt_check;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_car_rt_view = g_gpu.mcla_gpu_car_rt_view;

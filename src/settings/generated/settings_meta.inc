@@ -233,6 +233,8 @@
 {"mcla_gpu_car_dump", "MCLA/GPU"},
 {"mcla_gpu_car_dump_id", "MCLA/GPU"},
 {"mcla_gpu_car_frame_log", "MCLA/GPU"},
+{"mcla_gpu_car_rt_cars", "MCLA/GPU"},
+{"mcla_gpu_car_rt_cars_radius", "MCLA/GPU"},
 {"mcla_gpu_car_rt_check", "MCLA/GPU"},
 {"mcla_gpu_car_rt_masks", "MCLA/GPU"},
 {"mcla_gpu_car_rt_view", "MCLA/GPU"},

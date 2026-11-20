@@ -795,12 +795,12 @@
  },
  "mcla_gpu_car_selfrefl_rt_parts": {
   "type": "i32",
-  "default": "7",
+  "default": "23",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: the parts of your car the ray traced self-reflection's ray can hit, a sum of: 1 the body, 2 the glass, 4 the tyres, 8 the \"\n    \"driver. 7 (the default): the body, the glass and the tyres. Live.\"",
+  "help": "\"Diagnostic: the parts the ray traced self-reflection's ray can hit, a sum of: 1 your car's body, 2 its glass, 4 its tyres, 8 its \"\n    \"driver, 16 the other cars beside it (opponents, traffic, parked cars; mcla_gpu_car_rt_cars says how many are in the scene). 23 (the \"\n    \"default): the body, the glass, the tyres and the other cars. 7 is your car alone. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{1, 15}"
+   "rex::Range{1, 31}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -809,7 +809,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with \"\n    \"DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its \"\n    \"linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many \"\n    \"vehicle pixels the structures cover (the other cars and the driver count as misses) and how far the distances are apart. It \"\n    \"needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.\"",
+  "help": "\"Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with \"\n    \"DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its \"\n    \"linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many \"\n    \"vehicle pixels the structures cover (the driver counts as a miss; the other cars cover their pixels while they are in the scene, \"\n    \"mcla_gpu_car_rt_cars) and how far the distances are apart. It \"\n    \"needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -8735,6 +8735,30 @@
   "help": "\"Debug: use the rows read from the clip tree of a movie other than the pause menu (the garage's other pages, dialogs) for the hover and for clicks on rows. The garage's first menu and its two-row pop-ups do not need it \"\n    \"(their card is fitted to pictures). Off: those menus are read and \"\n    \"logged (`[menu-mouse] menu ...: FALLBACK (the layout ... is not checked against a picture yet ...)`) but treated as a fallback menu: no hover, a left click presses the highlighted row, \"\n    \"the wheel and the right button work. Every page of those movies is a quad in the game's 3D menu scene whose size follows its list, so a scale and offset read from the clip tree \"\n    \"cannot be assumed right (round 1: the garage's first row at stage (39.8, 75.3), in the picture at about (860, 233), rows 22.7 apart, not 35); a page gets a card of its own when its pictures are measured.\"",
   "traits": [
    "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_cars": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how many OTHER cars (opponents, traffic, parked cars) the ray traced car effects see besides your own: your car's paint and chrome \"\n    \"reflect a car driving alongside. -1 (the default): the graphics card's class decides (the nearest 4 within 14 m of your car on the High class, 2 within 10 m on \"\n    \"the Mid class, none on the Low class); 0 turns the other cars off (your car alone, as it was); 1 to 8 asks for that many. Each car is built \"\n    \"once into ray tracing structures (8 to 10 MiB at full detail) and a new car appears in parts over a few frames. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 8}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_cars_radius": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's \"\n    \"class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 60.0}"
   ],
   "comments": [],
   "pp_depth": 0
