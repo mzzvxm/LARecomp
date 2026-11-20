@@ -118,20 +118,26 @@ inline float SpotFactor(float cos_axis, float cos_outer, float cos_inner) {
   const float t = std::clamp((cos_axis - cos_outer) / std::max(cos_inner - cos_outer, 1e-4f), 0.0f, 1.0f);
   return t * t * (3.0f - 2.0f * t);
 }
-// The distance law of a lamp (the stub's: the shaders' VOL-SHADERS package calibrates it against the road's pool, V7): 1 / (d^2 + near^2),
-// windowed so that it is exactly 0 at the reach: saturate(1 - (d / range)^4)^2. The 0.8 m near clamp keeps the singularity out.
+// The distance law of a lamp: 1 / (d^2 + near^2), windowed so that it is exactly 0 at the reach: saturate(1 - (d / range)^4)^2. The near radius is the
+// lamp's own (volumetrics_lamps.h: the game's lamps saturate at the radius sqrt(intensity); the headlights' is the lit shaders' falloff distance), the
+// calibration against the road's pool of light (V7); a lamp that says none (the test lights) has the 0.8 m below, which keeps the singularity out.
 inline constexpr float kLampNear = 0.8f;
-// The scene units of a light's colour (hlsl/volumetrics_inject_cs.hlsl kLightGain): the scattered light is the game's colour times its intensity
-// times this, times the haze's extinction.
+// The scene units of a light's colour (hlsl/volumetrics_inject_cs.hlsl kLightGain): the scattered light is the light's colour, in the game's units (the
+// producers' MakeVolLamp and ApplyHeadlightUnits), times this, times the haze's extinction. 60 = pi x 19.1 (volumetrics_lamps.h kPhysicalGain and
+// kVisibilityBoost: what the calibration says it comes to).
 inline constexpr float kLightGain = 60.0f;
-inline float LampFalloff(float dist, float range) {
+// The near radius squared of a lamp: its own (VolLamp::pad[0], volumetrics_lamps.h: the game's lamps saturate at their plateau's radius) or, when it says
+// none (0, a test light), kLampNear squared.
+inline float LampNearSqOrDefault(float near_sq) { return near_sq > 0.0f ? near_sq : kLampNear * kLampNear; }
+inline float LampFalloff(float dist, float range, float near_sq) {
   if (!(dist < range)) {
     return 0.0f;
   }
   const float r = dist / range;
   const float w = std::clamp(1.0f - r * r * r * r, 0.0f, 1.0f);
-  return w * w / (dist * dist + kLampNear * kLampNear);
+  return w * w / (dist * dist + LampNearSqOrDefault(near_sq));
 }
+inline float LampFalloff(float dist, float range) { return LampFalloff(dist, range, 0.0f); }
 
 // ---------------------------------------------------------------------------
 // the sun's cascades (the collector's lookup) and the headlights' shadow maps
@@ -186,6 +192,42 @@ inline bool ShadowLit(float stored, float depth, float bias) {
     return true;
   }
   return stored >= depth - bias;
+}
+
+// The fraction of a headlight's beam that reaches the world point `p` (1: all of it), as hlsl/volumetrics_inject_cs.hlsl HeadlightLit computes it: the
+// published matrix, a point behind the light, outside the map's depth range or outside the view's tile (atlas_rect = u0 v0 u1 v1: the far corner, as
+// local_shadow_types.h publishes it) is lit; else a bilinear weighting of the four texels' compares, the taps clamped into the tile's texel box so that a
+// neighbouring view's texels are never read. `fetch(x, y)` gives the atlas's depth at a texel, the atlas is `width` x `height` texels.
+template <class Fetch>
+inline float ShadowShare(const VolShadowView& view, const float p[3], int width, int height, Fetch&& fetch) {
+  float u, v, depth;
+  if (view.valid == 0 || !ShadowViewPoint(view, p, &u, &v, &depth)) {
+    return 1.0f;
+  }
+  const float* r = view.atlas_rect;
+  if (!(depth > 0.0f && depth < 1.0f) || u < r[0] || v < r[1] || u > r[2] || v > r[3]) {
+    return 1.0f;
+  }
+  const int lo_x = int(std::floor(r[0] * float(width) + 0.5f));
+  const int lo_y = int(std::floor(r[1] * float(height) + 0.5f));
+  const int hi_x = std::max(int(std::floor(r[2] * float(width) + 0.5f)) - 1, lo_x);
+  const int hi_y = std::max(int(std::floor(r[3] * float(height) + 0.5f)) - 1, lo_y);
+  const float tx = u * float(width) - 0.5f;
+  const float ty = v * float(height) - 0.5f;
+  const int x0 = int(std::floor(tx));
+  const int y0 = int(std::floor(ty));
+  const float fx = tx - float(x0);
+  const float fy = ty - float(y0);
+  const float ref = depth - view.depth_bias;
+  auto lit = [&](int x, int y) {
+    const float stored = fetch(std::clamp(x, lo_x, hi_x), std::clamp(y, lo_y, hi_y));
+    return (stored >= 1.0f || stored >= ref) ? 1.0f : 0.0f;
+  };
+  const float a = lit(x0, y0);
+  const float b = lit(x0 + 1, y0);
+  const float c = lit(x0, y0 + 1);
+  const float d = lit(x0 + 1, y0 + 1);
+  return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
 }
 
 // ---------------------------------------------------------------------------

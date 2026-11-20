@@ -10,8 +10,11 @@
 //   sun         sun colour x sun strength x Henyey-Greenstein(g_sun) x its visibility: the game's own cascades (the collector's lookup: the cascade
 //               is 4 minus the number of boxes that hold the point, the atlas uv and depth from that cascade's light matrix, a bilinear 2x2
 //               compare), visibility lerp(lit, 1, sun_fade). No cascade data: the sun is unshadowed.
-//   lamps       the street lamps of the frame's list: colour x spot cone x 1 / (d^2 + 0.8^2), windowed to zero at the reach, Henyey-Greenstein(g_lamp).
-//   headlights  the same for the cars' spot lights with Henyey-Greenstein(g_head), shadowed by their shadow view in the headlights' atlas.
+//   lamps       the street lamps of the frame's list: colour x spot cone x 1 / (d^2 + near^2), windowed to zero at the reach, Henyey-Greenstein(g_lamp).
+//               near^2 is the lamp's own (the fourth row's second float, volumetrics_lamps.h: the game's lamps saturate at their plateau's radius, so the
+//               producer gives the plateau's radius squared times 0.618); 0 means the 0.8 m of a lamp that says nothing (the test lights).
+//   headlights  the same for the cars' spot lights with Henyey-Greenstein(g_head), shadowed by their shadow view in the headlights' atlas: the lookup stays
+//               inside the view's tile (the atlas holds the views side by side) and a point outside the tile, behind the lamp or outside the map's depth range is lit.
 //   haze        the game's own fog colour x sigma: a thickened fog has the game's colour and nothing else is invented.
 //   history     the previous frame's volume at the voxel's world position (the previous camera's grid), trilinear, blended in by the weight
 //               the host gives (0: never read). The voxel's sample is jittered inside the voxel by the frame's offsets so that the history
@@ -57,9 +60,12 @@ float InterleavedGradient(float2 p, float frame) {
 
 // --- the lights ---------------------------------------------------------------------------------------------------------------------
 
-// The scene units of the lights' colours: a lamp's or a headlight's colour is the game's (its colour times its intensity, a few units), and its
-// scattered light is that times this (the survey's section 5.1 estimate: a lamp's cone should show over a clear night's haze of 0.0012 per metre);
-// calibrated against the road's pool of light in V7 (volumetrics_rules.h kLightGain is the twin).
+// The scene units of the lights' colours: a lamp's or a headlight's colour is the game's (the lamp's colour times its intensity and its fade, the headlight's
+// times the lit shaders' peak and falloff distance squared: volumetrics_lamps.h MakeVolLamp, volumetrics_headlights.h ApplyHeadlightUnits), so that the term
+// at a distance is the light the road gets there; the scattered light is that times this and the haze's extinction. 60 = pi (the physical gain from the
+// game's units, a surface's radiance over its albedo, to a medium's in-scatter) x 19.1 (how much thicker than its extinction the haze is shown, so that a
+// lamp shows in a clear night's 0.0012 per metre): volumetrics_lamps.h, the calibration; mcla_gpu_vol_lamp_strength and _head_strength are the debug values
+// (volumetrics_rules.h kLightGain is the twin).
 static const float kLightGain = 60.0;
 
 float HenyeyGreenstein(float cos_theta, float g) {
@@ -76,19 +82,23 @@ float SpotFactor(float cos_axis, float cos_outer, float cos_inner) {
   return t * t * (3.0 - 2.0 * t);
 }
 
-float LampFalloff(float dist, float range) {
+float LampFalloff(float dist, float range, float near2) {
   if (!(dist < range)) {
     return 0.0;
   }
   const float r = dist / range;
   const float w = saturate(1.0 - r * r * r * r);
-  return w * w / (dist * dist + 0.64);
+  return w * w / (dist * dist + near2);
 }
 
 // A depth texel of a bindless texture, clamped to its size.
 float LoadDepth(uint slot, int2 texel, uint2 size) {
   const int2 t = clamp(texel, int2(0, 0), int2(size) - 1);
   return g_textures[slot].Load(int3(t, 0)).x;
+}
+// A depth texel clamped into the texel box [lo, hi] (a tile of the headlights' atlas).
+float LoadDepthIn(uint slot, int2 texel, int2 lo, int2 hi) {
+  return g_textures[slot].Load(int3(clamp(texel, lo, hi), 0)).x;
 }
 
 // The fraction of the sun's light that reaches `p` through the game's cascades: the collector's lookup with a bilinear weighted compare
@@ -135,8 +145,11 @@ float CascadeLit(float3 p) {
   return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);
 }
 
-// The fraction of a headlight's beam that reaches `p` (1 without a shadow view): the published matrix (column vectors, the atlas uv and the
-// depth z / w in it), lit when stored >= depth - bias, a stored 1 meaning nothing drawn there (local_shadow_rules.h).
+// The fraction of a headlight's beam that reaches `p` (1 without a shadow view): the published matrix (column vectors, the atlas uv and the depth z / w in
+// it), lit when stored >= depth - bias, a stored 1 meaning nothing drawn there (local_shadow_rules.h). The view's tile is u0 v0 u1 v1 of the atlas (the
+// published rectangle: its far corner, not its size): a point outside it, or outside the map's depth range, is lit, and the four taps of the bilinear compare stay
+// inside the tile (the neighbour tile is another car's view). The atlas is a depth plane read with Load (the point sampler's compare, weighted by the
+// fraction of the texel, so that the shadow's edge is smooth in the air).
 float HeadlightLit(float3 p, int view_index) {
   if (view_index < 0 || (g_push.slots.z & 2u) == 0u) {
     return 1.0;
@@ -146,7 +159,11 @@ float HeadlightLit(float3 p, int view_index) {
   const float4 m1 = VolF4(base + 16u);
   const float4 m2 = VolF4(base + 32u);
   const float4 m3 = VolF4(base + 48u);
-  const float4 info = VolF4(base + 80u);  // x depth bias, y texel size
+  const float4 rect = VolF4(base + 64u);  // u0, v0, u1, v1
+  const float4 info = VolF4(base + 80u);  // x depth bias, y texel size, zw the view's light index and its valid flag (bits)
+  if (VolU4(base + 80u).w == 0u) {
+    return 1.0;
+  }
   const float4 pp = float4(p, 1.0);
   const float4 o = float4(dot(m0, pp), dot(m1, pp), dot(m2, pp), dot(m3, pp));
   if (!(o.w > 0.0)) {
@@ -154,21 +171,23 @@ float HeadlightLit(float3 p, int view_index) {
   }
   const float2 uv = o.xy / o.w;
   const float depth = o.z / o.w;
-  if (!(depth > 0.0 && depth < 1.0)) {
+  if (!(depth > 0.0 && depth < 1.0) || uv.x < rect.x || uv.y < rect.y || uv.x > rect.z || uv.y > rect.w) {
     return 1.0;
   }
   const uint slot = VolU4(kO_counts).w;
   uint w, h;
   g_textures[slot].GetDimensions(w, h);
-  const uint2 size = uint2(w, h);
-  const float2 tc = uv * float2(size) - 0.5;
+  const float2 size = float2(w, h);
+  const int2 lo = int2(floor(rect.xy * size + 0.5));
+  const int2 hi = max(int2(floor(rect.zw * size + 0.5)) - 1, lo);
+  const float2 tc = uv * size - 0.5;
   const int2 i0 = int2(floor(tc));
   const float2 fr = tc - float2(i0);
   const float ref = depth - info.x;
-  const float a = LoadDepth(slot, i0, size);
-  const float b = LoadDepth(slot, i0 + int2(1, 0), size);
-  const float c = LoadDepth(slot, i0 + int2(0, 1), size);
-  const float d = LoadDepth(slot, i0 + int2(1, 1), size);
+  const float a = LoadDepthIn(slot, i0, lo, hi);
+  const float b = LoadDepthIn(slot, i0 + int2(1, 0), lo, hi);
+  const float c = LoadDepthIn(slot, i0 + int2(0, 1), lo, hi);
+  const float d = LoadDepthIn(slot, i0 + int2(1, 1), lo, hi);
   const float s00 = (a >= 1.0 || a >= ref) ? 1.0 : 0.0;
   const float s10 = (b >= 1.0 || b >= ref) ? 1.0 : 0.0;
   const float s01 = (c >= 1.0 || c >= ref) ? 1.0 : 0.0;
@@ -194,9 +213,10 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
   }
   float lit = 1.0;
   if (shadowed) {
-    lit = HeadlightLit(p, asint(VolF4(offset + 48u).x));
+    lit = HeadlightLit(p, int(g_vol.Load(offset + 48u)));
   }
-  return c.xyz * (strength * spot * lit * LampFalloff(dist, a.w) * HenyeyGreenstein(dot(travel, -ray), g));
+  const float near_sq = asfloat(g_vol.Load(offset + 52u));  // the light's near radius squared (0: the default 0.8 m)
+  return c.xyz * (strength * spot * lit * LampFalloff(dist, a.w, near_sq > 0.0 ? near_sq : 0.64) * HenyeyGreenstein(dot(travel, -ray), g));
 }
 
 [numthreads(8, 8, 1)]
