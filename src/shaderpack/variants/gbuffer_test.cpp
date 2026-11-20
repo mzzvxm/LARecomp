@@ -57,6 +57,59 @@ std::string ReadFile(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+// Takes the variant's four insertions out again (the second output, the three constants rows, the helper, the write of the sidecar) and gives back what is
+// left: it must be the game's text, byte for byte, with the line ends of the transform (LF). Whatever the game computes its colour with is then untouched by
+// the variant, so a colour that differs with the G-buffer on is not the shader text's doing (the spike's pictures of 2026-11-19 differed in the sky, which is
+// on the game's own clock: perf\out\GBUFFER-SPIKE.txt, S1).
+std::string WithoutVariant(std::string text, std::string helper) {
+  std::string missing;
+  const auto cut = [&](const char* name, std::string_view piece) {
+    const size_t at = text.find(piece);
+    if (at == std::string::npos || text.find(piece, at + piece.size()) != std::string::npos) {
+      missing += std::string(" ") + name;
+      return;
+    }
+    text.erase(at, piece.size());
+  };
+  while (!helper.empty() && (helper.back() == '\n' || helper.back() == '\r' || helper.back() == ' ' || helper.back() == '\t')) helper.pop_back();
+  std::string no_cr;
+  for (const char c : helper) {
+    if (c != '\r') no_cr += c;
+  }
+  cut("the second output", "\n\t, out float2 oC1 : SV_Target1");
+  // the SPIR-V rows: a comment line and three #defines after the game's g_InvResolutionScale define
+  constexpr std::string_view kCamRow = "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)";
+  const size_t begin = text.find("\n// G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants)");
+  const size_t cam = text.find(kCamRow);
+  if (begin == std::string::npos || cam == std::string::npos || cam < begin) {
+    missing += " the SPIR-V rows";
+  } else {
+    text.erase(begin, cam + kCamRow.size() - begin);
+  }
+  cut("the DXIL rows", " \\\n    uint4 g_GBufferMode : packoffset(c38); \\\n    float4 g_GBufferRay : packoffset(c39); \\\n    float4 g_GBufferCam : packoffset(c40);");
+  cut("the helper", no_cr + "\n\n");
+  cut("the sidecar write", "\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(iTexCoord0.xyz);\n\t}");
+  return missing.empty() ? text : "<missing or twice there:" + missing + ">";
+}
+
+std::string LfOnly(std::string_view text) {
+  std::string out;
+  for (const char c : text) {
+    if (c != '\r') out += c;
+  }
+  return out;
+}
+
+// "" when the two texts are the same, else where they first differ (a few bytes of each) for the message of a failed check.
+std::string FirstDifference(const std::string& got, const std::string& want) {
+  if (got == want) return std::string();
+  size_t at = 0;
+  while (at < got.size() && at < want.size() && got[at] == want[at]) ++at;
+  const auto around = [&](const std::string& text) { return text.substr(at > 20 ? at - 20 : 0, 60); };
+  return " (first difference at byte " + std::to_string(at) + ": got '" + around(got) + "', want '" + around(want) + "'; sizes " + std::to_string(got.size()) + " and " +
+         std::to_string(want.size()) + ")";
+}
+
 // The shape of the translator's pixel shader the edits look at (a day shader: the real text has 700 lines).
 constexpr const char* kFixture =
     "#define g_InvResolutionScale      vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)\n"
@@ -111,6 +164,8 @@ void CheckFixture() {
     const size_t main_at = r.hlsl.find("void main(");
     const size_t decl_at = r.hlsl.find("#define g_GBufferMode");
     Check(helper_at != std::string::npos && main_at != std::string::npos && decl_at < helper_at && helper_at < main_at, "the declarations, the helper, then main");
+    const std::string fixture_diff = FirstDifference(WithoutVariant(r.hlsl, kHelper), LfOnly(kFixture));
+    Check(fixture_diff.empty(), std::string(shader.name) + ": with the variant's four insertions taken out the fixture is the game's text again, byte for byte" + fixture_diff);
     // a line end convention does not matter
     std::string crlf;
     for (const char c : std::string(kFixture)) {
@@ -208,6 +263,9 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
     Check(Count(hlsl, "float4 r1 = iTexCoord1;") == 1, std::string(name) + ": r1 is loaded from TEXCOORD1 (the position)");
     Check(Count(hlsl, "if (oCoverage == 0u) discard;") == 1, std::string(name) + ": the alpha test discards before the colour write");
     Check(Count(r.hlsl, "oC1 : SV_Target1") == 1 && Count(r.hlsl, "GbRt1Encode(iTexCoord0.xyz)") == 1, std::string(name) + ": one second output, one write");
+    // the colour path: nothing the game computes oC0 with is touched (the four insertions are all the variant does)
+    const std::string retail_diff = FirstDifference(WithoutVariant(r.hlsl, helper), LfOnly(hlsl));
+    Check(retail_diff.empty(), std::string(name) + ": with the variant's four insertions taken out the retail text is the game's again, byte for byte" + retail_diff);
     if (!out.empty()) {
       std::filesystem::create_directories(out);
       std::ofstream(out / (std::string(name) + ".gbuffer.hlsl"), std::ios::binary) << r.hlsl;
