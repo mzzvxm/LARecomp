@@ -22,8 +22,9 @@
 //    The volume's lamp term (hlsl/volumetrics_inject_cs.hlsl SpotLight) is  colour x w(d)^2 / (d^2 + near^2)  with the window w = saturate(1 - (d / range)^4):
 //    the game's inverse square with a near radius where the game has its plateau. MakeVolLamp gives a lamp   colour = lamp colour x I x scale,
 //    near^2 = kLampNearShare x I,  range = sqrt(100 I),  so that beyond the plateau the term IS the game's I / d^2 and the lamp's own core, where the game
-//    clamps at 1, rises to 1 / kLampNearShare (1.62) instead of being flat: the largest ratio of the volume's term to the game's, anywhere, is 1.62 and the
-//    smallest 0.62 (at the plateau's edge): kLampNearShare is the golden ratio's conjugate because that balances the two (tested: no other share does better).
+//    clamps at 1, rises to 1 / kLampNearShare (1.62) instead of being flat: out to a third of the reach (where the window is still above 0.88) the volume's term
+//    is at most 1.62 times the game's and at least 0.62 times it (at the plateau's edge): kLampNearShare is the golden ratio's conjugate because that balances
+//    the two (tested: no other share does better); farther out the window takes the term to zero at the range, where the game's is 1 to 2 per cent.
 //    The near radius travels in VolLamp::pad[0] (the frozen header leaves three padding floats; the shader reads the second float of the fourth row, 0 meaning
 //    the shader's own 0.8 m), so the interface's layout is untouched.
 //
