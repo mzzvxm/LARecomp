@@ -12,9 +12,11 @@ namespace mcla::ui {
 // OPENING IT: the debug setting mcla_director_panel (the hidden DEBUG menu's TOOLS page has the row DIRECTOR PANEL), the key Ctrl+F12 (ui.bind.mcla_director, flips the setting:
 // F2/F4/F9/F10/F11 and the other F-key menus are untouched), or an agent's `ui.open {panel:"director"}`. It needs the Director (mcla_director): the panel offers to switch it on.
 //
-// KEYS (while the panel is open the game does not see the keyboard; the GAME KEYS box gives it back, and a recorded drive does it by itself):
+// KEYS (the keyboard stays the game's too, so the F-key menus work while the panel is open; with the pointer on the dock the panel holds the keys, and the GAME KEYS box lets the
+// game have them there as well, which a recorded drive does by itself):
 //   Space play / pause   Home restart   , and . one frame back / on   K add a key at the playhead   [ and ] the previous / next key   Del delete the selected key
-//   F the free camera on / off   G the gizmos in the world   Tab hide the panel for a clean look   Ctrl+Z / Ctrl+Y undo / redo   Esc close
+//   F the free camera on / off   G the gizmos in the world   Tab hide the panel for a clean look   Ctrl+Z / Ctrl+Y undo / redo   Esc ends the waypoint tool
+//   CLOSE in the bar, the DEBUG menu row or Ctrl+F12 (with the pointer off the dock) close it
 //   with the free camera: W A S D along the view, Q E down and up, Shift fast, Ctrl slow, Z X tilt, R levels the horizon, + - zoom, the RIGHT MOUSE BUTTON looks, the wheel steps the speed
 //   the pad: the flight's own sticks, and Back + B add a key, Back + RB / LB next / previous key, Back + Start play / pause, Back + D-pad right one frame, Back + D-pad up the take
 //
