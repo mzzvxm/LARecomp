@@ -25,11 +25,18 @@
 //     retail shaders they share (xCityDefault's night shader) and compiles that: the headlight's block at 608, the G-buffer's at 1280, both helpers once, and DXIL and SPIR-V
 //     with the shader's spec constants 0 and 2 (the alpha test twin).
 //
+//     2c. THE G-BUFFER'S VERTEX STAGE (feature 12, shaderpack/variants/gbuffer_day.h). It composes with nothing: each of its three real vertex shaders (the road, the tunnel road, the foliage
+//     props) is made alone, has the export once, and compiles to DXIL and SPIR-V at the vertex shader's spec variants 0 and 1.
+//  The G-buffer's own families: the variant has grown past the spike's two shaders (the night family: gbuffer_night.h, the day families: gbuffer_day.h), so its lines are not part of the
+//  identity of a tree that adds those stages to a main that has the spike: `--expect-changes gbuffer` counts them against the golden (INFO lines: same / differ / new / gone) and never fails on
+//  them; the stages' own tests (gbuffer_night_test, gbuffer_day_test) hold their texts to the game's plus the insertions, and every other variant stays byte for byte the golden's.
+//
 //   cmake --build <build dir> --target larecomp_variant_golden_test     (src/shaderpack/CMakeLists.txt)
-//   larecomp_variant_golden_test --hlsl <folder>... --hlsli <hdr_tonemap_shoulder.hlsli> [--gbuffer-hlsli <gbuffer_common.hlsli>] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]
+//   larecomp_variant_golden_test --hlsl <folder>... --hlsli <hdr_tonemap_shoulder.hlsli> [--gbuffer-hlsli <gbuffer_common.hlsli>] [--golden FILE | --write FILE] [--expect-changes VARIANT]... [--dxc DIR] [--work DIR]
 // Exit 0 when every check holds.
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -65,6 +72,11 @@
 #if __has_include("shaderpack/variants/gbuffer.h")
 #include "shaderpack/variants/gbuffer.h"
 #define GOLDEN_HAS_GBUFFER 1
+#endif
+// The G-buffer's day stage (package GB-D): its vertex stage (feature 12) is checked on the three real vertex shaders it is for (section 2c).
+#if __has_include("shaderpack/variants/gbuffer_day.h")
+#include "shaderpack/variants/gbuffer_day.h"
+#define GOLDEN_HAS_GBUFFER_DAY 1
 #endif
 
 // The one function of the pack builder's hash library this test needs (hdr_scene.cpp fingerprints its curve with it; the text it makes does not depend on it).
@@ -216,6 +228,7 @@ sp::VariantDef TestStage(uint32_t feature, std::string name, std::string tag) {
 int main(int argc, char** argv) {
   std::vector<fs::path> roots;
   fs::path golden, write, hlsli, gbuffer_hlsli, dxc_dir, work;
+  std::set<std::string> expect_changes;  // --expect-changes NAME: the variant's texts are not part of the identity (its stage was edited on purpose); the golden's lines are only counted
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const bool more = i + 1 < argc;
@@ -226,13 +239,14 @@ int main(int argc, char** argv) {
     else if (a == "--gbuffer-hlsli" && more) gbuffer_hlsli = argv[++i];
     else if (a == "--dxc" && more) dxc_dir = argv[++i];
     else if (a == "--work" && more) work = argv[++i];
+    else if (a == "--expect-changes" && more) expect_changes.insert(argv[++i]);
     else {
-      std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
+      std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--expect-changes VARIANT]... [--dxc DIR] [--work DIR]\n");
       return 2;
     }
   }
   if (roots.empty() || hlsli.empty()) {
-    std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
+    std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--expect-changes VARIANT]... [--dxc DIR] [--work DIR]\n");
     return 2;
   }
   std::vector<Shader> files;
@@ -321,14 +335,29 @@ int main(int argc, char** argv) {
     for (const sp::VariantDef& def : defs) {
       const auto v = golden_versions.find(def.name);
       if (golden_versions.empty()) break;
+      if (expect_changes.count(def.name)) continue;  // edited on purpose: its version moves with its text
       Check(v != golden_versions.end(), "the golden file has the version of " + def.name);
       if (v != golden_versions.end()) Check(v->second == def.version, def.name + " is version " + std::to_string(def.version) + ", the golden's is " + std::to_string(v->second));
     }
     size_t same = 0, different = 0, missing = 0;
+    std::map<std::string, std::array<size_t, 4>> expected;  // per variant of --expect-changes: same, differ, new, gone (counted, never failed)
     std::set<std::pair<std::string, std::string>> seen;
     for (const Line& l : mine) {
       seen.insert({l.variant, l.stem});
       const auto it = want.find({l.variant, l.stem});
+      if (expect_changes.count(l.variant)) {
+        std::array<size_t, 4>& count = expected[l.variant];
+        if (it == want.end()) {
+          ++count[2];
+        } else if (it->second.status == l.status && it->second.size == l.size && it->second.fnv == l.fnv && it->second.error == l.error) {
+          ++count[0];
+        } else {
+          ++count[1];
+          std::printf("INFO: %s %s differs from the golden (a stage edited on purpose: before %s %s, now %s %s)\n", l.variant.c_str(), l.stem.c_str(), it->second.size.c_str(),
+                      it->second.fnv.c_str(), l.size.c_str(), l.fnv.c_str());
+        }
+        continue;
+      }
       if (it == want.end()) {
         ++missing;
         std::printf("FAILED: %s %s is not in the golden file\n", l.variant.c_str(), l.stem.c_str());
@@ -347,7 +376,14 @@ int main(int argc, char** argv) {
     }
     size_t gone = 0;
     for (const auto& [key, g] : want) {
-      if (!seen.count(key)) ++gone;
+      if (!seen.count(key)) {
+        if (expect_changes.count(key.first)) ++expected[key.first][3];
+        else ++gone;
+      }
+    }
+    for (const auto& [name, count] : expected) {
+      std::printf("INFO: %s (--expect-changes): %zu texts as the golden's, %zu differ, %zu new, %zu gone; not part of the identity (the stage's own tests hold its texts to the game's plus the insertions)\n",
+                  name.c_str(), count[0], count[1], count[2], count[3]);
     }
     g_checks += 3;
     g_failed += (different != 0) + (missing != 0) + (gone != 0);
@@ -541,6 +577,48 @@ int main(int argc, char** argv) {
       std::printf("%d composed headlight + G-buffer texts%s\n", pairs, dxc.enabled() ? (", " + std::to_string(pair_compiles) + " compiled with dxc (DXIL and SPIR-V, both spec constants)").c_str() : " (no --dxc: not compiled)");
     }
   }
+
+#ifdef GOLDEN_HAS_GBUFFER_DAY
+  // ---- 2c. the G-buffer's vertex stage (feature 12) on the real vertex shaders it is for ----------------------------------------------------------------
+  // The three vertex shaders of the day families that fetch a normal and export none (the road, the tunnel road, the foliage props): composed alone through the chain, the export is in once, the
+  // text is the game's plus it, and it compiles to DXIL and SPIR-V at the vertex shader's spec variants 0 and 1 (the packed normal twin: the table's row has it). The pixel words of the day
+  // families read what this stage exports where it is there and take a derivative normal where it is not (gbuffer_day.h), so no pixel word needs it: the renderer pairs it per draw.
+  {
+    const std::vector<sp::VariantDef> vs_defs = {sp::MakeGBufferVsVariant()};
+    const chain::FeatureInfo* vs_row = chain::Find(sp::kFeatureGBufferVs);
+    Check(vs_row && vs_row->name == vs_defs[0].name && vs_row->stage == chain::Stage::kVertex && vs_defs[0].vertex && vs_row->spec_twin && vs_row->constants_bytes == 0,
+          "the table has the row of gbuffer_vs: a vertex stage with the twin and no block of constants");
+    int made = 0, compiled = 0;
+    for (const sp::GBufferVsShader& vs_shader : sp::kGBufferVsShaders) {
+      const Shader* file = nullptr;
+      for (const Shader& f : files) {
+        if (f.stem == vs_shader.name) file = &f;
+      }
+      if (!file) continue;
+      const std::string text = Slurp(file->path);
+      const sp::VariantTransformResult r = sp::ComposeStages(vs_defs, chain::FeatureBit(sp::kFeatureGBufferVs), {std::string(vs_shader.name), 0}, text);
+      Check(r.ok && CountOccurrences(r.hlsl, "oTexCoord15 = float4(") == 1, std::string("the vertex stage exports the normal in ") + std::string(vs_shader.name) + ": " + r.error);
+      if (!r.ok) continue;
+      ++made;
+      if (dxc.enabled()) {
+        int bad = 0;
+        for (const bool spirv : {false, true}) {
+          for (const uint32_t spec : {0u, 1u}) {
+            const std::string tag = "gbvs" + std::to_string(made) + (spirv ? "_spv" : "_dxil") + std::to_string(spec);
+            if (dxc.Compile(r.hlsl, tag, spirv, true, spec) != 0) {
+              ++bad;
+              std::printf("FAILED: the G-buffer's vertex stage on %s: dxc %s spec %u\n", std::string(vs_shader.name).c_str(), spirv ? "SPIR-V" : "DXIL", spec);
+            }
+          }
+        }
+        Check(bad == 0, "the G-buffer's vertex stage text of " + std::string(vs_shader.name) + " compiles (DXIL and SPIR-V, spec variants 0 and 1)");
+        compiled += bad == 0 ? 1 : 0;
+      }
+    }
+    Check(made == int(sp::kGBufferVsShaderCount), "the three real vertex shaders of the G-buffer's vertex stage are in the HLSL folders (" + std::to_string(made) + " of " + std::to_string(sp::kGBufferVsShaderCount) + ")");
+    std::printf("%d G-buffer vertex stage texts made on real vertex shaders, %d compiled with dxc\n", made, compiled);
+  }
+#endif
 
   // ---- 3. a vertex stage on a real vertex shader --------------------------------------------------------------------------------------------------
   {

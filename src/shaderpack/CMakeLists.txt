@@ -259,7 +259,7 @@ target_compile_features(larecomp_variant_golden_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_golden_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The variants of the branches that are not in every tree (feat/headlights, feat/gbuffer-spike) are checked too when their files are there (variant_golden_test.cpp
 # takes them with __has_include; the G-buffer's helper is `--gbuffer-hlsli src/gpu/hlsl/gbuffer_common.hlsli`): with both, the real pair is composed and compiled.
-foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer gbuffer_night)
+foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer gbuffer_night gbuffer_day)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/variants/${_larecomp_branch_variant}.cpp")
         target_sources(larecomp_variant_golden_test PRIVATE variants/${_larecomp_branch_variant}.cpp)
     endif()
@@ -287,12 +287,13 @@ add_executable(larecomp_headlight_variant_test EXCLUDE_FROM_ALL
     variants/headlight.cpp)
 target_compile_features(larecomp_headlight_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_headlight_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
-# The G-buffer variant's text transform (variants/gbuffer_test.cpp; xCityDefault's day and night shaders): cmake --build <dir> --target
+# The G-buffer variant's text transform (variants/gbuffer_test.cpp; xCityDefault's night shader, and the dispatch to the night and day stages): cmake --build <dir> --target
 # larecomp_gbuffer_variant_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
 add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL
     variants/gbuffer_test.cpp
     variants/gbuffer.cpp
     variants/gbuffer_night.cpp
+    variants/gbuffer_day.cpp
     hash.cpp)
 target_compile_features(larecomp_gbuffer_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
@@ -302,6 +303,7 @@ target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURREN
 add_executable(larecomp_gbuffer_night_test EXCLUDE_FROM_ALL
     variants/gbuffer_night_test.cpp
     variants/gbuffer_night.cpp
+    variants/gbuffer_day.cpp
     variants/gbuffer.cpp
     variants/headlight.cpp
     hash.cpp)

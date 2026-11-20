@@ -2525,6 +2525,16 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
                                                  d.key.vs_variant, &vs_word);
     if (chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer) && (chain::FeaturesOf(word) & chain::FeaturesOf(before)) == chain::FeaturesOf(before)) {
       facts.variant_word = word;
+      // The day stage's vertex word (gbuffer_day.h, feature kFeatureGBufferVs): the road, the tunnel road and the foliage props' vertex shaders also export the vertex normal
+      // (TEXCOORD15, which their pixel shaders' G-buffer words read where it is there and replace by a derivative normal where it is not). No pixel word needs it, so the pack's
+      // `needs` never asks for it: this is the pairing, made when the draw's vertex shader has the word (for its own spec variant: the packed normal twin). A draw that gets no
+      // sidecar keeps its own vertex word (the key below is only used when the draw attaches).
+      if (d.vs && chain::FeaturesOf(vs_word) == 0) {
+        const uint32_t gb_vs = chain::Word(chain::FeatureBit(larecomp::shaderpack::kFeatureGBufferVs), chain::SpecOf(vs_word));
+        if (d.vs->HasWord(gb_vs)) {
+          vs_word = gb_vs;
+        }
+      }
     }
   }
   const gbuffer::DrawDecision decision = gbuffer::Decide(facts);
@@ -2561,7 +2571,7 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   if (decision.variant != 0) {
     key.ps_variant = decision.variant;
     if (chain::FeaturesOf(vs_word) != 0) {
-      key.vs_variant = vs_word;  // a vertex stage the chosen word needs (none today)
+      key.vs_variant = vs_word;  // the vertex stage the draw is paired with: the day stage's export (above), or one a pixel word needs (none today)
     }
   }
   d.gbuffer_attached = true;

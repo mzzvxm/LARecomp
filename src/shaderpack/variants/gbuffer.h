@@ -4,7 +4,8 @@
 // ===========================================================================
 // perf/GBUFFER-SURVEY.md (the hybrid path): the game's forward lighting stays, and the lit pixel shaders are drawn as a variant that, besides the
 // game's colour, writes the G-buffer's planes into the sidecar render targets the main view's pipelines carry (src/gpu/gbuffer_types.h: RT1 the
-// octahedral world normal, RT2 and RT3 later). THIS IS THE SPIKE (phase 0): the family is xCityDefault alone, the plane is RT1 alone.
+// octahedral world normal, RT2 and RT3 later). The family started as xCityDefault alone (phase 0, the spike: the edits below are its); the night's shaders (gbuffer_night.h) and the
+// day's (gbuffer_day.h) are the rest, each with a transform of its own that this file's TransformGBufferHlsl sends them to. The plane is RT1 alone.
 //
 // The shaders (found by name, in the executable's and the RPF's containers: needs_rpf):
 //   xCityDefault::PSCityDefault    the day shader of the family's material: its vertex shader (VSCityDefaultDay) exports the vertex's normal as
@@ -14,7 +15,10 @@
 //                                  (`r5.w = saturate(dot(r0.zxy, gMultiLightDynamicLightData(10).zxy))`, the sun's term)
 // The other pixel shaders of the group (the shadow, depth and AO passes) are not in the variant. The rest of the NIGHT family is: every `__PSMultiLight`, `...Env` and
 // `...Interior` pixel shader (the city's materials, the props, the traffic cars' body, the pedestrians) is edited by shaderpack/variants/gbuffer_night.cpp (package GB-C), which
-// finds each one's normal itself; this file's own edits below stay for xCityDefault's two shaders (the night one gets the same text from either).
+// finds each one's normal itself; this file's own edits below stay for xCityDefault::PSMultiLight (the night stage's text for it is the same: its test checks).
+// The DAY families (the 69 `PSCity*` / `PSProp*` shaders: shaderpack/variants/gbuffer_day.cpp, package GB-D) are sent to TransformGBufferDayHlsl, xCityDefault::PSCityDefault
+// among them (the same four insertions, with the back face flip kModeFlipBackface asks for added to its write); the day table also says which of them are the
+// day stage's vertex shaders' (feature kFeatureGBufferVs, its own pack entries: gbuffer_day.h) to pair per draw (Scene::GBufferKey).
 //
 // What the transform edits (each anchor must be found the number of times said or the variant is not built: the HLSL is not the one it was written for):
 //   1. the output: `, out float2 oC1 : SV_Target1` after `out float4 oC0 : SV_Target0` (RT1 is R16G16_UNORM; a pixel shader with a second output next to
@@ -55,7 +59,10 @@ namespace larecomp::shaderpack {
 // Hand bumped: the edits, the helper's use or the checks of this variant (its stamp line variants_gbuffer_version). The file src/gpu/hlsl/gbuffer_common.hlsli is
 // part of the variant's text and is in the stamp through the fingerprint (variants_gbuffer_input).
 // 2: the night family (PSMultiLight, ...Env, ...Interior: gbuffer_night.h) is in the variant; every pack that had version 1 is built again.
-inline constexpr uint32_t kGBufferVariantVersion = 2;
+// 3: the day families (gbuffer_day.h: 42 PSCity / PSProp shaders, their normals from the interpolant, the vertex stage's export or the derivatives); xCityDefault::PSCityDefault is the
+//    day table's now (the back face flip is in its text). The day stage's own kGBufferDayVersion and the vertex stage's kGBufferVsVersion (its own pack entry: gbuffer_vs) are bumped by hand
+//    for the edits of their own; a change to the day table or the day edits also bumps THIS number, which is the pixel stage's stamp line (variants_gbuffer_version).
+inline constexpr uint32_t kGBufferVariantVersion = 3;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

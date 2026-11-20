@@ -39,19 +39,17 @@
 // the spec variant 1 twin (the packed normal). The skinned foliage vertex shader is not edited (its pixel shader takes the derivative normal with it). The renderer picks the vertex word per
 // draw: Scene::GBufferKey, see INTEGRATION.
 //
-// INTEGRATION (the main session wires; the three packages meet in gbuffer.cpp, which this package does not edit):
-//   1. gbuffer.cpp's TransformGBufferHlsl calls TransformGBufferDayHlsl for IsGBufferDayShader(name) (it replaces the spike's own text for xCityDefault::PSCityDefault: the table has it
-//      with k = 0 and the same colour path), and its VariantDef lists GBufferDayShaderNames() with its other names: ONE stage, one VariantDef (the chain finds a stage by its feature).
-//      Its version (kGBufferVariantVersion) must change with that (a player's pack stamped with the old one would otherwise stay current and never get the day shaders): the day stage's own
-//      constant is kGBufferDayVersion, to be added to the stage's version.
-//   2. BuiltInVariants() (variant_pack.cpp) already adds MakeGBufferVsVariant().
-//   3. Scene::GBufferKey, after the pixel word was chosen (the vertex word is the renderer's to pair: no pixel word needs it, see above):
-//        if (chain::HasFeature(word, kFeatureGBuffer) && d.vs && chain::FeaturesOf(d.key.vs_variant) == 0) {
-//          const uint32_t gb_vs = chain::Word(chain::FeatureBit(kFeatureGBufferVs), chain::SpecOf(d.key.vs_variant));
-//          if (d.vs->HasWord(gb_vs)) vs_word = gb_vs;   // the key's vs_variant is then set by the code that is already there
-//        }
-//   4. FillVariantBlock must fill GBufferConstants::view_ray and camera_to_world (the derivative shaders read them); the mode bit kModeDerivativeNormal is not read by this stage (each
-//      shader's source is fixed by its name).
+// WIRING (done in feat/gb-phase1, GB-INTEGRATE-1):
+//   1. gbuffer.cpp's TransformGBufferHlsl sends every IsGBufferDayShader name to TransformGBufferDayHlsl (xCityDefault::PSCityDefault included: the table has it with k = 0, the spike's colour
+//      path plus the back face flip), and its VariantDef lists GBufferDayShaderNames() with its other names: one stage, one VariantDef. kGBufferVariantVersion is 3 (2 = the night family, 3 =
+//      the day families): the pack's variants_gbuffer_version stamp line. kGBufferDayVersion below is the day stage's own number (the stage VariantDef of the tests); a change to the day
+//      table or edits bumps both.
+//   2. BuiltInVariants() (variant_pack.cpp) adds MakeGBufferVsVariant() (stamp lines variants_gbuffer_vs_*).
+//   3. Scene::GBufferKey pairs the vertex word per draw, after the pixel word was chosen (the vertex word is the renderer's to pair: no pixel word needs it, see above): when the draw's pixel
+//      word has the G-buffer's stage and its vertex shader has the word of feature kFeatureGBufferVs at the vertex shader's own spec variant, the key's vs_variant is that word.
+//   4. Scene::FillVariantBlock fills GBufferConstants::view_ray and camera_to_world from Scene::FillGBufferCamera (the temporal system's previous camera: MakeCameraRows). CHECK: the camera
+//      rows exist only while the temporal system is active (an upscaler runs); without them the derivative shaders (store interiors, the traffic signals, the skinned foliage's fallback) write
+//      "no data" (zeros make the normal NaN, which GbRt1Encode writes as 0). The mode bit kModeDerivativeNormal is not read by this stage (each shader's source is fixed by its name).
 // ===========================================================================
 
 #include <cstdint>
@@ -64,7 +62,7 @@
 
 namespace larecomp::shaderpack {
 
-// Hand bumped: the edits, the table or the checks of the day pixel stage / of the vertex stage (the integrator folds the first into gbuffer's version, the second is its own stamp line).
+// Hand bumped: the edits, the table or the checks of the day pixel stage / of the vertex stage (a change to the first also bumps gbuffer.h's kGBufferVariantVersion, the second is its own stamp line).
 inline constexpr uint32_t kGBufferDayVersion = 1;
 inline constexpr uint32_t kGBufferVsVersion = 1;
 

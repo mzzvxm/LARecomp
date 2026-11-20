@@ -10,6 +10,7 @@
 
 #include "shaderpack/hash.h"
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
@@ -36,10 +37,13 @@ VariantTransformResult TransformGBufferHlsl(const VariantShader& shader, std::st
     result.error = std::string(shader.name) + ": " + std::move(message);
     return result;
   };
-  // The rest of the night family (PSMultiLight, ...Env, ...Interior: shaderpack/variants/gbuffer_night.h, package GB-C) has its own transform; xCityDefault::PSMultiLight
-  // keeps the edits below (the text GB-C makes for it is the same, gbuffer_night_test.cpp checks it).
+  // The day families (the PSCity / PSProp shaders: shaderpack/variants/gbuffer_day.h, package GB-D) have their own transform, xCityDefault::PSCityDefault among them: it is the
+  // spike's text plus the back face flip (the table row says where each shader's normal is). The rest of the night family (PSMultiLight, ...Env, ...Interior:
+  // shaderpack/variants/gbuffer_night.h, package GB-C) has its own too; xCityDefault::PSMultiLight keeps the edits below (the text GB-C makes for it is the same,
+  // gbuffer_night_test.cpp checks it).
+  if (IsGBufferDayShader(shader.name)) return TransformGBufferDayHlsl(shader, hlsl, hlsli_text, ctx);
   if (shader.name != kGBufferNightShader && IsGBufferNightShader(shader.name)) return TransformGBufferNightHlsl(shader, hlsl, hlsli_text, ctx);
-  if (shader.name != kGBufferDayShader && shader.name != kGBufferNightShader) {
+  if (shader.name != kGBufferNightShader) {
     result.skip = true;
     result.error = "not a shader the G-buffer variant is for";
     return result;
@@ -136,6 +140,9 @@ VariantDef MakeGBufferVariantFromText(std::string_view hlsli_text) {
   def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text));
   def.pixel_name_suffixes = {kGBufferDayShader, kGBufferNightShader};
   for (const std::string_view suffix : kGBufferNightSuffixes) def.pixel_name_suffixes.push_back(suffix);  // GB-C: the night family
+  for (const std::string_view name : GBufferDayShaderNames()) {                                             // GB-D: the day families (kGBufferDayShader is their first row)
+    if (name != kGBufferDayShader) def.pixel_name_suffixes.push_back(name);
+  }
   def.transform = [helper = std::string(hlsli_text)](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
     return TransformGBufferHlsl(shader, hlsl, helper, ctx);
   };
