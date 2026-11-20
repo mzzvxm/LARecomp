@@ -43,6 +43,7 @@
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
 #include "shaderpack/variants/gbuffer.h"
+#include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/hdr_scene.h"
@@ -778,6 +779,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   } else if (left_out) {
     left_out->push_back("gbuffer: " + why);
   }
+  variants.push_back(MakeGBufferVsVariant());  // the G-buffer's vertex stage (feature 12): needs no helper text, so it is always there
   return variants;
 }
 

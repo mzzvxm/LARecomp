@@ -108,6 +108,7 @@ add_library(larecomp_shaderpack STATIC
     variants/ui_sharp.cpp
     variants/headlight.cpp
     variants/gbuffer.cpp
+    variants/gbuffer_day.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -293,6 +294,14 @@ add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL
     hash.cpp)
 target_compile_features(larecomp_gbuffer_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
+# The G-buffer's day families (variants/gbuffer_day.h: 42 pixel shaders with their normal sources, and the vertex stage's three shaders): cmake --build <dir> --target
+# larecomp_gbuffer_day_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
+add_executable(larecomp_gbuffer_day_test EXCLUDE_FROM_ALL
+    variants/gbuffer_day_test.cpp
+    variants/gbuffer_day.cpp
+    hash.cpp)
+target_compile_features(larecomp_gbuffer_day_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_gbuffer_day_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).
