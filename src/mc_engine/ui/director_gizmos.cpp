@@ -3,6 +3,7 @@
 #include "director_gizmos.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 #include "mc_engine/cinematic/camera.h"
@@ -254,7 +255,15 @@ void AddCar(const Projector& view, const dir::SnapCar& car, bool selected, int i
     const float radius = std::clamp(static_cast<float>(2.0 / (depth * view.tan_half_fov) * view.picture.h * 0.5), 8.0f, 90.0f);
     out->dots.push_back({px, radius, color, false, id});
     std::string text = car.id;
-    if (!car.model.empty()) {
+    // (the player's car has no model name of its own: the snapshot says "player" there, which printed the label twice)
+    const auto same_word = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        }
+        return true;
+    };
+    if (!car.model.empty() && !same_word(car.model, car.id)) {
         std::string m = car.model;
         if (m.size() > 22) m = m.substr(0, 22);
         text += "  " + m;

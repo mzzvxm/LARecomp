@@ -995,4 +995,104 @@ std::vector<std::string> CarIds(const dir::Snapshot& snap) {
     return ids;
 }
 
+// ---------------------------------------------------------------------------------------------------------------- the dock's size
+
+const char* DockSizeName(DockSize size) {
+    switch (size) {
+        case DockSize::kSmall: return "small";
+        case DockSize::kNormal: return "normal";
+        case DockSize::kTall: return "tall";
+    }
+    return "normal";
+}
+
+DockSize NextDockSize(DockSize size) {
+    switch (size) {
+        case DockSize::kSmall: return DockSize::kNormal;
+        case DockSize::kNormal: return DockSize::kTall;
+        case DockSize::kTall: return DockSize::kSmall;
+    }
+    return DockSize::kNormal;
+}
+
+DockPlan PlanDock(float display_w, float display_h, DockSize size, bool collapsed, float bar_height, float size_scale) {
+    DockPlan p;
+    const float h = display_h > 1.0f ? display_h : 720.0f;
+    const float w = display_w > 1.0f ? display_w : 1280.0f;
+    const float user = std::clamp(size_scale, 0.6f, 3.0f);
+    p.scale = std::clamp(h / 900.0f, 0.78f, 2.0f) * user;
+    p.font = 17.0f * p.scale;
+    p.pad_x = 0.45f * p.font;
+    p.pad_y = 0.28f * p.font;
+    p.frame_x = 0.42f * p.font;
+    p.frame_y = 0.17f * p.font;
+    p.item_x = 0.45f * p.font;
+    p.item_y = 0.22f * p.font;
+    p.row = p.font + 2.0f * p.frame_y + p.item_y;
+    p.footer = p.font + 0.5f * p.font;
+    const float bar = bar_height > 0.0f ? bar_height : 2.0f * p.row;
+    const float body_min = 4.0f * p.row + 0.4f * p.font;  // the tab strip and three rows of the inspector
+    p.min_height = 2.0f * p.pad_y + bar + p.footer + body_min;
+    p.timeline_fraction = w < 1100.0f ? 0.56f : 0.60f;
+    if (collapsed) {
+        p.height = 2.0f * p.pad_y + bar;
+    } else {
+        const float want = size == DockSize::kSmall ? 0.0f : (size == DockSize::kNormal ? 0.32f : 0.50f) * h;
+        p.height = std::max(p.min_height, std::min(want, 0.62f * h));
+    }
+    p.fraction_of_window = p.height / h;
+    return p;
+}
+
+TabStrip LayoutTabStrip(const std::vector<float>& widths, float gap, float avail, float arrow_w, int first, int ensure) {
+    TabStrip s;
+    const int n = static_cast<int>(widths.size());
+    if (n == 0) return s;
+    float total = gap * static_cast<float>(n - 1);
+    for (float w : widths) total += w;
+    if (total <= avail) {
+        s.first = 0;
+        s.last = n - 1;
+        return s;
+    }
+    s.overflow = true;
+    const float room = std::max(0.0f, avail - 2.0f * (arrow_w + gap));
+    // the last tab that fits from `from` (at least `from` itself, even when it is wider than the room: it is clipped, never skipped)
+    const auto last_from = [&](int from) {
+        float used = widths[static_cast<size_t>(from)];
+        int last = from;
+        while (last + 1 < n && used + gap + widths[static_cast<size_t>(last + 1)] <= room) {
+            used += gap + widths[static_cast<size_t>(last + 1)];
+            ++last;
+        }
+        return last;
+    };
+    int f = std::clamp(first, 0, n - 1);
+    if (ensure >= 0 && ensure < n && ensure < f) f = ensure;
+    int l = last_from(f);
+    while (ensure >= 0 && ensure < n && ensure > l && f < n - 1) {
+        ++f;
+        l = last_from(f);
+    }
+    // no free room at the right while a tab is hidden at the left
+    while (f > 0 && l == n - 1) {
+        float used = widths[static_cast<size_t>(f - 1)] + gap;
+        for (int i = f; i <= l; ++i) used += widths[static_cast<size_t>(i)] + (i > f ? gap : 0.0f);
+        if (used > room) break;
+        --f;
+    }
+    s.first = f;
+    s.last = last_from(f);
+    s.can_left = s.first > 0;
+    s.can_right = s.last < n - 1;
+    return s;
+}
+
+int ScrollTabStrip(const std::vector<float>& widths, float gap, float avail, float arrow_w, int first, int direction) {
+    const TabStrip now = LayoutTabStrip(widths, gap, avail, arrow_w, first, -1);
+    if (direction > 0 && now.can_right) return now.first + 1;
+    if (direction < 0 && now.can_left) return now.first - 1;
+    return now.first;
+}
+
 }  // namespace mcla::ui::director

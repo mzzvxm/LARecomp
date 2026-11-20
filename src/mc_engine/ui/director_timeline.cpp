@@ -355,11 +355,43 @@ Snapped SnapTime(double t, const Axis& axis, const std::vector<double>& marks, d
 
 int LaneAt(const Metrics& m, float y, int lane_count) {
     if (y < m.ruler_h) return -1;
-    const float rel = y - m.ruler_h;
-    const int lane = static_cast<int>(rel / (m.lane_h + m.lane_gap));
-    if (lane < 0 || lane >= lane_count) return -1;
-    const float in_lane = rel - lane * (m.lane_h + m.lane_gap);
-    return in_lane <= m.lane_h ? lane : -1;
+    float top = m.ruler_h;
+    for (int lane = 0; lane < lane_count; ++lane) {
+        const float h = m.LaneHeight(lane);
+        if (y < top) return -1;  // the gap above this lane
+        if (y <= top + h) return lane;
+        top += h + m.lane_gap;
+    }
+    return -1;
+}
+
+std::vector<bool> CollapsedLanes(const Metrics& m, const std::vector<int>& pref, float avail_h, float min_lane_h, int keep_open) {
+    const int n = static_cast<int>(pref.size());
+    std::vector<bool> out(pref.size(), false);
+    for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = pref[static_cast<size_t>(i)] < 0;
+    // the room the open lanes need at the smallest height: the ruler, every lane's gap, the strips, then min_lane_h for each open one
+    const auto need = [&]() {
+        float h = m.ruler_h;
+        for (int i = 0; i < n; ++i) h += m.lane_gap + (out[static_cast<size_t>(i)] ? m.collapsed_h : min_lane_h);
+        return h;
+    };
+    for (int i = n - 1; i >= 0 && need() > avail_h; --i) {
+        if (out[static_cast<size_t>(i)] || pref[static_cast<size_t>(i)] != 0 || i == keep_open) continue;
+        out[static_cast<size_t>(i)] = true;
+    }
+    return out;
+}
+
+float FitLaneHeight(const Metrics& m, int lane_count, float avail_h, float min_h, float max_h) {
+    int open = 0;
+    float strips = 0.0f;
+    for (int i = 0; i < lane_count; ++i) {
+        if (m.Collapsed(i)) strips += m.collapsed_h + m.lane_gap;
+        else ++open;
+    }
+    if (open == 0) return std::clamp(max_h, min_h, max_h);
+    const float h = (avail_h - m.ruler_h - strips) / static_cast<float>(open) - m.lane_gap;
+    return std::clamp(h, min_h, max_h);
 }
 
 int HitMarker(const Layout& layout, const Axis& axis, const Metrics& metrics, Vec2f p, float slop) {
@@ -368,7 +400,7 @@ int HitMarker(const Layout& layout, const Axis& axis, const Metrics& metrics, Ve
     for (size_t i = 0; i < layout.markers.size(); ++i) {
         const Marker& m = layout.markers[i];
         const float cx = axis.TimeToX(m.t);
-        const float top = metrics.LaneTop(m.lane), bottom = top + metrics.lane_h;
+        const float top = metrics.LaneTop(m.lane), bottom = top + metrics.LaneHeight(m.lane);
         float d;
         if (m.is_cut) {
             if (p.y < top || p.y > bottom) continue;
@@ -377,7 +409,7 @@ int HitMarker(const Layout& layout, const Axis& axis, const Metrics& metrics, Ve
         } else {
             const float cy = metrics.LaneCenter(m.lane);
             const float dx = p.x - cx, dy = p.y - cy;
-            if (std::fabs(dx) > slop || std::fabs(dy) > metrics.marker_r + slop * 0.5f) continue;
+            if (std::fabs(dx) > slop || std::fabs(dy) > metrics.MarkerRadius(m.lane) + slop * 0.5f) continue;
             d = std::sqrt(dx * dx + dy * dy);
         }
         if (best < 0 || d <= best_d) {

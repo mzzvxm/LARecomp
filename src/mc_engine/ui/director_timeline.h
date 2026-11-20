@@ -99,12 +99,30 @@ struct Metrics {
     float lane_h = 26.0f;
     float lane_gap = 2.0f;
     float marker_r = 7.0f;
-    float LaneTop(int lane) const { return ruler_h + lane * (lane_h + lane_gap); }
-    float LaneCenter(int lane) const { return LaneTop(lane) + lane_h * 0.5f; }
-    float Height(int lane_count) const { return ruler_h + lane_count * (lane_h + lane_gap); }
+    // A COLLAPSED lane is a thin strip (its keys are small dots, no labels): a scene with many cars still shows every lane in a short dock. `collapsed[i]` for lane i; a lane
+    // past the end of the vector is open.
+    float collapsed_h = 9.0f;
+    float collapsed_marker_r = 3.5f;
+    std::vector<bool> collapsed;
+    bool Collapsed(int lane) const { return lane >= 0 && static_cast<size_t>(lane) < collapsed.size() && collapsed[static_cast<size_t>(lane)]; }
+    float LaneHeight(int lane) const { return Collapsed(lane) ? collapsed_h : lane_h; }
+    float MarkerRadius(int lane) const { return Collapsed(lane) ? collapsed_marker_r : marker_r; }
+    float LaneTop(int lane) const {
+        float y = ruler_h;
+        for (int i = 0; i < lane; ++i) y += LaneHeight(i) + lane_gap;
+        return y;
+    }
+    float LaneCenter(int lane) const { return LaneTop(lane) + LaneHeight(lane) * 0.5f; }
+    float Height(int lane_count) const { return LaneTop(lane_count); }
 };
 // The lane under a y inside the canvas (0 = the canvas' top edge), or -1 (the ruler, a gap, below the last lane).
 int LaneAt(const Metrics& metrics, float y, int lane_count);
+// Which lanes are collapsed. `pref[i]`: -1 the user collapsed lane i, +1 the user opened it, 0 untouched. Untouched lanes are open while every open lane can still be `min_lane_h`
+// tall in `avail_h` (the canvas' height, ruler included); when they cannot, untouched lanes collapse from the bottom up, never the lane `keep_open` (the camera lane, or the lane of
+// the selected key; -1: none), until they fit or none is left to collapse. The metrics' own `collapsed` vector is not read.
+std::vector<bool> CollapsedLanes(const Metrics& metrics, const std::vector<int>& pref, float avail_h, float min_lane_h, int keep_open);
+// The height of an open lane that fills `avail_h` with the lanes collapsed as `metrics.collapsed` says, clamped to min_h .. max_h.
+float FitLaneHeight(const Metrics& metrics, int lane_count, float avail_h, float min_h, float max_h);
 // The marker under a point of the canvas, or -1. A marker is hit within `slop` pixels of its centre; a cut (a vertical line across its lane) is hit anywhere in the lane within
 // `slop` of its x. When several are hit the nearest one wins (a later one, on a tie: it is drawn on top).
 int HitMarker(const Layout& layout, const Axis& axis, const Metrics& metrics, Vec2f point, float slop);

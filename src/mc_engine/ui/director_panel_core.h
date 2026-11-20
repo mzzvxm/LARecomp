@@ -309,4 +309,49 @@ std::string CameraModeText(const std::string& mode);
 // The cars' ids of the snapshot for the rig and path pickers ("player" first).
 std::vector<std::string> CarIds(const dir::Snapshot& snap);
 
+// ---------------------------------------------------------------------------------------------------------------- the dock's size
+
+// THE DOCK FOLLOWS THE WINDOW. Everything the panel draws is in ImGui's own space, io.DisplaySize: the window's LOGICAL size (the SDK's drawer sets it to the physical size times
+// medium DPI over DPI: 853x480 for a 1280x720 window at 150 %), mapped by the overlay onto the whole frame. The font, the paddings and the dock's height are worked out from that
+// size here, so a small window gets a small dock (a third of the picture, not half of it) and a 4K one a big one. A first run's dock was a fixed 250 to 400 units tall with a fixed 17
+// unit font: half of an 853x480 window.
+enum class DockSize : uint8_t { kSmall, kNormal, kTall };  // SIZE button: kSmall = no taller than it has to be, kNormal about a third, kTall about half of the window
+const char* DockSizeName(DockSize size);
+DockSize NextDockSize(DockSize size);  // small -> normal -> tall -> small
+
+struct DockPlan {
+    float scale = 1.0f;              // 1.0 at a display 900 units tall; 17 units of font
+    float font = 17.0f;
+    float pad_x = 0.0f, pad_y = 0.0f;      // the dock window's padding
+    float frame_x = 0.0f, frame_y = 0.0f;  // a button's padding
+    float item_x = 0.0f, item_y = 0.0f;    // the space between widgets
+    float row = 0.0f;                // one row of buttons, spacing included
+    float footer = 0.0f;             // the "what I did" line
+    float height = 0.0f;             // the dock's height; with the bar only when collapsed
+    float min_height = 0.0f;         // the least a full dock needs for its bar, a few rows of inspector and the footer
+    float timeline_fraction = 0.6f;  // of the dock's width
+    float fraction_of_window = 0.0f;
+};
+// `bar_height`: what the transport bar measured last frame (it wraps to a second row when the window is narrow); 0 or less means two rows. `size_scale`: the player's own size
+// factor on top of the window's (1.0), for a 4K window that wants bigger.
+DockPlan PlanDock(float display_w, float display_h, DockSize size, bool collapsed, float bar_height, float size_scale = 1.0f);
+// A pixel length given for the reference font (17 units) at this plan's size.
+inline float Scaled(const DockPlan& plan, float reference_px) {
+    return reference_px * plan.scale;
+}
+
+// The tab strip: the inspector's tabs in a row that scrolls when they do not fit, with an arrow at each end.
+struct TabStrip {
+    int first = 0;           // the first tab shown
+    int last = -1;           // the last tab shown (-1: none)
+    bool overflow = false;   // some tab is out of view: the arrows are drawn
+    bool can_left = false;   // a tab is hidden on the left (the left arrow works)
+    bool can_right = false;  // a tab is hidden on the right
+};
+// `widths` of the tabs, `gap` between two, `avail` the strip's width, `arrow_w` one arrow button (two are kept free, with a gap each, when the tabs overflow). `first`: the strip's
+// scroll, the first tab it showed. `ensure`: a tab that must be in view (the selected one; -1 none). The strip never leaves free room at the right while a tab is hidden at the left.
+TabStrip LayoutTabStrip(const std::vector<float>& widths, float gap, float avail, float arrow_w, int first, int ensure);
+// An arrow clicked: the strip's new `first` (direction -1 left, +1 right; unchanged when there is nothing to scroll to).
+int ScrollTabStrip(const std::vector<float>& widths, float gap, float avail, float arrow_w, int first, int direction);
+
 }  // namespace mcla::ui::director

@@ -1235,6 +1235,238 @@ void TestFlying() {
     Check(CommandsForFlyEvents(fc::Events{}, &snap, take).empty(), "no event, no command");
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------- the dock follows the window
+
+// ImGui's space is the window's LOGICAL size (io.DisplaySize): a 1280x720 window at 150 % DPI is 853x480 there. The same camera projected for the physical window and for the
+// logical ones lands every point on the same physical pixel once the logical position is scaled back, and a car's ring has the same size: the first run's ring check seemed to be 76
+// pixels off at 150 %, which was the dock hiding the ring's lower half, not the projection; this pins the projection's units for good.
+void TestUiUnits() {
+    const dir::SnapCamera cam = MakeCamera(819.6, 19.0, -800.0, 80.0, -4.0, 45.0, 16.0 / 9.0);
+    const double pts[4][3] = {{830, 17, -790}, {825, 18.5, -795}, {822, 19.5, -797}, {840, 15, -810}};
+    const Projector physical = Projector::Make(cam, 1280.0f, 720.0f);
+    dir::SnapCar car;
+    car.id = "a";
+    car.model = "vp_x";
+    for (int i = 0; i < 3; ++i) car.pos[i] = cam.pose.pos[i] + 30.0 * physical.fwd[i];  // 30 m ahead: a ring well inside the clamp
+    car.ready = true;
+    Gizmos ring_physical;
+    AddCar(physical, car, false, 0, &ring_physical);
+    Check(ring_physical.dots.size() == 1 && ring_physical.dots[0].radius > 8.0f && ring_physical.dots[0].radius < 90.0f, "the reference ring is not at the clamp (so its size can be compared)");
+    for (const float scale : {1.0f, 1.5f, 2.0f}) {
+        const std::string tag = " at DPI scale " + std::to_string(scale).substr(0, 3);
+        const float dw = 1280.0f / scale, dh = 720.0f / scale;  // what io.DisplaySize holds
+        const Projector ui = Projector::Make(cam, dw, dh);
+        CheckNum(ui.picture.w, dw, "the picture is the whole display" + tag, 1e-3);
+        CheckNum(ui.picture.h, dh, "... in both axes" + tag, 1e-3);
+        for (const auto& pt : pts) {
+            Vec2f a, b;
+            const bool in_a = physical.Project(pt, &a), in_b = ui.Project(pt, &b);
+            Check(in_a && in_b, "a point is in front for both" + tag);
+            if (in_a && in_b) {
+                CheckNum(b.x * scale, a.x, "x: ImGui unit times the scale is the physical pixel" + tag, 0.02);
+                CheckNum(b.y * scale, a.y, "y" + tag, 0.02);
+            }
+        }
+        // the pointer is in the same units: the physical pixel (x, y) is (x / scale, y / scale) for ImGui and its ray is the same ray
+        const Ray ra = physical.PixelRay({700.0f, 400.0f}), rb = ui.PixelRay({700.0f / scale, 400.0f / scale});
+        for (int i = 0; i < 3; ++i) CheckNum(rb.dir[i], ra.dir[i], "the ray through the same pixel" + tag, 1e-6);
+        // the ring's size follows the picture's height: the same number of physical pixels
+        Gizmos ring_ui;
+        AddCar(ui, car, false, 0, &ring_ui);
+        Check(ring_ui.dots.size() == 1, "the car has a ring" + tag);
+        if (ring_ui.dots.size() == 1) {
+            CheckNum(ring_ui.dots[0].radius * scale, ring_physical.dots[0].radius, "the ring is the same size in physical pixels" + tag, 0.05);
+            CheckNum(ring_ui.dots[0].p.x * scale, ring_physical.dots[0].p.x, "... and at the same place" + tag, 0.02);
+        }
+        // the same camera, the window's own pixels given as if they were ImGui's: every gizmo would be `scale` times too far from the picture's corner (the wrong use)
+        if (scale > 1.0f) {
+            Vec2f wrong, right;
+            Check(physical.Project(pts[0], &wrong) && ui.Project(pts[0], &right) && std::fabs(wrong.x - right.x * scale) < 0.05f && std::fabs(wrong.x - right.x) > 1.0f,
+                  "physical and logical coordinates differ: the panel must use the logical" + tag);
+        }
+    }
+    // the car's label does not say the same word twice (the player's car has no model name: the snapshot says "player")
+    dir::SnapCar player;
+    player.id = "player";
+    player.model = "Player";
+    player.pos[0] = 830, player.pos[1] = 17, player.pos[2] = -790;
+    player.ready = true;
+    Gizmos g;
+    AddCar(physical, player, false, 1, &g);
+    CheckEq(g.labels.empty() ? "" : g.labels[0].text, "player", "the player's car is labelled once");
+    Gizmos g2;
+    AddCar(physical, car, false, 1, &g2);
+    CheckEq(g2.labels.empty() ? "" : g2.labels[0].text, "a  vp_x", "another car: id and model");
+}
+
+void TestDockPlan() {
+    // the first run's dock: 250 to 400 units tall at any window and a 17 unit font = 52 % of an 853x480 window. The plan follows the window.
+    const DockPlan small_window = PlanDock(853.0f, 480.0f, DockSize::kNormal, false, 0.0f);  // a 1280x720 window at 150 %
+    Check(small_window.fraction_of_window <= 0.34f, "853x480: the dock takes at most a third of the window (was half)");
+    Check(small_window.height >= small_window.min_height - 1e-3f, "... and no less than its bar, a few rows and the footer need");
+    Check(small_window.font >= 12.0f && small_window.font <= 15.0f, "the font is small in a small window");
+    const DockPlan p720 = PlanDock(1280.0f, 720.0f, DockSize::kNormal, false, 0.0f);
+    Check(p720.fraction_of_window <= 0.34f && p720.fraction_of_window >= 0.2f, "1280x720: about a third");
+    const DockPlan p1080 = PlanDock(1920.0f, 1080.0f, DockSize::kNormal, false, 0.0f);
+    Check(p1080.fraction_of_window <= 0.34f && p1080.font > p720.font, "1920x1080: a third, a bigger font");
+    const DockPlan p4k = PlanDock(3840.0f, 2160.0f, DockSize::kNormal, false, 0.0f);  // a 4K window at 100 %
+    Check(p4k.fraction_of_window <= 0.34f && p4k.font >= 30.0f, "3840x2160: the font grows with the window (a 4K window is not a tiny dock)");
+    const DockPlan p4k_scaled = PlanDock(2560.0f, 1440.0f, DockSize::kNormal, false, 0.0f);  // 4K at 150 %
+    Check(p4k_scaled.font > p1080.font && p4k_scaled.fraction_of_window <= 0.34f, "2560x1440: bigger than 1080p, still a third");
+    // the three sizes
+    const DockPlan small = PlanDock(1920.0f, 1080.0f, DockSize::kSmall, false, 0.0f), tall = PlanDock(1920.0f, 1080.0f, DockSize::kTall, false, 0.0f);
+    Check(small.height <= p1080.height && p1080.height <= tall.height, "small, normal, tall in that order");
+    Check(small.height >= small.min_height - 1e-3f && small.fraction_of_window < 0.25f, "small is no taller than it has to be");
+    Check(tall.fraction_of_window <= 0.62f + 1e-4f && tall.fraction_of_window > 0.45f, "tall is about half, never more than 62 %");
+    // collapsed: the bar alone
+    const DockPlan folded = PlanDock(1920.0f, 1080.0f, DockSize::kNormal, true, 0.0f);
+    Check(folded.height < small.height && folded.height > 0.0f, "collapsed is shorter than the shortest dock");
+    // the bar's measured height counts: a bar that wrapped to three rows asks for more room, and the dock never drops below its minimum
+    const DockPlan wrapped = PlanDock(853.0f, 480.0f, DockSize::kSmall, false, 3.0f * small_window.row);
+    const DockPlan two_rows = PlanDock(853.0f, 480.0f, DockSize::kSmall, false, 2.0f * small_window.row);
+    Check(wrapped.height > two_rows.height, "a taller bar makes a taller dock");
+    // a tiny window: the minimum wins over the fraction
+    const DockPlan tiny = PlanDock(400.0f, 200.0f, DockSize::kSmall, false, 0.0f);
+    Check(tiny.height >= tiny.min_height - 1e-3f && tiny.height > 0.0f, "a tiny window still gets a dock that works");
+    // the monotone font and the player's own scale
+    Check(PlanDock(853.0f, 480.0f, DockSize::kNormal, false, 0.0f).font <= p720.font && p720.font <= p1080.font && p1080.font <= p4k.font, "the font never shrinks as the window grows");
+    const DockPlan big = PlanDock(1920.0f, 1080.0f, DockSize::kNormal, false, 0.0f, 1.5f);
+    CheckNum(big.font, p1080.font * 1.5, "the player's own size factor multiplies the font", 1e-3);
+    CheckNum(Scaled(p1080, 100.0f), 100.0f * p1080.scale, "a reference length scales with the plan");
+    // no zero or nonsense from a window with no size yet
+    const DockPlan none = PlanDock(0.0f, 0.0f, DockSize::kNormal, false, 0.0f);
+    Check(none.height > 0.0f && none.font > 5.0f, "a window of no size has a dock of a default window's");
+    CheckEq(DockSizeName(NextDockSize(DockSize::kSmall)), "normal", "SIZE: small -> normal");
+    CheckEq(DockSizeName(NextDockSize(DockSize::kNormal)), "tall", "normal -> tall");
+    CheckEq(DockSizeName(NextDockSize(DockSize::kTall)), "small", "tall -> small");
+    // the timeline gets more of a narrow window
+    Check(small_window.timeline_fraction < p1080.timeline_fraction, "the inspector gets more of a narrow dock");
+}
+
+void TestTabStrip() {
+    const std::vector<float> widths = {50, 40, 40, 48, 40, 50};  // CAMERA RIGS CARS PATHS TAKE AGENT
+    const float gap = 4.0f, arrow = 20.0f;
+    // room for all of them: no arrows, all in view
+    TabStrip all = LayoutTabStrip(widths, gap, 400.0f, arrow, 3, -1);
+    Check(!all.overflow && all.first == 0 && all.last == 5 && !all.can_left && !all.can_right, "enough room: every tab, no arrows");
+    // a narrow strip (the first run cut the fourth tab off): arrows, the first tabs in view
+    TabStrip narrow = LayoutTabStrip(widths, gap, 200.0f, arrow, 0, -1);
+    Check(narrow.overflow && narrow.first == 0 && narrow.last == 2 && !narrow.can_left && narrow.can_right, "a narrow strip: three tabs, the right arrow works");
+    // the right arrow steps one tab; repeated, it reaches the end and then stops
+    int first = 0;
+    std::vector<bool> seen(widths.size(), false);
+    for (int step = 0; step < 12; ++step) {
+        const TabStrip st = LayoutTabStrip(widths, gap, 200.0f, arrow, first, -1);
+        for (int i = st.first; i <= st.last; ++i) seen[static_cast<size_t>(i)] = true;
+        // what is in view fits between the arrows
+        float used = 0.0f;
+        for (int i = st.first; i <= st.last; ++i) used += widths[static_cast<size_t>(i)] + (i > st.first ? gap : 0.0f);
+        Check(used <= 200.0f - 2.0f * (arrow + gap) + 1e-3f, "the tabs in view fit between the arrows");
+        const int next = ScrollTabStrip(widths, gap, 200.0f, arrow, first, +1);
+        if (!st.can_right) {
+            Check(next == st.first, "at the end the right arrow changes nothing");
+            break;
+        }
+        Check(next == st.first + 1, "the right arrow scrolls by one tab");
+        first = next;
+    }
+    bool every = true;
+    for (bool b : seen) every = every && b;
+    Check(every, "every tab can be reached with the right arrow");
+    const TabStrip end = LayoutTabStrip(widths, gap, 200.0f, arrow, first, -1);
+    Check(end.last == 5 && end.can_left && !end.can_right, "scrolled to the end: the last tab is in view, the left arrow works");
+    // no free room at the right while a tab is hidden at the left
+    float used = 0.0f;
+    for (int i = end.first; i <= end.last; ++i) used += widths[static_cast<size_t>(i)] + (i > end.first ? gap : 0.0f);
+    const float room = 200.0f - 2.0f * (arrow + gap);
+    Check(end.first == 0 || used + gap + widths[static_cast<size_t>(end.first - 1)] > room, "the strip scrolls no further than it has to");
+    // the left arrow walks back to the start
+    int back = end.first;
+    for (int step = 0; step < 12 && LayoutTabStrip(widths, gap, 200.0f, arrow, back, -1).can_left; ++step) {
+        const int prev = ScrollTabStrip(widths, gap, 200.0f, arrow, back, -1);
+        Check(prev == back - 1, "the left arrow scrolls back by one tab");
+        back = prev;
+    }
+    Check(back == 0 && ScrollTabStrip(widths, gap, 200.0f, arrow, 0, -1) == 0, "back at the start the left arrow changes nothing");
+    // a tab that is asked for is brought into view, from either side, and one already in view does not move the strip
+    const TabStrip want_last = LayoutTabStrip(widths, gap, 200.0f, arrow, 0, 5);
+    Check(want_last.first <= 5 && want_last.last >= 5, "the AGENT tab asked for is in view");
+    const TabStrip want_first = LayoutTabStrip(widths, gap, 200.0f, arrow, 3, 0);
+    Check(want_first.first == 0 && want_first.last >= 0, "the CAMERA tab asked for is in view");
+    const TabStrip in_view = LayoutTabStrip(widths, gap, 200.0f, arrow, 1, 2);
+    Check(in_view.first == 1, "a tab already in view leaves the scroll alone");
+    // degenerate strips: no room for even one tab, an empty list, no tabs
+    const TabStrip none = LayoutTabStrip(widths, gap, 10.0f, arrow, 0, -1);
+    Check(none.overflow && none.first == 0 && none.last == 0, "no room: one tab, clipped, never none");
+    const TabStrip empty = LayoutTabStrip({}, gap, 200.0f, arrow, 0, -1);
+    Check(!empty.overflow && empty.last == -1, "no tabs");
+    Check(ScrollTabStrip({}, gap, 200.0f, arrow, 0, +1) == 0, "scrolling no tabs is nothing");
+}
+
+void TestCollapsedLanes() {
+    Metrics m;  // ruler 24, lane 26, gap 2, collapsed 9
+    CheckNum(m.LaneTop(1), 24.0 + 28.0, "open lanes as before: the second lane's top");
+    CheckNum(m.Height(4), 24.0 + 4 * 28.0, "... the canvas' height");
+    m.collapsed = {false, true, false, false};
+    CheckNum(m.LaneHeight(1), 9.0, "a collapsed lane is a strip");
+    CheckNum(m.LaneTop(1), 52.0, "its top is where it was");
+    CheckNum(m.LaneTop(2), 52.0 + 9.0 + 2.0, "the next lane follows closely");
+    CheckNum(m.Height(4), 24.0 + 28.0 + 11.0 + 28.0 + 28.0, "the canvas is shorter");
+    CheckNum(m.MarkerRadius(1), 3.5, "a collapsed lane's keys are small");
+    CheckNum(m.MarkerRadius(0), 7.0, "an open lane's are not");
+    Check(!m.Collapsed(-1) && !m.Collapsed(9), "a lane that is not there is not collapsed");
+    Check(LaneAt(m, 56.0f, 4) == 1, "the pointer on the strip is on its lane");
+    Check(LaneAt(m, m.LaneTop(2) + 3.0f, 4) == 2, "the lane below it");
+    Check(LaneAt(m, m.LaneTop(1) + 9.0f + 1.0f, 4) == -1, "the gap under a strip");
+    Check(LaneAt(m, m.Height(4) + 5.0f, 4) == -1, "below the last lane");
+    // a key on a collapsed lane is hit at its small dot
+    Layout l;
+    l.lanes = {{LaneKind::kCamera, "CAMERA", ""}, {LaneKind::kCar, "CAR a", "a"}, {LaneKind::kWorld, "WORLD", ""}};
+    Marker mk;
+    mk.line = 4;
+    mk.t = 2.0;
+    mk.lane = 1;
+    mk.kind = dir::EventKind::kCar;
+    l.markers.push_back(mk);
+    Axis a;
+    a.x0 = 0, a.x1 = 1000, a.t0 = 0, a.t1 = 10;
+    const Vec2f at{a.TimeToX(2.0), m.LaneCenter(1)};
+    Check(HitMarker(l, a, m, at, 8.0f) == 0, "a key on a collapsed lane is hit on its dot");
+    Check(HitMarker(l, a, m, {at.x, at.y + 14.0f}, 8.0f) == -1, "... and not from the lane below");
+    // CollapsedLanes: the room decides for the lanes the player did not touch
+    const Metrics base;
+    const std::vector<int> untouched(5, 0);
+    std::vector<bool> got = CollapsedLanes(base, untouched, 200.0f, 15.0f, 0);
+    Check(std::count(got.begin(), got.end(), true) == 0, "room enough: every lane open");
+    got = CollapsedLanes(base, untouched, 100.0f, 15.0f, 0);
+    Check(got.size() == 5 && !got[0] && !got[1] && !got[2] && got[3] && got[4], "not enough room: the last lanes collapse first");
+    got = CollapsedLanes(base, untouched, 100.0f, 15.0f, 4);
+    Check(!got[4] && got[3] && got[2] && !got[0], "the lane to keep (the selected key's) stays open");
+    got = CollapsedLanes(base, untouched, 20.0f, 15.0f, 0);
+    Check(!got[0] && got[1] && got[2] && got[3] && got[4], "no room at all: everything but the kept lane collapses");
+    std::vector<int> pref = {0, -1, +1, 0, 0};
+    got = CollapsedLanes(base, pref, 400.0f, 15.0f, 0);
+    Check(!got[0] && got[1] && !got[2] && !got[3] && !got[4], "a lane the player collapsed stays collapsed with room to spare");
+    got = CollapsedLanes(base, pref, 60.0f, 15.0f, 0);
+    Check(got[1] && !got[2], "a lane the player opened stays open when there is no room");
+    // FitLaneHeight: the open lanes fill the canvas
+    Metrics fit;
+    CheckNum(FitLaneHeight(fit, 4, 120.0f, 15.0f, 28.0f), (120.0 - 24.0) / 4.0 - 2.0, "four open lanes fill 120 units");
+    fit.lane_h = static_cast<float>(FitLaneHeight(fit, 4, 120.0f, 15.0f, 28.0f));
+    CheckNum(fit.Height(4), 120.0, "... exactly", 1e-3);
+    fit.collapsed = {false, true, false, false};
+    const float with_strip = FitLaneHeight(fit, 4, 120.0f, 15.0f, 28.0f);
+    Check(with_strip > fit.lane_h, "a collapsed lane gives its room to the open ones");
+    fit.lane_h = with_strip;
+    CheckNum(fit.Height(4), 120.0, "... and the canvas still fills the room", 1e-3);
+    CheckNum(FitLaneHeight(Metrics{}, 4, 600.0f, 15.0f, 28.0f), 28.0, "never taller than the maximum");
+    CheckNum(FitLaneHeight(Metrics{}, 4, 40.0f, 15.0f, 28.0f), 15.0, "never shorter than the minimum");
+    Metrics all_folded;
+    all_folded.collapsed = {true, true};
+    CheckNum(FitLaneHeight(all_folded, 2, 100.0f, 15.0f, 28.0f), 28.0, "every lane collapsed: nothing to fit");
+}
+
 }  // namespace
 
 int main() {
@@ -1256,6 +1488,10 @@ int main() {
     TestPaths();
     TestTakeAndTransport();
     TestFlying();
+    TestUiUnits();
+    TestDockPlan();
+    TestTabStrip();
+    TestCollapsedLanes();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

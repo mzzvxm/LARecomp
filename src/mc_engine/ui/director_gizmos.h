@@ -5,6 +5,11 @@
 // lands in the WINDOW, a world segment cut at the camera's near plane, the ray through a window pixel, the colours, and the lists of lines and dots a drawer
 // only has to paint. No ImGui, no game, no log: director_panel_test.cpp builds it on its own.
 //
+// THE UNITS: the window the projector is made for is ImGui's own space, io.DisplaySize (the window's LOGICAL size: 853x480 for a 1280x720 window at 150 % DPI, 640x360 at 200 %;
+// the SDK's drawer sets it so and the overlay maps that rectangle onto the whole frame, io.DisplayFramebufferScale stays 1). A gizmo drawn at a projected point and the pointer
+// (io.MousePos) are both in that space, so a car's ring lands on the car whatever the DPI; passing the physical pixel size by mistake would draw every gizmo `scale` times too far
+// out from the picture's top left corner. director_panel_test.cpp projects the same camera for 1.0, 1.5 and 2.0 and compares in physical pixels.
+//
 // THE PROJECTION MATCHES THE RENDER (CHECK 2 of the design, settled by a run: R-E1 draws a marker at a known car): the picture is not the window. The picture's
 // rectangle is the window's largest rectangle of the camera's aspect, centred (display/frame_fit.h FrameOf: ultrawide, 4:3 or a window with bars all follow it),
 // and in a TALL picture (narrower than 16:9) the renderer rewrites the camera's vertical field of view (ultrawide.cpp CameraFov = VertPlusFov: the horizontal angle

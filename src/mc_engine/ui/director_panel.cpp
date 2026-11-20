@@ -172,12 +172,28 @@ class DirectorPanel final : public rex::ui::DialogBase {
   private:
     // ------------------------------------------------------------------------------------------------------------ lifecycle
 
+    // ui.open's `panel`: a tab's name opens the panel on it; the panel's own words set how it looks (a script or an agent can bring the dock into the shape a picture or a test wants):
+    // collapse / expand (the transport bar alone or the whole dock), hide / show (the dock away, as Tab does), size-small / size-normal / size-tall, lanes-collapse / lanes-open (every
+    // lane but CAMERA a thin strip, or all open), tabs-left / tabs-right (the tab strip scrolls by one when the tabs overflow).
     bool OpenFor(const std::string& panel) {
         if (panel.empty()) return false;
+        const std::string word = dp::Lower(panel);
+        hidden_ = word == "hide";
         for (int i = 0; i < kTabCount; ++i) {
-            if (dp::Lower(panel) == dp::Lower(kTabNames[i])) want_tab_ = i;
+            if (word == dp::Lower(kTabNames[i])) {
+                want_tab_ = i;
+                tab_ensure_ = true;
+            }
         }
-        hidden_ = false;
+        if (word == "collapse") collapsed_ = true;
+        else if (word == "expand") collapsed_ = false;
+        else if (word == "size-small") dock_size_ = dp::DockSize::kSmall;
+        else if (word == "size-normal") dock_size_ = dp::DockSize::kNormal;
+        else if (word == "size-tall") dock_size_ = dp::DockSize::kTall;
+        else if (word == "lanes-collapse") lanes_request_ = -1;
+        else if (word == "lanes-open") lanes_request_ = +1;
+        else if (word == "tabs-left") tab_scroll_request_ = -1;
+        else if (word == "tabs-right") tab_scroll_request_ = +1;
         return true;
     }
 
@@ -219,6 +235,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
         Shortcuts(io, s);
         FeedFly(io, s);
         FlushEdits(s);
+        // (ImGui's space: io.DisplaySize is the window's logical size, the space the gizmos are drawn and the pointer read in: director_gizmos.h, "THE UNITS")
+        plan_ = dp::PlanDock(io.DisplaySize.x, io.DisplaySize.y, dock_size_, collapsed_, bar_h_);
         view_ = dp::Projector::Make(s.camera, io.DisplaySize.x, io.DisplaySize.y);
         BuildGizmos(s);
         geom_.clear();
@@ -243,6 +261,15 @@ class DirectorPanel final : public rex::ui::DialogBase {
         e.Set("hidden", hidden_);
         e.Set("collapsed", collapsed_);
         e.Set("tab", kTabNames[std::clamp(tab_, 0, static_cast<int>(kTabCount) - 1)]);
+        e.Set("size", dp::DockSizeName(dock_size_));
+        e.Set("font", std::round(plan_.font * 10.0f) / 10.0f);
+        {
+            dir::Json tabs = dir::Json::Object();
+            tabs.Set("first", tab_strip_.first);
+            tabs.Set("last", tab_strip_.last);
+            tabs.Set("overflow", tab_strip_.overflow);
+            e.Set("tabs", std::move(tabs));
+        }
         e.Set("display", dir::Json::Vec3(std::round(io.DisplaySize.x), std::round(io.DisplaySize.y), 0.0));
         e.Set("picture", dir::Json::Vec3(view_.picture.x, view_.picture.y, view_.picture.w));
         e.Set("selected_line", selected_line_);
@@ -257,7 +284,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
             dir::Json l = dir::Json::Object();
             l.Set("title", layout_.lanes[i].title);
             l.Set("y", std::round((canvas_y_ + metrics_.LaneTop(static_cast<int>(i))) * 2.0f) / 2.0f);
-            l.Set("h", metrics_.lane_h);
+            l.Set("h", metrics_.LaneHeight(static_cast<int>(i)));
+            l.Set("collapsed", metrics_.Collapsed(static_cast<int>(i)));
             lanes.Push(std::move(l));
         }
         e.Set("lanes", std::move(lanes));
@@ -518,7 +546,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
             if (d.filled) dl->AddCircleFilled(ImVec2(d.p.x, d.p.y), d.radius, d.color);
             else dl->AddCircle(ImVec2(d.p.x, d.p.y), d.radius, d.color, 0, 2.0f);
         }
-        ImGui::PushFont(nullptr, 15.0f);
+        ImGui::PushFont(nullptr, std::max(11.0f, 0.88f * plan_.font));
         for (const dp::Label2& t : gizmos_.labels) {
             const ImVec2 size = ImGui::CalcTextSize(t.text.c_str());
             const ImVec2 at(t.p.x + 8.0f, t.p.y - size.y * 0.5f);
@@ -654,24 +682,30 @@ class DirectorPanel final : public rex::ui::DialogBase {
 
     // ------------------------------------------------------------------------------------------------------------ the dock
 
+    // The dock is sized from the window (director_panel_core.h PlanDock): the font, the paddings and the height follow ImGui's display size, so a small window keeps most of its
+    // picture. The transport bar's buttons flow and wrap at the dock's right edge, the bar measures its own height for the next frame, and the rest is the timeline and the inspector.
     void DrawDock(ImGuiIO& io, const dir::Snapshot& s) {
-        const float full = std::clamp(io.DisplaySize.y * 0.36f, 250.0f, 400.0f);
-        const float bar = io.DisplaySize.x < 1500.0f ? 66.0f : 36.0f;
-        const float h = collapsed_ ? bar + 28.0f : full;
-        ImGui::SetNextWindowPos(ImVec2(0.0f, io.DisplaySize.y - h));
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, h));
+        const dp::DockPlan& pl = plan_;
+        ImGui::SetNextWindowPos(ImVec2(0.0f, io.DisplaySize.y - pl.height));
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, pl.height));
         ImGui::SetNextWindowBgAlpha(0.74f);
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pl.pad_x, pl.pad_y));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(pl.frame_x, pl.frame_y));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(pl.item_x, pl.item_y));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(0.35f * pl.font, 0.2f * pl.font));
+        ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, std::max(6.0f, 0.4f * pl.font));
         if (ImGui::Begin("##mcla_dir_dock", nullptr, flags)) {
-            ImGui::PushFont(nullptr, kFontSize);
-            DrawTransportBar(s, bar);
+            const ImVec2 wpos = ImGui::GetWindowPos(), wsize = ImGui::GetWindowSize();
+            geom_["DOCK"] = {wpos.x, wpos.y, wsize.x, wsize.y};
+            ImGui::PushFont(nullptr, pl.font);
+            DrawTransportBar(s);
             if (!collapsed_) {
-                const float footer = ImGui::GetFontSize() + 8.0f;
-                const float body = std::max(60.0f, ImGui::GetContentRegionAvail().y - footer);
+                const float footer = ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y;
+                const float body = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer);
                 const float width = ImGui::GetContentRegionAvail().x;
-                const float left = std::floor(width * 0.60f);
+                const float left = std::floor(width * pl.timeline_fraction);
                 ImGui::BeginChild("##dir_timeline", ImVec2(left, body), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
                 DrawTimeline(io, s);
                 ImGui::EndChild();
@@ -684,79 +718,89 @@ class DirectorPanel final : public rex::ui::DialogBase {
             ImGui::PopFont();
         }
         ImGui::End();
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(5);
     }
 
-    // A row of buttons that wraps at the window's edge.
-    bool Item(float width) {
-        if (ImGui::GetContentRegionAvail().x < width && ImGui::GetCursorPosX() > 20.0f) return false;
-        return true;
-    }
-    void Gap() { ImGui::SameLine(0.0f, 8.0f); }
+    // A length in the dock's units: the reference sizes of the tabs' widgets (written for a 17 unit font) at this window's size.
+    float S(float reference_px) const { return dp::Scaled(plan_, reference_px); }
 
-    bool Btn(const char* label, bool enabled = true) {
+    // A row of widgets that wraps: the next widget (of width `w`) goes beside the last when it fits before the window's right edge, else on the next row.
+    void Gap(float w = 0.0f) {
+        const float right = ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        if (ImGui::GetItemRectMax().x + spacing + w <= right) ImGui::SameLine(0.0f, spacing);
+    }
+    static float TextWidth(const char* text) { return ImGui::CalcTextSize(text).x; }
+    static float ButtonWidth(const char* label) { return ImGui::CalcTextSize(label).x + 2.0f * ImGui::GetStyle().FramePadding.x; }
+    static float CheckWidth(const char* label) { return ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(label).x; }
+
+    // A button reported to the geometry under its own label, or under `geo_name` when its label changes (the SIZE button says the size it is at).
+    bool Btn(const char* label, bool enabled = true, const char* geo_name = nullptr) {
         if (!enabled) ImGui::BeginDisabled();
         const bool hit = ImGui::Button(label);
-        Geo(label);
+        Geo(geo_name ? geo_name : label);
         if (!enabled) ImGui::EndDisabled();
         return hit && enabled;
     }
+    // The next button of a row: wrapped by Gap, then drawn.
+    bool FlowBtn(const char* label, bool enabled = true, const char* geo_name = nullptr) {
+        Gap(ButtonWidth(label));
+        return Btn(label, enabled, geo_name);
+    }
 
-    void DrawTransportBar(const dir::Snapshot& s, float bar_height) {
-        ImGui::BeginChild("##dir_bar", ImVec2(0.0f, bar_height), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    void DrawTransportBar(const dir::Snapshot& s) {
+        const float top = ImGui::GetCursorPosY();
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ToVec4(kYellow), "DIRECTOR");
-        Gap();
-        if (Btn("RESTART")) Send(dp::RestartCmd(0.0));
-        Gap();
-        if (Btn(s.transport.paused ? "PLAY" : "PAUSE")) Send(dp::TogglePlayCmd(s.transport));
-        Gap();
-        if (Btn("< FRAME")) Send(dp::SeekCmd(s.transport.t - dp::FrameStep(s.transport)));
-        Gap();
-        if (Btn("FRAME >")) StepOn(s);
-        Gap();
-        ImGui::TextColored(ToVec4(kWhite), "%s / %s", dp::FormatClock(s.transport.t).c_str(), s.transport.duration > 0.0 ? dp::FormatClock(s.transport.duration).c_str() : "--");
-        Gap();
-        ImGui::TextColored(ToVec4(s.transport.paused ? kYellow : kGreen), "%s", dp::TransportStateText(s.transport).c_str());
+        if (FlowBtn("RESTART")) Send(dp::RestartCmd(0.0));
+        if (FlowBtn(s.transport.paused ? "PLAY" : "PAUSE")) Send(dp::TogglePlayCmd(s.transport));
+        if (FlowBtn("< FRAME")) Send(dp::SeekCmd(s.transport.t - dp::FrameStep(s.transport)));
+        if (FlowBtn("FRAME >")) StepOn(s);
+        const std::string clock = dp::FormatClock(s.transport.t) + " / " + (s.transport.duration > 0.0 ? dp::FormatClock(s.transport.duration) : std::string("--"));
+        Gap(TextWidth(clock.c_str()));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ToVec4(kWhite), "%s", clock.c_str());
+        const std::string state = dp::TransportStateText(s.transport);
+        Gap(TextWidth(state.c_str()));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ToVec4(s.transport.paused ? kYellow : kGreen), "%s", state.c_str());
         if (!s.transport.scrubbable) {
-            Gap();
-            ImGui::TextColored(ToVec4(kYellow), "SCRUB NOT EXACT: %s", s.transport.scrub_hint.c_str());
+            const std::string warn = "SCRUB NOT EXACT: " + s.transport.scrub_hint;
+            Gap(TextWidth(warn.c_str()));
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ToVec4(kYellow), "%s", warn.c_str());
         }
-        Gap();
         bool fixed = s.transport.mode == "fixed";
+        Gap(CheckWidth("FIXED STEP"));
         if (ImGui::Checkbox("FIXED STEP", &fixed)) Send(dp::FixedModeCmd(fixed));
         Geo("FIXED STEP");
         // the second group
-        if (bar_height > 40.0f) ImGui::NewLine();
-        else Gap();
         const bool flying = s.camera.mode == "freecam";
-        if (Btn(flying ? "FREE CAMERA: ON" : "FREE CAMERA: OFF")) Send(dp::CameraModeCmd(flying ? "scene" : "freecam"));
-        Gap();
-        if (Btn("ADD KEY")) Send(dp::AddKeyHere(0.0, false, "", false));
-        Gap();
-        if (Btn("CUT")) QueueEdit("cut", [](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::CutAt(ctx.rev, snap.transport.t); });
-        Gap();
-        if (Btn("UNDO", s.can_undo)) Send(UndoCmd("scene.undo"));
-        Gap();
-        if (Btn("REDO", s.can_redo)) Send(UndoCmd("scene.redo"));
-        Gap();
+        if (FlowBtn(flying ? "FREE CAMERA: ON" : "FREE CAMERA: OFF")) Send(dp::CameraModeCmd(flying ? "scene" : "freecam"));
+        if (FlowBtn("ADD KEY")) Send(dp::AddKeyHere(0.0, false, "", false));
+        if (FlowBtn("CUT")) QueueEdit("cut", [](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::CutAt(ctx.rev, snap.transport.t); });
+        if (FlowBtn("UNDO", s.can_undo)) Send(UndoCmd("scene.undo"));
+        if (FlowBtn("REDO", s.can_redo)) Send(UndoCmd("scene.redo"));
+        Gap(CheckWidth("GIZMOS"));
         ImGui::Checkbox("GIZMOS", &gizmos_on_);
         Geo("GIZMOS");
-        Gap();
+        Gap(CheckWidth("GAME KEYS"));
         if (ImGui::Checkbox("GAME KEYS", &game_keys_)) {}
         Geo("GAME KEYS");
-        Gap();
         if (s.take_active) {
-            ImGui::TextColored(ToVec4(kRed), "RENDERING %s: %llu FRAMES", s.take_name.c_str(), static_cast<unsigned long long>(s.take_frames));
-        } else if (Btn("RENDER TAKE")) {
+            const std::string rec = "RENDERING " + s.take_name + ": " + std::to_string(static_cast<unsigned long long>(s.take_frames)) + " FRAMES";
+            Gap(TextWidth(rec.c_str()));
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ToVec4(kRed), "%s", rec.c_str());
+        } else if (FlowBtn("RENDER TAKE")) {
             take_.name = take_name_;
             Send(dp::TakeRenderCmd(take_));
         }
-        Gap();
-        if (Btn(collapsed_ ? "SHOW" : "COLLAPSE")) collapsed_ = !collapsed_;
-        Gap();
-        if (Btn("CLOSE")) larecomp::cvar::SetFlagByName("mcla_director_panel", "false");
-        ImGui::EndChild();
+        const std::string size_label = std::string("SIZE: ") + dp::Upper(dp::DockSizeName(dock_size_));
+        if (FlowBtn(size_label.c_str(), true, "SIZE")) dock_size_ = dp::NextDockSize(dock_size_);
+        if (FlowBtn(collapsed_ ? "SHOW" : "COLLAPSE")) collapsed_ = !collapsed_;
+        if (FlowBtn("CLOSE")) larecomp::cvar::SetFlagByName("mcla_director_panel", "false");
+        bar_h_ = ImGui::GetCursorPosY() - top;
     }
 
     void DrawFooter(const dir::Snapshot&) {
@@ -778,10 +822,25 @@ class DirectorPanel final : public rex::ui::DialogBase {
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         if (avail.x < 80.0f || avail.y < 40.0f) return;
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        const float gutter = 86.0f;
+        const float font = ImGui::GetFontSize();
+        const float gutter = std::round(5.6f * font);
         const int lanes = static_cast<int>(layout_.lanes.size());
         dp::Metrics m;
-        m.lane_h = std::clamp((avail.y - m.ruler_h) / static_cast<float>(std::max(1, lanes)) - m.lane_gap, 15.0f, 28.0f);
+        m.ruler_h = std::round(1.3f * font);
+        m.lane_gap = std::max(1.0f, std::round(0.1f * font));
+        m.marker_r = std::round(0.4f * font);
+        m.collapsed_h = std::round(0.55f * font);
+        m.collapsed_marker_r = std::max(2.5f, 0.2f * font);
+        ApplyLaneRequest();
+        std::vector<int> pref(static_cast<size_t>(lanes), 0);
+        for (int i = 0; i < lanes; ++i) {
+            const auto it = lane_pref_.find(layout_.lanes[static_cast<size_t>(i)].title);
+            if (it != lane_pref_.end()) pref[static_cast<size_t>(i)] = it->second;
+        }
+        const dp::Marker* selected_marker = SelectedMarker();
+        const float min_lane_h = 0.85f * font;
+        m.collapsed = dp::CollapsedLanes(m, pref, avail.y, min_lane_h, selected_marker ? selected_marker->lane : 0);
+        m.lane_h = dp::FitLaneHeight(m, lanes, avail.y, min_lane_h, 1.65f * font);
         metrics_ = m;
         canvas_y_ = origin.y;
         axis_.x0 = origin.x + gutter;
@@ -799,7 +858,12 @@ class DirectorPanel final : public rex::ui::DialogBase {
         axis_.KeepInside(0.0, end);
 
         int hot = hovered ? dp::HitMarker(layout_, axis_, m, mouse, 8.0f) : -1;
-        if (hovered && io.MouseClicked[0]) {
+        const bool in_gutter = io.MousePos.x < axis_.x0 - 2.0f;
+        if (hovered && io.MouseClicked[0] && in_gutter) {
+            // a lane's title collapses or opens it; the corner above the titles does it for every lane but CAMERA
+            if (mouse.y < m.ruler_h) ToggleAllLanes(m);
+            else if (const int lane = dp::LaneAt(m, mouse.y, lanes); lane >= 0) ToggleLane(m, lane);
+        } else if (hovered && io.MouseClicked[0]) {
             if (hot >= 0) {
                 const dp::Marker& mk = layout_.markers[static_cast<size_t>(hot)];
                 Select(mk.line);
@@ -837,10 +901,30 @@ class DirectorPanel final : public rex::ui::DialogBase {
         const ImVec2 bottom_right(origin.x + avail.x, origin.y + avail.y);
         dl->PushClipRect(top_left, bottom_right, true);
         dl->AddRectFilled(top_left, bottom_right, IM_COL32(0, 0, 0, 90));
+        bool any_open = false;
         for (int i = 0; i < lanes; ++i) {
             const float y0 = origin.y + m.LaneTop(i);
-            dl->AddRectFilled(ImVec2(origin.x, y0), ImVec2(bottom_right.x, y0 + m.lane_h), i % 2 ? IM_COL32(255, 255, 255, 10) : IM_COL32(255, 255, 255, 22));
-            dl->AddText(ImVec2(origin.x + 6.0f, y0 + (m.lane_h - ImGui::GetFontSize()) * 0.5f), kDim, layout_.lanes[static_cast<size_t>(i)].title.c_str());
+            const float lane_h = m.LaneHeight(i);
+            const bool folded = m.Collapsed(i);
+            dl->AddRectFilled(ImVec2(origin.x, y0), ImVec2(bottom_right.x, y0 + lane_h), i % 2 ? IM_COL32(255, 255, 255, 10) : IM_COL32(255, 255, 255, 22));
+            // a small triangle (down: open, right: collapsed) and the title; a collapsed lane's title is as small as its strip
+            const float tri = 0.26f * font, cx = origin.x + 0.55f * font, cy = y0 + lane_h * 0.5f;
+            if (folded) dl->AddTriangleFilled(ImVec2(cx - tri * 0.6f, cy - tri), ImVec2(cx - tri * 0.6f, cy + tri), ImVec2(cx + tri, cy), kDim);
+            else dl->AddTriangleFilled(ImVec2(cx - tri, cy - tri * 0.6f), ImVec2(cx + tri, cy - tri * 0.6f), ImVec2(cx, cy + tri), kDim);
+            const char* title = layout_.lanes[static_cast<size_t>(i)].title.c_str();
+            if (folded) {
+                const float small = std::max(7.0f, lane_h * 0.95f);
+                dl->AddText(ImGui::GetFont(), small, ImVec2(origin.x + 1.1f * font, y0 + (lane_h - small) * 0.5f), kDim, title);
+            } else {
+                dl->AddText(ImVec2(origin.x + 1.1f * font, y0 + (lane_h - font) * 0.5f), kDim, title);
+                if (layout_.lanes[static_cast<size_t>(i)].kind != dp::LaneKind::kCamera) any_open = true;
+            }
+        }
+        // the corner above the titles: collapse every lane but CAMERA, or open them again
+        {
+            const char* corner = any_open ? "- LANES" : "+ LANES";
+            dl->AddText(ImVec2(origin.x + 4.0f, origin.y + (m.ruler_h - font) * 0.5f), kCyan, corner);
+            geom_["LANES"] = {origin.x, origin.y, gutter, m.ruler_h};
         }
         // the take's range
         {
@@ -851,9 +935,9 @@ class DirectorPanel final : public rex::ui::DialogBase {
         for (const dp::Tick& t : dp::RulerTicks(axis_)) {
             const float x = axis_.TimeToX(t.t);
             if (x < axis_.x0 - 1.0f || x > axis_.x1 + 1.0f) continue;
-            dl->AddLine(ImVec2(x, origin.y + (t.major ? 6.0f : 14.0f)), ImVec2(x, origin.y + m.ruler_h), t.major ? kDim : IM_COL32(110, 110, 104, 255));
+            dl->AddLine(ImVec2(x, origin.y + m.ruler_h * (t.major ? 0.25f : 0.6f)), ImVec2(x, origin.y + m.ruler_h), t.major ? kDim : IM_COL32(110, 110, 104, 255));
             if (t.major) {
-                dl->AddText(ImVec2(x + 3.0f, origin.y + 1.0f), kDim, t.label.c_str());
+                dl->AddText(ImVec2(x + 3.0f, origin.y + (m.ruler_h - font) * 0.5f), kDim, t.label.c_str());
                 dl->AddLine(ImVec2(x, origin.y + m.ruler_h), ImVec2(x, bottom_right.y), IM_COL32(255, 255, 255, 14));
             }
         }
@@ -865,9 +949,10 @@ class DirectorPanel final : public rex::ui::DialogBase {
             if (!mk.has_span) continue;
             const float cy = origin.y + m.LaneCenter(mk.lane);
             const float xa = axis_.TimeToX(mk.t), xb = axis_.TimeToX(mk.span_end);
+            const float half = std::min(0.3f * font, 0.3f * m.LaneHeight(mk.lane));
             ImU32 col = MarkerColor(mk);
             col = (col & 0x00FFFFFFu) | (static_cast<ImU32>(mk.line == selected_line_ ? 110 : 55) << 24);
-            dl->AddRectFilled(ImVec2(xa, cy - 5.0f), ImVec2(xb, cy + 5.0f), col, 2.0f);
+            dl->AddRectFilled(ImVec2(xa, cy - half), ImVec2(xb, cy + half), col, 2.0f);
         }
         for (size_t i = 0; i < layout_.markers.size(); ++i) {
             const dp::Marker& mk = layout_.markers[i];
@@ -878,22 +963,22 @@ class DirectorPanel final : public rex::ui::DialogBase {
             const bool is_hot = static_cast<int>(i) == hot;
             const ImU32 col = selected ? kYellow : MarkerColor(mk);
             if (mk.is_cut) {
-                dl->AddLine(ImVec2(x, origin.y + m.LaneTop(mk.lane)), ImVec2(x, origin.y + m.LaneTop(mk.lane) + m.lane_h), col, selected ? 3.0f : 2.0f);
+                dl->AddLine(ImVec2(x, origin.y + m.LaneTop(mk.lane)), ImVec2(x, origin.y + m.LaneTop(mk.lane) + m.LaneHeight(mk.lane)), col, selected ? 3.0f : 2.0f);
                 continue;
             }
-            const float r = m.marker_r * (is_hot || selected ? 1.15f : 1.0f);
+            const float r = m.MarkerRadius(mk.lane) * (is_hot || selected ? 1.15f : 1.0f);
             const ImVec2 pts[4] = {ImVec2(x, cy - r), ImVec2(x + r, cy), ImVec2(x, cy + r), ImVec2(x - r, cy)};
             dl->AddConvexPolyFilled(pts, 4, col);
             if (is_hot || selected) dl->AddPolyline(pts, 4, kWhite, ImDrawFlags_Closed, 1.5f);
             // the label, when there is room before the next marker of the lane
-            float room = 220.0f;
+            float room = 13.0f * font;
             for (size_t k = i + 1; k < layout_.markers.size() && layout_.markers[k].lane == mk.lane; ++k) {
                 if (layout_.markers[k].t > mk.t + 1e-6) {
                     room = axis_.TimeToX(layout_.markers[k].t) - x - r - 6.0f;
                     break;
                 }
             }
-            if (room > 36.0f) {
+            if (room > 2.1f * font && !m.Collapsed(mk.lane)) {
                 dl->PushClipRect(ImVec2(x + r + 3.0f, cy - m.lane_h * 0.5f), ImVec2(x + r + 3.0f + room, cy + m.lane_h * 0.5f), true);
                 dl->AddText(ImVec2(x + r + 4.0f, cy - ImGui::GetFontSize() * 0.5f), IM_COL32(230, 230, 222, 230), mk.label.c_str());
                 dl->PopClipRect();
@@ -905,7 +990,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
             const dp::Marker& mk = layout_.markers[static_cast<size_t>(drag_.marker)];
             const float cy = origin.y + m.LaneCenter(mk.lane);
             dl->AddLine(ImVec2(x, origin.y), ImVec2(x, bottom_right.y), IM_COL32(255, 255, 255, 110));
-            const ImVec2 pts[4] = {ImVec2(x, cy - 8.0f), ImVec2(x + 8.0f, cy), ImVec2(x, cy + 8.0f), ImVec2(x - 8.0f, cy)};
+            const float g = 0.47f * font;
+            const ImVec2 pts[4] = {ImVec2(x, cy - g), ImVec2(x + g, cy), ImVec2(x, cy + g), ImVec2(x - g, cy)};
             dl->AddConvexPolyFilled(pts, 4, drag_.duplicate ? kGreen : kWhite);
             char tag[48];
             std::snprintf(tag, sizeof(tag), "%s%s", drag_.duplicate ? "COPY AT " : "", dp::FormatClock(drag_.t_now, 3).c_str());
@@ -915,7 +1001,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         {
             const float x = axis_.TimeToX(s.transport.t);
             dl->AddLine(ImVec2(x, origin.y), ImVec2(x, bottom_right.y), kCyan, 2.0f);
-            const ImVec2 tri[3] = {ImVec2(x - 6.0f, origin.y), ImVec2(x + 6.0f, origin.y), ImVec2(x, origin.y + 10.0f)};
+            const ImVec2 tri[3] = {ImVec2(x - 0.35f * font, origin.y), ImVec2(x + 0.35f * font, origin.y), ImVec2(x, origin.y + 0.6f * font)};
             dl->AddConvexPolyFilled(tri, 3, kCyan);
         }
         dl->PopClipRect();
@@ -925,6 +1011,27 @@ class DirectorPanel final : public rex::ui::DialogBase {
             ImGui::SetTooltip("%s\n%s s%s", mk.text.c_str(), dp::FormatClock(mk.t, 3).c_str(), mk.ease.empty() ? "" : ("  ease " + mk.ease).c_str());
         }
         DrawKeyMenu(s);
+    }
+
+    // Collapse / open a lane by hand (the choice is kept by the lane's title; an untouched lane follows the room there is: director_timeline.h CollapsedLanes).
+    void ToggleLane(const dp::Metrics& m, int lane) {
+        lane_pref_[layout_.lanes[static_cast<size_t>(lane)].title] = m.Collapsed(lane) ? +1 : -1;
+        geom_dirty_ = true;
+    }
+    // Every lane but CAMERA collapsed when one of them is open; else all open.
+    void ToggleAllLanes(const dp::Metrics& m) {
+        bool any_open = false;
+        for (size_t i = 0; i < layout_.lanes.size(); ++i) any_open = any_open || (layout_.lanes[i].kind != dp::LaneKind::kCamera && !m.Collapsed(static_cast<int>(i)));
+        lanes_request_ = any_open ? -1 : +1;
+    }
+    void ApplyLaneRequest() {
+        if (lanes_request_ == 0) return;
+        for (const dp::Lane& lane : layout_.lanes) {
+            if (lanes_request_ < 0) lane_pref_[lane.title] = lane.kind == dp::LaneKind::kCamera ? +1 : -1;
+            else lane_pref_[lane.title] = +1;
+        }
+        lanes_request_ = 0;
+        geom_dirty_ = true;
     }
 
     void FinishDrag() {
@@ -993,32 +1100,70 @@ class DirectorPanel final : public rex::ui::DialogBase {
 
     // ------------------------------------------------------------------------------------------------------------ the inspector
 
+    // The tabs are a row of buttons of our own (not ImGui's tab bar): when they do not fit the inspector's width the row scrolls, an arrow at each end, a tab that is asked for
+    // (a click, ui.open) is brought into view, and the strip reports its first and last tab to the geometry. The arithmetic is director_panel_core.h LayoutTabStrip.
     void DrawInspector(ImGuiIO& io, const dir::Snapshot& s) {
-        if (!ImGui::BeginTabBar("##dir_tabs")) return;
-        for (int i = 0; i < kTabCount; ++i) {
-            ImGuiTabItemFlags f = 0;
-            if (want_tab_ == i) {
-                f |= ImGuiTabItemFlags_SetSelected;
-                want_tab_ = -1;
-            }
-            const bool shown = ImGui::BeginTabItem(kTabNames[i], nullptr, f);
-            Geo(std::string("TAB ") + kTabNames[i]);
-            if (!shown) continue;
-            tab_ = i;
-            ImGui::BeginChild("##dir_tab_body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
-            switch (i) {
-                case kTabCamera: TabCamera(io, s); break;
-                case kTabRigs: TabRigs(s); break;
-                case kTabCars: TabCars(s); break;
-                case kTabPaths: TabPaths(s); break;
-                case kTabTake: TabTake(s); break;
-                case kTabAgent: TabAgent(s); break;
-                default: break;
-            }
-            ImGui::EndChild();
-            ImGui::EndTabItem();
+        const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+        const float arrow_w = ImGui::GetFrameHeight();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        std::vector<float> widths;
+        for (int i = 0; i < kTabCount; ++i) widths.push_back(ButtonWidth(kTabNames[i]));
+        if (want_tab_ >= 0) {
+            tab_ = want_tab_;
+            want_tab_ = -1;
         }
-        ImGui::EndTabBar();
+        tab_ = std::clamp(tab_, 0, static_cast<int>(kTabCount) - 1);
+        if (tab_scroll_request_ != 0) {
+            tab_first_ = dp::ScrollTabStrip(widths, gap, avail, arrow_w, tab_first_, tab_scroll_request_);
+            tab_scroll_request_ = 0;
+        }
+        tab_strip_ = dp::LayoutTabStrip(widths, gap, avail, arrow_w, tab_first_, tab_ensure_ ? tab_ : -1);
+        tab_first_ = tab_strip_.first;
+        tab_ensure_ = false;
+        const float x0 = ImGui::GetCursorPosX();
+        if (tab_strip_.overflow) {
+            if (!tab_strip_.can_left) ImGui::BeginDisabled();
+            if (ImGui::ArrowButton("##tabs_left", ImGuiDir_Left)) tab_scroll_request_ = -1;
+            Geo("TAB <");
+            if (!tab_strip_.can_left) ImGui::EndDisabled();
+            ImGui::SameLine(0.0f, gap);
+        }
+        for (int i = tab_strip_.first; i <= tab_strip_.last; ++i) {
+            if (i > tab_strip_.first) ImGui::SameLine(0.0f, gap);
+            const bool selected = i == tab_;
+            if (selected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.05f, 0.30f, 0.30f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.05f, 0.43f, 0.43f, 0.90f));
+            }
+            if (ImGui::Button(kTabNames[i])) {
+                tab_ = i;
+                tab_ensure_ = true;
+            }
+            Geo(std::string("TAB ") + kTabNames[i]);
+            if (selected) {
+                ImGui::PopStyleColor(2);
+                const ImVec2 lo = ImGui::GetItemRectMin(), hi = ImGui::GetItemRectMax();
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(lo.x, hi.y - 2.0f), ImVec2(hi.x, hi.y), kCyan);
+            }
+        }
+        if (tab_strip_.overflow) {
+            ImGui::SameLine(x0 + avail - arrow_w, 0.0f);
+            if (!tab_strip_.can_right) ImGui::BeginDisabled();
+            if (ImGui::ArrowButton("##tabs_right", ImGuiDir_Right)) tab_scroll_request_ = +1;
+            Geo("TAB >");
+            if (!tab_strip_.can_right) ImGui::EndDisabled();
+        }
+        ImGui::BeginChild("##dir_tab_body", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
+        switch (tab_) {
+            case kTabCamera: TabCamera(io, s); break;
+            case kTabRigs: TabRigs(s); break;
+            case kTabCars: TabCars(s); break;
+            case kTabPaths: TabPaths(s); break;
+            case kTabTake: TabTake(s); break;
+            case kTabAgent: TabAgent(s); break;
+            default: break;
+        }
+        ImGui::EndChild();
     }
 
     // A slider that sends its value as an edit while it is dragged (at most four times a second) and once more at the end.
@@ -1052,15 +1197,11 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::SameLine();
         ImGui::TextColored(ToVec4(kDim), "   %.1f %.1f %.1f   YAW %.1f  PITCH %.1f  FOV %.0f", s.camera.pose.pos[0], s.camera.pose.pos[1], s.camera.pose.pos[2], s.camera.pose.yaw, s.camera.pose.pitch, s.camera.pose.fov);
         if (Btn("FREE")) Send(dp::CameraModeCmd("freecam"));
-        Gap();
-        if (Btn("SCENE")) Send(dp::CameraModeCmd("scene"));
-        Gap();
-        if (Btn("GAME")) Send(dp::CameraModeCmd("game"));
-        Gap();
-        if (Btn("LOOK AT PLAYER")) Send(dp::LookAtCmd("player"));
+        if (FlowBtn("SCENE")) Send(dp::CameraModeCmd("scene"));
+        if (FlowBtn("GAME")) Send(dp::CameraModeCmd("game"));
+        if (FlowBtn("LOOK AT PLAYER")) Send(dp::LookAtCmd("player"));
         if (Btn("ADD KEY HERE")) Send(dp::AddKeyHere(0.0, false, "", false));
-        Gap();
-        if (Btn("ADD KEY + CUT")) Send(dp::AddKeyHere(0.0, false, "", true));
+        if (FlowBtn("ADD KEY + CUT")) Send(dp::AddKeyHere(0.0, false, "", true));
         const dp::Marker* m = SelectedMarker();
         const bool cam_key = m && m->kind == dir::EventKind::kCamera;
         ImGui::Separator();
@@ -1076,10 +1217,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
                     return i < 0 ? dp::Cmd{} : dp::UpdateKeyFromPose(ctx, layout_.markers[static_cast<size_t>(i)], pose);
                 });
             }
-            Gap();
-            if (Btn("GO TO KEY")) Send(dp::SeekCmd(m->t));
-            Gap();
-            if (Btn("DELETE")) DeleteSelected();
+            if (FlowBtn("GO TO KEY")) Send(dp::SeekCmd(m->t));
+            if (FlowBtn("DELETE")) DeleteSelected();
             ImGui::TextColored(ToVec4(kDim), "EASE");
             ImGui::SameLine();
             for (const char* ease : dp::kEases) {
@@ -1138,7 +1277,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::Separator();
         ImGui::TextColored(ToVec4(kCyan), "NEW RIG KEY AT THE PLAYHEAD");
         const std::vector<std::string>& kinds = dp::RigKinds();
-        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SetNextItemWidth(S(120.0f));
         if (ImGui::BeginCombo("##rigkind", dp::Lower(kinds[static_cast<size_t>(new_rig_kind_)]).c_str())) {
             for (size_t i = 0; i < kinds.size(); ++i) {
                 if (ImGui::Selectable(kinds[i].c_str(), static_cast<int>(i) == new_rig_kind_)) new_rig_kind_ = static_cast<int>(i);
@@ -1148,7 +1287,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::SameLine();
         const std::vector<std::string> cars = dp::CarIds(s);
         if (new_rig_car_.empty() || std::find(cars.begin(), cars.end(), new_rig_car_) == cars.end()) new_rig_car_ = cars.size() > 1 ? cars[1] : cars[0];
-        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SetNextItemWidth(S(120.0f));
         if (ImGui::BeginCombo("##rigcar", new_rig_car_.c_str())) {
             for (const std::string& c : cars) {
                 if (ImGui::Selectable(c.c_str(), c == new_rig_car_)) new_rig_car_ = c;
@@ -1176,7 +1315,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         ImGui::SameLine();
         ImGui::TextColored(ToVec4(kYellow), "%s", model_.empty() ? "(pick a model)" : dp::ModelTitle(model_).c_str());
         const std::vector<std::string> list = dp::FilterModels(models_, search_, recents_, 300);
-        ImGui::BeginChild("##modellist", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, std::max(40.0f, ImGui::GetContentRegionAvail().y - 88.0f)), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("##modellist", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, std::max(40.0f, ImGui::GetContentRegionAvail().y - S(88.0f))), ImGuiChildFlags_Borders);
         int shown_rows = 0;
         for (const std::string& name : list) {
             const bool recent = std::find(recents_.begin(), recents_.end(), name) != recents_.end();
@@ -1188,7 +1327,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
         if (models_.empty()) ImGui::TextColored(ToVec4(kDim), "(the model list comes from the game: it fills in a moment)");
         ImGui::EndChild();
         ImGui::SameLine();
-        ImGui::BeginChild("##carlist", ImVec2(0.0f, std::max(40.0f, ImGui::GetContentRegionAvail().y - 88.0f)), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("##carlist", ImVec2(0.0f, std::max(40.0f, ImGui::GetContentRegionAvail().y - S(88.0f))), ImGuiChildFlags_Borders);
         ImGui::TextColored(ToVec4(kDim), "CARS (click one in the world to drag it)");
         for (const dir::SnapCar& c : s.cars) {
             std::string row = c.id + (c.ready ? "" : "  (loading)") + (c.on_path ? "  on a path" : "");
@@ -1223,7 +1362,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
                 QueueEdit("head" + id, [id, h](const dp::EditContext& ctx, const dir::Snapshot& snap) { return dp::SetCarHeading(ctx, snap.events, id, h); });
             }
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(70.0f);
+            ImGui::SetNextItemWidth(S(70.0f));
             ImGui::InputInt("PAINT", &paint_, 0, 0);
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 const std::string id = sel->id;
@@ -1276,10 +1415,10 @@ class DirectorPanel final : public rex::ui::DialogBase {
     void TabPaths(const dir::Snapshot& s) {
         if (!routes_asked_) RefreshRouteList();
         // the working route
-        ImGui::SetNextItemWidth(140.0f);
+        ImGui::SetNextItemWidth(S(140.0f));
         ImGui::InputText("ROUTE", route_name_, sizeof(route_name_));
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0f);
+        ImGui::SetNextItemWidth(S(90.0f));
         ImGui::SliderFloat("SPEED", &wp_speed_, 2.0f, 60.0f, "%.0f m/s");
         ImGui::SameLine();
         if (ImGui::Checkbox("DROP WAYPOINTS", &drop_mode_)) {}
@@ -1318,7 +1457,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
                 Send(dp::SetRoute(route_));
             }
             Gap();
-            ImGui::SetNextItemWidth(70.0f);
+            ImGui::SetNextItemWidth(S(70.0f));
             ImGui::SliderFloat("##allspeed", &all_speed_, 2.0f, 60.0f, "%.0f");
             ImGui::SameLine();
             if (Btn("ALL SPEEDS")) {
@@ -1331,18 +1470,17 @@ class DirectorPanel final : public rex::ui::DialogBase {
                 for (const dp::Cmd& c : dp::ReplayCmds(dp::NextCarId(s.cars, s.events), model_, route_, s.transport.t, 0.0)) Send(c);
             }
             if (selected_car_ != "" && selected_car_ != "player") {
-                Gap();
-                if (Btn("USE ON SELECTED CAR")) Send(dp::AssignRoute(selected_car_, route_.name, 0.0, s.transport.t, true));
+                if (FlowBtn("USE ON SELECTED CAR")) Send(dp::AssignRoute(selected_car_, route_.name, 0.0, s.transport.t, true));
             }
             for (size_t i = 0; i < route_.pts.size(); ++i) {
                 ImGui::PushID(static_cast<int>(i));
                 dp::WayPt& p = route_.pts[i];
                 ImGui::Text("%zu", i + 1);
-                ImGui::SameLine(34.0f);
+                ImGui::SameLine(S(34.0f));
                 ImGui::TextColored(ToVec4(kDim), "%.0f %.0f", p.x, p.z);
-                ImGui::SameLine(130.0f);
+                ImGui::SameLine(S(130.0f));
                 float sp = static_cast<float>(p.speed);
-                ImGui::SetNextItemWidth(110.0f);
+                ImGui::SetNextItemWidth(S(110.0f));
                 if (ImGui::SliderFloat("##sp", &sp, 0.5f, 60.0f, "%.1f m/s")) dp::RouteSetSpeed(&route_, i, sp);
                 if (ImGui::IsItemDeactivatedAfterEdit()) Send(dp::SetRoute(route_));
                 ImGui::SameLine();
@@ -1367,7 +1505,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
     void RecordRow(const dir::Snapshot& s) {
         // (drawn under the route body by the caller's layout: a row of its own at the bottom of the tab)
         ImGui::Separator();
-        ImGui::SetNextItemWidth(110.0f);
+        ImGui::SetNextItemWidth(S(110.0f));
         ImGui::InputText("##recname", rec_name_, sizeof(rec_name_));
         ImGui::SameLine();
         if (!recording_) {
@@ -1403,7 +1541,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
     }
 
     void TabTake(const dir::Snapshot& s) {
-        ImGui::SetNextItemWidth(70.0f);
+        ImGui::SetNextItemWidth(S(70.0f));
         if (ImGui::BeginCombo("FPS", std::to_string(take_.fps).c_str())) {
             for (int f : dp::kTakeFps) {
                 if (ImGui::Selectable(std::to_string(f).c_str(), f == take_.fps)) take_.fps = f;
@@ -1411,21 +1549,21 @@ class DirectorPanel final : public rex::ui::DialogBase {
             ImGui::EndCombo();
         }
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0f);
+        ImGui::SetNextItemWidth(S(90.0f));
         if (ImGui::BeginCombo("SINK", dp::kSinks[take_.sink])) {
             for (int i = 0; i < 4; ++i) {
                 if (ImGui::Selectable(dp::kSinks[i], i == take_.sink)) take_.sink = i;
             }
             ImGui::EndCombo();
         }
-        ImGui::SetNextItemWidth(180.0f);
+        ImGui::SetNextItemWidth(S(180.0f));
         ImGui::InputTextWithHint("NAME", "from the scene", take_name_, sizeof(take_name_));
         float from = static_cast<float>(take_.from), to = static_cast<float>(take_.to < 0.0 ? s.transport.duration : take_.to);
-        ImGui::SetNextItemWidth(80.0f);
+        ImGui::SetNextItemWidth(S(80.0f));
         if (ImGui::InputFloat("IN", &from, 0.0f, 0.0f, "%.2f")) take_.from = std::max(0.0f, from);
         ImGui::SameLine();
         if (Btn("IN = PLAYHEAD")) take_.from = s.transport.t;
-        ImGui::SetNextItemWidth(80.0f);
+        ImGui::SetNextItemWidth(S(80.0f));
         if (ImGui::InputFloat("OUT", &to, 0.0f, 0.0f, "%.2f")) take_.to = std::max(0.0f, to);
         ImGui::SameLine();
         if (Btn("OUT = PLAYHEAD")) take_.to = s.transport.t;
@@ -1467,8 +1605,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
             ImGui::Separator();
             ImGui::TextColored(ToVec4(kYellow), "AGENT PROPOSAL: %s", s.proposal_note.c_str());
             if (Btn("ACCEPT")) Send(UndoCmd("scene.accept"));
-            Gap();
-            if (Btn("REJECT")) Send(UndoCmd("scene.reject"));
+            if (FlowBtn("REJECT")) Send(UndoCmd("scene.reject"));
         }
         ImGui::Separator();
         ImGui::TextColored(ToVec4(kDim), "LAST COMMANDS (the panel's and the agents')");
@@ -1505,6 +1642,14 @@ class DirectorPanel final : public rex::ui::DialogBase {
     double now_ = 0.0;
     bool open_ = false, hidden_ = false, collapsed_ = false, gizmos_on_ = true, game_keys_ = false, keys_before_record_ = false;
     int tab_ = 0, want_tab_ = -1;
+    // the dock's look: its size from the window (PlanDock), the player's SIZE choice, the tab strip's scroll, the lanes the player collapsed (by title: +1 open, -1 collapsed)
+    dp::DockSize dock_size_ = dp::DockSize::kNormal;
+    dp::DockPlan plan_ = dp::PlanDock(1280.0f, 720.0f, dp::DockSize::kNormal, false, 0.0f);
+    float bar_h_ = 0.0f;  // what the transport bar measured last frame
+    dp::TabStrip tab_strip_;
+    int tab_first_ = 0, tab_scroll_request_ = 0, lanes_request_ = 0;
+    bool tab_ensure_ = true;
+    std::map<std::string, int> lane_pref_;
     uint64_t seen_ui_serial_ = 0;
     int seen_snapshot_selected_ = 0, selected_line_ = 0;
     std::string last_cmd_;

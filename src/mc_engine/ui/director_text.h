@@ -87,6 +87,13 @@ inline std::string Lower(std::string s) {
     return s;
 }
 
+inline std::string Upper(std::string s) {
+    for (char& c : s) {
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    }
+    return s;
+}
+
 inline bool ContainsNoCase(std::string_view haystack, std::string_view needle) {
     if (needle.empty()) return true;
     const std::string h = Lower(std::string(haystack)), n = Lower(std::string(needle));
