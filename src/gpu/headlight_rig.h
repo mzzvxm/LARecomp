@@ -23,8 +23,10 @@
 // traffic's xAmbientCarLight::PSAmbientCarLight (by pixel shader identity; on the retail build CarFrame lists the player's car only, the other cars' draws are
 // on the ray tracing branches, so the rig has its own hook). The rig is told of every main-view draw (Scene::NoteAmbientOcclusion, like CarFrame) and for a lens
 // draw it takes the lens mesh's model-space box centre (read once from guest memory and kept by the mesh's address; the draw's own bone matrix times gWorld puts
-// it in the world) and the car's own frame (gWorld: right, up, back, position; the lens draws of one car share it, which is how they are grouped: no stencil
-// ID is needed). At the guest present a car's lenses on its front half (along its forward, minus the third row) are its headlights (headlight_rig_rules.h FrontLamp); the cars
+// it in the world) and the car's own frame: gWorld is the car's root translation ONLY (the lens draws of one car share it, which is how they are grouped: no stencil
+// ID is needed), the car's turn is in the draw's bone (PoseFromBone: the rows right, up, back of the bone's rotation). A lens draw whose vertex shader reads no bone
+// palette (a glow or a sprite with a world matrix of its own) or whose centre is at the car's root is no lamp and is left out. At the guest present a car's lenses on
+// its front half (along its forward, minus the third row) are its headlights (headlight_rig_rules.h FrontLamp); the cars
 // become tracks that keep a key from frame to frame, at most four are picked by importance (the player's first, then by distance and whether the car is on the
 // screen, with a hysteresis so that two equal cars do not trade places), and they fade in and out. The set made at the present of frame N is what frame N + 1
 // draws with (one frame of latency: a car's lamps are drawn before the world, but not every world draw is after every lamp), moved one frame ahead by the
@@ -38,9 +40,10 @@
 // the player's points that no lens lamp is near make a lamp of their own, so the player's lights work even if the lens identity is wrong. A traffic car's points have
 // no owner and no direction: they only give the place and the state, and the lens lamp (its pose) gives the forward.
 //
-// WHEN THEY ARE ON, WITHOUT THEM. The lamps' state is then the sun's: the light's travel direction is in every car draw's vertex constants (c16, as the ambient
-// occlusion reads it): at and below 3 degrees of elevation it is night, from 12 degrees up it is day, smooth between (headlight_rig_rules.h NightFactor); a car
-// whose points were not seen is lit by that. In the day the hook is called one frame in 30 to see the sun.
+// WHEN THEY ARE ON, WITHOUT THEM. The lamps' state is then the sun's: the world's light direction, as the ambient occlusion picks it from the frame's draws (the
+// Scene hands it over at the present, SetWorldSun): at and below 3 degrees of elevation it is night, from 12 degrees up it is day, smooth between
+// (headlight_rig_rules.h NightFactor); a car whose points were not seen is lit by that. A car's OWN draws' c16 is not the world's sun (the headlights run of
+// 2026-11-20 read -5 degrees at noon from the lens draws), so it is only the fallback while the occlusion gives none (then the hook is called one frame in 30).
 //
 // THE SHADOW HOOK (src/gpu/local_shadow_types.h): a producer sets the frame's views and the atlas they are in (SetLocalShadows); the variant's shaders
 // sample the atlas for the lights that have a valid view. None set: every light is lit and no atlas is read.
@@ -114,6 +117,9 @@ class HeadlightRig {
   // The Scene's hooks. BeginFrame: reads the settings. OnMainDraw: a lens draw is noted, every other draw costs two compares. OnPresent: the frame is over,
   // the lights for the next one are made and published.
   void BeginFrame();
+  // The world's sun as the frame's draws carried it (AmbientOcclusion::SunDirection: the unit direction TO the sun), or null when there is none: called by the Scene
+  // before the present, so that the night factor of this frame's lights is the world's, not that of a lens draw's constants.
+  void SetWorldSun(const double* to_sun);
   void OnMainDraw(const MainDraw& draw);
   void OnPresent();
   // Whether the Scene is to tell the rig of the frame's draws (the setting is on, and it is night or the one frame in 30 that looks at the sun).
@@ -147,6 +153,7 @@ class HeadlightRig {
   };
 
   void ReadSettings();
+  void ApplyNightOverride();
   void ReadFrameFacts(const uint8_t* vs_bank, const car_dump::CarMatrices& m);
   bool LensCentre(const MainDraw& draw, const car_dump::CarMatrices& m, double out[3]);
   void Publish(const std::array<headlight_rules::Tracked, headlight_rules::kMaxLights>& tracked, size_t count);
@@ -170,6 +177,8 @@ class HeadlightRig {
   double night_ = 0.0;
   double sun_degrees_ = 90.0;
   bool sun_seen_ = false;
+  bool world_sun_ = false;         // the Scene gave the world's sun lately: night_ is made from it, the lens draws' c16 is not read
+  uint64_t world_sun_frame_ = 0;   // the frame it was last given in
   car_mesh::PlayerVehicle player_;
   uint32_t boxes_read_ = 0;
 
@@ -178,6 +187,7 @@ class HeadlightRig {
   std::unordered_map<uint64_t, LensBox> boxes_;
   car_mesh::Triangles mesh_;
   car_mesh::Scratch scratch_;
+  car_mesh::ShaderReadsCache reads_;  // what a lens draw's vertex shader reads: a bone palette (a mesh on the car) or not (a sprite)
   headlight_rules::HeadlightConstants block_{};
   std::array<headlight_rules::Lamp, headlight_rules::kMaxLights> lamps_{};  // the published lights as the shader reads them
   size_t lamp_count_ = 0;
@@ -191,6 +201,7 @@ class HeadlightRig {
 
   // The census.
   uint32_t lens_draws_ = 0, lens_player_ps_ = 0, lens_traffic_ps_ = 0, lens_no_pose_ = 0, lens_no_id_ = 0;
+  uint32_t lens_no_bone_ = 0, lens_at_root_ = 0;  // left out: no bone palette in the draw (sprites), a centre at the car's root
   uint32_t variant_draws_ = 0, variant_alpha_draws_ = 0, fallback_draws_ = 0;
   uint64_t last_log_ = 0;
   uint64_t night_frames_ = 0, frames_ = 0;

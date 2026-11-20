@@ -646,6 +646,223 @@ void CheckBlock() {
 
 
 // ---------------------------------------------------------------------------
+// which way a car faces: the convention, pinned (the headlights run of 2026-11-20: the light landed BEHIND the player's car)
+// ---------------------------------------------------------------------------
+// A car's DRAW does not carry the car's turn in gWorld: gWorld (c0-c3) is the root translation only, the rotation is the identity for every car, and the turn is in the
+// bone palette's rotation (rows = the images of the model's x, y, z axes; the model's +z is the car's back). The rig read gWorld's rows as the car's frame, so every car
+// "faced" -z and the lamps of a car that faced +x shone behind it. These checks build a car the way the game draws it.
+
+// The bone of a car facing `forward` (a horizontal unit vector) on the world's y up: the row-vector palette `palette` (rows right, up, back; row 3 the bone's offset
+// from the root) and the draw's gWorld `world` (identity rotation, the root's translation).
+void DrawMatrices(const double forward[3], const double root[3], double palette[4][4], double world[4][4]) {
+  const double up[3] = {0.0, 1.0, 0.0};
+  // right = forward x up (a right-handed world: looking along -z with y up, the right is +x)
+  const double right[3] = {forward[1] * up[2] - forward[2] * up[1], forward[2] * up[0] - forward[0] * up[2], forward[0] * up[1] - forward[1] * up[0]};
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      palette[r][c] = 0.0;
+      world[r][c] = r == c ? 1.0 : 0.0;
+    }
+  }
+  for (int c = 0; c < 3; ++c) {
+    palette[0][c] = right[c];
+    palette[1][c] = up[c];
+    palette[2][c] = -forward[c];
+    world[3][c] = root[c];
+  }
+}
+
+// A model-space point (x right, y up, z back) through the bone, then gWorld: [p 1] * palette * world.
+void ModelToWorld(const double palette[4][4], const double world[4][4], const double p[3], double out[3]) {
+  for (int c = 0; c < 3; ++c) {
+    const double bone = p[0] * palette[0][c] + p[1] * palette[1][c] + p[2] * palette[2][c] + palette[3][c];
+    out[c] = bone + world[3][c];  // gWorld is a translation
+  }
+}
+
+void CheckFacing() {
+  const double root[3] = {100.0, 2.0, 50.0};
+  const double plus_x[3] = {1.0, 0.0, 0.0};
+  double palette[4][4], world[4][4];
+  DrawMatrices(plus_x, root, palette, world);
+
+  // THE BUG, pinned: the draw's gWorld is a pose that faces -z whatever the car does, so it must not be the source of the facing.
+  {
+    hr::Pose from_world;
+    Check(hr::PoseFromWorld(world, &from_world), "the draw's gWorld is a valid frame (the identity)");
+    CheckNear(-from_world.back[2], -1.0, 1e-12, "gWorld's rows say the car faces -z, for a car that faces +x (this is why they are not read)");
+    CheckNear(-from_world.back[0], 0.0, 1e-12, "... and nothing along x");
+  }
+
+  // The bone's frame says +x: a car facing +x lights +x.
+  hr::Pose pose;
+  Check(hr::PoseFromBone(palette, root, &pose), "the bone of a car is a pose");
+  CheckNear(pose.position[0], root[0], 1e-12, "the pose's place is the root (gWorld's translation)");
+  CheckNear(-pose.back[0], 1.0, 1e-12, "a car facing +x: its forward (minus the back row) is +x");
+  CheckNear(-pose.back[2], 0.0, 1e-12, "... and nothing along z");
+  // Not a pose: a bone with no rotation, a NaN.
+  {
+    double flat[4][4] = {};
+    hr::Pose p;
+    Check(!hr::PoseFromBone(flat, root, &p), "an empty bone is no pose");
+    double bad[4][4];
+    std::copy(&palette[0][0], &palette[0][0] + 16, &bad[0][0]);
+    bad[2][1] = std::nan("");
+    Check(!hr::PoseFromBone(bad, root, &p), "a bone with a NaN is no pose");
+  }
+
+  // The lenses as the game's lamp meshes put them (model space, +z back): head lamps 2.0 m ahead (model z -2.0), tail lamps 2.1 m behind (model z +2.1).
+  std::vector<double> flat;
+  const double model_spots[][3] = {{0.65, 0.65, -2.0}, {-0.65, 0.65, -2.0}, {0.7, 0.8, 2.1}, {-0.7, 0.8, 2.1}};
+  for (const auto& spot : model_spots) {
+    double w[3];
+    ModelToWorld(palette, world, spot, w);
+    Check(hr::LensOffRoot(root, w), "a lamp mesh at a car's end is off its root");
+    flat.insert(flat.end(), w, w + 3);
+  }
+  // The head lamps are at +x of the root, the tail lamps at -x.
+  Check(flat[0] > root[0] + 1.9 && flat[3] > root[0] + 1.9 && flat[6] < root[0] - 2.0 && flat[9] < root[0] - 2.0, "the model's -z end is the front: +x for this car");
+  hr::CarLamp lamp;
+  Check(hr::FrontLamp(pose, reinterpret_cast<const double(*)[3]>(flat.data()), 4, &lamp), "the car has headlights");
+  Check(lamp.front == 2 && lamp.position[0] > root[0] + 2.0, "the headlights are the two lenses ahead, in front of the root along +x");
+  CheckNear(lamp.forward[0], 1.0, 1e-12, "the lamp's forward is +x");
+  float axis[3];
+  hr::BeamAxis(lamp, axis);
+  CheckNear(axis[0], std::cos(hr::kDipDegrees * hr::kPi / 180.0), 1e-6, "the beam goes along +x (dipped)");
+  CheckNear(axis[2], 0.0, 1e-6, "... not along z");
+
+  // The tracker keeps it (what Publish makes the beam from), and the shader's term lights the road AHEAD of the car and not behind it.
+  {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    hr::Candidate c;
+    c.lamp = lamp;
+    c.player = true;
+    c.camera_distance = 6.0;
+    tracker.Observe(c);
+    Check(tracker.EndFrame(1, &out) == 1, "one light");
+    CheckNear(out[0].forward[0], 1.0, 1e-12, "the tracked light faces +x");
+    hr::CarLamp made;
+    for (int i = 0; i < 3; ++i) {
+      made.forward[i] = out[0].forward[i];
+      made.up[i] = out[0].up[i];
+    }
+    float beam[3];
+    hr::BeamAxis(made, beam);
+    hr::Lamp light;
+    for (int i = 0; i < 3; ++i) {
+      light.position[i] = float(out[0].position[i]);
+      light.direction[i] = beam[i];
+    }
+    light.cos_outer = hr::CosOfDegrees(hr::kOuterDegrees);
+    light.cos_inner = hr::CosOfDegrees(hr::kInnerDegrees);
+    hr::Surface ahead;  // the road 8 m ahead of the lamp
+    ahead.position[0] = light.position[0] + 8.0f;
+    ahead.position[1] = float(root[1]);
+    ahead.position[2] = light.position[2];
+    hr::Surface behind = ahead;  // the road 8 m behind it
+    behind.position[0] = light.position[0] - 8.0f;
+    Check(hr::LampScale(light, ahead) > 0.2f, "the road ahead of a car that faces +x is lit");
+    CheckNear(hr::LampScale(light, behind), 0.0, 0.0, "the road behind it is not");
+  }
+
+  // The same car facing +z and -x and at 62 degrees: the lamp is always ahead of the root along the facing.
+  for (const double heading : {0.0, 62.0, 90.0, 180.0, 270.0}) {
+    const double h = heading * hr::kPi / 180.0;
+    const double facing[3] = {std::sin(h), 0.0, std::cos(h)};
+    double pal[4][4], wor[4][4];
+    DrawMatrices(facing, root, pal, wor);
+    hr::Pose p;
+    Check(hr::PoseFromBone(pal, root, &p), "a turned car is a pose");
+    std::vector<double> lens;
+    for (const auto& spot : model_spots) {
+      double w[3];
+      ModelToWorld(pal, wor, spot, w);
+      lens.insert(lens.end(), w, w + 3);
+    }
+    hr::CarLamp l;
+    Check(hr::FrontLamp(p, reinterpret_cast<const double(*)[3]>(lens.data()), 4, &l), "a turned car has headlights");
+    const double ahead[3] = {l.position[0] - root[0], l.position[1] - root[1], l.position[2] - root[2]};
+    CheckNear(hr::Dot3d(ahead, facing), 2.0 + hr::kNudge, 1e-9, "the lamp is 2 m (and the nudge) ahead of the root along the facing");
+    CheckNear(hr::Dot3d(l.forward, facing), 1.0, 1e-12, "and faces the way the car does");
+  }
+
+  // The game's own points agree: the player's Headlight points, the car's back axis in `dir`, make a lamp that faces +x for a car facing +x.
+  {
+    hr::GuestPoint a, b;
+    a.pos[0] = float(root[0] + 1.95);
+    a.pos[1] = float(root[1] + 0.5);
+    a.pos[2] = float(root[2] - 0.6);
+    b = a;
+    b.pos[2] = float(root[2] + 0.6);
+    for (hr::GuestPoint* g : {&a, &b}) {
+      g->dir[0] = float(pose.back[0]);  // the car's BACK axis: -x
+      g->dir[1] = float(pose.back[1]);
+      g->dir[2] = float(pose.back[2]);
+      g->has_dir = true;
+      g->intensity = 2.0f;
+      g->player = true;
+      g->vehicle = 0x1234;
+    }
+    std::vector<hr::GuestPoint> points = {a, b};
+    const auto made = hr::LampsFromPoints(points, std::vector<bool>(2, false));
+    Check(made.size() == 1, "a lamp from the pair");
+    CheckNear(made[0].lamp.forward[0], 1.0, 1e-6, "the points' lamp faces +x (minus the back axis)");
+    // And the lens lamp of the bone's pose agrees with them (nothing to turn round); the lamp from gWorld's pose would be told to turn.
+    std::vector<bool> taken;
+    const double place[1][3] = {{lamp.position[0], lamp.position[1], lamp.position[2]}};
+    const auto matches = hr::AssignPoints(points, place, 1, &taken);
+    Check(matches[0].count == 2, "the front lens lamp takes the pair (they are within 3 m)");
+    hr::CarLamp l = lamp;
+    double on = 0.0;
+    bool disagrees = true;
+    hr::ApplyPoints(matches[0], &l, &on, &disagrees);
+    Check(!disagrees, "the bone's lamp and the points agree on the facing");
+    hr::Pose from_world;
+    Check(hr::PoseFromWorld(world, &from_world), "gWorld's pose");
+    hr::CarLamp wrong = lamp;
+    for (int c = 0; c < 3; ++c) {
+      wrong.forward[c] = -from_world.back[c];  // what the old rig made of it
+    }
+    CheckNear(hr::Dot3d(wrong.forward, lamp.forward), 0.0, 1e-9, "the lamp the old rig made faces -z: a quarter turn off for a car facing +x");
+    hr::ApplyPoints(matches[0], &wrong, &on, &disagrees);
+    Check(!disagrees, "(a quarter turn is not more than 90 degrees: the points turn it without saying so)");
+    // The player of the run (heading 331.7, the points' back axis (0.47, 0.04, -0.88)): the old lamp faced -z, 152 degrees off, and is told to turn round
+    // (the census's `forward turned by the points`).
+    hr::GuestPoint p;
+    p.pos[0] = 818.7f;
+    p.pos[1] = 18.1f;
+    p.pos[2] = -806.7f;
+    p.dir[0] = 0.47f;
+    p.dir[1] = 0.04f;
+    p.dir[2] = -0.88f;
+    p.has_dir = true;
+    p.intensity = 2.0f;
+    std::vector<hr::GuestPoint> player_points = {p};
+    const double player_lamp[1][3] = {{818.7, 18.1, -806.7}};
+    const auto player_match = hr::AssignPoints(player_points, player_lamp, 1, &taken);
+    hr::CarLamp gworld_lamp;
+    gworld_lamp.forward[0] = 0.0;
+    gworld_lamp.forward[1] = 0.0;
+    gworld_lamp.forward[2] = -1.0;  // gWorld's identity rotation
+    disagrees = false;
+    hr::ApplyPoints(player_match[0], &gworld_lamp, &on, &disagrees);
+    Check(disagrees, "a lamp that faces -z for the player of the run is told to turn round by the points");
+    CheckNear(gworld_lamp.forward[2], 0.88 / std::sqrt(0.47 * 0.47 + 0.04 * 0.04 + 0.88 * 0.88), 1e-6, "... and faces the way the player drives (+z)");
+  }
+
+  // A lens draw at the car's root (a sprite, or a mesh whose box was unreadable) is no lamp; a lens a metre to the side of the root, level with it, is not either.
+  {
+    const double at_root[3] = {root[0], root[1] + 0.7, root[2]};
+    const double near_root[3] = {root[0] + 0.5, root[1], root[2] - 0.6};
+    const double at_end[3] = {root[0] + 1.9, root[1] + 0.6, root[2] + 0.6};
+    Check(!hr::LensOffRoot(root, at_root), "a centre above the root is on the root");
+    Check(!hr::LensOffRoot(root, near_root), "a centre 0.8 m from the root is no lamp");
+    Check(hr::LensOffRoot(root, at_end), "a centre 2 m from the root is a lamp's");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // the game's own light points (the night probe's numbers: perf/out/NIGHT-PROBE.txt C12)
 // ---------------------------------------------------------------------------
 
@@ -860,6 +1077,7 @@ int main() {
   CheckTerm();
   CheckNight();
   CheckCar();
+  CheckFacing();
   CheckTracker();
   CheckShadow();
   CheckShadowRemap();

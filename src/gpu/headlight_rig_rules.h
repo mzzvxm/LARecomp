@@ -18,7 +18,11 @@
 //     importance (the player's first) with a hysteresis, fade in and out, and are moved one frame ahead by their own velocity.
 //
 // Matrices are row vectors as in car_dump_rules.h (world = (p, 1) * M): the car entity's world matrix has the rows right, up, BACK and
-// position (mc_engine/cinematic/car_registry.h): the car's forward is minus the third row. This header includes nothing of the renderer.
+// position (mc_engine/cinematic/car_registry.h): the car's forward is minus the third row. A car's DRAW does not carry that matrix in gWorld, though:
+// gWorld (c0-c3) is the car's root translation only (rotation = the identity) and the car's turn is in the bone palette (gCarMtxBuffer, c64 and up;
+// perf/CAR-RT-SPIKE.md: "the palette is world space minus the root translation"; the traffic cars' heading is in bone 0, 2026-11-19): a pose is made from a lens draw's BONE (PoseFromBone), its model space being the entity's
+// (+z = the car's back). Reading gWorld's rows made every car face -z, whatever way it was driving (the headlights run of 2026-11-20, the light landed
+// behind the player's car). This header includes nothing of the renderer.
 // ===========================================================================
 
 #include <algorithm>
@@ -376,6 +380,35 @@ inline bool PoseFromWorld(const double m[4][4], Pose* out) {
   }
   *out = pose;
   return true;
+}
+
+// A car's frame from the bone matrix of one of its parts and the car's root. `palette` is car_dump::CarMatrices::palette: the row-vector form of the bone's three
+// registers (the bone maps a model point p to rows 0-2 applied to p, plus row 3: row 0, 1 and 2 are the images of the model's x, y and z axes, in the world, row 3 the
+// bone's offset from the root). The car's body and the parts fixed to it (the lamps' lenses) share the car's turn, and the model's +z is the car's BACK, as the
+// entity matrix's third row is (the game's own light points' direction and the ambient scene verb's heading + 180 both say so). CHECK: that sign is read off those,
+// not off a lens draw's bone: the census counts the lamps the game's points turn round (`forward turned by the points`). `root` is gWorld's
+// translation (row 3 of c0-c3): the car's origin, which is how the lens draws of one car are told from another's. False when the rows are no car's frame.
+inline bool PoseFromBone(const double palette[4][4], const double root[3], Pose* out) {
+  double m[4][4];
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      m[r][c] = palette[r][c];
+    }
+  }
+  for (int c = 0; c < 3; ++c) {
+    m[3][c] = root[c];
+  }
+  m[3][3] = 1.0;
+  return PoseFromWorld(m, out);
+}
+
+// A lens draw whose centre lies this near the car's root (on the ground plane) is no lamp of the car: a car's lamps are at its ends, 1.5 m and more from the
+// root, and the draws that sit at the root are the sprites (glows, coronas) that have a world matrix of their own, or a lens mesh whose box could not be read
+// (the centre is then the bone's origin).
+inline constexpr double kLensMinFromRoot = 1.2;
+inline bool LensOffRoot(const double root[3], const double lens[3]) {
+  const double dx = lens[0] - root[0], dz = lens[2] - root[2];
+  return std::sqrt(dx * dx + dz * dz) >= kLensMinFromRoot;
 }
 
 // The lamp of a car: where the beam starts and which way the car faces.

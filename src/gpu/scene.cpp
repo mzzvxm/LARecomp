@@ -3551,6 +3551,11 @@ void Scene::OnPresent() {
   }
   edram_->SetScenePhase(true);  // the next frame's scene
   NoteMenuWorld();  // before the effects forget the frame
+  if (headlights_) {
+    // The world's sun as this frame's draws carried it (the occlusion's pick, read before its OnPresent forgets the frame): the headlights' night is the world's.
+    double to_sun[3];
+    headlights_->SetWorldSun(ao_ && ao_->SunDirection(to_sun) ? to_sun : nullptr);
+  }
   if (ao_) {
     ao_->OnPresent();
   }

@@ -45,6 +45,10 @@ constexpr uint64_t kDayProbeFrames = 30;
 constexpr int kPointAgeMs = 150;
 // How far outside the screen a lamp may be and still count as on it (a share of the clip box).
 constexpr double kScreenMargin = 1.3;
+// Frames a vertex shader that could not be read is left alone before it is tried again (car_frame.cpp's number).
+constexpr uint32_t kRecipeRetryFrames = 300;
+// Frames the world's sun given by the Scene is trusted without a new one (a time of day does not change in ten seconds; a menu frame gives none).
+constexpr uint64_t kWorldSunKeepFrames = 600;
 
 // The frame being built, as the render thread last published it.
 HeadlightSet g_set;
@@ -116,8 +120,11 @@ void HeadlightRig::Initialize(GuestMemory& memory) {
   state_logged_ = false;
   frame_ = 0;
   last_night_ = 0;
+  world_sun_ = false;
+  world_sun_frame_ = 0;
   tracker_.Clear();
   boxes_.clear();
+  reads_.Clear();
   ClearPublished();
 }
 
@@ -126,6 +133,8 @@ void HeadlightRig::Shutdown() {
   ClearPublished();
   tracker_.Clear();
   boxes_.clear();
+  reads_.Clear();
+  world_sun_ = false;
   memory_ = nullptr;
   enabled_ = false;
   observing_ = false;
@@ -167,7 +176,38 @@ void HeadlightRig::BeginFrame() {
     observing_ = false;
     return;
   }
-  observing_ = night_override_ == 1 || (night_override_ != 0 && (night_ > 0.0 || points_on_ || frame_ % kDayProbeFrames == 0));
+  // The one frame in 30 that looks at the sun through the lens draws is only for when the Scene gives no world sun (the occlusion is off, or no frame of it yet).
+  const bool world_sun = world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames;
+  const bool probe = !world_sun && frame_ % kDayProbeFrames == 0;
+  observing_ = night_override_ == 1 || (night_override_ != 0 && (night_ > 0.0 || points_on_ || probe));
+}
+
+void HeadlightRig::ApplyNightOverride() {
+  if (night_override_ == 1) {
+    night_ = 1.0;
+  } else if (night_override_ == 0) {
+    night_ = 0.0;
+  }
+  if (night_ > 0.0) {
+    last_night_ = frame_;
+  }
+}
+
+void HeadlightRig::SetWorldSun(const double* to_sun) {
+  if (!enabled_ || !to_sun) {
+    return;
+  }
+  const double length = std::sqrt(to_sun[0] * to_sun[0] + to_sun[1] * to_sun[1] + to_sun[2] * to_sun[2]);
+  if (!std::isfinite(length) || length < 0.5) {
+    return;
+  }
+  const double sine = std::clamp(to_sun[1] / length, -1.0, 1.0);  // the direction TO the sun: its y is the sine of the elevation
+  world_sun_ = true;
+  world_sun_frame_ = frame_;
+  sun_seen_ = true;
+  sun_degrees_ = std::asin(sine) * 180.0 / headlight_rules::kPi;
+  night_ = headlight_rules::NightFactor(sine);
+  ApplyNightOverride();
 }
 
 // ---------------------------------------------------------------------------
@@ -189,21 +229,17 @@ void HeadlightRig::ReadFrameFacts(const uint8_t* vs_bank, const car_dump::CarMat
       camera_[c] = view_inverse.m[3][c];
     }
   }
-  // The sun: c16 is the direction the light travels.
-  const double travel[3] = {double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 0)),
-                            double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 1)),
-                            double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 2))};
-  const double sine = headlight_rules::SunSine(travel);
-  sun_seen_ = std::isfinite(sine);
-  sun_degrees_ = std::asin(std::clamp(sine, -1.0, 1.0)) * 180.0 / headlight_rules::kPi;
-  night_ = sun_seen_ ? headlight_rules::NightFactor(sine) : 0.0;
-  if (night_override_ == 1) {
-    night_ = 1.0;
-  } else if (night_override_ == 0) {
-    night_ = 0.0;
-  }
-  if (night_ > 0.0) {
-    last_night_ = frame_;
+  // The sun: the Scene's world sun when it gave one (SetWorldSun). Else the lens draw's own c16 (the direction its light travels), which is a car's light, not
+  // the world's: the headlights run of 2026-11-20 read -5 degrees from it at noon. A fallback only.
+  if (!(world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames)) {
+    const double travel[3] = {double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 0)),
+                              double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 1)),
+                              double(car_dump::BankFloat(vs_bank, car_frame_rules::kSunRegister, 2))};
+    const double sine = headlight_rules::SunSine(travel);
+    sun_seen_ = std::isfinite(sine);
+    sun_degrees_ = std::asin(std::clamp(sine, -1.0, 1.0)) * 180.0 / headlight_rules::kPi;
+    night_ = sun_seen_ ? headlight_rules::NightFactor(sine) : 0.0;
+    ApplyNightOverride();
   }
   // The player's vehicle, once a frame (the guest is held back inside this call).
   car_mesh::ReadPlayerVehicle(&player_, false);
@@ -292,8 +328,17 @@ void HeadlightRig::OnMainDraw(const MainDraw& d) {
   if (!facts_read_) {
     ReadFrameFacts(bank, m);
   }
+  // A lens mesh on a car is placed by its bone: the vertex shader reads the bone palette and gWorld is only the car's root translation, so the car's turn (the
+  // direction its lamps face) is in the bone's rotation and gWorld's rotation is the identity for every car (reading it made every lamp face -z). A draw whose shader
+  // reads no palette, or whose bone index names none, is a sprite with a matrix of its own: no car frame, no lamp.
+  const car_dump::RecipeChoice recipe = car_dump::ChooseRecipe(reads_.Of(r, frame_, kRecipeRetryFrames).reads, false, r.vs_identity);
+  if (recipe.recipe != car_dump::Recipe::kPalette || !m.bone_valid) {
+    ++lens_no_bone_;
+    return;
+  }
+  const double root[3] = {m.world.m[3][0], m.world.m[3][1], m.world.m[3][2]};
   headlight_rules::Pose pose;
-  if (!headlight_rules::PoseFromWorld(m.world.m, &pose)) {
+  if (!headlight_rules::PoseFromBone(m.palette.m, root, &pose)) {
     ++lens_no_pose_;
     return;
   }
@@ -317,6 +362,10 @@ void HeadlightRig::OnMainDraw(const MainDraw& d) {
   }
   std::array<double, 3> centre{};
   if (LensCentre(d, m, centre.data())) {
+    if (!headlight_rules::LensOffRoot(pose.position, centre.data())) {
+      ++lens_at_root_;  // a lamp is at one of the car's ends: this is a sprite's centre, or a mesh whose box was unreadable (the bone's origin)
+      return;
+    }
     car->lenses.push_back(centre);
   }
 }
@@ -522,14 +571,15 @@ void HeadlightRig::Log(size_t picked) {
     lights += std::format("{}{} key {} at ({:.1f}, {:.1f}, {:.1f}) axis ({:.2f}, {:.2f}, {:.2f}) colour {:.2f}", i ? "; " : "", h.is_player ? "player" : "car",
                           h.car_key, h.pos[0], h.pos[1], h.pos[2], h.dir[0], h.dir[1], h.dir[2], h.color[0]);
   }
-  REXLOG_INFO("{} frame {}: night {:.2f} (the sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
-              "no pose {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
+  REXLOG_INFO("{} frame {}: night {:.2f} (the {} sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
+              "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
               "pipeline was being made), {} lens boxes kept",
-              kPrefix, frame_, night_, sun_seen_ ? "seen" : "NOT seen", sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
-              lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
+              kPrefix, frame_, night_, world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames ? "world's" : "lens draw's", sun_seen_ ? "seen" : "NOT seen",
+              sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
+              lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, lens_no_bone_, lens_at_root_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
               pts_only_lamps_, pts_disagree_, last_cars_, last_cars_lit_, picked,
               lights.empty() ? std::string("none") : lights, variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size());
-  lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = 0;
+  lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = lens_no_bone_ = lens_at_root_ = 0;
   variant_draws_ = variant_alpha_draws_ = fallback_draws_ = 0;
 }
 
