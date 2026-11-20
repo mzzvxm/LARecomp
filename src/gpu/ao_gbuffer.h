@@ -256,7 +256,7 @@ enum class Why : uint8_t {
   kNoGBuffer,         // the renderer has no G-buffer object (a build without it)
   kPauseView,         // the 4x views have no sidecar (gbuffer_rules.h Decide: kPauseView)
   kNoNormalPlane,     // the frame published no normal plane (nothing asked it in time, a cutscene, the memory cap, no stage writes it)
-  kSizeDiffers,       // the plane's size is not the picture's (a render scale change in flight)
+  kSizeDiffers,       // the plane is not the depth target's width (a render scale change in flight), or does not cover the picture
   kNoCamera,          // no rotation for the frame (no camera of this kind of view yet)
   kCameraStale,       // the vertex constants may hold a camera that turned, and are not known to
   kPipelinePending,   // the normal pass's pipeline is being made in the background (a frame never waits for a compile)
@@ -270,7 +270,7 @@ constexpr const char* WhyName(Why why) {
     case Why::kNoGBuffer: return "no G-buffer in this renderer";
     case Why::kPauseView: return "the pause menu's / the map's / the garage's world has no sidecar";
     case Why::kNoNormalPlane: return "the frame has no normal plane (the G-buffer was not asked in time, a cutscene, the memory cap)";
-    case Why::kSizeDiffers: return "the normal plane's size is not the picture's";
+    case Why::kSizeDiffers: return "the normal plane's size is not the depth target's, or does not cover the picture (a render scale change in flight)";
     case Why::kNoCamera: return "no camera of this kind of view yet";
     case Why::kCameraStale: return "the vertex constants' camera may have turned and is not known to be the camera";
     case Why::kPipelinePending: return "the normal pass's pipeline is still being made";
@@ -286,8 +286,9 @@ struct FrameFacts {
   bool frame_has_normal = false;   // GBufferFrame::Has(kPlaneNormal)
   uint32_t plane_width = 0;        // GBufferFrame::width / height
   uint32_t plane_height = 0;
-  uint32_t render_width = 0;       // the picture's size in host pixels (Plan::render)
+  uint32_t render_width = 0;       // the picture's size in host pixels (Plan::render): the part of the target the resolve copies, at its top left corner
   uint32_t render_height = 0;
+  uint32_t target_width = 0;       // the main view's depth target's width in host pixels (the guest's 1280 times the scale): the width the sidecar is made at (the scale in flight shows in it)
   Camera camera = Camera::kNone;
   bool pipeline_ready = true;
 };
@@ -296,7 +297,11 @@ constexpr Why Decide(const FrameFacts& f) {
   if (!f.gbuffer_present) return Why::kNoGBuffer;
   if (!f.play_view) return Why::kPauseView;
   if (!f.frame_has_normal) return Why::kNoNormalPlane;
-  if (f.plane_width != f.render_width || f.plane_height != f.render_height) return Why::kSizeDiffers;
+  // The plane has the main colour target's size, not the picture's: the guest's target is 1280 x 736 and the picture (the resolve's rectangle) 1280 x 720 in its top left corner, so the plane is 1920 x 1104
+  // at 1.5x where the picture is 1920 x 1080. A pixel of the picture is the plane's texel at the same place, whatever the plane's height. What is checked: the plane's width is the depth target's (a render
+  // scale change in flight leaves the plane at the old scale, and the scale shows in the width) and the plane covers the picture. (GB-AB-1 2026-11-20: this compared the plane with the PICTURE, which is never
+  // equal, so no frame ever took the plane.)
+  if (f.plane_width != f.target_width || f.render_width > f.plane_width || f.render_height > f.plane_height) return Why::kSizeDiffers;
   if (f.camera == Camera::kNone) return Why::kNoCamera;
   if (f.camera == Camera::kStale) return Why::kCameraStale;
   if (!f.pipeline_ready) return Why::kPipelinePending;

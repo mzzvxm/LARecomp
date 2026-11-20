@@ -924,7 +924,7 @@ class AmbientOcclusion {
     uint32_t plane_slot = 0;       // RT1's bindless slot
     uint32_t plane_samples = 1;    // its host sample count (above 1: Texture2DMS)
     uint32_t plane_sample0 = 0;    // the host sample that is the guest's sample 0
-    uint32_t plane_size[2] = {};   // RT1's size (the picture's)
+    uint32_t plane_size[2] = {};   // RT1's size (the depth target's, the picture's size or larger: the picture is its top left part)
     ao_gbuffer::Rows rows;         // the camera's rotation, world to view
     ao_gbuffer::Camera camera = ao_gbuffer::Camera::kNone;
     bool depth_source_bits = false;  // the depth pass records the half size source (the pixel is half size)

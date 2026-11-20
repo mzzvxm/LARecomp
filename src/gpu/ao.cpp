@@ -2339,6 +2339,11 @@ ao_gbuffer::Why AmbientOcclusion::PlanNormals(const ResolveCache::Summary& summa
     facts.plane_width = frame->width;
     facts.plane_height = frame->height;
   }
+  if (summary.source) {
+    // The sidecar is made at the main colour target's host size (GBuffer::OnResolve: scale.Edge of the target's width and height: 1920x1104 at 1.5x), the picture (the resolve's rectangle) is the
+    // part of it at the top left corner (1920x1080), and the depth target the passes read has the same pitch: the widths say whether the plane is at the scale of this frame's depth.
+    facts.target_width = summary.source->scale.Edge(summary.source->width);
+  }
   facts.camera = FrameCameraRows(&out->rows);
   out->camera = facts.camera;
   facts.pipeline_ready = true;

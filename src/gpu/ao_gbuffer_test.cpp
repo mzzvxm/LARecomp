@@ -528,8 +528,10 @@ void RuleChecks() {
   // the frame's decision, in the order of the reasons
   ag::FrameFacts a;
   a.frame_has_normal = true;
-  a.plane_width = a.render_width = 1920;
-  a.plane_height = a.render_height = 1080;
+  // The real frame (the first G-buffer run, 11-20): the sidecar is the guest's 1280 x 736 times 1.5 = 1920 x 1104, the depth target has its width, the picture (the resolve's rectangle) is 1920 x 1080.
+  a.plane_width = a.target_width = a.render_width = 1920;
+  a.plane_height = 1104;
+  a.render_height = 1080;
   a.camera = ag::Camera::kPrevious;
   Check(ag::Decide(a) == ag::Why::kUsed, "everything there: the frame uses the plane");
   a.camera = ag::Camera::kVertexBank;
@@ -543,8 +545,14 @@ void RuleChecks() {
   Check(without([](ag::FrameFacts& b) { b.gbuffer_present = false; }) == ag::Why::kNoGBuffer, "no G-buffer object: kNoGBuffer");
   Check(without([](ag::FrameFacts& b) { b.play_view = false; }) == ag::Why::kPauseView, "the pause world: kPauseView");
   Check(without([](ag::FrameFacts& b) { b.frame_has_normal = false; }) == ag::Why::kNoNormalPlane, "no published normal plane: kNoNormalPlane");
-  Check(without([](ag::FrameFacts& b) { b.plane_width = 1280; }) == ag::Why::kSizeDiffers, "a plane of another width: kSizeDiffers");
-  Check(without([](ag::FrameFacts& b) { b.plane_height = 720; }) == ag::Why::kSizeDiffers, "a plane of another height: kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.plane_width = 1280; b.render_width = 1280; }) == ag::Why::kSizeDiffers, "a plane of another width than the depth target's: kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.target_width = 1280; }) == ag::Why::kSizeDiffers, "a plane made at the last scale (the depth target is another width now): kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.plane_height = 720; }) == ag::Why::kSizeDiffers, "a plane shorter than the picture does not cover it: kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.render_height = 1104; b.render_width = 1920; }) == ag::Why::kUsed, "a picture as big as the target is covered by the plane");
+  Check(without([](ag::FrameFacts& b) { b.render_height = 1105; }) == ag::Why::kSizeDiffers, "a picture taller than the plane is not covered: kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.render_width = 1921; }) == ag::Why::kSizeDiffers, "a picture wider than the plane is not covered: kSizeDiffers");
+  Check(without([](ag::FrameFacts& b) { b.plane_height = 736; b.plane_width = b.target_width = 1280; b.render_width = 1280; b.render_height = 720; }) == ag::Why::kUsed,
+        "720p: the plane is 1280 x 736 and the picture 1280 x 720 (the size every real frame has): used");
   Check(without([](ag::FrameFacts& b) { b.camera = ag::Camera::kNone; }) == ag::Why::kNoCamera, "no camera: kNoCamera");
   Check(without([](ag::FrameFacts& b) { b.camera = ag::Camera::kStale; }) == ag::Why::kCameraStale, "a stale camera: kCameraStale");
   Check(without([](ag::FrameFacts& b) { b.pipeline_ready = false; }) == ag::Why::kPipelinePending, "a pipeline still being made: kPipelinePending");
