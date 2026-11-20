@@ -17,6 +17,7 @@
 #define MCLA_GPU_AO_COMMON_HLSLI
 
 #include "host_pass_common.hlsli"
+#include "gbuffer_common.hlsli"
 
 #ifndef AO_DEPTH_MS
 #define AO_DEPTH_MS 0
@@ -70,6 +71,11 @@ struct AoPush {
   // slots2.y as the slot of the depth history (R32_FLOAT), lens.z as the weight the bounce's history
   // keeps and lens.w as the width of its clip. The a-trous pass (ao_atrous_ps) takes slots2.x as its step
   // in pixels.
+  //
+  // The normal image's bindless slot (AoNormalAt below; 0 = none) rides where the pass has no other use for the field and the push's default is 0: the main pass (plain and bounce
+  // light) in lin.y as a number (as the traced image's slot in lin.x; it is set for that pass, lin.y holds a projection row otherwise), the denoise (all three modes) and the a-trous
+  // filter in slots2.w, the accumulation (both) and the contact march in the high 16 bits of slots.y (the low bits are the host sample, bindless slots are below 32768), the apply
+  // in the high 16 bits of slots.w (the low 16 are the depth image's slot). The normal pass (ao_normal_ps) has its own fields, listed in its file.
 };
 
 #ifdef __spirv__
@@ -182,6 +188,18 @@ float3 AoNormalFromImage(uint slot, int2 p, int2 size, float tc, float3 pc) {
   const float3 n = cross(v, h);
   const float len = length(n);
   return len > 1e-20f ? n / len : float3(0.0f, 0.0f, -1.0f);
+}
+
+// THE NORMAL IMAGE (GB-E; ao_normal_ps.hlsl, ao_gbuffer_normal.hlsli, ao_gbuffer.h): where the frame has the G-buffer's normal plane one pass makes the unit view-space normal of every
+// pixel of the traced image once (R16G16_UNORM, octahedral: the plane's normal turned into view space where a pixel has one that faces the camera, the depth's normal, this file's
+// AoNormalFromImage, where it has not) and the passes load it here. `normal_slot` is the image's bindless slot, 0 for none (the heap's reserved null texture): without the image,
+// a frame without the G-buffer, or with mcla_gpu_ao_gbuffer_normals off, this is AoNormalFromImage and the pass is what it was. The slot rides in a field each pass does not
+// otherwise use, where the push block's default is 0 (ao.h lists them), so a pass that is not given one reconstructs.
+float3 AoNormalAt(uint normal_slot, uint depth_slot, int2 p, int2 size, float tc, float3 pc) {
+  if (normal_slot == 0u) {
+    return AoNormalFromImage(depth_slot, p, size, tc, pc);
+  }
+  return GbOctDecode(g_textures[normal_slot].Load(int3(p, 0)).xy);
 }
 
 // Interleaved gradient noise (Jimenez 2014) of a pixel position.

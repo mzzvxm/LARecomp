@@ -204,6 +204,24 @@ void RowChecks() {
   Check(worst_axes < 0.001, Num("the camera's right, up and forward axes map to (1,0,0), (0,1,0), (0,0,1): worst %.5f degrees", worst_axes));
   Check(worst_sun < 0.001, Num("the rows turn a world direction into view space as ao.cpp FillPush turns the sun's: worst %.5f degrees", worst_sun));
 
+  // the rotation difference: the position is not in it, a turn is
+  {
+    Camera a = MakeCamera(rng);
+    Camera b = a;
+    for (int i = 0; i < 3; ++i) b.m[3][i] += 40.0;  // the car drove 40 m
+    Check(ag::RotationDifference(a.m, b.m) == 0.0, "a camera that only moved has no rotation difference");
+    // turn the camera 3 degrees about its up axis: right' = right cos + back sin ... (rows 0 and 2 mix)
+    const double t = 3.0 * 3.14159265358979323846 / 180.0;
+    Camera c = a;
+    for (int i = 0; i < 3; ++i) {
+      c.m[0][i] = a.m[0][i] * std::cos(t) + a.m[2][i] * std::sin(t);
+      c.m[2][i] = -a.m[0][i] * std::sin(t) + a.m[2][i] * std::cos(t);
+    }
+    const double turned = ag::RotationDifference(a.m, c.m);
+    Check(turned > 0.02 && turned < 0.06, Num("a turn of 3 degrees is a rotation difference of %.4f (the limit kPoseStaleDifference is %.3f)", turned, ag::kPoseStaleDifference));
+    Check(std::fabs(ag::kPoseStaleDifference - std::sin(t)) < 0.003, "kPoseStaleDifference is the sine of 3 degrees");
+  }
+
   // refused matrices
   Camera cam = MakeCamera(rng);
   ag::Rows rows;
@@ -593,7 +611,7 @@ void SourceChecks(const std::string& gpu) {
   // the ask
   Check(Has(cpp, "gbuffer::Consumer::kAmbientOcclusion") && Has(cpp, "gbuffer::Consumer::kBounceLight") && Has(cpp, "ao_gbuffer::PlanesWanted(") && Has(cpp, "ao_gbuffer::BouncePlanesWanted("),
         "ao.cpp asks the G-buffer for the normal plane through GBuffer::Want, for the occlusion and the bounce light");
-  Check(Has(cpp, "ao_gbuffer::Decide(") && Has(cpp, "ao_gbuffer::ChooseCamera(") && Has(cpp, "ao_gbuffer::RowsFromViewInverse("), "ao.cpp decides the frame with the header's rules");
+  Check(Has(cpp, "ao_gbuffer::Decide(") && Has(cpp, "ao_gbuffer::ChooseCamera(") && Has(cpp, "ao_gbuffer::RowsFromViewInverse(") && Has(cpp, "ao_gbuffer::RotationDifference("), "ao.cpp decides the frame with the header's rules");
   Check(Has(renderer, "ao_.SetGBuffer(&gbuffer_)"), "renderer.cpp gives the occlusion the G-buffer");
 
   // the shared include: every consumer asks AoNormalAt, nobody else reconstructs

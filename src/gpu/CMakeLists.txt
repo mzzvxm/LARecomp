@@ -659,6 +659,10 @@ larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINE
 larecomp_gpu_host_shader(ao_depth_ps ps_6_0 DEFINES AO_DEPTH_MS=0)
 larecomp_gpu_host_shader(ao_depth_ms_ps ps_6_0 SOURCE ao_depth_ps DEFINES AO_DEPTH_MS=1)
 larecomp_gpu_host_shader(ao_mip_ps ps_6_0)
+# The normal image the passes read (ao.h, GB-E): the unit view-space normal of every pixel, from the G-buffer's normal plane where it has one and from the depth where it has not;
+# once for a plane with one sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(ao_normal_ps ps_6_0 DEFINES AO_NORMAL_MS=0)
+larecomp_gpu_host_shader(ao_normal_ms_ps ps_6_0 SOURCE ao_normal_ps DEFINES AO_NORMAL_MS=1)
 larecomp_gpu_host_shader(ao_main_ps ps_6_0)
 # The same visibility pass with the slices and steps compiled in (ao_fast.h: 3 slices of 3 steps at high, 2 of 2 at low): the loops over
 # the steps unroll and what is a function of the counts folds. ao_main_ps is the compilation that reads the counts from the push block,

@@ -18,8 +18,13 @@
 // depth target's stencil plane (slots.z, 0xFFFFFFFF when there is none) holds a vehicle's ID in its upper
 // six bits while the car is drawn. The occlusion's main pass uses the bit to keep a car's reach on the
 // road short (ao_main_ps.hlsl).
+//
+// With the G-buffer's normals on (slots2.w not 0; GB-E, ao_normal_ps.hlsl, ao_gbuffer_normal.hlsli) the two bits above the mark also say which of the block's four samples a
+// half size pixel stands for (0 top left, 1 top right, 2 bottom left, 3 bottom right: the sample whose depth and stencil the pixel took, the one nearest the block's mean),
+// so that the normal pass takes the G-buffer's texel of the same surface. Seven units in the last place of the depth at the most; with slots2.w 0 the depth is what it was.
 
 #include "ao_common.hlsli"
+#include "ao_gbuffer_normal.hlsli"
 
 // A vehicle's stencil ID is the stencil byte >> 2: 1 to 23 (the UI's draws use 24 and up), as in
 // ao_temporal_ps.hlsl.
@@ -53,6 +58,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const int2 last = int2(g_push.sizes.zw) - 1;
   float t;
   int2 source;
+  uint source_index = 0u;
   if (AoLow()) {
     const int2 p0 = min(pixel * 2 + int2(0, 0), last);
     const int2 p1 = min(pixel * 2 + int2(1, 0), last);
@@ -70,16 +76,19 @@ float4 main(float4 position : SV_Position) : SV_Target {
     if (abs(d.y - mean) < best) {
       t = d.y;
       source = p1;
+      source_index = 1u;
       best = abs(d.y - mean);
     }
     if (abs(d.z - mean) < best) {
       t = d.z;
       source = p2;
+      source_index = 2u;
       best = abs(d.z - mean);
     }
     if (abs(d.w - mean) < best) {
       t = d.w;
       source = p3;
+      source_index = 3u;
     }
     // One surface: its depth at the block's centre (the vehicle mark and the stencil stay the chosen sample's).
     const float spread = max(max(d.x, d.y), max(d.z, d.w)) - min(min(d.x, d.y), min(d.z, d.w));
@@ -90,5 +99,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
     source = min(pixel, last);
     t = AoLinearDepth(AoLoadStored(source));
   }
-  return float4(AoSetVehicleBit(t, IsVehiclePixel(source)), 0.0f, 0.0f, 0.0f);
+  const float marked = AoSetVehicleBit(t, IsVehiclePixel(source));
+  return float4(g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked, 0.0f, 0.0f, 0.0f);
 }

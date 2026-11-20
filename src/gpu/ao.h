@@ -338,6 +338,36 @@
 // dusk and night (chain-ssgistrong.ps1): a sunlit road's light in the shade of a wall, a coloured wall's colour on
 // the car beside it, neon and lamps not whitening the walls, no halo at a silhouette's edge from the far ring.
 //
+// THE G-BUFFER'S NORMALS (GB-E: the first consumers of the G-buffer; perf/GBUFFER-SURVEY.md 4 and 7.2; ao_gbuffer.h has the rules and the C++ twin, hlsl/ao_normal_ps.hlsl the pass,
+// hlsl/ao_gbuffer_normal.hlsli the choice of a pixel's normal; mcla_gpu_ao_gbuffer_normals, debug-only, live, on by default, is the A/B switch). Every pass of the three effects worked
+// out the surface's normal from the depth's neighbours (hlsl/ao_common.hlsli AoNormalFromImage: the neighbour on each axis whose depth is nearer, a cross product), ten times a frame,
+// and the depth's normal bends where the surface ends: the halo and silhouette rules of ao_halo.h and ao_paint.h exist because of it. The G-buffer (gbuffer.h) holds the surface's own
+// world normal in RT1 wherever the draw's shader has a G-buffer variant, and 0 ("no data") elsewhere (impostors, billboards, every shader no family covers yet). So:
+//   - the effects ask the G-buffer for that plane while they are on (BeginFrame: GBuffer::Want, the occlusion and the contact shadows as kAmbientOcclusion, the bounce light as
+//     kBounceLight): the sidecar images exist only then, so what the writes cost (the survey: +0.1 to 0.2 ms at 4K) is paid only where these effects run, and with the setting off, or the
+//     effects off (the Low class), no image is made and no draw of the game changes;
+//   - in a frame that published the plane (Scene::OnResolve runs the G-buffer's publish before this) one pass after the depth chain, "ao normals" (hlsl/ao_normal_ps.hlsl), makes a
+//     NORMAL IMAGE: R16G16_UNORM, the unit view-space normal of every pixel as an octahedral code, at the traced size (and one at the picture's size where the contact shadows keep it beside
+//     a half size occlusion: Plan::SplitContact). A pixel takes RT1's normal turned into view space with the camera's rotation (the frame's own view inverse from the vertex constants
+//     where they are trusted, else the last frame's camera; a frame that cannot tell, an untrusted bank that differs from the last camera by more than a turn of 3 degrees, takes
+//     none) when it faces the camera (a normal that faces away by more than a margin is stale or wrong), and the depth's normal, the very function the passes used, otherwise. At half
+//     size the depth pass leaves the number of the block's sample it took in the two bits above the vehicle mark (the vehicle mark's bit and every value read from the depth are as
+//     before, to a few units in the last place), and the normal pass reads RT1 at that sample, so that across a depth edge the normal is of the surface the depth is of;
+//   - the passes load the image where they took the depth's normal (AoNormalAt: the main pass plain and bounce light, the denoise, the accumulation, the a-trous filter, the contact
+//     march and its filter, the apply pass where the image has the picture's size). Its bindless slot rides in a field the pass does not otherwise use (hlsl/ao_common.hlsli AoPush has
+//     the list); 0 is none, and a pass that is not given one reconstructs, so a frame without the plane is the passes as they were, to the bit;
+//   - the bounce light's facing test (does a sample's surface face the pixel?) read a second depth one texel further along the slice; it now reads the sample's own normal, cut by the
+//     slice's plane (ao_gbuffer.h FacingFromNormal: the same number on a plane, ao_gbuffer_test.cpp), which is not another surface across a depth edge and costs one texel of the image in
+//     place of a depth texel and the arithmetic of a position and a cross product.
+// What is gained: no depth edge bends a normal where the surface has one of its own (the plane/edge artifacts the survey lists), the passes' loads and arithmetic of ten
+// reconstructions become one pass and ten loads (the survey's estimate: 0.1 to 0.2 ms of the occlusion's 1.4 ms at 4K, more on a GPU that is arithmetic bound: not measured), and the
+// bounce light's facing test is exact. What it is not: the look is the same where the surface is flat (a smooth round prop's interpolated normal is not the depth's faceted one: the horizon
+// search then starts from the smooth surface, the picture A/B in the run plan judges it). The pause world, the garage and the map (4x views) have no sidecar and run on the depth.
+// CHECK: (none of this could be run) the plane's world is the camera's (the rows follow ao.cpp FillPush's sun conversion; ao_gbuffer_test.cpp checks the arithmetic, a picture of mcla_gpu_ao_view
+// 4 with the setting on and off at a wall and a road checks the game's constants), the edges of the occlusion at a kerb, a pole and a car's silhouette, the pass's cost at 1080p and 4K
+// ("ao normals" against the passes' old sum), D3D12 with the sidecar's writers-only policy (a stale normal under a later draw that has no variant: kRejectFacing catches only the
+// ones that face away).
+//
 // The census (mcla_gpu_ao_census, off by default) is a diagnostic log: the trigger, the light
 // constants, the lens, what the history did and, at its frames, a statistic of the linear depth
 // read back from the GPU.
@@ -378,6 +408,7 @@
 
 #include <plume_render_interface.h>
 
+#include "ao_gbuffer.h"
 #include "ao_size.h"
 #include "constants.h"
 #include "edram.h"
@@ -399,6 +430,7 @@ class CarRtScene;    // car_rt_scene.h: the player's car as ray tracing structur
 class CarShadowMap;  // car_shadow_map.h: the player's car's own sun shadow map; the contact march reads it
 class Device;
 class FrameRing;
+class GBuffer;       // gbuffer.h: the normal plane the passes read (GB-E)
 class PassTiming;
 
 class AmbientOcclusion {
@@ -503,6 +535,11 @@ class AmbientOcclusion {
   // null (no map: the contact shadows are as they were). Render thread, before the first frame.
   void SetCarShadowMap(const CarShadowMap* map) { car_shadow_map_ = map; }
 
+  // The G-buffer (gbuffer.h; GB-E): the occlusion, the contact shadows and the bounce light ask it for the normal plane while they are on (GBuffer::Want, in BeginFrame) and, in a
+  // frame that published one, make a normal image from it (see THE G-BUFFER'S NORMALS above). Not owned; null: the passes take the depth's normal, as they always did. Render thread,
+  // before the first frame; the renderer's Shutdown stops the occlusion before the G-buffer.
+  void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+
   // The video memory the images hold now.
   uint64_t HeldBytes() const;
 
@@ -571,12 +608,17 @@ class AmbientOcclusion {
     kPassMainGi2,
     kPassMainGi3Exact,
     kPassMainGi2Exact,
+    // The normal image's pass (GB-E; hlsl/ao_normal_ps.hlsl), for a G-buffer plane with one sample and for the host's MSAA level: made when the first frame that has the plane asks
+    // (EnsureNormalShader), with its pipeline in the background (NormalPipelineReady); not the bounce light's, so EnsureGiShaders leaves it alone.
+    kPassNormal,
+    kPassNormalMs,
     kPassCount,
   };
   // A pass the occlusion needs (made at the start with the others), against the bounce light's (made when it is on).
   static constexpr bool CorePass(uint32_t pass) {
     return pass < kCorePassCount || pass == kPassMain3 || pass == kPassMain2;
   }
+  static constexpr bool NormalPass(uint32_t pass) { return pass == kPassNormal || pass == kPassNormalMs; }
 
   // The pipelines: one per pass and kind of depth plane, and the apply pass per colour target's
   // sample count and per kind of output (the multiply, or a debug view's write).
@@ -614,7 +656,10 @@ class AmbientOcclusion {
     kVTemporalGiMs = kVTemporalGi + 1,
     kVAtrous = kVTemporalGiMs + 1,
     kVApplyGiBase = kVAtrous + 1,  // + 4 * debug + log2(samples): the apply with the bounce light
-    kVariantCount = kVApplyGiBase + 8,
+    // The normal image's pass (GB-E): listed with the host precache the first time a frame has the G-buffer's plane (NormalPipelineReady), never at the start.
+    kVNormal = kVApplyGiBase + 8,
+    kVNormalMs = kVNormal + 1,
+    kVariantCount = kVNormalMs + 1,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
@@ -871,6 +916,36 @@ class AmbientOcclusion {
                    const Plan& plan, const Push& push);
   void FillPush(Push* push, const ResolveCache::Summary& summary, const Plan& plan,
                 const LightRaw* light) const;
+  // --- the G-buffer's normals (hlsl/ao_normal_ps.hlsl, ao_gbuffer.h) ---
+  // What the frame does with the G-buffer's normal plane (PlanNormals): the plane's slot and host sample, the camera's rows, and the slot of the normal image each kind of pass reads
+  // (0: none, the pass takes the depth's normal as it did).
+  struct NormalPlan {
+    bool on = false;
+    uint32_t plane_slot = 0;       // RT1's bindless slot
+    uint32_t plane_samples = 1;    // its host sample count (above 1: Texture2DMS)
+    uint32_t plane_sample0 = 0;    // the host sample that is the guest's sample 0
+    uint32_t plane_size[2] = {};   // RT1's size (the picture's)
+    ao_gbuffer::Rows rows;         // the camera's rotation, world to view
+    ao_gbuffer::Camera camera = ao_gbuffer::Camera::kNone;
+    bool depth_source_bits = false;  // the depth pass records the half size source (the pixel is half size)
+    uint32_t ao_slot = 0;          // the image the occlusion's, the bounce light's passes read (traced size)
+    uint32_t contact_slot = 0;     // the contact march's and its filter's
+    uint32_t apply_slot = 0;       // the apply pass's (0 where no image has the picture's size)
+  };
+  // Decides the frame's use of the plane from the G-buffer's frame, the setting and the camera, and makes the shader and the pipeline's background build ready (a frame never waits for
+  // a compile): the reason when not (ao_gbuffer.h Why; kUsed with `out->on` set otherwise). Logs a change of reason.
+  ao_gbuffer::Why PlanNormals(const ResolveCache::Summary& summary, const Plan& plan, NormalPlan* out);
+  // The camera's world to view rotation for the frame (ao_gbuffer.h ChooseCamera): the vertex constants' view inverse where they are trusted, else the last frame's camera.
+  ao_gbuffer::Camera FrameCameraRows(ao_gbuffer::Rows* rows) const;
+  // The normal pass's shader (made on first use, on the render thread: a short call) and whether its pipeline is made; the first call lists it with the host precache and the frame
+  // goes without until it is ready.
+  bool EnsureNormalShader(bool multisampled);
+  bool NormalPipelineReady(bool multisampled);
+  // The images of the normal pass, made for the frame's plan and given back after a while without use; false when one could not be made (the frame takes the depth's normal).
+  bool EnsureNormalImages(const Plan& plan, const NormalPlan& normals);
+  void ReleaseNormalImages();
+  // The normal pass(es): the traced size image from the depth chain's level 0, and the picture's size one from the contact shadows' own depth.
+  void RecordNormals(plume::RenderCommandList* list, const Plan& plan, const Push& base, const NormalPlan& normals);
   // The look (strength, radius, power, direct): mcla_gpu_ao_intensity's, read when the passes are
   // recorded; logged when it changes.
   struct Look {
@@ -1121,6 +1196,7 @@ class AmbientOcclusion {
   HostPasses* passes_ = nullptr;
   EdramTargets* edram_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  GBuffer* gbuffer_ = nullptr;       // the normal plane (SetGBuffer); not owned
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
   bool contact_shader_failed_ = false;
@@ -1143,6 +1219,10 @@ class AmbientOcclusion {
   float car_reach_logged_ = -1.0f;
   uint32_t paint_code_logged_ = ~0u;
   HostImage depth_[3];  // the linear depth chain: the traced size (half the picture's above 1080 lines), then 1/2 and 1/4 of it
+  // The normal image (GB-E, hlsl/ao_normal_ps.hlsl): R16G16_UNORM, the octahedral code of the unit view-space normal of every pixel, at the traced size, and one at the picture's
+  // size while the contact shadows keep that beside a half size occlusion (Plan::SplitContact). Made while frames use the G-buffer's plane, given back after a while without.
+  HostImage normal_;
+  HostImage normal_full_;
   HostImage raw_;       // the main pass's visibility (also the contact shadows' march while their size is the traced one)
   HostImage denoised_;  // the denoise's (also the contact shadows' filter pass's then)
   // The contact shadows' own images while the occlusion is traced at half size and they are not (Plan::SplitContact): the picture's size,
@@ -1226,6 +1306,18 @@ class AmbientOcclusion {
   uint32_t mask_dims_[2] = {};   // the game's sun shadow mask's size in host texels (FindMaskSlot), 0 where there is none
   bool contact_skip_geometry_logged_ = false;
   uint64_t generation_ = 1;  // bumped when the images go: a probe in flight is then ignored
+
+  // The G-buffer's normals: what the last frame that asked decided and why (the log says a change), the frames that used the plane and the others by reason, the frames since the
+  // image was last used (it goes back after kReleaseAfterFrames), and the shader failure (it takes the normal pass only).
+  NormalPlan normals_;  // this frame's (set by Run, read by RecordContact)
+  ao_gbuffer::Why normal_why_ = ao_gbuffer::Why::kCount;
+  uint64_t normal_frames_ = 0;
+  std::array<uint64_t, size_t(ao_gbuffer::Why::kCount)> normal_why_frames_{};
+  uint32_t normal_idle_frames_ = 0;
+  bool normal_shaders_failed_ = false;
+  bool normal_images_failed_logged_ = false;
+  bool normal_pending_logged_ = false;
+  uint32_t normal_images_for_[4] = {};  // the traced and the full size the images were made for (the log says a new size)
 
   // What the log has said once.
   bool no_lens_logged_ = false;

@@ -220,6 +220,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
+    ao_.SetGBuffer(&gbuffer_);  // the occlusion, the bounce light and the contact shadows ask for the G-buffer's normal plane and read it (ao.h, GB-E)
     scene_.SetSunShafts(&shafts_);
     scene_.SetGBuffer(&gbuffer_);
     scene_.SetCarSelfRefl(&car_refl_);

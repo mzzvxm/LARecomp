@@ -40,8 +40,19 @@ inline constexpr float kMinFacing = 0.05f;
 
 // The camera's rotation of the frame, to be taken from the vertex constants (this frame's own view inverse) or from the last frame's camera; where the two are not the same and the
 // vertex constants are not known to hold the camera (ao.cpp vs_pose_trusted_), the frame cannot tell a turn from a constant that is not the camera, and the frame takes no G-buffer
-// normals. The difference of the two view inverses, the largest entry: 0.05 is a turn of 3 degrees (sin 3 degrees = 0.052).
+// normals. The difference of the two rotations, the largest entry of the 3 x 3 (the camera's position, which moves with the car, is not in it): 0.05 is a turn of 3 degrees
+// (sin 3 degrees = 0.052).
 inline constexpr double kPoseStaleDifference = 0.05;
+// The largest difference between an entry of the rotation parts (rows and columns 0 to 2) of two view inverses.
+inline double RotationDifference(const double a[4][4], const double b[4][4]) {
+  double worst = 0.0;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      worst = std::fmax(worst, std::fabs(a[r][c] - b[r][c]));
+    }
+  }
+  return worst;
+}
 
 // The normal image goes back to the heap after this many frames that did not use it (a cutscene, the pause, a switch of the setting: not made again for each).
 inline constexpr uint32_t kReleaseAfterFrames = 60;
@@ -99,7 +110,7 @@ struct CameraFacts {
   bool bank_present = false;        // a main view colour draw carried view inverse constants this frame
   bool bank_trusted = false;        // they have matched the anchor's camera in a frame the camera moved in
   bool bank_sane = false;           // they are a camera's matrix (RowsFromViewInverse accepts them)
-  double bank_difference = 0.0;     // the largest entry of (bank - the last frame's view inverse)
+  double bank_difference = 0.0;     // RotationDifference(bank, the last frame's view inverse)
 };
 constexpr Camera ChooseCamera(const CameraFacts& f) {
   if (f.bank_present && f.bank_trusted && f.bank_sane) {

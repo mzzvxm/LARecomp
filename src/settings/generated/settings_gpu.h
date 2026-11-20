@@ -113,6 +113,15 @@ class GPUSettings final : public rex::SettingOwner {
     "comparing the cost and the picture. Live; the first frame after the change makes the other pipeline on the "
     "render thread (a debug switch: a hitch of tens of milliseconds, once).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ao_gbuffer_normals, true, "Diagnostic (G-buffer, GB-E): the ambient occlusion, the contact shadows and the bounce light take each pixel's surface normal from the G-buffer (the "
+    "world normal of the surfaces whose shader has the G-buffer variant, turned into view space) in place of working it out from the depth's neighbours in "
+    "every pass: no depth edge bends it, the passes read one image that a normal pass makes once a frame, and the bounce light's facing test reads the "
+    "sample's normal instead of a second depth. A pixel the G-buffer holds no data for (impostors, billboards, the shaders no family covers yet) takes the "
+    "depth's normal as before, and so does a frame without the plane (the pause menu's world, the garage, the map, a cutscene). While it is on and one of "
+    "those effects is, the effects ask the G-buffer for its normal plane, so the main view's draws also write it (a small cost, paid only then). False: no "
+    "plane is asked for and every pass works out the normal from the depth, the picture as it was (the A/B). Live; the first frame after the change makes "
+    "the normal pass's pipeline in the background.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_ao_half_above_1080, true, "Diagnostic: above 1080 lines of render height (1440p, 4K, an upscaler's larger render size) the ambient "
     "occlusion's passes (depth chain, visibility, blur, history) run at half the picture's size, 720 lines for 1440p "
     "and 1080 for 4K, and the apply pass's depth-aware upsample puts the result back; 1080 lines and below are as "
@@ -663,7 +672,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, mcla_gpu_gbuffer, "auto", "Diagnostic (G-buffer, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the "
     "game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant, "
     "into a second render target the main view's draws carry, cleared with the game's own clear of the main colour. full: the same, the other planes are not "
-    "written yet. auto: what the effects that are on ask for, which is nothing yet (so off: no image is made and no shader changes). The colour of the picture "
+    "written yet. auto: what the effects that are on ask for (the ambient occlusion, the contact shadows and the bounce light ask for the normal while mcla_gpu_ao_gbuffer_normals is on; none on: no image is made and no shader changes). The colour of the picture "
     "is the same with it on. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live (the first frame with it on builds the extra shaders "
     "and pipelines: a short stutter).", rex::kDebugOnly, rex::Allowed("auto", "off", "normals", "full"));
 
@@ -1405,6 +1414,7 @@ inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;
 inline auto& mcla_gpu_ao_fade_end = g_gpu.mcla_gpu_ao_fade_end;
 inline auto& mcla_gpu_ao_fast_math = g_gpu.mcla_gpu_ao_fast_math;
+inline auto& mcla_gpu_ao_gbuffer_normals = g_gpu.mcla_gpu_ao_gbuffer_normals;
 inline auto& mcla_gpu_ao_half_above_1080 = g_gpu.mcla_gpu_ao_half_above_1080;
 inline auto& mcla_gpu_ao_history = g_gpu.mcla_gpu_ao_history;
 inline auto& mcla_gpu_ao_intensity = g_gpu.mcla_gpu_ao_intensity;

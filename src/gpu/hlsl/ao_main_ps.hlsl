@@ -123,6 +123,7 @@
 
 #if AO_GI
 #include "ssgi_common.hlsli"
+#include "ao_gbuffer_normal.hlsli"
 #endif
 
 static const float kPi = 3.14159265358979f;
@@ -254,7 +255,8 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   if (!(all(p >= 0.0f) && all(p < size))) {
     return;  // off screen: nothing there, the sky share of the hemisphere stays the game's ambient
   }
-  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, ChainDepth(p, level));
+  const float t_sample = ChainDepth(p, level);
+  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, t_sample);
   const float3 delta = sp - pc;
   const float dist = length(delta);
   float w = saturate(dist * falloff_mul + falloff_add);
@@ -285,20 +287,32 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   // camera), and the weight is 0 for a surface that faces away (a roof seen from the ground, a wall
   // seen from behind), 1 from a quarter of the way to facing straight at the pixel, a ramp between.
   // No second depth (the sky, the image's edge): it is taken to face the pixel.
+  // With the normal image (GB-E; ao_common.hlsli AoNormalAt, ao_gbuffer_normal.hlsli) the second depth is not read: the surface's own normal at the sample's pixel, cut by the slice
+  // plane, is the same profile normal on a plane (ao_gbuffer_test.cpp compares them) and it is not another surface across a depth edge; a sample in the sky is taken to face the
+  // pixel as before. The image's pixel is the sample's own, at the traced size (the chain's coarser levels average the depth, not the normal).
   float facing = 1.0f;
   if (facing_weight > 0.0f) {
-    const float2 p2 = p + away * float(1u << level);
-    const float t2 = ChainDepth(p2, level);
-    const float3 tangent = AoViewPosInv(floor(p2) + 0.5f, clip_scale, t2) - sp;
-    if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
-      float3 normal_s = cross(tangent, axis);
-      const float length_n = length(normal_s);
-      if (length_n > 1e-6f) {
-        normal_s *= 1.0f / length_n;
-        if (dot(normal_s, sp) > 0.0f) {
-          normal_s = -normal_s;
+    const uint normal_slot = uint(g_push.lin.y);
+    if (normal_slot != 0u) {
+      if (t_sample < kAoSky * 0.5f) {
+        const int2 at = clamp(int2(floor(p)), int2(0, 0), int2(size) - 1);
+        const float3 normal_sample = GbOctDecode(g_textures[normal_slot].Load(int3(at, 0)).xy);
+        facing = lerp(1.0f, AoGbFacingFromNormal(normal_sample, axis, sp, dir), facing_weight);
+      }
+    } else {
+      const float2 p2 = p + away * float(1u << level);
+      const float t2 = ChainDepth(p2, level);
+      const float3 tangent = AoViewPosInv(floor(p2) + 0.5f, clip_scale, t2) - sp;
+      if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
+        float3 normal_s = cross(tangent, axis);
+        const float length_n = length(normal_s);
+        if (length_n > 1e-6f) {
+          normal_s *= 1.0f / length_n;
+          if (dot(normal_s, sp) > 0.0f) {
+            normal_s = -normal_s;
+          }
+          facing = lerp(1.0f, saturate(4.0f * dot(normal_s, -dir)), facing_weight);
         }
-        facing = lerp(1.0f, saturate(4.0f * dot(normal_s, -dir)), facing_weight);
       }
     }
   }
@@ -316,7 +330,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float2 centre = float2(pixel) + 0.5f;
   const float3 pc = AoViewPos(centre, size, tc);
-  const float3 normal = AoNormalFromImage(g_push.slots.z, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(uint(g_push.lin.y), g_push.slots.z, pixel, isize, tc, pc);
   const float3 view_vec = normalize(-pc);
 
   const float radius = g_push.lens.z;
@@ -481,7 +495,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float2 centre = float2(pixel) + 0.5f;
   const float3 pc = AoViewPos(centre, size, tc);
-  const float3 normal = AoNormalFromImage(g_push.slots.z, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(uint(g_push.lin.y), g_push.slots.z, pixel, isize, tc, pc);
   const float3 view_vec = normalize(-pc);
 
   const float radius = g_push.lens.z;

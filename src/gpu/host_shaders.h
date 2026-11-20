@@ -40,6 +40,8 @@
 #include "ao_main_gi_ps.hlsl.dxil.h"
 #include "ao_main_ps.hlsl.dxil.h"
 #include "ao_mip_ps.hlsl.dxil.h"
+#include "ao_normal_ms_ps.hlsl.dxil.h"
+#include "ao_normal_ps.hlsl.dxil.h"
 #include "ao_temporal_gi_ms_ps.hlsl.dxil.h"
 #include "ao_temporal_gi_ps.hlsl.dxil.h"
 #include "ao_temporal_ms_ps.hlsl.dxil.h"
@@ -126,6 +128,8 @@
 #include "ao_main_gi_ps.hlsl.spirv.h"
 #include "ao_main_ps.hlsl.spirv.h"
 #include "ao_mip_ps.hlsl.spirv.h"
+#include "ao_normal_ms_ps.hlsl.spirv.h"
+#include "ao_normal_ps.hlsl.spirv.h"
 #include "ao_temporal_gi_ms_ps.hlsl.spirv.h"
 #include "ao_temporal_gi_ps.hlsl.spirv.h"
 #include "ao_temporal_ms_ps.hlsl.spirv.h"
@@ -393,7 +397,8 @@ inline HostShaderBlob DlssFrameGenerationUiPixelShader(bool hdr) {
 // the apply pass with the bounce light, for a plain and for a multisampled colour target (ao_apply_ps.hlsl
 // compiled with AO_GI; G7c), then the visibility pass with its counts compiled in (ao_fast.h; ao_main_ps.hlsl with
 // AO_SLICES, AO_STEPS and for the bitmask AO_FAR_STEPS): 21 the occlusion's at 3 slices of 3 steps, 22 at 2 of 2, 23 the
-// bitmask's at 3x3 with 2 ring steps and the polynomial acos, 24 at 2x2 with 1, 25 and 26 the same with the hardware's acos.
+// bitmask's at 3x3 with 2 ring steps and the polynomial acos, 24 at 2x2 with 1, 25 and 26 the same with the hardware's acos, then the normal image's pass (GB-E,
+// ao_normal_ps.hlsl): 27 for a G-buffer plane with one sample, 28 for the host's MSAA level.
 inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ao_depth_ps);
@@ -422,6 +427,8 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 24: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_2x2_far1_ps);
     case 25: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_3x3_far2_exact_ps);
     case 26: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_2x2_far1_exact_ps);
+    case 27: return MCLA_GPU_HOST_SHADER_BLOB(ao_normal_ps);
+    case 28: return MCLA_GPU_HOST_SHADER_BLOB(ao_normal_ms_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
 }

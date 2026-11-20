@@ -312,6 +312,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ao_gbuffer_normals": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (G-buffer, GB-E): the ambient occlusion, the contact shadows and the bounce light take each pixel's surface normal from the G-buffer (the \"\n    \"world normal of the surfaces whose shader has the G-buffer variant, turned into view space) in place of working it out from the depth's neighbours in \"\n    \"every pass: no depth edge bends it, the passes read one image that a normal pass makes once a frame, and the bounce light's facing test reads the \"\n    \"sample's normal instead of a second depth. A pixel the G-buffer holds no data for (impostors, billboards, the shaders no family covers yet) takes the \"\n    \"depth's normal as before, and so does a frame without the plane (the pause menu's world, the garage, the map, a cutscene). While it is on and one of \"\n    \"those effects is, the effects ask the G-buffer for its normal plane, so the main view's draws also write it (a small cost, paid only then). False: no \"\n    \"plane is asked for and every pass works out the normal from the depth, the picture as it was (the A/B). Live; the first frame after the change makes \"\n    \"the normal pass's pipeline in the background.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ao_half_above_1080": {
   "type": "bool",
   "default": "true",
@@ -1205,7 +1216,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (G-buffer, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the \"\n    \"game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant, \"\n    \"into a second render target the main view's draws carry, cleared with the game's own clear of the main colour. full: the same, the other planes are not \"\n    \"written yet. auto: what the effects that are on ask for, which is nothing yet (so off: no image is made and no shader changes). The colour of the picture \"\n    \"is the same with it on. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live (the first frame with it on builds the extra shaders \"\n    \"and pipelines: a short stutter).\"",
+  "help": "\"Diagnostic (G-buffer, perf/GBUFFER-SURVEY.md): which planes of the G-buffer the main view's lit shaders write beside the \"\n    \"game's colour. off: none, and the game's own shaders draw, bit for bit. normals: the world normal of the surfaces whose shader has the G-buffer variant, \"\n    \"into a second render target the main view's draws carry, cleared with the game's own clear of the main colour. full: the same, the other planes are not \"\n    \"written yet. auto: what the effects that are on ask for (the ambient occlusion, the contact shadows and the bounce light ask for the normal while mcla_gpu_ao_gbuffer_normals is on; none on: no image is made and no shader changes). The colour of the picture \"\n    \"is the same with it on. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live (the first frame with it on builds the extra shaders \"\n    \"and pipelines: a short stutter).\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"normals\", \"full\")"
