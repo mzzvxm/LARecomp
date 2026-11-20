@@ -39,6 +39,7 @@ add_library(larecomp_gpu OBJECT
     frame_layers.cpp
     frame_trace.cpp
     frame.cpp
+    gbuffer.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -586,6 +587,10 @@ larecomp_gpu_host_shader(upscaler_masks_ps ps_6_0)
 # The same masks from a coverage image with the samples of the game's depth (mcla_gpu_msaa_with_upscaler): the mean
 # of the samples' masks.
 larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DEFINES MASKS_MS=1)
+# The G-buffer's debug view (gbuffer.h, mcla_gpu_gbuffer_view): a plane of the sidecar images drawn over the main view's colour; once for planes with one
+# sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
+larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
 # The screen-space ambient occlusion's passes (ao.h): the linear depth and its coarser levels, the
 # GTAO visibility, the denoise, the accumulation over frames and the apply into the scene colour; the
 # depth, the accumulation (its vehicle stencil test) and the apply read the EDRAM depth target's

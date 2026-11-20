@@ -66,6 +66,7 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "gbuffer_types.h"
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
@@ -95,6 +96,7 @@ class CarDump;
 class CarFrame;
 class CarShadowMap;
 class CarRtScene;
+class GBuffer;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -147,6 +149,9 @@ class Scene {
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
+  // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
+  // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
+  void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -279,6 +284,10 @@ class Scene {
     // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
+    // The G-buffer (gbuffer.h): the draw carries the sidecar as a second colour target (the pipeline's key has it; `key` stays the guest's), and, when
+    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin) and writes it.
+    bool gbuffer_attached = false;
+    uint32_t gbuffer_variant = 0;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -376,6 +385,12 @@ class Scene {
   // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
   // kept for the next draw when neither changed.
   bool UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& d);
+  // The G-buffer (gbuffer.h): asks the rules (gbuffer_rules.h Decide) whether the draw carries the sidecar and writes it, sets d.gbuffer_attached and
+  // d.gbuffer_variant, and returns the key the pipeline is made with: the guest's key widened by the sidecar's colour target (and the variant's id).
+  PipelineKey GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d);
+  // A draw of the G-buffer variant reads 48 bytes after the shared constants (gbuffer_types.h GBufferConstants): the draw's own copy of them and the block, in
+  // one span that replaces `shared_constants`; the last one is kept for the next draw when neither changed.
+  bool UploadGBufferConstants(const SharedConstants& shared, PreparedDraw& d);
   // The UI sharpening (ui_sharp.h): the variant id the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
   // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
   // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
@@ -450,6 +465,7 @@ class Scene {
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  GBuffer* gbuffer_ = nullptr;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
@@ -477,6 +493,9 @@ class Scene {
   SharedConstants last_shadow_shared_{};
   shadow_filter::ShadowFilterConstants last_shadow_block_{};
   UploadSpan last_shadow_span_;
+  gbuffer::GBufferConstants last_gbuffer_block_{};
+  SharedConstants last_gbuffer_shared_{};
+  UploadSpan last_gbuffer_span_;
   ui_sharp::UiSharpConstants last_ui_sharp_block_{};
   SharedConstants last_ui_sharp_shared_{};
   UploadSpan last_ui_sharp_span_;
@@ -661,6 +680,7 @@ class Scene {
     EdramTargets::Target* colors[kColorTargetCount] = {};
     EdramTargets::Target* depth = nullptr;
     plume::RenderFramebuffer* framebuffer = nullptr;
+    uint32_t gbuffer_generation = 0;  // the sidecar the framebuffer has (GBuffer::generation), 0: none
   };
   TargetsMemo targets_memo_;
   // The last draw's Xenos state and what Prepare made from it (

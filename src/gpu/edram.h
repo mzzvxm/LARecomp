@@ -550,8 +550,15 @@ class EdramTargets {
 
   // The framebuffer of `color_count` colour targets (slots 0..n-1) and an
   // optional depth target, created on first use. Null on failure (logged).
+  // `extra`: a host image that is no EDRAM identity (the G-buffer's sidecar, gbuffer.h) attached as the
+  // colour slot after the last one (slot `color_count`); `extra_generation` changes whenever its texture is
+  // replaced (the key holds both). The renderer asks RetireFramebuffersWithExtra before it releases one.
   plume::RenderFramebuffer* Framebuffer(Target* const* colors, uint32_t color_count,
-                                        Target* depth);
+                                        Target* depth, const plume::RenderTexture* extra = nullptr,
+                                        uint32_t extra_generation = 0);
+  // The framebuffers that name `extra` as their extra colour image go (after the lists that still use them), and
+  // change_serial moves, so that the Scene's memo of the last draw's framebuffer is dropped.
+  void RetireFramebuffersWithExtra(const plume::RenderTexture* extra);
 
   // True when `access` of `target` to the tiles of `pixels` is known to
   // change and report nothing at this map epoch, aspect by aspect (cheap: the
@@ -679,6 +686,9 @@ class EdramTargets {
     const Target* targets[5] = {};  // colour 0..3, depth
     uint32_t generations[5] = {};
     uint32_t color_count = 0;
+    const plume::RenderTexture* extra = nullptr;  // the sidecar image after the colours, or none
+    uint32_t extra_generation = 0;
+    uint32_t reserved = 0;  // no padding: the key is hashed as bytes
     bool operator==(const FramebufferKey& o) const;
   };
   struct FramebufferKeyHash {

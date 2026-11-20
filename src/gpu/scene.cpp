@@ -33,6 +33,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "gbuffer.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -822,6 +823,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (gbuffer_) {
+    gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
+  }
   watch::BeginFrame(frame_serial_);
   if (scene_noise::BeginFrame()) {
     REXLOG_INFO("[gpu] scene noise: the first guest frame of a scene carries update {} (renderer frame {}): the noise follows the scene's updates from here", scene_noise::CurrentUpdate(), frame_serial_);
@@ -1608,10 +1612,13 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       d.key.slope_scaled_depth_bias = d.bias.slope;
     }
   }
+  // The G-buffer (gbuffer.h): a main view draw in the frame's window carries the sidecar as a second colour target, and a shader that has the variant
+  // writes it. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
+  const PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
-  if (pipeline_memo_ && d.key == pipeline_memo_key_) {
+  if (pipeline_memo_ && pipeline_key == pipeline_memo_key_) {
     ++memo_hits_[size_t(Memo::kPipeline)];
     d.pipeline = pipeline_memo_;
   } else {
@@ -1620,9 +1627,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     const SkipAsk ask{this, &d};
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
-    d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
+    d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
     if (d.pipeline) {
-      pipeline_memo_key_ = d.key;
+      pipeline_memo_key_ = pipeline_key;
       pipeline_memo_ = d.pipeline;
     } else if (pending) {
       // Not memoized: the next draw with the key asks again, and takes the
@@ -1726,6 +1733,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // constants.
   if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
       !UploadCarSelfReflConstants(shared, d)) {
+    return Skip::kUpload;
+  }
+  // The G-buffer variant reads 48 bytes after the shared constants (gbuffer_types.h GBufferConstants).
+  if (d.gbuffer_variant != 0 && !UploadGBufferConstants(shared, d)) {
     return Skip::kUpload;
   }
   // The UI sharpening variant reads 16 bytes after the shared constants.
@@ -2335,6 +2346,66 @@ bool Scene::UploadUiSharpConstants(const SharedConstants& shared, PreparedDraw& 
   return true;
 }
 
+PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d) {
+  PipelineKey key = d.key;
+  d.gbuffer_attached = false;
+  d.gbuffer_variant = 0;
+  gbuffer::DrawFacts facts;
+  facts.active = true;
+  facts.window_open = gbuffer_->Gate() != gbuffer::Window::Gate::kClosed;
+  facts.main_samples = d.key.color_count >= 1 ? temporal::MainColorSamples(ColorEdramKey(state, 0)) : 0u;
+  facts.guest_color_count = d.key.color_count;
+  facts.has_depth = d.key.depth_format != 0;
+  facts.rt0_blended = (d.key.blend[0] & 0xFu) != 0;
+  facts.rt0_writes = ((d.key.blend[0] >> 28) & 0xFu) != 0;
+  facts.ps_variant_before = d.key.ps_variant;
+  facts.ps_variant_mask = d.ps ? d.ps->variants : 0u;
+  facts.variant_id = ShaderStore::kGBufferVariant;
+  facts.alpha_variant_id = ShaderStore::kGBufferAlphaVariant;
+  const gbuffer::DrawDecision decision = gbuffer::Decide(facts);
+  gbuffer_->NoteDraw(decision.why, r.ps_identity);
+  if (!decision.attach()) {
+    return key;
+  }
+  // The sidecar is the colour target after the guest's one: R16G16_UNORM, written whole by the variant, masked (write mask 0) for every other draw.
+  const uint32_t slot = d.key.color_count;
+  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+  blend.renderTargetWriteMask = decision.variant != 0 ? uint8_t(0xF) : uint8_t(0);
+  key.color_count = slot + 1;
+  key.color_format[slot] = uint32_t(plume::RenderFormat::R16G16_UNORM);
+  key.blend[slot] = PackBlend(blend);
+  if (decision.variant != 0) {
+    key.ps_variant = decision.variant;
+  }
+  d.gbuffer_attached = true;
+  d.gbuffer_variant = decision.variant;
+  return key;
+}
+
+bool Scene::UploadGBufferConstants(const SharedConstants& shared, PreparedDraw& d) {
+  static_assert(kGBufferConstantsOffset == sizeof(SharedConstants));
+  gbuffer::GBufferConstants block;
+  block.mode = gbuffer::kModeWriteNormal;
+  block.frame = uint32_t(frame_serial_);
+  if (last_gbuffer_span_ && std::memcmp(&last_gbuffer_shared_, &shared, sizeof(shared)) == 0 && last_gbuffer_block_ == block) {
+    d.shared_constants = last_gbuffer_span_;
+    return true;
+  }
+  const UploadSpan span = upload_->Allocate(slot_, kGBufferConstantsOffset + sizeof(gbuffer::GBufferConstants), kConstantAlignment);
+  if (!span) {
+    return false;
+  }
+  std::memcpy(span.cpu, &shared, sizeof(shared));
+  std::memcpy(span.cpu + kGBufferConstantsOffset, &block, sizeof(block));
+  last_gbuffer_shared_ = shared;
+  last_gbuffer_block_ = block;
+  last_gbuffer_span_ = span;
+  ++window_.shared_uploads;
+  window_.upload_bytes += kGBufferConstantsOffset + sizeof(block);
+  d.shared_constants = span;
+  return true;
+}
+
 ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {
   if (ui_phase_) {
     return ui_sharp::Context::kPhase;
@@ -2650,7 +2721,8 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const TargetsMemo& memo = targets_memo_;
   bool memo_hit = memo.serial != 0 && memo.serial == edram_->change_serial() &&
                   memo.color_count == d.key.color_count && memo.has_depth == has_depth &&
-                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key);
+                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key) &&
+                  memo.gbuffer_generation == (d.gbuffer_attached ? gbuffer_->generation() : 0u);
   for (uint32_t i = 0; i < d.key.color_count && memo_hit; ++i) {
     memo_hit = memo.color_keys[i] == color_keys[i];
   }
@@ -2764,13 +2836,29 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     target_height = std::min(target_height, depth->height);
   }
+  // The G-buffer's sidecar (gbuffer.h) beside the colour target: made, cleared and moved to the attachment layout here, before the framebuffer is bound.
+  plume::RenderTexture* sidecar = nullptr;
+  if (d.gbuffer_attached) {
+    sidecar = gbuffer_->Attach(list, *colors[0]);
+    if (!sidecar) {
+      *detail = "the G-buffer's sidecar could not be made";
+      return Skip::kTarget;
+    }
+    if (!memo_hit || memo.gbuffer_generation != gbuffer_->generation()) {
+      framebuffer = nullptr;  // the sidecar was made again by this draw: the memo's framebuffer has the old one
+    }
+    if (gbuffer_->TakeFramebufferDirty()) {
+      bound_.framebuffer = nullptr;  // a clear of the sidecar left its own framebuffer bound: BindFramebuffer below binds this draw's
+    }
+  }
   if (!framebuffer) {
-    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
+    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth, sidecar, sidecar ? gbuffer_->generation() : 0u);
     if (!framebuffer) {
       return Skip::kFramebuffer;
     }
     TargetsMemo& m = targets_memo_;
     m.serial = edram_->change_serial();
+    m.gbuffer_generation = sidecar ? gbuffer_->generation() : 0u;
     m.color_count = d.key.color_count;
     for (uint32_t i = 0; i < d.key.color_count; ++i) {
       m.color_keys[i] = color_keys[i];
@@ -3148,6 +3236,13 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     }
     ++window_.clears_color;
     note_other_pitch(i, key);
+    if (gbuffer_ && gbuffer_->active() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
+      // The main view's colour in the play view: the G-buffer's sidecar is cleared with the same rectangle (gbuffer.h).
+      gbuffer_->OnColorClear(list, *target, plume::RenderRect(x0, y0, x1, y1));
+      if (gbuffer_->TakeFramebufferDirty()) {
+        bound_.framebuffer = nullptr;
+      }
+    }
   }
   if (flags & 0x30u) {
     xreg::RB_DEPTH_INFO depth_info;
@@ -3225,6 +3320,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  if (gbuffer_ && gbuffer_->active()) {
+    // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
+    gbuffer_->OnResolve(record, summary, list);
+  }
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
@@ -3251,6 +3350,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
     // its own pass and target: the reset below forgets them too).
     car_refl_->OnResolve(record, summary, list);
+  }
+  if (gbuffer_ && gbuffer_->active()) {
+    // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
+    gbuffer_->DrawView(summary, list);
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
