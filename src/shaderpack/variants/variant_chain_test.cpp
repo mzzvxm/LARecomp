@@ -72,7 +72,8 @@ void TestWord() {
 void TestTable_() {
   const char* why = nullptr;
   Check(chain::TableIsValid(chain::kFeatures, &why), std::string("the built-in table is valid ") + (why ? why : ""));
-  Check(chain::kFeatureCount == 10, "ten rows: nine built in this tree and the headlights'");
+  Check(chain::kFeatureCount == 11, "eleven rows: nine built in this tree, the headlights' and the G-buffer's (their variants are in two other branches)");
+  Check(sp::kFeatureHeadlight == 9 && sp::kFeatureGBuffer == 10 && sp::kFeatureLampShadow == 11 && !chain::Find(sp::kFeatureLampShadow), "the bits 9, 10 and 11 are the headlight's, the G-buffer's and the lamps' shadows' (reserved, no row yet)");
   for (const chain::FeatureInfo& row : chain::kFeatures) {
     Check(chain::Find(row.feature) == &row, "Find returns the row of " + std::string(row.name));
   }
@@ -83,13 +84,20 @@ void TestTable_() {
     bool twin;
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
-                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 672, true}};
+                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 672, true}, {sp::kFeatureGBuffer, 48, true}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
   }
-  // The headlights' row is reserved for feat/headlights; nothing of the built-in variants composes with anything yet.
-  for (const chain::FeatureInfo& row : chain::kFeatures) Check(row.composes_with == 0 && row.needs_vs == 0, std::string(row.name) + " composes with nothing yet");
+  // The headlights' and the G-buffer's rows are the only pair that composes (both edit PSMultiLight shaders); no stage of the table needs a vertex stage yet.
+  for (const chain::FeatureInfo& row : chain::kFeatures) {
+    const uint32_t partner = row.feature == sp::kFeatureHeadlight ? chain::FeatureBit(sp::kFeatureGBuffer) : row.feature == sp::kFeatureGBuffer ? chain::FeatureBit(sp::kFeatureHeadlight) : 0u;
+    Check(row.composes_with == partner && row.needs_vs == 0, std::string(row.name) + (partner ? " composes with its partner only" : " composes with nothing yet"));
+  }
+  Check(chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer)) &&
+            !chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureShadowFilter)) &&
+            chain::HasTwin(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer)),
+        "the headlight and the G-buffer compose (and have the twin together), the headlight and the shadow filter do not");
 
   // A table that is not well formed says why.
   const auto bad = [](std::vector<chain::FeatureInfo> rows, std::string_view expected, const std::string& what) {
@@ -145,9 +153,9 @@ void TestLayout() {
     }
     all_dense &= layout.total_bytes == sum && layout.total_bytes <= chain::MaxConstantsBytes();
   }
-  Check(all_disjoint, "no two blocks overlap in any of the 1024 subsets of the built-in features");
+  Check(all_disjoint, "no two blocks overlap in any of the 2048 subsets of the table's features");
   Check(all_dense, "the layouts are dense: shared constants plus the blocks of the active features, never more than MaxConstantsBytes");
-  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 672, "the most a draw uploads is every block of the table");
+  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 672 + 48, "the most a draw uploads is every block of the table");
 
   // A table of 31 features with blocks of different sizes, random subsets (a fixed generator).
   std::vector<chain::FeatureInfo> wide;
