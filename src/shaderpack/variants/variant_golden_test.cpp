@@ -514,8 +514,8 @@ int main(int argc, char** argv) {
                   CountOccurrences(t, "uint4 g_GBufferMode : packoffset(c80);") == 1 && CountOccurrences(t, "float4 g_GBufferCam : packoffset(c82);") == 1,
               label + ": the blocks are at 608 (c38) and 1280 (c80), once in each backend");
         Check(CountOccurrences(t, "float4 HeadlightLight(") == 1 && CountOccurrences(t, "float2 GbRt1Encode(float3 n)") == 1 &&
-                  t.find("float4 HeadlightLight(") < t.find("void main(") && t.find("float2 GbRt1Encode(float3 n)") < t.find("void main("),
-              label + ": both helpers are before main, once");
+                  t.find("float4 HeadlightLight(") < t.rfind("void main(") && t.find("float2 GbRt1Encode(float3 n)") < t.rfind("void main("),
+              label + ": both helpers are before main (the last `void main(`: the G-buffer helper's header comment names it too), once");
         Check(CountOccurrences(t, "hlLight.") == CountOccurrences(hl_alone.hlsl, "hlLight.") && CountOccurrences(t, " = HeadlightLight(") == 1 &&
                   CountOccurrences(t, "oC1 : SV_Target1") == 1 && CountOccurrences(t, "oC1 = GbRt1Encode(iTexCoord0.xyz);") == 1,
               label + ": the headlight's term and the G-buffer's output are in once");
