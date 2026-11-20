@@ -218,6 +218,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/ambient_car.cpp
     src/mc_engine/cinematic/cars.cpp
     src/mc_engine/cinematic/scene_seed.cpp
+    # The Director's world knowledge (package C): the atlas of lamps, roads and lanes, garages and cars decoded from guest memory (atlas_core, pure), its
+    # JSON answers (atlas_answers: empty until the command layer's director.h is in the tree) and the `atlas.dump` / `query.*` commands (handlers_world).
+    src/mc_engine/cinematic/director/atlas_core.cpp
+    src/mc_engine/cinematic/director/atlas_answers.cpp
+    src/mc_engine/cinematic/director/handlers_world.cpp
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
 
@@ -619,6 +624,23 @@ add_executable(larecomp_path_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/path_follow_test.cpp
     src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_path_test PRIVATE src src/mc_engine/cinematic)
+# The Director's atlas (director/atlas_core.h: decoding the lamps, the rail network, the car table from a byte buffer, the queries, a route along the roads, the camera
+# maths, the JSON files: pure) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_atlas_test, then run <build dir>/larecomp_atlas_test (exit 0 = passed; with --rails <traffic.xrn decompressed> it
+#   decodes that and prints what it found).
+add_executable(larecomp_atlas_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/atlas_core_test.cpp
+    src/mc_engine/cinematic/director/atlas_core.cpp)
+target_include_directories(larecomp_atlas_test PRIVATE src/mc_engine/cinematic/director)
+# ... and its JSON answers (atlas_answers.h), which need the command layer's json.h / json.cpp (package A): the target exists once those are in the tree.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/cinematic/director/json.cpp")
+    add_executable(larecomp_atlas_answers_test EXCLUDE_FROM_ALL
+        src/mc_engine/cinematic/director/atlas_answers_test.cpp
+        src/mc_engine/cinematic/director/atlas_answers.cpp
+        src/mc_engine/cinematic/director/atlas_core.cpp
+        src/mc_engine/cinematic/director/json.cpp)
+    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director)
+endif()
 # What a settings save does with a cvar a scene holds (src/mc_engine/core/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).
 add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
