@@ -595,6 +595,28 @@ class GPUSettings final : public rex::SettingOwner {
     "is highlighted and never saves it; set on the command line it stays on for the run. Changes at "
     "once.");
 
+  REX_SETTING(std::string, mcla_gpu_headlights, "auto", "Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). "
+    "Your car, the nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a "
+    "time, from dusk to dawn. on is the one level; off leaves the night as the game has it. auto (the default) is on for "
+    "a discrete graphics card and off for an integrated one (a handheld, or the iGPU of a desktop CPU). Costs the "
+    "graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the "
+    "graphics card builds the lit shaders' variants (a short stutter).", rex::Allowed("auto", "off", "on"));
+
+  REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
+    "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
+  REX_SETTING(f64, mcla_gpu_headlight_range, 70.0, "Diagnostic: how far a headlight reaches, in metres (the light falls to nothing there). Live.", rex::kDebugOnly, rex::Range{10.0, 200.0});
+
+  REX_SETTING(f64, mcla_gpu_headlight_cone, 38.0, "Diagnostic: the headlight cone's outer half angle in degrees (the full light is inside a third of it). Live.", rex::kDebugOnly, rex::Range{10.0, 70.0});
+
+  REX_SETTING(i32, mcla_gpu_headlight_night, -1, "Diagnostic: when the headlights are on. -1: from the game's own lights (each car's headlight points say whether "
+    "they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below "
+    "3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.", rex::kDebugOnly, rex::Range{-1, 1});
+
+  REX_SETTING(bool, mcla_gpu_headlight_log, false, "Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the "
+    "night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the "
+    "draws that took the variant. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_lock_ahead_verify, false, "Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it "
     "waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the "
     "log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the "
@@ -1323,6 +1345,12 @@ inline auto& mcla_gpu_hdr_layers_view = g_gpu.mcla_gpu_hdr_layers_view;
 inline auto& mcla_gpu_hdr_paper_white_nits = g_gpu.mcla_gpu_hdr_paper_white_nits;
 inline auto& mcla_gpu_hdr_peak_nits = g_gpu.mcla_gpu_hdr_peak_nits;
 inline auto& mcla_gpu_hdr_test_pattern = g_gpu.mcla_gpu_hdr_test_pattern;
+inline auto& mcla_gpu_headlight_cone = g_gpu.mcla_gpu_headlight_cone;
+inline auto& mcla_gpu_headlight_log = g_gpu.mcla_gpu_headlight_log;
+inline auto& mcla_gpu_headlight_night = g_gpu.mcla_gpu_headlight_night;
+inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;
+inline auto& mcla_gpu_headlight_strength = g_gpu.mcla_gpu_headlight_strength;
+inline auto& mcla_gpu_headlights = g_gpu.mcla_gpu_headlights;
 inline auto& mcla_gpu_lock_ahead_verify = g_gpu.mcla_gpu_lock_ahead_verify;
 inline auto& mcla_gpu_lock_dump = g_gpu.mcla_gpu_lock_dump;
 inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;
