@@ -253,4 +253,6 @@ Fixes made directly in LARecomp:
 
 **libmspack**, by Stuart Caie (v1.11, [kyz/libmspack](https://github.com/kyz/libmspack)). LARecomp reads the game's compressed files with libmspack's LZX decoder. libmspack is under the GNU LGPL 2.1 and is a separate DLL, `larecomp_mspack.dll` (`liblarecomp_mspack.so` on Linux), next to the exe, so you can replace it with a build of your own. Its licence and a short notice are copied next to it (`larecomp_mspack_license.txt`, `larecomp_mspack_notice.txt`; the repository keeps them in `LICENSES/`), and the library's source is the submodule `thirdparty/libmspack`.
 
+**ARC DTrade**, who made the LARecomp logo font for the project: the word mark and the LAR app icon.
+
 **Rockstar San Diego**, who made the game.

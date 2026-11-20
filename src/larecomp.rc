@@ -1,9 +1,9 @@
 // Windows executable resources for larecomp.
-//
-// No ICON resource is declared, so Explorer and the taskbar show the default
-// executable icon. Adding one back means dropping an .ico under src/assets/,
-// un-ignoring it in .gitignore, and declaring it here as the lowest-numbered
-// ICON resource.
+
+// The app icon (the LAR tile; sizes 16 to 256, drawn by the icon sources kept with the project's design files). The lowest-numbered
+// ICON resource is the one Explorer and the taskbar show, and the one the SDK's SDL window class takes for the window and Alt-Tab, so it
+// stays number 1. CMakeLists.txt makes this file depend on larecomp.ico (a resource compiler does not report ICON inputs).
+1 ICON "larecomp.ico"
 
 // Achievement metadata embedded in the exe (loaded at boot from the resource,
 // so it does not need to ship as a loose file under assets/).
