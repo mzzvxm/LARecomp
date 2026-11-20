@@ -49,6 +49,9 @@
 #include <unistd.h>
 #endif
 
+#include <chrono>
+
+#include "../scene_runtime.h"
 #include "atlas_answers.h"
 #include "atlas_core.h"
 #include "director.h"
@@ -195,13 +198,25 @@ int ProbeSegment(Vec3 a, Vec3 b, Hit* out) {
 struct Live {
     std::unique_ptr<World> world;
     std::unique_ptr<Index> index;
+    std::chrono::steady_clock::time_point read_at;
 };
 Live g_live;
 
-// Reads the world from guest memory (or again, with refresh). False with `error` when neither the lights nor the roads are there (a menu, a loading
-// screen): the atlas is only worth having with a city loaded.
+// Reads the world from guest memory (or again, with refresh). False with `error` when no city is loaded (a menu, a loading screen: the ambient manager is
+// built at the boot, with its rail network, but the lights and the player's car are not there until a city is: run 1 of 11-20 dumped a menu's world, kept it,
+// and every later query.lights answered from it) or when neither the lights nor the roads are there. A world that was read incompletely (a part is named in
+// its `error`) is not kept for good: the next call reads it again, at most every 1.5 s, so a query that comes after the city has finished loading sees all of it.
 bool EnsureWorld(bool refresh, std::string* error) {
-    if (g_live.world && !refresh) return true;
+    GameStateSample gs;
+    if (!mc::cinematic::SampleGameState(&gs) || !gs.world_ready) {
+        *error = "no city is loaded (a menu or a loading screen): load a save and leave the menus";
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (g_live.world && !refresh) {
+        const bool partial = !g_live.world->error.empty();
+        if (!partial || now - g_live.read_at < std::chrono::milliseconds(1500)) return true;
+    }
     auto w = std::make_unique<World>();
     w->source = "live";
     GameView view;
@@ -241,6 +256,7 @@ bool EnsureWorld(bool refresh, std::string* error) {
     g_live.index.reset();
     g_live.world = std::move(w);
     g_live.index = std::make_unique<Index>(*g_live.world);
+    g_live.read_at = now;
     LARECOMP_APP_INFO("[atlas] live world read: {} lights, {} rails, {} nodes, {} cars{}", g_live.world->lights.size(), g_live.world->rails.size(),
                       g_live.world->nodes.size(), g_live.world->cars.size(), problems.empty() ? std::string() : " (" + problems + ")");
     return true;

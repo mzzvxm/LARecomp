@@ -221,6 +221,9 @@ void RegisterCapture() {
             g_take.since = internal::TickCount();
             g_take.finished_seen = CaptureGetStatus().finished;
             SceneRestartAt(0.0);
+            // The clock stands at 0 until the take begins: left running, the scene was already 0.15 to 0.27 s in when the take started (run 1, 11-20: a 2 s take had 54 frames, a
+            // 10 s take 297). Not when the restart went to "waiting" (no world just now): a held clock would never start it.
+            if (CurrentSceneState() == SceneState::kRunning) SceneHold(true);
             Json res = Json::Object();
             res.Set("name", g_take.name);
             res.Set("fps", fps);

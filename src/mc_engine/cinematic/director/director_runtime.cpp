@@ -672,6 +672,10 @@ Json TransportJson() {
     j.Set("scrubbable", si.scrubbable);
     j.Set("scrub_hint", si.hint);
     j.Set("holding_for_ready", t.holding_for_ready);
+    // A city is loaded (a car on the road and the ambient manager built): false in the title screen, a menu and while the city loads. transport.get answers in all of those,
+    // so a tool that waits for the world reads this (cars.list names the player's car only then too).
+    GameStateSample gs;
+    j.Set("world", SampleGameState(&gs) && gs.world_ready);
     return j;
 }
 

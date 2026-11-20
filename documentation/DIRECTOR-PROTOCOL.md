@@ -78,7 +78,7 @@ clock and the cars are kept, only a car whose statement changed is made again). 
 ### transport (the scene's clock)
 | Command | Args -> result |
 |---|---|
-| `transport.get` | `{}` -> `{state, t, duration, fps, step, paused, frozen, frame, mode, scrubbable, scrub_hint, holding_for_ready}`. `state`: off, pending, waiting (for the world), running, finished, failed. `mode`: `fixed` (a fixed step is in force) or `realtime`. |
+| `transport.get` | `{}` -> `{state, t, duration, fps, step, paused, frozen, frame, mode, scrubbable, scrub_hint, holding_for_ready, world}`. `state`: off, pending, waiting (for the world), running, finished, failed. `mode`: `fixed` (a fixed step is in force) or `realtime`. `world`: a city is loaded (a car on the road, the ambient manager built); false in the title screen, a menu and while the city loads. transport.get answers in all of those, it does not say `no_world`: a tool that waits for a city reads this field. |
 | `transport.play` | `{}` -> `transport.get` fields. Releases a pause or a seek; the clock goes on from where it stands. |
 | `transport.pause` | `{}` -> same. Holds the clock and freezes the world (time scale floor). |
 | `transport.restart` | `{t?:0, wait?}` -> same. Runs the scene again from the start (the cars are made again) and, when `t` > 0, seeks there. |

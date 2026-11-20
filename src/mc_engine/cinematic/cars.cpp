@@ -1463,7 +1463,31 @@ bool GetCarPose(std::string_view id, CarPose* out) {
 
 bool CarMatrixById(const char* id, float matrix[16]) {
     if (!id || !matrix) return false;
-    return PoseOf(id, matrix, nullptr);
+    if (PoseOf(id, matrix, nullptr)) return true;
+    // The car is not there (yet): a camera attached to it would hold the world's origin, and the city is only streamed around the camera, so a car 800 m from it never
+    // came in (run 1, 11-20: a seek past a `spawn` put `cam ... rig chase car:p1` at (0, 1.6, -6) in the same update; the car's load state stayed 0 for 20 s and it was
+    // deleted). Until it is, the car stands where its `spawn` statement puts it: the camera is near the place, the streaming comes to it and the car loads.
+    if (std::string_view(id) == "player") return false;
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    const CarKey* last_applied = nullptr;
+    const CarKey* first_any = nullptr;
+    bool gone = false;
+    for (const CarKey& k : g.keys) {
+        if (k.cmd.id != id) continue;
+        if (k.cmd.verb == CarVerb::kSpawn) {
+            if (!first_any) first_any = &k;
+            if (k.applied) {
+                last_applied = &k;
+                gone = false;
+            }
+        } else if (k.cmd.verb == CarVerb::kDelete && k.applied && last_applied) {
+            gone = true;
+        }
+    }
+    const CarKey* spawn = last_applied ? last_applied : first_any;
+    if (!spawn || gone) return false;
+    MatrixAtScenePlace(spawn->cmd.position, spawn->cmd.has_heading ? spawn->cmd.heading : 0.0, matrix);
+    return true;
 }
 
 size_t SceneCarCount() {
