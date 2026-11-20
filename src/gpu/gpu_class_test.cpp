@@ -87,11 +87,14 @@ const Row kTable[] = {
     // high about 1 ms; nothing on shared memory).
     {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)",
      "AUTO (ULTRA)"},
+    // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).
+    {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high", "AUTO (OFF)", "AUTO (MEDIUM)",
+     "AUTO (HIGH)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
 const char* const kOwnChoices[] = {"off",  "game", "low",  "high", "ultra",
-                                   "soft", "pcss", "on",   "",     "Auto",
+                                   "soft", "pcss", "on",   "",     "Auto", "medium",
                                    "AUTO", "mid",  "near", "all",
                                    "auto " /* a space: not auto */};
 
@@ -145,6 +148,30 @@ void CheckAmbientOcclusion() {
     last = now;
     Check(now >= rank(Cell(Effect::kContactShadows, c)), at + ": not below the contact shadows' cell");
   }
+}
+
+// Volumetric light's `auto` (mcla_gpu_volumetrics): off on shared memory, medium on a small discrete card, high on the rest. Ultra is a
+// deliberate pick, never a cell; a value the player holds (off, medium, high, ultra) is kept in every class; nothing is called low.
+void CheckVolumetrics() {
+  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
+  const char* const want[] = {"off", "medium", "high"};
+  const char* const own[] = {"off", "medium", "high", "ultra"};
+  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "medium" ? 1 : v == "high" ? 2 : 3; };
+  int last = -1;
+  for (int k = 0; k < 3; ++k) {
+    const GpuClass c = classes[k];
+    const std::string at = "volumetric light on " + std::string(ClassName(c));
+    CheckEq(ResolveFor(c, Effect::kVolumetrics, "auto"), want[k], at + ": auto");
+    for (const char* v : own) {
+      CheckEq(ResolveFor(c, Effect::kVolumetrics, v), v, at + ": the saved '" + v + "' is kept");
+    }
+    const int now = rank(Cell(Effect::kVolumetrics, c));
+    Check(now >= last, at + ": not below the class under it");
+    Check(now < 3, at + ": auto never picks ultra");
+    last = now;
+  }
+  CheckEq(AutoLabelFor(GpuClass::kMid, Effect::kVolumetrics), "AUTO (MEDIUM)", "the Mid class's row says AUTO (MEDIUM)");
+  Check(AutoLabelFor(GpuClass::kHigh, Effect::kVolumetrics).size() <= 13, "the longest value of the row fits the page");
 }
 
 void CheckLabels() {
@@ -632,6 +659,7 @@ int main() {
   CheckTable();
   CheckSunShaftSteps();
   CheckAmbientOcclusion();
+  CheckVolumetrics();
   CheckLabels();
   CheckWords();
   CheckNames();
