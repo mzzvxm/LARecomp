@@ -272,6 +272,7 @@
 {"mcla_gpu_car_selfrefl_thickness", "MCLA/GPU"},
 {"mcla_gpu_car_selfrefl_view", "MCLA/GPU"},
 {"mcla_gpu_car_shadow_map", "MCLA/GPU"},
+{"mcla_gpu_car_shadow_map_owns", "MCLA/GPU"},
 {"mcla_gpu_car_shadow_map_view", "MCLA/GPU"},
 {"mcla_gpu_headlight_shadows", "MCLA/GPU"},
 {"mcla_gpu_headlight_shadow_test", "MCLA/GPU"},

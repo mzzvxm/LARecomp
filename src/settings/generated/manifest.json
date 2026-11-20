@@ -970,6 +970,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_shadow_map_owns": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength \"\n    \"(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on \"\n    \"the world is the car shadow map's alone and has no second edge of the game's low-detail one. Off: the game draws the \"\n    \"car into them as it always does. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_shadow_map_view": {
   "type": "i32",
   "default": "0",
@@ -1981,7 +1992,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from \"\n    \"pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a \"\n    \"smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with \"\n    \"contact hardening: a shadow is sharp where it touches what casts it and softer with the distance \"\n    \"from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) \"\n    \"picks by the graphics card: game on an integrated one, soft on the rest. The sun's shadows show from \"\n    \"8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss \"\n    \"about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss \"\n    \"shows, the graphics card builds its shaders (a short stutter).\"",
+  "help": "\"How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from \"\n    \"pixel to pixel, a grainy edge), soft (more taps on a disk, a \"\n    \"smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with \"\n    \"contact hardening: a shadow is sharp where it touches what casts it and softer with the distance \"\n    \"from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) \"\n    \"picks by the graphics card: game on an integrated one, pcss on the rest. Your car's own shadow \"\n    \"(CAR SHADOW MAP) is filtered the same way. The sun's shadows show from \"\n    \"8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss \"\n    \"about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss \"\n    \"shows, the graphics card builds its shaders (a short stutter).\"",
   "traits": [
    "rex::Allowed(\"auto\", \"game\", \"soft\", \"pcss\")"
   ],
@@ -2026,9 +2037,9 @@
  },
  "mcla_gpu_shadow_filter_pcf": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own \"\n    \"sampler, which compares a depth blended from four texels (what the game's four taps do). On: \"\n    \"it compares the four texels one by one and blends the answers (a true percentage-closer tap); \"\n    \"the shadow edge is a little smoother and its bias a little different. Live.\"",
+  "help": "\"Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: \"\n    \"it compares the four texels one by one at the receiver's own slope and blends the answers (a true \"\n    \"percentage-closer tap): the shadow edge is smooth, without the grain of one compare of a blended depth. \"\n    \"Off: with the game's own sampler, which compares a depth blended from four texels (what the game's four \"\n    \"taps do): a grainy edge, as the game's. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

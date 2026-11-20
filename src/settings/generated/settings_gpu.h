@@ -366,6 +366,11 @@ class GPUSettings final : public rex::SettingOwner {
     "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
     "and 8 or 32 MiB of video memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
+  REX_SETTING(bool, mcla_gpu_car_shadow_map_owns, true, "Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength "
+    "(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on "
+    "the world is the car shadow map's alone and has no second edge of the game's low-detail one. Off: the game draws the "
+    "car into them as it always does. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_car_shadow_map_view, 0, "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
@@ -935,19 +940,21 @@ class GPUSettings final : public rex::SettingOwner {
     "much as without the memo.", rex::kDebugOnly, rex::kRestart);
 
   REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
-    "pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a "
-    "smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
+    "pixel to pixel, a grainy edge), soft (more taps on a disk, a "
+    "smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
     "contact hardening: a shadow is sharp where it touches what casts it and softer with the distance "
     "from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) "
-    "picks by the graphics card: game on an integrated one, soft on the rest. The sun's shadows show from "
+    "picks by the graphics card: game on an integrated one, pcss on the rest. Your car's own shadow "
+    "(CAR SHADOW MAP) is filtered the same way. The sun's shadows show from "
     "8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss "
     "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
     "shows, the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
 
-  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, false, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. Off: with the game's own "
-    "sampler, which compares a depth blended from four texels (what the game's four taps do). On: "
-    "it compares the four texels one by one and blends the answers (a true percentage-closer tap); "
-    "the shadow edge is a little smoother and its bias a little different. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, true, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: "
+    "it compares the four texels one by one at the receiver's own slope and blends the answers (a true "
+    "percentage-closer tap): the shadow edge is smooth, without the grain of one compare of a blended depth. "
+    "Off: with the game's own sampler, which compares a depth blended from four texels (what the game's four "
+    "taps do): a grainy edge, as the game's. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_shadow_filter_radius, 1.0, "Diagnostic: how wide the soft shadow filter is, as a multiple of the game's own filter measured in "
     "texels of the shadow map (1: the edge of a shadow takes the same number of shadow map texels, so "
@@ -1426,6 +1433,7 @@ inline auto& mcla_gpu_car_selfrefl_test = g_gpu.mcla_gpu_car_selfrefl_test;
 inline auto& mcla_gpu_car_selfrefl_thickness = g_gpu.mcla_gpu_car_selfrefl_thickness;
 inline auto& mcla_gpu_car_selfrefl_view = g_gpu.mcla_gpu_car_selfrefl_view;
 inline auto& mcla_gpu_car_shadow_map = g_gpu.mcla_gpu_car_shadow_map;
+inline auto& mcla_gpu_car_shadow_map_owns = g_gpu.mcla_gpu_car_shadow_map_owns;
 inline auto& mcla_gpu_car_shadow_map_view = g_gpu.mcla_gpu_car_shadow_map_view;
 inline auto& mcla_gpu_headlight_shadows = g_gpu.mcla_gpu_headlight_shadows;
 inline auto& mcla_gpu_headlight_shadow_test = g_gpu.mcla_gpu_headlight_shadow_test;

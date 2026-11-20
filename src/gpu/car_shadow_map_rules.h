@@ -33,6 +33,7 @@
 // ===========================================================================
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -182,6 +183,58 @@ constexpr const char* WhyName(Why why) {
   }
   return "?";
 }
+
+// ---------------------------------------------------------------------------
+// who casts the player's car's shadow on the world: the map, or the game's cascades
+// ---------------------------------------------------------------------------
+// The game draws the player's car into its four sun cascades at a forced low level of detail (Vehicle::Draw, the byte +594:
+// traffic_shadow.h). Its shadow is then a blob that is bigger and rounder than the car, filtered by the game's four taps, and it
+// lies under the car's own crisp shadow from this map: the edge of the blob pokes out round the crisp one with the game's grain
+// (the owner, 2026-11-19: "we're also drawing the game's dither-prone shadow as well"). Where the map covers the car's shadow
+// the cascades must not cast it. The map covers all of it: the map is a view along the sun, the car is inside the square, so every
+// ground point in its shadow has its place in the square whatever the sun's height, and a point beyond the far plane under a
+// texel that holds the car is shadowed (car_shadow_map.h). What the map shades is the sun's share through the contact shadows' apply
+// (ao_apply_ps.hlsl: 1 - sun_share * (1 - cs) is the sun's term taken out where the game's own mask says lit), which is the same
+// number the game's mask would have taken out, but only at the contact shadows' full strength: the strength is the setting times
+// the sun's elevation gate (full from 12 degrees: ao.cpp kGateFullDegrees) times the wetness gate. Below it (a low sun, rain, a
+// setting under 1) the cascades keep the car, as the game draws it, and the map's shadow goes over it.
+//
+// The guest's draw runs ahead of the renderer by a few frames, so the decision is the renderer's last word, published in an atomic
+// the hook reads: it is taken when the map has been there for kOwnAfterFrames frames in a row with the contact shadows at full
+// strength, and given up the moment a frame has no map (the player's car left the picture, a pipeline is being made, the
+// setting went off) or the strength falls under kOwnKeepStrength (the hysteresis keeps a sun at 12 degrees from flipping it).
+inline constexpr uint32_t kOwnAfterFrames = 3;
+inline constexpr float kOwnTakeStrength = 0.995f;
+inline constexpr float kOwnKeepStrength = 0.9f;
+
+struct Owner {
+  uint32_t valid_run = 0;  // frames in a row that drew a map with the strength at kOwnTakeStrength or more
+  bool owns = false;
+};
+
+// The next state after a frame. `map_drawn`: the frame drew a map (CarShadowMap::View().valid); `strength`: the contact shadows'
+// strength this frame (setting x sun gate x wetness gate, 0 when they are off or gated); `allowed`: the debug switch
+// mcla_gpu_car_shadow_map_owns.
+constexpr Owner NextOwner(Owner before, bool map_drawn, float strength, bool allowed) {
+  Owner after;
+  if (!allowed || !map_drawn) {
+    return after;
+  }
+  after.valid_run = strength >= kOwnTakeStrength ? before.valid_run + 1 : 0u;
+  after.owns = before.owns ? strength >= kOwnKeepStrength : after.valid_run >= kOwnAfterFrames;
+  if (before.owns && strength >= kOwnKeepStrength && strength < kOwnTakeStrength) {
+    after.valid_run = before.valid_run;  // inside the hysteresis band: held, not counted
+  }
+  return after;
+}
+
+// The cell the renderer writes and the guest's hook (hooks/traffic_shadow.cpp Patch_TrafficCascadeGate) reads, on other threads.
+inline std::atomic<bool>& OwnerCell() {
+  static std::atomic<bool> cell{false};
+  return cell;
+}
+inline bool PlayerShadowIsTheMaps() { return OwnerCell().load(std::memory_order_relaxed); }
+inline void PublishOwner(bool owns) { OwnerCell().store(owns, std::memory_order_relaxed); }
 
 // ---------------------------------------------------------------------------
 // the car's frame

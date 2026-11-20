@@ -76,7 +76,7 @@ struct CarShadowMapView {
   // at (u, v) is smaller than its own depth by more than a bias.
   float to_map[3][4] = {};
   // The same three rows in a bindless 4x1 R32G32B32A32_FLOAT texture (texel k = to_map[k], texel 3 = (texel_m, depth_m, size,
-  // 1)), for a pass whose push block has no room for a matrix. 0xFFFFFFFF: none.
+  // the world's shadow filter: contact_trace.h CarMapFilterCode)), for a pass whose push block has no room for a matrix. 0xFFFFFFFF: none.
   uint32_t matrix_slot = 0xFFFFFFFFu;
   float texel_m = 0.0f;  // a texel's side in metres
   float depth_m = 0.0f;  // the map's depth range in metres (a stored depth difference times this = metres)
@@ -183,6 +183,8 @@ class CarShadowMap {
 
   // The car's fit, held from frame to frame.
   car_shadow_map::Held held_;
+  // Whether the map alone casts the player's car's shadow on the world (car_shadow_map_rules.h Owner).
+  car_shadow_map::Owner owner_;
 
   // The GPU side.
   Device* device_ = nullptr;
@@ -210,6 +212,7 @@ class CarShadowMap {
 
   // What the log has said once, and the totals.
   uint32_t last_level_logged_ = ~0u;
+  uint32_t last_filter_logged_ = ~0u;
   uint32_t last_why_logged_ = ~0u;
   uint32_t size_logged_ = 0;
   bool pending_logged_ = false;

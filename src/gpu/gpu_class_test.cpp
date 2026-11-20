@@ -61,8 +61,8 @@ struct Row {
 
 // The table of GFX-UPGRADES-DESIGN.md section 9, in the order of the Effect enum.
 const Row kTable[] = {
-    {Effect::kShadowFilter, "mcla_gpu_shadow_filter", "game", "soft", "soft", "AUTO (GAME)",
-     "AUTO (SOFT)", "AUTO (SOFT)"},
+    {Effect::kShadowFilter, "mcla_gpu_shadow_filter", "game", "pcss", "pcss", "AUTO (GAME)",
+     "AUTO (PCSS)", "AUTO (PCSS)"},
     {Effect::kShadowResolution, "mcla_gpu_shadow_resolution", "game", "high", "high", "AUTO (GAME)",
      "AUTO (HIGH)", "AUTO (HIGH)"},
     {Effect::kEnvResolution, "mcla_gpu_env_resolution", "game", "game", "high", "AUTO (GAME)",

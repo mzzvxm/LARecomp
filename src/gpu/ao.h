@@ -511,6 +511,9 @@ class AmbientOcclusion {
   bool SunDirection(double to_sun[3]) const;
   // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
   bool ContactGated() const { return contact_state_ == ContactState::kGated; }
+  // The contact shadows' strength of the last frame that planned them: the setting times the sun's elevation gate times the wetness
+  // gate (full from 12 degrees on a dry road); 0 when they are off or gated. Render thread. car_shadow_map_rules.h Owner reads it.
+  float ContactStrength() const { return contact_state_ == ContactState::kActive ? contact_strength_ : 0.0f; }
   // The frame's linear depth image (level 0: R32_FLOAT at the traced size, the vehicle bit in its lowest bit, hlsl/ao_common.hlsli) and
   // the lens it was made with (tan of the half field of view, x and y), for a pass that reads it after the occlusion's own, in the same
   // list (car_rt_scene.h's check). False in a frame whose passes did not run (the image is the next frame's depth history then).
@@ -694,6 +697,7 @@ class AmbientOcclusion {
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
     bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
     bool rt_view = false;          // mcla_gpu_contact_shadows_view 7: ... the ray traced sun term alone (car_rt_ao.h)
+    uint32_t light_chroma = 0;     // the ambient's and the sun's colours for the apply (contact_trace.h PackChroma; 0 = none planned: the apply takes grey)
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
