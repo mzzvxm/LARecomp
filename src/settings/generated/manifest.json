@@ -1804,7 +1804,7 @@
   "type": "std::string",
   "default": "\"\"",
   "category": "MCLA/GPU",
-  "help": "\"The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v2.pack) are read from \"\n    \"and built into. Empty: the cache/shaders folder next to the program or, where that folder \"\n    \"cannot be written to, larecomp/cache/shaders in the local application data folder; a pack \"\n    \"left in the program's assets folder by an older install is still used when there is none \"\n    \"in that folder. When this is set, only this folder is used.\"",
+  "help": "\"The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v3.pack) are read from \"\n    \"and built into. Empty: the cache/shaders folder next to the program or, where that folder \"\n    \"cannot be written to, larecomp/cache/shaders in the local application data folder; a pack \"\n    \"left in the program's assets folder by an older install is still used when there is none \"\n    \"in that folder. When this is set, only this folder is used.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::kRestart"

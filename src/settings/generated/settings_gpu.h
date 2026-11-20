@@ -1213,7 +1213,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, precache_pipelines_threads, 0, "With precache_pipelines: how many threads compile the pipelines. 0 uses every processor but "
     "one. A lower number leaves the PC more usable meanwhile, and the preparation takes longer.", rex::Range{0, 16}, rex::kRestart, rex::kDebugOnly);
 
-  REX_SETTING(std::string, shader_pack_dir, "", "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v2.pack) are read from "
+  REX_SETTING(std::string, shader_pack_dir, "", "The folder the shader packs (mcla_shaders.v8.pack and mcla_shaders_variants.v3.pack) are read from "
     "and built into. Empty: the cache/shaders folder next to the program or, where that folder "
     "cannot be written to, larecomp/cache/shaders in the local application data folder; a pack "
     "left in the program's assets folder by an older install is still used when there is none "
