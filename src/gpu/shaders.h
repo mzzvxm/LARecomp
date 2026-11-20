@@ -141,6 +141,11 @@ class ShaderStore {
   // word's bit 0 set: kUiSharpAlphaVariant.
   static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureUiSharp);
   static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureUiSharp), 1);
+  // The city's lit pixel shaders (the PSMultiLight family and the traffic cars' body) with the cars' headlights as one more term of their light sum
+  // (shaderpack/variants/headlight.h; headlight_rig.h): chosen by pipelines.cpp while the rig has a light; 672 bytes of constants follow the shared block.
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0).
+  static constexpr uint32_t kHeadlightVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureHeadlight);
+  static constexpr uint32_t kHeadlightAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), 1);
 
   enum class Stage : uint8_t { kVertex, kPixel };
 

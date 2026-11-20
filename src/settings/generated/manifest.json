@@ -982,6 +982,101 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlight_shadows": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Headlight shadows: the cars' headlights cast shadows. The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the headlights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on \"\n    \"ultra), and the headlights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the \"\n    \"default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game \"\n    \"view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video \"\n    \"memory. Live.\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_test": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), \"\n    \"whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own \"\n    \"point of view shows the same scene as the main view, which tells the replay's matrices are right. Nothing reads such a map: no light is shadowed \"\n    \"by it. The setting itself must not be off. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 draws the headlight shadow atlas in a rectangle in the lower right corner of the picture (grey by distance from the \"\n    \"lamps, near bright; dark blue where nothing was drawn; the tiles are framed), while the maps are drawn. 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_skip": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: draws left out of the headlight shadow maps, a sum of 1 plain opaque draws, 2 alpha tested ones (foliage, fences), 4 skinned ones \"\n    \"(people), 8 vehicles' parts. 0: none left out. For finding which kind a wrong shadow comes from. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 15}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_cull": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: which faces the headlight shadow maps draw. 0: the faces turned from the light (front faces culled where the game culls back \"\n    \"faces; the default), 1: both faces, 2: the game's own. A pipeline is made for each, so a change takes a moment to build. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 2}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_views": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how many cars' headlights get a view in the headlight shadow maps, 1 to 4 (the lamps of one car share a view). 0: the level's \"\n    \"own (1 on high, 2 on ultra). A change remakes the atlas. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 4}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_bias": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: a factor on the depth bias the headlight shadows' lookup subtracts from a surface's distance from the lamps before it \"\n    \"compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.05, 40.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_shadow_cone": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 (the default) leaves out of each headlight shadow map the draws whose place is outside the lamps' view (the view's cone and \"\n    \"reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws \"\n    \"every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_a2c_dither_all": {
   "type": "bool",
   "default": "true",
@@ -1324,6 +1419,76 @@
   "help": "\"HDR output: how far the game's lights, the sun, the sky at dusk and the headlights go above \"\n    \"the game's white: 1 normal, 1.5 bright, 2 brighter, 3 brightest. It is the steepness of the \"\n    \"HDR curve above where it leaves the game's, so the brightest light stays under the display's \"\n    \"peak whatever it is. Changes at once, also in the world behind the pause menu and the map; \"\n    \"nothing happens while HDR output is off.\"",
   "traits": [
    "rex::Range{1.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlights": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). \"\n    \"Your car, the nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a \"\n    \"time, from dusk to dawn. on is the one level; off leaves the night as the game has it. auto (the default) is on for \"\n    \"a discrete graphics card and off for an integrated one (a handheld, or the iGPU of a desktop CPU). Costs the \"\n    \"graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the \"\n    \"graphics card builds the lit shaders' variants (a short stutter).\"",
+  "traits": [
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_strength": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). \"\n    \"Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_range": {
+  "type": "f64",
+  "default": "70.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: how far a headlight reaches, in metres (the light falls to nothing there). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{10.0, 200.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_cone": {
+  "type": "f64",
+  "default": "38.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: the headlight cone's outer half angle in degrees (the full light is inside a third of it). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{10.0, 70.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_night": {
+  "type": "i32",
+  "default": "-1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: when the headlights are on. -1: from the game's own lights (each car's headlight points say whether \"\n    \"they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below \"\n    \"3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_headlight_log": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the \"\n    \"night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the \"\n    \"draws that took the variant. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

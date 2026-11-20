@@ -32,6 +32,7 @@
 #include "edram.h"
 #include "effect_compare.h"
 #include "format.h"
+#include "headlight_rig.h"
 #include "layout.h"
 #include "os/thread_priority.h"
 #include "shadow_filter.h"
@@ -145,6 +146,11 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
   }
   if (has(sp::kFeatureLuminanceScale) && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     want(sp::kFeatureLuminanceScale);
+  }
+  // The cars' headlights in the city's lit shaders (headlight_rig.h): while the rig has a light this frame (at night, with the setting on). The shader
+  // takes the word of the headlight feature (or the pair with the G-buffer's, when that stage is wanted too: variant_chain.h kFeatures composes_with).
+  if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {
+    want(sp::kFeatureHeadlight);
   }
   return wanted;
 }
