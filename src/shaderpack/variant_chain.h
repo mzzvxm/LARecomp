@@ -104,8 +104,13 @@ inline constexpr FeatureInfo kFeatures[] = {
     {kFeatureLuminanceScale, "luminance_scale", Stage::kPixel, 0, 0, false, 0},
     {kFeatureCarChrome, "car_chrome", Stage::kPixel, 112, 0, false, 0},
     {kFeatureUiSharp, "ui_sharp", Stage::kPixel, 16, 0, true, 0},
-    // Reserved for feat/headlights (headlight.cpp is not in this tree): 672 bytes (headlight_rules.h HeadlightConstants), the alpha test twin.
-    {kFeatureHeadlight, "headlight", Stage::kPixel, 672, 0, true, 0},
+    // The headlights and the G-buffer's normal plane compose: both edit the city's PSMultiLight shaders (xCityDefault's night shader among them), so the builder makes the
+    // pair in one text for those (the chain's order: the headlight's edits first, the G-buffer's on the text they leave: shaderpack/variants/gbuffer.h anchors on lines the
+    // headlight does not rewrite). Their variants are in feat/headlights (variants/headlight.cpp) and feat/gbuffer-spike (variants/gbuffer.cpp): a row whose variant is not in the
+    // tree is harmless (nothing builds it, nothing picks it). 672 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants; 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
+    {kFeatureHeadlight, "headlight", Stage::kPixel, 672, FeatureBit(kFeatureGBuffer), true, 0},
+    {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight), true, 0},
+    // kFeatureLampShadow (11) is reserved: its row comes with its variant, and names the headlight and the G-buffer in composes_with (in all three rows).
 };
 
 constexpr size_t kFeatureCount = sizeof(kFeatures) / sizeof(kFeatures[0]);

@@ -159,10 +159,17 @@ inline constexpr uint32_t kFeatureCarChrome = 7;
 // console's 720p bitmaps are magnified: Catmull-Rom colour and a steeper alpha edge (16 bytes of constants; shaderpack/variants/ui_sharp.h). It has
 // the alpha test twin: compiled with the shader's ALPHA_TEST spec constants (the main pack's spec variant 1) the word's bit 0 is set (it declares SV_Coverage).
 inline constexpr uint32_t kFeatureUiSharp = 8;
-// Reserved for the cars' headlights as spot lights in the city's lit pixel shaders (feat/headlights, 672 bytes of constants, with the alpha test
-// twin); not built by this tree. Its old id was 12 and 13.
+// The cars' headlights as spot lights in the city's lit pixel shaders (feat/headlights, shaderpack/variants/headlight.h when that file is in the tree; 672 bytes of
+// constants, the alpha test twin). Its old id (version 2 of the pack) was 12 and 13. It composes with the G-buffer's stage on the PSMultiLight shaders: the headlight's edits
+// come first (the lower index), the G-buffer's after them (variant_chain.h, "THE ORDER").
 inline constexpr uint32_t kFeatureHeadlight = 9;
-// The next free index is 10 (the G-buffer's stages, the lamp shadows ...): a new feature takes the next one, with its row in variant_chain.h's table.
+// The G-buffer's normal plane: the lit pixel shaders of the city also write the sidecar's render target (feat/gbuffer-spike, shaderpack/variants/gbuffer.h when that file is in
+// the tree; 48 bytes of constants, the alpha test twin). Its old id was 14 and 15. Composes with the headlight's stage.
+inline constexpr uint32_t kFeatureGBuffer = 10;
+// RESERVED, nothing builds it yet: the lamps' shadows (the PSMultiLight shaders' colour fetch of a street lamp's shadow map; the spike is test/lamp-bspike). It will compose with the headlight's and the
+// G-buffer's stages, so its row in variant_chain.h kFeatures (and its partners' bits in theirs) come with its variant; the index is taken now so that no other change uses it.
+inline constexpr uint32_t kFeatureLampShadow = 11;
+// The next free index is 12: a new feature takes the next one, with its row in variant_chain.h's table.
 
 // Entry flags of the variant pack (the entry's `flags`).
 inline constexpr uint32_t kVariantEntryVertex = 1u << 0;  // the key is a vertex shader's
