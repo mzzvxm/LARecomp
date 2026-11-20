@@ -87,6 +87,7 @@
 #endif
 
 #include "car_spawn.h"
+#include "director/director_math.h"
 #include "discord_rpc/discord_rpc.h"  // RpcInFreeRoam: the game's state machine is in Cruising
 #include "larecomp_log.h"
 #include "native_call.h"
@@ -340,6 +341,15 @@ struct CarKey {
     double t = 0.0;
     int line = 0;
     CarCommand cmd;
+    bool applied = false;  // its time has come and the Director was handed it
+};
+
+// A car the Director's `car.place` asked to be put somewhere, for the next update that may call natives.
+struct Placement {
+    std::string id;
+    double position[3] = {};
+    double heading = 0.0;  // the scene's convention
+    bool has_heading = false;
 };
 
 // What the game thread knows of a paint seed held for an ambient car (the paint section below), for the log.
@@ -377,7 +387,7 @@ struct State {
     std::recursive_mutex mutex;  // the camera hook reads poses; both run on the game thread (a native could even call the hook inside TickCars)
     Director dir;
     std::vector<CarKey> keys;
-    size_t next_key = 0;
+    std::vector<Placement> placements;
     uint64_t frame = 0;
     int ready_ticks = 0;
     int64_t next_pose_log_ms = 0;
@@ -1135,6 +1145,38 @@ void TickPaths(const uint8_t* base, uint32_t mgr) {
     }
 }
 
+// The Director's `car.place`: one Racer_Teleport for each car asked for, at an update that may call natives. The car's own speed is 0 afterwards.
+void TickPlacements(const uint8_t* base, uint32_t mgr, uint32_t player) {
+    if (g.placements.empty()) return;
+    std::vector<Placement> todo;
+    todo.swap(g.placements);
+    const uint32_t wrapper = WrapperFor(Native::kTeleport);
+    for (const Placement& p : todo) {
+        uint32_t racer = 0;
+        CarEntry* e = g.dir.registry().Find(p.id);
+        if (p.id == "player") racer = player;
+        else if (e) racer = e->racer;
+        if (!racer) {
+            LARECOMP_APP_WARN("[cars] place {}: the car has no racer (not made yet, or gone)", p.id);
+            continue;
+        }
+        if (p.id != "player" && !InManager(base, mgr, racer)) {
+            LARECOMP_APP_WARN("[cars] place {}: racer {} is not in the opponent manager's list any more: nothing is called", p.id, Hex(racer));
+            g.dir.MarkLost(racer);
+            continue;
+        }
+        const double heading = p.has_heading ? p.heading : (e && e->have_pose ? e->pose.heading : 0.0);
+        const uint32_t vec = GuestPutVec(static_cast<float>(p.position[0]), static_cast<float>(p.position[1]), static_cast<float>(p.position[2]), 0.0f);
+        if (!vec) {
+            LARECOMP_APP_ERROR("[cars] place {}: no guest memory for Racer_Teleport's argument", p.id);
+            continue;
+        }
+        const NativeResult r = CallNative(wrapper, {racer, vec, std::bit_cast<uint32_t>(static_cast<float>(NativeHeadingDeg(heading))), std::bit_cast<uint32_t>(0.0f)}, false);
+        LARECOMP_APP_INFO("[cars] place {}: Racer_Teleport racer {} at {} heading {:.1f}{}", p.id, Hex(racer), Triple(p.position[0], p.position[1], p.position[2]), heading,
+                          r.called ? "" : " (the native could not be called)");
+    }
+}
+
 // ---------------------------------------------------------------- the scene runner's applier
 
 #if defined(LARECOMP_CARS_HAS_STATE_LOG)
@@ -1175,27 +1217,16 @@ bool StateLogCarGet(size_t index, char* id, size_t id_size, float matrix[16]) {
 const statelog::CarSource kStateLogCars = {&StateLogCarCount, &StateLogCarGet};
 #endif
 
-void ApplierBegin(const Scene& scene) {
-#if defined(LARECOMP_CARS_HAS_STATE_LOG)
-    statelog::RegisterCarSource(&kStateLogCars);
-#endif
-    std::lock_guard<std::recursive_mutex> lock(g.mutex);
-    g.keys.clear();
-    g.next_key = 0;
-    g.routes.clear();
-    g.path_clock = 0.0;
-    g.last_scene_t = 0.0;
-    g.have_scene_t = false;
-    g.reads.clear();
-    g.ambient_items.clear();
-    ClearAllForcedSeeds();
+// The `car` keys of a scene, in time order (the events are), each with its parse; a key the cars package does not know is reported and left out.
+std::vector<CarKey> ReadCarKeys(const Scene& scene) {
+    std::vector<CarKey> keys;
     for (const Event& e : scene.events) {
         if (e.track != Track::kCar) continue;
         CarCommand cmd;
         std::string why;
         switch (ParseCarCommand(e.words, &cmd, &why)) {
             case CarParse::kOk:
-                g.keys.push_back({e.t, e.line, cmd});
+                keys.push_back({e.t, e.line, cmd, false});
                 break;
             case CarParse::kOtherVerb:
                 LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, ambient, delete, profile, at (the player), path and stop", e.line,
@@ -1206,6 +1237,23 @@ void ApplierBegin(const Scene& scene) {
                 break;
         }
     }
+    return keys;
+}
+
+void ApplierBegin(const Scene& scene) {
+#if defined(LARECOMP_CARS_HAS_STATE_LOG)
+    statelog::RegisterCarSource(&kStateLogCars);
+#endif
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    g.keys.clear();
+    g.routes.clear();
+    g.path_clock = 0.0;
+    g.last_scene_t = 0.0;
+    g.have_scene_t = false;
+    g.reads.clear();
+    g.ambient_items.clear();
+    ClearAllForcedSeeds();
+    g.keys = ReadCarKeys(scene);
     if (g.keys.empty()) return;
     for (const CarKey& k : g.keys) {
         if (k.cmd.verb == CarVerb::kPath) LoadRoute(k.cmd.route, k.line);
@@ -1221,6 +1269,10 @@ void ApplierApply(const Scene& scene, double t) {
     // scale one update late, so a car follows the slowed-down world, not the scene's own wall time).
     if (!g.have_scene_t) {
         g.path_clock = t;
+    } else if (std::fabs(t - g.last_scene_t) > 0.3) {
+        // A jump (the Director's seek, a restart at a time): the clock is the world time the scene time stands for, the integral of the time scale track, so
+        // that a car on a route stands where a run would have it (closed form of the time).
+        g.path_clock = director::WorldTimeAt(scene, t);
     } else if (t != g.last_scene_t) {
         // Forwards, and backwards too: a still (mcla_scene_t, the test harness's `scene_at`) pins the scene clock to a time the running clock has just passed by
         // a fraction of a step, and a scrub goes back by more. The car must stand where its route has it at THAT scene time, so the clock follows both ways
@@ -1232,14 +1284,18 @@ void ApplierApply(const Scene& scene, double t) {
     }
     g.last_scene_t = t;
     g.have_scene_t = true;
-    while (g.next_key < g.keys.size() && g.keys[g.next_key].t <= t + 1e-9) {
-        const CarKey& k = g.keys[g.next_key++];
+    for (CarKey& k : g.keys) {
+        if (k.t > t + 1e-9) break;  // the keys are in time order
+        if (k.applied) continue;
+        k.applied = true;
         const Route* route = nullptr;
         if (k.cmd.verb == CarVerb::kPath) {
             const auto it = g.routes.find(k.cmd.route);
             if (it != g.routes.end()) route = it->second.route.get();
         }
-        const Director::Applied a = g.dir.Apply(k.cmd, g.path_clock, route);
+        // a key that came due a long way back (a seek over it, a car added to a scene that has run): the path it starts began at the key's own time
+        const double key_clock = (t - k.t > 0.3) ? director::WorldTimeAt(scene, k.t) : g.path_clock;
+        const Director::Applied a = g.dir.Apply(k.cmd, key_clock, route);
         if (a.ok) LARECOMP_APP_INFO("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);
         else LARECOMP_APP_WARN("[cars] t={:.2f} (line {}) {}", t, k.line, a.message);
     }
@@ -1249,7 +1305,6 @@ void ApplierEnd() {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
     const bool had_cars = !g.keys.empty();
     g.keys.clear();
-    g.next_key = 0;
     g.dir.EndScene();
     ClearAllForcedSeeds();  // every car the scene placed exists by now or goes with its item: no queue entry of the scene is to be changed any more
     FlushEvents();
@@ -1258,7 +1313,88 @@ void ApplierEnd() {
     if (!active && had_cars) LogNothingLeft();           // ... unless the scene deleted them itself: nothing is left to wait for
 }
 
-const TrackApplier kApplier = {"cars", TrackBit(Track::kCar), &ApplierBegin, &ApplierApply, &ApplierEnd};
+bool SameVerbs(const CarCommand& a, const CarCommand& b) {
+    return a.id == b.id && a.verb == b.verb && a.source == b.source && a.model == b.model && a.slot == b.slot && a.position[0] == b.position[0] &&
+           a.position[1] == b.position[1] && a.position[2] == b.position[2] && a.has_heading == b.has_heading && a.heading == b.heading && a.route == b.route &&
+           a.speed.kind == b.speed.kind && a.speed.value == b.speed.value && a.mode == b.mode && a.has_paint == b.has_paint && a.paint == b.paint;
+}
+
+bool SameKey(const CarKey& a, const CarKey& b) {
+    return std::fabs(a.t - b.t) < 1e-9 && SameVerbs(a.cmd, b.cmd);
+}
+
+bool IsPathVerb(CarVerb v) {
+    return v == CarVerb::kPath || v == CarVerb::kStop;
+}
+
+// The Director's soft reload (scene_runtime.h TrackApplier::reload): the file changed while the scene runs at time `t`. Per car: when the statements due by now
+// are the same as before, nothing happens; when only its path statements differ, they are given to the car again; when anything else differs (the model, the
+// place, a `delete`), the car is deleted and made again from the new statements. Keys that are not due yet wait for their time as usual.
+void ApplierReload(const Scene& scene, double t) {
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    std::vector<CarKey> next = ReadCarKeys(scene);
+    const bool had_keys = !g.keys.empty();
+    std::vector<std::string> ids;
+    const auto add_id = [&](const std::string& id) {
+        if (std::find(ids.begin(), ids.end(), id) == ids.end()) ids.push_back(id);
+    };
+    for (const CarKey& k : g.keys) add_id(k.cmd.id);
+    for (const CarKey& k : next) add_id(k.cmd.id);
+    for (const std::string& id : ids) {
+        std::vector<const CarKey*> old_due, new_due;
+        for (const CarKey& k : g.keys) {
+            if (k.cmd.id == id && k.applied) old_due.push_back(&k);
+        }
+        for (const CarKey& k : next) {
+            if (k.cmd.id == id && k.t <= t + 1e-9) new_due.push_back(&k);
+        }
+        bool same = old_due.size() == new_due.size();
+        for (size_t i = 0; same && i < old_due.size(); ++i) same = SameKey(*old_due[i], *new_due[i]);
+        if (same) {
+            for (CarKey& k : next) {
+                if (k.cmd.id == id && k.t <= t + 1e-9) k.applied = true;  // in force already
+            }
+            continue;
+        }
+        // Only the path statements differ: the car stays and is given them again. Otherwise it goes and is made again.
+        std::vector<const CarKey*> old_rest, new_rest;
+        for (const CarKey* k : old_due) {
+            if (!IsPathVerb(k->cmd.verb)) old_rest.push_back(k);
+        }
+        for (const CarKey* k : new_due) {
+            if (!IsPathVerb(k->cmd.verb)) new_rest.push_back(k);
+        }
+        bool rest_same = old_rest.size() == new_rest.size();
+        for (size_t i = 0; rest_same && i < old_rest.size(); ++i) rest_same = SameKey(*old_rest[i], *new_rest[i]);
+        const bool had_car = !old_due.empty();
+        if (rest_same && had_car) {
+            for (CarKey& k : next) {
+                if (k.cmd.id == id && k.t <= t + 1e-9 && !IsPathVerb(k.cmd.verb)) k.applied = true;
+                if (IsPathVerb(k.cmd.verb) && k.cmd.id == id && k.cmd.verb == CarVerb::kPath) g.routes.erase(k.cmd.route);  // the route file may have been written since
+            }
+            LARECOMP_APP_INFO("[cars] reload: car {} keeps its place, only its path statements changed: they are given to it again", id);
+        } else if (had_car) {
+            CarCommand del;
+            del.id = id;
+            del.verb = CarVerb::kDelete;
+            const Director::Applied a = g.dir.Apply(del, g.path_clock, nullptr);
+            LARECOMP_APP_INFO("[cars] reload: car {} changed: {}; it is made again from the new statements", id, a.message);
+            for (CarKey& k : next) {
+                if (IsPathVerb(k.cmd.verb) && k.cmd.id == id) g.routes.erase(k.cmd.route);
+            }
+        }
+    }
+    g.keys = std::move(next);
+    for (const CarKey& k : g.keys) {
+        if (k.cmd.verb == CarVerb::kPath) LoadRoute(k.cmd.route, k.line);
+    }
+    if (!g.keys.empty()) {
+        if (!had_keys) g.dir.BeginScene();  // the scene had no cars until now (BeginScene also restarts the default paints' numbering, so not on every reload)
+        g_active.store(true, std::memory_order_relaxed);
+    }
+}
+
+const TrackApplier kApplier = {"cars", TrackBit(Track::kCar), &ApplierBegin, &ApplierApply, &ApplierEnd, &ApplierReload};
 
 // The applier is registered when the program starts; the runner's own tables are constant-initialised, so the order of the translation
 // units does not matter. When the camera package is in the build, the registry is its source for `car:<id>`.
@@ -1315,10 +1451,11 @@ void TickCars() {
     const Director::Next next = g.dir.Poll(now, player, calls_ok);
     if (next.call.native != Native::kNone) Execute(base, next, mgr);
     if (calls_ok) TickPaths(base, mgr);
+    if (calls_ok) TickPlacements(base, mgr, player);
 
     FlushEvents();
     LogPoses(now);
-    if (!g.dir.Active()) {
+    if (!g.dir.Active() && g.placements.empty()) {
         g_active.store(false, std::memory_order_relaxed);
         LogNothingLeft();
     }
@@ -1333,12 +1470,158 @@ bool GetCarPose(std::string_view id, CarPose* out) {
 
 bool CarMatrixById(const char* id, float matrix[16]) {
     if (!id || !matrix) return false;
-    return PoseOf(id, matrix, nullptr);
+    if (PoseOf(id, matrix, nullptr)) return true;
+    // The car is not there (yet): a camera attached to it would hold the world's origin, and the city is only streamed around the camera, so a car 800 m from it never
+    // came in (run 1, 11-20: a seek past a `spawn` put `cam ... rig chase car:p1` at (0, 1.6, -6) in the same update; the car's load state stayed 0 for 20 s and it was
+    // deleted). Until it is, the car stands where its `spawn` statement puts it: the camera is near the place, the streaming comes to it and the car loads.
+    if (std::string_view(id) == "player") return false;
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    const CarKey* last_applied = nullptr;
+    const CarKey* first_any = nullptr;
+    bool gone = false;
+    for (const CarKey& k : g.keys) {
+        if (k.cmd.id != id) continue;
+        if (k.cmd.verb == CarVerb::kSpawn) {
+            if (!first_any) first_any = &k;
+            if (k.applied) {
+                last_applied = &k;
+                gone = false;
+            }
+        } else if (k.cmd.verb == CarVerb::kDelete && k.applied && last_applied) {
+            gone = true;
+        }
+    }
+    const CarKey* spawn = last_applied ? last_applied : first_any;
+    if (!spawn || gone) return false;
+    MatrixAtScenePlace(spawn->cmd.position, spawn->cmd.has_heading ? spawn->cmd.heading : 0.0, matrix);
+    return true;
 }
 
 size_t SceneCarCount() {
     std::lock_guard<std::recursive_mutex> lock(g.mutex);
     return g.dir.SceneCarCount();
+}
+
+// ---------------------------------------------------------------- what the Director reads and asks (cars.h)
+
+namespace {
+// The statement that made a car: the last applied `spawn`, `ambient` or `profile` key of the id.
+std::string ModelOfCar(const std::string& id) {
+    for (auto it = g.keys.rbegin(); it != g.keys.rend(); ++it) {
+        if (!it->applied || it->cmd.id != id) continue;
+        if (it->cmd.verb == CarVerb::kSpawn || it->cmd.verb == CarVerb::kAmbient) {
+            return it->cmd.source == CarSource::kGarage ? "profile " + std::to_string(it->cmd.slot) : it->cmd.model;
+        }
+    }
+    return id == "player" ? "player" : std::string();
+}
+std::string RouteOfCar(const std::string& id) {
+    for (auto it = g.keys.rbegin(); it != g.keys.rend(); ++it) {
+        if (it->applied && it->cmd.id == id && it->cmd.verb == CarVerb::kPath) return it->cmd.route;
+    }
+    return {};
+}
+}  // namespace
+
+std::vector<SceneCarInfo> ListSceneCars() {
+    std::vector<SceneCarInfo> out;
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    bool have_player = false;
+    for (const CarEntry& e : g.dir.registry().entries()) {
+        SceneCarInfo i;
+        i.id = e.id;
+        i.model = ModelOfCar(e.id);
+        i.ready = e.have_pose;
+        if (e.have_pose) {
+            i.position[0] = e.pose.position[0], i.position[1] = e.pose.position[1], i.position[2] = e.pose.position[2];
+            i.heading = e.pose.heading;
+        }
+        const PathDrive* path = g.dir.PathOf(e.id);
+        i.on_path = path && path->Active();
+        i.brain = path && path->mode() == PathMode::kBrain;
+        if (i.on_path) i.route = RouteOfCar(e.id);
+        have_player = have_player || e.is_player;
+        out.push_back(std::move(i));
+    }
+    if (!have_player) {  // no scene with cars: the player's car is still there
+        CarPose p;
+        if (PoseOf("player", nullptr, &p)) {
+            SceneCarInfo i;
+            i.id = "player";
+            i.model = "player";
+            i.ready = true;
+            i.position[0] = p.position[0], i.position[1] = p.position[1], i.position[2] = p.position[2];
+            i.heading = p.heading;
+            out.insert(out.begin(), std::move(i));
+        }
+    }
+    return out;
+}
+
+int PlaceCar(std::string_view id, const double position[3], double heading, bool has_heading) {
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    const CarEntry* e = g.dir.registry().Find(id);
+    if (!e && id != "player") return 1;
+    if (id != "player" && (!e->have_pose || e->racer == 0)) return 2;
+    Placement p;
+    p.id = std::string(id);
+    p.position[0] = position[0], p.position[1] = position[1], p.position[2] = position[2];
+    p.heading = heading;
+    p.has_heading = has_heading;
+    g.placements.erase(std::remove_if(g.placements.begin(), g.placements.end(), [&](const Placement& o) { return o.id == p.id; }), g.placements.end());
+    g.placements.push_back(std::move(p));
+    g_active.store(true, std::memory_order_relaxed);
+    return 0;
+}
+
+std::vector<std::string> ListCarModels() {
+    std::vector<std::string> names;
+    const uint8_t* base = Membase();
+    if (!base || !Mapped(kCarTable, 8)) return names;
+    const uint32_t count = std::min<uint32_t>(R16(base, kCarTable + 4), 4000);
+    for (uint32_t i = 0; i < count; ++i) {
+        const std::string name = GuestName(base, CarTableName(base, static_cast<int32_t>(i)));
+        if (!name.empty()) names.push_back(name);
+    }
+    return names;
+}
+
+bool SceneCarsSettled(std::string* waiting_for) {
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    if (g.keys.empty()) return true;
+    const auto wait = [&](const std::string& why) {
+        if (waiting_for) *waiting_for = why;
+        return false;
+    };
+    if (!g.have_scene_t) return wait("the scene's first update has not run");
+    for (const CarKey& k : g.keys) {
+        if (!k.applied && k.t <= g.last_scene_t + 1e-9) return wait("the car key of line " + std::to_string(k.line) + " is not given to the cars yet");
+    }
+    for (const CarEntry& e : g.dir.registry().entries()) {
+        if (!e.is_player && !e.have_pose) return wait("car " + e.id + " is not ready (its pose is not readable yet)");
+    }
+    return true;
+}
+
+std::vector<SceneRouteInfo> ListSceneRoutes() {
+    std::vector<SceneRouteInfo> out;
+    std::lock_guard<std::recursive_mutex> lock(g.mutex);
+    for (const CarKey& k : g.keys) {
+        if (k.cmd.verb != CarVerb::kPath) continue;
+        SceneRouteInfo r;
+        r.name = k.cmd.route;
+        r.car = k.cmd.id;
+        r.kinematic = k.cmd.mode == PathMode::kKinematic;
+        r.line = k.line;
+        const auto it = g.routes.find(k.cmd.route);
+        if (it != g.routes.end() && it->second.route) {
+            for (const RoutePoint& p : it->second.route->points) {
+                r.points.push_back({p.x, p.has_y ? p.y : 0.0, p.z, p.speed < 0.0 ? kDefaultRouteSpeed : p.speed});
+            }
+        }
+        out.push_back(std::move(r));
+    }
+    return out;
 }
 
 }  // namespace mc::cinematic
@@ -1363,6 +1646,11 @@ void TickCars() {}
 bool GetCarPose(std::string_view, CarPose*) { return false; }
 bool CarMatrixById(const char*, float[16]) { return false; }
 size_t SceneCarCount() { return 0; }
+std::vector<SceneCarInfo> ListSceneCars() { return {}; }
+int PlaceCar(std::string_view, const double[3], double, bool) { return 1; }
+std::vector<std::string> ListCarModels() { return {}; }
+bool SceneCarsSettled(std::string*) { return true; }
+std::vector<SceneRouteInfo> ListSceneRoutes() { return {}; }
 }  // namespace mc::cinematic
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

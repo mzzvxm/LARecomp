@@ -202,6 +202,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/spots.cpp
     src/mc_engine/cinematic/state_log_core.cpp
     src/mc_engine/cinematic/state_log.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
@@ -217,8 +218,29 @@ set(LARECOMP_SOURCES
     src/mc_engine/cinematic/ambient_car.cpp
     src/mc_engine/cinematic/cars.cpp
     src/mc_engine/cinematic/scene_seed.cpp
+    # The Director's world knowledge (package C): the atlas of lamps, roads and lanes, garages and cars decoded from guest memory (atlas_core, pure), its
+    # JSON answers (atlas_answers: empty until the command layer's director.h is in the tree) and the `atlas.dump` / `query.*` commands (handlers_world).
+    src/mc_engine/cinematic/director/atlas_core.cpp
+    src/mc_engine/cinematic/director/atlas_answers.cpp
+    src/mc_engine/cinematic/director/handlers_world.cpp
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
+
+    # The Director (feature-parity/DIRECTOR-DESIGN.md; documentation/DIRECTOR-PROTOCOL.md): one command layer under the panel, the scene file and an agent's requests.
+    # Inert unless the debug setting mcla_director is on. The pure files (json, command, line_server, scene_edit, director_math, png_writer) have larecomp_director_test
+    # and larecomp_scene_edit_test; director_runtime and the handlers_* files are the game side. Package C's world queries (handlers_world.cpp) are added below.
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/command.cpp
+    src/mc_engine/cinematic/director/line_server.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/director_math.cpp
+    src/mc_engine/cinematic/director/png_writer.cpp
+    src/mc_engine/cinematic/director/director_runtime.cpp
+    src/mc_engine/cinematic/director/handlers_transport.cpp
+    src/mc_engine/cinematic/director/handlers_scene.cpp
+    src/mc_engine/cinematic/director/handlers_camera.cpp
+    src/mc_engine/cinematic/director/handlers_cars.cpp
+    src/mc_engine/cinematic/director/handlers_capture.cpp
 
     src/mc_engine/gameplay/map_warp.cpp
     src/mc_engine/gameplay/real_weather.cpp
@@ -575,8 +597,18 @@ endif()
 add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera_test.cpp
     src/mc_engine/cinematic/camera.cpp
-    src/mc_engine/cinematic/scene.cpp)
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/spots.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_camera_test PRIVATE src src/mc_engine/cinematic)
+# The scene's named places (src/mc_engine/cinematic/spots.h: the spot words of a statement, the spots file's reader, the lookup of the files a scene uses) and the
+# way scene.cpp turns spot words into numbers have a check that needs no game (with scene files as arguments it prints their statements, spots resolved):
+#   cmake --build <build dir> --target larecomp_spots_test, then run <build dir>/larecomp_spots_test (exit 0 = passed).
+add_executable(larecomp_spots_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/spots_test.cpp
+    src/mc_engine/cinematic/spots.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_spots_test PRIVATE src src/mc_engine/cinematic)
 # The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements (header only), the registry of poses and the script of native calls, pure) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
 add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
@@ -592,6 +624,23 @@ add_executable(larecomp_path_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/path_follow_test.cpp
     src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_path_test PRIVATE src src/mc_engine/cinematic)
+# The Director's atlas (director/atlas_core.h: decoding the lamps, the rail network, the car table from a byte buffer, the queries, a route along the roads, the camera
+# maths, the JSON files: pure) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_atlas_test, then run <build dir>/larecomp_atlas_test (exit 0 = passed; with --rails <traffic.xrn decompressed> it
+#   decodes that and prints what it found).
+add_executable(larecomp_atlas_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/atlas_core_test.cpp
+    src/mc_engine/cinematic/director/atlas_core.cpp)
+target_include_directories(larecomp_atlas_test PRIVATE src/mc_engine/cinematic/director)
+# ... and its JSON answers (atlas_answers.h), which need the command layer's json.h / json.cpp (package A): the target exists once those are in the tree.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/cinematic/director/json.cpp")
+    add_executable(larecomp_atlas_answers_test EXCLUDE_FROM_ALL
+        src/mc_engine/cinematic/director/atlas_answers_test.cpp
+        src/mc_engine/cinematic/director/atlas_answers.cpp
+        src/mc_engine/cinematic/director/atlas_core.cpp
+        src/mc_engine/cinematic/director/json.cpp)
+    target_include_directories(larecomp_atlas_answers_test PRIVATE src/mc_engine/cinematic/director)
+endif()
 # What a settings save does with a cvar a scene holds (src/mc_engine/core/config_save.h, DecideCvarSave, a plain function) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_config_save_test, then run <build dir>/larecomp_config_save_test (exit 0 = passed).
 add_executable(larecomp_config_save_test EXCLUDE_FROM_ALL
@@ -633,7 +682,8 @@ add_executable(larecomp_freecam_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/freecam_test.cpp
     src/mc_engine/cinematic/freecam.cpp
     src/mc_engine/cinematic/camera.cpp
-    src/mc_engine/cinematic/scene.cpp)
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
 target_include_directories(larecomp_freecam_test PRIVATE src src/mc_engine/cinematic)
 # The scene's `split` track (the parser's keys and EvaluateSplit) has a check of its own, also without the game:
 #   cmake --build <build dir> --target larecomp_split_track_test, then run <build dir>/larecomp_split_track_test (exit 0 = passed).
@@ -641,6 +691,36 @@ add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/split_track_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_split_track_test PRIVATE src src/mc_engine/cinematic)
+# The Director's pure parts (src/mc_engine/cinematic/director: the JSON of the wire, the command engine and its argument check, the console grammar, the line server over real
+# loopback sockets, the camera projection, the route reducer, the path rule, the PNG writer) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_director_test, then run <build dir>/larecomp_director_test (exit 0 = passed).
+add_executable(larecomp_director_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/director_test.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/command.cpp
+    src/mc_engine/cinematic/director/line_server.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/director_math.cpp
+    src/mc_engine/cinematic/director/png_writer.cpp
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
+target_include_directories(larecomp_director_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_director_test PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(larecomp_director_test PRIVATE ws2_32)
+endif()
+# The scene file's line-addressed edits (insert, replace, delete, move, param; comments and layout kept; the stale rule; the diff):
+#   cmake --build <build dir> --target larecomp_scene_edit_test, then run <build dir>/larecomp_scene_edit_test (exit 0 = passed).
+add_executable(larecomp_scene_edit_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/scene_edit_test.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_scene_edit_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

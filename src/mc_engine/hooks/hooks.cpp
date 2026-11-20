@@ -18,6 +18,7 @@
 #include "mc_engine/camera/camera_look.h"
 #include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/cars.h"
+#include "../cinematic/director/director.h"
 #include "../cinematic/scene_runtime.h"
 #include "mc_engine/input/cursor_hide.h"
 #include "mc_engine/gameplay/cutscene_gallery.h"
@@ -189,6 +190,7 @@ void Patch_DeltaTimePre() {
     ApplyRubberBandScales();      // AI catch-up / hold-back limits
     ApplyRubberBandLive();        // ...pushed into the AI racers of the race in progress
     mc::cinematic::TickScene();   // trailer toolkit: a scene armed by mcla_scene (hour, weather, traffic, time scale, settings); one string test when off
+    mc::cinematic::director::Tick();  // trailer toolkit Director: runs the queued commands and publishes the snapshot (after the scene's tick, before the cars'); one setting read when off
     mc::cinematic::TickCars();    // trailer toolkit: the scene's cars (spawn, delete, the player's garage car) and their poses; one flag test when no scene uses cars
     LogRenderPhaseMaskOnce();     // a few samples of the real per-frame masks
     g_frame_heartbeat.fetch_add(1, std::memory_order_relaxed);

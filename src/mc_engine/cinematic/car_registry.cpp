@@ -61,6 +61,17 @@ bool PoseFromMatrix(const float m[16], CarPose* out) {
     return true;
 }
 
+void MatrixAtScenePlace(const double pos[3], double heading_deg, float out[16]) {
+    const double h = heading_deg * (3.14159265358979323846 / 180.0);
+    const float s = static_cast<float>(std::sin(h)), c = static_cast<float>(std::cos(h));
+    for (int i = 0; i < 16; ++i) out[i] = 0.0f;
+    out[0] = -c, out[2] = s;     // right
+    out[5] = 1.0f;               // up
+    out[8] = -s, out[10] = -c;   // back: the nose is along (sin h, 0, cos h)
+    out[12] = static_cast<float>(pos[0]), out[13] = static_cast<float>(pos[1]), out[14] = static_cast<float>(pos[2]);
+    out[15] = 1.0f;
+}
+
 CarEntry* CarRegistry::Add(const std::string& id, bool is_player) {
     if (Find(id)) return nullptr;
     CarEntry e;

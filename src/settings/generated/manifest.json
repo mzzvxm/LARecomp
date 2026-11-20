@@ -4369,6 +4369,39 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_director": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT DIRECTOR (debug): the game listens on 127.0.0.1 (loopback only, a token in the info file) for an agent's commands and runs the same commands as the Director panel (documentation/DIRECTOR-PROTOCOL.md). Live: on starts the listener, off stops it. A scene cannot set it.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_director_info": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT DIRECTOR: a file name; while the listener is up the game writes director.json there (port, token, pid, slot, scene). Empty: no file.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_director_root": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT DIRECTOR: the folder the Director's commands may write to, as relative paths without '..'. Empty: the game's working folder.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_scene": {
   "type": "std::string",
   "default": "\"\"",

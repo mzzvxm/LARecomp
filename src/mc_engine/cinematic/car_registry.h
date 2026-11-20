@@ -33,6 +33,11 @@ struct CarPose {
 // rotation (a forward shorter than 0.5): such a matrix is not a car's.
 bool PoseFromMatrix(const float m[16], CarPose* out);
 
+// The matrix (right, up, back, position rows; the w words 0, 0, 0, 1) of a car that stands at `pos` with its nose along the scene heading `heading_deg` (0 along +Z,
+// 90 along +X) on level ground: where a car that is not made yet will be, for a camera that is attached to it (cars.cpp CarMatrixById). PoseFromMatrix reads the heading
+// and the position back.
+void MatrixAtScenePlace(const double pos[3], double heading_deg, float out[16]);
+
 // For the log: why `m` is not a car's matrix, or "" when PoseFromMatrix takes it ("word 13 (position y) is not finite (nan)",
 // "the back row is 0.00 long").
 std::string MatrixFault(const float m[16]);

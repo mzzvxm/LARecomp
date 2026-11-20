@@ -240,6 +240,24 @@ void TestPoses() {
         CheckNum(pose.forward[0], std::sin(h * 3.14159265358979323846 / 180.0), "forward x is sin(heading)", 1e-5);
         CheckNum(pose.forward[2], std::cos(h * 3.14159265358979323846 / 180.0), "forward z is cos(heading)", 1e-5);
     }
+    // the place a car that is not made yet will stand at (what a camera attached to it follows meanwhile): the pose reads back, and it is the matrix the game gives a car there
+    for (double h : {0.0, 62.0, 242.0, 331.6}) {
+        float want[16], got[16];
+        MatrixForNativeHeading(NativeHeadingDeg(h), pos, want);
+        MatrixAtScenePlace(pos, h, got);
+        CarPose at;
+        Check(PoseFromMatrix(got, &at), "the declared place's matrix is a car's, heading " + std::to_string(h));
+        CheckNum(at.heading, h, "the declared place keeps the heading " + std::to_string(h), 1e-3);
+        CheckNum(at.position[0], 900.0, "the declared place keeps x");
+        CheckNum(at.position[1], 17.5, "the declared place keeps y");
+        CheckNum(at.position[2], -850.0, "the declared place keeps z");
+        bool same = true;
+        for (int i = 0; i < 16; ++i) {
+            if ((i & 3) == 3) continue;
+            same = same && std::fabs(got[i] - want[i]) < 1e-5f;
+        }
+        Check(same, "the declared place's rows are the game's for the heading " + std::to_string(h));
+    }
     float bad[16] = {};
     CarPose pose;
     Check(!PoseFromMatrix(bad, &pose), "an all-zero matrix is no car's");

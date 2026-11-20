@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "scene.h"
+#include "spots.h"
 
 using namespace mc::cinematic;
 
@@ -808,8 +809,8 @@ void TestCvarRefusal() {
         "mcla_capture_dir", "mcla_capture_name", "mcla_capture_statelog", "mcla_capture_audio", "mcla_capture_memory_mb",
         // the state log's file (M3a) and the flight recorder's (M1d)
         "mcla_state_log", "mcla_freecam_record", "mcla_freecam_out", "MCLA_STATE_LOG",
-        // the scene's own settings
-        "mcla_scene", "mcla_scene_restart", "mcla_scene_t",
+        // the scene's own settings, and the Director's (its command channel and the folder its commands write to)
+        "mcla_scene", "mcla_scene_restart", "mcla_scene_t", "mcla_director", "mcla_director_info", "mcla_director_root", "MCLA_DIRECTOR",
         // paths, folders, programs, arguments, servers
         "log_file", "dump_path", "dump_shaders", "dump_source", "cache_root", "game_data_root", "user_data_root", "update_data_root",
         "metadata_root", "hid_mappings_file", "keycaps_dir", "larecomp_texture_folder", "string_folder", "shader_pack_dir", "perf_log_csv",
@@ -837,6 +838,7 @@ void TestCvarRefusal() {
         "mcla_fixed_step_fps", "aspect_ratio", "display_gamma", "speed_units", "weather", "time_of_day", "ui_interpolate", "x", "some_text",
         "mcla_capture", "capture_fps",  // not the mcla_capture_ prefix
         "mcla_gpu_sync_builds", "mcla_freecam_speed", "mcla_freecam_log",
+        "mcla_dire", "direct_mode",  // only look like mcla_director
     };
     for (const char* name : allowed) {
         Check(CvarRefusal(name).empty(), std::string("a scene may set ") + name + ": " + CvarRefusal(name));
@@ -850,6 +852,8 @@ void TestCvarRefusal() {
     CheckError("at 1 set mcla_capture_out C:/Users/x/Startup/a", "a scene does not set mcla_capture_out");
     CheckError("at 1 set MCLA_CAPTURE_SINK ffmpeg", "a scene does not set MCLA_CAPTURE_SINK");
     CheckError("at 1 set mcla_scene other", "a scene does not set mcla_scene");
+    CheckError("at 1 set mcla_director true", "a scene does not set mcla_director");
+    CheckError("at 1 set mcla_director_info C:/x/info.json", "a scene does not set mcla_director_info");
     CheckError("at 1 set log_file x.log", "makes the game write a file of its own");
     CheckError("at 1 set dump_shaders C:/x", "it names a program, a path, a server or arguments");
     const ParseResult bad = ParseScene("scene a\nat 0 set mcla_gpu_ao off\nat 1 set mcla_capture_ffmpeg x\nat 2 set mcla_gpu_ao high\nend 5\n");
@@ -984,6 +988,44 @@ void TestAmbientWorld() {
     }
 }
 
+// Spot words (spots.h): scene.cpp turns them into numbers when the statement is read. The table and the words' own rules are spots_test.cpp's; this checks
+// the parser's side: which statements take them, that the other packages see numbers, that a scene with none is read as before.
+void TestSpotWords() {
+    SpotTable table;
+    Spot street;
+    street.name = "street";
+    street.x = 832.19;
+    street.y = 16.5;
+    street.z = -787.53;
+    street.heading = 62.0;
+    street.has_heading = true;
+    table.Add(street);
+    ParseOptions with;
+    with.spots = &table;
+    with.path = "scenes\\recipes\\x.scene";
+    const ParseResult r = ParseScene(
+        "scene s\n"
+        "at 1 car p1 spawn vp_x at spot:street heading spot:street\n"
+        "cam 2 pos spot:street@0,2,0 look spot:street\n"
+        "cut 3\n"
+        "end 9\n",
+        with);
+    Check(r.Ok(), "spot words in a car and a camera statement parse");
+    const Event* car = First(r.scene, Track::kCar);
+    Check(car && car->words.size() == 9 && car->words[4] == "832.19" && car->words[5] == "16.5" && car->words[6] == "-787.53" && car->words[8] == "62",
+          "the car's words are numbers");
+    const Event* cam = First(r.scene, Track::kCamera);
+    Check(cam && cam->words.size() == 8 && cam->words[0] == "pos" && cam->words[2] == "18.5" && cam->words[4] == "look", "the camera's words are numbers");
+    CheckEq(r.scene.source_dir, "scenes\\recipes", "the scene knows its folder");
+    CheckError("at 1 car p1 spawn vp_x at spot:street", "no spot table is loaded");
+    const ParseResult none = ParseScene("scene s\nat 1 car p1 spawn vp_x at spot:street\nend 3\n", with);
+    Check(none.Ok(), "(the same line with a table)");
+    const ParseResult unknown = ParseScene("scene s\ncam 1 pos spot:strret look 0 0 0\nend 3\n", with);
+    const Diagnostic* d = Find(unknown, "did you mean street?");
+    Check(!unknown.Ok() && d && d->line == 2, "an unknown spot names the likely one, on its line");
+    Check(ParseScene("scene s\nat 1 label \"spot:street\"\nat 2 mark spot-x\nend 3\n").Ok(), "a label's text is not a spot word");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1006,6 +1048,7 @@ int main(int argc, char** argv) {
     TestCvarRefusal();
     TestCaptureOptions();
     TestAmbientWorld();
+    TestSpotWords();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

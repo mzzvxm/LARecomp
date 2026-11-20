@@ -48,6 +48,7 @@
 #include <string>
 
 #include "camera.h"
+#include "director/director_game.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
 #include "larecomp_guest.h"
@@ -377,6 +378,8 @@ bool CinematicCameraApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     }
 
     WriteCamera(base, sp, v);
+    // The Director (when it is on) reads the camera the frame shows from the slots just written: the exact pose of the scene's camera.
+    if (director::Enabled()) director::NoteSceneCameraWritten(base, sp, mode);
     g.was_applied = true;
     ++g.frames;
     if (g.cut_pending) {
