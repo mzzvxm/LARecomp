@@ -8,8 +8,10 @@
 //   car <id> spawn profile <N> at <x,y,z> [heading <deg>]  a car from garage slot N of the player's save, dressed as the owner left it
 //   car <id> ambient <model> at <x,y,z> [heading <deg>] [paint <n>]    a REAL ambient (traffic-class) car, placed through AmbientMgr_AddAmbientToLayout (ambient_car.h);
 //                                                          it stands still where it is put, with no route, and goes when the scene ends
+//   car <id> spawn|ambient ... near <car> <right>,<up>,<forward> [heading <deg>]   the same, at a place in another car's frame (below)
 //   car <id> delete                                        the car goes (every car a scene spawned or placed goes when it ends)
 //   car player profile <N>                                 the player's own car becomes garage slot N (the old one comes back at the end)
+//   car player at <x,y,z> [heading <deg>]                  the player's own car is put at that place (below); he is put back at the scene's end when that is safe
 //   car <id> path <route file> [speed <x>] [mode brain|kinematic]   the car drives a route (work package M4c; path_follow.h has the file)
 //   car <id> stop                                          the car stops where it is (a path ends; the car stays)
 //
@@ -35,6 +37,19 @@
 // game's generators are held while the car is loaded. A garage car (`spawn profile N`) is dressed as the owner left it: `paint` there
 // is an error.
 //
+// `near <car> <right>,<up>,<forward>` (instead of `at`, for `spawn` and `ambient`) puts the car at a place in ANOTHER car's frame: so many metres to its right, up and
+// ahead of it (the frame is the car's own: right and forward lie along its matrix rows, so a car on a slope has them tilted with it). <car> is `player` or the id of a car the
+// scene made earlier (a spawned car must be ready, an ambient car placed, before a car can be near it). The place is worked out when the line runs, from the pose that car has
+// THEN; until it has a pose (a car spawned a moment ago, the player's car still being put by `car player at`) the car waits, and the log says what for. `heading` after `near`
+// is relative: degrees from that car's heading (0, the default, is the same way as it; 180 faces it; 90 is a quarter turn to its LEFT: a scene heading grows counter-clockwise seen from
+// above, 0 along +Z, 90 along +X). `at` and `near` do not go together.
+// A car's width is not known here: two cars that are to stand 1.5 m apart side by side are (their half widths + 1.5) apart: 3.35 for two 1.85 m cars.
+//
+// `car player at <x,y,z> [heading <deg>]` is the one statement that moves the PLAYER's car. It is put there with Racer_Teleport on his racer when the line runs, with no
+// speed (the same native a spawned car is put with; it sets the matrix, no ground snap, so ask for a y a little above the road and the car settles on it). Without `heading` he
+// keeps the way he faces. When the scene ends he is put back where he stood before the first `car player at` (Racer_Teleport again) only if that is safe: his car is the same one,
+// he is still within 5 m of where the scene left him (somebody who drove off is not fetched back), the game is in free roam, and the garage dressing is done.
+//
 // Any other verb is not this file's: ParseCarCommand says kOtherVerb and the scene parser lets it through (the runner warns).
 //
 
@@ -49,7 +64,7 @@
 
 namespace mc::cinematic {
 
-enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile, kPath, kStop, kAmbient };
+enum class CarVerb : uint8_t { kSpawn, kDelete, kProfile, kPath, kStop, kAmbient, kPlace };
 enum class PathMode : uint8_t { kKinematic, kBrain };
 enum class CarSource : uint8_t { kModel, kGarage };  // spawn: a vehicle name, or a garage slot
 
@@ -60,8 +75,14 @@ struct CarCommand {
     std::string model;  // kModel: the vehicle name, lower case
     int slot = -1;      // kGarage, and the profile verb: the garage slot, from 0
     double position[3] = {0.0, 0.0, 0.0};
-    double heading = 0.0;  // degrees in [0, 360): the camera's yaw convention
+    double heading = 0.0;  // degrees in [0, 360): the camera's yaw convention (`relative`: the offset from the other car's heading)
     bool has_heading = false;
+    // spawn, ambient: `near <car> <right>,<up>,<forward>`: the place is in the frame of the car `anchor` (an id, or "player"), worked out when the line runs
+    // (ResolveRelative in car_spawn.h); `heading` is then the offset from that car's heading. `position` is not used until the Director has resolved it.
+    // (Named `relative`, not `near`: windows.h defines `near` as an empty macro.)
+    bool relative = false;
+    std::string anchor;
+    double offset[3] = {0.0, 0.0, 0.0};  // metres to the anchor's right, up and ahead
     // path:
     std::string route;                  // the route file as written
     SpeedSpec speed;                    // how fast
@@ -183,12 +204,55 @@ inline std::string Num(double v) {
     return buf;
 }
 
-constexpr const char* kSpawnUsage = "car <id> spawn <model|profile N> at <x,y,z> [heading <deg>] [paint <n>]";
-constexpr const char* kAmbientUsage = "car <id> ambient <model> at <x,y,z> [heading <deg>] [paint <n>]";
+constexpr const char* kSpawnUsage = "car <id> spawn <model|profile N> (at <x,y,z> | near <car> <right,up,forward>) [heading <deg>] [paint <n>]";
+constexpr const char* kAmbientUsage = "car <id> ambient <model> (at <x,y,z> | near <car> <right,up,forward>) [heading <deg>] [paint <n>]";
+constexpr const char* kPlaceUsage = "car player at <x,y,z> [heading <deg>]";
+constexpr double kMaxNearOffset = 1000.0;  // metres: a car "near" another is within a kilometre (an ambient car must be within one of the player)
 
 inline CarParse Fail(std::string* error, const std::string& message) {
     *error = message;
     return CarParse::kError;
+}
+
+// The three numbers after a keyword: as one word "a,b,c" or as three words. `first` is the index of the first number (the word after `at`, or after the car's id for `near`),
+// `key` the keyword for the messages, `shape` what the three are ("x,y,z") and `what` what they make ("position"). Moves *i past them. The messages are the `at` ones of old.
+inline bool ReadTriple(const std::vector<std::string>& w, size_t* i, size_t first, const char* key, const char* shape, const char* what, double out[3], std::string* error) {
+    if (first >= w.size()) {
+        *error = std::string(key) + " needs " + shape;
+        return false;
+    }
+    if (w[first].find(',') != std::string::npos) {
+        if (!ParseTriple(w[first], out)) {
+            *error = std::string("bad ") + what + " '" + w[first] + "' (" + shape + ": three numbers)";
+            return false;
+        }
+        *i = first + 1;
+        return true;
+    }
+    if (first + 2 >= w.size()) {
+        *error = std::string(key) + " needs " + shape + " (as " + shape + " or as three numbers)";
+        return false;
+    }
+    for (size_t k = 0; k < 3; ++k) {
+        if (!ParseNumber(w[first + k], &out[k])) {
+            *error = std::string("bad ") + what + " '" + w[first + k] + "' (" + shape + ": three numbers)";
+            return false;
+        }
+    }
+    *i = first + 3;
+    return true;
+}
+
+// A car's id as the scene's parser takes one: a letter or _, then letters, digits and _.
+inline bool IsCarId(const std::string& s) {
+    if (s.empty()) return false;
+    for (size_t k = 0; k < s.size(); ++k) {
+        const char c = s[k];
+        const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+        const bool digit = c >= '0' && c <= '9';
+        if (!(alpha || (digit && k > 0))) return false;
+    }
+    return true;
 }
 
 // `ambient` true: the words of `car <id> ambient ...`: a model only (an ambient type of the game), the same `at` and `heading`.
@@ -231,23 +295,26 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
         const std::string key = Lower(w[i]);
         if (key == "at") {
             if (have_at) return Fail(error, std::string(verb) + ": a second 'at'");
-            if (i + 1 >= w.size()) return Fail(error, "at needs x,y,z");
-            if (w[i + 1].find(',') != std::string::npos) {
-                if (!ParseTriple(w[i + 1], out->position)) return Fail(error, "bad position '" + w[i + 1] + "' (x,y,z: three numbers)");
-                i += 2;
-            } else {
-                if (i + 3 >= w.size()) return Fail(error, "at needs x,y,z (as x,y,z or as three numbers)");
-                for (int k = 0; k < 3; ++k) {
-                    if (!ParseNumber(w[i + 1 + static_cast<size_t>(k)], &out->position[k])) {
-                        return Fail(error, "bad position '" + w[i + 1 + static_cast<size_t>(k)] + "' (x,y,z: three numbers)");
-                    }
-                }
-                i += 4;
-            }
+            if (!ReadTriple(w, &i, i + 1, "at", "x,y,z", "position", out->position, error)) return CarParse::kError;
             for (double c : out->position) {
                 if (std::fabs(c) > kMaxCoordinate) return Fail(error, "the position is outside the world (more than 100000 from the origin)");
             }
             have_at = true;
+        } else if (key == "near") {
+            if (out->relative) return Fail(error, std::string(verb) + ": a second 'near'");
+            if (i + 1 >= w.size()) return Fail(error, "near needs a car and a place in its frame (near player 3.35,0,0: right, up, forward in metres)");
+            std::string anchor = w[i + 1];
+            if (!IsCarId(anchor)) {
+                return Fail(error, "near needs the id of a car, or player ('" + anchor + "' is not one): near player 3.35,0,0 (right, up, forward in metres)");
+            }
+            if (Lower(anchor) == "player") anchor = "player";
+            if (anchor == out->id) return Fail(error, "car " + out->id + " cannot be near itself");
+            if (!ReadTriple(w, &i, i + 2, "near", "right,up,forward", "offset", out->offset, error)) return CarParse::kError;
+            for (double c : out->offset) {
+                if (std::fabs(c) > kMaxNearOffset) return Fail(error, "the offset is more than 1000 m from the car it is near: a car that far is placed with `at`");
+            }
+            out->relative = true;
+            out->anchor = anchor;
         } else if (key == "heading") {
             if (out->has_heading) return Fail(error, std::string(verb) + ": a second 'heading'");
             double h = 0.0;
@@ -266,10 +333,42 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
             out->has_paint = true;
             i += 2;
         } else {
-            return Fail(error, std::string(verb) + ": unknown option '" + w[i] + "' (at, heading, paint)");
+            return Fail(error, std::string(verb) + ": unknown option '" + w[i] + "' (at, near, heading, paint)");
         }
     }
-    if (!have_at) return Fail(error, std::string(verb) + " needs a place: " + usage);
+    if (have_at && out->relative) {
+        return Fail(error, std::string(verb) + ": `at` (a place in the world) and `near` (a place in a car's frame) do not go together: give one of them");
+    }
+    if (!have_at && !out->relative) return Fail(error, std::string(verb) + " needs a place: " + usage);
+    return CarParse::kOk;
+}
+
+// `car player at <x,y,z> [heading <deg>]` (w = the words after `car`: the id, `at`, ...): the player's own car is put at that place.
+inline CarParse ParsePlace(const std::vector<std::string>& w, CarCommand* out, std::string* error) {
+    out->verb = CarVerb::kPlace;
+    bool have_at = false;
+    size_t i = 1;
+    while (i < w.size()) {
+        const std::string key = Lower(w[i]);
+        if (key == "at") {
+            if (have_at) return Fail(error, "car player at: a second 'at'");
+            if (!ReadTriple(w, &i, i + 1, "at", "x,y,z", "position", out->position, error)) return CarParse::kError;
+            for (double c : out->position) {
+                if (std::fabs(c) > kMaxCoordinate) return Fail(error, "the position is outside the world (more than 100000 from the origin)");
+            }
+            have_at = true;
+        } else if (key == "heading") {
+            if (out->has_heading) return Fail(error, "car player at: a second 'heading'");
+            double h = 0.0;
+            if (i + 1 >= w.size() || !ParseNumber(w[i + 1], &h)) return Fail(error, "heading needs degrees (heading 270)");
+            out->heading = NormalizeDegrees(h);
+            out->has_heading = true;
+            i += 2;
+        } else {
+            return Fail(error, "car player at: unknown option '" + w[i] + "' (heading; a car near another is `spawn ... near`)");
+        }
+    }
+    if (!have_at) return Fail(error, std::string("car player at needs a place: ") + kPlaceUsage);
     return CarParse::kOk;
 }
 
@@ -345,11 +444,11 @@ inline CarParse ParseCarCommand(const std::vector<std::string>& w, CarCommand* o
     const std::string verb = Lower(w[1]);
     const bool player = Lower(w[0]) == "player";
     if (verb == "spawn") {
-        if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` applies to it)");
+        if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` and `car player at ...` apply to it)");
         return ParseSpawn(w, out, error);
     }
     if (verb == "ambient") {
-        if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` applies to it)");
+        if (player) return Fail(error, "'player' is the player's own car: pick another id (only `car player profile N` and `car player at ...` apply to it)");
         return ParseSpawn(w, out, error, true);
     }
     if (verb == "delete" || verb == "despawn") {
@@ -357,6 +456,12 @@ inline CarParse ParseCarCommand(const std::vector<std::string>& w, CarCommand* o
         if (w.size() != 2) return Fail(error, "car <id> delete takes nothing after it");
         out->verb = CarVerb::kDelete;
         return CarParse::kOk;
+    }
+    if (verb == "at") {
+        if (!player) {
+            return Fail(error, "only the player's car is put with `at` (car player at <x,y,z> [heading <deg>]); a spawned car is placed by its own spawn or ambient line (`at`, or `near` another car)");
+        }
+        return ParsePlace(w, out, error);
     }
     if (verb == "profile") {
         if (!player) {
@@ -393,13 +498,21 @@ inline std::string DescribeCarCommand(const CarCommand& c) {
             return c.id + " stop";
         case CarVerb::kPath:
             return c.id + " path " + c.route + " at " + DescribeSpeed(c.speed) + " (" + (c.mode == PathMode::kBrain ? "brain" : "kinematic") + ")";
+        case CarVerb::kPlace:
+            return c.id + " at (" + Num(c.position[0]) + ", " + Num(c.position[1]) + ", " + Num(c.position[2]) + ")" +
+                   (c.has_heading ? " heading " + Num(c.heading) : std::string(" (keeps the way it faces)"));
         case CarVerb::kSpawn:
         case CarVerb::kAmbient:
             break;
     }
     std::string out = c.id + (c.verb == CarVerb::kAmbient ? " ambient " : " spawn ");
     out += c.source == CarSource::kGarage ? "profile " + std::to_string(c.slot) : c.model;
-    out += " at (" + Num(c.position[0]) + ", " + Num(c.position[1]) + ", " + Num(c.position[2]) + ") heading " + Num(c.heading);
+    if (c.relative) {
+        out += " near " + c.anchor + " (" + Num(c.offset[0]) + " right, " + Num(c.offset[1]) + " up, " + Num(c.offset[2]) + " ahead) heading " + (c.has_heading ? "+" + Num(c.heading) : std::string("+0.00")) +
+               " from its own";
+    } else {
+        out += " at (" + Num(c.position[0]) + ", " + Num(c.position[1]) + ", " + Num(c.position[2]) + ") heading " + Num(c.heading);
+    }
     if (c.has_paint) out += " paint " + std::to_string(c.paint) + (c.paint_default ? " (the default)" : "");
     return out;
 }
