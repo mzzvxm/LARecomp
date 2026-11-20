@@ -84,7 +84,7 @@ inline constexpr uint64_t kTrafficLensPs = 0x25E3BB37714FA645ull;  // xAmbientCa
 // The settings' words, as the render thread reads them. `auto` is the class's cell; a word that is no value counts as `auto`.
 enum class Mode : uint8_t { kOff, kOn };
 
-// Whether the lit shaders' headlight variant is to be chosen for a draw now: the rig published a light (pipelines.cpp ChoosePackedVariant). Any thread.
+// Whether the lit shaders' headlight variant is to be chosen for a draw now: the rig published a light (pipelines.cpp WantedFeatures). Any thread.
 bool VariantSelected();
 
 // The shadow producer's side: this frame's views and the atlas they are in (the bindless slots of the texture and of a sampler). `frame` null, or no

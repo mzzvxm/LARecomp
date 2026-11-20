@@ -112,8 +112,9 @@ bool GlowSoftSelected() {
 // needs the draw (the UI phase, its target's scale and its textures' filters), so the Scene sets it on the key after this
 // (Scene::UiSharpDraw); each is read at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders
 // draw and the picture stays the game's (the environment map's variant is the same arithmetic at the game's size, but that is not
-// asked). A feature that composes with another (variant_chain.h kFeatures composes_with) adds its line here like the others: it
-// says whether ITS setting is on, and nothing about the others.
+// asked). The cars' headlights (kFeatureHeadlight, headlight_rig.h) are wanted while the rig has a light this frame. A feature that
+// composes with another (variant_chain.h kFeatures composes_with) adds its line here like the others: it says whether ITS setting
+// is on, and nothing about the others.
 uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
   namespace sp = larecomp::shaderpack;
   uint32_t wanted = 0;

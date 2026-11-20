@@ -290,6 +290,8 @@ constexpr Audited kAudited[] = {
     {"scene.cpp", "memcmp(&", 2,
      "the last uploaded SharedConstants (the plain draws' and the variant draws' kept copies): members of 4 bytes only, so no padding is possible; a difference costs one upload "
      "(the variant blocks are compared as arrays of bytes: memcmp(block.data(), ...), not as structs)"},
+    {"local_shadow.cpp", "memcmp(&", 1,
+     "the headlight shadow replay's collected SharedConstants (consecutive draws repeat the block): members of 4 bytes only, so no padding is possible; a difference costs one more copy"},
     {"car_rt_scene_rules.h", "memcmp(&", 1, "a float compared bit for bit on purpose (the check reads back what the shader read)"},
     {"pipelines.cpp", "bytes of &", 4, "the cache file's writer: a uint32, the 104-byte key record, the layout hash"},
 };
