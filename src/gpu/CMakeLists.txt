@@ -182,6 +182,11 @@ add_executable(larecomp_volumetrics_rules_test EXCLUDE_FROM_ALL volumetrics_rule
 # of feat/headlights when they are in the tree) likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_inputs_test, then run src/gpu/larecomp_volumetrics_inputs_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_inputs_test EXCLUDE_FROM_ALL volumetrics_inputs_test.cpp)
+# The volumetric light's stability rules (volumetrics_stable.h: a lamp's term averaged over a slice of the grid, the composite's samples, the history's weight as a time
+# constant) and a simulation of the passes for a camera driving at a street lamp, which puts a number on the flicker of the first version and of the fixes; given the
+# src/gpu folder it also checks that the shaders' flags are the header's, likewise:
+#   cmake --build <dir> --target larecomp_volumetrics_stable_test, then run src/gpu/larecomp_volumetrics_stable_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_volumetrics_stable_test EXCLUDE_FROM_ALL volumetrics_stable_test.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
