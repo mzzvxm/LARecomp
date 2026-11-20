@@ -613,7 +613,7 @@ void SourceChecks(const std::string& gpu) {
   }
   // the setting: debug-only, live, on by default
   const setting_source::Info setting = setting_source::Find(gpu, cpp, "mcla_gpu_ao_gbuffer_normals");
-  Check(setting_source::DefaultIsTrue(setting), "the setting mcla_gpu_ao_gbuffer_normals exists and defaults to true (the consumers ask for the plane where they run)");
+  Check(setting.found && !setting_source::DefaultIsTrue(setting), "the setting mcla_gpu_ao_gbuffer_normals exists and defaults to false (2026-11-20: the G-buffer stays off by default until a feature that needs it lands; its cost)");
   Check(setting.debug_only && setting.live, "... it is debug-only and live");
   Check(Has(cpp, "larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get()"), "ao.cpp reads the setting");
   // the ask

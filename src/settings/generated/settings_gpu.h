@@ -113,7 +113,7 @@ class GPUSettings final : public rex::SettingOwner {
     "comparing the cost and the picture. Live; the first frame after the change makes the other pipeline on the "
     "render thread (a debug switch: a hitch of tens of milliseconds, once).", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_ao_gbuffer_normals, true, "Diagnostic (G-buffer, GB-E): the ambient occlusion, the contact shadows and the bounce light take each pixel's surface normal from the G-buffer (the "
+  REX_SETTING(bool, mcla_gpu_ao_gbuffer_normals, false, "Diagnostic (G-buffer, GB-E; off by default since 2026-11-20: the G-buffer costs 0.04 to 0.2 ms of the graphics card for a small change to these passes, so it stays off until a feature that needs it lands): the ambient occlusion, the contact shadows and the bounce light take each pixel's surface normal from the G-buffer (the "
     "world normal of the surfaces whose shader has the G-buffer variant, turned into view space) in place of working it out from the depth's neighbours in "
     "every pass: no depth edge bends it, the passes read one image that a normal pass makes once a frame, and the bounce light's facing test reads the "
     "sample's normal instead of a second depth. A pixel the G-buffer holds no data for (impostors, billboards, the shaders no family covers yet) takes the "
