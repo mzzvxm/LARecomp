@@ -1240,10 +1240,12 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_vol_stable, true, "Diagnostic: keeps the volumetric light steady in motion: a street lamp's glow is averaged over each slice of the "
     "light's grid instead of sampled once at a random place in it (so it no longer pulses as the camera moves and the history no longer has "
     "noise to average), a pixel at an edge of depth looks the light up at every sample of the picture's anti-aliasing instead of the first, "
-    "the history's weight follows time, not the frame count, and the lamps fade in a real 0.35 s whatever the frame rate. False: the first version. Live.", rex::kDebugOnly);
+    "the history's weight follows time, not the frame count, the lamps fade in a real 0.35 s whatever the frame rate, a shadowed headlight takes three taps of its "
+    "shadow map along each cell of the grid, the history gives way where a car's headlights moved, and a frame whose camera is not known takes the previous one moved on by its "
+    "last step. False: the first version. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_vol_view, 0, "Diagnostic: 1 shows only the light the volumetric light adds, in place of the picture (to see or measure how steady "
-    "it is), 2 the same eight times brighter, 0 the picture. The bloom and the tone map still follow it. Live.", rex::kDebugOnly, rex::Range{0, 2});
+    "it is), 2 the same eight times brighter, 3 thirty-two times brighter (for the faint headlights), 0 the picture. The bloom and the tone map still follow it. Live.", rex::kDebugOnly, rex::Range{0, 3});
 
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "

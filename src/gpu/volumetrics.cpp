@@ -337,7 +337,7 @@ void Volumetrics::BeginFrame() {
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
   stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
-  view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 2));
+  view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 3));
   const vol::Choice choice = ReadChoice();
   Level level = choice.level;
   if (!ready_ && vol::On(level) && !shaders_failed_ && MakeLayoutAndShaders()) {
@@ -542,6 +542,7 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
   if (play_view_ == pause_view_) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
@@ -551,12 +552,14 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   const float height = BankFloat(ps, 62, 1);
   if (!(width >= 16.0f && width <= 16384.0f && height >= 16.0f && height <= 16384.0f)) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
   temporal::Camera camera;
   if (temporal::ExtractCamera(ps, uint32_t(width + 0.5f), uint32_t(height + 0.5f), frame_, &camera) != temporal::Reject::kNone) {
     have_previous_ = false;
+    have_older_ = false;
     vs_pose_trusted_ = false;
     return;
   }
@@ -579,6 +582,11 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     }
   } else {
     vs_pose_trusted_ = false;
+  }
+  // The camera of the frame before the previous one, for the volume that has to guess this frame's camera (VOL-STABLE-2: volumetrics_stable.h ExtrapolateCamera).
+  have_older_ = same_kind;
+  if (same_kind) {
+    cam_older_ = CameraOf(previous_);
   }
   previous_ = camera;
   previous_pause_ = pause;
@@ -891,6 +899,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // camera); the lens is always the previous frame's.
   vol::VolCamera camera = CameraOf(previous_);
   const bool current = PoseFromVertexConstants(&camera);
+  // Where the vertex constants are not trusted the previous camera is a frame behind a moving one: the steady rules move it on by its own last step (a still camera stays
+  // where it is; a cut, or an axis that turned half way round, is left alone).
+  bool extrapolated = false;
+  if (!current && stable_ && have_older_) {
+    vol::VolCamera guess;
+    if (vol::ExtrapolateCamera(cam_older_, camera, &guess)) {
+      camera = guess;
+      extrapolated = true;
+    }
+  }
 
   vol::VolFrameContext context;
   context.frame = frame_;
@@ -1005,8 +1023,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if (current) {
     ++current_camera_;
   }
+  if (extrapolated) {
+    ++extrapolated_camera_;
+  }
   history_.valid = true;
   history_.camera = camera;
+  // the headlights this volume was made with: the next frame's inject compares its own with them (a moving light leaves the history wrong where it was)
+  history_.headlight_count = stable_ ? std::min(constants.counts[1], uint32_t(vol::kMaxHeadlights)) : 0u;
+  for (uint32_t i = 0; i < history_.headlight_count; ++i) {
+    history_.headlights[i] = constants.headlights[i];
+  }
   history_.far_m = plan.far_m;
   history_.near_m = grid.near_m;
   history_.weight = 0.0f;
@@ -1074,7 +1100,7 @@ bool Volumetrics::RecordVolume(plume::RenderCommandList* list, uint32_t frame_sl
   push.slots[0] = use_history ? read.slot : 0u;
   push.slots[1] = write.slot;
   push.slots[2] = (use_history ? 1u : 0u) | (use_shadows ? 2u : 0u);
-  push.slots[3] = stable_ ? vol::kInjectFlagSliceLamps : 0u;
+  push.slots[3] = stable_ ? (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads) : 0u;
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(heap_->sampler_set(), 1);
@@ -1315,7 +1341,8 @@ void Volumetrics::Census() {
                           look_weights_.clear, look_weights_.fog, look_weights_.rain, look_weights_.night, look_weights_.low, look_weights_.day, look_.sigma, look_.lamp_strength,
                           look_.head_strength, look_.sun_strength, look_.g_sun, look_.g_lamp, look_.g_head, look_.extinction, look_.cap));
   // VOL-STABLE: which rules ran (mcla_gpu_vol_stable), the history's weight of the last volume and the camera's smoothed move, the debug view
-  REXLOG_INFO("{} frame {}: steady rules {}, history weight {:.3f} (camera move {:.3f}), debug view {}", kPrefix, frame_, stable_ ? "on" : "off (the first version)", last_weight_, motion_, view_);
+  REXLOG_INFO("{} frame {}: steady rules {}, history weight {:.3f} (camera move {:.3f}), camera moved on from the last two frames' in {} of {} volumes, debug view {}", kPrefix, frame_,
+              stable_ ? "on" : "off (the first version)", last_weight_, motion_, extrapolated_camera_, volumes_, view_);
 }
 
 }  // namespace mcla::gpu

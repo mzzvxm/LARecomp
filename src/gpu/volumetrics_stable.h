@@ -25,10 +25,27 @@
 //   4. THE LAMPS' FADE AND THE HAZE'S DRIFT RAN ON A 60 FPS CLOCK (lamps entering or leaving the pick; the wind). `elapsed_s` was the frames since the last volume
 //      over 60: at 240 FPS a lamp faded in 88 ms, not 350. It is the scene clock's time now (the wall clock, or a take's frames times its step).
 //   5. THE CAMERA OF THE VOLUME IS THE PREVIOUS FRAME'S WHEN THE VERTEX CONSTANTS ARE NOT TRUSTED (every effect; the first frame of a move, or after a frame
-//      that mismatched): the volume is one frame behind the picture. NOT FIXED here (the second point could record the passes with the anchor's own camera,
-//      a change of the frame's structure that needs a run to check); the census counts how often it happens.
-//   6. THE HEADLIGHTS' SHADOW EDGES (headlights only): the map's compare is binary and sampled once per voxel at a jittered point, so a shadow edge shimmers
-//      until the history has averaged it. The view picker keeps its views with a hysteresis (local_shadow_rules.h ViewPicker) and is not the cause.
+//      that mismatched): the volume is one frame behind the picture. VOL-STABLE-2: the census of the takes says `camera this frame's in 697 of 697 volumes` (every
+//      take of the first run): the vertex pose is trusted all through a drive, so this is NOT what is left of the chase's flicker; where it is not trusted the volume now
+//      takes the previous camera moved on by its own last step (ExtrapolateCamera), which is a frame closer than the previous one at any steady move.
+//   6. THE HEADLIGHTS (headlights only). Two things: (a) the shadow edge. A voxel is up to a slice thick (5 to 10 m at 40 to 80 m) and a shadow's edge is a hard step
+//      inside it, but the voxel took ONE jittered sample, so an edge voxel flipped between lit and shadowed by its jitter and the history only averaged it over a few
+//      frames. Now a shadowed headlight takes kHeadlightShadowTaps samples, one in each third of the slice with the frame's one offset (StratifiedDepth), and averages
+//      them. (b) A MOVING light against the history. The history is the volume at the previous camera, reprojected: a light that moved 0.2 m (12 m/s) or 1 m (60 m/s)
+//      leaves its old beam in the history, and a weight of 0.9 keeps it for 8 frames: a trail of 1.7 m at 12 m/s and 8 m at 60 m/s behind the beam's edges and shadows.
+//      The inject now compares the headlights of this frame with the ones of the volume the history holds (the constants carry both) and lowers the history's weight
+//      where the light's own term changed by more than a few per cent of the voxel's light (HistoryWeightUnderLightMotion): a parked car's beam keeps the full history,
+//      a passing one's edges take the frame's own value.
+//
+//   WHAT THE FIRST RUN'S NUMBERS WERE (VOL-STABLE-2, from the takes, no game run): the chase's and the headlight-only flicker that the first run kept were mostly the test
+//   and the view, not the volume. (i) The chase scene's camera is not smooth: the pole's image in the PICTURE take moves 0.25 to 1.1 pixels a frame (mean 0.69) in the same
+//   order in the first version's run and the steady one, a sub-pixel jitter that every sharp glow and edge answers with a second difference; the rigid dolly's steps are
+//   exact to 0.01 pixel and its flicker is 0.07 per cent. A chase run's floor is the camera's own. (ii) The headlights alone light 1.8 levels in the x8 view: 97.5 per
+//   cent of the lit pixels are the same in two frames and 95 per cent of what the metric sums is within one level (the picture is 8 bits: a band's edge that moves a level),
+//   the metric's own floor. What is above one level (`ex` of vol_stable_metric.py) fell from 0.125 to 0.008 per cent: 6 per cent of the first version's, where the metric's
+//   px said 57. The view 3 (x32) and a camera that moves exactly (scenes\vol-stable-pan.scene) measure what is left. (iii) What the volume still does, from the simulation of
+//   the passes: a lamp narrower than a slice (a pool of 6 m past 40 m) still pulses 1.7 per cent of its light as the camera passes a slice, because a surface in the lamp's own
+//   slice (the pole) gets the cumulative light by a ramp across the slice; only a second value per voxel (where in the slice the light is) would take that away.
 //
 // NOT CAUSES (read in the code): the lamp list popping (volumetrics_lamps.h: lamps are keyed by their place, fade over kFadeSeconds, keep their slot while they
 // fade and win a tie by 1.3x: nothing pops, only the 60 FPS clock of 4 was wrong); the history starting again too often (kCutStepMetres 25 m and 0.7 rad are
@@ -50,14 +67,19 @@ namespace mcla::gpu::volumetrics {
 // the flags the host gives the passes (the shaders' own constants say the same: the rules test reads them)
 // ---------------------------------------------------------------------------
 
-// The inject's push (VolPush::slots.w): bit 0: the lamps' term is averaged over each slice (1 / the first version's point sample).
+// The inject's push (VolPush::slots.w): bit 0: the lamps' term is averaged over each slice (1 / the first version's point sample) and sampled at the voxel's centre in x
+// and y, not at a jittered place (VOL-STABLE-2: the term is smooth across a voxel, so the jitter was noise and nothing else); bit 1: the headlights' rules (the stratified
+// shadow taps and the history's weight under a light's motion).
 inline constexpr uint32_t kInjectFlagSliceLamps = 1u;
+inline constexpr uint32_t kInjectFlagSteadyHeads = 2u;
 // The composite's push (VolApplyPush::slots.w): bits 0 to 7 the host sample that is the guest's sample 0, bit 8: every sample's depth is used (0: sample 0 only),
-// bits 9 and 10 the debug view (0 the picture, 1 the volume's light alone, 2 the same times 8).
+// bits 9 and 10 the debug view (0 the picture, 1 the volume's light alone, 2 the same times 8, 3 the same times 32).
 inline constexpr uint32_t kApplyFlagAllSamples = 0x100u;
 inline constexpr uint32_t kApplyViewShift = 9u;
 inline constexpr uint32_t kApplyViewMask = 3u;
-inline constexpr float kApplyViewGain = 8.0f;  // the debug view 2's multiplier
+inline constexpr float kApplyViewGain = 8.0f;       // the debug view 2's multiplier
+inline constexpr float kApplyViewGainHigh = 32.0f;  // the debug view 3's: the headlights alone are 1.8 levels in view 2, and the 8 bit steps of the picture are the floor of the metric
+inline constexpr float ApplyViewGain(uint32_t view) { return view == 2u ? kApplyViewGain : (view == 3u ? kApplyViewGainHigh : 1.0f); }
 
 inline constexpr uint32_t ApplyWord(uint32_t depth_sample, bool all_samples, uint32_t view) {
   return (depth_sample & 0xFFu) | (all_samples ? kApplyFlagAllSamples : 0u) | ((view & kApplyViewMask) << kApplyViewShift);
@@ -250,6 +272,131 @@ inline float HistoryWeightFor(const GridDesc& g, bool valid, float dt, float mot
   }
   const float tau = kHistoryTauStill + (kHistoryTauMoving - kHistoryTauStill) * std::clamp(motion, 0.0f, 1.0f);
   return std::clamp(std::exp(-ClampFrameSeconds(dt) / tau), kHistoryMinWeight, kHistoryMaxWeight);
+}
+
+
+// ---------------------------------------------------------------------------
+// 4. the headlights: stratified shadow taps, and the history under a light's motion
+// ---------------------------------------------------------------------------
+
+// A shadowed headlight takes this many taps of its shadow map along the voxel's slice, one in each part of it (the frame's one offset `u` in 0..1 places them).
+inline constexpr uint32_t kHeadlightShadowTaps = 3;
+
+// The depth of tap `i` of `n`: the stretch [z0, z1] cut into n equal parts, the tap at the fraction `u` of its part. With u uniform every tap is uniform in its part and
+// the n of them cover the slice: the edge of a shadow inside the slice takes a share of the taps by where it is, where one tap took all or none of the slice.
+inline float StratifiedDepth(float z0, float z1, uint32_t i, uint32_t n, float u) { return z0 + (float(i) + u) / float(std::max(n, 1u)) * (z1 - z0); }
+
+// What a headlight scatters toward the camera at `p` seen along the unit ray `ray`, per unit of its colour and strength, WITHOUT its shadow: the low beam's shape, the cone,
+// the distance law and the phase function (the twin of the inject's SpotLight for a headlight with the shadow lookup left out).
+inline float HeadlightTermUnshadowed(const VolLamp& l, const float p[3], const float ray[3], float g) {
+  const float delta[3] = {p[0] - l.pos[0], p[1] - l.pos[1], p[2] - l.pos[2]};
+  const float dist_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+  if (!(dist_sq < l.range * l.range)) {
+    return 0.0f;
+  }
+  const float dist = std::sqrt(dist_sq);
+  const float inv = 1.0f / std::max(dist, 1e-4f);
+  const float travel[3] = {delta[0] * inv, delta[1] * inv, delta[2] * inv};
+  const float spot = SpotFactor(travel[0] * l.dir[0] + travel[1] * l.dir[1] + travel[2] * l.dir[2], l.cos_outer, l.cos_inner);
+  if (!(spot > 0.0f)) {
+    return 0.0f;
+  }
+  const float shape = HeadlightCutoff(travel[1]) * HeadlightNearFade(dist);
+  if (!(shape > 0.0f)) {
+    return 0.0f;
+  }
+  return spot * shape * LampFalloff(dist, l.range, l.pad[0]) * HenyeyGreenstein(-(travel[0] * ray[0] + travel[1] * ray[1] + travel[2] * ray[2]), g);
+}
+
+// How much the headlights' light at `p` differs between this frame's (`now`) and the history's (`before`): the largest channel of |sum now - sum before| of colour x term,
+// both without shadows (a shadow's edge moves with the light and is the same kind of change; the shadow lookup is left to the sample). 0 for a light that did not move.
+inline float HeadlightChange(const VolLamp* now, uint32_t n_now, const VolLamp* before, uint32_t n_before, const float p[3], const float ray[3], float g) {
+  float a[3] = {0.0f, 0.0f, 0.0f};
+  float b[3] = {0.0f, 0.0f, 0.0f};
+  for (uint32_t i = 0; i < n_now; ++i) {
+    const float t = HeadlightTermUnshadowed(now[i], p, ray, g);
+    for (int c = 0; c < 3; ++c) {
+      a[c] += now[i].colour[c] * t;
+    }
+  }
+  for (uint32_t i = 0; i < n_before; ++i) {
+    const float t = HeadlightTermUnshadowed(before[i], p, ray, g);
+    for (int c = 0; c < 3; ++c) {
+      b[c] += before[i].colour[c] * t;
+    }
+  }
+  return std::max({std::fabs(a[0] - b[0]), std::fabs(a[1] - b[1]), std::fabs(a[2] - b[2])});
+}
+
+// The history may be this far off (as a share of the voxel's light) before its weight is halved: 8 per cent is under what an eye sees in a glow and over the change a
+// beam's interior has in one frame of a car at 12 m/s (under 1 per cent).
+inline constexpr float kHeadlightHistoryTolerance = 0.08f;
+
+// The history's weight after the light's motion: weight / (1 + (change / total / tolerance)^2), `change` and `total` in the same units (the voxel's scattered light of the
+// frame, its largest channel, and the part of it that the light's motion changed). No change keeps the weight; a change as large as the voxel's light all but drops the history.
+inline float HistoryWeightUnderLightMotion(float weight, float change, float total) {
+  const float rel = change / std::max(total, 1e-6f);
+  const float r = rel / kHeadlightHistoryTolerance;
+  return weight / (1.0f + r * r);
+}
+
+// ---------------------------------------------------------------------------
+// 5. the camera, when the vertex constants are not trusted
+// ---------------------------------------------------------------------------
+
+// The camera one frame on from two consecutive ones, `older` then `newer`: the position moved on by the last step, each axis by its last change and made a frame again (unit,
+// at right angles). The previous camera is a frame behind the picture at any move; this one is behind only by the change of the move's speed. False (leave the camera as
+// it is) for a step that is a cut or an axis that turned half way round.
+inline bool ExtrapolateCamera(const VolCamera& older, const VolCamera& newer, VolCamera* out) {
+  float step2 = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    const float d = newer.pos[i] - older.pos[i];
+    step2 += d * d;
+  }
+  if (!(step2 <= 25.0f * 25.0f) || !std::isfinite(step2)) {
+    return false;
+  }
+  const float cosine = newer.forward[0] * older.forward[0] + newer.forward[1] * older.forward[1] + newer.forward[2] * older.forward[2];
+  if (!(cosine > 0.9f)) {
+    return false;
+  }
+  VolCamera c = newer;
+  float f[3];
+  float r[3];
+  for (int i = 0; i < 3; ++i) {
+    c.pos[i] = newer.pos[i] + (newer.pos[i] - older.pos[i]);
+    f[i] = newer.forward[i] + (newer.forward[i] - older.forward[i]);
+    r[i] = newer.right[i] + (newer.right[i] - older.right[i]);
+  }
+  auto normalise = [](float v[3]) {
+    const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(n > 1e-6f)) {
+      return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+      v[i] /= n;
+    }
+    return true;
+  };
+  if (!normalise(f)) {
+    return false;
+  }
+  // right made square to forward, then the up axis as right x forward (the camera's: right x up = backward)
+  const float rf = r[0] * f[0] + r[1] * f[1] + r[2] * f[2];
+  for (int i = 0; i < 3; ++i) {
+    r[i] -= rf * f[i];
+  }
+  if (!normalise(r)) {
+    return false;
+  }
+  const float u[3] = {r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+  for (int i = 0; i < 3; ++i) {
+    c.forward[i] = f[i];
+    c.right[i] = r[i];
+    c.up[i] = u[i];
+  }
+  *out = c;
+  return true;
 }
 
 }  // namespace mcla::gpu::volumetrics

@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "volumetrics_headlights.h"
 #include "volumetrics_lamps.h"
 #include "volumetrics_stable.h"
 
@@ -281,6 +282,7 @@ struct Plane {
 
 struct Setup {
   bool slice_lamps = false;       // the lamp's term averaged over the slice (the lamps take no z jitter)
+  bool centred_lamps = false;     // ... and sampled at the voxel's centre in x and y, not at the frame's jittered place (VOL-STABLE-2)
   bool stable_history = false;    // the time constant and the smoothed move
   float fps = 60.0f;
   float speed = 25.0f;            // m/s along the axis
@@ -301,7 +303,7 @@ void InjectPlane(const Setup& setup, const GridDesc& g, const VolCamera& cam, co
       (void)jx;
       const float jy = JitterUnit(Halton(frame % 16u + 1u, 3) + JitterUnit(n0 * 7.31f)) - 0.5f;
       const float jz = JitterUnit(Halton(frame % 16u + 1u, 5) + JitterUnit(n0 * 3.77f)) - 0.5f;
-      const float v = (float(y) + 0.5f + jy * 0.9f) / float(g.ny);
+      const float v = (float(y) + 0.5f + (setup.slice_lamps && setup.centred_lamps ? 0.0f : jy * 0.9f)) / float(g.ny);
       float value = 0.0f;
       if (setup.slice_lamps) {
         float dir[3];
@@ -542,14 +544,19 @@ void CheckDrive() {
   slice.slice_lamps = true;
   Setup full = slice;
   full.stable_history = true;
+  Setup centred = full;
+  centred.centred_lamps = true;
   Setup first144 = first;
   first144.fps = 144.0f;
   Setup history144 = first144;
   history144.stable_history = true;
   Setup full144 = full;
   full144.fps = 144.0f;
+  Setup centred144 = full144;
+  centred144.centred_lamps = true;
   const Row rows[] = {{"first version, 60 FPS", first},          {"slice average, 60 FPS", slice},           {"slice average + time history, 60 FPS", full},
-                      {"first version, 144 FPS", first144},      {"time history only, 144 FPS", history144}, {"all of it, 144 FPS", full144}};
+                      {"first version, 144 FPS", first144},      {"time history only, 144 FPS", history144}, {"all of it, 144 FPS", full144},
+                      {"... and lamps at the voxel's centre, 60 FPS", centred}, {"... and lamps at the voxel's centre, 144 FPS", centred144}};
   std::printf("  a camera drives at a street lamp at 25 m/s from 85 m to 18 m (lamp 55, pool %0.1f m, high grid): the composite of the pixel that images the lamp's pole (at the lamp's\n"
               "  depth) and of the street 15 m behind it, against the exact integral; the error as a share of the mean light, over the 85 to 35 m stretch where the pool is narrower\n"
               "  than a slice (rms of the error / its pulse over 12 frames or less / frame to frame jitter / the largest error)\n",
@@ -565,6 +572,13 @@ void CheckDrive() {
   double hf_history144 = 0.0;
   double pulse_first = 0.0;
   double pulse_slice = 0.0;
+  double hf_full = 0.0;
+  double pulse_full = 0.0;
+  double rms_full = 0.0;
+  double hf_centred = 0.0;
+  double pulse_centred = 0.0;
+  double rms_centred = 0.0;
+  double hf_centred144 = 0.0;
   for (const Row& row : rows) {
     const Series s = Drive(row.setup);
     const Flicker near_f = Measure(s.value, s.truth, s.distance, 35.0, 85.0);
@@ -587,6 +601,16 @@ void CheckDrive() {
       hf_history144 = near_f.hf;
     } else if (&row == &rows[5]) {
       hf_full144 = near_f.hf;
+    } else if (&row == &rows[2]) {
+      hf_full = near_f.hf;
+      pulse_full = near_f.pulse;
+      rms_full = near_f.rms_error;
+    } else if (&row == &rows[6]) {
+      hf_centred = near_f.hf;
+      pulse_centred = near_f.pulse;
+      rms_centred = near_f.rms_error;
+    } else if (&row == &rows[7]) {
+      hf_centred144 = near_f.hf;
     }
   }
   Check(hf_first > 0.0, "the first version's pole pixel has a flicker to measure");
@@ -596,6 +620,323 @@ void CheckDrive() {
   Check(pulse_slice < 0.6 * pulse_first, "and its pulse over 12 frames");
   Check(hf_history144 < 0.9 * hf_first144, "a time constant alone makes the jitter smaller at 144 FPS (more frames are averaged in the same time)");
   Check(hf_full144 < 0.2 * hf_first144, "all of the fixes together are at least five times steadier than the first version at 144 FPS");
+  // VOL-STABLE-2: the lamps at the voxel's centre take the jitter's noise away and change nothing else (the error against the exact integral and the pulse stay)
+  Check(hf_centred <= 0.7 * hf_full, "the lamps at the voxel's centre make the frame to frame jitter of the pole's pixel at most 0.7 of the jittered sample's at 60 FPS (" + std::to_string(hf_centred) + " against " + std::to_string(hf_full) + ")");
+  Check(hf_centred144 < 0.7 * hf_full144, "and at 144 FPS");
+  Check(rms_centred < 1.05 * rms_full + 1e-3, "the error against the exact integral does not grow");
+  Check(pulse_centred < 1.05 * pulse_full + 1e-3, "and the pulse of a slice that passes the lamp does not");
+}
+
+
+// --- the headlights (VOL-STABLE-2): the stratified taps of a shadow's edge, a moving light against the history ------------------------------------------
+
+// A shadow's edge inside a slice: the map says lit before the depth `edge` and dark after it. The slice's true light is the share of it that is lit.
+void CheckStratifiedTaps() {
+  Rng rng;
+  double worst_ratio = 0.0;
+  double mean_a = 0.0;
+  double mean_b = 0.0;
+  int rows = 0;
+  std::printf("  a shadow's edge inside a voxel's slice, a frame's estimate of its lit share and the history's (weight 0.9) after 3000 frames: rms error against the truth\n"
+              "    edge at     one tap (the first version)   three stratified taps\n");
+  for (int e = 1; e <= 9; ++e) {
+    const double p = double(e) / 10.0;
+    const float z0 = 40.0f;
+    const float z1 = 50.0f;
+    const float edge = z0 + float(p) * (z1 - z0);
+    auto lit = [&](float z) { return z < edge ? 1.0 : 0.0; };
+    double hist_a = p;
+    double hist_b = p;
+    double se_a = 0.0;
+    double se_b = 0.0;
+    double bias_b = 0.0;
+    const int frames = 3000;
+    for (int f = 0; f < frames; ++f) {
+      const float u = rng.Next();
+      const double one = lit(z0 + u * (z1 - z0));
+      double three = 0.0;
+      for (uint32_t i = 0; i < kHeadlightShadowTaps; ++i) {
+        three += lit(StratifiedDepth(z0, z1, i, kHeadlightShadowTaps, u));
+      }
+      three /= double(kHeadlightShadowTaps);
+      bias_b += three;
+      hist_a = 0.9 * hist_a + 0.1 * one;
+      hist_b = 0.9 * hist_b + 0.1 * three;
+      if (f >= 200) {
+        se_a += (hist_a - p) * (hist_a - p);
+        se_b += (hist_b - p) * (hist_b - p);
+      }
+    }
+    const double rms_a = std::sqrt(se_a / (frames - 200));
+    const double rms_b = std::sqrt(se_b / (frames - 200));
+    std::printf("    %.1f of it     %.4f                        %.4f\n", p, rms_a, rms_b);
+    CheckNear(bias_b / frames, p, 0.012, "the stratified estimate is unbiased: its mean over the frames is the lit share (edge at " + std::to_string(p) + ")");
+    worst_ratio = std::max(worst_ratio, rms_b / rms_a);
+    mean_a += rms_a;
+    mean_b += rms_b;
+    ++rows;
+  }
+  Check(worst_ratio < 0.7, "at every edge place three taps make the history's noise at most 0.7 of one tap's (worst " + std::to_string(worst_ratio) + ")");
+  Check(mean_b < 0.5 * mean_a, "and on average at most half of it (" + std::to_string(mean_b / rows) + " against " + std::to_string(mean_a / rows) + ")");
+  CheckNear(StratifiedDepth(10.0f, 40.0f, 0, 3, 0.0f), 10.0, 1e-5, "the first tap at offset 0 is the slice's start");
+  CheckNear(StratifiedDepth(10.0f, 40.0f, 2, 3, 0.999f), 39.99, 0.05, "the last tap at offset 1 is the slice's end");
+  CheckNear(StratifiedDepth(10.0f, 40.0f, 1, 3, 0.5f), 25.0, 1e-5, "the middle tap at offset 0.5 is the slice's middle");
+}
+
+// A car's headlight as the volume has it (the rig's units: colour x 2 x 26^2, near radius 26 m, the low beam's cone, 60 m of reach).
+VolLamp CarLight(float x, float y, float z) {
+  VolLamp l{};
+  l.pos[0] = x;
+  l.pos[1] = y;
+  l.pos[2] = z;
+  l.range = 60.0f;
+  l.dir[0] = 0.999f;
+  l.dir[1] = -0.04f;
+  l.dir[2] = 0.0f;
+  l.cos_outer = std::cos(40.0f * 3.14159265f / 180.0f);
+  l.cos_inner = std::cos(12.0f * 3.14159265f / 180.0f);
+  l.colour[0] = 1.0f;
+  l.colour[1] = 0.93f;
+  l.colour[2] = 0.78f;
+  l.shadow_view = -1;
+  ApplyHeadlightUnits(&l);
+  return l;
+}
+
+struct BeamRun {
+  double lag_m = 0.0;        // how far behind the light's own profile the history's profile lies (their centroids), metres
+  double rms_error = 0.0;    // the history's value against this frame's own, as a share of it, over the voxels the beam lights
+  double noise = 0.0;        // the frame to frame jitter of a voxel's value (rms of x(t) - (x(t-1) + x(t+1)) / 2, as a share of the mean) with 10 per cent noise on every frame's sample
+};
+
+// A line of voxels along the road at 1.2 m, 2 m to the side of the car's path, a light that drives along it at `speed` m/s at 60 FPS with the history blended at weight 0.9
+// (rule off) or at HistoryWeightUnderLightMotion's (rule on), the haze under it a small constant light.
+BeamRun BeamDrive(float speed, bool rule, float noise_level) {
+  const float dt = 1.0f / 60.0f;
+  const int count = 960;
+  const float spacing = 0.25f;
+  const float haze = 0.002f;                // the voxel's own light with no beam
+  const float gain = 0.0012f * kLightGain;  // sigma x the scene units
+  const float cam[3] = {0.0f, 1.5f, -12.0f};
+  std::vector<double> hist(size_t(count), 0.0);
+  std::vector<double> clean(size_t(count), 0.0);
+  Rng rng;
+  VolLamp before = CarLight(20.0f, 0.7f, 0.0f);
+  bool have = false;
+  double lag_sum = 0.0;
+  double err_sum = 0.0;
+  int measured = 0;
+  std::vector<double> probe_series;
+  for (int frame = 0; frame < 420; ++frame) {
+    const float x_light = 20.0f + speed * float(frame) * dt;
+    const VolLamp lamp = CarLight(x_light, 0.7f, 0.0f);
+    double peak = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const float p[3] = {float(i) * spacing, 1.2f, 2.0f};
+      float ray[3] = {p[0] - cam[0], p[1] - cam[1], p[2] - cam[2]};
+      Normalise(ray);
+      const double beam = double(HeadlightTermUnshadowed(lamp, p, ray, 0.6f)) * lamp.colour[1] * gain;
+      clean[size_t(i)] = haze + beam;
+      peak = std::max(peak, clean[size_t(i)]);
+      const double sample = haze + beam * (1.0 + noise_level * (2.0 * rng.Next() - 1.0));
+      if (!have) {
+        hist[size_t(i)] = sample;
+        continue;
+      }
+      double w = 0.9;
+      if (rule) {
+        const float change = HeadlightChange(&lamp, 1, &before, 1, p, ray, 0.6f) * gain;
+        w = HistoryWeightUnderLightMotion(0.9f, change, float(std::max(sample, 1e-9)));
+      }
+      hist[size_t(i)] = sample + (hist[size_t(i)] - sample) * w;
+    }
+    before = lamp;
+    have = true;
+    if (frame < 150) {
+      continue;
+    }
+    // the centroids of the beam's own profile and of the history's, over the light above the haze
+    double n0 = 0.0;
+    double n1 = 0.0;
+    double h0 = 0.0;
+    double h1 = 0.0;
+    double err = 0.0;
+    double en = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const double c = clean[size_t(i)] - haze;
+      const double h = std::max(hist[size_t(i)] - haze, 0.0);
+      n0 += c;
+      n1 += c * double(i) * spacing;
+      h0 += h;
+      h1 += h * double(i) * spacing;
+      if (clean[size_t(i)] > 0.05 * peak) {
+        err += std::fabs(hist[size_t(i)] - clean[size_t(i)]) / clean[size_t(i)];
+        en += 1.0;
+      }
+    }
+    if (n0 > 0.0 && h0 > 0.0) {
+      lag_sum += n1 / n0 - h1 / h0;
+      err_sum += err / std::max(en, 1.0);
+      ++measured;
+    }
+    probe_series.push_back(hist[size_t(std::clamp(int((x_light + 8.0f) / spacing), 0, count - 1))]);  // a voxel 8 m ahead of the light, in the beam
+  }
+  BeamRun out;
+  out.lag_m = lag_sum / std::max(measured, 1);
+  out.rms_error = err_sum / std::max(measured, 1);
+  double mean = 0.0;
+  for (double v : probe_series) {
+    mean += v;
+  }
+  mean /= double(std::max<size_t>(probe_series.size(), 1));
+  double sh = 0.0;
+  for (size_t i = 1; i + 1 < probe_series.size(); ++i) {
+    const double d = probe_series[i] - 0.5 * (probe_series[i - 1] + probe_series[i + 1]);
+    sh += d * d;
+  }
+  out.noise = std::sqrt(sh / double(std::max<size_t>(probe_series.size() - 2, 1))) / std::max(mean, 1e-12);
+  return out;
+}
+
+void CheckMovingLight() {
+  // the rule's numbers: no change keeps the weight, a change as large as the voxel's light all but drops it
+  CheckNear(HistoryWeightUnderLightMotion(0.9f, 0.0f, 1.0f), 0.9, 1e-7, "a light that did not move keeps the history's weight");
+  CheckNear(HistoryWeightUnderLightMotion(0.9f, kHeadlightHistoryTolerance, 1.0f), 0.45, 1e-5, "a change of the tolerance's size halves it");
+  Check(HistoryWeightUnderLightMotion(0.9f, 1.0f, 1.0f) < 0.01f, "a change as large as the voxel's light all but drops it");
+  Check(HistoryWeightUnderLightMotion(0.9f, 1.0f, 0.0f) < 0.01f, "a voxel the beam has left (no light now, light before) drops the history");
+  Check(HistoryWeightUnderLightMotion(0.9f, 0.0f, 0.0f) == 0.9f, "a voxel with no light and no change keeps the weight");
+  // the change: none for a light that stayed, a beam's own term for one that appeared or went
+  const VolLamp a = CarLight(10.0f, 0.7f, 0.0f);
+  const float p[3] = {25.0f, 1.2f, 2.0f};
+  float ray[3] = {p[0] - 0.0f, p[1] - 1.5f, p[2] + 12.0f};
+  Normalise(ray);
+  CheckNear(HeadlightChange(&a, 1, &a, 1, p, ray, 0.6f), 0.0, 1e-9, "a light that stayed has no change");
+  const float full = HeadlightChange(&a, 1, nullptr, 0, p, ray, 0.6f);
+  Check(full > 0.0f, "a light that appeared changes the voxel it lights");
+  const VolLamp b = CarLight(10.2f, 0.7f, 0.0f);
+  const float moved = HeadlightChange(&b, 1, &a, 1, p, ray, 0.6f);
+  Check(moved > 0.0f && moved < 0.1f * full, "a light that moved 0.2 m changes the beam's interior by under a tenth of its term (" + std::to_string(moved / full) + ")");
+  const float gone = HeadlightChange(nullptr, 0, &a, 1, p, ray, 0.6f);
+  CheckNear(gone, full, 1e-7, "a light that went changes the voxel by what it lit (the same number as when it appeared)");
+
+  std::printf("  a car's headlight drives along a line of voxels (60 FPS, history 0.9): the history's profile behind the light's own (m), its error against the frame's (share of the voxel),\n"
+              "  and the jitter of a voxel in the beam with 10 per cent noise on every frame's sample (the history's weight is what averages it)\n");
+  const float speeds[] = {0.0f, 12.0f, 40.0f, 60.0f};
+  BeamRun fixed[4];
+  BeamRun ruled[4];
+  for (int i = 0; i < 4; ++i) {
+    fixed[i] = BeamDrive(speeds[i], false, 0.1f);
+    ruled[i] = BeamDrive(speeds[i], true, 0.1f);
+    const BeamRun fixed_clean = BeamDrive(speeds[i], false, 0.0f);
+    const BeamRun ruled_clean = BeamDrive(speeds[i], true, 0.0f);
+    std::printf("    %4.0f m/s   fixed weight: lag %5.2f m, error %5.1f%%, jitter %4.1f%%    under the rule: lag %5.2f m, error %5.1f%%, jitter %4.1f%%\n", speeds[i], fixed_clean.lag_m,
+                100.0 * fixed_clean.rms_error, 100.0 * fixed[i].noise, ruled_clean.lag_m, 100.0 * ruled_clean.rms_error, 100.0 * ruled[i].noise);
+    fixed[i].lag_m = fixed_clean.lag_m;
+    fixed[i].rms_error = fixed_clean.rms_error;
+    ruled[i].lag_m = ruled_clean.lag_m;
+    ruled[i].rms_error = ruled_clean.rms_error;
+  }
+  CheckNear(ruled[0].lag_m, fixed[0].lag_m, 1e-6, "a parked car's beam: the rule changes nothing (lag)");
+  CheckNear(ruled[0].noise, fixed[0].noise, 1e-9, "... and nothing in the noise the history averages");
+  Check(fixed[1].lag_m > 1.0, "the fixed weight leaves the beam 1 m or more behind at 12 m/s (the trail the rule is for)");
+  Check(ruled[1].lag_m < 0.6 * fixed[1].lag_m, "the rule takes the trail at 12 m/s to under 0.6 of the fixed weight's");
+  Check(ruled[3].lag_m < 0.3 * fixed[3].lag_m, "and at 60 m/s to under 0.3");
+  Check(ruled[1].rms_error < 0.6 * fixed[1].rms_error, "and the history's error against the frame's at 12 m/s");
+  Check(ruled[3].rms_error < 0.5 * fixed[3].rms_error, "and at 60 m/s to under half");
+  Check(ruled[1].noise < 3.0 * fixed[1].noise, "the shorter history costs under three times the jitter at 12 m/s (the stratified taps are what take it back)");
+}
+
+// --- the camera moved on ---------------------------------------------------------------------------------------------------------------------------
+
+VolCamera YawCamera(double x, double yaw) {
+  VolCamera c;
+  c.pos[0] = float(x);
+  c.pos[1] = 1.5f;
+  c.pos[2] = 0.0f;
+  c.right[0] = float(std::cos(yaw));
+  c.right[1] = 0.0f;
+  c.right[2] = float(std::sin(yaw));
+  c.up[0] = 0.0f;
+  c.up[1] = 1.0f;
+  c.up[2] = 0.0f;
+  c.forward[0] = float(std::sin(yaw));
+  c.forward[1] = 0.0f;
+  c.forward[2] = float(-std::cos(yaw));
+  c.tan_x = 0.9f;
+  c.tan_y = 0.5f;
+  return c;
+}
+
+double Dot3(const float a[3], const float b[3]) { return double(a[0]) * b[0] + double(a[1]) * b[1] + double(a[2]) * b[2]; }
+
+void CheckExtrapolation() {
+  const double dt = 1.0 / 60.0;
+  const double speed = 12.0;
+  const double turn_rate = 0.4;
+  double worst_pos = 0.0;
+  double worst_lag = 0.0;
+  double worst_axis = 0.0;
+  double worst_frame = 0.0;
+  for (int i = 2; i < 200; ++i) {
+    const double t = double(i) * dt;
+    const VolCamera older = YawCamera(speed * (t - 2.0 * dt), turn_rate * (t - 2.0 * dt));
+    const VolCamera newer = YawCamera(speed * (t - dt), turn_rate * (t - dt));
+    const VolCamera truth = YawCamera(speed * t, turn_rate * t);
+    VolCamera guess;
+    Check(ExtrapolateCamera(older, newer, &guess), "a steady move is extrapolated");
+    worst_pos = std::max(worst_pos, std::fabs(double(guess.pos[0]) - double(truth.pos[0])));
+    worst_lag = std::max(worst_lag, std::fabs(double(newer.pos[0]) - double(truth.pos[0])));
+    worst_axis = std::max(worst_axis, std::fabs(Dot3(guess.forward, truth.forward) - 1.0));
+    // a frame again: unit axes at right angles, right x up = backward
+    const double fr = Dot3(guess.forward, guess.right);
+    const double fu = Dot3(guess.forward, guess.up);
+    const double ru = Dot3(guess.right, guess.up);
+    const double lf = Dot3(guess.forward, guess.forward);
+    const double lr = Dot3(guess.right, guess.right);
+    const double lu = Dot3(guess.up, guess.up);
+    worst_frame = std::max({worst_frame, std::fabs(fr), std::fabs(fu), std::fabs(ru), std::fabs(lf - 1.0), std::fabs(lr - 1.0), std::fabs(lu - 1.0)});
+    const float cross[3] = {guess.right[1] * guess.up[2] - guess.right[2] * guess.up[1], guess.right[2] * guess.up[0] - guess.right[0] * guess.up[2],
+                            guess.right[0] * guess.up[1] - guess.right[1] * guess.up[0]};
+    Check(Dot3(cross, guess.forward) < -0.999, "right x up is backward, as the game's camera has it");
+  }
+  std::printf("  the camera moved on (12 m/s and a turn of 0.4 rad/s at 60 FPS): the previous camera is %.4f m behind, the extrapolated one %.5f m off; the forward axis's error 1 - cos: %.2e\n",
+              worst_lag, worst_pos, worst_axis);
+  Check(worst_lag > 0.19, "the previous camera is a frame (0.2 m) behind");
+  Check(worst_pos < 0.01 * worst_lag, "the extrapolated camera is within a hundredth of that (a steady move)");
+  Check(worst_axis < 1e-6, "and its aim is within a millionth of the truth's");
+  Check(worst_frame < 1e-5, "the axes stay a frame");
+  // an accelerating camera (3 m/s^2): a frame's error is the acceleration times the step squared (2 p(t) - p(t - 1) against p(t + 1)), far under a frame's lag
+  {
+    VolCamera older = YawCamera(0.0, 0.0);
+    VolCamera newer = YawCamera(0.2, 0.0);
+    const double a = 3.0;
+    older.pos[0] = float(0.5 * a * 0.0);
+    newer.pos[0] = float(0.5 * a * dt * dt);
+    const VolCamera mid = YawCamera(0.5 * a * (2 * dt) * (2 * dt), 0.0);
+    VolCamera guess;
+    Check(ExtrapolateCamera(older, newer, &guess), "an accelerating camera is extrapolated");
+    Check(std::fabs(double(guess.pos[0]) - double(mid.pos[0])) < a * dt * dt * 1.01, "an accelerating camera is off by the acceleration times the step squared at most");
+  }
+  // a still camera stays; a cut and a flip are left alone
+  {
+    const VolCamera still = YawCamera(5.0, 0.3);
+    VolCamera guess;
+    Check(ExtrapolateCamera(still, still, &guess) && std::fabs(guess.pos[0] - 5.0f) < 1e-6f && std::fabs(Dot3(guess.forward, still.forward) - 1.0) < 1e-6, "a still camera stays where it is");
+    Check(!ExtrapolateCamera(YawCamera(0.0, 0.0), YawCamera(40.0, 0.0), &guess), "a step of 40 m is a cut: not extrapolated");
+    Check(!ExtrapolateCamera(YawCamera(0.0, 0.0), YawCamera(0.2, 3.0), &guess), "an aim that turned half way round is a cut: not extrapolated");
+    VolCamera bad = still;
+    bad.pos[0] = std::nanf("");
+    Check(!ExtrapolateCamera(still, bad, &guess), "a camera that is not a number is not extrapolated");
+  }
+}
+
+// The debug view's gain.
+void CheckViewGain() {
+  CheckNear(ApplyViewGain(0), 1.0, 1e-9, "view 0: no gain");
+  CheckNear(ApplyViewGain(1), 1.0, 1e-9, "view 1: as it is");
+  CheckNear(ApplyViewGain(2), 8.0, 1e-9, "view 2: x8");
+  CheckNear(ApplyViewGain(3), 32.0, 1e-9, "view 3: x32");
+  Check(((ApplyWord(1, true, 3) >> kApplyViewShift) & kApplyViewMask) == 3u, "the word carries view 3");
 }
 
 }  // namespace
@@ -607,6 +948,10 @@ int main(int argc, char** argv) {
   CheckHistory();
   CheckFlags();
   CheckDrive();
+  CheckStratifiedTaps();
+  CheckMovingLight();
+  CheckExtrapolation();
+  CheckViewGain();
   if (argc > 1) {
     // the shaders say what the header says (a constant here, a constant there)
     const std::string folder = argv[1];
@@ -623,6 +968,11 @@ int main(int argc, char** argv) {
     Check(apply.find("static const uint kApplyFlagAllSamples = 0x100u;") != std::string::npos, "the composite's all samples flag is the header's");
     Check(apply.find("static const uint kApplyViewShift = " + std::to_string(kApplyViewShift) + "u;") != std::string::npos, "the composite's debug view shift is the header's");
     Check(apply.find("static const float kApplyViewGain = 8.0;") != std::string::npos, "the composite's debug view gain is the header's");
+    Check(apply.find("static const float kApplyViewGainHigh = 32.0;") != std::string::npos, "the composite's view 3 gain is the header's");
+    Check(inject.find("static const uint kInjectFlagSteadyHeads = " + std::to_string(kInjectFlagSteadyHeads) + "u;") != std::string::npos, "the inject's steady headlights flag is the header's");
+    Check(inject.find("static const uint kHeadlightShadowTaps = " + std::to_string(kHeadlightShadowTaps) + "u;") != std::string::npos, "the inject's taps along a slice are the header's");
+    Check(inject.find("static const float kHeadlightHistoryTolerance = 0.08;") != std::string::npos && std::fabs(kHeadlightHistoryTolerance - 0.08f) < 1e-9f, "the inject's tolerance of a moving light is the header's");
+    Check(inject.find("kO_prev_headlights") != std::string::npos && inject.find("weight / (1.0 + over * over)") != std::string::npos, "the inject lowers the history's weight by the headlights' motion");
     Check(inject.find("LampSlice(") != std::string::npos, "the inject has the slice average for the lamps");
   }
   if (g_failed != 0) {

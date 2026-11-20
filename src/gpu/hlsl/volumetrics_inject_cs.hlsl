@@ -24,6 +24,11 @@
 //               slots.w bit 0) a lamp's term is the exact AVERAGE of the kernel over the slice along the voxel's ray (an arc tangent), in up to three pieces where
 //               a piece would be wider than the pool, the cone, the window and the phase function taken at each piece's point nearest the lamp, and the lamp
 //               takes no jitter in depth (LampSlice; volumetrics_stable.h LampSliceFactor is the twin). The headlights and the sun keep their one jittered sample.
+//   steady heads  VOL-STABLE-2 (the push's slots.w bit 1): a headlight that reads a shadow view takes kHeadlightShadowTaps taps of it along the voxel's slice, one in each part of
+//               it with the frame's one offset, and averages them (an edge of a shadow inside a slice was one random tap, lit or dark by the jitter); and the history's weight
+//               falls where the headlights' own term changed between the volume the history holds and this one (the constants carry both sets: kO_prev_headlights), so a
+//               moving beam leaves no trail (volumetrics_stable.h HistoryWeightUnderLightMotion, HeadlightChange, StratifiedDepth are the twins). The lamps of the slice average
+//               are sampled at the voxel's centre in x and y: their term is smooth over a voxel and the jitter only made noise.
 // The shadow lookups are the stubs of the first version: a sun tap and a headlight tap; VOL-SHADERS refines them (calibration against the road's
 // pool of light, CHECK V7, and the shadow taps, V9).
 //
@@ -210,8 +215,9 @@ float HeadlightLit(float3 p, int view_index) {
   return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);
 }
 
-// One spot light (a lamp or a headlight) of the constants at `offset`: its scattered radiance at `p` seen along the unit ray `ray` (camera to p).
-float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, bool shadowed) {
+// One spot light (a lamp or a headlight) of the constants at `offset`: its scattered radiance at `p` seen along the unit ray `ray` (camera to p). `shaped`: the low beam's
+// shape of a headlight; `shadowed`: and its shadow map (only with the shape).
+float3 SpotLightEx(uint offset, float3 p, float3 ray, float g, float strength, bool shaped, bool shadowed) {
   const float4 a = VolF4(offset);
   const float4 b = VolF4(offset + 16u);
   const float4 c = VolF4(offset + 32u);
@@ -227,22 +233,29 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
     return 0.0;
   }
   float lit = 1.0;
-  if (shadowed) {
-    // the headlights (the only shadowed lights): the low beam's shape, then the shadow map
+  if (shaped) {
+    // the headlights (the only shaped lights): the low beam's shape, then the shadow map
     lit = HeadlightShape(travel.y, dist);
     if (!(lit > 0.0)) {
       return 0.0;
     }
-    lit *= HeadlightLit(p, int(g_vol.Load(offset + 48u)));
+    if (shadowed) {
+      lit *= HeadlightLit(p, int(g_vol.Load(offset + 48u)));
+    }
   }
   const float near_sq = asfloat(g_vol.Load(offset + 52u));  // the light's near radius squared (0: the default 0.8 m)
   return c.xyz * (strength * spot * lit * LampFalloff(dist, a.w, near_sq > 0.0 ? near_sq : 0.64) * HenyeyGreenstein(dot(travel, -ray), g));
 }
+float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, bool shadowed) { return SpotLightEx(offset, p, ray, g, strength, shadowed, shadowed); }
 
 // --- the lamps' term averaged over a slice (volumetrics_stable.h: SliceAverageKernel, LampStretchFactor, LampSliceFactor are the twins) -----------------------------
 
 // The push's slots.w flags (volumetrics_stable.h kInjectFlag*).
 static const uint kInjectFlagSliceLamps = 1u;
+static const uint kInjectFlagSteadyHeads = 2u;
+// A shadowed headlight's taps along a slice, and the history's tolerance of a moving light (volumetrics_stable.h kHeadlightShadowTaps, kHeadlightHistoryTolerance).
+static const uint kHeadlightShadowTaps = 3u;
+static const float kHeadlightHistoryTolerance = 0.08;
 // A piece of a slice is at most this many pool widths (h = sqrt(dmin^2 + near^2)) long; a slice has at most this many pieces.
 static const float kPieceReach = 0.6;
 static const uint kMaxPieces = 3u;
@@ -357,13 +370,16 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
   const uint4 counts = VolU4(kO_counts);
   float3 lights = 0.0;
+  // the grid's view depth bounds of this voxel's slice
+  const float z0 = depth.x * exp(depth.z * float(id.z) / float(grid.z));
+  const float z1 = depth.x * exp(depth.z * float(id.z + 1u) / float(grid.z));
   if ((g_push.slots.w & kInjectFlagSliceLamps) != 0u) {
-    // the lamps through the voxel's slice, along the (x and y jittered) ray of the voxel: no jitter in depth, the slice's own bounds
-    const float3 dirvec = cam_right * ((2.0 * uv.x - 1.0) * tan_x) + cam_up * ((1.0 - 2.0 * uv.y) * tan_y) + cam_fwd;
+    // the lamps through the voxel's slice, along the ray through the voxel's CENTRE in x and y (the term is smooth over a voxel, so the jitter was noise only) and with no
+    // jitter in depth: the slice's own bounds
+    const float2 uv_c = cell / float2(grid.xy);
+    const float3 dirvec = cam_right * ((2.0 * uv_c.x - 1.0) * tan_x) + cam_up * ((1.0 - 2.0 * uv_c.y) * tan_y) + cam_fwd;
     const float dir_len = length(dirvec);
     const float3 ray_l = dirvec / dir_len;
-    const float z0 = depth.x * exp(depth.z * float(id.z) / float(grid.z));
-    const float z1 = depth.x * exp(depth.z * float(id.z + 1u) / float(grid.z));
     [loop] for (uint i = 0u; i < counts.x; ++i) {
       lights += LampSlice(kO_lamps + i * 64u, cam_pos.xyz, ray_l, z0 * dir_len, z1 * dir_len, mixv.z, scale.y);
     }
@@ -372,14 +388,47 @@ void main(uint3 id : SV_DispatchThreadID) {
       lights += SpotLight(kO_lamps + i * 64u, p, ray, mixv.z, scale.y, false);
     }
   }
+  const bool steady_heads = (g_push.slots.w & kInjectFlagSteadyHeads) != 0u;
+  // the ray of the jittered sample, for the taps of a shadowed headlight along the slice (the same line as `ray`, at other depths)
+  const float3 dirvec_j = (p - cam_pos.xyz) / z;
+  const float tap_u = jit.z + 0.5;
   [loop] for (uint j = 0u; j < counts.y; ++j) {
-    lights += SpotLight(kO_headlights + j * 64u, p, ray, mixv.w, scale.z, true);
+    const uint offset = kO_headlights + j * 64u;
+    if (steady_heads && int(g_vol.Load(offset + 48u)) >= 0 && (g_push.slots.z & 2u) != 0u) {
+      // a shadowed headlight: the shadow map's taps in each part of the slice, averaged (an edge of a shadow inside the slice shares them by where it is)
+      float3 taps = 0.0;
+      [unroll] for (uint t = 0u; t < kHeadlightShadowTaps; ++t) {
+        const float zt = z0 + (float(t) + tap_u) / float(kHeadlightShadowTaps) * (z1 - z0);
+        taps += SpotLight(offset, cam_pos.xyz + dirvec_j * zt, ray, mixv.w, scale.z, true);
+      }
+      lights += taps / float(kHeadlightShadowTaps);
+    } else {
+      lights += SpotLight(offset, p, ray, mixv.w, scale.z, true);
+    }
   }
   scatter += lights * (sigma * kLightGain);
   float4 now = float4(scatter, sigma);
 
   // --- the history, trilinear in the previous camera's grid ---
   if ((g_push.slots.z & 1u) != 0u && history.z > 0.0) {
+    // the history's weight, lowered where the headlights moved: this frame's headlights' own term (no shadow) against the one the history's volume was made with
+    float weight = history.z;
+    const uint prev_count = VolU4(kO_prev_counts).x;
+    if (steady_heads && (counts.y > 0u || prev_count > 0u)) {
+      float3 head_now = 0.0;
+      float3 head_before = 0.0;
+      [loop] for (uint k = 0u; k < counts.y; ++k) {
+        head_now += SpotLightEx(kO_headlights + k * 64u, p, ray, mixv.w, scale.z, true, false);
+      }
+      [loop] for (uint m = 0u; m < prev_count; ++m) {
+        head_before += SpotLightEx(kO_prev_headlights + m * 64u, p, ray, mixv.w, scale.z, true, false);
+      }
+      const float3 moved = abs(head_now - head_before) * (sigma * kLightGain);
+      const float change = max(moved.x, max(moved.y, moved.z));
+      const float total = max(now.x, max(now.y, now.z));
+      const float over = change / max(total, 1e-6) / kHeadlightHistoryTolerance;
+      weight = weight / (1.0 + over * over);
+    }
     const float3 pc = cam_pos.xyz + cam_right * ((2.0 * cell.x / float(grid.x) - 1.0) * tan_x * zc) +
                       cam_up * ((1.0 - 2.0 * cell.y / float(grid.y)) * tan_y * zc) + cam_fwd * zc;
     const float4 pp = VolF4(kO_prev_pos);
@@ -400,7 +449,7 @@ void main(uint3 id : SV_DispatchThreadID) {
         const float4 a = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s0, grid), 0);
         const float4 b = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s1, grid), 0);
         const float4 old = lerp(a, b, ft);
-        now = lerp(now, old, history.z);
+        now = lerp(now, old, weight);
       }
     }
   }

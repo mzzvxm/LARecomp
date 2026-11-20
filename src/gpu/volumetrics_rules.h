@@ -460,6 +460,9 @@ struct HistoryUse {
   float far_m = 0.0f;
   float near_m = 0.0f;
   float weight = 0.0f;
+  // The headlights of the volume that is the history (as the constants gave them to the inject): a moving light is compared with where it was.
+  std::array<VolLamp, kMaxHeadlights> headlights{};
+  uint32_t headlight_count = 0;
 };
 
 // The weight of the history by level and by how far the camera moved: 0.9 where it is still, falling to 0.5 for a fast move
@@ -546,6 +549,14 @@ inline void MakeGpuConstants(const GridDesc& g, const VolInputs& in, const VolCa
   }
   for (uint32_t i = 0; i < in.shadow_view_count && i < kMaxShadowViews; ++i) {
     out->shadow_views[i] = in.shadow_views[i];
+  }
+  // the history's headlights (VOL-STABLE-2): only where the history is read
+  if (use_history) {
+    const uint32_t before = std::min({history.headlight_count, g.headlights, kMaxHeadlights});
+    out->prev_counts[0] = before;
+    for (uint32_t i = 0; i < before; ++i) {
+      out->prev_headlights[i] = history.headlights[i];
+    }
   }
 }
 
