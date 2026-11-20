@@ -202,4 +202,14 @@ private:
     std::array<std::atomic<uint64_t>, 4> tapped_{};
 };
 
+// ---------------------------------------------------------------------------------------------------------------------------
+// WHO GETS A MOUSE BUTTON OR A WHEEL TURN. An ImGui window under the pointer owns it (the F4 panel, the browsers, the Director panel's dock), and so does a panel that works with the pointer
+// anywhere in the picture while it shows (imgui_theme.h PointerHeldByPanel: the Director panel, where a click on the ground picks a car, a drag moves it and the right button looks round
+// the free camera). None of that is the game's: a click on a panel button must not fire the nitro (LMB) and a look round must not set the look back (RMB). The mouse run of 2026-11-20 logged
+// `mouse key LMB down` for a car drag and `RMB down` for the free camera's look. A button's release always lets go (keyboard_native.cpp), so nothing stays held.
+// ---------------------------------------------------------------------------------------------------------------------------
+inline constexpr bool MouseGoesToGame(bool overlay_wants_mouse, bool pointer_held_by_panel) {
+    return !overlay_wants_mouse && !pointer_held_by_panel;
+}
+
 }  // namespace larecomp::kbm

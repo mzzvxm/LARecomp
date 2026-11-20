@@ -291,6 +291,14 @@ void TestMenuKeys() {
     CHECK(c.Test(MenuKeyId(MenuKey::Down)) && c.Test(MenuKeyId(MenuKey::Right)) && !c.Test(MenuKeyId(MenuKey::Up)));
 }
 
+// The mouse is the game's only when no overlay wants it and no panel holds the pointer (the Director panel's whole picture).
+void TestMouseGoesToGame() {
+    CHECK(MouseGoesToGame(false, false));   // the road: LMB is nitro, RMB the look back
+    CHECK(!MouseGoesToGame(true, false));   // the pointer is over an ImGui window (the dock's buttons, the F4 panel)
+    CHECK(!MouseGoesToGame(false, true));   // the Director panel shows: a click on the ground, a car dragged, the right button's look are the panel's
+    CHECK(!MouseGoesToGame(true, true));
+}
+
 }  // namespace
 
 int main() {
@@ -306,6 +314,7 @@ int main() {
     TestMouseKeyNames();
     TestMouseKeyCaps();
     TestMenuKeys();
+    TestMouseGoesToGame();
     std::printf("kbm_input_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

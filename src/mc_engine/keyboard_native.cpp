@@ -119,8 +119,9 @@ bool HeapPtr(uint32_t ea) { return ea >= 0x40000000u && ea < 0xE0000000u; }
 // Steam Deck, and a key tapped between two polls still reaches the game (kbm_input.h).
 larecomp::kbm::KeyLatch g_keys;
 
-// The mouse is over one of the ImGui overlays (F4, the browsers): a click or a wheel turn there is not the game's.
-bool MouseOverOverlay() { return mcla::ui::OverlayWantsMouse(); }
+// The mouse is an overlay's: over one of the ImGui overlays (F4, the browsers, the Director panel's dock), or the Director panel is up and holds the pointer over the whole picture (a click on
+// the ground, a car dragged, the right button's look). A click or a wheel turn there is not the game's (kbm_input.h MouseGoesToGame).
+bool MouseOverOverlay() { return !larecomp::kbm::MouseGoesToGame(mcla::ui::OverlayWantsMouse(), mcla::ui::PointerHeldByPanel()); }
 
 // The UI system's input events (ui_events.h): layer 0 like before, they never mark an event handled, and what an overlay
 // holds (typing in one, the mouse over one) never reaches them. The UI system runs the binds AFTER its listeners
