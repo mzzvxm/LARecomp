@@ -1645,6 +1645,19 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
     d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
+    if (!d.pipeline && pending && d.gbuffer_attached) {
+      // The pipeline with the G-buffer's planes is being made in the background (the first frames with the sidecar on: every pipeline of the main view's window is a new
+      // key when the non writers carry it): this draw is the game's own, with no planes, instead of being left out of the frame; the key stays asked for and the next frame
+      // that has it takes it. The planes keep what the frame wrote there (a hole the consumers read as no data or an earlier surface) for these few frames.
+      pipeline_key = d.key;
+      d.gbuffer_attached = false;
+      d.gbuffer_variant = 0;
+      d.gbuffer_planes = 0;
+      d.gbuffer_mode = gbuffer::PlaneMode::kNone;
+      pending = false;
+      gbuffer_->NoteFallbackDraw();
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
+    }
     if (!d.pipeline && pending && larecomp::shaderpack::chain::HasFeature(pipeline_key.ps_variant, larecomp::shaderpack::kFeatureHeadlight)) {
       // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on): this draw is the same shader without
       // the headlight meanwhile (the other features of a composed word stay when the pack has that word: the G-buffer's, else the game's own shader), with no headlight,
@@ -1661,6 +1674,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
         pipeline_key = d.key;
         d.gbuffer_attached = false;
         d.gbuffer_variant = 0;
+        d.gbuffer_planes = 0;
+        d.gbuffer_mode = gbuffer::PlaneMode::kNone;
       }
       pipeline_key.ps_variant = word;
       pending = false;
@@ -2399,10 +2414,15 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       return;
     }
     case sp::kFeatureGBuffer: {
-      // The sidecar's normal plane is written (gbuffer_types.h kModeWriteNormal): the host's per-draw switch; the draws that carry no sidecar never get here (no word).
+      // The planes the frame writes (gbuffer_types.h kModeWrite*: the host's per-draw switch; a plane whose bit is clear is written as "no data"), the camera rows for the
+      // derivative normal (the permission bit kModeDerivativeNormal is set with them), the back face flip for a two sided draw (cull none), and the draw's material word. The
+      // draws that carry no sidecar never get here (no word).
       static_assert(sizeof(gbuffer::GBufferConstants) == sp::chain::Find(sp::kFeatureGBuffer)->constants_bytes);
       gbuffer::GBufferConstants block;
-      block.mode = gbuffer::kModeWriteNormal;
+      const bool camera = FillGBufferCamera(&block, d);
+      const bool two_sided = (d.key.raster & 0xFu) == uint32_t(plume::RenderCullMode::NONE);
+      block.mode = gbuffer::ModeBits(gbuffer_ ? gbuffer_->plan().written : gbuffer::PlaneBit(gbuffer::kPlaneNormal), camera, two_sided);
+      block.material = gbuffer::DefaultMaterialWord();
       block.frame = uint32_t(frame_serial_);
       std::memcpy(out, &block, sizeof(block));
       return;
@@ -2466,15 +2486,35 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   PipelineKey key = d.key;
   d.gbuffer_attached = false;
   d.gbuffer_variant = 0;
+  d.gbuffer_planes = 0;
+  d.gbuffer_mode = gbuffer::PlaneMode::kNone;
+  const gbuffer::FramePlan& plan = gbuffer_->plan();
   gbuffer::DrawFacts facts;
   facts.active = true;
   facts.window_open = gbuffer_->Gate() != gbuffer::Window::Gate::kClosed;
-  facts.main_samples = d.key.color_count >= 1 ? temporal::MainColorSamples(ColorEdramKey(state, 0)) : 0u;
+  facts.planes = plan.attached;
+  facts.per_target_blend = gbuffer_->caps().per_target_blend;
+  facts.masked_attach = gbuffer_->masked_attach();
   facts.guest_color_count = d.key.color_count;
   facts.has_depth = d.key.depth_format != 0;
   facts.rt0_blended = (d.key.blend[0] & 0xFu) != 0;
-  facts.rt0_writes = ((d.key.blend[0] >> 28) & 0xFu) != 0;
+  facts.rt0_write_mask = (d.key.blend[0] >> 28) & 0xFu;
+  facts.rt0_writes = facts.rt0_write_mask != 0;
   facts.ps_variant_before = d.key.ps_variant;
+  // Which view the draw is in. The main view is the colour identity AND the depth identity of the play view at the same samples: the pause world (4 samples) is told by the samples, the
+  // side views (cascades, environment map, reflections) by their other identities, a main colour with another depth is not the view, and a draw whose viewport is a window of the target
+  // (the rear view mirror's phase: hooks/rear_view.cpp) is not the whole view (gbuffer_rules.h, "The views that never write"). A cutscene's frames have no sidecar at all (active()).
+  if (d.key.color_count >= 1) {
+    const uint32_t color_samples = temporal::MainColorSamples(ColorEdramKey(state, 0));
+    facts.main_samples = color_samples;
+    if (color_samples != 0 && facts.has_depth) {
+      facts.depth_is_main = temporal::MainDepthSamples(DepthEdramKey(state)) == color_samples;
+    }
+    if (color_samples != 0 && !state.clip.clip_disable && state.vte.vport_x_scale_ena) {
+      // The guest viewport's width: twice its x scale (viewport.cpp); with the viewport transform off (screen space rectangles) the draw is the whole target's.
+      facts.sub_view = gbuffer::IsSubViewport(uint32_t(std::abs(state.viewport[0]) * 2.0f), state.surface_pitch);
+    }
+  }
   // The word the draw's shader takes with the G-buffer's stage on top of the features the draw has (the headlight's, on the lit shaders that have both): the best word
   // of the pack for those features, kept only when it has the G-buffer's and every feature the draw already had; the pack decides what composes.
   namespace chain = larecomp::shaderpack::chain;
@@ -2492,14 +2532,32 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   if (!decision.attach()) {
     return key;
   }
-  // The sidecar is the colour target after the guest's one: R16G16_UNORM, written whole by the variant. Only a draw of the variant carries it (gbuffer_rules.h
-  // kMaskedDrawsAttach); on D3D12 its blend state is RT0's (Plume sets no independent blend), an opaque draw's.
-  const uint32_t slot = d.key.color_count;
+  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel,
+  // a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
+  // writers get here and the slots' states are the writer's.
+  static_assert(gbuffer::kMaxColourSlots <= kColorTargetCount, "the guest's colour and the planes fit the pipeline key's slots");
+  const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode);
   plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
-  blend.renderTargetWriteMask = decision.variant != 0 ? uint8_t(0xF) : uint8_t(0);
-  key.color_count = slot + 1;
-  key.color_format[slot] = uint32_t(plume::RenderFormat::R16G16_UNORM);
-  key.blend[slot] = PackBlend(blend);
+  blend.renderTargetWriteMask = plane_blend.write_mask;
+  if (plane_blend.zero) {
+    blend.blendEnabled = true;
+    blend.srcBlend = plume::RenderBlend::ZERO;
+    blend.dstBlend = plume::RenderBlend::ZERO;
+    blend.blendOp = plume::RenderBlendOperation::ADD;
+    blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+    blend.dstBlendAlpha = plume::RenderBlend::ZERO;
+    blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
+  }
+  uint32_t slot = d.key.color_count;
+  for (uint32_t p = 0; p < gbuffer::kPlaneCount; ++p) {
+    if ((plan.attached & (1u << p)) == 0) {
+      continue;
+    }
+    key.color_format[slot] = uint32_t(GBuffer::FormatOf(gbuffer::Plane(p)));
+    key.blend[slot] = PackBlend(blend);
+    ++slot;
+  }
+  key.color_count = slot;
   if (decision.variant != 0) {
     key.ps_variant = decision.variant;
     if (chain::FeaturesOf(vs_word) != 0) {
@@ -2508,7 +2566,28 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   }
   d.gbuffer_attached = true;
   d.gbuffer_variant = decision.variant;
+  d.gbuffer_planes = gbuffer::PlaneCount(plan.attached);
+  d.gbuffer_mode = decision.mode;
   return key;
+}
+
+bool Scene::FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDraw& d) const {
+  // The camera of the frame before (the anchor's constants, temporal_camera.h) when this frame follows it directly: the view ray and the rotation the derivative normal reads
+  // (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at most, a camera cut shows for one frame (the temporal system
+  // starts again at a cut: no previous camera then).
+  // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal (no family reads it yet).
+  const temporal::Camera* camera = temporal_ && temporal_->active() ? temporal_->previous_camera() : nullptr;
+  if (!camera || camera->width == 0 || camera->height == 0 || !(camera->fov_y > 0.0) || !(camera->aspect > 0.0)) {
+    return false;
+  }
+  const double tan_y = std::tan(camera->fov_y * 0.5);
+  const double tan_x = tan_y * camera->aspect;
+  // SV_Position is in the host pixels of the target: the guest's frame at the draw's scale.
+  const float width = float(d.scale.Edge(camera->width));
+  const float height = float(d.scale.Edge(camera->height));
+  const auto axis = [](const double v[3]) { return gbuffer::Vec3{float(v[0]), float(v[1]), float(v[2])}; };
+  // The axes are the rows of the game's view inverse; whether they are a rotation of the view space the shaders assume depends on the world's handedness (MakeCameraRows).
+  return gbuffer::MakeCameraRows(axis(camera->right), axis(camera->up), axis(camera->forward), float(tan_x), float(tan_y), width, height, block->view_ray, block->camera_to_world);
 }
 
 ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {
@@ -2941,29 +3020,33 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     target_height = std::min(target_height, depth->height);
   }
-  // The G-buffer's sidecar (gbuffer.h) beside the colour target: made, cleared and moved to the attachment layout here, before the framebuffer is bound.
-  plume::RenderTexture* sidecar = nullptr;
+  // The G-buffer's planes (gbuffer.h) after the colour target: made, cleared and moved to the attachment layout here, before the framebuffer is bound.
+  GBuffer::Sidecar sidecar;
   if (d.gbuffer_attached) {
-    sidecar = gbuffer_->Attach(list, *colors[0]);
-    if (!sidecar) {
+    if (!gbuffer_->Attach(list, *colors[0], &sidecar)) {
       *detail = "the G-buffer's sidecar could not be made";
       return Skip::kTarget;
     }
-    if (!memo_hit || memo.gbuffer_generation != gbuffer_->generation()) {
+    if (sidecar.count != d.gbuffer_planes) {
+      // The pipeline was made for another number of planes than the images the frame has (the plan changed between the key and this draw): never bound.
+      *detail = std::format("the G-buffer has {} plane images, the draw's pipeline {}", sidecar.count, d.gbuffer_planes);
+      return Skip::kTarget;
+    }
+    if (!memo_hit || memo.gbuffer_generation != sidecar.generation) {
       framebuffer = nullptr;  // the sidecar was made again by this draw: the memo's framebuffer has the old one
     }
     if (gbuffer_->TakeFramebufferDirty()) {
-      bound_.framebuffer = nullptr;  // a clear of the sidecar left its own framebuffer bound: BindFramebuffer below binds this draw's
+      bound_.framebuffer = nullptr;  // a clear of the planes left their own framebuffer bound: BindFramebuffer below binds this draw's
     }
   }
   if (!framebuffer) {
-    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth, sidecar, sidecar ? gbuffer_->generation() : 0u);
+    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth, sidecar.textures, sidecar.count, sidecar.generation);
     if (!framebuffer) {
       return Skip::kFramebuffer;
     }
     TargetsMemo& m = targets_memo_;
     m.serial = edram_->change_serial();
-    m.gbuffer_generation = sidecar ? gbuffer_->generation() : 0u;
+    m.gbuffer_generation = sidecar.count != 0 ? sidecar.generation : 0u;
     m.color_count = d.key.color_count;
     for (uint32_t i = 0; i < d.key.color_count; ++i) {
       m.color_keys[i] = color_keys[i];
@@ -3341,8 +3424,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     }
     ++window_.clears_color;
     note_other_pitch(i, key);
-    if (gbuffer_ && gbuffer_->active() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
-      // The main view's colour in the play view: the G-buffer's sidecar is cleared with the same rectangle (gbuffer.h).
+    if (gbuffer_ && gbuffer_->tracking() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
+      // The main view's colour in the play view: the G-buffer's planes are cleared with the same rectangle (gbuffer.h; also while the memory cap holds the sidecar back:
+      // the clear is where the cap is looked at again).
       gbuffer_->OnColorClear(list, *target, plume::RenderRect(x0, y0, x1, y1));
       if (gbuffer_->TakeFramebufferDirty()) {
         bound_.framebuffer = nullptr;

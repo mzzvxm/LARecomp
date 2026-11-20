@@ -171,7 +171,9 @@ enum class View : uint8_t {
   kClass = 4,        // a colour per class and flag (the family picture)
   kCoverage = 5,     // written (white) or not (black): the missing-pixels view
   kLitWeight = 6,    // RT2.a as grey
-  kCount = 7,
+  kMissing = 7,      // the picture of what no family covers yet: green where RT1 holds a normal, RED where the main depth holds geometry and RT1 does not (a shader with no
+                     // variant, a mirror, a masked draw), black where there is neither (the sky); the survey's R2 "missing pixels" view
+  kCount = 8,
 };
 
 }  // namespace mcla::gpu::gbuffer

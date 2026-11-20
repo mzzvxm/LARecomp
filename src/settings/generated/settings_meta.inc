@@ -324,6 +324,7 @@
 {"mcla_gpu_fsr_sharpness", "MCLA/GPU"},
 {"mcla_gpu_fsr_velocity_factor", "MCLA/GPU"},
 {"mcla_gpu_gbuffer", "MCLA/GPU"},
+{"mcla_gpu_gbuffer_attach", "MCLA/GPU"},
 {"mcla_gpu_gbuffer_view", "MCLA/GPU"},
 {"mcla_gpu_ghost_log_interval", "MCLA/GPU"},
 {"mcla_gpu_glow_visibility", "MCLA/GPU"},

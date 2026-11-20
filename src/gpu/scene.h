@@ -66,6 +66,7 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "geometry.h"
 #include "hdr_tonemap.h"
@@ -292,11 +293,14 @@ class Scene {
     // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
-    // The G-buffer (gbuffer.h): the draw carries the sidecar as a second colour target (the pipeline's key has it; `key` stays the guest's) and, when
-    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin) and writes it. Today the
-    // two are the same draws (gbuffer_rules.h kMaskedDrawsAttach).
+    // The G-buffer (gbuffer.h): the draw carries the sidecar's planes as colour targets after the guest's (the pipeline's key has them; `key` stays the guest's) and, when
+    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin, or a word composed with another
+    // feature) and writes them: `gbuffer_mode` says what the draw does to them (gbuffer_rules.h PlaneMode: write, clear what it covers, or leave them). Where the backend has
+    // no blend state per colour target (gbuffer_rules.h kD3d12PerTargetBlend) only the writers are attached.
     bool gbuffer_attached = false;
     uint32_t gbuffer_variant = 0;
+    uint32_t gbuffer_planes = 0;  // the planes the key carries (PlaneCount: the colour slots after the guest's)
+    gbuffer::PlaneMode gbuffer_mode = gbuffer::PlaneMode::kNone;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -394,11 +398,13 @@ class Scene {
   // The `size` bytes of the block of `feature` for the draw `d` and its constant banks (the table's constants_bytes). A feature that is added
   // to the chain with a block adds its case here (scene.cpp), next to its table row.
   void FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size);
-  // The G-buffer (gbuffer.h): asks the rules (gbuffer_rules.h Decide) whether the draw carries the sidecar and writes it, sets d.gbuffer_attached and
-  // d.gbuffer_variant (the variant word of the pipeline: the G-buffer's alone, or composed with the features the draw has, the alpha test twin for an alpha test
-  // draw), and returns the key the pipeline is made with: the guest's key widened by the sidecar's colour target and with that word. The block of constants
-  // the variant reads is Scene::FillVariantBlock's, with the other features' (UploadVariantConstants).
+  // The G-buffer (gbuffer.h): asks the rules (gbuffer_rules.h Decide) whether the draw carries the sidecar and what it does to it, sets d.gbuffer_attached, d.gbuffer_mode
+  // and d.gbuffer_variant (the variant word of the pipeline: the G-buffer's alone, or composed with the features the draw has, the alpha test twin for an alpha test
+  // draw), and returns the key the pipeline is made with: the guest's key widened by the planes' colour targets (each with the blend state of the draw's mode) and
+  // with that word. The block of constants the variant reads is Scene::FillVariantBlock's, with the other features' (UploadVariantConstants).
   PipelineKey GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d);
+  // The camera rows of the G-buffer's constants (view_ray and camera_to_world: for the derivative normal), from the previous frame's camera; false when there is none.
+  bool FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDraw& d) const;
   // The UI sharpening (ui_sharp.h): the variant word the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
   // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
   // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
