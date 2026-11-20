@@ -697,6 +697,7 @@ class AmbientOcclusion {
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
     bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
     bool rt_view = false;          // mcla_gpu_contact_shadows_view 7: ... the ray traced sun term alone (car_rt_ao.h)
+    uint32_t light_chroma = 0;     // the ambient's and the sun's colours for the apply (contact_trace.h PackChroma; 0 = none planned: the apply takes grey)
   };
   // What the SSGI test does in a frame (PlanGi): the colour chain and the bitmask pass in place of the
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion

@@ -1557,4 +1557,77 @@ float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int 
   return March(t, depth_at, x, y);
 }
 
+// ---------------------------------------------------------------------------
+// the contact factor per colour channel: a shadow takes the SUN's light away, in the sun's colour
+// ---------------------------------------------------------------------------
+// The scene colour is albedo * (ambient + sun * N.L * visibility) and a contact shadow (or the car's shadow map through the contact pass) takes the sun's
+// share of it away. The first version took the share of the LUMAS (ambient 0.114, sun 0.903 at noon) and multiplied all three channels by it: the
+// luma is right, the colour is not. The sunlit road is warm (a warm sun on a cool sky's ambient) and a grey multiplier keeps its hue: under the car at noon,
+// where the car's map owns the shadow and the game's cascade no longer shades it, the shadow came out darker and WARMER than the game's own shadow beside it
+// (measured on shdith1-shd-noon-x1, rear camera: the game's own shadow, the cascade holding the car, is (20.5, 24.8, 23.3) against a lit (105.5, 101.4, 79.6),
+// the factor 0.19, 0.25, 0.29 for red, green, blue; the car map's, (21.6, 20.4, 14.8), the same 0.20 for all three). A shadow removes the sun's share of EACH
+// channel: S_c * N.L * v / (A_c + S_c * N.L * v), and what stays is albedo * A_c, the sky's colour. The share of a grey light is the old number, bit for
+// bit (the check below), so a night, a cloudy hour or a grey frame is as before.
+//
+// The apply pass takes the two lights' colours as chroma = channel / luma, red and blue of each (green follows from the luma), 7 bits each in 1/32 (0 to
+// 3.97: a dusk sky is bluer than twice its luma): one dword in shape.w of the apply's push block (the apply took 0.5 * the fade's end there: the shader makes it itself now). The dword is read as a
+// float by the GPU, so its top three bits are fixed (0, 0, 1: the exponent is never 0 or 255, never a denormal, an infinity or a NaN a copy might change).
+inline constexpr float kChromaScale = 32.0f;
+inline constexpr uint32_t kChromaMaxByte = 127;
+inline constexpr uint32_t kChromaMarker = 0x20000000u;
+inline constexpr uint32_t kNeutralChroma = kChromaMarker | 32u | (32u << 7) | (32u << 14) | (32u << 21);  // chroma 1 in red and blue, both lights: grey
+inline constexpr float kLumaRed = 0.2126f;
+inline constexpr float kLumaGreen = 0.7152f;
+inline constexpr float kLumaBlue = 0.0722f;
+
+struct Rgb {
+  float r = 0.0f, g = 0.0f, b = 0.0f;
+};
+
+inline float LumaOf(const float c[3]) {
+  const auto usable = [](float x) { return std::isfinite(x) && x > 0.0f ? x : 0.0f; };
+  return kLumaRed * usable(c[0]) + kLumaGreen * usable(c[1]) + kLumaBlue * usable(c[2]);
+}
+
+// One chroma value: channel / luma in 1/32, clamped to 0..127; a light with no luma is grey (chroma 1).
+inline uint32_t ChromaByte(float channel, float luma) {
+  if (!(luma > 1e-6f) || !std::isfinite(channel)) {
+    return uint32_t(kChromaScale);
+  }
+  return uint32_t(std::clamp(std::lround(std::max(channel, 0.0f) / luma * kChromaScale), 0L, long(kChromaMaxByte)));
+}
+
+// The code: bits 0-6 the ambient's red chroma, 7-13 its blue, 14-20 the sun's red, 21-27 its blue; bits 28-31 are the marker (kChromaMarker).
+inline uint32_t PackChroma(const float ambient[3], const float sun[3]) {
+  const float la = LumaOf(ambient), ls = LumaOf(sun);
+  return kChromaMarker | ChromaByte(ambient[0], la) | (ChromaByte(ambient[2], la) << 7) | (ChromaByte(sun[0], ls) << 14) | (ChromaByte(sun[2], ls) << 21);
+}
+
+// A light's chroma (channel / luma for the three channels) from its red and blue bytes; the green follows from the luma weights.
+inline Rgb ChromaRgb(uint32_t red_byte, uint32_t blue_byte) {
+  const float r = float(red_byte) * (1.0f / kChromaScale);
+  const float b = float(blue_byte) * (1.0f / kChromaScale);
+  return {r, std::max((1.0f - kLumaRed * r - kLumaBlue * b) / kLumaGreen, 0.0f), b};
+}
+
+// The sun's share of the light in each channel: S_c * lit / (A_c + S_c * lit), lit = N.L times the sun's visibility. The lumas are the apply's
+// light.w (ambient) and extra.x (sun); a pixel with no light at all has no share.
+inline Rgb SunShareRgb(float ambient_luma, float sun_luma, uint32_t chroma_code, float lit) {
+  const Rgb a = ChromaRgb(chroma_code & 0x7Fu, (chroma_code >> 7) & 0x7Fu);
+  const Rgb s = ChromaRgb((chroma_code >> 14) & 0x7Fu, (chroma_code >> 21) & 0x7Fu);
+  const auto share = [&](float ac, float sc) {
+    const float amb = ambient_luma * ac, sunlit = sun_luma * sc * lit;
+    return (amb + sunlit) > 1e-6f ? sunlit / (amb + sunlit) : 0.0f;
+  };
+  return {share(a.r, s.r), share(a.g, s.g), share(a.b, s.b)};
+}
+
+// The apply pass's contact factor: 1 - weight * share * (1 - cs), per channel; weight = the setting's strength times the distance fade, cs the
+// contact visibility (1 open, 0 shadowed). With cs 0 and weight 1 what is left of the lit colour is albedo * ambient, in the ambient's colour.
+inline Rgb ContactFactorRgb(const Rgb& share, float weight, float cs) {
+  const float k = Saturate(weight) * (1.0f - Saturate(cs));
+  return {1.0f - Saturate(k * share.r), 1.0f - Saturate(k * share.g), 1.0f - Saturate(k * share.b)};
+}
+
+
 }  // namespace mcla::gpu::contact_trace

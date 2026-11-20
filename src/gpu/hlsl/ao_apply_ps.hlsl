@@ -26,7 +26,12 @@
 //     distance_fade  1 up to shape.w, to 0 at extra.y (smoothstep).
 //
 //   contact_factor 1 - sun_share * strength * (1 - cs) * fade: the contact shadows darken only the
-//                  sun's share of the light, so they cannot darken what the game already shadows
+//                  sun's share of the light, so they cannot darken what the game already shadows. The share is
+//                  taken PER COLOUR CHANNEL (sun_share_c = S_c * N.L * vis / (A_c + S_c * N.L * vis), the two lights'
+//                  colours in shape.w: contact_trace.h "the contact factor per colour channel"): a shadow takes the
+//                  sun's colour away and leaves the sky's, as the game's own shadow does; a grey light gives the luma's
+//                  share below, bit for bit. (The luma's share darkened the right amount in the wrong colour: the car's
+//                  shadow at noon, which the car's map owns, was warmer than the game's own shadows beside it.)
 //     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is; with
 //                    mcla_gpu_contact_shadows_fast (flag bit 25, AoContactFilter, only at the picture's size) the image
 //                    is the march's own and this pass does the filter (AoBilateralEdgeFolded: the same 3x3 weights),
@@ -51,6 +56,9 @@
 //                    is under a pixel far away.
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fades) the pixel is not written.
+//
+// shape.w of this pass is the lights' colours (four 7 bit values, contact_trace.h kChromaScale: the ambient's and the sun's red and blue over their luma in 1/32;
+// kNeutralChroma is grey), no longer the distance fade's start: that is half of extra.y, as ao.cpp FillPush has always made it.
 //
 // THE PAINT (ao_paint.h has the story, the numbers and the test). The game draws a car's paint as one colour, and the
 // factor multiplies all of it: on dark glossy paint nearly all of that colour is the reflection of the environment, which
@@ -126,6 +134,22 @@
 #endif
 
 static const float kViewScale = 0.3f;
+static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
+// The two lights' colours (contact_trace.h ChromaRgb, SunShareRgb: keep in step): shape.w holds, 7 bits each, the chroma = channel / luma in 1/32 of the
+// ambient's red and blue and of the sun's red and blue (bits 0-27, the top bits are a marker); the green follows from the luma weights.
+static const float kChromaScale = 32.0f;
+float3 ChromaRgb(uint red_byte, uint blue_byte) {
+  const float r = float(red_byte) * (1.0f / kChromaScale);
+  const float b = float(blue_byte) * (1.0f / kChromaScale);
+  return float3(r, max((1.0f - 0.2126f * r - 0.0722f * b) / 0.7152f, 0.0f), b);
+}
+// The sun's share of the light in each channel: S_c * lit / (A_c + S_c * lit), lit = N.L times the sun's visibility; the lumas are light.w and extra.x.
+float3 SunShareRgb(float ambient_luma, float sun_luma, float lit) {
+  const uint code = asuint(g_push.shape.w);
+  const float3 amb = ambient_luma * ChromaRgb(code & 0x7Fu, (code >> 7) & 0x7Fu);
+  const float3 sunlit = (sun_luma * lit) * ChromaRgb((code >> 14) & 0x7Fu, (code >> 21) & 0x7Fu);
+  return sunlit / max(amb + sunlit, 1e-6f);
+}
 // The folded contact filter (AoContactFilter in this pass) is not run where the contact shadows change the factor
 // by less than this (the filter keeps cs between 0 and 1, so the factor moves by at most the weight).
 static const float kFoldedFilterSkip = 0.002f;
@@ -152,7 +176,6 @@ bool AoPaintOn() { return AoPaintCode() != 15u; }
 // units of 0.25.
 float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.04f; }
 float GiCap() { return float((g_push.slots2.z >> 26) & 0x3Fu) * 0.25f; }
-static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
 #endif
 
 // The apply's slots.x and slots.y carry two more things beside the depth plane's slot and the host sample (contact_trace.h "a car's own sun
@@ -350,7 +373,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float sun = g_push.extra.x * n_dot_l;
   const float ambient_share = (ambient + sun) > 1e-6f ? ambient / (ambient + sun) : 1.0f;
   const float share = lerp(ambient_share, 1.0f, saturate(g_push.extra.z));
-  const float fade = 1.0f - smoothstep(g_push.shape.w, fade_end, tc);
+  const float fade = 1.0f - smoothstep(0.5f * fade_end, fade_end, tc);
   // The visibility the factor takes: ao itself on the world, the paint's on a vehicle (PaintVisibility).
   const float ao_seen = ao_on ? PaintVisibility(ao, ao_vehicle) : 1.0f;
   const float ao_factor = ao_on ? lerp(1.0f, ao_seen, saturate(g_push.shape.z * share * fade)) : 1.0f;
@@ -360,7 +383,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float sun_vis = 1.0f;      // the game's mask as it is (the debug view 10)
   float sun_vis_used = 1.0f; // what the share takes: a vehicle's pixel has the car sun image's value, or 1 (CarAwareSunVisibility; the debug view 13)
   float sun_share = 0.0f;
-  float contact_factor = 1.0f;
+  float contact_factor = 1.0f;                       // the luma's (the debug view 8)
+  float3 contact_factor3 = float3(1.0f, 1.0f, 1.0f); // the one the picture takes: the sun's share of each channel
   if (contact_on) {
     if (MaskOn()) {
       const float2 uv = (float2(pixel) + 0.5f) / size;
@@ -393,8 +417,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
                                  float4(tl, tr, tt, tb));
     }
     contact_factor = 1.0f - saturate(contact_weight * (1.0f - cs));
+    const float3 share_rgb = SunShareRgb(ambient, g_push.extra.x, n_dot_l * sun_vis_used);
+    contact_factor3 = 1.0f - saturate((g_push.extra.w * contact_fade * (1.0f - cs)) * share_rgb);
   }
-  const float factor = ao_factor * contact_factor;
+  const float3 factor3 = ao_factor * contact_factor3;
+  const float factor = dot(factor3, kLuma);  // its luma: the ceiling's room and the debug views
 
 #if AO_GI
   // The bounce light. T is the light the game's constants say fell on the pixel: the ambient and the sun's
@@ -431,7 +458,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (added > 1e-6f) {
     bounce *= SsgiSoftClip(added, room) / added;
   }
-  const float3 gi_factor = factor + bounce;
+  const float3 gi_factor = factor3 + bounce;
   if (view >= 16u) {
     float3 shown = gi_factor * kViewScale;
     if (view == 17u) {
@@ -488,9 +515,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   return float4(gi_factor, 1.0f);
 #else
-  if (factor >= 0.999f) {
+  if (all(factor3 >= 0.999f)) {
     discard;
   }
-  return float4(factor, factor, factor, 1.0f);
+  return float4(factor3, 1.0f);
 #endif
 }
