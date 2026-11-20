@@ -201,6 +201,7 @@ set(LARECOMP_SOURCES
     # Trailer toolkit: the scene file (parser, timeline, clock), its runner and the script native call shim.
     # Inert unless the debug cvar mcla_scene names a scene file.
     src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/spots.cpp
     src/mc_engine/cinematic/state_log_core.cpp
     src/mc_engine/cinematic/state_log.cpp
     src/mc_engine/cinematic/scene_runtime.cpp
@@ -576,6 +577,14 @@ add_executable(larecomp_camera_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/camera.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_camera_test PRIVATE src src/mc_engine/cinematic)
+# The scene's named places (src/mc_engine/cinematic/spots.h: the spot words of a statement, the spots file's reader, the lookup of the files a scene uses) and the
+# way scene.cpp turns spot words into numbers have a check that needs no game (with scene files as arguments it prints their statements, spots resolved):
+#   cmake --build <build dir> --target larecomp_spots_test, then run <build dir>/larecomp_spots_test (exit 0 = passed).
+add_executable(larecomp_spots_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/spots_test.cpp
+    src/mc_engine/cinematic/spots.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_spots_test PRIVATE src src/mc_engine/cinematic)
 # The scene's cars (car_verbs.h, car_registry.h, car_spawn.h: the statements (header only), the registry of poses and the script of native calls, pure) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_cars_test, then run <build dir>/larecomp_cars_test (exit 0 = passed).
 add_executable(larecomp_cars_test EXCLUDE_FROM_ALL
