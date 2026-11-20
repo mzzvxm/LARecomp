@@ -32,6 +32,11 @@
 // car: the mean of the history's vehicle texels around its body centre, darkened by the same shade (car_rt_refl_rules.h FindOtherCarColour says why that and
 // not a paint constant). mcla_gpu_car_rt_cars 0 takes them out of the scene (the player's car alone, as before), mcla_gpu_car_selfrefl_rt_parts 7 leaves
 // them in the scene and out of the reflection.
+// A HIT ON ANOTHER CAR'S PART THE CAMERA DOES NOT SEE IS SHADED FROM THE CAR'S OWN MATERIAL (RT-HIT-SHADING, car_rt_material_rules.h has the design, the record, the arithmetic and
+// the test plan): its paint colour (the gradient of the draw's own constants, the livery over it), its diffuse texture at the mip level of the cone's footprint, the ambient the
+// cars' draws saw and the sun (N.L and one visibility ray), the game's environment map by the fresnel, the lamps' glow at night. It replaces the stand-in colour described above
+// wherever the instance has a material; the history's colour is still the answer where the camera sees the part, and the two blend by the share of the hit the history shows.
+// mcla_gpu_car_rt_hit_shading (debug) is the A/B (off: the stand-in), mcla_gpu_car_rt_hit_gain, _ambient and _spec move the brightness.
 // THE OPPONENTS' OWN PAINT (car_rt_opp_refl.h): the pass below is the player's car's. The paint of another car (an instance with CAR_RT_MASK_OTHER_PAINT, the draws of the customisable paint's
 // shader) is traced by a second dispatch of the same shader file (the variant hlsl/car_rt_refl_opp.hlsli) that CarRtRefl::OnHistory records right after this one, into the same images: the paint
 // variant reads an opponent's texel like the player's, so its door shows the cars round it too. mcla_gpu_car_rt_opp_refl (debug) is the A/B.

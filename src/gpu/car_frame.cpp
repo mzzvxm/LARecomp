@@ -1155,6 +1155,8 @@ car_rt_material::Material CarFrame::MaterialOf(const MainDraw& d) const {
 
 // The frame's light: the pixel constants of the first vehicle draw (c26 ambient, c39 sun colour, c57 sky), and the environment map's slots from the first draw of a shader that
 // reads it (fetch slots 0 and 1; the slot the scene bound for the draw, valid for this frame).
+// CHECK: that c26, c39 and c57 hold the ambient, the sun's colour and the sky colour for the CARS' shaders as they do for the ao's reads of the world (the translated paint shader
+// names them gLightAmbient, gLightColor[0] and ambYPos at those registers); the "[car rt] ... the cars' light" line prints them at the first frame.
 void CarFrame::NoteLight(const MainDraw& d, const car_rt_material::Material& material) {
   car_rt_material::FrameLight& light = frame_.light;
   if (!light.valid && d.banks) {

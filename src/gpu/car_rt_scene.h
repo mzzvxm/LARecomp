@@ -61,6 +61,10 @@
 //     by the walk's part matrices through the SAME world-to-view conversion as a draw's instance (PackInstanceTransform), ranked with the other cars by the
 //     distance to the player within the class's count, with the car's paint colour in its record. The walker checks its placements against the draws of the cars the
 //     camera does draw and says the error in metres (the "PLACEMENT PROOF" line). A car that has not been placed for a while gives its meshes back.
+//   - MATERIALS (RT-HIT-SHADING, car_rt_material_rules.h): a mesh read from a draw also keeps its texture coordinates (a half2 a vertex, binding 4), and every instance has a
+//     material (the draw's shader class, its paint colours and fresnel, the fetch constant of its diffuse texture; a walked part's usual one), written every frame with the
+//     frame's lighting into binding 5 once the texture cache (TextureCache::Peek2D) has said which diffuse textures are resident. The reflection pass shades a hit on another car
+//     from them where the history does not show it.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,

@@ -295,6 +295,8 @@ class TextureCache {
   // texture decoded from guest memory that was uploaded and has no write pending, in a host texture of the cache. Nothing is created, decoded or uploaded and nothing is
   // logged; the entry is marked used in this frame (the budget's Trim and the idle eviction leave it). kNullTexture2DSlot when there is nothing to hand out: a texture the
   // cache never made or gave back, a replacement or a depth product it would not bind here, a dimension other than 2D. Render thread.
+  // CHECK: a resolve product is handed out in whatever layout the last draw that read it left it in (a compute pass reads it at the history trigger); a product that was written
+  // later in the frame than its last read would need a barrier this call cannot record. The first run's validation layer says.
   uint32_t Peek2D(const TextureFetch& fetch);
 
   // The image that stands for a scene colour product for the rest of a frame (the temporal

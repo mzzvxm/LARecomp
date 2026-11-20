@@ -329,6 +329,7 @@ struct Material {
   float flop = 0.0f;                     // the paint's exponent of N.V between A and B (0: A everywhere)
   float emissive = 0.0f;                 // scale of the glow at night
   uint8_t env = 0;                       // ShaderRule::env: the draw's fetch slots 0 (and 1) are the environment map (the frame's light takes the slots from such a draw)
+  float grey = 0.0f;                     // > 0: the tints are 1 (the diffuse texture gives the colour) and this grey is the surface's colour where the texture is not resident (MakeRows)
   FetchInfo diffuse;                     // the texture, where the draw has one the table names
   bool Known() const { return cls != Class::kNone; }
 };
@@ -416,6 +417,12 @@ inline Material Capture(uint64_t ps_identity, const uint8_t* ps_bank, FetchFn&& 
       m.diffuse = info;
       if (m.cls == Class::kPaint) {
         m.flags |= kFlagDecal;
+      } else if (rule->source == Source::kNone) {
+        // The texture is the surface's colour: the class's grey would darken it twice. The grey is what the surface shows where the texture is not resident.
+        m.grey = grey;
+        for (int c = 0; c < 3; ++c) {
+          m.tint_a[c] = m.tint_b[c] = 1.0f;
+        }
       }
     }
   }
@@ -582,8 +589,16 @@ inline void MakeRows(const InstanceMaterial& im, uint32_t slot, uint32_t rows[kM
   rows[0][0] = uint32_t(m.cls) | (uint32_t(flags & 0xFu) << 4) | (Byte01(fmin, 1.0f) << 8) | (Byte01(fmax, 1.0f) << 16) |
                (uint32_t(std::clamp(std::lround(std::clamp(fpow, 0.0f, 15.9f) * 16.0f), 0L, 255L)) << 24);
   rows[0][1] = slot;
-  rows[0][2] = PackRgb10(m.tint_a);
-  rows[0][3] = PackRgb10(m.tint_b);
+  float tint_a[3] = {m.tint_a[0], m.tint_a[1], m.tint_a[2]};
+  float tint_b[3] = {m.tint_b[0], m.tint_b[1], m.tint_b[2]};
+  if (m.grey > 0.0f && slot == kNoSlot) {
+    // a textured surface whose texture the cache does not hold shows the class's colour
+    for (int c = 0; c < 3; ++c) {
+      tint_a[c] = tint_b[c] = m.grey;
+    }
+  }
+  rows[0][2] = PackRgb10(tint_a);
+  rows[0][3] = PackRgb10(tint_b);
   const uint32_t edge = std::max<uint32_t>(m.diffuse.width, m.diffuse.height);
   rows[1][0] = Bits(m.flop);
   rows[1][1] = Bits(slot != kNoSlot && im.has_uv ? LodBase(im.uv_density, edge) : 0.0f);
