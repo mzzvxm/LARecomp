@@ -179,6 +179,9 @@ void GBuffer::BeginFrame(uint64_t frame_serial) {
                   PlaneNames(wants_.Of(gbuffer::Consumer::kLocalLights)), PlaneNames(wants_.Of(gbuffer::Consumer::kReflections)), PlaneNames(wants_.Of(gbuffer::Consumer::kDecals)),
                   PlaneNames(plan_.written), gbuffer::PlaneCount(plan_.attached), gbuffer::PlaneCount(plan_.attached) == 1 ? "" : "s");
     } else {
+      if (interval_frames_ != 0) {
+        LogInterval();  // the spell of frames that is ending: a short run (a tour that switches it on and off) gets its counts here, not only at the 600th frame
+      }
       REXLOG_INFO("{} the G-buffer is off (mcla_gpu_gbuffer {}; no effect asks for a plane the stage writes)", kPrefix, larecomp::settings::mcla_gpu_gbuffer.Get());
     }
     blocked_ = false;  // asked again at the next clear
