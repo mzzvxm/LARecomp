@@ -181,6 +181,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/camera/camera_trace.cpp
     src/mc_engine/menus/display_menu.cpp
     src/mc_engine/display/display_mode.cpp
+    src/mc_engine/display/window_icon.cpp
     src/mc_engine/display/ultrawide.cpp
     src/mc_engine/menus/frame_generation_menu.cpp
     src/mc_engine/menus/upscaling_menu.cpp
@@ -698,6 +699,10 @@ else()
 
         add_executable(larecomp WIN32 ${LARECOMP_SOURCES} src/larecomp.rc
                        "${CMAKE_CURRENT_BINARY_DIR}/keycaps.rc")
+        # The app icon (src/larecomp.ico, `1 ICON` in larecomp.rc): the resource compiler does not report ICON inputs as dependencies either,
+        # so an edited icon would not rebuild the .rc without this. The same for MinGW (windres -> llvm-rc reads the same .rc).
+        set_source_files_properties(src/larecomp.rc PROPERTIES
+                                    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/larecomp.ico")
     else()
         add_executable(larecomp ${LARECOMP_SOURCES})
     endif()

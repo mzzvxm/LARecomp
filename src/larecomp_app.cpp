@@ -54,6 +54,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/input/device_watch.h"
 #include "mc_engine/core/guest_profiler.h"
 #include "mc_engine/display/display_mode.h"
+#include "mc_engine/display/window_icon.h"
 #include "mc_engine/hooks/hooks.h"
 #include "mc_engine/input/impulse_triggers.h"
 #include "mc_engine/input/map_mouse.h"
@@ -700,6 +701,7 @@ void LarecompApp::StartOverlays() {
   }
   mcla::ui::StartControllerToasts(ui);  // the connect / disconnect panels (always on the screen's list, drawing nothing between pads)
   mcla::display::Initialize(ui);        // the DISPLAY MODE rows: follows the fullscreen / resolution settings (0.10 did this in SetupPresentation)
+  mcla::display::SetWindowIcon(ui);     // Linux: the app icon on the SDL window (Windows takes it from the exe's resources, larecomp.rc)
 }
 
 // The window's client size for the ultrawide maths: physical pixels, from the native window (the video mode is the title's, not the window's).
