@@ -256,8 +256,6 @@ class DirectorPanel final : public rex::ui::DialogBase {
         PublishGeometry(io);
     }
 
-    // Where the panel's things are, as an event (`ui.geometry`, in ImGui's own units: io.DisplaySize), when they move: a test that clicks and drags with the real mouse needs to know
-    // where the buttons, the lanes and the keys are, and the panel is the one that knows. At most four a second; ui.open asks for one at once.
     // The item's rectangle, cut to what is on show: an item under the fold of a scrolled child or past the dock's edge is outside the clip rect, a click on it hits nothing, and the
     // mouse run of 2026-11-20 clicked "SPAWN HERE" at such a place and counted a miss it could not explain. A widget with nothing on show is left out of the geometry (a test says
     // "no such widget" and scrolls or fails clearly), a half shown one reports its shown half (its centre is clickable).
@@ -273,6 +271,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
         geom_[name] = {std::round(seen.x0 * 2.0f) / 2.0f, std::round(seen.y0 * 2.0f) / 2.0f, std::round((seen.x1 - seen.x0) * 2.0f) / 2.0f, std::round((seen.y1 - seen.y0) * 2.0f) / 2.0f};
     }
 
+    // Where the panel's things are, as an event (`ui.geometry`, in ImGui's own units: io.DisplaySize), when they move: a test that clicks and drags with the real mouse needs to know
+    // where the buttons, the lanes and the keys are, and the panel is the one that knows. At most four a second; ui.open asks for one at once.
     void PublishGeometry(ImGuiIO& io) {
         if (now_ - last_geom_ < 0.25 && !geom_dirty_) return;
         dir::Json e = dir::Json::Object();
