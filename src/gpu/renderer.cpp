@@ -171,6 +171,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for
+    headlights_.Initialize(guest_memory_);  // and the cars' headlights (headlight_rig.h), which the lit shaders' variant reads
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
@@ -213,6 +214,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
+    scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -280,6 +282,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_rt_refl_.Shutdown();
     car_rt_.Shutdown();
     car_frame_.Shutdown();
+    headlights_.Shutdown();
     flicker_probe_.Shutdown();
     capture_readback_.Shutdown();
     hdr_tone_.Shutdown();
@@ -452,6 +455,7 @@ void Renderer::Shutdown() {
   car_rt_refl_.Shutdown();
   car_rt_.Shutdown();
   car_frame_.Shutdown();
+  headlights_.Shutdown();
   flicker_probe_.Shutdown();
   capture_readback_.Shutdown();
   hdr_tone_.Shutdown();

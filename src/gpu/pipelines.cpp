@@ -32,6 +32,7 @@
 #include "edram.h"
 #include "effect_compare.h"
 #include "format.h"
+#include "headlight_rig.h"
 #include "layout.h"
 #include "os/thread_priority.h"
 #include "shadow_filter.h"
@@ -140,6 +141,11 @@ uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
   }
   if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     return ShaderStore::kLuminanceVariant;
+  }
+  // The cars' headlights in the city's lit shaders (headlight_rig.h): while the rig has a light this frame (at night, with the setting on). The lit family has
+  // no other variant (shaderpack/variants/variant_overlap_test.cpp checks it on the retail text).
+  if ((ps.variants & (1u << ShaderStore::kHeadlightVariant)) != 0 && headlight_rig::VariantSelected()) {
+    return ShaderStore::kHeadlightVariant;
   }
   return 0;
 }
@@ -1580,6 +1586,9 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   // spec variant 0, so a draw that needs the alpha test keeps the main pack's shader.
   if (ps && key.ps_variant == 0 && ps->variants != 0) {
     key.ps_variant = ChoosePackedVariant(*ps);
+  } else if (ps && key.ps_variant == 1 && (ps->variants & (1u << ShaderStore::kHeadlightAlphaVariant)) != 0 && headlight_rig::VariantSelected()) {
+    // A draw with the alpha test or alpha to coverage on (spec variant 1) takes the headlight variant's twin compiled with the same spec mask.
+    key.ps_variant = ShaderStore::kHeadlightAlphaVariant;
   }
   key.input_layout = inputs.input_layout->id;
   key.topology = uint32_t(topology);

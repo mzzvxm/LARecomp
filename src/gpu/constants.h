@@ -108,6 +108,11 @@ inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
 // SharedConstants followed by ui_sharp::UiSharpConstants (Scene::UploadUiSharpConstants).
 inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
 
+// The headlight variant (headlight_rig.h, shaderpack/variants/headlight.h, shaders.h kHeadlightVariant and its alpha test twin) reads 672 bytes at the same
+// place, in the draws of the city's lit shaders that take it: headlight_rules::HeadlightConstants (c38 to c79 of the block), uploaded after
+// SharedConstants by Scene::UploadHeadlightConstants.
+inline constexpr uint64_t kHeadlightConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {

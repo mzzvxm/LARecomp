@@ -152,6 +152,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/rear_view.cpp
     src/mc_engine/hooks/traffic_shadow.cpp
     src/mc_engine/hooks/traffic_probe.cpp
+    src/mc_engine/hooks/headlight_points.cpp
     src/mc_engine/hooks/road_reflection_cars_test.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp

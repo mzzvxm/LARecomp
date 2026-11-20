@@ -93,6 +93,7 @@ class SunShafts;
 class CarSelfRefl;
 class CarDump;
 class CarFrame;
+class HeadlightRig;
 class CarShadowMap;
 class CarRtScene;
 class PostAa;
@@ -141,6 +142,9 @@ class Scene {
   // The player car's draws (car_frame.h): told of the main view's draws that write a vehicle ID in the frames a car effect asks for them,
   // and of the frame's start and its present. Null: none.
   void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
+  // The cars' headlights (headlight_rig.h): told of the main view's lens draws, of the frame's start and its present; the draws of the lit shaders' headlight
+  // variant (ShaderStore::kHeadlightVariant) take its block of lights as constants (UploadHeadlightConstants). Null: none (the variant then is never chosen).
+  void SetHeadlightRig(HeadlightRig* headlights) { headlights_ = headlights; }
   // The player car's sun shadow map (car_shadow_map.h): told of the frame boundary, the anchor, the composite marker and the mid-scene
   // depth copy, where it records its map BEFORE the ambient occlusion's passes. Null: none.
   void SetCarShadowMap(CarShadowMap* car_shadow) { car_shadow_ = car_shadow; }
@@ -372,6 +376,10 @@ class Scene {
   // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
   // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
   bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
+  // A draw of the headlight variant (ShaderStore::kHeadlightVariant, or its alpha test twin) reads 672 bytes after the shared constants (headlight_rig_rules.h
+  // HeadlightConstants): the draw's own copy of them and the block, in one span that replaces its shared constants, with the camera as the draw's own pixel
+  // constants say (c12-c15, the view inverse: the camera's position is row 3).
+  bool UploadHeadlightConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d);
   // A draw of the UI sharpening variant (ShaderStore::kUiSharpVariant) reads 16 bytes after the shared constants
   // (ui_sharp.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`; the last one is
   // kept for the next draw when neither changed.
@@ -449,6 +457,7 @@ class Scene {
   CarSelfRefl* car_refl_ = nullptr;
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
+  HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
