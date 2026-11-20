@@ -58,8 +58,8 @@ void CheckChoice() {
 }
 
 void CheckModes() {
-  // The table of GFX-UPGRADES-DESIGN.md section 9: auto is game / soft / soft.
-  const Mode auto_mode[] = {Mode::kGame, Mode::kSoft, Mode::kSoft};
+  // The table of GFX-UPGRADES-DESIGN.md section 9: auto is game / pcss / pcss (decided by the owner on 2026-11-19).
+  const Mode auto_mode[] = {Mode::kGame, Mode::kPcss, Mode::kPcss};
   for (int i = 0; i < 3; ++i) {
     const std::string at = std::string(" on ") + kClassNames[i];
     Check(shadow_filter::ModeFor(kClasses[i], Choice::kAuto) == auto_mode[i], "auto" + at);
@@ -74,9 +74,12 @@ void CheckModes() {
   Check(shadow_filter::ModeOfCell("game") == Mode::kGame && shadow_filter::ModeOfCell("soft") == Mode::kSoft &&
             shadow_filter::ModeOfCell("pcss") == Mode::kPcss,
         "a cell of the table");
-  // The table stays game / soft / soft until the pictures decide (proposal: pcss on High): a cell that said pcss
-  // would be the contact hardening on High and soft (no search) on Low whatever it said there.
-  Check(gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kHigh) == "soft", "the table's High cell is soft");
+  // The table is game / pcss / pcss (owner, 2026-11-19): the contact hardening on Mid and High, the game's own on Low (a cell that said pcss
+  // there would be soft, no search, whatever it said).
+  Check(gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kHigh) == "pcss" &&
+            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kMid) == "pcss" &&
+            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kLow) == "game",
+        "the table's cells are game on Low, pcss on Mid and High");
   // The mode that is selected as a variant: soft and pcss, not game (pipelines.cpp: one shader for both).
   Check(shadow_filter::Mode::kGame != shadow_filter::Mode::kSoft && shadow_filter::Mode::kSoft != shadow_filter::Mode::kPcss,
         "three modes");

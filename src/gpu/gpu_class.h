@@ -86,7 +86,9 @@ struct EffectInfo {
   std::string_view low, mid, high;
 };
 inline constexpr EffectInfo kEffects[kEffectCount] = {
-    {"mcla_gpu_shadow_filter", "game", "soft", "soft"},
+    // Contact hardening on Mid and High (owner, 2026-11-19: auto picks PCSS where the search runs; on Low it stays the game's own, and a hand set
+    // pcss there is soft: shadow_filter.h PcssAvailable). Kept only if the cost of pcss against soft on Mid is small (the check plan measures it).
+    {"mcla_gpu_shadow_filter", "game", "pcss", "pcss"},
     {"mcla_gpu_shadow_resolution", "game", "high", "high"},
     {"mcla_gpu_env_resolution", "game", "game", "high"},
     {"mcla_gpu_reflection_resolution", "game", "high", "high"},

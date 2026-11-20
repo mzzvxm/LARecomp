@@ -13,7 +13,7 @@
 //     pcss   contact hardening (package G1c): the same variant and pipeline with a blocker search in front (8
 //            taps) and the kernel that the sun's size gives at the distance of the blockers: sharp where a
 //            shadow touches its caster, softer with distance. A Low class has no search: pcss is soft there.
-//     auto   gpu_class.h's table: game on Low, soft on Mid and High (pcss on High is proposed, not decided)
+//     auto   gpu_class.h's table: game on Low, pcss on Mid and High (decided by the owner on 2026-11-19)
 //
 // pipelines.cpp WantedFeatures asks VariantSelected() per draw; Scene::Prepare uploads the 16 bytes the
 // variant reads after the shared constants (ShadowFilterConstants, byte 608 of the draw's SharedConstants

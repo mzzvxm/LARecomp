@@ -1817,9 +1817,9 @@ constexpr RowDynamics kAoIntensityDynamics = {.enabled = AoOn};
 // game's own four taps (GAME: the picture is the game's), more taps on a disk (SOFT) or that with contact
 // hardening (PCSS: a shadow is sharp where it touches what casts it and softer with the distance from it).
 // AUTO says what it comes to on this GPU (the first value's label, like the latency reducer's): GAME on an
-// integrated GPU, SOFT on the rest (gpu/gpu_class.h; PCSS on the strong class is proposed, not decided).
+// integrated GPU, PCSS on the rest (gpu/gpu_class.h; decided by the owner on 2026-11-19).
 // PCSS on an integrated GPU has no blocker search (the same cost rule as its AUTO) and says so: "PCSS (SOFT)".
-// The row is "SHADOW FILTER" (13 characters) with a value of at most 11 ("AUTO (SOFT)", "AUTO (GAME)",
+// The row is "SHADOW FILTER" (13 characters) with a value of at most 11 ("AUTO (PCSS)", "AUTO (GAME)",
 // "PCSS (SOFT)").
 const char* const kNativeShadowFilterVals[]  = {"auto", "game", "soft", "pcss"};
 const char* const kNativeShadowFilterNames[] = {"AUTO", "GAME", "SOFT", "PCSS"};

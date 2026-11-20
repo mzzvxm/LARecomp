@@ -886,11 +886,12 @@ class GPUSettings final : public rex::SettingOwner {
     "much as without the memo.", rex::kDebugOnly, rex::kRestart);
 
   REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
-    "pixel to pixel, a grainy edge), soft (more taps on a disk, turned by noise of the screen pixel, a "
-    "smooth edge of the same width, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
+    "pixel to pixel, a grainy edge), soft (more taps on a disk, a "
+    "smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
     "contact hardening: a shadow is sharp where it touches what casts it and softer with the distance "
     "from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) "
-    "picks by the graphics card: game on an integrated one, soft on the rest. The sun's shadows show from "
+    "picks by the graphics card: game on an integrated one, pcss on the rest. Your car's own shadow "
+    "(CAR SHADOW MAP) is filtered the same way. The sun's shadows show from "
     "8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss "
     "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
     "shows, the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
