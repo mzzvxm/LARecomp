@@ -402,6 +402,9 @@ bool Volumetrics::EnsureUavSet(uint32_t index, const HostImage& image) {
 }
 
 bool Volumetrics::EnsureConstantSet(uint32_t slot) {
+  if (slot >= kFramesInFlight) {
+    return false;
+  }
   if (cb_set_[slot]) {
     return true;
   }
