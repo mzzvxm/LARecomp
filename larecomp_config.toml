@@ -26762,6 +26762,16 @@ address = 0x823794C8
 registers = ["r31"]
 jump_address_on_true = 0x823794CC
 
+# 0x82574FF8, entry of sub_82574FF8(r3 = query, r4 = a node of the bound pool, r5 = mask): the query's box against the node's matrix and bound. The node's bound
+# pointer (+4) is read first; a node with none (dropped by another thread, or not filled yet) made the title read guest 0xC (vol3-race-vulkan, 2026-11-20, a race
+# load). True answers no (r3 = 0) and returns; the callers (sub_8256CF78, sub_8256CEC8's chain walk) go on to the next node. No setting: it fires only where the
+# title would have died. See hooks/vehicle.cpp and hooks/bound_node_guard.h.
+[[midasm_hook]]
+name = "MCLA_BoundNodeTest_82574FF8"
+address = 0x82574FF8
+registers = ["r3", "r4"]
+return_on_true = true
+
 # sub_824DF200(owner, type, name, &field, ...) -- every tune field registration.
 # Diagnostic, gated on the tune_field_probe cvar (off by default).
 [[midasm_hook]]

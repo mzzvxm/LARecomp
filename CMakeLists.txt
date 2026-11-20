@@ -433,6 +433,11 @@ add_executable(larecomp_hud_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/hud_track_test.cpp
     src/mc_engine/cinematic/hud_track.cpp)
 target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cinematic)
+# The guard of the game's bound-node test (src/mc_engine/hooks/bound_node_guard.h: which nodes it must not read) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_bound_node_guard_test, then run <build dir>/larecomp_bound_node_guard_test (exit 0 = passed).
+add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/bound_node_guard_test.cpp)
+target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).
