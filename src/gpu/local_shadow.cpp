@@ -994,9 +994,11 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
   list->setFramebuffer(nullptr);
   last_banks_ = banks_written;
   banks_total_ += banks_written;
-  // The lit draws of the next frame (and the translucent ones after this) read it as a texture.
+  // The lit draws of the next frame (and the translucent ones after this) read it as a texture, and the volumetric light's inject (a compute pass, later in
+  // this frame: volumetrics_headlights.h) reads it too: both stages (D3D12: ALL_SHADER_RESOURCE, a compute shader may not read PIXEL_SHADER_RESOURCE;
+  // Vulkan: fragment and compute). The pixel readers are unchanged.
   const plume::RenderTextureBarrier read(atlas_.texture.get(), plume::RenderTextureLayout::SHADER_READ);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS, read);
+  list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE), read);
   atlas_.layout = plume::RenderTextureLayout::SHADER_READ;
   if (upload_failed) {
     static bool reported = false;  // render thread only
