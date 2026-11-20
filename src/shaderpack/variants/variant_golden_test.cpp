@@ -3,15 +3,20 @@
 //
 //  1. BYTE IDENTITY. Every built-in variant, run alone through the chain (ComposeStages with its own feature: version 2 of the variant pack's text), must
 //     give for every shader it is for exactly the text the variant gave before the chain existed. The reference is a "golden" file made by the pre-chain
-//     code (origin/main 9e2220cb, whose VariantDef::transform takes (shader, hlsl)), by a small dumper that is NOT in this tree (it only builds against
+//     code (origin/main, whose VariantDef::transform takes (shader, hlsl)), by a small dumper that is NOT in this tree (it only builds against
 //     that API; it lives in golden_old.cpp in the folder variant-compose-golden next to the worktree): one line per
 //     (variant, shader file) with the status, the size and the FNV-1a 64 of the text:
 //       <variant> TAB <file stem> TAB <ok|skip|error> TAB <size> TAB <fnv1a64, 16 hex digits> TAB <the first 100 characters of the error>
+//     and, before them, header lines the dumper writes: `# reference <what the golden was made from, e.g. origin/main a2f91fdd>` (printed) and one
+//     `# version <variant> <n>` per variant (VariantDef::version of the pre-chain code): the text AND the version must be the main's, so a variant
+//     whose text was carried over but whose version stamp was not (or the other way round) fails (the pack's stamp lines are what the player's pack
+//     is checked against). A golden without header lines (the older ones) is checked on the text only.
 //     Nothing of the text is in the file, only its hash, and the file is not committed. `--golden FILE` checks against it; `--write FILE` writes this
-//     tree's own lines in the same format (to make a new reference after a variant's text was changed on purpose). The same check serves the branches
-//     that changed a variant's text (fix/shadow-dither's shadow_filter version 3, fix/rt-chrome-edge's car_chrome version 3): golden made from that
-//     branch's tree, and this test on that branch's tree with the mechanical port (the transform takes the StageContext, DeclareConstants replaces the
-//     two declarations and the two kChecks lines about them).
+//     tree's own lines in the same format (to make a new reference after a variant's text was changed on purpose). WHENEVER MAIN CHANGES A VARIANT'S
+//     TEXT (fix/shadow-dither's shadow_filter version 3, fix/rt-chrome-edge's and the RT line's car_chrome versions 2 and 3): make the golden again from
+//     origin/main as it is now (perf\scripts\variant-golden.ps1 does the export, the dumper's build and this test in one go) and run this test on the
+//     branch that carries the chain: 0 differ is the pass. The mechanical port of a changed stage: the transform takes the StageContext, DeclareConstants
+//     replaces the two declarations and the kChecks lines about them (variants/stage_constants.h).
 //  2. COMPOSITION ON RETAIL TEXT. Each built-in stage composed with a test stage of this file's own (32 bytes of constants, a helper before main, a local after
 //     the cube map's line), with the real stage first and with it second: the composition applies, both blocks are declared once at the offsets the chain gives,
 //     and with `--dxc DIR` (the folder of dxc.exe and dxil.dll) the composed text compiles to DXIL and SPIR-V with the pack's arguments. A vertex stage is
@@ -262,10 +267,23 @@ int main(int argc, char** argv) {
   }
   if (!golden.empty()) {
     std::map<std::pair<std::string, std::string>, Line> want;
+    std::map<std::string, unsigned> golden_versions;
     {
       std::ifstream in(golden);
       std::string row;
       while (std::getline(in, row)) {
+        if (!row.empty() && row.back() == '\r') row.pop_back();
+        if (row.empty()) continue;
+        if (row[0] == '#') {  // the dumper's header: what the golden was made from, and the pre-chain version of each variant
+          if (row.rfind("# reference ", 0) == 0) {
+            std::printf("golden made from: %s\n", row.c_str() + 12);
+          } else if (row.rfind("# version ", 0) == 0) {
+            char name[64] = {};
+            unsigned version = 0;
+            if (std::sscanf(row.c_str() + 10, "%63s %u", name, &version) == 2) golden_versions[name] = version;
+          }
+          continue;
+        }
         Line l;
         size_t from = 0;
         std::string* fields[] = {&l.variant, &l.stem, &l.status, &l.size, &l.fnv, &l.error};
@@ -278,6 +296,13 @@ int main(int argc, char** argv) {
       }
     }
     Check(!want.empty(), "the golden file has lines");
+    // The versions of the pre-chain code: the stamp lines of the pack (variants_<name>_version) must read what they read before.
+    for (const sp::VariantDef& def : defs) {
+      const auto v = golden_versions.find(def.name);
+      if (golden_versions.empty()) break;
+      Check(v != golden_versions.end(), "the golden file has the version of " + def.name);
+      if (v != golden_versions.end()) Check(v->second == def.version, def.name + " is version " + std::to_string(def.version) + ", the golden's is " + std::to_string(v->second));
+    }
     size_t same = 0, different = 0, missing = 0;
     std::set<std::pair<std::string, std::string>> seen;
     for (const Line& l : mine) {

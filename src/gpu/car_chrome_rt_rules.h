@@ -6,7 +6,7 @@
 // chrome pixel where the car's own parts cover it (a tailpipe under a bumper), with two centimetre probes marched through the history image of the car
 // (car_selfrefl.h: every vehicle's pixels of the frame before, distance in alpha) or, where the frame has the ray traced image (car_rt_refl.h), with the
 // reflection probe's weight read from it. The ray traced image only knows the PLAYER'S car (its primary ray hits the player's body and nothing else), and
-// its sky probe is always marched. The variant is chosen by the shader (ChoosePackedVariant: xChrome::PS_Chrome, whoever draws it) and its constants by the
+// its sky probe is always marched. The variant is chosen by the shader (pipelines.cpp WantedFeatures: xChrome::PS_Chrome, whoever draws it) and its constants by the
 // draw's stencil ID, whose pixels are in the history: so another car's chrome has been taking the march all along. This is the ray traced version for it.
 //
 // WHAT THIS ADDS (where ray tracing runs: the RAY TRACED setting's devices, the car self-reflection on, mcla_gpu_car_rt_cars above 0, the other cars in the
