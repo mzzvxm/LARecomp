@@ -506,6 +506,13 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
+# Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
+# own default for cache_root) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).
+add_executable(larecomp_pack_folder_test EXCLUDE_FROM_ALL
+    src/bootprogress/pack_folder_rules_test.cpp)
+target_include_directories(larecomp_pack_folder_test PRIVATE src)
+
 # Which renderer each value of the SDK's gpu.driver means (src/gpu/renderer_choice.h: LARecomp's own, or the SDK's Xenia GPU), and the hidden
 # way back to the XENIA renderer (src/gpu/renderer_fallback.h: the debug row's picks, the box's words and its larecomp.toml write through the
 # profile store, the count of starts that never got going) have a check that needs no game:
