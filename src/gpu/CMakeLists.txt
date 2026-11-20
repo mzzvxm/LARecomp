@@ -21,6 +21,7 @@ add_library(larecomp_gpu OBJECT
     car_rt_scene.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
+    local_shadow.cpp
     car_rt_refl.cpp
     capture_readback.cpp
     choice_box.cpp
@@ -651,6 +652,8 @@ larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES 
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
 larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
+# The headlight shadow atlas's debug view (local_shadow.h): the atlas in a rectangle of the picture. The replay itself uses the game's own shaders.
+larecomp_gpu_host_shader(local_shadow_view_ps ps_6_0)
 # The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5, DXIL only) and the pass
 # that shows its picture over the scene.
 larecomp_gpu_host_shader_rt(car_rt_check_cs cs_6_5)

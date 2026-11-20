@@ -35,6 +35,7 @@
 #include "format.h"
 #include "gpu.h"
 #include "layout.h"
+#include "local_shadow.h"
 #include "mc_engine/display/ultrawide.h"
 #include "native_gfx/vertex_declaration.h"
 #include "occlusion.h"
@@ -854,6 +855,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_shadow_) {
     car_shadow_->BeginFrame();
   }
+  if (local_shadow_) {
+    local_shadow_->BeginFrame();
+  }
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
@@ -1288,6 +1292,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (car_shadow_) {
       car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
     }
+    if (local_shadow_) {
+      local_shadow_->OnAnchor();  // ... nor the headlight shadow maps'
+    }
     if (car_rt_) {
       car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
     }
@@ -1311,6 +1318,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
           (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
           (car_frame_ && car_frame_->wants_draws())) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
+      }
+      if (local_shadow_ && local_shadow_->wants_draws()) {
+        NoteLocalShadow(banks, last_shared_, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1951,6 +1961,36 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.cache = geometry_;
     car_frame_->OnMainDraw(frame);
   }
+}
+
+void Scene::NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConstants& shared, const PreparedDraw& d) {
+  EdramKey color;
+  EdramKey depth;
+  const EdramKey* color0 = nullptr;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth0 = &depth;
+  }
+  LocalShadow::MainDraw draw;
+  draw.match = temporal::MatchMainView(color0, depth0);
+  if (!draw.match) {
+    return;
+  }
+  draw.key = &d.key;
+  draw.vs = d.vs;
+  draw.ps = d.ps;
+  draw.input_layout = d.input_layout;
+  draw.geometry = &d.geometry;
+  draw.banks = &banks;
+  draw.shared = &shared;  // the block Prepare uploaded for this draw: UploadConstants keeps it in last_shared_
+  draw.ps_constants = d.ps_constants;
+  draw.stencil_ids = temporal::StencilIdsWritten(d.state);
+  local_shadow_->OnMainDraw(draw);
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -3230,6 +3270,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
     car_shadow_->OnResolve(record, summary, list);
   }
+  if (local_shadow_) {
+    // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
+    // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
+    local_shadow_->OnResolve(record, summary, list, slot_);
+  }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
@@ -3307,6 +3352,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (local_shadow_) {
+    local_shadow_->OnComposite();
   }
   if (car_shadow_) {
     car_shadow_->OnComposite();
