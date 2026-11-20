@@ -1802,6 +1802,17 @@ void EdramTargets::RetireFramebuffersWithExtra(const plume::RenderTexture* extra
   }
 }
 
+void EdramTargets::DestroyFramebuffersWithExtra(const plume::RenderTexture* extra) {
+  ++change_serial_;
+  for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
+    if (it->first.extra == extra) {
+      it = framebuffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 void EdramTargets::RetireFramebuffersOf(const Target* target) {
   ++change_serial_;
   for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {

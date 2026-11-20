@@ -53,11 +53,25 @@ void GBuffer::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pa
 }
 
 void GBuffer::Shutdown() {
+  // The GPU is idle and the FrameRing drained: everything goes at once, and the heap goes later so the slot is not handed back (CarRtScene::Shutdown,
+  // UpscalerMasks::Shutdown). ReleaseImage() here retired instead: the EDRAM framebuffers that carry the sidecar (each with a view of the main depth
+  // that reads the depth texture when it dies, on Vulkan) then waited in the FrameRing until the renderer's last drain, which runs after
+  // EdramTargets::Shutdown freed that texture: ACCESS_VIOLATION in ~VulkanTextureView at quit (Vulkan, G-buffer on, 2026-11-20). The image's own
+  // objects go in the order that they name each other: the framebuffer, the view (which reads the texture), the texture.
   view_pipelines_.clear();
   view_shaders_ = {};
-  if (passes_ && image_.texture) {
-    ReleaseImage();
+  if (edram_ && image_.texture) {
+    edram_->DestroyFramebuffersWithExtra(image_.texture.get());
   }
+  image_.framebuffer.reset();
+  image_.view.reset();
+  image_.texture.reset();
+  image_ = HostImage{};
+  held_bytes_ = 0;
+  frame_ = gbuffer::GBufferFrame{};
+  passes_ = nullptr;
+  edram_ = nullptr;
+  pass_timing_ = nullptr;
 }
 
 uint64_t GBuffer::HeldBytes() const {

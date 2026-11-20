@@ -559,6 +559,10 @@ class EdramTargets {
   // The framebuffers that name `extra` as their extra colour image go (after the lists that still use them), and
   // change_serial moves, so that the Scene's memo of the last draw's framebuffer is dropped.
   void RetireFramebuffersWithExtra(const plume::RenderTexture* extra);
+  // Shutdown only (the GPU idle, the FrameRing drained): the same framebuffers die at once, before `extra` and before the targets' textures do.
+  // Retired there instead, they wait in the FrameRing until its last drain, which comes after Shutdown() freed the depth texture that each one's
+  // depth view still names (Plume's Vulkan view reads its texture when it dies).
+  void DestroyFramebuffersWithExtra(const plume::RenderTexture* extra);
 
   // True when `access` of `target` to the tiles of `pixels` is known to
   // change and report nothing at this map epoch, aspect by aspect (cheap: the
