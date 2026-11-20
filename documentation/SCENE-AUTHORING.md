@@ -140,7 +140,7 @@ scrubbed still). The lint and the preview warn about brain cars.
 The game runs with `mcla_director` (opt_run `--director`): `director.json` in the run folder says port and token. `st slots` finds it; `--attach slot:N` (or the run's name) uses it; a
 game you attach to gets its own scene back after a preview.
 
-- **Human leads** (the Director panel): every change the human makes writes the scene file; you see the event `scene.reloaded {by:"panel", changed}` and can refine. Read the file again
+- **Human leads** (the Director panel: Ctrl+F12, the DEBUG menu's DIRECTOR PANEL row, or `st cmd slot:0 ui.open panel=director`; `documentation\DEBUG.md` says what it does): every change the human makes writes the scene file; you see the event `scene.reloaded {by:"panel", changed}` and can refine. Read the file again
   before you edit; edit with line-addressed ops so you keep their comments and layout:
   `st cmd slot:0 '{"cmd":"scene.edit","args":{"base_rev":12,"ops":[{"op":"param","line":14,"expect":"cam 5 rig chase car:p1 dist 7 fov 50","key":"fov","value":"40"}]}}'`
   (`expect` is the old text of the line: if it moved, the answer is `stale`: read `scene.get` again). Ops: `insert`, `replace`, `delete`, `move` (the time word), `param` (one word pair).

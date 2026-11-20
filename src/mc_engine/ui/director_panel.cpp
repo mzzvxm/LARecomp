@@ -337,7 +337,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
                 axis_fit_ = true;
             }
         }
-        if (scene_text_.rev() != s.rev && !text_inflight_) {
+        if (scene_text_.rev() != s.rev && !text_inflight_ && now_ >= text_retry_at_) {
             text_inflight_ = true;
             dp::Cmd get;
             get.cmd = "scene.get";
@@ -345,8 +345,10 @@ class DirectorPanel final : public rex::ui::DialogBase {
             if (!disp_.Send(get, [this](const dir::Reply& r) {
                     text_inflight_ = false;
                     if (r.ok) scene_text_.Set(static_cast<int64_t>(r.result.NumberOr("rev", -1)), r.result.StringOr("text", ""));
+                    else text_retry_at_ = now_ + 1.0;  // no scene yet, or the Director is busy: not again every frame
                 })) {
                 text_inflight_ = false;
+                text_retry_at_ = now_ + 1.0;
             }
         }
         if (s.selected_line != seen_snapshot_selected_) {
@@ -1500,6 +1502,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
     // the scene as the panel holds it
     dp::SceneText scene_text_;
     bool text_inflight_ = false;
+    double text_retry_at_ = 0.0;
     int edits_inflight_ = 0;
     std::vector<QueuedEdit> queue_;
     dp::Layout layout_;
