@@ -7,11 +7,12 @@
 //                                                                the game would say (exit 1 when one has an error)
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
-//   clang++ -std=c++23 camera_test.cpp camera.cpp scene.cpp -o camera_test.exe
+//   clang++ -std=c++23 camera_test.cpp camera.cpp scene.cpp spots.cpp path_follow.cpp -o camera_test.exe
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -20,6 +21,7 @@
 
 #include "camera.h"
 #include "scene.h"
+#include "spots.h"
 
 using namespace mc::cinematic;
 using namespace mc::cinematic::camera;
@@ -845,6 +847,335 @@ void TestRigAimBlend() {
     CheckVec(at1.basis.forward, {0, 0, 1}, "flown to (100,0,-100) the look at (100,0,0) is along +Z", 1e-9);
 }
 
+// ---------------------------------------------------------------------------------------------------------------- rigs (DIRECTOR-DESIGN 4.3)
+
+// A route source from text, for the flyby (the default one reads files beside the scene).
+struct MapRoutes : RouteSource {
+    std::map<std::string, std::string> files;
+    int loads = 0;
+    bool Load(const std::string& name, Route* out, std::string* error) override {
+        ++loads;
+        const auto it = files.find(name);
+        if (it == files.end()) {
+            *error = "no route file '" + name + "'";
+            return false;
+        }
+        return ParseRoute(it->second, out, error);
+    }
+};
+
+BuildResult BuildWith(const std::string& text, RouteSource* routes, const SpotTable* spots = nullptr) {
+    ParseOptions o;
+    o.spots = spots;
+    const ParseResult p = ParseScene(text, o);
+    if (!p.Ok()) {
+        std::printf("test scene does not parse:\n");
+        for (const Diagnostic& d : p.diagnostics) std::printf("  %s\n", FormatDiagnostic(d, "t").c_str());
+    }
+    return BuildTrack(p.scene, routes);
+}
+
+CameraTrack TrackWith(const std::string& text, RouteSource* routes, const SpotTable* spots = nullptr) {
+    BuildResult r = BuildWith(text, routes, spots);
+    if (!r.Ok()) {
+        std::printf("test scene does not build:\n");
+        for (const Diagnostic& d : r.diagnostics) std::printf("  %s\n", FormatDiagnostic(d, "t").c_str());
+    }
+    return std::move(r.track);
+}
+
+// A car that drives on and turns, the same for every rig that is asked.
+CarPose MovingCar(double t) {
+    return CarAt({100.0 + 6.0 * t, 0.0, 50.0 + 8.0 * t}, 30.0 + 10.0 * t, 2.0 * std::sin(t));
+}
+
+// The camera a rig line gives and the camera the keys it stands for give, frame by frame while the cars move: the same position, axes and lens.
+void CheckSameShot(const std::string& what, const std::string& rig_line, const std::string& key_line, double end_t = 6.0, RouteSource* routes = nullptr) {
+    const CameraTrack a = TrackWith("scene t\n" + rig_line + "\nend 99\n", routes);
+    const CameraTrack b = TrackWith("scene t\n" + key_line + "\nend 99\n", routes);
+    FakeCars cars;
+    Rig ra, rb;
+    double worst = 0.0;
+    bool same_fov = true;
+    for (int i = 0; i <= static_cast<int>(end_t * 60.0); ++i) {
+        const double t = i / 60.0;
+        cars.cars["p1"] = MovingCar(t);
+        cars.cars["p2"] = CarAt({50.0, 0.0, 50.0 - 3.0 * t}, 90.0);
+        const View va = ra.Evaluate(a, t, cars);
+        const View vb = rb.Evaluate(b, t, cars);
+        worst = std::max({worst, Length(va.position - vb.position), Length(va.basis.forward - vb.basis.forward), Length(va.basis.right - vb.basis.right),
+                          Length(va.basis.up - vb.basis.up)});
+        same_fov = same_fov && std::fabs(va.fov - vb.fov) < 1e-12 && std::fabs(va.near_plane - vb.near_plane) < 1e-12 && va.active == vb.active;
+    }
+    Check(worst < 1e-9, what + ": the rig and its keys give one camera (worst difference " + std::to_string(worst) + ")");
+    Check(same_fov, what + ": ...and one lens");
+}
+
+void CheckRigBad(const std::string& line, const std::string& part, RouteSource* routes = nullptr, const SpotTable* spots = nullptr) {
+    const BuildResult r = BuildWith("scene t\ncam 0 pos 0 0 0 yaw 0 pitch 0\n" + line + "\nend 20\n", routes, spots);
+    const Diagnostic* d = Find(r, part);
+    Check(!r.Ok(), "'" + line + "' is an error");
+    Check(d != nullptr, "'" + line + "' says '" + part + "'");
+    if (d) Check(d->line == 3, "'" + line + "' is reported on line 3, not " + std::to_string(d->line));
+}
+
+void TestRigChase() {
+    CheckSameShot("chase, every word", "cam 0 rig chase car:p1 dist 7 height 2 side 1 lag 0.5 aim 1.2 ahead 3 fov 45 roll 2 ease inout",
+                  "cam 0 attach car:p1 1 2 -7 heading follow 0.5 look car:p1 0 1.2 3 aimfollow 0.5 fov 45 roll 2 ease inout");
+    CheckSameShot("chase, the defaults", "cam 0 rig chase car:p1", "cam 0 attach car:p1 0 1.8 -6 heading follow 0.3 look car:p1 0 1 0 aimfollow 0.3");
+    CheckSameShot("chase, no lag", "cam 0 rig chase car:p2 lag 0 dist 4", "cam 0 attach car:p2 0 1.8 -4 heading look car:p2 0 1 0");
+    CheckSameShot("chase, words in any order", "cam 0 rig chase height 3 car:p1 fov 50 dist 9", "cam 0 attach car:p1 0 3 -9 heading follow 0.3 look car:p1 0 1 0 aimfollow 0.3 fov 50");
+    CheckSameShot("chase, the player's car", "cam 0 rig chase car:Player dist 5", "cam 0 attach car:player 0 1.8 -5 heading follow 0.3 look car:player 0 1 0 aimfollow 0.3");
+    // what it is: behind the car, level, looking at it
+    FakeCars cars;
+    cars.cars["p1"] = CarAt({10, 0, 20}, 0);
+    const CameraTrack tr = TrackWith("scene t\ncam 0 rig chase car:p1 dist 6 height 1.8 lag 0\nend 9\n", nullptr);
+    Rig rig;
+    const View v = rig.Evaluate(tr, 0.0, cars);
+    CheckVec(v.position, {10, 1.8, 14}, "six metres behind a car that faces +Z and 1.8 up", 1e-9);
+    Check(v.basis.forward.z > 0.9 && v.basis.forward.y < 0.0, "looking forward and down at the car");
+    Check(BuildWith("scene t\ncam 0 rig chase car:p1\nend 9\n", nullptr).Ok(), "a bare chase builds");
+    Check(Summarize(tr).find("1 attach") != std::string::npos && Summarize(tr).find("cars: p1") != std::string::npos, "the summary names the keys and the car");
+
+    CheckRigBad("cam 1 rig", "rig needs a kind");
+    CheckRigBad("cam 1 rig dolly car:p1", "unknown rig 'dolly' (chase, orbit, tripod, flyby, hood, bumper or roof)");
+    CheckRigBad("cam 1 rig chase", "rig chase: needs a car");
+    CheckRigBad("cam 1 rig chase car:p1 car:p2", "rig chase: two cars (p1 and p2)");
+    CheckRigBad("cam 1 rig chase car:p1 dist 0", "rig chase: dist 0.00 (0.50 to 200.00 metres)");
+    CheckRigBad("cam 1 rig chase car:p1 dist 500", "rig chase: dist 500.00");
+    CheckRigBad("cam 1 rig chase car:p1 dist far", "rig chase: 'dist' needs a number (got 'far')");
+    CheckRigBad("cam 1 rig chase car:p1 dist", "rig chase: 'dist' needs a value");
+    CheckRigBad("cam 1 rig chase car:p1 dist 3 dist 4", "rig chase: 'dist' twice");
+    CheckRigBad("cam 1 rig chase car:p1 lag 11", "rig chase: lag 11.00 (0.00 to 10.00 seconds)");
+    CheckRigBad("cam 1 rig chase car:p1 speed 3", "rig chase: unknown word 'speed' (dist, height, side, lag, aim, ahead, fov, roll, near, far, ease, car:<id>)");
+    CheckRigBad("cam 1 rig chase car:p1 track car:p2", "rig chase: unknown word 'track'");
+    CheckRigBad("cam 1 rig chase car:p1 fov 500", "cam: fov 500.00 (1 to 170 degrees, vertical)");
+    CheckRigBad("cam 1 rig chase car:p1 ease wobbly", "bad ease 'wobbly'");
+    CheckRigBad("cam 1 rig chase car:p-1", "unknown word 'car:p-1'");
+}
+
+void TestRigOrbit() {
+    CheckSameShot("orbit sweep", "cam 0 rig orbit car:p1 r 8 az 20..200 over 6 el 10", "cam 0 orbit car:p1 r 8 az 20 el 10\ncam 6 orbit car:p1 r 8 az 200 el 10", 8.0);
+    CheckSameShot("orbit, the defaults", "cam 0 rig orbit car:p1", "cam 0 orbit car:p1 r 8 az 0 el 10");
+    CheckSameShot("orbit, both ranges and a target offset", "cam 0 rig orbit car:p2 r 5 az 0..90 el 5..30 over 4 at 0 1 0 fov 40 ease inout",
+                  "cam 0 orbit car:p2 r 5 az 0 el 5 at 0 1 0 fov 40 ease inout\ncam 4 orbit car:p2 r 5 az 90 el 30 at 0 1 0", 6.0);
+    CheckSameShot("orbit, only the elevation moves", "cam 0 rig orbit car:p1 az 45 el 0..40 over 3", "cam 0 orbit car:p1 r 8 az 45 el 0\ncam 3 orbit car:p1 r 8 az 45 el 40", 5.0);
+    CheckSameShot("orbit, with a lag", "cam 0 rig orbit car:p1 r 6 az 90 lag 0.4", "cam 0 orbit car:p1 r 6 az 90 el 10 follow 0.4");
+    const CameraTrack one = TrackWith("scene t\ncam 0 rig orbit car:p1 az 90\nend 9\n", nullptr);
+    Check(one.pos.size() == 1 && one.pos[0].kind == PosKind::kOrbit && one.pos[0].radius == 8.0 && one.pos[0].elevation == 10.0, "no range: one orbit key with r 8 and el 10");
+    const CameraTrack sweep = TrackWith("scene t\ncam 2 rig orbit car:p1 az 20..200 over 6\nend 9\n", nullptr);
+    Check(sweep.pos.size() == 2 && std::fabs(sweep.pos[1].t - 8.0) < 1e-12 && sweep.pos[1].azimuth == 200.0 && sweep.pos[0].azimuth == 20.0,
+          "a sweep is two keys, the second `over` seconds later");
+    FakeCars cars;
+    cars.cars["p1"] = CarAt({0, 0, 0}, 0);
+    Rig rig;
+    const View held = rig.Evaluate(sweep, 20.0, cars);
+    CheckVec(held.position, OrbitPoint({0, 0, 0}, HeadingBasis(0), 8.0, 200.0, 10.0), "after the sweep it holds its end", 1e-9);
+
+    // a statement inside the sweep: the sweep's end key (t = 8) was made first, the keys of a channel run in time order, and the file is told it is out of order
+    const BuildResult inside = BuildWith("scene t\ncam 0 rig orbit car:p1 az 0..90 over 8\ncam 5 fov 30\nend 99\n", nullptr);
+    Check(inside.Ok() && Find(inside, "comes after one at t=8.00") != nullptr, "a camera key inside a sweep says it is out of order");
+    Check(inside.track.pos.size() == 2 && inside.track.pos[0].t == 0.0 && inside.track.pos[1].t == 8.0 && inside.track.fov.size() == 1, "...and the keys are in time order");
+    CheckRigBad("cam 1 rig orbit", "rig orbit: needs a car");
+    CheckRigBad("cam 1 rig orbit car:p1 az 20..200", "a sweep (az a..b) needs its length: over <seconds>");
+    CheckRigBad("cam 1 rig orbit car:p1 el 0..30", "a sweep (el a..b) needs its length");
+    CheckRigBad("cam 1 rig orbit car:p1 over 4", "over is the length of an az or el sweep");
+    CheckRigBad("cam 1 rig orbit car:p1 az sideways", "az needs degrees (az 90) or a sweep (az 20..200)");
+    CheckRigBad("cam 1 rig orbit car:p1 el 95", "el needs degrees from -89 to 89");
+    CheckRigBad("cam 1 rig orbit car:p1 r 0", "rig orbit: r 0.00 (0.10 to 5000.00 metres)");
+    CheckRigBad("cam 1 rig orbit car:p1 at 1 2", "'at' needs three numbers");
+    CheckRigBad("cam 1 rig orbit car:p1 az 1..2 over 0", "rig orbit: over 0.00 (0.05 to 3600.00 seconds)");
+    CheckRigBad("cam 1 rig orbit car:p1 dist 4", "rig orbit: unknown word 'dist' (r, az, el, over, at, lag, fov, roll, near, far, ease, car:<id>)");
+}
+
+void TestRigTripod() {
+    CheckSameShot("tripod on a car", "cam 0 rig tripod at 90 2 40 track car:p1 0 1 0", "cam 0 pos 90 2 40 look car:p1 0 1 0");
+    CheckSameShot("tripod, the default aim point", "cam 0 rig tripod at 90 2 40 track car:p1", "cam 0 pos 90 2 40 look car:p1 0 0.8 0");
+    CheckSameShot("tripod, an aim lag", "cam 0 rig tripod at 90 2 40 track car:p1 0 1 0 aimlag 0.5 fov 35", "cam 0 pos 90 2 40 look car:p1 0 1 0 aimfollow 0.5 fov 35");
+    CheckSameShot("tripod on a place", "cam 0 rig tripod at 1 2 3 track 0 0 100", "cam 0 pos 1 2 3 look 0 0 100");
+    CheckSameShot("tripod aimed by hand", "cam 0 rig tripod at 1 2 3 yaw 90 pitch -10 roll 3", "cam 0 pos 1 2 3 yaw 90 pitch -10 roll 3");
+    CheckSameShot("tripod, words in any order", "cam 0 rig tripod track car:p2 0 0.5 0 at 5 6 7", "cam 0 pos 5 6 7 look car:p2 0 0.5 0");
+
+    CheckRigBad("cam 1 rig tripod track car:p1", "needs a place: at <x> <y> <z>");
+    CheckRigBad("cam 1 rig tripod at 1 2 3", "needs an aim: track car:<id>");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track car:p1 yaw 5", "two ways to aim");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 car:p1", "'car:p1' goes after track (track car:p1)");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track", "track needs a car (track car:<id> [<dx> <dy> <dz>]) or a place");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track 1 2", "track needs a car");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track car:p1 1 2", "track car:<id> takes no offset or three numbers");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track car:p1 track car:p2", "track twice");
+    CheckRigBad("cam 1 rig tripod at 1 2 x track car:p1", "'at' needs three numbers");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track 1 2 3 aimlag 0.3", "aimlag lags a track on a car");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track car:p1 aimlag 20", "rig tripod: aimlag 20.00 (0.00 to 10.00 seconds)");
+    CheckRigBad("cam 1 rig tripod at 1 2 3 track car:p1 dist 3", "rig tripod: unknown word 'dist' (at, aimlag, fov, roll, near, far, ease, yaw, pitch, track)");
+}
+
+// the routes of the flyby tests: a straight 100 m at 10 m/s along +X, with and without heights
+void FlybyRoutes(MapRoutes* r) {
+    r->files["flat.route"] = "0,0,10\n100,0,10\n";
+    r->files["high.route"] = "0,0,10,5\n100,0,10,5\n";
+    r->files["slow.route"] = "0,0,2\n100,0,2\n";
+}
+
+void TestRigFlyby() {
+    MapRoutes routes;
+    FlybyRoutes(&routes);
+    const CameraTrack tr = TrackWith("scene t\ncam 2 rig flyby path flat.route y 3 track car:p1 0 1 0\nend 99\n", &routes);
+    Check(tr.routes.size() == 1 && tr.pos.size() == 1 && tr.pos[0].kind == PosKind::kPath && tr.pos[0].has_y && tr.pos[0].path_t0 == 2.0, "a flyby is one position key on a route");
+    FakeCars cars;
+    cars.cars["p1"] = CarAt({50, 0, 20}, 0);
+    Rig rig;
+    CheckVec(rig.Evaluate(tr, 2.0, cars).position, {0, 3, 0}, "at the key's time it is at the first point", 1e-9);
+    CheckVec(rig.Evaluate(tr, 4.0, cars).position, {20, 3, 0}, "two seconds on at 10 m/s", 1e-9);
+    CheckVec(rig.Evaluate(tr, 7.0, cars).position, {50, 3, 0}, "five seconds on: half way", 1e-9);
+    const View mid = rig.Evaluate(tr, 7.0, cars);
+    CheckVec(mid.basis.forward, Normalize(Vec3{50, 1, 20} - Vec3{50, 3, 0}, {0, 0, 1}), "it looks at the car's offset point", 1e-9);
+    CheckVec(rig.Evaluate(tr, 12.0, cars).position, {100, 3, 0}, "at the end of the route", 1e-9);
+    CheckVec(rig.Evaluate(tr, 50.0, cars).position, {100, 3, 0}, "and it holds there", 1e-9);
+    // a scrub gives the same place: the position is a function of the time
+    Rig other;
+    CheckVec(other.Evaluate(tr, 9.0, cars).position, {70, 3, 0}, "a fresh rig at t = 9 is where the running one is", 1e-9);
+    CheckVec(rig.Evaluate(tr, 9.0, cars).position, {70, 3, 0}, "and a step back gives the place again", 1e-9);
+
+    CheckSameShot("flyby speed factor", "cam 0 rig flyby path flat.route speed x2 y 3 track 50 0 20", "cam 0 pos 0 3 0 look 50 0 20", 0.0, &routes);
+    const CameraTrack fast = TrackWith("scene t\ncam 0 rig flyby path flat.route speed x2 y 0 track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(fast, 2.5, cars).position, {50, 0, 0}, "speed x2: twice the route's 10 m/s", 1e-9);
+    const CameraTrack fixed = TrackWith("scene t\ncam 0 rig flyby path flat.route speed 5 y 0 track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(fixed, 4.0, cars).position, {20, 0, 0}, "speed 5: five metres a second", 1e-9);
+    const CameraTrack own = TrackWith("scene t\ncam 0 rig flyby path slow.route y 0 track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(own, 10.0, cars).position, {20, 0, 0}, "the route's own speed (2 m/s)", 1e-9);
+
+    const CameraTrack hi = TrackWith("scene t\ncam 0 rig flyby path high.route track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(hi, 5.0, cars).position, {50, 7, 0}, "a route with heights: its height plus 2 m", 1e-9);
+    const CameraTrack up = TrackWith("scene t\ncam 0 rig flyby path high.route up 0.5 track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(up, 5.0, cars).position, {50, 5.5, 0}, "up: above the route's own height", 1e-9);
+    const CameraTrack abs = TrackWith("scene t\ncam 0 rig flyby path high.route y 20 track 50 0 20\nend 99\n", &routes);
+    CheckVec(Rig().Evaluate(abs, 5.0, cars).position, {50, 20, 0}, "y: in the world, whatever the route's height", 1e-9);
+    Check(Summarize(tr).find("1 flyby") != std::string::npos, "the summary counts the flyby");
+
+    // a cut after it: the flyby carries on, it does not start again
+    const CameraTrack cut = TrackWith("scene t\ncam 2 rig flyby path flat.route y 3 track car:p1\ncut 5\ncam 5 fov 40\nend 99\n", &routes);
+    Check(cut.routes.size() == 1 && cut.shots.size() == 2, "a flyby and a cut");
+    Rig c;
+    c.Evaluate(cut, 4.9, cars);
+    CheckVec(c.Evaluate(cut, 6.0, cars).position, {40, 3, 0}, "after a cut that names no position the flyby has not started again", 1e-9);
+    // the same route and speed twice: one sampler
+    const CameraTrack twice = TrackWith("scene t\ncam 0 rig flyby path flat.route y 3 track car:p1\ncut 4\ncam 4 rig flyby path flat.route y 5 track car:p1\nend 99\n", &routes);
+    Check(twice.routes.size() == 1 && twice.pos.size() == 2, "the same route twice is one sampler");
+    // blends into the next key
+    const CameraTrack blend = TrackWith("scene t\ncam 0 rig flyby path flat.route y 3 track car:p1\ncam 10 pos 100 30 0 look car:p1\nend 99\n", &routes);
+    Rig bl;
+    const View b5 = bl.Evaluate(blend, 5.0, cars);
+    Check(Proper(b5.basis) && b5.position.x > 40.0 && b5.position.x < 80.0 && b5.position.y > 3.0 && b5.position.y < 30.0, "a flyby blends into the key that follows it");
+
+    CheckRigBad("cam 1 rig flyby y 3 track car:p1", "rig flyby: needs a route: path <route file>", &routes);
+    CheckRigBad("cam 1 rig flyby path ../x.route y 3 track car:p1", "is not a route file name", &routes);
+    CheckRigBad("cam 1 rig flyby path missing.route y 3 track car:p1", "rig flyby: route 'missing.route': no route file 'missing.route'", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route track car:p1", "route 'flat.route' has no heights (x,z,speed,y): give the camera's height in the world with y <metres>", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route up 2 y 3 track car:p1", "up (above the route's own height) and y (in the world) are two ways", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route up 2 track car:p1", "up is above the route's own height, and route 'flat.route' has none", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route y 3", "needs an aim: track car:<id>", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route y 3 speed fast track car:p1", "speed needs metres a second", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route y 3 speed 200 track car:p1", "a speed from 0.5 to 120", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route y 3 path other.route track car:p1", "'path' twice", &routes);
+    CheckRigBad("cam 1 rig flyby path flat.route y 3 car:p1", "goes after track", &routes);
+    routes.files["short.route"] = "0,0\n0,0.5\n";
+    CheckRigBad("cam 1 rig flyby path short.route y 3 track car:p1", "rig flyby: route 'short.route'", &routes);
+    routes.files["bad.route"] = "0,0\nx,3\n";
+    CheckRigBad("cam 1 rig flyby path bad.route y 3 track car:p1", "line 2: 'x' is not a number", &routes);
+}
+
+void TestRigMounts() {
+    CheckSameShot("hood", "cam 0 rig hood car:p1", "cam 0 attach car:p1 0 1.2 0.8 look car:p1 0 1.1 30 near 0.1");
+    CheckSameShot("bumper", "cam 0 rig bumper car:p2 fov 70", "cam 0 attach car:p2 0 0.45 2.3 look car:p2 0 0.5 30 near 0.1 fov 70");
+    CheckSameShot("roof", "cam 0 rig roof car:p1 ahead 50 lag 0.2", "cam 0 attach car:p1 0 1.55 -0.1 follow 0.2 look car:p1 0 1.1 50 aimfollow 0.2 near 0.1");
+    CheckSameShot("hood, shifted and with its own near", "cam 0 rig hood car:p1 shift 0.3 0.1 -0.2 near 0.3", "cam 0 attach car:p1 0.3 1.3 0.6 look car:p1 0 1.2 30 near 0.3");
+    FakeCars cars;
+    cars.cars["p1"] = CarAt({0, 0, 0}, 0);
+    const char* const names[] = {"hood", "bumper", "roof"};
+    const Vec3 want[] = {{0, 1.2, 0.8}, {0, 0.45, 2.3}, {0, 1.55, -0.1}};
+    for (int i = 0; i < 3; ++i) {
+        const CameraTrack tr = TrackWith(std::string("scene t\ncam 0 rig ") + names[i] + " car:p1\nend 9\n", nullptr);
+        Rig rig;
+        const View v = rig.Evaluate(tr, 0.0, cars);
+        CheckVec(v.position, want[i], std::string(names[i]) + " sits where the table says (a car facing +Z at the origin)", 1e-9);
+        CheckNum(v.near_plane, 0.1, std::string(names[i]) + " has near 0.1", 1e-12);
+        Check(v.basis.forward.z > 0.99, std::string(names[i]) + " looks forward along the car");
+    }
+    // a rigid mount: it turns with the car
+    cars.cars["p1"] = CarAt({0, 0, 0}, 90);
+    const CameraTrack hood = TrackWith("scene t\ncam 0 rig hood car:p1\nend 9\n", nullptr);
+    Rig r;
+    const View v = r.Evaluate(hood, 0.0, cars);
+    CheckVec(v.position, {0.8, 1.2, 0}, "a car that faces +X: the hood camera is 0.8 m ahead of the middle on +X", 1e-9);
+    CheckVec(v.basis.forward, {1, 0, 0}, "...and looks along +X (a tenth of a metre down over 30 m ahead)", 1e-2);
+
+    CheckRigBad("cam 1 rig hood", "rig hood: needs a car");
+    CheckRigBad("cam 1 rig roof car:p1 ahead 0", "rig roof: ahead 0.00 (1.00 to 1000.00 metres)");
+    CheckRigBad("cam 1 rig bumper car:p1 shift 9 0 0", "'shift' needs three numbers within 5.00");
+    CheckRigBad("cam 1 rig hood car:p1 height 3", "rig hood: unknown word 'height' (ahead, lag, shift, fov, roll, near, far, ease, car:<id>)");
+}
+
+// the default route source: files beside the scene file (ParseOptions::path), or in its routes folder
+void TestRigRouteFiles() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path(ec) / "larecomp-camera-test";
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "routes", ec);
+    const auto write = [](const fs::path& p, const std::string& text) { std::ofstream(p, std::ios::binary) << text; };
+    write(root / "a.route", "0,0,10,1\n100,0,10,1\n");
+    write(root / "routes" / "deep.route", "0,0,10,2\n100,0,10,2\n");
+    const std::string scene =
+        "scene t\n"
+        "cam 0 rig flyby path a.route track 50 0 20\n"
+        "cut 5\n"
+        "cam 5 rig flyby path deep track 50 0 20\n"
+        "end 99\n";
+    ParseOptions o;
+    o.path = (root / "x.scene").string();
+    const ParseResult p = ParseScene(scene, o);
+    const BuildResult r = BuildTrack(p.scene);
+    Check(p.Ok() && r.Ok() && r.track.routes.size() == 2, "routes are found beside the scene (with the extension) and in its routes folder (without it)");
+    FakeCars cars;
+    Rig rig;
+    CheckVec(rig.Evaluate(r.track, 2.0, cars).position, {20, 3, 0}, "...and read (the route's height 1 + up 2)", 1e-9);
+    const ParseResult unknown = ParseScene(scene);
+    const BuildResult none = BuildTrack(unknown.scene);
+    Check(!none.Ok() && Find(none, "the scene's folder is not known") != nullptr, "a scene parsed without its path says why a route cannot be found");
+    ParseOptions elsewhere;
+    elsewhere.path = (root / "nowhere" / "x.scene").string();
+    const BuildResult missing = BuildTrack(ParseScene(scene, elsewhere).scene);
+    Check(!missing.Ok() && Find(missing, "no route file 'a.route' (looked for") != nullptr, "a route that is not there names the places looked in");
+    fs::remove_all(root, ec);
+}
+
+// spot words through the rigs: the parser has turned them into numbers by the time the camera reads them
+void TestRigSpots() {
+    SpotTable table;
+    Spot street;
+    street.name = "street";
+    street.x = 832.19;
+    street.y = 16.5;
+    street.z = -787.53;
+    street.heading = 62.0;
+    street.has_heading = true;
+    table.Add(street);
+    MapRoutes routes;
+    FlybyRoutes(&routes);
+    const CameraTrack tr = TrackWith("scene t\ncam 0 rig tripod at spot:street@4,1.2,-8 track spot:street\nend 9\n", nullptr, &table);
+    Check(tr.pos.size() == 1 && tr.aim.size() == 1 && tr.aim[0].kind == AimKind::kLookPoint, "a tripod on a spot, looking at the spot");
+    const double h = 62.0 * kDeg;
+    CheckVec(tr.pos[0].point, {832.19 + 4 * (-std::cos(h)) - 8 * std::sin(h), 16.5 + 1.2, -787.53 + 4 * std::sin(h) - 8 * std::cos(h)}, "its place is the spot plus the offset in the spot's frame", 1e-3);
+    CheckVec(tr.aim[0].point, {832.19, 16.5, -787.53}, "its aim is the spot", 1e-9);
+    const CameraTrack yaw = TrackWith("scene t\ncam 0 rig tripod at spot:street@0,2,0 yaw spot:street pitch -5\nend 9\n", nullptr, &table);
+    Check(yaw.aim.size() == 1 && yaw.aim[0].kind == AimKind::kAngles && std::fabs(yaw.aim[0].yaw - 62.0) < 1e-9, "yaw takes the spot's heading");
+    const BuildResult fly = BuildWith("scene t\ncam 0 rig flyby path flat.route y spot:street track car:p1\nend 9\n", &routes, &table);
+    Check(!fly.Ok(), "a spot is a place, not a height: y spot:... is an error");
+    const BuildResult ok = BuildWith("scene t\ncam 0 rig flyby path flat.route y 3 track spot:street@0,1,0\nend 9\n", &routes, &table);
+    Check(ok.Ok(), "a flyby that tracks a place by name");
+}
+
 // Parse files given on the command line and say what the game would say. Returns 1 when one has an error.
 int ParseFiles(int argc, char** argv) {
     int rc = 0;
@@ -856,8 +1187,14 @@ int ParseFiles(int argc, char** argv) {
             continue;
         }
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        ParseResult pr;
-        const BuildResult r = Build(text, &pr);
+        // as the game does: the spots files that belong to the scene, and the scene's own path (a flyby's routes are looked for beside it)
+        const LoadedSpots spots = LoadSpotsFor(argv[i]);
+        for (const std::string& problem : spots.problems) std::printf("%s\n", problem.c_str());
+        ParseOptions options;
+        options.spots = &spots.table;
+        options.path = argv[i];
+        const ParseResult pr = ParseScene(text, options);
+        const BuildResult r = BuildTrack(pr.scene);
         if (!pr.Ok()) {
             for (const Diagnostic& d : pr.diagnostics) std::printf("%s\n", FormatDiagnostic(d, argv[i]).c_str());
             std::printf("%s: the scene itself has %d error(s) (not the camera's)\n", argv[i], pr.ErrorCount());
@@ -893,6 +1230,13 @@ int main(int argc, char** argv) {
     TestRigInherit();
     TestRigCars();
     TestRigAimBlend();
+    TestRigChase();
+    TestRigOrbit();
+    TestRigTripod();
+    TestRigFlyby();
+    TestRigMounts();
+    TestRigRouteFiles();
+    TestRigSpots();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

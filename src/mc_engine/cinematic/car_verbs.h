@@ -13,7 +13,8 @@
 //   car <id> path <route file> [speed <x>] [mode brain|kinematic]   the car drives a route (work package M4c; path_follow.h has the file)
 //   car <id> stop                                          the car stops where it is (a path ends; the car stays)
 //
-// `at` takes x,y,z as one word or as three; the position is a world position (x east, z south, y up). `heading` is where the
+// `at` takes x,y,z as one word or as three; the position is a world position (x east, z south, y up). A place or a heading may be written as a spot
+// word (`at spot:hw-street@-1.5,0,0 heading spot:hw-street`, spots.h): the scene parser turns it into numbers before these rules read the statement. `heading` is where the
 // nose points, in degrees, as the camera's yaw: 0 along +Z, 90 along +X (the game's own Racer_Teleport angle is this plus 180:
 // NativeHeadingDeg). Garage slots count from 0. `garage:N` and `slot:N` mean `profile N`; `despawn` means `delete`. The id is
 // what the camera's `car:<id>` names; `player` is the player's own car and takes only `profile`.
@@ -154,6 +155,17 @@ inline bool ParsePaint(const std::string& s, int* v) {
     return true;
 }
 
+// A spot word (`spot:<name>[@r,u,f]`, spots.h) is turned into numbers when a scene is read (scene.cpp, ExpandSpotWords), before these parsers see the
+// statement. One that reaches them was not: a car statement parsed on its own, without the table. Say so, instead of "bad position".
+inline bool IsUnresolvedSpotWord(const std::string& s) {
+    return s.size() >= 5 && Lower(s.substr(0, 5)) == "spot:";
+}
+
+inline std::string UnresolvedSpotMessage(const std::string& word) {
+    return "'" + word + "' is a spot word, and spot words are turned into coordinates when the scene is read (ParseScene with a spots table; "
+           "ExpandSpotWords for a statement on its own)";
+}
+
 inline bool IsModelName(const std::string& s) {
     if (s.empty() || s.size() > kMaxModelChars) return false;
     for (char c : s) {
@@ -232,6 +244,7 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
         if (key == "at") {
             if (have_at) return Fail(error, std::string(verb) + ": a second 'at'");
             if (i + 1 >= w.size()) return Fail(error, "at needs x,y,z");
+            if (IsUnresolvedSpotWord(w[i + 1])) return Fail(error, UnresolvedSpotMessage(w[i + 1]));
             if (w[i + 1].find(',') != std::string::npos) {
                 if (!ParseTriple(w[i + 1], out->position)) return Fail(error, "bad position '" + w[i + 1] + "' (x,y,z: three numbers)");
                 i += 2;
@@ -251,6 +264,7 @@ inline CarParse ParseSpawn(const std::vector<std::string>& w, CarCommand* out, s
         } else if (key == "heading") {
             if (out->has_heading) return Fail(error, std::string(verb) + ": a second 'heading'");
             double h = 0.0;
+            if (i + 1 < w.size() && IsUnresolvedSpotWord(w[i + 1])) return Fail(error, UnresolvedSpotMessage(w[i + 1]));
             if (i + 1 >= w.size() || !ParseNumber(w[i + 1], &h)) return Fail(error, "heading needs degrees (heading 270)");
             out->heading = NormalizeDegrees(h);
             out->has_heading = true;

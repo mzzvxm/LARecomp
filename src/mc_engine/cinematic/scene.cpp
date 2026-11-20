@@ -5,6 +5,7 @@
 #include "scene.h"
 
 #include "car_verbs.h"
+#include "spots.h"
 
 #include <algorithm>
 #include <array>
@@ -152,6 +153,12 @@ bool ParseOnOff(std::string_view s, int* out) {
     return true;
 }
 
+// The folder of a file path ("C:\a\b.scene" -> "C:\a"), either slash; empty when the path has none.
+std::string FolderOf(const std::string& path) {
+    const size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut);
+}
+
 // Words of one line: split on blanks, "double quotes" keep a word together (and may be empty), '#' at the start of a word
 // (outside quotes) starts a comment. *unterminated is set when a quote is not closed.
 std::vector<std::string> SplitWords(std::string_view line, bool* unterminated) {
@@ -205,6 +212,8 @@ using Args = std::vector<std::string>;
 
 class Parser {
   public:
+    explicit Parser(const ParseOptions& options) : options_(options) {}
+
     ParseResult Run(std::string_view text) {
         if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") text.remove_prefix(3);  // a byte order mark
         int line_no = 0;
@@ -221,6 +230,8 @@ class Parser {
         std::stable_sort(result_.diagnostics.begin(), result_.diagnostics.end(),
                          [](const Diagnostic& x, const Diagnostic& y) { return x.line < y.line; });  // the whole-file ones (line 0) first
         result_.scene.events = std::move(events_);
+        result_.scene.source_path = options_.path;
+        result_.scene.source_dir = FolderOf(options_.path);
         return std::move(result_);
     }
 
@@ -846,7 +857,17 @@ class Parser {
     }
 
     // camera, cut, hud, car and start: only their shape is checked here; the packages that apply them read the words.
-    void Opaque(int line, double t, const std::string& verb, const Args& a) {
+    void Opaque(int line, double t, const std::string& verb, const Args& given) {
+        // A spot word (`spot:<name>[@r,u,f]`, spots.h) is a place or a heading by name: it becomes numbers here, so the packages that read the
+        // words (the camera, the cars) see coordinates only. A statement that cannot be resolved is an error on its own line.
+        Args a = given;
+        if (verb == "cam" || verb == "car" || verb == "start") {
+            std::string why;
+            if (!ExpandSpotWords(&a, options_.spots, &why)) {
+                Error(line, why);
+                return;
+            }
+        }
         Event e;
         e.t = t;
         e.line = line;
@@ -982,6 +1003,7 @@ class Parser {
         }
     }
 
+    ParseOptions options_;
     ParseResult result_;
     std::vector<Event> events_;
     int statements_ = 0;
@@ -1115,7 +1137,7 @@ bool EndsWith(std::string_view s, std::string_view suffix) {
 std::string CvarRefusal(std::string_view name) {
     const std::string n = Lower(name);
     const std::string given(name);
-    if (StartsWith(n, "mcla_scene")) return "a scene does not set " + given;
+    if (StartsWith(n, "mcla_scene") || StartsWith(n, "mcla_director")) return "a scene does not set " + given;
     bool refused = StartsWith(n, "mcla_capture_") || n.find("dump") != std::string::npos;
     for (const std::string_view suffix : kRefusedSuffixes) refused = refused || EndsWith(n, suffix);
     for (const std::string_view exact : kRefusedCvars) refused = refused || n == exact;
@@ -1158,7 +1180,11 @@ int ParseResult::WarningCount() const {
 }
 
 ParseResult ParseScene(std::string_view text) {
-    return Parser().Run(text);
+    return Parser(ParseOptions{}).Run(text);
+}
+
+ParseResult ParseScene(std::string_view text, const ParseOptions& options) {
+    return Parser(options).Run(text);
 }
 
 std::string Summarize(const Scene& scene) {

@@ -53,6 +53,10 @@
 //                                                         kept as words for their packages, which register a TrackApplier
 //                                                         (camera.h, hud_track.h, car_verbs.h read them); `start` has none yet
 //
+// SPOT WORDS. In a `cam`, `car` or `start` statement a word `spot:<name>[@right,up,forward[,turn]]` is a named place of the spots file
+// (spots.h): the parser turns it into numbers before the statement's words are kept (x y z, or after `heading` or `yaw` the heading in
+// degrees), so the packages that read the words see coordinates only. It needs the table: ParseOptions below.
+//
 // ease: linear (default), in, out, inout. A key's value holds until the next key of the same track.
 //
 // Everything a runner needs to know to run a scene reads as data here. A parse never throws: it returns the scene and
@@ -163,6 +167,11 @@ struct Scene {
     // Options of the whole scene (written without a time): `statelog on [dir <folder>]`.
     bool statelog = false;
     std::string statelog_dir;  // empty = the default place
+
+    // Where the text came from (ParseOptions::path): the file and its folder. Empty when the parser was not told. The folder is where a
+    // route named by a camera rig (camera.h `rig flyby path <route>`) is looked for, beside the scene and in its `routes` folder.
+    std::string source_path;
+    std::string source_dir;
 };
 
 struct ParseResult {
@@ -173,8 +182,18 @@ struct ParseResult {
     bool Ok() const { return ErrorCount() == 0; }
 };
 
+class SpotTable;  // spots.h
+
+// What a parse may know beyond the text. A scene file is the same text everywhere; the table of spots and the folder it lies in are the
+// machine's (spots.h INTEGRATION says how the runtime fills this in).
+struct ParseOptions {
+    const SpotTable* spots = nullptr;  // `spot:<name>` words resolve against it; null: none is loaded, a spot word is an error
+    std::string path;                  // the scene file's path (Scene::source_path); empty: not known
+};
+
 // Parses a whole file. Never throws; on an error the scene holds what was understood and Ok() is false.
 ParseResult ParseScene(std::string_view text);
+ParseResult ParseScene(std::string_view text, const ParseOptions& options);
 
 // "12 events: hour 2, weather 1, set 3 ...; ends at 24.0 s" for the log.
 std::string Summarize(const Scene& scene);
@@ -187,6 +206,7 @@ int WeatherIndexFromName(std::string_view name);  // -1 when it is not one of th
 // error, the runner as its warning), and an empty string when it may; the runner still asks the cvar system whether the setting exists,
 // is live and takes the value. Not settable by a scene (names compared without regard to case):
 //   mcla_scene*          a scene does not arm another one
+//   mcla_director*       nor drive the Director (its command channel and the folder its commands may write to: DIRECTOR-DESIGN.md 2.2)
 //   mcla_capture_*       every capture setting: the take's program (ffmpeg), its arguments, its sink and its folder. A take is started
 //                        with the scene's own `capture` key; where it goes is chosen on the command line
 //   a setting that names a program, a path, a server or arguments (a name ending in _path, _dir, _folder, _file, _root, _exe, _args,
