@@ -10,6 +10,8 @@
 // The sidecar. A host image (HostPasses::EnsureImage) at the size and sample count of the main view's colour target (render scale and the host's MSAA level
 // included), made on the first draw that carries it and made again whenever the colour target changes. It is not an EDRAM identity: the tile map and the
 // aliasing detector never see it. Its framebuffer is the colour target's, the sidecar after it, and the depth (EdramTargets::Framebuffer with `extra`).
+// Only the draws that WRITE it bind it (gbuffer_rules.h kMaskedDrawsAttach says why: Plume's D3D12 back end has no per target write mask yet): every other draw of
+// the main view binds the guest's own framebuffer.
 //
 // The frame (gbuffer_rules.h Window):
 //   - the guest's clear of the main colour is mirrored: the sidecar is cleared to 0 ("no data") with the same rectangle, at the target's scale. A day frame
@@ -23,8 +25,8 @@
 // mcla_gpu_gbuffer_view 0..6 (hlsl/gbuffer_view_ps.hlsl). Both are read at each frame boundary (live); turning it off gives the images back.
 //
 // Logs (info, "[gbuffer]"): the first frame with the sidecar and every time it is made again (size, samples, bytes), the window's clears (the first
-// few frames: how many, how many partial: survey C6), and a line every 600 frames with the draws by outcome and the pixel shaders that wrote it or were
-// left masked (their identities: the family picture, survey R2).
+// few frames: how many, how many partial: survey C6), and a line every 600 frames with the draws by outcome and the pixel shaders that wrote it or that
+// have no variant yet ("masked" in the counts: the draws that could have carried it and did not write it; their identities are the family picture, survey R2).
 //
 // Threading: render thread only.
 // ===========================================================================
@@ -143,7 +145,7 @@ class GBuffer {
   uint64_t initial_clears_ = 0;
   uint64_t late_clears_ = 0;  // a mirrored clear that found the window closed
   std::unordered_map<uint64_t, uint32_t> written_by_;  // pixel shader identity -> draws that wrote the sidecar (this interval)
-  std::unordered_map<uint64_t, uint32_t> masked_by_;   // ... draws that carried it and left it masked for want of a variant
+  std::unordered_map<uint64_t, uint32_t> masked_by_;   // ... draws of the main view's window whose shader has no variant (yet)
   uint32_t window_logs_ = 0;                           // the first frames' window lines logged
   uint64_t held_bytes_ = 0;
 };

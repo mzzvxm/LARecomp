@@ -1612,8 +1612,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       d.key.slope_scaled_depth_bias = d.bias.slope;
     }
   }
-  // The G-buffer (gbuffer.h): a main view draw in the frame's window carries the sidecar as a second colour target, and a shader that has the variant
-  // writes it. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
+  // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
+  // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
   const PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
@@ -2367,7 +2367,8 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   if (!decision.attach()) {
     return key;
   }
-  // The sidecar is the colour target after the guest's one: R16G16_UNORM, written whole by the variant, masked (write mask 0) for every other draw.
+  // The sidecar is the colour target after the guest's one: R16G16_UNORM, written whole by the variant. Only a draw of the variant carries it (gbuffer_rules.h
+  // kMaskedDrawsAttach); on D3D12 its blend state is RT0's (Plume sets no independent blend), an opaque draw's.
   const uint32_t slot = d.key.color_count;
   plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
   blend.renderTargetWriteMask = decision.variant != 0 ? uint8_t(0xF) : uint8_t(0);

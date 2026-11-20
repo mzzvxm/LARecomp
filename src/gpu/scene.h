@@ -284,8 +284,9 @@ class Scene {
     // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
-    // The G-buffer (gbuffer.h): the draw carries the sidecar as a second colour target (the pipeline's key has it; `key` stays the guest's), and, when
-    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin) and writes it.
+    // The G-buffer (gbuffer.h): the draw carries the sidecar as a second colour target (the pipeline's key has it; `key` stays the guest's) and, when
+    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin) and writes it. Today the
+    // two are the same draws (gbuffer_rules.h kMaskedDrawsAttach).
     bool gbuffer_attached = false;
     uint32_t gbuffer_variant = 0;
   };

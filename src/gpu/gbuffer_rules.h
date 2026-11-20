@@ -275,13 +275,22 @@ inline bool IsTrigger(const TriggerFacts& f) {
          !f.inside_end_tiling && f.first_this_frame;
 }
 
+// Whether a draw that does NOT write the sidecar (blended, no variant yet, another variant, no colour) still binds it with write mask 0, as the survey's design has
+// it (one framebuffer for the whole window, no pass switch). That needs a per colour target write mask: Vulkan has it (Plume reads the device's features and
+// fills colorWriteMask per attachment), but Plume's D3D12 back end builds the pipeline state from RenderTarget[0] alone (IndependentBlendEnable is never set,
+// plume_d3d12.cpp), so there RT1 would get RT0's mask and such a draw, whose pixel shader writes no SV_Target1, would put undefined values into the normal plane. Until
+// Plume sets it (a one line change, its own PR) a draw that does not write the sidecar binds the guest's own framebuffer, and only the draws of the variant bind the
+// sidecar: the framebuffer changes between the two kinds (a pass switch on Vulkan, a binding change on D3D12). A variant draw takes RT0's blend state for RT1 on
+// D3D12: opaque, so no blend, and the write mask of a lit draw has red and green in it.
+inline constexpr bool kMaskedDrawsAttach = false;
+
 // What a draw of the main view's colour (the guest has one colour target, RT0, and a depth target) does with the sidecar.
 enum class Why : uint8_t {
   kWrites,           // attached, and the pixel shader's variant writes the planes
-  kMaskedBlended,    // attached, write mask 0: the draw blends (glass, decals, particles) and does not define the surface
-  kMaskedNoVariant,  // attached, write mask 0: the pixel shader has no G-buffer variant (yet)
-  kMaskedOtherVariant,  // attached, write mask 0: the draw took another variant (a shader has one)
-  kMaskedNoColor,    // attached, write mask 0: the draw writes no colour (RT0's write mask is 0)
+  kMaskedBlended,    // the draw blends (glass, decals, particles) and does not define the surface (write mask 0 when kMaskedDrawsAttach)
+  kMaskedNoVariant,  // the pixel shader has no G-buffer variant (yet)
+  kMaskedOtherVariant,  // the draw took another variant (a shader has one)
+  kMaskedNoColor,    // the draw writes no colour (RT0's write mask is 0)
   kOff,              // the G-buffer is off this frame
   kNotMainView,      // not the main view's colour (a cascade, the UI, a reflection view)
   kPauseView,        // the pause menu's / the map's world (4 samples): no sidecar in phase 1
@@ -290,7 +299,7 @@ enum class Why : uint8_t {
   kWindowClosed,     // after the mid-scene depth copy
   kCount,
 };
-inline constexpr bool Attached(Why why) { return why <= Why::kMaskedNoColor; }
+inline constexpr bool Attached(Why why) { return why == Why::kWrites || (kMaskedDrawsAttach && why <= Why::kMaskedNoColor); }
 
 struct DrawFacts {
   bool active = false;               // the G-buffer is on this frame

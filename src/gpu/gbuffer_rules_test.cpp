@@ -394,27 +394,28 @@ void RuleChecks() {
     gb::DrawFacts f = GoodDraw();
     f.ps_variant_mask = (1u << 14);
     f.ps_variant_before = 1;
-    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach() && gb::Decide(f).variant == 0, "an alpha draw whose shader has no twin is attached, masked");
+    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach && gb::Decide(f).variant == 0, "an alpha draw whose shader has no twin writes nothing (and binds the sidecar masked only when kMaskedDrawsAttach)");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.ps_variant_mask = 0;
-    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach(), "a shader with no variant is attached, masked");
+    Check(gb::Decide(f).why == Why::kMaskedNoVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a shader with no variant writes nothing");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.rt0_blended = true;
-    Check(gb::Decide(f).why == Why::kMaskedBlended && gb::Decide(f).attach(), "a blended draw is attached, masked");
+    Check(gb::Decide(f).why == Why::kMaskedBlended && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a blended draw writes nothing");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.rt0_writes = false;
-    Check(gb::Decide(f).why == Why::kMaskedNoColor && gb::Decide(f).attach(), "a draw that writes no colour is attached, masked");
+    Check(gb::Decide(f).why == Why::kMaskedNoColor && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a draw that writes no colour writes nothing");
   }
   {
     gb::DrawFacts f = GoodDraw();
     f.ps_variant_before = 7;
-    Check(gb::Decide(f).why == Why::kMaskedOtherVariant && gb::Decide(f).attach(), "a draw with another variant is attached, masked");
+    Check(gb::Decide(f).why == Why::kMaskedOtherVariant && gb::Decide(f).attach() == gb::kMaskedDrawsAttach, "a draw with another variant writes nothing");
+    Check(!gb::kMaskedDrawsAttach, "while Plume's D3D12 back end has no independent blend only the draws that write the sidecar bind it (gbuffer_rules.h kMaskedDrawsAttach)");
   }
   {
     gb::DrawFacts f = GoodDraw();
