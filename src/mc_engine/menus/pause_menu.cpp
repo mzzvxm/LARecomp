@@ -2006,11 +2006,13 @@ constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
 // Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
 // cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
 // lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
-// OFF, HIGH (the player's car and the nearest other car, a shadow from each headlamp: 4 views of 512x512 texels) or ULTRA (also the next nearest car's, sharper: 6 views of
-// 1024x1024). The levels are the table of gpu/local_shadow_rules.h (kLevelTable), and so are this row's words: with the three level shape (kThreeLevelShape) the row has MEDIUM too,
-// and nothing here changes. AUTO says what it comes to on this GPU, like the other AUTO rows (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, HIGH on a medium
-// one, OFF on an integrated one). The stored words are the shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live
-// whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 12 ("AUTO (ULTRA)").
+// OFF, MEDIUM (the player's car and the nearest other car, one view for each car: 2 views of 512x512 texels), HIGH (the same two cars, the player's car with a shadow from each
+// headlamp and the other car with one: 3 views of 512x512) or ULTRA (also the next nearest car's, every car with a shadow from each lamp, sharper: 6 views of 1024x1024): the three
+// level shape (owner, 2026-11-20). The levels are the table of gpu/local_shadow_rules.h (kLevelTable, kThreeLevelShape), and so are this row's words (the row's code builds its arrays
+// from kMenuWords: auto, off, medium, high, ultra; three levels are Medium / High / Ultra, never "low"). AUTO says what it comes to on this GPU, like the other AUTO rows
+// (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, MEDIUM on a medium one, OFF on an integrated one). The stored words are the shown words (no level is called low).
+// It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 13
+// ("AUTO (MEDIUM)").
 struct LightShadowWords {
     const char* vals[mcla::gpu::local_shadow::kMenuWordMax] = {};
     const char* names[mcla::gpu::local_shadow::kMenuWordMax] = {};
@@ -3111,7 +3113,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
 // LIGHTING AND SHADOWS (kLightItems, 13 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
 // "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL", "SHADOW FILTER" and "LIGHT SHADOWS" 13, "CAR
-// SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
+// SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 13 (LIGHT SHADOWS' and VOLUMETRIC LIGHT's "AUTO (MEDIUM)"), 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
 // REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR
 // REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 37. WORLD DETAIL (kWorldDetailItems): "FOLIAGE

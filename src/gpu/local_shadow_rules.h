@@ -6,7 +6,7 @@
 // no game, as pure functions on plain numbers, so that local_shadow_rules_test.cpp builds on its own:
 //
 //   - the setting: mcla_gpu_light_shadows' words and THE LEVEL TABLE (kLevelTable: the size of a view, how many cars a level shadows and for how many of them each
-//     headlamp has a view of its own; the two level shape is the default, kThreeLevelShape the fallback: one constant), Resolve, MaxViews;
+//     headlamp has a view of its own; the three level shape is the one in use since 2026-11-20, kThreeLevelShape picks the table: one constant), Resolve, MaxViews;
 //   - the lights: which of the rig's lights share a view (BuildGroups: one view covers all the lamps of a car), which cars get views (ViewPicker: the player's car,
 //     then the others by their importance, with a hysteresis so that two cars of the same importance do not trade a view back and forth), the views of a car (PlanViews:
 //     one for each headlamp, or one for the car), the view that covers a group (FitView: eye, direction, field of view, near and far planes) and its matrices (LightClip,
@@ -64,8 +64,8 @@ namespace tp = ::mcla::gpu::temporal;
 // the setting
 // ---------------------------------------------------------------------------
 
-// mcla_gpu_light_shadows (was mcla_gpu_headlight_shadows): auto, off, high or ultra (medium too, with the three level shape below). No level is called low (owner,
-// 2026-11-14): the levels are the table's.
+// mcla_gpu_light_shadows (was mcla_gpu_headlight_shadows): auto, off, medium, high or ultra (the three level shape below; the two level shape has no medium). No level is
+// called low (owner, 2026-11-14): the levels are the table's.
 //
 // THE LEVELS (owner, 2026-11-20): a level differs by how many cars' lights are shadowed, by how many of those have a view for EACH HEADLAMP (a pole that both lamps light
 // casts two shadows, and a car's shadow has the half-lit band of one lamp) and by how sharp the views are. A car's light is one term (the middle of its two lamps,
@@ -82,22 +82,25 @@ struct LevelRow {
   uint32_t lamp_cars = 0;
 };
 
-// THE TWO LEVEL SHAPE (the default, owner 2026-11-20): both levels have a view for every lamp of every car they shadow. High: the player's car and the nearest other
-// car, 4 views of 512 (8 MiB); ultra: the player's car and the two nearest, 6 views of 1024 (48 MiB).
+// THE TWO LEVEL SHAPE (the first plan of 2026-11-20, kept for the tests and as a way back): both levels have a view for every lamp of every car they shadow. High: the
+// player's car and the nearest other car, 4 views of 512 (8 MiB); ultra: the player's car and the two nearest, 6 views of 1024 (48 MiB).
 inline constexpr LevelRow kTwoLevels[] = {
     {Level::kHigh, "high", 512, 2, 2},
     {Level::kUltra, "ultra", 1024, 3, 3},
 };
-// THE THREE LEVEL SHAPE (the fallback if the lamps' views prove too expensive, after the cost runs of perf/HL-PER-LAMP-RUN.md): medium is the first version's high (one view for
-// each of two cars, 512, 2 views, 4 MiB), high gives the player's car a view for each lamp (3 views of 512, 6 MiB), ultra every shadowed car (6 views of 1024).
+// THE THREE LEVEL SHAPE (IN USE since 2026-11-20: the cost runs of perf/out/HL-PER-LAMP.txt showed a view for each headlamp adds +0.05 to +0.15 ms of graphics card time and
+// +0.04 to +0.16 ms of render thread time on an RTX 5080, and a weaker PC pays several times that, so the lamps' views are for the higher levels only): medium is the first
+// version's high (one view for each of two cars, 512, 2 views, 4 MiB), high gives the player's car a view for each lamp and the nearest other car one view (3 views of 512,
+// 6 MiB), ultra every shadowed car a view for each lamp (6 views of 1024, 48 MiB). Auto: Mid medium, High ultra, Low off (gpu_class.h).
 inline constexpr LevelRow kThreeLevels[] = {
     {Level::kMedium, "medium", 512, 2, 0},
     {Level::kHigh, "high", 512, 2, 1},
     {Level::kUltra, "ultra", 1024, 3, 3},
 };
-// THE ONE DATA CHANGE between the shapes. The rest follows: the pause menu's words (MenuWords), the class table's cells (gpu_class.h kEffects: Mid's `auto` is `high` in the
-// two level shape and should be `medium` in the three level one; a cell the table does not have takes the next level up, Row below), the setting's help text.
-inline constexpr bool kThreeLevelShape = false;
+// THE ONE DATA CHANGE between the shapes. The rest follows: the pause menu's words (MenuWords), the class table's cells (gpu_class.h kEffects: Mid's `auto` is `medium` in the
+// three level shape and was `high` in the two level one; a cell the table does not have takes the next level up, Row below), the setting's allowed words and help text
+// (settings_gpu.h, manifest.json).
+inline constexpr bool kThreeLevelShape = true;
 inline constexpr std::span<const LevelRow> kLevelTable = kThreeLevelShape ? std::span<const LevelRow>(kThreeLevels) : std::span<const LevelRow>(kTwoLevels);
 
 using LevelTable = std::span<const LevelRow>;
@@ -109,7 +112,8 @@ inline constexpr uint32_t kMaxCars = 4;
 
 // Every function below takes the table too (default: the shape in use), so that the tests read both shapes without building twice.
 
-// The row a level has in the table: its own, else (a level the shape does not have: `medium` in the two level shape) the next one up, else the greatest below. Null for off.
+// The row a level has in the table: its own, else (a level the shape does not have: `medium` in the two level shape, only the tests' table now) the next one up, else the greatest
+// below. Null for off.
 constexpr const LevelRow* Row(Level level, LevelTable table = kLevelTable) {
   if (level == Level::kOff || table.empty()) {
     return nullptr;
@@ -186,7 +190,8 @@ inline std::string Lower(std::string_view text) {
   return out;
 }
 
-// The words of the setting, the table's or not (a word the shape does not have, `medium` in the two level one, is a value that comes to the next level up: Effective).
+// The words of the setting, the table's or not (a word the shape does not have, `medium` in the two level one, is a value that comes to the next level up: Effective). The three
+// level shape has all of them.
 inline Level ParseLevel(std::string_view text, bool* known) {
   *known = true;
   if (text == "off") return Level::kOff;
@@ -197,7 +202,7 @@ inline Level ParseLevel(std::string_view text, bool* known) {
   return Level::kOff;
 }
 
-// `auto` is the class table's cell (gpu_class.h Effect::kLightShadows: off on shared memory, high on Mid, ultra on High); a word that is
+// `auto` is the class table's cell (gpu_class.h Effect::kLightShadows: off on shared memory, medium on Mid, ultra on High); a word that is
 // no value of the setting (the low of an older larecomp.toml) counts as `auto`. The level a Choice holds is always one the table has.
 inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   Choice choice;
@@ -239,7 +244,7 @@ constexpr MenuWords MakeMenuWords(LevelTable table = kLevelTable) {
 }
 inline constexpr MenuWords kMenuWords = MakeMenuWords();
 
-// "light shadows high, up to 4 views of 512x512: 2 cars, a view for each lamp (auto on the mid class)".
+// "light shadows high, up to 3 views of 512x512: 2 car(s), a view for each lamp of the first 1 (set)".
 inline std::string Describe(const Choice& choice, gpu_class::GpuClass cls, int views_per_car = 0) {
   std::string text = "light shadows ";
   text += LevelName(choice.level);
@@ -295,13 +300,14 @@ inline AtlasLayout MakeAtlas(uint32_t tile, uint32_t views) {
   return atlas;
 }
 
-// The atlas a level makes (`views_per_car` as MaxViews): high 4 tiles of 512 (1024 x 1024), ultra 6 tiles of 1024 (3072 x 2048).
+// The atlas a level makes (`views_per_car` as MaxViews): medium 2 tiles of 512 (1024 x 512), high 3 of 512 (1536 x 512), ultra 6 of 1024 (3072 x 2048); in the two level shape
+// high is 4 tiles of 512 (1024 x 1024).
 inline AtlasLayout AtlasFor(Level level, int views_per_car, LevelTable table = kLevelTable) {
   return MakeAtlas(TileSize(level, table), MaxViews(level, views_per_car, table));
 }
 
-// What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). High is 8 MiB,
-// ultra 48 MiB (it was 4 and 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
+// What the atlas holds in video memory: D32 float + S8 is 8 bytes a texel (plume's RenderFormatSize: 24 bits unused), a lower bound (the driver pads). In the three level shape
+// medium is 4 MiB, high 6 MiB and ultra 48 MiB (the two level shape's high is 8 MiB; the first version's ultra was 24 with one view for each car). CHECK: D32 float alone (4 bytes a texel: half of this) needs the depth plane read as it is on both backends.
 inline constexpr uint64_t kAtlasTexelBytes = 8;
 inline uint64_t AtlasBytes(const AtlasLayout& atlas) { return uint64_t(atlas.width()) * atlas.height() * kAtlasTexelBytes; }
 

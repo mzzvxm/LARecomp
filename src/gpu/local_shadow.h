@@ -9,13 +9,14 @@
 // player's car from the sun is its model.
 //
 // WHAT IT DOES, and when.
-//   mcla_gpu_light_shadows       auto | off | high | ultra (the pause menu's LIGHT SHADOWS: the headlights now, the street lamps later; it was
-//                                mcla_gpu_headlight_shadows, which stays as an alias; medium too, with the three level shape: local_shadow_rules.h kLevelTable
-//                                has the rows and is the one place to change). The levels differ by how many cars are shadowed, by how many of them have a view
-//                                for EACH HEADLAMP, and by how sharp (owner, 2026-11-20). high: the player's car and the nearest other car, a view for each
-//                                lamp, 4 views of 512 x 512 (8 MiB of video memory); ultra: the player's car and the two nearest other cars, 6 views of
-//                                1024 x 1024 (48 MiB). `auto` is high on Mid, ultra on High, off on Low (gpu_class.h Effect::kLightShadows). Live: a change
-//                                applies at the next frame.
+//   mcla_gpu_light_shadows       auto | off | medium | high | ultra (the pause menu's LIGHT SHADOWS: the headlights now, the street lamps later; it was
+//                                mcla_gpu_headlight_shadows, which stays as an alias; local_shadow_rules.h kLevelTable has the rows and is the one place to change:
+//                                the three level shape, owner 2026-11-20, after the cost runs of a view for each headlamp). The levels differ by how many cars are
+//                                shadowed, by how many of them have a view for EACH HEADLAMP, and by how sharp. medium: the player's car and the nearest other car,
+//                                one view for each car, 2 views of 512 x 512 (4 MiB of video memory); high: the same two cars, the player's car with a view for
+//                                each lamp and the other car with one, 3 views of 512 x 512 (6 MiB); ultra: the player's car and the two nearest other cars, every
+//                                car with a view for each lamp, 6 views of 1024 x 1024 (48 MiB). `auto` is medium on Mid, ultra on High, off on Low (gpu_class.h
+//                                Effect::kLightShadows). Live: a change applies at the next frame.
 //                                A CAR'S LIGHT IS ONE TERM (the middle of its two lamps: headlight_types.h) AND ITS SHADOW IS THE MEAN OF ITS LAMPS' VIEWS: a
 //                                pole in front of the car that both lamps light casts two shadows, each half as dark where only one lamp is blocked, and the
 //                                shadow of a car in front has the half-lit band of one lamp. The lamps' places come from the rig (Headlight::lamp_offset: the
