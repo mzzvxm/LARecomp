@@ -415,6 +415,11 @@ set(LARECOMP_SOURCES
     src/mc_engine/ui/settings.cpp
     src/mc_engine/ui/achievements.cpp
     src/mc_engine/ui/kerning.cpp
+    # The Director panel (feature-parity/DIRECTOR-DESIGN.md section 3): the ImGui dialog and its pure parts (the timeline, the world gizmos, the panel's logic; larecomp_director_panel_test).
+    src/mc_engine/ui/director_panel.cpp
+    src/mc_engine/ui/director_timeline.cpp
+    src/mc_engine/ui/director_gizmos.cpp
+    src/mc_engine/ui/director_panel_core.cpp
 )
 # The developer tools' sources are in the build only with -DLARECOMP_DEV_TOOLS=ON (see the option above).
 if(LARECOMP_DEV_TOOLS)

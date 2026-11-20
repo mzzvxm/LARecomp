@@ -4402,6 +4402,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_director_panel": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Cinematic",
+  "help": "\"TRAILER TOOLKIT DIRECTOR PANEL (debug): the Director's panel over the picture: a timeline with the scene's keys to drag, the free camera's keys by framing, rigs with sliders, cars to spawn and place, routes to record or drop and edit, the take's render button, and the routes and the camera's path drawn in the world. Every action is a command of the Director and a line of the scene file. Live; the key Ctrl+F12 (ui.bind.mcla_director) flips it. Needs mcla_director (the panel offers to switch it on).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_scene": {
   "type": "std::string",
   "default": "\"\"",
