@@ -179,6 +179,10 @@ class FrameRing {
   plume::RenderCommandList* OpenNextList();
   void WaitSlot(Slot& slot);
   void ReleaseCompleted();
+  // Destroys every retirement, oldest first: a retirement is made after the objects that name what it holds,
+  // so that is the order they may go in (a std::deque's clear() runs back to front, and Plume's Vulkan
+  // framebuffer reads its depth texture when its depth view dies).
+  void ReleaseAll();
 
   Device* device_ = nullptr;
   Slot slots_[kFramesInFlight];

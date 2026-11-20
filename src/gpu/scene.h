@@ -66,6 +66,7 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "gbuffer_types.h"
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
@@ -95,6 +96,7 @@ class CarDump;
 class CarFrame;
 class CarShadowMap;
 class CarRtScene;
+class GBuffer;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -147,6 +149,9 @@ class Scene {
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
+  // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
+  // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
+  void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -279,6 +284,11 @@ class Scene {
     // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
+    // The G-buffer (gbuffer.h): the draw carries the sidecar as a second colour target (the pipeline's key has it; `key` stays the guest's) and, when
+    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin) and writes it. Today the
+    // two are the same draws (gbuffer_rules.h kMaskedDrawsAttach).
+    bool gbuffer_attached = false;
+    uint32_t gbuffer_variant = 0;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -371,10 +381,16 @@ class Scene {
   // is at the place the chain's layout gives it for the draw's feature set (chain::LayoutConstants: dense in feature order, a feature alone
   // at byte 608), the same function the pack builder used for the text, so the blocks of a composed shader never overlap. The last
   // few uploads are kept for the next draws when nothing changed.
-  bool UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d);
+  // `ps_word` is the variant word of the pipeline the draw is recorded with: d.key.ps_variant, or the G-buffer's composed one (d.key stays the guest's).
+  bool UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d, uint32_t ps_word);
   // The `size` bytes of the block of `feature` for the draw `d` and its constant banks (the table's constants_bytes). A feature that is added
   // to the chain with a block adds its case here (scene.cpp), next to its table row.
   void FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size);
+  // The G-buffer (gbuffer.h): asks the rules (gbuffer_rules.h Decide) whether the draw carries the sidecar and writes it, sets d.gbuffer_attached and
+  // d.gbuffer_variant (the variant word of the pipeline: the G-buffer's alone, or composed with the features the draw has, the alpha test twin for an alpha test
+  // draw), and returns the key the pipeline is made with: the guest's key widened by the sidecar's colour target and with that word. The block of constants
+  // the variant reads is Scene::FillVariantBlock's, with the other features' (UploadVariantConstants).
+  PipelineKey GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d);
   // The UI sharpening (ui_sharp.h): the variant word the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
   // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
   // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
@@ -449,6 +465,7 @@ class Scene {
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  GBuffer* gbuffer_ = nullptr;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
@@ -665,6 +682,7 @@ class Scene {
     EdramTargets::Target* colors[kColorTargetCount] = {};
     EdramTargets::Target* depth = nullptr;
     plume::RenderFramebuffer* framebuffer = nullptr;
+    uint32_t gbuffer_generation = 0;  // the sidecar the framebuffer has (GBuffer::generation), 0: none
   };
   TargetsMemo targets_memo_;
   // The last draw's Xenos state and what Prepare made from it (

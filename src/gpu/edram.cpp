@@ -347,7 +347,7 @@ size_t EdramTargets::KeyHash::operator()(const EdramKey& k) const {
 }
 
 bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
-  if (color_count != o.color_count) {
+  if (color_count != o.color_count || extra != o.extra || extra_generation != o.extra_generation) {
     return false;
   }
   for (uint32_t i = 0; i < 5; ++i) {
@@ -1756,9 +1756,12 @@ void EdramTargets::Transition(plume::RenderCommandList* list, Target& target,
 }
 
 plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint32_t color_count,
-                                                    Target* depth) {
+                                                    Target* depth, const plume::RenderTexture* extra,
+                                                    uint32_t extra_generation) {
   FramebufferKey key;
   key.color_count = color_count;
+  key.extra = extra;
+  key.extra_generation = extra ? extra_generation : 0;
   for (uint32_t i = 0; i < color_count && i < 4; ++i) {
     key.targets[i] = colors[i];
     key.generations[i] = colors[i] ? colors[i]->generation : 0;
@@ -1769,11 +1772,15 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
   if (it != framebuffers_.end()) {
     return it->second.get();
   }
-  const plume::RenderTexture* attachments[4] = {};
+  const plume::RenderTexture* attachments[5] = {};
+  uint32_t attachment_count = 0;
   for (uint32_t i = 0; i < color_count && i < 4; ++i) {
-    attachments[i] = colors[i]->texture.get();
+    attachments[attachment_count++] = colors[i]->texture.get();
   }
-  plume::RenderFramebufferDesc desc(attachments, color_count,
+  if (extra && attachment_count < 4) {
+    attachments[attachment_count++] = extra;
+  }
+  plume::RenderFramebufferDesc desc(attachments, attachment_count,
                                     depth ? depth->texture.get() : nullptr);
   std::unique_ptr<plume::RenderFramebuffer> framebuffer =
       device_->CreateFramebuffer(desc, "edram framebuffer");
@@ -1784,6 +1791,29 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
   plume::RenderFramebuffer* raw = framebuffer.get();
   framebuffers_.emplace(key, std::move(framebuffer));
   return raw;
+}
+
+void EdramTargets::RetireFramebuffersWithExtra(const plume::RenderTexture* extra) {
+  ++change_serial_;
+  for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
+    if (it->first.extra == extra) {
+      frames_->Retire(std::move(it->second));
+      it = framebuffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void EdramTargets::DestroyFramebuffersWithExtra(const plume::RenderTexture* extra) {
+  ++change_serial_;
+  for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
+    if (it->first.extra == extra) {
+      it = framebuffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void EdramTargets::RetireFramebuffersOf(const Target* target) {

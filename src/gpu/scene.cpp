@@ -33,6 +33,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "gbuffer.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -823,6 +824,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (gbuffer_) {
+    gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
+  }
   watch::BeginFrame(frame_serial_);
   if (scene_noise::BeginFrame()) {
     REXLOG_INFO("[gpu] scene noise: the first guest frame of a scene carries update {} (renderer frame {}): the noise follows the scene's updates from here", scene_noise::CurrentUpdate(), frame_serial_);
@@ -1611,10 +1615,13 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       d.key.slope_scaled_depth_bias = d.bias.slope;
     }
   }
+  // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
+  // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
+  const PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
-  if (pipeline_memo_ && d.key == pipeline_memo_key_) {
+  if (pipeline_memo_ && pipeline_key == pipeline_memo_key_) {
     ++memo_hits_[size_t(Memo::kPipeline)];
     d.pipeline = pipeline_memo_;
   } else {
@@ -1623,9 +1630,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     const SkipAsk ask{this, &d};
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
     bool pending = false;
-    d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
+    d.pipeline = pipelines_->Get(pipeline_key, inputs, &deferral, &pending);
     if (d.pipeline) {
-      pipeline_memo_key_ = d.key;
+      pipeline_memo_key_ = pipeline_key;
       pipeline_memo_ = d.pipeline;
     } else if (pending) {
       // Not memoized: the next draw with the key asks again, and takes the
@@ -1723,8 +1730,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
   // The variant pack's features that read constants after the shared block (the sun shadow collector's soft lookup 16 bytes, the car paint's
   // self-reflection and the chrome's 112, the UI sharpening 16 ...): one span with the shared constants and the blocks, each where the chain
-  // puts it for this draw's features.
-  if (d.key.ps_variant >= ShaderStore::kFirstPackedVariant && !UploadVariantConstants(banks, shared, d)) {
+  // puts it for this draw's features (the pipeline's word: the G-buffer's stage is in the pipeline's key only, d.key stays the guest's).
+  if (pipeline_key.ps_variant >= ShaderStore::kFirstPackedVariant && !UploadVariantConstants(banks, shared, d, pipeline_key.ps_variant)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
@@ -2289,6 +2296,15 @@ void Scene::FillVariantBlock(uint32_t feature, [[maybe_unused]] const ConstantBa
       std::memcpy(out, &block, sizeof(block));
       return;
     }
+    case sp::kFeatureGBuffer: {
+      // The sidecar's normal plane is written (gbuffer_types.h kModeWriteNormal): the host's per-draw switch; the draws that carry no sidecar never get here (no word).
+      static_assert(sizeof(gbuffer::GBufferConstants) == sp::chain::Find(sp::kFeatureGBuffer)->constants_bytes);
+      gbuffer::GBufferConstants block;
+      block.mode = gbuffer::kModeWriteNormal;
+      block.frame = uint32_t(frame_serial_);
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
     default:
       break;
   }
@@ -2303,9 +2319,9 @@ void Scene::FillVariantBlock(uint32_t feature, [[maybe_unused]] const ConstantBa
   }
 }
 
-bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d) {
+bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d, uint32_t ps_word) {
   namespace chain = larecomp::shaderpack::chain;
-  const uint32_t features = chain::FeaturesOf(d.key.ps_variant);
+  const uint32_t features = chain::FeaturesOf(ps_word);
   const chain::ConstantsLayout layout = chain::LayoutConstants(features);
   if (layout.count == 0) {
     return true;  // none of the draw's features reads constants of its own (the bloom's, the glow's ...): the draw's shared constants as they are
@@ -2342,6 +2358,55 @@ bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const Shar
   window_.upload_bytes += layout.total_bytes;
   d.shared_constants = span;
   return true;
+}
+
+PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d) {
+  PipelineKey key = d.key;
+  d.gbuffer_attached = false;
+  d.gbuffer_variant = 0;
+  gbuffer::DrawFacts facts;
+  facts.active = true;
+  facts.window_open = gbuffer_->Gate() != gbuffer::Window::Gate::kClosed;
+  facts.main_samples = d.key.color_count >= 1 ? temporal::MainColorSamples(ColorEdramKey(state, 0)) : 0u;
+  facts.guest_color_count = d.key.color_count;
+  facts.has_depth = d.key.depth_format != 0;
+  facts.rt0_blended = (d.key.blend[0] & 0xFu) != 0;
+  facts.rt0_writes = ((d.key.blend[0] >> 28) & 0xFu) != 0;
+  facts.ps_variant_before = d.key.ps_variant;
+  // The word the draw's shader takes with the G-buffer's stage on top of the features the draw has (the headlight's, on the lit shaders that have both): the best word
+  // of the pack for those features, kept only when it has the G-buffer's and every feature the draw already had; the pack decides what composes.
+  namespace chain = larecomp::shaderpack::chain;
+  uint32_t vs_word = d.key.vs_variant;
+  if (d.ps && (d.ps->features & ShaderStore::FeatureBit(larecomp::shaderpack::kFeatureGBuffer)) != 0) {
+    const uint32_t before = d.key.ps_variant;
+    const uint32_t word = shaders_.ChooseVariant(*d.ps, chain::FeaturesOf(before) | chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), chain::SpecOf(before), d.vs,
+                                                 d.key.vs_variant, &vs_word);
+    if (chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer) && (chain::FeaturesOf(word) & chain::FeaturesOf(before)) == chain::FeaturesOf(before)) {
+      facts.variant_word = word;
+    }
+  }
+  const gbuffer::DrawDecision decision = gbuffer::Decide(facts);
+  gbuffer_->NoteDraw(decision.why, r.ps_identity);
+  if (!decision.attach()) {
+    return key;
+  }
+  // The sidecar is the colour target after the guest's one: R16G16_UNORM, written whole by the variant. Only a draw of the variant carries it (gbuffer_rules.h
+  // kMaskedDrawsAttach); on D3D12 its blend state is RT0's (Plume sets no independent blend), an opaque draw's.
+  const uint32_t slot = d.key.color_count;
+  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+  blend.renderTargetWriteMask = decision.variant != 0 ? uint8_t(0xF) : uint8_t(0);
+  key.color_count = slot + 1;
+  key.color_format[slot] = uint32_t(plume::RenderFormat::R16G16_UNORM);
+  key.blend[slot] = PackBlend(blend);
+  if (decision.variant != 0) {
+    key.ps_variant = decision.variant;
+    if (chain::FeaturesOf(vs_word) != 0) {
+      key.vs_variant = vs_word;  // a vertex stage the chosen word needs (none today)
+    }
+  }
+  d.gbuffer_attached = true;
+  d.gbuffer_variant = decision.variant;
+  return key;
 }
 
 ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {
@@ -2659,7 +2724,8 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const TargetsMemo& memo = targets_memo_;
   bool memo_hit = memo.serial != 0 && memo.serial == edram_->change_serial() &&
                   memo.color_count == d.key.color_count && memo.has_depth == has_depth &&
-                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key);
+                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key) &&
+                  memo.gbuffer_generation == (d.gbuffer_attached ? gbuffer_->generation() : 0u);
   for (uint32_t i = 0; i < d.key.color_count && memo_hit; ++i) {
     memo_hit = memo.color_keys[i] == color_keys[i];
   }
@@ -2773,13 +2839,29 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     target_height = std::min(target_height, depth->height);
   }
+  // The G-buffer's sidecar (gbuffer.h) beside the colour target: made, cleared and moved to the attachment layout here, before the framebuffer is bound.
+  plume::RenderTexture* sidecar = nullptr;
+  if (d.gbuffer_attached) {
+    sidecar = gbuffer_->Attach(list, *colors[0]);
+    if (!sidecar) {
+      *detail = "the G-buffer's sidecar could not be made";
+      return Skip::kTarget;
+    }
+    if (!memo_hit || memo.gbuffer_generation != gbuffer_->generation()) {
+      framebuffer = nullptr;  // the sidecar was made again by this draw: the memo's framebuffer has the old one
+    }
+    if (gbuffer_->TakeFramebufferDirty()) {
+      bound_.framebuffer = nullptr;  // a clear of the sidecar left its own framebuffer bound: BindFramebuffer below binds this draw's
+    }
+  }
   if (!framebuffer) {
-    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
+    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth, sidecar, sidecar ? gbuffer_->generation() : 0u);
     if (!framebuffer) {
       return Skip::kFramebuffer;
     }
     TargetsMemo& m = targets_memo_;
     m.serial = edram_->change_serial();
+    m.gbuffer_generation = sidecar ? gbuffer_->generation() : 0u;
     m.color_count = d.key.color_count;
     for (uint32_t i = 0; i < d.key.color_count; ++i) {
       m.color_keys[i] = color_keys[i];
@@ -3157,6 +3239,13 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     }
     ++window_.clears_color;
     note_other_pitch(i, key);
+    if (gbuffer_ && gbuffer_->active() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
+      // The main view's colour in the play view: the G-buffer's sidecar is cleared with the same rectangle (gbuffer.h).
+      gbuffer_->OnColorClear(list, *target, plume::RenderRect(x0, y0, x1, y1));
+      if (gbuffer_->TakeFramebufferDirty()) {
+        bound_.framebuffer = nullptr;
+      }
+    }
   }
   if (flags & 0x30u) {
     xreg::RB_DEPTH_INFO depth_info;
@@ -3234,6 +3323,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  if (gbuffer_ && gbuffer_->active()) {
+    // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
+    gbuffer_->OnResolve(record, summary, list);
+  }
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
@@ -3273,6 +3366,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
     // its own pass and target: the reset below forgets them too).
     car_refl_->OnResolve(record, summary, list);
+  }
+  if (gbuffer_ && gbuffer_->active()) {
+    // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
+    gbuffer_->DrawView(summary, list);
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
