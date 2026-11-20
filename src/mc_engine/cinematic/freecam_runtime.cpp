@@ -136,6 +136,7 @@ fc::Pad g_ext_pad;                       // g_pad_mutex
 uint32_t g_ext_serial = 0;               // g_pad_mutex: the hook run the external pad was given in
 bool g_pending_pose = false;             // g_pad_mutex
 fc::Pose g_pending;                      // g_pad_mutex
+FreecamEventHook g_event_hook = nullptr;  // the panel's chords (SetFreecamEventHook)
 
 struct State {
     bool armed = false;      // the cvar was on at the last hook
@@ -403,6 +404,7 @@ static bool FreecamApplyImpl(uint8_t* base, uint32_t sp, uint32_t mode, bool* ga
             if (g_hook_serial.load(std::memory_order_relaxed) - g_ext_serial <= kPadStaleFrames) pad = g_ext_pad;
         }
         const fc::Events ev = g.flyer.Step(pad, dt, params);
+        if (g_event_hook) g_event_hook(ev);
         g.have_frame = true;
         g.last_frame = frame;
         ++g.frames;
@@ -469,6 +471,10 @@ CameraOverride FreecamOverride() {
     return static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed));
 }
 
+void SetFreecamEventHook(FreecamEventHook hook) {
+    g_event_hook = hook;
+}
+
 void FreecamFeedPad(const freecam::Pad& pad) {
     std::lock_guard<std::mutex> lock(g_pad_mutex);
     g_ext_pad = pad;
@@ -513,6 +519,7 @@ bool FreecamGetPose(freecam::Pose*) { return false; }
 void FreecamSetOverride(CameraOverride) {}
 CameraOverride FreecamOverride() { return CameraOverride::kNone; }
 void FreecamFeedPad(const freecam::Pad&) {}
+void SetFreecamEventHook(FreecamEventHook) {}
 }  // namespace mc::cinematic
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

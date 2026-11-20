@@ -44,6 +44,10 @@ CameraOverride FreecamOverride();
 // A pad that is not the real one flies the camera while it is fed (every update; four updates without it and the real pad is back): the panel's mouse and
 // keys. Any thread.
 void FreecamFeedPad(const freecam::Pad& pad);
+// A function called once for every update of the flight with the events its pad produced (freecam.h Events: the recorder's chords, and the panel's chords
+// Back + B add key, Back + RB / LB next / previous key, Back + Start play / pause that package E adds there). The Director's panel turns them into commands.
+using FreecamEventHook = void (*)(const freecam::Events& events);
+void SetFreecamEventHook(FreecamEventHook hook);
 
 // An object on the stack of the XamInputGetState wrapper: runs FreecamObservePad when the wrapper returns, whatever path it took, unless the
 // call failed (`result` is the wrapper's r3, which holds the call's result by then: 0 = a pad answered).
