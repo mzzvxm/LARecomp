@@ -970,6 +970,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_shadow_map_owns": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength \"\n    \"(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on \"\n    \"the world is the car shadow map's alone and has no second edge of the game's low-detail one. Off: the game draws the \"\n    \"car into them as it always does. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_shadow_map_view": {
   "type": "i32",
   "default": "0",

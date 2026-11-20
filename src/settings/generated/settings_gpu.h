@@ -366,6 +366,11 @@ class GPUSettings final : public rex::SettingOwner {
     "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
     "and 8 or 32 MiB of video memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
+  REX_SETTING(bool, mcla_gpu_car_shadow_map_owns, true, "Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength "
+    "(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on "
+    "the world is the car shadow map's alone and has no second edge of the game's low-detail one. Off: the game draws the "
+    "car into them as it always does. Live.", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_gpu_car_shadow_map_view, 0, "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
@@ -1373,6 +1378,7 @@ inline auto& mcla_gpu_car_selfrefl_test = g_gpu.mcla_gpu_car_selfrefl_test;
 inline auto& mcla_gpu_car_selfrefl_thickness = g_gpu.mcla_gpu_car_selfrefl_thickness;
 inline auto& mcla_gpu_car_selfrefl_view = g_gpu.mcla_gpu_car_selfrefl_view;
 inline auto& mcla_gpu_car_shadow_map = g_gpu.mcla_gpu_car_shadow_map;
+inline auto& mcla_gpu_car_shadow_map_owns = g_gpu.mcla_gpu_car_shadow_map_owns;
 inline auto& mcla_gpu_car_shadow_map_view = g_gpu.mcla_gpu_car_shadow_map_view;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;

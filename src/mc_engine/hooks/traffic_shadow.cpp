@@ -54,6 +54,7 @@
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
+#include "gpu/car_shadow_map_rules.h"
 #include "gpu/gpu_class.h"
 #include "gpu/live_text.h"
 #include "gpu/traffic_shadow.h"
@@ -348,8 +349,15 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
     NoteCall();
     // The game's own caster (the player's car, +594 set): nothing to add, and the common exit of the player's
     // calls (in free roam the only one: traffic is not a vehicle of this client, see the traffic route below).
+    // Except where the car shadow map (gpu/car_shadow_map_rules.h Owner) casts the car's shadow on the world: there the
+    // cascades must not draw the car at its low level of detail, which would put the game's own blob and its grain round the
+    // map's crisp edge. r11 = 0 skips the cascade draw (the colour pass and the rest of the draw never read this branch).
     if (r11.u64 != 0) {
         gates.Add(Gate::kGameCaster);
+        if (ts::CascadeIndex(uint32_t(r28.u64)) != 0 && mcla::gpu::car_shadow_map::PlayerShadowIsTheMaps()) {
+            gates.Add(Gate::kPlayerLeftOut);
+            r11.u64 = 0;
+        }
         return;
     }
     const uint32_t phase = uint32_t(r28.u64);

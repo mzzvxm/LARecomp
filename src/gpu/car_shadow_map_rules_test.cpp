@@ -598,6 +598,94 @@ void TestInset() {
   Check(tiny.size >= 16 && tiny.size <= 100 && tiny.x + tiny.size <= 200 && tiny.y >= 0, "a tiny picture still has a square that fits");
 }
 
+// The map covers ALL of the car's shadow on the world, at any sun: a point of the ground in the shadow is a point of the car moved away
+// from the sun along the sun's ray, and a view along the sun gives both the same (u, v), so its place in the square is the car's own,
+// and its depth is the car's plus the way it was moved (over 1 when it is beyond the far plane: the reader shadows it, car_shadow_map.h).
+// This is why the game's cascades can leave the car out wherever the map is drawn.
+void TestShadowOnTheGround() {
+  const tp::Mat4 world = CarWorld(37.0, -620.03, 17.80, -644.88);
+  cs::Pose pose;
+  cs::MakePose(world, &pose);
+  double lo[3], hi[3];
+  WorldBox(world, lo, hi);
+  const cs::Held held = cs::Hold(cs::Held{}, cs::EstimateOf(pose, true, lo, hi));
+  double worst_uv = 0.0;
+  double least_gain = 1e30;
+  int points = 0;
+  for (double elevation : {3.0, 5.0, 12.0, 30.0, 60.0, 89.0}) {
+    for (int azimuth = 0; azimuth < 360; azimuth += 60) {
+      double sun[3];
+      Sun(elevation, azimuth, sun);
+      cs::Fit fit;
+      Check(cs::MakeFit(sun, pose, held, 2048, &fit), "a fit");
+      for (int i = 0; i < 5; ++i) {
+        for (int k = 0; k < 9; ++k) {
+          const double p[3] = {kBox[0][0] + (kBox[1][0] - kBox[0][0]) * i / 4.0, kBox[0][1], kBox[0][2] + (kBox[1][2] - kBox[0][2]) * k / 8.0};
+          double car[3];
+          Transform(world, p, car);
+          // The ground under it along the sun's ray: the point where the ray from the car away from the sun meets the road's plane.
+          const double drop = car[1] - 17.80;  // the car's root is on the road at y 17.80: the point's height above it
+          if (!(sun[1] > 0.0) || drop < 0.0) {
+            continue;
+          }
+          const double t = drop / sun[1];
+          const double ground[3] = {car[0] - t * sun[0], car[1] - t * sun[1], car[2] - t * sun[2]};
+          double uc, vc, dc, ug, vg, dg;
+          cs::MapOfWorld(fit, car, &uc, &vc, &dc);
+          cs::MapOfWorld(fit, ground, &ug, &vg, &dg);
+          worst_uv = std::max(worst_uv, std::max(std::fabs(uc - ug), std::fabs(vc - vg)));
+          least_gain = std::min(least_gain, dg - dc);
+          ++points;
+        }
+      }
+    }
+  }
+  std::printf("  %d points of the car's shadow on the road, sun 3 to 89 degrees: the largest (u, v) difference from the car's %.2e, the least depth gain %.3g\n",
+              points, worst_uv, least_gain);
+  Check(points > 100 && worst_uv < 1e-9, "a ground point in the car's shadow has the (u, v) of the car point that shades it, at any sun");
+  Check(least_gain >= -1e-12, "and it is never nearer the sun than that point: the reader's compare shadows it (beyond the far plane too)");
+}
+
+// Who casts the player's car's shadow on the world: the map takes it after kOwnAfterFrames frames of a map at full contact strength,
+// gives it up at once, and a sun that wanders round 12 degrees does not flip it.
+void TestOwner() {
+  cs::Owner o;
+  for (uint32_t i = 1; i < cs::kOwnAfterFrames; ++i) {
+    o = cs::NextOwner(o, true, 1.0f, true);
+    Check(!o.owns, "the map has not been there long enough: the game's cascades keep the car (frame " + std::to_string(i) + ")");
+  }
+  o = cs::NextOwner(o, true, 1.0f, true);
+  Check(o.owns, "after kOwnAfterFrames frames of a map at full strength the map owns the shadow");
+  Check(cs::kOwnAfterFrames >= 2, "a frame or two of both is not enough to take it: the guest's draw runs ahead of the renderer");
+  // The strength: just under the take level never takes, and a hysteresis band keeps it.
+  cs::Owner low;
+  for (int i = 0; i < 10; ++i) {
+    low = cs::NextOwner(low, true, 0.99f, true);
+  }
+  Check(!low.owns, "a strength of 0.99 (a sun at 11 degrees) never takes it");
+  cs::Owner held = o;
+  held = cs::NextOwner(held, true, 0.95f, true);
+  Check(held.owns, "owning, a strength of 0.95 keeps it (the hysteresis band)");
+  held = cs::NextOwner(held, true, 0.85f, true);
+  Check(!held.owns && held.valid_run == 0, "a strength under kOwnKeepStrength gives it up and the count starts again");
+  held = cs::NextOwner(held, true, 1.0f, true);
+  Check(!held.owns, "and it is taken again only after the frames in a row");
+  // A frame without a map gives it up at once, whatever the strength.
+  cs::Owner gone = cs::NextOwner(o, false, 1.0f, true);
+  Check(!gone.owns && gone.valid_run == 0, "no map this frame: the game's cascades draw the car again at once");
+  // The debug switch.
+  cs::Owner off = o;
+  off = cs::NextOwner(off, true, 1.0f, false);
+  Check(!off.owns && off.valid_run == 0, "mcla_gpu_car_shadow_map_owns off: never");
+  // The gates of the contact shadows (ao.cpp): full strength needs the sun at 12 degrees or more (kGateFullDegrees) and a dry road.
+  Check(cs::kOwnTakeStrength <= 1.0f && cs::kOwnTakeStrength > cs::kOwnKeepStrength, "the take level is over the keep level and not over 1");
+  // The cell the hook reads.
+  cs::PublishOwner(true);
+  Check(cs::PlayerShadowIsTheMaps(), "the published ownership is what the hook reads");
+  cs::PublishOwner(false);
+  Check(!cs::PlayerShadowIsTheMaps(), "and it is given up the same way");
+}
+
 }  // namespace
 
 int main() {
@@ -611,6 +699,8 @@ int main() {
   TestMatrices();
   TestVariants();
   TestInset();
+  TestShadowOnTheGround();
+  TestOwner();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

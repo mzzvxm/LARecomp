@@ -160,6 +160,8 @@ bool CarShadowMap::MakeShaders() {
 }
 
 void CarShadowMap::Shutdown() {
+  rules::PublishOwner(false);  // the game's cascades draw the car again from here on
+  owner_ = rules::Owner{};
   // The host builder's functions name this object's shaders and layout: stop it first.
   if (passes_) {
     passes_->precache().Stop();
@@ -440,6 +442,21 @@ void CarShadowMap::ReleaseImages() {
 
 void CarShadowMap::BeginFrame() {
   ++frame_;
+  // Who casts the player's car's shadow on the world from now on (car_shadow_map_rules.h Owner): last frame's map and strength decide,
+  // and the guest's hook in Vehicle::Draw reads the answer (hooks/traffic_shadow.cpp), so it is published before this frame's map is made.
+  {
+    const bool allowed = larecomp::settings::mcla_gpu_car_shadow_map_owns.Get();
+    const float strength = ao_ != nullptr ? ao_->ContactStrength() : 0.0f;
+    const rules::Owner before = owner_;
+    owner_ = rules::NextOwner(owner_, view_.valid, strength, allowed);
+    rules::PublishOwner(owner_.owns);
+    if (owner_.owns != before.owns) {
+      REXLOG_INFO("{} the player's car's shadow on the world is {} (the contact shadows' strength {:.2f}; mcla_gpu_car_shadow_map_owns = {}; logged when "
+                  "it changes)",
+                  kPrefix, owner_.owns ? "the map's alone: the game's sun shadow maps no longer draw the car" : "the game's again: its sun shadow maps draw the car",
+                  strength, allowed ? "true" : "false");
+    }
+  }
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;

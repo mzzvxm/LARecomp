@@ -511,6 +511,9 @@ class AmbientOcclusion {
   bool SunDirection(double to_sun[3]) const;
   // The contact shadows were gated off in the last frame the AO judged (a low sun or a wet road): a pass made only for them can skip.
   bool ContactGated() const { return contact_state_ == ContactState::kGated; }
+  // The contact shadows' strength of the last frame that planned them: the setting times the sun's elevation gate times the wetness
+  // gate (full from 12 degrees on a dry road); 0 when they are off or gated. Render thread. car_shadow_map_rules.h Owner reads it.
+  float ContactStrength() const { return contact_state_ == ContactState::kActive ? contact_strength_ : 0.0f; }
   // The frame's linear depth image (level 0: R32_FLOAT at the traced size, the vehicle bit in its lowest bit, hlsl/ao_common.hlsli) and
   // the lens it was made with (tan of the half field of view, x and y), for a pass that reads it after the occlusion's own, in the same
   // list (car_rt_scene.h's check). False in a frame whose passes did not run (the image is the next frame's depth history then).

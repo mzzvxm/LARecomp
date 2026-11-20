@@ -183,6 +183,8 @@ class CarShadowMap {
 
   // The car's fit, held from frame to frame.
   car_shadow_map::Held held_;
+  // Whether the map alone casts the player's car's shadow on the world (car_shadow_map_rules.h Owner).
+  car_shadow_map::Owner owner_;
 
   // The GPU side.
   Device* device_ = nullptr;
