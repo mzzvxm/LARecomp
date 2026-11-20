@@ -37,14 +37,23 @@ static const float kHlCutLow = 0.10;
 static const float kHlCutHigh = 0.38;
 static const float kHlNearStart = 0.8;
 static const float kHlNearSpan = 1.5;
+static const float kHlShadowKernel = 3.0;
 static const uint kHlNoView = 0xFFFFFFFFu;
 #ifndef __spirv__
 #define g_HlLight(INDEX) g_HlLights[INDEX]
 #define g_HlShadow(INDEX) g_HlShadowArr[INDEX]
 #endif
 
-// The share of a light the shadow views let through at a world point: 4 compares in the atlas (the game's `>=`, the depth moved toward the lamp by the
-// view's bias). A point outside the view's rectangle or depth range is lit.
+// One texel of the map against the receiver's depth: 1 lit, 0 in shadow (the game's `>=`).
+float HeadlightShadowTexel(uint4 atlas, float2 uv, float depth)
+{
+    return tfetch2DLod(atlas.x, atlas.y, uv, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
+}
+
+// The share of a light the shadow views let through at a world point: the share of a box kHlShadowKernel texels square, centred on the point's place in the map,
+// whose texels are lit (the game's `>=`, the depth moved toward the lamp by the view's bias), each texel counted by the part of it the box covers. The box covers
+// 4 x 4 texels: the four outer ones are compared first and when they agree the box is inside a lit area or a shadow and that is the answer. A point outside the
+// view's rectangle or depth range is lit. (src/gpu/headlight_rig_rules.h SoftShadow is the CPU twin.)
 float HeadlightShadow(uint view, float3 world)
 {
     float4 row0 = g_HlShadow(view * 6u + 0u);
@@ -63,12 +72,29 @@ float HeadlightShadow(uint view, float3 world)
     float depth = s.z - shadowParams.x;
     uint4 atlas = g_HlAtlas;
     float2 t = (rect.zw - rect.xy) * shadowParams.y;  // one texel of the tile in atlas uv, on each axis (the atlas is two tiles wide, not two tall)
+    // The box's low corner in texels of the atlas (a tile starts at a whole number of its own texels, so the atlas's texel grid is the tile's), and the weights
+    // of the 4 texels it covers along each axis: its first and last only in part.
+    float2 low = s.xy / t - 0.5 * kHlShadowKernel;
+    float2 base = floor(low);
+    float2 f = low - base;
+    float4 wx = float4(1.0 - f.x, 1.0, 1.0, f.x);
+    float4 wy = float4(1.0 - f.y, 1.0, 1.0, f.y);
+    float2 uv0 = (base + 0.5) * t;  // the centre of the first texel
+    float corners = HeadlightShadowTexel(atlas, uv0, depth) + HeadlightShadowTexel(atlas, uv0 + float2(3.0, 0.0) * t, depth) +
+                    HeadlightShadowTexel(atlas, uv0 + float2(0.0, 3.0) * t, depth) + HeadlightShadowTexel(atlas, uv0 + float2(3.0, 3.0) * t, depth);
+    if (corners == 0.0 || corners == 4.0)
+        return corners * 0.25;
     float lit = 0.0;
-    lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(-0.5, -0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
-    lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(0.5, -0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
-    lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(-0.5, 0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
-    lit += tfetch2DLod(atlas.x, atlas.y, s.xy + float2(0.5, 0.5) * t, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
-    return lit * 0.25;
+    [unroll]
+    for (int j = 0; j < 4; ++j)
+    {
+        float row = 0.0;
+        [unroll]
+        for (int i = 0; i < 4; ++i)
+            row += wx[i] * HeadlightShadowTexel(atlas, uv0 + float2(float(i), float(j)) * t, depth);
+        lit += wy[j] * row;
+    }
+    return lit * (1.0 / 9.0);
 }
 
 // The headlights' light at a world point, rgb (the same units as a lamp's term: the shader adds it to the lamps and the ambient). Called at the start of
