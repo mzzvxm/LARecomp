@@ -24,6 +24,7 @@
 #include "scene_noise.h"
 #include "shaders.h"
 #include "texture_bytes.h"
+#include "vol_lamp_list.h"
 
 namespace mcla::gpu {
 
@@ -353,6 +354,10 @@ void Volumetrics::BeginFrame() {
     HoldUntilBuilt(&level);
   }
   level_ = level;
+  if (!vol::On(level_)) {
+    // The guest hook that copies the game's lamp list (vol_lamp_list.h) only works while the volume is on: the producer turns it on at its first Fill.
+    vol_lamps::SetWanted(false);
+  }
 }
 
 uint64_t Volumetrics::HeldBytes() const {

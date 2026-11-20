@@ -2272,10 +2272,34 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams where the \"\n    \"game's lamp list and the headlights are not read yet: 1 a street lamp 8 m ahead and 4.5 m up, 2 a headlight, 3 \"\n    \"both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.\"",
+  "help": "\"Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams without the game's own \"\n    \"lights: 1 a street lamp 8 m ahead and 4.5 m up (the game's street lamps are then not read), 2 a headlight (the rig's \"\n    \"headlights are then not read), 3 both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_inputs": {
+  "type": "i32",
+  "default": "3",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: which of the game's lights the volumetric light reads: 1 the street lamps (the game's per-frame lamp list), \"\n    \"2 the cars' headlights (the headlight rig's lights and, where the shadow maps run, their shadows), 3 both (the default), \"\n    \"0 neither. A bit that mcla_gpu_vol_test uses for a test light is left to the test light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_lamp_limit": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: at most this many of the game's street lamps are put in the volumetric light (the brightest in view are \"\n    \"kept, with hysteresis); 0: as many as the level reads (12 on medium, 32 on high, 48 on ultra). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 48}"
   ],
   "comments": [],
   "pp_depth": 0

@@ -168,6 +168,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
     volumetrics_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the volumetric light (volumetrics.h)
+    volumetrics_.SetInputSource(&vol_inputs_);  // its street lamps and headlights are the producer's (volumetrics_inputs.h)
+#if __has_include("local_shadow.h")
+    vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (feat/headlights)
+#endif
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);

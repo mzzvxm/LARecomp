@@ -107,6 +107,7 @@ add_library(larecomp_gpu OBJECT
     vehicle_motion.cpp
     viewport.cpp
     volumetrics.cpp
+    volumetrics_inputs.cpp
     vram_budget.cpp
     watch.cpp
 )
@@ -169,6 +170,11 @@ add_executable(larecomp_volumetrics_level_test EXCLUDE_FROM_ALL volumetrics_leve
 # shaders' constants and byte offsets are the header's) likewise:
 #   cmake --build <dir> --target larecomp_volumetrics_rules_test, then run src/gpu/larecomp_volumetrics_rules_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_rules_test EXCLUDE_FROM_ALL volumetrics_rules_test.cpp)
+# The volumetric light's light inputs (volumetrics_lamps.h: the game's lamp law and the calibration against the lit road, the pick with its hysteresis and fades;
+# vol_lamp_list.h: the guest list's record and the table; volumetrics_headlights.h: the headlights' units and the shadow atlas's state, with the real headers
+# of feat/headlights when they are in the tree) likewise:
+#   cmake --build <dir> --target larecomp_volumetrics_inputs_test, then run src/gpu/larecomp_volumetrics_inputs_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_volumetrics_inputs_test EXCLUDE_FROM_ALL volumetrics_inputs_test.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].

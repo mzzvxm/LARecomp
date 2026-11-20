@@ -1065,9 +1065,16 @@ class GPUSettings final : public rex::SettingOwner {
     "instead of at the game's copy of the main colour after them, to compare the two. Without it the light goes in "
     "at that copy and falls back to the mid-scene point by itself when no such copy comes. Live.", rex::kDebugOnly);
 
-  REX_SETTING(i32, mcla_gpu_vol_test, 0, "Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams where the "
-    "game's lamp list and the headlights are not read yet: 1 a street lamp 8 m ahead and 4.5 m up, 2 a headlight, 3 "
-    "both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.", rex::kDebugOnly, rex::Range{0, 3});
+  REX_SETTING(i32, mcla_gpu_vol_test, 0, "Diagnostic: adds a test light to the volumetric light, where the camera looks, to see its beams without the game's own "
+    "lights: 1 a street lamp 8 m ahead and 4.5 m up (the game's street lamps are then not read), 2 a headlight (the rig's "
+    "headlights are then not read), 3 both. A test light also keeps the haze at least 0.004 thick. 0: none. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_vol_inputs, 3, "Diagnostic: which of the game's lights the volumetric light reads: 1 the street lamps (the game's per-frame lamp list), "
+    "2 the cars' headlights (the headlight rig's lights and, where the shadow maps run, their shadows), 3 both (the default), "
+    "0 neither. A bit that mcla_gpu_vol_test uses for a test light is left to the test light. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_vol_lamp_limit, 0, "Diagnostic: at most this many of the game's street lamps are put in the volumetric light (the brightest in view are "
+    "kept, with hysteresis); 0: as many as the level reads (12 on medium, 32 on high, 48 on ultra). Live.", rex::kDebugOnly, rex::Range{0, 48});
 
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
@@ -1471,6 +1478,8 @@ inline auto& mcla_gpu_vol_far = g_gpu.mcla_gpu_vol_far;
 inline auto& mcla_gpu_vol_temporal = g_gpu.mcla_gpu_vol_temporal;
 inline auto& mcla_gpu_vol_early = g_gpu.mcla_gpu_vol_early;
 inline auto& mcla_gpu_vol_test = g_gpu.mcla_gpu_vol_test;
+inline auto& mcla_gpu_vol_inputs = g_gpu.mcla_gpu_vol_inputs;
+inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

@@ -415,6 +415,8 @@
 {"mcla_gpu_vol_temporal", "MCLA/GPU"},
 {"mcla_gpu_vol_early", "MCLA/GPU"},
 {"mcla_gpu_vol_test", "MCLA/GPU"},
+{"mcla_gpu_vol_inputs", "MCLA/GPU"},
+{"mcla_gpu_vol_lamp_limit", "MCLA/GPU"},
 {"mcla_gpu_vram_budget_mb", "MCLA/GPU"},
 {"mcla_gpu_vram_log", "MCLA/GPU"},
 {"mcla_gpu_vsync", "MCLA/GPU"},
