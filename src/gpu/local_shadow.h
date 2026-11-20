@@ -10,14 +10,22 @@
 //
 // WHAT IT DOES, and when.
 //   mcla_gpu_light_shadows       auto | off | high | ultra (the pause menu's LIGHT SHADOWS: the headlights now, the street lamps later; it was
-//                                mcla_gpu_headlight_shadows, which stays as an alias). The levels differ by how many cars are shadowed as well as by how
-//                                sharp (owner, 2026-11-20). high: two views of 512 x 512, the player's car's lamps and the nearest other car's (4 MiB of
-//                                video memory); ultra: three views of 1024 x 1024, the player's car's and the two nearest other cars' (24 MiB). `auto` is
-//                                high on Mid, ultra on High, off on Low (gpu_class.h Effect::kLightShadows). Live: a change applies at the next frame.
+//                                mcla_gpu_headlight_shadows, which stays as an alias; medium too, with the three level shape: local_shadow_rules.h kLevelTable
+//                                has the rows and is the one place to change). The levels differ by how many cars are shadowed, by how many of them have a view
+//                                for EACH HEADLAMP, and by how sharp (owner, 2026-11-20). high: the player's car and the nearest other car, a view for each
+//                                lamp, 4 views of 512 x 512 (8 MiB of video memory); ultra: the player's car and the two nearest other cars, 6 views of
+//                                1024 x 1024 (48 MiB). `auto` is high on Mid, ultra on High, off on Low (gpu_class.h Effect::kLightShadows). Live: a change
+//                                applies at the next frame.
+//                                A CAR'S LIGHT IS ONE TERM (the middle of its two lamps: headlight_types.h) AND ITS SHADOW IS THE MEAN OF ITS LAMPS' VIEWS: a
+//                                pole in front of the car that both lamps light casts two shadows, each half as dark where only one lamp is blocked, and the
+//                                shadow of a car in front has the half-lit band of one lamp. The lamps' places come from the rig (Headlight::lamp_offset: the
+//                                game's two Headlight points, else the front lenses, else 0.55 m either side of the light).
 //                                WHICH CARS: the player's car always, the others by importance (nearer to the camera and on the screen first), with a
-//                                hysteresis so that two cars of the same importance do not trade a view back and forth (local_shadow_rules.h ViewPicker).
-//                                A car the rig lights but that has no view is lit without a shadow. A view costs about 0.02 ms of the graphics card
-//                                and 0.05 to 0.1 ms of the render thread (the draws are replayed once more for each view); the size barely costs.
+//                                hysteresis so that two cars of the same importance do not trade views back and forth (local_shadow_rules.h ViewPicker); a car's
+//                                views come and go together. A car the rig lights but that has no view is lit without a shadow. mcla_gpu_headlight_shadow_views
+//                                (debug) is the views of a car: 1 one for the car (the first version's), 2 one for each lamp, 0 the level's.
+//                                A view costs about 0.02 ms of the graphics card and 0.05 to 0.1 ms of the render thread (the draws are replayed once more for
+//                                each view); the size barely costs. perf/HL-PER-LAMP-RUN.md has the cost plan of the lamps' views.
 //   COLLECT (Scene::OnDraw, every prepared draw of the main view's colour pass before the anchor): the draw's shaders, input layout, host
 //   geometry (valid until the frame's lists are submitted), its vertex constants (a host copy of the bank, 4 KiB, once per bank version),
 //   its shared constants (once per distinct block) and its pixel constants span. A draw is a caster when it is opaque (blend off, depth
@@ -26,8 +34,9 @@
 //   colour target the driver cuts down to the alpha test. Collecting costs a few hundred bytes a draw, and only runs while the setting is on
 //   and a headlight is lit (or was a moment ago).
 //   REPLAY (the history trigger, the game's mid-scene depth copy into 078B0000 after every opaque draw of the main view, Scene::OnResolve
-//   calls us before the ambient occlusion's passes): the rig's lights are grouped by car (a car's two lamps share a view), each group gets a
-//   spot view that covers its lamps' cones (local_shadow_rules.h FitView, LightClip), and every caster is drawn into each view with the game's
+//   calls us before the ambient occlusion's passes): the rig's lights are grouped by car and the level's cars are picked, each car gets a view for each
+//   headlamp or one for the car (local_shadow_rules.h PlanViews), each view a spot frustum that covers the light's cone from where the lamp is (FitView, LightClip), and
+//   every caster is drawn into each view with the game's
 //   own vertex shader, the draw's own vertex and index views, a copy of its vertex constants whose c8-c11 (gWorldViewProj) is replaced by
 //   gWorldViewProj x VP_main^-1 x VP_light (local_shadow_rules.h: that is gWorld x VP_light), a copy of its shared constants whose NDC transform
 //   is the pass's, and no pixel shader (or its own, for the alpha tested). The main camera VP_main is found in the same frame's stored banks
@@ -47,9 +56,20 @@
 // patched in place, the main view's own copy is still to be read by the draws before the trigger, and a vertex shader that took the matrix from
 // somewhere else is a change of the shader pack), so the cost goes with the number of draws and banks, and these cut them:
 //   - BY DAY nothing is collected or replayed (no headlight is lit); the draws are only looked at one frame in eight, to list the pipelines.
-//   - THE CONE CULL (mcla_gpu_headlight_shadow_cone): a draw whose place (its world matrix's translation, from c8-c11) is outside every view's cone
-//     and reach, plus a margin for how far its geometry reaches from the place (7 m for a car, 40 m for any other draw: the guest's vertex buffers are
-//     not read for bounds), is dropped at collection, before its bank is copied. Each view then keeps only its own (local_shadow_rules.h SphereInView).
+//   - THE CONE CULL (mcla_gpu_headlight_shadow_cone): a draw whose place (its world matrix's translation, from c8-c11) is outside every CAR's view and reach, plus a margin
+//     for how far its geometry reaches from the place (7 m for a car, 40 m for any other draw: the guest's vertex buffers are not read for bounds), is dropped at
+//     collection, before its bank is copied. The car's view there is ONE for both lamps (local_shadow_rules.h FitCar: a cone from behind both lamps that holds both of
+//     theirs), so a draw is tested once for a car, and collected once for both lamp views; each view then keeps only its own (SphereInView), and what is the same for
+//     every view (the place is a world matrix, the pixel constants, a made pipeline) is settled once.
+//   - NOT ONE DRAW INTO BOTH LAMP TILES (considered 2026-11-20, HL-PER-LAMP). A caster could be drawn once with two instances and a per-instance matrix, each to its own tile
+//     (SV_ViewportArrayIndex), which would halve the draws and the constant banks. It needs three things this tree does not have and a blind change should not add: (1) a
+//     vertex stage in the variant pack that rewrites c8-c11 for the game's ~700 vertex shaders (the pack's vertex stages name at most four shaders, variant_pack.h
+//     kVariantVertexShaders; skinned, instanced and wind vertex shaders each read the matrix their own way), (2) the viewport index written from a vertex shader on both
+//     APIs: Plume enables neither `multiViewport` + `shaderOutputViewportIndex` on Vulkan nor the D3D12 option for it (a Plume PR), (3) a second matrix beside the 4 KiB
+//     bank (the root descriptor reads exactly 256 registers). The gain is also small: a view costs 0.05 to 0.1 ms of the render thread, the saving at most half of the second
+//     lamp's. And the cheaper sharing, drawing each caster into both tiles with one set of binds, loses to the viewport and scissor that change at every draw: for 300
+//     draws the model of local_shadow_rules_test.cpp CheckSharedWork counts 2974 commands for two passes and 3477 (17 per cent more) for the interleaved order, so a car's two
+//     views are drawn one after the other. What the lamps share is the collection and the planning (below), a few per cent of a view's cost.
 //   - A bank is written in three pieces around c8-c11, never written twice.
 // THE PLAYER'S OWN CAR. The survey (4.2 point 8) took the player's car from CarFrame so as not to draw it twice. Here it comes from the same list as
 // every other draw (the main view draws it at full detail, with the game's own vertex shader), and the car that owns a view's lamps is not drawn
@@ -227,7 +247,7 @@ class LocalShadow {
   void FlushListing();
   static uint64_t PrecacheKey(uint32_t id);
 
-  // The frame's lights and the cars that get a view (BeginFrame, once: the cone cull and the replay work from the same cars).
+  // The frame's lights, the cars that get views and the views of each car (BeginFrame, once: the cone cull and the replay work from the same cars and views).
   void PickViews();
   // The frame's views as the lights alone say them: what Collect culls against once the camera is known.
   void PlanEarlyViews();
@@ -274,17 +294,19 @@ class LocalShadow {
   // holds a view (the hysteresis), the last frame's main camera (the importance's distance and screen) and which cars had the views at the last change.
   local_shadow::Light frame_lights_[4];
   uint32_t frame_light_count_ = 0;
-  local_shadow::Group frame_groups_[4];
+  local_shadow::Group frame_groups_[4];     // the picked cars, the player's first
+  uint32_t frame_cars_ = 0;
+  local_shadow::ViewPlan frame_plan_;       // the views of those cars: a view for each headlamp, or one for the car (local_shadow_rules.h PlanViews)
   uint32_t frame_views_ = 0;
   local_shadow::ViewPicker picker_;
   local_shadow::Camera last_camera_;
-  uint32_t last_view_count_ = 0;
-  uint32_t last_view_keys_[local_shadow::kMaxViews] = {};
+  uint32_t last_view_count_ = 0;            // cars that held views at the last change
+  uint32_t last_view_keys_[local_shadow::kMaxCars] = {};
   uint32_t view_changes_ = 0;
-  // The cone cull's frame: the views the lights alone make (the set does not change until the next present), the camera found from the first
-  // banks (the same one the replay takes), and the place of the last bank version looked at.
-  local_shadow::ViewSpec early_specs_[4];
-  uint32_t early_views_ = 0;
+  // The cone cull's frame: one view for each car that holds all of the car's views (the lights alone make it: the set does not change until the next present), the camera found
+  // from the first banks (the same one the replay takes), and the place of the last bank version looked at.
+  local_shadow::ViewSpec early_specs_[local_shadow::kMaxCars];
+  uint32_t early_views_ = 0;                // cars planned
   local_shadow::Camera early_camera_;
   uint32_t early_tries_ = 0;
   bool eval_have_ = false;
@@ -333,10 +355,12 @@ class LocalShadow {
   uint64_t triggers_ = 0;
   uint64_t maps_ = 0;
   uint64_t views_total_ = 0;
+  uint64_t lamp_views_total_ = 0;  // views made from a headlamp
   uint64_t draws_total_ = 0;
   uint64_t skipped_total_[size_t(local_shadow::Skip::kCount)] = {};
   uint64_t no_map_[6] = {};
   uint32_t last_views_ = 0;
+  uint32_t last_lamp_views_ = 0;
   uint32_t last_draws_ = 0;
   uint32_t last_collected_ = 0;
   uint32_t last_banks_ = 0;       // banks written into the maps in the last map (all views)

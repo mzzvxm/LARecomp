@@ -89,8 +89,8 @@ const Row kTable[] = {
      "AUTO (ULTRA)"},
     // The headlights have one level, `on`: the integrated class (Low) has none.
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
-    // Light shadows (local_shadow.h; the headlights now, the street lamps later): high on Mid (two maps of 512: the player's car's lamps and the nearest other car's), ultra on High
-    // (three of 1024: the next nearest car's too), nothing on shared memory.
+    // Light shadows (local_shadow.h; the headlights now, the street lamps later): high on Mid (four maps of 512: a map for each lamp of the player's car and of the nearest other car), ultra on High
+    // (six of 1024: the next nearest car's too), nothing on shared memory.
     {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "high", "ultra", "AUTO (OFF)",
      "AUTO (HIGH)", "AUTO (ULTRA)"},
     // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).

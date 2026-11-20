@@ -78,7 +78,7 @@ enum class Effect : uint8_t {
   kCarSelfRefl,           // mcla_gpu_car_selfrefl       auto, off, on (car_selfrefl.h)
   kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, high, ultra
   kHeadlights,            // mcla_gpu_headlights         auto, off, on (headlight_rig.h)
-  kLightShadows,          // mcla_gpu_light_shadows      auto, off, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
+  kLightShadows,          // mcla_gpu_light_shadows      auto, off, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows; medium too in the three level shape)
   kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)
 };
 inline constexpr int kEffectCount = 13;
@@ -120,10 +120,12 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // 100+ ms there) gets it. The cost is the owner's to measure (perf/HEADLIGHT-LIGHT-RUNPLAN.md), a cell is corrected from it.
     {"mcla_gpu_headlights", "off", "on", "on"},
     // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 512 (high) or
-    // 1024 (ultra) texels a view; high shadows the player's car's headlights and the nearest other car's (2 views, 4 MiB), ultra also the next nearest car's (3 views,
-    // 24 MiB; owner, 2026-11-20: the levels differ by how many cars are shadowed, not only by how sharp). Mid gets high, High gets ultra, shared memory nothing (the scene
-    // alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time (the size barely counts) and 0.05 to 0.1 ms of render thread time (the second
-    // pass over the frame's draws), measured on the RTX 5080 in the headlights runs of 2026-11-20; the cells are unchanged by the second and third view.
+    // 1024 (ultra) texels a view, a view for each HEADLAMP (a pole in front of a car casts a shadow from each of its two lamps; owner, 2026-11-20); high shadows the player's car's
+    // headlights and the nearest other car's (4 views, 8 MiB), ultra also the next nearest car's (6 views, 48 MiB). Mid gets high, High gets ultra, shared memory nothing (the
+    // scene alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time (the size barely counts) and 0.05 to 0.1 ms of render thread time (a pass
+    // over the frame's draws), measured on the RTX 5080 in the headlights runs of 2026-11-20 with a view for each car: the lamps' views double the count of views, so the cells
+    // are the owner's to confirm from perf/HL-PER-LAMP-RUN.md's cost runs. THE THREE LEVEL SHAPE (local_shadow_rules.h kThreeLevelShape, the fallback if that proves too much:
+    // medium, high with lamps for the player's car only, ultra): Mid's cell becomes `medium` and the setting's allowed words (settings_gpu.h) get `medium`.
     {"mcla_gpu_light_shadows", "off", "high", "ultra"},
     // Volumetric light (light beams under the lamps and headlights, fog and sun shafts: volumetrics.h; VOLUMETRICS-SURVEY.md section 4,
     // estimated 0.13 / 0.19 / 0.30 ms at 4K and 0.06 / 0.12 / 0.23 ms at 1080p on an RTX 5080 for medium / high / ultra, about 0.5 ms
