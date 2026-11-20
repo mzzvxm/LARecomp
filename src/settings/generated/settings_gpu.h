@@ -406,6 +406,10 @@ class GPUSettings final : public rex::SettingOwner {
     "reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws "
     "every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_skirt, 1, "Diagnostic: 1 (the default) draws each vehicle part a second time into the headlight shadow maps, 0.22 m lower and 0.6 m farther "
+    "along the light, which puts the underbody on the road and closes the gap under a car that a low lamp shines through (without it the road behind a car is "
+    "lit through the ground clearance except where the tyres block: a few thin stripes instead of the car's shadow). 0 draws the car once. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
     "distribution. Empty: off.", rex::kDebugOnly, rex::kRestart);
@@ -1521,6 +1525,7 @@ inline auto& mcla_gpu_headlight_shadow_cull = g_gpu.mcla_gpu_headlight_shadow_cu
 inline auto& mcla_gpu_headlight_shadow_views = g_gpu.mcla_gpu_headlight_shadow_views;
 inline auto& mcla_gpu_headlight_shadow_bias = g_gpu.mcla_gpu_headlight_shadow_bias;
 inline auto& mcla_gpu_headlight_shadow_cone = g_gpu.mcla_gpu_headlight_shadow_cone;
+inline auto& mcla_gpu_headlight_shadow_skirt = g_gpu.mcla_gpu_headlight_shadow_skirt;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;

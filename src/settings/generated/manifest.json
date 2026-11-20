@@ -1088,6 +1088,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlight_shadow_skirt": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 (the default) draws each vehicle part a second time into the headlight shadow maps, 0.22 m lower and 0.6 m farther \"\n    \"along the light, which puts the underbody on the road and closes the gap under a car that a low lamp shines through (without it the road behind a car is \"\n    \"lit through the ground clearance except where the tyres block: a few thin stripes instead of the car's shadow). 0 draws the car once. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_a2c_dither_all": {
   "type": "bool",
   "default": "true",

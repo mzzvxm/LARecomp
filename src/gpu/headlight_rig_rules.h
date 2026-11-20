@@ -198,6 +198,40 @@ inline bool ProjectToShadow(const larecomp::gpu::LocalShadowView& view, const fl
 // The compare of one tap: lit when the map's stored depth is not nearer than the receiver's (moved toward the lamp by the bias).
 inline float ShadowTap(float stored, float receiver_depth, float bias) { return stored >= receiver_depth - bias ? 1.0f : 0.0f; }
 
+// THE SOFT LOOKUP (the shader's HeadlightShadow; src/shaderpack/variants/headlight.cpp kHlShadowKernel is this number). The first version compared FOUR taps half a
+// texel from the receiver's place, each tap one texel of a point sampled map: five levels, and every edge of a shadow a staircase of texels, hard and grainy (the owner's
+// "hard-edged stripes", 2026-11-20). Now the answer is the share of a box `kShadowKernel` texels square, centred on the receiver's place in the map, whose texels are
+// lit, each texel counted by the part of it the box covers (a texel the box covers by a third counts a third): the share changes smoothly as the receiver moves, and
+// a straight edge goes from shadow to light over `kShadowKernel` texels (about 15 cm at 27 m from the lamps with a 1024 tile, twice that on the 512 tile of `high`).
+// A box this wide covers 4 x 4 texels, 16 fetches; the four outer ones go first and when they agree (all lit or all dark: a point well inside a shadow or a lit
+// area, which is most of the lit pixels) the other twelve are not taken: nothing thinner than the box is lost there, which the penumbra does not need.
+inline constexpr float kShadowKernel = 3.0f;
+
+// (tx, ty): the receiver's place in texels of the atlas (its uv over one texel's uv); lit_at(ix, iy): the compare of texel (ix, iy) of the atlas with the
+// receiver's depth, 1 lit or 0 in shadow.
+template <class LitAt>
+inline float SoftShadow(float tx, float ty, LitAt&& lit_at) {
+  const float lx = tx - 0.5f * kShadowKernel, ly = ty - 0.5f * kShadowKernel;
+  const float bx = std::floor(lx), by = std::floor(ly);
+  const float fx = lx - bx, fy = ly - by;
+  const float wx[4] = {1.0f - fx, 1.0f, 1.0f, fx};
+  const float wy[4] = {1.0f - fy, 1.0f, 1.0f, fy};
+  const int ix = int(bx), iy = int(by);
+  const float corners = lit_at(ix, iy) + lit_at(ix + 3, iy) + lit_at(ix, iy + 3) + lit_at(ix + 3, iy + 3);
+  if (corners == 0.0f || corners == 4.0f) {
+    return corners * 0.25f;
+  }
+  float lit = 0.0f;
+  for (int j = 0; j < 4; ++j) {
+    float row = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+      row += wx[i] * lit_at(ix + i, iy + j);
+    }
+    lit += wy[j] * row;
+  }
+  return lit * (1.0f / 9.0f);
+}
+
 // The host's table from a light to its shadow view: view index, or kNoView. A view counts when it is valid and names a light of the set
 // (light_index 0 .. kMaxLights - 1; 100 and up are the lamps', later); a light has the first valid view that names it.
 inline constexpr uint32_t kNoView = 0xFFFFFFFFu;
