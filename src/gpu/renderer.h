@@ -94,6 +94,8 @@
 #include "scene.h"
 #include "shaders.h"
 #include "shafts.h"
+#include "volumetrics.h"
+#include "volumetrics_inputs.h"
 #include "swap_chain.h"
 #include "temporal.h"
 #include "textures.h"
@@ -288,6 +290,8 @@ class Renderer final : public RenderThread::Executor {
   TemporalSystem temporal_;   // render thread; the temporal upscalers' groundwork (temporal.h)
   AmbientOcclusion ao_;       // render thread; screen-space ambient occlusion (ao.h)
   SunShafts shafts_;          // render thread; screen-space sun shafts (shafts.h)
+  VolumetricsInputs vol_inputs_;  // render thread; the volumetric light's street lamps and headlights (volumetrics_inputs.h); before it: it outlives it
+  Volumetrics volumetrics_;   // render thread; volumetric light: lamp and headlight beams, haze, sun through the cascades (volumetrics.h)
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)
   CarDump car_dump_;          // render thread; the debug dump of one frame's cars (car_dump.h)
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)

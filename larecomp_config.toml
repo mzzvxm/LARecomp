@@ -26904,6 +26904,19 @@ name = "Hook_PromptDropped"
 registers = []
 after_instruction = false
 
+# 0x82302814: one instruction into the cone drawer sub_82302810 (its first instruction, `mflr r12`, is where the night probe's MCLANightConeDraw sits on
+# test/night-probe: a midasm hook is keyed by its address and the SDK keeps the last of two, so this one is one instruction later and both run; the
+# instruction between them writes only r12 and nothing else branches here). The per-frame list of spot lamps (guest 0x8288B8D8: AddLight sub_823029D0 appends
+# the lamps within 300 m of the eye, this drawer sorts the list, draws a cone mesh per record in rain only, and empties it) is COMPLETE here: mean 64 lamps,
+# at most 83, in a clear night (perf/out/NIGHT-PROBE.txt C3, C5). The hook copies it, once a frame and only while the volumetric light is on
+# (gpu/vol_lamp_list.h Wanted), into the table the renderer's lamp producer reads (src/gpu/volumetrics_inputs.h). Reads only: nothing is written into the guest.
+# vol_lamps.cpp. No register is read (the list is at a fixed address). A codegen run is needed for the hook to exist.
+[[midasm_hook]]
+address = 0x82302814
+name = "MCLAVolLampList"
+registers = []
+after_instruction = false
+
 # Cutscene camera diagnosis. mcCineScript::Camera_LaunchEvent (sub_823C3BA8) is
 # what core_rolling_prototype calls to put the cutscene camera on screen, right
 # before EndDescriptionAndStartClock -- and the disassembly of that script shows

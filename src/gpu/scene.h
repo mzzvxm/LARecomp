@@ -90,6 +90,7 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class Volumetrics;
 class CarSelfRefl;
 class CarDump;
 class CarFrame;
@@ -134,6 +135,9 @@ class Scene {
   // the mid-scene depth resolve (the sky) and before the end-of-scene copy of the colour (the light).
   // Null: none.
   void SetSunShafts(SunShafts* shafts) { shafts_ = shafts; }
+  // The volumetric light (volumetrics.h): told of the shadow collector's and the main view's draws, the camera and the resolves, run at the game's
+  // mid-scene depth copy (the volume) and at its end-of-scene copy (the composite), and it has the game's lamp cones left out of a frame it made.
+  void SetVolumetrics(Volumetrics* volumetrics) { vol_ = volumetrics; }
   // The car self-reflection prototype (car_selfrefl.h): told of the main view's draws, the camera and the mid-scene depth
   // copy, and asked for the constants of the car paint variant's draws. Null: none (the variant then draws as the game's).
   void SetCarSelfRefl(CarSelfRefl* car_refl) { car_refl_ = car_refl; }
@@ -455,6 +459,7 @@ class Scene {
   TemporalSystem* temporal_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
   SunShafts* shafts_ = nullptr;
+  Volumetrics* vol_ = nullptr;
   menu_world::Announcer menu_world_;  // the one line per change of world
   CarSelfRefl* car_refl_ = nullptr;
   CarDump* car_dump_ = nullptr;

@@ -112,6 +112,8 @@ add_library(larecomp_gpu OBJECT
     validation.cpp
     vehicle_motion.cpp
     viewport.cpp
+    volumetrics.cpp
+    volumetrics_inputs.cpp
     vram_budget.cpp
     watch.cpp
 )
@@ -166,6 +168,19 @@ add_executable(larecomp_shafts_sun_test EXCLUDE_FROM_ALL shafts_sun_test.cpp)
 # The sun shafts' strength levels (shafts_level.h: the setting's words, the multipliers, auto per class, the old values, the ray steps) likewise:
 #   cmake --build <dir> --target larecomp_shafts_level_test, then run src/gpu/larecomp_shafts_level_test.
 add_executable(larecomp_shafts_level_test EXCLUDE_FROM_ALL shafts_level_test.cpp)
+# The volumetric light's setting words and what `auto` comes to per class (volumetrics_level.h) likewise:
+#   cmake --build <dir> --target larecomp_volumetrics_level_test, then run src/gpu/larecomp_volumetrics_level_test (exit 0 = passed).
+add_executable(larecomp_volumetrics_level_test EXCLUDE_FROM_ALL volumetrics_level_test.cpp)
+# The volumetric light's rules (volumetrics_rules.h, volumetrics_types.h: the slice maths and the 2D atlas, the phase function, the lamp law, the
+# cascade pick, the headlight shadow lookup, the reprojection, the constants' layout and builder; given the src/gpu folder it also checks that the
+# shaders' constants and byte offsets are the header's) likewise:
+#   cmake --build <dir> --target larecomp_volumetrics_rules_test, then run src/gpu/larecomp_volumetrics_rules_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_volumetrics_rules_test EXCLUDE_FROM_ALL volumetrics_rules_test.cpp)
+# The volumetric light's light inputs (volumetrics_lamps.h: the game's lamp law and the calibration against the lit road, the pick with its hysteresis and fades;
+# vol_lamp_list.h: the guest list's record and the table; volumetrics_headlights.h: the headlights' units and the shadow atlas's state, with the real headers
+# of feat/headlights when they are in the tree) likewise:
+#   cmake --build <dir> --target larecomp_volumetrics_inputs_test, then run src/gpu/larecomp_volumetrics_inputs_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_volumetrics_inputs_test EXCLUDE_FROM_ALL volumetrics_inputs_test.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
@@ -695,6 +710,12 @@ larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
+# The volumetric light's passes (volumetrics.h): the inject and the integrate (compute, Shader Model 6.0, a typed RGBA16F storage image store on both
+# APIs) and the composite (plain or multisampled depth plane).
+larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)
+larecomp_gpu_host_shader(volumetrics_integrate_cs cs_6_0)
+larecomp_gpu_host_shader(volumetrics_apply_ps ps_6_0 DEFINES APPLY_MS=0)
+larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=1)
 # The car self-reflection history (car_selfrefl.h): the main view's colour and the car's depth into one image, read by the
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
