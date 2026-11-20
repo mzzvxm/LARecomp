@@ -4,7 +4,7 @@ A scene is a text file: what the world, the cars and the camera do on a timeline
 everything an agent needs to write one, check it, look at it and render it. The reference for the grammar is the top of `src\mc_engine\cinematic\scene.h`,
 `camera.h`, `car_verbs.h` and `spots.h`; the wire of the live channel is `documentation\DIRECTOR-PROTOCOL.md`; the design is `feature-parity\DIRECTOR-DESIGN.md`.
 
-Everything below is one command line, `ports\scripts\scene_tool.py` (written `st` here). Every command takes `--json` (one JSON object on stdout) and exits
+Everything below is one command line, `python C:\mcv\larecomp\ports\scripts\scene_tool.py` (written `st` here). Every command takes `--json` (one JSON object on stdout) and exits
 **0** done, **1** the content is wrong (lint error, a failed preview check, two things differ), **2** bad arguments, **3** the environment (no atlas, no game,
 the game said no). `lint`, `query`, `route`, `new` and `diff` of files need no game and run under `python -I`; `preview` needs a game and Pillow (plain `python`).
 
@@ -29,7 +29,7 @@ scene my-shot fps 60 step 1/60                   # name, the take's frame rate (
 world hour 16.5 hold weather nice traffic off peds off parked off police off   # hold the world still: nothing drives into the cars
 at 0 hud off                                     # the game's own UI off
 at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-street@-1.5,0,-26 heading spot:hw-street     # a spawn takes about 4 s
-at 6 car p1 path street-lane1.route speed 7      # a route file beside the scene or in its routes\ folder
+at 6 car p1 path my-run.route speed 7            # a route file beside the scene or in its routes\ folder; make it with `st route` (below)
 cam 6 rig chase car:p1 dist 7 height 1.9 lag 0.35 fov 50                  # a shot in one line
 cam 9 rig chase car:p1 dist 3.5 height 1.1 side 1.6 lag 0.2 fov 42 ease inout
 at 6 capture fps 60 name my-shot sink png        # the take (one a scene); `capture off` or `end` closes it
@@ -89,8 +89,10 @@ st query road   --near spot:hw-street          # the nearest lanes: name, speed,
 st query lights --near spot:hw-street --r 60   # lamps: position, colour, reach (a night shot wants some)
 st query route  --from spot:hw-street@-1.5,0,-26 --to spot:hw-street@-1.5,0,24      # a dry run
 st route --from spot:hw-street@-1.5,0,-26 --to spot:hw-street@-1.5,0,24 --name my-run --scene my-shot --speed 12   # writes scenes\routes\my-run.route
-st query route --file scenes\routes\my-run.route     # length, time, speeds, how far from the road
+st query route --file scenes\routes\my-run.route     # length, time, speeds, how far from a road, and from a lane that runs the route's way
 ```
+
+A hand-written route is usually off: the old `m4c-a.route` is on the road but in the oncoming lane (13 m from a lane that runs its way). Ask the atlas before you trust one.
 
 `route` follows the lanes (the start's heading picks the lane; a start more than 6 m from a lane is warned about), then writes `x,z,speed,y` lines about 2 m apart with the speed from
 the roads' limits and the curves (`--speed` caps it). Without an atlas it makes a smooth line through the stops and says so. Use it as `car p1 path my-run.route [speed x1.2]`.
@@ -116,8 +118,8 @@ picture at: every `cam` key, every `cut` and one update before it, the start, th
   size_frac, dist_m, occluded}, cars[{id,pos,speed,dist_to_road_m,on_road}], streaming_ready, ground_clearance_m, checks{...}`. Check values: `pass`, `fail`, `unknown` (could not be made:
   not a failure), `n/a`.
 - **The checks** (thresholds in the file, `--thr key=value`): the subject (the car the active key looks at or follows; else `--subject`; else the scene's only car) has its centre in the
-  inner 90 percent of the picture and fills 3 to 90 percent of its height; not occluded when the game can tell; every car that drives a route is within 4 m of a road at every shot (6 m
-  along the whole route); the world was streamed (retried up to 10 s, then flagged); the camera is 0.3 m above the known ground.
+  inner 90 percent of the picture and fills 3 to 90 percent of its height; not occluded when the game can tell; every car that drives a route is within 4 m of a lane that runs its way at every shot (6 m
+  along the whole route: a car on the wrong side of the road fails); the world was streamed (retried up to 10 s, then flagged); the camera is 0.3 m above the known ground.
 
 Fix what `failed` names, then `lint` and `preview` again. The shots are at the scene's own step; `preview.json` `strategy` says how: `seek` pins the clock (exact for a scene of pure functions of
 the time), `step` runs the scene stepwise (brain cars, traffic: what the take will see), `play` is pictures only.
@@ -152,7 +154,7 @@ Other commands, all one line: `st cmd slot:0 help` (every command with its argum
 ## Do and don't
 
 - Do lint after every edit; do preview before you render; do read the map, not only the pictures.
-- Do use a spot where one exists and `st route` for car routes; do not write coordinates you guessed (the m4c routes were 3 m off the road; `query route --file` says so).
+- Do use a spot where one exists and `st route` for car routes; do not write coordinates you guessed (the first hand-made route ran in the oncoming lane; `query route --file` says so).
 - Do hold the world (`traffic off peds off parked off police off`) in a shot with cars; a spawn takes about 4 s, keep the first camera key after the cars are ready.
 - Do keep one take a scene, and the `end` after it.
 - Do give `expect` text with every edit made through the channel; on `stale` re-read.
