@@ -296,9 +296,9 @@ void CheckFixtures() {
 
   // The variant's definition.
   const sp::VariantDef def = sp::MakeShadowFilterVariant();
-  Check(def.id == larecomp::shaderpack::kVariantShadowFilter && def.name == "shadow_filter" && def.needs_rpf &&
+  Check(def.feature == larecomp::shaderpack::kFeatureShadowFilter && def.name == "shadow_filter" && def.needs_rpf &&
             def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 && def.transform,
-        "the definition: id, name, the RPF, two name suffixes, a transform");
+        "the definition: feature, name, the RPF, two name suffixes, a transform");
   Check(def.version == sp::kShadowFilterVariantVersion && def.version >= 1, "the definition carries the version");
 }
 

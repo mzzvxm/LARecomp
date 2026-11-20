@@ -64,7 +64,7 @@
 //     lower than about 3.5 m at the nearest cascade, so the sun's size is a setting (mcla_gpu_shadow_filter_sun).
 //   - a Low class never gets the search (the host leaves the bit out): LOW is soft.
 //
-// Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantShadowFilter) while
+// Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureShadowFilter) while
 // mcla_gpu_shadow_filter resolves to soft or pcss; src/gpu/scene.cpp uploads the constants. A variant is built for
 // spec variant 0 only, so a collector draw that has the alpha test or alpha to coverage on keeps the game's
 // shader (CHECK in the report: whether the alpha shaders are drawn that way).
@@ -90,7 +90,8 @@ VariantDef MakeShadowFilterVariant();
 // The text transform alone (pure; public for tests). `shader` is only used in messages. Returns `skip` for
 // a shader that reads no atlas or has a filter of its own, an error for a shader that reads the atlas in
 // a way these edits were not written for.
-VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl);
+VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl,
+                                                 const StageContext& ctx = SoloContext(kFeatureShadowFilter));
 
 // The reasons a shader is left out (also what the tests look for).
 inline constexpr std::string_view kShadowSkipNoLookup = "it reads no shadow map";

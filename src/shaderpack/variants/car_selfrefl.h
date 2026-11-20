@@ -111,6 +111,7 @@ inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint"
 VariantDef MakeCarSelfReflVariant();
 
 // The text transform alone (pure; public for tests).
-VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl);
+VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl,
+                                                const StageContext& ctx = SoloContext(kFeatureCarSelfRefl));
 
 }  // namespace larecomp::shaderpack

@@ -60,7 +60,7 @@
 //                  oC0.xyz = saturate(r1.zyx * r2.xyz) times the share
 //   both:          the helper, before `void main(`
 //
-// Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantGlowSoft) while the setting
+// Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureGlowSoft) while the setting
 // mcla_gpu_glow_visibility is `soft`; `game` selects nothing, so the picture is the game's own, bit for bit.
 // ===========================================================================
 

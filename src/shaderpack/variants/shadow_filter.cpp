@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 namespace larecomp::shaderpack {
@@ -259,7 +260,7 @@ VariantTransformResult Skipped(std::string_view why) {
 
 }  // namespace
 
-VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl) {
+VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
   std::string text = NormalizeNewlines(hlsl);
 
   // 0. What kind of lookup it has: none, its own, or the rotated cross these edits are for.
@@ -397,10 +398,6 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
 
   // 5. The anchored edits: the locals the copies go to, the constants and the helper.
   static constexpr Piece kCubeMap[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
   std::string error;
@@ -413,21 +410,9 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
                    &error)) {
     return Failed(shader, std::move(error));
   }
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// Shadow filter variant (src/gpu/shadow_filter.h ShadowFilterConstants): 16 bytes after the 608.\n"
-                            "#define g_ShadowFilter vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)";
-                   },
-                   &error)) {
-    return Failed(shader, std::move(error));
-  }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_ShadowFilter : packoffset(c38);";
-                   },
-                   &error)) {
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_ShadowFilter"}};
+  if (!DeclareConstants(text, ctx, "Shadow filter variant (src/gpu/shadow_filter.h ShadowFilterConstants): 16 bytes after the 608.", kMembers,
+                        &error)) {
     return Failed(shader, std::move(error));
   }
   if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
@@ -435,14 +420,13 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
     return Failed(shader, std::move(error));
   }
 
-  // What the text must hold now: the helper's definition and its one call, one g_ShadowFilter in each backend's
-  // declaration and one read, and the four copies of the taps and the one of the depth.
+  // What the text must hold now: the helper's definition and its one call, one read of g_ShadowFilter (its declarations are
+  // checked by DeclareConstants), and the four copies of the taps and the one of the depth.
   const struct {
     std::string_view needle;
     size_t want;
   } kChecks[] = {
       {"float ShadowFilterSoft(", 1}, {" = ShadowFilterSoft(", 1},
-      {"SharedConstants + 608", 1},   {"g_ShadowFilter : packoffset(c38)", 1},
       {"float4 constants = g_ShadowFilter;", 1},
       {"\tshadowTap1 = ", 1},          {"\tshadowTap2 = ", 1},
       {"\tshadowTap3 = ", 1},          {"\tshadowTap4 = ", 1},
@@ -464,13 +448,13 @@ VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, st
 
 VariantDef MakeShadowFilterVariant() {
   VariantDef def;
-  def.id = kVariantShadowFilter;
+  def.feature = kFeatureShadowFilter;
   def.name = "shadow_filter";
   def.version = kShadowFilterVariantVersion;
   def.pixel_name_suffixes = {kShadowBlendSuffix, kShadowBlendAlphaSuffix};
   def.needs_rpf = true;
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
-    return TransformShadowFilterHlsl(shader, hlsl);
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+    return TransformShadowFilterHlsl(shader, hlsl, ctx);
   };
   return def;
 }

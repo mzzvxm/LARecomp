@@ -175,8 +175,10 @@ void RunNegatives() {
 
   // The definition of the variant.
   const sp::VariantDef def = sp::MakeCarChromeVariant();
-  Check(def.id == sp::kVariantCarChrome && def.id == 9 && def.id < sp::kVariantSlots && def.id != sp::kVariantCarSelfRefl,
-        "the variant id is 9, inside the slots and not the paint's");
+  Check(def.feature == sp::kFeatureCarChrome && def.feature == 7 && def.feature < sp::kMaxFeatures && def.feature != sp::kFeatureCarSelfRefl,
+        "the feature is 7 (the old id 9), inside the word and not the paint's");
+  Check(sp::chain::Find(def.feature) && sp::chain::Find(def.feature)->constants_bytes == 112 && sp::chain::Find(def.feature)->name == def.name,
+        "its chain row says 112 bytes of constants");
   Check(def.name == "car_chrome" && def.needs_rpf && def.pixel_shaders.size() == 1 && def.pixel_shaders[0].key == 0x2D8CA0430FF88ED7ull,
         "the definition: one shader, the identity of xChrome::PS_Chrome");
   Check(def.name != sp::MakeCarSelfReflVariant().name, "the chrome's name is not the paint's (the stamp lines are by name)");

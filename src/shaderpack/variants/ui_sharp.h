@@ -26,7 +26,7 @@
 //           middle by a gain of max(1, magnification x the constant's y), and put back into that range: a ramp that was a texel wide and
 //           is magnified m times is about a pixel wide again, and lo and hi, so a thin stroke's peak, are kept.
 //
-// Two ids (VariantDef::alpha_test_id): kVariantUiSharp (10) is the text compiled for spec variant 0 (no alpha test) and kVariantUiSharpAlphaTest (11)
+// Two words (the feature kFeatureUiSharp, with the table row's spec_twin; ids 10 and 11 in version 2 of the pack): the text compiled for spec variant 0 (no alpha test) and
 // the same text compiled with the shader's own spec mask (the alpha test and alpha to coverage, SV_Coverage), for the UI draws that have one on:
 // the round 1 run never took the variant for any draw, and a UI draw with the alpha test on (key spec variant 1) was the first suspect.
 //
@@ -58,7 +58,7 @@
 // the race HUD, the photo mode and the shops may draw others of the ui category (xLit*, xMetal*, xRadialGradient, xArrow, xRearView, xAlphaModulate...): the
 // census of those screens names them and they go into kUiSharpSuffixes, with a new kUiSharpVariantVersion.
 //
-// Runtime: src/gpu/scene.cpp (UiSharpDraw) chooses it per draw (ps_variant kVariantUiSharp = 10, or 11 where the key was spec variant 1) for draws in the
+// Runtime: src/gpu/scene.cpp (UiSharpDraw) chooses it per draw (the word of the feature kFeatureUiSharp, with the spec bit set where the key was spec variant 1) for draws in the
 // UI phase while mcla_ui_sharp is above 0; nothing else does.
 //
 // In the pack step's log: "ui_sharp (N shaders ...)" in the variant pack summary line, and in its stamp variants_ui_sharp_version=2.
@@ -105,6 +105,7 @@ inline constexpr std::string_view kUiSharpBitmapSamplers[] = {"TextureSampler", 
 VariantDef MakeUiSharpVariant();
 
 // The text transform alone (pure; public for tests). `shader` only names the shader in the messages.
-VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::string_view hlsl);
+VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::string_view hlsl,
+                                            const StageContext& ctx = SoloContext(kFeatureUiSharp));
 
 }  // namespace larecomp::shaderpack

@@ -44,7 +44,7 @@
 //      (exactly nine in each shader, each along its axis: the offset's other component is 0)
 //   2. the helper, before `void main(`
 //
-// Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantBloomGauss) while the setting
+// Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureBloomGauss) while the setting
 // mcla_gpu_bloom_scale is on.
 // ===========================================================================
 

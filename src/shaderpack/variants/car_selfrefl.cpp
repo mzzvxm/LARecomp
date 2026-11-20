@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 namespace larecomp::shaderpack {
@@ -618,7 +619,7 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
 
 }  // namespace
 
-VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl) {
+VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
   VariantTransformResult result;
   if (shader.name != kCarPaint.name) {
     result.error = std::format("{} is not the car paint this variant was written for", shader.name);
@@ -640,10 +641,6 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
 
   // 2. The anchored edits: the local result, the constants of both backends and the helper.
   static constexpr Piece kCubeMap[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
   if (!ReplaceOnce(text, kCubeMap, 0, 0, "the start of main's registers",
@@ -654,34 +651,10 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
     result.error = std::string(shader.name) + ": " + error;
     return result;
   }
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// Car self-reflection variant (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.\n"
-                            "#define g_CarReflM0 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)\n"
-                            "#define g_CarReflM1 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)\n"
-                            "#define g_CarReflM2 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)\n"
-                            "#define g_CarReflM3 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 656, 0x10)\n"
-                            "#define g_CarReflA vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 672, 0x10)\n"
-                            "#define g_CarReflB vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 688, 0x10)\n"
-                            "#define g_CarReflC vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 704, 0x10)";
-                   },
-                   &error)) {
-    result.error = std::string(shader.name) + ": " + error;
-    return result;
-  }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_CarReflM0 : packoffset(c38); \\\n"
-                            "    float4 g_CarReflM1 : packoffset(c39); \\\n"
-                            "    float4 g_CarReflM2 : packoffset(c40); \\\n"
-                            "    float4 g_CarReflM3 : packoffset(c41); \\\n"
-                            "    float4 g_CarReflA : packoffset(c42); \\\n"
-                            "    float4 g_CarReflB : packoffset(c43); \\\n"
-                            "    uint4 g_CarReflC : packoffset(c44);";
-                   },
-                   &error)) {
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_CarReflM0"}, {"float4", "g_CarReflM1"}, {"float4", "g_CarReflM2"},
+                                                {"float4", "g_CarReflM3"}, {"float4", "g_CarReflA"},  {"float4", "g_CarReflB"},
+                                                {"uint4", "g_CarReflC"}};
+  if (!DeclareConstants(text, ctx, "Car self-reflection variant (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.", kMembers, &error)) {
     result.error = std::string(shader.name) + ": " + error;
     return result;
   }
@@ -704,10 +677,8 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
       {"CarReflApply(r13.xyz, carRefl, 0.5)", 1},
       {"float3 CarReflDebug(", 1},        {"CarReflDebug(carRefl, iTexCoord4.w)", 1},
       {"CarReflResult carRefl = (CarReflResult)0;", 1},
-      {"SharedConstants + 608", 1},       {"SharedConstants + 704", 1},
       {"history.SampleLevel(", 0},        {"history.Sample(", 0},
       {"CarReflLoad(history, ray.size, uv)", 1}, {"CarReflLoad(history, ray.size, startUv)", 1},
-      {"g_CarReflM0 : packoffset(c38)", 1}, {"g_CarReflC : packoffset(c44)", 1},
   };
   for (const auto& check : kChecks) {
     const size_t count = CountOccurrences(text, check.needle);
@@ -724,13 +695,13 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
 
 VariantDef MakeCarSelfReflVariant() {
   VariantDef def;
-  def.id = kVariantCarSelfRefl;
+  def.feature = kFeatureCarSelfRefl;
   def.name = "car_selfrefl";
   def.version = kCarSelfReflVariantVersion;
   def.needs_rpf = true;  // xCarPaintCustomizable lives in xarchive_cache.rpf (cars)
   def.pixel_shaders = {kCarPaint};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
-    return TransformCarSelfReflHlsl(shader, hlsl);
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+    return TransformCarSelfReflHlsl(shader, hlsl, ctx);
   };
   return def;
 }

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 namespace larecomp::shaderpack {
@@ -145,7 +146,7 @@ bool SlotOf(std::string_view text, std::string_view macro, uint32_t* slot, std::
 
 }  // namespace
 
-VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::string_view hlsl) {
+VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
   VariantTransformResult result;
   std::string text = NormalizeNewlines(hlsl);
   std::string error;
@@ -212,28 +213,11 @@ VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::st
   }
 
   // 2. g_UiSharp in the SPIR-V shared constants, 3. and in the DXIL block (as the HDR scene's variant puts g_HdrScene there).
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
   // 4. The helper, before main.
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// UI sharpening variant (src/gpu/ui_sharp.h UiSharpConstants): 16 bytes after the 608.\n"
-                            "#define g_UiSharp vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)";
-                   },
-                   &error)) {
-    return fail(std::move(error));
-  }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_UiSharp : packoffset(c38);";
-                   },
-                   &error)) {
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_UiSharp"}};
+  if (!DeclareConstants(text, ctx, "UI sharpening variant (src/gpu/ui_sharp.h UiSharpConstants): 16 bytes after the 608.", kMembers, &error)) {
     return fail(std::move(error));
   }
   if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
@@ -248,8 +232,6 @@ VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::st
   } kChecks[] = {
       {"float4 tfetch2DUiSharp(", 1},
       {"float4 UiSharpCatmullRom(", 1},
-      {"SharedConstants + 608", 1},
-      {"g_UiSharp : packoffset(c38)", 1},
       {"float4 settings = g_UiSharp;", 1},
       {"float4 tfetch2D(uint resourceDescriptorIndex", 1},
       {"\x01", 0},
@@ -275,13 +257,14 @@ VariantTransformResult TransformUiSharpHlsl(const VariantShader& shader, std::st
 
 VariantDef MakeUiSharpVariant() {
   VariantDef def;
-  def.id = kVariantUiSharp;
-  def.alpha_test_id = kVariantUiSharpAlphaTest;
+  def.feature = kFeatureUiSharp;
   def.name = "ui_sharp";
   def.version = kUiSharpVariantVersion;
   def.pixel_shaders = {kUiSharpTextured};
   for (const std::string_view suffix : kUiSharpSuffixes) def.pixel_name_suffixes.push_back(suffix);
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) { return TransformUiSharpHlsl(shader, hlsl); };
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+    return TransformUiSharpHlsl(shader, hlsl, ctx);
+  };
   return def;
 }
 

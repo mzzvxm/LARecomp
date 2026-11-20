@@ -433,16 +433,16 @@ void CheckFixtures() {
 
   // The variant's definition.
   const sp::VariantDef def = sp::MakeGlowSoftVariant();
-  Check(def.id == sp::kVariantGlowSoft && def.id == 6 && def.name == "glow_soft" && def.pixel_shaders.size() == 2 &&
+  Check(def.feature == sp::kFeatureGlowSoft && def.feature == 4 && def.name == "glow_soft" && def.pixel_shaders.size() == 2 &&
             def.vertex_shaders.empty() && def.needs_rpf && def.transform,
-        "the definition: id 6, name, two pixel shaders, no vertex shader, the RPF, a transform");
+        "the definition: feature 4 (the old id 6), name, two pixel shaders, no vertex shader, the RPF, a transform");
   Check(def.version == sp::kGlowSoftVariantVersion && def.version >= 1, "the definition carries the version");
   Check(def.pixel_shaders[0].name == "xstar_glow__PSTrailSeedRT" && def.pixel_shaders[0].key == 0xF6A55A0E0E26E0BBull &&
             def.pixel_shaders[1].name == "xstar_glow__PSSeedRT1" && def.pixel_shaders[1].key == 0x92CAA8C0D85D8EC2ull,
         "the identities are the census's");
-  Check(sp::kVariantGlowSoft < sp::kVariantSlots && sp::kVariantGlowSoft > sp::kVariantBloomGauss &&
-            sp::kVariantGlowSoft != 4 && sp::kVariantGlowSoft != 5,
-        "id 6 is in the pack's slots and is neither 4 (env map) nor 5 (shadow filter)");
+  Check(sp::kFeatureGlowSoft < sp::kMaxFeatures && sp::kFeatureGlowSoft > sp::kFeatureBloomGauss &&
+            sp::kFeatureGlowSoft != sp::kFeatureEnvMap && sp::kFeatureGlowSoft != sp::kFeatureShadowFilter,
+        "feature 4 is in the word and is neither the env map's nor the shadow filter's");
 
   CheckRule(trail_text);
 }

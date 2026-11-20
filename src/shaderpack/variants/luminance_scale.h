@@ -55,7 +55,7 @@
 //                       r0.xy, float2(  ->  LuminanceTap(...        (exactly nine; offsets whole numbers -1..1)
 //   2. the helper, before `void main(`
 //
-// Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantLuminanceScale) while the setting
+// Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureLuminanceScale) while the setting
 // mcla_gpu_luminance_scale_fix is on.
 //
 // In the pack step's log: "luminance_scale (1 shader)" in the variant pack's summary line, and in its stamp

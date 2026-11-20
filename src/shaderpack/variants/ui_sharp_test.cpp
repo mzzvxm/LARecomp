@@ -184,15 +184,16 @@ void TestTransform() {
   }
   {
     const sp::VariantDef def = sp::MakeUiSharpVariant();
-    Check(def.id == sp::kVariantUiSharp && def.id >= sp::kFirstPackedVariant && def.id < sp::kVariantSlots, "the id is a variant pack slot");
+    Check(def.feature == sp::kFeatureUiSharp && def.feature < sp::kMaxFeatures, "the feature is a bit of the variant word");
     Check(def.name == "ui_sharp" && def.version == sp::kUiSharpVariantVersion, "name and version");
     Check(def.pixel_shaders.size() == 1 && def.pixel_shaders[0].key == 0x5CA2EECD341441FFull &&
               def.pixel_shaders[0].name == "xrage_im__PS_Textured",
           "xrage_im PS_Textured by its verified identity");
     Check(def.pixel_name_suffixes.size() == std::size(sp::kUiSharpSuffixes) && def.vertex_shaders.empty() && bool(def.transform),
           "the others by name, no vertex shader, a transform");
-    Check(sp::kVariantUiSharp == 10 && sp::kVariantUiSharpAlphaTest == 11, "the ids never change: a pipeline cache holds them");
-    Check(def.alpha_test_id == sp::kVariantUiSharpAlphaTest && def.alpha_test_id < sp::kVariantSlots, "the alpha test twin is id 11");
+    Check(sp::kFeatureUiSharp == 8, "the feature index never changes: a pipeline cache holds words made of it (the old ids 10 and 11)");
+    Check(sp::chain::Find(def.feature) && sp::chain::Find(def.feature)->spec_twin && sp::chain::Find(def.feature)->constants_bytes == 16,
+          "its chain row has the alpha test twin (the word's bit 0) and 16 bytes of constants");
     Check(sp::kUiSharpVariantVersion >= 2, "version 2 or later: the pack of round 1 (version 1) is rebuilt");
     // The census's six "ui" category shaders are in the name list, each name once and as a whole name.
     for (const sp::VariantShader& retail : sp::kUiSharpRetail) {

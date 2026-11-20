@@ -67,9 +67,9 @@
 // hit, yellow: a hit, blue: the ray traced image answered).
 //
 // The setting and the switch: the variant is drawn wherever the paint's is (CarSelfRefl::Selected(): mcla_gpu_car_selfrefl, auto = on on
-// Mid and High) unless the debug-only mcla_gpu_car_chrome_occlusion (default on) is off, for an A/B; pipelines.cpp ChoosePackedVariant.
-// Variant id 9 (pack_format.h kVariantCarChrome): its own id so the switch can tell the chrome from the paint, the host reads the same
-// constants block for both (scene.cpp UploadCarSelfReflConstants).
+// Mid and High) unless the debug-only mcla_gpu_car_chrome_occlusion (default on) is off, for an A/B; pipelines.cpp WantedFeatures.
+// Feature 7 (pack_format.h kFeatureCarChrome; id 9 in version 2 of the pack): its own feature so the switch can tell the chrome from the paint,
+// the host reads the same constants block for both (scene.cpp UploadVariantConstants).
 //
 // CHECK: both edited texts compile with dxc (ps_6_0 DXIL and SPIR-V); in a run: that the chrome's draws are not alpha tested or alpha to
 // mask (else they keep the game's shader: Pipelines key.ps_variant 1), that the pixel shader's TEXCOORD0 and TEXCOORD1 are the world
@@ -93,6 +93,7 @@ inline constexpr VariantShader kChrome = {"xChrome__PS_Chrome", 0x2D8CA0430FF88E
 VariantDef MakeCarChromeVariant();
 
 // The text transform alone (pure; public for tests).
-VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::string_view hlsl);
+VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::string_view hlsl,
+                                              const StageContext& ctx = SoloContext(kFeatureCarChrome));
 
 }  // namespace larecomp::shaderpack

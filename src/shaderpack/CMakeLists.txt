@@ -208,6 +208,34 @@ add_executable(larecomp_variant_overlap_test EXCLUDE_FROM_ALL
 target_compile_features(larecomp_variant_overlap_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_overlap_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+# The transform chain (variant_chain.h, variant_compose.h, variants/stage_constants.h, variant_pack_format.h): the variant word, the table, the
+# constants' layout of every permutation, which permutations are built, the renderer's choice, composing synthetic stages, a vertex stage and
+# the variant pack's file round trip with the refusal of other versions. Header only code, no compiler, renderer or game files:
+#   cmake --build <dir> --target larecomp_variant_chain_test, then run src/shaderpack/larecomp_variant_chain_test (exit 0 = passed;
+#   variants/variant_chain_test.cpp).
+add_executable(larecomp_variant_chain_test EXCLUDE_FROM_ALL
+    variants/variant_chain_test.cpp)
+target_compile_features(larecomp_variant_chain_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_variant_chain_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The chain against the retail text (variants/variant_golden_test.cpp): every built-in variant alone gives byte for byte the text it gave before the
+# chain (against a golden file of hashes made by the pre-chain code), and each stage composed with a test stage compiles with dxc:
+#   cmake --build <dir> --target larecomp_variant_golden_test, then run src/shaderpack/larecomp_variant_golden_test --hlsl <hlsl-rpf> --hlsl <hlsl-xex>
+#   --hlsli src/gpu/hlsl/hdr_tonemap_shoulder.hlsli [--golden FILE] [--dxc <folder of dxc.exe>] (exit 0 = passed).
+add_executable(larecomp_variant_golden_test EXCLUDE_FROM_ALL
+    variants/variant_golden_test.cpp
+    variants/hdr_scene.cpp
+    variants/bloom_gauss.cpp
+    variants/env_map.cpp
+    variants/shadow_filter.cpp
+    variants/glow_soft.cpp
+    variants/car_selfrefl.cpp
+    variants/car_chrome.cpp
+    variants/luminance_scale.cpp
+    variants/ui_sharp.cpp)
+target_compile_features(larecomp_variant_golden_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_variant_golden_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
 # The same for the luminance scale variant (variants/luminance_scale_test.cpp): cmake --build <dir> --target
 # larecomp_luminance_scale_test, then run it [<translated PSSampleAverageLuminance.hlsl> [<folder for the result>]].
 add_executable(larecomp_luminance_scale_test EXCLUDE_FROM_ALL

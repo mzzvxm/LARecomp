@@ -183,7 +183,9 @@ void RunNegatives() {
 
   // The definition of the variant.
   const sp::VariantDef def = sp::MakeCarSelfReflVariant();
-  Check(def.id == sp::kVariantCarSelfRefl && def.id == 7 && def.id < sp::kVariantSlots, "the variant id is 7, inside the slots");
+  Check(def.feature == sp::kFeatureCarSelfRefl && def.feature == 5 && def.feature < sp::kMaxFeatures, "the feature is 5 (the old id 7), inside the word");
+  Check(sp::chain::Find(def.feature) && sp::chain::Find(def.feature)->constants_bytes == 112 && sp::chain::Find(def.feature)->name == def.name,
+        "its chain row says 112 bytes of constants");
   Check(def.name == "car_selfrefl" && def.needs_rpf && def.pixel_shaders.size() == 1, "the definition");
   Check(def.pixel_shaders[0].key == 0x439B193A3F675533ull, "the identity of the paint");
 }

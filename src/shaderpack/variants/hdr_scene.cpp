@@ -12,6 +12,7 @@
 
 #include "shaderpack/hash.h"
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 #ifdef LARECOMP_HDR_HLSLI_EMBEDDED
@@ -28,18 +29,13 @@ namespace larecomp::shaderpack {
 
 using namespace textedit;
 
-VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_view include_text) {
+VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_view include_text, const StageContext& ctx) {
   VariantTransformResult result;
   std::string text = NormalizeNewlines(hlsl);
   std::string include = NormalizeNewlines(include_text);
   while (!include.empty() && IsSpace(include.back())) include.pop_back();  // include_text.rstrip()
 
-  // 1. g_HdrScene in the SPIR-V shared constants (header of every generated shader).
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  // 2. and in the DXIL shared constants block.
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
+  // 1. g_HdrScene in both backends' shared constants (header of every generated shader), declared by DeclareConstants.
   // 3. The curve and the finish, before main.
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
@@ -64,22 +60,8 @@ VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_v
     return result;
   };
   std::string error;
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// HDR scene variant (src/gpu/constants.h HdrSceneConstants): 16 bytes after the 608.\n"
-                            "#define g_HdrScene vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)";
-                   },
-                   &error)) {
-    return fail(std::move(error));
-  }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     // the group without its closing ';', then the line continuation and the new member
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_HdrScene : packoffset(c38);";
-                   },
-                   &error)) {
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_HdrScene"}};
+  if (!DeclareConstants(text, ctx, "HDR scene variant (src/gpu/constants.h HdrSceneConstants): 16 bytes after the 608.", kMembers, &error)) {
     return fail(std::move(error));
   }
   if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
@@ -99,9 +81,7 @@ VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_v
     return fail(std::move(error));
   }
 
-  for (const std::string_view needle : {std::string_view("HdrToneLd(r1.x"), std::string_view("HdrFinish(select"),
-                                        std::string_view("g_HdrScene : packoffset(c38)"),
-                                        std::string_view("SharedConstants + 608")}) {
+  for (const std::string_view needle : {std::string_view("HdrToneLd(r1.x"), std::string_view("HdrFinish(select")}) {
     const size_t count = CountOccurrences(text, needle);
     if (count != 1) return fail(std::format("the transformed HLSL has '{}' {} times", needle, count));
   }
@@ -140,7 +120,7 @@ std::string EmbeddedCurve() {
 
 VariantDef MakeHdrSceneVariantFromText(std::string_view hlsli_text) {
   VariantDef def;
-  def.id = kVariantHdrScene;
+  def.feature = kFeatureHdrScene;
   def.name = "hdr_scene";
   def.version = kHdrSceneVariantVersion;
   // The fingerprint is of the curve as the transform reads it (TransformToneMapHlsl: CRLF and lone CR are LF), not of
@@ -151,8 +131,8 @@ VariantDef MakeHdrSceneVariantFromText(std::string_view hlsli_text) {
   def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text));
   def.pixel_shaders = {kPixelTarget};
   def.vertex_shaders.assign(std::begin(kVertexTargets), std::end(kVertexTargets));
-  def.transform = [curve = std::string(hlsli_text)](const VariantShader&, std::string_view hlsl) {
-    return TransformToneMapHlsl(hlsl, curve);
+  def.transform = [curve = std::string(hlsli_text)](const VariantShader&, std::string_view hlsl, const StageContext& ctx) {
+    return TransformToneMapHlsl(hlsl, curve, ctx);
   };
   return def;
 }
