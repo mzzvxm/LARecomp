@@ -107,6 +107,7 @@ void OnFlyEvents(const fc::Events& events) {
 struct QueuedEdit {
     std::string key;  // an edit with the same key replaces the one that waits (a slider's drag is one edit, the last value)
     std::function<dp::Cmd(const dp::EditContext&, const dir::Snapshot&)> build;
+    std::function<void(const dir::Reply&)> then;  // runs from Drain when the Director has answered (a copy of a key becomes the selected one)
 };
 
 // What the event listener hands the UI thread (a take that ended).
@@ -299,14 +300,15 @@ class DirectorPanel final : public rex::ui::DialogBase {
         return disp_.Send(c, std::move(then));
     }
 
-    void QueueEdit(std::string key, std::function<dp::Cmd(const dp::EditContext&, const dir::Snapshot&)> build) {
+    void QueueEdit(std::string key, std::function<dp::Cmd(const dp::EditContext&, const dir::Snapshot&)> build, std::function<void(const dir::Reply&)> then = {}) {
         for (QueuedEdit& q : queue_) {
             if (!key.empty() && q.key == key) {
                 q.build = std::move(build);
+                q.then = std::move(then);
                 return;
             }
         }
-        queue_.push_back({std::move(key), std::move(build)});
+        queue_.push_back({std::move(key), std::move(build), std::move(then)});
         if (queue_.size() > 32) queue_.erase(queue_.begin());
     }
 
@@ -317,9 +319,11 @@ class DirectorPanel final : public rex::ui::DialogBase {
         const dp::Cmd c = q.build(Ctx(s), s);
         if (c.cmd.empty()) return;
         ++edits_inflight_;
-        const bool taken = Send(c, [this](const dir::Reply& r) {
+        std::function<void(const dir::Reply&)> after = std::move(q.then);
+        const bool taken = Send(c, [this, after](const dir::Reply& r) {
             --edits_inflight_;
             if (!r.ok && (r.code == dir::ErrorCode::kStale || r.code == dir::ErrorCode::kBadArgs)) scene_text_ = dp::SceneText();  // read the file again
+            if (after) after(r);
         });
         if (!taken) --edits_inflight_;  // the Director refused it (off, queue full): nothing will answer
     }
@@ -937,8 +941,15 @@ class DirectorPanel final : public rex::ui::DialogBase {
             QueueEdit("dup" + std::to_string(line) + "@" + dp::Num(t), [this, line, t](const dp::EditContext& ctx, const dir::Snapshot&) {
                 const int i = dp::FindMarkerByLine(layout_, line);
                 return i < 0 ? dp::Cmd{} : dp::DuplicateKey(ctx, layout_.markers[static_cast<size_t>(i)], t);
-            });
+            }, [this](const dir::Reply& r) { SelectCopy(r); });
         }
+    }
+
+    // The copy a drag with Alt made is the selected key (the numbers of the lines after it moved by one).
+    void SelectCopy(const dir::Reply& r) {
+        if (!r.ok) return;
+        const dir::Json& lines = r.result.Get("lines");
+        if (lines.size() > 0 && lines.at(0).is_number()) Select(static_cast<int>(lines.at(0).AsInt()));
     }
 
     // Right click on a key: how its segment runs, a copy here, go there, delete.
