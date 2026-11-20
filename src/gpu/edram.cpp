@@ -347,7 +347,7 @@ size_t EdramTargets::KeyHash::operator()(const EdramKey& k) const {
 }
 
 bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
-  if (color_count != o.color_count || extra != o.extra || extra_generation != o.extra_generation) {
+  if (color_count != o.color_count || extra_count != o.extra_count || extra_generation != o.extra_generation) {
     return false;
   }
   for (uint32_t i = 0; i < 5; ++i) {
@@ -355,11 +355,16 @@ bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
       return false;
     }
   }
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (extras[i] != o.extras[i]) {
+      return false;
+    }
+  }
   return true;
 }
 
 size_t EdramTargets::FramebufferKeyHash::operator()(const FramebufferKey& k) const {
-  // Hashed as bytes (the == above is field by field): five pointers, five generations, the count: no padding, every member set.
+  // Hashed as bytes (the == above is field by field): eight pointers, five generations, the counts: no padding, every member set.
   static_assert(key_guard::kNoPadding<FramebufferKey>, "FramebufferKey is hashed as bytes: it must have no padding (key_guard.h)");
   static_assert(key_guard::AllMembersSet<FramebufferKey>(), "every FramebufferKey member needs a default initializer (key_guard.h)");
   return size_t(XXH3_64bits(&k, sizeof(k)));
@@ -1755,14 +1760,21 @@ void EdramTargets::Transition(plume::RenderCommandList* list, Target& target,
   ++stats_.barriers;
 }
 
-plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint32_t color_count,
-                                                    Target* depth, const plume::RenderTexture* extra,
-                                                    uint32_t extra_generation) {
+plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint32_t color_count, Target* depth,
+                                                    const plume::RenderTexture* const* extras, uint32_t extra_count,
+                                                    uint32_t extras_generation) {
+  // The pipeline key has four colour slots: the EDRAM colours and the extra images share them.
+  const uint32_t colors_used = std::min(color_count, kMaxExtraColors);
+  const uint32_t extras_used =
+      extras ? std::min(std::min(extra_count, kMaxExtraColors - colors_used), 3u) : 0u;
   FramebufferKey key;
   key.color_count = color_count;
-  key.extra = extra;
-  key.extra_generation = extra ? extra_generation : 0;
-  for (uint32_t i = 0; i < color_count && i < 4; ++i) {
+  key.extra_count = extras_used;
+  key.extra_generation = extras_used ? extras_generation : 0;
+  for (uint32_t i = 0; i < extras_used; ++i) {
+    key.extras[i] = extras[i];
+  }
+  for (uint32_t i = 0; i < colors_used; ++i) {
     key.targets[i] = colors[i];
     key.generations[i] = colors[i] ? colors[i]->generation : 0;
   }
@@ -1772,13 +1784,13 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
   if (it != framebuffers_.end()) {
     return it->second.get();
   }
-  const plume::RenderTexture* attachments[5] = {};
+  const plume::RenderTexture* attachments[kMaxExtraColors + 1] = {};
   uint32_t attachment_count = 0;
-  for (uint32_t i = 0; i < color_count && i < 4; ++i) {
+  for (uint32_t i = 0; i < colors_used; ++i) {
     attachments[attachment_count++] = colors[i]->texture.get();
   }
-  if (extra && attachment_count < 4) {
-    attachments[attachment_count++] = extra;
+  for (uint32_t i = 0; i < extras_used; ++i) {
+    attachments[attachment_count++] = extras[i];
   }
   plume::RenderFramebufferDesc desc(attachments, attachment_count,
                                     depth ? depth->texture.get() : nullptr);
@@ -1796,7 +1808,7 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
 void EdramTargets::RetireFramebuffersWithExtra(const plume::RenderTexture* extra) {
   ++change_serial_;
   for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
-    if (it->first.extra == extra) {
+    if (it->first.HasExtra(extra)) {
       frames_->Retire(std::move(it->second));
       it = framebuffers_.erase(it);
     } else {
@@ -1808,7 +1820,7 @@ void EdramTargets::RetireFramebuffersWithExtra(const plume::RenderTexture* extra
 void EdramTargets::DestroyFramebuffersWithExtra(const plume::RenderTexture* extra) {
   ++change_serial_;
   for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
-    if (it->first.extra == extra) {
+    if (it->first.HasExtra(extra)) {
       it = framebuffers_.erase(it);
     } else {
       ++it;

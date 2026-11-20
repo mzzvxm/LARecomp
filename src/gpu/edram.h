@@ -555,13 +555,23 @@ class EdramTargets {
 
   // The framebuffer of `color_count` colour targets (slots 0..n-1) and an
   // optional depth target, created on first use. Null on failure (logged).
-  // `extra`: a host image that is no EDRAM identity (the G-buffer's sidecar, gbuffer.h) attached as the
-  // colour slot after the last one (slot `color_count`); `extra_generation` changes whenever its texture is
-  // replaced (the key holds both). The renderer asks RetireFramebuffersWithExtra before it releases one.
+  // `extras`: host images that are no EDRAM identity (the G-buffer's planes, gbuffer.h), attached as the colour slots after the last
+  // EDRAM one (slot `color_count` for extras[0], and so on; together with the colours at most kMaxExtraColors, the pipeline key's four
+  // slots); `extras_generation` changes whenever one of their textures is replaced (the key holds the textures and it). The renderer
+  // asks RetireFramebuffersWithExtra before it releases one. With `color_count` 0 and no depth the framebuffer is the extras' alone (the
+  // G-buffer clears its planes through it).
+  static constexpr uint32_t kMaxExtraColors = 4;
+  plume::RenderFramebuffer* Framebuffer(Target* const* colors, uint32_t color_count, Target* depth,
+                                        const plume::RenderTexture* const* extras, uint32_t extra_count,
+                                        uint32_t extras_generation);
+  // The same with at most one extra image.
   plume::RenderFramebuffer* Framebuffer(Target* const* colors, uint32_t color_count,
                                         Target* depth, const plume::RenderTexture* extra = nullptr,
-                                        uint32_t extra_generation = 0);
-  // The framebuffers that name `extra` as their extra colour image go (after the lists that still use them), and
+                                        uint32_t extra_generation = 0) {
+    return Framebuffer(colors, color_count, depth, extra ? &extra : nullptr, extra ? 1u : 0u,
+                       extra ? extra_generation : 0u);
+  }
+  // The framebuffers that name `extra` as one of their extra colour images go (after the lists that still use them), and
   // change_serial moves, so that the Scene's memo of the last draw's framebuffer is dropped.
   void RetireFramebuffersWithExtra(const plume::RenderTexture* extra);
   // Shutdown only (the GPU idle, the FrameRing drained): the same framebuffers die at once, before `extra` and before the targets' textures do.
@@ -693,12 +703,19 @@ class EdramTargets {
   };
   struct FramebufferKey {
     const Target* targets[5] = {};  // colour 0..3, depth
+    const plume::RenderTexture* extras[3] = {};  // the G-buffer's planes after the colours (extra_count of them), or none
     uint32_t generations[5] = {};
     uint32_t color_count = 0;
-    const plume::RenderTexture* extra = nullptr;  // the sidecar image after the colours, or none
+    uint32_t extra_count = 0;
     uint32_t extra_generation = 0;
-    uint32_t reserved = 0;  // no padding: the key is hashed as bytes
+    uint32_t reserved[2] = {};  // no padding: the key is hashed as bytes
     bool operator==(const FramebufferKey& o) const;
+    bool HasExtra(const plume::RenderTexture* extra) const {
+      for (uint32_t i = 0; i < extra_count && i < 3; ++i) {
+        if (extras[i] == extra) return true;
+      }
+      return false;
+    }
   };
   struct FramebufferKeyHash {
     size_t operator()(const FramebufferKey& k) const;
