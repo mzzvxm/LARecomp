@@ -97,6 +97,7 @@
 #include "descriptors.h"
 #include "format.h"
 #include "guest_memory.h"
+#include "key_guard.h"
 #include "region_index.h"
 #include "scale.h"
 #include "texture_bytes.h"
@@ -149,6 +150,9 @@ struct TextureKey {
   std::string Describe() const;
 };
 static_assert(sizeof(TextureKey) == 24);
+// Hashed (TextureKeyHash: XXH3 over the object) and compared (==: memcmp) as bytes: no padding, every member set (key_guard.h).
+static_assert(key_guard::kNoPadding<TextureKey>, "TextureKey is hashed and compared as bytes: it must have no padding (key_guard.h)");
+static_assert(key_guard::AllMembersSet<TextureKey>(), "every TextureKey member needs a default initializer (key_guard.h)");
 
 struct TextureKeyHash {
   size_t operator()(const TextureKey& key) const;
