@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -20,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -121,8 +124,8 @@ void AddLeftOutLine(const VariantDef& def, std::string_view why, std::vector<Sta
 // on, read back from the blobs: for a pixel shader the colour output is there, and the coverage output (SV_Coverage / the sample mask) exactly when
 // the draw is the alpha test one (spec != 0), no specialization constant; for a vertex shader the position is invariant and no fast operation reaches
 // it (the checks of the main pack's vertex shaders). Once per text: the same text gives the same blobs. False with *error.
-bool CompileChecked(DxcWorker& worker, ProgressSink& sink, uint32_t formats, ShaderStage stage, const std::string& hlsl, uint32_t spec,
-                    const std::string& label, std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
+bool CompileChecked(DxcWorker& worker, const std::function<bool()>& cancelled, uint32_t formats, ShaderStage stage, const std::string& hlsl,
+                    uint32_t spec, const std::string& label, std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
   CompileRequest request;
   request.hlsl = hlsl;
   request.stage = stage;
@@ -136,7 +139,7 @@ bool CompileChecked(DxcWorker& worker, ProgressSink& sink, uint32_t formats, Sha
       return false;
     }
   }
-  if (sink.Cancelled()) {
+  if (cancelled()) {
     *error = "The shader build was cancelled.";
     return false;
   }
@@ -268,6 +271,7 @@ class VariantStepImpl final : public VariantStep {
   bool BuildVariant(const VariantStepInput& input, DxcWorker& worker, const VariantDef& def, uint32_t formats,
                     std::vector<PackEntry>* entries, std::vector<SoloShader>* solo, std::string* note, std::string* error) const {
     ProgressSink& sink = *input.sink;
+    const std::function<bool()> cancelled = [&sink] { return sink.Cancelled(); };
     if (!def.transform) {
       *error = "it has no transform";
       return false;
@@ -349,7 +353,7 @@ class VariantStepImpl final : public VariantStep {
       auto found = compiled.find(variant.hlsl);
       if (found == compiled.end()) {
         Compiled blobs;
-        if (!CompileChecked(worker, sink, formats, stage, variant.hlsl, 0, std::format("{} [{}] ({} variant)", source->name, Hex64(source->key), def.name),
+        if (!CompileChecked(worker, cancelled, formats, stage, variant.hlsl, 0, std::format("{} [{}] ({} variant)", source->name, Hex64(source->key), def.name),
                             &blobs.dxil, &blobs.spirv, error)) {
           return false;
         }
@@ -366,7 +370,7 @@ class VariantStepImpl final : public VariantStep {
         auto twin = compiled_twin.find(twin_key);
         if (twin == compiled_twin.end()) {
           Compiled blobs;
-          if (!CompileChecked(worker, sink, formats, stage, variant.hlsl, translated.spec_mask,
+          if (!CompileChecked(worker, cancelled, formats, stage, variant.hlsl, translated.spec_mask,
                               std::format("{} [{}] ({} variant, spec variant 1)", source->name, Hex64(source->key), def.name), &blobs.dxil, &blobs.spirv,
                               error)) {
             return false;
@@ -406,26 +410,48 @@ class VariantStepImpl final : public VariantStep {
   // The compositions: for each shader that more than one stage made an entry for, the feature sets the chain's table allows
   // (variant_chain.h Permutations), each built like a variant: the stages applied in chain order to the translated text, compiled
   // and checked. A composition that cannot be made (a stage's anchors do not match after the stages before it, the text does not
-  // compile) is left out with a warning; the stages themselves are in the pack alone. *compiles counts the compiles done.
-  void ComposePass(const VariantStepInput& input, DxcWorker& worker, uint32_t formats, const std::vector<SoloShader>& solo,
+  // compile) is left out with a warning; the stages themselves are in the pack alone. The texts are made here, in a fixed order; the
+  // compiles (the cost: about 0.2 s of dxc for a lit shader's DXIL and SPIR-V) run on VariantStepInput::threads workers, one DxcWorker
+  // each, and the entries are put together here in the same fixed order, so the pack does not depend on which worker finished first.
+  // *compiles counts the distinct compiles done.
+  void ComposePass(const VariantStepInput& input, DxcWorker& first_worker, uint32_t formats, const std::vector<SoloShader>& solo,
                    std::vector<PackEntry>* entries, std::vector<std::string>* left_out, size_t* composed, size_t* compiles) const {
     ProgressSink& sink = *input.sink;
     // Per shader (vertex shaders and pixel shaders have their own keys): the stages that made it alone.
     std::map<std::pair<bool, uint64_t>, std::vector<const SoloShader*>> by_shader;
     for (const SoloShader& s : solo) by_shader[{s.vertex, s.key}].push_back(&s);
-    size_t jobs = 0;
     std::map<std::pair<bool, uint64_t>, chain::PermutationList> plans;
     for (const auto& [shader_key, stages] : by_shader) {
       if (stages.size() < 2) continue;
       uint32_t applicable = 0;
       for (const SoloShader* s : stages) applicable |= chain::FeatureBit(s->feature);
       chain::PermutationList plan = chain::Permutations(applicable, stages.front()->spec_mask != 0);
-      for (const uint32_t set : plan.sets) jobs += std::popcount(set) >= 2 ? 1 : 0;
-      plans[shader_key] = std::move(plan);
+      if (std::any_of(plan.sets.begin(), plan.sets.end(), [](uint32_t set) { return std::popcount(set) >= 2; }) || plan.dropped != 0) {
+        plans[shader_key] = std::move(plan);
+      }
     }
-    if (jobs == 0) return;
-    sink.BeginPhase("Composing the shader variants", int(jobs));
-    std::unordered_map<std::string, Compiled> compiled;  // by the composed HLSL and the spec mask
+    if (plans.empty()) return;
+
+    // 1. The texts and the distinct compiles they need.
+    struct Job {
+      std::string hlsl;
+      ShaderStage stage = ShaderStage::kPixel;
+      uint32_t spec = 0;
+      std::string label;
+      Compiled blobs;
+      std::string error;
+      bool ok = false;
+    };
+    struct Planned {
+      uint64_t key = 0;
+      bool vertex = false;
+      uint32_t set = 0;
+      std::string name;
+      std::vector<std::pair<uint32_t, size_t>> words;  // (spec bit 0 or 1, job)
+    };
+    std::vector<Job> jobs;
+    std::map<std::string, size_t> job_of;  // by the text and the spec mask
+    std::vector<Planned> planned;
     for (const auto& [shader_key, plan] : plans) {
       const SoloShader& first = *by_shader[shader_key].front();
       if (plan.dropped != 0) {
@@ -442,7 +468,6 @@ class VariantStepImpl final : public VariantStep {
       for (const uint32_t set : plan.sets) {
         if (std::popcount(set) < 2) continue;
         if (sink.Cancelled()) return;
-        sink.Step(first.source->name);
         const VariantTransformResult text = ComposeStages(variants_, set, first.shader, translated.hlsl);
         if (!text.ok) {
           const std::string why = std::format("{} with the features {:#x}: {}", first.source->name, set, text.error);
@@ -453,40 +478,101 @@ class VariantStepImpl final : public VariantStep {
         // Words: the set alone (spec 0), and its twin when the shader has a spec variant and every stage of the set has one.
         std::vector<uint32_t> specs = {0};
         if (translated.spec_mask != 0 && chain::HasTwin(set)) specs.push_back(translated.spec_mask);
-        std::vector<PackEntry> made;
-        bool ok = true;
+        Planned plan_entry{first.key, first.vertex, set, first.source->name, {}};
         for (const uint32_t spec_mask : specs) {
           const std::string cache_key = text.hlsl + std::format("\n//spec {}", spec_mask);
-          auto found = compiled.find(cache_key);
-          if (found == compiled.end()) {
-            Compiled blobs;
-            const std::string label = std::format("{} [{}] (features {:#x}{})", first.source->name, Hex64(first.key), set,
-                                                  spec_mask != 0 ? ", spec variant 1" : "");
-            if (!CompileChecked(worker, sink, formats, stage, text.hlsl, spec_mask, label, &blobs.dxil, &blobs.spirv, &error)) {
-              if (sink.Cancelled()) return;
-              const std::string why = std::format("{} with the features {:#x}: {}", first.source->name, set, error);
-              SHADERPACK_LOG_WARN("shader variants: a composition was not built: {}", why);
-              left_out->push_back(why);
-              ok = false;
-              break;
-            }
-            ++*compiles;
-            found = compiled.emplace(cache_key, std::move(blobs)).first;
+          auto found = job_of.find(cache_key);
+          if (found == job_of.end()) {
+            Job job;
+            job.hlsl = text.hlsl;
+            job.stage = stage;
+            job.spec = spec_mask;
+            job.label = std::format("{} [{}] (features {:#x}{})", first.source->name, Hex64(first.key), set, spec_mask != 0 ? ", spec variant 1" : "");
+            found = job_of.emplace(cache_key, jobs.size()).first;
+            jobs.push_back(std::move(job));
           }
-          PackEntry entry;
-          entry.variant = chain::Word(set, spec_mask != 0 ? 1 : 0);
-          entry.flags = first.vertex ? kVariantEntryVertex : 0;
-          entry.key = first.key;
-          entry.vs_features = chain::VertexNeedsOf(set);
-          entry.dxil = found->second.dxil;
-          entry.spirv = found->second.spirv;
-          made.push_back(std::move(entry));
+          plan_entry.words.emplace_back(spec_mask != 0 ? 1u : 0u, found->second);
         }
-        if (!ok) continue;
-        for (PackEntry& entry : made) entries->push_back(std::move(entry));
-        ++*composed;
+        planned.push_back(std::move(plan_entry));
       }
     }
+    if (jobs.empty()) return;
+
+    // 2. The compiles, on the step's threads (this thread is one of them while the others start: the first worker is the one the step made).
+    sink.BeginPhase("Composing the shader variants", int(jobs.size()));
+    const unsigned threads = std::max(1u, std::min<unsigned>(input.threads, unsigned(jobs.size())));
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> finished{0};
+    std::atomic<bool> stop{false};
+    std::atomic<unsigned> running{threads};
+    const std::function<bool()> stopped = [&stop] { return stop.load(std::memory_order_relaxed); };
+    const auto work = [&](DxcWorker* given) {
+      std::unique_ptr<DxcWorker> own;
+      DxcWorker* worker = given;
+      if (!worker) {
+        DxcStatus status;
+        own = input.dxc->CreateWorker(&status);
+        worker = own.get();
+      }
+      for (;;) {
+        const size_t index = worker ? next.fetch_add(1) : jobs.size();
+        if (index >= jobs.size() || stop.load(std::memory_order_relaxed)) break;
+        Job& job = jobs[index];
+        try {
+          job.ok = CompileChecked(*worker, stopped, formats, job.stage, job.hlsl, job.spec, job.label, &job.blobs.dxil, &job.blobs.spirv, &job.error);
+        } catch (const std::exception& exception) {
+          job.ok = false;
+          job.error = std::string("exception: ") + exception.what();
+        }
+        finished.fetch_add(1);
+      }
+      own.reset();
+      running.fetch_sub(1);
+    };
+    std::vector<std::thread> pool;
+    for (unsigned i = 1; i < threads; ++i) pool.emplace_back(work, nullptr);
+    std::thread main_worker(work, &first_worker);  // a DxcWorker is used by one thread at a time: this one's, while this function polls
+    size_t reported = 0;
+    bool cancelled = false;
+    while (running.load() != 0) {
+      if (!cancelled && sink.Cancelled()) {
+        cancelled = true;
+        stop.store(true);
+      }
+      for (const size_t done = finished.load(); reported < done; ++reported) sink.Step(jobs[std::min(reported, jobs.size() - 1)].label);
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    main_worker.join();
+    for (std::thread& thread : pool) thread.join();
+    for (const size_t done = finished.load(); reported < done; ++reported) sink.Step(jobs[std::min(reported, jobs.size() - 1)].label);
+    if (cancelled) return;  // the caller sees sink.Cancelled() and fails the step
+
+    // 3. The entries, in the order the compositions were planned.
+    for (const Planned& plan_entry : planned) {
+      bool ok = true;
+      for (const auto& [spec, job] : plan_entry.words) {
+        if (!jobs[job].ok) {
+          const std::string why = std::format("{} with the features {:#x}: {}", plan_entry.name, plan_entry.set, jobs[job].error);
+          SHADERPACK_LOG_WARN("shader variants: a composition was not built: {}", why);
+          left_out->push_back(why);
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      for (const auto& [spec, job] : plan_entry.words) {
+        PackEntry entry;
+        entry.variant = chain::Word(plan_entry.set, spec);
+        entry.flags = plan_entry.vertex ? kVariantEntryVertex : 0;
+        entry.key = plan_entry.key;
+        entry.vs_features = chain::VertexNeedsOf(plan_entry.set);
+        entry.dxil = jobs[job].blobs.dxil;
+        entry.spirv = jobs[job].blobs.spirv;
+        entries->push_back(std::move(entry));
+      }
+      ++*composed;
+    }
+    *compiles = size_t(std::count_if(jobs.begin(), jobs.end(), [](const Job& job) { return job.ok; }));
   }
 
   void BuildChecked(const VariantStepInput& input, VariantStepResult* result) const {
