@@ -995,6 +995,49 @@ void CheckTrackerView() {
       Check(has_f && !has_e, which + "the two cars off the screen tie and the lower key wins: the car that lights the picture loses");
     }
   }
+  // A car that coasts gives its place to cars that are in the picture: the player's and three cars in view take the four places, and the car that left the picture (its beam still
+  // in the view) is dropped from the set, by fade steps; with only two other cars in view it keeps its place.
+  for (const int others : {2, 3}) {
+    hr::Tracker tracker;
+    std::array<hr::Tracked, hr::kMaxLights> out{};
+    TestCamera cam;
+    cam.eye[1] = 1.3;
+    cam.Build();
+    const double x_edge = -25.0 * cam.tan_x;
+    const auto make = [&](double x, double z, bool player) {
+      hr::Candidate c;
+      c.lamp.position[0] = x;
+      c.lamp.position[1] = 0.65;
+      c.lamp.position[2] = z;
+      c.camera_distance = std::sqrt(x * x + z * z);
+      c.player = player;
+      c.guest = true;
+      c.on = 1.0;
+      return c;
+    };
+    uint64_t frame = 1;
+    for (; frame <= 20; ++frame) {  // the car at the left edge is seen with the others
+      tracker.Observe(make(0.0, 3.0, true));
+      tracker.Observe(make(x_edge * 0.95, 25.0, false));
+      for (int k = 0; k < others; ++k) tracker.Observe(make(2.0 + 3.0 * k, 20.0 + 4.0 * k, false));
+      tracker.EndFrame(frame, &out, &cam.frustum);
+    }
+    bool coasting_listed = false;
+    for (int i = 0; i < 40; ++i, ++frame) {  // then it is not drawn any more
+      tracker.Observe(make(0.0, 3.0, true));
+      for (int k = 0; k < others; ++k) tracker.Observe(make(2.0 + 3.0 * k, 20.0 + 4.0 * k, false));
+      const size_t n = tracker.EndFrame(frame, &out, &cam.frustum);
+      if (i >= 25) {
+        coasting_listed = false;
+        for (size_t j = 0; j < n; ++j) coasting_listed |= out[j].coasting && out[j].fade > 0.05f;
+      }
+    }
+    if (others == 2) {
+      Check(coasting_listed, "with room (the player and two cars in view) the car that left the picture keeps its place");
+    } else {
+      Check(!coasting_listed, "with the player and three cars in view the car that left the picture gives its place up");
+    }
+  }
   // Without a view the first version's rule is intact: the car off the screen scores 0.35 (the existing checks above) and nothing coasts.
   {
     hr::Tracker tracker;
