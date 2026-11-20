@@ -12,7 +12,9 @@
 //                                  vertex shader has no gWorld multiply), and the pixel shader reads them into r0 and r1 and overwrites r0 at once
 //   xCityDefault::PSMultiLight     the night shader of the same material: the same interpolants, r0 is the normal the lamps are lit with
 //                                  (`r5.w = saturate(dot(r0.zxy, gMultiLightDynamicLightData(10).zxy))`, the sun's term)
-// The other pixel shaders of the group (PSMultiLightInterior, the shadow, depth and AO passes) are not in the variant.
+// The other pixel shaders of the group (the shadow, depth and AO passes) are not in the variant. The rest of the NIGHT family is: every `__PSMultiLight`, `...Env` and
+// `...Interior` pixel shader (the city's materials, the props, the traffic cars' body, the pedestrians) is edited by shaderpack/variants/gbuffer_night.cpp (package GB-C), which
+// finds each one's normal itself; this file's own edits below stay for xCityDefault's two shaders (the night one gets the same text from either).
 //
 // What the transform edits (each anchor must be found the number of times said or the variant is not built: the HLSL is not the one it was written for):
 //   1. the output: `, out float2 oC1 : SV_Target1` after `out float4 oC0 : SV_Target0` (RT1 is R16G16_UNORM; a pixel shader with a second output next to
@@ -52,7 +54,8 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper's use or the checks of this variant (its stamp line variants_gbuffer_version). The file src/gpu/hlsl/gbuffer_common.hlsli is
 // part of the variant's text and is in the stamp through the fingerprint (variants_gbuffer_input).
-inline constexpr uint32_t kGBufferVariantVersion = 1;
+// 2: the night family (PSMultiLight, ...Env, ...Interior: gbuffer_night.h) is in the variant; every pack that had version 1 is built again.
+inline constexpr uint32_t kGBufferVariantVersion = 2;
 
 // The pixel shaders, by name (the group and the entry point, as the translator names its HLSL files). Found by name alone: the identities are whatever
 // the game's containers hold.

@@ -10,6 +10,7 @@
 
 #include "shaderpack/hash.h"
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/gbuffer_night.h"
 #include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
@@ -35,6 +36,9 @@ VariantTransformResult TransformGBufferHlsl(const VariantShader& shader, std::st
     result.error = std::string(shader.name) + ": " + std::move(message);
     return result;
   };
+  // The rest of the night family (PSMultiLight, ...Env, ...Interior: shaderpack/variants/gbuffer_night.h, package GB-C) has its own transform; xCityDefault::PSMultiLight
+  // keeps the edits below (the text GB-C makes for it is the same, gbuffer_night_test.cpp checks it).
+  if (shader.name != kGBufferNightShader && IsGBufferNightShader(shader.name)) return TransformGBufferNightHlsl(shader, hlsl, hlsli_text, ctx);
   if (shader.name != kGBufferDayShader && shader.name != kGBufferNightShader) {
     result.skip = true;
     result.error = "not a shader the G-buffer variant is for";
@@ -131,6 +135,7 @@ VariantDef MakeGBufferVariantFromText(std::string_view hlsli_text) {
   // The helper is part of the variant's text: the fingerprint is of the file as the transform reads it (LF line ends), as the HDR curve's is.
   def.input_xxh3 = Xxh3(NormalizeNewlines(hlsli_text));
   def.pixel_name_suffixes = {kGBufferDayShader, kGBufferNightShader};
+  for (const std::string_view suffix : kGBufferNightSuffixes) def.pixel_name_suffixes.push_back(suffix);  // GB-C: the night family
   def.transform = [helper = std::string(hlsli_text)](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
     return TransformGBufferHlsl(shader, hlsl, helper, ctx);
   };

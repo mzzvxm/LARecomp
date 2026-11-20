@@ -108,6 +108,7 @@ add_library(larecomp_shaderpack STATIC
     variants/ui_sharp.cpp
     variants/headlight.cpp
     variants/gbuffer.cpp
+    variants/gbuffer_night.cpp
     # self tests, used by tools/shaderpack_tool
     input_selftest.cpp
     dxc_selftest.cpp
@@ -257,7 +258,7 @@ target_compile_features(larecomp_variant_golden_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_golden_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 # The variants of the branches that are not in every tree (feat/headlights, feat/gbuffer-spike) are checked too when their files are there (variant_golden_test.cpp
 # takes them with __has_include; the G-buffer's helper is `--gbuffer-hlsli src/gpu/hlsl/gbuffer_common.hlsli`): with both, the real pair is composed and compiled.
-foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer)
+foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer gbuffer_night)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/variants/${_larecomp_branch_variant}.cpp")
         target_sources(larecomp_variant_golden_test PRIVATE variants/${_larecomp_branch_variant}.cpp)
     endif()
@@ -290,9 +291,21 @@ target_include_directories(larecomp_headlight_variant_test PRIVATE "${CMAKE_CURR
 add_executable(larecomp_gbuffer_variant_test EXCLUDE_FROM_ALL
     variants/gbuffer_test.cpp
     variants/gbuffer.cpp
+    variants/gbuffer_night.cpp
     hash.cpp)
 target_compile_features(larecomp_gbuffer_variant_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_gbuffer_variant_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
+# The G-buffer variant's night stage (variants/gbuffer_night_test.cpp; package GB-C: the PSMultiLight, ...Env and ...Interior shaders): its anchors on small texts, and with a folder of translated HLSL
+# the census of the retail shaders (edited, or left out and why), the colour identity of every edited text, and the composition with the headlight's stage. cmake --build <dir> --target
+# larecomp_gbuffer_night_test, then run it [<src/gpu/hlsl/gbuffer_common.hlsli> [<folder of translated HLSL> [<folder for the transformed texts>]]] (exit 0 = passed).
+add_executable(larecomp_gbuffer_night_test EXCLUDE_FROM_ALL
+    variants/gbuffer_night_test.cpp
+    variants/gbuffer_night.cpp
+    variants/gbuffer.cpp
+    variants/headlight.cpp
+    hash.cpp)
+target_compile_features(larecomp_gbuffer_night_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_gbuffer_night_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${_larecomp_xxhash_include}")
 # The bloom fix variant's text transform, and the proof that its two bilinear fetches at 3x give the three sub-taps' sum, likewise:
 #   cmake --build <dir> --target larecomp_bloom_gauss_test, then run src/shaderpack/larecomp_bloom_gauss_test
 #   [<folder of translated HLSL> [<folder for the results>]] (exit 0 = passed; variants/bloom_gauss_test.cpp).
