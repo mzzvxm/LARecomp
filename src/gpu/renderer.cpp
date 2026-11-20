@@ -198,6 +198,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // and before the precache starts.
     car_rt_refl_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, car_refl_.ListedAtStart());
     car_refl_.SetCarRtRefl(&car_rt_refl_);
+    // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
+    ao_.InitializeCarRt(&car_rt_, &car_frame_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.

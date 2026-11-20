@@ -26,6 +26,7 @@
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
+// pipelines.cpp: the chrome variant's own switch (the pass leaves another car's chrome alone where the variant is not drawn).
 
 namespace mcla::gpu {
 
@@ -314,10 +315,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     }
   }
 
+  // Another car's chrome (car_chrome_rt_rules.h): found by the primary ray too, and its probes traced, where the chrome variant is drawn at all and the switch for
+  // this is on; else the primary ray is the player's body alone, as it was (no instance of the scene has the chrome's bit then that a ray here would take).
+  const bool chrome_others = larecomp::settings::mcla_gpu_car_chrome_occlusion.Get() && larecomp::settings::mcla_gpu_car_chrome_rt_others.Get();
   Push push = {};
   push.slots[0] = history.slot;
   push.slots[1] = parts;
-  push.slots[2] = car_rt_refl::kPrimaryParts;
+  push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
   push.slots[3] = info.pattern_phase & 7u;
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
@@ -331,6 +335,9 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.tune[1] = car_rt_refl::kHiddenWeight;
   push.tune[2] = car_rt_refl::kFadeFrom;
   push.tune[3] = tan_half;
+  push.up[0] = view.up[0];
+  push.up[1] = view.up[1];
+  push.up[2] = view.up[2];
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -395,10 +402,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
-                "parts {}, {} rays over a cone of {} degrees{}",
+                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
-                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "");
+                info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
+                chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version");
   }
   return true;
 }

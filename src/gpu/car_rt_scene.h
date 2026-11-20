@@ -40,6 +40,8 @@
 //     the SAME structure its model's other cars use (the key is the model's triangles in model space) with the mask CAR_RT_MASK_OTHERS: the
 //     reflection's rays hit it, the primary ray that finds the player's car never does. The other cars' share of the memory stops short of the
 //     cap by a reserve for the player's own car. mcla_gpu_car_rt_cars (-1 class, 0 none, N) and mcla_gpu_car_rt_cars_radius are the debug switches.
+//     Each kept car's BOX in view space (its instances' transformed mesh boxes) is kept too: CarRtView::boxes, and in the table after the cars' rows,
+//     for the ray traced occlusion's region (car_rt_ao.h), which traces round the player's car and each of them, not round one box that holds them all.
 //   - The top level: one instance a body draw with a built structure, the transform the draw's model-to-world matrix through the frame's
 //     camera (VIEW space, float 3x4), the mask by the draw's kind (hlsl/car_rt_common.hlsli CAR_RT_MASK_*), InstanceID and
 //     InstanceIndex the row of the table (binding 1). The driver (kSkinned draws) is not in the first version. The instance buffer,
@@ -50,10 +52,13 @@
 //   - Nothing of the structures is kept in the bindless heap (it does not fit: an acceleration structure descriptor differs from a
 //     texture's): the set below is the car RT set, bound by each consumer at a set index of its own pipeline layout (SetDesc()).
 //
-// THE CHECK (mcla_gpu_car_rt_check, debug): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
-// through every vehicle pixel of the occlusion's linear depth image and compares the committed hit's distance with the pixel's (hlsl/
-// car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
+// THE CHECK (mcla_gpu_car_rt_check, debug; recorded by OnAfterOcclusion): a compute pass after the occlusion's passes traces one primary ray from the view-space origin
+// through every vehicle pixel of the occlusion's linear depth image that the scene is meant to hold and compares the committed hit's distance
+// with the pixel's (hlsl/car_rt_check_cs.hlsl); it counts coverage and error and logs them every 120 frames ("[car rt] check ..."); mcla_gpu_car_rt_view 1/2
 // shows the error / the normals over the scene. This is what proves the camera space, the matrices and the meshes on the first run.
+// The pixels the scene is meant to hold are the player's car's and those of the other cars the frame's selection kept (the class's radius and count,
+// the cars 0 switch); the driver is left out of the scene (its pixels stay in the player's count: the depth image has no mask for it). A vehicle
+// pixel of any other car is counted apart as "not in the scene by design" (car_rt_scene_rules.h THE SCOPE: placed in the kept cars' boxes).
 // ===========================================================================
 
 #include <array>
@@ -95,13 +100,26 @@ class UploadRing;
 //                                       y = its mesh's first vertex in buffer 3, z = flags (car_rt_common.hlsli CAR_RT_*),
 //                                       w = the draw's place in car_frame::Frame::draws (an instance of another car: the row of its car's
 //                                       record, which follows the instances' rows in this table: xyz the car's body centre in view space,
-//                                       w its radius, as float bits)
+//                                       w its radius, as float bits); after the cars' records come two rows for the box of each other car
+//                                       that has an instance (CarRtView::box_row): its minimum and its maximum in view space, as float bits
 //   2  ByteAddressBuffer                every mesh's triangle-list indices (uint32, relative to the mesh's first vertex)
 //   3  ByteAddressBuffer                every mesh's vertex normals (float3, 12 bytes a vertex, model space, unit length)
 struct CarRtView {
   bool valid = false;                         // this frame's top level was built and recorded on the list before the caller's pass
   plume::RenderDescriptorSet* set = nullptr;  // bound by the caller at its own set index
   uint32_t instance_count = 0;
+  // The OTHER cars' boxes in the frame's view space (the union of each kept car's instances' transformed mesh boxes), one an other car with any
+  // instance in this top level, nearest first. `boxes` points at the scene's own list (valid until the next OnResolve or the present). The same
+  // boxes are in binding 1's table for a shader: two rows a box (minimum, maximum as float bits) from row `box_row`. Where the player's own box
+  // is (CarFrame's world box through the camera) is up to the caller: this is what the scene knows of the cars beside it.
+  const car_rt_instances::ViewBox* boxes = nullptr;
+  uint32_t box_count = 0;
+  uint32_t box_row = 0;
+  // The player's own car's box in the same space, from its listed instances' transformed mesh boxes (valid = false: none had a box). Used by the check.
+  car_rt_instances::ViewBox player_box;
+  // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
+  // car_rt_refl_cs.hlsl; the camera pitches, so the view's own y is not it). (0, 1, 0) where the frame's camera gave none.
+  float up[3] = {0.0f, 1.0f, 0.0f};
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
@@ -136,11 +154,14 @@ class CarRtScene final : public car_frame::Listener {
   // The Scene's hooks, as car_selfrefl.h's: the game's motion blur draw and the composite come after the trigger, the present ends the frame.
   void OnAnchor() { anchor_seen_ = true; }
   void OnComposite() { composite_seen_ = true; }
-  // A resolve, after ResolveCache::Execute and after the ambient occlusion's passes (the check reads their linear depth image): at the
-  // frame's trigger it uploads and builds what is new, builds the top level and, with the check on, records the check. `list` is the
-  // frame's open list outside any render pass, `slot` its frame slot. True when anything was recorded (the caller's list state is gone).
-  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot,
-                 const AmbientOcclusion* ao);
+  // A resolve, after ResolveCache::Execute and BEFORE the ambient occlusion's passes (they trace rays in the top level): at the frame's trigger
+  // it uploads and builds what is new and builds the top level. `list` is the frame's open list outside any render pass, `slot` its frame
+  // slot. True when anything was recorded (the caller's list state is gone). The check pass is not recorded here: it reads the occlusion's
+  // linear depth, which the occlusion's passes make after this call (OnAfterOcclusion).
+  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot);
+  // The same resolve again, after the ambient occlusion's passes: with the check on (mcla_gpu_car_rt_check) and this frame's top level built,
+  // records the check pass over the occlusion's linear depth image (`ao`). True when anything was recorded.
+  bool OnAfterOcclusion(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot, const AmbientOcclusion* ao);
   // A guest present: the frame boundary.
   void OnPresent();
 
@@ -165,6 +186,9 @@ class CarRtScene final : public car_frame::Listener {
     std::vector<float> normals;
     std::vector<uint32_t> indices;
     uint32_t triangles = 0;
+    float bounds_min[3] = {};  // the mesh's box in its model space (car_rt_instances_rules.h BoundsOf)
+    float bounds_max[3] = {};
+    bool has_bounds = false;
   };
   // A mesh in the shared buffers, with its bottom-level structure once built.
   struct Mesh {
@@ -177,6 +201,9 @@ class CarRtScene final : public car_frame::Listener {
     uint64_t structure_size = 0;
     uint64_t bytes = 0;  // positions, normals, indices and structure
     uint64_t last_seen = 0;
+    float bounds_min[3] = {};  // the mesh's box in its model space, for the cars' boxes (car_rt_instances_rules.h GrowBox)
+    float bounds_max[3] = {};
+    bool has_bounds = false;
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
   };
   // A shared buffer and what its last barrier left it for (Plume tracks the D3D12 state on the buffer itself; this says whether the next
@@ -211,12 +238,20 @@ class CarRtScene final : public car_frame::Listener {
   };
   struct Placed;
 
-  // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 32 bytes.
+  // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 80 bytes.
   struct CheckPush {
     uint32_t slots[4];  // the linear depth image's slot, its width and height, the flags (bit 0 write the picture, bits 8-15 the view mode)
     float lens[4];      // tan of the half field of view (x, y), the ray's start and end
+    uint32_t scope[4];  // the first row of the other kept cars' boxes in the car RT table, how many, the flags (car_rt_scene_rules.h kScopeFlag*)
+    float box_min[4];   // the player's car's box in view space (xyz), grown by the host
+    float box_max[4];
   };
-  static_assert(sizeof(CheckPush) == 32);
+  static_assert(sizeof(CheckPush) == 80);
+  // What the check's scope held in the frame it was recorded for, for the log line (ProcessReadback).
+  struct CheckScope {
+    uint32_t kept_cars = 0;     // the other cars with a box in the top level (the frame's selection, those with a built mesh)
+    bool player_box = false;    // the player's box was known (else only the other cars' boxes counted)
+  };
   // The display pass's push block (hlsl/car_rt_view_ps.hlsl CarRtViewPush), 32 bytes.
   struct ViewPush {
     uint32_t slots[4];
@@ -261,7 +296,7 @@ class CarRtScene final : public car_frame::Listener {
   bool RecordView(plume::RenderCommandList* list, const ResolveCache::Summary& summary, uint32_t image_slot, uint32_t image_width,
                   uint32_t image_height);
   plume::RenderPipeline* ViewPipeline(uint32_t samples);
-  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, uint32_t width, uint32_t height);
+  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t instances, const CheckScope& scope, uint32_t width, uint32_t height);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
@@ -283,6 +318,7 @@ class CarRtScene final : public car_frame::Listener {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool trigger_seen_ = false;
+  bool check_due_ = false;  // this frame's top level was built and the check is on: OnAfterOcclusion records it
   CarRtView view_;
   int flip_state_ = 0;  // 1: the frame's camera has z backward (the game's own) and is flipped; -1: z forward already; 0 not decided yet
   uint32_t staged_triangles_ = 0;        // read this frame

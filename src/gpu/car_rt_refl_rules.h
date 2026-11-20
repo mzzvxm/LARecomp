@@ -89,11 +89,18 @@ inline constexpr uint32_t kPartAll = 0x1F;
 // The primary ray finds the car's pixel: only the opaque rigid parts, which are the paint's (and the rims', lights' and so on: the
 // paint's own pixels are among them, and no pixel of glass, of the driver or of a tyre is read by the paint).
 inline constexpr uint32_t kPrimaryParts = kPartBody;
+// Another car's CHROME (car_rt_scene_rules.h kMaskOtherChrome: the instance of a draw of xChrome::PS_Chrome of another car has this bit and kPartOthers):
+// the primary ray also finds it, with the window around the image's distance as for the player's body, because the chrome's occlusion is traced for its pixels
+// (car_chrome_rt_rules.h). The mask is outside kPartAll: it is not a part a reflection ray can be asked for, and no other car's paint has it.
+inline constexpr uint32_t kPartOtherChrome = 0x20;
+inline constexpr uint32_t kPrimaryTraceParts = kPrimaryParts | kPartOtherChrome;
 // The reflection ray: the body, the glass (a window reflects as dark as the history shows it, or by the fallback colour where the
 // glass writes no depth), the tyres, and the other cars. Not the driver (skinned, seen through the glass only). The debug cvar
 // mcla_gpu_car_selfrefl_rt_parts replaces it.
 inline constexpr uint32_t kDefaultReflectionParts = kPartBody | kPartGlass | kPartTyres | kPartOthers;
 static_assert((kPrimaryParts & kPartOthers) == 0, "the primary ray never finds another car");
+static_assert((kPrimaryTraceParts & kPartOthers) == 0 && (kPartOtherChrome & kPartAll) == 0,
+              "the primary ray never finds another car's paint either: only its chrome, by a bit of its own");
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The image's codes

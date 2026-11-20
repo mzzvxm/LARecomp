@@ -35,7 +35,7 @@ class CarRtInstances {
   car_rt_instances::Limits CurrentLimits() const;
 
   // This frame's list. `flip_z` and `glass_rule` as the scene decided them for the player's car (the other cars' instances all take the mask
-  // CAR_RT_MASK_OTHERS, flagged when drawn after the world). `find(key, &ref)` says whether a mesh has a structure and where its indices and
+  // CAR_RT_MASK_OTHERS, and CAR_RT_MASK_OTHER_CHROME as well for a draw of the chrome's shader; flagged when drawn after the world). `find(key, &ref)` says whether a mesh has a structure and where its indices and
   // vertices are in the shared buffers; the scene marks the mesh seen in it.
   const car_rt_instances::List& Build(const car_frame::Frame& frame, const car_rt_instances::Limits& limits, bool flip_z, bool glass_rule,
                                       const FindMesh& find);
@@ -59,8 +59,8 @@ class CarRtInstances {
     uint64_t first_frame = 0;
     uint32_t frames = 0;
     uint32_t frames_with_cars = 0;
-    uint64_t player_sum = 0, other_sum = 0, cars_sum = 0, missing_sum = 0, bad_sum = 0, cut_sum = 0;
-    uint32_t player_max = 0, other_max = 0, cars_max = 0, distinct_max = 0, shared_max = 0;
+    uint64_t player_sum = 0, other_sum = 0, chrome_sum = 0, cars_sum = 0, missing_sum = 0, bad_sum = 0, cut_sum = 0;
+    uint32_t player_max = 0, other_max = 0, chrome_max = 0, cars_max = 0, distinct_max = 0, shared_max = 0;
     uint64_t built_at_start = 0;
   };
 

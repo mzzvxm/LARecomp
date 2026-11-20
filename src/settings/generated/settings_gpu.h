@@ -141,6 +141,20 @@ class GPUSettings final : public rex::SettingOwner {
     "(3.6) out again, so the paint is darkened by the share of the sky a part can see. Rounded to sixteenths, 1/16 to 1. "
     "Live.", rex::kDebugOnly, rex::Range{0.0625, 1.0});
 
+  REX_SETTING(std::string, mcla_gpu_ao_rt, "auto", "Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray "
+    "tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
+    "darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) "
+    "and shadow the cars' own parts and the road from the sun exactly. "
+    "auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; "
+    "ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this "
+    "says. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "ao", "contact"));
+
+  REX_SETTING(f64, mcla_gpu_ao_rt_length, 0.6, "Diagnostic: how far the ray traced occlusion's rays reach, in the game's world units (about metres): what your car blocks within it darkens "
+    "the pixel, less the farther it is, nothing at the reach. A longer reach darkens more of the road round the car. Live.", rex::kDebugOnly, rex::Range{0.2, 2.0});
+
+  REX_SETTING(i32, mcla_gpu_ao_rt_rays, 0, "Diagnostic: the ray traced occlusion's rays a pixel, 1 to 4; 0 (the default) is the occlusion's level (high 2, ultra 4). The occlusion's own "
+    "history averages the frames, so a few rays a frame are enough. Live.", rex::kDebugOnly, rex::Range{0, 4});
+
   REX_SETTING(bool, mcla_gpu_ao_stable, true, "Diagnostic: the occlusion's noise stays as small in a big picture as in a small one: its blur reaches "
     "as far in the picture at 4K (7x7 pixels) as it does at 720 lines (3x3), the wide blur of the pixels "
     "that have no history follows, and the noise's shift from frame to frame is a lattice of 13 frames that "
@@ -179,6 +193,12 @@ class GPUSettings final : public rex::SettingOwner {
     "self-reflection runs (mcla_gpu_car_selfrefl) and needs the shader pack's variant file. Off: the game's own chrome. Live; "
     "the first time it shows, the graphics card builds its shader (a short stutter).", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_car_chrome_rt_others, true, "Diagnostic: where the graphics card can ray trace and the car self-reflection runs, the chrome of the OTHER cars (opponents, traffic: the tailpipes, "
+    "badges and trim) is darkened under their own bodies from their real shape, as your own car's chrome is (mcla_gpu_car_chrome_occlusion): two "
+    "short rays a chrome pixel against the cars in the ray traced scene (mcla_gpu_car_rt_cars), traced where the picture of the frame before shows "
+    "the chrome. Off: their chrome takes the marched version (the picture of the car of the frame before), as before this. Needs "
+    "mcla_gpu_car_chrome_occlusion and the other cars in the scene. Live.", rex::kDebugOnly);
+
   REX_SETTING(u64, mcla_gpu_car_dump, 0, "Debug: takes the triangles of every car the game draws in ONE frame out of the game's memory, puts them in world space with "
     "each draw's own matrices and writes them to car_dump_<frame>.obj next to the executable (one group per draw, for the car "
     "chosen by mcla_gpu_car_dump_id), with a census of the car draws (how many draws, vertices and triangles each car has and "
@@ -211,8 +231,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
-    "vehicle pixels the structures cover (the driver counts as a miss; the other cars cover their pixels while they are in the scene, "
-    "mcla_gpu_car_rt_cars) and how far the distances are apart. It "
+    "vehicle pixels the structures cover and how far the distances are apart. Only the pixels the scene is meant to hold are traced: "
+    "the player's car and the other cars the frame kept (mcla_gpu_car_rt_cars); the pixels of other cars are counted apart as not in "
+    "the scene by design (the driver is in the player's count and shows as a miss). It "
     "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_car_rt_masks, 0, "Debug: how the car's parts are told apart in the top level: 0 the tyres by their shader and glass by being drawn after the world's "
@@ -220,8 +241,8 @@ class GPUSettings final : public rex::SettingOwner {
     "that is no tyre is a body. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
   REX_SETTING(i32, mcla_gpu_car_rt_view, 0, "Debug: shows the car ray tracing check's picture over the scene (only while mcla_gpu_car_rt_check is on): 1 the error of each "
-    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit), 2 the hit's normal as colour (x right, y up, "
-    "z forward, times 0.5 plus 0.5). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 2});
+    "vehicle pixel's hit (green below 2%, yellow at 2%, red from 10%, magenta: nothing hit, grey-blue: a car outside the scene by design), "
+    "2 the hit's normal as colour (x right, y up, z forward, times 0.5 plus 0.5). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
   REX_SETTING(std::string, mcla_gpu_car_selfrefl, "auto", "Car self-reflections: your car's paint reflects its own body, which the game's paint does not: the wing shows in the "
     "trunk lid and the mirror in the door, and the reflection is darker where the body shades it, under a spoiler or "
@@ -393,7 +414,9 @@ class GPUSettings final : public rex::SettingOwner {
     "the map shadows the pixel: the wing, the mirrors, the sills and the wheels on the car and on the road "
     "near it; white everywhere in a frame without the map: car_shadow_map.h), 6 the sun's visibility the share "
     "of the light took (the game's mask on the world, the game's car sun image on a car, 1 on a car in a frame "
-    "without that image). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
+    "without that image), 7 the ray traced sun ray's term alone (white; black where the ray from the pixel toward the sun "
+    "meets the player's car: its own parts on it, and its shadow on the road; white everywhere in a frame without it: "
+    "car_rt_ao.h). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
   REX_SETTING(i32, mcla_gpu_contact_skip_stat, 0, "Diagnostic: with mcla_gpu_contact_shadows_fast and the game's sun shadow mask in the frame, every N frames (0: never) the contact march's "
     "skip is counted: a second march pass classifies every pixel (skipped under the game's own shadow, the sky or past the fade, turned from "
@@ -1255,11 +1278,15 @@ inline auto& mcla_gpu_ao_half_above_1080 = g_gpu.mcla_gpu_ao_half_above_1080;
 inline auto& mcla_gpu_ao_history = g_gpu.mcla_gpu_ao_history;
 inline auto& mcla_gpu_ao_intensity = g_gpu.mcla_gpu_ao_intensity;
 inline auto& mcla_gpu_ao_paint = g_gpu.mcla_gpu_ao_paint;
+inline auto& mcla_gpu_ao_rt = g_gpu.mcla_gpu_ao_rt;
+inline auto& mcla_gpu_ao_rt_length = g_gpu.mcla_gpu_ao_rt_length;
+inline auto& mcla_gpu_ao_rt_rays = g_gpu.mcla_gpu_ao_rt_rays;
 inline auto& mcla_gpu_ao_stable = g_gpu.mcla_gpu_ao_stable;
 inline auto& mcla_gpu_ao_view = g_gpu.mcla_gpu_ao_view;
 inline auto& mcla_gpu_batch_draws = g_gpu.mcla_gpu_batch_draws;
 inline auto& mcla_gpu_bloom_scale = g_gpu.mcla_gpu_bloom_scale;
 inline auto& mcla_gpu_car_chrome_occlusion = g_gpu.mcla_gpu_car_chrome_occlusion;
+inline auto& mcla_gpu_car_chrome_rt_others = g_gpu.mcla_gpu_car_chrome_rt_others;
 inline auto& mcla_gpu_car_dump = g_gpu.mcla_gpu_car_dump;
 inline auto& mcla_gpu_car_dump_id = g_gpu.mcla_gpu_car_dump_id;
 inline auto& mcla_gpu_car_frame_log = g_gpu.mcla_gpu_car_frame_log;

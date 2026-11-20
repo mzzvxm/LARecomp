@@ -20,6 +20,7 @@ add_library(larecomp_gpu OBJECT
     car_mesh_read.cpp
     car_rt_instances.cpp
     car_rt_scene.cpp
+    car_rt_ao.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
     car_rt_refl.cpp
@@ -208,6 +209,11 @@ add_executable(larecomp_car_rt_refl_rules_test EXCLUDE_FROM_ALL car_rt_refl_rule
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).
 add_executable(larecomp_car_chrome_rules_test EXCLUDE_FROM_ALL car_chrome_rules_test.cpp)
+# The other cars' ray traced chrome (car_chrome_rt_rules.h: the masks, the sky probe's rays, the texel's code in the ray traced image, the chrome variant's read of it,
+# the probes over boxes: a tailpipe under a lip, in the open sun, a plane of every slope; and that hlsl/car_rt_refl_cs.hlsl, the host and the chrome variant
+# hold the header's numbers) likewise; run it with the src folder (the one that holds gpu and shaderpack) or from there:
+#   cmake --build <dir> --target larecomp_car_chrome_rt_rules_test, then run src/gpu/larecomp_car_chrome_rt_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_chrome_rt_rules_test EXCLUDE_FROM_ALL car_chrome_rt_rules_test.cpp)
 # The car dump's rules (car_dump_rules.h: the matrices out of a vertex shader bank, the positions and indices as the guest holds them, the
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
@@ -229,6 +235,11 @@ add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_ru
 # car that is new, the instance list) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_instances_rules_test, then run src/gpu/larecomp_car_rt_instances_rules_test (exit 0 = passed).
 add_executable(larecomp_car_rt_instances_rules_test EXCLUDE_FROM_ALL car_rt_instances_rules_test.cpp)
+# The ray traced occlusion and contact shadows around the player's car (car_rt_ao_rules.h: the setting, the rays and their lengths, the cosine pattern, the
+# car's box in view space and the pixel rectangle of it, the slab test, the flags; given the src/gpu folder it also checks that hlsl/car_rt_ao_cs.hlsl,
+# ao_main_ps.hlsl and ao_contact_ps.hlsl use the header's numbers and flags) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_ao_rules_test, then run src/gpu/larecomp_car_rt_ao_rules_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_car_rt_ao_rules_test EXCLUDE_FROM_ALL car_rt_ao_rules_test.cpp)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
@@ -658,6 +669,9 @@ larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
+# The ray traced occlusion and sun term around the player's car (car_rt_ao.h): one compute pass inside the occlusion's own passes with inline ray queries
+# against the car's structures (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan, through the same function as the others (larecomp_gpu_host_shader_rt).
+larecomp_gpu_host_shader_rt(car_rt_ao_cs cs_6_5)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs
