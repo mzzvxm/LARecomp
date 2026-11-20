@@ -95,6 +95,10 @@
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
 #include "shafts_sky_ps.hlsl.dxil.h"
+#include "volumetrics_apply_ms_ps.hlsl.dxil.h"
+#include "volumetrics_apply_ps.hlsl.dxil.h"
+#include "volumetrics_inject_cs.hlsl.dxil.h"
+#include "volumetrics_integrate_cs.hlsl.dxil.h"
 #include "smaa_blend_ps.hlsl.dxil.h"
 #include "smaa_edges_ps.hlsl.dxil.h"
 #include "smaa_weights_ps.hlsl.dxil.h"
@@ -183,6 +187,10 @@
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
 #include "shafts_sky_ps.hlsl.spirv.h"
+#include "volumetrics_apply_ms_ps.hlsl.spirv.h"
+#include "volumetrics_apply_ps.hlsl.spirv.h"
+#include "volumetrics_inject_cs.hlsl.spirv.h"
+#include "volumetrics_integrate_cs.hlsl.spirv.h"
 #include "smaa_blend_ps.hlsl.spirv.h"
 #include "smaa_edges_ps.hlsl.spirv.h"
 #include "smaa_weights_ps.hlsl.spirv.h"
@@ -431,6 +439,18 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 28: return MCLA_GPU_HOST_SHADER_BLOB(ao_normal_ms_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
+}
+
+// The volumetric light's passes (volumetrics.h, hlsl/volumetrics_*.hlsl): the inject and the integrate compute passes, and the composite (the
+// multisampled one reads the depth plane as a Texture2DMS).
+inline HostShaderBlob VolumetricsInjectShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_inject_cs);
+}
+inline HostShaderBlob VolumetricsIntegrateShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_integrate_cs);
+}
+inline HostShaderBlob VolumetricsApplyShader(bool multisampled) {
+  return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(volumetrics_apply_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(volumetrics_apply_ps);
 }
 
 // The sun shafts' passes (shafts.h, hlsl/shafts_*_ps.hlsl), numbered as SunShafts::Pass: 0 the sky's

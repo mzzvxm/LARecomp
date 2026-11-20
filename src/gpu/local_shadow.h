@@ -10,9 +10,14 @@
 //
 // WHAT IT DOES, and when.
 //   mcla_gpu_light_shadows       auto | off | high | ultra (the pause menu's LIGHT SHADOWS: the headlights now, the street lamps later; it was
-//                                mcla_gpu_headlight_shadows, which stays as an alias). high: a view of 512 x 512 for the player's lamps (one view
-//                                covers both), ultra: 1024 x 1024 and the nearest other car's lamps too. `auto` is high on Mid, ultra on High, off on Low
-//                                (gpu_class.h Effect::kLightShadows). Live: a change applies at the next frame.
+//                                mcla_gpu_headlight_shadows, which stays as an alias). The levels differ by how many cars are shadowed as well as by how
+//                                sharp (owner, 2026-11-20). high: two views of 512 x 512, the player's car's lamps and the nearest other car's (4 MiB of
+//                                video memory); ultra: three views of 1024 x 1024, the player's car's and the two nearest other cars' (24 MiB). `auto` is
+//                                high on Mid, ultra on High, off on Low (gpu_class.h Effect::kLightShadows). Live: a change applies at the next frame.
+//                                WHICH CARS: the player's car always, the others by importance (nearer to the camera and on the screen first), with a
+//                                hysteresis so that two cars of the same importance do not trade a view back and forth (local_shadow_rules.h ViewPicker).
+//                                A car the rig lights but that has no view is lit without a shadow. A view costs about 0.02 ms of the graphics card
+//                                and 0.05 to 0.1 ms of the render thread (the draws are replayed once more for each view); the size barely costs.
 //   COLLECT (Scene::OnDraw, every prepared draw of the main view's colour pass before the anchor): the draw's shaders, input layout, host
 //   geometry (valid until the frame's lists are submitted), its vertex constants (a host copy of the bank, 4 KiB, once per bank version),
 //   its shared constants (once per distinct block) and its pixel constants span. A draw is a caster when it is opaque (blend off, depth
@@ -26,8 +31,13 @@
 //   own vertex shader, the draw's own vertex and index views, a copy of its vertex constants whose c8-c11 (gWorldViewProj) is replaced by
 //   gWorldViewProj x VP_main^-1 x VP_light (local_shadow_rules.h: that is gWorld x VP_light), a copy of its shared constants whose NDC transform
 //   is the pass's, and no pixel shader (or its own, for the alpha tested). The main camera VP_main is found in the same frame's stored banks
-//   (DeriveCamera). Faces: the ones turned from the light are kept (mcla_gpu_headlight_shadow_cull). The lamps' own car (a vehicle's part whose
+//   (DeriveCamera). Faces: the world's draws keep the ones turned from the light, a vehicle's parts are drawn on both (local_shadow_rules.h
+//   ResolveCasterCull; mcla_gpu_headlight_shadow_cull is the debug policy). The lamps' own car (a vehicle's part whose
 //   root is within 3.5 m of the view's eye) and everything nearer than 1.5 m to the lamps (the near plane) are left out.
+//   THE GROUND SKIRT: each vehicle part is drawn a second time into the same view, 0.22 m lower and 0.6 m farther along the light (local_shadow_rules.h "the
+//   ground skirt"; mcla_gpu_headlight_shadow_skirt turns it off). A car floats 0.1 to 0.2 m over the road and a lamp as low as a car's own shines through that
+//   gap onto the road behind it, so the road behind a car was lit except for four stripes where the tyres are (the owner's picture of 2026-11-20); the copy puts
+//   the underbody on the road. It sits behind the car's own surfaces for the lamp, so it shadows none of them.
 //   The map is of THIS frame's draws but the lit draws that read it came BEFORE the trigger, so they read the previous frame's map: one frame of
 //   latency (survey finding 4). Frame() and AtlasInfo() are what the lit draws of the next frame read (and the translucent draws after the
 //   trigger of this one).
@@ -57,10 +67,13 @@
 //
 // THE LOG. "[local-shadow] ..." lines: one when the choice changes, one at the first map and then every 1800 frames while the feature runs:
 // views, draws replayed (of the collected), skipped by kind (the cone cull's too), the vertex constant banks written, the atlas, the time of the
-// pass and of the collecting on the render thread (CPU).
+// pass and of the collecting on the render thread (CPU). And, from the first frame that has a car in it and then every 1800 frames, a line that counts the
+// vehicle draws of that frame by vertex shader identity (collected, or why not: local_shadow_rules.h VehicleCensus; perf/scripts/vs_identities.py names the
+// identities): what a car is made of in the map.
 //
 // THE GLUE. After the maps of a frame are recorded (and whenever they are given up) HandOver() tells headlight_rig::SetLocalShadows the views and the
-// atlas's bindless slot with the fixed point/clamp sampler (kSamplerPointClamp): the lit shaders of the headlight variant compare four taps themselves.
+// atlas's bindless slot with the fixed point/clamp sampler (kSamplerPointClamp): the lit shaders of the headlight variant compare the texels themselves, as the
+// share of a box of 3 x 3 texels that is lit (headlight_rig_rules.h SoftShadow: a soft edge, not a staircase).
 // The rig copies the views and moves them to the lights of the set that reads them by the car (headlight_rig_rules.h RemapShadowViews).
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread. The pipelines are made on the host builder thread.
@@ -214,7 +227,9 @@ class LocalShadow {
   void FlushListing();
   static uint64_t PrecacheKey(uint32_t id);
 
-  // The frame's views as the lights alone say them (BeginFrame): what Collect culls against once the camera is known.
+  // The frame's lights and the cars that get a view (BeginFrame, once: the cone cull and the replay work from the same cars).
+  void PickViews();
+  // The frame's views as the lights alone say them: what Collect culls against once the camera is known.
   void PlanEarlyViews();
   // The place of a draw (the translation of its world matrix) from its c8-c11, with the frame's camera.
   void EvaluatePlace(const ConstantBanks::Banks& banks);
@@ -240,6 +255,7 @@ class LocalShadow {
   int test_mode_ = 0;
   float bias_scale_ = 1.0f;
   int cone_cull_ = 1;
+  int skirt_ = 1;           // mcla_gpu_headlight_shadow_skirt
   uint32_t idle_frames_ = 0;
   uint64_t frame_ = 0;
   uint32_t lit_frames_left_ = 0;  // frames a map is still collected for after the last lit headlight
@@ -254,6 +270,17 @@ class LocalShadow {
   uint64_t last_bank_version_ = 0;
   uint32_t last_bank_index_ = 0;
   bool have_bank_ = false;
+  // The frame's lights (the rig's set, as the rules read it), the cars that get a view (the player's first), and what the picking remembers across frames: who
+  // holds a view (the hysteresis), the last frame's main camera (the importance's distance and screen) and which cars had the views at the last change.
+  local_shadow::Light frame_lights_[4];
+  uint32_t frame_light_count_ = 0;
+  local_shadow::Group frame_groups_[4];
+  uint32_t frame_views_ = 0;
+  local_shadow::ViewPicker picker_;
+  local_shadow::Camera last_camera_;
+  uint32_t last_view_count_ = 0;
+  uint32_t last_view_keys_[local_shadow::kMaxViews] = {};
+  uint32_t view_changes_ = 0;
   // The cone cull's frame: the views the lights alone make (the set does not change until the next present), the camera found from the first
   // banks (the same one the replay takes), and the place of the last bank version looked at.
   local_shadow::ViewSpec early_specs_[4];
@@ -267,6 +294,9 @@ class LocalShadow {
   std::vector<SharedConstants> shared_;  // one per distinct block
   uint32_t counts_[size_t(local_shadow::Skip::kCount)] = {};  // this frame's collection verdicts
   uint32_t collected_ = 0;
+  local_shadow::VehicleCensus vehicle_census_;  // this frame's vehicle draws by vertex shader (the log's "vehicle draws" line)
+  uint64_t next_vehicle_log_ = 0;               // the frame from which the next such line may be written
+  uint32_t vehicle_logs_ = 0;
 
   // What the lit draws read.
   larecomp::gpu::LocalShadowFrame published_;

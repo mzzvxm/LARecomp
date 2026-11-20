@@ -287,12 +287,25 @@ void CheckHelper() {
   } kConstants[] = {
       {"kHlPeak", hr::kPeak},           {"kHlFalloffDistance", hr::kFalloffDistance}, {"kHlSurfaceWrap", hr::kSurfaceWrap},
       {"kHlCutLow", hr::kCutLow},       {"kHlCutHigh", hr::kCutHigh},                 {"kHlNearStart", hr::kNearStart},
-      {"kHlNearSpan", hr::kNearSpan},
+      {"kHlNearSpan", hr::kNearSpan},     {"kHlShadowKernel", hr::kShadowKernel},
   };
   for (const auto& c : kConstants) {
     const double got = ConstantOf(helper, c.name);
     Check(std::fabs(got - c.want) < 1e-6, std::string("the helper's ") + c.name + " is the rules' (" + std::to_string(got) + " against " + std::to_string(c.want) + ")");
   }
+  // The shadow hook's soft lookup (hr::SoftShadow is its CPU twin): a box of kShadowKernel = 3 texels square read as 4 x 4 texels, the four outer ones first and
+  // then the other twelve, each texel's weight along an axis (1 - f, 1, 1, f), their sum over 9.
+  Check(hr::kShadowKernel == 3.0f, "the box is three texels wide, so it covers four texels along an axis");
+  Check(Contains(helper, "float HeadlightShadowTexel(") && Count(helper, "HeadlightShadowTexel(") == 6, "one fetch function, four outer fetches and the loop's one");
+  Check(Contains(helper, "float2 low = s.xy / t - 0.5 * kHlShadowKernel;") && Contains(helper, "float2 f = low - base;"), "the box's low corner is the place less half the box");
+  Check(Contains(helper, "float4 wx = float4(1.0 - f.x, 1.0, 1.0, f.x);") && Contains(helper, "float4 wy = float4(1.0 - f.y, 1.0, 1.0, f.y);"),
+        "the weights along an axis are (1 - f, 1, 1, f) for a box of three");
+  Check(Contains(helper, "uv0 + float2(3.0, 0.0) * t") && Contains(helper, "uv0 + float2(0.0, 3.0) * t") && Contains(helper, "uv0 + float2(3.0, 3.0) * t"),
+        "the outer fetches are the box's corners, three texels from the first");
+  Check(Contains(helper, "if (corners == 0.0 || corners == 4.0)") && Contains(helper, "return corners * 0.25;"), "the shortcut when the outer four agree");
+  Check(Contains(helper, "return lit * (1.0 / 9.0);"), "the box's weights sum to nine");
+  Check(Count(helper, "[unroll]") == 2 && Contains(helper, "for (int j = 0; j < 4; ++j)") && Contains(helper, "for (int i = 0; i < 4; ++i)"), "the sixteen fetches are two unrolled loops");
+  Check(Contains(helper, ">= depth ? 1.0 : 0.0") && Count(helper, ">= depth ? 1.0 : 0.0") == 1, "the one compare is the game's `>=`");
   // The shadow hook's number of views and taps, the light count, the loop bound.
   Check(Contains(helper, "min(uint(g_HlHeader.x + 0.5), 4u)") && hr::kMaxLights == 4, "the helper takes at most four lights, as the rules do");
   Check(Contains(helper, "view * 6u + 5u") && sizeof(larecomp::gpu::LocalShadowView) == 96, "a shadow view is six registers (96 bytes) in the block");

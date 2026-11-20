@@ -79,8 +79,9 @@ enum class Effect : uint8_t {
   kAmbientOcclusion,      // mcla_gpu_ao                 auto, off, high, ultra
   kHeadlights,            // mcla_gpu_headlights         auto, off, on (headlight_rig.h)
   kLightShadows,          // mcla_gpu_light_shadows      auto, off, high, ultra (local_shadow.h; was mcla_gpu_headlight_shadows)
+  kVolumetrics,           // mcla_gpu_volumetrics        auto, off, medium, high, ultra (volumetrics_level.h)
 };
-inline constexpr int kEffectCount = 12;
+inline constexpr int kEffectCount = 13;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -119,10 +120,16 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // 100+ ms there) gets it. The cost is the owner's to measure (perf/HEADLIGHT-LIGHT-RUNPLAN.md), a cell is corrected from it.
     {"mcla_gpu_headlights", "off", "on", "on"},
     // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 512 (high) or
-    // 1024 (ultra) texels a view; high shadows the player's headlights, ultra the nearest other car's too. Mid gets high, High gets ultra,
-    // shared memory nothing (the scene alone is 100+ ms there). The cost is the render thread's second pass over the frame's draws and a few
-    // hundredths of a millisecond of graphics card time: to be measured (perf/LOCAL-SHADOWS-SURVEY.md option A), the cells are a first guess.
+    // 1024 (ultra) texels a view; high shadows the player's car's headlights and the nearest other car's (2 views, 4 MiB), ultra also the next nearest car's (3 views,
+    // 24 MiB; owner, 2026-11-20: the levels differ by how many cars are shadowed, not only by how sharp). Mid gets high, High gets ultra, shared memory nothing (the scene
+    // alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time (the size barely counts) and 0.05 to 0.1 ms of render thread time (the second
+    // pass over the frame's draws), measured on the RTX 5080 in the headlights runs of 2026-11-20; the cells are unchanged by the second and third view.
     {"mcla_gpu_light_shadows", "off", "high", "ultra"},
+    // Volumetric light (light beams under the lamps and headlights, fog and sun shafts: volumetrics.h; VOLUMETRICS-SURVEY.md section 4,
+    // estimated 0.13 / 0.19 / 0.30 ms at 4K and 0.06 / 0.12 / 0.23 ms at 1080p on an RTX 5080 for medium / high / ultra, about 0.5 ms
+    // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
+    // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
+    {"mcla_gpu_volumetrics", "off", "medium", "high"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

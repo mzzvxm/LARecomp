@@ -93,7 +93,7 @@ void CheckSetting() {
   Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024,
         "the tile is 512 on high and 1024 on ultra");
   Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 3) == 0, "off draws no view, whatever the override");
-  Check(ls::MaxViews(ls::Level::kHigh, 0) == 1 && ls::MaxViews(ls::Level::kUltra, 0) == 2, "high shadows the player's lamps, ultra one car more");
+  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
   Check(ls::MaxViews(ls::Level::kHigh, 3) == 3 && ls::MaxViews(ls::Level::kUltra, 9) == 4, "the debug override takes 1 to 4 views");
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
@@ -965,14 +965,576 @@ void CheckKeyPadding() {
   Check(!(a == b), "the pixel shader's variant counts");
 }
 
+// ---------------------------------------------------------------------------
+// a car between a lamp and the road (the owner's picture of 2026-11-20: four thin stripes behind a car that should shadow its whole width)
+// ---------------------------------------------------------------------------
+
+struct P2 {
+  double x, y;
+};
+struct Edge2 {
+  P2 a, b;
+  P2 n;  // outward normal (unit)
+};
+
+// Whether the open segment p -> q crosses the segment a -> b (not at the ends of p -> q).
+bool Crosses(P2 p, P2 q, P2 a, P2 b) {
+  const double rx = q.x - p.x, ry = q.y - p.y, sx = b.x - a.x, sy = b.y - a.y;
+  const double den = rx * sy - ry * sx;
+  if (std::fabs(den) < 1e-12) {
+    return false;
+  }
+  const double t = ((a.x - p.x) * sy - (a.y - p.y) * sx) / den;
+  const double u = ((a.x - p.x) * ry - (a.y - p.y) * rx) / den;
+  return t > 1e-6 && t < 1.0 - 1e-6 && u >= 0.0 && u <= 1.0;
+}
+
+// The profile of a car seen from the side, x toward the lamp, y up, the road at y = 0: the underbody 0.16 m over the road (ground clearance), a bumper, a
+// hood, a windscreen, a roof, a rear window and a trunk, 4.6 m long and 1.2 m high.
+std::vector<Edge2> CarProfile() {
+  const P2 pts[] = {{2.30, 0.16}, {2.34, 0.50}, {1.90, 0.70}, {0.90, 0.80}, {0.20, 1.20}, {-1.20, 1.20}, {-1.90, 0.95}, {-2.30, 0.92}, {-2.30, 0.16}};
+  const size_t n = sizeof(pts) / sizeof(pts[0]);
+  P2 centre{0.0, 0.0};
+  for (const P2& p : pts) {
+    centre.x += p.x / double(n);
+    centre.y += p.y / double(n);
+  }
+  std::vector<Edge2> edges;
+  for (size_t i = 0; i < n; ++i) {
+    Edge2 e;
+    e.a = pts[i];
+    e.b = pts[(i + 1) % n];
+    const double dx = e.b.x - e.a.x, dy = e.b.y - e.a.y, len = std::sqrt(dx * dx + dy * dy);
+    e.n = {dy / len, -dx / len};
+    const double out = e.n.x * ((e.a.x + e.b.x) / 2 - centre.x) + e.n.y * ((e.a.y + e.b.y) / 2 - centre.y);
+    if (out < 0.0) {
+      e.n = {-e.n.x, -e.n.y};
+    }
+    edges.push_back(e);
+  }
+  return edges;
+}
+
+// The edges a pass over `cull` draws for a lamp at `lamp`, moved by `shift`: kFront (front faces culled) keeps the faces turned from the lamp, kBack the faces it
+// sees, kNone both.
+std::vector<Edge2> DrawnEdges(const std::vector<Edge2>& edges, P2 lamp, ls::Cull cull, P2 shift = {0.0, 0.0}) {
+  std::vector<Edge2> out;
+  for (Edge2 e : edges) {
+    const P2 mid{(e.a.x + e.b.x) / 2 + shift.x, (e.a.y + e.b.y) / 2 + shift.y};
+    const bool sees = e.n.x * (lamp.x - mid.x) + e.n.y * (lamp.y - mid.y) > 0.0;
+    if ((cull == ls::Cull::kFront && sees) || (cull == ls::Cull::kBack && !sees)) {
+      continue;
+    }
+    e.a = {e.a.x + shift.x, e.a.y + shift.y};
+    e.b = {e.b.x + shift.x, e.b.y + shift.y};
+    out.push_back(e);
+  }
+  return out;
+}
+
+bool Blocked(P2 lamp, P2 receiver, const std::vector<Edge2>& edges) {
+  for (const Edge2& e : edges) {
+    if (Crosses(lamp, receiver, e.a, e.b)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The unit way the light travels, from a lamp `distance` m from the car and `height` m high toward the middle of the car (0.9 m high), in the plane of the profile.
+void LightDirection(double distance, double height, double dir[3]) {
+  dir[0] = -distance;
+  dir[1] = 0.9 - height;
+  dir[2] = 0.0;
+  const double length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+  dir[0] /= length;
+  dir[1] /= length;
+}
+
+void CheckCarCastsItsSilhouette() {
+  using ls::Cull;
+  // The faces: the world keeps the policy's, a vehicle's part is drawn on both faces under the default one, the debug policies mean what they said.
+  Check(ls::ResolveCasterCull(0, Cull::kBack, false) == Cull::kFront, "a world draw keeps the faces turned from the lamp");
+  Check(ls::ResolveCasterCull(0, Cull::kBack, true) == Cull::kNone, "a vehicle's part is drawn on both faces");
+  Check(ls::ResolveCasterCull(0, Cull::kFront, true) == Cull::kNone, "... whichever the game culled");
+  Check(ls::ResolveCasterCull(1, Cull::kBack, true) == Cull::kNone, "policy 1 is both faces for a vehicle too");
+  Check(ls::ResolveCasterCull(2, Cull::kBack, true) == Cull::kBack && ls::ResolveCasterCull(2, Cull::kBack, false) == Cull::kBack,
+        "policy 2 is the game's own for a vehicle as for the world");
+
+  const std::vector<Edge2> car = CarProfile();
+  // The car as one solid down to the road: the reference of what "casts its whole silhouette" means (the gap under the floor filled in).
+  std::vector<Edge2> solid = car;
+  solid.push_back({{2.30, 0.0}, {2.30, 0.16}, {1.0, 0.0}});
+  solid.push_back({{-2.30, 0.0}, {-2.30, 0.16}, {-1.0, 0.0}});
+  for (const double lamp_height : {0.45, 0.65}) {
+    const double distance = 20.0;
+    const P2 lamp{distance, lamp_height};
+    double dir[3], shift3[3];
+    LightDirection(distance, lamp_height, dir);
+    ls::SkirtShift(dir, shift3);
+    const P2 shift{shift3[0], shift3[1]};
+    CheckNear(shift3[2], 0.0, 1e-12, "the skirt does not move sideways for a light along x");
+    Check(shift.x < -0.5 && shift.y < -ls::kSkirtDrop * 0.9, "the skirt's copy is lower and farther along the light");
+    const std::vector<Edge2> old_way = DrawnEdges(car, lamp, Cull::kFront);  // the faces turned from the lamp
+    const std::vector<Edge2> both = DrawnEdges(car, lamp, Cull::kNone);
+    const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, shift);
+    std::vector<Edge2> with_skirt = both;
+    with_skirt.insert(with_skirt.end(), copy.begin(), copy.end());
+    int in_umbra = 0, leaks_old = 0, leaks_both = 0, leaks_skirt = 0, dark_beyond = 0, outside = 0;
+    for (double x = -2.45; x > -12.0; x -= 0.05) {
+      const P2 receiver{x, 0.0};
+      if (Blocked(lamp, receiver, solid)) {
+        ++in_umbra;
+        leaks_old += !Blocked(lamp, receiver, old_way);
+        leaks_both += !Blocked(lamp, receiver, both);
+        leaks_skirt += !Blocked(lamp, receiver, with_skirt);
+      } else {
+        ++outside;
+        dark_beyond += Blocked(lamp, receiver, with_skirt);
+      }
+    }
+    const std::string at = " (lamp " + std::to_string(lamp_height) + " m high, " + std::to_string(int(distance)) + " m away)";
+    Check(in_umbra > 20, "the road behind the car has an umbra to check" + at);
+    Check(leaks_old > 0 && leaks_both > 0,
+          "without the skirt the light gets through under the car: " + std::to_string(leaks_old) + " and " + std::to_string(leaks_both) + " of " + std::to_string(in_umbra) +
+              " road samples lit inside the car's silhouette" + at);
+    Check(leaks_skirt == 0, "with the skirt the whole silhouette is shadow: " + std::to_string(leaks_skirt) + " of " + std::to_string(in_umbra) + " lit" + at);
+    Check(outside == 0 && dark_beyond == 0, "(a lamp this low shadows the whole road behind the car)" + at);
+  }
+  // A lamp above the roof (1.6 m, 6 m away): the shadow ends where the rays clear the roof, and the skirt moves that end by nothing.
+  {
+    const double lamp_height = 1.6, distance = 6.0;
+    const P2 lamp{distance, lamp_height};
+    double dir[3], shift3[3];
+    LightDirection(distance, lamp_height, dir);
+    ls::SkirtShift(dir, shift3);
+    const P2 shift{shift3[0], shift3[1]};
+    std::vector<Edge2> with_skirt = DrawnEdges(car, lamp, Cull::kNone);
+    const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, shift);
+    with_skirt.insert(with_skirt.end(), copy.begin(), copy.end());
+    int in_umbra = 0, outside = 0, leaks = 0, dark_beyond = 0;
+    for (double x = -2.45; x > -40.0; x -= 0.05) {
+      const P2 receiver{x, 0.0};
+      const bool skirt_blocked = Blocked(lamp, receiver, with_skirt);
+      if (Blocked(lamp, receiver, solid)) {
+        ++in_umbra;
+        leaks += !skirt_blocked;
+      } else {
+        ++outside;
+        dark_beyond += skirt_blocked;
+      }
+    }
+    Check(in_umbra > 100 && outside > 100, "a lamp above the roof has both a shadow and a lit road behind it: " + std::to_string(in_umbra) + " and " + std::to_string(outside));
+    Check(leaks == 0 && dark_beyond == 0, "the skirt changes neither end of that shadow: " + std::to_string(leaks) + " lit inside, " + std::to_string(dark_beyond) + " dark outside");
+  }
+
+  // The skirt never shadows the surfaces of its own car that the lamp lights: a point just off a face the lamp sees has no skirt edge between it and the lamp.
+  for (const double lamp_height : {0.45, 0.65, 0.9}) {
+    for (const double distance : {6.0, 20.0, 40.0}) {
+      const P2 lamp{distance, lamp_height};
+      double dir[3], shift3[3];
+      LightDirection(distance, lamp_height, dir);
+      ls::SkirtShift(dir, shift3);
+      const std::vector<Edge2> copy = DrawnEdges(car, lamp, Cull::kNone, {shift3[0], shift3[1]});
+      int lit_points = 0, shadowed = 0;
+      for (const Edge2& e : car) {
+        const P2 mid{(e.a.x + e.b.x) / 2, (e.a.y + e.b.y) / 2};
+        if (e.n.x * (lamp.x - mid.x) + e.n.y * (lamp.y - mid.y) <= 0.0) {
+          continue;  // a face the lamp does not see is not lit by it
+        }
+        for (int k = 1; k < 50; ++k) {
+          const double t = double(k) / 50.0;
+          const P2 p{e.a.x + (e.b.x - e.a.x) * t + e.n.x * 1e-3, e.a.y + (e.b.y - e.a.y) * t + e.n.y * 1e-3};
+          ++lit_points;
+          shadowed += Blocked(lamp, p, copy);
+        }
+      }
+      Check(lit_points > 100 && shadowed == 0,
+            "the skirt's copy casts no shadow on its own car: " + std::to_string(shadowed) + " of " + std::to_string(lit_points) + " lit points (lamp " +
+                std::to_string(lamp_height) + " m high, " + std::to_string(int(distance)) + " m away)");
+    }
+  }
+}
+
+void CheckSkirtMatrix() {
+  const GameCamera cam = MakeCamera(-20.0, 2903.0, 14.0, -810.0);
+  const tp::Mat4 world0 = tp::Mul(RotationY(33.0), Translation(2890.0, 0.5, -820.0));
+  const ls::Camera camera = ls::DeriveCamera(MakeBank(cam, world0).data());
+  Check(camera.valid, "the camera of the skirt check");
+  ls::Light lamps[2] = {Lamp(2900.0, 1.0, -815.0, 0.3, -0.05, 0.95, 1, true, 0, std::cos(ls::Rad(30)), 45.0),
+                        Lamp(2901.4, 1.0, -815.0, 0.3, -0.05, 0.95, 1, true, 1, std::cos(ls::Rad(30)), 45.0)};
+  ls::Group g;
+  ls::GroupLights(lamps, 2, 1, &g);
+  ls::ViewSpec spec;
+  ls::FitView(lamps, g, &spec);
+  tp::Mat4 light_clip, replay, skirt;
+  Check(ls::LightClip(spec, camera.right_handed, &light_clip) && ls::ReplayMatrix(camera, light_clip, &replay), "the view's matrices");
+  double shift[3];
+  ls::SkirtShift(spec.dir, shift);
+  Check(ls::SkirtReplayMatrix(camera, light_clip, shift, &skirt), "the skirt's replay matrix");
+  CheckNear(shift[0] * spec.dir[0] + shift[1] * spec.dir[1] + shift[2] * spec.dir[2] + ls::kSkirtDrop * spec.dir[1], ls::kSkirtPush, 1e-9,
+            "the shift is the push along the light and the drop");
+  // A car's draw: c8-c11 x the skirt matrix takes a model point to the light's clip of the world point moved by the shift; the car's own matrix to the point itself.
+  const tp::Mat4 car = tp::Mul(RotationY(120.0), Translation(2902.0, 0.0, -808.0));
+  const std::vector<float> bank = MakeBank(cam, car);
+  float own[16], moved[16];
+  ls::ReplaceWvp(bank.data() + 8 * 4, replay, own);
+  ls::ReplaceWvp(bank.data() + 8 * 4, skirt, moved);
+  const double model[4][3] = {{0, 0, 0}, {0.5, 1.2, -0.3}, {-1.0, 0.2, 0.7}, {2.0, 0.0, -2.0}};
+  for (const auto& mp : model) {
+    double w[3];
+    for (int k = 0; k < 3; ++k) {
+      w[k] = mp[0] * car.m[0][k] + mp[1] * car.m[1][k] + mp[2] * car.m[2][k] + car.m[3][k];
+    }
+    for (int pass = 0; pass < 2; ++pass) {
+      const double p[3] = {w[0] + (pass ? shift[0] : 0.0), w[1] + (pass ? shift[1] : 0.0), w[2] + (pass ? shift[2] : 0.0)};
+      const float* rows = pass ? moved : own;
+      double via[4], direct[4];
+      for (int j = 0; j < 4; ++j) {
+        via[j] = mp[0] * rows[0 * 4 + j] + mp[1] * rows[1 * 4 + j] + mp[2] * rows[2 * 4 + j] + rows[3 * 4 + j];
+        direct[j] = p[0] * light_clip.m[0][j] + p[1] * light_clip.m[1][j] + p[2] * light_clip.m[2][j] + light_clip.m[3][j];
+      }
+      const double scale = std::max(1.0, std::fabs(direct[3]));
+      for (int j = 0; j < 4; ++j) {
+        CheckNear(via[j] / scale, direct[j] / scale, 5e-3,
+                  std::string(pass ? "the skirt's copy" : "the car") + " lands where the light's clip puts the world point, component " + std::to_string(j));
+      }
+    }
+  }
+  // Without a camera there is no matrix.
+  Check(!ls::SkirtReplayMatrix(ls::Camera{}, light_clip, shift, &skirt), "no camera, no skirt matrix");
+  // The part's own ray: from the eye to its place, unit; the view's axis when it is at the eye.
+  {
+    const double eye[3] = {10.0, 2.0, -5.0}, axis[3] = {0.0, 0.0, 1.0}, place[3] = {10.0 + 30.0, 2.0, -5.0 + 40.0};
+    double dir[3];
+    ls::SkirtDirection(eye, place, axis, dir);
+    CheckNear(dir[0], 0.6, 1e-12, "the part's ray: x");
+    CheckNear(dir[1], 0.0, 1e-12, "the part's ray: y");
+    CheckNear(dir[2], 0.8, 1e-12, "the part's ray: z");
+    ls::SkirtDirection(eye, eye, axis, dir);
+    CheckNear(dir[2], 1.0, 1e-12, "a part at the eye takes the view's axis");
+    // The shift along a ray 40 degrees off the axis still lands the copy behind the part's own surface: its component along the ray is the push.
+    double shift2[3];
+    const double level[3] = {0.0, 0.0, 1.0};
+    ls::SkirtShift(level, shift2);
+    CheckNear(shift2[1], -ls::kSkirtDrop, 1e-12, "a level ray moves the copy straight down by the drop");
+    const double off[3] = {std::sin(ls::Rad(40.0)), 0.0, std::cos(ls::Rad(40.0))};
+    ls::SkirtShift(off, shift2);
+    CheckNear(shift2[0] * off[0] + shift2[1] * off[1] + shift2[2] * off[2], ls::kSkirtPush, 1e-12, "along a ray 40 degrees off the axis the push is the full push");
+  }
+}
+
+void CheckVehicleCensus() {
+  ls::VehicleCensus census;
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kNone);
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kNone);
+  census.Note(0x3B4E4762B73D5239ull, ls::Skip::kNotOpaque);
+  census.Note(0x23FB35FC659D4A67ull, ls::Skip::kOutOfView);
+  Check(census.draws == 4 && census.used == 2 && census.overflow == 0, "the census counts draws and shaders");
+  const std::string text = ls::DescribeVehicleCensus(census);
+  Check(text.find("23FB35FC659D4A67: 2 drawn, 1 outside the lamps' view;") != std::string::npos, "the log names a shader's verdicts: " + text);
+  Check(text.find("3B4E4762B73D5239: 1 not opaque;") != std::string::npos, "... each shader on its own: " + text);
+  for (uint64_t i = 0; i < 40; ++i) {
+    census.Note(0x1000 + i, ls::Skip::kNone);
+  }
+  Check(census.used == ls::VehicleCensus::kRows && census.overflow == 10 && census.draws == 44, "the 33rd shader and beyond are counted, not named");
+  Check(ls::DescribeVehicleCensus(census).find("(and 10 draws of other shaders)") != std::string::npos, "... and the log says so");
+  census.Clear();
+  Check(census.draws == 0 && census.used == 0 && ls::DescribeVehicleCensus(census).empty(), "a cleared census is empty");
+}
+
+// ---------------------------------------------------------------------------
+// the levels: views, sizes, memory (owner, 2026-11-20: the levels differ by how many cars are shadowed, not only by how sharp)
+// ---------------------------------------------------------------------------
+
+void CheckLevels() {
+  Check(ls::kViewsHigh == 2 && ls::kViewsUltra == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
+  Check(ls::MaxViews(ls::Level::kHigh, 0) == 2 && ls::MaxViews(ls::Level::kUltra, 0) == 3 && ls::MaxViews(ls::Level::kOff, 0) == 0, "the levels' view counts");
+  Check(ls::MaxViews(ls::Level::kHigh, 1) == 1 && ls::MaxViews(ls::Level::kHigh, 4) == 4 && ls::MaxViews(ls::Level::kUltra, 7) == 4 &&
+            ls::MaxViews(ls::Level::kUltra, -3) == 3,
+        "the debug override takes 1 to 4 views, a negative one is the level's");
+  // Every level draws views the published frame and the headlight variant's block can hold (a view for each lit lamp, a lamp for each car: four).
+  larecomp::gpu::LocalShadowFrame frame;
+  Check(ls::kMaxViews == frame.views.size() && ls::kViewsUltra <= ls::kMaxViews && ls::kViewsHigh < ls::kViewsUltra, "the views a level draws fit the published frame");
+
+  // The atlas of every level and every number of views, at both tile sizes: where each tile is, inside the atlas, none on another, and the memory.
+  struct Case {
+    uint32_t tile, views, width, height;
+  };
+  const Case cases[] = {{512, 1, 512, 512},   {512, 2, 1024, 512},   {512, 3, 1536, 512},   {512, 4, 1024, 1024},
+                        {1024, 1, 1024, 1024}, {1024, 2, 2048, 1024}, {1024, 3, 3072, 1024}, {1024, 4, 2048, 2048}};
+  for (const Case& c : cases) {
+    const std::string at = std::to_string(c.views) + " view(s) of " + std::to_string(c.tile);
+    const ls::AtlasLayout atlas = ls::MakeAtlas(c.tile, c.views);
+    Check(atlas.valid() && atlas.views == c.views && atlas.width() == c.width && atlas.height() == c.height, at + ": the atlas is " + std::to_string(c.width) + "x" + std::to_string(c.height));
+    std::unordered_set<uint64_t> seen;
+    for (uint32_t k = 0; k < c.views; ++k) {
+      const ls::TileRect r = ls::TileAt(atlas, k);
+      Check(r.size == c.tile && r.x % c.tile == 0 && r.y % c.tile == 0 && r.x + r.size <= atlas.width() && r.y + r.size <= atlas.height(), at + ": tile " + std::to_string(k) + " is inside the atlas, on the tile grid");
+      Check(seen.insert((uint64_t(r.x) << 32) | r.y).second, at + ": tile " + std::to_string(k) + " is a tile of its own");
+      // The published rectangle (what the shader compares a point with) is the tile, in uv, and no other tile's.
+      float uv[4], rect[4];
+      ls::UvRect(atlas, k, uv);
+      ls::PublishedRect(uv, rect);
+      CheckNear(rect[0] * atlas.width(), r.x, 1e-2, at + ": rect u0 of tile " + std::to_string(k));
+      CheckNear(rect[1] * atlas.height(), r.y, 1e-2, at + ": rect v0 of tile " + std::to_string(k));
+      CheckNear(rect[2] * atlas.width(), r.x + r.size, 1e-2, at + ": rect u1 of tile " + std::to_string(k));
+      CheckNear(rect[3] * atlas.height(), r.y + r.size, 1e-2, at + ": rect v1 of tile " + std::to_string(k));
+    }
+    // Unused texels: none for up to three views in a row; a 2x2 atlas of four is full too.
+    Check(uint64_t(atlas.width()) * atlas.height() == uint64_t(c.tile) * c.tile * c.views, at + ": no tile is left over");
+    Check(ls::AtlasBytes(atlas) == uint64_t(c.width) * c.height * 8, at + ": 8 bytes a texel (D32 float + S8)");
+  }
+  // Memory: high 4 MiB (it was 2), ultra 24 MiB (it was 16): the figures in the setting's help.
+  const ls::AtlasLayout high = ls::AtlasFor(ls::Level::kHigh, 0);
+  const ls::AtlasLayout ultra = ls::AtlasFor(ls::Level::kUltra, 0);
+  Check(high.width() == 1024 && high.height() == 512 && high.cols == 2 && high.rows == 1, "high: 1024 x 512, two tiles of 512 side by side");
+  Check(ultra.width() == 3072 && ultra.height() == 1024 && ultra.cols == 3 && ultra.rows == 1, "ultra: 3072 x 1024, three tiles of 1024 in a row");
+  CheckNear(ls::Mib(ls::AtlasBytes(high)), 4.0, 1e-9, "high holds 4 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 24.0, 1e-9, "ultra holds 24 MiB (a 2 x 2 layout of three would hold 32)");
+  Check(ls::AtlasBytes(ls::AtlasFor(ls::Level::kOff, 0)) == 0 && !ls::AtlasFor(ls::Level::kOff, 0).valid(), "off holds nothing");
+  Check(ls::AtlasFor(ls::Level::kUltra, 4).width() == 2048 && ls::AtlasFor(ls::Level::kUltra, 4).height() == 2048, "the debug override of four views is a 2 x 2 atlas");
+  Check(ls::AtlasFor(ls::Level::kHigh, 0).width() <= 3072 && ls::AtlasFor(ls::Level::kUltra, 0).width() <= 4096, "a texture a Vulkan device must support (4096)");
+  // The size follows the level, not the number of cars lit: the atlas is the same for one car or three.
+  Check(ls::AtlasFor(ls::Level::kUltra, 0).views == 3 && ls::AtlasFor(ls::Level::kHigh, 0).views == 2, "the atlas has a tile for every view of its level");
+  // What the log says.
+  const std::string text = ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "auto"), gc::GpuClass::kHigh);
+  Check(text.find("ultra") != std::string::npos && text.find("up to 3 views of 1024x1024") != std::string::npos, "Describe says three views of 1024: " + text);
+  const std::string mid = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "auto"), gc::GpuClass::kMid);
+  Check(mid.find("up to 2 views of 512x512") != std::string::npos, "Describe says two views of 512: " + mid);
+}
+
+// A point through a published view of a 3-in-a-row atlas lands in its own tile's rectangle and in no other's: what the lit shaders' rectangle test does.
+void CheckThreeViewsLand() {
+  for (uint32_t tile : {512u, 1024u}) {
+    const ls::AtlasLayout atlas = ls::MakeAtlas(tile, 3);
+    ls::Light lamps[3] = {Lamp(0.0, 0.7, 0.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(30.0, 0.7, 40.0, 0.0, 0.0, -1.0, 2, false, 1), Lamp(-20.0, 0.7, 25.0, 1.0, 0.0, 0.0, 3, false, 2)};
+    for (uint32_t k = 0; k < 3; ++k) {
+      ls::Group g;
+      ls::GroupLights(&lamps[k], 1, 1, &g);
+      ls::ViewSpec spec;
+      tp::Mat4 clip;
+      Check(ls::FitView(&lamps[k], g, &spec) && ls::LightClip(spec, true, &clip), "a view for the lamp");
+      float uv[4], rect[4], m[16];
+      ls::UvRect(atlas, k, uv);
+      ls::PublishedRect(uv, rect);
+      ls::WorldToShadow(clip, uv, 1.0, 1.0, m);
+      for (double dist : {8.0, 20.0, 35.0}) {
+        const double p[3] = {spec.eye[0] + spec.dir[0] * (spec.lamps_m + dist), spec.eye[1] + spec.dir[1] * (spec.lamps_m + dist),
+                             spec.eye[2] + spec.dir[2] * (spec.lamps_m + dist)};
+        double u, v, d;
+        const std::string at = "tile " + std::to_string(tile) + " view " + std::to_string(k) + " at " + std::to_string(int(dist)) + " m";
+        Check(ls::MapPoint(m, p, &u, &v, &d), at + ": in front of the view");
+        for (uint32_t other = 0; other < 3; ++other) {
+          float ouv[4], orect[4];
+          ls::UvRect(atlas, other, ouv);
+          ls::PublishedRect(ouv, orect);
+          const bool inside = u >= orect[0] && u <= orect[2] && v >= orect[1] && v <= orect[3];
+          Check(inside == (other == k), at + ": the axis point is in tile " + std::to_string(other) + "'s rectangle only when it is its own");
+        }
+        CheckNear(u * atlas.width(), ls::TileAt(atlas, k).x + tile * 0.5, 0.1, at + ": the axis is the middle of the tile (x)");
+        CheckNear(v * atlas.height(), tile * 0.5, 0.1, at + ": the axis is the middle of the tile (y)");
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// which cars get a view
+// ---------------------------------------------------------------------------
+
+// A car with one lamp at (x, 0.7, z).
+ls::Light CarLamp(uint32_t key, double x, double z, bool player = false, uint32_t index = 0) { return Lamp(x, 0.7, z, 0.0, 0.0, 1.0, key, player, index); }
+
+// Picks with a fresh set of lights each time (the index is the light's place in the set): the car keys in the picked order.
+std::vector<uint32_t> Keys(const ls::Group* groups, uint32_t n) {
+  std::vector<uint32_t> keys;
+  for (uint32_t i = 0; i < n; ++i) {
+    keys.push_back(groups[i].car_key);
+  }
+  return keys;
+}
+
+bool Same(const std::vector<uint32_t>& a, std::initializer_list<uint32_t> b) { return a == std::vector<uint32_t>(b); }
+
+void CheckPicking() {
+  const ls::PickContext none;
+  // The player's car first and always; the others nearest first. Four lit cars: the player's, and others at 30, 12 and 60 m from its lamps.
+  ls::Light cars[4] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 30, false, 1), CarLamp(3, 12, 0, false, 2), CarLamp(4, 0, -60, false, 3)};
+  ls::Group g[4];
+  {
+    ls::ViewPicker p;
+    uint32_t n = p.Pick(cars, 4, ls::MaxViews(ls::Level::kHigh, 0), none, g);
+    Check(n == 2 && Same(Keys(g, n), {1, 3}), "high: the player's car and the nearest other car (12 m)");
+    ls::ViewPicker q;
+    n = q.Pick(cars, 4, ls::MaxViews(ls::Level::kUltra, 0), none, g);
+    Check(n == 3 && Same(Keys(g, n), {1, 3, 2}), "ultra: the player's car and the two nearest other cars (12 m, 30 m); the 60 m car has none");
+    ls::ViewPicker r;
+    n = r.Pick(cars, 4, 4, none, g);
+    Check(n == 4 && Same(Keys(g, n), {1, 3, 2, 4}), "four views: every car, nearest first");
+    ls::ViewPicker s;
+    n = s.Pick(cars, 4, 1, none, g);
+    Check(n == 1 && g[0].is_player, "one view: the player's");
+    Check(s.Pick(cars, 4, 0, none, g) == 0 && s.held_count() == 0, "no view: none, and nobody holds one");
+    Check(s.Pick(cars, 0, 3, none, g) == 0, "no light: no view");
+  }
+  // The player's car is first even when it is the farthest from everything (the player listed last in the set, with a car that is near the camera).
+  {
+    ls::Light order[3] = {CarLamp(7, 0, 5, false, 0), CarLamp(8, 0, 9, false, 1), CarLamp(1, 0, 200, true, 2)};
+    ls::PickContext camera;
+    camera.have_reference = true;  // the camera is next to the other cars
+    camera.reference[2] = 6.0;
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(order, 3, 2, camera, g);
+    Check(n == 2 && g[0].car_key == 1 && g[0].is_player && g[1].car_key == 7, "the player's car is first whatever its place, then the nearest to the camera");
+  }
+  // No lamp of the player's: the best other cars, from the first light's place when there is no camera.
+  {
+    ls::Light others[3] = {CarLamp(5, 50, 0, false, 0), CarLamp(6, 0, 0, false, 1), CarLamp(9, 20, 0, false, 2)};
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(others, 3, 3, none, g);
+    Check(n == 3 && Same(Keys(g, n), {5, 9, 6}), "no player's lamp: the first light's car is the reference (itself, then 30 m, then 50 m)");
+  }
+  // The camera, not the player, is the reference when it is known: a car beside the camera but far from the player's car wins the second view.
+  {
+    ls::Light mix[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 20, 0, false, 1), CarLamp(3, 0, -40, false, 2)};
+    ls::PickContext camera;
+    camera.have_reference = true;
+    camera.reference[2] = -35.0;  // 5 m from car 3, 35 m from car 2
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(mix, 3, 2, camera, g);
+    Check(n == 2 && g[1].car_key == 3, "the importance is measured from the camera when it is known");
+  }
+  // The screen: a near car whose lamps are off the screen is worth 0.35 times as much as it is. A camera at the origin looking along +z, 90 degrees.
+  {
+    ls::ViewSpec view;
+    view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+    view.dir[0] = 0.0;
+    view.dir[1] = 0.0;
+    view.dir[2] = 1.0;
+    view.fov = ls::Rad(90.0);
+    view.near_m = 0.5;
+    view.far_m = 500.0;
+    tp::Mat4 vp;
+    Check(ls::LightClip(view, false, &vp), "a camera for the screen test");
+    const double on[3] = {0.0, 0.0, 10.0}, edge_in[3] = {12.0, 0.0, 10.0}, edge_out[3] = {14.0, 0.0, 10.0}, behind[3] = {0.0, 0.0, -5.0}, above[3] = {0.0, 14.0, 10.0};
+    Check(ls::OnScreen(vp, on, 1.3) && ls::OnScreen(vp, edge_in, 1.3) && !ls::OnScreen(vp, edge_out, 1.3) && !ls::OnScreen(vp, behind, 1.3) && !ls::OnScreen(vp, above, 1.3),
+          "a point is on the screen up to a third beyond the edge, never behind the camera");
+    Check(!ls::OnScreen(vp, edge_in, 1.0) && ls::OnScreen(vp, on, 1.0), "the margin is a share of the clip box");
+    ls::Light two[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, -15, false, 1), CarLamp(3, 0, 40, false, 2)};  // car 2 is behind the camera, car 3 ahead
+    ls::PickContext screen;
+    screen.have_reference = true;
+    screen.have_screen = true;
+    screen.view_projection = vp;
+    ls::ViewPicker p;
+    uint32_t n = p.Pick(two, 3, 2, screen, g);
+    Check(n == 2 && g[1].car_key == 3, "a car 15 m behind the camera loses the view to one 40 m ahead of it (0.35 x 0.74 = 0.26 against 0.28)");
+    ls::ViewPicker q;
+    n = q.Pick(two, 3, 2, none, g);  // no screen known: distance alone, car 2 first
+    Check(n == 2 && g[1].car_key == 2, "with no screen known the distance alone ranks them");
+  }
+  // The importance's numbers: a half at 25 m, 0.35 off the screen, 1.3 for the holder.
+  CheckNear(ls::ViewImportance(0.0, true, false), 1.0, 1e-12, "importance 1 at the camera");
+  CheckNear(ls::ViewImportance(25.0, true, false), 0.5, 1e-12, "... a half at 25 m");
+  CheckNear(ls::ViewImportance(25.0, false, false), 0.5 * 0.35, 1e-12, "... 0.35 of that off the screen");
+  CheckNear(ls::ViewImportance(25.0, true, true), 0.5 * 1.3, 1e-12, "... 1.3 times it for the car that holds a view");
+  Check(ls::ViewImportance(10.0, true, false) > ls::ViewImportance(20.0, true, false) && ls::ViewImportance(10.0, false, false) < ls::ViewImportance(10.0, true, false),
+        "nearer and on the screen is more important");
+}
+
+void CheckPickingHysteresis() {
+  const ls::PickContext none;
+  ls::Group g[4];
+  // Two other cars at about the same distance from the player's car that trade places with every frame (a pass, two cars side by side): with only ONE view for
+  // them (high with the player's car and one other) the picking without a memory flips every other frame, the picker keeps the holder.
+  int flips_plain = 0, flips_sticky = 0;
+  uint32_t last_plain = 0, last_sticky = 0;
+  ls::ViewPicker sticky;
+  for (int frame = 0; frame < 200; ++frame) {
+    const double wobble = (frame % 2 == 0) ? 0.5 : -0.5;                  // metres: the cars' distances cross every frame
+    ls::Light cars[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 20 + wobble, false, 1), CarLamp(3, 0, 20 - wobble, false, 2)};
+    ls::Group plain[4];
+    const uint32_t a = ls::GroupLights(cars, 3, 2, plain);
+    const uint32_t b = sticky.Pick(cars, 3, 2, none, g);
+    Check(a == 2 && b == 2, "two views");
+    if (frame > 0) {
+      flips_plain += plain[1].car_key != last_plain ? 1 : 0;
+      flips_sticky += g[1].car_key != last_sticky ? 1 : 0;
+    }
+    last_plain = plain[1].car_key;
+    last_sticky = g[1].car_key;
+  }
+  Check(flips_plain >= 190, "without a memory the view goes back and forth with every wobble (" + std::to_string(flips_plain) + " swaps in 200 frames)");
+  Check(flips_sticky == 0, "with the holder kept it never moves (" + std::to_string(flips_sticky) + " swaps)");
+  // A challenger takes the view when it is clearly more important: the holder 25 m away (0.5), the challenger nearer. 1.3 x 0.5 = 0.65 = 1 / (1 + (d/25)^2) at d = 18.3 m.
+  {
+    ls::ViewPicker p;
+    ls::Light start[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 40, false, 2)};
+    Check(p.Pick(start, 3, 2, none, g) == 2 && g[1].car_key == 2 && p.Holds(2) && p.Holds(1) && !p.Holds(3), "the nearer car gets the view first");
+    ls::Light close_a[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 20, false, 2)};  // the challenger at 20 m: 0.61 < 0.65
+    Check(p.Pick(close_a, 3, 2, none, g) == 2 && g[1].car_key == 2, "a challenger at 20 m does not take a holder's view at 25 m");
+    ls::Light close_b[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 25, false, 1), CarLamp(3, 0, 15, false, 2)};  // 15 m: 0.735 > 0.65
+    Check(p.Pick(close_b, 3, 2, none, g) == 2 && g[1].car_key == 3, "a challenger at 15 m takes it");
+    Check(p.Holds(3) && !p.Holds(2), "... and now it holds it: the old holder must beat it by the same margin");
+    Check(p.Pick(close_a, 3, 2, none, g) == 2 && g[1].car_key == 3, "so the 20 m car (0.61) against the new holder at 15 m keeps it");
+  }
+  // A holder that leaves the set loses the view; one that comes back later (after Forget, or after another holder) starts with no bonus.
+  {
+    ls::ViewPicker p;
+    ls::Light a[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 30, false, 1), CarLamp(3, 0, 32, false, 2)};
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 2, "the nearer of two gets the view");
+    ls::Light b[2] = {CarLamp(1, 0, 0, true, 0), CarLamp(3, 0, 32, false, 1)};
+    Check(p.Pick(b, 2, 2, none, g) == 2 && g[1].car_key == 3 && !p.Holds(2), "the holder left: the other car takes the view");
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 3, "car 2 is back and 2 m nearer: the new holder keeps it (1.3 x)");
+    p.Forget();
+    Check(p.held_count() == 0 && !p.Holds(3), "Forget ends every hold");
+    p.Pick(a, 3, 2, none, g);
+    Check(g[1].car_key == 2, "after Forget the nearer car wins again");
+    // A gap of no lights keeps the holders (a night's frame or two without a set); a view count of 0 ends them.
+    p.Pick(nullptr, 0, 2, none, g);
+    Check(p.Holds(2), "no light for a frame: who holds a view is kept");
+    ls::Light c[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 34, false, 1), CarLamp(3, 0, 32, false, 2)};
+    p.Pick(c, 3, 2, none, g);
+    Check(g[1].car_key == 2, "... so the holder is still ahead of a challenger 2 m nearer");
+    p.Pick(c, 3, 0, none, g);
+    Check(p.held_count() == 0, "a level with no views ends them");
+  }
+  // The holders of a level with more views: three views, three cars hold them; a fourth that comes near enough takes the farthest holder's, never the player's.
+  {
+    ls::ViewPicker p;
+    ls::Light cars[4] = {CarLamp(1, 0, 0, true, 0), CarLamp(2, 0, 20, false, 1), CarLamp(3, 0, 30, false, 2), CarLamp(4, 0, 90, false, 3)};
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 2, 3}), "ultra: the player's, 20 m and 30 m");
+    cars[3] = CarLamp(4, 0, 10, false, 3);
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 4, 2}) && !p.Holds(3), "a car at 10 m takes the farthest holder's view (the car at 30 m), never the player's");
+    cars[3] = CarLamp(4, 0, 25, false, 3);
+    Check(p.Pick(cars, 4, 3, none, g) == 3 && Same(Keys(g, 3), {1, 2, 4}) && p.Holds(4) && !p.Holds(3),
+          "(the car that took the view, now at 25 m, keeps it against the car at 30 m: 0.65 against 0.41; the car at 20 m is ahead of it)");
+  }
+  // The view order does not matter to the maps but is stable: the same lights and holders always give the same order (ties by car key).
+  {
+    ls::Light twins[3] = {CarLamp(1, 0, 0, true, 0), CarLamp(9, 10, 0, false, 1), CarLamp(5, -10, 0, false, 2)};
+    ls::ViewPicker p, q;
+    p.Pick(twins, 3, 3, none, g);
+    const std::vector<uint32_t> first = Keys(g, 3);
+    q.Pick(twins, 3, 3, none, g);
+    Check(first == Keys(g, 3) && Same(first, {1, 5, 9}), "two cars at the same distance: the lower car key first");
+  }
+}
+
 }  // namespace
 
 int main() {
   CheckTypes();
   CheckSetting();
   CheckAtlas();
+  CheckLevels();
+  CheckThreeViewsLand();
   CheckLights();
   CheckGroups();
+  CheckPicking();
+  CheckPickingHysteresis();
   CheckFit();
   CheckWorldToShadow();
   CheckCamera();
@@ -982,6 +1544,9 @@ int main() {
   CheckViewCull();
   CheckCullAndKeys();
   CheckKeyPadding();
+  CheckCarCastsItsSilhouette();
+  CheckSkirtMatrix();
+  CheckVehicleCensus();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

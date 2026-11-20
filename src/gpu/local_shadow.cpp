@@ -59,6 +59,7 @@ constexpr uint32_t kReleaseAfterFrames = 240;
 constexpr uint64_t kCensusFrames = 1800;
 constexpr uint32_t kFlushGapFrames = 15;  // pipelines first seen are handed to the builder at most this often
 constexpr uint32_t kLitGraceFrames = 3;   // frames a map is still collected for after the rig's last lit light
+constexpr uint32_t kViewChangeLogs = 8;   // the first changes of which cars hold a view are logged one by one, the rest only counted
 constexpr uint32_t kListEveryFrames = 8;  // with no lit headlight the main view's draws are looked at one frame in this many, to list their pipelines
 
 LiveText& Setting() {
@@ -108,6 +109,7 @@ struct LocalShadow::Plan {
     rules::ViewSpec spec;
     tp::Mat4 clip;
     tp::Mat4 replay;
+    bool skirt_ok = false;    // the vehicle parts are drawn a second time: the skirt (local_shadow_rules.h "the ground skirt")
     float uv[4] = {};
     rules::TileRect tile;
     std::vector<uint32_t> keep;  // the casters this view draws, in draw order
@@ -396,28 +398,62 @@ void LocalShadow::HandOver() {
   headlight_rig::SetLocalShadows(have ? &published_ : nullptr, have ? atlas_info_.slot : kInvalidBindlessSlot, kSamplerPointClamp);
 }
 
-void LocalShadow::PlanEarlyViews() {
-  early_views_ = 0;
+// The frame's lights, and which cars get a view: made once when the frame opens, so that the cone cull (which drops draws no view can see) and the replay
+// (which draws into the views) work from the same cars. The set does not change until the next guest present. The hysteresis (local_shadow_rules.h ViewPicker)
+// lives across frames.
+void LocalShadow::PickViews() {
+  frame_light_count_ = 0;
+  frame_views_ = 0;
   const larecomp::gpu::HeadlightSet& set = larecomp::gpu::CurrentHeadlights();
-  rules::Light lights[4];
-  uint32_t count = 0;
-  for (uint32_t i = 0; i < set.count && i < set.lights.size(); ++i) {
+  for (uint32_t i = 0; i < set.count && i < set.lights.size() && frame_light_count_ < 4; ++i) {  // the groups take four lights (BuildGroups)
     const larecomp::gpu::Headlight& h = set.lights[i];
-    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &lights[count])) {
-      ++count;
+    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &frame_lights_[frame_light_count_])) {
+      ++frame_light_count_;
     }
   }
-  if (count == 0) {
+  rules::PickContext context;
+  if (last_camera_.valid) {
+    // The distance from the camera and whether a car's lamps are on the screen, as the last frame had them.
+    context.have_reference = true;
+    context.have_screen = true;
+    std::memcpy(context.reference, last_camera_.eye, sizeof(context.reference));
+    context.view_projection = last_camera_.view_projection;
+  }
+  frame_views_ = picker_.Pick(frame_lights_, frame_light_count_, rules::MaxViews(choice_.level, views_override_), context, frame_groups_);
+  // The log: which cars hold the views, when that changes (the first few times in full, the rest as a count in the census line).
+  bool changed = frame_views_ != last_view_count_;
+  for (uint32_t v = 0; v < frame_views_ && !changed; ++v) {
+    changed = frame_groups_[v].car_key != last_view_keys_[v];
+  }
+  if (changed) {
+    ++view_changes_;
+    if (view_changes_ <= kViewChangeLogs) {
+      std::string cars;
+      for (uint32_t v = 0; v < frame_views_; ++v) {
+        cars += std::format("{}{} (key {})", v ? ", " : "", frame_groups_[v].is_player ? "the player's car" : "a car", frame_groups_[v].car_key);
+      }
+      REXLOG_INFO("{} views now: {} of {} lit car(s), of at most {}: {} (change {})", kPrefix, frame_views_, frame_light_count_,
+                  rules::MaxViews(choice_.level, views_override_), cars.empty() ? std::string("none") : cars, view_changes_);
+    }
+    last_view_count_ = frame_views_;
+    for (uint32_t v = 0; v < frame_views_; ++v) {
+      last_view_keys_[v] = frame_groups_[v].car_key;
+    }
+  }
+}
+
+// The cone cull's views: the ones PickViews chose, as the lights alone say them.
+void LocalShadow::PlanEarlyViews() {
+  early_views_ = 0;
+  if (frame_views_ == 0) {
     return;  // no lamp lit: the test light (made at the camera) is not planned here
   }
-  rules::Group groups[4];
-  const uint32_t views = rules::GroupLights(lights, count, rules::MaxViews(choice_.level, views_override_), groups);
-  for (uint32_t v = 0; v < views; ++v) {
-    if (!rules::FitView(lights, groups[v], &early_specs_[v])) {
+  for (uint32_t v = 0; v < frame_views_; ++v) {
+    if (!rules::FitView(frame_lights_, frame_groups_[v], &early_specs_[v])) {
       return;  // the replay will refuse this frame too
     }
   }
-  early_views_ = views;
+  early_views_ = frame_views_;
 }
 
 void LocalShadow::EvaluatePlace(const ConstantBanks::Banks& banks) {
@@ -450,6 +486,7 @@ void LocalShadow::BeginFrame() {
   collected_ = 0;
   collect_cycles_ = 0;
   std::memset(counts_, 0, sizeof(counts_));
+  vehicle_census_.Clear();
   early_views_ = 0;
   early_camera_ = rules::Camera{};
   early_tries_ = 0;
@@ -478,6 +515,7 @@ void LocalShadow::BeginFrame() {
   test_mode_ = int(larecomp::settings::mcla_gpu_headlight_shadow_test.Get());
   bias_scale_ = float(larecomp::settings::mcla_gpu_headlight_shadow_bias.Get());
   cone_cull_ = int(larecomp::settings::mcla_gpu_headlight_shadow_cone.Get());
+  skirt_ = int(larecomp::settings::mcla_gpu_headlight_shadow_skirt.Get());
   wanted_ = choice_.level != rules::Level::kOff;
   if (larecomp::gpu::CurrentHeadlights().count > 0) {
     lit_frames_left_ = kLitGraceFrames;
@@ -488,9 +526,17 @@ void LocalShadow::BeginFrame() {
   // By day (nothing lit) the draws are only looked at to list their pipelines, so that the night's are made: one frame in a few is enough, a shape that is
   // seen late is left out of a map for the moment (pending) and listed then.
   offering_ = wanted_ && (collecting_ || frame_ % kListEveryFrames == 0);
+  frame_light_count_ = 0;
+  frame_views_ = 0;
+  if (collecting_) {
+    PickViews();
+  } else {
+    picker_.Forget();  // the lights have been off for a while: the next night's pick starts afresh
+  }
   if (collecting_ && cone_cull_ != 0) {
     PlanEarlyViews();
-  }  const uint32_t state = uint32_t(choice_.level) * 16u + rules::MaxViews(choice_.level, views_override_);
+  }
+  const uint32_t state = uint32_t(choice_.level) * 16u + rules::MaxViews(choice_.level, views_override_);
   if (state != last_choice_logged_) {
     last_choice_logged_ = state;
     REXLOG_INFO("{} {} (mcla_gpu_light_shadows = {}, live); {} view(s) at most; collecting only while a headlight is lit", kPrefix,
@@ -535,8 +581,19 @@ void LocalShadow::Collect(const MainDraw& d) {
   f.vs_key = d.vs->key;
   rules::Kind kind = rules::Kind::kOpaque;
   const rules::Skip verdict = rules::ClassifyDraw(f, uint32_t(skip_mask_), &kind);
+  // What became of the draw, for the frame's counters and, for a vehicle's part, the census by vertex shader (the log's "vehicle draws" line).
+  const bool census = f.vehicle && collecting_;  // by day nothing is stored, and nothing is counted by shader either
+  const auto dropped = [&](rules::Skip why) {
+    ++counts_[size_t(why)];
+    if (census) {
+      vehicle_census_.Note(f.vs_key, why);
+    }
+  };
   ++counts_[size_t(verdict)];
   if (verdict != rules::Skip::kNone) {
+    if (census) {
+      vehicle_census_.Note(f.vs_key, verdict);
+    }
     return;
   }
   rules::PipeKey key;
@@ -545,7 +602,7 @@ void LocalShadow::Collect(const MainDraw& d) {
   key.layout = d.input_layout->id;
   key.topology = uint32_t(g.topology);
   key.front_ccw = uint8_t((d.key->raster >> 4) & 1u);
-  key.cull = uint8_t(rules::ResolveCull(cull_policy_, GameCull(d.key->raster)));
+  key.cull = uint8_t(rules::ResolveCasterCull(cull_policy_, GameCull(d.key->raster), f.vehicle));
   if (f.alpha_tested && d.ps) {
     key.ps = d.ps->key;
     key.ps_variant = 1;
@@ -554,7 +611,7 @@ void LocalShadow::Collect(const MainDraw& d) {
   // pipelines are made.
   const uint32_t pipe = PipelineFor(d, key);
   if (pipe == rules::kNoPipeline) {
-    ++counts_[size_t(rules::Skip::kPipeline)];
+    dropped(rules::Skip::kPipeline);
     return;
   }
   if (!collecting_) {
@@ -573,7 +630,7 @@ void LocalShadow::Collect(const MainDraw& d) {
       EvaluatePlace(*d.banks);
     }
     if (!eval_ok_) {
-      ++counts_[size_t(rules::Skip::kNotWvp)];
+      dropped(rules::Skip::kNotWvp);
       return;
     }
     const double reach = rules::CasterReach(f.vehicle);
@@ -582,7 +639,7 @@ void LocalShadow::Collect(const MainDraw& d) {
       in_view = rules::SphereInView(early_specs_[v], eval_origin_, reach);
     }
     if (!in_view) {
-      ++counts_[size_t(rules::Skip::kOutOfView)];
+      dropped(rules::Skip::kOutOfView);
       return;
     }
   }
@@ -616,6 +673,9 @@ void LocalShadow::Collect(const MainDraw& d) {
   c.shared = uint32_t(shared_.size() - 1);
   casters_.push_back(std::move(c));
   ++collected_;
+  if (census) {
+    vehicle_census_.Note(f.vs_key, rules::Skip::kNone);
+  }
 }
 
 bool LocalShadow::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
@@ -679,15 +739,17 @@ bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Su
     }
     return false;
   }
-  // The lights, grouped by car; the views a level draws.
-  const larecomp::gpu::HeadlightSet& set = larecomp::gpu::CurrentHeadlights();
-  for (uint32_t i = 0; i < set.count && i < set.lights.size(); ++i) {
-    const larecomp::gpu::Headlight& h = set.lights[i];
-    rules::Light light;
-    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &light)) {
-      plan.lights[plan.light_count++] = light;
-    }
+  // The lights and the cars that get a view: the frame's pick (BeginFrame), the same one the cone cull worked from.
+  last_camera_ = plan.camera;  // the next frame's pick measures from this one's camera
+  for (uint32_t i = 0; i < frame_light_count_; ++i) {
+    plan.lights[i] = frame_lights_[i];
   }
+  plan.light_count = frame_light_count_;
+  rules::Group groups[4];
+  for (uint32_t v = 0; v < frame_views_; ++v) {
+    groups[v] = frame_groups_[v];
+  }
+  plan.views = frame_views_;
   bool synthetic = false;
   if (plan.light_count == 0 && test_mode_ != 0) {
     // mcla_gpu_headlight_shadow_test: a light of its own at the camera (the map is drawn and can be looked at; nothing reads it).
@@ -699,18 +761,16 @@ bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Su
     if (rules::MakeLight(pos, dir, float(std::cos(rules::Rad(35.0))), 40.0f, 0xFFFFFFFFu, true, 0, &plan.lights[0])) {
       plan.light_count = 1;
       synthetic = true;
+      plan.views = rules::GroupLights(plan.lights, plan.light_count, 1, groups);
     }
   }
-  const uint32_t max_views = rules::MaxViews(choice_.level, views_override_);
-  rules::Group groups[4];
-  plan.views = plan.light_count ? rules::GroupLights(plan.lights, plan.light_count, max_views, groups) : 0;
   if (plan.views == 0) {
     ++no_map_[0];
     return false;
   }
   plan.sx = shared_.front().pos_scale[0] < 0.0f ? -1.0 : 1.0;
   plan.sy = shared_.front().pos_scale[1] < 0.0f ? -1.0 : 1.0;
-  plan.atlas = rules::MakeAtlas(choice_.tile(), max_views);
+  plan.atlas = rules::AtlasFor(choice_.level, views_override_);
   for (uint32_t v = 0; v < plan.views; ++v) {
     Plan::View& view = plan.view[v];
     view.group = groups[v];
@@ -719,6 +779,7 @@ bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Su
       ++no_map_[2];
       return false;
     }
+    view.skirt_ok = skirt_ != 0;
     view.tile = rules::TileAt(plan.atlas, v);
     rules::UvRect(plan.atlas, v, view.uv);
   }
@@ -840,6 +901,14 @@ bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Su
   last_collect_ns_ = uint64_t(cycles::ToNs(collect_cycles_));
   collect_ns_total_ += last_collect_ns_;
   idle_frames_ = 0;
+  // The vehicles' draws by vertex shader (a car is some 200 draws of some 20 shaders): the first frame that has a car, then one line in 1800 frames. It says
+  // which parts of a car are in the map and which are left out and why (the picture of 2026-11-20 had only the tyres).
+  if (vehicle_census_.draws >= 40 && frame_ >= next_vehicle_log_ && vehicle_logs_ < 8) {
+    ++vehicle_logs_;
+    next_vehicle_log_ = frame_ + kCensusFrames;
+    REXLOG_INFO("{} frame {}: {} vehicle draws by vertex shader (identity: collected, or why not):{}; the skirt copy of a vehicle's part is {}", kPrefix, frame_,
+                vehicle_census_.draws, rules::DescribeVehicleCensus(vehicle_census_), skirt_ != 0 ? "on" : "off");
+  }
   if (maps_ == 1) {
     // The first map: the line the run plan reads (views, draws replayed, skipped by kind).
     std::string skipped;
@@ -900,6 +969,13 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
   plume::RenderIndexBufferView bound_index;
   bool index_bound = false;
   std::vector<UploadSpan> bank_spans;
+  std::vector<UploadSpan> skirt_spans;
+  // What a view draws: each kept caster, and for a vehicle's part its skirt copy right after it (pass 1, local_shadow_rules.h "the ground skirt").
+  struct DrawItem {
+    uint32_t index;
+    uint32_t pass;
+  };
+  std::vector<DrawItem> items;
   float rows[16];
   bool upload_failed = false;
   uint32_t banks_written = 0;
@@ -909,11 +985,20 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
     list->setViewports(&viewport, 1);
     const plume::RenderRect scissor(int32_t(view.tile.x), int32_t(view.tile.y), int32_t(view.tile.x + view.tile.size), int32_t(view.tile.y + view.tile.size));
     list->setScissors(&scissor, 1);
-    // The replaced vertex constants of a bank version: made when the view first draws a caster that has it.
+    // The replaced vertex constants of a bank version (and of its skirt copy): made when the view first draws a caster that has it.
     bank_spans.assign(banks_.size() / kBankFloats, UploadSpan{});
+    skirt_spans.assign(view.skirt_ok ? banks_.size() / kBankFloats : 0, UploadSpan{});
+    items.clear();
+    items.reserve(view.keep.size() + view.keep.size() / 4);
     for (uint32_t index : view.keep) {
-      const Caster& c = casters_[index];
-      UploadSpan& vs_span = bank_spans[c.bank];
+      items.push_back({index, 0});
+      if (view.skirt_ok && casters_[index].vehicle) {
+        items.push_back({index, 1});
+      }
+    }
+    for (const DrawItem& item : items) {
+      const Caster& c = casters_[item.index];
+      UploadSpan& vs_span = item.pass == 0 ? bank_spans[c.bank] : skirt_spans[c.bank];
       if (!vs_span) {
         vs_span = upload_->Allocate(slot, guest::kConstantBankBytes, kConstantAlignment);
         if (!vs_span) {
@@ -921,7 +1006,18 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
           break;
         }
         const float* bank = banks_.data() + size_t(c.bank) * kBankFloats;
-        rules::ReplaceWvp(bank + size_t(rules::kWvpRegister) * 4, view.replay, rows);
+        // The skirt's copy of a bank: moved along the way the light travels to this car, not along the view's axis (a bank's draws share their place).
+        tp::Mat4 skirt;
+        const tp::Mat4* replay = &view.replay;
+        if (item.pass != 0) {
+          double dir[3], shift[3];
+          rules::SkirtDirection(view.spec.eye, c.origin, view.spec.dir, dir);
+          rules::SkirtShift(dir, shift);
+          if (rules::SkirtReplayMatrix(plan.camera, view.clip, shift, &skirt)) {
+            replay = &skirt;
+          }
+        }
+        rules::ReplaceWvp(bank + size_t(rules::kWvpRegister) * 4, *replay, rows);
         // The bank in three pieces around c8-c11, each byte written once (the span is write-combined memory: a second write to the same line costs).
         constexpr size_t kBefore = size_t(rules::kWvpRegister) * 16;
         constexpr size_t kAfter = kBefore + sizeof(float) * 16;
@@ -994,9 +1090,11 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
   list->setFramebuffer(nullptr);
   last_banks_ = banks_written;
   banks_total_ += banks_written;
-  // The lit draws of the next frame (and the translucent ones after this) read it as a texture.
+  // The lit draws of the next frame (and the translucent ones after this) read it as a texture, and the volumetric light's inject (a compute pass, later in
+  // this frame: volumetrics_headlights.h) reads it too: both stages (D3D12: ALL_SHADER_RESOURCE, a compute shader may not read PIXEL_SHADER_RESOURCE;
+  // Vulkan: fragment and compute). The pixel readers are unchanged.
   const plume::RenderTextureBarrier read(atlas_.texture.get(), plume::RenderTextureLayout::SHADER_READ);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS, read);
+  list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE), read);
   atlas_.layout = plume::RenderTextureLayout::SHADER_READ;
   if (upload_failed) {
     static bool reported = false;  // render thread only
@@ -1111,10 +1209,10 @@ void LocalShadow::Census() {
       skipped += std::format(" {} {},", skipped_total_[k], rules::SkipName(rules::Skip(k)));
     }
   }
-  REXLOG_INFO("{} frame {}: {} ({}x{}); since the start {} triggers, {} maps ({} views, {} draws replayed; the last map: {} view(s), {} draws of {} collected "
+  REXLOG_INFO("{} frame {}: {} ({}x{}); since the start {} triggers, {} maps ({} views, {} draws replayed, the cars holding the views changed {} times; the last map: {} view(s), {} draws of {} collected "
               "(opaque {}, alpha tested {}, skinned {}, vehicle {}), {} banks written, render thread {:.2f} ms for the pass and {:.2f} ms collecting; {:.2f} + {:.2f} ms a map on average, {:.0f} banks); no map: {} no lamp, {} no camera, {} view, "
               "{} atlas, {} pass; {} frames with pipelines still being made; {} pipelines; skipped (all frames, all views):{} ; {:.1f} MiB",
-              kPrefix, frame_, rules::Describe(choice_, gpu_class::Current()), atlas_.width, atlas_.height, triggers_, maps_, views_total_, draws_total_,
+              kPrefix, frame_, rules::Describe(choice_, gpu_class::Current()), atlas_.width, atlas_.height, triggers_, maps_, views_total_, draws_total_, view_changes_,
               last_views_, last_draws_, last_collected_, last_kinds_[0], last_kinds_[1], last_kinds_[2], last_kinds_[3], last_banks_, MilliSeconds(last_cpu_ns_),
               MilliSeconds(last_collect_ns_), maps_ ? MilliSeconds(cpu_ns_total_) / double(maps_) : 0.0,
               maps_ ? MilliSeconds(collect_ns_total_) / double(maps_) : 0.0, maps_ ? double(banks_total_) / double(maps_) : 0.0, no_map_[0], no_map_[1], no_map_[2], no_map_[3], no_map_[4], pending_draws_,
