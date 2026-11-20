@@ -108,6 +108,12 @@ inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
 // SharedConstants followed by ui_sharp::UiSharpConstants (Scene::UploadUiSharpConstants).
 inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
 
+// The G-buffer variants (gbuffer_types.h GBufferConstants, 48 bytes: c38 to c40 of the block; shaders.h kGBufferVariant and its alpha test twin) read their
+// block at the same place, in the draws that take one, which upload SharedConstants followed by it (Scene::UploadGBufferConstants). Where another variant's
+// block is in the same shader (the composition of the variant framework, package GB-B) the composer moves it; the variant's HLSL reads it through names the
+// transform defines (gbuffer_types.h).
+inline constexpr uint64_t kGBufferConstantsOffset = sizeof(SharedConstants);
+
 class ConstantBanks {
  public:
   struct Banks {

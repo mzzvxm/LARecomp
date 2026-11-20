@@ -211,6 +211,10 @@ add_executable(larecomp_car_chrome_rules_test EXCLUDE_FROM_ALL car_chrome_rules_
 # triangle list, the CPU rasteriser and the statistics against the car history image) likewise:
 #   cmake --build <dir> --target larecomp_car_dump_rules_test, then run src/gpu/larecomp_car_dump_rules_test (exit 0 = passed).
 add_executable(larecomp_car_dump_rules_test EXCLUDE_FROM_ALL car_dump_rules_test.cpp)
+# The G-buffer's frozen interface (gbuffer_types.h, gbuffer_rules.h, light_set.h; it compiles hlsl/gbuffer_common.hlsli as C++ and compares it with the twin)
+# and the host's pure rules (which draws get the sidecar, the frame window, the trigger) likewise:
+#   cmake --build <dir> --target larecomp_gbuffer_rules_test, then run src/gpu/larecomp_gbuffer_rules_test [<hlsl/gbuffer_common.hlsli>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_rules_test EXCLUDE_FROM_ALL gbuffer_rules_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
