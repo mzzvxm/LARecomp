@@ -116,7 +116,7 @@ The file is written atomically, the Director recognises its own write (no reload
 | Command | Args -> result |
 |---|---|
 | `camera.get` | `{}` -> `{mode, pose:{pos, yaw, pitch, roll, fov}, rows:{right, up, back}, near, far, aspect, valid}`. `mode`: `scene` (the scene's camera is the picture's), `freecam`, `game`. |
-| `camera.set` | `{pos?, yaw?, pitch?, roll?, fov?}` (or the same inside `pose`) -> `{mode:"freecam", pose}`. The free camera is placed there (no key is written); fields left out stay. |
+| `camera.set` | `{pos?, yaw?, pitch?, roll?, fov?}` (or the same inside `pose`) -> `{mode:"freecam", pose}`. The free camera is placed there (no key is written); fields left out stay. `no_world` when no city is loaded (the title screen, a menu, a loading screen): the pose would never be applied. |
 | `camera.look_at` | `{target, from?, fov?}` -> same. `target`: a target; `from`: where to stand (default: where the camera is). |
 | `camera.mode` | `{mode:"scene"\|"freecam"\|"game"}` -> `{mode}`. `game` leaves the picture to the game's own camera. |
 | `camera.key.add` [file] | `{t?:now, ease?, cut?:false, rig?}` -> `{line, lines, text}`. Inserts `cam <t> pos ... yaw ... pitch ... roll ... fov ...` from the camera as it is now (plus a `cut <t>` line when `cut`); `rig` is a rig's words instead of a pose (`"chase car:p1 dist 6"`). |

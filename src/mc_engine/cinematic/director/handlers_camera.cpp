@@ -64,6 +64,12 @@ void Place(const SnapPose& p) {
     FreecamSetPose(f);
 }
 
+// A city is loaded (a car on the road, the ambient manager built). Without one the free camera is not applied: the title screen's and the loading screen's camera are the game's.
+bool WorldUp() {
+    GameStateSample gs;
+    return SampleGameState(&gs) && gs.world_ready;
+}
+
 // A number as the scene file writes it: three decimals at most, trailing zeros dropped.
 std::string Num(double v) {
     char buf[48];
@@ -144,6 +150,8 @@ void RegisterCamera() {
                 return r.Fail(ErrorCode::kBadArgs, "camera.set: yaw, pitch, roll and fov must be numbers");
             }
             if (p.fov < 5.0 || p.fov > 150.0) return r.Fail(ErrorCode::kBadArgs, "camera.set: 'fov' must be 5 to 150 degrees");
+            // Run 1 (11-20): accepted in the title screen, answered `freecam` and was never applied (camera.get read the title's camera): say so.
+            if (!WorldUp()) return r.Fail(ErrorCode::kNoWorld, "camera.set: no city is loaded (the title screen, a menu or a loading screen): the free camera needs one");
             Place(p);
             Json res = Json::Object();
             res.Set("mode", "freecam");
@@ -173,6 +181,7 @@ void RegisterCamera() {
                 if (fov->AsNumber() < 5.0 || fov->AsNumber() > 150.0) return r.Fail(ErrorCode::kBadArgs, "camera.look_at: 'fov' must be 5 to 150 degrees");
                 p.fov = fov->AsNumber();
             }
+            if (!WorldUp()) return r.Fail(ErrorCode::kNoWorld, "camera.look_at: no city is loaded (the title screen, a menu or a loading screen): the free camera needs one");
             Place(p);
             Json res = Json::Object();
             res.Set("mode", "freecam");

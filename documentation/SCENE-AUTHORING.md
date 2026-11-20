@@ -156,6 +156,7 @@ Other commands, all one line: `st cmd slot:0 help` (every command with its argum
 - Do lint after every edit; do preview before you render; do read the map, not only the pictures.
 - Do use a spot where one exists and `st route` for car routes; do not write coordinates you guessed (the first hand-made route ran in the oncoming lane; `query route --file` says so).
 - Do hold the world (`traffic off peds off parked off police off`) in a shot with cars; a spawn takes about 4 s, keep the first camera key after the cars are ready.
+- Do spawn the cars of a scene AT 0 (`at 0 car p1 spawn ...`) when the scene is to be previewed or tested: the ready gate holds the clock at 0 until the cars of t = 0 are made, so a still at any time, a preview and a take all have them. A car spawned later is made some seconds after its spawn, at a time a seek, a still and a take do not share (a still waits for it, a take does not): preview and take differ there. A camera that is attached to a car which is not made yet stands at the place of its `spawn` statement until it is (it used to hold the world's origin, and the car, 800 m away, never loaded).
 - Do keep one take a scene, and the `end` after it.
 - Do give `expect` text with every edit made through the channel; on `stale` re-read.
 - Don't edit the scene while a take renders. Don't put paths, programs or `mcla_capture_*`, `mcla_scene*`, `mcla_director*` in a `set`.
