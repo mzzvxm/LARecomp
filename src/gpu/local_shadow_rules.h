@@ -845,7 +845,21 @@ inline Cull ResolveCasterCull(int policy, Cull game, bool vehicle) {
 inline constexpr double kSkirtDrop = 0.22;  // metres
 inline constexpr double kSkirtPush = 0.60;  // metres along the way the light travels
 
-// The world-space shift of the skirt's copy for a view that looks along `dir` (unit).
+// The way the light travels from a view's eye to a vehicle part's place (unit): the skirt moves along the part's own ray, not along the view's axis, so that a car at
+// the edge of a wide view, which the lamp lights from an angle, gets its copy behind its own surfaces too. `axis` stands in when the part is at the eye.
+inline void SkirtDirection(const double eye[3], const double origin[3], const double axis[3], double out[3]) {
+  double d[3] = {origin[0] - eye[0], origin[1] - eye[1], origin[2] - eye[2]};
+  if (!detail::Normalize(d)) {
+    d[0] = axis[0];
+    d[1] = axis[1];
+    d[2] = axis[2];
+  }
+  out[0] = d[0];
+  out[1] = d[1];
+  out[2] = d[2];
+}
+
+// The world-space shift of the skirt's copy for light that travels along `dir` (unit).
 inline void SkirtShift(const double dir[3], double out[3]) {
   out[0] = dir[0] * kSkirtPush;
   out[1] = dir[1] * kSkirtPush - kSkirtDrop;

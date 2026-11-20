@@ -1203,6 +1203,25 @@ void CheckSkirtMatrix() {
   }
   // Without a camera there is no matrix.
   Check(!ls::SkirtReplayMatrix(ls::Camera{}, light_clip, shift, &skirt), "no camera, no skirt matrix");
+  // The part's own ray: from the eye to its place, unit; the view's axis when it is at the eye.
+  {
+    const double eye[3] = {10.0, 2.0, -5.0}, axis[3] = {0.0, 0.0, 1.0}, place[3] = {10.0 + 30.0, 2.0, -5.0 + 40.0};
+    double dir[3];
+    ls::SkirtDirection(eye, place, axis, dir);
+    CheckNear(dir[0], 0.6, 1e-12, "the part's ray: x");
+    CheckNear(dir[1], 0.0, 1e-12, "the part's ray: y");
+    CheckNear(dir[2], 0.8, 1e-12, "the part's ray: z");
+    ls::SkirtDirection(eye, eye, axis, dir);
+    CheckNear(dir[2], 1.0, 1e-12, "a part at the eye takes the view's axis");
+    // The shift along a ray 40 degrees off the axis still lands the copy behind the part's own surface: its component along the ray is the push.
+    double shift2[3];
+    const double level[3] = {0.0, 0.0, 1.0};
+    ls::SkirtShift(level, shift2);
+    CheckNear(shift2[1], -ls::kSkirtDrop, 1e-12, "a level ray moves the copy straight down by the drop");
+    const double off[3] = {std::sin(ls::Rad(40.0)), 0.0, std::cos(ls::Rad(40.0))};
+    ls::SkirtShift(off, shift2);
+    CheckNear(shift2[0] * off[0] + shift2[1] * off[1] + shift2[2] * off[2], ls::kSkirtPush, 1e-12, "along a ray 40 degrees off the axis the push is the full push");
+  }
 }
 
 void CheckVehicleCensus() {

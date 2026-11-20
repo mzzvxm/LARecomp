@@ -108,8 +108,7 @@ struct LocalShadow::Plan {
     rules::ViewSpec spec;
     tp::Mat4 clip;
     tp::Mat4 replay;
-    tp::Mat4 skirt;           // the replay matrix of a vehicle's skirt copy (local_shadow_rules.h SkirtReplayMatrix)
-    bool skirt_ok = false;
+    bool skirt_ok = false;    // the vehicle parts are drawn a second time: the skirt (local_shadow_rules.h "the ground skirt")
     float uv[4] = {};
     rules::TileRect tile;
     std::vector<uint32_t> keep;  // the casters this view draws, in draw order
@@ -737,9 +736,7 @@ bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Su
       ++no_map_[2];
       return false;
     }
-    double shift[3];
-    rules::SkirtShift(view.spec.dir, shift);
-    view.skirt_ok = skirt_ != 0 && rules::SkirtReplayMatrix(plan.camera, view.clip, shift, &view.skirt);
+    view.skirt_ok = skirt_ != 0;
     view.tile = rules::TileAt(plan.atlas, v);
     rules::UvRect(plan.atlas, v, view.uv);
   }
@@ -966,7 +963,18 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
           break;
         }
         const float* bank = banks_.data() + size_t(c.bank) * kBankFloats;
-        rules::ReplaceWvp(bank + size_t(rules::kWvpRegister) * 4, item.pass == 0 ? view.replay : view.skirt, rows);
+        // The skirt's copy of a bank: moved along the way the light travels to this car, not along the view's axis (a bank's draws share their place).
+        tp::Mat4 skirt;
+        const tp::Mat4* replay = &view.replay;
+        if (item.pass != 0) {
+          double dir[3], shift[3];
+          rules::SkirtDirection(view.spec.eye, c.origin, view.spec.dir, dir);
+          rules::SkirtShift(dir, shift);
+          if (rules::SkirtReplayMatrix(plan.camera, view.clip, shift, &skirt)) {
+            replay = &skirt;
+          }
+        }
+        rules::ReplaceWvp(bank + size_t(rules::kWvpRegister) * 4, *replay, rows);
         // The bank in three pieces around c8-c11, each byte written once (the span is write-combined memory: a second write to the same line costs).
         constexpr size_t kBefore = size_t(rules::kWvpRegister) * 16;
         constexpr size_t kAfter = kBefore + sizeof(float) * 16;
