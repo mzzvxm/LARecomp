@@ -822,8 +822,8 @@ inline Cull ResolveCull(int policy, Cull game) {
 // The faces a CASTER is drawn with. The world keeps the policy's (faces turned from the light: a ground, a wall or a facade that faces the lamps casts no
 // shadow on itself); a VEHICLE's part is drawn on both faces under the default policy. A car's body is an open shell of panels that face outwards, and from a
 // lamp as low as a car's own the shadow on the road behind it is made by the panels the lamp SEES (the bumper, the sills, the front of the underbody), which a
-// "faces turned from the light" pass throws away: what is left is the far skin and the tyres (the owner's picture of 2026-11-20: four dark stripes where the four
-// tyres are and a lit gap between them, behind a car that should shadow its whole width). Both faces keep the nearest, which is the face the lamp sees.
+// "faces turned from the light" pass throws away (the owner's picture of 2026-11-20: dark stripes where the tyres are and the road between them lit, behind a car
+// that should shadow its whole width). Both faces keep the nearest, which is the face the lamp sees.
 inline Cull ResolveCasterCull(int policy, Cull game, bool vehicle) {
   if (vehicle && policy == 0) {
     return Cull::kNone;
