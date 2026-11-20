@@ -300,6 +300,9 @@ const ItemDef kDebugToolsItems[] = {
     // but Start, so close this menu to fly; Back + A on the pad records too. The file name is mcla_freecam_out.
     Bool("PM_RxDbgFlyCam",    "mcla_freecam",        "TRAILER FREE CAMERA: "),
     Bool("PM_RxDbgFlyRec",    "mcla_freecam_record", "RECORD FLIGHT: "),
+    // The Director's panel (ui/director_panel.h): the timeline, the camera keys by framing, the rigs, the cars and the routes over the picture, every action a command of
+    // the Director and a line of the scene file. Close this menu to use it; Ctrl+F12 flips it too (ui.bind.mcla_director). It switches the Director on itself.
+    Bool("PM_RxDbgDirPanel",  "mcla_director_panel", "DIRECTOR PANEL: "),
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),

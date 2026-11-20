@@ -53,8 +53,9 @@ struct Route {
     bool has_y = false;  // every point has a height
 };
 
-// Reads a route file's text. False with `error` ("line 7: ..."). A route has to have 2 points; length is checked by PathSampler::Build.
-bool ParseRoute(std::string_view text, Route* out, std::string* error);
+// Reads a route file's text. False with `error` ("line 7: ..."). A route has to have 2 points; length is checked by PathSampler::Build. `min_points` 0 or 1 reads a route that is
+// still being made (the Director's waypoints are dropped one at a time, so the file has one point before it has two); nothing that drives a car passes it.
+bool ParseRoute(std::string_view text, Route* out, std::string* error, size_t min_points = 2);
 
 // How fast the car goes: the route's own speeds, a speed of its own, or the route's speeds times `value`.
 enum class SpeedKind : uint8_t { kFile, kMetersPerSecond, kScale };

@@ -81,6 +81,9 @@ Json InsertedJson(const EditOutcome& o, const std::string& text) {
 
 // ---- the route files
 
+// A route the Director is making (waypoints dropped one at a time) has ONE point after the first drop; a route a car drives needs two (ParseRoute's default).
+constexpr size_t kMakingRoutePoints = 1;
+
 // Looks for a route file the way the cars package does: beside the scene, or in a `routes` folder beside it.
 bool FindRoute(const std::string& name, std::filesystem::path* out, std::string* error) {
     const PathCheck c = CheckRelativePath(name);
@@ -413,9 +416,10 @@ void RegisterCars() {
             std::vector<WayPoint> pts;
             std::string text;
             if (internal::ReadTextFile(file, &text)) {
+                // (a route being made has one point after the first drop: it must read, or the second drop fails)
                 Route route;
                 std::string perr;
-                if (!ParseRoute(text, &route, &perr)) return r.Fail(ErrorCode::kFailed, "the route file does not read: " + perr);
+                if (!ParseRoute(text, &route, &perr, kMakingRoutePoints)) return r.Fail(ErrorCode::kFailed, "the route file does not read: " + perr);
                 pts = ToWayPoints(route);
             }
             pts.push_back({at[0], at[1], at[2], speed});
@@ -447,7 +451,7 @@ void RegisterCars() {
                         std::string perr;
                         Json j = Json::Object();
                         j.Set("name", internal::Utf8(it->path().stem()));
-                        if (internal::ReadTextFile(it->path(), &text) && ParseRoute(text, &route, &perr)) {
+                        if (internal::ReadTextFile(it->path(), &text) && ParseRoute(text, &route, &perr, kMakingRoutePoints)) {
                             const std::vector<WayPoint> pts = ToWayPoints(route);
                             j.Set("points", static_cast<int64_t>(pts.size()));
                             j.Set("length_m", RouteLength(pts));
@@ -472,7 +476,7 @@ void RegisterCars() {
             if (!FindRoute(req.args.StringOr("route", ""), &file, &err)) return r.Fail(ErrorCode::kFailed, err);
             std::string text;
             Route route;
-            if (!internal::ReadTextFile(file, &text) || !ParseRoute(text, &route, &err)) return r.Fail(ErrorCode::kFailed, "the route file does not read: " + err);
+            if (!internal::ReadTextFile(file, &text) || !ParseRoute(text, &route, &err, kMakingRoutePoints)) return r.Fail(ErrorCode::kFailed, "the route file does not read: " + err);
             const std::vector<WayPoint> pts = ToWayPoints(route);
             Json res = Json::Object();
             res.Set("route", req.args.StringOr("route", ""));

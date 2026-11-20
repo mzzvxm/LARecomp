@@ -94,6 +94,10 @@ class CinematicSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, mcla_director_root, "", "TRAILER TOOLKIT DIRECTOR: the folder the Director's commands may write to (stills, takes, routes, proposals), as relative paths without '..'. "
     "A scene's own folder is always allowed too. Empty: the game's working folder.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_director_panel, false, "TRAILER TOOLKIT DIRECTOR PANEL (debug): the Director's panel over the picture: a timeline with the scene's keys to drag, the free camera's keys by "
+    "framing, rigs with sliders, cars to spawn and place, routes to record or drop and edit, the take's render button, and the routes and the camera's path drawn in the world. "
+    "Every action is a command of the Director and a line of the scene file. Live; the key Ctrl+F12 (ui.bind.mcla_director) flips it. Needs mcla_director (the panel offers to switch it on).", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_fixed_step_fps, 0.0, "TRAILER TOOLKIT: the game steps by exactly 1 / this many frames a second, whatever the frame takes (the engine timer is given "
     "the game's own tick count for it); the FPS limit, the step cap and frame pacing stand aside. No take, no frame gate. 0: off. "
     "10 to 1000.", rex::Range{0.0, 1000.0}, rex::kDebugOnly);
@@ -167,6 +171,7 @@ inline auto& mcla_cin_hud_alpha = g_cinematic.mcla_cin_hud_alpha;
 inline auto& mcla_director = g_cinematic.mcla_director;
 inline auto& mcla_director_info = g_cinematic.mcla_director_info;
 inline auto& mcla_director_root = g_cinematic.mcla_director_root;
+inline auto& mcla_director_panel = g_cinematic.mcla_director_panel;
 inline auto& mcla_fixed_step_fps = g_cinematic.mcla_fixed_step_fps;
 inline auto& mcla_freecam = g_cinematic.mcla_freecam;
 inline auto& mcla_freecam_inertia = g_cinematic.mcla_freecam_inertia;

@@ -41,8 +41,8 @@ void FreecamSetPose(const freecam::Pose& pose);
 bool FreecamGetPose(freecam::Pose* out);
 void FreecamSetOverride(CameraOverride mode);
 CameraOverride FreecamOverride();
-// A pad that is not the real one flies the camera while it is fed (every update; four updates without it and the real pad is back): the panel's mouse and
-// keys. Any thread.
+// A pad that is not the real one flies the camera while it is fed (every drawn frame of the panel; 150 ms of wall time without a feed and the real pad is back): the panel's
+// mouse and keys. Pad::look_right / look_up / speed_steps are amounts to apply once: they add up between two updates and the next one takes them. Any thread.
 void FreecamFeedPad(const freecam::Pad& pad);
 // A function called once for every update of the flight with the events its pad produced (freecam.h Events: the recorder's chords, and the panel's chords
 // Back + B add key, Back + RB / LB next / previous key, Back + Start play / pause that package E adds there). The Director's panel turns them into commands.

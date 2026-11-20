@@ -198,6 +198,7 @@
 {"mcla_director", "MCLA/Cinematic"},
 {"mcla_director_info", "MCLA/Cinematic"},
 {"mcla_director_root", "MCLA/Cinematic"},
+{"mcla_director_panel", "MCLA/Cinematic"},
 {"mcla_compare_effect", "MCLA/GPU"},
 {"mcla_compare_label_seconds", "MCLA/GPU"},
 {"mcla_controller_toast", "MCLA"},

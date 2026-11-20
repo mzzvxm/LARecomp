@@ -71,7 +71,7 @@ clock and the cars are kept, only a car whose statement changed is made again). 
 | `batch` | `{cmds:[{cmd, args?}], stop_on_error?:true}` -> `{results:[reply...]}` |
 | `events.set` | `{on?:bool, only?:[names]}` -> `{on, only}`: mute the connection's events, or take only the named ones |
 | `log.tail` | `{n?:50, filter?:text, level?:"warn"}` -> `{lines:[{seq, level, cat, text}], latest}`: the game's log lines (`[scene]`, `[cars]`, `[cap]`, `[dir]`) so an agent reads errors without the file |
-| `ui.open` | `{panel}` -> `{}`: asks the panel to open (`"director"`, `"timeline"`, ...) |
+| `ui.open` | `{panel}` -> `{}`: asks the panel to open (`"director"`, `"timeline"`, or a tab: `"camera"`, `"rigs"`, `"cars"`, `"paths"`, `"take"`, `"agent"`); the panel is `mcla_director_panel`, the key Ctrl+F12, a row on the DEBUG menu's TOOLS page. It also sets how the dock looks: `"collapse"` / `"expand"` (the bar alone, or the whole dock), `"hide"` / `"show"` (as Tab does), `"size-small"` / `"size-normal"` / `"size-tall"`, `"lanes-collapse"` / `"lanes-open"` (every lane but CAMERA a thin strip, or all open), `"tabs-left"` / `"tabs-right"` (scroll the tab strip by one) |
 | `ui.select` | `{line}` -> `{}`: points at a key; the panel highlights it |
 | `quit` | `{}` -> `{quitting:true}`: ends the game |
 
@@ -134,6 +134,7 @@ The file is written atomically, the Director recognises its own write (no reload
 | `car.path.record` | `{id, name, every_m?:2}` -> `{recording:true}`: records a car's drive (the player's, or a scene car's) |
 | `car.path.record.stop` | `{}` -> `{route, points, length_m}`: writes `routes\<name>.route` (`x,z,speed,y`, reduced to what the shape needs) |
 | `path.waypoint` | `{route, at:"camera"\|[x,y,z], speed?}` -> `{route, points}`: appends a waypoint to `routes\<route>.route` (creating it) |
+| `path.set` | `{route, points:[[x,y,z,speed]]}` -> `{route, points, length_m}`: writes the whole route file again (the panel's edits: a point moved or deleted, a speed changed, the route smoothed); 2 to 5000 points, speed 0.5 to 120 |
 | `path.list` | `{}` -> `{routes:[{name, points, length_m}]}` |
 | `path.get` | `{route}` -> `{route, points:[[x,y,z,speed]], length_m}` |
 
@@ -160,6 +161,7 @@ Always `{ok, result|error}`; `query.ground` says `not streamed` where the world 
 | `take.progress`, `take.done` | `name, frames` / `name, folder, state, frames, error?` |
 | `edit` | `rev, by, ops, lines`: what a client changed in the scene |
 | `agent` | `client, name, connected`: an agent came or left (the one that connects does not hear about itself) |
+| `ui.geometry` | the Director panel (mcla_director_panel) says where its things are, in ImGui's units (`display` = ImGui's DisplaySize; the window's client area in pixels over it is the scale): `hidden, collapsed, size ("small"|"normal"|"tall"), font, tab, tabs:{first,last,overflow}, picture:[x,y,w], axis:{t0,t1,x0,x1}, lanes:[{title,y,h,collapsed}], markers:[{line,t,x,y,label}], widgets:{"PLAY":[x,y,w,h], "DOCK":[...], "TAB CARS":[...], "TAB >":[...], "LANES":[...], "TIMELINE":[...]}` (a tab scrolled out of view has no widget until the strip scrolls to it: `"TAB <"` and `"TAB >"` are the arrows). At most four a second, when something moved; `ui.open` asks for one at once. A test that clicks and drags with the real mouse reads it. |
 
 ## The pure parts' tests
 `larecomp_director_test` (JSON, the command engine, the console grammar, the paths rule, the PNG writer, the route reducer, the projection, a loopback
