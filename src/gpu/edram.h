@@ -75,6 +75,7 @@
 
 #include <plume_render_interface.h>
 
+#include "key_guard.h"
 #include "scale.h"
 #include "side_views.h"
 #include "texture_bytes.h"
@@ -105,6 +106,10 @@ struct EdramKey {
            format == o.format && samples == o.samples && reserved == o.reserved;
   }
 };
+// Compared and hashed field by field (KeyHash), so padding would not matter here; the guard keeps it so if a day a byte hash is
+// used on it (the key is one 8-byte word: key_guard.h).
+static_assert(key_guard::kNoPadding<EdramKey>, "EdramKey must have no padding (key_guard.h)");
+static_assert(key_guard::AllMembersSet<EdramKey>(), "every EdramKey member needs a default initializer (key_guard.h)");
 
 // The colour format a target is stored as: the _AS_ variants share the
 // storage of their base format (24.12).

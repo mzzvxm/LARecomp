@@ -182,6 +182,11 @@ add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
 #   cmake --build <dir> --target larecomp_resolve_variants_test, then run src/gpu/larecomp_resolve_variants_test <src/gpu dir>.
 add_executable(larecomp_resolve_variants_test EXCLUDE_FROM_ALL resolve_variants_test.cpp)
 target_link_libraries(larecomp_resolve_variants_test PRIVATE plume)
+# The guards for the structs the renderer hashes or compares as bytes (key_guard.h: no padding, every member set, the float zero canonical) and the list of the
+# places in src/gpu that read a struct as bytes (a new one fails until it is audited): the headlight replay's key had tail padding and made 98 759 to 543 441
+# pipelines in a minute on some runs, 230 on others. Given the src/gpu folder it also reads the sources:
+#   cmake --build <dir> --target larecomp_key_guard_test, then run src/gpu/larecomp_key_guard_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_key_guard_test EXCLUDE_FROM_ALL key_guard_test.cpp)
 # The contact shadows' trace rules and the C++ twin of their march (contact_trace.h: the depth tolerance in pixel footprints, the
 # ray's fade and steps, the filter weights, the cost model) likewise:
 #   cmake --build <dir> --target larecomp_contact_trace_test, then run src/gpu/larecomp_contact_trace_test.
