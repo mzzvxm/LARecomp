@@ -17,11 +17,16 @@ bool Enabled();
 //   kFreecam      the flight wrote the slots
 //   kGameForced   the Director forced the game's own camera: the slots are the game's
 //   kNone         nobody yet: the slots hold the game's camera and the scene's camera (camera_runtime.cpp) may be written next
-enum class CameraSource : uint8_t { kNone, kFreecam, kGameForced };
+//   kScene        the scene's camera: camera_runtime.cpp wrote it into the slots just now (NoteSceneCameraWritten)
+enum class CameraSource : uint8_t { kNone, kFreecam, kGameForced, kScene };
 
 // Called by FreecamApply on every hook run while the Director is on, with the guest memory, the guest stack pointer of sub_822C0320 (the camera slots' frame)
 // and the camera mode. The Director reads the camera from the slots, or, for the scene's camera, evaluates the scene's camera track itself the way the hook
-// will (a shadow rig). CHECK: an exact reading of the scene camera needs one call in camera_runtime.cpp after WriteCamera (see director_runtime.cpp).
+// will (a shadow rig: the fallback for a hook run in which the scene's camera does not write; NoteSceneCameraWritten replaces it when it does).
 void NoteCameraHook(uint8_t* base, uint32_t sp, uint32_t mode, CameraSource who);
+
+// Called by CinematicCameraApply (camera_runtime.cpp) right after WriteCamera, while the Director is on: the slots hold the scene's camera, exactly the pose the
+// frame (and a take) shows. The Director reads it from them, so scene.get / camera.get / query.visible see the real camera, lag, springs and all.
+void NoteSceneCameraWritten(uint8_t* base, uint32_t sp, uint32_t mode);
 
 }  // namespace mc::cinematic::director

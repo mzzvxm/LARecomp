@@ -36,6 +36,7 @@
 
 #include "../camera.h"
 #include "../capture_core.h"
+#include "../camera_runtime.h"
 #include "../capture_mode.h"
 #include "../cars.h"
 #include "../freecam.h"
@@ -227,8 +228,8 @@ void NoteCameraHook(uint8_t* base, uint32_t sp, uint32_t mode, CameraSource who)
     double far_plane = RF(base, sp + kSlotFar);
     cam::Vec3 pos = slot_pos;
     cam::Basis basis = cam::FromSlotRows(rows);
-    v.mode = who == CameraSource::kFreecam ? "freecam" : "game";
-    if (who == CameraSource::kNone) {
+    v.mode = who == CameraSource::kFreecam ? "freecam" : who == CameraSource::kScene ? "scene" : "game";
+    if (who == CameraSource::kNone && !CinematicCameraActive()) {
         // The slots hold the game's own camera and the scene's camera is written after this hook (camera_runtime.cpp): the Director evaluates the scene's camera
         // track the way that hook will. CHECK: the two agree when the scene's camera has no follow lag; with a lag the shadow rig's springs have seen the same
         // times, so they agree too, but an exact reading needs one call in camera_runtime.cpp after WriteCamera.
@@ -282,6 +283,10 @@ void NoteCameraHook(uint8_t* base, uint32_t sp, uint32_t mode, CameraSource who)
     v.near_plane = near_plane;
     v.far_plane = far_plane;
     cs.view = v;
+}
+
+void NoteSceneCameraWritten(uint8_t* base, uint32_t sp, uint32_t mode) {
+    if (base) NoteCameraHook(base, sp, mode, CameraSource::kScene);
 }
 
 namespace internal {
@@ -1071,6 +1076,7 @@ const bool kCoreRegistered = (RegisterCore(), true);
 namespace mc::cinematic::director {
 bool Enabled() { return false; }
 void NoteCameraHook(uint8_t*, uint32_t, uint32_t, CameraSource) {}
+void NoteSceneCameraWritten(uint8_t*, uint32_t, uint32_t) {}
 void Tick() {}
 bool StreamingDone(bool* known) {
     if (known) *known = false;
