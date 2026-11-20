@@ -147,8 +147,8 @@ struct VolCascade {
 static_assert(sizeof(VolCascade) == 80);
 
 struct VolSun {
-  float right[4];  // xyz: c85 (the right axis the boxes are measured along)
-  float top[4];    // xyz: c82 (the top axis)
+  float right[4] = {};  // xyz: c85 (the right axis the boxes are measured along)
+  float top[4] = {};    // xyz: c82 (the top axis)
   std::array<VolCascade, kMaxCascades> cascades{};
   uint32_t atlas_slot = kNoSlot;  // the bindless slot of the cascade atlas (the collector's fetch constant 15), kNoSlot: none
   uint32_t cascade_count = 0;     // 0: no sun shadow (the sun is unshadowed: lit everywhere)
