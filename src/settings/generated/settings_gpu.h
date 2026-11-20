@@ -750,6 +750,11 @@ class GPUSettings final : public rex::SettingOwner {
     "they are on: 2.0 at night, 0 by day), and from the sun's height for a car whose points were not seen (night below "
     "3 degrees, none above 12; the default). 0: never. 1: always, by the sun's rule alone, to see them by day. Live.", rex::kDebugOnly, rex::Range{-1, 1});
 
+  REX_SETTING(bool, mcla_gpu_headlight_edge, true, "Diagnostic: how the headlights pick the cars at the edge of the frame. On (the default): a car is worth what its beam "
+    "adds to the picture, not where its lamp is, and a car the game stops drawing because it left the frame keeps its light while its beam is still in the view "
+    "(up to 1.5 seconds), fading with the beam and with its distance. Off: the first version, a light dropped within 8 frames of the game's last draw of its car, and "
+    "a car whose lamp is off the screen counted at 0.35. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_headlight_log, false, "Diagnostic: logs a census line of the headlights every 300 frames, with '[headlights]' in front: the sun and the "
     "night factor, the lens draws seen, the cars with a front lens, the lights picked with their place and axis, and the "
     "draws that took the variant. Live.", rex::kDebugOnly);
@@ -1579,6 +1584,7 @@ inline auto& mcla_gpu_hdr_paper_white_nits = g_gpu.mcla_gpu_hdr_paper_white_nits
 inline auto& mcla_gpu_hdr_peak_nits = g_gpu.mcla_gpu_hdr_peak_nits;
 inline auto& mcla_gpu_hdr_test_pattern = g_gpu.mcla_gpu_hdr_test_pattern;
 inline auto& mcla_gpu_headlight_cone = g_gpu.mcla_gpu_headlight_cone;
+inline auto& mcla_gpu_headlight_edge = g_gpu.mcla_gpu_headlight_edge;
 inline auto& mcla_gpu_headlight_log = g_gpu.mcla_gpu_headlight_log;
 inline auto& mcla_gpu_headlight_night = g_gpu.mcla_gpu_headlight_night;
 inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;

@@ -14,6 +14,8 @@
 //   mcla_gpu_headlight_cone      debug: the outer half angle in degrees (rules: kOuterDegrees; the inner is the same share of it)
 //   mcla_gpu_headlight_night     debug: -1 follow the game's own lights, else the sun (the default), 0 never, 1 always (a day test; the game's own light points are not
 //                                read then)
+//   mcla_gpu_headlight_edge      debug: on (the default) a car is ranked by how much of its BEAM is in the view and keeps its light after the game stops drawing it (it left the
+//                                frame) while the beam is still in the view; off is the first version (a light dropped within 8 frames, a car whose lamp is off the screen at 0.35)
 //   mcla_gpu_headlight_log       debug: a census line every 300 frames
 //
 // THE FROZEN INTERFACE (HEADLIGHT-SHADOW-REPLAY consumes it): Headlight, HeadlightSet and CurrentHeadlights() below. The set is the frame being
@@ -31,6 +33,16 @@
 // screen, with a hysteresis so that two equal cars do not trade places), and they fade in and out. The set made at the present of frame N is what frame N + 1
 // draws with (one frame of latency: a car's lamps are drawn before the world, but not every world draw is after every lamp), moved one frame ahead by the
 // track's own velocity.
+//
+// THE FRAME'S EDGE (HL-EDGE-FADE, owner 2026-11-20: "as traffic cars get near the edge of the frame, their headlights seem to turn off, or at least get much weaker"). The game draws a car
+// only while its bounds are in the view, so the rig knows a car only then, and the first version dropped a car's light within 8 frames of the game's last draw of it, and ranked a car whose
+// LAMP was off the screen at 0.35: a car at the edge of the frame lit the road in the picture and was treated as if it lit nothing. Now (light_influence.h; headlight_rig_rules.h Tracker,
+// given the frame's frustum) a car's importance is how much of its BEAM is in the view (the beam's cross sections along its axis, weighted by the light's strength there), a car's light fades
+// with its distance from the camera (in full to 90 m, gone at 140 m) and, when a car that was picked left through the picture's edge and the game stopped drawing it, its light goes on, the
+// car moved on by its own velocity (slowing a little a frame), for up to 90 frames while its beam is in the view (the light follows the beam out of the picture and tapers off over the last
+// 36 frames; a car that vanished in the middle of the picture fades as before). The same view ranks the cars for the shadow replay (local_shadow_rules.h ViewPicker). mcla_gpu_headlight_edge
+// off gives the first version back. The game's own glows (the halo of a lamp, glow_soft.h) had a twin of the same fault at the screen's edge: a glow whose centre was off the screen was tested
+// against the pixel at the edge in its row.
 //
 // THE GAME'S OWN LIGHT POINTS (headlight_points.h, src/mc_engine/hooks/headlight_points.cpp: a midasm hook at 0x8237AFB8 (one instruction after the night probe's own at 0x8237AFB4, which proved the place: two hooks at one address are one), which the night probe proved). The
 // game's light submit has every vehicle's light points by kind; the Headlight points have a world position, a racer's and the player's a direction (the car's
@@ -163,6 +175,8 @@ class HeadlightRig {
 
   GuestMemory* memory_ = nullptr;
   bool enabled_ = false;     // the setting resolved to on (read once a frame)
+  bool edge_ = true;         // mcla_gpu_headlight_edge: the tracker is given the frame's view (the beams count, a car that left the frame keeps its light while its beam is in the view)
+  bool last_view_ = false;   // the last present had a view (the census)
   bool observing_ = false;   // the hook is wanted in this frame
   uint64_t frame_ = 0;       // guest presents seen
   uint64_t last_night_ = 0;  // the last frame that saw night

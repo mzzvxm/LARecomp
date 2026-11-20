@@ -1442,6 +1442,109 @@ void CheckPicking() {
         "nearer and on the screen is more important");
 }
 
+// The views of cars at the edge of the frame (HL-EDGE-FADE, owner 2026-11-20: a traffic car's headlights fade near the frame's edge). A car is ranked for a view by how much of
+// its BEAM is in the picture (light_influence.h), not by whether its LAMP is on the screen: the first version ranked a car off the screen at 0.35 and so gave the view to a car
+// whose beam points out of the picture rather than to one at the edge whose beam crosses it.
+void CheckPickingReach() {
+  namespace li = mcla::gpu::light_influence;
+  // The importance's numbers: the first version's 0.35 for a beam that lights nothing, 1 from a reach of 0.45, smooth between; a holder keeps its 1.3.
+  CheckNear(ls::ViewImportanceReach(25.0, 0.0, false), 0.5 * 0.35, 1e-12, "a beam that lights nothing in the picture: 0.35 of the car's importance (a half at 25 m)");
+  CheckNear(ls::ViewImportanceReach(25.0, 0.45, false), 0.5, 1e-12, "a reach of 0.45: in full");
+  CheckNear(ls::ViewImportanceReach(25.0, 1.0, false), 0.5, 1e-12, "a reach of 1: in full");
+  CheckNear(ls::ViewImportanceReach(25.0, 1.0, true), 0.5 * 1.3, 1e-12, "the holder of a view keeps its 1.3");
+  {
+    bool monotone = true;
+    double previous = 0.0;
+    for (double r = 0.0; r <= 1.0; r += 0.01) {
+      const double v = ls::ViewImportanceReach(30.0, r, false);
+      monotone &= v >= previous - 1e-12;
+      previous = v;
+    }
+    Check(monotone, "the importance never falls as the beam's reach grows");
+  }
+
+  // A camera at the origin looking along +z, 90 degrees (the frustum's half width is the depth).
+  ls::ViewSpec view;
+  view.eye[0] = view.eye[1] = view.eye[2] = 0.0;
+  view.dir[0] = 0.0;
+  view.dir[1] = 0.0;
+  view.dir[2] = 1.0;
+  view.fov = ls::Rad(90.0);
+  view.near_m = 0.5;
+  view.far_m = 500.0;
+  tp::Mat4 vp;
+  Check(ls::LightClip(view, false, &vp), "a camera for the reach test");
+  ls::PickContext ctx;
+  ctx.have_reference = true;
+  ctx.have_screen = true;
+  ctx.view_projection = vp;
+  Check(li::MakeViewFrustum(vp.m, view.eye, &ctx.frustum) && ctx.frustum.valid, "the camera's frustum is made from the same matrix");
+  ls::PickContext legacy = ctx;
+  legacy.frustum = li::ViewFrustum{};  // the first version's: the lamp's place on the screen
+
+  // GroupReach: the strongest of a car's lamps. A car with two lamps, one in the view and one far outside pointing out of it: the car's reach is the first one's.
+  {
+    ls::Light two[2] = {Lamp(0.0, 0.7, 20.0, 0.0, 0.0, 1.0, 5, false, 0), Lamp(-60.0, 0.7, 20.0, -1.0, 0.0, 0.0, 5, false, 1)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    p.Pick(two, 2, 2, legacy, g);
+    const double both = ls::GroupReach(two, g[0], ctx.frustum);
+    ls::Light only_out[1] = {Lamp(-60.0, 0.7, 20.0, -1.0, 0.0, 0.0, 5, false, 0)};
+    ls::Group h[4];
+    ls::ViewPicker q;
+    q.Pick(only_out, 1, 2, legacy, h);
+    const double out_alone = ls::GroupReach(only_out, h[0], ctx.frustum);
+    Check(both > 0.9 && out_alone < 0.01, "a car's reach is its best lamp's: " + std::to_string(both) + " with a lamp in the view, " + std::to_string(out_alone) + " with the other alone");
+  }
+
+  // Two cars for the one other view that high has: E off the RIGHT edge (5 m out at 20 m) with its beam across the picture, F off the LEFT edge with its beam pointing out of it.
+  // Both lamps are off the screen (beyond the margin of 1.3 too): the first version ranks them alike and the lower key, F, wins; the view gives E the view.
+  {
+    ls::Light cars[3] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0),     // the player's car behind the camera
+                         Lamp(-40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 2, false, 1),  // F: the lower key, off the left edge, pointing out of the picture
+                         Lamp(40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};  // E: off the right edge, pointing across the picture
+    ls::Group g[4];
+    ls::ViewPicker first;
+    uint32_t n = first.Pick(cars, 3, 2, legacy, g);
+    Check(n == 2 && g[1].car_key == 2, "the first version: two cars off the screen tie and the lower key (the car whose beam points out of the picture) has the view");
+    ls::ViewPicker second;
+    n = second.Pick(cars, 3, 2, ctx, g);
+    Check(n == 2 && g[1].car_key == 3, "with the view: the car at the edge whose beam crosses the picture has it");
+    // Hysteresis holds as before with the view: the holder keeps its view against a challenger that is somewhat better.
+    ls::Light now[3] = {cars[0], Lamp(-40.0, 0.7, 30.0, -1.0, 0.0, 0.0, 2, false, 1), Lamp(36.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};
+    ls::ViewPicker third;
+    third.Pick(now, 3, 2, ctx, g);
+    Check(g[1].car_key == 3, "(the car at the edge holds the view)");
+    // F now turns to point along the road into the picture: its reach rises, but E holds the view with its 1.3 against a challenger that is not clearly better.
+    ls::Light turned[3] = {cars[0], Lamp(-30.0, 0.7, 30.0, 0.0, 0.0, 1.0, 2, false, 1), Lamp(36.0, 0.7, 30.0, -1.0, 0.0, 0.0, 3, false, 2)};
+    const uint32_t m = third.Pick(turned, 3, 2, ctx, g);
+    Check(m == 2 && g[1].car_key == 3, "the holder keeps the view against a challenger whose beam now crosses the picture as well (1.3)");
+  }
+
+  // The car at the edge, seen as the first version saw it: a lamp 10 m beyond the left edge at 30 m depth, beam along the road: lit by the view (its beam is in the picture) and
+  // ranked like a car in the middle at the same distance, where the first version gave it 0.35.
+  {
+    ls::Light edge[2] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(-40.0, 0.7, 30.0, 0.0, 0.0, 1.0, 9, false, 1)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    p.Pick(edge, 2, 2, ctx, g);
+    const double reach = ls::GroupReach(edge, g[1], ctx.frustum);
+    const double distance = std::sqrt(40.0 * 40.0 + 33.0 * 33.0);
+    const double importance = ls::ViewImportanceReach(distance, reach, false);
+    const double middle = ls::ViewImportance(distance, true, false);
+    Check(reach > 0.45 && std::fabs(importance - middle) < 1e-9, "a car at the edge whose beam goes into the picture is as important as one in the middle at its distance (reach " + std::to_string(reach) + ")");
+  }
+
+  // No frustum: nothing is different (the first version's rule is read).
+  {
+    ls::Light cars[3] = {Lamp(0.0, 0.7, -3.0, 0.0, 0.0, 1.0, 1, true, 0), Lamp(0.0, 0.7, -15.0, 0.0, 0.0, 1.0, 2, false, 1), Lamp(0.0, 0.7, 40.0, 0.0, 0.0, 1.0, 3, false, 2)};
+    ls::Group g[4];
+    ls::ViewPicker p;
+    const uint32_t n = p.Pick(cars, 3, 2, legacy, g);
+    Check(n == 2, "the first version's pick still works with no frustum");
+  }
+}
+
 void CheckPickingHysteresis() {
   const ls::PickContext none;
   ls::Group g[4];
@@ -1535,6 +1638,7 @@ int main() {
   CheckGroups();
   CheckPicking();
   CheckPickingHysteresis();
+  CheckPickingReach();
   CheckFit();
   CheckWorldToShadow();
   CheckCamera();

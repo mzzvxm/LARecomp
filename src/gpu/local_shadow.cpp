@@ -418,6 +418,10 @@ void LocalShadow::PickViews() {
     context.have_screen = true;
     std::memcpy(context.reference, last_camera_.eye, sizeof(context.reference));
     context.view_projection = last_camera_.view_projection;
+    // HL-EDGE-FADE: the camera's frustum, so that a car is ranked by how much of its beam is in the view (the rig's ranking, mcla_gpu_headlight_edge, the same switch).
+    if (larecomp::settings::mcla_gpu_headlight_edge.Get()) {
+      light_influence::MakeViewFrustum(last_camera_.view_projection.m, last_camera_.eye, &context.frustum);
+    }
   }
   frame_views_ = picker_.Pick(frame_lights_, frame_light_count_, rules::MaxViews(choice_.level, views_override_), context, frame_groups_);
   // The log: which cars hold the views, when that changes (the first few times in full, the rest as a count in the census line).

@@ -43,7 +43,8 @@ constexpr size_t kMaxCars = 32;
 constexpr uint64_t kDayProbeFrames = 30;
 // How old a headlight point of the game's may be and still count (ms): the hook notes a point every frame it is submitted.
 constexpr int kPointAgeMs = 150;
-// How far outside the screen a lamp may be and still count as on it (a share of the clip box).
+// How far outside the screen a lamp may be and still count as on it (a share of the clip box). The first version's rule (mcla_gpu_headlight_edge off): with the view's
+// frustum the tracker ranks a car by how much of its BEAM is in the view (light_influence.h) and this is not read.
 constexpr double kScreenMargin = 1.3;
 // Frames a vertex shader that could not be read is left alone before it is tried again (car_frame.cpp's number).
 constexpr uint32_t kRecipeRetryFrames = 300;
@@ -157,6 +158,7 @@ void HeadlightRig::ReadSettings() {
   range_ = float(std::clamp(double(s::mcla_gpu_headlight_range.Get()), 10.0, 200.0));
   outer_degrees_ = float(std::clamp(double(s::mcla_gpu_headlight_cone.Get()), 10.0, 70.0));
   night_override_ = int(s::mcla_gpu_headlight_night.Get());
+  edge_ = s::mcla_gpu_headlight_edge.Get();
   log_ = s::mcla_gpu_headlight_log.Get();
   if (was_enabled != enabled_ || !state_logged_) {
     state_logged_ = true;
@@ -474,7 +476,13 @@ void HeadlightRig::OnPresent() {
   last_cars_ = cars;
   last_cars_lit_ = lit;
   std::array<headlight_rules::Tracked, headlight_rules::kMaxLights> tracked{};
-  const size_t count = tracker_.EndFrame(frame_, &tracked);
+  // The frame's camera as a frustum (HL-EDGE-FADE): only when a lens draw gave it in THIS frame (the camera of an older frame is not where the lights are being looked at from),
+  // else the tracker has no view and a car the game did not draw fades out as it did.
+  light_influence::ViewFrustum frustum;
+  const bool have_view = edge_ && facts_read_ && projection_ok_ && camera_ok_ && light_influence::MakeViewFrustum(view_projection_.m, camera_, &frustum);
+  tracker_.SetBeam(double(range_), double(outer_degrees_));
+  const size_t count = tracker_.EndFrame(frame_, &tracked, have_view ? &frustum : nullptr);
+  last_view_ = have_view;
   Publish(tracked, count);
   if (night_ > 0.0) {
     ++night_frames_;
@@ -572,13 +580,14 @@ void HeadlightRig::Log(size_t picked) {
                           h.car_key, h.pos[0], h.pos[1], h.pos[2], h.dir[0], h.dir[1], h.dir[2], h.color[0]);
   }
   REXLOG_INFO("{} frame {}: night {:.2f} (the {} sun {} at {:+.1f} degrees{}), {} lens draws in {} frames' windows (player's lens {}, traffic's {}, no vehicle ID {}, "
-              "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
+              "no pose {}, left out: no bone palette {}, at the car's root {}), game's light points {} recent ({} lit, {} notes since the start), lens lamps with points {}, lamps from points alone {}, forward turned by the points {}, {} cars seen, {} with a front lens, {} lights ({}; {} coasting after the game stopped drawing the car; the view {}), {} variant draws ({} with the alpha test, {} more drew the game's own shader while the variant's "
               "pipeline was being made), {} lens boxes kept",
               kPrefix, frame_, night_, world_sun_ && frame_ - world_sun_frame_ <= kWorldSunKeepFrames ? "world's" : "lens draw's", sun_seen_ ? "seen" : "NOT seen",
               sun_degrees_, night_override_ >= 0 ? ", overridden" : "", lens_draws_, kLogFrames,
               lens_player_ps_, lens_traffic_ps_, lens_no_id_, lens_no_pose_, lens_no_bone_, lens_at_root_, pts_recent_, pts_on_, headlight_points::Global().notes(), pts_matched_lamps_,
               pts_only_lamps_, pts_disagree_, last_cars_, last_cars_lit_, picked,
-              lights.empty() ? std::string("none") : lights, variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size());
+              lights.empty() ? std::string("none") : lights, tracker_.coasting_count(), last_view_ ? "known (the beams count)" : "not known",
+              variant_draws_, variant_alpha_draws_, fallback_draws_, boxes_.size());
   lens_draws_ = lens_player_ps_ = lens_traffic_ps_ = lens_no_pose_ = lens_no_id_ = lens_no_bone_ = lens_at_root_ = 0;
   variant_draws_ = variant_alpha_draws_ = fallback_draws_ = 0;
 }
