@@ -740,7 +740,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
     vol::VolLamp& lamp = in->lamps[in->lamp_count++];
     for (int i = 0; i < 3; ++i) {
       lamp.pos[i] = c.pos[i] + c.forward[i] * 8.0f;
-      lamp.colour[i] = i == 0 ? 6.0f : (i == 1 ? 4.5f : 2.5f);
+      lamp.colour[i] = i == 0 ? 4.0f : (i == 1 ? 3.0f : 1.7f);  // the game's own scale: an intensity of 4 and a warm white
     }
     lamp.pos[1] += 4.5f;
     lamp.dir[0] = 0.0f;
@@ -756,7 +756,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
     for (int i = 0; i < 3; ++i) {
       lamp.pos[i] = c.pos[i] + c.right[i] * 1.0f - c.up[i] * 1.2f;
       lamp.dir[i] = c.forward[i];
-      lamp.colour[i] = i == 2 ? 14.0f : 20.0f;
+      lamp.colour[i] = i == 2 ? 1.6f : 2.0f;  // the game's own scale: its lit headlight points read 2.0
     }
     lamp.range = 70.0f;
     lamp.cos_outer = std::cos(38.0f * vol::kPi / 180.0f);

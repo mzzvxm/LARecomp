@@ -121,6 +121,9 @@ inline float SpotFactor(float cos_axis, float cos_outer, float cos_inner) {
 // The distance law of a lamp (the stub's: the shaders' VOL-SHADERS package calibrates it against the road's pool, V7): 1 / (d^2 + near^2),
 // windowed so that it is exactly 0 at the reach: saturate(1 - (d / range)^4)^2. The 0.8 m near clamp keeps the singularity out.
 inline constexpr float kLampNear = 0.8f;
+// The scene units of a light's colour (hlsl/volumetrics_inject_cs.hlsl kLightGain): the scattered light is the game's colour times its intensity
+// times this, times the haze's extinction.
+inline constexpr float kLightGain = 60.0f;
 inline float LampFalloff(float dist, float range) {
   if (!(dist < range)) {
     return 0.0f;

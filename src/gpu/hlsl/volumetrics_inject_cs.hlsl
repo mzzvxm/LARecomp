@@ -57,6 +57,11 @@ float InterleavedGradient(float2 p, float frame) {
 
 // --- the lights ---------------------------------------------------------------------------------------------------------------------
 
+// The scene units of the lights' colours: a lamp's or a headlight's colour is the game's (its colour times its intensity, a few units), and its
+// scattered light is that times this (the survey's section 5.1 estimate: a lamp's cone should show over a clear night's haze of 0.0012 per metre);
+// calibrated against the road's pool of light in V7 (volumetrics_rules.h kLightGain is the twin).
+static const float kLightGain = 60.0;
+
 float HenyeyGreenstein(float cos_theta, float g) {
   const float g2 = g * g;
   const float d = 1.0 + g2 - 2.0 * g * cos_theta;
@@ -255,7 +260,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   [loop] for (uint j = 0u; j < counts.y; ++j) {
     lights += SpotLight(kO_headlights + j * 64u, p, ray, mixv.w, scale.z, true);
   }
-  scatter += lights * sigma;
+  scatter += lights * (sigma * kLightGain);
   float4 now = float4(scatter, sigma);
 
   // --- the history, trilinear in the previous camera's grid ---

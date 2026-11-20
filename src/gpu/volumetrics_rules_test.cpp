@@ -478,6 +478,7 @@ void CheckShaders(const std::string& folder) {
   if (ReadFile(folder + "/hlsl/volumetrics_inject_cs.hlsl", &inject)) {
     Check(inject.find("i * 80u + 64u") != std::string::npos, "the inject reads a cascade's box at 80 * i + 64");
     Check(inject.find("uint(view_index) * 96u") != std::string::npos, "the inject reads a shadow view at 96 * i");
+    Check(inject.find("static const float kLightGain = " + std::to_string(int(kLightGain)) + ".0;") != std::string::npos, "the inject's light gain is the header's");
     Check(inject.find("kO_lamps + i * 64u") != std::string::npos && inject.find("kO_headlights + j * 64u") != std::string::npos, "the inject reads the lamps at 64 bytes each");
   } else {
     Check(false, "volumetrics_inject_cs.hlsl is readable");
