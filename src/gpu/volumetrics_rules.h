@@ -247,13 +247,183 @@ inline float SunStrength(float elevation_deg) {
 inline float NightFactor(float elevation_deg) { return 1.0f - SmoothStep(-4.0f, 6.0f, elevation_deg); }
 // The wetness (VS c43.x, 0.095 dry, 1.17 in rain) as 0..1: the sun shafts' rain gate (shafts.cpp kWetStart / kWetEnd).
 inline float WetFactor(float wetness) { return SmoothStep(0.2f, 0.7f, wetness); }
-// The default extinction (1/m) from the wetness and the fog quad's opacity: a clear-air floor of 0.0012, 0.008 in rain, and the fog's own thick
-// states (an opacity over 0.7: the game's foggy weather) up to 0.02.
-inline float BaseSigma(float wet, float fog_opacity) {
-  const float clear = 0.0012f + (0.008f - 0.0012f) * wet;
-  const float fog = 0.02f * SmoothStep(0.7f, 0.95f, fog_opacity);
-  return std::max(clear, fog);
+// ---------------------------------------------------------------------------
+// the look: the numbers by weather and by hour (VOL-LOOK-TUNE; perf/VOLUMETRICS-TUNING/TUNING.md says why each one is what it is)
+// ---------------------------------------------------------------------------
+// The first look (VOL-ON-MAIN's run vol2) had ONE set of numbers for every weather: a clear night showed a grey veil over the sky, rain a white ball around the
+// oncoming headlights, and the foggy night the clear night's density (the old fog test needed an opacity of 0.7, the game's foggy NIGHT is 0.56). The cause is the
+// units: a lamp's or a headlight's colour is in the game's units (a headlight is 1352 = kPeak x D^2) and the scatter is sigma x kLightGain (60) x that, so how much
+// light the air gives back is set by the gains, and the gains that make a lamp show in a clear night (halos a few metres wide) are far too much for a headlight (its
+// phase function is forward and its beam covers the camera) and for a medium that is ten times thicker (rain, fog). So the look is a TABLE of three weathers (clear,
+// fog, rain) by three hours (night, low sun, day), each cell the numbers below, mixed by weights that come from what the draws tell (the sun's height, the wetness
+// VS c43.x, the fog quad's opacity), and a cap on the light the composite may add.
+
+// What the frame's look is made of: how much of each weather and each hour it is (each triple sums to 1).
+struct LookWeights {
+  float clear = 1.0f, fog = 0.0f, rain = 0.0f;
+  float night = 0.0f, low = 0.0f, day = 1.0f;
+};
+
+// One cell of the table.
+struct VolLook {
+  float sigma = 0.0f;         // the medium's extinction at and above the ground layer's floor, 1/m
+  float ground_k = 0.0f;      // the ground layer's extra density at the ground, a multiplier (1: twice as thick)
+  float ground_h = 40.0f;     // its scale height, m
+  float g_sun = 0.6f;         // the phase function's anisotropy per light class (Henyey-Greenstein g)
+  float g_lamp = 0.3f;
+  float g_head = 0.45f;
+  float sun_strength = 1.0f;  // a multiplier per light class on top of the shader's unit gain (kLightGain for lamps and headlights, 1 for the sun)
+  float lamp_strength = 1.0f;
+  float head_strength = 1.0f;
+  float extinction = 0.1f;    // how much of the medium's own dimming the composite applies (1: all of it)
+  float cap = 1.5f;           // the soft limit on the light the composite adds to a pixel (scene units, the largest channel); 0: none
+};
+
+inline constexpr int kLookFields = 11;
+enum class LookWeather : int { kClear = 0, kFog = 1, kRain = 2 };
+enum class LookHour : int { kNight = 0, kLow = 1, kDay = 2 };
+
+// The table: [weather][hour][field]. Fields: sigma, ground_k, ground_h, g_sun, g_lamp, g_head, sun_strength, lamp_strength, head_strength, extinction, cap.
+//  CLEAR  night: the air is only dust: a lamp shows a halo a few metres wide (lamp strength 4: the game's lamp colour is its intensity, 55 to 100, so its pool is
+//         bright; 4 puts the halo about 0.25 scene units above the sky), a headlight a faint beam (0.09: its units are 25 times a lamp's and the camera sits in the
+//         oncoming car's beam, so any more is a veil over the sky), the cap 1.5 is never reached by the look itself (only by the debug multipliers).
+//         low sun: dusk and dawn mist, 2.3 times the night's thickness with a deeper ground layer, the sun's forward lobe tighter (g 0.72), almost no dimming (0.05:
+//         the extinction of a bright sky is what made the first look a dim haze toward the sun).
+//         day: nearly clear air; the sun term is only worth a pass while the sun is low (SunStrength is 0 from 55 degrees).
+//  FOG    the game's foggy weather: 0.010 1/m (the first look used the clear 0.0012 there), a thinner ground layer (the fog is everywhere), headlights wider in the
+//         phase (g 0.4: the beam reads as a cone from behind, not only as a glow when it faces the camera), lamps 3, headlights 0.16, the cap 6.
+//  RAIN   wet air 0.008 1/m; headlights 0.12 (the first look's white ball: 43 scene units at the oncoming car, 3.7 now), lamps 3 (visible cones), the cap 5; the sun's
+//         term is off (rain gates the shafts too).
+inline constexpr float kLookTable[3][3][kLookFields] = {
+    // clear
+    {{0.0012f, 1.0f, 40.0f, 0.60f, 0.30f, 0.45f, 0.0f, 4.0f, 0.09f, 0.15f, 1.5f},   // night
+     {0.0028f, 1.5f, 50.0f, 0.72f, 0.30f, 0.45f, 1.0f, 4.0f, 0.09f, 0.05f, 1.5f},   // low sun
+     {0.0008f, 1.0f, 40.0f, 0.65f, 0.30f, 0.45f, 1.0f, 4.0f, 0.09f, 0.05f, 1.0f}},  // day
+    // fog
+    {{0.0100f, 0.5f, 40.0f, 0.60f, 0.35f, 0.40f, 0.0f, 3.0f, 0.16f, 0.20f, 6.0f},
+     {0.0100f, 0.5f, 40.0f, 0.60f, 0.35f, 0.40f, 0.5f, 3.0f, 0.16f, 0.20f, 6.0f},
+     {0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.40f, 0.5f, 3.0f, 0.16f, 0.20f, 4.0f}},
+    // rain
+    {{0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 5.0f},
+     {0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 5.0f},
+     {0.0060f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 4.0f}}};
+
+// The game's foggy weather from the fog quad's opacity (PS c64.w of PSBlendedHeightFog*, the run's census): the foggy NIGHT is 0.56 (a clear night 0 to 0.13, the
+// dusk 0.41, the clear day 0.4 to 0.67) and the foggy DAY 0.94; so the night's ramp is 0.35 to 0.52 and the day's 0.75 to 0.90, mixed by the night factor. A cloudy
+// night (0.59) is read as fog too: it has the game's own thick fog there (CHECK: the guest's weather weights 0x827E1B30 would tell them apart).
+inline float FogWeight(float opacity, float night) {
+  const float at_night = SmoothStep(0.35f, 0.52f, opacity);
+  const float by_day = SmoothStep(0.75f, 0.90f, opacity);
+  return by_day + (at_night - by_day) * std::clamp(night, 0.0f, 1.0f);
 }
+
+// The weights of a frame from the sun's height in degrees, the wetness mapped to 0..1 (WetFactor) and the fog quad's opacity. The hours: night as NightFactor, day
+// from 22 degrees (full at 40: the dusk of the chain, 17.2 h, is 25 degrees and still wants its mist), the low sun the rest. The weathers: rain is the wetness, fog the fog weight in what rain leaves.
+inline LookWeights LookWeightsFor(float elevation_deg, float wet01, float fog_opacity) {
+  LookWeights w;
+  w.night = NightFactor(elevation_deg);
+  w.day = SmoothStep(22.0f, 40.0f, elevation_deg);
+  w.low = std::max(0.0f, 1.0f - w.night - w.day);
+  const float sum = w.night + w.low + w.day;
+  w.night /= sum;
+  w.low /= sum;
+  w.day /= sum;
+  w.rain = std::clamp(wet01, 0.0f, 1.0f);
+  w.fog = (1.0f - w.rain) * std::clamp(FogWeight(fog_opacity, w.night), 0.0f, 1.0f);
+  w.clear = 1.0f - w.rain - w.fog;
+  return w;
+}
+
+// The cell of the table.
+inline VolLook LookCell(LookWeather weather, LookHour hour) {
+  const float* c = kLookTable[int(weather)][int(hour)];
+  VolLook l;
+  l.sigma = c[0];
+  l.ground_k = c[1];
+  l.ground_h = c[2];
+  l.g_sun = c[3];
+  l.g_lamp = c[4];
+  l.g_head = c[5];
+  l.sun_strength = c[6];
+  l.lamp_strength = c[7];
+  l.head_strength = c[8];
+  l.extinction = c[9];
+  l.cap = c[10];
+  return l;
+}
+
+// The look of a frame: the table's cells mixed by the weights (a weather change or the sun's setting blends, nothing jumps).
+inline VolLook LookFor(const LookWeights& w) {
+  const float weather[3] = {w.clear, w.fog, w.rain};
+  const float hour[3] = {w.night, w.low, w.day};
+  float sum[kLookFields] = {};
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      const float weight = weather[a] * hour[b];
+      for (int i = 0; i < kLookFields; ++i) {
+        sum[i] += weight * kLookTable[a][b][i];
+      }
+    }
+  }
+  VolLook l;
+  l.sigma = sum[0];
+  l.ground_k = sum[1];
+  l.ground_h = sum[2];
+  l.g_sun = sum[3];
+  l.g_lamp = sum[4];
+  l.g_head = sum[5];
+  l.sun_strength = sum[6];
+  l.lamp_strength = sum[7];
+  l.head_strength = sum[8];
+  l.extinction = sum[9];
+  l.cap = sum[10];
+  return l;
+}
+inline VolLook LookFor(float elevation_deg, float wet01, float fog_opacity) { return LookFor(LookWeightsFor(elevation_deg, wet01, fog_opacity)); }
+
+// ---------------------------------------------------------------------------
+// the clamps: what keeps a light from whiting out the picture
+// ---------------------------------------------------------------------------
+
+// The composite's soft limit on the light it adds (hlsl/volumetrics_apply_ps.hlsl SoftLimit is the twin): the largest channel is kept as it is up to the knee
+// (half the cap), then rolls off exponentially toward the cap with the same slope at the knee, so that no pixel gets more than `cap` however many lights add up or
+// however thick the air is, and the hue stays the light's (all three channels are scaled alike). cap <= 0: no limit.
+inline constexpr float kSoftKnee = 0.5f;
+inline float SoftLimit(float x, float cap) {
+  if (!(x > 0.0f)) {
+    return 0.0f;
+  }
+  if (!(cap > 0.0f)) {
+    return x;
+  }
+  const float knee = cap * kSoftKnee;
+  if (x <= knee) {
+    return x;
+  }
+  const float room = cap - knee;
+  return knee + room * (1.0f - std::exp(-(x - knee) / room));
+}
+inline void SoftLimitColour(float c[3], float cap) {
+  const float m = std::max({c[0], c[1], c[2], 0.0f});
+  if (!(cap > 0.0f) || !(m > 0.0f)) {
+    return;
+  }
+  const float scale = SoftLimit(m, cap) / m;
+  for (int i = 0; i < 3; ++i) {
+    c[i] *= scale;
+  }
+}
+
+// A car's headlights are low beams: the lit shaders (headlight_rig_rules.h LampScale: kCutLow, kCutHigh, kNearStart, kNearSpan) put no light above the lamp's own
+// height by a ramp in the sine of the angle a point is above the lamp, and none in the lamp's first 0.8 m. The beam in the air is the same light: without it the
+// cone lit the sky above the oncoming car and the air right at the nose (volumetrics_inputs_test.cpp holds these four numbers against the rig's own).
+inline constexpr float kHeadCutLow = 0.10f;
+inline constexpr float kHeadCutHigh = 0.38f;
+inline constexpr float kHeadNearStart = 0.8f;
+inline constexpr float kHeadNearSpan = 1.5f;
+// `sin_above` is the y of the unit direction from the lamp to the point (the light's direction of travel).
+inline float HeadlightCutoff(float sin_above) { return 1.0f - SmoothStep(kHeadCutLow, kHeadCutHigh, sin_above); }
+inline float HeadlightNearFade(float dist) { return std::clamp((dist - kHeadNearStart) / kHeadNearSpan, 0.0f, 1.0f); }
 
 // ---------------------------------------------------------------------------
 // the frame's noise

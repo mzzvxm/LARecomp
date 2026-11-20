@@ -2270,7 +2270,7 @@
   "type": "f64",
   "default": "1.0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the clear air's 0.0012 per metre, \"\n    \"rain's 0.008, the game's foggy weather's up to 0.02). Live.\"",
+  "help": "\"Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the look's own: 0.0012 per metre in a clear night, \"\n    \"0.008 in rain, 0.010 in fog; 1: as the look has it). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 50.0}"
@@ -2282,7 +2282,7 @@
   "type": "f64",
   "default": "40.0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: the scale height in metres of the thicker haze above the ground in the volumetric light (0: no \"\n    \"ground layer). Live.\"",
+  "help": "\"Diagnostic: a multiplier on the scale height of the thicker haze above the ground in the volumetric light (40: as the look has it, 0: no \"\n    \"ground layer). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 500.0}"
@@ -2294,7 +2294,7 @@
   "type": "f64",
   "default": "1.0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how much thicker the haze is at the ground than high above it in the volumetric light (1: twice as \"\n    \"thick). Live.\"",
+  "help": "\"Diagnostic: a multiplier on how much thicker the look makes the haze at the ground than high above it (1: as the look has it, 0: \"\n    \"none). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 20.0}"
@@ -2330,7 +2330,7 @@
   "type": "f64",
   "default": "0.6",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how strongly the haze scatters the sun forward (0: evenly, toward 1: only toward the camera when \"\n    \"looking at the sun). Live.\"",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter the sun forward (0.6: as the look has it; the look's value is 0.6 to 0.72, 0: evenly, toward 0.95: only toward the camera when \"\n    \"looking at the sun). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 0.95}"
@@ -2342,7 +2342,7 @@
   "type": "f64",
   "default": "0.25",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how strongly the haze scatters a street lamp's light forward. Live.\"",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter a street lamp's light forward (0.25: as the look has it). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 0.95}"
@@ -2354,7 +2354,7 @@
   "type": "f64",
   "default": "0.6",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how strongly the haze scatters a car's headlight forward (oncoming lights glare in fog). Live.\"",
+  "help": "\"Diagnostic: a multiplier on how strongly the look makes the haze scatter a car's headlight forward (0.6: as the look has it; oncoming lights glare in fog). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 0.95}"
@@ -2402,7 +2402,7 @@
   "type": "f64",
   "default": "0.25",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how much of the haze's own dimming the volumetric light applies to the picture (0: it only adds \"\n    \"light, 1: the full physical amount; the game's own fog dims the distance already). Live.\"",
+  "help": "\"Diagnostic: a multiplier on how much of the haze's own dimming the volumetric light applies to the picture (0.25: as the look has it; 0: it only adds \"\n    \"light, 1: the full physical amount; the game's own fog dims the distance already). Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 1.0}"

@@ -7,7 +7,8 @@
 // the lens as the occlusion does: t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored; the sky, stored 0, takes the far plane) and
 // reads the accumulated volume at that depth: two bilinear fetches of the 2D atlas (the slices around it), (S.rgb, T).
 // The output is (S, lerp(1, T, extinction_scale)): the added medium dims the picture only by the share the setting asks for (the game's own
-// fog attenuates already).
+// fog attenuates already). The light S is soft limited first (SoftLimit, the push's cap): no number of lights and no thickness of air may add more
+// than the cap to a pixel (VOL-LOOK-TUNE: the first look's white ball around the oncoming headlights in rain).
 //
 // The depth is the guest's sample 0 of the (possibly multisampled) depth plane: APPLY_MS 1 reads a Texture2DMS in space 1.
 
@@ -22,13 +23,29 @@ struct VolApplyPush {
   // x the main depth plane's bindless slot, y the accumulated volume's slot, z the grid packed as nx | ny << 8 | nz << 16 | tiles_x << 24,
   // w the depth's guest sample (the host sample that is the guest's sample 0)
   uint4 slots;
-  // xy the picture's size in host pixels, z the extinction scale (0: purely additive), w unused
+  // xy the picture's size in host pixels, z the extinction scale (0: purely additive), w the cap of the light the pixel may get (scene units, 0: none)
   float4 sizes;
   // x near, y far (metres), z 1 / ln(far / near), w unused
   float4 depth;
   // the projection's depth rows P22, P23, P32, P33 (ao.cpp: lin)
   float4 lin;
 };
+
+// The soft limit (volumetrics_rules.h SoftLimit / SoftLimitColour is the twin): the largest channel is kept up to the knee (half the cap), then rolls off
+// exponentially toward the cap with the same slope; the three channels are scaled alike so that the hue stays the light's.
+static const float kSoftKnee = 0.5;
+float3 SoftLimit(float3 c, float cap) {
+  const float m = max(c.x, max(c.y, c.z));
+  if (!(cap > 0.0) || !(m > 0.0)) {
+    return c;
+  }
+  const float knee = cap * kSoftKnee;
+  if (m <= knee) {
+    return c;
+  }
+  const float room = cap - knee;
+  return c * ((knee + room * (1.0 - exp(-(m - knee) / room))) / m);
+}
 
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<VolApplyPush> g_push;
@@ -72,7 +89,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float4 a = volume.SampleLevel(g_samplers[kSamplerLinearClamp], uv0, 0);
   const float4 b = volume.SampleLevel(g_samplers[kSamplerLinearClamp], uv1, 0);
   const float4 v = lerp(a, b, saturate(blend));
-  const float3 light = max(v.rgb, 0.0);
+  const float3 light = SoftLimit(max(v.rgb, 0.0), g_push.sizes.w);
   const float transmittance = lerp(1.0, saturate(v.a), g_push.sizes.z);
   return float4(light, transmittance);
 }

@@ -163,6 +163,7 @@ class Volumetrics {
     volumetrics::GridDesc grid;
     float far_m = 0.0f;
     float extinction_scale = 0.25f;
+    float cap = 0.0f;  // the composite's soft limit on the light a pixel gets (VolWorld::mix[1]; 0: none)
     float lin[4] = {};
   };
 
@@ -328,6 +329,11 @@ class Volumetrics {
   float census_sun_[4] = {};     // the last usable light constants' direction TO the sun (x, y, z, in the game's world: heading = atan2(x, z)) and its elevation in degrees: the census says it,
                                  // so that a scene's camera can be aimed at the sun (chain-volumetrics.ps1's dusk views)
   bool census_sun_valid_ = false;
+  float census_sun_colour_[3] = {};  // the sun's colour of the frame (PS c39) as the first point read it, and the collector's fade (ShaderGlobals.z; sun_dir.w): the census says
+  float census_sun_fade_ = 0.0f;     // them, to calibrate the sun's gain against a dusk picture (VOL-LOOK-TUNE CHECK)
+  // The look of the last frame (volumetrics_rules.h LookFor): the weights of the weathers and hours and the cell they came to, for the census.
+  volumetrics::LookWeights look_weights_;
+  volumetrics::VolLook look_;
 };
 
 }  // namespace mcla::gpu

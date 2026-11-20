@@ -777,6 +777,11 @@ void CheckHeadlights() {
 #if TEST_RULES_HEADER
   CheckNear(kHeadlightPeak, mcla::gpu::headlight_rules::kPeak, 1e-9, "kHeadlightPeak is the rig's kPeak");
   CheckNear(kHeadlightFalloffDistance, mcla::gpu::headlight_rules::kFalloffDistance, 1e-9, "kHeadlightFalloffDistance is the rig's");
+  // the low beam's shape the volume gives the headlights (volumetrics_rules.h HeadlightCutoff / HeadlightNearFade; the inject's HeadlightShape) is the lit shaders'
+  CheckNear(kHeadCutLow, mcla::gpu::headlight_rules::kCutLow, 1e-9, "the volume's low beam cut-off starts where the rig's does");
+  CheckNear(kHeadCutHigh, mcla::gpu::headlight_rules::kCutHigh, 1e-9, "and ends where the rig's does");
+  CheckNear(kHeadNearStart, mcla::gpu::headlight_rules::kNearStart, 1e-9, "the near fade starts where the rig's does");
+  CheckNear(kHeadNearSpan, mcla::gpu::headlight_rules::kNearSpan, 1e-9, "and spans what the rig's does");
 #endif
   std::printf("headlight and shadow types: %s\n", TEST_REAL_HEADERS ? "the real headers of feat/headlights" : "mirrors (feat/headlights is not in this tree)");
 }

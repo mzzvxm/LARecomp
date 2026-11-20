@@ -82,6 +82,16 @@ float SpotFactor(float cos_axis, float cos_outer, float cos_inner) {
   return t * t * (3.0 - 2.0 * t);
 }
 
+// A car's headlights are low beams (headlight_rig_rules.h LampScale, volumetrics_rules.h HeadlightCutoff / HeadlightNearFade are the twins): no light above the lamp's
+// own height by a ramp in the sine of the angle a point is above the lamp, none in the lamp's first 0.8 m.
+static const float kHeadCutLow = 0.10;
+static const float kHeadCutHigh = 0.38;
+static const float kHeadNearStart = 0.8;
+static const float kHeadNearSpan = 1.5;
+float HeadlightShape(float sin_above, float dist) {
+  return (1.0 - smoothstep(kHeadCutLow, kHeadCutHigh, sin_above)) * saturate((dist - kHeadNearStart) / kHeadNearSpan);
+}
+
 float LampFalloff(float dist, float range, float near2) {
   if (!(dist < range)) {
     return 0.0;
@@ -213,7 +223,12 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
   }
   float lit = 1.0;
   if (shadowed) {
-    lit = HeadlightLit(p, int(g_vol.Load(offset + 48u)));
+    // the headlights (the only shadowed lights): the low beam's shape, then the shadow map
+    lit = HeadlightShape(travel.y, dist);
+    if (!(lit > 0.0)) {
+      return 0.0;
+    }
+    lit *= HeadlightLit(p, int(g_vol.Load(offset + 48u)));
   }
   const float near_sq = asfloat(g_vol.Load(offset + 52u));  // the light's near radius squared (0: the default 0.8 m)
   return c.xyz * (strength * spot * lit * LampFalloff(dist, a.w, near_sq > 0.0 ? near_sq : 0.64) * HenyeyGreenstein(dot(travel, -ray), g));

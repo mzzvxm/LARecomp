@@ -175,7 +175,8 @@ struct VolWorld {
   float sun_colour[4] = {0.0f, 0.0f, 0.0f, 0.6f};
   // rgb: the haze's own in-scatter colour (the game's fog colour); w far_m: the grid's far plane this frame (0: the level's)
   float haze_colour[4] = {0.05f, 0.06f, 0.08f, 0.0f};
-  // x night 0..1; y wet 0..1 (VS c43.x: 0.095 dry, 1.17 rain, mapped); z g_lamp; w g_head (anisotropies)
+  // x night 0..1; y cap: the composite's soft limit on the light a pixel gets from the volume, in scene units (the largest channel; 0: none; the shaders of the
+  // inject never read it, the composite gets it in its push; VOL-LOOK-TUNE: it was the wetness, which no shader read); z g_lamp; w g_head (anisotropies)
   float mix[4] = {0.0f, 0.0f, 0.25f, 0.6f};
   // x extinction_scale: how much of the medium's absorption the composite applies (the game's fog already attenuates: 0.25); y lamp_strength;
   // z head_strength; w sun_strength (artist multipliers, 1 = the rules' look)

@@ -41,6 +41,8 @@ constexpr uint32_t kMinRenderSize = 64;
 // Frames without a volume before the images are given back (a clear noon, a menu: 2 s).
 constexpr uint32_t kReleaseAfterFrames = 120;
 constexpr uint32_t kIntervalFrames = 600;
+// The haze's own in-scatter is the game's fog colour (PS c64) times this: a thickened fog has the game's colour, scaled down so that it is not a second fog.
+constexpr float kHazeGain = 0.35f;
 
 // The registers read: VS c16 gLightPosDir (the direction the sunlight travels), PS c39 gLightColor (the sun colour), VS c43 gReflectionParams (x:
 // the wetness), VS c12-c15 the view inverse.
@@ -691,26 +693,33 @@ void Volumetrics::FillCascades(vol::VolInputs* in) const {
 }
 
 void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& frame, vol::VolInputs* in) {
-  using larecomp::settings::mcla_gpu_vol_density;
+  namespace st = larecomp::settings;
   *in = vol::VolInputs{};
   vol::VolWorld& w = in->world;
   const float wet = vol::WetFactor(light.wetness);
   const float night = vol::NightFactor(float(light.elevation));
   const float fog_opacity = fog_seen_ ? std::clamp(fog_colour_[3], 0.0f, 1.0f) : 0.0f;
-  float sigma = vol::BaseSigma(wet, fog_opacity) * float(std::clamp(mcla_gpu_vol_density.Get(), 0.0, 50.0));
-  // The ground layer: the smoothed height of the ground under the camera (a hill above the layer is clear air), 40 m deep by default.
+  // The look of the frame: the table of weathers by hours (volumetrics_rules.h LookFor). The debug cvars are multipliers on it (a ratio to the cvar's
+  // default, so that the default leaves the table as it is).
+  const vol::LookWeights weights = vol::LookWeightsFor(float(light.elevation), wet, fog_opacity);
+  const vol::VolLook look = vol::LookFor(weights);
+  look_weights_ = weights;
+  look_ = look;
+  const auto ratio = [](double value, double reference, double highest) { return float(std::clamp(value / reference, 0.0, highest)); };
+  const float sigma = look.sigma * float(std::clamp(st::mcla_gpu_vol_density.Get(), 0.0, 50.0));
+  // The ground layer: the smoothed height of the ground under the camera (a hill above the layer is clear air), its depth and strength the look's.
   const float ground = frame.camera.pos[1] - 1.4f;
   ground_y_ = ground_valid_ ? ground_y_ + (ground - ground_y_) * 0.02f : ground;
   ground_valid_ = true;
   w.density[0] = sigma;
   w.density[1] = ground_y_;
-  w.density[2] = float(std::clamp(larecomp::settings::mcla_gpu_vol_ground_height.Get(), 0.0, 500.0));
-  w.density[3] = float(std::clamp(larecomp::settings::mcla_gpu_vol_ground_strength.Get(), 0.0, 20.0));
+  w.density[2] = look.ground_h * ratio(st::mcla_gpu_vol_ground_height.Get(), 40.0, 12.5);
+  w.density[3] = look.ground_k * ratio(st::mcla_gpu_vol_ground_strength.Get(), 1.0, 20.0);
   const float elapsed = std::clamp(frame.elapsed_s, 0.0f, 0.25f);
-  const float wind = float(std::clamp(larecomp::settings::mcla_gpu_vol_wind.Get(), 0.0, 50.0));
+  const float wind = float(std::clamp(st::mcla_gpu_vol_wind.Get(), 0.0, 50.0));
   wind_[0] += wind * elapsed;
   wind_[1] += 0.3f * wind * elapsed;
-  w.noise[0] = float(std::clamp(larecomp::settings::mcla_gpu_vol_noise.Get(), 0.0, 1.0));
+  w.noise[0] = float(std::clamp(st::mcla_gpu_vol_noise.Get(), 0.0, 1.0));
   w.noise[1] = 0.02f;
   w.noise[2] = std::fmod(wind_[0], 4096.0f);
   w.noise[3] = std::fmod(wind_[1], 4096.0f);
@@ -723,20 +732,20 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
   for (int i = 0; i < 3; ++i) {
     w.sun_colour[i] = light.colour[i] * sun_strength;
   }
-  w.sun_colour[3] = float(std::clamp(larecomp::settings::mcla_gpu_vol_g_sun.Get(), 0.0, 0.95));
+  w.sun_colour[3] = std::clamp(look.g_sun * ratio(st::mcla_gpu_vol_g_sun.Get(), 0.6, 1.6f), 0.0f, 0.95f);
   // The haze takes the game's fog colour (the fog quad's PS c64) scaled down: it is what a thickened fog looks like, not a second fog.
   for (int i = 0; i < 3; ++i) {
-    w.haze_colour[i] = Usable(fog_colour_[i]) * 0.5f;
+    w.haze_colour[i] = Usable(fog_colour_[i]) * kHazeGain;
   }
-  w.haze_colour[3] = float(std::clamp(larecomp::settings::mcla_gpu_vol_far.Get(), 0.0, 1000.0));
+  w.haze_colour[3] = float(std::clamp(st::mcla_gpu_vol_far.Get(), 0.0, 1000.0));
   w.mix[0] = night;
-  w.mix[1] = wet;
-  w.mix[2] = float(std::clamp(larecomp::settings::mcla_gpu_vol_g_lamp.Get(), 0.0, 0.95));
-  w.mix[3] = float(std::clamp(larecomp::settings::mcla_gpu_vol_g_head.Get(), 0.0, 0.95));
-  w.scale[0] = float(std::clamp(larecomp::settings::mcla_gpu_vol_extinction.Get(), 0.0, 1.0));
-  w.scale[1] = float(std::clamp(larecomp::settings::mcla_gpu_vol_lamp_strength.Get(), 0.0, 50.0));
-  w.scale[2] = float(std::clamp(larecomp::settings::mcla_gpu_vol_head_strength.Get(), 0.0, 50.0));
-  w.scale[3] = float(std::clamp(larecomp::settings::mcla_gpu_vol_sun_strength.Get(), 0.0, 50.0));
+  w.mix[1] = look.cap;  // the composite's soft limit (volumetrics_types.h VolWorld::mix)
+  w.mix[2] = std::clamp(look.g_lamp * ratio(st::mcla_gpu_vol_g_lamp.Get(), 0.25, 3.8f), 0.0f, 0.95f);
+  w.mix[3] = std::clamp(look.g_head * ratio(st::mcla_gpu_vol_g_head.Get(), 0.6, 1.6f), 0.0f, 0.95f);
+  w.scale[0] = std::clamp(look.extinction * ratio(st::mcla_gpu_vol_extinction.Get(), 0.25, 4.0f), 0.0f, 1.0f);
+  w.scale[1] = look.lamp_strength * float(std::clamp(st::mcla_gpu_vol_lamp_strength.Get(), 0.0, 50.0));
+  w.scale[2] = look.head_strength * float(std::clamp(st::mcla_gpu_vol_head_strength.Get(), 0.0, 50.0));
+  w.scale[3] = look.sun_strength * float(std::clamp(st::mcla_gpu_vol_sun_strength.Get(), 0.0, 50.0));
   FillCascades(in);
   if (in->sun_valid) {
     w.sun_dir[3] = std::clamp(collector_.shader_globals_z, 0.0f, 1.0f);  // the collector's own fade: visibility lerp(lit, 1, z)
@@ -854,6 +863,9 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   }
   census_sun_[3] = float(light.elevation);
   census_sun_valid_ = true;
+  for (int i = 0; i < 3; ++i) {
+    census_sun_colour_[i] = light.colour[i];
+  }
 
   vol::GridDesc grid = vol::GridFor(level_);
   if (!grid.valid()) {
@@ -889,6 +901,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   last_fill_frame_ = frame_;
   auto inputs = std::make_unique<vol::VolInputs>();
   FillDefaults(light, context, inputs.get());
+  census_sun_fade_ = inputs->world.sun_dir[3];
   if (source_) {
     source_->Fill(context, inputs.get());
   }
@@ -943,6 +956,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   plan.grid = grid;
   plan.far_m = constants.depth[1];
   plan.extinction_scale = inputs->world.scale[0];
+  plan.cap = inputs->world.mix[1];
   const temporal::Mat4& p = previous_.projection;
   plan.lin[0] = float(p.m[2][2]);
   plan.lin[1] = float(p.m[2][3]);
@@ -1146,6 +1160,7 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   push.sizes[0] = float(plan.render[0]);
   push.sizes[1] = float(plan.render[1]);
   push.sizes[2] = plan.extinction_scale;
+  push.sizes[3] = plan.cap;
   push.depth[0] = g.near_m;
   push.depth[1] = plan.far_m;
   push.depth[2] = 1.0f / vol::LogRatio(g.near_m, plan.far_m);
@@ -1264,14 +1279,19 @@ void Volumetrics::Census() {
   }
   ++census_frames_logged_;
   REXLOG_INFO("{} frame {}: {} view, {} (level {}); {} first points, {} gated, {} without a camera, {} lost, {} composites; collector: {} (atlas slot {}, "
-              "age {} frames), fog quad: {}; history {}; camera this frame's in {} of {} volumes; sun {}",
+              "age {} frames), fog quad: {}; history {}; camera this frame's in {} of {} volumes; sun {}; look: {}",
               kPrefix, frame_, pause_view_ ? "pause/map" : "play", OutcomeName(outcome_), vol::Name(level_), triggers_, gated_, skipped_no_camera_, lost_,
               runs_, collector_.valid ? std::format("{} draws", collector_.draws) : std::string("none"),
               collector_.valid && collector_.atlas_slot != vol::kNoSlot ? std::to_string(collector_.atlas_slot) : std::string("none"),
               collector_.valid ? frame_ - collector_.frame : 0, fog_seen_ ? std::format("colour ({:.3f}, {:.3f}, {:.3f}), opacity {:.2f}", fog_colour_[0], fog_colour_[1], fog_colour_[2], fog_colour_[3]) : std::string("not seen"),
               history_.valid ? "valid" : "none", current_camera_, volumes_,
-              census_sun_valid_ ? std::format("toward ({:.3f}, {:.3f}, {:.3f}), elevation {:.1f} degrees", census_sun_[0], census_sun_[1], census_sun_[2], census_sun_[3])
-                                : std::string("not read"));
+              census_sun_valid_ ? std::format("toward ({:.3f}, {:.3f}, {:.3f}), elevation {:.1f} degrees, colour ({:.3f}, {:.3f}, {:.3f}), shadow fade {:.2f}", census_sun_[0],
+                                              census_sun_[1], census_sun_[2], census_sun_[3], census_sun_colour_[0], census_sun_colour_[1], census_sun_colour_[2], census_sun_fade_)
+                                : std::string("not read"),
+              std::format("weathers clear {:.2f} fog {:.2f} rain {:.2f}, hours night {:.2f} low sun {:.2f} day {:.2f}; sigma {:.4f}, lamps x{:.2f}, headlights x{:.2f}, sun x{:.2f}, "
+                          "g sun {:.2f} lamp {:.2f} head {:.2f}, dimming {:.2f}, cap {:.1f}",
+                          look_weights_.clear, look_weights_.fog, look_weights_.rain, look_weights_.night, look_weights_.low, look_weights_.day, look_.sigma, look_.lamp_strength,
+                          look_.head_strength, look_.sun_strength, look_.g_sun, look_.g_lamp, look_.g_head, look_.extinction, look_.cap));
 }
 
 }  // namespace mcla::gpu

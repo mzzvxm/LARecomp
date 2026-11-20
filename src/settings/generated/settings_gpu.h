@@ -1169,26 +1169,26 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_vol_keep_cones, false, "Diagnostic: draws the game's own cone meshes under the lamps (xrage_spotlightfog, in rain) as well as the "
     "volumetric light, to compare the two. Without it the cones are not drawn in a frame the volume was made. Live.", rex::kDebugOnly);
 
-  REX_SETTING(f64, mcla_gpu_vol_density, 1.0, "Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the clear air's 0.0012 per metre, "
-    "rain's 0.008, the game's foggy weather's up to 0.02). Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
+  REX_SETTING(f64, mcla_gpu_vol_density, 1.0, "Diagnostic: a multiplier on the haze's thickness the volumetric light uses (the look's own: 0.0012 per metre in a clear night, "
+    "0.008 in rain, 0.010 in fog; 1: as the look has it). Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
-  REX_SETTING(f64, mcla_gpu_vol_ground_height, 40.0, "Diagnostic: the scale height in metres of the thicker haze above the ground in the volumetric light (0: no "
+  REX_SETTING(f64, mcla_gpu_vol_ground_height, 40.0, "Diagnostic: a multiplier on the scale height of the thicker haze above the ground in the volumetric light (40: as the look has it, 0: no "
     "ground layer). Live.", rex::kDebugOnly, rex::Range{0.0, 500.0});
 
-  REX_SETTING(f64, mcla_gpu_vol_ground_strength, 1.0, "Diagnostic: how much thicker the haze is at the ground than high above it in the volumetric light (1: twice as "
-    "thick). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
+  REX_SETTING(f64, mcla_gpu_vol_ground_strength, 1.0, "Diagnostic: a multiplier on how much thicker the look makes the haze at the ground than high above it (1: as the look has it, 0: "
+    "none). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
 
   REX_SETTING(f64, mcla_gpu_vol_noise, 0.35, "Diagnostic: how much the haze's thickness varies from place to place in the volumetric light (0: even, 1: "
     "patches of clear air). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
 
   REX_SETTING(f64, mcla_gpu_vol_wind, 2.0, "Diagnostic: how fast, in metres a second, the haze's patches drift in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
-  REX_SETTING(f64, mcla_gpu_vol_g_sun, 0.6, "Diagnostic: how strongly the haze scatters the sun forward (0: evenly, toward 1: only toward the camera when "
+  REX_SETTING(f64, mcla_gpu_vol_g_sun, 0.6, "Diagnostic: a multiplier on how strongly the look makes the haze scatter the sun forward (0.6: as the look has it; the look's value is 0.6 to 0.72, 0: evenly, toward 0.95: only toward the camera when "
     "looking at the sun). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
-  REX_SETTING(f64, mcla_gpu_vol_g_lamp, 0.25, "Diagnostic: how strongly the haze scatters a street lamp's light forward. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+  REX_SETTING(f64, mcla_gpu_vol_g_lamp, 0.25, "Diagnostic: a multiplier on how strongly the look makes the haze scatter a street lamp's light forward (0.25: as the look has it). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
-  REX_SETTING(f64, mcla_gpu_vol_g_head, 0.6, "Diagnostic: how strongly the haze scatters a car's headlight forward (oncoming lights glare in fog). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
+  REX_SETTING(f64, mcla_gpu_vol_g_head, 0.6, "Diagnostic: a multiplier on how strongly the look makes the haze scatter a car's headlight forward (0.6: as the look has it; oncoming lights glare in fog). Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
   REX_SETTING(f64, mcla_gpu_vol_lamp_strength, 1.0, "Diagnostic: a multiplier on the street lamps' light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
@@ -1196,7 +1196,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_vol_sun_strength, 1.0, "Diagnostic: a multiplier on the sun's light in the volumetric light. Live.", rex::kDebugOnly, rex::Range{0.0, 50.0});
 
-  REX_SETTING(f64, mcla_gpu_vol_extinction, 0.25, "Diagnostic: how much of the haze's own dimming the volumetric light applies to the picture (0: it only adds "
+  REX_SETTING(f64, mcla_gpu_vol_extinction, 0.25, "Diagnostic: a multiplier on how much of the haze's own dimming the volumetric light applies to the picture (0.25: as the look has it; 0: it only adds "
     "light, 1: the full physical amount; the game's own fog dims the distance already). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
 
   REX_SETTING(f64, mcla_gpu_vol_far, 0.0, "Diagnostic: how far in metres the volumetric light reaches (30 to the level's own, 120 on medium and 160 on "

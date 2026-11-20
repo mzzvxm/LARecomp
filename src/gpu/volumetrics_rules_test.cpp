@@ -8,11 +8,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <string>
 
+#include "volumetrics_headlights.h"
 #include "volumetrics_rules.h"
 
 using namespace mcla::gpu::volumetrics;
@@ -247,10 +249,342 @@ void CheckDefaults() {
   CheckNear(NightFactor(10.0f), 0.0, 1e-6, "day from 6 degrees");
   CheckNear(WetFactor(0.095f), 0.0, 1e-6, "dry");
   CheckNear(WetFactor(1.17f), 1.0, 1e-6, "rain");
-  CheckNear(BaseSigma(0.0f, 0.0f), 0.0012, 1e-9, "the clear air floor");
-  CheckNear(BaseSigma(1.0f, 0.0f), 0.008, 1e-9, "rain");
-  CheckNear(BaseSigma(0.0f, 0.94f), 0.02 * SmoothStep(0.7f, 0.95f, 0.94f), 1e-9, "the game's foggy weather");
-  Check(BaseSigma(0.0f, 0.6f) == BaseSigma(0.0f, 0.0f), "a cloudy sky's fog opacity adds no haze");
+}
+
+// ---------------------------------------------------------------------------
+// the look: the table by weather and hour, the weights, the clamps (VOL-LOOK-TUNE)
+// ---------------------------------------------------------------------------
+
+// A column of the volume as the shaders integrate it (the inject's headlight and lamp terms and the integrate pass), for the canonical open street of the
+// chain's views (local-lights-open-mid): the camera 7 m behind the player and 1.7 m up, the player's two low beams (z = 2.1 m, 0.65 m high) and the oncoming car's
+// 27 m ahead of the player, 4.86 m to its left, nose toward it. x right, y up, z ahead. Returns the light the composite would add (before the soft limit): the
+// scene units of the volume. The same pipeline as perf's model (the VOL-LOOK-TUNE calibration: display luminance is about 0.02 to 0.03 of these units).
+struct Street {
+  VolLamp heads[4];
+  VolLamp lamp;
+};
+
+Street MakeStreet() {
+  Street s{};
+  const float dip = -2.0f * kPi / 180.0f;
+  for (int i = 0; i < 4; ++i) {
+    VolLamp& l = s.heads[i];
+    const bool oncoming = i >= 2;
+    const float side = (i % 2 == 0) ? -0.65f : 0.65f;
+    l.pos[0] = (oncoming ? -4.86f : 0.0f) + side;
+    l.pos[1] = 0.65f;
+    l.pos[2] = oncoming ? 24.9f : 2.1f;
+    l.dir[0] = 0.0f;
+    l.dir[1] = std::sin(dip);
+    l.dir[2] = (oncoming ? -1.0f : 1.0f) * std::cos(dip);
+    l.colour[0] = 1.0f;
+    l.colour[1] = 0.93f;
+    l.colour[2] = 0.78f;
+    l.range = 70.0f;
+    l.cos_outer = std::cos(38.0f * kPi / 180.0f);
+    l.cos_inner = std::cos(12.0f * kPi / 180.0f);
+    l.shadow_view = -1;
+    ApplyHeadlightUnits(&l);
+  }
+  // a street lamp of intensity 70 (the game's units: colour x intensity, the plateau's radius squared x 0.618 as the near radius, the reach sqrt(100 I)), 8 m to the
+  // left of the camera's axis, 6 m high, 13 m ahead of it, pointing down with the game's 125 degree cone (full inside 37.25, gone at 62.5)
+  VolLamp& l = s.lamp;
+  l.pos[0] = -8.0f;
+  l.pos[1] = 6.0f;
+  l.pos[2] = 6.0f;
+  l.dir[1] = -1.0f;
+  l.colour[0] = 70.0f;
+  l.colour[1] = 70.0f * 0.85f;
+  l.colour[2] = 70.0f * 0.55f;
+  l.range = std::sqrt(100.0f * 70.0f);
+  l.cos_outer = std::cos(62.5f * kPi / 180.0f);
+  l.cos_inner = std::cos(37.25f * kPi / 180.0f);
+  l.pad[0] = 0.618034f * 70.0f;
+  l.shadow_view = -1;
+  return s;
+}
+
+// (u, v) in 0..1 of the picture (v down); the 55 degree vertical field of view at 16:9; the camera pitched down 1.4 degrees.
+void StreetRay(float u, float v, float dir[3]) {
+  const float tan_y = std::tan(27.5f * kPi / 180.0f);
+  const float tan_x = tan_y * 16.0f / 9.0f;
+  const float pitch = -1.4f * kPi / 180.0f;
+  const float fwd[3] = {0.0f, std::sin(pitch), std::cos(pitch)};
+  const float up[3] = {0.0f, std::cos(pitch), -std::sin(pitch)};
+  const float x = (2.0f * u - 1.0f) * tan_x;
+  const float y = (1.0f - 2.0f * v) * tan_y;
+  const float d[3] = {x + fwd[0] + y * up[0], fwd[1] + y * up[1], fwd[2] + y * up[2]};
+  const float n = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  for (int i = 0; i < 3; ++i) {
+    dir[i] = d[i] / n;
+  }
+}
+
+// The light the column of pixel (u, v) gets to the far end of the High grid (the sky takes the far slice), for a look, headlights and the lamp as asked.
+double StreetLight(const VolLook& look, float u, float v, bool heads, bool lamps, double* largest = nullptr) {
+  const Street street = MakeStreet();
+  const GridDesc g = GridFor(Level::kHigh);
+  VolWorld world;
+  world.density[0] = look.sigma;
+  world.density[1] = 0.3f;
+  world.density[2] = look.ground_h;
+  world.density[3] = look.ground_k;
+  world.noise[0] = 0.0f;
+  float dir[3];
+  StreetRay(u, v, dir);
+  const float cam[3] = {0.0f, 1.7f, -7.0f};
+  const float pitch = -1.4f * kPi / 180.0f;
+  const float fwd[3] = {0.0f, std::sin(pitch), std::cos(pitch)};
+  const float along = dir[0] * fwd[0] + dir[1] * fwd[1] + dir[2] * fwd[2];
+  double s[3] = {0.0, 0.0, 0.0};
+  double t = 1.0;
+  float d0 = g.near_m;
+  for (uint32_t k = 0; k < g.nz; ++k) {
+    const float dc = SliceCentre(g.near_m, g.far_m, g.nz, k);
+    const float d1 = SliceBoundary(g.near_m, g.far_m, g.nz, float(k) + 1.0f);
+    const float ray_t = dc / along;
+    const float p[3] = {cam[0] + dir[0] * ray_t, cam[1] + dir[1] * ray_t, cam[2] + dir[2] * ray_t};
+    const float sigma = std::max(Extinction(world, p[1], 0.5f), 1e-6f);
+    double rate[3] = {0.0, 0.0, 0.0};
+    auto add = [&](const VolLamp& l, float g_phase, float strength, bool head) {
+      const float delta[3] = {p[0] - l.pos[0], p[1] - l.pos[1], p[2] - l.pos[2]};
+      const float dist = std::sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+      if (!(dist < l.range)) {
+        return;
+      }
+      const float travel[3] = {delta[0] / dist, delta[1] / dist, delta[2] / dist};
+      const float spot = SpotFactor(travel[0] * l.dir[0] + travel[1] * l.dir[1] + travel[2] * l.dir[2], l.cos_outer, l.cos_inner);
+      float shape = 1.0f;
+      if (head) {
+        shape = HeadlightCutoff(travel[1]) * HeadlightNearFade(dist);
+      }
+      const float phase = HenyeyGreenstein(-(travel[0] * dir[0] + travel[1] * dir[1] + travel[2] * dir[2]), g_phase);
+      const float term = strength * spot * shape * LampFalloff(dist, l.range, l.pad[0]) * phase * sigma * kLightGain;
+      for (int c = 0; c < 3; ++c) {
+        rate[c] += double(l.colour[c]) * term;
+      }
+    };
+    if (heads) {
+      for (const VolLamp& l : street.heads) {
+        add(l, look.g_head, look.head_strength, true);
+      }
+    }
+    if (lamps) {
+      add(street.lamp, look.g_lamp, look.lamp_strength, false);
+    }
+    // the integrate pass: two halves around the slice's centre
+    double tz = std::exp(-double(sigma) * double(dc - d0));
+    for (int c = 0; c < 3; ++c) {
+      s[c] += t * (rate[c] - rate[c] * tz) / sigma;
+    }
+    t *= tz;
+    tz = std::exp(-double(sigma) * double(d1 - dc));
+    for (int c = 0; c < 3; ++c) {
+      s[c] += t * (rate[c] - rate[c] * tz) / sigma;
+    }
+    t *= tz;
+    d0 = d1;
+  }
+  const double m = std::max({s[0], s[1], s[2]});
+  if (largest) {
+    *largest = m;
+  }
+  return m;
+}
+
+// the pictures' places (the measured regions of VOL-LOOK-TUNE): the sky above the street, the sky above the oncoming car, the street along its beam and the glare
+// right at its lamps
+constexpr float kSkyTop[2] = {0.5f, 0.07f};
+constexpr float kSkyMid[2] = {0.5f, 0.21f};
+constexpr float kStreetFar[2] = {0.5f, 0.49f};
+constexpr float kBall[2] = {0.4f, 0.49f};
+
+void CheckLook() {
+  // the weights: three weathers and three hours, each triple sums to 1, for every sun height, wetness and fog opacity
+  for (float e = -50.0f; e <= 80.0f; e += 2.5f) {
+    for (float wet : {0.0f, 0.3f, 0.5f, 0.8f, 1.0f}) {
+      for (float opacity : {0.0f, 0.13f, 0.41f, 0.56f, 0.67f, 0.94f, 1.0f}) {
+        const LookWeights w = LookWeightsFor(e, wet, opacity);
+        CheckNear(w.clear + w.fog + w.rain, 1.0, 1e-5, "the weathers sum to 1");
+        CheckNear(w.night + w.low + w.day, 1.0, 1e-5, "the hours sum to 1");
+        Check(w.clear >= -1e-6f && w.fog >= -1e-6f && w.rain >= -1e-6f && w.night >= 0.0f && w.low >= 0.0f && w.day >= 0.0f, "no weight is negative");
+      }
+    }
+  }
+  // what the run's census saw (the fog quad's opacity): a clear night 0 to 0.13, the dusk 0.41, the foggy night 0.56, the stormy night 0.59 with the rain's wetness,
+  // the clear day 0.39 to 0.67, the foggy day 0.94
+  CheckNear(LookWeightsFor(-47.5f, 0.0f, 0.0f).clear, 1.0, 1e-5, "a clear night (opacity 0) is clear");
+  CheckNear(LookWeightsFor(-47.5f, 0.0f, 0.13f).clear, 1.0, 1e-5, "a clear night (opacity 0.13) is clear");
+  CheckNear(LookWeightsFor(-47.5f, 0.0f, 0.56f).fog, 1.0, 1e-5, "the foggy night (opacity 0.56: the old test needed 0.7) is fog");
+  CheckNear(LookWeightsFor(-47.5f, 1.17f, 0.59f).rain, 1.0, 1e-5, "the stormy night is rain");
+  CheckNear(LookWeightsFor(-47.5f, WetFactor(1.17f), 0.59f).fog, 0.0, 1e-5, "and the rain leaves no room for fog");
+  CheckNear(LookWeightsFor(20.0f, 0.0f, 0.41f).clear, 1.0, 1e-5, "the dusk of the chain (17.6 h, 20 degrees, opacity 0.41) is clear");
+  CheckNear(LookWeightsFor(25.0f, 0.0f, 0.41f).clear, 1.0, 1e-5, "and at 17.2 h (25 degrees)");
+  for (float opacity : {0.39f, 0.45f, 0.48f, 0.67f}) {
+    CheckNear(LookWeightsFor(45.0f, 0.0f, opacity).fog, 0.0, 1e-5, "a clear day's fog opacity (0.39 to 0.67) is no fog");
+  }
+  CheckNear(LookWeightsFor(40.0f, 0.0f, 0.94f).fog, 1.0, 1e-5, "the foggy day (0.94) is fog");
+  CheckNear(LookWeightsFor(10.0f, 0.0f, 0.41f).low, 1.0, 1e-5, "10 degrees is the low sun");
+  Check(LookWeightsFor(20.0f, 0.0f, 0.41f).low > 0.99f && LookWeightsFor(25.0f, 0.0f, 0.41f).low > 0.8f, "and 20 and 25 degrees (the chain's dusk at 17.6 h and 17.2 h) are the low sun");
+  CheckNear(LookWeightsFor(-30.0f, 0.0f, 0.0f).night, 1.0, 1e-5, "under the horizon is night");
+  CheckNear(LookWeightsFor(60.0f, 0.0f, 0.0f).day, 1.0, 1e-5, "60 degrees is day");
+  CheckNear(LookWeightsFor(40.0f, 0.0f, 0.0f).day, 1.0, 1e-5, "and 40 degrees");
+
+  // the table: every cell finite and in the ranges the shaders and the cvars take
+  for (int a = 0; a < 3; ++a) {
+    for (int b = 0; b < 3; ++b) {
+      const VolLook l = LookCell(LookWeather(a), LookHour(b));
+      Check(std::isfinite(l.sigma) && l.sigma > 1e-4f && l.sigma < 0.05f, "a cell's extinction is a haze's (1e-4 .. 0.05 per metre)");
+      Check(l.ground_k >= 0.0f && l.ground_k <= 20.0f && l.ground_h >= 0.0f && l.ground_h <= 500.0f, "a cell's ground layer is in the cvars' ranges");
+      Check(l.g_sun >= 0.0f && l.g_sun <= 0.95f && l.g_lamp >= 0.0f && l.g_lamp <= 0.95f && l.g_head >= 0.0f && l.g_head <= 0.95f, "a cell's anisotropies are below 0.95");
+      Check(l.sun_strength >= 0.0f && l.lamp_strength > 0.0f && l.head_strength > 0.0f, "a cell's strengths are positive (the sun's may be 0: night, rain)");
+      Check(l.extinction >= 0.0f && l.extinction <= 1.0f, "a cell's dimming is a share");
+      Check(l.cap > 0.0f, "every cell has a cap: nothing is left to add without limit");
+    }
+  }
+  const VolLook clear_night = LookCell(LookWeather::kClear, LookHour::kNight);
+  const VolLook fog_night = LookCell(LookWeather::kFog, LookHour::kNight);
+  const VolLook rain_night = LookCell(LookWeather::kRain, LookHour::kNight);
+  Check(fog_night.sigma >= 8.0f * clear_night.sigma, "the foggy night is at least 8 times the clear night's haze (the first look gave it the clear night's)");
+  Check(rain_night.sigma >= 5.0f * clear_night.sigma, "the rain's air is at least 5 times the clear night's");
+  Check(clear_night.head_strength <= 0.10f, "a clear night's headlight gain is small (the oncoming beam covers the camera: any more is a veil)");
+  Check(clear_night.lamp_strength >= 3.0f, "a clear night's lamps carry the halos");
+  Check(rain_night.head_strength < fog_night.head_strength, "rain's headlights are weaker than fog's: its beam is brighter on wet air");
+  Check(clear_night.cap <= fog_night.cap && clear_night.cap <= rain_night.cap, "the cap is lowest in clear air");
+  Check(fog_night.g_head < clear_night.g_head + 0.001f, "fog's headlights scatter less forward (the beam reads as a cone from behind)");
+  Check(LookCell(LookWeather::kClear, LookHour::kLow).g_sun > clear_night.g_sun, "the low sun's lobe is tighter (god rays)");
+  Check(LookCell(LookWeather::kClear, LookHour::kLow).extinction <= 0.05f + 1e-6f, "the low sun's sky is not dimmed by the haze");
+  Check(rain_night.sun_strength == 0.0f && LookCell(LookWeather::kRain, LookHour::kDay).sun_strength == 0.0f, "rain has no sun term");
+
+  // the mix is continuous: sweeping the sun from -20 to 70 degrees and the wetness from 0 to 1 moves no parameter by more than 8 per cent of its range per step
+  {
+    VolLook previous = LookFor(-20.0f, 0.0f, 0.0f);
+    for (float e = -19.5f; e <= 70.0f; e += 0.5f) {
+      const VolLook now = LookFor(e, 0.0f, 0.0f);
+      Check(std::fabs(now.sigma - previous.sigma) < 0.0006f && std::fabs(now.cap - previous.cap) < 0.12f && std::fabs(now.extinction - previous.extinction) < 0.02f &&
+                std::fabs(now.sun_strength - previous.sun_strength) < 0.08f,
+            "the look moves smoothly with the sun's height");
+      previous = now;
+    }
+    previous = LookFor(-30.0f, 0.0f, 0.56f);
+    for (float wet = 0.0f; wet <= 1.0f; wet += 0.02f) {
+      const VolLook now = LookFor(-30.0f, wet, 0.56f);
+      Check(std::fabs(now.sigma - previous.sigma) < 0.0004f && std::fabs(now.head_strength - previous.head_strength) < 0.02f, "the look moves smoothly with the wetness");
+      previous = now;
+    }
+  }
+  // the mixed look is between the cells it is made of
+  {
+    const VolLook mixed = LookFor(LookWeights{0.5f, 0.5f, 0.0f, 1.0f, 0.0f, 0.0f});
+    CheckNear(mixed.sigma, 0.5 * (clear_night.sigma + fog_night.sigma), 1e-6, "half clear, half fog is the mean of the cells");
+  }
+
+  // the clamps: the soft limit
+  for (float cap : {0.5f, 1.5f, 6.0f}) {
+    const float knee = kSoftKnee * cap;
+    CheckNear(SoftLimit(0.0f, cap), 0.0, 1e-9, "no light stays none");
+    CheckNear(SoftLimit(0.5f * knee, cap), 0.5 * knee, 1e-6, "below the knee the light is as it is");
+    CheckNear(SoftLimit(knee, cap), knee, 1e-6, "at the knee the light is as it is");
+    // the slope at the knee is 1 on both sides (a smooth shoulder)
+    const double slope = (SoftLimit(knee + 1e-3f, cap) - SoftLimit(knee, cap)) / 1e-3;
+    CheckNear(slope, 1.0, 5e-3, "the shoulder starts with the slope of the line");
+    float last = 0.0f;
+    for (float x = 0.0f; x <= 100.0f * cap; x += cap / 50.0f) {
+      const float y = SoftLimit(x, cap);
+      Check(y >= last - 1e-6f, "the soft limit never falls");
+      Check(y <= cap + 1e-5f && y <= x + 1e-5f, "the soft limit never reaches the cap nor adds light");
+      last = y;
+    }
+    Check(SoftLimit(1e9f, cap) <= cap && SoftLimit(1e9f, cap) > 0.999f * cap, "a huge light gets the cap");
+    Check(SoftLimit(60000.0f, cap) <= cap, "the largest value a volume can hold (60000) is limited too");
+  }
+  CheckNear(SoftLimit(123.0f, 0.0f), 123.0, 1e-6, "no cap, no limit");
+  {
+    float c[3] = {40.0f, 20.0f, 4.0f};
+    SoftLimitColour(c, 2.0f);
+    Check(std::max({c[0], c[1], c[2]}) <= 2.0f, "a colour's largest channel is limited to the cap");
+    CheckNear(c[1] / c[0], 0.5, 1e-5, "the limit keeps the colour's hue");
+    CheckNear(c[2] / c[0], 0.1, 1e-5, "all three channels");
+    float d[3] = {0.1f, 0.05f, 0.01f};
+    SoftLimitColour(d, 2.0f);
+    CheckNear(d[0], 0.1, 1e-6, "a dim colour is left alone");
+  }
+  // the low beam's shape (the rig's: headlight_rig_rules.h LampScale)
+  CheckNear(HeadlightCutoff(-0.5f), 1.0, 1e-9, "below the lamp the low beam is complete");
+  CheckNear(HeadlightCutoff(0.10f), 1.0, 1e-9, "complete up to the cut-off's start");
+  CheckNear(HeadlightCutoff(0.38f), 0.0, 1e-9, "gone at the cut-off's end");
+  CheckNear(HeadlightCutoff(0.9f), 0.0, 1e-9, "no light into the sky");
+  Check(HeadlightCutoff(0.24f) > 0.0f && HeadlightCutoff(0.24f) < 1.0f, "a ramp between");
+  CheckNear(HeadlightNearFade(0.5f), 0.0, 1e-9, "nothing in the lamp's first 0.8 m");
+  CheckNear(HeadlightNearFade(2.3f), 1.0, 1e-6, "complete from 2.3 m");
+
+  // THE BUDGETS: what the table gives in the chain's views (the scene units of the light the composite adds; the display's luminance is about 0.02 to 0.03 of them
+  // below 1: the first look's clear night added 0.7 to the sky and 3.4 along the street, which is the grey veil; its rain 4.8 and 21, the white ball).
+  const VolLook night = LookFor(-47.5f, 0.0f, 0.0f);
+  const VolLook foggy = LookFor(-47.5f, 0.0f, 0.56f);
+  const VolLook rainy = LookFor(-47.5f, 1.0f, 0.59f);
+  const double sky_clear = StreetLight(night, kSkyTop[0], kSkyTop[1], true, true);
+  const double mid_clear = StreetLight(night, kSkyMid[0], kSkyMid[1], true, true);
+  const double street_clear = StreetLight(night, kStreetFar[0], kStreetFar[1], true, true);
+  const double ball_clear = StreetLight(night, kBall[0], kBall[1], true, true);
+  Check(sky_clear <= 0.06, "clear night: the sky above the street gets at most 0.06 (a few levels of the display), not the first look's 0.7");
+  Check(mid_clear <= 0.10, "clear night: the sky above the oncoming car gets at most 0.10");
+  Check(street_clear >= 0.10 && street_clear <= 0.6, "clear night: the oncoming beam along the street is faint but there (0.10 to 0.6; the first look 3.4)");
+  Check(ball_clear <= 1.5 && ball_clear >= street_clear, "clear night: the glare at the oncoming lamps stays under the cap and is the brightest place");
+  Check(sky_clear * 4.0 <= street_clear + 1e-9, "clear night: the beam stands at least 4 times above the veil");
+  // a lamp's halo: the pixel at the lamp's place on the picture (the lamp is 8 m left, 6 m up, 13 m ahead of the camera: about u 0.16, v 0.26)
+  const double halo_clear = StreetLight(night, 0.16f, 0.26f, false, true);
+  Check(halo_clear >= 0.08 && halo_clear <= 1.0, "clear night: a street lamp shows a subtle halo (0.08 to 1.0)");
+  const double sky_fog = StreetLight(foggy, kSkyTop[0], kSkyTop[1], true, true);
+  const double ball_fog = StreetLight(foggy, kBall[0], kBall[1], true, true);
+  Check(sky_fog <= 0.6 && sky_fog > sky_clear, "fog: a haze over the sky, under 0.6 (the first look 0.8), thicker than the clear night's");
+  Check(SoftLimit(float(ball_fog), foggy.cap) <= foggy.cap, "fog: the glare is limited by the cap");
+  const double sky_rain = StreetLight(rainy, kSkyTop[0], kSkyTop[1], true, true);
+  const double street_rain = StreetLight(rainy, kStreetFar[0], kStreetFar[1], true, true);
+  const double ball_rain = StreetLight(rainy, kBall[0], kBall[1], true, true);
+  Check(sky_rain <= 0.5, "rain: the sky gets at most 0.5 (the first look 4.8)");
+  Check(street_rain >= 0.8 && street_rain <= 4.0, "rain: the beam along the street is clear (0.8 to 4; the first look 21)");
+  Check(ball_rain <= 6.0, "rain: the glare at the oncoming lamps is under 6 even before the cap (the first look 43: the white ball)");
+  Check(SoftLimit(float(ball_rain), rainy.cap) < rainy.cap, "rain: and the cap holds it under its limit");
+  // THE SUN: a horizontal ray at 1.7 m through sunlit air (vis 1, a sun colour whose red is 1, the game's 17 h is (1.00, 0.48, 0.10)), by the cosine between the ray and the
+  // sun. Facing the sun the dusk's haze adds a warm veil of about half the sun's red (0.2 to 0.9), 90 degrees to it almost nothing: the rays are a contrast between lit and
+  // shaded air close to the sun. The first look (sigma 0.0023, g 0.6) gave 0.13 facing it, which a run showed as no shafts at all.
+  {
+    const VolLook dusk = LookFor(22.0f, 0.0f, 0.41f);
+    const GridDesc g = GridFor(Level::kHigh);
+    VolWorld world;
+    world.density[0] = dusk.sigma;
+    world.density[1] = 0.3f;
+    world.density[2] = dusk.ground_h;
+    world.density[3] = dusk.ground_k;
+    world.noise[0] = 0.0f;
+    const float sigma = Extinction(world, 1.7f, 0.5f);
+    auto column = [&](float cos_view) {
+      double s = 0.0;
+      double t = 1.0;
+      float d0 = g.near_m;
+      const double rate = double(dusk.sun_strength) * HenyeyGreenstein(cos_view, dusk.g_sun) * sigma;
+      for (uint32_t k = 0; k < g.nz; ++k) {
+        const float d1 = SliceBoundary(g.near_m, g.far_m, g.nz, float(k) + 1.0f);
+        const double tz = std::exp(-double(sigma) * double(d1 - d0));
+        s += t * (rate - rate * tz) / sigma;
+        t *= tz;
+        d0 = d1;
+      }
+      return s;
+    };
+    const double facing = column(0.97f);
+    const double side = column(0.0f);
+    Check(facing >= 0.2 && facing <= 0.9, "dusk: facing the sun the sunlit haze adds 0.2 to 0.9 of the sun's red (the first look 0.13)");
+    Check(side <= 0.1 && side < 0.2 * facing, "dusk: at 90 degrees to the sun it adds almost nothing");
+    Check(SoftLimit(float(facing) * 50.0f, dusk.cap) <= dusk.cap, "dusk: and 50 times the sun's strength stays under the cap");
+    Check(dusk.extinction <= 0.05f + 1e-6f, "dusk: the haze dims the bright sky by at most 5 per cent of its own extinction");
+  }
+  // the debug multipliers cannot white out the picture: a head strength of 50 (the cvar's top) is still held by the cap
+  VolLook stretched = rainy;
+  stretched.head_strength *= 50.0f;
+  stretched.lamp_strength *= 50.0f;
+  Check(SoftLimit(float(StreetLight(stretched, kBall[0], kBall[1], true, true)), rainy.cap) <= rainy.cap, "50 times the lights still stay under the cap");
 }
 
 void CheckConstants() {
@@ -480,8 +814,32 @@ void CheckShaders(const std::string& folder) {
     Check(inject.find("uint(view_index) * 96u") != std::string::npos, "the inject reads a shadow view at 96 * i");
     Check(inject.find("static const float kLightGain = " + std::to_string(int(kLightGain)) + ".0;") != std::string::npos, "the inject's light gain is the header's");
     Check(inject.find("kO_lamps + i * 64u") != std::string::npos && inject.find("kO_headlights + j * 64u") != std::string::npos, "the inject reads the lamps at 64 bytes each");
+    // the low beam's shape: the shader's four numbers are the header's (and the header's are the rig's: volumetrics_inputs_test.cpp)
+    auto number = [&](const std::string& text, const std::string& name, double* out) {
+      const size_t at = text.find("static const float " + name + " = ");
+      if (at == std::string::npos) {
+        return false;
+      }
+      *out = std::atof(text.c_str() + at + std::string("static const float " + name + " = ").size());
+      return true;
+    };
+    double v = 0.0;
+    Check(number(inject, "kHeadCutLow", &v) && Near(v, kHeadCutLow, 1e-6), "the inject's low beam cut-off starts where the header's does");
+    Check(number(inject, "kHeadCutHigh", &v) && Near(v, kHeadCutHigh, 1e-6), "and ends where the header's does");
+    Check(number(inject, "kHeadNearStart", &v) && Near(v, kHeadNearStart, 1e-6), "the inject's near fade starts where the header's does");
+    Check(number(inject, "kHeadNearSpan", &v) && Near(v, kHeadNearSpan, 1e-6), "and spans what the header's does");
+    Check(inject.find("HeadlightShape(travel.y, dist)") != std::string::npos, "the inject applies the low beam's shape to the headlights");
   } else {
     Check(false, "volumetrics_inject_cs.hlsl is readable");
+  }
+  std::string apply;
+  if (ReadFile(folder + "/hlsl/volumetrics_apply_ps.hlsl", &apply)) {
+    const std::string knee = "static const float kSoftKnee = ";
+    const size_t at = apply.find(knee);
+    Check(at != std::string::npos && Near(std::atof(apply.c_str() + at + knee.size()), kSoftKnee, 1e-6), "the composite's soft knee is the header's");
+    Check(apply.find("SoftLimit(max(v.rgb, 0.0), g_push.sizes.w)") != std::string::npos, "the composite limits the light by the push's cap (sizes.w)");
+  } else {
+    Check(false, "volumetrics_apply_ps.hlsl is readable");
   }
 }
 
@@ -496,6 +854,7 @@ int main(int argc, char** argv) {
   CheckShadows();
   CheckNoise();
   CheckDefaults();
+  CheckLook();
   CheckConstants();
   CheckAdaptors();
   if (argc > 1) {
