@@ -2575,6 +2575,7 @@ bool Scene::FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDr
   // The camera of the frame before (the anchor's constants, temporal_camera.h) when this frame follows it directly: the view ray and the rotation the derivative normal reads
   // (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at most, a camera cut shows for one frame (the temporal system
   // starts again at a cut: no previous camera then).
+  // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal (no family reads it yet).
   const temporal::Camera* camera = temporal_ && temporal_->active() ? temporal_->previous_camera() : nullptr;
   if (!camera || camera->width == 0 || camera->height == 0 || !(camera->fov_y > 0.0) || !(camera->aspect > 0.0)) {
     return false;

@@ -25,6 +25,8 @@
 // wrote there: the one inexactness, which the "missing pixels" view (mcla_gpu_gbuffer_view 7) shows for the shaders that have no variant (their draws are counted by
 // identity in the log either way).
 //
+// CHECK (not run): the clear and mask blend states on Vulkan (auto = all there) and on D3D12 with Plume's fix; the cutscene gate (no hook calls NoteCutsceneCamera yet); the rear view mirror's window; the memory cap.
+//
 // THE FRAME (gbuffer_rules.h Window):
 //   - the guest's clear of the main colour is mirrored: the planes are cleared to 0 ("no data") with the same rectangle, at the target's scale. A day frame has two (the
 //     guest clears again after the sun shadow collector, which draws into the same target), both mirrored; the collector's shaders have no variant, so with the

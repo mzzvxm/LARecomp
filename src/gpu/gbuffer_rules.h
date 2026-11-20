@@ -313,6 +313,7 @@ constexpr bool SidecarAffordable(uint32_t planes, uint32_t width, uint32_t heigh
 // RT1 would take RT0's mask and blend, and such a draw, whose pixel shader writes no SV_Target1, would put undefined values into the normal plane. The fix is Plume
 // 5d60b70 (fix/d3d12-independent-blend, its own PR to mzzvxm/plume); flip this when the pin has it. Until then on D3D12 only the draws that write the sidecar bind it, and
 // the pixels of the others keep what an earlier draw of the window wrote there (see Why and PlaneMode: that is the one inexactness of the writers only way).
+// CHECK: Vulkan's per target blend states with the clear (ZERO / ZERO) and the mask (write mask 0) on a pixel shader that writes no output at that slot, and D3D12's with the fix: not run.
 inline constexpr bool kD3d12PerTargetBlend = false;
 struct Caps {
   bool per_target_blend = false;
@@ -443,6 +444,7 @@ inline View ViewOf(int value) { return (value > 0 && value < int(View::kCount)) 
 //               calls); CutsceneGate turns the count into "this frame is a cutscene's" (a frame or two late at the ends, harmless)
 //   the mirror: the rear view mirror's phase draws the world again from behind into a small window of the main colour and depth (hooks/rear_view.cpp: 229 x 44 of the
 //               1280 x 720 target); the draws' viewport is a small piece of the target. Their pixels are not the play view's: they are told apart by the viewport's width
+// CHECK: that the rear view mirror's draws have a guest viewport this narrow (hooks/rear_view.cpp says 229 x 44 of 1280 x 720; not run with the mirror on) and that no draw of the play view does.
 inline constexpr uint32_t kSubViewportDivisor = 2;
 // A viewport narrower than half the target's pitch (both in host pixels) is a window, not the view.
 constexpr bool IsSubViewport(uint32_t viewport_width, uint32_t target_pitch) {
