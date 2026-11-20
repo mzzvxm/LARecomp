@@ -108,7 +108,8 @@
 //              with flag bit 31 the traced image's slot (the statistics picture's pass has no bit 31)
 //   slots.w    the car's shadow map (bit 28): its bindless slot, one float channel, the depth from the sun (0 nearest, 1 where no part of the car is)
 //   slots2.x   the car's shadow map (bit 28): the slot of its matrix, a 4 x 1 R32G32B32A32_FLOAT texture, texels 0 to 2 the rows that take a
-//              view position to (u, v, depth) (car_shadow_map.h), texel 3 (texel_m, depth_m, size, 1)
+//              view position to (u, v, depth) (car_shadow_map.h), texel 3 (texel_m, depth_m, size, the world's shadow filter: mode * 256 + the
+//              sun in sixteenths; mode 0 is the map's own ring, 1 the soft disk, 2 pcss; contact_trace.h "THE FILTER FOLLOWS THE WORLD'S")
 //   slots2.y   the frame number (the noise's shift); 0 while no temporal upscaler runs
 //   slots2.z   flags: bit 24 the skip under the game's own shadow (THE SKIP below); bit 27 a draw that is not the march: the skip's
 //              block pass, or with bit 26 the statistics picture (THE SKIP below); bits 28 to 30 the car's shadow map (above: a map is
@@ -251,6 +252,16 @@ static const float kCarMapProducerSlope = 2.0f;
 static const float kCarMapMaxTan = 8.0f;
 static const float kCarMapEdgeTexels = 4.0f;
 static const float kCarMapEmpty = 0.9999f;
+// The world's filter on the car's map (contact_trace.h "THE FILTER FOLLOWS THE WORLD'S"): the matrix texture's last component is mode * 256 + the sun in sixteenths.
+static const uint kCarMapFilterPcss = 2u;
+static const float kCarMapSoftRadiusMetres = 0.03f;
+static const float kCarMapSunTan = 0.0047123890f;
+static const float kCarMapFilterMaxRadii = 2.0f;
+static const int kCarMapFilterTaps = 16;
+static const int kCarMapSearchTaps = 8;
+static const float kCarMapFixedAngle = 2.399963f;
+static const float kCarMapGoldenCos = -0.7373688780783197f;
+static const float kCarMapGoldenSin = 0.6754902942615238f;
 
 // The ground under a vehicle (header comment). Two columns of two probes, one straight up from the pixel and one along the
 // sun's ray (the same heights up it, kUnderHeight times the share times a jitter of kUnderJitterLow + kUnderJitterSpan
@@ -371,6 +382,9 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
   const float texel_m = info.x;
   const float depth_m = info.y;
   const float size = info.z;
+  const uint filter_code = uint(info.w + 0.5f);
+  const uint filter_mode = filter_code >> 8;
+  const float sun_times = float(filter_code & 255u) * (1.0f / 16.0f);
   if (!(texel_m > 0.0f && depth_m > 0.0f && size >= 2.0f)) {
     return 0.0f;
   }
@@ -411,6 +425,41 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
   blocker_sum += dot(blocked, over);
   blocker_count += dot(blocked, 1.0f);
   float total = dot(blocked, weight);  // the centre's share; the filter's first tap
+  if (filter_mode != 0u) {
+    // The world's filter (soft: the disk of a fixed radius; pcss: at the penumbra's width): the search over the disk's reach (the centre is its first
+    // tap), then 16 taps on a Vogel disk, every one a bilinear gather. The disk keeps its angle unless a temporal upscaler runs (the push's frame is not 0).
+    const float soft = kCarMapSoftRadiusMetres / texel_m;
+    const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
+    float2 direction;
+    sincos((g_push.slots2.y != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);
+    [unroll] for (int j = 0; j < kCarMapSearchTaps; ++j) {
+      const float at = (float(j) + 0.5f) * (1.0f / float(kCarMapSearchTaps));
+      CarMapGather(slot, centre + direction * (sqrt(at) * reach), centre, receiver_m, gradient, depth_m, inv_size, bias, occupied, blocked, over, weight);
+      blocker_sum += dot(blocked, over);
+      blocker_count += dot(blocked, 1.0f);
+      direction = float2(direction.x * kCarMapGoldenCos - direction.y * kCarMapGoldenSin,
+                         direction.x * kCarMapGoldenSin + direction.y * kCarMapGoldenCos);
+    }
+    if (blocker_count < 0.5f) {
+      return 0.0f;
+    }
+    float radius = soft;
+    if (filter_mode == kCarMapFilterPcss) {
+      radius = clamp(blocker_sum / blocker_count * kCarMapSunTan * sun_times / texel_m, kCarMapMinFilterTexels, reach);
+    }
+    float sum = 0.0f;
+    float weights = 0.0f;
+    [loop] for (int i = 0; i < kCarMapFilterTaps; ++i) {
+      const float at = (float(i) + 0.5f) * (1.0f / float(kCarMapFilterTaps));
+      const float w = 1.0f - 0.5f * at;
+      CarMapGather(slot, centre + direction * (sqrt(at) * radius), centre, receiver_m, gradient, depth_m, inv_size, bias, occupied, blocked, over, weight);
+      sum += w * dot(blocked, weight);
+      weights += w;
+      direction = float2(direction.x * kCarMapGoldenCos - direction.y * kCarMapGoldenSin,
+                         direction.x * kCarMapGoldenSin + direction.y * kCarMapGoldenCos);
+    }
+    return saturate(sum / weights) * saturate(edge / kCarMapEdgeTexels);
+  }
   const float r0 = clamp(kCarMapSearchMetres / texel_m, kCarMapSearchMinTexels, kCarMapMaxFilterTexels);
   const float2 ring[4] = {d0, d1, -d0, -d1};
   [unroll] for (int i = 0; i < 4; ++i) {

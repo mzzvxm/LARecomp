@@ -748,6 +748,36 @@ inline constexpr float kCarMapMaxTan = 8.0f;               // the plane's gradie
 inline constexpr float kCarMapEdgeTexels = 4.0f;
 inline constexpr float kCarMapEmpty = 0.9999f;             // a stored depth at or above this is "no part of the car here"
 
+// THE FILTER FOLLOWS THE WORLD'S (mcla_gpu_shadow_filter; owner, 2026-11-19: the car's shadow and the world's must match). The sun's cascades are
+// filtered by the setting (shadow_filter.h: game, soft, pcss) and the car's own map had a filter of its own, a ring of four taps turned by the pixel's
+// noise at the real sun's penumbra, which is crisp (a roof a metre up has an edge 4 mm wide) beside a world shadow that is soft. The map's
+// matrix texture carries the world's mode and sun size in its last component (kCarMapFilterCode: mode * 256 + the sun in sixteenths), and
+//   game  the filter above, to the bit
+//   soft  the soft filter's disk: kCarMapFilterTaps taps on a Vogel disk (golden angle, sqrt radius, the weight 1 - r^2 / 2: the same as
+//         src/shaderpack/variants/shadow_filter.cpp) of kCarMapSoftRadiusMetres, every tap a bilinear gather (a true PCF tap, smooth over a texel)
+//   pcss  the same disk at the penumbra's width: the mean blocker distance times the sun's tangent times the sun's size (4 times the real sun by default:
+//         mcla_gpu_shadow_filter_sun), at least kCarMapMinFilterTexels and at most kCarMapFilterMaxRadii soft radii (the world's cap)
+// both with a blocker search first (the centre and 8 taps over the disk's reach, which says "no shadow here" without the 16 taps), and the disk
+// turned by the pixel's noise only while a temporal upscaler runs (the push's frame number is not 0); otherwise it keeps its angle, as the world's does
+// (the noise is a grain that nothing averages: shadow_filter.h kModeNoise).
+inline constexpr uint32_t kCarMapFilterGame = 0;
+inline constexpr uint32_t kCarMapFilterSoft = 1;
+inline constexpr uint32_t kCarMapFilterPcss = 2;
+inline constexpr float kCarMapSoftRadiusMetres = 0.03f;    // the soft disk's radius: the nearest cascade's 4 texels at the high shadow detail, about 2.5 to 3.5 cm
+inline constexpr float kCarMapSunTan = 0.0047123890f;      // tan of the sun's angular radius, 0.27 degrees (the world's: shadow_filter.cpp kShadowFilterSunTan)
+inline constexpr float kCarMapFilterMaxRadii = 2.0f;
+inline constexpr int kCarMapFilterTaps = 16;
+inline constexpr int kCarMapSearchTaps = 8;
+inline constexpr float kCarMapFixedAngle = 2.399963f;      // the disk's angle without noise
+inline constexpr float kCarMapGoldenCos = -0.7373688780783197f;
+inline constexpr float kCarMapGoldenSin = 0.6754902942615238f;
+// The matrix texture's last component: an exact integer in a float.
+constexpr float CarMapFilterCode(uint32_t mode, uint32_t sun_sixteenths) {
+  return float(mode * 256u + (mode == kCarMapFilterPcss ? (sun_sixteenths > 255u ? 255u : sun_sixteenths) : 0u));
+}
+constexpr uint32_t CarMapFilterModeOf(float code) { return uint32_t(code + 0.5f) >> 8; }
+constexpr float CarMapFilterSunOf(float code) { return float(uint32_t(code + 0.5f) & 255u) * (1.0f / 16.0f); }
+
 // The map's blocker test at one texel: the receiver's depth at the texel (metres along the sun's ray, on the receiver's plane) is deeper than the
 // stored depth by more than the bias, and the texel holds a part of the car.
 inline float CarMapBiasMetres(float texel_m, float footprint) {
@@ -766,6 +796,9 @@ struct CarMapView {
   float to_map[3][4] = {};
   float texel_m = 0.0f;
   float depth_m = 0.0f;
+  uint32_t filter_mode = kCarMapFilterGame;  // kCarMapFilter*: the world's filter (the matrix texture's last component)
+  float sun_times = 4.0f;                    // pcss: the sun's size in times the real sun's
+  bool noise_turns = false;                  // the disk turns by the pixel's noise (a temporal upscaler runs)
   int size = 0;
   const float* texels = nullptr;  // size * size stored depths, rows downward (v down)
   float At(int tx, int ty) const {
@@ -864,6 +897,58 @@ inline CarMapResult CarMapShadow(const CarMapView& m, Vec3 pc, Vec3 normal, floa
         }
       }
     }
+  }
+  if (m.filter_mode != kCarMapFilterGame) {
+    // The world's filter (kCarMapFilterSoft / kCarMapFilterPcss): the centre above, then the search over the disk's reach and the disk itself.
+    const float soft = kCarMapSoftRadiusMetres / m.texel_m;  // texels
+    const float reach = m.filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
+    float dx = std::cos(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    float dy = std::sin(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    const auto turn = [&] {
+      const float nx = dx * kCarMapGoldenCos - dy * kCarMapGoldenSin;
+      const float ny = dx * kCarMapGoldenSin + dy * kCarMapGoldenCos;
+      dx = nx;
+      dy = ny;
+    };
+    for (int j = 0; j < kCarMapSearchTaps; ++j) {
+      const float at = (float(j) + 0.5f) / float(kCarMapSearchTaps);
+      const float r = std::sqrt(at) * reach;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          blocker_sum += q.over[k];
+          blocker_count += 1.0f;
+        }
+      }
+      turn();
+    }
+    if (blocker_count < 0.5f) {
+      return out;
+    }
+    float radius = soft;
+    if (m.filter_mode == kCarMapFilterPcss) {
+      radius = std::clamp(blocker_sum / blocker_count * kCarMapSunTan * m.sun_times / m.texel_m, kCarMapMinFilterTexels, reach);
+    }
+    float sum = 0.0f, weights = 0.0f;
+    for (int i = 0; i < kCarMapFilterTaps; ++i) {
+      const float at = (float(i) + 0.5f) / float(kCarMapFilterTaps);
+      const float weight = 1.0f - 0.5f * at;
+      const float r = std::sqrt(at) * radius;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      float tap = 0.0f;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          tap += q.weight[k];
+        }
+      }
+      sum += weight * tap;
+      weights += weight;
+      turn();
+    }
+    out.shadow = Saturate(sum / weights) * Saturate(edge / kCarMapEdgeTexels);
+    return out;
   }
   for (int t = 0; t < 4; ++t) {
     const CarMapQuad q = CarMapGather(m, cx + r0 * ox[t], cy + r0 * oy[t], cx, cy, receiver_m, grad_u, grad_v);

@@ -2605,6 +2605,111 @@ void ScoreCarMap(const Rig& rig, const RigImage& im, const CarMapRig& map, CarMa
   }, tally);
 }
 
+// THE FILTER FOLLOWS THE WORLD'S (contact_trace.h): on a straight edge of a flat blocker (the map's left half holds it at depth 0.5, the right half is empty)
+// the soft disk is a smooth ramp of the world's width, the pcss disk grows with the blocker's distance, neither turns without a temporal upscaler, and a
+// pixel far from every blocker costs the search alone. The map has 1 cm texels here (a soft radius of 3 texels).
+void CarMapWorldFilter() {
+  std::vector<float> texels(64 * 64, 1.0f);
+  for (int y = 0; y < 64; ++y) {
+    for (int x = 0; x < 32; ++x) {
+      texels[size_t(y) * 64 + size_t(x)] = 0.5f;
+    }
+  }
+  CarMapView m;
+  m.size = 64;
+  m.texel_m = 0.01f;
+  m.depth_m = 1.0f;
+  m.texels = texels.data();
+  m.to_map[0][0] = 1.0f / (64.0f * 0.01f);
+  m.to_map[1][1] = -1.0f / (64.0f * 0.01f);
+  m.to_map[1][3] = 1.0f;
+  m.to_map[2][2] = 1.0f;
+  const float side = 0.64f;
+  const Vec3 n{0.0f, 0.0f, -1.0f};
+  // The edge is at u = 0.5 (x = 0.32 m). Walk the receiver across it in quarter texels; `depth` is the receiver's z, the blocker's is 0.5.
+  const auto ramp = [&](CarMapView view, float depth, float noise, std::vector<float>* out) {
+    out->clear();
+    for (int i = -32; i <= 32; ++i) {
+      const float x = 0.5f * side + float(i) * 0.0025f;  // quarter texels
+      out->push_back(CarMapShadow(view, {x, 0.5f * side, depth}, n, 0.0005f, noise).shadow);
+    }
+  };
+  const auto width = [&](const std::vector<float>& r) {  // the 10 to 90 percent width, in texels
+    int first = -1, last = -1;
+    for (size_t i = 0; i < r.size(); ++i) {
+      if (first < 0 && r[i] < 0.9f) first = int(i);
+      if (r[i] > 0.1f) last = int(i);
+    }
+    return first < 0 || last < first ? 0.0f : float(last - first) * 0.25f;
+  };
+  std::vector<float> a, b;
+  // soft: a smooth, monotonic ramp about 1.36 radii wide (3 texels each) at any blocker distance.
+  CarMapView soft = m;
+  soft.filter_mode = kCarMapFilterSoft;
+  ramp(soft, 0.6f, 0.37f, &a);
+  bool monotonic = true;
+  for (size_t i = 1; i < a.size(); ++i) {
+    monotonic = monotonic && a[i] <= a[i - 1] + 1e-4f;
+  }
+  Check(monotonic && a.front() > 0.97f && a.back() < 0.03f, Num("soft: a monotonic ramp from shadow to light across the edge (%.3f to %.3f)", double(a.front()), double(a.back())));
+  const float soft_width = width(a);
+  Check(soft_width > 2.5f && soft_width < 5.5f, Num("soft: the 10 to 90 percent width is about 1.4 radii of 3 texels: %.2f texels", double(soft_width)));
+  float steepest = 0.0f;
+  for (size_t i = 1; i < a.size(); ++i) {
+    steepest = std::max(steepest, a[i - 1] - a[i]);
+  }
+  Check(steepest < 0.12f, Num("soft: no step of the ramp over a quarter texel is bigger than 0.12 (16 gathers: %.3f)", double(steepest)));
+  ramp(soft, 0.95f, 0.37f, &b);
+  Check(std::fabs(width(b) - soft_width) < 0.6f, Num("soft: the width does not depend on the blocker's distance (%.2f against %.2f texels)", double(width(b)), double(soft_width)));
+  // Without a temporal upscaler the disk does not turn: the noise changes nothing. With one it does.
+  std::vector<float> c, d;
+  ramp(soft, 0.6f, 0.05f, &c);
+  ramp(soft, 0.6f, 0.83f, &d);
+  Check(c == d, "soft: no upscaler: the pixel's noise changes nothing (a fixed disk)");
+  CarMapView turning = soft;
+  turning.noise_turns = true;
+  ramp(turning, 0.6f, 0.05f, &c);
+  ramp(turning, 0.6f, 0.83f, &d);
+  float most = 0.0f;
+  for (size_t i = 0; i < c.size(); ++i) {
+    most = std::max(most, std::fabs(c[i] - d[i]));
+  }
+  Check(most > 0.01f, Num("soft: with a temporal upscaler the noise turns the disk (the ramps differ by %.3f)", double(most)));
+  // pcss: the penumbra grows with the blocker's distance (the sun 15 times the real one here, texels of 1 cm).
+  CarMapView pcss = m;
+  pcss.filter_mode = kCarMapFilterPcss;
+  pcss.sun_times = 15.0f;
+  ramp(pcss, 0.6f, 0.37f, &a);   // 10 cm behind the blocker
+  ramp(pcss, 0.95f, 0.37f, &b);  // 45 cm behind it
+  const float near_width = width(a), far_width = width(b);
+  Check(far_width > near_width + 1.0f && near_width < 2.5f,
+        Num("pcss: the penumbra grows with the blocker's distance: %.2f texels at 10 cm, %.2f at 45 cm", double(near_width), double(far_width)));
+  Check(far_width <= 1.4f * 2.0f * (kCarMapSoftRadiusMetres / m.texel_m) + 0.5f, "pcss: and never wider than twice the soft disk");
+  pcss.sun_times = 4.0f;
+  ramp(pcss, 0.95f, 0.37f, &c);
+  Check(width(c) < far_width, "pcss: a smaller sun gives a narrower penumbra");
+  // The cost: a pixel with no blocker in reach makes the centre's gather and the search's 8 (9), one at an edge 9 + 16.
+  std::vector<float> empty(64 * 64, 1.0f);
+  CarMapView none = soft;
+  none.texels = empty.data();
+  const CarMapResult nothing = CarMapShadow(none, {0.3f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(nothing.shadow == 0.0f && nothing.gathers == 1 + kCarMapSearchTaps, Num("soft: no blocker: the centre and the search alone (%.0f gathers)", double(nothing.gathers)));
+  const CarMapResult edge = CarMapShadow(soft, {0.5f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(edge.gathers == 1 + kCarMapSearchTaps + kCarMapFilterTaps && edge.shadow > 0.2f && edge.shadow < 0.8f,
+        Num("soft: at the edge: 9 gathers and the 16 taps (%.0f), a partial shadow %.2f", double(edge.gathers), double(edge.shadow)));
+  // `game` is the map's own filter, to the bit: a ring of five taps turned by the noise at the real sun's penumbra.
+  const CarMapResult game = CarMapShadow(m, {0.5f * side, 0.5f * side, 0.6f}, n, 0.0005f, 0.5f);
+  Check(m.filter_mode == kCarMapFilterGame && game.gathers == 5 + 4, Num("game: the map's own ring (%.0f gathers)", double(game.gathers)));
+  // The matrix texture's last component.
+  Check(CarMapFilterModeOf(CarMapFilterCode(kCarMapFilterGame, 64)) == kCarMapFilterGame && CarMapFilterCode(kCarMapFilterSoft, 64) == 256.0f &&
+            CarMapFilterModeOf(CarMapFilterCode(kCarMapFilterPcss, 64)) == kCarMapFilterPcss && CarMapFilterSunOf(CarMapFilterCode(kCarMapFilterPcss, 64)) == 4.0f &&
+            CarMapFilterSunOf(CarMapFilterCode(kCarMapFilterPcss, 240)) == 15.0f && CarMapFilterCode(kCarMapFilterGame, 64) == 0.0f,
+        "the matrix texture's filter code: mode * 256 + the sun in sixteenths (pcss only), read back exactly");
+  Check(kCarMapSunTan == 0.0047123890f && std::fabs(kCarMapSunTan - std::tan(0.27 * 3.14159265358979323846 / 180.0)) < 1e-5 &&
+            kCarMapFilterTaps == 16 && kCarMapFilterMaxRadii == 2.0f,
+        "the car map's sun is the world's (tan 0.27 degrees), its disk 16 taps, its cap twice the soft radius");
+}
+
 void CarMapRules() {
   // The penumbra's half width is the blocker distance times the sun's angular radius, at least a texel's worth and at most kCarMapMaxFilterTexels.
   const float texel = 0.005f;
@@ -4132,6 +4237,26 @@ void ShaderConstantsMatch(const std::string& dir) {
             contact.find("return saturate(total * 0.2f) * saturate(edge / kCarMapEdgeTexels);") != std::string::npos &&
             contact.find("if (blocker_count < 0.5f) {") != std::string::npos,
         "the shader's blocker search and filter are the twin's (a ring at the search radius, the penumbra's half width, a ring an eighth turned, five taps)");
+  // The world's filter on the map (CarMapWorldFilter): the same numbers and the same loops as the twin's.
+  Check(contact.find("static const float kCarMapSoftRadiusMetres = 0.03f;") != std::string::npos && kCarMapSoftRadiusMetres == 0.03f &&
+            contact.find("static const float kCarMapSunTan = 0.0047123890f;") != std::string::npos && kCarMapSunTan == 0.0047123890f &&
+            contact.find("static const float kCarMapFilterMaxRadii = 2.0f;") != std::string::npos && kCarMapFilterMaxRadii == 2.0f &&
+            contact.find("static const int kCarMapFilterTaps = 16;") != std::string::npos && kCarMapFilterTaps == 16 &&
+            contact.find("static const int kCarMapSearchTaps = 8;") != std::string::npos && kCarMapSearchTaps == 8 &&
+            contact.find("static const float kCarMapFixedAngle = 2.399963f;") != std::string::npos && kCarMapFixedAngle == 2.399963f &&
+            contact.find("static const float kCarMapGoldenCos = -0.7373688780783197f;") != std::string::npos && kCarMapGoldenCos == -0.7373688780783197f &&
+            contact.find("static const float kCarMapGoldenSin = 0.6754902942615238f;") != std::string::npos && kCarMapGoldenSin == 0.6754902942615238f &&
+            contact.find("static const uint kCarMapFilterPcss = 2u;") != std::string::npos && kCarMapFilterPcss == 2u,
+        "the shader's world filter constants are the header's");
+  Check(contact.find("const uint filter_code = uint(info.w + 0.5f);") != std::string::npos &&
+            contact.find("const uint filter_mode = filter_code >> 8;") != std::string::npos &&
+            contact.find("const float sun_times = float(filter_code & 255u) * (1.0f / 16.0f);") != std::string::npos &&
+            contact.find("const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;") != std::string::npos &&
+            contact.find("sincos((g_push.slots2.y != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);") != std::string::npos &&
+            contact.find("radius = clamp(blocker_sum / blocker_count * kCarMapSunTan * sun_times / texel_m, kCarMapMinFilterTexels, reach);") != std::string::npos &&
+            contact.find("const float w = 1.0f - 0.5f * at;") != std::string::npos &&
+            contact.find("return saturate(sum / weights) * saturate(edge / kCarMapEdgeTexels);") != std::string::npos,
+        "the shader's world filter is the twin's (the matrix's last component, the reach, the turn only with a frame, the penumbra, the weights)");
   Check(contact.find("if (facing > kSunFacingLow) {") != std::string::npos &&
             contact.find("if (covered && AoIsVehicle(tc) && (flags & kCarMapKeepMarchFlag) == 0u) {") != std::string::npos &&
             contact.find("steps = 0u;") != std::string::npos && contact.find("shadow = max(shadow, car_shadow);") != std::string::npos &&
@@ -4215,6 +4340,7 @@ void ShaderConstantsMatch(const std::string& dir) {
 int main(int argc, char** argv) {
   if (argc > 2 && std::string(argv[2]) == "carmap") {  // only the car's shadow map checks (a second argument: quicker to run while working on them)
     CarMapRules();
+    CarMapWorldFilter();
     CarMapNoAcne();
     CarMapShadowsLandWhereGeometrySays();
     CarMapPenumbra();
@@ -4264,6 +4390,7 @@ int main(int argc, char** argv) {
   WingFromTheSide();
   SmallShadowsStay();
   CarMapRules();
+  CarMapWorldFilter();
   CarMapNoAcne();
   CarMapShadowsLandWhereGeometrySays();
   CarMapPenumbra();
