@@ -139,6 +139,12 @@ inline constexpr uint32_t kVariantUiSharp = 10;
 // The same variant compiled with the shader's ALPHA_TEST spec constants (the main pack's spec variant 1: the alpha test and alpha to coverage; it
 // declares SV_Coverage), for the UI draws that have one of them on: a draw whose key is spec variant 1 cannot take id 10, which is spec variant 0's.
 inline constexpr uint32_t kVariantUiSharpAlphaTest = 11;
+// The G-buffer's pixel shaders (perf/GBUFFER-SURVEY.md, src/gpu/gbuffer_types.h): the game's lit shaders that also write the sidecar's planes, in the draws of the
+// main view that carry the sidecar (Scene::GBufferDraw chooses them, not Pipelines::ChoosePackedVariant). Id 15 is the same text compiled with the shader's ALPHA_TEST
+// spec constants, for the draws whose key is spec variant 1. The spike (phase 0) has the xCityDefault family only (shaderpack/variants/gbuffer.h). These are the last
+// two ids of the table: the variant framework (package GB-B) widens it, and composes this variant with the headlight's (ids 12 and 13 on feat/headlight-light).
+inline constexpr uint32_t kVariantGBuffer = 14;
+inline constexpr uint32_t kVariantGBufferAlphaTest = 15;
 inline constexpr uint32_t kVariantSlots = 16;      // ids 0..15 (ShaderStore keeps one table per id)
 
 }  // namespace larecomp::shaderpack

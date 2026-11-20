@@ -34,6 +34,7 @@
 #include "shaderpack/variants/car_chrome.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
+#include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/hdr_scene.h"
 #include "shaderpack/variants/luminance_scale.h"
@@ -606,6 +607,12 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeCarChromeVariant());
   variants.push_back(MakeLuminanceScaleVariant());
   variants.push_back(MakeUiSharpVariant());
+  VariantDef gbuffer;
+  if (MakeGBufferVariant(&gbuffer, &why)) {
+    variants.push_back(std::move(gbuffer));
+  } else if (left_out) {
+    left_out->push_back("gbuffer: " + why);
+  }
   return variants;
 }
 
