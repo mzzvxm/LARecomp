@@ -20,6 +20,7 @@
 #include "gpu_class.h"
 #include "host_shaders.h"
 #include "live_text.h"
+#include "mc_engine/cinematic/capture_mode.h"
 #include "pass_timing.h"
 #include "scene_noise.h"
 #include "shaders.h"
@@ -900,8 +901,15 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   context.render_width = plan.render[0];
   context.render_height = plan.render[1];
   context.upscaler = upscaler_running;
+  // The time since the last volume: the scene clock's (the wall clock, or a take's frames times its step), so that a lamp's fade of 0.35 s and the haze's drift run at
+  // the same speed at any frame rate; the first version counted the frames over 60 (a lamp faded in 88 ms at 240 FPS).
+  const double clock_ms = mc::cinematic::SceneClockNowMs(frame_);
   context.elapsed_s = last_fill_frame_ != 0 && frame_ > last_fill_frame_ ? float(frame_ - last_fill_frame_) / 60.0f : 0.0f;
+  if (stable_ && last_fill_frame_ != 0 && frame_ > last_fill_frame_ && last_fill_ms_ > 0.0 && clock_ms > last_fill_ms_) {
+    context.elapsed_s = float(std::min((clock_ms - last_fill_ms_) * 1e-3, 5.0));
+  }
   last_fill_frame_ = frame_;
+  last_fill_ms_ = clock_ms;
   auto inputs = std::make_unique<vol::VolInputs>();
   FillDefaults(light, context, inputs.get());
   census_sun_fade_ = inputs->world.sun_dir[3];
@@ -953,7 +961,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ && !cut;
   vol::HistoryUse use = history_;
   use.valid = history_ok;
-  use.weight = vol::HistoryWeight(grid, history_ok, step, turn);
+  if (stable_) {
+    // a time constant, and a move that is smoothed (volumetrics_stable.h): the noise of a frame does not pump with the steering and the history is as long in time at
+    // 240 FPS as at 60
+    const float dt = history_ok && clock_ms > history_clock_ms_ ? float((clock_ms - history_clock_ms_) * 1e-3) : 1.0f / 60.0f;
+    motion_ = history_ok ? vol::HistoryMotion(motion_, vol::RawMotion(step, turn, dt), dt) : 0.0f;
+    use.weight = vol::HistoryWeightFor(grid, history_ok, dt, motion_);
+  } else {
+    use.weight = vol::HistoryWeight(grid, history_ok, step, turn);
+  }
+  last_weight_ = use.weight;
   vol::VolGpuConstants constants;
   vol::MakeGpuConstants(grid, *inputs, camera, use, uint32_t(frame_), &constants);
   plan.grid = grid;
@@ -994,6 +1011,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   history_.near_m = grid.near_m;
   history_.weight = 0.0f;
   history_frame_ = frame_;
+  history_clock_ms_ = clock_ms;
   history_level_ = level_;
   parity_ ^= 1u;
   pending_ = plan;
@@ -1296,6 +1314,8 @@ void Volumetrics::Census() {
                           "g sun {:.2f} lamp {:.2f} head {:.2f}, dimming {:.2f}, cap {:.1f}",
                           look_weights_.clear, look_weights_.fog, look_weights_.rain, look_weights_.night, look_weights_.low, look_weights_.day, look_.sigma, look_.lamp_strength,
                           look_.head_strength, look_.sun_strength, look_.g_sun, look_.g_lamp, look_.g_head, look_.extinction, look_.cap));
+  // VOL-STABLE: which rules ran (mcla_gpu_vol_stable), the history's weight of the last volume and the camera's smoothed move, the debug view
+  REXLOG_INFO("{} frame {}: steady rules {}, history weight {:.3f} (camera move {:.3f}), debug view {}", kPrefix, frame_, stable_ ? "on" : "off (the first version)", last_weight_, motion_, view_);
 }
 
 }  // namespace mcla::gpu

@@ -283,6 +283,10 @@ class Volumetrics {
   bool ground_valid_ = false;
   float wind_[2] = {};
   uint64_t last_fill_frame_ = 0;
+  double last_fill_ms_ = 0.0;      // the scene clock at the last Fill (stable: the producers' dt is real time, not frames over 60)
+  double history_clock_ms_ = 0.0;  // the scene clock when the history's volume was made (the history's weight follows the time between)
+  float motion_ = 0.0f;            // the camera's move, smoothed over about a tenth of a second (volumetrics_stable.h HistoryMotion)
+  float last_weight_ = 0.0f;       // the history's weight of the last volume (the census)
 
   // --- the GPU side ---
   Device* device_ = nullptr;
