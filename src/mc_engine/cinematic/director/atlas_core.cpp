@@ -187,6 +187,54 @@ bool DecodeLights(const GuestView& view, uint32_t list_addr, std::vector<Light>*
     return !out->empty();
 }
 
+bool ReadCityLights(const GuestView& view, uint32_t manager_global, std::vector<Light>* out, std::string* why, uint32_t* list_at) {
+    out->clear();
+    if (list_at) *list_at = 0;
+    char buf[640];
+    view.ClearFailed();
+    const uint32_t mgr = view.U32(manager_global);
+    if (view.failed()) {
+        std::snprintf(buf, sizeof(buf), "the light manager's pointer at 0x%08X cannot be read", static_cast<unsigned>(manager_global));
+        Fail(why, buf);
+        return false;
+    }
+    if (mgr == 0) {
+        std::snprintf(buf, sizeof(buf), "the light manager is not made yet (the pointer at 0x%08X is 0)", static_cast<unsigned>(manager_global));
+        Fail(why, buf);
+        return false;
+    }
+    const uint32_t set = view.U32(mgr + 4);
+    const uint32_t file = view.U32(mgr + 8);
+    if (view.failed()) {
+        std::snprintf(buf, sizeof(buf), "the light manager at 0x%08X cannot be read", static_cast<unsigned>(mgr));
+        Fail(why, buf);
+        return false;
+    }
+    if (set == 0) {
+        std::snprintf(buf, sizeof(buf), "the light manager at 0x%08X has no light set (its +4 is 0; its +8, the packed light file, is 0x%08X)", static_cast<unsigned>(mgr),
+                      static_cast<unsigned>(file));
+        Fail(why, buf);
+        return false;
+    }
+    std::string e96, e80;
+    for (const uint32_t at : {96u, 80u}) {
+        std::string& e = at == 96u ? e96 : e80;
+        if (DecodeLights(view, set + at, out, &e)) {
+            if (list_at) *list_at = at;
+            return true;
+        }
+    }
+    view.ClearFailed();
+    const uint32_t a96 = view.U32(set + 96), a80 = view.U32(set + 80);
+    const unsigned n96 = view.U16(set + 96 + 4), n80 = view.U16(set + 80 + 4);
+    std::snprintf(buf, sizeof(buf),
+                  "the light set at 0x%08X holds no lights: its +96 list {array 0x%08X, count %u}: %s; its +80 list {array 0x%08X, count %u}: %s (manager 0x%08X, packed file 0x%08X)",
+                  static_cast<unsigned>(set), static_cast<unsigned>(a96), n96, e96.c_str(), static_cast<unsigned>(a80), n80, e80.c_str(), static_cast<unsigned>(mgr),
+                  static_cast<unsigned>(file));
+    Fail(why, buf);
+    return false;
+}
+
 Vec3 EvalBSpline(const std::vector<Vec3>& cvs, const std::vector<float>& knots, int deg, double t) {
     const int n = static_cast<int>(cvs.size()) - 1;
     int k;

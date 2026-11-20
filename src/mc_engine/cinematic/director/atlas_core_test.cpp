@@ -217,6 +217,93 @@ void TestDecode() {
     Check(Near(sg[0].pos.x, g[0].pos.x, 0.01) && Near(sg[1].pos.y, g[1].pos.y, 0.01) && Near(sg[2].pos.z, g[2].pos.z, 0.01), "garages: the static list agrees");
 }
 
+// The multi-light manager the way the game lays it out (handlers_world.cpp): a global that holds the manager, its +4 the light set, +8 the packed file; the set's +96 list is the
+// run-time one and its +80 list the file's own. `list96` and `list80` say which of the two lists hold the two lights (the other is {0, 0, 0}).
+std::vector<uint8_t> SynthLightManager(bool manager, bool set, bool list96, bool list80) {
+    Buf b(0x800);
+    const uint32_t kMgr = kP + 0x100, kSet = kP + 0x200, kArr = kP + 0x400;
+    if (manager) b.W32(0x10, kMgr);
+    if (manager) b.W32(0x100 + 8, kP + 0x700);
+    if (manager && set) b.W32(0x100 + 4, kSet);
+    for (int i = 0; i < 2; ++i) {
+        const size_t o = 0x400 + 96 * i;
+        b.WF(o, 10.0f + i);
+        b.WF(o + 4, 5.0f);
+        b.WF(o + 8, -3.0f);
+        b.WF(o + 16, 1.0f);
+        b.WF(o + 20, 0.9f);
+        b.WF(o + 24, 0.8f);
+        b.WF(o + 36, -1.0f);
+        b.WF(o + 64, 20.0f);
+        b.WF(o + 68, 360.0f);
+        b.d[o + 89] = 1;
+    }
+    if (list96) {
+        b.W32(0x200 + 96, kArr);
+        b.W16(0x200 + 96 + 4, 2);
+        b.W16(0x200 + 96 + 6, 2);
+    }
+    if (list80) {
+        b.W32(0x200 + 80, kArr);
+        b.W16(0x200 + 80 + 4, 2);
+        b.W16(0x200 + 80 + 6, 2);
+    }
+    return b.d;
+}
+
+void TestCityLights() {
+    const uint32_t kGlobal = kP + 0x10;
+    struct Case {
+        const char* name;
+        bool manager, set, l96, l80;
+    };
+    const Case cases[] = {{"the run-time list (+96)", true, true, true, false}, {"the file's own list (+80) when +96 is empty", true, true, false, true}, {"both lists", true, true, true, true}};
+    for (const Case& c : cases) {
+        const auto mem = SynthLightManager(c.manager, c.set, c.l96, c.l80);
+        BufferView v(mem.data(), mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        uint32_t at = 0;
+        const bool ok = ReadCityLights(v, kGlobal, &out, &why, &at);
+        const uint32_t want = c.l96 ? 96u : 80u;
+        std::string what = std::string("city lights: ") + c.name;
+        Check(ok && out.size() == 2 && at == want && why.empty() && Near(out[0].pos[0], 10.0) && Near(out[1].pos[0], 11.0), what.c_str());
+    }
+    {   // no manager: the pointer is 0
+        const auto mem = SynthLightManager(false, false, false, false);
+        BufferView v(mem.data(), mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        Check(!ReadCityLights(v, kGlobal, &out, &why) && why.find("not made yet") != std::string::npos && why.find("is 0") != std::string::npos,
+              "city lights: no manager says its pointer is 0");
+    }
+    {   // a manager with no light set: its +4 is 0, and the packed file's pointer is shown
+        const auto mem = SynthLightManager(true, false, false, false);
+        BufferView v(mem.data(), mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        Check(!ReadCityLights(v, kGlobal, &out, &why) && why.find("no light set") != std::string::npos && why.find("0x50000700") != std::string::npos,
+              "city lights: a manager with no light set says so, with the packed file's pointer");
+    }
+    {   // a set with two empty lists: both are named with their words
+        const auto mem = SynthLightManager(true, true, false, false);
+        BufferView v(mem.data(), mem.size(), kP);
+        std::vector<Light> out;
+        std::string why;
+        uint32_t at = 7;
+        Check(!ReadCityLights(v, kGlobal, &out, &why, &at) && at == 0 && why.find("+96 list") != std::string::npos && why.find("+80 list") != std::string::npos &&
+                  why.find("count 0") != std::string::npos && why.find("0x50000200") != std::string::npos,
+              "city lights: a set with no lights names both lists");
+    }
+    {   // the manager's address cannot be read
+        const auto mem = SynthLightManager(true, true, true, false);
+        BufferView v(mem.data(), 0x8, kP);
+        std::vector<Light> out;
+        std::string why;
+        Check(!ReadCityLights(v, kGlobal, &out, &why) && why.find("cannot be read") != std::string::npos, "city lights: a pointer that cannot be read is not 'not made yet'");
+    }
+}
+
 void TestQueries() {
     const World w = SynthWorld();
     const Index index(w);
@@ -379,6 +466,7 @@ int main(int argc, char** argv) {
         return Summarise(argv[1] + 2, argv[2], write_to);
     }
     TestDecode();
+    TestCityLights();
     TestQueries();
     TestCamera();
     TestFiles();

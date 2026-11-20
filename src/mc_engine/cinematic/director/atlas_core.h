@@ -130,6 +130,12 @@ struct World {
 // apart by the first word. Light: +0 position, +16 colour, +32 direction, +64 intensity, +68 cone, +72 spread, +88 type (1 spot), +89 on.
 bool DecodeLights(const GuestView& view, uint32_t list_addr, std::vector<Light>* out, std::string* error);
 
+// The city's lamps from the multi-light manager: `*manager_global` (0x8287E2F4) is the manager, its +4 the light set (sub_822F9648 loads lights.xlm into it; sub_822F9268 makes an empty one),
+// whose +96 list is the run-time one (sub_822F87E8 appends the packed lights to it and builds the grid from it) and whose +80 list is the file's own (the 15,174 the offline atlas decodes);
+// the manager's +8 is the packed light file. Tries +96, then +80; `list_at` (when given) says which one answered. On failure `why` names what was not there with the raw words
+// (the manager, +4, +8, each list's head), so that a run's log says which of them it was: the first real run (11-20) only had "not made yet" for six reads over 30 s of free roam.
+bool ReadCityLights(const GuestView& view, uint32_t manager_global, std::vector<Light>* out, std::string* why, uint32_t* list_at = nullptr);
+
 // The traffic rail network: `root` is the mcRailnetData (the resource's first object; in the running game `*(railnet + 8)`). `step_m` is the spacing
 // of the polyline samples, at most `max_pts` a rail.
 bool DecodeRailnet(const GuestView& view, uint32_t root, World* world, std::string* error, double step_m = 4.0, int max_pts = 40);

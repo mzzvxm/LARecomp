@@ -12,8 +12,10 @@
 // The live world is decoded once from guest memory (atlas_core.h: the layouts) and kept; `atlas.dump {refresh:true}` reads it again. All handlers run on the
 // game thread (director.h). The guest addresses are those the notes derive from the recompiled code:
 //
-//   *0x8287E2F4            mcMultiLightMgr; its +4 is the run-time light set, whose +96 is the list {u32 array, u16 count, u16 capacity} of 96-byte lights
-//                          (sub_822F87E8 builds it from lights.#lm) [CHECK C4: the live list is lights.xlm's list]
+//   *0x8287E2F4            mcMultiLightMgr; its +4 is the light set, whose +96 is the run-time list {u32 array, u16 count, u16 capacity} of 96-byte lights
+//                          (sub_822F87E8 builds it from lights.#lm) and whose +80 is the loaded file's own list (atlas_core.h ReadCityLights tries both and, when neither
+//                          answers, names the manager's, set's and file's words in the error) [CHECK C4: the live list is lights.xlm's list; the first real run (11-20)
+//                          read 0 lights in free roam six times over 30 s with "not made yet": the cause is not known]
 //   *0x8286D8E4            mcAmbientMgr; the traffic mcRailnetAmbient is at +0x641C0 (409,920), its +8 the mcRailnetData (the resource's root object)
 //                          [CHECK C1: the live arrays are the file's]
 //   0x828CD0A8             the car table (cars.cpp)
@@ -67,8 +69,6 @@ using dir::ErrorCode;
 using dir::Json;
 
 constexpr uint32_t kMultiLightMgrPtr = 0x8287E2F4;
-constexpr uint32_t kLightSetAt = 4;
-constexpr uint32_t kLightListAt = 96;
 constexpr uint32_t kAmbientMgrPtr = 0x8286D8E4;
 constexpr uint32_t kRailnetAt = 409920;  // 0x641C0
 constexpr uint32_t kRailnetDataAt = 8;
@@ -227,13 +227,8 @@ bool EnsureWorld(bool refresh, std::string* error) {
     if (!ReadGarages(view, &w->garages)) w->garages = StaticGarages();
 
     std::string e;
-    const uint32_t light_mgr = view.U32(kMultiLightMgrPtr);
-    const uint32_t light_set = light_mgr ? view.U32(light_mgr + kLightSetAt) : 0;
-    if (light_set) {
-        if (!DecodeLights(view, light_set + kLightListAt, &w->lights, &e)) note("lights", e);
-    } else {
-        note("lights", "the light manager is not made yet");
-    }
+    uint32_t lights_from = 0;
+    if (!ReadCityLights(view, kMultiLightMgrPtr, &w->lights, &e, &lights_from)) note("lights", e);
     e.clear();
     const uint32_t amb = view.U32(kAmbientMgrPtr);
     const uint32_t root = amb ? view.U32(amb + kRailnetAt + kRailnetDataAt) : 0;
@@ -257,7 +252,8 @@ bool EnsureWorld(bool refresh, std::string* error) {
     g_live.world = std::move(w);
     g_live.index = std::make_unique<Index>(*g_live.world);
     g_live.read_at = now;
-    LARECOMP_APP_INFO("[atlas] live world read: {} lights, {} rails, {} nodes, {} cars{}", g_live.world->lights.size(), g_live.world->rails.size(),
+    LARECOMP_APP_INFO("[atlas] live world read: {} lights{}, {} rails, {} nodes, {} cars{}", g_live.world->lights.size(),
+                      lights_from == 0 || lights_from == 96 ? std::string() : " (from the light set's +" + std::to_string(lights_from) + " list)", g_live.world->rails.size(),
                       g_live.world->nodes.size(), g_live.world->cars.size(), problems.empty() ? std::string() : " (" + problems + ")");
     return true;
 }
