@@ -71,8 +71,8 @@ class SceneEdit {
 std::string TextHash(std::string_view text);
 
 // The 1-based numbers of the lines of `after` that are not in `before` (a longest-common-subsequence of the two files' lines: an inserted line counts
-// one, a changed line counts one, a moved line counts both ends). The `changed` of the scene.reloaded event. Capped: past 4000 lines it compares by
-// position.
+// one, a changed line counts one, a moved line counts both ends). The `changed` of the scene.reloaded event. The common first and last lines are skipped;
+// when the part that differs is more than about 2000 x 2000 lines it is compared by position.
 std::vector<int> ChangedLines(std::string_view before, std::string_view after);
 
 // How a scene statement reads for placement and for the timeline rows: its time and its track. A line that is blank, a comment or has no time (the
@@ -87,6 +87,8 @@ struct StatementInfo {
     size_t time_end = 0;
 };
 StatementInfo ReadStatement(std::string_view line);
+// The line without its comment (a '#' at the start or after a blank, outside quotes) and without the blanks around what is left.
+std::string StripComment(std::string_view line);
 // "3", "3.5", "1:30.5" -> seconds; false when it is not a time.
 bool ParseSceneTime(std::string_view word, double* seconds);
 // A time as the edit writes it: "3.2" ("3" for a whole number), at most 3 decimals, trailing zeros dropped; over a minute stays in seconds ("90.5").
