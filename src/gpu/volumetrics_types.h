@@ -116,9 +116,13 @@ struct VolLamp {
 };
 static_assert(sizeof(VolLamp) == 64);
 
-// One shadow map view of a spot light (LocalShadowView of local_shadow_types.h, field for field): the matrix takes a world position
-// to the map's texture space (row vectors, v' = v M, uv in x y and the receiver depth in z; w 1), the atlas rectangle is
-// (u0, v0, u1, v1) of the map inside its atlas, `light_index` the index of the headlight it belongs to. 96 bytes, the GPU layout too.
+// One shadow map view of a spot light (LocalShadowView of local_shadow_types.h, field for field). The matrix is the published one
+// (local_shadow_rules.h WorldToShadow): column vectors, row major, so o[j] = M[4j] x + M[4j+1] y + M[4j+2] z + M[4j+3] for a world
+// point (x, y, z); the ATLAS uv is o.xy / o.w (the tile's offset and size are in it already) and the receiver depth o.z / o.w (a point
+// behind the light has o.w <= 0). The map stores z / w of the light's projection, 1 where nothing was drawn; the reader compares
+// receiver_depth - depth_bias against the stored value (stored < that: shadowed; a stored 1: nothing there, lit; a receiver depth
+// outside 0..1: lit). The atlas rectangle is the tile as (u offset, v offset, u size, v size) of the atlas (to keep a tap inside it),
+// `light_index` the index of the headlight it belongs to. 96 bytes, the GPU layout too.
 struct VolShadowView {
   float world_to_shadow[16];
   float atlas_rect[4];
