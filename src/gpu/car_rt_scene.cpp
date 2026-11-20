@@ -79,8 +79,14 @@ std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, 
   if (vulkan) {
     // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
     // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
-    if (!caps.rayQuery) {
-      return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+    // Plume's rayQuery exists only in a Plume with the ray query work (car_rt_rules::CapsRayQuery: main's published pin has not): else
+    // Vulkan has no ray traced car effects in this build, and Direct3D 12 below is as it was.
+    if (!rr::CapsRayQuery(caps)) {
+      if constexpr (!rr::kCapsHaveRayQuery<plume::RenderDeviceCapabilities>) {
+        return "on Vulkan it waits for Plume's ray query support (VK_KHR_ray_query), which this build's Plume does not have yet: the ray traced car effects run on Direct3D 12";
+      } else {
+        return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+      }
     }
     if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
       return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";

@@ -11,7 +11,7 @@
 //
 // There is no setting of its own for a player: it belongs to the occlusion (mcla_gpu_ao) and the contact shadows (mcla_gpu_contact_shadows), runs
 // where the device can trace the car (the same decision the ray traced car self-reflection makes: CarRtSupported; D3D12 with DXR 1.1, or Vulkan with
-// ray queries) and where one of the two is on, and
+// ray queries once the Plume pin has them: Direct3D 12 only for now, car_rt_scene.h) and where one of the two is on, and
 // follows their levels (the occlusion's high traces 2 rays a pixel, ultra 4) and their class defaults (an integrated GPU has neither on). The debug
 // cvars (ao.h's list):
 //

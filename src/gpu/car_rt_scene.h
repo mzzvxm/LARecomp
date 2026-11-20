@@ -11,6 +11,9 @@
 //
 // D3D12 with DXR tier 1.1 (inline ray queries, Shader Model 6.5), and Vulkan with VK_KHR_ray_query (Plume's feat/ray-query: the structures
 // are VkAccelerationStructureKHR, the shaders SPIR-V 1.5 from the same HLSL); keep the decision in ONE function, CarRtSupported.
+// THIS BUILD'S PLUME (main's published pin) HAS NO RAY QUERY SUPPORT YET (mzzvxm/plume pull requests 13 and 14 are not merged): CarRtSupported says
+// no on Vulkan there (car_rt_rules::CapsRayQuery tests the capability member itself), so the Vulkan code below is built but never reached, every
+// ray traced car effect is Direct3D 12 only, and a Plume pin that carries the ray query work turns the Vulkan side on with no change here.
 //
 // car_rt_scene.cpp implements CarRtScene, hlsl/car_rt_common.hlsli its shader side and src/gpu/CMakeLists.txt the function
 // larecomp_gpu_host_shader_rt; the ray traced self-reflection (car_rt_refl.h) uses View(), the descriptor set and the .hlsli.

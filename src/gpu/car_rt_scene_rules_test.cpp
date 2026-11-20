@@ -394,6 +394,28 @@ void TestScope() {
 
 
 // The probe (RT-MODEL-CARS-4): the first cars' two rows as the shader read them, against what the host wrote.
+// The Plume this build is made against: a capabilities struct with no rayQuery member (main's published Plume pin) answers "no ray queries", one
+// with the member answers what it says; the answer is decided by the member, so a Plume with the ray query work turns Vulkan on with no change.
+struct CapsWithoutRayQuery {
+  bool raytracing = true;
+};
+struct CapsWithRayQuery {
+  bool raytracing = true;
+  bool rayQuery = false;
+};
+
+void TestPlumeRayQuery() {
+  static_assert(!rr::kCapsHaveRayQuery<CapsWithoutRayQuery>, "a Plume without the member has no ray queries");
+  static_assert(rr::kCapsHaveRayQuery<CapsWithRayQuery>, "a Plume with the member has them");
+  static_assert(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "no member: no ray queries, decided at compile time");
+  CapsWithRayQuery off;
+  CapsWithRayQuery on;
+  on.rayQuery = true;
+  Check(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "a Plume without the ray query member reports no ray queries (Vulkan: the effects are unavailable in this build)");
+  Check(!rr::CapsRayQuery(off), "a Plume with the member, the device without ray queries: none");
+  Check(rr::CapsRayQuery(on), "a Plume with the member, the device with them: yes");
+}
+
 void TestProbe() {
   Check(rr::kStatProbe == 20 && rr::kProbeCars == 4 && rr::kProbeWordsPerCar == 8 && rr::kStatsWords == rr::kStatProbe + rr::kProbeCars * rr::kProbeWordsPerCar,
         "the probe's words follow the counters'");
@@ -499,6 +521,7 @@ int main(int argc, char** argv) {
   TestStats();
   TestScope();
   TestProbe();
+  TestPlumeRayQuery();
   if (argc > 1) {
     TestShaderParity(argv[1]);
   }

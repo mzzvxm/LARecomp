@@ -644,4 +644,26 @@ inline bool ProbeMatches(const ProbeCar& read, const float centre[3], float radi
   return same(read.radius, radius) && read.flags == (has_paint ? 1u : 0u);
 }
 
+// ---------------------------------------------------------------------------
+// the Plume this build is made against
+// ---------------------------------------------------------------------------
+
+// Vulkan needs Plume's ray query support: RenderDeviceCapabilities::rayQuery, and the Vulkan back end that fills it in and builds the
+// structures (mzzvxm/plume pull requests 13 and 14). The Plume a build is made against may not have them yet (main's published pin has not,
+// until those are merged): then the member does not exist, the answer is "no", and the Vulkan ray traced car effects report themselves
+// unavailable while Direct3D 12 is not touched. It is the member itself that is tested, so a Plume pin that carries the ray query work turns
+// the Vulkan path on with no change here. `Caps` is plume::RenderDeviceCapabilities in the renderer (a stand-in in the test).
+template <typename Caps>
+inline constexpr bool kCapsHaveRayQuery = requires(const Caps& caps) { caps.rayQuery; };
+
+template <typename Caps>
+constexpr bool CapsRayQuery(const Caps& caps) {
+  if constexpr (kCapsHaveRayQuery<Caps>) {
+    return static_cast<bool>(caps.rayQuery);
+  } else {
+    (void)caps;
+    return false;
+  }
+}
+
 }  // namespace mcla::gpu::car_rt_rules
