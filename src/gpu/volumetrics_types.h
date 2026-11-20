@@ -53,7 +53,7 @@ enum class Level : uint8_t { kOff, kMedium, kHigh, kUltra };
 inline constexpr uint32_t kMaxLamps = 48;
 inline constexpr uint32_t kMaxHeadlights = 4;
 inline constexpr uint32_t kMaxCascades = 4;
-inline constexpr uint32_t kMaxShadowViews = 4;
+inline constexpr uint32_t kMaxShadowViews = 8;  // a view for each lamp of the rig's four cars (local_shadow_types.h kMaxShadowViews)
 inline constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
 
 // The grid of a level. The cost is the number of froxels (nx * ny * nz) times the work of one: the survey's table (4K, RTX 5080:
@@ -104,6 +104,7 @@ constexpr GridDesc GridFor(Level level) {
 //   dir, cos_outer  unit axis of the cone; cosine of its outer half angle (-1: a point light, no cone)
 //   colour, cos_inner  light colour x intensity x fade; cosine of the inner half angle (full strength inside it)
 //   shadow_view     index into VolInputs::shadow_views of this light's shadow map, or -1 (unshadowed)
+//   shadow_view_b   a car's light has a view for each of its two headlamps (HL-PER-LAMP): the index of the second, or -1; the light's share is the mean of the two
 struct VolLamp {
   float pos[3];
   float range;
@@ -112,7 +113,9 @@ struct VolLamp {
   float colour[3];
   float cos_inner;
   int32_t shadow_view;
-  float pad[3];
+  float pad[1];  // pad[0]: the near radius squared (volumetrics_lamps.h)
+  int32_t shadow_view_b;
+  float pad2;
 };
 static_assert(sizeof(VolLamp) == 64);
 
@@ -301,6 +304,7 @@ constexpr VolLamp LampFromHeadlight(const HeadlightT& h) {
   lamp.cos_outer = h.cos_outer;
   lamp.cos_inner = h.cos_inner;
   lamp.shadow_view = -1;
+  lamp.shadow_view_b = -1;
   return lamp;
 }
 
@@ -314,14 +318,15 @@ void FillHeadlights(const HeadlightSetT& set, VolInputs* out) {
   out->headlight_count = n;
 }
 
-// The frame's LocalShadowFrame (`views`, `count`) and the atlas it is in into `out->shadow_views`, and each headlight's `shadow_view`
-// (the valid view whose light_index is the light's index; -1 when none). `frame` null: no shadows, every headlight lit.
+// The frame's LocalShadowFrame (`views`, `count`) and the atlas it is in into `out->shadow_views`, and each headlight's `shadow_view` and `shadow_view_b`
+// (the first and the second valid view whose light_index is the light's index: a car's two headlamps; -1 when none). `frame` null: no shadows, every headlight lit.
 template <class LocalShadowFrameT>
 void FillShadowViews(const LocalShadowFrameT* frame, uint32_t atlas_slot, float atlas_width, float atlas_height, VolInputs* out) {
   out->shadow_view_count = 0;
   out->shadow_atlas_slot = kNoSlot;
   for (uint32_t i = 0; i < out->headlight_count; ++i) {
     out->headlights[i].shadow_view = -1;
+    out->headlights[i].shadow_view_b = -1;
   }
   if (!frame || atlas_slot == kNoSlot) {
     return;
@@ -341,7 +346,12 @@ void FillShadowViews(const LocalShadowFrameT* frame, uint32_t atlas_slot, float 
     d.light_index = v.light_index;
     d.valid = v.valid;
     if (v.valid != 0 && v.light_index < out->headlight_count) {
-      out->headlights[v.light_index].shadow_view = int32_t(n);
+      VolLamp& light = out->headlights[v.light_index];
+      if (light.shadow_view < 0) {
+        light.shadow_view = int32_t(n);
+      } else if (light.shadow_view_b < 0) {
+        light.shadow_view_b = int32_t(n);
+      }
     }
     ++n;
   }

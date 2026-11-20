@@ -543,6 +543,9 @@ inline void MakeGpuConstants(const GridDesc& g, const VolInputs& in, const VolCa
     if (out->headlights[i].shadow_view >= int32_t(in.shadow_view_count)) {
       out->headlights[i].shadow_view = -1;
     }
+    if (out->headlights[i].shadow_view_b >= int32_t(in.shadow_view_count)) {
+      out->headlights[i].shadow_view_b = -1;
+    }
   }
   for (uint32_t i = 0; i < in.shadow_view_count && i < kMaxShadowViews; ++i) {
     out->shadow_views[i] = in.shadow_views[i];
