@@ -8,8 +8,8 @@
 // instances are in the frame's VIEW space (the AO's: x right, y up, z forward = the linear depth t; ao_common.hlsli
 // AoViewPos), so a pass at the history trigger traces rays in the same space as the depth image and the history image.
 //
-// D3D12 with DXR tier 1.1 (inline ray queries, Shader Model 6.5) first. Vulkan: off until Plume enables VK_KHR_ray_query
-// (separate Plume branch); keep the decision in ONE function, CarRtSupported.
+// D3D12 with DXR tier 1.1 (inline ray queries, Shader Model 6.5), and Vulkan with VK_KHR_ray_query (Plume's feat/ray-query: the structures
+// are VkAccelerationStructureKHR, the shaders SPIR-V 1.5 from the same HLSL); keep the decision in ONE function, CarRtSupported.
 //
 // car_rt_scene.cpp implements CarRtScene, hlsl/car_rt_common.hlsli its shader side and src/gpu/CMakeLists.txt the function
 // larecomp_gpu_host_shader_rt; the ray traced self-reflection (car_rt_refl.h) uses View(), the descriptor set and the .hlsli.
@@ -93,8 +93,8 @@ struct CarRtView {
   uint32_t instance_count = 0;
 };
 
-// The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: false until Plume has
-// VK_KHR_ray_query). The ONE place to extend for Vulkan.
+// The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
+// VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2). The ONE place for the decision.
 bool CarRtSupported(const plume::RenderDeviceCapabilities& caps, bool vulkan);
 // Why not, in plain words for the log; empty when it is supported.
 std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan);

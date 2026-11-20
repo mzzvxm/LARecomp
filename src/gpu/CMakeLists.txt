@@ -445,13 +445,13 @@ file(GLOB LARECOMP_GPU_THIRDPARTY_SHADER_SOURCES CONFIGURE_DEPENDS
      "${LARECOMP_GPU_THIRDPARTY_DIR}/fxaa/*.h")
 
 # larecomp_gpu_host_shader(<stem> <profile> [SOURCE <hlsl stem>] [HLSL_VERSION <year>]
-#                          [DEFINES NAME=VALUE...] [DXIL_ONLY]):
+#                          [DEFINES NAME=VALUE...] [SPIRV_ARGS <dxc argument>...]):
 # the same source compiled more than once (variants) under different stems.
 # HLSL 2021 unless HLSL_VERSION says otherwise: AMD's ffx_a.h uses the vector
-# ternaries 2021 rejects, so the FSR1 passes build as 2018. DXIL_ONLY: only the
-# D3D12 backend gets a blob (larecomp_gpu_host_shader_rt below).
+# ternaries 2021 rejects, so the FSR1 passes build as 2018. SPIRV_ARGS: more
+# dxc arguments for the SPIR-V blob only (larecomp_gpu_host_shader_rt below).
 function(larecomp_gpu_host_shader STEM PROFILE)
-    cmake_parse_arguments(ARG "DXIL_ONLY" "SOURCE;HLSL_VERSION" "DEFINES" ${ARGN})
+    cmake_parse_arguments(ARG "" "SOURCE;HLSL_VERSION" "DEFINES;SPIRV_ARGS" ${ARGN})
     if(NOT ARG_SOURCE)
         set(ARG_SOURCE "${STEM}")
     endif()
@@ -463,16 +463,13 @@ function(larecomp_gpu_host_shader STEM PROFILE)
         list(APPEND define_args -D "${_define}")
     endforeach()
     foreach(_backend IN LISTS LARECOMP_GPU_BACKENDS)
-        if(ARG_DXIL_ONLY AND NOT _backend STREQUAL "D3D12")
-            continue()
-        endif()
         if(_backend STREQUAL "D3D12")
             set(ext dxil)
             set(format_args "")
         else()
             set(ext spirv)
             # D3D cbuffer packing on Vulkan too, and D3D clip-space y.
-            set(format_args -spirv -fvk-use-dx-layout)
+            set(format_args -spirv -fvk-use-dx-layout ${ARG_SPIRV_ARGS})
             if(PROFILE MATCHES "^vs")
                 list(APPEND format_args -fvk-invert-y)
             endif()
@@ -498,13 +495,12 @@ endfunction()
 
 # larecomp_gpu_host_shader_rt(<stem> <profile> [SOURCE <hlsl stem>] [HLSL_VERSION <year>] [DEFINES NAME=VALUE...]):
 # a host shader that traces rays inline (RayQuery over a top level structure, the car ray tracing's: car_rt_scene.h). DXIL at the profile given
-# (cs_6_5: Shader Model 6.5 is where inline ray queries start; the renderer only runs them where Plume reports DXR 1.1 and that shader
-# model, CarRtSupported), for the D3D12 backend only. NO SPIR-V for now: a Vulkan-only build generates nothing for these, and host_shaders.h
-# hands out an empty blob for them on Vulkan, so the pass is left out there and nothing else changes (the Vulkan path needs
-# VK_KHR_ray_query in Plume first: -spirv -fvk-use-dx-layout -fspv-target-env=vulkan1.2). The header is <stem>.hlsl.dxil.h with the array
-# g_<stem>_dxil, as the others.
+# (cs_6_5: Shader Model 6.5 is where inline ray queries start; the renderer only runs them where Plume reports DXR 1.1 and that shader model,
+# CarRtSupported) and SPIR-V for Vulkan 1.2 with -fspv-target-env=vulkan1.2 (SPIR-V 1.5, which the ray query extension needs; DXC adds the
+# RayQueryKHR capability and SPV_KHR_ray_query itself). Run only where Plume reports capabilities.rayQuery (VK_KHR_ray_query): a device without
+# the feature refuses the module. The headers are <stem>.hlsl.<dxil|spirv>.h with the arrays g_<stem>_<dxil|spirv>, as the others.
 function(larecomp_gpu_host_shader_rt STEM PROFILE)
-    larecomp_gpu_host_shader(${STEM} ${PROFILE} DXIL_ONLY ${ARGN})
+    larecomp_gpu_host_shader(${STEM} ${PROFILE} ${ARGN} SPIRV_ARGS -fspv-target-env=vulkan1.2)
 endfunction()
 
 larecomp_gpu_host_shader(overlay_vs vs_6_0)
@@ -647,16 +643,16 @@ larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES 
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
 larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
-# The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5, DXIL only) and the pass
-# that shows its picture over the scene.
+# The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5; SPIR-V 1.5 on Vulkan) and
+# the pass that shows its picture over the scene.
 larecomp_gpu_host_shader_rt(car_rt_check_cs cs_6_5)
 larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 # The ray traced half (car_rt_refl.h): one compute pass over the history image with inline ray queries against the car's structures
-# (car_rt_scene.h). Shader Model 6.5, DXIL only (larecomp_gpu_host_shader_rt: feat/car-rt-scene's function): Vulkan has no ray queries yet.
+# (car_rt_scene.h). Shader Model 6.5, and SPIR-V 1.5 on Vulkan (larecomp_gpu_host_shader_rt).
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
-# Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays). Built DXIL only
-# beside the trace (the pass runs only where the trace does), through the same function.
-larecomp_gpu_host_shader_rt(car_rt_refl_denoise_cs cs_6_0)
+# Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
+# both backends like any host shader (the pass runs only where the trace does).
+larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

@@ -73,8 +73,15 @@ double Mib(uint64_t bytes) {
 
 std::string CarRtUnsupportedReason(const plume::RenderDeviceCapabilities& caps, bool vulkan) {
   if (vulkan) {
-    // Extend here when Plume enables VK_KHR_ray_query (RenderDeviceCapabilities::rayQuery) and the SPIR-V of the shaders is built.
-    return "on Vulkan it waits for Plume's VK_KHR_ray_query support, which this build does not use yet";
+    // Plume's rayQuery is VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2 together (plume_vulkan.cpp),
+    // the whole of what the structures' builds and the SPIR-V 1.5 shaders (hlsl/car_rt_*.hlsl) need. The ray tracing pipelines are not needed.
+    if (!caps.rayQuery) {
+      return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+    }
+    if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
+      return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
+    }
+    return std::string();
   }
   if (!caps.raytracing || !caps.raytracingStateUpdate) {
     return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
@@ -148,7 +155,7 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
 bool CarRtScene::MakeCheck(HostPasses& passes) {
   const HostShaderBlob blob = CarRtCheckShader();
   if (!blob.data) {
-    REXLOG_INFO("{} the check pass has no shader in this build (Direct3D 12 only): mcla_gpu_car_rt_check does nothing", kPrefix);
+    REXLOG_INFO("{} the check pass has no shader in this build: mcla_gpu_car_rt_check does nothing", kPrefix);
     return false;
   }
   check_set_builder_.begin();
@@ -933,8 +940,9 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
                             uint64_t table_bytes) {
   const auto room = [](uint64_t bytes) { return AlignUp(bytes + bytes / 4, 4096); };
   if (tlas_bytes != 0 && s.tlas_bytes < tlas_bytes) {
-    // CHECK: the top level sits at offset 0 of a buffer of its own: Plume's pinned D3D12 descriptor for an acceleration structure uses the
-    // buffer's base address and ignores the structure's offset (fixed on its feat/ray-query 3c81454, not pinned yet).
+    // The top level sits at offset 0 of a buffer of its own: Plume's D3D12 descriptor for an acceleration structure used the buffer's base
+    // address and ignored the structure's offset until its feat/ray-query 3c81454 (pinned with the Vulkan work). Kept at offset 0: on Vulkan
+    // the descriptor names the structure itself, so the offset never mattered there.
 
     const uint64_t bytes = room(tlas_bytes);
     const std::string name = std::format("car rt top level {}", index);

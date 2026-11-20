@@ -201,7 +201,7 @@ class GPUSettings final : public rex::SettingOwner {
     "line every few seconds. Never saved. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
-    "DirectX Raytracing 1.1). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
+    "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
     "vehicle pixels the structures cover (the other cars and the driver count as misses) and how far the distances are apart. It "
     "needs the ambient occlusion on, and it asks for the car's meshes to be built. Costs a ray a vehicle pixel; never saved. Live.", rex::kDebugOnly);
@@ -234,7 +234,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_length, 2.0, "Diagnostic: how far the car self-reflection's ray goes, in the game's world units (about metres). Live.", rex::kDebugOnly, rex::Range{0.2, 6.0});
 
-  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "auto", "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1), your car's reflection of "
+  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "auto", "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of "
     "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
     "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
     "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "

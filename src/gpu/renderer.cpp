@@ -182,9 +182,14 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
-                    "structures while an effect asks for them",
-                    device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        if (vulkan) {
+          REXLOG_INFO("[gpu] car ray tracing: available (Vulkan ray queries, VK_KHR_ray_query): the player's car is built into ray tracing "
+                      "structures while an effect asks for them");
+        } else {
+          REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
+                      "structures while an effect asks for them",
+                      device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        }
       } else {
         REXLOG_WARN("[gpu] car ray tracing: the device can trace rays but the structures could not be set up: not available");
       }

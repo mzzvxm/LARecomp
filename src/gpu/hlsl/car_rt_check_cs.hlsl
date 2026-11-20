@@ -17,12 +17,16 @@
 //
 // Layout (car_rt_scene.cpp), the same shape the ray traced reflection pass has: set 0 the bindless texture set (t0, space0: the linear depth
 // image by its slot), set 1 this pass's own (u0 the picture, u1 the counters, space1), set 2 the car RT set (hlsl/car_rt_common.hlsli,
-// CAR_RT_SPACE 2), the push range at (b0, space3). Compiled at Shader Model 6.5 (DXIL only: car RT is D3D12 for now).
+// CAR_RT_SPACE 2), the push range at (b0, space3; a Vulkan push constant block). Compiled at Shader Model 6.5 (DXIL), and to SPIR-V 1.5 for Vulkan 1.2 (VK_KHR_ray_query).
 
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
 
 Texture2D<float4> gLinearDepth[] : register(t0, space0);
+#ifdef __spirv__
+// Vulkan takes the format of a storage image from the shader (DXC would say rgba32f for a float4): the picture is R8G8B8A8_UNORM.
+[[vk::image_format("rgba8")]]
+#endif
 RWTexture2D<unorm float4> gView : register(u0, space1);
 RWByteAddressBuffer gStats : register(u1, space1);
 
@@ -32,7 +36,11 @@ struct CheckPush {
   // x and y tan of the half field of view the image was made with, z the ray's start (distance), w its end
   float4 lens;
 };
+#ifdef __spirv__
+[[vk::push_constant]] ConstantBuffer<CheckPush> g_push;
+#else
 ConstantBuffer<CheckPush> g_push : register(b0, space3);
+#endif
 
 // car_rt_scene_rules.h: the counters' places, the unit of the error sum and the histogram's edges.
 static const uint kStatsWords = 16;
