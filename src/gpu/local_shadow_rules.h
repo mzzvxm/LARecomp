@@ -12,7 +12,7 @@
 //   - the replay's matrix: a main-view draw's gWorldViewProj (VS c8-c11) turned into model -> light clip (ReplaceWvp), and the main camera's
 //     view-projection found from the draws' own constants (DeriveCamera);
 //   - which draws are casters (ClassifyDraw: opaque, alpha tested; skinned, impostor, billboard, a vehicle's own parts...) and which of them
-//     a view keeps (KeepForView, SelectForView);
+//     a view keeps (the view's cone and reach: SphereInView; the lamps' own car and the budget: SelectForView);
 //   - the pipelines' key (PipeKey) and the face culling a caster is drawn with (ResolveCull).
 //
 // THE REPLAY'S ONE TRICK (survey 4.2 point 1). Every vertex shader of the pack that places a vertex multiplies it by gWorldViewProj, VS
@@ -450,6 +450,32 @@ inline bool LightClip(const ViewSpec& spec, bool right_handed, tp::Mat4* out) {
   return tp::Finite(*out);
 }
 
+// How far a draw's geometry may reach from its place (the origin of its world matrix), for the cone test below. A draw of a vehicle is a car's part: its
+// root is the car's, the longest (a bus, a truck with a trailer) reaches about this far. Any other draw has no bounds here (the guest's vertex
+// buffers are not read), so it gets a margin that holds a building or a stretch of road: a thing larger than that and mostly outside the view is
+// left out wrongly (the debug setting mcla_gpu_headlight_shadow_cone 0 turns the test off to look for such a shadow).
+inline constexpr double kVehicleReach = 7.0;
+inline constexpr double kWorldReach = 40.0;
+constexpr double CasterReach(bool vehicle) { return vehicle ? kVehicleReach : kWorldReach; }
+
+// Whether a sphere (a draw's place and its reach) can touch the view's frustum: nearer than the near plane or farther than the far one, or outside
+// the cone that holds the square frustum (half the diagonal's angle), is out. Conservative: a sphere that reaches the plane of the eye, where the cone
+// is no test, stays. The planes are measured along the axis from the eye (spec.near_m already holds the lamps' offset behind the lamps).
+inline bool SphereInView(const ViewSpec& spec, const double centre[3], double reach) {
+  const double offset[3] = {centre[0] - spec.eye[0], centre[1] - spec.eye[1], centre[2] - spec.eye[2]};
+  const double along = detail::Dot(offset, spec.dir);
+  if (along + reach < spec.near_m || along - reach > spec.far_m) {
+    return false;
+  }
+  if (along <= reach) {
+    return true;
+  }
+  const double tan_diagonal = std::tan(spec.fov * 0.5) * 1.4142135623730951;
+  const double cos_diagonal = 1.0 / std::sqrt(1.0 + tan_diagonal * tan_diagonal);
+  const double sideways = std::sqrt(std::max(0.0, detail::Dot(offset, offset) - along * along));
+  return (sideways - along * tan_diagonal) * cos_diagonal <= reach;
+}
+
 // The published matrix (local_shadow_types.h): column-vector, row-major, world p -> (u w, v w, depth w, w) of the ATLAS, so that
 // (M * float4(p, 1)).xy / w is the atlas uv and .z / w the depth. `uv_rect` is {u offset, v offset, u size, v size} of the tile; `sx` and `sy`
 // are the signs of the pass's NDC x and y (the main view's pos_scale signs: +1 and +1 in a normal view).
@@ -465,6 +491,14 @@ inline void WorldToShadow(const tp::Mat4& light_clip, const float uv_rect[4], do
       out[j * 4 + i] = float(m.m[i][j]);
     }
   }
+}
+
+// The tile as the published view carries it (local_shadow_types.h atlas_rect): u0, v0, u1, v1, from UvRect's offset and size.
+inline void PublishedRect(const float uv_rect[4], float out[4]) {
+  out[0] = uv_rect[0];
+  out[1] = uv_rect[1];
+  out[2] = uv_rect[0] + uv_rect[2];
+  out[3] = uv_rect[1] + uv_rect[3];
 }
 
 // A world point through a published matrix: the atlas uv and the depth (false behind the light: w <= 0).
@@ -646,6 +680,7 @@ enum class Skip : uint8_t {
   kKindMasked,   // mcla_gpu_headlight_shadow_skip names its kind (debug)
   kPipeline,     // its pipeline is still being made, or failed
   kUnusable,     // no usable geometry
+  kOutOfView,    // its place is outside the view's cone and reach (SphereInView with the draw's margin): nothing of it can be in the map
   kBudget,       // over kMaxDrawsPerView: the farthest are left out
   kCount,
 };
@@ -663,6 +698,7 @@ constexpr const char* SkipName(Skip s) {
     case Skip::kKindMasked: return "kind masked";
     case Skip::kPipeline: return "pipeline pending or failed";
     case Skip::kUnusable: return "unusable geometry";
+    case Skip::kOutOfView: return "outside the lamps' view";
     case Skip::kBudget: return "over the budget";
     case Skip::kCount: break;
   }

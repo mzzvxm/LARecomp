@@ -31,6 +31,15 @@
 //   latency (survey finding 4). Frame() and AtlasInfo() are what the lit draws of the next frame read (and the translucent draws after the
 //   trigger of this one).
 //
+// WHAT IT COSTS ON THE RENDER THREAD, and what keeps it down. Every draw of a map costs its commands and the copy of its vertex constants (the game's
+// vertex shaders read one 4 KiB bank of 256 registers through one address: only c8-c11 differ from the main view's draw, but a bank cannot be
+// patched in place, the main view's own copy is still to be read by the draws before the trigger, and a vertex shader that took the matrix from
+// somewhere else is a change of the shader pack), so the cost goes with the number of draws and banks, and these cut them:
+//   - BY DAY nothing is collected or replayed (no headlight is lit); the draws are only looked at one frame in eight, to list the pipelines.
+//   - THE CONE CULL (mcla_gpu_headlight_shadow_cone): a draw whose place (its world matrix's translation, from c8-c11) is outside every view's cone
+//     and reach, plus a margin for how far its geometry reaches from the place (7 m for a car, 40 m for any other draw: the guest's vertex buffers are
+//     not read for bounds), is dropped at collection, before its bank is copied. Each view then keeps only its own (local_shadow_rules.h SphereInView).
+//   - A bank is written in three pieces around c8-c11, never written twice.
 // THE PLAYER'S OWN CAR. The survey (4.2 point 8) took the player's car from CarFrame so as not to draw it twice. Here it comes from the same list as
 // every other draw (the main view draws it at full detail, with the game's own vertex shader), and the car that owns a view's lamps is not drawn
 // into that view at all (a vehicle part whose root is within 3.5 m of the view's eye, plus the near plane): it casts nothing into its own
@@ -46,7 +55,12 @@
 // made yet is left out of the map for now (counted, never waited for).
 //
 // THE LOG. "[local-shadow] ..." lines: one when the choice changes, one at the first map and then every 1800 frames while the feature runs:
-// views, draws replayed (of the collected), skipped by kind, the atlas, the time of the pass on the render thread (CPU).
+// views, draws replayed (of the collected), skipped by kind (the cone cull's too), the vertex constant banks written, the atlas, the time of the
+// pass and of the collecting on the render thread (CPU).
+//
+// THE GLUE. After the maps of a frame are recorded (and whenever they are given up) HandOver() tells headlight_rig::SetLocalShadows the views and the
+// atlas's bindless slot with the fixed point/clamp sampler (kSamplerPointClamp): the lit shaders of the headlight variant compare four taps themselves.
+// The rig copies the views and moves them to the lights of the set that reads them by the car (headlight_rig_rules.h RemapShadowViews).
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread. The pipelines are made on the host builder thread.
 // ===========================================================================
@@ -125,8 +139,9 @@ class LocalShadow {
 
   // The Scene opened a frame's first list: reads the settings, forgets the last frame's draws.
   void BeginFrame();
-  // True while Scene::OnDraw should offer the main view's draws (the setting is on in the game view).
-  bool wants_draws() const { return wanted_; }
+  // True while Scene::OnDraw should offer the main view's draws: every frame while a headlight is lit, one frame in a few otherwise (the pipelines are
+  // listed from them).
+  bool wants_draws() const { return offering_; }
   // A prepared draw of the main view's colour pass (the Scene checks nothing but wants_draws()).
   void OnMainDraw(const MainDraw& draw);
   // The game's motion blur draw (the anchor) and the composite marker: a depth copy after either is not the trigger.
@@ -181,6 +196,8 @@ class LocalShadow {
     bool wvp_ok = false;
   };
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
+  // OnResolve's work (OnResolve tells the headlight rig of the result).
+  bool RecordMaps(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot);
   // OnMainDraw's work (OnMainDraw times it).
   void Collect(const MainDraw& draw);
   bool MakeDebugShader();
@@ -196,6 +213,12 @@ class LocalShadow {
   void FlushListing();
   static uint64_t PrecacheKey(uint32_t id);
 
+  // The frame's views as the lights alone say them (BeginFrame): what Collect culls against once the camera is known.
+  void PlanEarlyViews();
+  // The place of a draw (the translation of its world matrix) from its c8-c11, with the frame's camera.
+  void EvaluatePlace(const ConstantBanks::Banks& banks);
+  // Tells the headlight rig the maps (or that there are none): its lit shaders read them. After every change of published_ and atlas_info_.
+  void HandOver();
   bool EnsureAtlas(const local_shadow::AtlasLayout& layout);
   void ReleaseImages();
   void Census();
@@ -206,7 +229,8 @@ class LocalShadow {
 
   // The frame's decisions (BeginFrame).
   local_shadow::Choice choice_;
-  bool wanted_ = false;      // the setting is on and the feature is ready: the main view's draws are offered (the pipelines are listed)
+  bool wanted_ = false;      // the setting is on and the feature is ready: the pipelines are listed
+  bool offering_ = false;    // the main view's draws are offered in this frame (all of them while collecting, one frame in kListEveryFrames otherwise)
   bool collecting_ = false;  // ... and a headlight is lit (or was): the draws are stored for the replay
   int view_mode_ = 0;
   int skip_mask_ = 0;
@@ -214,6 +238,7 @@ class LocalShadow {
   int views_override_ = 0;
   int test_mode_ = 0;
   float bias_scale_ = 1.0f;
+  int cone_cull_ = 1;
   uint32_t idle_frames_ = 0;
   uint64_t frame_ = 0;
   uint32_t lit_frames_left_ = 0;  // frames a map is still collected for after the last lit headlight
@@ -228,6 +253,16 @@ class LocalShadow {
   uint64_t last_bank_version_ = 0;
   uint32_t last_bank_index_ = 0;
   bool have_bank_ = false;
+  // The cone cull's frame: the views the lights alone make (the set does not change until the next present), the camera found from the first
+  // banks (the same one the replay takes), and the place of the last bank version looked at.
+  local_shadow::ViewSpec early_specs_[4];
+  uint32_t early_views_ = 0;
+  local_shadow::Camera early_camera_;
+  uint32_t early_tries_ = 0;
+  bool eval_have_ = false;
+  uint64_t eval_version_ = 0;
+  bool eval_ok_ = false;
+  double eval_origin_[3] = {};
   std::vector<SharedConstants> shared_;  // one per distinct block
   uint32_t counts_[size_t(local_shadow::Skip::kCount)] = {};  // this frame's collection verdicts
   uint32_t collected_ = 0;
@@ -272,6 +307,8 @@ class LocalShadow {
   uint32_t last_views_ = 0;
   uint32_t last_draws_ = 0;
   uint32_t last_collected_ = 0;
+  uint32_t last_banks_ = 0;       // banks written into the maps in the last map (all views)
+  uint64_t banks_total_ = 0;
   uint32_t last_kinds_[size_t(local_shadow::Kind::kCount)] = {};
   uint64_t last_cpu_ns_ = 0;
   uint64_t cpu_ns_total_ = 0;

@@ -316,6 +316,10 @@ class GPUSettings final : public rex::SettingOwner {
     "compares (the map's own slope bias is fixed). Larger: fewer speckles on surfaces that face the lamps and shadows that detach from what casts them. "
     "Live.", rex::kDebugOnly, rex::Range{0.05, 40.0});
 
+  REX_SETTING(i32, mcla_gpu_headlight_shadow_cone, 1, "Diagnostic: 1 (the default) leaves out of each headlight shadow map the draws whose place is outside the lamps' view (the view's cone and "
+    "reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws "
+    "every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_census_ps, "", "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
     "guest frame, the draws and vertices recorded with each; per report window, their "
     "distribution. Empty: off.", rex::kDebugOnly, rex::kRestart);
@@ -1330,6 +1334,7 @@ inline auto& mcla_gpu_headlight_shadow_skip = g_gpu.mcla_gpu_headlight_shadow_sk
 inline auto& mcla_gpu_headlight_shadow_cull = g_gpu.mcla_gpu_headlight_shadow_cull;
 inline auto& mcla_gpu_headlight_shadow_views = g_gpu.mcla_gpu_headlight_shadow_views;
 inline auto& mcla_gpu_headlight_shadow_bias = g_gpu.mcla_gpu_headlight_shadow_bias;
+inline auto& mcla_gpu_headlight_shadow_cone = g_gpu.mcla_gpu_headlight_shadow_cone;
 inline auto& mcla_gpu_census_ps = g_gpu.mcla_gpu_census_ps;
 inline auto& mcla_gpu_census_scale = g_gpu.mcla_gpu_census_scale;
 inline auto& mcla_gpu_census_targets = g_gpu.mcla_gpu_census_targets;

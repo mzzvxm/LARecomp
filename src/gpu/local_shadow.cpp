@@ -3,6 +3,8 @@
 #include "local_shadow.h"
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -39,17 +41,6 @@
 #endif
 #include "host_shaders.h"
 
-// Until the headlight rig (headlight_rig.h, the other half of this feature) is in the tree, a build that defines this has a rig with no lights:
-// there is then nothing to shadow, and the game links.
-#if defined(LARECOMP_LOCAL_SHADOW_STUB_HEADLIGHTS)
-namespace larecomp::gpu {
-const HeadlightSet& CurrentHeadlights() {
-  static const HeadlightSet none{};
-  return none;
-}
-}  // namespace larecomp::gpu
-#endif
-
 namespace mcla::gpu {
 
 namespace {
@@ -68,6 +59,7 @@ constexpr uint32_t kReleaseAfterFrames = 240;
 constexpr uint64_t kCensusFrames = 1800;
 constexpr uint32_t kFlushGapFrames = 15;  // pipelines first seen are handed to the builder at most this often
 constexpr uint32_t kLitGraceFrames = 3;   // frames a map is still collected for after the rig's last lit light
+constexpr uint32_t kListEveryFrames = 8;  // with no lit headlight the main view's draws are looked at one frame in this many, to list their pipelines
 
 LiveText& Setting() {
   static LiveText text("mcla_gpu_headlight_shadows");
@@ -172,8 +164,10 @@ void LocalShadow::Shutdown() {
   casters_.clear();
   published_ = larecomp::gpu::LocalShadowFrame{};
   atlas_info_ = LocalShadowAtlas{};
+  HandOver();
   ready_ = false;
   wanted_ = false;
+  offering_ = false;
   collecting_ = false;
   device_ = nullptr;
   frames_ = nullptr;
@@ -379,6 +373,56 @@ void LocalShadow::ReleaseImages() {
   atlas_info_ = LocalShadowAtlas{};
   published_ = larecomp::gpu::LocalShadowFrame{};
   atlas_logged_ = 0;  // the next atlas is logged again
+  HandOver();
+}
+
+// ---------------------------------------------------------------------------
+// the headlights' side
+// ---------------------------------------------------------------------------
+
+void LocalShadow::HandOver() {
+  // The views and the atlas the lit shaders read, as of now: the pointed-to frame changes in place, the rig copies it. The sampler is the fixed
+  // point/clamp one (the shader compares four taps itself; a depth plane is not filtered). With no map (no valid atlas or no view) the rig's block
+  // has no atlas slot and its shaders skip the lookup (every light is lit), so no fallback texture is read.
+  const bool have = atlas_info_.valid && published_.count != 0;
+  headlight_rig::SetLocalShadows(have ? &published_ : nullptr, have ? atlas_info_.slot : kInvalidBindlessSlot, kSamplerPointClamp);
+}
+
+void LocalShadow::PlanEarlyViews() {
+  early_views_ = 0;
+  const larecomp::gpu::HeadlightSet& set = larecomp::gpu::CurrentHeadlights();
+  rules::Light lights[4];
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < set.count && i < set.lights.size(); ++i) {
+    const larecomp::gpu::Headlight& h = set.lights[i];
+    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &lights[count])) {
+      ++count;
+    }
+  }
+  if (count == 0) {
+    return;  // no lamp lit: the test light (made at the camera) is not planned here
+  }
+  rules::Group groups[4];
+  const uint32_t views = rules::GroupLights(lights, count, rules::MaxViews(choice_.level, views_override_), groups);
+  for (uint32_t v = 0; v < views; ++v) {
+    if (!rules::FitView(lights, groups[v], &early_specs_[v])) {
+      return;  // the replay will refuse this frame too
+    }
+  }
+  early_views_ = views;
+}
+
+void LocalShadow::EvaluatePlace(const ConstantBanks::Banks& banks) {
+  float wvp[16];
+  const uint8_t* source = banks.vs.data() + size_t(rules::kWvpRegister) * 16;
+  for (uint32_t i = 0; i < 16; ++i) {
+    wvp[i] = std::bit_cast<float>(LoadBe32(source + size_t(i) * 4));
+  }
+  const rules::WvpFacts facts = rules::CheckWvp(wvp, early_camera_);
+  eval_have_ = true;
+  eval_version_ = banks.vs_version;
+  eval_ok_ = facts.ok;
+  std::memcpy(eval_origin_, facts.origin, sizeof(eval_origin_));
 }
 
 // ---------------------------------------------------------------------------
@@ -398,13 +442,22 @@ void LocalShadow::BeginFrame() {
   collected_ = 0;
   collect_cycles_ = 0;
   std::memset(counts_, 0, sizeof(counts_));
+  early_views_ = 0;
+  early_camera_ = rules::Camera{};
+  early_tries_ = 0;
+  eval_have_ = false;
   if (!had_trigger) {
     // The frame before had no trigger (a menu, a movie): its map is not the world the draws of this frame are of.
+    const bool had_map = published_.count != 0 || atlas_info_.valid;
     published_ = larecomp::gpu::LocalShadowFrame{};
     atlas_info_.valid = false;
+    if (had_map) {
+      HandOver();
+    }
   }
   if (!ready_) {
     wanted_ = false;
+    offering_ = false;
     collecting_ = false;
     return;
   }
@@ -416,6 +469,7 @@ void LocalShadow::BeginFrame() {
   views_override_ = int(larecomp::settings::mcla_gpu_headlight_shadow_views.Get());
   test_mode_ = int(larecomp::settings::mcla_gpu_headlight_shadow_test.Get());
   bias_scale_ = float(larecomp::settings::mcla_gpu_headlight_shadow_bias.Get());
+  cone_cull_ = int(larecomp::settings::mcla_gpu_headlight_shadow_cone.Get());
   wanted_ = choice_.level != rules::Level::kOff;
   if (larecomp::gpu::CurrentHeadlights().count > 0) {
     lit_frames_left_ = kLitGraceFrames;
@@ -423,7 +477,12 @@ void LocalShadow::BeginFrame() {
     --lit_frames_left_;
   }
   collecting_ = wanted_ && (lit_frames_left_ > 0 || test_mode_ != 0);
-  const uint32_t state = uint32_t(choice_.level) * 16u + rules::MaxViews(choice_.level, views_override_);
+  // By day (nothing lit) the draws are only looked at to list their pipelines, so that the night's are made: one frame in a few is enough, a shape that is
+  // seen late is left out of a map for the moment (pending) and listed then.
+  offering_ = wanted_ && (collecting_ || frame_ % kListEveryFrames == 0);
+  if (collecting_ && cone_cull_ != 0) {
+    PlanEarlyViews();
+  }  const uint32_t state = uint32_t(choice_.level) * 16u + rules::MaxViews(choice_.level, views_override_);
   if (state != last_choice_logged_) {
     last_choice_logged_ = state;
     REXLOG_INFO("{} {} (mcla_gpu_headlight_shadows = {}, live); {} view(s) at most; collecting only while a headlight is lit", kPrefix,
@@ -495,6 +554,26 @@ void LocalShadow::Collect(const MainDraw& d) {
     banks_.reserve(size_t(kBankFloats) * 1536);
     shared_.reserve(64);
   }
+  // The cone cull: once the frame's camera is known (the first banks give it, as at the trigger), a draw whose place is outside every view's cone and
+  // reach, with its margin, is dropped here, before its bank is copied. The place is c8-c11 x the main view-projection's inverse: 16 floats read, no copy.
+  if (early_views_ != 0 && early_camera_.valid) {
+    if (!eval_have_ || eval_version_ != d.banks->vs_version) {
+      EvaluatePlace(*d.banks);
+    }
+    if (!eval_ok_) {
+      ++counts_[size_t(rules::Skip::kNotWvp)];
+      return;
+    }
+    const double reach = rules::CasterReach(f.vehicle);
+    bool in_view = false;
+    for (uint32_t v = 0; v < early_views_ && !in_view; ++v) {
+      in_view = rules::SphereInView(early_specs_[v], eval_origin_, reach);
+    }
+    if (!in_view) {
+      ++counts_[size_t(rules::Skip::kOutOfView)];
+      return;
+    }
+  }
   Caster c;
   c.pipe = pipe;
   c.kind = uint8_t(kind);
@@ -512,6 +591,11 @@ void LocalShadow::Collect(const MainDraw& d) {
     last_bank_version_ = d.banks->vs_version;
     last_bank_index_ = c.bank;
     have_bank_ = true;
+    if (early_views_ != 0 && !early_camera_.valid && early_tries_ < kCameraTries) {
+      // The same banks, in the same order, the trigger looks at for the camera (OnResolve): the first that makes a usable one.
+      ++early_tries_;
+      early_camera_ = rules::DeriveCamera(banks_.data() + size_t(c.bank) * kBankFloats);
+    }
   }
   // The shared constants: once per distinct block (consecutive draws almost always repeat it).
   if (shared_.empty() || std::memcmp(&shared_.back(), d.shared, sizeof(SharedConstants)) != 0) {
@@ -546,6 +630,15 @@ bool LocalShadow::IsTrigger(const ResolveRecord& record, const ResolveCache::Sum
 // ---------------------------------------------------------------------------
 
 bool LocalShadow::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot) {
+  const bool had_trigger = trigger_seen_;
+  const bool recorded = RecordMaps(record, summary, list, slot);
+  if (trigger_seen_ && !had_trigger) {
+    HandOver();  // the views and the atlas of this frame (or none), for the lit draws that follow and the next frame's
+  }
+  return recorded;
+}
+
+bool LocalShadow::RecordMaps(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot) {
   if (!list || !ready_ || !wanted_ || !IsTrigger(record, summary)) {
     return false;
   }
@@ -641,6 +734,10 @@ bool LocalShadow::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
         ++verdicts[size_t(rules::Skip::kNotWvp)];
         continue;
       }
+      if (cone_cull_ != 0 && !rules::SphereInView(view.spec, c.origin, rules::CasterReach(c.vehicle))) {
+        ++verdicts[size_t(rules::Skip::kOutOfView)];  // another view's, or nobody's
+        continue;
+      }
       if (!c.ps_constants) {
         ++verdicts[size_t(rules::Skip::kUnusable)];  // every root descriptor of the guest layout is set for a draw
         continue;
@@ -698,7 +795,7 @@ bool LocalShadow::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     for (uint32_t m = 0; m < view.group.count && published_.count < published_.views.size() && !synthetic; ++m) {
       larecomp::gpu::LocalShadowView& out = published_.views[published_.count++];
       rules::WorldToShadow(view.clip, view.uv, plan.sx, plan.sy, out.world_to_shadow);
-      std::memcpy(out.atlas_rect, view.uv, sizeof(out.atlas_rect));
+      rules::PublishedRect(view.uv, out.atlas_rect);  // u0 v0 u1 v1, what the shader compares a point with
       out.depth_bias = rules::kDepthBias * bias_scale_;
       out.texel_size = 1.0f / float(plan.atlas.tile);
       out.light_index = plan.lights[view.group.members[m]].index;
@@ -741,9 +838,9 @@ bool LocalShadow::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
       }
     }
     REXLOG_INFO("{} first map: {} view(s) for {} light(s), {} draws replayed of {} collected (opaque {}, alpha tested {}, skinned {}, vehicle {}); skipped:{} "
-                "(per view, once each); render thread {:.2f} ms for the pass and {:.2f} ms collecting",
+                "(per view, once each); {} vertex constant banks written ({:.1f} KiB); render thread {:.2f} ms for the pass and {:.2f} ms collecting",
                 kPrefix, plan.views, plan.light_count, drawn, collected_, kinds[0], kinds[1], kinds[2], kinds[3], skipped.empty() ? " nothing" : skipped,
-                MilliSeconds(last_cpu_ns_), MilliSeconds(last_collect_ns_));
+                last_banks_, double(last_banks_) * double(guest::kConstantBankBytes) / 1024.0, MilliSeconds(last_cpu_ns_), MilliSeconds(last_collect_ns_));
   }
   return true;
 }
@@ -793,6 +890,7 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
   std::vector<UploadSpan> bank_spans;
   float rows[16];
   bool upload_failed = false;
+  uint32_t banks_written = 0;
   for (uint32_t v = 0; v < plan.views; ++v) {
     Plan::View& view = plan.view[v];
     const plume::RenderViewport viewport(float(view.tile.x), float(view.tile.y), float(view.tile.size), float(view.tile.size), 0.0f, 1.0f);
@@ -811,9 +909,14 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
           break;
         }
         const float* bank = banks_.data() + size_t(c.bank) * kBankFloats;
-        std::memcpy(vs_span.cpu, bank, guest::kConstantBankBytes);
         rules::ReplaceWvp(bank + size_t(rules::kWvpRegister) * 4, view.replay, rows);
-        std::memcpy(vs_span.cpu + size_t(rules::kWvpRegister) * 16, rows, sizeof(rows));
+        // The bank in three pieces around c8-c11, each byte written once (the span is write-combined memory: a second write to the same line costs).
+        constexpr size_t kBefore = size_t(rules::kWvpRegister) * 16;
+        constexpr size_t kAfter = kBefore + sizeof(float) * 16;
+        std::memcpy(vs_span.cpu, bank, kBefore);
+        std::memcpy(vs_span.cpu + kBefore, rows, sizeof(rows));
+        std::memcpy(vs_span.cpu + kAfter, reinterpret_cast<const uint8_t*>(bank) + kAfter, guest::kConstantBankBytes - kAfter);
+        ++banks_written;
       }
       const UploadSpan& shared = shared_span(c.shared);
       if (!shared) {
@@ -877,6 +980,8 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
     }
   }
   list->setFramebuffer(nullptr);
+  last_banks_ = banks_written;
+  banks_total_ += banks_written;
   // The lit draws of the next frame (and the translucent ones after this) read it as a texture.
   const plume::RenderTextureBarrier read(atlas_.texture.get(), plume::RenderTextureLayout::SHADER_READ);
   list->barriers(plume::RenderBarrierStage::GRAPHICS, read);
@@ -995,12 +1100,12 @@ void LocalShadow::Census() {
     }
   }
   REXLOG_INFO("{} frame {}: {} ({}x{}); since the start {} triggers, {} maps ({} views, {} draws replayed; the last map: {} view(s), {} draws of {} collected "
-              "(opaque {}, alpha tested {}, skinned {}, vehicle {}), render thread {:.2f} ms for the pass and {:.2f} ms collecting; {:.2f} + {:.2f} ms a map on average); no map: {} no lamp, {} no camera, {} view, "
+              "(opaque {}, alpha tested {}, skinned {}, vehicle {}), {} banks written, render thread {:.2f} ms for the pass and {:.2f} ms collecting; {:.2f} + {:.2f} ms a map on average, {:.0f} banks); no map: {} no lamp, {} no camera, {} view, "
               "{} atlas, {} pass; {} frames with pipelines still being made; {} pipelines; skipped (all frames, all views):{} ; {:.1f} MiB",
               kPrefix, frame_, rules::Describe(choice_, gpu_class::Current()), atlas_.width, atlas_.height, triggers_, maps_, views_total_, draws_total_,
-              last_views_, last_draws_, last_collected_, last_kinds_[0], last_kinds_[1], last_kinds_[2], last_kinds_[3], MilliSeconds(last_cpu_ns_),
+              last_views_, last_draws_, last_collected_, last_kinds_[0], last_kinds_[1], last_kinds_[2], last_kinds_[3], last_banks_, MilliSeconds(last_cpu_ns_),
               MilliSeconds(last_collect_ns_), maps_ ? MilliSeconds(cpu_ns_total_) / double(maps_) : 0.0,
-              maps_ ? MilliSeconds(collect_ns_total_) / double(maps_) : 0.0, no_map_[0], no_map_[1], no_map_[2], no_map_[3], no_map_[4], pending_draws_,
+              maps_ ? MilliSeconds(collect_ns_total_) / double(maps_) : 0.0, maps_ ? double(banks_total_) / double(maps_) : 0.0, no_map_[0], no_map_[1], no_map_[2], no_map_[3], no_map_[4], pending_draws_,
               pipes_.size(), skipped.empty() ? " nothing" : skipped, rules::Mib(HeldBytes()));
 }
 

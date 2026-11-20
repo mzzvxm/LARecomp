@@ -1065,6 +1065,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_headlight_shadow_cone": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: 1 (the default) leaves out of each headlight shadow map the draws whose place is outside the lamps' view (the view's cone and \"\n    \"reach, with a margin for how far a thing reaches from its place: 7 m for a car, 40 m for anything else), before their constants are copied. 0 draws \"\n    \"every collected draw into every map. For measuring what the cull saves and for finding a shadow the cull took away. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_a2c_dither_all": {
   "type": "bool",
   "default": "true",
