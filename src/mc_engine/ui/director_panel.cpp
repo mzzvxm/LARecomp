@@ -136,7 +136,10 @@ class DirectorPanel final : public rex::ui::DialogBase {
         std::memset(take_name_, 0, sizeof(take_name_));
         std::memset(console_, 0, sizeof(console_));
     }
-    ~DirectorPanel() override { dir::RemoveEventListener(listener_); }
+    ~DirectorPanel() override {
+        SetPointerHeldByPanel(false);
+        dir::RemoveEventListener(listener_);
+    }
 
     bool NeedsContinuousPaint() const override { return open_; }
 
@@ -163,9 +166,12 @@ class DirectorPanel final : public rex::ui::DialogBase {
         disp_.Drain(now_);
         if (!snap_ || !snap_->director) {
             DrawOffNotice();
+            SetPointerHeldByPanel(true);  // its buttons need the pointer too
             return true;
         }
         Frame(io, *snap_);
+        // The pointer is the panel's while it shows (director_panel_core.h HoldsPointer): mouse look and the idle hide of the pointer let go of it. After Frame: Tab toggles hidden_ there.
+        SetPointerHeldByPanel(dp::HoldsPointer(open_, hidden_));
         return true;
     }
 
@@ -208,6 +214,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
 
     void Closed() {
         open_ = false;
+        SetPointerHeldByPanel(false);
         queue_.clear();
         drag_ = dp::Drag();
         LARECOMP_APP_INFO("[dirpanel] the Director panel is closed");
@@ -273,6 +280,10 @@ class DirectorPanel final : public rex::ui::DialogBase {
         e.Set("display", dir::Json::Vec3(std::round(io.DisplaySize.x), std::round(io.DisplaySize.y), 0.0));
         e.Set("picture", dir::Json::Vec3(view_.picture.x, view_.picture.y, view_.picture.w));
         e.Set("selected_line", selected_line_);
+        // Where ImGui has the pointer (its own units; -1, -1 when it has none) and which buttons it holds: a test that moves the real mouse checks that the pointer ARRIVED before it clicks
+        // (a mouse look that held the pointer locked left it at no place at all: the first mouse run).
+        const bool has_pointer = io.MousePos.x > -1000.0f && io.MousePos.y > -1000.0f;
+        e.Set("pointer", dir::Json::Vec3(has_pointer ? std::round(io.MousePos.x) : -1.0, has_pointer ? std::round(io.MousePos.y) : -1.0, (io.MouseDown[0] ? 1.0 : 0.0) + (io.MouseDown[1] ? 2.0 : 0.0)));
         dir::Json axis = dir::Json::Object();
         axis.Set("t0", std::round(axis_.t0 * 1000.0) / 1000.0);
         axis.Set("t1", std::round(axis_.t1 * 1000.0) / 1000.0);

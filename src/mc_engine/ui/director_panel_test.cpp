@@ -1300,6 +1300,14 @@ void TestUiUnits() {
     CheckEq(g2.labels.empty() ? "" : g2.labels[0].text, "a  vp_x", "another car: id and model");
 }
 
+void TestPointer() {
+    // the panel holds the pointer while it is up and showing: open and shown only (Tab gives it back, a closed panel never held it)
+    Check(HoldsPointer(true, false), "an open panel that is showing holds the pointer");
+    Check(!HoldsPointer(true, true), "Tab hides the panel and gives the pointer back (mouse look again)");
+    Check(!HoldsPointer(false, false), "a closed panel does not hold it");
+    Check(!HoldsPointer(false, true), "... hidden or not");
+}
+
 void TestDockPlan() {
     // the first run's dock: 250 to 400 units tall at any window and a 17 unit font = 52 % of an 853x480 window. The plan follows the window.
     const DockPlan small_window = PlanDock(853.0f, 480.0f, DockSize::kNormal, false, 0.0f);  // a 1280x720 window at 150 %
@@ -1489,6 +1497,7 @@ int main() {
     TestTakeAndTransport();
     TestFlying();
     TestUiUnits();
+    TestPointer();
     TestDockPlan();
     TestTabStrip();
     TestCollapsedLanes();

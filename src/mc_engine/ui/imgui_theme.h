@@ -86,6 +86,13 @@ void InstallMclaTheme(rex::ui::IUISystem& ui);
 bool OverlayWantsMouse();
 bool OverlayWantsKeyboard();
 
+// Whether a panel that works with the pointer ANYWHERE in the picture (the Director panel: a click on the ground, a car dragged over it) is up and showing, from any thread. OverlayWantsMouse()
+// is true only while the pointer is over an ImGui window, and mouse look (relative mouse mode: the pointer hidden and locked, motion read raw) and the idle hide of the pointer would
+// keep the panel's pointer away from it: SetPointerHeldByPanel(true) tells mouse_look.cpp and cursor_hide.cpp to let go and to keep the pointer visible, as the F4 panel does. UI thread
+// writes (the panel's Draw), the game thread reads.
+void SetPointerHeldByPanel(bool held);
+bool PointerHeldByPanel();
+
 // UI thread, inside a dialog's Draw (the ImGui context is current): the same check by hand, for a dialog that is
 // not a PanelDialog (overlay_support.h; PanelDialog::Draw calls it).
 void EnsureMclaTheme();

@@ -410,6 +410,7 @@ namespace {
 
 std::atomic<bool> g_wants_mouse{false};
 std::atomic<bool> g_wants_keyboard{false};
+std::atomic<bool> g_pointer_held_by_panel{false};
 
 // Drawn first every frame (it is the first dialog added): puts the fonts and the style in place before any other
 // dialog, the SDK's toast included, draws.
@@ -428,6 +429,8 @@ class ThemeKeeper final : public rex::ui::DialogBase {
 
 bool OverlayWantsMouse() { return g_wants_mouse.load(std::memory_order_relaxed); }
 bool OverlayWantsKeyboard() { return g_wants_keyboard.load(std::memory_order_relaxed); }
+void SetPointerHeldByPanel(bool held) { g_pointer_held_by_panel.store(held, std::memory_order_relaxed); }
+bool PointerHeldByPanel() { return g_pointer_held_by_panel.load(std::memory_order_relaxed); }
 
 void InstallMclaTheme(rex::ui::IUISystem& ui) {
   // The SDK's Style (its overlays' colours and the toast's size) and ImGui's own style, which the UI system applies

@@ -92,7 +92,8 @@ void TickCursorHide() {
     // being over one counts as activity too: the pointer stays while it is used,
     // and does not vanish the moment the overlay closes. The F4 panel keeps it for
     // as long as it is open, wherever the mouse is.
-    const bool over_overlay = mcla::ui::SettingsOpen() || mcla::ui::OverlayWantsMouse();
+    // The Director panel keeps it too, all the time it shows (imgui_theme.h PointerHeldByPanel).
+    const bool over_overlay = mcla::ui::SettingsOpen() || mcla::ui::PointerHeldByPanel() || mcla::ui::OverlayWantsMouse();
     // Which device the player uses comes from the shared state machine (input_state.h: last input
     // wins, with hysteresis; a pad frame, a key or a deliberate mouse move switches it), not from
     // reading the pad here. A controller in use hides the pointer at once and keeps it hidden: a bump

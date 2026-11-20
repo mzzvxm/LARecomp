@@ -309,6 +309,16 @@ std::string CameraModeText(const std::string& mode);
 // The cars' ids of the snapshot for the rig and path pickers ("player" first).
 std::vector<std::string> CarIds(const dir::Snapshot& snap);
 
+// ---------------------------------------------------------------------------------------------------------------- the pointer
+
+// THE POINTER IS THE PANEL'S while the panel is up and showing (Tab hides it for a clean look and gives the pointer back: mouse look again). A human with a mouse works with the
+// dock AND the picture (a click on the ground, a car dragged over it, the right button's look), so the pointer has to be free and visible everywhere, not only over the dock: the
+// game's mouse look (relative mouse mode: the pointer hidden and locked, motion read raw, so no pointer position ever reached ImGui: the first mouse run, 2026-11-20, 14 of 15 checks)
+// and the idle hide of the pointer let go of it while this is true (imgui_theme.h SetPointerHeldByPanel, read by mouse_look.cpp and cursor_hide.cpp).
+inline bool HoldsPointer(bool open, bool hidden) {
+    return open && !hidden;
+}
+
 // ---------------------------------------------------------------------------------------------------------------- the dock's size
 
 // THE DOCK FOLLOWS THE WINDOW. Everything the panel draws is in ImGui's own space, io.DisplaySize: the window's LOGICAL size (the SDK's drawer sets it to the physical size times
