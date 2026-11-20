@@ -366,6 +366,15 @@ class RangeAllocator {
   uint64_t used_ = 0;
 };
 
+// A growth copies the old buffer's first `copied` bytes (the allocator's high water) into the new one in one copy: the ranges that are free at that
+// moment included, the holes that given-back meshes left below the high water. The first-fit allocator hands those holes to the next meshes, whose
+// copies then write bytes the growth's copy wrote in the same recording, and nothing orders the two copies (Vulkan sync validation reports
+// SYNC-HAZARD-WRITE-AFTER-WRITE: the old, stale bytes could land after the new mesh). A copy of `size` bytes at `offset` needs a barrier before it
+// when it reaches into those bytes. (A range past them was never written in the recording, and one barrier orders every copy after it.)
+inline bool CopyNeedsBarrier(uint64_t copied, uint64_t offset, uint64_t size) {
+  return size != 0 && offset < copied;
+}
+
 // The capacity a buffer grows to when `needed` does not fit: double, at least `needed` rounded up to `step`, never over `limit`.
 inline uint64_t GrownCapacity(uint64_t capacity, uint64_t needed, uint64_t step, uint64_t limit) {
   const uint64_t wanted = std::max(capacity * 2, (needed + step - 1) / step * step);

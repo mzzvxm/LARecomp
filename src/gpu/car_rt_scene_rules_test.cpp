@@ -1,5 +1,6 @@
 // Check of the car ray tracing scene's rules (car_rt_scene_rules.h): the instance transform and the camera's z direction, the masks and the
-// table's rows, the clean-up of a mesh read from guest memory, the range allocator, the eviction policy and the build budget, and the check
+// table's rows, the clean-up of a mesh read from guest memory, the range allocator (and when a copy into a grown buffer needs a barrier), the
+// eviction policy and the build budget, and the check
 // pass's statistics and scope (which vehicle pixels the scene is meant to hold). Given the src/gpu folder it also checks that
 // hlsl/car_rt_check_cs.hlsl counts with the header's numbers. A program of its
 // own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
@@ -232,6 +233,30 @@ void TestAllocator() {
   Check(rr::GrownCapacity(4, 30, 8, 100) == 32, "a growth takes what is needed, rounded to the step");
   Check(rr::GrownCapacity(60, 70, 8, 100) == 100, "a growth stops at the limit");
   Check(rr::GrownCapacity(60, 130, 8, 100) == 130, "but never below what is needed");
+}
+
+// The 0.11 line's validation error (SYNC-HAZARD-WRITE-AFTER-WRITE, copies of 2544 and 216 bytes side by side): a growth's copy writes everything
+// below the high water, the hole a given-back mesh left included, and first fit puts the next meshes into that hole.
+void TestGrowthCopyOrder() {
+  rr::RangeAllocator a;
+  a.Reset(1000);
+  uint64_t first = 0, given_back = 0, last = 0, m1 = 0, m2 = 0, m3 = 0;
+  Check(a.Alloc(300, 1, &first) && a.Alloc(250, 1, &given_back) && a.Alloc(100, 1, &last) && given_back == 300 && last == 550, "three meshes");
+  a.Free(given_back, 250);  // one is given back: a hole of 250 below the last
+  const uint64_t copied = a.high_water();
+  Check(copied == 650, "the growth's copy covers the hole and both meshes around it");
+  a.Grow(2000);
+  Check(a.high_water() == copied, "growing adds free space past the high water only");
+
+  Check(a.Alloc(212, 1, &m1) && m1 == 300, "first fit gives the hole to the next mesh");
+  Check(rr::CopyNeedsBarrier(copied, m1, 212), "its copy writes bytes the growth's copy wrote: it needs a barrier");
+  Check(a.Alloc(18, 1, &m2) && m2 == 512 && rr::CopyNeedsBarrier(copied, m2, 18), "the mesh beside it in the hole as well");
+  Check(a.Alloc(100, 1, &m3) && m3 == copied && !rr::CopyNeedsBarrier(copied, m3, 100),
+        "a mesh past the high water was never written in the list: no barrier");
+  Check(!rr::CopyNeedsBarrier(copied, copied, 10), "a range that starts where the growth's copy ended is apart from it");
+  Check(rr::CopyNeedsBarrier(copied, copied - 1, 10), "one byte inside is not");
+  Check(!rr::CopyNeedsBarrier(0, 0, 10), "no growth copy in the list: no barrier");
+  Check(!rr::CopyNeedsBarrier(copied, 100, 0), "a copy of no bytes needs none");
 }
 
 void TestEviction() {
@@ -469,6 +494,7 @@ int main(int argc, char** argv) {
   TestMasks();
   TestMesh();
   TestAllocator();
+  TestGrowthCopyOrder();
   TestEviction();
   TestStats();
   TestScope();

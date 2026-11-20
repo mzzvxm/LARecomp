@@ -246,6 +246,9 @@ class CarRtScene final : public car_frame::Listener {
     std::unique_ptr<plume::RenderBuffer> buffer;
     uint64_t bytes = 0;
     Access access = Access::kNone;
+    // The bytes from 0 that a growth's copy wrote into this buffer in the list being recorded and no barrier has ordered yet (0 = none):
+    // a mesh copied into a hole below it needs a barrier first (car_rt_rules::CopyNeedsBarrier).
+    uint64_t copied_bytes = 0;
   };
   // A page of structures: one buffer, with the ranges its structures hold.
   struct Page {
@@ -316,6 +319,9 @@ class CarRtScene final : public car_frame::Listener {
   // --- the shared buffers ---
   bool MakeShared(Shared& shared, uint64_t bytes, plume::RenderBufferFlags flags, const char* name);
   void SetAccess(plume::RenderCommandList* list, Shared& shared, Access access);
+  // Before a copy of `bytes` at `offset` into a shared buffer that is already in the copy-write state: a barrier when the list's growth copy
+  // wrote those bytes (a hole of given-back meshes the first fit gave to a new mesh).
+  void OrderCopyInto(plume::RenderCommandList* list, Shared& shared, uint64_t offset, uint64_t bytes);
   // Grows a shared buffer pair to hold `needed_units` (units of `unit_bytes`), copying what the ranges hold.
   bool GrowVertices(plume::RenderCommandList* list, uint64_t needed_vertices);
   bool GrowIndices(plume::RenderCommandList* list, uint64_t needed_indices);

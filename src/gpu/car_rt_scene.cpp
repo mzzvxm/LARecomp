@@ -1327,6 +1327,18 @@ void CarRtScene::SetAccess(plume::RenderCommandList* list, Shared& shared, Acces
       break;
   }
   shared.access = access;
+  shared.copied_bytes = 0;  // a barrier was recorded: it ordered the growth's copy too
+}
+
+void CarRtScene::OrderCopyInto(plume::RenderCommandList* list, Shared& shared, uint64_t offset, uint64_t bytes) {
+  if (!shared.buffer || shared.access != Access::kCopyWrite || !rr::CopyNeedsBarrier(shared.copied_bytes, offset, bytes)) {
+    return;
+  }
+  // The buffer is in the copy-write state already (SetAccess records nothing then): this barrier orders the new mesh's copy after the growth's.
+  // Plume's Vulkan barrier is a transfer-to-transfer memory dependency whatever the state before; its D3D12 one records nothing for a buffer
+  // that stays in COPY_DEST.
+  list->barriers(plume::RenderBarrierStage::COPY, plume::RenderBufferBarrier(shared.buffer.get(), plume::RenderBufferAccess::WRITE));
+  shared.copied_bytes = 0;
 }
 
 bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_vertices) {
@@ -1355,6 +1367,10 @@ bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_ve
     SetAccess(list, normals, Access::kCopyWrite);
     list->copyBufferRegion(plume::RenderBufferReference(normals.buffer.get(), 0), plume::RenderBufferReference(normals_.buffer.get(), 0),
                            used_bytes);
+    // The copies wrote everything below the high water, the free holes too: a mesh placed into one later in this list is ordered after them
+    // (OrderCopyInto).
+    positions.copied_bytes = used_bytes;
+    normals.copied_bytes = used_bytes;
   }
   if (positions_.buffer) {
     frames_->Retire(std::move(positions_.buffer));
@@ -1389,6 +1405,7 @@ bool CarRtScene::GrowIndices(plume::RenderCommandList* list, uint64_t needed_ind
     SetAccess(list, indices, Access::kCopyWrite);
     list->copyBufferRegion(plume::RenderBufferReference(indices.buffer.get(), 0), plume::RenderBufferReference(indices_.buffer.get(), 0),
                            used_bytes);
+    indices.copied_bytes = used_bytes;  // as for the vertices
   }
   if (indices_.buffer) {
     frames_->Retire(std::move(indices_.buffer));
@@ -1529,6 +1546,12 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     SetAccess(list, positions_, Access::kCopyWrite);
     SetAccess(list, normals_, Access::kCopyWrite);
     SetAccess(list, indices_, Access::kCopyWrite);
+    // First fit hands a new mesh the holes below the high water that a growth earlier in this list has copied the old bytes into: the three
+    // copies below come after a barrier then (the validation layer's WRITE_AFTER_WRITE on the 0.11 line's model walk, which gives meshes back
+    // and places hundreds in a frame).
+    OrderCopyInto(list, positions_, uint64_t(first_vertex) * 12, position_bytes);
+    OrderCopyInto(list, normals_, uint64_t(first_vertex) * 12, position_bytes);
+    OrderCopyInto(list, indices_, uint64_t(first_index) * 4, index_bytes);
     list->copyBufferRegion(plume::RenderBufferReference(positions_.buffer.get(), uint64_t(first_vertex) * 12),
                            plume::RenderBufferReference(span.buffer, span.offset), position_bytes);
     list->copyBufferRegion(plume::RenderBufferReference(normals_.buffer.get(), uint64_t(first_vertex) * 12),
