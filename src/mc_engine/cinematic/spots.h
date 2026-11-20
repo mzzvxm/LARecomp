@@ -297,6 +297,21 @@ inline bool ExpandSpotWords(std::vector<std::string>* words, const SpotTable* ta
         }
         return false;
     }();
+    // `car <id> spawn|ambient <model> near <car> <right,up,forward> [heading <deg>]` (car_verbs.h): after `near` the three numbers are an offset in the other car's
+    // frame and a heading is relative to that car's heading, so a spot (a place and a heading in the world) means nothing there. `near_at` is where the word `near` is
+    // (0: the statement has none). Only a car's spawn and ambient have it: a camera's `near <clip>` is a number and takes no spot word.
+    size_t near_at = 0;
+    if (words->size() > 3) {
+        const std::string verb = spots_detail::Lower((*words)[1]);
+        if (verb == "spawn" || verb == "ambient") {
+            for (size_t i = 2; i < words->size(); ++i) {
+                if (spots_detail::Lower((*words)[i]) == "near") {
+                    near_at = i;
+                    break;
+                }
+            }
+        }
+    }
     std::vector<std::string> out;
     out.reserve(words->size() + 8);
     for (size_t i = 0; i < words->size(); ++i) {
@@ -304,6 +319,19 @@ inline bool ExpandSpotWords(std::vector<std::string>* words, const SpotTable* ta
         if (!IsSpotWord(w)) {
             out.push_back(w);
             continue;
+        }
+        if (near_at != 0 && i > near_at) {
+            const std::string prev_word = spots_detail::Lower((*words)[i - 1]);
+            if (i == near_at + 2) {
+                *error = "'" + w + "': after `near <car>`, the three numbers are an offset in that car's frame (right up forward), not a place in the world: "
+                         "give the offset as numbers, or place the car with `at " + w + "`";
+                return false;
+            }
+            if (prev_word == "heading" || prev_word == "yaw") {
+                *error = "'" + w + "': after `near`, `heading` is degrees from the other car's heading, not a heading in the world: give a number, "
+                         "or place the car with `at` and a spot heading";
+                return false;
+            }
         }
         SpotRef ref;
         if (!ParseSpotRef(w, &ref, error)) return false;

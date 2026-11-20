@@ -150,6 +150,14 @@ inline constexpr float kVehicleMarkOffset = 2.0f;
 inline float MarkedVisibility(float v) { return v - kVehicleMarkOffset; }
 inline bool IsMarked(float stored) { return stored < -0.5f; }
 inline float UnmarkedVisibility(float stored) { return IsMarked(stored) ? stored + kVehicleMarkOffset : stored; }
+// THE MARK AND THE RAY TRACED TERM (hlsl/ao_contact_ps.hlsl, car_rt_ao.h; the two lines of work met in play build 11). Where the device traces rays against the
+// player's car (and the cars beside it) the march takes the darker of its shadow and the traced sun ray's (March's `traced_shadow`, 0 lit to 1 the car's own parts in
+// the way), a term that is exact and crisp: no noise, no resolution. A vehicle pixel the ray holds in a shadow (traced_shadow at or above this) therefore stores its
+// visibility plain, not marked, as a pixel the car's map covers does: the filter's visibility weight keeps the shadow's edge from the lit pixels beside it, and the
+// ray's edge keeps the width it was traced with (VehicleStippleIsFiltered, the section on the ray traced term: marking those pixels too makes the edge about as wide
+// again as the map's was in the control of section 3). The vehicle pixels the ray leaves lit still march and are marked, so a false hit of the march there is still
+// averaged. Without the term (traced_shadow 0, every build without the ray tracing line) nothing changes.
+inline constexpr float kRtUnmarkedShadow = 0.5f;
 // The apply pass does the filter itself with mcla_gpu_contact_shadows_fast and leaves out a pixel the contact shadows
 // change the picture's factor by less than this (hlsl/ao_apply_ps.hlsl kFoldedFilterSkip): the factor is
 // 1 - weight (1 - cs) with cs in 0 to 1, so it moves by at most the weight.
@@ -912,6 +920,7 @@ struct Trace {
   bool vehicle_rule = true;    // a vehicle's own pixels march a short, thin ray (kVehicleReceiver*); false: the march as it was (the check's control)
   bool sun_column = true;      // the ground under a vehicle also needs the column along the sun's ray; false: the vertical column alone, as it was
   mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
+  float traced_shadow = 0.0f;           // the ray traced sun term at the pixel (car_rt_ao.h; THE MARK AND THE RAY TRACED TERM): 0 lit or no term, 1 the car's own parts in the sun's way
   const CarMapView* car_map = nullptr;  // the player's car's sun shadow map (CarMapShadow); null: no map, the march as it was
   bool car_map_keep_march = false;      // kCarMapKeepMarchFlag: the vehicle march also runs on the pixels the map covers
   bool car_map_only = false;            // kCarMapViewFlag: the debug view, March returns 1 minus the map's term alone
@@ -1038,7 +1047,7 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   }
   t.steps_used = steps;
   // A vehicle pixel that marches (the map did not take its steps) writes the marked value: the noise of its ray's start is in it.
-  t.marked = !t.classic && t.vehicle_rule && DepthIsVehicle(tc) && steps > 0;
+  t.marked = !t.classic && t.vehicle_rule && DepthIsVehicle(tc) && steps > 0 && t.traced_shadow < kRtUnmarkedShadow;
   for (uint32_t i = 0; i < steps; ++i) {
     if (shadow >= 0.99f) {
       break;
@@ -1074,6 +1083,9 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   }
   if (!t.classic && t.car_map) {
     shadow = std::max(shadow, t.car_result.shadow);  // the darker of the march and the map
+  }
+  if (!t.classic) {
+    shadow = std::max(shadow, t.traced_shadow);  // ... and of the ray traced sun ray (0 without the term)
   }
   if (!t.classic) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);

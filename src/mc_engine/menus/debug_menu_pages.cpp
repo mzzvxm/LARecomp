@@ -163,6 +163,10 @@ const ItemDef kDebugFixesItems[] = {
     // and SHARP MINIMAP is mcla_ui_minimap_scale); this is the strength for tuning, 1 the default, 2 a harder alpha edge. Read at each UI draw, so live.
     NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp_strength", "UI SHARP STRENGTH: ",
                    kUiSharpVals, Len(kUiSharpVals), "%g", "", "NONE")),
+    // The chrome of the cars (the tailpipe tips, badges and trim) is not lit by what the car's own body covers: short rays through the car's picture of the frame
+    // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
+    // draw (pipelines.cpp ChoosePackedVariant), so the row is live; the first draw after turning it on builds the shader (a short stutter).
+    NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
 #endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };

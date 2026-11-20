@@ -157,6 +157,7 @@
 #include "backend.h"
 #include "draw_state.h"
 #include "input_layout.h"
+#include "key_guard.h"
 #include "level_seeds.h"
 #include "precache_queue.h"
 #include "shaders.h"
@@ -190,7 +191,16 @@ struct PipelineKey {
 
   bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
 };
-static_assert(sizeof(PipelineKey) == 104, "PipelineKey must have no padding");
+// The key is hashed (PipelineKeyHash) and compared (==) as bytes, and the cache file stores it as bytes: no padding, and
+// every member set by a default-constructed key (BuildKey starts from PipelineKey{}). It holds a float, so the size is
+// checked against the members added up: vs, ps | vs_variant, ps_variant, input_layout, topology, sample_count, color_count |
+// color_format[] | depth_format | blend[] | depth, stencil, stencil_masks, raster, depth_bias, slope_scaled_depth_bias, reserved.
+// The float is kept canonical (key_guard::CanonicalZero): a -0.0 slope is the same pipeline as +0.0 and the same bytes.
+static_assert(key_guard::SizeIsMemberSum<PipelineKey>(2 * sizeof(uint64_t) +
+                                                       sizeof(uint32_t) * (6 + kColorTargetCount + 1 + kColorTargetCount + 7)),
+              "PipelineKey is hashed and compared as bytes: it must have no padding (key_guard.h)");
+static_assert(sizeof(PipelineKey) == 104, "PipelineKey is the cache file's record: 104 bytes (tools/pipelines/pipeline_list.py KEY_SIZE)");
+static_assert(key_guard::AllMembersSet<PipelineKey>(), "every PipelineKey member needs a default initializer (key_guard.h)");
 
 struct PipelineKeyHash {
   size_t operator()(const PipelineKey& k) const;

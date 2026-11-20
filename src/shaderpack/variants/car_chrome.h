@@ -49,6 +49,19 @@
 // of the hemisphere, so the sky probe is always marched; the helper's CarChrSkyProbe is where a ray traced ambient occlusion replaces it.
 // Without the bit this reads exactly as written above. Until that branch is merged the bit is never set.
 //
+// ANOTHER CAR'S CHROME (version 2; src/gpu/car_chrome_rt_rules.h has the whole story): the variant is the shader's, so the chrome of every car goes through
+// it, and for another car it has marched the history image all along (the history holds every vehicle's pixels, the constants are the draw's stencil ID's).
+// Where the host traced the frame's image AND the car is in its scene (the nearest few, within a radius), the image holds, at the texels of that car's chrome,
+// a texel of a second kind: alpha 1 + the reflection probe's weight (as the first kind) and the colour's red -(1 + the sky probe's weight), a value no colour
+// has. The read tells the kinds apart by that sign (the first kind's arithmetic is the older one's, unchanged), and where the second kind covers the footprint
+// it answers BOTH probes and nothing is marched: the sky probe's answer is the only place the image has one. The debug view 4 shows it cyan.
+//
+// THE RIM OF A TIP (version 3). The history holds one sample of each pixel (the guest's sample 0; one texel per 2x2 pixels from 2560 across), the shader runs at
+// the pixel's centre: at the top and the left edge of a tip the texel under a pixel is what is behind it (the bumper's cavity, 3 to 7 cm further, or no vehicle)
+// and the self-test of the setup failed on that 1 pixel rim, leaving the game's unoccluded chrome there: a thin bright line round the tip (the debug view 4 shows
+// that rim red; ray traced run rtint1, chase shots). The self-test now takes the best agreement of the own texel and the 12 round it (one or two steps away;
+// car_chrome_rules.h SilhouetteAgreement), read only for a pixel whose own texel does not agree fully.
+//
 // What the edit does, in one helper block before main and four anchored lines:
 //   `r1.xyz = tfetch2DGrad(dpFrontSampler_...).xyz;`  (once)     the environment read, followed by the setup (the probes' state and the
 //                                                               reflection probe) and `env` through CarChromeEnv
@@ -71,7 +84,7 @@
 // Variant id 9 (pack_format.h kVariantCarChrome): its own id so the switch can tell the chrome from the paint, the host reads the same
 // constants block for both (scene.cpp UploadCarSelfReflConstants).
 //
-// CHECK: both edited texts compile with dxc (ps_6_0 DXIL and SPIR-V); in a run: that the chrome's draws are not alpha tested or alpha to
+// CHECK: both edited texts compile with dxc (ps_6_0 DXIL and SPIR-V; version 3's compiled clean, dxc 1.9 and spirv-val of the Vulkan SDK 1.4.363); in a run: that the chrome's draws are not alpha tested or alpha to
 // mask (else they keep the game's shader: Pipelines key.ps_variant 1), that the pixel shader's TEXCOORD0 and TEXCOORD1 are the world
 // position and normal (the debug view 4 is all red if not), that the tips' vertex alpha is 1 (view 3), that the history's texel at a tip
 // agrees with the shaded point (view 4 not red on the tubes: a tip is 6 to 25 pixels across), the 2x MSAA edge of a tube (the history holds
@@ -85,7 +98,9 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_chrome_version).
-inline constexpr uint32_t kCarChromeVariantVersion = 1;  // 1: reflection and sky probes of centimetre scale, the ray traced image's hook
+inline constexpr uint32_t kCarChromeVariantVersion = 3;  // 1: reflection and sky probes of centimetre scale, the ray traced image's hook;
+                                                          // 2: another car's chrome from the ray traced image (both probes: the sky's weight in the red);
+                                                          // 3: the self-test tries the texels round the shaded pixel's own (the rim of a tip)
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kChrome = {"xChrome__PS_Chrome", 0x2D8CA0430FF88ED7ull};

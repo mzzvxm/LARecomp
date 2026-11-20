@@ -805,7 +805,40 @@ void Director::BeginScene() {
     scene_on_ = true;
     ambient_calls_ = 0;
     paint_ordinal_ = 0;
+    deferred_.clear();
+    place_.clear();
+    // A put-back still waiting from the scene before is dropped: this scene places him itself, and its own end puts him back to where he stood BEFORE the first scene (the origin is kept).
+    restore_ = false;
+    restore_since_ms_ = -1;
+    place_check_ = false;
     if (!registry_.Find("player")) registry_.Add("player", true);
+}
+
+bool Director::IsDeferred(const std::string& id) const {
+    for (const Deferred& d : deferred_) {
+        if (d.cmd.id == id) return true;
+    }
+    return false;
+}
+
+Director::Applied Director::StartCar(const CarCommand& cmd) {
+    Applied a;
+    if (cmd.verb == CarVerb::kAmbient) {
+        auto entry = std::make_unique<AmbientEntry>(timing_);
+        entry->id = cmd.id;
+        entry->car.Start(cmd);
+        ambient_.push_back(std::move(entry));
+        if (!registry_.Find(cmd.id)) registry_.Add(cmd.id, false);
+        a.message = "placing " + DescribeCarCommand(cmd) + " (an ambient car: the game's parked spawner makes it from the layout item)";
+        return a;
+    }
+    auto car = std::make_unique<SceneCar>(timing_);
+    car->id = cmd.id;
+    car->spawner.Start(cmd);
+    cars_.push_back(std::move(car));
+    if (!registry_.Find(cmd.id)) registry_.Add(cmd.id, false);
+    a.message = "spawning " + DescribeCarCommand(cmd);
+    return a;
 }
 
 // A car that takes a paint and was not given one gets the default of its place in the scene (scene_seed.h): never the game's random pick.
@@ -826,35 +859,42 @@ Director::Applied Director::Apply(const CarCommand& in_cmd, double clock, const 
     Applied a;
     const CarCommand cmd = WithPaint(in_cmd, &paint_ordinal_);
     switch (cmd.verb) {
-        case CarVerb::kAmbient: {
-            if (FindLive(cmd.id) || FindLiveAmbient(cmd.id)) {
-                a.ok = false;
-                a.message = "car " + cmd.id + " already exists: a second ambient of it is ignored";
-                return a;
-            }
-            auto entry = std::make_unique<AmbientEntry>(timing_);
-            entry->id = cmd.id;
-            entry->car.Start(cmd);
-            ambient_.push_back(std::move(entry));
-            registry_.Add(cmd.id, false);
-            a.message = "placing " + DescribeCarCommand(cmd) + " (an ambient car: the game's parked spawner makes it from the layout item)";
-            return a;
-        }
+        case CarVerb::kAmbient:
         case CarVerb::kSpawn: {
-            if (FindLive(cmd.id) || FindLiveAmbient(cmd.id)) {
+            if (FindLive(cmd.id) || FindLiveAmbient(cmd.id) || IsDeferred(cmd.id)) {
                 a.ok = false;
-                a.message = "car " + cmd.id + " already exists: a second spawn of it is ignored";
+                a.message = "car " + cmd.id + " already exists: a second " + (cmd.verb == CarVerb::kAmbient ? "ambient" : "spawn") + " of it is ignored";
                 return a;
             }
-            auto car = std::make_unique<SceneCar>(timing_);
-            car->id = cmd.id;
-            car->spawner.Start(cmd);
-            cars_.push_back(std::move(car));
-            registry_.Add(cmd.id, false);
-            a.message = "spawning " + DescribeCarCommand(cmd);
+            if (cmd.relative) {
+                // The place is in another car's frame: it is worked out when that car has a pose worth taking (ResolveDeferred, from Poll). The id is known at once (the camera may name it).
+                if (!registry_.Find(cmd.anchor)) {
+                    a.ok = false;
+                    a.message = "car " + cmd.id + " near " + cmd.anchor + ": there is no car " + cmd.anchor + " (never spawned, or already deleted): not placed";
+                    return a;
+                }
+                Deferred d;
+                d.cmd = cmd;
+                deferred_.push_back(std::move(d));
+                registry_.Add(cmd.id, false);
+                a.message = std::string(cmd.verb == CarVerb::kAmbient ? "placing " : "spawning ") + DescribeCarCommand(cmd) + " (when " + cmd.anchor + "'s pose is known)";
+                return a;
+            }
+            return StartCar(cmd);
+        }
+        case CarVerb::kPlace: {
+            place_.push_back(cmd);
+            a.message = "the player's car is to be put at " + DescribeCarCommand(cmd).substr(cmd.id.size() + 4);
             return a;
         }
         case CarVerb::kDelete: {
+            for (auto it = deferred_.begin(); it != deferred_.end(); ++it) {
+                if (it->cmd.id != cmd.id) continue;
+                deferred_.erase(it);
+                registry_.Remove(cmd.id);
+                a.message = "car " + cmd.id + " was still waiting for the car it is near: dropped before it was placed";
+                return a;
+            }
             if (AmbientEntry* amb = FindLiveAmbient(cmd.id)) {
                 const bool placed = amb->car.Placed() || amb->car.stage() == AmbientCar::Stage::kRemove;
                 amb->ended = true;
@@ -880,6 +920,11 @@ Director::Applied Director::Apply(const CarCommand& in_cmd, double clock, const 
             a.message = "the player's car to garage slot " + std::to_string(cmd.slot);
             return a;
         case CarVerb::kPath: {
+            if (IsDeferred(cmd.id)) {
+                a.ok = false;
+                a.message = "car " + cmd.id + " is still waiting for the car it is near: it has no route to drive yet (put the path after the car is on the road)";
+                return a;
+            }
             if (FindLiveAmbient(cmd.id)) {
                 a.ok = false;
                 a.message = "car " + cmd.id + " is an ambient car: it stands where it was placed and takes no route (spawn a car for a path)";
@@ -906,6 +951,11 @@ Director::Applied Director::Apply(const CarCommand& in_cmd, double clock, const 
             return a;
         }
         case CarVerb::kStop: {
+            if (IsDeferred(cmd.id)) {
+                a.ok = false;
+                a.message = "car " + cmd.id + " is still waiting for the car it is near: nothing to stop";
+                return a;
+            }
             if (FindLiveAmbient(cmd.id)) {
                 a.ok = false;
                 a.message = "car " + cmd.id + " is an ambient car: it has no route to stop (it stands where it was placed)";
@@ -947,12 +997,22 @@ void Director::EndScene() {
         registry_.Remove(a->id);
         ++n;
     }
-    registry_.Remove("player");
+    for (const Deferred& d : deferred_) {
+        registry_.Remove(d.cmd.id);
+        ++n;
+    }
+    deferred_.clear();
+    place_.clear();  // a `car player at` that has not made its call is dropped
+    // The player's car goes back to where he stood before the scene's first place, when that is safe (PollPlayer says whether it is): only if the scene moved him.
+    restore_ = have_origin_ && (placed_ || place_pending_ == PlaceKind::kPlace);
+    restore_since_ms_ = -1;
+    if (!restore_) registry_.Remove("player");  // (kept while he is to be put back: the put-back reads where he stands)
     dresser_.Restore();
     scene_on_ = false;
     const bool restore = dresser_.Changed() || dresser_.Busy();
-    if (n > 0 || restore) {
-        events_.push_back({false, "the scene is over: " + std::to_string(n) + " car(s) to delete" + (restore ? ", the player's car to restore" : "")});
+    if (n > 0 || restore || restore_) {
+        events_.push_back({false, "the scene is over: " + std::to_string(n) + " car(s) to delete" + (restore ? ", the player's car to restore" : "") +
+                                      (restore_ ? ", the player's car to put back" : "")});
     }
 }
 
@@ -967,7 +1027,7 @@ void Director::Collect(SceneCar& car) {
 
 Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_calls) {
     Next out;
-    if (pending_car_ || pending_dresser_ || pending_path_car_ || pending_ambient_) return out;  // a call is in flight: its Report comes first
+    if (pending_car_ || pending_dresser_ || pending_path_car_ || pending_ambient_ || place_pending_ != PlaceKind::kNone) return out;  // a call is in flight: its Report comes first
 
     // Finished spawns leave: the log lines first, then the registry.
     for (auto it = cars_.begin(); it != cars_.end();) {
@@ -1014,7 +1074,9 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
         }
     }
     for (CarEvent& e : dresser_.TakeEvents()) events_.push_back(std::move(e));
+    NotePlacedPose();
     if (!allow_calls) return out;
+    ResolveDeferred(now_ms);
 
     auto take = [&](SceneCar& car) {
         Call c = car.spawner.Poll(now_ms);
@@ -1063,6 +1125,14 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
             return out;
         }
     }
+    {
+        Call c = PollPlayer(now_ms, player_racer);
+        if (c.native != Native::kNone) {
+            out.car = "player";
+            out.call = std::move(c);
+            return out;
+        }
+    }
     for (auto& c : cars_) {
         if (c->spawner.delete_requested()) continue;
         if (take(*c)) return out;
@@ -1084,7 +1154,9 @@ Director::Next Director::Poll(int64_t now_ms, uint32_t player_racer, bool allow_
 }
 
 void Director::Report(const Outcome& outcome) {
-    if (pending_dresser_) {
+    if (place_pending_ != PlaceKind::kNone) {
+        ReportPlayer(outcome);
+    } else if (pending_dresser_) {
         dresser_.Report(outcome);
     } else if (pending_path_car_) {
         if (pending_path_delete_) pending_path_car_->path.ReportBrainDelete(outcome);
@@ -1102,6 +1174,7 @@ void Director::Report(const Outcome& outcome) {
 }
 
 void Director::CancelPending() {
+    place_pending_ = PlaceKind::kNone;
     pending_car_ = nullptr;
     pending_ambient_ = nullptr;
     pending_path_car_ = nullptr;
@@ -1113,6 +1186,243 @@ void Director::MarkLost(uint32_t racer) {
     for (auto& c : cars_) {
         if (c->spawner.racer() == racer && !c->spawner.Finished()) c->spawner.MarkLost();
     }
+}
+
+// ---- a car near another
+
+// The pose of the car `id` for a `near` car. A scene car must be ready (its spawn ran to its end) and have a pose, an ambient car placed and have one, the player's car must not have a
+// placement of the scene still to make or to be read; a car that is itself waiting for the car it is near is waited for. No such car (never made, deleted, failed) is kGone.
+Director::Anchor Director::ResolveAnchor(const std::string& id, CarPose* pose, std::string* why) {
+    const CarEntry* e = registry_.Find(id);
+    if (id == "player") {
+        if (!place_.empty() || place_pending_ == PlaceKind::kPlace) {
+            *why = "the player's car, which the scene is still putting at its place";
+            return Anchor::kWait;
+        }
+        if (!e || !e->have_pose) {
+            *why = "the player's car, whose pose is not known yet";
+            return Anchor::kWait;
+        }
+        if (place_check_ && e->pose_updates <= place_reads_) {
+            *why = "the player's car, whose pose has not been read since it was put at its place";
+            return Anchor::kWait;
+        }
+        *pose = e->pose;
+        return Anchor::kReady;
+    }
+    if (IsDeferred(id)) {
+        *why = "car " + id + ", which is itself waiting for the car it is near";
+        return Anchor::kWait;
+    }
+    if (const SceneCar* c = FindLive(id)) {
+        if (c->spawner.Finished()) return Anchor::kGone;
+        if (!c->spawner.Ready()) {
+            *why = "car " + id + " to be ready (its spawn is at '" + c->spawner.StageName() + "')";
+            return Anchor::kWait;
+        }
+        if (!e || !e->have_pose) {
+            *why = "car " + id + ", whose pose is not known yet";
+            return Anchor::kWait;
+        }
+        *pose = e->pose;
+        return Anchor::kReady;
+    }
+    if (const AmbientEntry* a = FindLiveAmbient(id)) {
+        if (a->car.Finished()) return Anchor::kGone;
+        if (!a->car.Placed() || !e || !e->have_pose) {
+            *why = "car " + id + " (ambient) to stand in the world";
+            return Anchor::kWait;
+        }
+        *pose = e->pose;
+        return Anchor::kReady;
+    }
+    return Anchor::kGone;
+}
+
+void Director::ResolveDeferred(int64_t now_ms) {
+    for (size_t k = 0; k < deferred_.size();) {
+        Deferred& d = deferred_[k];
+        if (d.first_ms < 0) d.first_ms = now_ms;
+        CarPose pose;
+        std::string why;
+        const Anchor state = ResolveAnchor(d.cmd.anchor, &pose, &why);
+        if (state == Anchor::kGone || (state == Anchor::kWait && now_ms - d.first_ms > kNearGiveUpMs)) {
+            ++failed_;
+            events_.push_back({true, state == Anchor::kGone ? "car " + d.cmd.id + " is not placed: car " + d.cmd.anchor + ", which it is near, is gone (deleted, failed, or never made)"
+                                                          : "car " + d.cmd.id + " is not placed: it waited " + std::to_string(kNearGiveUpMs / 1000) + " s for " + why});
+            registry_.Remove(d.cmd.id);
+            deferred_.erase(deferred_.begin() + static_cast<std::ptrdiff_t>(k));
+            continue;
+        }
+        if (state == Anchor::kWait) {
+            if (why != d.waiting_for) {
+                d.waiting_for = why;
+                events_.push_back({false, "car " + d.cmd.id + " (near " + d.cmd.anchor + ") waits for " + why});
+            }
+            ++k;
+            continue;
+        }
+        CarCommand cmd = d.cmd;
+        ResolveRelative(pose, cmd, cmd.position, &cmd.heading);
+        cmd.has_heading = true;
+        cmd.relative = false;
+        char buf[400];
+        std::snprintf(buf, sizeof(buf),
+                      "car %s near %s: %s is at (%.2f, %.2f, %.2f) heading %.1f; %.2f right, %.2f up, %.2f ahead of it (and %.1f degrees round) is (%.2f, %.2f, %.2f) heading %.1f",
+                      cmd.id.c_str(), cmd.anchor.c_str(), cmd.anchor.c_str(), pose.position[0], pose.position[1], pose.position[2], pose.heading, cmd.offset[0], cmd.offset[1],
+                      cmd.offset[2], d.cmd.has_heading ? d.cmd.heading : 0.0, cmd.position[0], cmd.position[1], cmd.position[2], cmd.heading);
+        events_.push_back({false, buf});
+        deferred_.erase(deferred_.begin() + static_cast<std::ptrdiff_t>(k));
+        const Applied started = StartCar(cmd);
+        events_.push_back({!started.ok, started.message});
+    }
+}
+
+// ---- the player's car
+
+Call Director::PollPlayer(int64_t now_ms, uint32_t player_racer) {
+    Call none;
+    if (!player_racer || dresser_.Busy()) return none;  // (the dressing changes the car under him: the place waits for it to settle)
+    const CarEntry* pe = registry_.Find("player");
+    const bool have_pose = pe && pe->have_pose;
+    if (!place_.empty()) {
+        CarCommand cmd = place_.front();
+        place_.pop_front();
+        if (!cmd.has_heading && !have_pose) {
+            events_.push_back({true, "the player's car is not put at " + DescribeCarCommand(cmd).substr(cmd.id.size() + 4) + ": the line gave no heading and his pose cannot be read to keep it"});
+            return none;
+        }
+        if (!have_origin_ && !placed_) {
+            if (have_pose) {
+                for (int k = 0; k < 3; ++k) origin_position_[k] = pe->pose.position[k];
+                origin_heading_ = pe->pose.heading;
+                have_origin_ = true;
+            } else {
+                events_.push_back({true, "the player's pose is not known: he cannot be put back where he stood at the scene's end"});
+            }
+        }
+        place_asked_ = cmd;
+        place_asked_.heading = cmd.has_heading ? cmd.heading : pe->pose.heading;
+        place_asked_.has_heading = true;
+        placed_racer_ = player_racer;
+        Call c;
+        c.native = Native::kTeleport;
+        c.racer = player_racer;
+        c.on_player = true;
+        for (int k = 0; k < 3; ++k) c.position[k] = cmd.position[k];
+        c.heading_native = NativeHeadingDeg(place_asked_.heading);
+        c.speed = 0.0;
+        place_pending_ = PlaceKind::kPlace;
+        return c;
+    }
+    if (!restore_) return none;
+
+    if (restore_since_ms_ < 0) restore_since_ms_ = now_ms;
+    auto abandon = [&](const std::string& why) {
+        events_.push_back({false, "the player's car is not put back: " + why});
+        restore_ = false;
+        have_origin_ = false;
+        placed_ = false;
+        place_check_ = false;
+        if (!scene_on_) registry_.Remove("player");
+    };
+    if (!have_origin_ || !placed_) {
+        abandon("the scene never put him anywhere");
+        return none;
+    }
+    if (player_racer != placed_racer_) {
+        abandon("his car is not the one the scene placed (the world was rebuilt, or the car was changed)");
+        return none;
+    }
+    if (!have_pose) {
+        if (now_ms - restore_since_ms_ > kRestoreGiveUpMs) abandon("his pose could not be read");
+        return none;
+    }
+    const double dx = pe->pose.position[0] - placed_position_[0];
+    const double dz = pe->pose.position[2] - placed_position_[2];
+    const double drift = std::sqrt(dx * dx + dz * dz);
+    if (drift > kRestoreMaxDriftM) {
+        char buf[200];
+        std::snprintf(buf, sizeof(buf), "he is %.1f m from where the scene left him (more than %.0f m): somebody drove him, and he is not fetched back", drift, kRestoreMaxDriftM);
+        abandon(buf);
+        return none;
+    }
+    place_asked_ = CarCommand{};
+    place_asked_.id = "player";
+    place_asked_.verb = CarVerb::kPlace;
+    for (int k = 0; k < 3; ++k) place_asked_.position[k] = origin_position_[k];
+    place_asked_.heading = origin_heading_;
+    place_asked_.has_heading = true;
+    Call c;
+    c.native = Native::kTeleport;
+    c.racer = player_racer;
+    c.on_player = true;
+    for (int k = 0; k < 3; ++k) c.position[k] = origin_position_[k];
+    c.heading_native = NativeHeadingDeg(origin_heading_);
+    c.speed = 0.0;
+    place_pending_ = PlaceKind::kRestore;
+    return c;
+}
+
+void Director::ReportPlayer(const Outcome& o) {
+    const PlaceKind kind = place_pending_;
+    place_pending_ = PlaceKind::kNone;
+    const CarEntry* pe = registry_.Find("player");
+    if (!o.called) {
+        if (kind == PlaceKind::kRestore) {
+            events_.push_back({true, "the player's car could not be put back (Racer_Teleport was not called): he stays where the scene left him"});
+            restore_ = false;
+            have_origin_ = false;
+            placed_ = false;
+            if (!scene_on_) registry_.Remove("player");
+        } else {
+            events_.push_back({true, "the player's car could not be put at its place (Racer_Teleport was not called): he stays where he is"});
+            if (!placed_) have_origin_ = false;
+        }
+        return;
+    }
+    place_check_ = true;
+    place_check_polls_ = 0;
+    place_reads_ = pe ? pe->pose_updates : 0;
+    if (kind == PlaceKind::kPlace) {
+        placed_ = true;
+        for (int k = 0; k < 3; ++k) placed_position_[k] = place_asked_.position[k];
+    } else {
+        events_.push_back({false, "the player's car is put back where he stood before the scene"});
+        restore_ = false;
+        have_origin_ = false;
+        placed_ = false;
+        drop_player_after_check_ = !scene_on_;  // his registry entry goes once the pose after the put-back is logged
+    }
+}
+
+void Director::NotePlacedPose() {
+    if (!place_check_) return;
+    const CarEntry* pe = registry_.Find("player");
+    if (!pe || ++place_check_polls_ > kPlaceCheckPolls) {  // no entry any more, or the pose has not been read in all this time: no line
+        place_check_ = false;
+        place_check_polls_ = 0;
+        if (drop_player_after_check_) registry_.Remove("player");
+        drop_player_after_check_ = false;
+        return;
+    }
+    if (!pe->have_pose || pe->pose_updates <= place_reads_) return;
+    place_check_ = false;
+    place_check_polls_ = 0;
+    const CarPose& p = pe->pose;
+    const double dx = p.position[0] - place_asked_.position[0];
+    const double dz = p.position[2] - place_asked_.position[2];
+    double dh = std::fabs(p.heading - place_asked_.heading);
+    if (dh > 180.0) dh = 360.0 - dh;
+    char buf[400];
+    std::snprintf(buf, sizeof(buf),
+                  "the player's car stands at (%.2f, %.2f, %.2f) heading %.1f: the call asked for (%.2f, %.2f, %.2f) heading %.1f (%.2f m off on the ground, %.2f m in height: he settles on "
+                  "the road after it, %.1f degrees)",
+                  p.position[0], p.position[1], p.position[2], p.heading, place_asked_.position[0], place_asked_.position[1], place_asked_.position[2], place_asked_.heading,
+                  std::sqrt(dx * dx + dz * dz), p.position[1] - place_asked_.position[1], dh);
+    events_.push_back({false, buf});
+    if (drop_player_after_check_) registry_.Remove("player");
+    drop_player_after_check_ = false;
 }
 
 namespace {

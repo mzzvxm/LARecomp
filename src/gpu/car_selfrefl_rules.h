@@ -81,6 +81,16 @@ inline float ExpBiasGain(int32_t exp_bias) {
   return std::ldexp(1.0f, -std::clamp<int32_t>(exp_bias, -24, 24));
 }
 
+// The inverse: what a colour in the paint's units (the shaders' output) is multiplied by to be in the history's, the target's own units. The ray traced reflection's image
+// is in the history's units (the paint multiplies it by ExpBiasGain), so a colour the pass makes up itself from a paint constant (another car's paint, the grey of a car
+// placed from memory: shader output units) must be multiplied by this first (RT-MODEL-CARS-4: it was not, and every such colour came out 16 times too dark at the game's
+// bias of 4, so a neighbour reflected as a dark silhouette instead of in its paint).
+inline float ExpBiasUnits(int32_t exp_bias) {
+  return std::ldexp(1.0f, std::clamp<int32_t>(exp_bias, -24, 24));
+}
+// The bias of the game's main colour target (RB_COLOR_INFO color_exp_bias, constants.cpp): the pass uses it until a paint draw has told it the target's own.
+inline constexpr int32_t kMainTargetExpBias = 4;
+
 // The matrix a vertex of the draw is taken into the history frame's clip space with: the vehicle's own motion (this
 // frame's world position to its world position one frame ago, vehicle_motion.h; null: the identity) and then the
 // history frame's view-projection, row vectors, written row by row.

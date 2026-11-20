@@ -11,8 +11,14 @@
 // called on has been looked up in the opponent manager's active list first: when the world is rebuilt under a scene (a race, the
 // front end) the car is simply gone from the books and nothing is called on it.
 //
+// THE PLAYER'S PLACE AND CARS NEAR OTHERS (car_verbs.h has the statements, car_spawn.h the machine). `car player at <x,y,z> [heading]` is one Racer_Teleport on the player's racer (the same
+// native a spawned car is put with: speed 0, the matrix set, no ground snap) when the player's car is on the road and the garage dressing is done; the player's racer is not in the
+// opponent manager's list, so the in-list check of the other natives is not made for it (the Call says on_player). The scene's end puts him back where he stood before the first place with one
+// more Racer_Teleport, only when that is safe (car_spawn.h). A `spawn`/`ambient ... near <car> r,u,f` waits in the Director until that car's pose is worth taking, then is started at the
+// world place worked out in its frame: no native is called for the waiting.
+//
 // WHAT IS WRITTEN. Nothing but through the natives: OpponentManager_CreateOpponent / Load / Add / Delete, Racer_Activate /
-// SetStreamingLockedIn / Teleport (the spawn), Racer_ChangeCarByConfig on the player's racer (the garage dressing); the reads are
+// SetStreamingLockedIn / Teleport (the spawn, and the player's place), Racer_ChangeCarByConfig on the player's racer (the garage dressing); the reads are
 // LookupCar, LocalOptions_*, Racer_GetLoadState / IsCarStreamed / GetPosition and the car table of the game's memory (the name
 // string of a car). No guest memory is poked. The scene's end deletes what the scene spawned and puts the player's car back.
 //
@@ -906,7 +912,8 @@ void Execute(const uint8_t* base, const Director::Next& n, uint32_t mgr) {
         g.dir.Report(out);
         return;
     }
-    if (NeedsInWorld(c.native) && !InManager(base, mgr, c.racer)) {
+    // The player's racer is not one of the opponent manager's: `car player at` (and its put-back) put him with Racer_Teleport without that check (Poll handed the call out on the racer it was given this update).
+    if (NeedsInWorld(c.native) && !c.on_player && !InManager(base, mgr, c.racer)) {
         LARECOMP_APP_WARN("[cars] {} {}: racer {} is not in the opponent manager's list any more (the world was rebuilt?): the car is dropped, nothing is called",
                           n.car, NativeName(c.native), Hex(c.racer));
         g.dir.MarkLost(c.racer);
@@ -1222,7 +1229,7 @@ std::vector<CarKey> ReadCarKeys(const Scene& scene) {
                 keys.push_back({e.t, e.line, cmd, false});
                 break;
             case CarParse::kOtherVerb:
-                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, ambient, delete, profile, path and stop", e.line,
+                LARECOMP_APP_WARN("[cars] line {}: 'car {} {}' is not applied: the cars package knows spawn, ambient, delete, profile, at (the player), path and stop", e.line,
                                   e.words.empty() ? std::string() : e.words[0], e.words.size() > 1 ? e.words[1] : std::string());
                 break;
             case CarParse::kError:

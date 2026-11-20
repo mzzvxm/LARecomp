@@ -86,6 +86,29 @@ inline float Agreement(float stored, float depth, float slack) {
   return 1.0f - cr::SmoothStep(0.5f * tolerance, tolerance, std::fabs(stored - depth));
 }
 
+// THE RIM OF A PART. The history holds ONE sample of each pixel (the guest's sample 0 of the stencil and the depth, car_history_ps.hlsl; at 2560 pixels
+// across and more one texel stands for the lower right pixel of a 2x2 block), while the chrome's pixel shader runs at the pixel's centre. At the silhouette of
+// a tip (its top and its left edge, where that sample lies outside the tip) the texel under a shaded pixel belongs to what is behind the tip, the bumper's cavity
+// 3 to 7 cm further or no vehicle at all, so Agreement() above says 0, the whole effect is left to the game, and the pixel keeps the game's bright
+// sky ambient: a thin bright line round the tip's top (the ray traced run rtint1, the debug view's red outline). The cure is to try the texels around the
+// own one as well and take the best agreement: a texel one or two steps away that holds the shaded point's own surface is the same part, a centimetre away.
+// A pixel that agrees fully takes no search; one whose neighbours do not agree either (a wrong guess of the car's motion, a disocclusion) stays at 0, as it was.
+inline constexpr int kSilhouetteTaps = 12;
+inline constexpr int kSilhouetteOffsets[kSilhouetteTaps][2] = {{-1, 0}, {0, -1}, {1, 0},  {0, 1},  {-1, -1}, {1, -1},
+                                                               {-1, 1}, {1, 1},  {-2, 0}, {0, -2}, {2, 0},   {0, 2}};
+
+// The self-test's agreement of one texel's stored distance (0 where it holds no vehicle).
+inline float TexelAgreement(float stored, float depth, float slack) { return stored > 0.0f ? Agreement(stored, depth, slack) : 0.0f; }
+
+// The shaded point's agreement given its own texel's (`own`) and the stored distances of the kSilhouetteTaps texels round it (0 where they hold no vehicle):
+// never lower than `own`, and `own` itself where that is already 1.
+inline float SilhouetteAgreement(float own, const float stored[kSilhouetteTaps], float depth, float slack) {
+  float best = own;
+  if (best >= 1.0f) return best;
+  for (int k = 0; k < kSilhouetteTaps; ++k) best = std::max(best, TexelAgreement(stored[k], depth, slack));
+  return best;
+}
+
 // The sky probe's direction: the normal bent towards the sky, normalize(n + up); a normal that points straight down (n + up near 0) has
 // no sky to look at and takes up. `up` is the world's +y, as the paint's own ambient (ambYPos) is the ambient of +y.
 struct Dir {

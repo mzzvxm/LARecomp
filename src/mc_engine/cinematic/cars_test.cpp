@@ -1811,7 +1811,7 @@ void TestPaintVerbs() {
     CheckError("p1 ambient vp_x at 1,2,3 paint 1 colour 2", "ambient: a second 'paint'");
     CheckError("p1 spawn profile 2 at 1,2,3 paint 1", "keeps the paint the owner gave it");
     CheckError("p1 spawn garage:2 at 1,2,3 paint 1", "keeps the paint the owner gave it");
-    CheckError("p1 spawn vp_x at 1,2,3 sparkle", "unknown option 'sparkle' (at, heading, paint)");
+    CheckError("p1 spawn vp_x at 1,2,3 sparkle", "unknown option 'sparkle' (at, near, heading, paint)");
 }
 
 void TestSeeds() {
@@ -2033,6 +2033,619 @@ void TestStillUpdates() {
     Check(x.Take(false, 6.5 + 1.0 / 60.0) == y.Take(false, 6.5 + 1.0 / 60.0), "a hold of 363 updates and a hold of 371 leave the same numbers behind");
 }
 
+// ---------------------------------------------------------------------------------------------------------------- the player's place, and cars near others (SCENE-PLAYER-POSE)
+
+void TestPoseVerbs() {
+    {
+        const Parsed p = P("player at 832.19,16.9,-787.53 heading 62");
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kPlace && p.cmd.id == "player", "player at: a place");
+        CheckNum(p.cmd.position[0], 832.19, "place x");
+        CheckNum(p.cmd.position[1], 16.9, "place y");
+        CheckNum(p.cmd.position[2], -787.53, "place z");
+        CheckNum(p.cmd.heading, 62.0, "place heading");
+        Check(p.cmd.has_heading && !p.cmd.relative, "place: a heading, not relative");
+    }
+    {
+        const Parsed p = P("Player AT 1 2 3");  // any case, three numbers, no heading: his own is kept
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kPlace && !p.cmd.has_heading, "player at, upper case, three numbers, no heading");
+        CheckNum(p.cmd.position[2], 3.0, "place z (three numbers)");
+    }
+    CheckNum(P("player at 1,2,3 heading -90").cmd.heading, 270.0, "place heading -90 is 270");
+    CheckNum(P("player at 1,2,3 heading 10").cmd.heading, 10.0, "heading after at");
+    CheckError("player at", "at needs x,y,z");
+    CheckError("player at 1,2", "bad position");
+    CheckError("player at 1 2", "at needs x,y,z");
+    CheckError("player at 1,2,3 at 4,5,6", "a second 'at'");
+    CheckError("player at 1,2,3 heading", "heading needs degrees");
+    CheckError("player at 1,2,3 heading 1 heading 2", "a second 'heading'");
+    CheckError("player at 999999,0,0", "outside the world");
+    CheckError("player at 1,2,3 paint 3", "unknown option 'paint'");
+    CheckError("player at 1,2,3 near n1 1,0,0", "unknown option 'near'");
+    CheckError("player at heading 10", "at needs x,y,z");
+    CheckError("p1 at 1,2,3", "only the player's car is put with `at`");
+    CheckError("player spawn vp_x at 1,2,3", "car player at");  // the 'player' message names the verbs that do apply
+    CheckError("player ambient vp_x at 1,2,3", "car player at");
+
+    // near
+    {
+        const Parsed p = P("n1 spawn vp_lam_murcielago_06 near player -3.35,0.3,0 heading 10");
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kSpawn && p.cmd.relative && p.cmd.anchor == "player", "spawn near player");
+        CheckNum(p.cmd.offset[0], -3.35, "offset right");
+        CheckNum(p.cmd.offset[1], 0.3, "offset up");
+        CheckNum(p.cmd.offset[2], 0.0, "offset ahead");
+        CheckNum(p.cmd.heading, 10.0, "the relative heading");
+        Check(p.cmd.has_heading, "has_heading (relative)");
+        Check(DescribeCarCommand(p.cmd) == "n1 spawn vp_lam_murcielago_06 near player (-3.35 right, 0.30 up, 0.00 ahead) heading +10.00 from its own",
+              "describe a near spawn: " + DescribeCarCommand(p.cmd));
+    }
+    {
+        const Parsed p = P("a1 AMBIENT va_gmc_yukon_05 NEAR Player 1 2 -3");  // three numbers, any case; the player is "player"
+        Check(p.status == CarParse::kOk && p.cmd.verb == CarVerb::kAmbient && p.cmd.relative && p.cmd.anchor == "player" && !p.cmd.has_heading, "ambient near Player (three numbers, no heading)");
+        CheckNum(p.cmd.offset[2], -3.0, "offset ahead (three numbers)");
+        Check(DescribeCarCommand(p.cmd).find("heading +0.00 from its own") != std::string::npos, "describe: no heading is the same way as the car");
+    }
+    {
+        const Parsed p = P("n2 spawn garage:3 heading 180 near n1 0,0,-5");  // heading first; a garage car; a spawned car as the anchor
+        Check(p.status == CarParse::kOk && p.cmd.source == CarSource::kGarage && p.cmd.slot == 3 && p.cmd.relative && p.cmd.anchor == "n1" && p.cmd.heading == 180.0, "garage car near n1, heading first");
+    }
+    {
+        const Parsed p = P("n3 spawn vp_x near n1 1,0,0 paint 7");
+        Check(p.status == CarParse::kOk && p.cmd.has_paint && p.cmd.paint == 7 && p.cmd.relative, "near and paint go together");
+    }
+    CheckError("n1 spawn vp_x near", "near needs a car");
+    CheckError("n1 spawn vp_x near 3x 1,0,0", "is not one");
+    CheckError("n1 spawn vp_x near player", "near needs right,up,forward");
+    CheckError("n1 spawn vp_x near player 1,2", "bad offset");
+    CheckError("n1 spawn vp_x near player 1 2", "near needs right,up,forward (as");
+    CheckError("n1 spawn vp_x near player 1 2 z", "bad offset 'z'");
+    CheckError("n1 spawn vp_x near player 1,2,3 near player 1,2,3", "a second 'near'");
+    CheckError("n1 spawn vp_x near player 1,2,3 at 1,2,3", "do not go together");
+    CheckError("n1 spawn vp_x at 1,2,3 near player 1,2,3", "do not go together");
+    CheckError("n1 spawn vp_x near n1 1,0,0", "cannot be near itself");
+    CheckError("n1 spawn vp_x near player 5000,0,0", "more than 1000 m");
+    CheckError("n1 spawn vp_x near player 1,2,3 heading", "heading needs degrees");
+    CheckError("n1 ambient vp_x near player 1,2,3 heading 1 heading 2", "ambient: a second 'heading'");
+    CheckError("n1 spawn vp_x heading 5", "needs a place");
+    Check(P("n1 spawn vp_x near player nan,0,0").status == CarParse::kError, "a nan offset is refused");
+    // the place line of a spawn is unchanged
+    Check(P("n1 spawn vp_x at 1,2,3").status == CarParse::kOk && !P("n1 spawn vp_x at 1,2,3").cmd.relative, "an `at` spawn is not relative");
+}
+
+CarPose MakePose(double x, double y, double z, double scene_heading) {
+    const double pos[3] = {x, y, z};
+    float m[16];
+    MatrixForNativeHeading(NativeHeadingDeg(scene_heading), pos, m);
+    CarPose p;
+    PoseFromMatrix(m, &p);
+    return p;
+}
+
+void TestResolveRelative() {
+    const double kPi = 3.14159265358979323846;
+    for (double h : {0.0, 62.0, 90.0, 180.0, 270.0, 331.7}) {
+        const CarPose a = MakePose(832.19, 16.5, -787.53, h);
+        CarCommand c = P("n1 spawn vp_x near player 3.35,0.3,-9.5").cmd;
+        double pos[3];
+        double heading = -1.0;
+        ResolveRelative(a, c, pos, &heading);
+        const double fx = std::sin(h * kPi / 180.0), fz = std::cos(h * kPi / 180.0);  // forward: (sin h, cos h) on the ground
+        const double rx = -std::cos(h * kPi / 180.0), rz = std::sin(h * kPi / 180.0);  // right: seen from above, x east, z south: facing south (h 0) his right is west
+        CheckNum(pos[0], 832.19 + rx * 3.35 + fx * -9.5, "right 3.35, back 9.5: x at heading " + std::to_string(h), 2e-4);
+        CheckNum(pos[1], 16.5 + 0.3, "up 0.3: y at heading " + std::to_string(h), 2e-4);
+        CheckNum(pos[2], -787.53 + rz * 3.35 + fz * -9.5, "right 3.35, back 9.5: z at heading " + std::to_string(h), 2e-4);
+        CheckNum(heading, h, "no heading given: the same as the anchor's, " + std::to_string(h), 1e-3);
+    }
+    {  // a place 1.5 m of gap beside a car is on its right when the offset is positive: the other car's matrix says the same
+        const CarPose a = MakePose(100.0, 5.0, 200.0, 62.0);
+        const double right_dot = a.right[0] * (-std::cos(62.0 * kPi / 180.0)) + a.right[2] * std::sin(62.0 * kPi / 180.0);
+        CheckNum(right_dot, 1.0, "the pose's right is (-cos h, sin h) in x, z", 1e-5);
+    }
+    {  // heading is an offset: +90 is a quarter turn to the LEFT, 180 faces it, a wrap past 360
+        const CarPose a = MakePose(0.0, 0.0, 0.0, 62.0);
+        double pos[3];
+        double heading = 0.0;
+        ResolveRelative(a, P("n spawn vp_x near player 0,0,0 heading 90").cmd, pos, &heading);
+        CheckNum(heading, 152.0, "62 + 90", 1e-3);
+        ResolveRelative(a, P("n spawn vp_x near player 0,0,0 heading 180").cmd, pos, &heading);
+        CheckNum(heading, 242.0, "62 + 180", 1e-3);
+        ResolveRelative(a, P("n spawn vp_x near player 0,0,0 heading 300").cmd, pos, &heading);
+        CheckNum(heading, 2.0, "62 + 300 wraps to 2", 1e-3);
+        ResolveRelative(a, P("n spawn vp_x near player 0,0,0 heading -70").cmd, pos, &heading);
+        CheckNum(heading, 352.0, "62 - 70 wraps to 352", 1e-3);
+        // 90 degrees to the left: the new car's forward is the anchor's left (minus its right)
+        ResolveRelative(a, P("n spawn vp_x near player 0,0,0 heading 90").cmd, pos, &heading);
+        CheckNum(std::sin(heading * kPi / 180.0), -a.right[0], "the new car's forward x is the anchor's left", 1e-3);
+        CheckNum(std::cos(heading * kPi / 180.0), -a.right[2], "...and z", 1e-3);
+    }
+    {  // a car on a slope has its frame tilted with it: the matrix's own axes are used (right (1,0,0), up (0,.8,.6), forward (0,-.6,.8))
+        CarPose a;
+        a.position[0] = 10.0; a.position[1] = 20.0; a.position[2] = 30.0;
+        a.right[0] = 1.0; a.right[1] = 0.0; a.right[2] = 0.0;
+        a.up[0] = 0.0; a.up[1] = 0.8; a.up[2] = 0.6;
+        a.forward[0] = 0.0; a.forward[1] = -0.6; a.forward[2] = 0.8;
+        a.heading = 0.0;
+        double pos[3];
+        double heading = 0.0;
+        ResolveRelative(a, P("n spawn vp_x near player 1,2,3").cmd, pos, &heading);
+        CheckNum(pos[0], 11.0, "tilted frame x");
+        CheckNum(pos[1], 20.0 + 1.6 - 1.8, "tilted frame y");
+        CheckNum(pos[2], 30.0 + 1.2 + 2.4, "tilted frame z");
+    }
+}
+
+// A game with a player and a Director: every tick reads the player's pose (the glue's UpdatePoses), polls, makes the call that was handed out and reports it. The player's car goes where
+// a `car player at` put him (and drops `drop` metres onto the road); a scene car that is ready is read at the place it was loaded at.
+struct PoseWorld {
+    Director dir;
+    FakeGame game;
+    uint32_t racer = 0xBF33C450u;
+    double pos[3] = {819.61, 17.56, -808.41};  // where the starter save leaves him
+    double heading = 331.7;
+    double drop = 0.4;
+    uint64_t frame = 0;
+    int64_t t = 0;
+    bool feed_player = true;
+    bool gate_open = true;
+    int32_t next_layout = 135;
+    std::vector<Call> puts;  // the Racer_Teleports made on the player
+    std::vector<Call> loads;  // the loads of racers
+    std::vector<Call> adds;  // the ambient adds
+    PoseWorld() { dir.BeginScene(); }
+
+    void Tick() {
+        ++frame;
+        t += 16;
+        if (feed_player) FeedPose(dir, "player", pos[0], pos[1], pos[2], heading, frame);
+        for (const Director::Reader& r : dir.PoseReaders()) {
+            for (auto it = game.detail.rbegin(); it != game.detail.rend(); ++it) {
+                if (it->native == Native::kLoadOpponent && it->racer == r.racer) {
+                    FeedPose(dir, r.id, it->position[0], it->position[1], it->position[2], NormalizeDegrees(it->heading_native - 180.0), frame);
+                    break;
+                }
+            }
+        }
+        for (const Director::AmbientReader& r : dir.AmbientReaders()) {
+            for (const Call& c : adds) {
+                if (c.index == r.layout_id) {
+                    const double p3[3] = {c.position[0], c.position[1], c.position[2]};
+                    float m[16];
+                    MatrixForNativeHeading(c.heading_native, p3, m);
+                    dir.NoteAmbientPose(r.id, m, frame);
+                }
+            }
+        }
+        if (gate_open) dir.SetAmbientGate(OpenGate());
+        const Director::Next n = dir.Poll(t, racer);
+        if (n.call.native == Native::kNone) return;
+        Outcome o;
+        if (n.call.native == Native::kAddAmbient) {
+            Call c = n.call;
+            c.index = next_layout;  // remembered with the layout id the game answers
+            adds.push_back(c);
+            o.called = true;
+            o.ret_written = true;
+            o.ret = static_cast<uint32_t>(next_layout++);
+        } else {
+            o = game.Run(n.call, t);
+        }
+        if (n.call.native == Native::kTeleport && n.call.on_player && o.called) {
+            puts.push_back(n.call);
+            for (int k = 0; k < 3; ++k) pos[k] = n.call.position[k];
+            pos[1] -= drop;
+            heading = NormalizeDegrees(n.call.heading_native - 180.0);
+        }
+        if (n.call.native == Native::kLoadOpponent) loads.push_back(n.call);
+        dir.Report(o);
+    }
+    void Run(int ticks) {
+        for (int i = 0; i < ticks; ++i) Tick();
+    }
+    bool Event(const std::string& part, bool warning_only = false) { return HasEvent(dir, part, warning_only); }
+};
+
+CarCommand PlaceCmd(double x, double y, double z, double heading, bool has_heading = true) {
+    CarCommand c;
+    c.id = "player";
+    c.verb = CarVerb::kPlace;
+    c.position[0] = x;
+    c.position[1] = y;
+    c.position[2] = z;
+    c.heading = heading;
+    c.has_heading = has_heading;
+    return c;
+}
+
+CarCommand NearCmd(const std::string& id, const std::string& model, const std::string& anchor, double r, double u, double f, double rel_heading = 0.0, bool has_heading = false,
+                   bool ambient = false) {
+    CarCommand c = ambient ? Ambient(id, model) : Spawn(id, model);
+    c.relative = true;
+    c.anchor = anchor;
+    c.offset[0] = r;
+    c.offset[1] = u;
+    c.offset[2] = f;
+    c.heading = rel_heading;
+    c.has_heading = has_heading;
+    return c;
+}
+
+void TestPlayerPlace() {
+    {  // one Racer_Teleport on the player's racer, at the asked place, with no speed
+        PoseWorld w;
+        Check(w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0)).ok, "the place applies");
+        Check(w.dir.Active() && w.dir.registry().Find("player") != nullptr, "active; the player is in the registry");
+        w.Run(30);
+        Check(w.puts.size() == 1, "one put");
+        if (w.puts.size() == 1) {
+            const Call& c = w.puts[0];
+            Check(c.racer == 0xBF33C450u && c.on_player && c.native == Native::kTeleport, "Racer_Teleport on the player's racer, marked on_player");
+            CheckNum(c.position[0], 832.19, "x");
+            CheckNum(c.position[1], 16.9, "y");
+            CheckNum(c.position[2], -787.53, "z");
+            CheckNum(c.heading_native, NativeHeadingDeg(62.0), "the heading goes in as the native angle");
+            CheckNum(c.speed, 0.0, "no speed");
+        }
+        Check(w.game.calls.size() == 1 && w.game.calls[0] == "Racer_Teleport", "it is the only native the place makes");
+        Check(w.Event("the player's car stands at (832.19, 16.50, -787.53) heading 62.0: the call asked for (832.19, 16.90, -787.53) heading 62.0"), "the pose after the put is logged beside the ask");
+        w.dir.TakeEvents();
+        w.Run(30);
+        Check(w.dir.TakeEvents().empty(), "...once");
+    }
+    {  // without a heading he keeps his own
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 0.0, false));
+        w.Run(30);
+        Check(w.puts.size() == 1, "put");
+        if (!w.puts.empty()) CheckNum(w.puts[0].heading_native, NativeHeadingDeg(331.7), "the heading is the one he has (331.7), as the native angle", 1e-3);
+    }
+    {  // no heading and no pose: nothing is called, with a warning
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 0.0, false));
+        w.Run(30);
+        Check(w.puts.empty() && w.game.calls.empty(), "without a pose to keep the heading nothing is called");
+        Check(w.Event("gave no heading and his pose cannot be read", true), "...and the log says why");
+        Check(!w.dir.PlayerPutBackPending(), "nothing to put back");
+    }
+    {  // no player racer (a menu, the garage): no call; it goes on when he is there
+        PoseWorld w;
+        w.racer = 0;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        Check(w.game.calls.empty(), "no player racer: no call");
+        w.racer = 0xBF33C450u;
+        w.Run(10);
+        Check(w.puts.size() == 1, "...and the put is made when he is there");
+    }
+    {  // the garage dressing finishes first
+        PoseWorld w;
+        w.dir.Apply(Profile(3));
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(100);
+        Check(w.puts.empty() && w.game.N("Racer_ChangeCarByConfig") == 1, "the dressing is made, the put waits for its parts to settle (3 s)");
+        w.Run(260);
+        Check(w.puts.size() == 1, "...and is made after it");
+    }
+    {  // a refused call: a warning, nothing to put back
+        PoseWorld w;
+        w.game.uncallable = true;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        Check(w.Event("could not be put at its place", true), "a call that could not be made is a warning");
+        w.dir.EndScene();
+        w.Run(30);
+        Check(w.game.calls.size() == 1 && !w.dir.Active(), "no put-back for a put that never happened; nothing is left to do");
+    }
+    {  // the scene ends: he is put back where he stood
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.TakeEvents();
+        w.dir.EndScene();
+        Check(w.dir.Active() && w.dir.PlayerPutBackPending(), "the scene is over, he is still to be put back");
+        Check(w.dir.registry().Find("player") != nullptr, "his registry entry stays until then (the put-back reads where he stands)");
+        w.Run(30);
+        Check(w.puts.size() == 2, "a second put");
+        if (w.puts.size() == 2) {
+            CheckNum(w.puts[1].position[0], 819.61, "back at x", 1e-3);
+            CheckNum(w.puts[1].position[1], 17.56, "back at y", 1e-3);
+            CheckNum(w.puts[1].position[2], -808.41, "back at z", 1e-3);
+            CheckNum(w.puts[1].heading_native, NativeHeadingDeg(331.7), "back at his heading", 1e-3);
+            Check(w.puts[1].on_player && w.puts[1].racer == 0xBF33C450u, "on his racer");
+        }
+        Check(w.Event("the player's car is put back where he stood before the scene"), "the log says so");
+        Check(!w.dir.Active() && w.dir.registry().Find("player") == nullptr, "nothing left, the registry is clear");
+    }
+    {  // two places: the origin is the pose before the FIRST
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.Apply(PlaceCmd(900.0, 17.0, -800.0, 90.0));
+        w.Run(30);
+        Check(w.puts.size() == 2, "two puts");
+        w.dir.EndScene();
+        w.Run(30);
+        Check(w.puts.size() == 3, "one put-back");
+        if (w.puts.size() == 3) {
+            CheckNum(w.puts[2].position[0], 819.61, "put back to where he stood before the first place: x", 1e-3);
+            CheckNum(w.puts[2].position[2], -808.41, "z", 1e-3);
+        }
+    }
+    {  // he was driven away: not fetched back
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.pos[0] += 40.0;  // somebody drove him off
+        w.Run(30);
+        Check(w.puts.size() == 1, "no put-back for a car driven 40 m away");
+        Check(w.Event("is not put back: he is 40.0 m from where the scene left him"), "...and the log says how far");
+        Check(!w.dir.Active() && w.dir.registry().Find("player") == nullptr, "nothing left to do");
+    }
+    {  // he moved a little (under 5 m): still put back
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.pos[2] += 3.0;
+        w.Run(30);
+        Check(w.puts.size() == 2, "3 m is within the limit: put back");
+    }
+    {  // another racer is his now (the world was rebuilt): not put back
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.racer = 0xBF33D000u;
+        w.Run(30);
+        Check(w.puts.size() == 1, "a different racer: no put-back");
+        Check(w.Event("his car is not the one the scene placed"), "...and the log says so");
+        Check(!w.dir.Active(), "nothing left to do");
+    }
+    {  // no pose for the put-back: it waits, and gives up
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.feed_player = false;
+        w.dir.registry().Find("player")->have_pose = false;
+        w.Run(100);
+        Check(w.puts.size() == 1 && w.dir.Active(), "no pose: no put-back yet");
+        w.t += kRestoreGiveUpMs + 100;
+        w.Run(5);
+        Check(w.puts.size() == 1 && !w.dir.Active() && w.Event("his pose could not be read"), "...it gives up after kRestoreGiveUpMs");
+    }
+    {  // the scene ends before the put is made: dropped, nothing is put back
+        PoseWorld w;
+        w.racer = 0;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(10);
+        w.dir.EndScene();
+        w.racer = 0xBF33C450u;
+        w.Run(30);
+        Check(w.game.calls.empty() && !w.dir.Active(), "a place that never got to be made is dropped with the scene");
+    }
+    {  // the scene ends while the put is in flight: it is put back after
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        FeedPose(w.dir, "player", w.pos[0], w.pos[1], w.pos[2], w.heading, 1);
+        w.frame = 1;
+        w.t = 16;
+        const Director::Next n = w.dir.Poll(w.t, w.racer);
+        Check(n.call.native == Native::kTeleport && n.call.on_player, "the put is handed out");
+        w.dir.EndScene();  // ... and the scene ends before its report
+        Check(w.dir.PlayerPutBackPending(), "a put in flight counts: he is to be put back");
+        w.pos[0] = n.call.position[0];
+        w.pos[1] = n.call.position[1];
+        w.pos[2] = n.call.position[2];
+        w.dir.Report(w.game.Run(n.call, w.t));
+        w.Run(40);
+        Check(w.game.N("Racer_Teleport") == 2, "he is put back after the report");
+    }
+    {  // a second scene begins while the put-back waits: it is dropped, the origin stays for the second scene's own end
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.racer = 0;  // not on the road: the put-back cannot be made yet
+        w.Run(10);
+        Check(w.dir.PlayerPutBackPending(), "the put-back waits");
+        w.racer = 0xBF33C450u;
+        w.dir.BeginScene();
+        Check(!w.dir.PlayerPutBackPending(), "a new scene drops the waiting put-back");
+        w.dir.Apply(PlaceCmd(900.0, 17.0, -800.0, 90.0));
+        w.Run(30);
+        w.dir.EndScene();
+        w.Run(30);
+        Check(w.puts.size() == 3, "the second scene's end puts him back");
+        if (w.puts.size() == 3) {
+            CheckNum(w.puts[2].position[0], 819.61, "to where he stood before the FIRST scene moved him: x", 1e-3);
+            CheckNum(w.puts[2].position[2], -808.41, "z", 1e-3);
+        }
+    }
+    {  // a scene that never moved him puts nothing back
+        PoseWorld w;
+        w.dir.Apply(Spawn("a", "vp_lam_murcielago_06"));
+        w.Run(40);
+        w.dir.EndScene();
+        w.Run(400);
+        Check(w.puts.empty(), "no place, no put-back");
+    }
+    {  // one native an update: the put does not share a poll with a spawn
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        w.dir.Apply(Spawn("a", "vp_lam_murcielago_06"));
+        w.Tick();
+        Check(w.game.calls.size() == 1 && w.game.calls[0] == "Racer_Teleport", "the put goes first, alone in its update");
+        w.Tick();
+        Check(w.game.calls.size() == 2 && w.game.calls[1] == "LookupCar", "the spawn's first native is in the next one");
+    }
+}
+
+void TestNearDirector() {
+    {  // the rt-neighbours shape: the player is put, then three cars are placed in his frame
+        PoseWorld w;
+        w.dir.Apply(PlaceCmd(832.19, 16.9, -787.53, 62.0));
+        const Director::Applied a1 = w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", -3.35, 0.3, 0.0));
+        Check(a1.ok && a1.message.find("(when player's pose is known)") != std::string::npos, "a near spawn applies and says what it waits for: " + a1.message);
+        w.dir.Apply(NearCmd("n2", "vp_aud_r8_08", "player", 3.35, 0.3, 0.0));
+        w.dir.Apply(NearCmd("n3", "vp_aud_r8_08", "player", 0.0, 0.3, -9.5));
+        Check(w.dir.registry().Find("n1") != nullptr && w.dir.WaitingCount() == 3, "the ids are in the registry at once; three wait");
+        Check(w.dir.Active() && w.dir.SceneCarCount() == 0, "active; no machine has started");
+        w.Tick();
+        Check(w.puts.size() == 1 && w.game.calls.size() == 1, "the first update makes the put, nothing else");
+        Check(w.dir.WaitingCount() == 3 && w.game.calls.size() == 1, "the cars wait for the put's pose to be read");
+        w.Run(2);
+        Check(w.dir.WaitingCount() == 0 && w.dir.SceneCarCount() == 3, "the pose was read after the put: the three cars are started");
+        Check(w.Event("car n1 near player: player is at (832.19, 16.50, -787.53) heading 62.0; -3.35 right, 0.30 up, 0.00 ahead of it"), "the resolution is logged with the player's pose");
+        w.Run(1500);
+        Check(w.loads.size() == 3, "three loads");
+        const double rx = -std::cos(62.0 * 3.14159265358979323846 / 180.0), rz = std::sin(62.0 * 3.14159265358979323846 / 180.0);
+        const double fx = std::sin(62.0 * 3.14159265358979323846 / 180.0), fz = std::cos(62.0 * 3.14159265358979323846 / 180.0);
+        if (w.loads.size() == 3) {
+            CheckNum(w.loads[0].position[0], 832.19 - 3.35 * rx, "n1 (the left one): x", 2e-4);
+            CheckNum(w.loads[0].position[1], 16.8, "n1: y is the player's settled 16.50 + 0.3", 2e-4);
+            CheckNum(w.loads[0].position[2], -787.53 - 3.35 * rz, "n1: z", 2e-4);
+            CheckNum(w.loads[1].position[0], 832.19 + 3.35 * rx, "n2 (the right one): x", 2e-4);
+            CheckNum(w.loads[1].position[2], -787.53 + 3.35 * rz, "n2: z", 2e-4);
+            CheckNum(w.loads[2].position[0], 832.19 - 9.5 * fx, "n3 (behind): x", 2e-4);
+            CheckNum(w.loads[2].position[2], -787.53 - 9.5 * fz, "n3: z", 2e-4);
+            for (const Call& c : w.loads) CheckNum(c.heading_native, NativeHeadingDeg(62.0), "the same heading as the player (native angle)", 1e-3);
+        }
+        Check(w.dir.spawned() == 3, "all three are ready");
+        // the scene's end: the cars go and the player is put back
+        w.dir.EndScene();
+        w.Run(900);
+        Check(w.game.deleted_nodes.size() == 3 && w.puts.size() == 2 && !w.dir.Active(), "three deleted, the player put back, nothing left");
+    }
+    {  // a relative heading
+        PoseWorld w;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0, 180.0, true));
+        w.Run(1000);
+        Check(w.loads.size() == 1, "loaded");
+        if (!w.loads.empty()) {
+            CheckNum(w.loads[0].heading_native, NativeHeadingDeg(NormalizeDegrees(331.7 + 180.0)), "facing back at the player: 180 from his heading", 1e-3);
+        }
+    }
+    {  // nothing is called for a car near a player whose pose is not known; it gives up after a minute
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        w.Run(100);
+        Check(w.game.calls.empty() && w.dir.WaitingCount() == 1, "no pose: no call, still waiting");
+        Check(w.Event("car n1 (near player) waits for the player's car, whose pose is not known yet"), "the wait is said once");
+        w.dir.TakeEvents();
+        w.Run(50);
+        Check(w.dir.TakeEvents().empty(), "...and only once");
+        w.t += kNearGiveUpMs + 1000;
+        w.Run(2);
+        Check(w.dir.WaitingCount() == 0 && w.dir.failed() == 1 && w.dir.registry().Find("n1") == nullptr, "it gave up: dropped, counted as failed, out of the registry");
+        Check(w.Event("waited 60 s for the player's car"), "...with a warning that says what it waited for");
+    }
+    {  // near a car that does not exist
+        PoseWorld w;
+        const Director::Applied a = w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "nobody", 5.0, 0.0, 0.0));
+        Check(!a.ok && a.message.find("there is no car nobody") != std::string::npos, "an unknown anchor is refused at once: " + a.message);
+        Check(w.dir.registry().Find("n1") == nullptr && w.dir.WaitingCount() == 0, "nothing is kept");
+        Check(w.dir.Apply(Spawn("n1", "vp_lam_murcielago_06")).ok, "the id is free");
+    }
+    {  // near a spawned car: it waits until that car is ready
+        PoseWorld w;
+        w.dir.Apply(Spawn("a", "vp_lam_murcielago_06", 900.0, -850.0, 90.0));
+        w.dir.Apply(NearCmd("b", "vp_aud_r8_08", "a", 0.0, 0.0, -6.0));
+        w.Run(100);
+        Check(w.dir.WaitingCount() == 1 && w.loads.size() == 1, "b waits, a is loading");
+        Check(w.Event("car b (near a) waits for car a to be ready"), "the wait names the car and its stage");
+        w.Run(800);
+        Check(w.dir.WaitingCount() == 0 && w.loads.size() == 2, "a is ready: b starts");
+        if (w.loads.size() == 2) {
+            // a at (900, 17.5, -850) heading 90 (nose along +x): 6 m behind it is x 894
+            CheckNum(w.loads[1].position[0], 894.0, "6 m behind a (heading 90): x", 2e-4);
+            CheckNum(w.loads[1].position[1], 17.5, "y", 2e-4);
+            CheckNum(w.loads[1].position[2], -850.0, "z", 2e-4);
+            CheckNum(w.loads[1].heading_native, NativeHeadingDeg(90.0), "a's heading", 1e-3);
+        }
+    }
+    {  // a chain: b near a near the player
+        PoseWorld w;
+        w.dir.Apply(NearCmd("a", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        w.dir.Apply(NearCmd("b", "vp_aud_r8_08", "a", 5.0, 0.0, 0.0));
+        Check(w.dir.WaitingCount() == 2, "both wait");
+        w.Run(1200);
+        Check(w.dir.WaitingCount() == 0 && w.loads.size() == 2, "both are made");
+        if (w.loads.size() == 2) {
+            double d = std::hypot(w.loads[1].position[0] - w.loads[0].position[0], w.loads[1].position[2] - w.loads[0].position[2]);
+            CheckNum(d, 5.0, "b is 5 m from a", 2e-3);
+            d = std::hypot(w.loads[0].position[0] - 819.61, w.loads[0].position[2] + 808.41);
+            CheckNum(d, 5.0, "a is 5 m from the player", 2e-3);
+        }
+    }
+    {  // the anchor goes (deleted) while the car waits for it
+        PoseWorld w;
+        w.dir.Apply(Spawn("a", "vp_lam_murcielago_06", 900.0, -850.0, 90.0));
+        w.dir.Apply(NearCmd("b", "vp_aud_r8_08", "a", 0.0, 0.0, -6.0));
+        w.Run(50);
+        w.dir.Apply(Delete("a"));
+        w.Run(5);
+        Check(w.dir.WaitingCount() == 0 && w.dir.failed() == 1 && w.Event("car a, which it is near, is gone", true), "b is dropped with a warning when a is deleted");
+        Check(w.dir.registry().Find("b") == nullptr, "out of the registry");
+    }
+    {  // a waiting car is deleted by the scene
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        const Director::Applied d = w.dir.Apply(Delete("n1"));
+        Check(d.ok && d.message.find("still waiting for the car it is near") != std::string::npos, "delete of a waiting car: " + d.message);
+        Check(w.dir.WaitingCount() == 0 && w.dir.registry().Find("n1") == nullptr, "dropped, out of the registry");
+        Check(w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0)).ok, "the id is free again");
+    }
+    {  // a path or a stop on a waiting car is refused with a reason
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        const Route straight = RouteOf("100,200,10\n100,300,10\n");
+        const Director::Applied p = w.dir.Apply(PathCmd("n1", "r.route"), 0.0, &straight);
+        Check(!p.ok && p.message.find("still waiting for the car it is near") != std::string::npos, "path on a waiting car: " + p.message);
+        const Director::Applied s = w.dir.Apply(StopCmd("n1"));
+        Check(!s.ok && s.message.find("still waiting") != std::string::npos, "stop on a waiting car: " + s.message);
+    }
+    {  // the id is taken by the waiting car
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        const Director::Applied dup = w.dir.Apply(Spawn("n1", "vp_aud_r8_08"));
+        Check(!dup.ok && dup.message.find("already exists") != std::string::npos, "a second n1 is ignored while the first waits");
+    }
+    {  // the scene ends while a car waits: it is dropped and nothing is left
+        PoseWorld w;
+        w.feed_player = false;
+        w.dir.Apply(NearCmd("n1", "vp_lam_murcielago_06", "player", 5.0, 0.0, 0.0));
+        w.Run(10);
+        w.dir.EndScene();
+        Check(!w.dir.Active() && w.dir.WaitingCount() == 0 && w.dir.registry().Find("n1") == nullptr, "dropped with the scene, nothing left");
+        w.Run(10);
+        Check(w.game.calls.empty(), "no call was ever made");
+    }
+    {  // an ambient car near the player, and a racer near that ambient car
+        PoseWorld w;
+        w.dir.Apply(NearCmd("a1", "va_gmc_yukon_05", "player", 6.0, 0.0, 0.0, 0.0, false, true));
+        w.dir.Apply(NearCmd("b", "vp_aud_r8_08", "a1", 0.0, 0.0, 8.0));
+        for (int i = 0; i < 400 && w.adds.empty(); ++i) w.Tick();
+        Check(w.adds.size() == 1 && w.dir.WaitingCount() == 1, "the ambient car is placed, b waits for it to stand in the world (its matrix is read an update later)");
+        if (w.adds.size() == 1) {
+            const double rx = -std::cos(331.7 * 3.14159265358979323846 / 180.0), rz = std::sin(331.7 * 3.14159265358979323846 / 180.0);
+            CheckNum(w.adds[0].position[0], 819.61 + 6.0 * rx, "the ambient car is 6 m to the player's right: x", 2e-4);
+            CheckNum(w.adds[0].position[2], -808.41 + 6.0 * rz, "z", 2e-4);
+            CheckNum(w.adds[0].heading_native, LayoutHeadingDeg(331.7), "the layout angle of the player's heading", 1e-3);
+        }
+        w.Run(1500);
+        Check(w.dir.WaitingCount() == 0 && w.loads.size() == 1, "a1 stands: b is made");
+        if (w.adds.size() == 1 && w.loads.size() == 1) {
+            const double d = std::hypot(w.loads[0].position[0] - w.adds[0].position[0], w.loads[0].position[2] - w.adds[0].position[2]);
+            CheckNum(d, 8.0, "b is 8 m ahead of a1", 2e-3);
+        }
+    }
+}
+
 int main() {
     TestVerbs();
     TestPathVerbs();
@@ -2060,6 +2673,10 @@ int main() {
     TestPaintDirector();
     TestSceneNoise();
     TestStillUpdates();
+    TestPoseVerbs();
+    TestResolveRelative();
+    TestPlayerPlace();
+    TestNearDirector();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

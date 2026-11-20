@@ -1,6 +1,8 @@
 // Check of the car ray tracing scene's rules (car_rt_scene_rules.h): the instance transform and the camera's z direction, the masks and the
-// table's rows, the clean-up of a mesh read from guest memory, the range allocator, the eviction policy and the build budget, and the check
-// pass's statistics. Given the src/gpu folder it also checks that hlsl/car_rt_check_cs.hlsl counts with the header's numbers. A program of its
+// table's rows, the clean-up of a mesh read from guest memory, the range allocator (and when a copy into a grown buffer needs a barrier), the
+// eviction policy and the build budget, and the check
+// pass's statistics and scope (which vehicle pixels the scene is meant to hold). Given the src/gpu folder it also checks that
+// hlsl/car_rt_check_cs.hlsl counts with the header's numbers. A program of its
 // own: it needs no renderer, no ReXGlue and no game files, and exits 0 when every check holds.
 //
 //   cmake --build <build dir> --target larecomp_car_rt_scene_rules_test     (src/gpu/CMakeLists.txt)
@@ -146,7 +148,10 @@ void TestMasks() {
   Check(row.first_index == 300 && row.first_vertex == 120 && row.draw == 7 && (row.flags & 0xFFu) == rr::kMaskGlass &&
             (row.flags & rr::kFlagAfterWorld) != 0,
         "a row holds the mesh's place, the mask, the flag and the draw");
-  Check(rr::kMaskBody == 1 && rr::kMaskGlass == 2 && rr::kMaskTyres == 4 && rr::kMaskDriver == 8, "the masks are the contract's");
+  Check(rr::kMaskBody == 1 && rr::kMaskGlass == 2 && rr::kMaskTyres == 4 && rr::kMaskDriver == 8 && rr::kMaskOthers == 0x10, "the masks are the contract's");
+  Check((rr::kMaskOthers & (rr::kMaskBody | rr::kMaskGlass | rr::kMaskTyres | rr::kMaskDriver)) == 0, "the others' mask is a bit of its own");
+  const rr::InstanceRow other = rr::MakeRow(10, 20, rr::kMaskOthers, true, 33);
+  Check((other.flags & 0xFFu) == rr::kMaskOthers && (other.flags & rr::kFlagAfterWorld) != 0 && other.draw == 33, "a row of another car's instance holds the others' mask and its car's row in draw");
 }
 
 void TestMesh() {
@@ -230,6 +235,30 @@ void TestAllocator() {
   Check(rr::GrownCapacity(60, 130, 8, 100) == 130, "but never below what is needed");
 }
 
+// The 0.11 line's validation error (SYNC-HAZARD-WRITE-AFTER-WRITE, copies of 2544 and 216 bytes side by side): a growth's copy writes everything
+// below the high water, the hole a given-back mesh left included, and first fit puts the next meshes into that hole.
+void TestGrowthCopyOrder() {
+  rr::RangeAllocator a;
+  a.Reset(1000);
+  uint64_t first = 0, given_back = 0, last = 0, m1 = 0, m2 = 0, m3 = 0;
+  Check(a.Alloc(300, 1, &first) && a.Alloc(250, 1, &given_back) && a.Alloc(100, 1, &last) && given_back == 300 && last == 550, "three meshes");
+  a.Free(given_back, 250);  // one is given back: a hole of 250 below the last
+  const uint64_t copied = a.high_water();
+  Check(copied == 650, "the growth's copy covers the hole and both meshes around it");
+  a.Grow(2000);
+  Check(a.high_water() == copied, "growing adds free space past the high water only");
+
+  Check(a.Alloc(212, 1, &m1) && m1 == 300, "first fit gives the hole to the next mesh");
+  Check(rr::CopyNeedsBarrier(copied, m1, 212), "its copy writes bytes the growth's copy wrote: it needs a barrier");
+  Check(a.Alloc(18, 1, &m2) && m2 == 512 && rr::CopyNeedsBarrier(copied, m2, 18), "the mesh beside it in the hole as well");
+  Check(a.Alloc(100, 1, &m3) && m3 == copied && !rr::CopyNeedsBarrier(copied, m3, 100),
+        "a mesh past the high water was never written in the list: no barrier");
+  Check(!rr::CopyNeedsBarrier(copied, copied, 10), "a range that starts where the growth's copy ended is apart from it");
+  Check(rr::CopyNeedsBarrier(copied, copied - 1, 10), "one byte inside is not");
+  Check(!rr::CopyNeedsBarrier(0, 0, 10), "no growth copy in the list: no barrier");
+  Check(!rr::CopyNeedsBarrier(copied, 100, 0), "a copy of no bytes needs none");
+}
+
 void TestEviction() {
   std::vector<rr::MeshUse> meshes = {{1, 10, 100}, {2, 10, 5000}, {3, 10, 4990}, {4, 10, 4999}};
   rr::EvictionRequest request;
@@ -289,9 +318,130 @@ void TestStats() {
   Check(Near(s.within_1pct, 800.0 / 900.0), "within 1% is the first three buckets");
   Check(Near(s.nearer, 0.01) && Near(s.farther, 0.02), "nearer and farther are shares of the covered");
   Check(s.glass == 100 && s.body == 800 && s.tyres == 0, "the hits by class");
+  Check(s.other == 0, "the covered pixels the three classes count leave no other");
+  words[rr::kStatBody] = 600;
+  s = rr::DecodeCheckStats(words);
+  Check(s.other == 200, "covered pixels no class counts are the other cars' (and the driver's)");
+  words[rr::kStatBody] = 800;
   words[rr::kStatCovered] = 5000;  // more than the vehicle pixels: clamped, never a negative miss
   s = rr::DecodeCheckStats(words);
   Check(s.covered == 1000 && s.missed == 0, "a covered count past the vehicle pixels is clamped");
+
+  // The scope: the pixels of cars outside the selection are counted apart; they are in neither the vehicle pixels nor the misses nor the coverage.
+  uint32_t scoped[rr::kStatsWords] = {};
+  scoped[rr::kStatVehicle] = 200000;
+  scoped[rr::kStatCovered] = 199000;
+  scoped[rr::kStatOutside] = 48000;
+  scoped[rr::kStatOthers] = 30000;
+  scoped[rr::kStatErrorSum] = 1000;
+  scoped[rr::kStatHistogram] = 199000;
+  s = rr::DecodeCheckStats(scoped);
+  Check(s.vehicle == 200000 && s.outside == 48000 && s.others == 30000, "the vehicle pixels, the ones outside the scene by design and the other cars' share");
+  Check(s.missed == 1000 && Near(s.coverage, 0.995), "the coverage is over the pixels the scene is meant to hold only");
+  scoped[rr::kStatOthers] = 900000;
+  s = rr::DecodeCheckStats(scoped);
+  Check(s.others == 200000, "the other cars' share is never more than the vehicle pixels");
+  uint32_t only_outside[rr::kStatsWords] = {};
+  only_outside[rr::kStatOutside] = 1234;
+  s = rr::DecodeCheckStats(only_outside);
+  Check(s.vehicle == 0 && s.outside == 1234 && s.missed == 0 && s.coverage == 0.0, "pixels outside the scene alone leave no coverage to judge");
+  Check(rr::kStatsWords % 4 == 0 && rr::kStatOutside < rr::kStatsWords && rr::kStatOthers < rr::kStatsWords, "the counter words fit the buffer, a multiple of 16 bytes");
+}
+
+// The scope: which vehicle pixels the scene is meant to hold. A view-space point of a pixel goes in the player's box, in a kept other car's box
+// (grown by the margin) or in none (a car outside the selection).
+void TestScope() {
+  rr::ScopeBox player;
+  player.lo[0] = -1.0f; player.lo[1] = -0.2f; player.lo[2] = 5.0f;
+  player.hi[0] = 1.0f;  player.hi[1] = 1.4f;  player.hi[2] = 9.5f;
+  rr::ScopeBox others[2];
+  others[0].lo[0] = 2.0f; others[0].lo[1] = -0.2f; others[0].lo[2] = 8.0f;
+  others[0].hi[0] = 4.0f; others[0].hi[1] = 1.4f;  others[0].hi[2] = 12.5f;
+  others[1].lo[0] = -5.0f; others[1].lo[1] = -0.2f; others[1].lo[2] = 14.0f;
+  others[1].hi[0] = -3.0f; others[1].hi[1] = 1.4f;  others[1].hi[2] = 18.5f;
+
+  const float in_player[3] = {0.0f, 0.5f, 7.0f};
+  const float in_first[3] = {3.0f, 0.5f, 10.0f};
+  const float in_second[3] = {-4.0f, 0.5f, 16.0f};
+  const float nowhere[3] = {10.0f, 0.5f, 30.0f};
+  Check(rr::ScopeOf(in_player, &player, others, 2) == rr::kScopePlayer, "a pixel in the player's box is the player's");
+  Check(rr::ScopeOf(in_first, &player, others, 2) == rr::kScopeOther, "a pixel in a kept car's box is that car's");
+  Check(rr::ScopeOf(in_second, &player, others, 2) == rr::kScopeOther, "a pixel in the second kept car's box too");
+  Check(rr::ScopeOf(nowhere, &player, others, 2) == rr::kScopeOutside, "a pixel in no box is of a car outside the selection: not in the scene by design");
+  Check(rr::ScopeOf(in_first, &player, others, 0) == rr::kScopeOutside, "with no car kept (the cars 0 switch) every other car's pixel is outside");
+  Check(rr::ScopeOf(in_player, &player, nullptr, 0) == rr::kScopePlayer, "the player's car is in whatever the other cars are");
+
+  // A pixel just past the other car's edge is in by the margin and out beyond it; the player's box is as the host made it (no margin here).
+  const float edge_in[3] = {4.0f + rr::kScopeBoxMargin * 0.9f, 0.5f, 10.0f};
+  const float edge_out[3] = {4.0f + rr::kScopeBoxMargin * 1.1f, 0.5f, 10.0f};
+  Check(rr::ScopeOf(edge_in, &player, others, 2) == rr::kScopeOther, "the other car's box is grown by the margin");
+  Check(rr::ScopeOf(edge_out, &player, others, 2) == rr::kScopeOutside, "and not by more");
+  const float player_edge[3] = {1.0f + rr::kScopeBoxMargin * 0.5f, 0.5f, 7.0f};
+  Check(rr::ScopeOf(player_edge, &player, others, 2) == rr::kScopeOutside, "the player's box is taken as given (the host grew it)");
+
+  // A neighbour's pixel standing in front of the player's car (a car between the camera and the car, not kept) is outside, not a miss.
+  const float in_front[3] = {0.2f, 0.5f, 3.0f};
+  Check(rr::ScopeOf(in_front, &player, others, 2) == rr::kScopeOutside, "an unkept car in front of the player's is outside the scene by design");
+
+  // Boxes past the table's count are not read.
+  Check(rr::ScopeOf(in_second, &player, others, 1) == rr::kScopeOutside, "only the boxes counted are read");
+
+  // Without the player's box nothing can be told from its pixels: a pixel in no other car's box is counted as the player's.
+  Check(rr::ScopeOf(nowhere, nullptr, others, 2) == rr::kScopePlayer, "no player's box: a pixel in no kept car's box counts");
+  Check(rr::ScopeOf(in_first, nullptr, others, 2) == rr::kScopeOther, "no player's box: a kept car's pixel is still that car's");
+  Check(rr::kScopeFlagPlayerBox == 1u, "the player's box flag is bit 0");
+}
+
+
+// The probe (RT-MODEL-CARS-4): the first cars' two rows as the shader read them, against what the host wrote.
+// The Plume this build is made against: a capabilities struct with no rayQuery member (main's published Plume pin) answers "no ray queries", one
+// with the member answers what it says; the answer is decided by the member, so a Plume with the ray query work turns Vulkan on with no change.
+struct CapsWithoutRayQuery {
+  bool raytracing = true;
+};
+struct CapsWithRayQuery {
+  bool raytracing = true;
+  bool rayQuery = false;
+};
+
+void TestPlumeRayQuery() {
+  static_assert(!rr::kCapsHaveRayQuery<CapsWithoutRayQuery>, "a Plume without the member has no ray queries");
+  static_assert(rr::kCapsHaveRayQuery<CapsWithRayQuery>, "a Plume with the member has them");
+  static_assert(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "no member: no ray queries, decided at compile time");
+  CapsWithRayQuery off;
+  CapsWithRayQuery on;
+  on.rayQuery = true;
+  Check(!rr::CapsRayQuery(CapsWithoutRayQuery{}), "a Plume without the ray query member reports no ray queries (Vulkan: the effects are unavailable in this build)");
+  Check(!rr::CapsRayQuery(off), "a Plume with the member, the device without ray queries: none");
+  Check(rr::CapsRayQuery(on), "a Plume with the member, the device with them: yes");
+}
+
+void TestProbe() {
+  Check(rr::kStatProbe == 20 && rr::kProbeCars == 4 && rr::kProbeWordsPerCar == 8 && rr::kStatsWords == rr::kStatProbe + rr::kProbeCars * rr::kProbeWordsPerCar,
+        "the probe's words follow the counters'");
+  Check(rr::kStatsWords % 4 == 0 && rr::kStatOthers < rr::kStatProbe, "the buffer is a multiple of 16 bytes and the probe overlaps no counter");
+  uint32_t words[rr::kStatsWords] = {};
+  // car 0: centre (1, 2, 3), radius -1.6 (not drawn), paint (0.25, 0.125, 0.0625) known; car 1: a car with no paint
+  const float rows[2][8] = {{1.0f, 2.0f, 3.0f, -1.6f, 0.25f, 0.125f, 0.0625f, 0.0f}, {4.0f, 5.0f, 6.0f, 1.6f, 0.0f, 0.0f, 0.0f, 0.0f}};
+  std::memcpy(words + rr::kStatProbe, rows[0], sizeof(rows[0]));
+  std::memcpy(words + rr::kStatProbe + rr::kProbeWordsPerCar, rows[1], sizeof(rows[1]));
+  words[rr::kStatProbe + 7] = 1u;  // flags: the paint is known
+  const rr::ProbeCar a = rr::DecodeProbe(words, 0, 2);
+  const rr::ProbeCar b = rr::DecodeProbe(words, 1, 2);
+  Check(a.read && Near(a.centre[0], 1.0) && Near(a.centre[2], 3.0) && Near(a.radius, -1.6) && Near(a.paint[0], 0.25) && Near(a.paint[2], 0.0625) && a.flags == 1u,
+        "a car's two rows are decoded: centre, radius, paint, flags");
+  Check(b.read && Near(b.radius, 1.6) && b.flags == 0u && b.paint[0] == 0.0f, "a car with no paint: zeros and no flag");
+  Check(!rr::DecodeProbe(words, 2, 2).read && !rr::DecodeProbe(words, 4, 9).read, "a slot past the cars' count or past the probe's cars is not read");
+  const float centre0[3] = {1.0f, 2.0f, 3.0f};
+  const float paint0[3] = {0.25f, 0.125f, 0.0625f};
+  Check(rr::ProbeMatches(a, centre0, -1.6f, true, paint0), "the shader read exactly the bits the host wrote");
+  const float paint_off[3] = {0.25f, 0.125f, 0.0626f};
+  Check(!rr::ProbeMatches(a, centre0, -1.6f, true, paint_off), "one bit of a colour different: not the same");
+  Check(!rr::ProbeMatches(a, centre0, -1.6f, false, paint0), "the host wrote no paint but the shader read one: not the same");
+  const float centre1[3] = {4.0f, 5.0f, 6.0f};
+  const float none[3] = {0.0f, 0.0f, 0.0f};
+  Check(rr::ProbeMatches(b, centre1, 1.6f, false, none), "a car with no paint: zeros and a clear flag are the same");
+  Check(!rr::ProbeMatches(rr::ProbeCar{}, centre1, 1.6f, false, none), "a slot that was not read is never the same");
 }
 
 // The shader counts into the header's words with the header's edges and unit.
@@ -318,6 +468,31 @@ void TestShaderParity(const std::string& folder) {
   char unit[32];
   std::snprintf(unit, sizeof(unit), "%g", rr::kErrorUnit);
   Check(has(std::string("kErrorUnit = ") + unit), "the shader's error unit is the header's");
+  // The scope: the words, the margin, the box count, the flag and the result numbers are the header's, and the shader reads the other cars' boxes
+  // from the table as the ray traced occlusion does (two rows a box, grown by the margin).
+  Check(has("kStatOutside = " + std::to_string(rr::kStatOutside)) && has("kStatOthers = " + std::to_string(rr::kStatOthers)),
+        "the shader's scope words are the header's");
+  char margin[32];
+  std::snprintf(margin, sizeof(margin), "%g", double(rr::kScopeBoxMargin));
+  Check(has(std::string("kScopeBoxMargin = ") + margin), "the shader's scope margin is the header's");
+  Check(has("kScopeMaxOtherBoxes = " + std::to_string(rr::kScopeMaxOtherBoxes)) && has("kScopeFlagPlayerBox = " + std::to_string(rr::kScopeFlagPlayerBox) + "u"),
+        "the shader's box count and flag are the header's");
+  Check(has("kScopeOutside = " + std::to_string(rr::kScopeOutside) + "u") && has("kScopePlayer = " + std::to_string(rr::kScopePlayer) + "u") &&
+            has("kScopeOther = " + std::to_string(rr::kScopeOther) + "u"),
+        "the shader's scope results are the header's");
+  Check(has("asfloat(gCarRtInstances[row].xyz) - kScopeBoxMargin") && has("asfloat(gCarRtInstances[row + 1u].xyz) + kScopeBoxMargin") &&
+            has("row = g_push.scope.x + b * 2u"),
+        "the shader reads the other cars' boxes as the table has them");
+  Check(has("uint4 scope;") && has("float4 box_min;") && has("float4 box_max;"), "the shader's push block has the scope");
+  // the probe
+  Check(has("kStatProbe = " + std::to_string(rr::kStatProbe)) && has("kProbeCars = " + std::to_string(rr::kProbeCars)) && has("kProbeWordsPerCar = " + std::to_string(rr::kProbeWordsPerCar)),
+        "the shader's probe words are the header's");
+  Check(has("(g_push.slots.w >> 16) & 0xFFu") && has("const uint row = g_push.scope.w + k * 2u;") && has("gCarRtInstances[row + 1u]") && has("gStats.Store4((kStatProbe + k * kProbeWordsPerCar) * 4u, centre)") &&
+            has("gStats.Store4((kStatProbe + k * kProbeWordsPerCar + 4u) * 4u, paint)") && has("if (id.x == 0u && id.y == 0u)"),
+        "the shader's probe reads the cars' records from scope.w, as many as bits 16 to 23 of slots.w say, and stores them raw from word kStatProbe");
+  Check(has("mode == 3u") && has("CarRtLoadCar(hit_instance)") && has("CAR_RT_MASK_OTHERS"), "view 3 shows another car's paint row as the shader's own load reads it");
+  Check(has("kScopeOutside : kScopePlayer"), "without the player's box the shader counts the pixel as the player's");
+  Check(has("!outside") && has("Count(kStatOutside, WaveActiveCountBits(outside))"), "the pixels outside are counted apart and not traced");
   std::ifstream common(folder + "/hlsl/car_rt_common.hlsli", std::ios::binary);
   const std::string ctext((std::istreambuf_iterator<char>(common)), std::istreambuf_iterator<char>());
   char mask[64];
@@ -327,6 +502,8 @@ void TestShaderParity(const std::string& folder) {
   Check(ctext.find(mask) != std::string::npos, "the include's glass mask is the header's");
   std::snprintf(mask, sizeof(mask), "CAR_RT_MASK_TYRES 0x%02X", rr::kMaskTyres);
   Check(ctext.find(mask) != std::string::npos, "the include's tyre mask is the header's");
+  std::snprintf(mask, sizeof(mask), "CAR_RT_MASK_OTHERS 0x%02X", rr::kMaskOthers);
+  Check(ctext.find(mask) != std::string::npos, "the include's others mask is the header's");
   std::snprintf(mask, sizeof(mask), "CAR_RT_FLAG_AFTER_WORLD 0x%03X", rr::kFlagAfterWorld);
   Check(ctext.find(mask) != std::string::npos, "the include's after-world flag is the header's");
 }
@@ -339,8 +516,12 @@ int main(int argc, char** argv) {
   TestMasks();
   TestMesh();
   TestAllocator();
+  TestGrowthCopyOrder();
   TestEviction();
   TestStats();
+  TestScope();
+  TestProbe();
+  TestPlumeRayQuery();
   if (argc > 1) {
     TestShaderParity(argv[1]);
   }

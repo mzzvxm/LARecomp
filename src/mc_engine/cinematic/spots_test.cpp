@@ -241,6 +241,21 @@ void TestExpand() {
     Check(!ExpandSpotWords(&w, &t, &e) && e.find("offset in the car's frame") != std::string::npos, "an orbit's `at` is an offset, not a place");
     w = Words("orbit car:p1 r 8 look spot:hw-lot");
     Check(ExpandSpotWords(&w, &t, &e), "...but a look of an orbit is a place");
+
+    // the pose words (`car player at`, `spawn ... near <car> r,u,f`, car_verbs.h) and the spot words together
+    w = Words("player at spot:hw-lot heading spot:hw-lot");
+    Check(ExpandSpotWords(&w, &t, &e), "car player at takes a spot place and heading");
+    CheckEq(Join(w), "player at 819.6 17.6 -808.4 heading 332", "...as numbers");
+    w = Words("n1 spawn vp_x near player -3.35,0.3,0 heading 180");
+    Check(ExpandSpotWords(&w, nullptr, &e) && Join(w) == "n1 spawn vp_x near player -3.35,0.3,0 heading 180", "near with numbers: nothing to do, no table needed");
+    w = Words("n1 spawn vp_x near player spot:hw-lot");
+    Check(!ExpandSpotWords(&w, &t, &e) && e.find("an offset in that car's frame") != std::string::npos, "after near the three numbers are an offset: a spot is an error");
+    w = Words("n1 ambient va_x near n0 spot:hw-lot@1,0,0 heading 90");
+    Check(!ExpandSpotWords(&w, &t, &e) && e.find("not a place in the world") != std::string::npos, "...an offset of a spot too, for ambient");
+    w = Words("n1 spawn vp_x near player 3,0,0 heading spot:hw-lot");
+    Check(!ExpandSpotWords(&w, &t, &e) && e.find("degrees from the other car's heading") != std::string::npos, "after near a heading is relative: a spot heading is an error");
+    w = Words("pos spot:hw-lot near 0.1");
+    Check(ExpandSpotWords(&w, &t, &e) && Join(w) == "pos 819.6 17.6 -808.4 near 0.1", "a camera's `near <clip>` is a number, not the car word");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the scene parser
@@ -275,6 +290,22 @@ void TestScene() {
         "end 9\n",
         o);
     Check(r.Ok(), "a scene with spot words parses");
+    {   // the pose words and the spot words in one scene (`car player at`, `spawn ... near <car>`, `spawn ... at spot:`)
+        const ParseResult pose = ParseScene(
+            "scene s\n"
+            "at 0 car player at spot:hw-street heading spot:hw-street\n"
+            "at 0.5 car n1 spawn vp_lam_murcielago_06 near player -3.35,0.3,0\n"
+            "at 0.5 car n2 spawn vp_aud_r8_08 near player 3.35 0.3 0 heading 180\n"
+            "at 0.5 car n3 spawn vp_aud_r8_08 at spot:hw-lot heading spot:hw-lot\n"
+            "end 9\n",
+            o);
+        Check(pose.Ok() && pose.WarningCount() == 0, "the player's place at a spot, a car near the player, a car at a spot: one scene");
+        CheckEq(WordsOf(pose, Track::kCar, 0), "player at 832.19 16.5 -787.53 heading 62", "the player's place from the spot");
+        CheckEq(WordsOf(pose, Track::kCar, 1), "n1 spawn vp_lam_murcielago_06 near player -3.35,0.3,0", "a car near another is untouched");
+        const ParseResult bad = ParseScene("scene s\nat 1 car n1 spawn vp_x near player spot:hw-lot\nend 3\n", o);
+        const Diagnostic* bd = FindDiag(bad, "an offset in that car's frame");
+        Check(!bad.Ok() && bd != nullptr && bd->line == 2, "a spot as the offset of near is an error on its line");
+    }
     CheckEq(WordsOf(r, Track::kCar, 0), "p1 spawn vp_lam_murcielago_06 at " + spots_detail::FormatNumber(832.19 + 1.5 * std::cos(62 * 3.14159265358979 / 180)) +
                                             " 16.5 " + spots_detail::FormatNumber(-787.53 - 1.5 * std::sin(62 * 3.14159265358979 / 180)) + " heading 62",
             "a car's place and heading, kept as numbers for the cars package");
@@ -301,10 +332,10 @@ void TestScene() {
     const ParseResult bad_car = ParseScene("scene s\nat 1 car p1 spawn vp_x at spot:hw-lot heading\nend 3\n", o);
     Check(!bad_car.Ok() && FindDiag(bad_car, "heading needs degrees") != nullptr, "the car parser still judges what is left: a heading with no value");
     // a spot's place goes through the car parser's own limits
-    SpotTable far;
-    far.Add(Make("far", 99999.0, 0.0, 0.0, 90.0));
+    SpotTable edge;  // not `far`: <Windows.h> defines it
+    edge.Add(Make("far", 99999.0, 0.0, 0.0, 90.0));
     ParseOptions fo;
-    fo.spots = &far;
+    fo.spots = &edge;
     Check(ParseScene("scene s\nat 1 car p1 spawn vp_x at spot:far\nend 3\n", fo).Ok(), "a place inside the world");
     const ParseResult past = ParseScene("scene s\nat 1 car p1 spawn vp_x at spot:far@0,0,5000\nend 3\n", fo);
     Check(!past.Ok() && FindDiag(past, "outside the world") != nullptr, "an offset that leaves the world is the car parser's error, on its line");
@@ -325,6 +356,11 @@ void TestCarVerbs() {
     Check(ParseCarCommand(Words("p1 spawn vp_x at 1,2,3 heading spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("'spot:hw-lot' is a spot word") != std::string::npos,
           "...and in `heading`");
     Check(ParseCarCommand(Words("p1 ambient va_x at SPOT:a@1,2,3"), &cmd, &why) == CarParse::kError && why.find("is a spot word") != std::string::npos, "...in any case, for an ambient car too");
+    Check(ParseCarCommand(Words("player at spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("'spot:hw-lot' is a spot word") != std::string::npos,
+          "the player's place: a spot word that nobody resolved is named as one");
+    Check(ParseCarCommand(Words("player at 1,2,3 heading spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("is a spot word") != std::string::npos, "...and its heading");
+    Check(ParseCarCommand(Words("p1 spawn vp_x near player spot:hw-lot"), &cmd, &why) == CarParse::kError && why.find("is a spot word") != std::string::npos,
+          "...and the offset of a car near another");
     std::vector<std::string> w = Words("p1 spawn vp_x at spot:hw-street@-1.5,0,0 heading spot:hw-street");
     const SpotTable t = SampleTable();
     Check(ExpandSpotWords(&w, &t, &why) && ParseCarCommand(w, &cmd, &why) == CarParse::kOk, "expanded first, the same statement is a car statement");
