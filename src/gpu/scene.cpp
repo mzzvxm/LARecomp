@@ -2529,6 +2529,8 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
       // (TEXCOORD15, which their pixel shaders' G-buffer words read where it is there and replace by a derivative normal where it is not). No pixel word needs it, so the pack's
       // `needs` never asks for it: this is the pairing, made when the draw's vertex shader has the word (for its own spec variant: the packed normal twin). A draw that gets no
       // sidecar keeps its own vertex word (the key below is only used when the draw attaches).
+      // CHECK (not run): that the road / tunnel road / foliage draws take the paired pipelines and the vertex stage's pipelines are made in the background like the pixel stage's
+      // (the report's A2 counts the fallback draws); that a night draw of those vertex shaders (whose pixel word never reads TEXCOORD15) is not slower with the export.
       if (d.vs && chain::FeaturesOf(vs_word) == 0) {
         const uint32_t gb_vs = chain::Word(chain::FeatureBit(larecomp::shaderpack::kFeatureGBufferVs), chain::SpecOf(vs_word));
         if (d.vs->HasWord(gb_vs)) {
