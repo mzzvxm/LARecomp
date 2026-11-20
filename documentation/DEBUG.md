@@ -549,6 +549,22 @@ python -I scene_cut.py --one-take clip.mp4 --scene scenes\sweep-split-ao.scene -
 
 `scene_sweep.py` runs each take as one `opt_run.py` run through the main session's lockrun (`--plan` prints the commands and starts nothing). The take folder of capture mode is merged here, but `scene_sweep.py` still makes each take as `opt_run.py`'s clip of the game window (a take folder instead is a change to that tool); `scene_cut.py` already reads a take folder (its video, or its frames with `take.json`). `larecomp_split_test` (`src/gpu/split.h`: the columns and the two draws) and `larecomp_split_track_test` (the `split` statement and `EvaluateSplit`) check the pure parts without the game; `scene_cut.py selftest` and `scene_sweep.py selftest` check the tools on synthetic frames.
 
+## The Director (agents and the panel)
+
+The Director is one command layer under the trailer toolkit: a panel button, a scene-file line and an agent's request are the same named command. The whole wire format is `documentation/DIRECTOR-PROTOCOL.md`; the design is `feature-parity/DIRECTOR-DESIGN.md`. It is off unless `mcla_director` is on (debug only, live: on starts a listener on 127.0.0.1 only, off stops it).
+
+`mcla_director_info` names a file the game writes `director.json` into while it listens (`{proto, pid, port, token, slot, exe, version, scene, started}`; the port is chosen by the OS, so two games never clash); `mcla_director_root` is the folder commands may write to (stills, takes, routes: relative paths without `..`), default the working folder. A scene cannot set any of them. A client sends `{"cmd":"auth","token":"..."}` first, then one JSON object a line: `{"id":1,"cmd":"transport.seek","args":{"t":3.2},"wait":"settled"}`; `{"cmd":"help"}` lists every command with its arguments. `ports\scripts\director_client.py` is the Python client and a mock server that speaks the whole protocol with no game (`python -I director_client.py selftest`).
+
+What it does in the game (every part is inert while the setting is off):
+
+- **Transport.** A pause or a seek holds the scene clock and freezes the world at the engine's time scale floor; a seek pins the clock at a time, which is exact for what is a function of the scene time (camera, kinematic cars, hour, weather, hud, split) and reports `scrubbable:false` when a brain-mode car, traffic or peds are in the scene. A step runs exact updates at the fixed step (`mcla_fixed_step_fps`, set by `transport.mode`). Before t = 0 the clock waits until the scene's cars are made and the streaming is done (30 s at most).
+- **Soft reload.** While the Director runs, a changed scene file (or an edit by the Director) replaces the running scene in place: the clock and the cars stay, the settings of the old scene go back and the due ones of the new scene are taken, the keys already due are not played again, a car whose statements are unchanged is left alone, a car whose path statements changed gets them again, any other changed car is deleted and made again. The camera's rig starts over (one cut). Not while a take runs (the file is then loaded as before: the scene starts over).
+- **Edits.** `scene.edit` takes line-addressed ops (insert in time order, replace, delete, move a key's time, param) against a revision; comments and layout stay, a stale revision or `expect` text is refused with the line's actual text, the file is written atomically and every revision is kept in `<scene folder>\.director\<name>\rev-N.scene` (`scene.undo` and `scene.redo` use it).
+- **Stills and takes.** `shot` is a take of one frame (no overlay, the engine's 1:1 size, no virtual clock) written as a PNG without ffmpeg; `shot.schedule` takes stills at exact scene times during a play-through; `take.render` restarts the scene, waits for it to settle and renders a take from `from` to `to`.
+- **The free camera.** `camera.set` and `camera.look_at` place the same free camera the pad flies; `camera.mode game` forces the game's own camera.
+
+`larecomp_director_test` (the JSON, the command engine, the console grammar, the line server over real loopback sockets, the projection, the route reducer, the PNG writer) and `larecomp_scene_edit_test` need no game.
+
 ## Adding a debug setting
 
 A new cvar is one of three things, and the check below fails until it is:

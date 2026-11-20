@@ -14,9 +14,12 @@
 // car of the scene is false. "player" is always known.
 //
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "car_registry.h"
 
@@ -37,5 +40,40 @@ bool CarMatrixById(const char* id, float matrix[16]);
 
 // Cars of the scene known now (ready or not), without the player.
 size_t SceneCarCount();
+
+// ---------------------------------------------------------------------------------------------------------------- the Director's handles (src/mc_engine/cinematic/director)
+// Game thread only.
+
+// One car as the Director shows it: the scene's cars and "player".
+struct SceneCarInfo {
+    std::string id;
+    std::string model;  // the vehicle name, "profile N" for a garage car, "player"
+    double position[3] = {0.0, 0.0, 0.0};
+    double heading = 0.0;  // the scene's convention
+    bool ready = false;    // its pose has been read
+    bool on_path = false;
+    bool brain = false;    // its path is driven by the game's own AI (cannot be scrubbed)
+    std::string route;     // the route file of its path
+};
+std::vector<SceneCarInfo> ListSceneCars();
+
+// Puts a car there at the next update that may call natives (Racer_Teleport; speed 0). 0: asked for; 1: no such car; 2: the car is not made yet.
+int PlaceCar(std::string_view id, const double position[3], double heading, bool has_heading);
+
+// The game's vehicle names (its car table), in table order.
+std::vector<std::string> ListCarModels();
+
+// Every car key due by now was handed to the cars and every scene car has a readable pose: what the ready gate waits for. `waiting_for` says what is missing.
+bool SceneCarsSettled(std::string* waiting_for = nullptr);
+
+// The routes the scene's `path` keys name, as read (x, y, z, speed per point; y is 0 for a route with no heights).
+struct SceneRouteInfo {
+    std::string name;
+    std::string car;
+    bool kinematic = true;
+    int line = 0;
+    std::vector<std::array<double, 4>> points;
+};
+std::vector<SceneRouteInfo> ListSceneRoutes();
 
 }  // namespace mc::cinematic

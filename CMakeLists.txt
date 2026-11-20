@@ -220,6 +220,22 @@ set(LARECOMP_SOURCES
     # The scene's `split` track on the renderer's before/after split (trailer toolkit M5b).
     src/mc_engine/cinematic/split_runtime.cpp
 
+    # The Director (feature-parity/DIRECTOR-DESIGN.md; documentation/DIRECTOR-PROTOCOL.md): one command layer under the panel, the scene file and an agent's requests.
+    # Inert unless the debug setting mcla_director is on. The pure files (json, command, line_server, scene_edit, director_math, png_writer) have larecomp_director_test
+    # and larecomp_scene_edit_test; director_runtime and the handlers_* files are the game side. Package C's world queries (handlers_world.cpp) are added below.
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/command.cpp
+    src/mc_engine/cinematic/director/line_server.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/director_math.cpp
+    src/mc_engine/cinematic/director/png_writer.cpp
+    src/mc_engine/cinematic/director/director_runtime.cpp
+    src/mc_engine/cinematic/director/handlers_transport.cpp
+    src/mc_engine/cinematic/director/handlers_scene.cpp
+    src/mc_engine/cinematic/director/handlers_camera.cpp
+    src/mc_engine/cinematic/director/handlers_cars.cpp
+    src/mc_engine/cinematic/director/handlers_capture.cpp
+
     src/mc_engine/gameplay/map_warp.cpp
     src/mc_engine/gameplay/real_weather.cpp
     src/mc_engine/gameplay/squash_stretch.cpp
@@ -641,6 +657,36 @@ add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/split_track_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_split_track_test PRIVATE src src/mc_engine/cinematic)
+# The Director's pure parts (src/mc_engine/cinematic/director: the JSON of the wire, the command engine and its argument check, the console grammar, the line server over real
+# loopback sockets, the camera projection, the route reducer, the path rule, the PNG writer) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_director_test, then run <build dir>/larecomp_director_test (exit 0 = passed).
+add_executable(larecomp_director_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/director_test.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/command.cpp
+    src/mc_engine/cinematic/director/line_server.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/director_math.cpp
+    src/mc_engine/cinematic/director/png_writer.cpp
+    src/mc_engine/cinematic/scene.cpp
+    src/mc_engine/cinematic/camera.cpp
+    src/mc_engine/cinematic/freecam.cpp
+    src/mc_engine/cinematic/path_follow.cpp)
+target_include_directories(larecomp_director_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_director_test PRIVATE Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(larecomp_director_test PRIVATE ws2_32)
+endif()
+# The scene file's line-addressed edits (insert, replace, delete, move, param; comments and layout kept; the stale rule; the diff):
+#   cmake --build <build dir> --target larecomp_scene_edit_test, then run <build dir>/larecomp_scene_edit_test (exit 0 = passed).
+add_executable(larecomp_scene_edit_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/scene_edit_test.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_scene_edit_test PRIVATE src src/mc_engine/cinematic src/mc_engine/cinematic/director)
 
 if(REXGLUE_ENABLE_XEO3_TARGET)
     # The XEO3 DLL is a separate build, not a variant of this one: it needs the

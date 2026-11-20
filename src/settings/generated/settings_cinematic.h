@@ -84,6 +84,16 @@ class CinematicSettings final : public rex::SettingOwner {
     "menu, the DEBUG menu, the race pause, the map and the F3 card are never faded. Frames whose UI the renderer cannot "
     "keep apart from the picture (loading, movies) show it whole. Plume renderer only. Live; a scene's hud keys write it.", rex::Range{0.0, 1.0}, rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_director, false, "TRAILER TOOLKIT DIRECTOR (debug): the game listens on 127.0.0.1 (loopback only, a token in the info file) for an agent's commands and runs the same "
+    "commands as the Director panel: transport, scene edits, the free camera, cars, stills, takes (documentation/DIRECTOR-PROTOCOL.md). Live: on starts the listener, off stops it. "
+    "A scene cannot set it. Off: nothing listens and nothing runs.", rex::kDebugOnly);
+
+  REX_SETTING(std::string, mcla_director_info, "", "TRAILER TOOLKIT DIRECTOR: a file name; while the listener is up the game writes director.json there (port, token, pid, slot, scene) so a tool can find it, "
+    "and removes it at exit. Empty: no file.", rex::kDebugOnly);
+
+  REX_SETTING(std::string, mcla_director_root, "", "TRAILER TOOLKIT DIRECTOR: the folder the Director's commands may write to (stills, takes, routes, proposals), as relative paths without '..'. "
+    "A scene's own folder is always allowed too. Empty: the game's working folder.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_fixed_step_fps, 0.0, "TRAILER TOOLKIT: the game steps by exactly 1 / this many frames a second, whatever the frame takes (the engine timer is given "
     "the game's own tick count for it); the FPS limit, the step cap and frame pacing stand aside. No take, no frame gate. 0: off. "
     "10 to 1000.", rex::Range{0.0, 1000.0}, rex::kDebugOnly);
@@ -154,6 +164,9 @@ inline auto& mcla_capture_sink = g_cinematic.mcla_capture_sink;
 inline auto& mcla_capture_statelog = g_cinematic.mcla_capture_statelog;
 inline auto& mcla_capture_virtual_clock = g_cinematic.mcla_capture_virtual_clock;
 inline auto& mcla_cin_hud_alpha = g_cinematic.mcla_cin_hud_alpha;
+inline auto& mcla_director = g_cinematic.mcla_director;
+inline auto& mcla_director_info = g_cinematic.mcla_director_info;
+inline auto& mcla_director_root = g_cinematic.mcla_director_root;
 inline auto& mcla_fixed_step_fps = g_cinematic.mcla_fixed_step_fps;
 inline auto& mcla_freecam = g_cinematic.mcla_freecam;
 inline auto& mcla_freecam_inertia = g_cinematic.mcla_freecam_inertia;
