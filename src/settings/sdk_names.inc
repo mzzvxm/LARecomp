@@ -187,3 +187,7 @@
 {"bind_mod_browser", "ui.bind.mod_browser"},
 {"bind_server_browser", "ui.bind.server_browser"},
 {"bind_identity", "ui.bind.identity"},
+// LARecomp settings that were renamed: the old flat name keeps working in a larecomp.toml, on the command line and in a scene.
+// The target is the full name of the LARecomp setting (scope "larecomp"); the old name is not a setting, so RegisterAll's clash check does not meet it.
+// mcla_gpu_headlight_shadows became mcla_gpu_light_shadows (owner, 2026-11-20: one row, LIGHT SHADOWS, for the headlights now and the street lamps later).
+{"mcla_gpu_headlight_shadows", "larecomp.mcla_gpu_light_shadows"},

@@ -9,9 +9,10 @@
 // player's car from the sun is its model.
 //
 // WHAT IT DOES, and when.
-//   mcla_gpu_headlight_shadows   auto | off | high | ultra. high: a view of 512 x 512 for the player's lamps (one view covers both), ultra:
-//                                1024 x 1024 and the nearest other car's lamps too. `auto` is high on Mid, ultra on High, off on Low
-//                                (gpu_class.h Effect::kHeadlightShadows). Live: a change applies at the next frame.
+//   mcla_gpu_light_shadows       auto | off | high | ultra (the pause menu's LIGHT SHADOWS: the headlights now, the street lamps later; it was
+//                                mcla_gpu_headlight_shadows, which stays as an alias). high: a view of 512 x 512 for the player's lamps (one view
+//                                covers both), ultra: 1024 x 1024 and the nearest other car's lamps too. `auto` is high on Mid, ultra on High, off on Low
+//                                (gpu_class.h Effect::kLightShadows). Live: a change applies at the next frame.
 //   COLLECT (Scene::OnDraw, every prepared draw of the main view's colour pass before the anchor): the draw's shaders, input layout, host
 //   geometry (valid until the frame's lists are submitted), its vertex constants (a host copy of the bank, 4 KiB, once per bank version),
 //   its shared constants (once per distinct block) and its pixel constants span. A draw is a caster when it is opaque (blend off, depth

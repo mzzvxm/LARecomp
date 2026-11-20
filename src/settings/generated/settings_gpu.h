@@ -374,9 +374,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_shadow_map_view, 0, "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_headlight_shadows, "auto", "Headlight shadows: the cars' headlights cast shadows. The game draws no shadow from a light that is not the sun; "
-    "this draws the scene's opaque objects again from the headlights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on "
-    "ultra), and the headlights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the "
+  REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
+    "this draws the scene's opaque objects again from the lights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on "
+    "ultra), and the lights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the "
     "default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game "
     "view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video "
     "memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
@@ -1435,7 +1435,7 @@ inline auto& mcla_gpu_car_selfrefl_view = g_gpu.mcla_gpu_car_selfrefl_view;
 inline auto& mcla_gpu_car_shadow_map = g_gpu.mcla_gpu_car_shadow_map;
 inline auto& mcla_gpu_car_shadow_map_owns = g_gpu.mcla_gpu_car_shadow_map_owns;
 inline auto& mcla_gpu_car_shadow_map_view = g_gpu.mcla_gpu_car_shadow_map_view;
-inline auto& mcla_gpu_headlight_shadows = g_gpu.mcla_gpu_headlight_shadows;
+inline auto& mcla_gpu_light_shadows = g_gpu.mcla_gpu_light_shadows;
 inline auto& mcla_gpu_headlight_shadow_test = g_gpu.mcla_gpu_headlight_shadow_test;
 inline auto& mcla_gpu_headlight_shadow_view = g_gpu.mcla_gpu_headlight_shadow_view;
 inline auto& mcla_gpu_headlight_shadow_skip = g_gpu.mcla_gpu_headlight_shadow_skip;

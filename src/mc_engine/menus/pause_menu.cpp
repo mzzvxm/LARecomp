@@ -1551,7 +1551,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
 //   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
-//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, HEADLIGHT SHADOWS (kLightItems)
+//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS (kLightItems)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
@@ -1986,27 +1986,29 @@ std::string CarShadowLabel(int i) {
     }
 }
 constexpr RowDynamics kCarShadowDynamics = {.str_label = CarShadowLabel};
-// Headlight shadows (mcla_gpu_headlight_shadows, gpu/local_shadow.h, live): the cars' headlights cast shadows (the game has none from any light but
-// the sun): the scene's opaque objects are drawn again from the headlights into a small map the headlights' light reads. OFF, HIGH (512x512 texels
-// a view: your headlights) or ULTRA (1024x1024: the nearest other car's too). AUTO says what it comes to on this GPU, like the other AUTO rows
-// (gpu/gpu_class.h Effect::kHeadlightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The stored words are the
-// shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is.
-// The label is "HEADLIGHT SHADOWS" (17 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeHeadlightShadowVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeHeadlightShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-std::string HeadlightShadowLabel(int i) {
+// Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
+// cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
+// lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
+// OFF, HIGH (512x512 texels a view: your headlights) or ULTRA (1024x1024: the nearest other car's too). AUTO says what it comes to on this GPU,
+// like the other AUTO rows (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, HIGH on a medium one, OFF on an integrated one). The
+// stored words are the shown words (no level is called low). It runs only while a headlight is lit and in the game view; the row stays live
+// whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 12 ("AUTO (ULTRA)").
+const char* const kNativeLightShadowVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeLightShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string LightShadowLabel(int i) {
     switch (i) {
-    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kHeadlightShadows);
+    case 0:  return mcla::gpu::gpu_class::AutoLabel(mcla::gpu::gpu_class::Effect::kLightShadows);
     case 1:  return "OFF";
     case 2:  return "HIGH";
     default: return "ULTRA";
     }
 }
-// Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own.
+// Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own for now (when the street lamps get shadows too,
+// the row is grey only while both the headlights and the lamps are off).
 bool HeadlightsOn() {
     return mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kHeadlights, CvarGet("mcla_gpu_headlights")) == "on";
 }
-constexpr RowDynamics kHeadlightShadowDynamics = {.str_label = HeadlightShadowLabel, .enabled = HeadlightsOn};
+constexpr RowDynamics kLightShadowDynamics = {.str_label = LightShadowLabel, .enabled = HeadlightsOn};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
 // paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
 // level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
@@ -2098,10 +2100,10 @@ const ItemDef kImageQualityItems[] = {
 // graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
 // (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
 // (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
-// HEADLIGHT SHADOWS: the cars' lights, then the shadows they cast). The ids and the
+// LIGHT SHADOWS: the cars' lights, then the shadows the local lights cast). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
-// (SsgiOn); HEADLIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS has no dependency. 13 rows of the 24 a page can hold.
+// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS has no dependency. 13 rows of the 24 a page can hold.
 // Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
 const ItemDef kLightItems[] = {
@@ -2140,9 +2142,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuHeadlights", "mcla_gpu_headlights", "HEADLIGHTS: ",
                                 kNativeHeadlightsVals, kNativeHeadlightsNames, 3),
                             &kHeadlightsDynamics)),
-    NativeOnly(WithDynamics(Str("PM_RxGpuHeadlightShadows", "mcla_gpu_headlight_shadows", "HEADLIGHT SHADOWS: ",
-                                kNativeHeadlightShadowVals, kNativeHeadlightShadowNames, 4),
-                            &kHeadlightShadowDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
+                                kNativeLightShadowVals, kNativeLightShadowNames, 4),
+                            &kLightShadowDynamics)),
 #endif
 };
 
@@ -3072,7 +3074,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
 // LIGHTING AND SHADOWS (kLightItems, 13 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
-// "AMBIENT OCCLUSION" and "HEADLIGHT SHADOWS" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL" and "SHADOW FILTER" 13, "CAR
+// "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL", "SHADOW FILTER" and "LIGHT SHADOWS" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
 // REFLECTIONS (kReflectionItems, 3 rows): "CAR SELF-REFLECTIONS" 20, "ROAD REFLECTIONS" 16, "CAR

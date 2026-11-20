@@ -993,11 +993,11 @@
   "comments": [],
   "pp_depth": 0
  },
- "mcla_gpu_headlight_shadows": {
+ "mcla_gpu_light_shadows": {
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Headlight shadows: the cars' headlights cast shadows. The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the headlights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on \"\n    \"ultra), and the headlights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the \"\n    \"default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game \"\n    \"view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video \"\n    \"memory. Live.\"",
+  "help": "\"Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; \"\n    \"this draws the scene's opaque objects again from the lights, depth only, into a small map (512 by 512 texels on high, 1024 by 1024 on \"\n    \"ultra), and the lights' light reads it. high shadows your headlights, ultra the nearest other car's too. off, high, ultra or auto (the \"\n    \"default): ultra on a fast graphics card, high on a medium one, off on an integrated one. It only runs while a headlight is lit, in the game \"\n    \"view. Costs a little graphics card time and render thread time (the frame's opaque draws once more for each map) and 4 to 32 MiB of video \"\n    \"memory. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],

@@ -62,7 +62,7 @@ constexpr uint32_t kLitGraceFrames = 3;   // frames a map is still collected for
 constexpr uint32_t kListEveryFrames = 8;  // with no lit headlight the main view's draws are looked at one frame in this many, to list their pipelines
 
 LiveText& Setting() {
-  static LiveText text("mcla_gpu_headlight_shadows");
+  static LiveText text("mcla_gpu_light_shadows");
   return text;
 }
 
@@ -493,7 +493,7 @@ void LocalShadow::BeginFrame() {
   }  const uint32_t state = uint32_t(choice_.level) * 16u + rules::MaxViews(choice_.level, views_override_);
   if (state != last_choice_logged_) {
     last_choice_logged_ = state;
-    REXLOG_INFO("{} {} (mcla_gpu_headlight_shadows = {}, live); {} view(s) at most; collecting only while a headlight is lit", kPrefix,
+    REXLOG_INFO("{} {} (mcla_gpu_light_shadows = {}, live); {} view(s) at most; collecting only while a headlight is lit", kPrefix,
                 rules::Describe(choice_, cls), Setting().Get(), rules::MaxViews(choice_.level, views_override_));
   }
   if (wanted_) {

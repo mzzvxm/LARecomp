@@ -5,7 +5,7 @@
 // The renderer's half is local_shadow.h (perf/LOCAL-SHADOWS-SURVEY.md, option A). This header holds what needs no Plume, no ReXGlue and
 // no game, as pure functions on plain numbers, so that local_shadow_rules_test.cpp builds on its own:
 //
-//   - the setting: mcla_gpu_headlight_shadows' words, the size of a view per level and how many views a level draws (Resolve, MaxViews);
+//   - the setting: mcla_gpu_light_shadows' words, the size of a view per level and how many views a level draws (Resolve, MaxViews);
 //   - the lights: which of the rig's lights share a view (GroupLights: one view covers both lamps of a car), the view that covers a group
 //     (FitView: eye, direction, field of view, near and far planes) and its matrices (LightClip, WorldToShadow);
 //   - the atlas: where view k sits in it, in texels and in uv (MakeAtlas, TileRect, UvRect);
@@ -56,7 +56,7 @@ namespace tp = ::mcla::gpu::temporal;
 // the setting
 // ---------------------------------------------------------------------------
 
-// mcla_gpu_headlight_shadows: auto, off, high or ultra. No level is called low (owner, 2026-11-14): two sizes are high and ultra.
+// mcla_gpu_light_shadows (was mcla_gpu_headlight_shadows): auto, off, high or ultra. No level is called low (owner, 2026-11-14): two sizes are high and ultra.
 enum class Level : uint8_t { kOff, kHigh, kUltra };
 
 inline constexpr uint32_t kTileHigh = 512;    // texels a view
@@ -105,7 +105,7 @@ inline Level ParseLevel(std::string_view text, bool* known) {
   return Level::kOff;
 }
 
-// `auto` is the class table's cell (gpu_class.h Effect::kHeadlightShadows: off on shared memory, high on Mid, ultra on High); a word that is
+// `auto` is the class table's cell (gpu_class.h Effect::kLightShadows: off on shared memory, high on Mid, ultra on High); a word that is
 // no value of the setting (the low of an older larecomp.toml) counts as `auto`.
 inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   Choice choice;
@@ -119,13 +119,13 @@ inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   choice.automatic = true;
   choice.unknown = text != "auto";
   bool cell_known = false;
-  choice.level = ParseLevel(gpu_class::Cell(gpu_class::Effect::kHeadlightShadows, cls), &cell_known);
+  choice.level = ParseLevel(gpu_class::Cell(gpu_class::Effect::kLightShadows, cls), &cell_known);
   return choice;
 }
 
-// "headlight shadows high, 512x512 a view (auto on the mid class)".
+// "light shadows high, 512x512 a view (auto on the mid class)".
 inline std::string Describe(const Choice& choice, gpu_class::GpuClass cls) {
-  std::string text = "headlight shadows ";
+  std::string text = "light shadows ";
   text += LevelName(choice.level);
   if (choice.level != Level::kOff) {
     text += ", " + std::to_string(choice.tile()) + "x" + std::to_string(choice.tile()) + " a view";
