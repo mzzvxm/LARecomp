@@ -13,7 +13,9 @@
 //     view-projection found from the draws' own constants (DeriveCamera);
 //   - which draws are casters (ClassifyDraw: opaque, alpha tested; skinned, impostor, billboard, a vehicle's own parts...) and which of them
 //     a view keeps (the view's cone and reach: SphereInView; the lamps' own car and the budget: SelectForView);
-//   - the pipelines' key (PipeKey) and the face culling a caster is drawn with (ResolveCull).
+//   - the pipelines' key (PipeKey) and the face culling a caster is drawn with (ResolveCull; ResolveCasterCull for a vehicle's part);
+//   - the ground skirt: the second copy of a vehicle part that closes the gap under a car (SkirtShift, SkirtReplayMatrix);
+//   - the census of the vehicles' draws by shader (VehicleCensus).
 //
 // THE REPLAY'S ONE TRICK (survey 4.2 point 1). Every vertex shader of the pack that places a vertex multiplies it by gWorldViewProj, VS
 // c8-c11. In a main-view draw that is gWorld x VP_main (VP_main = the camera's view-projection, the game's own clip space), so
@@ -41,6 +43,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -816,6 +819,52 @@ inline Cull ResolveCull(int policy, Cull game) {
   return game == Cull::kBack ? Cull::kFront : Cull::kBack;
 }
 
+// The faces a CASTER is drawn with. The world keeps the policy's (faces turned from the light: a ground, a wall or a facade that faces the lamps casts no
+// shadow on itself); a VEHICLE's part is drawn on both faces under the default policy. A car's body is an open shell of panels that face outwards, and from a
+// lamp as low as a car's own the shadow on the road behind it is made by the panels the lamp SEES (the bumper, the sills, the front of the underbody), which a
+// "faces turned from the light" pass throws away: what is left is the far skin and the tyres (the owner's picture of 2026-11-20: four dark stripes where the four
+// tyres are and a lit gap between them, behind a car that should shadow its whole width). Both faces keep the nearest, which is the face the lamp sees.
+inline Cull ResolveCasterCull(int policy, Cull game, bool vehicle) {
+  if (vehicle && policy == 0) {
+    return Cull::kNone;
+  }
+  return ResolveCull(policy, game);
+}
+
+// ---------------------------------------------------------------------------
+// the ground skirt
+// ---------------------------------------------------------------------------
+
+// A car has ground clearance: its underbody floats 0.1 to 0.2 m over the road, and the road behind it is lit through that gap by a lamp that is low enough (a
+// ray that enters the gap under the bumper and leaves under the rear lip). Real light does that, and in the picture it reads as a few thin stripes where the
+// tyres and the exhaust block it, not as the shadow of a car. So each vehicle part is drawn a second time into the same view, `kSkirtDrop` lower, which puts its
+// underbody on the road and closes the gap, and `kSkirtPush` farther along the light so that the copy sits BEHIND the car's own surfaces for the lamp (a surface
+// that faces the lamp is nearer than its copy, so the car is never shadowed by its own skirt: the copy of a sloped hood or windscreen, lowered, would come out in
+// front of it otherwise). The copy goes below the road by the difference between its drop and the car's clearance: a receiver is on the road, so nothing under it
+// is ever between a lamp and a receiver.
+inline constexpr double kSkirtDrop = 0.22;  // metres
+inline constexpr double kSkirtPush = 0.60;  // metres along the way the light travels
+
+// The world-space shift of the skirt's copy for a view that looks along `dir` (unit).
+inline void SkirtShift(const double dir[3], double out[3]) {
+  out[0] = dir[0] * kSkirtPush;
+  out[1] = dir[1] * kSkirtPush - kSkirtDrop;
+  out[2] = dir[2] * kSkirtPush;
+}
+
+// ReplayMatrix of the copy: VP_main^-1 x translate(shift) x VP_light, so that c8-c11' = gWorld x translate(shift) x VP_light.
+inline bool SkirtReplayMatrix(const Camera& camera, const tp::Mat4& light_clip, const double shift[3], tp::Mat4* out) {
+  if (!camera.valid) {
+    return false;
+  }
+  tp::Mat4 move = tp::Identity();
+  for (int k = 0; k < 3; ++k) {
+    move.m[3][k] = shift[k];
+  }
+  *out = tp::Mul(tp::Mul(camera.view_projection_inverse, move), light_clip);
+  return tp::Finite(*out);
+}
+
 // A pipeline of the replay: the game's vertex shader (and its own pixel shader, for the alpha tested draws, which the driver cuts down to the
 // alpha test: there is no colour target), the layout of the draw's vertex declaration, the topology, the faces drawn.
 //
@@ -893,5 +942,66 @@ inline uint32_t SelectForView(const Candidate* candidates, uint32_t count, uint3
 }
 
 inline double Mib(uint64_t bytes) { return double(bytes) / (1024.0 * 1024.0); }
+
+// ---------------------------------------------------------------------------
+// the vehicles' census
+// ---------------------------------------------------------------------------
+
+// What became of the vehicle draws of a frame, by vertex shader identity: a car is some 200 draws of some 20 shaders (perf/scripts/vs_identities.py names the
+// identities), and the logs of 2026-11-20 only said "vehicle 314" for two cars, which could not tell a car whose body is in the map from a car that is only
+// tyres. `Note` is called once for each vehicle draw with the verdict it got at collection (kNone: collected).
+struct VehicleCensus {
+  static constexpr uint32_t kRows = 32;
+  struct Row {
+    uint64_t vs = 0;
+    uint32_t counts[size_t(Skip::kCount)] = {};
+  };
+  Row rows[kRows];
+  uint32_t used = 0;
+  uint32_t overflow = 0;  // draws of a shader after the 32nd
+  uint32_t draws = 0;
+  void Clear() { *this = VehicleCensus{}; }
+  void Note(uint64_t vs, Skip verdict) {
+    ++draws;
+    for (uint32_t i = 0; i < used; ++i) {
+      if (rows[i].vs == vs) {
+        ++rows[i].counts[size_t(verdict)];
+        return;
+      }
+    }
+    if (used == kRows) {
+      ++overflow;
+      return;
+    }
+    rows[used].vs = vs;
+    ++rows[used].counts[size_t(verdict)];
+    ++used;
+  }
+};
+
+// " 23FB35FC659D4A67: 14 drawn; 3B4E4762B73D5239: 6 not opaque; ..." (the log's text; "drawn" is the collected ones, the views then drop the lamps' own car).
+inline std::string DescribeVehicleCensus(const VehicleCensus& census) {
+  std::string text;
+  for (uint32_t i = 0; i < census.used; ++i) {
+    char id[24];
+    std::snprintf(id, sizeof(id), "%016llX", static_cast<unsigned long long>(census.rows[i].vs));
+    text += " ";
+    text += id;
+    text += ":";
+    bool first = true;
+    for (size_t k = 0; k < size_t(Skip::kCount); ++k) {
+      if (census.rows[i].counts[k] != 0) {
+        text += first ? " " : ", ";
+        text += std::to_string(census.rows[i].counts[k]) + " " + SkipName(Skip(k));
+        first = false;
+      }
+    }
+    text += ";";
+  }
+  if (census.overflow != 0) {
+    text += " (and " + std::to_string(census.overflow) + " draws of other shaders)";
+  }
+  return text;
+}
 
 }  // namespace mcla::gpu::local_shadow
