@@ -170,7 +170,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     volumetrics_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the volumetric light (volumetrics.h)
     volumetrics_.SetInputSource(&vol_inputs_);  // its street lamps and headlights are the producer's (volumetrics_inputs.h)
 #if __has_include("local_shadow.h")
-    vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (feat/headlights)
+    vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (local_shadow.h)
 #endif
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
@@ -292,8 +292,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     temporal_.Shutdown();
     ao_.Shutdown();
     shafts_.Shutdown();
+    volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
     local_shadow_.Shutdown();
-    volumetrics_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
@@ -467,8 +467,8 @@ void Renderer::Shutdown() {
   temporal_.Shutdown();
   ao_.Shutdown();
   shafts_.Shutdown();
+  volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
   local_shadow_.Shutdown();
-  volumetrics_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();

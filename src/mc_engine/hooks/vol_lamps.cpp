@@ -8,8 +8,9 @@
 // takes the newest copy at its trigger. Reads only, nothing is written into the guest, no file is written.
 //
 // The hook sits at 0x82302814, one instruction after the entry, on purpose: a midasm hook is keyed by its address (the SDK keeps the last of two), and the
-// night probe's MCLANightConeDraw (test/night-probe) is at 0x82302810. The instruction at 0x82302810 is `mflr r12`, which writes only r12; the hook reads
-// no register (the list is at a fixed address) and nothing else branches to 0x82302814, so both hooks run when the probe is merged over this.
+// night probe's MCLANightConeDraw (test/night-probe, a test branch that is never merged to main) is at 0x82302810. This is the only hook in the cone
+// drawer on main. The instruction at 0x82302810 is `mflr r12`, which writes only r12; the hook reads no register (the list is at a fixed address) and
+// nothing else branches to 0x82302814, so both hooks run when the probe is merged over this.
 //
 // A record is 128 bytes (vol_lamp_list.h): +0 the distance to the eye, +16 the game's unpacked 96-byte light (position, colour, direction, intensity,
 // cone angle, cone spread, type, on), +112 AddLight's scale. The header at 0x8288B8D8 is {u32 array pointer, u16 count, u16 capacity}. The array is read

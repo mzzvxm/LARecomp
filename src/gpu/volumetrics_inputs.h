@@ -11,10 +11,9 @@
 // has the law (the game's units: colour x intensity x fade, the plateau as the near radius, the cone from the angle and the spread), the calibration and
 // the pick (the top GridDesc::lamps by their contribution to the view, hysteresis and fades). Nothing is drawn by day: the list is empty then.
 //
-// HEADLIGHTS: the rig's HeadlightSet (feat/headlights: CurrentHeadlights()) in the volume's units (volumetrics_headlights.h) and the replay's
-// LocalShadowFrame with its atlas (LocalShadow::Frame() and AtlasInfo(), handed in with SetLocalShadow). feat/headlights is not on this branch: its two headers are
-// found with __has_include, and without them the headlights are simply not read (the lamps and the core's test lights work alone), so that the two branches
-// merge in either order.
+// HEADLIGHTS: the rig's HeadlightSet (headlight_types.h: CurrentHeadlights()) in the volume's units (volumetrics_headlights.h) and the replay's
+// LocalShadowFrame with its atlas (LocalShadow::Frame() and AtlasInfo(), handed in with SetLocalShadow). The two headers are found with __has_include (both are
+// in the tree on main; a tree without them simply does not read the headlights, the lamps and the core's test lights work alone).
 //
 // SETTINGS (debug only): mcla_gpu_vol_inputs (1 the lamps, 2 the headlights: the default reads both) and mcla_gpu_vol_lamp_limit (at most this many lamps;
 // 0: the level's). mcla_gpu_vol_test (the core's test lights) turns the game's lamps (bit 1) and headlights (bit 2) off in favour of the test light of that kind.
@@ -31,14 +30,14 @@
 
 namespace mcla::gpu {
 
-class LocalShadow;  // local_shadow.h (feat/headlights)
+class LocalShadow;  // local_shadow.h
 
 class VolumetricsInputs final : public volumetrics::VolInputSource {
  public:
   // The Fill of the frame (volumetrics_types.h): adds the lamps and the headlights to what the core put in `out`.
   void Fill(const volumetrics::VolFrameContext& frame, volumetrics::VolInputs* out) override;
 
-  // The headlight shadow maps' producer (the Renderer's LocalShadow of feat/headlights): its views and its atlas are what the headlights are shadowed by.
+  // The headlight shadow maps' producer (the Renderer's LocalShadow): its views and its atlas are what the headlights are shadowed by.
   // Null (the default): no shadows. It must outlive this.
   void SetLocalShadow(const LocalShadow* shadow) { local_shadow_ = shadow; }
 
