@@ -2007,6 +2007,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.primitive = d.primitive;
     frame.stencil_ids = draw.stencil_ids;
     frame.cache = geometry_;
+    frame.shared = &last_shared_;  // the draw's texture slots (the environment map's, for the ray traced cars' light): Prepare uploaded them for this draw
     car_frame_->OnMainDraw(frame);
   }
   if (headlights_ && headlights_->wants_draws()) {

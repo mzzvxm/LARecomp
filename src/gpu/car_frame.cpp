@@ -13,7 +13,9 @@
 #include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 
+#include "descriptors.h"
 #include "guest_memory.h"
+#include "textures.h"
 
 namespace mcla::gpu {
 
@@ -165,6 +167,7 @@ void CarFrame::StartFrame() {
   frame_.bounds_valid = false;
   frame_.other_cars.clear();
   frame_.other_draws.clear();
+  frame_.light = car_rt_material::FrameLight{};
   frame_.vehicles.clear();
   frame_.seen_cars.clear();
   frame_.vehicles_valid = false;
@@ -512,6 +515,8 @@ void CarFrame::HandleOtherDraw(const MainDraw& d, uint32_t order, uint32_t id, d
   out.mesh_key = key;
   out.indices = r.count;
   out.model_to_world = model.model;
+  out.material = MaterialOf(d);  // RT-HIT-SHADING: what the draw's surface is made of (a hit on this car's part the camera does not see is shaded from it)
+  NoteLight(d, out.material);
   frame_.other_draws.push_back(out);
   car_frame::OtherCar* car = nullptr;
   for (car_frame::OtherCar& c : frame_.other_cars) {
@@ -710,6 +715,10 @@ void CarFrame::FillDraw(const MainDraw& d, uint32_t order, uint32_t id, const Re
   out->after_world = world_draws_ != 0;
   out->model_to_world = model.model;  // a skinned draw: gWorld alone (DecodeModel)
   out->geometry = *d.geometry;
+  if (others_on_ && !skinned) {
+    out->material = MaterialOf(d);  // RT-HIT-SHADING: the shader's class, colours and diffuse fetch (the opponents' reflections of this car's hits)
+    NoteLight(d, out->material);
+  }
   out->position_slot = layout.position_slot;
   out->position_offset = layout.position_offset;
   out->position_stride = layout.position_stride;
@@ -1101,6 +1110,76 @@ void CarFrame::LogUnreadable(const char* what) {
   REXLOG_WARN("{} the triangles of a draw could not be read: {} (vs {:016x}, ps {:016x}, mesh key {:016x}, stencil ID {}); logged once "
               "per mesh",
               kPrefix, what, ctx_.draw->vs, ctx_.draw->ps, ctx_.draw->mesh_key, ctx_.draw->stencil_id);
+}
+
+bool CarFrame::Reader::ReadTexcoords(std::vector<float>* uvs) const {
+  if (!owner) {
+    if (uvs) {
+      uvs->clear();
+    }
+    return false;
+  }
+  return owner->ReadTexcoordsForListener(uvs);
+}
+
+// The current draw's TEXCOORD0 for the vertices of the triangles ReadForListener returned (the mesh read of the same draw is shared). A rigid draw only: the driver's vertices are
+// blended and are not in the scene.
+bool CarFrame::ReadTexcoordsForListener(std::vector<float>* uvs) {
+  if (uvs) {
+    uvs->clear();
+  }
+  if (!uvs || !ctx_.active || !ctx_.draw || !ctx_.draw_in || !memory_ || ctx_.draw->part != car_frame::Part::kBody || !LoadMesh()) {
+    return false;
+  }
+  return car_mesh::ReadTexcoords(*memory_, *ctx_.draw_in->view, mesh_.first_vertex, uint32_t(mesh_.local.size() / 3), uvs);
+}
+
+// RT-HIT-SHADING (car_rt_material_rules.h): the class of the draw's pixel shader, its base colours from the pixel constants, and the fetch constant of its diffuse texture.
+car_rt_material::Material CarFrame::MaterialOf(const MainDraw& d) const {
+  const DrawRecord& r = d.view->record();
+  const auto fetch = [&](uint32_t slot) {
+    car_rt_material::FetchInfo info;
+    uint32_t dwords[6];
+    d.view->FetchGroup(slot, dwords);
+    const TextureFetch texture = ReadTextureFetch(dwords);
+    if (texture.is_texture && texture.key.dimension == uint8_t(xe::DataDimension::k2DOrStacked) && !texture.key.stacked && texture.key.width != 0 && texture.key.height != 0) {
+      info.texture = true;
+      std::memcpy(info.dwords, dwords, sizeof(info.dwords));
+      info.width = texture.key.width;
+      info.height = texture.key.height;
+    }
+    return info;
+  };
+  return car_rt_material::Capture(r.ps_identity, d.banks ? d.banks->ps.data() : nullptr, fetch);
+}
+
+// The frame's light: the pixel constants of the first vehicle draw (c26 ambient, c39 sun colour, c57 sky), and the environment map's slots from the first draw of a shader that
+// reads it (fetch slots 0 and 1; the slot the scene bound for the draw, valid for this frame).
+void CarFrame::NoteLight(const MainDraw& d, const car_rt_material::Material& material) {
+  car_rt_material::FrameLight& light = frame_.light;
+  if (!light.valid && d.banks) {
+    const uint8_t* ps = d.banks->ps.data();
+    float sun[4], ambient[4], sky[4];
+    if (car_rt_material::ReadRegister(ps, 39, sun) && car_rt_material::ReadRegister(ps, 26, ambient)) {
+      for (int c = 0; c < 3; ++c) {
+        light.sun[c] = std::max(sun[c], 0.0f);
+        light.ambient[c] = std::max(ambient[c], 0.0f);
+      }
+      if (car_rt_material::ReadRegister(ps, 57, sky)) {
+        for (int c = 0; c < 3; ++c) {
+          light.sky[c] = std::max(sky[c], 0.0f);
+        }
+      }
+      light.valid = true;
+    }
+  }
+  if (light.env_sharp == 0 && material.env != 0 && d.shared) {
+    const uint32_t sharp = d.shared->texture_2d[0];
+    if ((sharp & ~kTextureGammaBit) != kNullTexture2DSlot) {
+      light.env_sharp = sharp;
+      light.env_blur = material.env == 1 ? d.shared->texture_2d[1] : 0u;
+    }
+  }
 }
 
 bool CarFrame::ReadForListener(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals) {

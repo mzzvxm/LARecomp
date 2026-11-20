@@ -280,6 +280,22 @@ class GPUSettings final : public rex::SettingOwner {
     "the graphics card's class decides: 500 on the High class, 200 on the Mid class, none on the Low class). Over it the pass casts fewer rays a texel (up to twice it: 2, over that: 1) "
     "and leaves the smaller cars out. Live.", rex::kDebugOnly, rex::Range{0, 8000});
 
+  REX_SETTING(bool, mcla_gpu_car_rt_hit_shading, true, "Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint "
+    "colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where "
+    "the camera sees the part its own colour in the picture is used as before. Off: a part the camera does not see takes the stand-in colour (the colour the camera sees of that car, in shade, or "
+    "its paint), as before. Needs the other cars in the scene (mcla_gpu_car_rt_cars). Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_car_rt_hit_shadow, true, "Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows are not "
+    "known there). Off: the sun lights every part that faces it. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_car_rt_hit_gain, 1.0, "Debug: the brightness of the shaded hits on other cars against the colours the camera sees (1, the default). A flank that is too bright or too dark against the part of the same car "
+    "the camera sees: move it. Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
+  REX_SETTING(f64, mcla_gpu_car_rt_hit_ambient, 1.0, "Debug: the share of the frame's ambient light (the cars' own pixel constants) in a shaded hit on another car (1, the default). Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
+  REX_SETTING(f64, mcla_gpu_car_rt_hit_spec, 1.0, "Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the "
+    "default). Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
   REX_SETTING(f64, mcla_gpu_car_rt_paint_gamma, 2.0, "Debug: the game's paint colours (what the player picks: an orange is 0.90, 0.49, 0.20) are raised to this power to be the colour the paint's light makes of them, for the "
     "colour another car shows in the ray traced reflection where the camera does not see the car (its paint, from the game's customisation record). 2: about what the "
     "game's own paint does (a car of colour 0.22 is black). 1: the colours as they are (paler, more grey). Live.", rex::kDebugOnly, rex::Range{1.0, 3.5});
@@ -1492,6 +1508,11 @@ inline auto& mcla_gpu_car_rt_cars_radius = g_gpu.mcla_gpu_car_rt_cars_radius;
 inline auto& mcla_gpu_car_rt_cars_traffic = g_gpu.mcla_gpu_car_rt_cars_traffic;
 inline auto& mcla_gpu_car_rt_cars_wheels = g_gpu.mcla_gpu_car_rt_cars_wheels;
 inline auto& mcla_gpu_car_rt_check = g_gpu.mcla_gpu_car_rt_check;
+inline auto& mcla_gpu_car_rt_hit_shading = g_gpu.mcla_gpu_car_rt_hit_shading;
+inline auto& mcla_gpu_car_rt_hit_shadow = g_gpu.mcla_gpu_car_rt_hit_shadow;
+inline auto& mcla_gpu_car_rt_hit_gain = g_gpu.mcla_gpu_car_rt_hit_gain;
+inline auto& mcla_gpu_car_rt_hit_ambient = g_gpu.mcla_gpu_car_rt_hit_ambient;
+inline auto& mcla_gpu_car_rt_hit_spec = g_gpu.mcla_gpu_car_rt_hit_spec;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;

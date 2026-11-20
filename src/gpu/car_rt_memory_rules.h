@@ -307,6 +307,7 @@ struct KitDraw {
   uint32_t indices = 0;
   bool after_world = false;
   float rel[4][3] = {};  // P * inverse(M): the draw's matrix in the vehicle's frame; the fourth column is (0, 0, 0, 1)
+  car_rt_material::Material material;  // what the draw's surface is made of as of the frame the kit was made (RT-HIT-SHADING): a car the camera no longer draws keeps its paint and parts' materials
 };
 
 // rel = P * inverse(M), for a draw's model-to-world P. False (nothing written) when the result is not finite or P is not affine (a perspective column).
@@ -578,6 +579,7 @@ class CarMemory {
         draw.ps = d.ps;
         draw.mesh_key = d.mesh_key;
         draw.indices = d.indices;
+        draw.material = d.material;
         draw.model_to_world = Place(d.rel, matrix);
         car.Add(draw.model_to_world, c.distance);
         out->draws.push_back(draw);
@@ -726,6 +728,7 @@ class CarMemory {
       k.mesh_key = d.mesh_key;
       k.vs = d.vs;
       k.ps = d.ps;
+      k.material = d.material;
       k.indices = d.indices;
       k.after_world = d.after_world;
       draws.push_back(k);

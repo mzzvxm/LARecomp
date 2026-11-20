@@ -9442,5 +9442,63 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shading": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint \"\n    \"colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where \"\n    \"the camera sees the part its own colour in the picture is used as before. Off: a part the camera does not see takes the stand-in colour (the colour the camera sees of that car, in shade, or \"\n    \"its paint), as before. Needs the other cars in the scene (mcla_gpu_car_rt_cars). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_shadow": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows are not \"\n    \"known there). Off: the sun lights every part that faces it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the brightness of the shaded hits on other cars against the colours the camera sees (1, the default). A flank that is too bright or too dark against the part of the same car \"\n    \"the camera sees: move it. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_ambient": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the frame's ambient light (the cars' own pixel constants) in a shaded hit on another car (1, the default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_spec": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the \"\n    \"default). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

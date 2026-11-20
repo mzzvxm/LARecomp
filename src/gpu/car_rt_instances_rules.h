@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "car_dump_rules.h"
+#include "car_rt_material_rules.h"
 #include "car_rt_scene_rules.h"
 #include "gpu_class.h"
 #include "temporal_math.h"
@@ -229,6 +230,11 @@ struct OtherDraw {
   uint64_t mesh_key = 0;
   uint32_t indices = 0;         // the draw's index (or vertex) count
   temporal::Mat4 model_to_world;
+  // What the surface is made of (car_rt_material_rules.h): the draw's shader class, its colours and its diffuse texture's fetch. Class kNone: the shader is not one the table knows
+  // (or the draw is a walked part's: `part` says which part).
+  car_rt_material::Material material;
+  static constexpr uint16_t kNoPart = 0xFFFFu;
+  uint16_t part = kNoPart;      // a walked car's part slot (car_model_walk_rules.h: 0..54, the body, tyre, rim, model); kNoPart for a drawn car's draw
 };
 
 // One kept car: its ID, its distance and the running sum of the origins of its draws.
@@ -246,6 +252,10 @@ struct OtherCar {
   // the hidden hits of the car show it instead of the fixed grey (hlsl/car_rt_refl_cs.hlsl OtherCarColour).
   bool has_paint = false;
   float paint[3] = {};
+  // A walked car's paint colours A and B as the customisation record gives them (0..1): the walked parts of paint class take them (car_rt_material_rules.h WalkedMaterial).
+  bool has_paint_ab = false;
+  float paint_a[3] = {};
+  float paint_b[3] = {};
 
   void Add(const temporal::Mat4& model_to_world, double draw_distance) {
     for (int c = 0; c < 3; ++c) {
@@ -371,6 +381,9 @@ struct MeshRef {
   float bounds_min[3] = {};
   float bounds_max[3] = {};
   bool has_bounds = false;
+  // The mesh's texture coordinates (a half2 a vertex in the shared buffer from `first_vertex`) and their density (car_rt_material_rules.h MeshUvDensity); has_uv false: none.
+  bool has_uv = false;
+  float uv_density = 0.0f;
 };
 
 // A box in the frame's view space (x right, y up, z forward: the occlusion's own). `valid` is false until a point has been added.
@@ -480,6 +493,8 @@ struct CarRecordLog {
 struct List {
   std::vector<Item> items;
   std::vector<rr::InstanceRow> rows;
+  // The material of each item (car_rt_material_rules.h), in the items' order. A list made by hand may leave it short: the missing ones are of class kNone.
+  std::vector<car_rt_material::InstanceMaterial> materials;
   // The other cars' boxes in the frame's view space, one a listed car that has any instance (the nearest first), and the first row of them in
   // `rows`: two rows a box, its minimum and its maximum as float bits (x, y, z, 0), after the cars' rows. The ray traced occlusion traces
   // inside these and the player's own box (hlsl/car_rt_ao_cs.hlsl).
@@ -500,6 +515,7 @@ struct List {
   void Clear() {
     items.clear();
     rows.clear();
+    materials.clear();
     boxes.clear();
     box_row = 0;
     car_row = 0;
@@ -545,7 +561,7 @@ inline std::vector<uint32_t> PlanCars(const std::vector<OtherCar>& cars, uint32_
 // its `draw` field.
 template <typename Find>
 inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const std::vector<OtherCar>& cars, const temporal::Mat4& view,
-                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find, uint32_t max_cars = 0) {
+                         bool flip_z, uint32_t budget_instances, uint32_t max_total, Find&& find, uint32_t max_cars = 0, float paint_gamma = car_rt_material::kWalkedPaintGamma) {
   const uint32_t have = uint32_t(list->items.size());
   const uint32_t room = max_total > have ? max_total - have : 0;
   uint32_t cut = 0;
@@ -587,6 +603,19 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     }
     list->items.push_back(item);
     list->rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, uint32_t(slot) * kCarRows));
+    {
+      // the surface: the draw's own material, or (a walked part, which has no shader) the part's usual one in the car's paint
+      car_rt_material::InstanceMaterial im;
+      if (draw.material.Known()) {
+        im.material = draw.material;
+      } else if (draw.part != OtherDraw::kNoPart) {
+        const OtherCar& car = cars[plan[size_t(slot)]];
+        im.material = car_rt_material::WalkedMaterial(draw.part, car.has_paint_ab, car.paint_a, car.paint_b, paint_gamma);
+      }
+      im.has_uv = ref.has_uv;
+      im.uv_density = ref.uv_density;
+      list->materials.push_back(im);
+    }
     GrowBox(&car_boxes[size_t(slot)], item.transform, ref);
     ++list->stats.other_instances;
     list->stats.other_chrome += (item.mask & rr::kMaskOtherChrome) != 0 ? 1u : 0u;

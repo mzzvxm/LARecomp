@@ -290,6 +290,13 @@ class TextureCache {
   Binding Bind2D(const TextureFetch& fetch, Scale reader_scale,
                  plume::RenderCommandList* list);
 
+  // The slot (kTextureGammaBit when the fetch asks) of the 2D texture `fetch` names IF it exists now, for a reader that does not draw: the ray traced car passes bind the
+  // textures of cars beside the player, some of which no draw names in this frame. A resolve product of the image (read as it is: no reduced copy, no recorded pass), or a
+  // texture decoded from guest memory that was uploaded and has no write pending, in a host texture of the cache. Nothing is created, decoded or uploaded and nothing is
+  // logged; the entry is marked used in this frame (the budget's Trim and the idle eviction leave it). kNullTexture2DSlot when there is nothing to hand out: a texture the
+  // cache never made or gave back, a replacement or a depth product it would not bind here, a dimension other than 2D. Render thread.
+  uint32_t Peek2D(const TextureFetch& fetch);
+
   // The image that stands for a scene colour product for the rest of a frame (the temporal
   // upscaler's output, temporal.h): every fetch whose resolve product (ResolveCache::Find) is
   // `product` (or `other_product`) binds `texture` instead, through its own swizzle's view, as a
