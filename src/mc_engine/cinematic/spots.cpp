@@ -190,4 +190,29 @@ bool SpotsChanged(const std::string& scene_path, const LoadedSpots& loaded) {
     return false;
 }
 
+ParseResult ParseSceneWithSpots(std::string_view text, const std::string& scene_path, LoadedSpots* loaded) {
+    LoadedSpots local;
+    LoadedSpots& spots = loaded != nullptr ? *loaded : local;
+    spots = LoadSpotsFor(scene_path);
+    ParseOptions options;
+    options.spots = &spots.table;
+    options.path = scene_path;
+    return ParseScene(text, options);
+}
+
+std::string SpotsTextFor(const std::string& scene_path) {
+    std::string out;
+    for (const std::string& path : SpotFilesFor(scene_path)) {
+        std::error_code ec;
+        const uintmax_t size = std::filesystem::file_size(PathFromUtf8(path), ec);
+        if (ec || size > kMaxSpotsFileBytes) continue;
+        std::ifstream in(PathFromUtf8(path), std::ios::binary);
+        if (!in) continue;
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        out += "# from " + path + "\n" + text;
+        if (text.empty() || text.back() != '\n') out += '\n';
+    }
+    return out;
+}
+
 }  // namespace mc::cinematic

@@ -451,6 +451,24 @@ void TestFiles() {
     Check(r.Ok(), "a scene in recipes resolves the local and the shared spot");
     CheckEq(WordsOf(r, Track::kCar, 0), "p1 spawn vp_x at 15 20 30 heading 90", "...here faces +X, so 5 m ahead is +5 in x");
     CheckEq(WordsOf(r, Track::kCar, 1), "p2 spawn vp_x at 1 2 3", "...the shared one");
+
+    // the same in one call (the runner and the Director use it), and the text a take keeps beside its scene copy
+    const std::string scene_path = (scenes / "recipes" / "r.scene").string();
+    const std::string scene_text = "scene r\nat 1 car p1 spawn vp_x at spot:here@0,0,5 heading spot:here\nend 4\n";
+    LoadedSpots again;
+    const ParseResult r2 = ParseSceneWithSpots(scene_text, scene_path, &again);
+    Check(r2.Ok() && again.files.size() == 2 && !SpotsChanged(scene_path, again), "ParseSceneWithSpots: the scene parses and the stamps are kept");
+    CheckEq(WordsOf(r2, Track::kCar, 0), "p1 spawn vp_x at 15 20 30 heading 90", "...with the same numbers");
+    CheckEq(r2.scene.source_path, scene_path, "...and knows its path");
+    Check(!ParseSceneWithSpots(scene_text, "").Ok(), "ParseSceneWithSpots without a path has no table: a spot word is an error");
+    const std::string kept = SpotsTextFor(scene_path);
+    Check(kept.find("shared 1 2 3 4") != std::string::npos && kept.find("here 10 20 30 90") != std::string::npos &&
+              kept.find("shared") < kept.find("here 10"),
+          "SpotsTextFor: both files, the shared one first");
+    SpotTable reread;
+    std::vector<Diagnostic> reread_diags;
+    Check(ParseSpots(kept, "spots.txt", &reread, &reread_diags) && reread.Find("here") && reread.Find("shared"), "...and the text reads back as a spots file");
+    CheckEq(SpotsTextFor(""), "", "SpotsTextFor without a scene path: nothing");
     fs::remove_all(root, ec);
 }
 

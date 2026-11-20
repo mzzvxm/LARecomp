@@ -16,6 +16,7 @@
 //   frames.csv    one row for every frame: the update it shows, its scene time and what it cost
 //   state.csv     only when the scene asks (`statelog on`): one row for every frame of the game's own state, the evidence that two takes match
 //   scene.scene   a copy of the scene file the take ran
+//   spots.txt     only when the scene names places (`spot:<name>`): the spots files it read (spots.h), so the copy resolves them
 //   ffmpeg.log    ffmpeg's own output (sinks ffmpeg and png)
 //
 // A take never overwrites another: a name that is taken gets -2, -3 ... after it.
@@ -79,6 +80,8 @@ inline constexpr const char* kTakeJsonName = "take.json";
 inline constexpr const char* kFramesCsvName = "frames.csv";
 inline constexpr const char* kStateCsvName = "state.csv";
 inline constexpr const char* kSceneCopyName = "scene.scene";
+// The spots files the scene reads (spots.h), one after the other: written beside the copy when the scene has a `spot:` word, so the copy resolves the same places.
+inline constexpr const char* kSpotsCopyName = "spots.txt";
 inline constexpr const char* kFfmpegLogName = "ffmpeg.log";
 inline constexpr const char* kVideoMkvName = "video.mkv";
 inline constexpr const char* kAudioWavName = "audio.wav";

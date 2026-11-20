@@ -42,6 +42,7 @@
 #include "../freecam_runtime.h"
 #include "../native_call.h"
 #include "../scene_runtime.h"
+#include "../spots.h"
 #include "command.h"
 #include "director_game.h"
 #include "director_internal.h"
@@ -387,7 +388,7 @@ SceneDoc& Doc() {
 }
 
 void RefreshDocCaches(SceneDoc& doc) {
-    const ParseResult r = ParseScene(doc.text);
+    const ParseResult r = ParseSceneWithSpots(doc.text, doc.path);  // with the scene's spots: a spot word is not an error here
     doc.name = r.scene.name;
     doc.fps = r.scene.fps;
     doc.duration = r.scene.Duration();
@@ -586,8 +587,8 @@ EditOutcome ApplySceneEdit(const std::vector<EditOp>& ops, int64_t base_rev, con
         out.details.Set("op", er.failed_op);
         return out;
     }
-    const ParseResult before = ParseScene(d.text);
-    const ParseResult after = ParseScene(er.text);
+    const ParseResult before = ParseSceneWithSpots(d.text, d.path);
+    const ParseResult after = ParseSceneWithSpots(er.text, d.path);
     if (!after.Ok() && !allow_errors && before.Ok()) {
         out.code = ErrorCode::kFailed;
         out.message = "the edit makes the scene not parse (" + std::to_string(after.ErrorCount()) + " error(s)); nothing was written. Pass allow_errors to write it anyway";
@@ -912,6 +913,17 @@ std::shared_ptr<const Snapshot> BuildSnapshot(State& s, const std::vector<SceneC
     sn->proposal_serial = d.proposal_serial;
     sn->proposal_path = d.proposal_path;
     sn->proposal_note = d.proposal_note;
+    // the scene's named places (spots.h), for query.spots and a `spot:<name>` subject of the other queries
+    if (const SpotTable* table = SceneSpotTable()) {
+        for (const Spot& sp : table->spots()) {
+            SnapSpot ss;
+            ss.name = sp.name;
+            ss.pos[0] = sp.x, ss.pos[1] = sp.y, ss.pos[2] = sp.z;
+            ss.heading = sp.has_heading ? sp.heading : 0.0;
+            ss.text = sp.note;
+            sn->spots.push_back(std::move(ss));
+        }
+    }
     for (const SnapshotContributor c : SnapshotContributors()) c(*sn);
     return sn;
 }

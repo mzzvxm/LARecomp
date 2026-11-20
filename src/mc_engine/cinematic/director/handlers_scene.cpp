@@ -13,6 +13,7 @@
 #include <string>
 
 #include "../scene_runtime.h"
+#include "../spots.h"
 #include "director_internal.h"
 #include "director_math.h"
 #include "larecomp_log.h"
@@ -183,7 +184,7 @@ void RegisterScene() {
             } else {
                 return r.Fail(ErrorCode::kBadArgs, "scene.propose: give 'text' or 'path'");
             }
-            const ParseResult parsed = ParseScene(text);
+            const ParseResult parsed = ParseSceneWithSpots(text, d.path);  // against the scene's own spots, wherever the proposal lies
             d.proposal_path = internal::Utf8(file);
             d.proposal_note = req.args.StringOr("note", "");
             ++d.proposal_serial;
@@ -207,7 +208,7 @@ void RegisterScene() {
             if (d.proposal_path.empty()) return r.Fail(ErrorCode::kNotReady, "no proposal is pending");
             std::string text;
             if (!internal::ReadTextFile(internal::FromUtf8(d.proposal_path), &text)) return r.Fail(ErrorCode::kFailed, "cannot read the proposal " + d.proposal_path);
-            const ParseResult parsed = ParseScene(text);
+            const ParseResult parsed = ParseSceneWithSpots(text, d.path);
             if (!parsed.Ok()) return r.Fail(ErrorCode::kFailed, "the proposal does not parse (" + std::to_string(parsed.ErrorCount()) + " error(s)): it is not accepted");
             std::string err;
             internal::WriteTextFileAtomic(internal::FromUtf8(d.path + ".bak-" + Stamp()), d.text, &err);  // the old scene, beside it

@@ -120,6 +120,7 @@ extern char** environ;
 #include "larecomp_log.h"
 #include "larecomp_version.h"
 #include "scene_runtime.h"
+#include "spots.h"
 #include "take_folder.h"
 
 #if defined(LARECOMP_HAS_GPU)
@@ -895,6 +896,12 @@ void CopySceneFile(Take& t) {
         return;
     }
     t.scene_fnv = core::Hex64(core::Fnv1a64(text.data(), text.size()));
+    // A scene that names places (`spot:<name>`) is run from the take folder with the places it had: the spots files it read, beside the copy (spots.h).
+    if (text.find("spot:") != std::string::npos) {
+        const std::string spots = SpotsTextFor(src);
+        const std::string spots_copy = core::JoinPath(t.layout.folder, core::kSpotsCopyName);
+        if (!spots.empty() && !WriteTextFile(spots_copy, spots)) LARECOMP_APP_WARN("[cap] cannot write {}", spots_copy);
+    }
 }
 
 // The take's folder: mcla_capture_out exactly, else <mcla_capture_dir>/<name> with the first free name. False: `why` says what is wrong, and no

@@ -67,6 +67,7 @@
 
 #include "scene_runtime.h"
 #include "scene_want.h"
+#include "spots.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
@@ -339,6 +340,9 @@ struct Runner {
     bool ready_warned = false;
     uint64_t updates = 0;       // updates run with a scene loaded
     uint64_t begin_update = 0;  // the update count when the scene (re)started: the ready gate waits a few updates after it
+
+    // The scene's named places (spots.h): the table of the spots files read for the last parse and the stamps they had, so a changed spots file reloads the scene.
+    LoadedSpots spots;
 };
 Runner g;
 
@@ -796,6 +800,14 @@ bool ApplyScene(ParseResult&& r, const char* by) {
     return false;
 }
 
+// The scene text parsed with the spots tables that apply to the scene's file (spots.h INTEGRATION): `spot:<name>` words become numbers, and the scene knows
+// where it lies (a camera rig's route is looked for beside it). What was read stays in g.spots for the change check in PollFile.
+ParseResult ParseSceneText(const std::string& text) {
+    ParseResult r = ParseSceneWithSpots(text, g.path, &g.spots);
+    for (const std::string& problem : g.spots.problems) LARECOMP_APP_WARN("[scene] spots: {}", problem);
+    return r;
+}
+
 void LogDiagnostics(const ParseResult& r) {
     for (const Diagnostic& d : r.diagnostics) {
         const std::string line = FormatDiagnostic(d, g.file_name);
@@ -808,7 +820,7 @@ void Load(const FileStamp& stamp) {
     std::ifstream in(PathFromUtf8(g.path), std::ios::binary);
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     g.watcher.Loaded(stamp);
-    ParseResult r = ParseScene(text);
+    ParseResult r = ParseSceneText(text);
     LogDiagnostics(r);
     if (!r.Ok()) {
         LARECOMP_APP_ERROR("[scene] {}: {} error(s), {}", g.file_name, r.ErrorCount(),
@@ -835,6 +847,11 @@ void PollFile() {
     }
     switch (g.watcher.Poll(stamp, now)) {
         case ReloadWatcher::Action::kNone:
+            // A spots file of the scene changed (a spot moved, one was added): the scene is read again, so the shot moves at once (soft: the clock and the cars stay).
+            if (g.have_scene && stamp.exists && SpotsChanged(g.path, g.spots)) {
+                LARECOMP_APP_INFO("[scene] a spots file of {} changed: reading the scene again", g.file_name);
+                Load(stamp);
+            }
             return;
         case ReloadWatcher::Action::kMissing:
             LARECOMP_APP_WARN("[scene] {}: no such file", g.path);
@@ -1045,6 +1062,10 @@ FileStamp CurrentStamp() {
 }
 }  // namespace
 
+const SpotTable* SceneSpotTable() {
+    return g.armed ? &g.spots.table : nullptr;
+}
+
 const Scene* LoadedScene() {
     return g.armed && g.have_scene ? &g.scene : nullptr;
 }
@@ -1112,7 +1133,7 @@ void SceneRestartAt(double t) {
 SceneTextResult SceneLoadText(const std::string& text, const char* by) {
     SceneTextResult res;
     if (!g.armed) return res;
-    ParseResult r = ParseScene(text);
+    ParseResult r = ParseSceneText(text);
     res.diagnostics = r.diagnostics;
     res.errors = r.ErrorCount();
     LogDiagnostics(r);
@@ -1186,6 +1207,7 @@ std::string SceneName() { return std::string(); }
 bool SampleGameState(GameStateSample* out) { *out = GameStateSample{}; return false; }
 bool RegisterTrackApplier(const TrackApplier*) { return false; }
 const Scene* LoadedScene() { return nullptr; }
+const SpotTable* SceneSpotTable() { return nullptr; }
 SceneTransport GetSceneTransport() { return SceneTransport{}; }
 void SceneHold(bool) {}
 void SceneSeekTo(double) {}

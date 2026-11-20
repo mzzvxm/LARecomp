@@ -314,10 +314,10 @@ inline bool ExpandSpotWords(std::vector<std::string>* words, const SpotTable* ta
         const Spot* spot = table->Find(ref.name);
         if (spot == nullptr) {
             *error = "unknown spot '" + ref.name + "'";
-            const std::vector<std::string> near = table->Suggest(ref.name);
-            if (!near.empty()) {
+            const std::vector<std::string> similar = table->Suggest(ref.name);  // not `near`: <Windows.h> defines it
+            if (!similar.empty()) {
                 *error += " (did you mean ";
-                for (size_t k = 0; k < near.size(); ++k) *error += (k ? ", " : "") + near[k];
+                for (size_t k = 0; k < similar.size(); ++k) *error += (k ? ", " : "") + similar[k];
                 *error += "?)";
             } else {
                 *error += " (" + std::to_string(table->size()) + " spots are known: see spots.txt)";
@@ -371,5 +371,14 @@ LoadedSpots LoadSpotsFor(const std::string& scene_path);
 
 // Whether the files changed since `loaded`: one of them has another stamp, or one appeared or went away. A cheap poll (a few stats).
 bool SpotsChanged(const std::string& scene_path, const LoadedSpots& loaded);
+
+// The INTEGRATION above in one call: the scene text parsed with the table of the spots files that apply to `scene_path` and with the path itself (a camera
+// rig's route is looked for beside it). `loaded`, when given, receives what was read and the stamps it had (for SpotsChanged). An empty path: no table, no folder.
+ParseResult ParseSceneWithSpots(std::string_view text, const std::string& scene_path, LoadedSpots* loaded = nullptr);
+
+// The text of the spots files a scene uses, in the order they apply, one after the other (a later line of the same name replaces an earlier one, as in
+// LoadSpotsFor). A take writes it as `spots.txt` beside its scene copy, so the copy reads the same places when it is run from the take folder. Empty when
+// the scene has no spots file.
+std::string SpotsTextFor(const std::string& scene_path);
 
 }  // namespace mc::cinematic

@@ -84,6 +84,9 @@ bool RegisterTrackApplier(const TrackApplier* applier);
 
 // The parsed scene that runs, or null when none is armed or the file was never read. Valid until the next TickScene.
 const Scene* LoadedScene();
+// The named places the scene resolves `spot:<name>` words against (spots.h; the files beside the scene as of its last read), or null when no scene is armed.
+// For the Director's snapshot and its query.spots. Valid until the next TickScene.
+const SpotTable* SceneSpotTable();
 
 struct SceneTransport {
     SceneState state = SceneState::kOff;
