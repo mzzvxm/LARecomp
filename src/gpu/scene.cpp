@@ -45,6 +45,7 @@
 #include "samplers.h"
 #include "scene_noise.h"
 #include "shafts.h"
+#include "volumetrics.h"
 #include "sync_builds.h"
 #include "temporal.h"
 #include "texture_names.h"
@@ -845,6 +846,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (shafts_) {
     shafts_->BeginFrame();
   }
+  if (vol_) {
+    vol_->BeginFrame();
+  }
   if (car_refl_) {
     car_refl_->BeginFrame();
   }
@@ -1279,6 +1283,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (shafts_ && shafts_->wants_draws()) {
       shafts_->OnAnchor(banks);  // ... and the next frame's sun shafts place the sun by it
     }
+    if (vol_ && vol_->wants_draws()) {
+      vol_->OnAnchor(banks);  // ... and the next frame's volumetric light has its lens and its pose by it
+    }
     if (car_refl_ && car_refl_->wants_draws()) {
       car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
     }
@@ -1305,9 +1312,14 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.no_effect[size_t(no_effect_reason)];
     } else if (skip != Skip::kCount) {
       CountSkip(skip, r, detail);
+    } else if (vol_ && vol_->SkipsLightCones() &&
+               UpscalerMasks::KindOf(r.vs_identity, r.ps_identity) == UpscalerMasks::Kind::kLightVolume) {
+      // The game's cone mesh under a lamp (xrage_spotlightfog): the volumetric light of this frame holds the same lamps, with depth and a medium
+      // (mcla_gpu_vol_keep_cones draws both). Not recorded; counted with the culled draws.
+      ++window_.no_effect[size_t(NoEffect::kCulled)];
     } else {
       ++window_.prepared;
-      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
+      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) || (vol_ && vol_->wants_draws()) ||
           (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
           (car_frame_ && car_frame_->wants_draws())) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
@@ -1897,6 +1909,10 @@ void Scene::NoteMenuWorld() {
 
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
                                  uint64_t vs_identity, uint64_t ps_identity, const DrawView& view) {
+  if (vol_ && vol_->wants_draws()) {
+    // The sun shadow collector's draws (not the main view's) tell the volumetric light the cascades and the atlas.
+    vol_->OnPreparedDraw(banks, d.ps ? d.ps->variants : 0u, d.shared_constants ? d.shared_constants.cpu : nullptr);
+  }
   EdramKey color;
   EdramKey depth;
   const EdramKey* color0 = nullptr;
@@ -1921,6 +1937,9 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
+  }
+  if (vol_ && vol_->wants_draws()) {
+    vol_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     car_refl_->OnMainDraw(draw.match, draw.stencil_ids);
@@ -3216,6 +3235,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
+  if (vol_ && vol_->wants_draws()) {
+    // The same copy (volumetrics.h): the volumetric light is composited into the colour before the copy reads it, and before the sun
+    // shafts' own pass below (the shafts' light is added on top of the haze).
+    vol_->BeforeResolve(record, list);
+  }
   if (shafts_ && shafts_->wants_draws()) {
     // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
     // before the copy reads it.
@@ -3240,6 +3264,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
     // targets: the reset below forgets them too).
     shafts_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (vol_ && vol_->wants_draws()) {
+    // The same depth copy again: the volumetric light's compute passes (volumetrics.h), after the car shadow map, the ambient occlusion and the sun
+    // shafts have recorded (and, with the headlights' shadow replay on the branch that has it, after that), so that the beams see this frame's maps.
+    vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
   }
   if (car_rt_) {
     // The same depth copy builds the player's car's ray tracing structures (car_rt_scene.h): new meshes into their bottom level structures,
@@ -3304,6 +3333,9 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   }
   if (shafts_) {
     shafts_->OnComposite();
+  }
+  if (vol_) {
+    vol_->OnComposite();
   }
   if (car_refl_) {
     car_refl_->OnComposite();
@@ -3446,6 +3478,9 @@ void Scene::OnPresent() {
   }
   if (shafts_) {
     shafts_->OnPresent();
+  }
+  if (vol_) {
+    vol_->OnPresent();
   }
   if (car_refl_) {
     car_refl_->OnPresent();
