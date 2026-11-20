@@ -684,6 +684,8 @@ class DirectorPanel final : public rex::ui::DialogBase {
 
     // The dock is sized from the window (director_panel_core.h PlanDock): the font, the paddings and the height follow ImGui's display size, so a small window keeps most of its
     // picture. The transport bar's buttons flow and wrap at the dock's right edge, the bar measures its own height for the next frame, and the rest is the timeline and the inspector.
+    // CHECK: drawn for the first time by the rerun of chain-dir-panel (pics): the numbers of PlanDock (font 0.78 to 2 times 17, a third of the window), whether the bar wraps to two rows at
+    // 853 units wide, the lane strips' tiny titles and the tab strip's right arrow position (SameLine to the strip's end) are judged on the pictures, not proven.
     void DrawDock(ImGuiIO& io, const dir::Snapshot& s) {
         const dp::DockPlan& pl = plan_;
         ImGui::SetNextWindowPos(ImVec2(0.0f, io.DisplaySize.y - pl.height));
