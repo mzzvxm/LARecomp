@@ -236,6 +236,13 @@ add_executable(larecomp_variant_golden_test EXCLUDE_FROM_ALL
     variants/ui_sharp.cpp)
 target_compile_features(larecomp_variant_golden_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_variant_golden_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# The variants of the branches that are not in every tree (feat/headlights, feat/gbuffer-spike) are checked too when their files are there (variant_golden_test.cpp
+# takes them with __has_include; the G-buffer's helper is `--gbuffer-hlsli src/gpu/hlsl/gbuffer_common.hlsli`): with both, the real pair is composed and compiled.
+foreach(_larecomp_branch_variant IN ITEMS headlight gbuffer)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/variants/${_larecomp_branch_variant}.cpp")
+        target_sources(larecomp_variant_golden_test PRIVATE variants/${_larecomp_branch_variant}.cpp)
+    endif()
+endforeach()
 
 # The same for the luminance scale variant (variants/luminance_scale_test.cpp): cmake --build <dir> --target
 # larecomp_luminance_scale_test, then run it [<translated PSSampleAverageLuminance.hlsl> [<folder for the result>]].

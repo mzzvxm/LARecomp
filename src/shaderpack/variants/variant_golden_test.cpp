@@ -21,9 +21,12 @@
 //     the cube map's line), with the real stage first and with it second: the composition applies, both blocks are declared once at the offsets the chain gives,
 //     and with `--dxc DIR` (the folder of dxc.exe and dxil.dll) the composed text compiles to DXIL and SPIR-V with the pack's arguments. A vertex stage is
 //     composed with a real vertex shader the same way.
+//     2b. THE REAL PAIR. A tree that has both the headlight's and the G-buffer's variants (feat/headlights and feat/gbuffer-spike together) also composes the two on the
+//     retail shaders they share (xCityDefault's night shader) and compiles that: the headlight's block at 608, the G-buffer's at 1280, both helpers once, and DXIL and SPIR-V
+//     with the shader's spec constants 0 and 2 (the alpha test twin).
 //
 //   cmake --build <build dir> --target larecomp_variant_golden_test     (src/shaderpack/CMakeLists.txt)
-//   larecomp_variant_golden_test --hlsl <folder>... --hlsli <hdr_tonemap_shoulder.hlsli> [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]
+//   larecomp_variant_golden_test --hlsl <folder>... --hlsli <hdr_tonemap_shoulder.hlsli> [--gbuffer-hlsli <gbuffer_common.hlsli>] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]
 // Exit 0 when every check holds.
 
 #include <algorithm>
@@ -53,6 +56,16 @@
 #include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 #include "shaderpack/variants/ui_sharp.h"
+// The variants of the branches that are not in every tree (feat/headlights, feat/gbuffer-spike): the test takes the ones this tree has, so that the same file serves each branch and
+// their union. The G-buffer's helper (src/gpu/hlsl/gbuffer_common.hlsli) is a file the variant pastes: `--gbuffer-hlsli FILE`.
+#if __has_include("shaderpack/variants/headlight.h")
+#include "shaderpack/variants/headlight.h"
+#define GOLDEN_HAS_HEADLIGHT 1
+#endif
+#if __has_include("shaderpack/variants/gbuffer.h")
+#include "shaderpack/variants/gbuffer.h"
+#define GOLDEN_HAS_GBUFFER 1
+#endif
 
 // The one function of the pack builder's hash library this test needs (hdr_scene.cpp fingerprints its curve with it; the text it makes does not depend on it).
 namespace larecomp::shaderpack {
@@ -202,7 +215,7 @@ sp::VariantDef TestStage(uint32_t feature, std::string name, std::string tag) {
 
 int main(int argc, char** argv) {
   std::vector<fs::path> roots;
-  fs::path golden, write, hlsli, dxc_dir, work;
+  fs::path golden, write, hlsli, gbuffer_hlsli, dxc_dir, work;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const bool more = i + 1 < argc;
@@ -210,15 +223,16 @@ int main(int argc, char** argv) {
     else if (a == "--golden" && more) golden = argv[++i];
     else if (a == "--write" && more) write = argv[++i];
     else if (a == "--hlsli" && more) hlsli = argv[++i];
+    else if (a == "--gbuffer-hlsli" && more) gbuffer_hlsli = argv[++i];
     else if (a == "--dxc" && more) dxc_dir = argv[++i];
     else if (a == "--work" && more) work = argv[++i];
     else {
-      std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
+      std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
       return 2;
     }
   }
   if (roots.empty() || hlsli.empty()) {
-    std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
+    std::printf("usage: larecomp_variant_golden_test --hlsl DIR... --hlsli FILE [--gbuffer-hlsli FILE] [--golden FILE | --write FILE] [--dxc DIR] [--work DIR]\n");
     return 2;
   }
   std::vector<Shader> files;
@@ -239,6 +253,13 @@ int main(int argc, char** argv) {
   defs.push_back(sp::MakeCarChromeVariant());
   defs.push_back(sp::MakeLuminanceScaleVariant());
   defs.push_back(sp::MakeUiSharpVariant());
+#ifdef GOLDEN_HAS_HEADLIGHT
+  defs.push_back(sp::MakeHeadlightVariant());
+#endif
+#ifdef GOLDEN_HAS_GBUFFER
+  if (!gbuffer_hlsli.empty()) defs.push_back(sp::MakeGBufferVariantFromText(Slurp(gbuffer_hlsli)));
+  else std::printf("no --gbuffer-hlsli: the G-buffer variant is not checked\n");
+#endif
 
   // The table says what the variants say.
   for (const sp::VariantDef& def : defs) {
@@ -453,6 +474,71 @@ int main(int argc, char** argv) {
     }
   }
   std::printf("%d texts composed on retail shaders%s\n", composed_texts, dxc.enabled() ? (", " + std::to_string(compiled_texts) + " compiled with dxc (DXIL and SPIR-V)").c_str() : " (no --dxc: not compiled)");
+
+  // ---- 2b. the real pair: the headlight and the G-buffer on the shaders both edit (xCityDefault's night shader) ---------------------------------------
+  // The chain applies the headlight's edits (feature 9) first and the G-buffer's (feature 10) on the text they leave: the headlight's block is at 608 and the G-buffer's follows it
+  // at 1280, each member once in each backend, both helpers before main, the term in the ambient sum and the second output; the text compiles to DXIL and SPIR-V, with and without
+  // the alpha test's spec constants (the twin: both stages have it). Only when the tree has both variants (each branch alone has one).
+  {
+    const sp::VariantDef* headlight = nullptr;
+    const sp::VariantDef* gbuffer = nullptr;
+    for (const sp::VariantDef& def : defs) {
+      if (def.feature == sp::kFeatureHeadlight) headlight = &def;
+      if (def.feature == sp::kFeatureGBuffer) gbuffer = &def;
+    }
+    if (headlight && gbuffer) {
+      const uint32_t both = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer);
+      Check(chain::CanCompose(both) && chain::HasTwin(both), "the table composes the headlight and the G-buffer, with the twin");
+      Check(chain::OffsetOf(both, sp::kFeatureHeadlight) == 608 && chain::OffsetOf(both, sp::kFeatureGBuffer) == 608 + 672, "the headlight's block is at 608, the G-buffer's at 1280");
+      std::vector<sp::VariantShader> hl_shaders;
+      const std::vector<const Shader*> hl_targets = TargetsOf(*headlight, files, &hl_shaders);
+      int pairs = 0, pair_compiles = 0;
+      for (const Shader* file : hl_targets) {
+        bool gb_names = false;
+        for (const auto& p : gbuffer->pixel_shaders) gb_names = gb_names || p.name == file->stem;
+        for (const auto& suffix : gbuffer->pixel_name_suffixes) gb_names = gb_names || std::string_view(file->stem).ends_with(suffix);
+        if (!gb_names) continue;
+        const std::string text = Slurp(file->path);
+        const sp::VariantShader named{file->stem, 0};
+        const sp::VariantTransformResult composed = sp::ComposeStages(defs, both, named, text);
+        const sp::VariantTransformResult hl_alone = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureHeadlight), named, text);
+        const sp::VariantTransformResult gb_alone = sp::ComposeStages(defs, chain::FeatureBit(sp::kFeatureGBuffer), named, text);
+        const std::string label = "headlight + G-buffer on " + file->stem;
+        Check(composed.ok && hl_alone.ok && gb_alone.ok, label + ": composes (" + composed.error + hl_alone.error + gb_alone.error + ")");
+        if (!composed.ok || !hl_alone.ok || !gb_alone.ok) continue;
+        ++pairs;
+        const std::string& t = composed.hlsl;
+        Check(CountOccurrences(t, "#define g_HlHeader vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
+                  CountOccurrences(t, "float4 g_HlHeader : packoffset(c38);") == 1 &&
+                  CountOccurrences(t, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 1280, 0x10)") == 1 &&
+                  CountOccurrences(t, "uint4 g_GBufferMode : packoffset(c80);") == 1 && CountOccurrences(t, "float4 g_GBufferCam : packoffset(c82);") == 1,
+              label + ": the blocks are at 608 (c38) and 1280 (c80), once in each backend");
+        Check(CountOccurrences(t, "float4 HeadlightLight(") == 1 && CountOccurrences(t, "float2 GbRt1Encode(float3 n)") == 1 &&
+                  t.find("float4 HeadlightLight(") < t.find("void main(") && t.find("float2 GbRt1Encode(float3 n)") < t.find("void main("),
+              label + ": both helpers are before main, once");
+        Check(CountOccurrences(t, "hlLight.") == CountOccurrences(hl_alone.hlsl, "hlLight.") && CountOccurrences(t, " = HeadlightLight(") == 1 &&
+                  CountOccurrences(t, "oC1 : SV_Target1") == 1 && CountOccurrences(t, "oC1 = GbRt1Encode(iTexCoord0.xyz);") == 1,
+              label + ": the headlight's term and the G-buffer's output are in once");
+        Check(t.size() > hl_alone.hlsl.size() && t.size() > gb_alone.hlsl.size(), label + ": more than either alone");
+        if (dxc.enabled()) {
+          int bad = 0;
+          for (const bool spirv : {false, true}) {
+            for (const uint32_t spec : {0u, 2u}) {  // the shader's own spec mask 2 is the alpha test twin's
+              const std::string tag = "pair" + std::to_string(pairs) + (spirv ? "_spv" : "_dxil") + std::to_string(spec);
+              if (dxc.Compile(t, tag, spirv, false, spec) != 0) {
+                ++bad;
+                std::printf("FAILED: %s: dxc %s spec %u (%s)\n", label.c_str(), spirv ? "SPIR-V" : "DXIL", spec, (dxc.work / (tag + (spirv ? ".spv.log" : ".dxil.log"))).string().c_str());
+              }
+            }
+          }
+          Check(bad == 0, label + ": the composed text compiles to DXIL and SPIR-V (spec constants 0 and 2)");
+          pair_compiles += bad == 0 ? 1 : 0;
+        }
+      }
+      Check(pairs > 0, "the headlight and the G-buffer share at least one retail shader (" + std::to_string(pairs) + ")");
+      std::printf("%d composed headlight + G-buffer texts%s\n", pairs, dxc.enabled() ? (", " + std::to_string(pair_compiles) + " compiled with dxc (DXIL and SPIR-V, both spec constants)").c_str() : " (no --dxc: not compiled)");
+    }
+  }
 
   // ---- 3. a vertex stage on a real vertex shader --------------------------------------------------------------------------------------------------
   {
