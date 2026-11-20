@@ -7,8 +7,8 @@
 #include <cmath>
 #include <cstdio>
 
-#include "camera.h"
-#include "freecam.h"
+#include "../camera.h"
+#include "../freecam.h"
 #include "scene_edit.h"
 
 namespace mc::cinematic::director {

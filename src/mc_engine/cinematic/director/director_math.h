@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "director.h"
-#include "scene.h"
+#include "../scene.h"
 
 namespace mc::cinematic::director {
 
