@@ -249,6 +249,15 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_car_rt_cars_radius, 0.0, "Debug: how far from your car, in metres, another car may be to be seen by the ray traced car effects (0, the default: the graphics card's "
     "class decides, 10 to 14 m). The reflection reaches 4 m from your car's paint, so a car more than about 10 m away cannot show in it. Live.", rex::kDebugOnly, rex::Range{0.0, 60.0});
 
+  REX_SETTING(i32, mcla_gpu_car_rt_cars_traffic, -1, "Debug (the fix's own switch): how many TRAFFIC and PARKED cars the ray traced car effects see built from their own model data (mcla_gpu_car_rt_cars_model), besides the racers: the cars "
+    "of the game's ambient list (the renderer's traffic client) that the camera does not draw this frame, ranked by their distance to your car within the class's radius. -1 (the "
+    "default): the class's count (4 on the High class, 2 on the Mid class); 0 leaves the traffic out; 1 to 8 asks for that many. A traffic car's model is a fraction of a racer's "
+    "(one low detail drawable), so the count is cheap. A traffic car is placed only after its bone matrices have been checked against the draws of a traffic car the camera sees. Live.", rex::kDebugOnly, rex::Range{-1, 8});
+
+  REX_SETTING(bool, mcla_gpu_car_rt_cars_wheels, true, "Debug (the fix's own switch): a racer the camera does not draw is built WITH its four wheels (the tyre and the rim from the game's wheel manager, placed by the vehicle's own wheel "
+    "matrices, steer and spin included), not the body and the parts alone. The wheels are placed only after their placement has been checked against the draws of the cars the "
+    "camera sees. off: no wheels. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_rt_check, false, "Debug: proves the player's car as ray tracing structures (car_rt_scene.h) on a graphics card that has them (Direct3D 12 with "
     "DirectX Raytracing 1.1, Vulkan with ray queries). After the ambient occlusion's passes one ray is traced from the camera through every vehicle pixel of its "
     "linear depth image and the hit's distance is compared with the pixel's; the log says every 120 frames, under [car rt], how many "
@@ -1327,6 +1336,8 @@ inline auto& mcla_gpu_car_rt_cars_match = g_gpu.mcla_gpu_car_rt_cars_match;
 inline auto& mcla_gpu_car_rt_cars_memory = g_gpu.mcla_gpu_car_rt_cars_memory;
 inline auto& mcla_gpu_car_rt_cars_model = g_gpu.mcla_gpu_car_rt_cars_model;
 inline auto& mcla_gpu_car_rt_cars_radius = g_gpu.mcla_gpu_car_rt_cars_radius;
+inline auto& mcla_gpu_car_rt_cars_traffic = g_gpu.mcla_gpu_car_rt_cars_traffic;
+inline auto& mcla_gpu_car_rt_cars_wheels = g_gpu.mcla_gpu_car_rt_cars_wheels;
 inline auto& mcla_gpu_car_rt_check = g_gpu.mcla_gpu_car_rt_check;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_car_rt_paint_gamma = g_gpu.mcla_gpu_car_rt_paint_gamma;

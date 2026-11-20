@@ -250,6 +250,16 @@ add_executable(larecomp_car_model_walk_rules_test EXCLUDE_FROM_ALL car_model_wal
 # instance against a draw's, the mesh read from the car's buffers and its key, the paint, which cars are staged and placed, the budgets and the cleanup) likewise:
 #   cmake --build <dir> --target larecomp_car_model_rt_rules_test, then run src/gpu/larecomp_car_model_rt_rules_test (exit 0 = passed).
 add_executable(larecomp_car_model_rt_rules_test EXCLUDE_FROM_ALL car_model_rt_rules_test.cpp)
+# The wheels of a walked car (car_model_wheel_rules.h, car_model_parts_rt_rules.h, RT-MODEL-PARTS: the wheel manager's tyre and rim by the game's accessors, the wheel draw's flags,
+# the geometries added to a vehicle's walk, the four hypotheses for where a wheel stands and the calibration against the draws, one placement per wheel, the kinds of what a car
+# brings) likewise:
+#   cmake --build <dir> --target larecomp_car_model_wheel_rules_test, then run src/gpu/larecomp_car_model_wheel_rules_test (exit 0 = passed).
+add_executable(larecomp_car_model_wheel_rules_test EXCLUDE_FROM_ALL car_model_wheel_rules_test.cpp)
+# The traffic and parked cars as walk sources (car_model_traffic_rules.h, car_model_parts_rt_rules.h, RT-MODEL-PARTS: the renderer's ambient client's items, an item's car and model,
+# the walk of the model's drawable, the pose block's root and bones, the hypotheses for a bone's placement and the calibration, the traffic's own count and the racers' and the
+# traffic's cars chosen apart) likewise:
+#   cmake --build <dir> --target larecomp_car_model_traffic_rules_test, then run src/gpu/larecomp_car_model_traffic_rules_test (exit 0 = passed).
+add_executable(larecomp_car_model_traffic_rules_test EXCLUDE_FROM_ALL car_model_traffic_rules_test.cpp)
 # The ray traced occlusion and contact shadows around the player's car (car_rt_ao_rules.h: the setting, the rays and their lengths, the cosine pattern, the
 # car's box in view space and the pixel rectangle of it, the slab test, the flags; given the src/gpu folder it also checks that hlsl/car_rt_ao_cs.hlsl,
 # ao_main_ps.hlsl and ao_contact_ps.hlsl use the header's numbers and flags) likewise:

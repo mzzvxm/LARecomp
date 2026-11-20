@@ -35,6 +35,14 @@ car_model_rt::Mode CarRtInstances::ModelMode() const {
   return car_model_rt::Mode(std::clamp<int>(int(larecomp::settings::mcla_gpu_car_rt_cars_model.Get()), 0, 2));
 }
 
+uint32_t CarRtInstances::TrafficCars() const {
+  return car_model_parts::TrafficCarsFor(CurrentLimits(), int(larecomp::settings::mcla_gpu_car_rt_cars_traffic.Get()));
+}
+
+bool CarRtInstances::WheelsOn() const {
+  return larecomp::settings::mcla_gpu_car_rt_cars_wheels.Get();
+}
+
 double CarRtInstances::MatchMetres() const {
   return double(larecomp::settings::mcla_gpu_car_rt_cars_match.Get());
 }

@@ -198,8 +198,12 @@ void CarFrame::StartFrame() {
     production.on = others_on_ && model_mode_next_ != car_model_rt::Mode::kOff;
     production.limits = other_limits_;
     production.mode = model_mode_next_;
+    production.traffic_cars = traffic_cars_next_;
+    production.wheels = wheels_next_;
     walk_.SetProduction(production);
     model_mode_next_ = car_model_rt::Mode::kOff;
+    traffic_cars_next_ = 0;
+    wheels_next_ = true;
   }
   walk_.StartFrame(guest_frame_, collecting_);
 }

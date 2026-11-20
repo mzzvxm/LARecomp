@@ -216,11 +216,14 @@ class CarFrame {
   void Request() { requested_ = true; }
   // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
   // `model`: the cars the camera does not draw are also walked from their own model data (car_model_walk.h Production; Mode::kOff: not).
-  void RequestOtherCars(const car_rt_instances::Limits& limits, car_model_rt::Mode model = car_model_rt::Mode::kOff) {
+  // `traffic`: how many traffic and parked cars the walk takes besides the racers (car_model_walk.h Production::traffic_cars; 0: none), `wheels`: the racers' wheels are walked.
+  void RequestOtherCars(const car_rt_instances::Limits& limits, car_model_rt::Mode model = car_model_rt::Mode::kOff, uint32_t traffic = 0, bool wheels = true) {
     requested_ = true;
     others_requested_ = limits.On();
     other_limits_next_ = limits;
     model_mode_next_ = model;
+    traffic_cars_next_ = traffic;
+    wheels_next_ = wheels;
   }
   // The walker of the cars' model data: the production walk's results (walked(), Resolve at the history trigger) and the debug log.
   car_model_walk::Walker& walker() { return walk_; }
@@ -379,6 +382,8 @@ class CarFrame {
   // The debug walk of the cars' own model data against this frame's draws (car_model_walk.h, mcla_gpu_car_model_walk): reads only, idle while the setting is 0.
   car_model_walk::Walker walk_;
   car_model_rt::Mode model_mode_next_ = car_model_rt::Mode::kOff;  // asked for in the frame before (RequestOtherCars)
+  uint32_t traffic_cars_next_ = 0;   // RT-MODEL-PARTS: asked for with RequestOtherCars
+  bool wheels_next_ = true;
 
   GuestMemory* memory_ = nullptr;
   std::vector<car_frame::Listener*> listeners_;

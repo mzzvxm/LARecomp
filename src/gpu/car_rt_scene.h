@@ -301,6 +301,11 @@ class CarRtScene final : public car_frame::Listener {
   uint64_t StagedBytes() const;
   // The walked cars of the frame: the walker's Resolve, the choice of the cars to place, their instances (appended to the remembered cars' lists), the paint.
   void PlaceWalkedCars(const car_frame::Frame& frame, bool flip_z);
+  // RT-MODEL-PARTS: the kinds of what the walked cars have in the top level (body, wheels, a traffic car's model; the driver is skinned and left out), counted per frame, logged per
+  // car when its composition has been stable for a while, and as a window line.
+  void NotePartsKinds(car_model_walk::Walker& walker, const std::vector<car_model_walk::WalkedCar>& walked,
+                      const std::unordered_map<uint32_t, car_model_parts::Composition>& resident_by_car, const std::unordered_set<uint32_t>& present, uint32_t traffic_placed,
+                      uint32_t racers_placed, uint32_t body, uint32_t tyres, uint32_t rims, uint32_t model, uint32_t wheels_held, const car_model_walk::ProofReport& proof);
   // Gives a walked mesh back (resident or staged).
   void GiveBack(uint64_t key);
 
@@ -399,6 +404,24 @@ class CarRtScene final : public car_frame::Listener {
   std::unordered_set<uint32_t> walked_present_;   // the vehicles placed in the last frame (the log says when one comes and goes)
   uint64_t walked_log_frame_ = 0;
   uint64_t walked_build_triangles_frame_ = 0;       // built in the frame being recorded
+  // RT-MODEL-PARTS: what the walked cars bring by kind (body, wheels, a traffic car's model; never a driver: skinned), how many traffic cars are placed, and what the log says.
+  struct PartsStats {
+    uint64_t frames = 0;                            // frames with a walked car placed
+    uint64_t body_sum = 0, wheels_sum = 0, model_sum = 0, tyres_sum = 0, rims_sum = 0;  // instances of the placed cars, summed over the frames
+    uint32_t body_max = 0, wheels_max = 0, model_max = 0;
+    uint64_t racer_frames = 0, traffic_frames = 0;  // frames a racer / a traffic car was placed
+    uint32_t traffic_most = 0;                      // the most traffic cars placed at once
+    uint64_t traffic_car_frames = 0;
+    uint64_t wheels_held = 0;                       // car-frames of a racer whose wheels waited for a wheel pose that fits the draws
+  } parts_stats_;
+  struct CompositionState {
+    car_model_parts::Composition now, logged;       // what the car has resident now / what the log last said
+    uint64_t since = 0;                             // the frame `now` last changed
+    bool logged_any = false;
+  };
+  std::unordered_map<uint32_t, CompositionState> walked_composition_;
+  uint32_t walked_traffic_placed_ = 0;              // traffic cars placed this frame: the instance list's count of cars is raised by it
+  uint64_t parts_log_frame_ = 0;
   uint64_t memory_log_frame_ = 0;
   bool memory_kit_logged_ = false;
   bool memory_lists_warned_ = false;

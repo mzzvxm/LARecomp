@@ -243,6 +243,8 @@
 {"mcla_gpu_car_rt_cars_memory", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_model", "MCLA/GPU"},
 {"mcla_gpu_car_rt_cars_radius", "MCLA/GPU"},
+{"mcla_gpu_car_rt_cars_traffic", "MCLA/GPU"},
+{"mcla_gpu_car_rt_cars_wheels", "MCLA/GPU"},
 {"mcla_gpu_car_rt_check", "MCLA/GPU"},
 {"mcla_gpu_car_rt_masks", "MCLA/GPU"},
 {"mcla_gpu_car_rt_paint_gamma", "MCLA/GPU"},

@@ -33,9 +33,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "car_model_parts_rt_rules.h"
 #include "car_model_rt_rules.h"
+#include "car_model_traffic_rules.h"
 #include "car_model_walk_rules.h"
 #include "car_model_walk_tap.h"
+#include "car_model_wheel_rules.h"
 #include "car_rt_instances_rules.h"
 #include "temporal_math.h"
 
@@ -45,6 +48,8 @@ class DrawView;
 struct XenosState;
 
 namespace car_model_walk {
+
+class GuestReader;  // car_model_walk.cpp: the bounds-checked reader of guest memory the walks use
 
 // mcla_gpu_car_model_walk: 0 = off, N = walk and log every N-th guest frame.
 uint32_t Interval();
@@ -62,6 +67,10 @@ struct Production {
   bool on = false;
   car_rt_instances::Limits limits;
   car_model_rt::Mode mode = car_model_rt::Mode::kOff;
+  // RT-MODEL-PARTS: the traffic and parked cars (the renderer's ambient client's items) are walked too, within this many (0: none; car_model_parts_rt_rules.h TrafficCarsFor),
+  // and the racers' wheels (the wheel manager's tyre and rim, placed four times) are part of every racer's walk.
+  uint32_t traffic_cars = 0;
+  bool wheels = true;
 };
 
 // One car of a production walk.
@@ -70,6 +79,7 @@ struct WalkedCar {
   bool is_player = false;
   bool visible = false;       // the game's +116 at the walk: the main view shows it
   bool drawn = false;         // Resolve: a draw of the frame is one of its geometries
+  bool traffic = false;       // a traffic or parked car: `vehicle` is its render item (the walker's key), `walk` the one drawable of its model
   bool staging = false;       // the scene is to stage this car's meshes: near, not visible, within the class's count (and a spare)
   double position[3] = {};    // the entity's world matrix row 3
   double distance = 0.0;      // from the player's vehicle, metres
@@ -79,6 +89,17 @@ struct WalkedCar {
   std::vector<car_model_rt::Part> parts;         // the geometries the scene takes, largest first, with their placements of this frame
   std::vector<car_model_rt::PoseSet> poses;      // for the calibration (only in the frames that calibrate): one per (part entry, bone)
   std::vector<int32_t> pose_of_geometry;         // by geometry index into `walk->geometries`: the place in `poses`, -1 none
+  // RT-MODEL-PARTS. A racer: the four wheels' matrices read in the walk's call (in the frames that place the car's parts or calibrate: wheels_read). A traffic car: its pose
+  // data (the root and the bones of its item's block, the car's render-copy matrix), and the raw palette colour for the log (unused: its meaning is not known).
+  bool wheels_read = false;
+  car_model_walk::WheelMatrices wheel_matrices;
+  bool pose_read = false;
+  car_model_walk::TrafficPoseData traffic_pose;
+  car_model_walk::AmbientColour colour;
+  uint32_t car_type = 0;       // a traffic car's type object
+  int32_t item_lod = -1;       // a traffic car's item lod (negative: outside the main view)
+  car_model_parts::Composition composition;  // what `parts` hold by kind
+  uint32_t wheels_held = 0;    // wheel geometries not placed this frame for want of a wheel pose that fits the draws
 };
 
 // What a listener may call inside CarFrame's Listener::OnWalkedCars (the guest is held back there): the triangles of a geometry of a walked car.
@@ -99,6 +120,13 @@ struct ProofReport {
   bool player_included = false;
   uint32_t walked_cars = 0;       // cars in this frame's walk
   uint32_t drawn_cars = 0;        // ... that the frame draws
+  // RT-MODEL-PARTS: the wheels' and the traffic's placement against the draws (pairs of a walked geometry and the draw of it, in the view space of the top level)
+  uint32_t wheel_pairs[2] = {};   // tyre, rim
+  double wheel_mean[2] = {}, wheel_worst[2] = {};
+  uint32_t traffic_pairs = 0;
+  double traffic_mean = 0.0, traffic_worst = 0.0;
+  uint32_t traffic_walked = 0;    // traffic cars in this frame's walk
+  uint32_t traffic_drawn = 0;     // ... that the frame draws
 };
 
 // How the game's paint colours are made into the colour another car shows in the reflection (the settings mcla_gpu_car_rt_paint_gamma and mcla_gpu_car_rt_paint_lit, car_model_rt_rules.h
@@ -142,6 +170,21 @@ class Walker {
   // The pose the placements are made with, and how it was chosen.
   car_model_rt::Pose pose() const { return calibration_.decided() ? calibration_.chosen() : car_model_rt::kDefaultPose; }
   const car_model_rt::PoseCalibration& calibration() const { return calibration_; }
+  // RT-MODEL-PARTS: the wheels' calibration (a hypothesis per kind), the traffic's, and what the last production walk found of the traffic.
+  const car_model_parts::WheelCalibration& wheel_calibration() const { return wheel_calibration_; }
+  const car_model_parts::TrafficCalibration& traffic_calibration() const { return traffic_calibration_; }
+  struct TrafficScan {
+    bool renderer = false, client = false;
+    uint32_t models = 0;        // model nodes in the client's list (one a car type; the items hang under them)
+    uint32_t items = 0;         // render items in the client's lists
+    uint32_t unreadable = 0;    // ... that were not read (their car or model word, or the car's matrix)
+    uint32_t in_range = 0;      // ... whose car is within the scan radius
+    uint32_t rejected = 0;      // ... of those the draw would not take (disabled, flags) or whose car has no pose
+    uint32_t visible = 0;       // ... of those the main view shows (the item's lod is not negative)
+    uint32_t block_missing = 0; // near cars the main view does not show whose bone block could not be read
+    uint32_t self_checked = 0;  // cars placed by the check against the car's own matrix (no draw has confirmed the pose; car_model_parts_rt_rules.h TrafficSelfCheck)
+  };
+  const TrafficScan& traffic_scan() const { return traffic_scan_; }
   // What the last production walk cost on the render thread (microseconds).
   double last_walk_microseconds() const { return walk_microseconds_; }
   // The caps and the mode of this frame (as StartFrame took them).
@@ -163,19 +206,32 @@ class Walker {
     bool renderer = false, client = false;
     uint32_t types = 0, instances = 0;
     uint32_t client_object = 0, client_mask = 0;
+    bool ambient_renderer = false, ambient_client = false, ambient_truncated = false;  // the traffic client (RT-MODEL-PARTS)
+    uint32_t ambient_items = 0, ambient_unreadable = 0;
+    uint32_t ambient_models = 0, ambient_flat = 0, ambient_foreign = 0, ambient_mismatched = 0;  // the client's list: model nodes, items that are nodes themselves, nodes that are neither, items whose model word is another node
+    uint32_t ambient_fail[car_model_walk::kAmbientFailCount] = {};  // the unreadable items by AmbientFail
+    std::vector<std::string> ambient_samples;                       // the words of the first unreadable items (for the log)
   };
 
   void RunWalk();
   void RunProduction();
+  // The traffic part of the production walk: appends the traffic and parked cars near the player to walked_cars_ (guest memory read in the draw's call).
+  void AddTraffic(const GuestReader& mem, const Production& prod, double scan, uint32_t min_indices, uint32_t per_car);
+  // The calibration and the proof of the wheels' and the traffic's placements against the draws of the frame (in the frames that calibrate).
+  void ResolveParts(const std::vector<const CarWalk*>& usable, const std::vector<uint32_t>& index_of, const car_model_rt::Assignment& assigned, const temporal::Mat4& view,
+                    bool flip_z, ProofReport* report);
   class Source;
   struct Cached {
     std::shared_ptr<CarWalk> walk;
     car_model_rt::WalkSignature signature;
     std::vector<uint32_t> picks;
     uint64_t last_frame = 0;
+    car_model_walk::AmbientColour colour;  // a traffic car's raw palette colour (log only)
   };
   void NoteDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world);
   void LogSamples(const CarWalk& car, const CarMatch& match, uint32_t car_index, const FrameMatch& frame);
+  // The debug walk's lines about the wheels of a racer and the item and pose of a traffic car (RT-MODEL-PARTS).
+  void LogParts(const CarWalk& car, const Found& found, uint32_t car_index, uint32_t found_index, const FrameMatch& frame);
 
   bool active_ = false;
   bool walked_ = false;
@@ -187,6 +243,13 @@ class Walker {
   std::vector<WalkedCar> walked_cars_;
   std::unordered_map<uint32_t, Cached> cache_;
   car_model_rt::PoseCalibration calibration_;
+  car_model_parts::WheelCalibration wheel_calibration_;
+  car_model_parts::TrafficCalibration traffic_calibration_;
+  TrafficScan traffic_scan_;
+  uint64_t wheel_proof_log_frame_ = 0, traffic_proof_log_frame_ = 0;
+  uint32_t wheel_proof_logs_ = 0, traffic_proof_logs_ = 0;
+  uint64_t traffic_selfcheck_log_frame_ = 0;
+  uint32_t traffic_selfcheck_logs_ = 0;
   uint64_t last_calibration_frame_ = 0;
   bool calibrating_ = false;
   std::unique_ptr<Source> source_;
@@ -200,6 +263,10 @@ class Walker {
   Options options_;
   std::vector<Found> found_;
   std::vector<Racer> racers_;
+  std::vector<car_model_walk::AmbientItem> ambient_;           // by found_: a traffic car's item as read (the others': not ok)
+  std::vector<car_model_walk::WheelMatrices> wheel_mats_;      // by found_: a vehicle's four wheels' matrices
+  std::vector<car_model_walk::TrafficPoseData> traffic_poses_; // by found_: a traffic car's root and bones
+  std::vector<car_model_walk::AmbientColour> ambient_colour_;  // by found_: a traffic car's raw palette colour
   std::vector<CarWalk> cars_;
   std::vector<DrawKey> draws_;
   uint32_t draws_proxy_ = 0;

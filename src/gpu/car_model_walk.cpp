@@ -44,6 +44,10 @@ constexpr const char* kProductionPrefix = "[car model rt]";
 constexpr uint32_t kFromPlayer = 1;
 constexpr uint32_t kFromList = 2;
 constexpr uint32_t kFromTap = 4;
+constexpr uint32_t kFromItems = 8;   // a traffic or parked car's render item (RT-MODEL-PARTS)
+// The debug walk takes this many of the nearest traffic items within this many metres of the player.
+constexpr uint32_t kTrafficWalkCars = 8;
+constexpr double kTrafficWalkMetres = 60.0;
 
 // The renderer's vehicle client (rear_view.cpp Patch_RearViewDiag reads it the same way): [0x8287E064] the renderer, + 128 + 4 * 7 the client of slot 7
 // (mcCarModelClass, mask 0x12E183F3), +8 its list of render types (next at +12), each type's +20 its list of instances (next at +8).
@@ -72,6 +76,7 @@ constexpr double kRacerMetres = 3.0;
 constexpr uint32_t kSamplesPerCar = 3;
 // Production: the frames between two calibrations of the pose once it is decided, a window of pairs after which the calibration starts over, and the log's pace.
 constexpr uint64_t kCalibrateEveryFrames = 16;
+constexpr uint64_t kCalibrateUndecidedFrames = 4;
 constexpr uint32_t kCalibrationWindowPairs = 3000;
 constexpr uint64_t kProofLogFrames = 600;
 // Production: a cached walk of a vehicle nobody asked for in this many frames is given up.
@@ -86,10 +91,42 @@ const char* const kPartNames[kPartSlots] = {
 
 const char* PartName(uint32_t part) { return part < kPartSlots ? kPartNames[part] : part == kBodyPart ? "body" : "?"; }
 
+// The words of a render item for the log (when an item could not be read: which link is wrong): its vtable, +8, +12, +16, +20 and, of the word at +16 taken for the car,
+// its flags byte (+500) and the translation row of its matrix (+176).
+template <class Mem>
+std::string ItemWords(const Mem& mem, uint32_t item) {
+  uint32_t w[6] = {};
+  const uint32_t at[6] = {0, 8, 12, 16, 20, 24};
+  bool ok[6] = {};
+  for (int i = 0; i < 6; ++i) {
+    ok[i] = mem.Word(item + at[i], &w[i]);
+  }
+  std::string text = std::format("item {:#010x}: +0 {:#010x} +8 {:#010x} +12 {:#010x} +16 {:#010x} +20 {:#010x} +24 {:#010x}{}", item, w[0], w[1], w[2], w[3], w[4], w[5],
+                                 (ok[0] && ok[1] && ok[2] && ok[3] && ok[4] && ok[5]) ? "" : " (some of them not readable)");
+  uint32_t flags = 0;
+  if (cw::Plausible(w[3]) && mem.Byte(w[3] + cw::kAmbCarFlags, &flags)) {
+    text += std::format("; the +16 object's byte +500 {:#04x}", flags);
+    uint32_t t[3] = {};
+    if (mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation, &t[0]) && mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation + 4, &t[1]) &&
+        mem.Word(w[3] + cw::kAmbCarMatrix + cw::kMatrixTranslation + 8, &t[2])) {
+      float f[3];
+      for (int i = 0; i < 3; ++i) {
+        std::memcpy(&f[i], &t[i], 4);
+      }
+      text += std::format(", its row +176 ({:.1f}, {:.1f}, {:.1f}) as floats", f[0], f[1], f[2]);
+    }
+  } else {
+    text += "; the +16 word is not a readable object";
+  }
+  return text;
+}
+
 const uint8_t* GuestBase() {
   auto* runtime = REX_RUNTIME();
   return runtime ? runtime->GetMembase().GetBase() : nullptr;
 }
+
+}  // namespace
 
 // Guest memory for the walk (car_model_walk_rules.h `Mem`): every range is checked with IsGuestRangeReadable before a byte of it is touched; nothing is
 // written. The guest is held back while a walk runs, so a page found readable stays so: the answers are cached by 4 KiB page for the walk's duration.
@@ -159,6 +196,8 @@ class GuestReader {
   mutable std::array<uint8_t, kCachePages> readable_{};
 };
 
+namespace {
+
 // The tables of the retail image (the parts' paint regions, the parts the main pass draws); not read when the image is not what they expect.
 void ReadOptions(const GuestReader& mem, Options* options) {
   *options = Options{};
@@ -200,6 +239,9 @@ std::string SourcesText(uint32_t sources) {
   }
   if (sources & kFromTap) {
     out += std::string(out.empty() ? "" : "+") + "tap";
+  }
+  if (sources & kFromItems) {
+    out += std::string(out.empty() ? "" : "+") + "ambient client item";
   }
   return out;
 }
@@ -252,7 +294,12 @@ void Walker::StartFrame(uint64_t guest_frame, bool collecting) {
   production_walked_ = false;
   fresh_ = false;
   walked_cars_.clear();
-  calibrating_ = production_frame_ && (!calibration_.decided() || guest_frame >= last_calibration_frame_ + kCalibrateEveryFrames);
+  // The parts' pose is calibrated against the draws every kCalibrateEveryFrames and until it is decided; the wheels' and the traffic's hypotheses, which only some frames can
+  // test (a drawn traffic car, a wheel draw), are tried every few frames until they are decided (the reading of the poses costs the render thread a little).
+  const bool wheels_undecided = production_frame_ && production_now_.wheels && !(wheel_calibration_.decided(false) && wheel_calibration_.decided(true));
+  const bool traffic_undecided = production_frame_ && production_now_.traffic_cars != 0 && !traffic_calibration_.decided();
+  calibrating_ = production_frame_ && (!calibration_.decided() || guest_frame >= last_calibration_frame_ + kCalibrateEveryFrames ||
+                                       ((wheels_undecided || traffic_undecided) && guest_frame >= last_calibration_frame_ + kCalibrateUndecidedFrames));
   draws_.clear();
   draws_proxy_ = draws_no_key_ = draws_dropped_ = 0;
   found_.clear();
@@ -445,12 +492,75 @@ void Walker::RunWalk() {
     note_ += std::format("{} vehicles found, the first {} walked; ", found_.size(), kMaxCars);
     found_.resize(kMaxCars);
   }
+  // The traffic and the parked cars (RT-MODEL-PARTS): the nearest items of the renderer's ambient client, each walked as one drawable (car_model_traffic_rules.h).
+  ambient_.clear();
+  {
+    cw::AmbientScan items_scan;
+    const std::vector<uint32_t> items = cw::ListAmbientItems(mem, &items_scan);
+    list_.ambient_renderer = items_scan.renderer;
+    list_.ambient_client = items_scan.client;
+    list_.ambient_items = items_scan.items;
+    list_.ambient_models = items_scan.models;
+    list_.ambient_flat = items_scan.flat_items;
+    list_.ambient_foreign = items_scan.foreign_nodes;
+    list_.ambient_mismatched = items_scan.mismatched;
+    list_.ambient_truncated = items_scan.truncated;
+    struct Near {
+      cw::AmbientItem info;
+      double distance;
+    };
+    std::vector<Near> near_items;
+    if (player_state.valid) {
+      for (const uint32_t item : items) {
+        mem.Forget();
+        cw::AmbientItem info = cw::ReadAmbientItem(mem, item);
+        if (!info.ok) {
+          ++list_.ambient_unreadable;
+          ++list_.ambient_fail[size_t(info.fail)];
+          if (list_.ambient_samples.size() < 2) {
+            list_.ambient_samples.push_back(std::format("{} ({})", ItemWords(mem, item), info.why));
+          }
+          continue;
+        }
+        const double distance = Distance(info.position, player_position_);
+        if (distance <= kTrafficWalkMetres) {
+          near_items.push_back({std::move(info), distance});
+        }
+      }
+      std::stable_sort(near_items.begin(), near_items.end(), [](const Near& a, const Near& b) { return a.distance < b.distance; });
+      if (near_items.size() > kTrafficWalkCars) {
+        near_items.resize(kTrafficWalkCars);
+      }
+    }
+    const size_t vehicles = found_.size();
+    for (const Near& n : near_items) {
+      found_.push_back({n.info.item, kFromItems, 0, 0});
+    }
+    ambient_.assign(found_.size(), cw::AmbientItem{});
+    for (size_t k = 0; k < near_items.size(); ++k) {
+      ambient_[vehicles + k] = near_items[k].info;
+    }
+  }
   cars_.resize(found_.size());
   racers_.assign(found_.size(), Racer{});
+  wheel_mats_.assign(found_.size(), cw::WheelMatrices{});
+  traffic_poses_.assign(found_.size(), cw::TrafficPoseData{});
+  ambient_colour_.assign(found_.size(), cw::AmbientColour{});
   for (uint32_t i = 0; i < found_.size(); ++i) {
     mem.Forget();
     mem.Word(found_[i].vehicle, &found_[i].vtable);
-    WalkVehicle(mem, found_[i].vehicle, options_, &cars_[i]);
+    if (found_[i].sources & kFromItems) {
+      cw::Options options = options_;
+      options.min_lod = 0;  // the item's own lod where the main view shows the car, else the finest: the debug walk compares with the draws
+      cw::WalkAmbient(mem, ambient_[i], options, &cars_[i]);
+      if (cars_[i].ok) {
+        traffic_poses_[i] = cw::ReadTrafficPose(mem, ambient_[i], cw::BonesNeeded(cars_[i]));
+        ambient_colour_[i] = cw::ReadAmbientColour(mem, ambient_[i]);
+      }
+    } else {
+      WalkVehicle(mem, found_[i].vehicle, options_, &cars_[i]);
+      wheel_mats_[i] = cw::ReadWheelMatrices(mem, found_[i].vehicle);
+    }
     const CarWalk& car = cars_[i];
     if (!car.ok || !car.position_read) {
       continue;
@@ -488,6 +598,22 @@ uint64_t HashBytes(const uint8_t* p, size_t n) {
     h = (h ^ p[i]) * 0x100000001B3ull;
   }
   return h;
+}
+
+// The wheel resources a vehicle wears and the flags the wheel draw tests (a change makes the cached walk start again): the tyre's and the rim's ids and four flag bits.
+uint64_t WheelSignature(const GuestReader& mem, uint32_t vehicle) {
+  uint32_t tyre = 0, rim = 0, b = 0, hide = 0;
+  mem.Word(vehicle + cw::kVehicleTyreId, &tyre);
+  mem.Word(vehicle + cw::kVehicleRimId, &rim);
+  uint64_t bits = 0;
+  bits |= (mem.Byte(vehicle + cw::kVehicleTyreOn, &b) && b != 0) ? 1u : 0u;
+  bits |= (mem.Byte(vehicle + cw::kVehicleRimOn, &b) && b != 0) ? 2u : 0u;
+  bits |= (mem.Byte(vehicle + cw::kVehicleLoop44A, &b) && b != 0) ? 4u : 0u;
+  if (mem.Word(vehicle + cw::kVehicleWheelHide, &hide) && cw::Plausible(hide)) {
+    uint32_t x = 0;
+    bits |= ((mem.Byte(hide + 266, &x) && x != 0) || (mem.Byte(hide + 267, &x) && x != 0) || (mem.Byte(hide + 268, &x) && x != 0)) ? 8u : 0u;
+  }
+  return (uint64_t(tyre) << 40) ^ (uint64_t(rim) << 8) ^ bits ^ 0x5748454Cull;  // "WHEL"
 }
 
 // Whether a matrix read from the guest is a car's pose (car_rt_memory_rules.h UsableRows).
@@ -607,6 +733,7 @@ void Walker::RunProduction() {
         sig.flags |= 1u << k;
       }
     }
+    sig.wheels = prod.wheels ? WheelSignature(mem, vehicle) : 0;
     sig.walked_frame = frame_;
 
     Cached& cached = cache_[vehicle];
@@ -615,6 +742,7 @@ void Walker::RunProduction() {
       options.production = true;
       options.validate = false;
       options.min_lod = car.min_lod;
+      options.wheels = prod.wheels;
       auto walk = std::make_shared<cw::CarWalk>();
       cw::WalkVehicle(mem, vehicle, options, walk.get());
       cached.walk = std::move(walk);
@@ -640,6 +768,32 @@ void Walker::RunProduction() {
       }
       for (const uint32_t g : cached.picks) {
         const cw::Geometry& geometry = walk.geometries[g];
+        if (cw::IsWheelPart(geometry.part)) {
+          // A wheel geometry (the tyre or the rim): one mesh, one placement per wheel the vehicle draws, by the wheel matrices (car_model_wheel_rules.h). The calibration of the
+          // wheels' pose (Resolve: the car's own wheel draws, the player's among them) decides; a wheel is not placed before a hypothesis fits the draws.
+          if (!car.wheels_read) {
+            car.wheel_matrices = cw::ReadWheelMatrices(mem, vehicle);
+            car.wheels_read = true;
+          }
+          const bool rim = cw::IsRimPart(geometry.part);
+          if (want_parts) {
+            if (!wheel_calibration_.fits(rim)) {
+              ++car.wheels_held;
+              continue;
+            }
+            for (const tp::Mat4& placed : car_model_parts::WheelPlacements(car.wheel_matrices, walk.wheels.present, rim, geometry.bone, wheel_calibration_.chosen(rim))) {
+              crt::Part part;
+              part.geometry = g;
+              part.key = crt::GeometryKey(geometry);
+              part.indices = geometry.index_count;
+              part.triangles = geometry.index_count / 3;
+              part.world = placed;
+              part.part = geometry.part;
+              car.parts.push_back(part);
+            }
+          }
+          continue;
+        }
         if (geometry.entry_index >= walk.parts.size()) {
           continue;
         }
@@ -672,12 +826,26 @@ void Walker::RunProduction() {
     seen.insert(vehicle);
     walked_cars_.push_back(std::move(car));
   }
-  // the cars to stage: near, not seen by the main view, within the class's count and a spare
+  // the traffic and the parked cars (RT-MODEL-PARTS)
+  traffic_scan_ = TrafficScan{};
+  if (prod.traffic_cars != 0) {
+    AddTraffic(mem, prod, scan, min_indices, per_car);
+  }
+  // what each car's parts are by kind (the log's and the check's numbers)
+  for (WalkedCar& car : walked_cars_) {
+    car.composition = car_model_parts::Composition{};
+    for (const crt::Part& part : car.parts) {
+      car_model_parts::Count(&car.composition, part.part);
+    }
+    car.composition.skinned_left_out = car.walk ? car_model_parts::SkinnedInUse(*car.walk) : 0;
+  }
+  // the cars to stage: near, not seen by the main view, within the class's count and a spare (the racers' and the traffic's counts apart)
   for (const WalkedCar& car : walked_cars_) {
     crt::CarInfo info;
     info.vehicle = car.vehicle;
     info.is_player = car.is_player;
     info.visible = car.visible;
+    info.traffic = car.traffic;
     info.distance = car.distance;
     info.parts = uint32_t(car.parts.size());
     for (int c = 0; c < 3; ++c) {
@@ -685,7 +853,7 @@ void Walker::RunProduction() {
     }
     infos.push_back(info);
   }
-  for (const uint32_t i : crt::ChooseStaged(infos, prod.limits)) {
+  for (const uint32_t i : car_model_parts::ChooseStagedAll(infos, prod.limits, prod.traffic_cars)) {
     walked_cars_[i].staging = true;
   }
   for (auto it = cache_.begin(); it != cache_.end();) {
@@ -697,6 +865,127 @@ void Walker::RunProduction() {
   }
   fresh_ = true;
   walk_microseconds_ = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - started).count();
+}
+
+// THE TRAFFIC AND THE PARKED CARS (RT-MODEL-PARTS; car_model_traffic_rules.h): the items of the renderer's ambient client, each a car object with one model, within the scan radius
+// of the player. The model's one drawable is walked at the reflection's lod (the game's own lod where the main view shows the car: its draws are then the same geometry),
+// cached per item; the pose data (the root and the bones of the item's block, the car's render-copy matrix) is read here, in the draw's call, in the frames that place the car or
+// calibrate; a car the main view does not show is placed by the traffic calibration's hypothesis once one fits the draws of the traffic cars the camera sees.
+void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double scan, uint32_t min_indices, uint32_t per_car) {
+  cw::AmbientScan list;
+  const std::vector<uint32_t> items = cw::ListAmbientItems(mem, &list);
+  traffic_scan_.renderer = list.renderer;
+  traffic_scan_.client = list.client;
+  traffic_scan_.models = list.models;
+  traffic_scan_.items = uint32_t(items.size());
+  (void)prod;
+  for (const uint32_t item : items) {
+    // the car's position first: the cars far from the player are left alone (an item list has up to a few hundred)
+    double at[3];
+    if (!cw::ReadAmbientPosition(mem, item, at)) {
+      ++traffic_scan_.unreadable;
+      continue;
+    }
+    if (!(Distance(at, player_position_) <= scan)) {
+      continue;
+    }
+    ++traffic_scan_.in_range;
+    const cw::AmbientItem info = cw::ReadAmbientItem(mem, item);
+    if (!info.ok) {
+      ++traffic_scan_.unreadable;
+      continue;
+    }
+    if (!info.Eligible()) {
+      ++traffic_scan_.rejected;
+      continue;
+    }
+    WalkedCar car;
+    car.traffic = true;
+    car.vehicle = item;
+    for (int c = 0; c < 3; ++c) {
+      car.position[c] = info.position[c];
+    }
+    car.distance = Distance(car.position, player_position_);
+    car.visible = info.Visible();
+    traffic_scan_.visible += car.visible ? 1u : 0u;
+    car.item_lod = info.lod;
+    car.car_type = info.type;
+    car.min_lod = car.visible ? 0 : 1;
+
+    crt::WalkSignature sig;
+    sig.model_set = info.model;
+    sig.min_lod = car.min_lod;
+    sig.body_lod = info.lod;
+    sig.part_lod = -3;
+    sig.wheels = info.type;
+    sig.walked_frame = frame_;
+    Cached& cached = cache_[item];
+    if (!cached.walk || !crt::WalkStillGood(cached.signature, sig, frame_)) {
+      cw::Options options = options_;
+      options.production = true;
+      options.validate = false;
+      options.min_lod = car.min_lod;
+      auto walk = std::make_shared<cw::CarWalk>();
+      cw::WalkAmbient(mem, info, options, walk.get());
+      cached.walk = std::move(walk);
+      cached.signature = sig;
+      cached.picks = cached.walk->ok ? crt::PickGeometries(*cached.walk, min_indices, car.visible ? 0u : per_car) : std::vector<uint32_t>();
+      cached.colour = cw::ReadAmbientColour(mem, info);
+    }
+    cached.last_frame = frame_;
+    const cw::CarWalk& walk = *cached.walk;
+    if (!walk.ok) {
+      continue;
+    }
+    car.walk = cached.walk;
+    car.colour = cached.colour;
+
+    // this frame's placements: a car the main view shows is not placed (its draws are the draw path's), but its pose is read in the frames that calibrate
+    const bool want_parts = !car.visible;
+    if (want_parts || calibrating_) {
+      car.traffic_pose = cw::ReadTrafficPose(mem, info, cw::BonesNeeded(walk));
+      car.pose_read = true;
+      if (want_parts && !car.traffic_pose.Usable()) {
+        ++traffic_scan_.block_missing;
+      }
+      // A car is placed by the calibration against the draws where one fits them; where none has decided (no traffic draw gave it a pair: the draws of the xAmbient* shaders decode
+      // no model-to-world), by the block's check against the car's own matrix (car_model_parts_rt_rules.h TrafficSelfCheck). A calibration that decided and does NOT fit places nothing.
+      bool by_self_check = false;
+      if (want_parts && !traffic_calibration_.fits() && !traffic_calibration_.decided() && car.traffic_pose.Usable()) {
+        const tp::Mat4& reference = car.traffic_pose.car_render_ok ? car.traffic_pose.car_render : info.matrix;
+        const car_model_parts::TrafficSelfCheck check = car_model_parts::CheckTrafficBlock(car.traffic_pose, traffic_calibration_.chosen(), reference);
+        by_self_check = check.ok;
+        if (traffic_selfcheck_logs_ < 8 || frame_ >= traffic_selfcheck_log_frame_ + kProofLogFrames) {
+          ++traffic_selfcheck_logs_;
+          traffic_selfcheck_log_frame_ = frame_;
+          REXLOG_INFO("{} frame {}: TRAFFIC SELF-CHECK (no draw has given the traffic calibration a pair: {} samples): item {:#010x}, car {:#010x}: the body bone of the block places the car "
+                      "{:.3f} m from its own {} matrix, largest 3x3 difference {:.3f}: {} (the limits are {:.2f} m and {:.2f})",
+                      kProductionPrefix, frame_, traffic_calibration_.samples(), item, info.car, check.metres, car.traffic_pose.car_render_ok ? "render-copy" : "update-copy", check.basis,
+                      !check.placed ? "the block could not be turned into a placement" : check.ok ? "accepted: the car is placed by it" : "NOT accepted: the car is not placed",
+                      car_model_parts::kSelfCheckMetres, car_model_parts::kSelfCheckBasis);
+        }
+      }
+      if (want_parts && (traffic_calibration_.fits() || by_self_check)) {
+        traffic_scan_.self_checked += by_self_check ? 1u : 0u;
+        for (const uint32_t g : cached.picks) {
+          const cw::Geometry& geometry = walk.geometries[g];
+          tp::Mat4 placed;
+          if (!cw::PlaceTraffic(car.traffic_pose, geometry.bone, traffic_calibration_.chosen(), &placed) || !crt::UsablePlacement(placed)) {
+            continue;
+          }
+          crt::Part part;
+          part.geometry = g;
+          part.key = crt::GeometryKey(geometry);
+          part.indices = geometry.index_count;
+          part.triangles = geometry.index_count / 3;
+          part.world = placed;
+          part.part = geometry.part;
+          car.parts.push_back(part);
+        }
+      }
+    }
+    walked_cars_.push_back(std::move(car));
+  }
 }
 
 // The history trigger: which walked cars the frame draws, the calibration of the pose, and the placement of the chosen pose against the draws in the view space.
@@ -718,6 +1007,9 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
   if (usable.empty()) {
     return report;
   }
+  for (const WalkedCar& car : walked_cars_) {
+    report.traffic_walked += car.traffic ? 1u : 0u;
+  }
   // Which car each draw is of (car_model_rt_rules.h AssignDraws: the cars of one model name the same buffers, so the buffers alone cannot say; the draw's stencil ID
   // and its origin do)
   std::vector<std::array<double, 3>> positions;
@@ -729,6 +1021,7 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
     WalkedCar& car = walked_cars_[index_of[u]];
     car.drawn = assigned.drawn[u] != 0;
     report.drawn_cars += car.drawn ? 1u : 0u;
+    report.traffic_drawn += (car.drawn && car.traffic) ? 1u : 0u;
   }
 
   // the pairs: a matched (geometry, draw) whose placements were made this frame, and the draw's own matrix known
@@ -792,6 +1085,11 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
     }
   }
 
+  // The wheels' and the traffic's placements against the draws (RT-MODEL-PARTS): in the calibrating frames, for the cars the camera draws.
+  if (calibrating_) {
+    ResolveParts(usable, index_of, assigned, view, flip_z, &report);
+  }
+
   // THE PROOF in the top level's own space: the chosen pose's instance of each matched geometry against the draw's instance, both through the frame's view. Not before the
   // calibration has chosen: until then the pose in force is the default, which is a hypothesis nobody has checked (the first check run's 1151 m line at frame 6753, logged
   // under the wrong hypothesis one frame before the calibration decided, failed the check for a placement that was exact from the next frame on).
@@ -827,6 +1125,147 @@ ProofReport Walker::Resolve(const temporal::Mat4& view, bool flip_z) {
                 report.basis_worst);
   }
   return report;
+}
+
+// The wheels' and the traffic's hypotheses against the draws of the frame (the frames that calibrate; RT-MODEL-PARTS). A pair is a walked geometry the draw's buffers name and
+// the draw's own model-to-world: for a wheel geometry the best of the four wheels' placements under each hypothesis, for a traffic car's geometry its bone's placement.
+// The calibration decides per kind (tyre, rim) and for the traffic, and the proof is the chosen hypothesis' placement through the frame's view against the draw's instance.
+void Walker::ResolveParts(const std::vector<const CarWalk*>& usable, const std::vector<uint32_t>& index_of, const crt::Assignment& assigned, const temporal::Mat4& view, bool flip_z,
+                          ProofReport* report) {
+  namespace cmp = car_model_parts;
+  struct Pair {
+    uint32_t car;       // walked_cars_ index
+    uint32_t draw;
+    uint32_t geometry;  // into the car's walk
+  };
+  std::vector<Pair> wheel_pairs, traffic_pairs;
+  for (uint32_t d = 0; d < draws_.size(); ++d) {
+    const crt::DrawOwner& owner = assigned.draws[d];
+    if (owner.car < 0 || owner.geometry < 0 || !draws_[d].has_world) {
+      continue;
+    }
+    const uint32_t car_index = index_of[size_t(owner.car)];
+    const WalkedCar& car = walked_cars_[car_index];
+    if (!car.walk || size_t(owner.geometry) >= car.walk->geometries.size()) {
+      continue;
+    }
+    const cw::Geometry& geometry = car.walk->geometries[size_t(owner.geometry)];
+    if (car.traffic) {
+      if (car.pose_read && car.traffic_pose.Usable()) {
+        traffic_pairs.push_back({car_index, d, uint32_t(owner.geometry)});
+      }
+    } else if (cw::IsWheelPart(geometry.part) && car.wheels_read) {
+      wheel_pairs.push_back({car_index, d, uint32_t(owner.geometry)});
+    }
+  }
+  (void)usable;
+
+  // ---- the wheels
+  for (const Pair& pair : wheel_pairs) {
+    const WalkedCar& car = walked_cars_[pair.car];
+    const cw::Geometry& geometry = car.walk->geometries[pair.geometry];
+    wheel_calibration_.Add(cw::IsRimPart(geometry.part), car.wheel_matrices, car.walk->wheels.present, geometry.bone, draws_[pair.draw].world);
+  }
+  if (!wheel_pairs.empty()) {
+    for (const bool rim : {false, true}) {
+      const bool was_decided = wheel_calibration_.decided(rim);
+      const cw::WheelPose was = wheel_calibration_.chosen(rim);
+      if (wheel_calibration_.Decide(rim) && (!was_decided || was != wheel_calibration_.chosen(rim))) {
+        REXLOG_INFO("{} frame {}: the wheels' matrices place the {} by '{}' ({}; {} pairs of a walked wheel geometry and the draw of it compared). All hypotheses: {}", kProductionPrefix,
+                    frame_, rim ? "rims" : "tyres", cw::WheelPoseName(wheel_calibration_.chosen(rim)),
+                    wheel_calibration_.fits(rim) ? "it fits the draws" : "NO HYPOTHESIS FITS THE DRAWS: the wheels of the cars the camera does not draw are not placed",
+                    wheel_calibration_.samples(rim), wheel_calibration_.Describe(rim));
+      }
+    }
+    for (const bool rim : {false, true}) {
+      if (wheel_calibration_.samples(rim) > kCalibrationWindowPairs) {
+        REXLOG_INFO("{} frame {}: the {} calibration window is over: {}", kProductionPrefix, frame_, rim ? "rims'" : "tyres'", wheel_calibration_.Describe(rim));
+        wheel_calibration_.NewWindow();
+      }
+    }
+    // the proof, per kind, in the top level's view space
+    double sum[2] = {}, worst[2] = {};
+    uint32_t n[2] = {};
+    for (const Pair& pair : wheel_pairs) {
+      const WalkedCar& car = walked_cars_[pair.car];
+      const cw::Geometry& geometry = car.walk->geometries[pair.geometry];
+      const bool rim = cw::IsRimPart(geometry.part);
+      if (!wheel_calibration_.decided(rim)) {
+        continue;
+      }
+      tp::Mat4 placed;
+      crt::PlacementError e;
+      if (!cmp::BestWheelPlacement(car.wheel_matrices, car.walk->wheels.present, geometry.bone, wheel_calibration_.chosen(rim), draws_[pair.draw].world, &placed) ||
+          !crt::ViewError(placed, draws_[pair.draw].world, view, flip_z, &e)) {
+        continue;
+      }
+      const int k = rim ? 1 : 0;
+      ++n[k];
+      sum[k] += e.translation;
+      worst[k] = std::max(worst[k], e.translation);
+    }
+    for (int k = 0; k < 2; ++k) {
+      report->wheel_pairs[k] = n[k];
+      report->wheel_mean[k] = n[k] != 0 ? sum[k] / double(n[k]) : 0.0;
+      report->wheel_worst[k] = worst[k];
+    }
+    if ((n[0] + n[1]) != 0 && (wheel_proof_logs_ < 3 || frame_ >= wheel_proof_log_frame_ + kProofLogFrames)) {
+      ++wheel_proof_logs_;
+      wheel_proof_log_frame_ = frame_;
+      REXLOG_INFO("{} frame {}: WHEEL PLACEMENT PROOF (a car the camera draws: the walk's wheel placement of each wheel geometry, the nearest of the four wheels, through the frame's view, "
+                  "against the instance of the draw of it): tyres {} geometries '{}': mean error {:.4f} m, worst {:.4f} m; rims {} geometries '{}': mean error {:.4f} m, worst {:.4f} m in the top "
+                  "level's view space",
+                  kProductionPrefix, frame_, n[0], cw::WheelPoseName(wheel_calibration_.chosen(false)), report->wheel_mean[0], report->wheel_worst[0], n[1],
+                  cw::WheelPoseName(wheel_calibration_.chosen(true)), report->wheel_mean[1], report->wheel_worst[1]);
+    }
+  }
+
+  // ---- the traffic
+  for (const Pair& pair : traffic_pairs) {
+    const WalkedCar& car = walked_cars_[pair.car];
+    traffic_calibration_.Add(car.traffic_pose, car.walk->geometries[pair.geometry].bone, draws_[pair.draw].world);
+  }
+  if (!traffic_pairs.empty()) {
+    const bool was_decided = traffic_calibration_.decided();
+    const cw::TrafficPose was = traffic_calibration_.chosen();
+    if (traffic_calibration_.Decide() && (!was_decided || was != traffic_calibration_.chosen())) {
+      REXLOG_INFO("{} frame {}: the traffic cars' bone matrices are placed by '{}' ({}; {} pairs of a walked geometry of a traffic car and the draw of it compared). All hypotheses: {}",
+                  kProductionPrefix, frame_, cw::TrafficPoseName(traffic_calibration_.chosen()),
+                  traffic_calibration_.fits() ? "it fits the draws" : "NO HYPOTHESIS FITS THE DRAWS: the traffic cars the camera does not draw are not placed", traffic_calibration_.samples(),
+                  traffic_calibration_.Describe());
+    }
+    if (traffic_calibration_.samples() > kCalibrationWindowPairs) {
+      REXLOG_INFO("{} frame {}: the traffic calibration window is over: {}", kProductionPrefix, frame_, traffic_calibration_.Describe());
+      traffic_calibration_.NewWindow();
+    }
+    if (traffic_calibration_.decided()) {
+      double sum = 0.0;
+      uint32_t n = 0;
+      std::unordered_set<uint32_t> cars;
+      for (const Pair& pair : traffic_pairs) {
+        const WalkedCar& car = walked_cars_[pair.car];
+        tp::Mat4 placed;
+        crt::PlacementError e;
+        if (!cw::PlaceTraffic(car.traffic_pose, car.walk->geometries[pair.geometry].bone, traffic_calibration_.chosen(), &placed) ||
+            !crt::ViewError(placed, draws_[pair.draw].world, view, flip_z, &e)) {
+          continue;
+        }
+        ++n;
+        sum += e.translation;
+        report->traffic_worst = std::max(report->traffic_worst, e.translation);
+        cars.insert(car.vehicle);
+      }
+      report->traffic_pairs = n;
+      report->traffic_mean = n != 0 ? sum / double(n) : 0.0;
+      if (n != 0 && (traffic_proof_logs_ < 3 || frame_ >= traffic_proof_log_frame_ + kProofLogFrames)) {
+        ++traffic_proof_logs_;
+        traffic_proof_log_frame_ = frame_;
+        REXLOG_INFO("{} frame {}: TRAFFIC PLACEMENT PROOF (a traffic car the camera draws: the walk's placement of each geometry, through the frame's view, against the instance of the draw "
+                    "of it): {} geometries of {} cars, '{}': mean error {:.4f} m, worst {:.4f} m in the top level's view space",
+                    kProductionPrefix, frame_, n, cars.size(), cw::TrafficPoseName(traffic_calibration_.chosen()), report->traffic_mean, report->traffic_worst);
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -880,6 +1319,10 @@ void Walker::FinishFrame() {
   for (const CarWalk& c : cars_) {
     bytes += c.validated_bytes;
   }
+  uint32_t traffic_walked = 0;
+  for (const Found& f : found_) {
+    traffic_walked += (f.sources & kFromItems) ? 1u : 0u;
+  }
   REXLOG_INFO("{} frame {}: HEADER walked {} vehicles in {:.0f} us ({} are cars with a model set, {} are not; {} drawn, {} culled); sources: player global {:#010x}, "
               "renderer client {} (slot 7: {}, mask {:#010x}, {} types, {} instances), tap {} vehicles ({} calls so far, {} dropped); draws noted {} ({} wheel proxies, {} with no "
               "buffer key, {} dropped); matched {}, vertex-only {}, unowned {}; {:.1f} MB of vertex and index data read{}",
@@ -887,6 +1330,22 @@ void Walker::FinishFrame() {
               kVehicleClientSlot, list_.client_mask, list_.types, list_.instances, tap_vehicles_, tap_calls_total_, tap_dropped_, draws_.size(), draws_proxy_, draws_no_key_,
               draws_dropped_, frame.draws_matched, frame.draws_vertex_only, frame.draws_unowned, double(bytes) / (1024.0 * 1024.0),
               note_.empty() ? std::string() : " [" + note_ + "]");
+  {
+    std::string reasons;
+    for (uint32_t f = 1; f < cw::kAmbientFailCount; ++f) {
+      if (list_.ambient_fail[f] != 0) {
+        reasons += std::format("{}{} {}", reasons.empty() ? "" : "; ", list_.ambient_fail[f], cw::AmbientFailName(cw::AmbientFail(f)));
+      }
+    }
+    REXLOG_INFO("{} frame {}: TRAFFIC ambient client {} (renderer {}), {} model nodes ({} flat items, {} foreign nodes), {} render items under them{} ({} whose model word is another node), "
+                "{} of them with no readable car{}, {} walked here (the nearest within {:.0f} m of the player; kind=traffic in the RESULT lines)",
+                kPrefix, frame_, list_.ambient_client ? "found" : "NOT FOUND", list_.ambient_renderer ? "readable" : "NOT READABLE", list_.ambient_models, list_.ambient_flat,
+                list_.ambient_foreign, list_.ambient_items, list_.ambient_truncated ? " (a cap was hit)" : "", list_.ambient_mismatched, list_.ambient_unreadable,
+                reasons.empty() ? std::string() : " [" + reasons + "]", traffic_walked, kTrafficWalkMetres);
+    for (const std::string& sample : list_.ambient_samples) {
+      REXLOG_INFO("{} frame {}:     unreadable {}", kPrefix, frame_, sample);
+    }
+  }
 
   uint32_t failed_logged = 0;
   for (uint32_t i = 0; i < cars_.size(); ++i) {
@@ -909,9 +1368,28 @@ void Walker::FinishFrame() {
     const bool is_player = car.vehicle == player_vehicle_;
     const double position[3] = {car.position[0], car.position[1], car.position[2]};
     const double player_distance = player_position_known_ && car.position_read ? Distance(position, player_position_) : -1.0;
-    const char* kind = is_player ? "player" : (racer.known && racer.distance < kRacerMetres) ? "racer" : "other";
-    const uint32_t body_geometry = match.in_use - match.empty_in_use;
-    const double percent = body_geometry != 0 ? 100.0 * double(match.matched_in_use) / double(body_geometry) : 0.0;
+    const bool is_item = (found.sources & kFromItems) != 0;
+    const char* kind = is_player ? "player" : is_item ? "traffic" : (racer.known && racer.distance < kRacerMetres) ? "racer" : "other";
+    // The wheels (RT-MODEL-PARTS) are told apart: the percentage and the counts of the earlier checks are of the model set's geometries (and a traffic car's), the wheels' own are the last
+    // two fields of the line (`wheels_in_use`, `wheels_matched`), so that a wheel draw the walk does not know cannot make a drawn car look badly walked.
+    std::unordered_set<uint32_t> hit_geometries;
+    for (const DrawMatch& d : frame.draws) {
+      if (d.hit == DrawHit::kGeometry && d.car == u) {
+        hit_geometries.insert(d.geometry);
+      }
+    }
+    uint32_t wheels_in_use = 0, wheels_matched = 0;
+    for (uint32_t g = 0; g < car.geometries.size(); ++g) {
+      const Geometry& geometry = car.geometries[g];
+      if (IsWheelPart(geometry.part) && geometry.in_use && geometry.index_count != 0) {
+        ++wheels_in_use;
+        wheels_matched += hit_geometries.count(g) != 0 ? 1u : 0u;
+      }
+    }
+    const uint32_t in_use_all = match.in_use - match.empty_in_use;
+    const uint32_t body_geometry = in_use_all >= wheels_in_use ? in_use_all - wheels_in_use : 0u;
+    const uint32_t matched_body = match.matched_in_use >= wheels_matched ? match.matched_in_use - wheels_matched : 0u;
+    const double percent = body_geometry != 0 ? 100.0 * double(matched_body) / double(body_geometry) : 0.0;
     uint32_t in_use_invalid = 0;
     for (const PartEntry& e : car.parts) {
       in_use_invalid += e.in_use && !e.valid;
@@ -923,14 +1401,14 @@ void Walker::FinishFrame() {
 
     REXLOG_INFO("{} frame {}: RESULT vehicle={:#010x} kind={} drawn={} geoms={} in_use={} in_use_tris={} matched={} matched_in_use={} pct={:.1f} matched_not_in_use={} "
                 "walked_only={} drawn_only={} vertex_only={} draws={} resident={} validated={} entries_present={} loaded={} valid={} in_use_invalid={} exact={} idxobj={} idxaddr={} "
-                "cnt={} stride={} posoff={} hdr_data={} lodmatch={}/{}/{} lodwalk={}/{}/{} lods={}/{}/{} loop={} flags={}{}{}{}{}{}{} visible={}",
+                "cnt={} stride={} posoff={} hdr_data={} lodmatch={}/{}/{} lodwalk={}/{}/{} lods={}/{}/{} loop={} flags={}{}{}{}{}{}{} visible={} wheels_in_use={} wheels_matched={}",
                 kPrefix, frame_, car.vehicle, kind, match.drawn ? 1 : 0, car.all.geometries, car.in_use.geometries, car.in_use.triangles, match.matched,
-                match.matched_in_use, percent, match.matched_not_in_use, match.walked_only_in_use, match.drawn_only, match.vertex_only, match.draws, car.resident_in_use,
+                matched_body, percent, match.matched_not_in_use, match.walked_only_in_use, match.drawn_only, match.vertex_only, match.draws, car.resident_in_use,
                 car.validated_in_use, car.entries_present, car.entries_loaded, car.entries_valid, in_use_invalid, match.exact_words, match.index_object_equal,
                 match.index_address_equal, match.index_count_equal, match.stride_equal, match.position_offset_equal, header_data, match.matched_by_lod[0], match.matched_by_lod[1],
                 match.matched_by_lod[2], match.walked_by_lod[0], match.walked_by_lod[1], match.walked_by_lod[2], car.body_lod, car.part_lod, car.forced_lod, car.loop_parts,
                 car.flags.ghost ? "G" : "-", car.flags.loop44_a ? "A" : "-", car.flags.loop44_b ? "B" : "-", car.flags.bumper_front_off ? "F" : "-", car.flags.bumper_rear_off ? "R" : "-",
-                car.flags.sub_bumpers ? "S" : "-", car.flags.intercooler ? "I" : "-", car.visible);
+                car.flags.sub_bumpers ? "S" : "-", car.flags.intercooler ? "I" : "-", car.visible, wheels_in_use, wheels_matched);
 
     REXLOG_INFO("{} frame {}:   car {:#010x} ({}, {}) at ({:.1f}, {:.1f}, {:.1f}), {:.1f} m from the player{}: {}; seen by {} (tap phases {}); visible +116 = {}, enabled {}, "
                 "lod body {} parts {} forced {} (lod distances {:.0f} / {:.0f} m), draw slot {}; entity state {}, body state {}, lod 0 {} (info {}); "
@@ -954,6 +1432,7 @@ void Walker::FinishFrame() {
                 car.in_use.vertices, car.in_use.triangles, car.lod_tally[0].geometries, car.lod_tally[1].geometries, car.lod_tally[2].geometries,
                 car.lod_tally[0].triangles, car.lod_tally[1].triangles, car.lod_tally[2].triangles, car.skinned, car.drawables_shared, car.truncated ? ", TRUNCATED" : "",
                 in_use_invalid, car.resident_in_use, car.validated_in_use, double(car.validated_bytes) / (1024.0 * 1024.0), header_data, car.all.geometries);
+    LogParts(car, found, u, i, frame);
     std::string ids_text;
     for (const uint32_t id : match.ids) {
       ids_text += std::format("{}{}", ids_text.empty() ? "" : ",", id);
@@ -963,7 +1442,7 @@ void Walker::FinishFrame() {
                   "{} of the in-use ones have no indices), {} draws of its IDs are none of its geometries (drawn-only, {} of them by the vertex window only); {} draws are "
                   "its geometries, with the stencil IDs {}; the match is exact for {} of {} matched (fetch dwords), index object {}, index address {}, index count {}, stride {}, "
                   "position offset 0 {}; {} of its vertex windows are another car's too",
-                  kPrefix, frame_, match.matched_in_use, body_geometry, percent, match.matched_not_in_use, match.walked_only_in_use, match.empty_in_use, match.drawn_only,
+                  kPrefix, frame_, matched_body, body_geometry, percent, match.matched_not_in_use, match.walked_only_in_use, match.empty_in_use, match.drawn_only,
                   match.vertex_only, match.draws, ids_text, match.exact_words, match.matched, match.index_object_equal, match.index_address_equal, match.index_count_equal, match.stride_equal,
                   match.position_offset_equal, match.shared_buffers);
     } else {
@@ -1010,6 +1489,96 @@ void Walker::FinishFrame() {
       break;
     }
   }
+}
+
+// The wheels of a racer and the item and the pose of a traffic car, for the reading of the debug walk (RT-MODEL-PARTS; the lines the check reads: "wheels:" and "traffic item").
+void Walker::LogParts(const CarWalk& car, const Found& found, uint32_t car_index, uint32_t found_index, const FrameMatch& frame) {
+  if (found_index >= found_.size()) {
+    return;
+  }
+  if ((found.sources & kFromItems) != 0) {
+    const cw::AmbientItem& item = ambient_[found_index];
+    const cw::TrafficPoseData& pose = traffic_poses_[found_index];
+    const cw::AmbientColour& colour = ambient_colour_[found_index];
+    std::string pose_text;
+    if (!pose.Usable()) {
+      pose_text = std::format("the item's bone block was NOT usable (blocks table {:#010x}, buffer {}, block {:#010x})", item.blocks, pose.buffer, pose.block);
+    } else {
+      const cw::AmbientBone& b0 = pose.bones[0];
+      const double at[3] = {pose.root[0] + double(b0.m[0][3]), pose.root[1] + double(b0.m[1][3]), pose.root[2] + double(b0.m[2][3])};
+      const double update = Distance(at, item.position);
+      std::string render = "no render copy";
+      if (pose.car_render_ok) {
+        const double rc[3] = {pose.car_render.m[3][0], pose.car_render.m[3][1], pose.car_render.m[3][2]};
+        render = std::format("{:.2f} m from its render copy", Distance(at, rc));
+      }
+      double lengths[3];
+      for (int axis = 0; axis < 3; ++axis) {
+        lengths[axis] = std::sqrt(double(b0.m[0][axis]) * b0.m[0][axis] + double(b0.m[1][axis]) * b0.m[1][axis] + double(b0.m[2][axis]) * b0.m[2][axis]);
+      }
+      pose_text = std::format("block {:#010x} (buffer {}), root ({:.2f}, {:.2f}, {:.2f}), {} bones read of the {} the geometries use, bone 0 at root + ({:.2f}, {:.2f}, {:.2f}) (its axes' lengths "
+                              "{:.3f} {:.3f} {:.3f}); root + bone 0 is {:.2f} m from the car's update-copy position and {}",
+                              pose.block, pose.buffer, pose.root[0], pose.root[1], pose.root[2], pose.bones.size(), cw::BonesNeeded(car), b0.m[0][3], b0.m[1][3], b0.m[2][3], lengths[0], lengths[1],
+                              lengths[2], update, render);
+    }
+    uint32_t models = 0;
+    for (const PartEntry& e : car.parts) {
+      models += e.models;
+    }
+    REXLOG_INFO("{} frame {}:     traffic item {:#010x}: car {:#010x} (type {:#010x}, radius {:.2f} m, flags {:#04x}), model {:#010x}, item lod {} ({}), enabled {}, view depth + radius {:.1f}; "
+                "lod taken {} ({} models, {} geometries, {} triangles, {} bones used); colour index {} -> palette {} ; pose: {}",
+                kPrefix, frame_, item.item, item.car, item.type, item.radius, item.car_flags, item.model, item.lod, item.Visible() ? "the main view shows it" : "outside the main view",
+                item.enabled ? 1 : 0, item.depth, car.body_lod, models, car.in_use.geometries, car.in_use.triangles, cw::BonesNeeded(car), item.colour_index,
+                colour.read ? std::format("({:.3f}, {:.3f}, {:.3f}, {:.3f}) x {:.3f}", colour.rgba[0], colour.rgba[1], colour.rgba[2], colour.rgba[3], colour.scale) : std::string("not readable"),
+                pose_text);
+    return;
+  }
+
+  // a racer: the wheels
+  const cw::WheelWalk& w = car.wheels;
+  if (!w.read) {
+    REXLOG_INFO("{} frame {}:     wheels: not read (the wheel manager [{:#010x}] or the vehicle's ids were not readable)", kPrefix, frame_, cw::kWheelManagerGlobal);
+    return;
+  }
+  uint32_t tyre_geoms = 0, rim_geoms = 0, tyre_tris = 0, rim_tris = 0, in_use = 0, bones = 0;
+  for (const Geometry& g : car.geometries) {
+    if (g.part == kTyrePart) {
+      ++tyre_geoms;
+      tyre_tris += g.index_count / 3;
+    } else if (g.part == kRimPart) {
+      ++rim_geoms;
+      rim_tris += g.index_count / 3;
+    } else {
+      continue;
+    }
+    in_use += g.in_use;
+    if (g.bone != kNoBone) {
+      bones = std::max(bones, g.bone + 1);
+    }
+  }
+  std::unordered_set<uint32_t> matched;
+  for (const DrawMatch& d : frame.draws) {
+    if (d.hit == DrawHit::kGeometry && d.car == car_index && d.geometry < car.geometries.size() && IsWheelPart(car.geometries[d.geometry].part)) {
+      matched.insert(d.geometry);
+    }
+  }
+  const cw::WheelMatrices& m = wheel_mats_[found_index];
+  std::string wheels_text;
+  for (uint32_t i = 0; i < kWheelCount; ++i) {
+    const auto at = [](bool ok, const temporal::Mat4& x) { return ok ? std::format("({:.2f}, {:.2f}, {:.2f})", x.m[3][0], x.m[3][1], x.m[3][2]) : std::string("-"); };
+    double tyre_rim = -1.0;
+    if (m.tyre_ok[i] && m.rim_ok[i]) {
+      tyre_rim = Distance(m.tyre[i].m[3], m.rim[i].m[3]);
+    }
+    wheels_text += std::format("{}w{}: tyre {} rim {} brake1 {} brake2 {} (tyre to rim {:.2f} m)", wheels_text.empty() ? "" : "; ", i, at(m.tyre_ok[i], m.tyre[i]), at(m.rim_ok[i], m.rim[i]),
+                               at(m.aux1_ok[i], m.aux1[i]), at(m.aux2_ok[i], m.aux2[i]), tyre_rim);
+  }
+  REXLOG_INFO("{} frame {}:     wheels: tyre id {} ({}; entry {:#010x}, drawable {:#010x}, {} geometries, {} triangles), rim id {} ({}; entry {:#010x}, drawable {:#010x}, {} geometries, {} triangles, "
+              "{} bones used by the wheel resources); the wheel draw's flags: tyre {}, rim {}, hidden {}; wheels the vehicle draws {}{}{}{}; {} wheel geometries in use of {}, {} of them are "
+              "draws of the frame; the vehicle's matrices (V+1344 tyre, V+1600 rim, V+1856 / V+1920 brake): {}",
+              kPrefix, frame_, w.tyre_id, w.tyre_ok ? "the accessor hands it out" : "NOT handed out", w.tyre_entry, w.tyre_drawable, tyre_geoms, tyre_tris, w.rim_id,
+              w.rim_ok ? "the accessor hands it out" : "NOT handed out", w.rim_entry, w.rim_drawable, rim_geoms, rim_tris, bones, w.tyre_on ? "on" : "off", w.rim_on ? "on" : "off",
+              w.hidden ? "YES" : "no", w.present[0] ? 1 : 0, w.present[1] ? 1 : 0, w.present[2] ? 1 : 0, w.present[3] ? 1 : 0, in_use, tyre_geoms + rim_geoms, matched.size(), wheels_text);
 }
 
 // Walked-only geometries and unmatched draws of a car with their raw words: what the first run's reading needs to see why a match failed.
