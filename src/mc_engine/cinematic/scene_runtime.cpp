@@ -66,6 +66,7 @@
 //
 
 #include "scene_runtime.h"
+#include "scene_want.h"
 
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
@@ -830,59 +831,14 @@ void Step(uint8_t* base) {
 
 // ---------------------------------------------------------------- mcla_scene, read from two threads
 //
-// The cvar's string is written by whoever edits it (the F4 panel, the console: SetFlagByName, under the cvar registry's lock) and read
-// by the game thread (TickScene) and by the thread that runs the camera hook (CurrentSceneState). A std::string read while it is
-// assigned is a data race, so nothing here reads the cvar's own storage:
-//   - the cvar's change callback (it runs on the writer's thread, under the registry's lock) copies every new value into g_want_text
-//     under g_want_mutex and bumps a generation;
-//   - a value that arrives with no write through SetFlagByName (the command line, larecomp.toml) is read once, by the cvar system's
-//     own locked getter, the first time anyone asks (on a guest thread, long after the command line and the file were read);
-//   - the game thread keeps a copy of its own and takes the lock only when the generation moved. With no scene and no edit a tick is
-//     two atomic loads and an emptiness test: no lock, no allocation. CurrentSceneState reads one atomic.
-std::mutex g_want_mutex;
-std::string g_want_text;                 // guarded by g_want_mutex
-bool g_want_known = false;               // guarded by g_want_mutex: g_want_text holds a value (from the callback or the first read)
-std::atomic<uint32_t> g_want_gen{0};     // bumped under g_want_mutex with every new value
-std::atomic<bool> g_want_set{false};     // the value is not empty
-std::atomic<bool> g_want_seeded{false};  // the first read is done
-std::string g_want_mine;                 // the game thread's own copy (TickScene only)
-uint32_t g_want_mine_gen = 0;
-
-void StoreWantLocked(std::string_view value) {
-    g_want_text.assign(value);
-    g_want_known = true;
-    g_want_set.store(!value.empty(), std::memory_order_release);
-    g_want_gen.fetch_add(1, std::memory_order_release);
-}
-
-void OnSceneCvarChanged(std::string_view, std::string_view value) {
-    std::lock_guard<std::mutex> lock(g_want_mutex);
-    StoreWantLocked(value);
-}
-
-// After the cvar's own definition at the top of the file, so the cvar exists when the callback is added.
-[[maybe_unused]] const bool g_want_watching = (larecomp::cvar::RegisterChangeCallback("mcla_scene", OnSceneCvarChanged), true);
-
-void EnsureWantKnown() {
-    if (g_want_seeded.load(std::memory_order_acquire)) return;
-    const std::string value = larecomp::cvar::GetFlagByName("mcla_scene");  // the cvar system's own locked read; none of our locks is held
-    {
-        std::lock_guard<std::mutex> lock(g_want_mutex);
-        if (!g_want_known) StoreWantLocked(value);  // a callback that ran meanwhile holds a newer value
-    }
-    g_want_seeded.store(true, std::memory_order_release);
-}
-
-// The scene asked for, as of this update. The game thread only.
-const std::string& WantedScene() {
-    EnsureWantKnown();
-    if (g_want_gen.load(std::memory_order_acquire) != g_want_mine_gen) {
-        std::lock_guard<std::mutex> lock(g_want_mutex);
-        g_want_mine = g_want_text;
-        g_want_mine_gen = g_want_gen.load(std::memory_order_relaxed);
-    }
-    return g_want_mine;
-}
+// What scene is asked for is kept by SceneWant (scene_want.h: no lock and no allocation on a quiet tick, and why the change callback is
+// hooked up on the first ask and not from a static initializer here: on 0.11 the setting does not exist yet at static initialization).
+SceneWant g_want(SceneWant::Source{
+    [](SceneWant::Notify notify) {
+        return larecomp::cvar::RegisterChangeCallback(
+            "mcla_scene", [notify = std::move(notify)](std::string_view, std::string_view value) { notify(value); });
+    },
+    [] { return larecomp::cvar::GetFlagByName("mcla_scene"); }});  // the cvar system's own locked read; none of our locks is held
 
 }  // namespace
 
@@ -890,7 +846,7 @@ const std::string& WantedScene() {
 
 void TickScene() {
     statelog::Tick();  // the per-update state log (mcla_state_log or a scene's `statelog on`): the row is the state after the update before; one string test when off
-    const std::string& want = WantedScene();
+    const std::string& want = g_want.Wanted();
     if (want.empty()) {
         if (g.armed) Disarm("mcla_scene was cleared");
         return;
@@ -903,10 +859,7 @@ void TickScene() {
 }
 
 SceneState CurrentSceneState() {
-    if (!g.armed) {
-        EnsureWantKnown();
-        return g_want_set.load(std::memory_order_acquire) ? SceneState::kPending : SceneState::kOff;
-    }
+    if (!g.armed) return g_want.IsSet() ? SceneState::kPending : SceneState::kOff;
     return g.state;
 }
 

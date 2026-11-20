@@ -552,14 +552,18 @@ rex::Result<void> LarecompApp::OnInit() {
   for (const auto& note : cli_notes_) LARECOMP_APP_WARN("[cli] {}", note);
   cli_notes_.clear();
 
+  // Where the shader packs and the driver's pipeline cache live: decided BEFORE the batch modes return, so that --build_shader_packs and
+  // --precache_pipelines (the launcher's setup) work in the folders the game's own start will use (0.10 did it in OnConfigurePaths, ahead
+  // of the batch run; here it came after it and a batch run built the packs where the game never looked: 2026-11-19).
+  larecomp::shaderbuild::ConfigurePackFolder(rex::GetPathSettings().cache_root.Get());
+  PinDriverShaderCache(rex::GetPathSettings().cache_root.Get());
+
   if (batch_ != BatchMode::kNone) {
     RunBatchMode();  // asks for a shutdown with the exit code; nothing else of the start-up happens
     return rex::Ok();
   }
 
   MoveUserDataIfNeeded();
-  larecomp::shaderbuild::ConfigurePackFolder(rex::GetPathSettings().cache_root.Get());
-  PinDriverShaderCache(rex::GetPathSettings().cache_root.Get());
 
   // log flush: a warning flushed the file at once, so a repeating warning cost a disk write each time (0.10 comment).
   // CHECK: ILogger has no flush_on level: log.flush_interval (hot) covers it.

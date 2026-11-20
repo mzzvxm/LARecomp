@@ -37,6 +37,7 @@
 #include "larecomp_log.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
+#include "bootprogress/pack_folder_rules.h"
 #include "bootprogress/larecomp_boot_progress.h"
 #include "gpu/renderer_fallback.h"  // the words of the compatibility renderer offer (standard library only)
 #include "mc_engine/core/boot_progress.h"
@@ -405,9 +406,14 @@ bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
 void ConfigurePackFolder(const std::filesystem::path& cache_root) {
 #if defined(LARECOMP_HAS_GPU)
   // Only a cache folder the player named moves the packs; otherwise the renderer picks (next to
-  // the program, or the local application data folder where that cannot be written).
-  if (cache_root.empty() || larecomp::cvar::GetFlagByName("cache_root").empty()) return;
-  mcla::gpu::SetShaderPackFolder(cache_root / "shaders");
+  // the program, or the local application data folder where that cannot be written). "Named" is
+  // the layer the value came from: LARecomp itself gives cache_root a value on every start (the
+  // title layer, LarecompApp::ChooseUserFolder), so the setting having text proves nothing
+  // (pack_folder_rules.h). Source::kDefault is the default and LARecomp's own title layer.
+  const bool named = larecomp::cvar::GetFlagSource("cache_root") != larecomp::cvar::Source::kDefault;
+  if (const std::filesystem::path folder = PackFolderFor(cache_root, named); !folder.empty()) {
+    mcla::gpu::SetShaderPackFolder(folder);
+  }
 #else
   (void)cache_root;
 #endif

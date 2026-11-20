@@ -506,6 +506,13 @@ add_executable(larecomp_cli_rules_test EXCLUDE_FROM_ALL
     src/settings/cli_rules_test.cpp)
 target_include_directories(larecomp_cli_rules_test PRIVATE src)
 
+# Which folder the shader packs go in (src/bootprogress/pack_folder_rules.h: only a cache folder the player named moves them, not LARecomp's
+# own default for cache_root) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_pack_folder_test, then run <build dir>/larecomp_pack_folder_test (exit 0 = passed).
+add_executable(larecomp_pack_folder_test EXCLUDE_FROM_ALL
+    src/bootprogress/pack_folder_rules_test.cpp)
+target_include_directories(larecomp_pack_folder_test PRIVATE src)
+
 # Which renderer each value of the SDK's gpu.driver means (src/gpu/renderer_choice.h: LARecomp's own, or the SDK's Xenia GPU), and the hidden
 # way back to the XENIA renderer (src/gpu/renderer_fallback.h: the debug row's picks, the box's words and its larecomp.toml write through the
 # profile store, the count of starts that never got going) have a check that needs no game:
@@ -553,6 +560,15 @@ add_executable(larecomp_scene_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/scene_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_scene_test PRIVATE src src/mc_engine/cinematic)
+# Which scene is asked for (src/mc_engine/cinematic/scene_want.h: the cell behind mcla_scene, header only), on a fake settings registry that
+# refuses a watch before RegisterAll like 0.11's, plus a source check that no change callback is added from a static initializer:
+#   cmake --build <build dir> --target larecomp_scene_want_test, then run <build dir>/larecomp_scene_want_test (exit 0 = passed).
+add_executable(larecomp_scene_want_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/scene_want_test.cpp)
+target_include_directories(larecomp_scene_want_test PRIVATE src src/mc_engine/cinematic)
+if(Threads_FOUND)
+    target_link_libraries(larecomp_scene_want_test PRIVATE Threads::Threads)
+endif()
 # The camera rig's maths, track parser and evaluator (src/mc_engine/cinematic/camera.h) have one too:
 #   cmake --build <build dir> --target larecomp_camera_test, then run <build dir>/larecomp_camera_test (exit 0 = passed).
 add_executable(larecomp_camera_test EXCLUDE_FROM_ALL

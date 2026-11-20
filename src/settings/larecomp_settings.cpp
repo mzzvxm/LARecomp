@@ -624,9 +624,16 @@ bool InvokeCommand(std::string_view name, std::string_view args) {
   return static_cast<bool>(rex::GetSettingsRegistry().Run(full, args));
 }
 
-void RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
+bool RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
   rex::SettingBase* s = ls::Find(name);
-  if (!s) return;
+  if (!s) {
+    // The old rex::cvar let a namespace-scope initializer add a callback (the REXCVAR_DEFINE next to it had registered the cvar at
+    // static initialization). Here the settings exist from RegisterAll (OnConfigure) on: asked for earlier, the callback finds nothing
+    // and is dropped. That was the trailer toolkit's "mcla_scene set at run time never starts" (scene_want.h): say so in the log
+    // instead of dropping it in silence, and let the caller fall back.
+    REXLOG_WARN("settings: no change callback for '{}': no such setting is registered (asked for before RegisterAll, or a driver that is not loaded)", name);
+    return false;
+  }
   std::lock_guard lock(g_cb_mutex);
   const std::string flat = ls::FlatName(*s);
   switch (s->GetType()) {
@@ -639,6 +646,7 @@ void RegisterChangeCallback(std::string_view name, ChangeCallback callback) {
     case rex::SettingType::kString: Watch<std::string>(*s, flat, callback); break;
     case rex::SettingType::kPath: Watch<std::filesystem::path>(*s, flat, callback); break;
   }
+  return true;
 }
 
 void UnregisterChangeCallbacks(std::string_view name) {
