@@ -511,6 +511,8 @@ void HeadlightRig::Publish(const std::array<headlight_rules::Tracked, headlight_
       lamp.up[c] = t.up[c];
     }
     rules::BeamAxis(lamp, h.dir);
+    // The car's two headlamps, for the shadow views (local_shadow.h): half the pair's span across the car, from the game's two points or the lenses, else the default.
+    rules::LampOffset(t.forward, t.up, t.half_span, h.lamp_offset);
     for (int c = 0; c < 3; ++c) {
       h.pos[c] = float(t.position[c]);
       h.color[c] = rules::kColor[c] * scale;

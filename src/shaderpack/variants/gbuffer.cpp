@@ -59,7 +59,7 @@ VariantTransformResult TransformGBufferHlsl(const VariantShader& shader, std::st
   }
 
   // 2. The block of constants (48 bytes: gbuffer_types.h GBufferConstants), declared at the place the chain gives it: byte 608 alone (c38 to c40), after the blocks of the
-  // stages before it in a composition (the headlight's 672 bytes come first: variant_chain.h, so 1280 there).
+  // stages before it in a composition (the headlight's 1072 bytes come first: variant_chain.h, so 1680 there).
   static constexpr ConstantMember kMembers[] = {{"uint4", "g_GBufferMode"}, {"float4", "g_GBufferRay"}, {"float4", "g_GBufferCam"}};
   if (!DeclareConstants(text, ctx, "G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants): 48 bytes after the 608.", kMembers, &error)) {
     return fail(std::move(error));

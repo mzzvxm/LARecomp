@@ -84,7 +84,7 @@ void TestTable_() {
     bool twin;
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
-                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 672, true}, {sp::kFeatureGBuffer, 48, true}};
+                {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
@@ -155,7 +155,7 @@ void TestLayout() {
   }
   Check(all_disjoint, "no two blocks overlap in any of the 2048 subsets of the table's features");
   Check(all_dense, "the layouts are dense: shared constants plus the blocks of the active features, never more than MaxConstantsBytes");
-  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 672 + 48, "the most a draw uploads is every block of the table");
+  Check(chain::MaxConstantsBytes() == 608 + 16 + 16 + 112 + 112 + 16 + 1072 + 48, "the most a draw uploads is every block of the table");
 
   // A table of 31 features with blocks of different sizes, random subsets (a fixed generator).
   std::vector<chain::FeatureInfo> wide;

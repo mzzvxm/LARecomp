@@ -19,7 +19,7 @@
 //      SV_Coverage is the shape of the game's own alpha tested shaders)
 //   2. the constants: the 48 bytes of gbuffer_types.h GBufferConstants after the 608 of SharedConstants, declared as g_GBufferMode (uint4), g_GBufferRay and
 //      g_GBufferCam (float4) with DeclareConstants (variants/stage_constants.h) at the offset the chain gives the block: byte 608 (c38 of the block) alone, for SPIR-V
-//      (RawBufferLoad) and DXIL (packoffset), and byte 1280 after the headlight's 672 bytes when the two are composed
+//      (RawBufferLoad) and DXIL (packoffset), and byte 1680 after the headlight's 1072 bytes when the two are composed
 //   3. the helper: src/gpu/hlsl/gbuffer_common.hlsli, pasted before `void main(` (the pack builder embeds the file: CMake, src/shaderpack/CMakeLists.txt)
 //   4. the write, after the game's `oC0 = applyBlendPremult(oC0);` (so after the alpha test's discard):
 //        oC1 = float2(0, 0);
