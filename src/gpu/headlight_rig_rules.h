@@ -44,10 +44,22 @@ namespace mcla::gpu::headlight_rules {
 inline constexpr size_t kMaxLights = 4;
 
 // The shader's term of one light, in the game's light units (what a lamp's term is: its colour times how much of its disc the pixel sees;
-// the grid lamps saturate at 1 inside their reach, so a peak of about 2.4 at the lamp's end of the beam makes the headlight as bright as a
-// street lamp 5 to 10 m from the car, and the 1/(1 + (d/D)^2) fall-off takes it down to a lamp's level at 15 to 20 m).
-inline constexpr float kPeak = 2.4f;              // the term on the beam's axis, close to the lamp (before the fall-off)
-inline constexpr float kFalloffDistance = 9.0f;   // m: the distance at which the 1/(1 + (d/D)^2) fall-off is a half
+// the grid lamps saturate at 1 inside their reach, and the night's ambient is about 0.1: a road under a street lamp shows about 60 to 80 of 255 where the
+// ambient alone shows 20 to 25, a ratio of 8 to 9 in light).
+//
+// CALIBRATION (2026-11-20, HEADLIGHT-FIX-2). The first look (peak 2.4, half distance 9 m) was a street lamp's level at 5 m and almost nothing beyond 15 m:
+// on a flat road (lamp 0.75 m up, the axis 2 degrees down, the road's surface term 0.47 to 0.53) its term was 0.96 at 5 m, 0.50 at 10 m, 0.28 at 15 m, 0.16 at
+// 20 m, 0.06 at 30 m: below the ambient from 25 m on, so the beam was lost in the picture (2.8 % of a chase picture's pixels changed). An inverse square
+// fall-off is too steep for a game's fixed exposure with a road lit at a grazing angle; a real low beam is aimed so that the road keeps its light out to
+// 40 m. Now peak 2.0 and half distance 26 m: the road's term on the axis is
+//     d (m)    3     5    10    15    20    25    30    40    50
+//     term   1.15  1.01  0.82  0.65  0.50  0.37  0.26  0.12  0.05     (a wall facing the lamp: 1.9 at 5 m, 1.7 at 10 m, 1.06 at 20 m, 0.57 at 30 m)
+// a street lamp's level at 5 m, half of it at 20 m (the edge of a lamp's pool, 4 to 5 times the ambient), a quarter at 30 m, out at 50 m: the near field is as
+// before (0.96 -> 1.01 at 5 m), the road at 20 m is 3 times and at 30 m 4 times brighter. A pale wall right in front of the car (1.9 times its albedo) still
+// clips, as a car's headlights do; a road never does (the lightest lane paint at 5 m: 0.7 x 1.0). headlight_rig_test.cpp holds these numbers;
+// mcla_gpu_headlight_strength (debug) multiplies all of it.
+inline constexpr float kPeak = 2.0f;              // the term on the beam's axis, close to the lamp (before the fall-off)
+inline constexpr float kFalloffDistance = 26.0f;  // m: the distance at which the 1/(1 + (d/D)^2) fall-off is a half
 inline constexpr float kSurfaceWrap = 0.45f;      // surface term = saturate(wrap + (1 - wrap) N.L): a road seen at a grazing angle keeps this share
 inline constexpr float kCutLow = 0.10f;           // low beam: the sine of the angle a point is above the lamp (as seen from the lamp) where the cut-off starts
 inline constexpr float kCutHigh = 0.38f;          // ... and where it is complete

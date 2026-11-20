@@ -29,8 +29,8 @@ namespace {
 // depth bias and the texel size as a share of the tile (src/gpu/local_shadow_types.h LocalShadowView).
 constexpr std::string_view kHelper = R"HLSL(// LARecomp variant headlight (src/shaderpack/variants/headlight.cpp): the cars' headlights as spot lights, one more term of the sum the shader multiplies
 // by the surface. 672 bytes after the shared constants (src/gpu/headlight_rig.h HeadlightConstants).
-static const float kHlPeak = 2.4;
-static const float kHlFalloffDistance = 9.0;
+static const float kHlPeak = 2.0;
+static const float kHlFalloffDistance = 26.0;
 static const float kHlSurfaceWrap = 0.45;
 static const float kHlCutLow = 0.10;
 static const float kHlCutHigh = 0.38;

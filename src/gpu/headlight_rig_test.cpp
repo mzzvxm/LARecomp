@@ -65,6 +65,49 @@ hr::Surface WallFacingLamp(float distance, float lateral = 0.0f, float height = 
 // the term
 // ---------------------------------------------------------------------------
 
+// The calibration of the look (headlight_rig_rules.h, HEADLIGHT-FIX-2): the road's term ahead of a low beam, in the game's light units where a street lamp is 1 and the
+// night's ambient about 0.1. The first look (peak 2.4, half distance 9 m) gave 0.96 / 0.50 / 0.28 / 0.16 / 0.06 at 5 / 10 / 15 / 20 / 30 m: lost beyond 15 m.
+void CheckCalibration() {
+  hr::Lamp lamp = BeamAlongX();
+  const float dip = hr::kDipDegrees * float(hr::kPi) / 180.0f;
+  lamp.position[1] = 0.75f;
+  lamp.direction[0] = std::cos(dip);
+  lamp.direction[1] = -std::sin(dip);  // the axis points a little below the car's forward
+  const auto road = [&](float d) {
+    hr::Surface s;
+    s.position[0] = d;
+    s.position[1] = 0.0f;
+    s.position[2] = 0.0f;
+    s.normal[0] = 0.0f;
+    s.normal[1] = 1.0f;
+    s.normal[2] = 0.0f;
+    return hr::LampScale(lamp, s);
+  };
+  struct Want {
+    float d, lo, hi;
+  };
+  const Want table[] = {{5.0f, 0.85f, 1.20f}, {10.0f, 0.70f, 0.95f}, {15.0f, 0.55f, 0.78f}, {20.0f, 0.40f, 0.62f},
+                        {25.0f, 0.30f, 0.45f}, {30.0f, 0.20f, 0.33f}, {40.0f, 0.08f, 0.17f}, {50.0f, 0.02f, 0.08f}};
+  for (const Want& w : table) {
+    const float got = road(w.d);
+    Check(got >= w.lo && got <= w.hi, "the road " + std::to_string(int(w.d)) + " m ahead of a low beam: " + std::to_string(got) + " in [" + std::to_string(w.lo) + ", " + std::to_string(w.hi) + "]");
+  }
+  Check(road(20.0f) > 2.5f * 0.16f && road(30.0f) > 3.0f * 0.06f, "the road at 20 and 30 m is far brighter than the first look's (0.16, 0.06)");
+  Check(road(20.0f) > 3.0f * 0.1f && road(30.0f) > 2.0f * 0.1f, "the road 20 and 30 m ahead stands out of the night's ambient (about 0.1)");
+  Check(road(5.0f) < 1.25f && road(3.0f) < 1.4f, "a road is never blown out near the car (a lamp's level is 1)");
+  bool monotone = true;
+  for (float d = 4.0f; d < 70.0f; d += 1.0f) {
+    if (road(d + 1.0f) > road(d) + 1e-6f) monotone = false;
+  }
+  Check(monotone, "the road's light falls with the distance from 4 m on");
+  // a wall facing the lamp is brighter than the road at the same distance, and a pale wall at 5 m clips at most as a car's lamps do
+  hr::Surface wall = WallFacingLamp(5.0f, 0.0f, 0.75f);
+  const float wall5 = hr::LampScale(lamp, wall);
+  Check(wall5 > road(5.0f) && wall5 < 2.1f, "a wall facing the lamp at 5 m is lit more than the road, under 2.1");
+  // the strength knob scales the colour, not the term: the rig multiplies the colour by it (headlight_rig.cpp); the term itself has no knob
+  Check(hr::kPeak > 0.0f && hr::kFalloffDistance > hr::kNearStart, "the calibration's constants are sane");
+}
+
 void CheckTerm() {
   const hr::Lamp lamp = BeamAlongX();
   // On the axis, at 3 m, on a wall that faces the lamp: peak * falloff * window, the surface term 1, no cut-off, the near fade complete.
@@ -1075,6 +1118,7 @@ void CheckShadowRemap() {
 
 int main() {
   CheckTerm();
+  CheckCalibration();
   CheckNight();
   CheckCar();
   CheckFacing();

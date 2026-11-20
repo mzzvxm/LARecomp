@@ -51,7 +51,8 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_headlight_version).
-inline constexpr uint32_t kHeadlightVariantVersion = 1;
+// 2: the beam's calibration (peak 2.0, half distance 26 m: the road is lit out to 40 m; HEADLIGHT-FIX-2), a new helper text: the packs are built again.
+inline constexpr uint32_t kHeadlightVariantVersion = 2;
 
 // The pixel shaders, found by name: every one of the lit family.
 inline constexpr std::string_view kHeadlightSuffixes[] = {"__PSMultiLight", "__PSMultiLightEnv", "__PSMultiLightInterior", "__PSMultiLightDebug",
