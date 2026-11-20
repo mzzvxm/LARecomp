@@ -78,6 +78,31 @@ ImVec4 ToVec4(ImU32 c) {
     return ImGui::ColorConvertU32ToFloat4(c);
 }
 
+// The pad's chords (freecam.h Events) arrive on the GAME thread, from the flight's own step: they become commands from there (Post is safe from any thread). The take's form is the
+// panel's, copied here every frame it is open, so Back + D-pad up renders what the TAKE tab says.
+std::mutex g_hook_mutex;
+dp::TakeForm g_hook_take;
+
+void OnFlyEvents(const fc::Events& events) {
+    if (!events.Any()) return;
+    const std::shared_ptr<const dir::Snapshot> snap = dir::GetSnapshot();
+    if (!snap || !snap->director) return;
+    dp::TakeForm take;
+    {
+        std::lock_guard<std::mutex> lock(g_hook_mutex);
+        take = g_hook_take;
+    }
+    for (dp::Cmd& c : dp::CommandsForFlyEvents(events, snap.get(), take)) {
+        dir::Posted p;
+        p.cmd = c.cmd;
+        p.args = std::move(c.args);
+        p.source = dir::Source::kPanel;
+        p.wait_settled = c.wait_settled;
+        p.timeout_s = c.timeout_s;
+        dir::Post(std::move(p));
+    }
+}
+
 // An edit of the scene file that waits for the panel to hold the file's current text (an edit needs the `expect` of its line).
 struct QueuedEdit {
     std::string key;  // an edit with the same key replaces the one that waits (a slider's drag is one edit, the last value)
@@ -129,6 +154,11 @@ class DirectorPanel final : public rex::ui::DialogBase {
             return true;
         }
         if (!open_) Opened();
+        take_.name = take_name_;
+        {
+            std::lock_guard<std::mutex> lock(g_hook_mutex);
+            g_hook_take = take_;
+        }
         disp_.Drain(now_);
         if (!snap_ || !snap_->director) {
             DrawOffNotice();
@@ -1523,6 +1553,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
 }  // namespace
 
 void StartDirectorPanel(rex::ui::IUISystem& ui) {
+    mc::cinematic::SetFreecamEventHook(&OnFlyEvents);  // the pad's chords: Back + B, RB, LB, Start, D-pad right, D-pad up (a flag test an update while the camera does not fly)
     ui.AddDialog(std::make_unique<DirectorPanel>(ui));
 }
 

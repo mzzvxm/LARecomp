@@ -902,7 +902,10 @@ std::vector<Cmd> CommandsForFlyEvents(const fc::Events& ev, const dir::Snapshot*
     } else if (ev.play_pause) {
         out.push_back(PlayCmd());
     }
-    if (ev.step_frame) out.push_back(StepCmd(1));
+    if (ev.step_frame) {
+        if (snap && snap->transport.mode != "fixed") out.push_back(FixedModeCmd(true));  // a step needs the fixed step
+        out.push_back(StepCmd(1));
+    }
     if (ev.render_take) out.push_back(TakeRenderCmd(take));
     return out;
 }

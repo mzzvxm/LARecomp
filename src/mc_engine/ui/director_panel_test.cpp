@@ -1212,10 +1212,13 @@ void TestFlying() {
     ev.step_frame = true;
     TakeForm take;
     std::vector<Cmd> cmds = CommandsForFlyEvents(ev, &snap, take);
-    Check(cmds.size() == 3, "add key, play and one frame");
+    Check(cmds.size() == 4, "add key, play, the fixed step and one frame");
     CheckEq(cmds[0].cmd, "camera.key.add", "Back + B");
     CheckEq(cmds[1].cmd, "transport.play", "Back + Start plays a held scene");
-    CheckEq(cmds[2].cmd, "transport.step", "Back + D-pad right");
+    CheckEq(cmds[2].cmd, "transport.mode", "a step needs the fixed step: asked for first");
+    CheckEq(cmds[3].cmd, "transport.step", "Back + D-pad right");
+    snap.transport.mode = "fixed";
+    Check(CommandsForFlyEvents(ev, &snap, take).size() == 3, "already in the fixed step: no mode command");
     snap.transport.paused = false;
     ev = fc::Events{};
     ev.play_pause = true;
