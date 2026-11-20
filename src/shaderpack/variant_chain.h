@@ -111,6 +111,10 @@ inline constexpr FeatureInfo kFeatures[] = {
     {kFeatureHeadlight, "headlight", Stage::kPixel, 672, FeatureBit(kFeatureGBuffer), true, 0},
     {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight), true, 0},
     // kFeatureLampShadow (11) is reserved: its row comes with its variant, and names the headlight and the G-buffer in composes_with (in all three rows).
+    // The G-buffer's vertex stage (variants/gbuffer_day.h): a vertex shader that also writes the vertex normal to TEXCOORD15. It composes with nothing, has no block of constants and the
+    // vertex shader's spec variant 1 twin. No pixel stage lists it in needs_vs: the G-buffer's pixel words read the export where it is and fall back to a derivative normal where it is
+    // not, so they are valid with any vertex shader and the renderer pairs the vertex word by itself (Scene::GBufferKey).
+    {kFeatureGBufferVs, "gbuffer_vs", Stage::kVertex, 0, 0, true, 0},
 };
 
 constexpr size_t kFeatureCount = sizeof(kFeatures) / sizeof(kFeatures[0]);
