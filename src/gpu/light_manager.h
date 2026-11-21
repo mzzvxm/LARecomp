@@ -24,8 +24,19 @@
 // rig's four headlights and of the cars that get shadow views, and the one budget (Pickers(), always, with or without the census); the street lamps' pick (the volume's LampPicker, the lamp
 // shadows') is reserved to move in with LU-4 / LU-5.
 //
-// THE SWITCH. mcla_gpu_lights_census N (debug only, default 0: the manager is not called, the cost is one setting read a frame). N > 0: it runs every guest frame, the census line is
-// every N guest frames (300 is the usual), a difference found by a check is logged at once (the first three of each kind) and counted in the next census line. Live.
+// THE FLIPS (LIGHT-UNIFY U4, package LU-4; mcla_gpu_light_frame, debug only, a bit mask, default 0). The consumers can read the frame instead of their own producers, one at a time, with
+// the SAME BYTES (light_project.h: each consumer's builder run over the frame's data, and the checks that compare the two byte for byte):
+//   bit 1  4a  the lit shaders' headlight block (HeadlightBlock(): Scene::FillVariantBlock reads it instead of HeadlightRig::Block())
+//   bit 2  4b  the volumetric light's lamps, headlights and shadow views (VolumetricsInputs::Fill)
+//   bit 4  4c  the lights the headlight shadow replay picks cars and makes views from (LocalShadow::PickViews)
+// A flipped consumer asks Serving(bit) first and uses its own producer when it is false (the manager off, the frame not opened yet): nothing breaks if the manager is late. With the census
+// ON the legacy producers' data is made too and compared with the projection every frame (Check::kBlockBytes, kVolumeBytes, kShadowLights; the census line counts them): that is the
+// proof run. With the census OFF and a flip on, only the frame is made: no checks, no upload, no cars' light points (what a flip costs at play). Switching a flip off live goes back to the
+// consumer's own producer, which kept running (the rig, the replay) or starts afresh (the volume's lamp picker: its first pick after a gap is at full weight).
+//
+// THE SWITCH. mcla_gpu_lights_census N (debug only, default 0): N > 0: it runs every guest frame, the census line is every N guest frames (300 is the usual), a difference found by a
+// check is logged at once (the first three of each kind) and counted in the next census line. Live. The manager runs while the census is on OR a flip is; with both off it is not
+// called and the cost is two setting reads a frame.
 //
 // THREADING. Render thread only. Initialize and Shutdown on the lifecycle thread.
 //
@@ -65,8 +76,10 @@
 
 #include "car_lights.h"
 #include "light_frame.h"
+#include "headlight_rig_rules.h"
 #include "light_manager_rules.h"
 #include "light_pick.h"
+#include "light_project.h"
 #include "local_shadow_types.h"
 #include "vol_lamp_list.h"
 #include "volumetrics_types.h"
@@ -88,8 +101,12 @@ class LightManager {
   void Initialize(UploadRing& upload, HeadlightRig& rig, LocalShadow& shadow);
   void Shutdown();
 
-  // The Scene opened a frame's first list: reads the setting; with it on, collects the frame's headlights and the last trigger's maps and checks the block. `frame` is the Scene's
-  // frame serial, `upload_slot` the frame's slot in the upload ring. A second list of the same guest frame is ignored.
+  // The Scene opened a frame's first list, BEFORE the shadow replay's BeginFrame (LU-4c: the replay picks its cars from the frame's lights): reads the settings (the census, the flips);
+  // when either is on, opens the frame with the rig's lights of this frame. `frame` is the Scene's frame serial, `upload_slot` the frame's slot in the upload ring. A second call of the
+  // same guest frame changes nothing but the slot.
+  void BeginLights(uint64_t frame, uint32_t upload_slot);
+  // The same list, AFTER the rig's and the replay's own BeginFrame: the last trigger's maps (the replay gave them up if the frame before had no trigger) and, with the census on, the
+  // block check at the start. Opens the frame itself if BeginLights was not called. A second list of the same guest frame is ignored.
   void BeginFrame(uint64_t frame, uint32_t upload_slot);
   // After the replay's OnResolve of every resolve (`shadow_recorded` is its return value): when it was the trigger, this frame's maps; then the block is checked again.
   void OnResolve(bool shadow_recorded);
@@ -99,8 +116,16 @@ class LightManager {
   // The guest present, BEFORE the rig makes the next frame's set: the frame's own check, the upload, the census.
   void OnPresent();
 
-  // Whether the manager is running (the setting was on at the last BeginFrame): the volume asks before it hands its inputs over.
+  // Whether the manager is running (the census or a flip was on at the last BeginLights): the volume asks before it hands its inputs over.
   bool active() const { return active_; }
+  // LU-4: whether the consumer of this flip (light_project.h kFlip*) is to read the frame now: the flip is set, the manager runs and the frame is open. False otherwise: the consumer
+  // uses its own producer.
+  bool Serving(uint32_t flip) const { return active_ && begun_ && (flips_ & flip) != 0; }
+  // Whether the legacy producers' data is made too and compared with the frame's projection (the census is on): the proof run.
+  bool Checking() const { return active_ && every_ > 0; }
+  // 4a: the headlight block of this frame made from the frame (the frame's lights, the maps as of now), or null when Serving(kFlipHeadlightBlock) is false or the frame's maps are not
+  // in yet. The camera in it is the rig's fallback; the Scene writes the draw's own over it. Valid until the next call after a change of the frame. Render thread.
+  const headlight_rules::HeadlightConstants* HeadlightBlock();
   // The frame as it is now. Valid on the render thread between BeginFrame and OnPresent (the frame is complete once the volume has filled).
   const larecomp::gpu::LightFrame& Frame() const { return collector_.frame(); }
 
@@ -135,8 +160,11 @@ class LightManager {
   larecomp::gpu::light_manager::SelfCheck check_;
 
   int every_ = 0;
+  uint32_t flips_ = 0;         // mcla_gpu_light_frame as read at the last BeginLights (light_project.h kFlip*)
   bool active_ = false;
-  bool begun_ = false;        // a frame has been opened and not yet presented
+  bool begun_ = false;         // a frame has been opened and not yet presented
+  bool shadows_begun_ = false; // ... and BeginFrame has put the last trigger's maps in it
+  bool cars_on_ = false;       // the hook's every-kind notes are on (the census is)
   bool volume_seen_ = false;  // the volume filled in this frame
   uint32_t upload_slot_ = 0;
   uint64_t frame_ = 0;
@@ -152,6 +180,13 @@ class LightManager {
   std::vector<larecomp::gpu::car_lights::FrameIn> car_frames_;
   std::vector<larecomp::gpu::Light> point_lights_;
   uint32_t cars_now_ = 0, car_lamps_on_ = 0, car_point_lights_ = 0;
+
+  // LU-4a: the projected headlight block, remade when the frame changes (the lights at BeginLights, the maps at BeginFrame and at the trigger)
+  headlight_rules::HeadlightConstants block_{};
+  bool block_dirty_ = true;
+  uint64_t block_made_ = 0, block_draws_ = 0;  // for the census: projections made, draws that took the block
+
+  void CheckBlocks(larecomp::gpu::light_manager::Check kind);
 
   // the volume's budgets of the last fill, for the census
   uint32_t grid_lamps_ = 0, grid_headlights_ = 0;

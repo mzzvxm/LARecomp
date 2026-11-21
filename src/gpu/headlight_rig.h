@@ -155,6 +155,13 @@ class HeadlightRig {
   // Scene writes the draw's own camera over it: its pixel constants c12-c15 are the view inverse), and the shadow views of the producer (SetLocalShadows) as of
   // now. Valid until the next call.
   const headlight_rules::HeadlightConstants& Block();
+  // The world position the block carries as its fallback camera (the camera of the frame's lens draws, in float): what Block().camera holds, without making the block. The light manager's
+  // projection of the headlight block (light_project.h, LU-4a) takes it; every draw whose pixel constants hold the camera overwrites it in the block anyway.
+  void FrameCamera(float out[3]) const {
+    for (int c = 0; c < 3; ++c) {
+      out[c] = float(camera_[c]);
+    }
+  }
   // A draw of the variant took the block (`alpha`: the alpha test twin), for the census.
   void NoteVariantDraw(bool alpha) {
     ++variant_draws_;

@@ -98,11 +98,17 @@ void LightManager::Reset() {
   list_.clear();
   list_seq_ = 0;
   cars_.SetEnabled(false);  // the hook notes nothing for the manager while it is not running (light_points.h Want)
+  cars_on_ = false;
   car_frames_.clear();
   point_lights_.clear();
   cars_now_ = car_lamps_on_ = car_point_lights_ = 0;
   active_ = false;
   begun_ = false;
+  shadows_begun_ = false;
+  flips_ = 0;
+  block_ = headlight_rules::HeadlightConstants{};
+  block_dirty_ = true;
+  block_made_ = block_draws_ = 0;
   volume_seen_ = false;
   presents_ = 0;
   frames_total_ = 0;
@@ -120,11 +126,12 @@ void LightManager::Reset() {
 // the frame
 // ---------------------------------------------------------------------------
 
-void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
+void LightManager::BeginLights(uint64_t frame, uint32_t upload_slot) {
   const int every = larecomp::settings::mcla_gpu_lights_census.Get();
-  if (every <= 0 || rig_ == nullptr || shadow_ == nullptr) {
+  const uint32_t flips = uint32_t(std::clamp(int(larecomp::settings::mcla_gpu_light_frame.Get()), 0, int(light_project::kFlipAll)));
+  if ((every <= 0 && flips == 0) || rig_ == nullptr || shadow_ == nullptr) {
     if (active_) {
-      REXLOG_INFO("{} off (mcla_gpu_lights_census = {})", kPrefix, every);
+      REXLOG_INFO("{} off (mcla_gpu_lights_census = {}, mcla_gpu_light_frame = {})", kPrefix, every, flips);
       Reset();
     }
     return;
@@ -132,24 +139,47 @@ void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
   if (!active_) {
     Reset();
     active_ = true;
-    cars_.SetEnabled(true);  // the hook now notes every kind of every car's light points (LU-7); polled at the present
-    REXLOG_INFO("{} on (mcla_gpu_lights_census = {}, live): collects the headlight rig's lights, the replay's shadow views and the volume's street lamps into one frame every guest frame, "
-                "checks it against the headlight block and the volume's inputs, uploads {} bytes of GpuLights a frame, polls the cars' light points of all 19 kinds; nothing reads it "
-                "(the picture is unchanged)",
-                kPrefix, every, sizeof(larecomp::gpu::GpuLightBuffer));
+    REXLOG_INFO("{} on (mcla_gpu_lights_census = {}, mcla_gpu_light_frame = {}, live): collects the headlight rig's lights, the replay's shadow views and the volume's street lamps into one frame "
+                "every guest frame{}; consumers that are flipped (mcla_gpu_light_frame) read it instead of their own producers, with the same bytes",
+                kPrefix, every, flips,
+                every > 0 ? std::format(", checks it against the headlight block and the volume's inputs, uploads {} bytes of GpuLights a frame, polls the cars' light points of all 19 kinds",
+                                        sizeof(larecomp::gpu::GpuLightBuffer))
+                          : std::string(" (no checks, no upload: the census is off)"));
+  }
+  if (flips != flips_) {
+    REXLOG_INFO("{} flips (mcla_gpu_light_frame = {}): the headlight block {}, the volume's lights {}, the shadow replay's lights {}{}", kPrefix, flips,
+                (flips & light_project::kFlipHeadlightBlock) != 0 ? "from the frame" : "from the rig", (flips & light_project::kFlipVolume) != 0 ? "from the frame" : "from the volume's producer",
+                (flips & light_project::kFlipShadowLights) != 0 ? "from the frame" : "from the rig", every > 0 ? " (each compared byte for byte with the legacy producer's)" : "");
+    flips_ = flips;
   }
   every_ = every;
+  const bool cars = every > 0;  // the cars' light points are for the census only (nothing of them is in the frame yet)
+  if (cars != cars_on_) {
+    cars_.SetEnabled(cars);  // the hook now notes every kind of every car's light points (LU-7); polled at the present
+    cars_on_ = cars;
+  }
   upload_slot_ = upload_slot;  // the latest list's: the upload is made at the present, into the slot that is being recorded
   if (begun_) {
     return;  // a second list of the same guest frame: the set is what it was
   }
   Cost cost(&frame_cpu_);
   begun_ = true;
+  shadows_begun_ = false;
+  block_dirty_ = true;
   volume_seen_ = false;
   frame_ = frame;
-  const HeadlightSet& set = CurrentHeadlights();
   const double now_s = mc::cinematic::SceneClockNowMs(frame) * 1.0e-3;
-  collector_.BeginFrame(uint32_t(frame), now_s, set);
+  collector_.BeginFrame(uint32_t(frame), now_s, CurrentHeadlights());
+}
+
+void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
+  BeginLights(frame, upload_slot);  // a no-op when the Scene called it before the replay's BeginFrame
+  if (!active_ || !begun_ || shadows_begun_) {
+    return;
+  }
+  shadows_begun_ = true;
+  Cost cost(&frame_cpu_);
+  const HeadlightSet& set = CurrentHeadlights();
   // The maps the rig holds at this point are those of the last trigger, moved to this set by the car; the replay gave them up at its own BeginFrame if the frame before had no trigger.
   if (!Carry::Published(shadow_->Frame(), AtlasOf(shadow_->AtlasInfo()))) {
     carry_.Clear();
@@ -160,7 +190,34 @@ void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
         return headlight_rules::RemapShadowViews(f, old_keys, old_count, new_keys, new_count);
       });
   collector_.SetShadows(moved.count != 0 ? &moved : nullptr, carry_.has() ? carry_.atlas() : larecomp::gpu::ShadowAtlasInfo{});
-  lm::CheckHeadlightBlock(collector_.frame(), collector_.rig(), rig_->Block(), lm::Check::kBlockBefore, &check_);
+  block_dirty_ = true;
+  CheckBlocks(lm::Check::kBlockBefore);
+}
+
+// The headlight block the rig made against the frame (the rows, the reach box, the views by content: LU-2) and against the projection of the frame byte for byte (LU-4a); only while the
+// census is on (the legacy producer's block is not made for a flipped block otherwise).
+void LightManager::CheckBlocks(lm::Check kind) {
+  if (!Checking()) {
+    return;
+  }
+  const headlight_rules::HeadlightConstants& legacy = rig_->Block();
+  lm::CheckHeadlightBlock(collector_.frame(), collector_.rig(), legacy, kind, &check_);
+  light_project::CheckBlockBytes(collector_.frame(), legacy, lm::Check::kBlockBytes, &check_);
+}
+
+const headlight_rules::HeadlightConstants* LightManager::HeadlightBlock() {
+  if (!Serving(light_project::kFlipHeadlightBlock) || !shadows_begun_) {
+    return nullptr;  // not flipped, or the frame is not complete: the rig's own block
+  }
+  if (block_dirty_) {
+    float camera[3];
+    rig_->FrameCamera(camera);
+    block_ = light_project::ProjectHeadlightBlock(collector_.frame(), camera);
+    block_dirty_ = false;
+    ++block_made_;
+  }
+  ++block_draws_;
+  return &block_;
 }
 
 void LightManager::RefreshCarry() {
@@ -185,12 +242,13 @@ void LightManager::OnResolve(bool shadow_recorded) {
   RefreshCarry();
   const bool have = Carry::Published(frame, atlas);
   collector_.SetShadows(have ? &frame : nullptr, have ? atlas : larecomp::gpu::ShadowAtlasInfo{});
-  lm::CheckHeadlightBlock(collector_.frame(), collector_.rig(), rig_->Block(), lm::Check::kBlockAfter, &check_);
+  block_dirty_ = true;
+  CheckBlocks(lm::Check::kBlockAfter);
 }
 
 void LightManager::NoteVolumeInputs(const volumetrics::VolFrameContext& context, const volumetrics::VolInputs& in, bool lamps_on, bool heads_on, uint32_t first_lamp) {
-  if (!active_ || !begun_) {
-    return;
+  if (!active_ || !begun_ || every_ <= 0) {
+    return;  // only the census looks at what the volume was given
   }
   Cost cost(&frame_cpu_);
   volume_seen_ = true;
@@ -225,9 +283,11 @@ void LightManager::OnPresent() {
   }
   {
     Cost cost(&frame_cpu_);
-    lm::CheckFrameInvariants(collector_.frame(), collector_.has_previous() ? &collector_.previous() : nullptr, &check_);
-    Upload();
-    PollCars();
+    if (Checking()) {
+      lm::CheckFrameInvariants(collector_.frame(), collector_.has_previous() ? &collector_.previous() : nullptr, &check_);
+      Upload();
+      PollCars();
+    }
     collector_.EndFrame();
   }
   ++presents_;
@@ -250,10 +310,15 @@ void LightManager::OnPresent() {
   window_.cpu_max_ns = std::max(window_.cpu_max_ns, ns);
   frame_cpu_ = {};
   begun_ = false;
+  shadows_begun_ = false;
+  if (every_ <= 0) {
+    window_ = Window{};  // flips only: nothing is logged, the window does not grow
+    return;
+  }
   if (!lights_seen_ && st.headlights + st.lamps != 0) {
     lights_seen_ = true;
     Census();  // the first frame with a light: the line is there at once, and the window starts again after it
-  } else if (every_ > 0 && presents_ % uint64_t(every_) == 0) {
+  } else if (presents_ % uint64_t(every_) == 0) {
     Census();
   }
 }
@@ -337,6 +402,13 @@ void LightManager::Census() {
               kPrefix, light_pick::ModeName(light_pick::ParseMode(larecomp::settings::mcla_gpu_light_pick.Get())), b.headlights, b.shadow_cars,
               b.shadow_lamp_cars, b.shadow_views, b.shadow_tile, b.shadow_tile, b.volume_lamps, b.volume_headlights, b.lamp_views, b.lamp_views_spare, pickers_.headlights.state_count(),
               pickers_.headlights.held_count(), pickers_.shadow_cars.held_count());
+  // The flips (LU-4): which consumers read the frame, how much they took from it, and how the byte compares of the projections came out (the checks' own counts are in the self-check
+  // text above: block bytes, volume bytes, shadow lights).
+  const auto flip_name = [&](uint32_t bit) { return (flips_ & bit) != 0 ? "the frame" : "its own producer"; };
+  REXLOG_INFO("{} flips (LU-4, mcla_gpu_light_frame = {}): the headlight block reads {} ({} projections made, {} lit draws took one), the volume reads {}, the shadow replay reads {}; the "
+              "projections are compared with the legacy producers' bytes every frame while the census is on: {}",
+              kPrefix, flips_, flip_name(light_project::kFlipHeadlightBlock), block_made_, block_draws_, flip_name(light_project::kFlipVolume), flip_name(light_project::kFlipShadowLights),
+              w.Checks() == 0 ? std::string("no check made") : std::format("{} differed in the window", w.Bad()));
   window_ = Window{};
 }
 

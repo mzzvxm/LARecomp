@@ -1299,6 +1299,12 @@ class GPUSettings final : public rex::SettingOwner {
     "<path>.views.txt, in the text format of light_pick_record.h, for the unit test light_pick_test to replay through both pickers. Empty: nothing is written. Live; "
     "changing the path starts new files.", rex::kDebugOnly);
 
+  REX_SETTING(i32, mcla_gpu_light_frame, 0, "Diagnostic (the one light description, LIGHT-UNIFY U4, the A/B of the flips): which consumers read the light manager's frame of lights instead of their own producer. "
+    "A bit mask: 1 the lit shaders' headlight block, 2 the volumetric light's street lamps, headlights and shadow views, 4 the lights the headlight shadow maps pick cars "
+    "and make views from; 7 all three. 0 (the default until the runs have shown the bytes equal): every consumer reads its own producer, as before. The data a flipped "
+    "consumer gets is byte for byte what its own producer made (mcla_gpu_lights_census checks it every frame while it is on, and says so in its line), so the picture "
+    "does not change. Live.", rex::kDebugOnly, rex::Range{0, 7});
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1749,6 +1755,7 @@ inline auto& mcla_gpu_vol_view = g_gpu.mcla_gpu_vol_view;
 inline auto& mcla_gpu_lights_census = g_gpu.mcla_gpu_lights_census;
 inline auto& mcla_gpu_light_pick = g_gpu.mcla_gpu_light_pick;
 inline auto& mcla_gpu_light_pick_record = g_gpu.mcla_gpu_light_pick_record;
+inline auto& mcla_gpu_light_frame = g_gpu.mcla_gpu_light_frame;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;

@@ -516,6 +516,9 @@ enum class Check : uint32_t {
   kVolumeHeadlights,  // the volume's headlights
   kVolumeViews,       // and the shadow views they read
   kFrame,             // the frame's own invariants
+  kBlockBytes,        // LU-4a: the projection of the frame (light_project.h) against the rig's block, byte for byte (at the frame's start and after the trigger)
+  kVolumeBytes,       // LU-4b: the volume's light inputs made from the frame against the legacy producer's, byte for byte
+  kShadowLights,      // LU-4c: the lights the shadow replay picks from, made from the frame against the rig's set, bit for bit
   kCount
 };
 inline constexpr uint32_t kCheckCount = uint32_t(Check::kCount);
@@ -527,6 +530,9 @@ inline const char* CheckName(Check c) {
     case Check::kVolumeHeadlights: return "volume headlights";
     case Check::kVolumeViews: return "volume views";
     case Check::kFrame: return "frame";
+    case Check::kBlockBytes: return "block bytes";
+    case Check::kVolumeBytes: return "volume bytes";
+    case Check::kShadowLights: return "shadow lights";
     case Check::kCount: break;
   }
   return "?";

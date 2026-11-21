@@ -873,11 +873,14 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (car_shadow_) {
     car_shadow_->BeginFrame();
   }
+  if (light_manager_) {
+    light_manager_->BeginLights(frame_serial_, slot);  // the frame's lights (light_manager.h): before the replay, which picks its cars from them when mcla_gpu_light_frame says so (LU-4c)
+  }
   if (local_shadow_) {
     local_shadow_->BeginFrame();
   }
   if (light_manager_) {
-    light_manager_->BeginFrame(frame_serial_, slot);  // passive (light_manager.h): off unless mcla_gpu_lights_census is set; after the rig's and the replay's own
+    light_manager_->BeginFrame(frame_serial_, slot);  // the last trigger's maps (passive unless mcla_gpu_lights_census or mcla_gpu_light_frame is set); after the rig's and the replay's own
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -2433,7 +2436,9 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
         std::memset(out, 0, size);
         return;
       }
-      headlight_rules::HeadlightConstants block = headlights_->Block();
+      // The block of the rig, or (mcla_gpu_light_frame bit 1, LU-4a) the same bytes projected from the light manager's frame.
+      const headlight_rules::HeadlightConstants* from_frame = light_manager_ ? light_manager_->HeadlightBlock() : nullptr;
+      headlight_rules::HeadlightConstants block = from_frame ? *from_frame : headlights_->Block();
       // The camera as this draw's own pixel constants say: c15 is row 3 of the view inverse (the position). A pass with another camera (a reflection map) is lit
       // right too; a bank that holds no number keeps the frame's.
       const uint8_t* ps_bank = banks.ps.data();

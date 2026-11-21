@@ -286,6 +286,11 @@ add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_
 # deliberate difference found) likewise:
 #   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
 add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
+# The consumers' shapes as projections of the light manager's frame (light_project.h, LIGHT-UNIFY U4: the headlight variant's constant block, the volume's light inputs, the lights the
+# shadow replay picks from) held to the producers that make them today, byte for byte, over a recorded drive (the rig's real tracker, the replay's real rules at all three levels, the volume's
+# real lamp picker; and the game's own recording when one is given), with each part of each shape deliberately changed and found:
+#   cmake --build <dir> --target larecomp_light_project_test, then run src/gpu/larecomp_light_project_test [<path>.rig.txt] (exit 0 = passed).
+add_executable(larecomp_light_project_test EXCLUDE_FROM_ALL light_project_test.cpp)
 # The one picker of the lights and the budget table (light_pick.h: the importance, the keep bonus, the fading and the held pick, the coast, all in seconds of the scene clock; light_budget.h: the
 # headlight, shadow view and volume numbers of each level; light_pick_record.h: the text format of a recording of the pickers' inputs) held to the two pickers it replaced: the old suites' checks
 # ported, a recorded drive through the rig's Tracker and the shadow replay's ViewPicker in both modes (the same picks), the same scenes at 30, 60 and 144 FPS, a switch of the mode in a run;
