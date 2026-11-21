@@ -10,10 +10,10 @@
 //      nothing to do. The launcher runs it where the PC's graphics card can ray trace (the pack is 250 MB of disk and the game does not read it otherwise).
 //   2. The game itself, in the BACKGROUND, when the pack is missing or stale AND the renderer wants it: ray traced shadows resolved on (the setting is auto on a High class card
 //      that can trace, high / ultra by hand), the contact shadows on (their consumer) and the device able to trace. Never at start-up and never behind the boot popup: the
-//      game does not need the pack to start, and most PCs never need it at all. One worker thread (a quarter of the PC's threads, at most four) at a lower priority than the
-//      game's own threads, so it never takes a core the game wants: about 17 seconds of one core in all (1.7 s on 12 threads; a slow PC takes a minute or two). The shadows come
+//      game does not need the pack to start, and most PCs never need it at all. The build runs on a thread of its own with a quarter of the PC's threads as workers (at least one,
+//      at most four), in background mode (a lower CPU, disk and memory priority than the game's own threads), so it never takes a core or the disk the game wants: about 17 seconds of one core in all (1.7 s on 12 threads; a slow PC takes a minute or two). The shadows come
 //      on by themselves when it is done (the renderer asks again every 2 s while it runs). A failure is logged once and not tried again until the game is started again.
-//   3. Never when no setting wants it: a PC that cannot trace, or a player who set RAY TRACED SHADOWS to OFF, never pays the disk or the cores.
+//   3. Never when no setting wants it: a PC that cannot trace, or a player who set RT SHADOWS to OFF, never pays the disk or the cores.
 //
 // THE COMMAND LINE'S OUTPUT (larecomp.exe --build_city_pack, what a launcher reads on stdout; every line starts with "@citypack|", fields are separated by '|', the last is free
 // text; the same shape as --build_shader_packs):

@@ -451,7 +451,7 @@ void SetCityPackHooks(CityPackHooks hooks);
 // Where the city pack and its stamp are: <ShaderPackFolder()>/city. Any thread; needs no renderer (the launcher's setup, --build_city_pack, builds there).
 std::filesystem::path CityPackFolder();
 // True when this device can ray trace the city's sun shadows: the same device test as the car's ray traced effects (CarRtSupported: Direct3D 12 with DXR 1.1 and shader model 6.5, or
-// Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RAY TRACED SHADOWS
+// Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RT SHADOWS
 // row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
 bool CityRtShadowsAvailable();
 

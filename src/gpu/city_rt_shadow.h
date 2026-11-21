@@ -8,7 +8,7 @@
 // one, on the sun's share of the light only (ao.cpp rt_contact_slot_, hlsl/ao_contact_ps.hlsl THE RAY TRACED TERM). city_rt_shadow_rules.h has the maths and why the look is
 // right; hlsl/city_rt_shadow_cs.hlsl the pass.
 //
-// THE SETTING. mcla_gpu_rt_shadows (auto, off, high, ultra; live; debug-only until its pause menu row is made, GRAPHICS > LIGHTING AND SHADOWS: RAY TRACED SHADOWS): auto is high on the
+// THE SETTING. mcla_gpu_rt_shadows (auto, off, high, ultra; live; the pause menu row RT SHADOWS on GRAPHICS > LIGHTING AND SHADOWS): auto is high on the
 // High class and off elsewhere (gpu_class.h), high or ultra by hand on any class with ray queries, never on Low. The level sets the class budget of the structures
 // (city_rt_rules.h BudgetFor) and the rays a pixel (2 or 4). It works where the contact march does (CONTACT SHADOWS on, which auto is on High): the march is the consumer.
 // The debug cvars: mcla_gpu_city_rt_sun (the sun's disc, times the real one; 3), _rays, _alpha (exclude, opaque, stochastic), _radius (the hi detail ring in metres), _range (the

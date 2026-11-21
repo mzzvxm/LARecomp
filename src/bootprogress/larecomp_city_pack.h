@@ -7,7 +7,7 @@
 //                                                 --build_shader_packs, where the PC's graphics card can ray trace), then the program ends
 //   SetupPresentation       InstallRendererHooks  before the renderer starts: tells it how the pack stands (stat only) and lets it ask for a build
 //   (render thread)         the request           the renderer wants the pack, it is missing or stale: ONE background thread builds it (a quarter of the PC's threads at most
-//                                                 four, at a lower priority than the game's own threads); the renderer asks again every 2 s and the shadows come on when it ends
+//                                                 four, in background mode: a lower CPU, disk and memory priority than the game's own threads); the renderer asks again every 2 s and the shadows come on when it ends
 //   OnShutdown              StopBackgroundBuild   a build that still runs is cancelled (it polls between sectors) and joined
 //
 // The pack goes in <shader pack folder>/city (mcla::gpu::CityPackFolder: the cache folder the player named, or next to the program, or the local application data folder), the

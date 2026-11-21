@@ -280,7 +280,7 @@ class GPUSettings final : public rex::SettingOwner {
     "(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a "
     "discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand "
     "with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, "
-    "or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RAY TRACED SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+    "or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RT SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(f64, mcla_gpu_city_rt_sun, 3.0, "Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to "
     "16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. "

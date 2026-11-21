@@ -82,10 +82,13 @@ cp::BuildResult BuildGuarded(const cp::BuildRequest& request, cp::ProgressSink* 
   return result;
 }
 
-// The in-game build's workers run below the game's own threads: on Windows a lower priority class of thread only runs on a core the game's threads leave free.
+// The in-game build's workers run below the game's own threads: on Windows a thread of a lower priority only runs on a core the game's threads leave free. Background mode lowers
+// the thread's CPU, disk and memory priorities together (the game's own streaming keeps the disk while the build reads 2 GB of archive); where it is refused the CPU priority alone goes down.
 void LowerThreadPriority() {
 #ifdef _WIN32
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  if (!SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN)) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+  }
 #else
   // Linux: the thread's own nice value (setpriority with a thread id affects that thread only).
   setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
@@ -240,7 +243,7 @@ class Background {
     request.threads = BackgroundWorkers(std::thread::hardware_concurrency());
     request.worker_start = &LowerThreadPriority;
     const cp::StampCheck why = cp::CheckCityPack(request);
-    LARECOMP_APP_INFO("[city pack] building the city pack in the background for the ray traced city shadows ({}): {} worker thread(s) below the game's own priority, about 17 seconds of one "
+    LARECOMP_APP_INFO("[city pack] building the city pack in the background for the ray traced city shadows ({}): {} worker thread(s) in background mode (below the game's own threads for the CPU and the disk), about 17 seconds of one "
                       "core in all; the game's own shadows stand until it is done; {} -> {}",
                       why.current ? "its stamp is current" : why.why, request.threads, PathUtf8(request.source_rpf), PathUtf8(folder_));
     file.Line("background build into " + PathUtf8(folder_) + " from " + PathUtf8(request.source_rpf) + ": " + (why.current ? "current" : why.why));
@@ -302,7 +305,7 @@ void StopBackgroundBuild() {
 
 // CHECK: written without a build of larecomp (the library and the rules have unit tests; this file is only syntax checked). Run it: `larecomp.exe --build_city_pack` in the install's game
 // folder with the stdout piped; expect the folder, phase, step and result lines, exit 0 (1.7 s on 12 threads), logs/city_pack_build.txt, and then a second run that prints "up to date" at
-// once; a normal start with RAY TRACED SHADOWS on must log "[city rt] the city pack is open" and no [city pack] build.
+// once; a normal start with RT SHADOWS on must log "[city rt] the city pack is open" and no [city pack] build.
 int RunCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
   const std::filesystem::path folder = mcla::gpu::CityPackFolder();
