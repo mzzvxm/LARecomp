@@ -50,10 +50,11 @@
 //   parts (lamp lenses, neon, lit windows) glow by (CityHitParams::lampFactor), so the whole city comes on together.
 //   THE LIVE EVIDENCE (R7; "the schedule by hour and weather"). The hour is the prop pass's rule with the lamp hours of the table (18 and 6, the TODSunNice values); the game loads the lamp
 //   hours from the active time-of-day set, so a stormy or foggy sky can have other ones, and the weather's own effect on the street lamps is in the game's per frame list: the list is made by the prop
-//   pass with the live hours and the lamps' fade. So a fresh list is the cross-check: with lamps that shine in it the street lamps ARE on (the schedule is at least their mean fade, whatever the
-//   hour says), with no lamp in it while the static table has street lamps within the list's reach (a merged table: lamp_merge.h) they are OFF (the schedule's street part is 0), and with neither (no
-//   fresh list, or no street lamp near enough to say) the hour decides. The fill lights keep the night curve of the hour (the game's ShaderGlobals.w: CHECK against a stormy day). The street part
-//   and the fill part are separate numbers in row 47: a lamp lens glows by the street lamps' schedule, neon, signs and lit windows by the fill lights' (a traffic signal always glows).
+//   pass with the live hours and the lamps' fade. So a fresh list is the cross-check: with lamps that shine in it the street lamps ARE on (ApplyLiveEvidence: the share of the table's street lamps in
+//   the list's reach that shine, times their mean fade; by day, in a storm, that alone), with no lamp in it while the static table has street lamps within the list's reach (a merged table:
+//   lamp_merge.h) they are OFF (the schedule's street part is 0), and with neither (no fresh list, or no street lamp near enough to say) the hour decides. The fill lights keep the night curve of
+//   the hour (the game's ShaderGlobals.w: CHECK against a stormy day). The street part and the fill part are separate numbers in row 47: a lamp lens glows by the street lamps' schedule, neon,
+//   signs and lit windows by the fill lights' (a traffic signal always glows). CHECK: at dusk a lens glows at the FRACTION of lamps that are on, where in the game each lamp is on or off.
 //   THE GRID: 64 m cells over x and z (absolute: cell = floor(x / 64)), a WINDOW of at most 16 x 16 cells around the camera that holds the budget's radius; a lamp outside it is dropped. The
 //   shader finds the lamps near a point by the cells that cover [p - r, p + r]: at most 5 cells an axis, a cell's lamps contiguous. `r` defaults to 64 m: a lamp of 20 (a fill light) reaches 44.7 m
 //   where its term is 1 per cent, a street lamp of 70 reaches 84 m, of 100 reaches 100 m: a radius of 100 takes every lamp that matters at the cost of 16 cells instead of 9.
@@ -170,6 +171,7 @@ struct Schedule {
   float fill = 0.0f;       // the fill lights' night factor
   float factor = 0.0f;     // max of the two: what the library's lampFactor takes (the lamps' own colours already hold their activity over it)
   uint32_t evidence = 0;   // kEvidence*: what the game's live list said about the street lamps (R7)
+  float hour_street = 0.0f;  // the street part as the hour (or the hint) gave it, before the evidence
 };
 
 // What the game's live lamp list says about the street lamps (CITY-RT R7). The list is made by the prop pass, with the live on hours and the lamps' fade, so it knows the weather's effect on them.
@@ -194,18 +196,25 @@ inline Schedule ScheduleAt(const ch::LampHours& hours, float hour, float night_h
   } else if (std::isfinite(night_hint) && night_hint >= 0.0f) {
     s.street = s.fill = std::clamp(night_hint, 0.0f, 1.0f);
   }
+  s.hour_street = s.street;
   s.factor = std::max(s.street, s.fill);
   return s;
 }
 
-// The schedule corrected by the game's list: lamps that shine in a fresh list are on (the street part is at least their mean fade), an empty fresh list next to a table that has street lamps in its
-// reach says they are off (the street part is 0), anything else leaves the hour's. The fill lights are the hour's either way. `factor` follows.
+// The schedule corrected by the game's list (from the hour's own street part, so that applying it twice is the same as once). Lamps that shine in a fresh list are ON: where the table says how many
+// street lamps there are in the list's reach the street part is the share of them that shine times their mean fade (the dusk's staircase as the game has it), at least the hour's; without
+// that count it is the hour's where the hour says some are on, else the mean fade (all of them, by day, in a storm). An empty fresh list next to a table that has street lamps in the reach says they
+// are OFF (the street part is 0). Anything else leaves the hour's. The fill lights are the hour's either way. `factor` follows.
 inline Schedule ApplyLiveEvidence(Schedule s, const LiveEvidence& e) {
   s.evidence = 0;
+  s.street = s.hour_street;
+  const bool table_known = e.table_streets >= kEvidenceMinTableStreets;
   if (e.fresh && e.shining > 0) {
     s.evidence = kEvidenceOn;
-    s.street = std::max(s.street, std::clamp(e.mean_scale, 0.0f, 1.0f));
-  } else if (e.fresh && e.shining == 0 && e.table_streets >= kEvidenceMinTableStreets && s.street > 0.0f) {
+    const float mean = std::clamp(e.mean_scale, 0.0f, 1.0f);
+    const float from_list = table_known ? std::min(1.0f, float(e.shining) / float(e.table_streets)) * mean : mean;
+    s.street = s.hour_street > 0.0f ? std::max(s.hour_street, table_known ? from_list : 0.0f) : from_list;
+  } else if (e.fresh && e.shining == 0 && table_known && s.hour_street > 0.0f) {
     s.evidence = kEvidenceOff;
     s.street = 0.0f;
   }
@@ -230,8 +239,8 @@ inline LiveEvidence EvidenceOf(bool fresh, const Lamps& live, uint32_t table_str
   return e;
 }
 
-// How much one lamp of the static table shines in this schedule: a street lamp by the prop pass's own rule (0 or 1) unless the game's live list said otherwise (evidence: off is 0, on is at least
-// the street part), every other light by the night factor; the light's own on byte first.
+// How much one lamp of the static table shines in this schedule: a street lamp by the prop pass's own rule (0 or 1) unless the game's live list said otherwise (evidence: off is 0; on, where the
+// hour says all are off, is the street part), every other light by the night factor; the light's own on byte first.
 inline float ActivityOf(const ch::Lamp& lamp, const Schedule& s, const ch::LampHours& hours, float hour) {
   if (!lamp.on) {
     return 0.0f;
@@ -246,8 +255,8 @@ inline float ActivityOf(const ch::Lamp& lamp, const Schedule& s, const ch::LampH
   } else {
     activity = ch::LampActivity(lamp, hours, hour, s.fill);
   }
-  if (street && (s.evidence & kEvidenceOn) != 0) {
-    activity = std::max(activity, s.street);
+  if (street && (s.evidence & kEvidenceOn) != 0 && s.hour_street <= 0.0f) {
+    activity = s.street;  // the hour says every street lamp is off and the game's list says they shine: no per lamp rule to follow, the street part for all of them
   }
   return activity;
 }
@@ -301,11 +310,14 @@ inline LiveLamp LiveLampOf(const vol_lamps::GameLamp& g) {
 // the frame's lamps
 // ---------------------------------------------------------------------------
 
+// What the game's per frame list covers around the eye (the prop pass's AddLight): the table's street lamps within it are the ones the list speaks for.
+inline constexpr float kLiveListReach = 300.0f;
+
 struct LampInput {
   const ch::LampTable* table = nullptr;           // the static table (null: only the live list)
   const std::vector<LiveLamp>* live = nullptr;     // the game's list of this frame (null: none)
   bool live_fresh = false;                         // the list was copied recently: it replaces the table's street lamps in its reach
-  float live_radius_m = 300.0f;                    // what the game's list covers (the prop pass's AddLight)
+  float live_radius_m = kLiveListReach;            // what the game's list covers (the prop pass's AddLight)
   double camera[3] = {0, 0, 0};                    // the camera's place in the game's world
   float axes[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};  // the world's axes in view space (rt_hit::FrameInput::world_axes_view)
   float hour = -1.0f;
@@ -841,6 +853,8 @@ struct Census {
   uint64_t frames_night = 0;     // ... with a schedule over 0
   uint64_t frames_cascade = 0;   // ... with the game's sun cascades
   uint64_t frames_env = 0;       // ... with the environment map's slot
+  uint64_t frames_evidence_on = 0;   // ... where the game's live lamp list said the street lamps are on (R7)
+  uint64_t frames_evidence_off = 0;  // ... and where it said they are off while the hour said on
   uint64_t lamps_sum = 0;        // lamps uploaded, summed (the mean is a frame's)
   uint32_t lamps_max = 0;
   uint64_t table_sum = 0, live_sum = 0, over_budget_sum = 0, outside_sum = 0, inactive_sum = 0;
@@ -855,15 +869,17 @@ inline std::string CensusText(const Census& c, float hour, float schedule, uint3
     return {};
   }
   const double n = c.frames != 0 ? double(c.frames) : 1.0;
-  char buffer[700];
+  char buffer[900];
   std::snprintf(buffer, sizeof(buffer),
                 "; ray tracing world frame: %llu frames filled (%llu without a view); the world's light in %.0f%% (the car's in %.0f%%), the hour in %.0f%% (now %.2f), the sun's cascades in %.0f%%, "
                 "the environment map in %.0f%%; lamps a frame %.1f mean, %u most, %u now (the table %.1f, the live list %.1f, off %.1f, over the budget %.1f, outside the window %.1f), the schedule %.2f, "
-                "fresh live list in %.0f%%, the static table %s; %.1f KiB written a frame; calibration windows %u (%u class gains moved)",
+                "fresh live list in %.0f%%, the static table %s; %.1f KiB written a frame; calibration windows %u (%u class gains moved); the game's lamp list said the street lamps are on in %.1f%% of the frames "
+                "and off in %.1f%%",
                 (unsigned long long)c.frames, (unsigned long long)c.frames_no_view, 100.0 * double(c.frames - c.frames_no_light) / n, 100.0 * double(c.frames_light_car) / n,
                 100.0 * double(c.frames_hour) / n, double(hour), 100.0 * double(c.frames_cascade) / n, 100.0 * double(c.frames_env) / n, double(c.lamps_sum) / n, c.lamps_max, lamps_now,
                 double(c.table_sum) / n, double(c.live_sum) / n, double(c.inactive_sum) / n, double(c.over_budget_sum) / n, double(c.outside_sum) / n, double(schedule),
-                100.0 * double(c.frames_live) / n, table_loaded ? "loaded" : "not loaded", double(c.bytes_sum) / n / 1024.0, c.windows_closed, c.classes_moved);
+                100.0 * double(c.frames_live) / n, table_loaded ? "loaded" : "not loaded", double(c.bytes_sum) / n / 1024.0, c.windows_closed, c.classes_moved, 100.0 * double(c.frames_evidence_on) / n,
+                100.0 * double(c.frames_evidence_off) / n);
   return buffer;
 }
 
