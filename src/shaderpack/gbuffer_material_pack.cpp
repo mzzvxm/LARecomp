@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gpu/gbuffer_material.h"
+#include "gpu/gbuffer_materials.h"
 #include "shaderpack/pack_writer.h"
 
 namespace larecomp::shaderpack {
@@ -59,6 +60,29 @@ MaterialTableResult WriteGBufferMaterialTable(const ContainerSet& containers, co
   result.written = true;
   result.records = records.size();
   result.message = std::format("{} shaders in the G-buffer material table ({} pixel; {} with a specular exponent), {} bytes", records.size(), pixel, with_gloss, bytes.size());
+
+  // The shader names file (GB-F2's census tool joins a pixel shader's identity, which the renderer logs, to its group and class). Nothing reads it at run time and it is not part of the
+  // table: a failure to write it is a word in the message, never the step's.
+  {
+    const std::string names = gb::FormatShaderNamesTsv(shaders);
+    const std::filesystem::path names_final = out_dir / gb::kShaderNamesFileName;
+    const std::filesystem::path names_temporary = out_dir / (std::string(gb::kShaderNamesFileName) + ".tmp");
+    bool ok = false;
+    {
+      std::ofstream file(names_temporary, std::ios::binary | std::ios::trunc);
+      if (file) file.write(names.data(), std::streamsize(names.size()));
+      if (file) file.flush();
+      ok = bool(file);
+    }
+    std::string names_error;
+    if (ok && CommitFile(names_temporary, names_final, &names_error)) {
+      result.message += std::format("; the shader names file {} ({} bytes)", gb::kShaderNamesFileName, names.size());
+    } else {
+      std::error_code names_ec;
+      std::filesystem::remove(names_temporary, names_ec);
+      result.message += std::string("; the shader names file was not written") + (names_error.empty() ? "" : ": " + names_error);
+    }
+  }
   return result;
 }
 

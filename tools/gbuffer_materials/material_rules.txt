@@ -1,0 +1,44 @@
+# The rules of the G-buffer's per-texture material table: THE FILE TO EDIT.
+# python -I author_materials.py --census census.tsv --rules material_rules.txt --out mcla_gbuffer_texture_materials.txt
+# (the grammar and every condition and field are described at the top of author_materials.py; the table's own format at the top of src/gpu/gbuffer_materials.h)
+#
+# One rule per line:   <id>: <conditions> => <fields>
+# Every rule that matches a texture applies, in this file's order; where two give the same field the LATER one wins, so the broad rules go first and the exceptions after them.
+# A texture that matches no rule, or that the rules would leave as its shader family already has it, gets no row: it keeps the family's material (the class table of the shader groups,
+# and the game's own specular exponent where the shader has one).
+#
+# Most of the city's textures have NO NAME in the retail game (the console builds strip them: in a dump, every texture of the dictionaries `common` and `lod_0` and nearly nine in ten of
+# the `Unknown_file_in_an_archive` ones are "unnamed"), so the keywords below can only reach the named ones: the cars' and pedestrians' textures, the sky and the effects, the runtime
+# ones, mods' textures. An unnamed texture is keyed by its content hash (the census prints it; so do the texture dumps, `unnamed__<hash>.dds`), and gets its rule from the REVIEW:
+# look at the busiest textures of each family on a contact sheet, and list the hashes of the ones that are metal, wet asphalt, glass ... in a rule with `hash=` (examples at the end).
+#
+# CHECK: every keyword and number below is a first guess from naming habits and from the survey (perf/GBUFFER-SURVEY.md 5), not a measurement: the census and the pictures decide.
+# rough is the PERCEPTUAL roughness (1 chalk .. 0 mirror); metal is stored in the material word but no plane carries it yet, so metal surfaces also get class=metal or class=chrome
+# (F0 = albedo).
+
+# --- glass: the family says glass for window shaders; this is for glass textures drawn with a plain wall or prop shader
+glass-world:     name~glass,window,windshield,windscreen,visor  novehicle   => class=glass rough=0.05 ssr=1
+glass-vehicle:   name~glass,window,windshield,windscreen,visor  vehicle     => class=glass rough=0.05 ssr=0
+
+# --- metal and chrome (a vehicle's keep the game's own environment reflections: no SSR)
+chrome-world:    name~chrome,mirror,polished  novehicle  => class=chrome rough=0.05 metal=1 ssr=1
+chrome-vehicle:  name~chrome,mirror,polished  vehicle    => class=chrome rough=0.05 metal=1 ssr=0
+metal-props:     name~metal,steel,aluminum,aluminium,iron,galvanized  novehicle  => class=metal rough=0.40 metal=1 ssr=1
+brake-parts:     name~rotor,caliper,brake  => class=metal rough=0.45 metal=1 ssr=0
+rust:            name~rust,rusty  => rough=0.80
+
+# --- what lights itself
+emissive-names:  name~neon,emissive,bulb,lampon,lamp_on  => class=emissive
+
+# --- soft materials and rubber
+rubber:          name~tire,tyre,rubber  => rough=0.92
+cloth:           name~cotton,denim,leather,cloth,fabric  => rough=0.85
+plates:          name~license,licence,plate  => rough=0.35
+
+# --- the road, when a texture says so
+puddles:         name~puddle,wet  class=road,world,sidewalk  => class=wetroad rough=0.10 ssr=1
+asphalt:         name~asphalt,tarmac  group~road  => rough=0.65
+
+# --- reviewed lists of unnamed textures go here, by hash (the census prints it; the first line is a template and matches nothing):
+# manhole-covers:  hash=0123456789ABCDEF,FEDCBA9876543210  => class=metal rough=0.45 metal=1 ssr=1
+# wet-asphalt:     hash=00B2E7B3C830B0E7  => class=wetroad rough=0.12 ssr=1

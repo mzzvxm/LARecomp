@@ -1,0 +1,11 @@
+key	dictionary	name	hash	width	height	format	draws	indices	rowdraws	group	groups	class	smooth	flags	lit	word	pairs	windows
+shared/glass_storefront_01	shared	glass_storefront_01	1111111111111111	256	256	18	3000	135000	0	xCityDefault	xCityDefault:3000	world	38	0	255	00FF0126	1	2
+hash:C0FFEE0000000001	common	unnamed	C0FFEE0000000001	1024	1024	54	1800	120000	0	xCityRoad	xCityRoad:1800	road	77	1	255	00FF224D	1	2
+hash:00B2E7B3C830B0E7	common	unnamed	00B2E7B3C830B0E7	512	512	54	1500	61000	0	xCityDefault	xCityDefault:1500	world	38	0	255	00FF0126	1	1
+hash:C0FFEE0000000002	common	unnamed	C0FFEE0000000002	128	128	54	800	20000	0	xCityDefault	xCityDefault:800	world	38	0	255	00FF0126	1	1
+hash:5555555555555555	common	unnamed	5555555555555555	512	256	54	700	33000	0	xCityDefault	xCityDefault:700	world	38	0	255	00FF0126	1	1
+shared/window_dirt	shared	window_dirt	2222222222222222	128	256	18	400	9000	0	xCityWindowLower	xCityWindowLower:400	glass	242	1	255	00FF2BF2	1	1
+vehicles/chrome_trim_demo	vehicles	chrome_trim_demo	3333333333333333	256	128	18	300	12000	0	xRimMain	xRimMain:300	chrome	242	4	255	00FF89F2	1	1
+shared/puddle_decal	shared	puddle_decal	4444444444444444	256	256	18	300	6000	0	xCityRoad	xCityRoad:300	road	77	1	255	00FF224D	1	2
+-	common	unnamed	-	4	4	54	100	1000	0	xCityDefault	xCityDefault:100	world	38	0	255	00FF0126	1	2
+hash:6666666666666666	common	unnamed	6666666666666666	64	64	54	50	600	0	xAmbientTire	xAmbientTire:50	world	38	4	255	00FF8126	1	1

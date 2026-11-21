@@ -46,6 +46,7 @@ add_library(larecomp_gpu OBJECT
     frame.cpp
     gbuffer.cpp
     gbuffer_material.cpp
+    gbuffer_materials.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -290,6 +291,10 @@ add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.c
 # the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
 #   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).
 add_executable(larecomp_car_lights_test EXCLUDE_FROM_ALL car_lights_test.cpp)
+# The per-texture material table (gbuffer_materials.h: the text format and its parser, the keys, what a row does to a word, the files' hot reload, the census lines, the shader names file) likewise;
+# with tools/gbuffer_materials/sample_table.txt (the file the Python tools' tests also read) it checks that the sample parses:
+#   cmake --build <dir> --target larecomp_gbuffer_materials_test, then run src/gpu/larecomp_gbuffer_materials_test [<tools/gbuffer_materials/sample_table.txt>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_materials_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
