@@ -293,6 +293,9 @@ constexpr Audited kAudited[] = {
     {"local_shadow.cpp", "memcmp(&", 1,
      "the headlight shadow replay's collected SharedConstants (consecutive draws repeat the block): members of 4 bytes only, so no padding is possible; a difference costs one more copy"},
     {"car_rt_scene_rules.h", "memcmp(&", 1, "a float compared bit for bit on purpose (the check reads back what the shader read)"},
+    {"light_manager_rules.h", "memcmp(&", 4,
+     "the passive light manager: three lines compare single floats bit for bit on purpose (a volume lamp's shape), one compares the replay's published frame with the last one as bytes "
+     "(ShadowCarry::Differs): a padding byte or a member left unset can only make it say 'differs', which costs one refresh of the carry and a line in the census; nothing reads the manager"},
     {"pipelines.cpp", "bytes of &", 4, "the cache file's writer: a uint32, the 104-byte key record, the layout hash"},
 };
 
