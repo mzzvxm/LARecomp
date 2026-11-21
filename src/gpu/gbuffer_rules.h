@@ -714,7 +714,8 @@ class CameraKeeper {
   CameraAxes camera_;
 };
 
-// The material word of a draw that has no better one (GB-F's tables come later): world class, smoothness 0, lit by the forward lights.
+// The material word of a draw that has no better one (a shader the material table does not know: another game build, a mod's shader; gbuffer_material.h has the draws' own
+// words): world class, smoothness 0, lit by the forward lights.
 inline uint32_t DefaultMaterialWord() { return MaterialWord(0.0f, SurfaceClass::kWorld, 0u, 1.0f); }
 
 // The frame's window (see the top of the file). One per renderer; the Scene calls the events in the frame's order.
@@ -764,5 +765,38 @@ class Window {
   uint32_t clears_ = 0;
   uint32_t partial_clears_ = 0;
 };
+
+// ===========================================================================
+// Part 3: the material channel's numbers (GB-F1: gbuffer_material.h has the tables that use them)
+// ===========================================================================
+// What RT3.r and the material word's bits 0..7 mean, settled here once so that the writers (which put the number in), the reflections and the light pass (which take a
+// roughness out) and the tables (which turn the game's specular exponent into it) agree:
+//
+//   power   the game's Blinn-Phong specular power n (the lobe is (N.H)^n): the vertex shaders' own SpecularExponent, and twice the pixel shaders' (they spend it in Schlick's
+//           approximation of the power, x / (n (1 - x) + x), with n = SpecularExponent + SpecularExponent: gbuffer_material.h kGlossPowerScale)
+//   alpha   the GGX (Trowbridge-Reitz) roughness of the same lobe, alpha = sqrt(2 / (n + 2)) (the usual Blinn-Phong to GGX fit: the lobes' widths agree)
+//   smooth  the byte: s = 1 - sqrt(alpha), PERCEPTUAL (alpha = (1 - s)^2, the convention of the common PBR engines), so the 256 steps are spread where the eye sees them: the
+//           rough and middle range (n from 2 to a few hundred, where a Blinn-Phong game's materials mostly are) is not squeezed into the first few codes the way 1 - alpha would do
+// So n = 1 (a chalk) is smoothness 0.10, n = 10 is 0.36, n = 100 is 0.63, n = 1000 is 0.79; a mirror (n -> infinity) is 1 and n = 0 (alpha 1) is 0.
+// CHECK: the first cut. The game's own range of SpecularExponent per family is not known until the census (GB-F2) reads it; the numbers above are the formula's, not the game's.
+
+// The GGX alpha of a Blinn-Phong power; a NaN stays a NaN (the caller tests), a negative power is 0.
+inline float GgxAlphaOfPower(float power) { return std::sqrt(2.0f / (std::max(power, 0.0f) + 2.0f)); }
+// The perceptual smoothness (0 rough .. 1 mirror) of a GGX alpha, and back.
+inline float SmoothnessOfAlpha(float alpha) { return 1.0f - std::sqrt(Saturate(alpha)); }
+inline float AlphaOfSmoothness(float smoothness) {
+  const float r = 1.0f - Saturate(smoothness);
+  return r * r;
+}
+inline float SmoothnessOfPower(float power) { return SmoothnessOfAlpha(GgxAlphaOfPower(power)); }
+// What a consumer gets from the stored byte (RT3.r, or MaterialRt3Smoothness(word)).
+inline float SmoothnessOfByte(uint32_t byte) { return float(byte & 255u) / 255.0f; }
+inline float AlphaOfByte(uint32_t byte) { return AlphaOfSmoothness(SmoothnessOfByte(byte)); }
+
+// The material word's fields, read back (a test, the debug statistics, a consumer on the CPU).
+inline SurfaceClass MaterialClassOf(uint32_t word) { return ClassOfByte(MaterialRt3ClassAndFlags(word)); }
+inline uint32_t MaterialFlagsOf(uint32_t word) { return FlagsOfByte(MaterialRt3ClassAndFlags(word)); }
+// The word with more flags (kMaterialFlag*) set: a draw whose pixel shader is the alpha test twin adds kMaterialFlagAlphaCovered.
+inline uint32_t MaterialWordWithFlags(uint32_t word, uint32_t flags) { return word | ((flags & 7u) << kMaterialFlagsShift); }
 
 }  // namespace mcla::gpu::gbuffer

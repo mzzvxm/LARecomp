@@ -45,6 +45,7 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gbuffer_material.cpp
     geometry.cpp
     gpu_class.cpp
     host_passes.cpp
@@ -274,6 +275,11 @@ add_executable(larecomp_light_frame_test EXCLUDE_FROM_ALL light_frame_test.cpp)
 # generation; it compiles hlsl/screen_hiz.hlsli as C++ and compares it with the twin, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_screen_shared_test, then run src/gpu/larecomp_screen_shared_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.cpp)
+# The material channel (gbuffer_material.h: the class table of the 192 shader groups, the gloss table, the specular exponent's mapping to a smoothness, the material word, the table file the
+# shader pack build writes and the draw's word) likewise; with the folder shaderpack/baseline (hlsl-rpf and hlsl-xex with their shader_report.tsv) it also checks the tables against the
+# translated HLSL of the retail game:
+#   cmake --build <dir> --target larecomp_gbuffer_material_test, then run src/gpu/larecomp_gbuffer_material_test [<shaderpack/baseline>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).

@@ -66,6 +66,7 @@
 #include "draw_census.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "gbuffer_material.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "geometry.h"
@@ -495,6 +496,8 @@ class Scene {
   LocalShadow* local_shadow_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
   ScreenShared* screen_ = nullptr;
+  // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
+  gbuffer::MaterialTable gbuffer_materials_;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;

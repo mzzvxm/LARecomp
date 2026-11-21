@@ -97,6 +97,7 @@ add_library(larecomp_shaderpack STATIC
     builder.cpp
     # the pixel shader variant pack (builder.h VariantStep): the framework, then one file per variant
     variant_pack.cpp
+    gbuffer_material_pack.cpp
     variants/hdr_scene.cpp
     variants/bloom_gauss.cpp
     variants/env_map.cpp

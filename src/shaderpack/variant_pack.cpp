@@ -29,6 +29,7 @@
 
 #include "native_gfx/shader_identity.h"
 #include "shaderpack/contract_checks.h"
+#include "shaderpack/gbuffer_material_pack.h"
 #include "shaderpack/hash.h"
 #include "shaderpack/hlsl_source.h"
 #include "shaderpack/log.h"
@@ -206,7 +207,8 @@ class VariantStepImpl final : public VariantStep {
   }
 
   bool NeedsRpfShaders() const override {
-    return std::any_of(variants_.begin(), variants_.end(), [](const VariantDef& def) { return def.needs_rpf; });
+    // The G-buffer's material table names every shader of the game, the RPF's included (gbuffer_material_pack.h): the step always reads them.
+    return true;
   }
 
   VariantStepResult Build(const VariantStepInput& input) override {
@@ -227,6 +229,8 @@ class VariantStepImpl final : public VariantStep {
         {std::string(kStampVariantsPrefix) + "step_version", std::to_string(kVariantStepVersion)},
         {std::string(kStampVariantsPrefix) + "pack_version", std::to_string(kVariantPackVersion)},
         {std::string(kStampVariantsPrefix) + "contract", std::to_string(kVariantContract)},
+        // The G-buffer's material table (gbuffer_material_pack.h): hand bumped with its tables, gpu/gbuffer_material.h kMaterialRulesVersion.
+        {std::string(kStampVariantsPrefix) + "gbuffer_material_version", std::to_string(GBufferMaterialRulesVersion())},
     };
   }
 
@@ -723,6 +727,16 @@ class VariantStepImpl final : public VariantStep {
     }
     if (!CommitFile(temporary_path, final_path, &error)) return fail(error);
 
+    // 2b. The G-buffer's material table, beside the variant pack, from the same containers (gbuffer_material_pack.h). Best effort: without it every draw takes the default
+    // material word, so a failure here is a warning, not the step's.
+    // CHECK: the step was not run on the game's files in this package (the file's writer was run on a made-up container set, the tables against the translated HLSL).
+    const MaterialTableResult material = WriteGBufferMaterialTable(*input.containers, input.out_dir);
+    if (material.written) {
+      SHADERPACK_LOG_INFO("G-buffer material table: {}", material.message);
+    } else {
+      SHADERPACK_LOG_WARN("the G-buffer material table was not written (the draws take the default material word): {}", material.message);
+    }
+
     // 3. What it was built from: the lines of the step and of every variant that was tried, built or left out
     // (a left out one also has its reason: see AddVariantLines).
     size_t dxil_bytes = 0;
@@ -742,6 +756,7 @@ class VariantStepImpl final : public VariantStep {
       if (!left_out_text.empty()) result->message += "; left out: " + left_out_text;
       if (!overlap_text.empty()) result->message += "; in more than one variant (only one is drawn): " + overlap_text;
     }
+    result->message += material.written ? "; " + material.message : "; the G-buffer material table was not written: " + material.message;
     result->stamp_lines = StepLines();
     for (StampLine& line : variant_lines) result->stamp_lines.push_back(std::move(line));
     // Informational (CheckStamp compares only the lines it expects).

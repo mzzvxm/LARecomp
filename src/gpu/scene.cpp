@@ -2451,7 +2451,11 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       }
       const bool two_sided = (d.key.raster & 0xFu) == uint32_t(plume::RenderCullMode::NONE);
       block.mode = gbuffer::ModeBits(gbuffer_ ? gbuffer_->plan().written : gbuffer::PlaneBit(gbuffer::kPlaneNormal), camera, two_sided);
-      block.material = gbuffer::DefaultMaterialWord();
+      // The draw's material word (gbuffer_material.h): its pixel shader's class and flags, the smoothness from the SpecularExponent in the pixel or the vertex shader's own
+      // constants, the alpha test twin's flag. A shader the table does not have (or no table: the pack was built before it existed) gets the default word.
+      // CHECK: this hunk was not compiled with the rest of Scene (no build in this package); the table's own code, the builder's file and the tests were.
+      gbuffer_materials_.EnsureLoaded(shaders_.folder());
+      block.material = gbuffer_materials_.WordFor(d.ps ? d.ps->key : 0, d.vs ? d.vs->key : 0, banks.ps, banks.vs, sp::chain::SpecOf(d.key.ps_variant) != 0);
       block.frame = uint32_t(frame_serial_);
       std::memcpy(out, &block, sizeof(block));
       return;
