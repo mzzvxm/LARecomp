@@ -25,10 +25,13 @@
 //               a piece would be wider than the pool, the cone, the window and the phase function taken at each piece's point nearest the lamp, and the lamp
 //               takes no jitter in depth (LampSlice; volumetrics_stable.h LampSliceFactor is the twin). The headlights and the sun keep their one jittered sample.
 //   steady heads  VOL-STABLE-2 (the push's slots.w bit 1): a headlight that reads a shadow view takes kHeadlightShadowTaps taps of it along the voxel's slice, one in each part of
-//               it with the frame's one offset, and averages them (an edge of a shadow inside a slice was one random tap, lit or dark by the jitter); and the history's weight
-//               falls where the headlights' own term changed between the volume the history holds and this one (the constants carry both sets: kO_prev_headlights), so a
-//               moving beam leaves no trail (volumetrics_stable.h HistoryWeightUnderLightMotion, HeadlightChange, StratifiedDepth are the twins). The lamps of the slice average
-//               are sampled at the voxel's centre in x and y: their term is smooth over a voxel and the jitter only made noise.
+//               it with the frame's one offset, and averages them (an edge of a shadow inside a slice was one random tap, lit or dark by the jitter); and the history's beam is
+//               taken to the light's place (VOL-HL-STEADY): the history holds the headlights' old beam (colour x the term of the light's OLD place x its visibility), so its
+//               headlight part is scaled by the ratio of the term now to the term then at the voxel's centre (the constants carry both sets of lights: kO_prev_headlights) and the
+//               history keeps its weight: the beam follows a moving light with no trail and the history still averages the noise (the second pass lowered the weight where the term
+//               changed instead, which took the trail and the smoothing away). Where the beam is new at the voxel (the term then is under a quarter of the term now) the history
+//               is dropped (volumetrics_stable.h 4b: CompensateHeadlightHistory, StratifiedDepth are the twins). The lamps of the slice average are sampled at the voxel's centre
+//               in x and y: their term is smooth over a voxel and the jitter only made noise.
 // The shadow lookups are the stubs of the first version: a sun tap and a headlight tap; VOL-SHADERS refines them (calibration against the road's
 // pool of light, CHECK V7, and the shadow taps, V9).
 //
@@ -253,9 +256,14 @@ float3 SpotLight(uint offset, float3 p, float3 ray, float g, float strength, boo
 // The push's slots.w flags (volumetrics_stable.h kInjectFlag*).
 static const uint kInjectFlagSliceLamps = 1u;
 static const uint kInjectFlagSteadyHeads = 2u;
-// A shadowed headlight's taps along a slice, and the history's tolerance of a moving light (volumetrics_stable.h kHeadlightShadowTaps, kHeadlightHistoryTolerance).
+// A shadowed headlight's taps along a slice (volumetrics_stable.h kHeadlightShadowTaps) and the history's beam compensation (kHeadCompFullRatio, kHeadCompMaxRatio, kHeadCompOldBound,
+// kHeadCompSignificance): up to the full ratio of the term now to the term then the history keeps its weight, from the max ratio it is dropped; the old beam is at most the bound times the old
+// term; a beam under the significance's share of the voxel's other light does not lower the weight.
 static const uint kHeadlightShadowTaps = 3u;
-static const float kHeadlightHistoryTolerance = 0.08;
+static const float kHeadCompFullRatio = 2.0;
+static const float kHeadCompMaxRatio = 4.0;
+static const float kHeadCompOldBound = 1.25;
+static const float kHeadCompSignificance = 0.1;
 // A piece of a slice is at most this many pool widths (h = sqrt(dmin^2 + near^2)) long; a slice has at most this many pieces.
 static const float kPieceReach = 0.6;
 static const uint kMaxPieces = 3u;
@@ -315,6 +323,31 @@ float3 LampSlice(uint offset, float3 cam, float3 ray, float s0, float s1, float 
   return c.xyz * (strength * total / float(pieces));
 }
 
+// --- the history's beam taken to the light's place (volumetrics_stable.h 4b: CompensateHeadlightHistory is the twin) ---------------------------------------------------------
+float HeadlightLuma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+
+// The history's light `old_rgb` at the voxel taken to where the headlights are now: its headlight part (what is over `base`, this frame's light of everything but the headlights, up to
+// the old term's own share) is scaled by luma(term_now) / luma(term_then). Writes the corrected light and returns the multiplier of the history's weight (1: kept; 0: the beam is new here and the
+// history has nothing to scale). The terms carry the colours and the strength and not sigma nor the gain.
+float CompensateHeadlightHistory(float3 old_rgb, float3 base, float3 term_now, float3 term_then, float sigma_now, float sigma_old, float gain, out float3 out_rgb) {
+  const float luma_now = HeadlightLuma(term_now);
+  const float luma_then = HeadlightLuma(term_then);
+  float ratio = 1.0;  // neither lights the voxel
+  if (!(luma_now > 0.0)) {
+    ratio = luma_then > 0.0 ? 0.0 : 1.0;  // the light went out here: the old beam is taken out
+  } else {
+    ratio = luma_now / max(luma_then, 1e-20);
+  }
+  const float used = min(ratio, kHeadCompMaxRatio);
+  const float3 bound = max(term_then * (kHeadCompOldBound * sigma_old * gain), 0.0);
+  const float3 head_old = clamp(old_rgb - base, float3(0.0, 0.0, 0.0), bound);
+  out_rgb = old_rgb + head_old * (used - 1.0);
+  const float fall = 1.0 - saturate((kHeadCompMaxRatio - ratio) / (kHeadCompMaxRatio - kHeadCompFullRatio));
+  const float beam = max(luma_now * sigma_now, luma_then * sigma_old) * gain;
+  const float significance = saturate(beam / max(kHeadCompSignificance * HeadlightLuma(base), 1e-6));
+  return 1.0 - significance * fall;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
   const uint4 grid = VolU4(kO_grid);
@@ -368,8 +401,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float vis = lerp(CascadeLit(p), 1.0, sun_dir.w);
     scatter += sun_col.xyz * (scale.w * vis * HenyeyGreenstein(dot(sun_dir.xyz, ray), sun_col.w)) * sigma;
   }
+  const float3 scatter_haze = scatter;  // the medium's own and the sun's, before any lamp or headlight
   const uint4 counts = VolU4(kO_counts);
   float3 lights = 0.0;
+  float3 head_lights = 0.0;  // the headlights' share of `lights`
   // the grid's view depth bounds of this voxel's slice
   const float z0 = depth.x * exp(depth.z * float(id.z) / float(grid.z));
   const float z1 = depth.x * exp(depth.z * float(id.z + 1u) / float(grid.z));
@@ -401,9 +436,13 @@ void main(uint3 id : SV_DispatchThreadID) {
         const float zt = z0 + (float(t) + tap_u) / float(kHeadlightShadowTaps) * (z1 - z0);
         taps += SpotLight(offset, cam_pos.xyz + dirvec_j * zt, ray, mixv.w, scale.z, true);
       }
-      lights += taps / float(kHeadlightShadowTaps);
+      taps /= float(kHeadlightShadowTaps);
+      lights += taps;
+      head_lights += taps;
     } else {
-      lights += SpotLight(offset, p, ray, mixv.w, scale.z, true);
+      const float3 one = SpotLight(offset, p, ray, mixv.w, scale.z, true);
+      lights += one;
+      head_lights += one;
     }
   }
   scatter += lights * (sigma * kLightGain);
@@ -411,26 +450,23 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   // --- the history, trilinear in the previous camera's grid ---
   if ((g_push.slots.z & 1u) != 0u && history.z > 0.0) {
-    // the history's weight, lowered where the headlights moved: this frame's headlights' own term (no shadow) against the one the history's volume was made with
     float weight = history.z;
-    const uint prev_count = VolU4(kO_prev_counts).x;
-    if (steady_heads && (counts.y > 0u || prev_count > 0u)) {
-      float3 head_now = 0.0;
-      float3 head_before = 0.0;
-      [loop] for (uint k = 0u; k < counts.y; ++k) {
-        head_now += SpotLightEx(kO_headlights + k * 64u, p, ray, mixv.w, scale.z, true, false);
-      }
-      [loop] for (uint m = 0u; m < prev_count; ++m) {
-        head_before += SpotLightEx(kO_prev_headlights + m * 64u, p, ray, mixv.w, scale.z, true, false);
-      }
-      const float3 moved = abs(head_now - head_before) * (sigma * kLightGain);
-      const float change = max(moved.x, max(moved.y, moved.z));
-      const float total = max(now.x, max(now.y, now.z));
-      const float over = change / max(total, 1e-6) / kHeadlightHistoryTolerance;
-      weight = weight / (1.0 + over * over);
-    }
     const float3 pc = cam_pos.xyz + cam_right * ((2.0 * cell.x / float(grid.x) - 1.0) * tan_x * zc) +
                       cam_up * ((1.0 - 2.0 * cell.y / float(grid.y)) * tan_y * zc) + cam_fwd * zc;
+    // the headlights' term (no shadow) at the voxel's centre: of this frame's lights and of the ones the history's volume was made with
+    const uint prev_count = VolU4(kO_prev_counts).x;
+    const bool compensate = steady_heads && (counts.y > 0u || prev_count > 0u);
+    float3 term_now = 0.0;
+    float3 term_then = 0.0;
+    if (compensate) {
+      const float3 ray_c = normalize(pc - cam_pos.xyz);
+      [loop] for (uint k = 0u; k < counts.y; ++k) {
+        term_now += SpotLightEx(kO_headlights + k * 64u, pc, ray_c, mixv.w, scale.z, true, false);
+      }
+      [loop] for (uint m = 0u; m < prev_count; ++m) {
+        term_then += SpotLightEx(kO_prev_headlights + m * 64u, pc, ray_c, mixv.w, scale.z, true, false);
+      }
+    }
     const float4 pp = VolF4(kO_prev_pos);
     const float3 pr = VolF4(kO_prev_pos + 16u).xyz;
     const float3 pu = VolF4(kO_prev_pos + 32u).xyz;
@@ -448,7 +484,14 @@ void main(uint3 id : SV_DispatchThreadID) {
         const Texture2D<float4> tex = g_textures[g_push.slots.x];
         const float4 a = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s0, grid), 0);
         const float4 b = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s1, grid), 0);
-        const float4 old = lerp(a, b, ft);
+        float4 old = lerp(a, b, ft);
+        if (compensate) {
+          // the history's headlight part to where the lights are now; this frame's light of everything but the headlights is what the history's beam is told from
+          const float3 base = scatter_haze + (lights - head_lights) * (sigma * kLightGain);
+          float3 old_rgb;
+          weight *= CompensateHeadlightHistory(old.rgb, base, term_now, term_then, sigma, old.w, kLightGain, old_rgb);
+          old = float4(old_rgb, old.w);
+        }
         now = lerp(now, old, weight);
       }
     }

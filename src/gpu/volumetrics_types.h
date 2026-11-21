@@ -261,8 +261,8 @@ struct VolGpuConstants {
   std::array<VolLamp, kMaxLamps> lamps;
   std::array<VolLamp, kMaxHeadlights> headlights;
   std::array<VolShadowView, kMaxShadowViews> shadow_views;
-  // VOL-STABLE-2: the headlights of the volume the history holds (the frame before): a light that moved leaves the history wrong where it was and where it is, and the
-  // inject lowers the history's weight there by how much the light's own term changed (volumetrics_stable.h HistoryWeightUnderLightMotion). Appended at the end so that
+  // VOL-STABLE-2: the headlights of the volume the history holds (the frame before): a light that moved leaves the history's beam where it was, and the inject takes that
+  // beam to where the light is now by the ratio of the two terms at the voxel (volumetrics_stable.h CompensateHeadlightHistory, VOL-HL-STEADY). Appended at the end so that
   // every offset above stays where it was.
   uint32_t prev_counts[4];  // x the headlight count of the history's volume (0: none, or no history); yzw unused
   std::array<VolLamp, kMaxHeadlights> prev_headlights;
