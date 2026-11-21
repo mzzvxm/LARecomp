@@ -110,6 +110,14 @@
 //     nearly full. When DLSS is the start's choice there is no pre-warm (the context made at start
 //     paid for its kind, and further steps would hold Streamline's mutex while it dispatches).
 //
+// Ray Reconstruction (perf/DLSS-RR.md, package RR-3): a second context kept beside the Super Resolution one (the companion slot: RequestCompanion, CompanionReady, ReleaseCompanion). The
+// Super Resolution context is the upscaler's own and is never given up for it; the companion is made on the same worker, in the background, with its own viewport and a warm-up
+// evaluation over the guide images (WarmImages carries them for a Ray Reconstruction request), so the first frame of it never pays NGX's seconds. A dispatch with
+// TemporalInputs::ray_reconstruction goes to the companion; a frame it cannot take (not made yet, the guides refused by the rules: rr::PlanTags) is the Super Resolution context's, in
+// the same call, and the history of each context starts again when the kind of the dispatch changes. A companion whose feature cannot be made, or whose evaluation fails three times in a
+// row (rr::FailureBook), is dropped for the session (dlss::RayReconstructionFacts::failed): DLSS itself stays on. While the worker builds the feature Streamline's lock is held (seconds on
+// the first one) and the frames are plain and not jittered as for any other context (Busy).
+//
 // Streamline's log: every line goes to sl.log in the logs folder (InitLocked); only its warnings
 // and errors reach the game's log.
 //
@@ -179,6 +187,12 @@ class DlssBackend final : public TemporalBackend {
   bool PrewarmNext(UpscaleMode* mode) override;
   void Prewarm(const BackendRequest& request) override;
   bool Upscale(plume::RenderCommandList* list, const TemporalInputs& inputs) override;
+  // Ray Reconstruction's context beside the Super Resolution one (RR-3; temporal_backend.h).
+  void RequestCompanion(const BackendRequest& request) override;
+  void ReleaseCompanion() override;
+  bool CompanionReady(const BackendRequest& request) const override;
+  bool LastUpscaleUsedCompanion() const override;
+  std::string CompanionSummary() const override;
   void Shutdown() override;
 
  private:
@@ -375,6 +389,13 @@ struct RayReconstructionFacts {
   bool files_ok = false;   // sl.dlss_d.dll (signed) and nvngx_dlssd.dll are next to the exe
   bool queried = false;    // the support question was asked: the start is over, the answer is final
   bool supported = false;  // this card, this driver and Windows can run it
+  // RR-3: the context's own story, published by the backend. `failed`: RR was dropped for this session (its feature could not be made in the background, or its evaluation failed three
+  // times in a row), Super Resolution goes on; `failed_why` says why. `measured_*`: the video memory the first RR context reported (slDLSSDGetState) and the output pixels it was made
+  // for, so that the room check for a later context (dlss_rr_rules.h ContextNeedBytes) uses the runtime's figure rather than NVIDIA's table.
+  bool failed = false;
+  std::string failed_why;
+  uint64_t measured_bytes = 0;
+  uint64_t measured_pixels = 0;
   std::string why;         // not built, not asked for, not supported: one plain sentence
 };
 

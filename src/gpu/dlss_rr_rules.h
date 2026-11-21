@@ -15,15 +15,23 @@
 //   FrameGate              why a frame cannot be given to RR even when it is the plan (no G-buffer planes: pause world, garage, map, cutscene): that frame is SR's.
 //   JitterPhases           RR wants at least 32 positions in the jitter sequence (SR's 8 x ratio^2 is not enough).
 //   WantRrPlugin           whether Streamline is started with the RR plugin (plugins cannot be added after slInit).
+//   ChooseDispatch         (RR-3) which context a frame's dispatch goes to: RR when the plan says RR, its context exists and this frame has its guides; else Super Resolution,
+//                          whose context is kept beside RR (a missing guide is an SR frame, never "DLSS off for the session").
+//   ContextKeeper          (RR-3) how long the RR context is kept after the plan stops wanting it (a quick switch back finds it).
+//   ContextNeedBytes       (RR-3) the video memory the RR context asks for, the check before it is made (NVIDIA's table, or what the first context measured).
+//   FailureBook            (RR-3) what a failed or refused RR evaluation means: a refusal is an SR frame, three errors in a row drop RR for the session (never DLSS).
 //
 // The rules the numbers come from: Streamline 2.14.16 docs/ProgrammingGuideDLSS_RR.md, the DLSS-RR Integration Guide (August 2026) chapter 3, and NVIDIA's RR
 // integration checklist in the same package (plugins/streamline-agent-skills/skills/integrate-dlss-rr).
 // ===========================================================================
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <string_view>
+
+#include "vram_room.h"
 
 namespace mcla::gpu::rr {
 
@@ -415,6 +423,11 @@ inline uint32_t JitterPhases(double ratio) {
   const uint32_t sr = uint32_t(std::floor(8.0 * r * r));
   return sr < 32u ? 32u : sr;
 }
+// What the temporal system hands upscaler_math.h JitterPhases as the runtime's own count: the longer of the context's (0: none) and RR's while RR may run this frame (the plan is RR and
+// its context is ready: a frame that turns out to be Super Resolution's keeps the longer sequence, which Super Resolution takes as well), else the runtime's untouched.
+inline uint32_t RuntimePhaseCount(uint32_t from_runtime, double ratio, bool rr_may_run) {
+  return rr_may_run ? std::max(from_runtime, JitterPhases(ratio)) : from_runtime;
+}
 
 // --- who does the denoising ------------------------------------------------------------------------------------------------------------------------------
 
@@ -445,6 +458,7 @@ struct Facts {
   bool files_ok = false;             // sl.dlss_d.dll and nvngx_dlssd.dll are next to the exe, the plugin is signed
   bool streamline_running = false;   // slInit and the device are done (a start still going on is not "not supported")
   bool supported = false;            // slIsFeatureSupported(kFeatureDLSS_RR) said yes for this adapter
+  bool failed = false;               // (RR-3) RR was dropped for this session: its feature could not be made, or its evaluation failed FailureBook::kMaxErrors times in a row
 };
 
 struct PlanInputs {
@@ -454,6 +468,7 @@ struct PlanInputs {
   bool upscaler_is_dlss = false;     // RR includes the upscale: only where DLSS is the upscaler
   bool consumers_active = false;     // some effect that wants RR (SSR, city RT reflections, RTGI, a raw mode of the car effects) is on
   bool guides_ready = false;         // the frame's guide images exist and were handed over (TemporalSystem::NoteRrGuides, RR-3; the pass that makes them is RR-2's rr_guides.h)
+  bool room_ok = true;               // (RR-3) video memory has room for the RR context (ContextNeedBytes); true where it is not asked (the context exists, or the sizes are not known yet)
 };
 
 enum class Why : uint8_t {
@@ -468,6 +483,8 @@ enum class Why : uint8_t {
   kProbeOnly,           // mcla_gpu_dlss_rr is probe
   kNoConsumer,          // AUTO and nothing that wants RR is on
   kGuidesNotReady,
+  kRrFailed,            // (RR-3) RR failed in this session and stays off until the game is started again; Super Resolution goes on
+  kNoRoom,              // (RR-3) video memory has no room for the RR context; Super Resolution goes on, the context is asked again after a wait
 };
 constexpr const char* WhyText(Why w) {
   switch (w) {
@@ -481,7 +498,9 @@ constexpr const char* WhyText(Why w) {
     case Why::kUpscalerNotDlss: return "the upscaler is not DLSS (RR includes the upscale)";
     case Why::kProbeOnly: return "mcla_gpu_dlss_rr is probe: RR is loaded and asked, no frame uses it";
     case Why::kNoConsumer: return "AUTO, and no effect that wants RR is on";
-    case Why::kGuidesNotReady: return "the guide images are not handed to the upscaler yet (the guide pass makes them: rr_guides.h, RR-2; the hand-over is package RR-3)";
+    case Why::kGuidesNotReady: return "the guide images are not handed to the upscaler yet (the guide pass makes them: rr_guides.h)";
+    case Why::kRrFailed: return "Ray Reconstruction failed in this session (the log says why) and stays off until the game is started again; Super Resolution goes on";
+    case Why::kNoRoom: return "there is no room in video memory for the Ray Reconstruction context; Super Resolution goes on";
   }
   return "?";
 }
@@ -500,9 +519,11 @@ inline Plan SelectDenoiser(const PlanInputs& in) {
   if (!in.facts.files_ok) return no(Why::kFilesMissing);
   if (!in.facts.streamline_running) return no(Why::kStreamlineNotRunning);
   if (!in.facts.supported) return no(Why::kNotSupported);
+  if (in.facts.failed) return no(Why::kRrFailed);
   if (!in.upscaler_is_dlss) return no(Why::kUpscalerNotDlss);
   if (in.debug == DebugSwitch::kProbe) return no(Why::kProbeOnly);
   if (in.setting == Denoiser::kAuto && !in.consumers_active) return no(Why::kNoConsumer);
+  if (!in.room_ok) return no(Why::kNoRoom);
   if (!in.guides_ready) return no(Why::kGuidesNotReady);
   return Plan{true, Why::kRrOn};
 }
@@ -541,6 +562,160 @@ inline Gate FrameGate(const FrameFacts& f) {
   if (f.gbuffer_size[0] != f.render_size[0] || f.gbuffer_size[1] != f.render_size[1]) return Gate::kSizeMismatch;
   return Gate::kOpen;
 }
+
+// --- RR-3: which context a frame goes to, how long RR's context is kept, what it costs, what a failure means -------------------------------------------------
+
+// Two contexts live side by side while RR is wanted: the Super Resolution one the upscaler always has (the pause world, the garage, the map, a cutscene, the first frames and every
+// frame whose guides are missing use it) and the RR one (perf/DLSS-RR.md section 4). A dispatch goes to exactly one of them.
+enum class Dispatch : uint8_t { kSuperResolution, kRayReconstruction };
+enum class DispatchWhy : uint8_t {
+  kRr,                 // RR runs this frame
+  kPlanOurs,           // the plan is not RR (the setting, the card, the upscaler, no consumer, no room ...): Super Resolution is the upscaler
+  kRrFailed,           // RR was dropped for the session
+  kNoGuides,           // this frame has no guide images (no G-buffer: pause, garage, map, cutscene, the first frame; or the guide pass was not ready)
+  kContextNotReady,    // the RR context is being made (its feature is built in the background): Super Resolution goes on meanwhile
+  kCount,
+};
+constexpr const char* DispatchWhyText(DispatchWhy w) {
+  switch (w) {
+    case DispatchWhy::kRr: return "Ray Reconstruction";
+    case DispatchWhy::kPlanOurs: return "the plan is not Ray Reconstruction";
+    case DispatchWhy::kRrFailed: return "Ray Reconstruction failed in this session";
+    case DispatchWhy::kNoGuides: return "the frame has no guide images";
+    case DispatchWhy::kContextNotReady: return "the Ray Reconstruction context is not made yet";
+    case DispatchWhy::kCount: break;
+  }
+  return "?";
+}
+
+struct DispatchInputs {
+  bool plan_rr = false;          // this frame's plan (SelectDenoiser) says RR
+  bool rr_failed = false;        // the backend dropped RR for the session
+  bool guides_now = false;       // THIS frame's guide pass ran (its images are in SHADER_READ at the compute stage)
+  bool context_ready = false;    // the RR context exists, its feature made
+};
+struct DispatchChoice {
+  Dispatch kind = Dispatch::kSuperResolution;
+  DispatchWhy why = DispatchWhy::kPlanOurs;
+};
+// The first reason that applies is the answer. RR needs all of: the plan, no failure, this frame's guides, its context. Anything missing is a Super Resolution frame: the upscale
+// itself is never lost to RR (a missing guide is an SR frame, never "DLSS off for the session").
+constexpr DispatchChoice ChooseDispatch(const DispatchInputs& in) {
+  if (!in.plan_rr) return {Dispatch::kSuperResolution, DispatchWhy::kPlanOurs};
+  if (in.rr_failed) return {Dispatch::kSuperResolution, DispatchWhy::kRrFailed};
+  if (!in.guides_now) return {Dispatch::kSuperResolution, DispatchWhy::kNoGuides};
+  if (!in.context_ready) return {Dispatch::kSuperResolution, DispatchWhy::kContextNotReady};
+  return {Dispatch::kRayReconstruction, DispatchWhy::kRr};
+}
+
+// Whether the plan's reason says the RR context is worth having: RR is the choice (kRrOn) or would be as soon as the guides are there (kGuidesNotReady): the same words that make the
+// guide pass wanted (rr_guides_rules.h PassWanted), so the context is being made while the guides are, and a switch is instant. Every other reason (off, OURS, no consumer, no room,
+// failed ...) wants none.
+constexpr bool ContextWanted(Why why) { return why == Why::kRrOn || why == Why::kGuidesNotReady; }
+
+// The RR context is kept for kContextHoldFrames frames after the plan stops wanting it (a pause, a consumer toggled off and on, a frame without an anchor): a quick switch back finds it,
+// and an RR that is really off gives its video memory back after that.
+inline constexpr uint32_t kContextHoldFrames = 600;
+class ContextKeeper {
+ public:
+  // One call per frame: whether the context should exist this frame.
+  bool Update(bool wanted) {
+    if (wanted) {
+      keep_ = true;
+      unwanted_ = 0;
+    } else if (keep_ && ++unwanted_ > kContextHoldFrames) {
+      keep_ = false;
+      unwanted_ = 0;
+    }
+    return keep_;
+  }
+  bool keep() const { return keep_; }
+  void Reset() { *this = ContextKeeper{}; }
+
+ private:
+  bool keep_ = false;
+  uint32_t unwanted_ = 0;
+};
+
+// What the RR context asks for in video memory. The network (Default / preset F, the integration guide 2.2): 154, 268 and 579 MB for an output of 1080p, 1440p and 4K, taken between
+// those points by the output's pixels (above 4K on the last slope, under 1080p in proportion). The runtime's own figure for a context it made (`measured_bytes` for
+// `measured_pixels` of output) replaces the table, scaled by the pixels. The guide images (28 bytes a render pixel, rr_guides_rules.h BytesOf) are asked for too where the pass has not made
+// them yet (`guide_bytes`); the Super Resolution context kept beside it is counted already (it exists).
+inline constexpr uint64_t kMiB = 1024ull * 1024ull;
+constexpr uint64_t NetworkBytes(uint32_t out_w, uint32_t out_h) {
+  const uint64_t px = uint64_t(out_w) * out_h;
+  constexpr uint64_t p1 = 1920ull * 1080ull, p2 = 2560ull * 1440ull, p3 = 3840ull * 2160ull;
+  constexpr uint64_t b1 = 154 * kMiB, b2 = 268 * kMiB, b3 = 579 * kMiB;
+  if (px == 0) return 0;
+  if (px <= p1) return b1 * px / p1;
+  if (px <= p2) return b1 + (b2 - b1) * (px - p1) / (p2 - p1);
+  return b2 + (b3 - b2) * (px - p2) / (p3 - p2);
+}
+constexpr uint64_t ContextNeedBytes(uint32_t out_w, uint32_t out_h, uint64_t measured_bytes, uint64_t measured_pixels, uint64_t guide_bytes) {
+  const uint64_t scaled = vram_room::ScaledEstimate(measured_bytes, measured_pixels, uint64_t(out_w) * out_h);
+  return (scaled != 0 ? scaled : NetworkBytes(out_w, out_h)) + guide_bytes;
+}
+// vram_room.h's line: the use plus the need stays under kHighPercent of the budget (true where the adapter reports none).
+constexpr bool HasRoomForContext(uint64_t used, uint64_t budget, uint64_t need) { return vram_room::HasRoom(used, budget, need); }
+
+// What one RR evaluation came to, and what it means (render thread). A REFUSAL (the frame's guides are not right: nothing was recorded) is an SR frame and never a count against RR: the
+// guides may be right next frame. An ERROR (Streamline said no after the tags were accepted) makes the frame Super Resolution's (never a plain one: three jittered frames in a row that are
+// not upscaled turn the upscaler off for the session); kMaxErrors in a row drop RR for the session, with Super Resolution going on (the backend is NOT failed: "never DLSS off for the
+// session"). A run resets the count; a refusal does not.
+class FailureBook {
+ public:
+  enum class Event : uint8_t { kRan, kRefused, kError };
+  static constexpr uint32_t kMaxErrors = 3;
+  // True when this event dropped RR for the session (the first time only).
+  bool Note(Event event) {
+    switch (event) {
+      case Event::kRan:
+        ++ran_;
+        errors_in_row_ = 0;
+        break;
+      case Event::kRefused:
+        ++refused_;
+        break;
+      case Event::kError:
+        ++errors_;
+        if (++errors_in_row_ >= kMaxErrors && !dropped_) {
+          dropped_ = true;
+          return true;
+        }
+        break;
+    }
+    return false;
+  }
+  // The feature could not be made (the background build): RR is dropped at once. True the first time.
+  bool Drop() {
+    const bool first = !dropped_;
+    dropped_ = true;
+    return first;
+  }
+  bool dropped() const { return dropped_; }
+  uint64_t ran() const { return ran_; }
+  uint64_t refused() const { return refused_; }
+  uint64_t errors() const { return errors_; }
+  uint32_t errors_in_row() const { return errors_in_row_; }
+
+ private:
+  uint64_t ran_ = 0;
+  uint64_t refused_ = 0;
+  uint64_t errors_ = 0;
+  uint32_t errors_in_row_ = 0;
+  bool dropped_ = false;
+};
+
+// The debug lever mcla_gpu_dlss_rr_test (RR-3): the frames Ray Reconstruction cannot take, made on purpose, so that a run can see Super Resolution take them and the switch back need no
+// rebuild. 1: the guide images are withheld from the dispatch for kTestPhaseFrames frames in every 2 x kTestPhaseFrames (the frame has no guides); 2: in the same frames the dispatch carries
+// no diffuse albedo, so the rules refuse it and the backend gives the frame to Super Resolution in the same call; 3: Ray Reconstruction's evaluation fails FailureBook::kMaxErrors frames in
+// a row, once (it is dropped for the session). Only while Ray Reconstruction is the plan.
+enum class TestLever : uint8_t { kOff = 0, kWithholdGuides = 1, kRefuseGuides = 2, kInjectErrors = 3 };
+constexpr TestLever TestLeverOf(int value) { return value >= 1 && value <= 3 ? TestLever(value) : TestLever::kOff; }
+inline constexpr uint64_t kTestPhaseFrames = 30;
+// The frames the lever acts in: the second half of each 60 frame cycle (the first 30 frames of the run are untouched, so the switch to RR has settled before the first one).
+constexpr bool TestPhaseActive(uint64_t frame) { return (frame / kTestPhaseFrames) % 2 == 1; }
+inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 
 // --- the plugin -------------------------------------------------------------------------------------------------------------------------------------------
 

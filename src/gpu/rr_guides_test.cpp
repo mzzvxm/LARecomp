@@ -771,6 +771,28 @@ void RulesChecks(const std::string& gpu) {
       }
     }
     Check(ok && cases == 3 * 3 * 128 && wanted_cases > 0 && wanted_cases < cases, "the guide pass is wanted exactly when Ray Reconstruction would run if its guides were there (the whole table of the rules' inputs), and for a view while an upscaler runs");
+    // RR-3: the pass and the RR context are wanted by the same two reasons (dlss_rr_rules.h ContextWanted), and a dropped RR or a card with no room wants neither
+    {
+      bool same = true;
+      for (int w = 0; w <= int(rr::Why::kNoRoom); ++w) {
+        rr::Plan plan;
+        plan.use_rr = w == int(rr::Why::kRrOn);
+        plan.why = rr::Why(w);
+        same = same && rg::PassWanted(plan, rg::View::kOff, true) == rr::ContextWanted(plan.why);
+      }
+      Check(same, "RR-3: the guide pass is wanted for exactly the reasons the RR context is wanted for (no view)");
+      rr::PlanInputs failed;
+      failed.debug = rr::DebugSwitch::kOn;
+      failed.setting = rr::Denoiser::kRr;
+      failed.facts = {true, true, true, true, true};
+      failed.upscaler_is_dlss = true;
+      failed.guides_ready = false;
+      Check(rg::PassWanted(rr::SelectDenoiser(failed), rg::View::kOff, true) == false, "RR-3: a session that dropped RR does not run the guide pass");
+      failed.facts.failed = false;
+      Check(rg::PassWanted(rr::SelectDenoiser(failed), rg::View::kOff, true), "... and the same inputs without the failure do");
+      failed.room_ok = false;
+      Check(rg::PassWanted(rr::SelectDenoiser(failed), rg::View::kOff, true) == false, "RR-3: no room in video memory for the RR context: the guide pass (and its 28 bytes a pixel) is not wanted either");
+    }
     // the plain defaults: nothing on, nothing wanted
     rr::PlanInputs idle;
     Check(!rg::PassWanted(rr::SelectDenoiser(idle), rg::View::kOff, true), "with the debug switch off and no view the pass is not wanted, even with an upscaler running");

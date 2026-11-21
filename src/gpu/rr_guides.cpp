@@ -347,8 +347,8 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first guide pass: frame {}, {}x{} render size, planes read at host sample {} of {}, the kept depth, {} and {} (reactive and transparency masks); five images {:.1f} MiB "
-                "(diffuse albedo, specular albedo and normals + roughness R16G16B16A16_FLOAT; hit distance and responsivity R16_FLOAT); nothing hands them to the upscaler yet (RR-3), the "
-                "debug view mcla_gpu_dlss_rr_view draws them",
+                "(diffuse albedo, specular albedo and normals + roughness R16G16B16A16_FLOAT; hit distance and responsivity R16_FLOAT); the temporal system hands them to the upscaler's Ray Reconstruction dispatch "
+                "and the debug view mcla_gpu_dlss_rr_view draws them",
                 kPrefix, in.frame, width, height, frame.sample0, frame.host_samples, have_mask ? "with" : "without", have_transparency ? "with" : "without", Mib(HeldBytes()));
   }
   return true;

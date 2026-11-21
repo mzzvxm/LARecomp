@@ -97,6 +97,7 @@ struct BackendStatus {
   std::string reason;     // kUnavailable, or why it failed
   std::string provider;   // the running provider's name once a context exists
   uint64_t context_bytes = 0;  // video memory the ready context holds, as the runtime reports it
+  uint64_t companion_bytes = 0;  // ... and the companion context beside it (RequestCompanion: DLSS Ray Reconstruction)
 };
 
 // One image of a dispatch.
@@ -110,7 +111,7 @@ struct TemporalImage {
 
 // DLSS Ray Reconstruction's guide images (dlss_rr_rules.h, perf/DLSS-RR.md): all at the render size, in SHADER_READ at the COMPUTE stage like the other inputs, linear
 // (never sRGB); a null texture is a guide this frame does not have. Only a context made for ray reconstruction (BackendRequest::ray_reconstruction) reads them; the
-// rules (rr::PlanTags) say which are required and what a missing or wrong one means. The guide pass (rr_guides.h, package RR-2) makes them (RrGuides::guides()); the hand-over to the dispatch is RR-3's.
+// rules (rr::PlanTags) say which are required and what a missing or wrong one means. The guide pass (rr_guides.h, package RR-2) makes them (RrGuides::guides()); TemporalSystem hands them to the dispatch (RR-3: NoteRrGuides, TemporalInputs::ray_reconstruction).
 struct TemporalGuides {
   TemporalImage diffuse_albedo;             // RGB linear
   TemporalImage specular_albedo;            // RGB linear
@@ -146,6 +147,11 @@ struct TemporalInputs {
   TemporalImage output;
   // Ray Reconstruction's guides (above), read only by a context made for it.
   TemporalGuides guides;
+  // This dispatch is Ray Reconstruction's (RR-3, dlss_rr_rules.h ChooseDispatch): the backend evaluates its companion context (RequestCompanion) with `guides`. Where that cannot be done (no
+  // companion, or the guides are refused) it does the ordinary upscale instead, in the same call, and LastUpscaleUsedCompanion says so. False: the ordinary upscale.
+  bool ray_reconstruction = false;
+  // Debug lever (mcla_gpu_dlss_rr_test 3): the companion's evaluation of this dispatch fails as if Streamline had said no (nothing is recorded for it).
+  bool test_rr_error = false;
   float jitter[2] = {};        // render pixels, +y down: what this frame's draws were moved by
   float motion_scale[2] = {1.0f, 1.0f};  // the vectors times this are render pixels
   float frame_time_ms = 16.667f;
@@ -329,6 +335,22 @@ class TemporalBackend {
   // asks again, and the answer is a context or a longer wait. The default is a runtime that makes no such
   // check (DLSS: Streamline gives no figure before a feature exists). Any thread.
   virtual bool NoRoom(const BackendRequest&) const { return false; }
+
+  // A companion context (DLSS Ray Reconstruction, RR-3; the defaults are for a runtime with none). The current context (Request) is the upscaler the player chose and is never given up for
+  // it: the companion is a second context, for a request with BackendRequest::ray_reconstruction set, made in the background beside the current one (its feature is built on the worker
+  // with the guide images, never by a frame) and kept ready while it is asked for. A dispatch with TemporalInputs::ray_reconstruction goes to it, any other to the current one; a frame
+  // the companion cannot take (not made yet, the guides refused) is the current context's, so the upscale is never lost to it. A failing companion is dropped for the session and the
+  // current context goes on (Status().failed stays clear).
+  //   RequestCompanion   render thread, every frame it is wanted (the same request again does nothing; another one replaces it, the old context is retired behind the frames)
+  //   ReleaseCompanion   not wanted any more: its context goes
+  //   CompanionReady     the companion for exactly this request exists and was not dropped. Any thread.
+  //   LastUpscaleUsedCompanion  the last Upscale() call that returned true ran the companion (render thread, read right after the call).
+  virtual void RequestCompanion(const BackendRequest&) {}
+  virtual void ReleaseCompanion() {}
+  virtual bool CompanionReady(const BackendRequest&) const { return false; }
+  virtual bool LastUpscaleUsedCompanion() const { return false; }
+  //   CompanionSummary   one plain phrase for the census: what the companion's evaluations came to (render thread).
+  virtual std::string CompanionSummary() const { return {}; }
 
   // GPU idle: the worker stops and every context goes.
   virtual void Shutdown() = 0;

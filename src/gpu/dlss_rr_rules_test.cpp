@@ -4,12 +4,15 @@
 //   cmake --build <build dir> --target larecomp_dlss_rr_rules_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_dlss_rr_rules_test
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "dlss_rr_rules.h"
+#include "upscaler_math.h"
 
 using namespace mcla::gpu::rr;
 
@@ -295,6 +298,19 @@ void CheckJitter() {
   Check(Near(float(RatioOf(Mode::kQuality)), 1.5151f, 1e-3f) && Near(float(RatioOf(Mode::kBalanced)), 1.7241f, 1e-3f), "Quality 0.66 and Balanced 0.58");
   Check(Near(LinearRoughnessOfSmoothness(0.0f), 1.0f) && Near(LinearRoughnessOfSmoothness(1.0f), 0.0f) && Near(LinearRoughnessOfSmoothness(0.63f), 0.37f), "linear roughness is 1 - smoothness");
   Check(LinearRoughnessOfSmoothness(-1.0f) == 1.0f && LinearRoughnessOfSmoothness(2.0f) == 0.0f, "clamped");
+  // RR-3: what the temporal system hands the sequence's length (RuntimePhaseCount into upscaler_math.h JitterPhases): at least 32 for every mode while RR may run, whatever the runtime's own
+  // count is (DLSS has none: 0; FFX's is 8 x ratio^2), Super Resolution's own count untouched otherwise, and never over the cap.
+  for (uint32_t m = 0; m < uint32_t(Mode::kCount); ++m) {
+    const double ratio = RatioOf(Mode(m));
+    for (const uint32_t runtime : {0u, 8u, 18u, 32u, 72u}) {
+      const uint32_t with_rr = mcla::gpu::upscaler_math::JitterPhases(ratio, RuntimePhaseCount(runtime, ratio, true));
+      const uint32_t without = mcla::gpu::upscaler_math::JitterPhases(ratio, RuntimePhaseCount(runtime, ratio, false));
+      Check(with_rr >= 32u && with_rr <= mcla::gpu::upscaler_math::kMaxPhases, "mode " + std::to_string(m) + " runtime " + std::to_string(runtime) + ": RR's sequence is 32 or longer, under the cap");
+      Check(with_rr >= without, "RR's sequence is never shorter than Super Resolution's");
+      Check(without == mcla::gpu::upscaler_math::JitterPhases(ratio, runtime), "RR not running: Super Resolution's sequence as it was");
+      Check(with_rr >= std::min<uint32_t>(runtime, mcla::gpu::upscaler_math::kMaxPhases), "the runtime's own longer count is kept");
+    }
+  }
 }
 
 PlanInputs ReadyInputs() {
@@ -374,17 +390,42 @@ void CheckSelection() {
   in.setting = Denoiser::kRr;
   p = SelectDenoiser(in);
   Check(!p.use_rr && p.why == Why::kGuidesNotReady, "RR asked for, no guides: ours");
+  // RR-3: a session that dropped RR stays on Super Resolution whatever else is true; no room in video memory says so before it says the guides are missing.
+  in = ReadyInputs();
+  in.facts.failed = true;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kRrFailed, "RR failed in this session: ours (Super Resolution goes on)");
+  in = ReadyInputs();
+  in.facts.failed = true;
+  in.facts.supported = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kNotSupported, "not supported is named before a failure");
+  in = ReadyInputs();
+  in.room_ok = false;
+  p = SelectDenoiser(in);
+  Check(!p.use_rr && p.why == Why::kNoRoom, "no room in video memory: ours");
+  in = ReadyInputs();
+  in.room_ok = false;
+  in.guides_ready = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kNoRoom, "no room is named before the missing guides (the guide pass is not wanted either)");
+  in = ReadyInputs();
+  in.room_ok = false;
+  in.consumers_active = false;
+  p = SelectDenoiser(in);
+  Check(p.why == Why::kNoConsumer, "no consumer is named before no room: nothing is asked of memory for an RR that is not wanted");
+  Check(!PlanInputs{}.facts.failed && PlanInputs{}.room_ok, "the defaults: not failed, room");
   // Every reason has a text.
-  for (int w = 0; w <= int(Why::kGuidesNotReady); ++w) {
+  for (int w = 0; w <= int(Why::kNoRoom); ++w) {
     Check(std::string(WhyText(Why(w))) != "?", "why " + std::to_string(w) + " has a text");
   }
   // The exhaustive table: RR only for the one combination.
-  // The whole table: 3 settings x 3 switches x 7 yes/no inputs. RR is chosen for exactly the combinations the rules name.
+  // The whole table: 3 settings x 3 switches x 9 yes/no inputs (RR-3 added the failure and the room). RR is chosen for exactly the combinations the rules name.
   int rr = 0;
   int rows = 0;
   for (int setting = 0; setting < 3; ++setting) {
     for (int debug = 0; debug < 3; ++debug) {
-      for (int bits = 0; bits < (1 << 7); ++bits) {
+      for (int bits = 0; bits < (1 << 9); ++bits) {
         PlanInputs t;
         t.setting = Denoiser(setting);
         t.debug = DebugSwitch(debug);
@@ -395,10 +436,12 @@ void CheckSelection() {
         t.upscaler_is_dlss = (bits >> 4) & 1;
         t.consumers_active = (bits >> 5) & 1;
         t.guides_ready = (bits >> 6) & 1;
+        t.facts.failed = (bits >> 7) & 1;
+        t.room_ok = (bits >> 8) & 1;
         const Plan q = SelectDenoiser(t);
         const bool expect = t.debug == DebugSwitch::kOn && t.setting != Denoiser::kOurs && t.facts.build_has_rr && t.facts.files_ok &&
                             t.facts.streamline_running && t.facts.supported && t.upscaler_is_dlss &&
-                            (t.setting == Denoiser::kRr || t.consumers_active) && t.guides_ready;
+                            (t.setting == Denoiser::kRr || t.consumers_active) && t.guides_ready && !t.facts.failed && t.room_ok;
         Check(q.use_rr == expect, "the table: setting " + std::to_string(setting) + " switch " + std::to_string(debug) + " bits " + std::to_string(bits));
         Check(q.use_rr == (q.why == Why::kRrOn), "the table: use_rr and the reason agree");
         ++rows;
@@ -406,8 +449,8 @@ void CheckSelection() {
       }
     }
   }
-  // AUTO needs every input including a consumer (1 case); RR does not need the consumer (2 cases); OURS never (0): 3 of 1152.
-  Check(rows == 1152 && rr == 3, "the table size and the number of RR cases");
+  // AUTO needs every input including a consumer (1 case); RR does not need the consumer (2 cases); OURS never (0): 3 of 4608.
+  Check(rows == 4608 && rr == 3, "the table size and the number of RR cases");
 }
 
 void CheckGate() {
@@ -484,6 +527,274 @@ void CheckPluginAndParsers() {
   Check(std::string(DenoiserName(Denoiser::kRr)) == "rr" && std::string(DebugSwitchName(DebugSwitch::kProbe)) == "probe", "names round trip");
 }
 
+// --- RR-3 -------------------------------------------------------------------------------------------------------------------------------------------------
+
+void CheckDispatch() {
+  // The whole table: 2^4 inputs. RR for exactly the one combination; every other one is a Super Resolution frame with the first reason that applies.
+  int rr = 0;
+  for (int bits = 0; bits < 16; ++bits) {
+    DispatchInputs in;
+    in.plan_rr = (bits >> 0) & 1;
+    in.rr_failed = (bits >> 1) & 1;
+    in.guides_now = (bits >> 2) & 1;
+    in.context_ready = (bits >> 3) & 1;
+    const DispatchChoice c = ChooseDispatch(in);
+    const bool expect = in.plan_rr && !in.rr_failed && in.guides_now && in.context_ready;
+    Check((c.kind == Dispatch::kRayReconstruction) == expect, "the dispatch table, bits " + std::to_string(bits));
+    Check((c.kind == Dispatch::kRayReconstruction) == (c.why == DispatchWhy::kRr), "the dispatch kind and its reason agree, bits " + std::to_string(bits));
+    if (c.kind == Dispatch::kRayReconstruction) ++rr;
+  }
+  Check(rr == 1, "RR for exactly one combination of sixteen");
+  DispatchInputs in;
+  Check(ChooseDispatch(in).why == DispatchWhy::kPlanOurs, "nothing set: the plan is not RR");
+  in.plan_rr = true;
+  in.rr_failed = true;
+  in.guides_now = true;
+  in.context_ready = true;
+  Check(ChooseDispatch(in).why == DispatchWhy::kRrFailed && ChooseDispatch(in).kind == Dispatch::kSuperResolution, "a dropped RR is a Super Resolution frame (the upscaler is never lost)");
+  in.rr_failed = false;
+  in.guides_now = false;
+  Check(ChooseDispatch(in).why == DispatchWhy::kNoGuides, "a missing guide is a Super Resolution frame");
+  in.guides_now = true;
+  in.context_ready = false;
+  Check(ChooseDispatch(in).why == DispatchWhy::kContextNotReady, "RR's context still being made: Super Resolution goes on");
+  for (int w = 0; w < int(DispatchWhy::kCount); ++w) Check(std::string(DispatchWhyText(DispatchWhy(w))) != "?", "dispatch reason text " + std::to_string(w));
+}
+
+void CheckContextKeeper() {
+  Check(ContextWanted(Why::kRrOn) && ContextWanted(Why::kGuidesNotReady), "RR chosen, or chosen once the guides are there: the context is wanted");
+  for (int w = 0; w <= int(Why::kNoRoom); ++w) {
+    const Why why = Why(w);
+    if (why == Why::kRrOn || why == Why::kGuidesNotReady) continue;
+    Check(!ContextWanted(why), "no context is made for the reason " + std::to_string(w));
+  }
+  ContextKeeper k;
+  Check(!k.keep() && !k.Update(false), "nothing wanted, nothing kept");
+  Check(k.Update(true) && k.keep(), "wanted: kept at once");
+  for (uint32_t i = 0; i < kContextHoldFrames; ++i) Check(k.Update(false), "held after the want stops, frame " + std::to_string(i));
+  Check(!k.Update(false) && !k.keep(), "released after kContextHoldFrames frames of not being wanted");
+  Check(k.Update(true), "wanted again: back at once");
+  for (uint32_t i = 0; i < kContextHoldFrames / 2; ++i) k.Update(false);
+  Check(k.Update(true), "wanted again half way through the hold");
+  for (uint32_t i = 0; i < kContextHoldFrames; ++i) k.Update(false);
+  Check(k.keep(), "the hold starts again from the last want (a toggled-off-and-on effect keeps its context)");
+  k.Reset();
+  Check(!k.keep(), "reset");
+}
+
+void CheckContextNeed() {
+  constexpr uint64_t mib = kMiB;
+  Check(NetworkBytes(1920, 1080) == 154 * mib && NetworkBytes(2560, 1440) == 268 * mib && NetworkBytes(3840, 2160) == 579 * mib, "NVIDIA's three figures at 1080p, 1440p and 4K");
+  Check(NetworkBytes(0, 1080) == 0 && NetworkBytes(1920, 0) == 0, "no output: nothing");
+  uint64_t last = 0;
+  bool monotone = true;
+  for (uint32_t h = 180; h <= 4320; h += 90) {
+    const uint32_t w = h * 16 / 9;
+    const uint64_t n = NetworkBytes(w, h);
+    monotone = monotone && n > last;
+    last = n;
+  }
+  Check(monotone, "the network's need grows with the output's pixels");
+  const uint64_t mid = NetworkBytes(2200, 1240);
+  Check(mid > 154 * mib && mid < 268 * mib, "between 1080p and 1440p: between the two figures");
+  const uint64_t big = NetworkBytes(5120, 2880);
+  Check(big > 579 * mib && big < 579 * mib * 3, "above 4K on the last slope");
+  const uint64_t small = NetworkBytes(1280, 720);
+  Check(small > 154 * mib / 3 && small < 154 * mib / 2, "under 1080p in proportion (720p is 4/9 of the pixels)");
+  // The measured figure replaces the table, scaled by the pixels; the guides are added where they are not held yet.
+  Check(ContextNeedBytes(3840, 2160, 0, 0, 0) == 579 * mib, "nothing measured: the table");
+  Check(ContextNeedBytes(3840, 2160, 0, 0, 100 * mib) == 679 * mib, "the guides are added");
+  Check(ContextNeedBytes(3840, 2160, 400 * mib, uint64_t(3840) * 2160, 0) == 400 * mib, "a context measured at this output: its own figure");
+  Check(ContextNeedBytes(1920, 1080, 400 * mib, uint64_t(3840) * 2160, 0) == 100 * mib, "a figure measured at 4K is scaled to 1080p by the pixels");
+  Check(ContextNeedBytes(1920, 1080, 400 * mib, 0, 0) == 154 * mib, "a figure with no pixel count is ignored");
+  // The room line: the use plus the need under 90 % of the budget (vram_room.h).
+  Check(HasRoomForContext(0, 0, 10000 * mib), "an adapter with no budget reports nothing to compare with: room");
+  Check(HasRoomForContext(4000 * mib, 16000 * mib, 579 * mib), "plenty of room");
+  Check(!HasRoomForContext(14000 * mib, 16000 * mib, 579 * mib), "a card nearly full: no room");
+  Check(HasRoomForContext(7000 * mib, 8000 * mib, 100 * mib) && !HasRoomForContext(7000 * mib, 8000 * mib, 300 * mib), "8 GB: 100 MB fits under 90 %, 300 MB does not");
+  // The wait after a refusal is the shared one: 5 s, 10 s ... one minute.
+  Check(mcla::gpu::vram_room::NextWaitMs(0) == 5000 && mcla::gpu::vram_room::NextWaitMs(5000) == 10000 && mcla::gpu::vram_room::NextWaitMs(60000) == 60000, "the refusal's wait is the shared one");
+}
+
+void CheckFailureBook() {
+  FailureBook b;
+  Check(!b.dropped() && b.errors_in_row() == 0, "fresh");
+  Check(!b.Note(FailureBook::Event::kRefused) && !b.Note(FailureBook::Event::kRefused) && !b.Note(FailureBook::Event::kRefused) && !b.Note(FailureBook::Event::kRefused), "refusals never drop RR");
+  Check(!b.dropped() && b.refused() == 4, "four refusals counted");
+  Check(!b.Note(FailureBook::Event::kError) && !b.Note(FailureBook::Event::kError), "two errors in a row: RR stays");
+  Check(!b.Note(FailureBook::Event::kRefused) && b.errors_in_row() == 2, "a refusal between errors does not reset the count (nothing ran)");
+  Check(!b.Note(FailureBook::Event::kRan) && b.errors_in_row() == 0, "a run resets the count");
+  Check(!b.Note(FailureBook::Event::kError) && !b.Note(FailureBook::Event::kError), "two errors again");
+  Check(b.Note(FailureBook::Event::kError) && b.dropped(), "the third in a row drops RR for the session");
+  Check(!b.Note(FailureBook::Event::kError) && b.dropped(), "it is reported once");
+  Check(b.errors() == 6 && b.ran() == 1, "the totals");
+  FailureBook c;
+  Check(c.Drop() && c.dropped() && !c.Drop(), "the feature that could not be made drops RR at once, once");
+  FailureBook d;
+  for (int i = 0; i < 1000; ++i) {
+    d.Note(FailureBook::Event::kError);
+    d.Note(FailureBook::Event::kError);
+    d.Note(FailureBook::Event::kRan);
+  }
+  Check(!d.dropped(), "errors that a run breaks up never add up");
+}
+
+void CheckTestLever() {
+  Check(TestLeverOf(0) == TestLever::kOff && TestLeverOf(1) == TestLever::kWithholdGuides && TestLeverOf(2) == TestLever::kRefuseGuides && TestLeverOf(3) == TestLever::kInjectErrors, "the lever's words");
+  Check(TestLeverOf(-1) == TestLever::kOff && TestLeverOf(4) == TestLever::kOff && TestLeverOf(1000) == TestLever::kOff, "anything else is off (the cvar's range is 0 to 3)");
+  // The phases: the first 30 frames of a run are untouched, then 30 act, 30 rest, and so on.
+  bool ok = true;
+  for (uint64_t f = 0; f < 600; ++f) ok = ok && (TestPhaseActive(f) == ((f % 60) >= 30));
+  Check(ok && !TestPhaseActive(0) && !TestPhaseActive(29) && TestPhaseActive(30) && TestPhaseActive(59) && !TestPhaseActive(60), "the lever acts in the second half of each 60 frames");
+  // Three injected errors in a row are exactly what drops RR (the lever's 3), and fewer never do.
+  FailureBook b;
+  bool dropped = false;
+  for (uint32_t i = 0; i < kTestErrorFrames; ++i) dropped = b.Note(FailureBook::Event::kError) || dropped;
+  Check(kTestErrorFrames == FailureBook::kMaxErrors && dropped && b.dropped(), "the lever's injected errors drop Ray Reconstruction, once");
+  FailureBook c;
+  for (uint32_t i = 0; i + 1 < kTestErrorFrames; ++i) c.Note(FailureBook::Event::kError);
+  Check(!c.dropped(), "one error fewer does not");
+  // The refusing lever: a frame with no diffuse albedo is refused by the tag plan (the backend then gives it to Super Resolution), and the same frame with it is accepted.
+  Inputs in = FullInputs();
+  in.diffuse_albedo = Image{};
+  const TagPlan plan = PlanTags(in);
+  Check(plan.verdict == Verdict::kMissing && plan.culprit == Buffer::kDiffuseAlbedo, "no diffuse albedo: the plan refuses the frame (mcla_gpu_dlss_rr_test 2)");
+  Check(PlanTags(FullInputs()).verdict == Verdict::kOk, "... and the frame with it is accepted");
+}
+
+// A timeline of frames through the rules the temporal system and the backend apply: the plan (from the last frame's guides), the context keeper (the context is asked for while the plan wants it), a
+// backend that makes the RR feature in `build_frames` frames, and the dispatch. The live switch without a restart: every move below is a setting or a frame kind changing while the game runs.
+struct Timeline {
+  PlanInputs plan_in;
+  ContextKeeper keeper;
+  bool requested = false;
+  bool made = false;
+  uint32_t asked_frame = 0;
+  uint32_t build_frames = 5;
+  uint32_t requests = 0;         // how many times a context was asked for (a rebuild counts)
+  bool failed = false;
+  bool last_guides = false;
+  uint32_t frame = 0;
+  std::vector<DispatchChoice> log;
+  Plan plan;
+
+  Timeline() {
+    plan_in = ReadyInputs();
+    plan_in.guides_ready = false;
+  }
+  // `gbuffer`: the frame has a G-buffer (a play frame); the guide pass runs where it is wanted (the plan's reasons ContextWanted, rr_guides_rules.h PassWanted: the same two words).
+  void Step(bool gbuffer) {
+    plan_in.guides_ready = last_guides;
+    plan_in.facts.failed = failed;
+    plan = SelectDenoiser(plan_in);
+    const bool keep = keeper.Update(ContextWanted(plan.why));
+    if (keep && !requested) {
+      requested = true;
+      made = false;
+      asked_frame = frame;
+      ++requests;
+    } else if (!keep && requested) {
+      requested = false;
+      made = false;
+    }
+    if (requested && !made && frame >= asked_frame + build_frames) made = true;
+    const bool guides_now = ContextWanted(plan.why) && gbuffer;
+    DispatchInputs d;
+    d.plan_rr = plan.use_rr;
+    d.rr_failed = failed;
+    d.guides_now = guides_now;
+    d.context_ready = made;
+    log.push_back(ChooseDispatch(d));
+    last_guides = guides_now;
+    ++frame;
+  }
+  uint32_t Count(Dispatch kind) const {
+    uint32_t n = 0;
+    for (const DispatchChoice& c : log) n += c.kind == kind;
+    return n;
+  }
+};
+
+void CheckLiveSwitch() {
+  Timeline t;
+  // The switch goes on while the game runs: the first frames are Super Resolution's (guides not there, then the context being made), then RR.
+  for (int i = 0; i < 20; ++i) t.Step(true);
+  Check(t.log[0].kind == Dispatch::kSuperResolution && t.log[0].why == DispatchWhy::kPlanOurs, "frame 0: no guides yet, Super Resolution");
+  Check(t.log[1].kind == Dispatch::kSuperResolution && t.log[1].why == DispatchWhy::kContextNotReady, "frame 1: the plan is RR, the context is being made: Super Resolution goes on");
+  int first_rr = -1;
+  for (int i = 0; i < 20 && first_rr < 0; ++i) {
+    if (t.log[size_t(i)].kind == Dispatch::kRayReconstruction) first_rr = i;
+  }
+  Check(first_rr == 5, "RR from the frame its context was made (frame 5 with a 5 frame build)");
+  for (int i = first_rr; i < 20; ++i) Check(t.log[size_t(i)].kind == Dispatch::kRayReconstruction, "RR from then on, frame " + std::to_string(i));
+  Check(t.requests == 1, "one context asked for");
+  // The pause menu opens: frames without a G-buffer are Super Resolution's, the context stays (it is held), and RR is back one frame after the play frames return (the plan is made
+  // from the frame before's guides), with no rebuild.
+  for (int i = 0; i < 40; ++i) t.Step(false);
+  for (int i = 0; i < 40; ++i) {
+    const DispatchChoice& c = t.log[20 + size_t(i)];
+    Check(c.kind == Dispatch::kSuperResolution && (c.why == DispatchWhy::kNoGuides || c.why == DispatchWhy::kPlanOurs), "a pause frame is Super Resolution's, frame " + std::to_string(i));
+  }
+  for (int i = 0; i < 10; ++i) t.Step(true);
+  Check(t.log[60].kind == Dispatch::kSuperResolution, "the first play frame after the pause: the plan still has the pause's guides, Super Resolution");
+  Check(t.log[61].kind == Dispatch::kRayReconstruction, "one frame later RR again");
+  Check(t.requests == 1, "the pause did not rebuild the context");
+  // A single frame with no guides (a pass whose pipeline was still being made, a cutscene frame) is one Super Resolution frame and two with the plan's lag; RR goes on after it.
+  t.Step(false);
+  t.Step(true);
+  t.Step(true);
+  t.Step(true);
+  Check(t.log[70].kind == Dispatch::kSuperResolution && t.log[73].kind == Dispatch::kRayReconstruction && t.requests == 1, "a lone frame without guides: Super Resolution for it and the next, then RR, no rebuild");
+  // The debug switch goes off while the game runs: Super Resolution at once, the context held, then released after kContextHoldFrames frames.
+  t.plan_in.debug = DebugSwitch::kOff;
+  t.Step(true);
+  Check(t.log.back().kind == Dispatch::kSuperResolution && t.log.back().why == DispatchWhy::kPlanOurs && t.requested, "switched off: Super Resolution at once, the context is still there");
+  for (uint32_t i = 0; i < kContextHoldFrames - 1; ++i) t.Step(true);
+  Check(t.requested, "held for the whole hold");
+  t.Step(true);
+  t.Step(true);
+  Check(!t.requested, "released after the hold");
+  // And on again: the context is made again and the switch is the same as the first time.
+  t.plan_in.debug = DebugSwitch::kOn;
+  for (int i = 0; i < 12; ++i) t.Step(true);
+  Check(t.requests == 2 && t.log.back().kind == Dispatch::kRayReconstruction, "on again: one more context, RR");
+  // RR fails in the session (three errors in a row, or the feature could not be made): Super Resolution from then on, every frame, and the context is not wanted any more.
+  t.failed = true;
+  for (int i = 0; i < 5; ++i) t.Step(true);
+  for (int i = 0; i < 5; ++i) {
+    const DispatchChoice& c = t.log[t.log.size() - 1 - size_t(i)];
+    Check(c.kind == Dispatch::kSuperResolution && c.why == DispatchWhy::kPlanOurs, "failed: Super Resolution (the plan already says ours)");
+  }
+  Check(t.plan.why == Why::kRrFailed && !ContextWanted(t.plan.why), "the plan says why and wants no context");
+  // A context that takes long to make: Super Resolution all along, never a plain frame.
+  Timeline u;
+  u.build_frames = 1000;
+  for (int i = 0; i < 50; ++i) u.Step(true);
+  Check(u.Count(Dispatch::kRayReconstruction) == 0 && u.log.back().why == DispatchWhy::kContextNotReady, "a context that takes long to make: Super Resolution all along");
+  // No consumer (AUTO): nothing is asked for, ever.
+  Timeline v;
+  v.plan_in.consumers_active = false;
+  for (int i = 0; i < 700; ++i) v.Step(true);
+  Check(v.requests == 0 && v.Count(Dispatch::kRayReconstruction) == 0, "AUTO with no consumer: no context, no guides, no RR");
+  // The player's OURS and the card without support behave the same.
+  Timeline w;
+  w.plan_in.setting = Denoiser::kOurs;
+  for (int i = 0; i < 100; ++i) w.Step(true);
+  Check(w.requests == 0 && w.Count(Dispatch::kRayReconstruction) == 0, "OURS: no context");
+  Timeline x;
+  x.plan_in.facts.supported = false;
+  for (int i = 0; i < 100; ++i) x.Step(true);
+  Check(x.requests == 0 && x.Count(Dispatch::kRayReconstruction) == 0, "a card that cannot run RR: no context");
+  // No room: the RR context is never asked for; with room again it is.
+  Timeline y;
+  y.plan_in.room_ok = false;
+  for (int i = 0; i < 50; ++i) y.Step(true);
+  Check(y.requests == 0 && y.plan.why == Why::kNoRoom, "no room: no context, the reason is the room");
+  y.plan_in.room_ok = true;
+  for (int i = 0; i < 20; ++i) y.Step(true);
+  Check(y.requests == 1 && y.log.back().kind == Dispatch::kRayReconstruction, "room again: the context is made and RR runs");
+}
+
 }  // namespace
 
 int main() {
@@ -496,6 +807,12 @@ int main() {
   CheckSelection();
   CheckGate();
   CheckPluginAndParsers();
+  CheckDispatch();
+  CheckContextKeeper();
+  CheckContextNeed();
+  CheckFailureBook();
+  CheckTestLever();
+  CheckLiveSwitch();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

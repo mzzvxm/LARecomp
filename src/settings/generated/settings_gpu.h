@@ -554,8 +554,8 @@ class GPUSettings final : public rex::SettingOwner {
     "nothing of it exists and nothing changes. probe: Streamline is started with the RR plugin (an RTX "
     "card, sl.dlss_d.dll and nvngx_dlssd.dll next to the exe) and the log says whether this card and "
     "driver support it and which sizes it takes, but no frame uses it. on: RR is chosen, as the row's RR value will choose it, which the "
-    "log says each time the choice changes and why not (until the guide images it needs are made, this "
-    "build says so and Super Resolution goes on). Read at the start (Streamline's plugins are chosen when "
+    "log says each time the choice changes and why not. While it is on, Ray Reconstruction's context is made in the background beside Super Resolution's, which keeps upscaling the frames meanwhile and every frame "
+    "Ray Reconstruction cannot take (the pause, garage and map worlds, cutscenes, frames without guides); the switch between them is live and never restarts. Read at the start (Streamline's plugins are chosen when "
     "it starts; on Vulkan only when DLSS is the saved upscaler).", rex::kDebugOnly, rex::kRestart, rex::Allowed("off", "probe", "on"));
 
   REX_SETTING(i32, mcla_gpu_dlss_rr_view, 0, "Debug (Ray Reconstruction guides): draws one of the images the DLSS Ray Reconstruction guide pass makes from the G-buffer over the upscaler's output "
@@ -565,6 +565,13 @@ class GPUSettings final : public rex::SettingOwner {
     "drawn over the view as usual. A frame with no G-buffer (the pause menu, the garage, the map, a cutscene) shows the upscaler's own picture. 0: off. "
     "Live.",
     rex::kDebugOnly, rex::Range{0, 6});
+
+  REX_SETTING(i32, mcla_gpu_dlss_rr_test, 0, "Debug (Ray Reconstruction fallbacks, perf/DLSS-RR.md, RR-3): makes the frames Ray Reconstruction cannot take happen on purpose, to see that Super Resolution takes them and the switch back needs no rebuild of the context. "
+    "0: off. 1: the guide images are withheld from the upscaler for 30 frames in every 60 (the frames are Super Resolution's, the plan says the guides are missing, the context stays). "
+    "2: in the same frames the dispatch carries no diffuse albedo, so the rules refuse the guides and Super Resolution takes the frame in the same call (the census counts them). "
+    "3: Ray Reconstruction's evaluation fails three frames in a row, once: it is dropped for the session and Super Resolution goes on (the log says so; DLSS stays on). "
+    "Only while Ray Reconstruction is the plan (mcla_gpu_dlss_rr on). Live.",
+    rex::kDebugOnly, rex::Range{0, 3});
 
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
@@ -1689,6 +1696,7 @@ inline auto& mcla_gpu_dlss_mask_tags = g_gpu.mcla_gpu_dlss_mask_tags;
 inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;
 inline auto& mcla_gpu_dlss_rr = g_gpu.mcla_gpu_dlss_rr;
 inline auto& mcla_gpu_dlss_rr_view = g_gpu.mcla_gpu_dlss_rr_view;
+inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;

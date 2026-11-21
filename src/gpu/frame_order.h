@@ -43,7 +43,8 @@
 //
 // RR-2 added the anchor phase and its two steps (the guide pass and its debug view, both in temporal.cpp: TemporalSystem::RecordUpscale calls them) and the temporal system's frame boundary at the
 // frame's start, where the guide pass declares its wants of the planes (kBeginTemporal: lag 1, the G-buffer reads its wants before the temporal system makes its plan). They are kScanned rows: only the
-// source checks hold them (the Scene's recorder notes the trigger and the end of the scene). RR-3 adds the upscale itself as a row after the guide pass (it reads data::kRrGuides).
+// source checks hold them (the Scene's recorder notes the trigger and the end of the scene). RR-3 added the upscale itself as a row between the guide pass and its view (kUpscale: it reads
+// data::kRrGuides where they are there; Ray Reconstruction's dispatch or Super Resolution's, TemporalSystem::ChooseRrDispatch).
 //
 // HOW TO ADD A PASS: add its Step in the place it must run, its Row (reads, makes, deps, wants), the `order_.Note` line after its call in scene.cpp, and, if it makes something new, a data:: bit. The test
 // fails until the table, scene.cpp and the pass agree. HOW TO MOVE ONE: move its enumerator and row together and its call in scene.cpp; the dependencies say what it may not cross.
@@ -198,6 +199,7 @@ enum class Step : uint8_t {
   kShaftsComposite,
   // the anchor (TemporalSystem::RecordUpscale, called from Scene::NoteTemporal at the game's motion blur draw)
   kRrGuides,
+  kUpscale,
   kRrGuidesView,
   // the present (Scene::OnPresent)
   kPresentWorld,
@@ -379,8 +381,16 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kShaftsComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
      .note = "RR-2: ONE compute pass, only while the plan wants the guides (the debug switch mcla_gpu_dlss_rr = on with DLSS, or a guide view): the planes (RT1 world normal, RT2 albedo, RT3 material, at the host "
              "sample that is the guest's sample 0), the kept depth and the upscaler's masks to the five guides (hlsl/rr_guides_common.hlsli). It runs right before the backend gets the frame, the guides in the "
-             "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3 calls "
-             "NoteRrGuides with its images; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes a reflection effect's image (RR-4)"},
+             "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3: "
+             "RecordRrGuides hands the images (or their absence) to NoteRrGuides right after the pass; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes a reflection "
+             "effect's image (RR-4)"},
+    {.step = Step::kUpscale, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "the upscaler's dispatch (Ray Reconstruction where its guides and context are there, else Super Resolution)",
+     .file = "temporal.cpp", .call = "backend->Upscale(list, in)", .label_file = "temporal.cpp", .label = "temporal upscale", .soft_reads = data::kRrGuides,
+     .deps = {{{Step::kRrGuides, "Ray Reconstruction takes the guides the pass made, in the state it left them"}}},
+     .note = "RR-3: ONE dispatch a frame. TemporalSystem::ChooseRrDispatch (dlss_rr_rules.h ChooseDispatch) sends it to the DLSS backend's Ray Reconstruction context when the plan is RR, its context is "
+             "made, nothing failed and THIS frame's guide pass ran; every other frame is Super Resolution's, whose context is always kept (the pause, garage and map worlds, cutscenes, the first frames, "
+             "the seconds the RR context is being made). The backend does the same in the call when the rules refuse the frame's guides. Soft read: the guides are not there in a Super Resolution "
+             "frame"},
     {.step = Step::kRrGuidesView, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide debug view over the upscaler's output", .file = "temporal.cpp",
      .call = "rr_pass_->RecordView(list, output_)", .label_file = "rr_guides.cpp", .label = "rr guides view", .closing_label = "after rr guides view", .reads = data::kRrGuides,
      .deps = {{{Step::kRrGuides, "it draws what the guide pass made"}}},

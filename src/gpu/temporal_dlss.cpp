@@ -78,6 +78,7 @@
 #include "dlss_rr_rules.h"
 #include "frame.h"
 #include "latency.h"
+#include "rr_guides_rules.h"
 #include "texture_bytes.h"
 #include "vram_budget.h"
 
@@ -125,6 +126,19 @@ constexpr plume::RenderTextureFlags kColorFlags = plume::RenderTextureFlag::NONE
 constexpr plume::RenderTextureFlags kDepthMotionFlags = plume::RenderTextureFlag::RENDER_TARGET;
 constexpr plume::RenderTextureFlags kOutputFlags =
     plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+// Ray Reconstruction's guide images (rr_guides.cpp makes the frame's own with these flags and the formats of rr_guides_rules.h SpecOf): the warm-up makes the same ones.
+constexpr plume::RenderTextureFlags kGuideFlags =
+    plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
+constexpr plume::RenderFormat WarmGuideFormat(rr_guides::Guide guide) {
+  switch (rr_guides::SpecOf(guide).format) {
+    case rr::Format::kRgba16Float: return plume::RenderFormat::R16G16B16A16_FLOAT;
+    case rr::Format::kR16Float: return plume::RenderFormat::R16_FLOAT;
+    default: break;
+  }
+  return plume::RenderFormat::UNKNOWN;
+}
+// What the player sees when a frame's guides are refused (EvaluateRr's text; Upscale tells the refusal from a Streamline error by it).
+constexpr const char* kGuidesRefusedText = "the guides were refused";
 
 // The files the game folder carries (cmake/FetchStreamline.cmake copies them next to the exe).
 const wchar_t* const kFiles[] = {L"sl.interposer.dll", L"sl.common.dll", L"sl.dlss.dll",
@@ -581,6 +595,22 @@ std::mutex g_rr_mutex;
 dlss::RayReconstructionFacts g_rr_facts;
 // The last refusal of a frame's guides that was logged (verdict and culprit packed), so that the log says each kind once. Render thread.
 std::atomic<uint32_t> g_rr_refusal_seen{0};
+// Ray Reconstruction was dropped for the session (its feature could not be made, or its evaluation failed): the plan reads it through dlss::GetRayReconstructionFacts and says so; Super
+// Resolution goes on. Callable from the render thread and the worker (its own lock; never Runtime::mu).
+void PublishRrFailure(const std::string& why) {
+  std::lock_guard lock(g_rr_mutex);
+  g_rr_facts.failed = true;
+  g_rr_facts.failed_why = why;
+}
+// The video memory the first Ray Reconstruction context reported for an output of `pixels` (the room check of a later one scales it).
+void PublishRrMeasured(uint64_t bytes, uint64_t pixels) {
+  if (bytes == 0 || pixels == 0) {
+    return;
+  }
+  std::lock_guard lock(g_rr_mutex);
+  g_rr_facts.measured_bytes = bytes;
+  g_rr_facts.measured_pixels = pixels;
+}
 // The worker is making a feature (or Streamline's start): the render thread's Streamline calls that
 // would wait for the lock say busy instead (Impl::building is this).
 std::atomic<bool> g_building{false};
@@ -1145,6 +1175,17 @@ struct WarmImages {
   std::unique_ptr<plume::RenderTexture> depth;
   std::unique_ptr<plume::RenderTexture> motion;
   std::unique_ptr<plume::RenderTexture> output;
+  // A Ray Reconstruction request also needs the five guide images (rr_guides_rules.h Guide order) at the render size, in the formats of the frame's own: made with the others, empty for a
+  // Super Resolution request.
+  std::array<std::unique_ptr<plume::RenderTexture>, rr_guides::kGuideCount> guides;
+  bool has_guides() const {
+    for (const auto& g : guides) {
+      if (!g) {
+        return false;
+      }
+    }
+    return true;
+  }
 };
 
 std::unique_ptr<SideKit> MakeSideKit(Device& device, std::string* why) {
@@ -1185,6 +1226,17 @@ TemporalInputs MakeWarmupInputs(const BackendRequest& request, const WarmImages&
                kDepthMotionFlags};
   in.output = {images.output.get(), in.output_size[0], in.output_size[1], kColorFormat,
                kOutputFlags};
+  if (request.ray_reconstruction && images.has_guides()) {
+    const auto guide = [&](rr_guides::Guide g) {
+      return TemporalImage{images.guides[size_t(g)].get(), in.render_size[0], in.render_size[1], WarmGuideFormat(g), kGuideFlags};
+    };
+    in.guides.diffuse_albedo = guide(rr_guides::Guide::kDiffuseAlbedo);
+    in.guides.specular_albedo = guide(rr_guides::Guide::kSpecularAlbedo);
+    in.guides.normal_roughness = guide(rr_guides::Guide::kNormalRoughness);
+    in.guides.specular_hit_distance = guide(rr_guides::Guide::kHitDistance);
+    in.guides.responsivity = guide(rr_guides::Guide::kResponsivity);
+    in.ray_reconstruction = true;
+  }
   in.reset = true;
   in.camera_aspect = float(in.output_size[0]) / float(std::max(in.output_size[1], 1u));
   SetIdentity(in.view_to_clip);
@@ -1234,6 +1286,19 @@ struct DlssBackend::Impl {
   std::unique_ptr<WarmImages> next_images;
   std::shared_ptr<Context> next_ctx;
   std::vector<std::shared_ptr<Context>> doomed;  // to be freed by the worker
+  // The companion context (RR-3, Ray Reconstruction's): made by the same worker, in the background, beside `ctx` (which is never given up for it), with the guide images of its warm-up.
+  bool comp_want = false;
+  BackendRequest comp_request;
+  std::unique_ptr<WarmImages> comp_images;
+  std::shared_ptr<Context> comp_ctx;
+  bool comp_refused_set = false;  // Ray Reconstruction does not take the sizes of `comp_refused`: not asked for again for it
+  BackendRequest comp_refused;
+  bool rr_dropped = false;        // Ray Reconstruction is off for the session (its feature could not be made, or its evaluation failed): `ctx` goes on
+  // Render thread only: what the evaluations came to, and which kind the last one that recorded was (the history of each context starts again when the kind changes).
+  rr::FailureBook rr_book;
+  enum class Kind : uint8_t { kNone, kSuperResolution, kRayReconstruction };
+  Kind last_kind = Kind::kNone;
+  bool last_used_companion = false;
   std::unique_ptr<SideKit> kit;
   std::atomic<bool>& building = g_building;  // the worker is making a context
   // Streamline's frame index: its own count, always rising, from any thread that evaluates.
@@ -1293,6 +1358,19 @@ struct DlssBackend::Impl {
   // Under `mu`: a context is wanted and not there yet, for the current slot and the prepared one.
   bool WantCurrentLocked() const { return want && !ctx && !status.failed; }
   bool WantNextLocked() const { return next_want && !next_ctx && !status.failed; }
+  bool WantCompanionLocked() const { return comp_want && !comp_ctx && !status.failed && !rr_dropped; }
+  // Under `mu`: the companion is not wanted any more (a context being made for it is freed by the worker when it is done).
+  void DropCompanionLocked(std::vector<std::shared_ptr<Context>>* retire) {
+    comp_want = false;
+    comp_images.reset();
+    if (comp_ctx) {
+      retire->push_back(std::move(comp_ctx));
+      comp_ctx.reset();
+    }
+    status.companion_bytes = 0;
+  }
+  // Ray Reconstruction is off for the rest of the session (render thread): the companion goes, the facts say why (the plan reads them), one log line. Super Resolution goes on.
+  void DropRr(const std::string& why);
   // Under `mu`: the prepared request is not wanted any more (a context being made for it is freed
   // by the worker when it is done).
   void DropNextLocked(std::vector<std::shared_ptr<Context>>* retire) {
@@ -1709,6 +1787,7 @@ void DlssBackend::Impl::FailLocked(std::unique_lock<std::mutex>& lock, const std
     ctx.reset();
   }
   DropNextLocked(&list);
+  DropCompanionLocked(&list);
   PublishLocked();
   PublishModesLocked();  // nothing is refused for a DLSS that is off
   lock.unlock();
@@ -1873,6 +1952,16 @@ std::unique_ptr<WarmImages> DlssBackend::Impl::MakeImages(const BackendRequest& 
   if (!images->color || !images->depth || !images->motion || !images->output) {
     return nullptr;
   }
+  if (request.ray_reconstruction) {
+    // Ray Reconstruction's feature is made over the guide images too: the same formats and flags as the frame's own (rr_guides.cpp), at the render size.
+    for (size_t g = 0; g < rr_guides::kGuideCount; ++g) {
+      const rr_guides::Guide guide = rr_guides::Guide(g);
+      images->guides[g] = device->CreateTexture(plume::RenderTextureDesc::Texture2D(rw, rh, 1, WarmGuideFormat(guide), kGuideFlags), rr_guides::SpecOf(guide).name);
+      if (!images->guides[g]) {
+        return nullptr;
+      }
+    }
+  }
   return images;
 }
 
@@ -1947,10 +2036,19 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
     return {};
   }
   if (request.ray_reconstruction) {
-    // The warm-up (Warmup) has the four Super Resolution images and no guides, so a Ray Reconstruction feature is made by the first dispatch, on the render thread, with
-    // the pause (package RR-3 gives the warm-up the guide images).
-    REXLOG_INFO("{} the Ray Reconstruction feature is made by its first dispatch (the warm-up has no guide images yet)", kPrefix);
-    return context;
+    // A Ray Reconstruction feature is never left to a frame's first dispatch (NGX takes seconds, on the render thread): it is made here, over the guide images, or not at all (the caller
+    // then drops Ray Reconstruction for the session and Super Resolution goes on).
+    std::string refusal;
+    if (!images || !images->has_guides()) {
+      refusal = "the images for its warm-up (the five guides) could not be made";
+    } else if (!side || !side->usable) {
+      refusal = "the side queue for its warm-up could not be made";
+    }
+    if (!refusal.empty()) {
+      *why = refusal;
+      FreeContext(*context);
+      return {};
+    }
   }
   if (!images || !side || !side->usable) {
     if (prewarm) {
@@ -1965,6 +2063,11 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
   const auto started = std::chrono::steady_clock::now();
   std::string error;
   if (!Warmup(*context, *images, *side, &error)) {
+    if (request.ray_reconstruction) {
+      *why = "its feature could not be made in the background: " + error;
+      FreeContext(*context);
+      return {};
+    }
     if (prewarm) {
       *why = error;  // created stays false
     } else {
@@ -1982,9 +2085,10 @@ std::shared_ptr<Context> DlssBackend::Impl::Build(const BackendRequest& request,
     context->made_ms = uint64_t(ms);  // the worker's step line says it (JobLoop)
     return context;
   }
-  REXLOG_INFO("{} the feature for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
+  REXLOG_INFO("{} the {} for {} at {}x{} to {}x{} (viewport {}) was made in the background in "
               "{} ms (about {} MB): the game went on meanwhile",
-              kPrefix, ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
+              kPrefix, request.ray_reconstruction ? "Ray Reconstruction feature" : "feature",
+              ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0],
               request.render_size[1], request.output_size[0], request.output_size[1],
               context->viewport_id, ms, context->bytes >> 20);
   return context;
@@ -2036,6 +2140,14 @@ bool DlssBackend::Impl::Warmup(Context& context, WarmImages& images, SideKit& si
       plume::RenderTextureBarrier(images.depth.get(), plume::RenderTextureLayout::SHADER_READ),
       plume::RenderTextureBarrier(images.motion.get(), plume::RenderTextureLayout::SHADER_READ)};
   list->barriers(Stage::COMPUTE, to_read, 3);
+  if (context.request.ray_reconstruction && images.has_guides()) {
+    // The guides in the state the frame's dispatch has them in (rr_guides.cpp leaves them SHADER_READ at the compute stage).
+    plume::RenderTextureBarrier guide_read[rr_guides::kGuideCount];
+    for (size_t g = 0; g < rr_guides::kGuideCount; ++g) {
+      guide_read[g] = plume::RenderTextureBarrier(images.guides[g].get(), plume::RenderTextureLayout::SHADER_READ);
+    }
+    list->barriers(Stage::COMPUTE, guide_read, uint32_t(rr_guides::kGuideCount));
+  }
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(images.output.get(),
                                                               plume::RenderTextureLayout::GENERAL));
   bool busy = false;
@@ -2210,7 +2322,7 @@ void DlssBackend::Impl::JobLoop() {
   for (;;) {
     cv.wait(lock, [this] {
       return stop || FitJobLocked() || !doomed.empty() || WantCurrentLocked() || WantNextLocked() ||
-             PrewarmJobLocked();
+             WantCompanionLocked() || PrewarmJobLocked();
     });
     if (stop) {
       break;
@@ -2231,12 +2343,13 @@ void DlssBackend::Impl::JobLoop() {
       lock.lock();
       continue;
     }
-    // The current slot first (the frames wait for it), then the prepared one.
+    // The current slot first (the frames wait for it), then the prepared one, then the companion (Ray Reconstruction's: Super Resolution goes on without it).
     const bool for_current = WantCurrentLocked();
-    if (for_current || WantNextLocked()) {
-      const BackendRequest request = for_current ? want_request : next_request;
-      std::unique_ptr<WarmImages> images =
-          std::move(for_current ? want_images : next_images);
+    const bool for_next = !for_current && WantNextLocked();
+    const bool for_comp = !for_current && !for_next && WantCompanionLocked();
+    if (for_current || for_next || for_comp) {
+      const BackendRequest request = for_current ? want_request : (for_next ? next_request : comp_request);
+      std::unique_ptr<WarmImages> images = std::move(for_current ? want_images : (for_next ? next_images : comp_images));
       SideKit* side = kit.get();
       building = true;
       lock.unlock();
@@ -2247,7 +2360,16 @@ void DlssBackend::Impl::JobLoop() {
       images.reset();  // Build waited for the side queue: the GPU is done with them
       lock.lock();
       building = false;
-      if (!made && refused) {
+      if (!made && refused && for_comp) {
+        // Ray Reconstruction does not take this size (the sizes DLSS takes for a mode are its own list): not a failure of DLSS or of RR, and not asked again for it. Another request is tried.
+        comp_refused_set = true;
+        comp_refused = request;
+        if (comp_want && comp_request == request) {
+          comp_want = false;
+          comp_images.reset();
+        }
+        REXLOG_INFO("{} Ray Reconstruction does not take this size: {}. Super Resolution goes on (the context is asked for again when the sizes or the mode change)", kPrefix, why);
+      } else if (!made && refused) {
         // DLSS does not take this mode at these sizes: not a failure. It is remembered (a request
         // for it is not made again, and the pause menu says "(N/A)"), nothing is wanted any more
         // for it, and the caller goes on with what runs; it says so (temporal.cpp ResolveDlssMode).
@@ -2261,15 +2383,28 @@ void DlssBackend::Impl::JobLoop() {
           next_want = false;
           next_images.reset();
         }
+      } else if (!made && for_comp) {
+        // The Ray Reconstruction feature could not be made in the background: RR is off for the session, DLSS (Super Resolution) is not.
+        comp_want = false;
+        comp_images.reset();
+        if (!rr_dropped) {
+          rr_dropped = true;
+          PublishRrFailure("its context could not be made: " + why);
+          REXLOG_WARN("{} Ray Reconstruction is off for this session: its context could not be made ({}); Super Resolution goes on", kPrefix, why);
+        }
       } else if (!made) {
         FailLocked(lock, "its context could not be made: " + why, /*render_thread=*/false);
       } else if (for_current && want && want_request == request && !ctx && !status.failed &&
                  !stop) {
         status.context_bytes = made->bytes;
         ctx = std::move(made);
-      } else if (!for_current && next_want && next_request == request && !next_ctx &&
+      } else if (for_next && next_want && next_request == request && !next_ctx &&
                  !status.failed && !stop) {
         next_ctx = std::move(made);
+      } else if (for_comp && comp_want && comp_request == request && !comp_ctx && !status.failed && !rr_dropped && !stop) {
+        status.companion_bytes = made->bytes;
+        PublishRrMeasured(made->bytes, uint64_t(request.output_size[0]) * request.output_size[1]);
+        comp_ctx = std::move(made);
       } else {
         // The request moved on (or DLSS failed, or the game is closing) while it was made: it goes.
         doomed.push_back(std::move(made));
@@ -2352,6 +2487,10 @@ void DlssBackend::Impl::JobLoop() {
     left.push_back(std::move(next_ctx));
     next_ctx.reset();
   }
+  if (comp_ctx) {
+    left.push_back(std::move(comp_ctx));
+    comp_ctx.reset();
+  }
   lock.unlock();
   for (const std::shared_ptr<Context>& old : left) {
     FreeContext(*old);
@@ -2360,6 +2499,9 @@ void DlssBackend::Impl::JobLoop() {
 
 void DlssBackend::Request(const BackendRequest& request) {
   Impl& i = *impl_;
+  if (request.ray_reconstruction) {
+    return;  // Ray Reconstruction is the companion's (RequestCompanion): the current context is Super Resolution's
+  }
   {
     std::lock_guard lock(i.mu);
     if (i.status.failed || i.status.state != BackendState::kAvailable) {
@@ -2458,7 +2600,7 @@ bool DlssBackend::Busy() const {
   std::lock_guard lock(i.mu);
   // The worker is making a context, or is about to (the wanted one is set before it wakes): either
   // way Streamline's mutex is, or is about to be, held for the seconds its first evaluation takes.
-  return i.building.load() || i.WantNextLocked();
+  return i.building.load() || i.WantNextLocked() || i.WantCompanionLocked();
 }
 
 // CHECK: the prepared slot on both APIs: a second viewport alive beside the first (options, feature,
@@ -2470,6 +2612,9 @@ bool DlssBackend::Busy() const {
 // its own viewport, while the current one keeps dispatching; Commit swaps them between two frames.
 void DlssBackend::Prepare(const BackendRequest& request) {
   Impl& i = *impl_;
+  if (request.ray_reconstruction) {
+    return;  // see Request
+  }
   std::vector<std::shared_ptr<Context>> retire;
   {
     std::lock_guard lock(i.mu);
@@ -2584,6 +2729,8 @@ void DlssBackend::Release() {
       i.ctx.reset();
     }
     i.DropNextLocked(&retire);
+    i.DropCompanionLocked(&retire);
+    i.comp_refused_set = false;
     i.status.context_bytes = 0;
   }
   i.RetireOutsideLock(retire);
@@ -2937,7 +3084,7 @@ rr::Image RrImageOf(const TemporalImage& image) {
 // plain, Upscale returns false), and otherwise the frame token, the constants, this frame's options (the camera's matrices move every frame) and the tags go in and
 // slEvaluateFeature(kFeatureDLSS_RR) runs. Streamline's lock is taken as Evaluate's is.
 // CHECK (nothing here has run): the constants are the Super Resolution's (same depth, vectors and jitter conventions: RR reads the same ones); the tags' states are the
-// ones the caller transitioned the images to (the guides must be put in SHADER_READ at the COMPUTE stage like the others, and back, by the caller: package RR-3).
+// ones the caller transitioned the images to (the guides are left in SHADER_READ at the COMPUTE stage by the guide pass, rr_guides.cpp; RecordUpscale does not move them).
 std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, const TemporalInputs& in, bool wait, bool* busy) {
   rr::Inputs ri;
   ri.color = RrImageOf(in.color);
@@ -2965,8 +3112,8 @@ std::string DlssBackend::Impl::EvaluateRr(void* native_list, Context& context, c
       REXLOG_WARN("{} Ray Reconstruction cannot take this frame: {} ({}); frames like it are plain until the guides are right",
                   kPrefix, rr::VerdictText(plan.verdict), rr::InfoOf(plan.culprit).name);
     }
-    *busy = true;  // nothing was recorded and nothing failed: the frame is plain
-    return "the guides were refused";
+    *busy = true;  // nothing was recorded and nothing failed: the caller goes on with Super Resolution (Upscale) and counts the refusal
+    return kGuidesRefusedText;
   }
   g_rr_refusal_seen.store(0);
 
@@ -3084,12 +3231,21 @@ std::string DlssBackend::Impl::EvaluateRr(void*, Context&, const TemporalInputs&
 }
 #endif
 
+// One dispatch. `in.ray_reconstruction` sends it to the companion context (Ray Reconstruction's) where it exists and its guides are right; any frame the companion cannot take is the
+// current (Super Resolution) context's, in this same call (LastUpscaleUsedCompanion says which ran). A Streamline error of the companion counts against Ray Reconstruction alone
+// (rr::FailureBook: three in a row drop it for the session), the frame is Super Resolution's, and it never fails DLSS. The history of each context starts again when the kind of the dispatch changes: the
+// context that was not used meanwhile has an old history.
 bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& in) {
   Impl& i = *impl_;
+  i.last_used_companion = false;
   std::shared_ptr<Context> context;
+  std::shared_ptr<Context> companion;
   {
     std::lock_guard lock(i.mu);
     context = i.ctx;
+    if (in.ray_reconstruction && !i.rr_dropped) {
+      companion = i.comp_ctx;
+    }
   }
   const auto fail = [this](const std::string& why) {
     Fail(why);
@@ -3102,25 +3258,67 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
   if (!native_list) {
     return fail("the command list has no native object");
   }
-  const bool reset = in.reset || !context->dispatched;
-  bool busy = false;
-  const std::string error = i.Evaluate(native_list, *context, in, /*wait=*/false, &busy);
-  if (busy) {
-    return false;  // nothing was recorded and nothing failed: this frame is plain (Busy())
+  const auto kind_reset = [&i, &in](Impl::Kind kind, const Context& c) { return in.reset || !c.dispatched || i.last_kind != kind; };
+  Context* used = nullptr;
+  bool reset = false;
+  if (companion) {
+    TemporalInputs rr_in = in;
+    rr_in.reset = kind_reset(Impl::Kind::kRayReconstruction, *companion);
+    bool busy = false;
+    const std::string error = in.test_rr_error ? std::string("an error injected by mcla_gpu_dlss_rr_test") : i.Evaluate(native_list, *companion, rr_in, /*wait=*/false, &busy);
+    if (error.empty()) {
+      i.rr_book.Note(rr::FailureBook::Event::kRan);
+      used = companion.get();
+      reset = rr_in.reset;
+      i.last_kind = Impl::Kind::kRayReconstruction;
+      i.last_used_companion = true;
+    } else if (busy) {
+      // Nothing was recorded and nothing failed: the guides were refused by the rules (counted, and the frame is Super Resolution's below), or Streamline is occupied (the
+      // Super Resolution evaluation below finds it busy as well and the frame is plain).
+      if (error == kGuidesRefusedText) {
+        i.rr_book.Note(rr::FailureBook::Event::kRefused);
+      }
+    } else {
+      // Streamline said no after the tags were accepted: the count goes up, the third in a row drops Ray Reconstruction, and this frame is Super Resolution's (below). A plain frame is
+      // not an option: three jittered frames in a row that are not upscaled turn the upscaler off for the session (temporal.cpp EndFrame), which a failing Ray Reconstruction must never cause.
+      const bool dropped = i.rr_book.Note(rr::FailureBook::Event::kError);
+      REXLOG_WARN("{} the Ray Reconstruction evaluation failed ({}), {} in a row: this frame is Super Resolution's{}", kPrefix, error, i.rr_book.errors_in_row(),
+                  dropped ? "; Ray Reconstruction is dropped" : "");
+      if (dropped) {
+        i.DropRr(std::format("its evaluation failed {} times in a row (the last: {})", rr::FailureBook::kMaxErrors, error));
+      }
+    }
   }
-  if (!error.empty()) {
-    return fail(error);
+  if (!used) {
+    TemporalInputs sr_in = in;
+    sr_in.ray_reconstruction = false;
+    sr_in.reset = kind_reset(Impl::Kind::kSuperResolution, *context);
+    bool busy = false;
+    const std::string error = i.Evaluate(native_list, *context, sr_in, /*wait=*/false, &busy);
+    if (busy) {
+      return false;  // nothing was recorded and nothing failed: this frame is plain (Busy())
+    }
+    if (!error.empty()) {
+      return fail(error);
+    }
+    used = context.get();
+    reset = sr_in.reset;
+    i.last_kind = Impl::Kind::kSuperResolution;
+    if (!context->created && !context->dispatched) {
+      REXLOG_INFO("{} the feature was not made in the background: this first dispatch made it, which "
+                  "paused the game for several seconds",
+                  kPrefix);
+    }
   }
-  if (!context->created && !context->dispatched) {
-    REXLOG_INFO("{} the feature was not made in the background: this first dispatch made it, which "
-                "paused the game for several seconds",
-                kPrefix);
-  }
-  if (!context->dispatched) {
-    context->dispatched = true;
-    if (context->bytes != 0) {
+  if (!used->dispatched) {
+    used->dispatched = true;
+    if (used->bytes != 0) {
       std::lock_guard lock(i.mu);
-      i.status.context_bytes = context->bytes;
+      (i.last_used_companion ? i.status.companion_bytes : i.status.context_bytes) = used->bytes;
+    }
+    if (i.last_used_companion) {
+      REXLOG_INFO("{} the first Ray Reconstruction dispatch: {}x{} to {}x{} (viewport {}), reset {}, about {} MB", kPrefix, in.render_size[0], in.render_size[1], in.output_size[0],
+                  in.output_size[1], used->viewport_id, reset ? "yes" : "no", used->bytes >> 20);
     }
   }
   if (i.dispatches++ == 0) {
@@ -3129,9 +3327,97 @@ bool DlssBackend::Upscale(plume::RenderCommandList* list, const TemporalInputs& 
                 kPrefix, in.render_size[0], in.render_size[1], in.output_size[0], in.output_size[1],
                 in.jitter[0], in.jitter[1], in.camera_near, in.camera_far,
                 double(in.camera_fov_y) * 57.29577951308232, reset ? "yes" : "no",
-                context->bytes >> 20);
+                used->bytes >> 20);
   }
   return true;
+}
+
+bool DlssBackend::LastUpscaleUsedCompanion() const {
+  return impl_->last_used_companion;
+}
+
+std::string DlssBackend::CompanionSummary() const {
+  const Impl& i = *impl_;
+  bool dropped = false;
+  {
+    std::lock_guard lock(i.mu);
+    dropped = i.rr_dropped;
+  }
+  return std::format("Ray Reconstruction evaluations: ran {}, guides refused {} (Super Resolution took them), errors {}{}", i.rr_book.ran(), i.rr_book.refused(), i.rr_book.errors(),
+                     dropped ? ", dropped for the session" : "");
+}
+
+// Ray Reconstruction's context, beside the current one (temporal_backend.h). The warm-up images (the guides included) are made here on the render thread; the worker makes the feature.
+void DlssBackend::RequestCompanion(const BackendRequest& request) {
+  Impl& i = *impl_;
+  if (!request.ray_reconstruction) {
+    return;
+  }
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.status.state != BackendState::kAvailable || i.stop || i.rr_dropped || !i.init_done) {
+      return;
+    }
+    if (i.comp_want && i.comp_request == request) {
+      return;
+    }
+    if (i.comp_refused_set && i.comp_refused == request) {
+      return;  // Ray Reconstruction does not take these sizes
+    }
+  }
+  i.EnsureKit();
+  std::unique_ptr<WarmImages> images = i.MakeImages(request);
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    if (i.status.failed || i.stop || i.rr_dropped) {
+      return;
+    }
+    if (i.comp_ctx && !(i.comp_ctx->request == request)) {
+      retire.push_back(std::move(i.comp_ctx));
+      i.comp_ctx.reset();
+      i.status.companion_bytes = 0;
+    }
+    i.comp_want = true;
+    i.comp_request = request;
+    i.comp_images = std::move(images);
+    i.comp_refused_set = false;
+  }
+  i.cv.notify_all();
+  i.RetireOutsideLock(retire);
+}
+
+void DlssBackend::ReleaseCompanion() {
+  Impl& i = *impl_;
+  std::vector<std::shared_ptr<Context>> retire;
+  {
+    std::lock_guard lock(i.mu);
+    i.DropCompanionLocked(&retire);
+    i.comp_refused_set = false;
+  }
+  i.RetireOutsideLock(retire);
+}
+
+bool DlssBackend::CompanionReady(const BackendRequest& request) const {
+  const Impl& i = *impl_;
+  std::lock_guard lock(i.mu);
+  return i.comp_ctx && i.comp_ctx->request == request && !i.status.failed && !i.rr_dropped;
+}
+
+void DlssBackend::Impl::DropRr(const std::string& why) {
+  std::vector<std::shared_ptr<Context>> retire;
+  bool first = false;
+  {
+    std::lock_guard lock(mu);
+    first = !rr_dropped;
+    rr_dropped = true;
+    DropCompanionLocked(&retire);
+  }
+  if (first) {
+    PublishRrFailure(why);
+    REXLOG_WARN("{} Ray Reconstruction is off for this session: {}; Super Resolution goes on", kPrefix, why);
+  }
+  RetireOutsideLock(retire);
 }
 
 void DlssBackend::Shutdown() {
@@ -3143,6 +3429,8 @@ void DlssBackend::Shutdown() {
     i.want_images.reset();
     i.next_want = false;
     i.next_images.reset();
+    i.comp_want = false;
+    i.comp_images.reset();
     i.DropPrewarmLocked();
   }
   i.cv.notify_all();
@@ -3168,6 +3456,10 @@ void DlssBackend::Shutdown() {
     if (i.next_ctx) {
       left.push_back(std::move(i.next_ctx));
       i.next_ctx.reset();
+    }
+    if (i.comp_ctx) {
+      left.push_back(std::move(i.comp_ctx));
+      i.comp_ctx.reset();
     }
   }
   if (i.probe_started) {

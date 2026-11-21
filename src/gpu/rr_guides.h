@@ -14,9 +14,9 @@
 // off and no view this class makes no image, no pipeline and no list command; a frame without the planes (the pause world, the garage, the map, a cutscene, the first frame) makes no guides and
 // says why once (rr::FrameGate), and that frame is Super Resolution's.
 //
-// WHAT IT HANDS OVER. guides() is the TemporalGuides the frame's evaluate path tags (temporal_backend.h), ready() says that this frame's images were made. RR-3 reads them: until it calls
-// TemporalSystem::NoteRrGuides(guides(), ready()) the plan stays "ours" ("the guide images are not handed to the upscaler yet"), so no context is asked for Ray Reconstruction and the upscale is the
-// one the player chose: the gate of perf/DLSS-RR.md (RR-3 does not start before the guide views of RR-2 have been looked at). The hit distance image is written by this pass (0 on a surface,
+// WHAT IT HANDS OVER. guides() is the TemporalGuides the frame's evaluate path tags (temporal_backend.h), ready() says that this frame's images were made. TemporalSystem::RecordRrGuides passes both to
+// TemporalSystem::NoteRrGuides right after Record (RR-3): the frame's dispatch is Ray Reconstruction's only with them (and the plan, and the RR context: dlss_rr_rules.h ChooseDispatch), the next frame's
+// plan reads that they were there. The hit distance image is written by this pass (0 on a surface,
 // 65504 in the sky) and takes a writer's image through Inputs::hit_slot: the reflection effects of RR-4 draw their distances into an image of their own and hand its slot over.
 //
 // THE DEBUG VIEW (mcla_gpu_dlss_rr_view 1..6): after the upscaler has written its output, RecordView draws one guide over it (hlsl/rr_guides_view_cs.hlsl); the game's tone map and UI are drawn over
@@ -99,7 +99,7 @@ class RrGuides {
   bool RecordView(plume::RenderCommandList* list, HostImage& output);
   bool viewing() const { return ready_ && view_ != rr_guides::View::kOff; }
 
-  // What RR-3 tags: the images of the frame, valid when ready() (made in this frame's Record).
+  // What the upscaler's Ray Reconstruction dispatch tags: the images of the frame, valid when ready() (made in this frame's Record).
   const TemporalGuides& guides() const { return guides_; }
   bool ready() const { return ready_; }
   rr::Gate gate() const { return gate_; }

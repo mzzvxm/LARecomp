@@ -101,7 +101,7 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 41 && Rows().back().step == Step::kPresentRig, "41 steps, the present's rig last");
+  Check(Rows().size() == 42 && Rows().back().step == Step::kPresentRig, "42 steps, the present's rig last");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -124,9 +124,9 @@ void CheckTableItself() {
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
   Check(phase_count[size_t(Phase::kBegin)] == 8 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 23 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
-            phase_count[size_t(Phase::kAnchor)] == 2 && phase_count[size_t(Phase::kPresent)] == 4,
-        "8 at the frame's start, 2 in the draws, 23 at the trigger, 2 at the end of the scene, 2 at the anchor, 4 at the present");
-  Check(noted == 15 && inner == 8 && scanned == 18, "15 noted calls, 8 steps inside the AO's frame, 18 held by the source checks alone");
+            phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
+        "8 at the frame's start, 2 in the draws, 23 at the trigger, 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+  Check(noted == 15 && inner == 8 && scanned == 19, "15 noted calls, 8 steps inside the AO's frame, 19 held by the source checks alone");
   // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
   for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
     int makers = 0;
@@ -199,8 +199,13 @@ void CheckPinnedOrder() {
   // the scene, the debug view right after the pass
   Check(Before(Step::kBeginGBuffer, Step::kBeginTemporal) && Before(Step::kBeginTemporal, Step::kBeginScreen), "RR-2: the temporal system's frame boundary is between the G-buffer's and the screen owner's");
   Check(Before(Step::kShaftsComposite, Step::kRrGuides) && Before(Step::kGBufferPublish, Step::kRrGuides) && Before(Step::kRrGuides, Step::kPresentWorld) &&
-            fo::RowOf(Step::kRrGuides).phase == Phase::kAnchor && PosOf(Step::kRrGuidesView) == PosOf(Step::kRrGuides) + 1 && PosOf(Step::kPresentWorld) == PosOf(Step::kRrGuidesView) + 1,
-        "RR-2: the guide pass is at the anchor, after the end of the scene and the planes' publish, the debug view right after it, the present next");
+            fo::RowOf(Step::kRrGuides).phase == Phase::kAnchor && PosOf(Step::kUpscale) == PosOf(Step::kRrGuides) + 1 && PosOf(Step::kRrGuidesView) == PosOf(Step::kUpscale) + 1 &&
+            PosOf(Step::kPresentWorld) == PosOf(Step::kRrGuidesView) + 1,
+        "RR-2/RR-3: the guide pass is at the anchor, after the end of the scene and the planes' publish, the upscale right after it, the debug view after that, the present next");
+  Check(fo::RowOf(Step::kUpscale).phase == Phase::kAnchor && fo::RowOf(Step::kUpscale).kind == Kind::kScanned && std::strcmp(fo::RowOf(Step::kUpscale).file, "temporal.cpp") == 0 &&
+            fo::RowOf(Step::kUpscale).soft_reads == fo::data::kRrGuides && fo::RowOf(Step::kUpscale).reads == 0 && fo::RowOf(Step::kUpscale).makes == 0 &&
+            fo::RowOf(Step::kUpscale).deps[0].before == Step::kRrGuides,
+        "RR-3: the upscale is a scanned anchor step in temporal.cpp that reads the guides only where they are there (a Super Resolution frame has none) and makes no shared data");
   Check(fo::RowOf(Step::kRrGuides).reads == fo::data::kPlanes && fo::RowOf(Step::kRrGuides).makes == fo::data::kRrGuides && fo::RowOf(Step::kRrGuidesView).reads == fo::data::kRrGuides &&
             fo::RowOf(Step::kRrGuidesView).makes == 0,
         "RR-2: the guide pass reads the planes and makes the guides; the view reads the guides and makes nothing");
@@ -581,7 +586,7 @@ std::string StepEnumName(Step step) {
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
                                        "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kLocalLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
-                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
+                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
 }
@@ -677,6 +682,20 @@ void CheckSources(const std::string& gpu) {
           "RR-2: temporal.cpp's RecordUpscale calls the guide pass before the backend's Upscale and the debug view after it");
     Check(Has(temporal, "rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));") && Has(text_of("scene.cpp"), "temporal_->BeginFrame(slot, list)"),
           "RR-2: the frame boundary tells the guide pass whether it is wanted, from the plan, the view setting and whether an upscaler runs");
+    // RR-3: the hand-over and the choice. The guide pass's images go to NoteRrGuides inside RecordRrGuides; the dispatch is chosen after the pass and before the backend is called; the census notes it
+    // after; the Ray Reconstruction context follows the Super Resolution request at the frame boundary, and the current slot's request is never Ray Reconstruction's.
+    {
+      const size_t choose = At(temporal, "ChooseRrDispatch();", record);
+      const size_t note = At(temporal, "NoteRrDispatch(dispatch, used_rr, width, height, out_width, out_height);", record);
+      Check(Has(temporal, "NoteRrGuides(rr_pass_->guides(), made && rr_pass_->ready()"), "RR-3: RecordRrGuides hands the guide pass's images to NoteRrGuides");
+      Check(choose != std::string::npos && choose > pass && choose < upscale && note != std::string::npos && note > upscale,
+            "RR-3: RecordUpscale chooses the dispatch after the guide pass and before the backend's Upscale, and notes it after");
+      Check(Has(temporal, "backend->Request(request);\n    request_ = request;\n    request_made_ = true;\n    ManageRrContext(request);"),
+            "RR-3: the Ray Reconstruction context follows the Super Resolution request at the frame boundary");
+      Check(!Has(temporal, "request.ray_reconstruction = rr_plan_") && !Has(temporal, "request->ray_reconstruction = rr_plan_"),
+            "RR-3: the current slot's request is Super Resolution's (Ray Reconstruction is the companion's, never a change of the upscaler's own context)");
+      Check(Has(temporal, "rr::RuntimePhaseCount(from_runtime, frame_.ratio, rr_may_run)"), "RR-3: the jitter sequence is 32 positions or more while Ray Reconstruction may run");
+    }
     // the frame boundary stands between the G-buffer's read and the screen owner's in scene.cpp, as the table's rows say
     const size_t gbuffer_begin = At(scene, "gbuffer_->BeginFrame(frame_serial_)");
     const size_t temporal_begin = At(scene, "temporal_->BeginFrame(slot, list)");
