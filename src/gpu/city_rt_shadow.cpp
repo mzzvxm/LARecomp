@@ -3,6 +3,7 @@
 #include "city_rt_shadow.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -57,12 +58,17 @@ LiveText& AlphaSetting() {
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }
 
+// CityRtShadowsAvailable()'s answer: set once the device can trace and the pass's layout and shader exist (Initialize), false again at Shutdown.
+std::atomic<bool> g_available{false};
+
 float GameHiRadius() {
   // The game draws a sector at its full detail within 300 m times lod_city_scale of the camera (CITY-RT-SURVEY section 1.2); gpu_class resolves 0 (auto) for this GPU.
   return float(300.0 * gpu_class::CityLodScale(larecomp::settings::lod_city_scale.Get()));
 }
 
 }  // namespace
+
+bool CityRtShadowsAvailable() { return g_available.load(std::memory_order_relaxed); }
 
 CityRtShadow::~CityRtShadow() = default;
 
@@ -80,6 +86,7 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   car_scene_ = car_scene;
   city_scene_ = city_scene;
   ready_ = false;
+  g_available.store(false, std::memory_order_relaxed);
   listed_ = false;
   pipeline_failed_ = false;
   const bool supported = car_scene != nullptr && car_scene->ready() && city_scene != nullptr && city_scene->initialized() &&
@@ -93,6 +100,7 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
     return;
   }
   ready_ = true;
+  g_available.store(true, std::memory_order_relaxed);
   if (listed_at_start && city_rt::LevelFor(gpu_class::Current(), city_rt::ParseChoice(Setting().Get())) != city_rt::Level::kOff) {
     const uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     listed_ = true;
@@ -144,6 +152,7 @@ void CityRtShadow::Shutdown() {
   shader_.reset();
   layout_.reset();
   ready_ = false;
+  g_available.store(false, std::memory_order_relaxed);
   wanted_ = false;
   ++generation_;
   device_ = nullptr;

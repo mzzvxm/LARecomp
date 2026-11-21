@@ -36,6 +36,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 
 #include "achievement_metadata.h"
 #include "bootprogress/larecomp_boot_progress.h"
+#include "bootprogress/larecomp_city_pack.h"
 #include "bootprogress/larecomp_pipeline_build.h"
 #include "bootprogress/larecomp_shader_build.h"
 #include "cpu_level.h"
@@ -117,6 +118,7 @@ namespace {
 constexpr rex::CLIAction kActions[] = {
     REX_CLI_ACTION(build_shader_packs, "Builds the shader packs from the game files and exits (the launcher's setup)."),
     REX_CLI_ACTION(precache_pipelines, "Fills the graphics driver's pipeline cache from the packs and exits."),
+    REX_CLI_ACTION(build_city_pack, "Builds the city pack (the city's geometry for ray traced shadows) from the game files and exits (the launcher's setup)."),
 };
 
 // Dedicated VRAM of the adapter the game will run on, in MiB, or 0. Used to size the texture cache (the limits are what
@@ -624,6 +626,8 @@ rex::Result<void> LarecompApp::OnInit() {
     mcla::compare::Start(GetUI());
 #endif
     larecomp::shaderbuild::InstallStartupGate(tp.game_root.Get());
+    // The city pack (ray traced city shadows): the renderer is told how it stands and may ask for a background build when it wants it and it is missing or stale (larecomp_city_pack.h).
+    larecomp::citypackbuild::InstallRendererHooks(tp.game_root.Get());
     auto window = GetUI().GetNativeWindow();
     if (!window) {
       return rex::Err(rex::ErrorCategory::kRuntime, "the Plume renderer needs the window and it is not open");
@@ -850,6 +854,12 @@ void LarecompApp::RunBatchMode() {
     code = larecomp::shaderbuild::RunCommandLine(game_root);
   } else if (batch_ == BatchMode::kPrecachePipelines) {
     code = larecomp::pipelinebuild::RunCommandLine(game_root);
+  } else if (batch_ == BatchMode::kBuildCityPack) {
+    code = larecomp::citypackbuild::RunCommandLine(game_root);
+  }
+  // --build_city_pack with another action: after it, when it succeeded (its own @citypack lines come after the other action's lines).
+  if (also_build_city_pack_ && code == 0) {
+    code = larecomp::citypackbuild::RunCommandLine(game_root);
   }
   // 0.10 also ran the pipeline pre-cache after the packs when both were given: main passes both as one mode in that
   // case (kBuildShaderPacks then kPrecachePipelines), see main.cpp.
@@ -1185,6 +1195,7 @@ void LarecompApp::OnShutdown() {
   StopBeforeTitleEnds();  // the latched work of OnRun's end, for a path that never ran (restart, setup failure, batch actions)
   larecomp::RequestBootBuildCancel();
   larecomp::WaitForBootBuild();
+  larecomp::citypackbuild::StopBackgroundBuild();  // a background city pack build still running is cancelled between sectors and joined (before the log stops)
   LARECOMP_Discord_Shutdown();
   mc::profiler::Shutdown();
   mc::DisableHighResTimer();

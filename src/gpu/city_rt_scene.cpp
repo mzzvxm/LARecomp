@@ -70,17 +70,48 @@ bool CityRtScene::OpenPack() {
   if (pack_.is_open()) {
     return true;
   }
-  if (pack_probe_frame_ != 0 && frame_ < pack_probe_frame_ + kReprobeFrames) {
+  if (pack_probe_frame_ != 0 && frame_ < pack_probe_frame_ + probe_wait_) {
     return false;
   }
   pack_probe_frame_ = frame_ == 0 ? 1 : frame_;
+  if (probe_) {
+    // The app's verdict first (stat only): a pack that is missing or built from other files than the player's now is never opened; the game's shadows stand until the app has
+    // built the right one (in the background: a minute at most on a slow PC), which the probe then reports as current.
+    std::string why;
+    const city_rt::PackState state = probe_(&why);
+    probe_wait_ = city_rt::ProbeWaitFrames(state, build_requested_);
+    if (!city_rt::CanOpenPack(state)) {
+      if (city_rt::WantsBuild(state) && !build_requested_ && request_build_) {
+        build_requested_ = true;
+        probe_wait_ = city_rt::ProbeWaitFrames(state, true);
+        request_build_();
+      }
+      if (logged_pack_state_ != int(state)) {
+        logged_pack_state_ = int(state);
+        REXLOG_INFO("{} the city pack is {}{}: ray traced city shadows are off until it is current (the game's shadows stand){}; looked for {}", kPrefix, city_rt::PackStateName(state),
+                    why.empty() ? std::string() : " (" + why + ")",
+                    city_rt::WantsBuild(state) ? "; the game builds it in the background (launcher setup runs larecomp.exe --build_city_pack, which has it ready at the first start)"
+                                               : state == city_rt::PackState::kBuilding ? "; it is being built in the background, checked again in 2 s" : "",
+                    pack_file_.string());
+      }
+      return false;
+    }
+    logged_pack_state_ = int(state);
+  } else {
+    probe_wait_ = kReprobeFrames;
+  }
   std::string error;
   if (!pack_.Open(pack_file_, &error)) {
     if (!pack_missing_logged_) {
       pack_missing_logged_ = true;
-      REXLOG_INFO("{} the city pack is not there or cannot be read ({}): ray traced city shadows are off until it is built (the launcher's setup builds it from the game files; "
-                  "tools/citypack_tool build does it by hand); looked for {}",
-                  kPrefix, error, pack_file_.string());
+      if (probe_) {
+        REXLOG_WARN("{} the city pack is current by its stamp but cannot be read ({}): ray traced city shadows stay off; delete {} and its stamp to have the game build it again", kPrefix, error,
+                    pack_file_.string());
+      } else {
+        REXLOG_INFO("{} the city pack is not there or cannot be read ({}): ray traced city shadows are off until it is built (the launcher's setup builds it from the game files; "
+                    "tools/citypack_tool build does it by hand); looked for {}",
+                    kPrefix, error, pack_file_.string());
+      }
     }
     return false;
   }

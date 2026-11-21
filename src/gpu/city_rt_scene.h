@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -64,7 +65,8 @@ class CityRtScene {
   static constexpr uint32_t kIdleReleaseFrames = 600;
   // A read or a build that failed is tried again after this many frames.
   static constexpr uint32_t kRetryFrames = 600;
-  // Ask the pack for its presence again after this many frames when it was not there at the first request.
+  // Ask the pack for its presence again after this many frames when it was not there at the first request (and the app has no say: no probe set). With the app's probe the wait is
+  // city_pack_state.h ProbeWaitFrames: 2 s while a build runs, a minute otherwise.
   static constexpr uint32_t kReprobeFrames = 3600;
 
   CityRtScene() = default;
@@ -78,6 +80,14 @@ class CityRtScene {
   // GPU idle and the FrameRing drained.
   void Shutdown();
   bool initialized() const { return device_ != nullptr; }
+
+  // The app's say on the pack (city_pack_state.h, gpu.h SetCityPackHooks), before the first frame: `probe` says which state the pack is in for the player's game files (stat only) and the pack is
+  // opened only when it is current; `request_build` is called once when it is missing or stale (the app builds it in the background and the probe answers "being built" from then on). Both
+  // empty: the pack is opened when it is there, as a pack built by hand with tools/citypack_tool is.
+  void SetPackProbe(std::function<city_rt::PackState(std::string* why)> probe, std::function<void()> request_build) {
+    probe_ = std::move(probe);
+    request_build_ = std::move(request_build);
+  }
 
   // Every frame, from the effect that wants the city's structures (the shadow pass's BeginFrame): `level` is the setting's, `radius_override` the debug radius (0 = the class's).
   void BeginFrame(city_rt::Level level, float radius_override);
@@ -179,6 +189,11 @@ class CityRtScene {
   uint64_t last_wanted_frame_ = 0;
   uint64_t pack_probe_frame_ = 0;
   bool pack_missing_logged_ = false;
+  std::function<city_rt::PackState(std::string* why)> probe_;
+  std::function<void()> request_build_;
+  uint32_t probe_wait_ = kReprobeFrames;
+  bool build_requested_ = false;
+  int logged_pack_state_ = -1;  // the last state the log said (one line a change)
   bool recorded_ = false;
   double camera_[3] = {0, 0, 0};
   bool camera_known_ = false;

@@ -491,8 +491,40 @@ void TestSafeRange() {
 
 }  // namespace
 
+// What `auto` comes to where the device can trace, and what the renderer does with each answer of the app about the city pack (city_pack_state.h).
+void TestAutoAndPackState() {
+  // auto: high on a High class card that can trace, off on every other class and on a High card that cannot (the pause menu's "AUTO (HIGH)" / "AUTO (OFF)")
+  CHECK(AutoLevelFor(GpuClass::kHigh, true) == Level::kHigh);
+  CHECK(AutoLevelFor(GpuClass::kHigh, false) == Level::kOff);
+  CHECK(AutoLevelFor(GpuClass::kMid, true) == Level::kOff);
+  CHECK(AutoLevelFor(GpuClass::kLow, true) == Level::kOff);
+  CHECK(AutoLevelFor(GpuClass::kMid, false) == Level::kOff);
+  // the row's words: the stored values are the shown ones
+  CHECK(LevelName(AutoLevelFor(GpuClass::kHigh, true)) == "high" && LevelName(AutoLevelFor(GpuClass::kHigh, false)) == "off");
+  // an explicit level is the player's: it does not look at the device here (the pass is simply not there without ray queries), and Low never runs it
+  CHECK(LevelFor(GpuClass::kMid, Choice::kHigh) == Level::kHigh && LevelFor(GpuClass::kMid, Choice::kUltra) == Level::kUltra);
+  CHECK(LevelFor(GpuClass::kLow, Choice::kUltra) == Level::kOff);
+  // the three levels the row lists match the budgets: off has none, high and ultra do
+  CHECK(!BudgetFor(GpuClass::kHigh, Level::kOff).on() && BudgetFor(GpuClass::kHigh, Level::kHigh).on() && BudgetFor(GpuClass::kHigh, Level::kUltra).on());
+  CHECK(BudgetFor(GpuClass::kHigh, Level::kHigh).hi_radius == 300.0f && BudgetFor(GpuClass::kHigh, Level::kUltra).hi_radius == 600.0f);
+
+  // the pack's states: only a current pack is opened; a missing or a stale one is built (asked once); the others are not
+  for (const PackState state : {PackState::kCurrent, PackState::kBuilding, PackState::kMissing, PackState::kStale, PackState::kNoSource, PackState::kFailed}) {
+    CHECK(CanOpenPack(state) == (state == PackState::kCurrent));
+    CHECK(WantsBuild(state) == (state == PackState::kMissing || state == PackState::kStale));
+    CHECK(!PackStateName(state).empty());
+  }
+  // when to ask again: a running build is looked at every 2 s; a build just asked for the same; a missing pack nobody builds, a minute; a failure never
+  CHECK(ProbeWaitFrames(PackState::kBuilding, false) == kProbeBuildingFrames);
+  CHECK(ProbeWaitFrames(PackState::kMissing, true) == kProbeBuildingFrames && ProbeWaitFrames(PackState::kStale, true) == kProbeBuildingFrames);
+  CHECK(ProbeWaitFrames(PackState::kMissing, false) == kProbeIdleFrames && ProbeWaitFrames(PackState::kNoSource, false) == kProbeIdleFrames);
+  CHECK(ProbeWaitFrames(PackState::kFailed, true) >= 1000000 && ProbeWaitFrames(PackState::kCurrent, false) == 0);
+  CHECK(kProbeBuildingFrames < kProbeIdleFrames);
+}
+
 int main() {
   TestSettingAndBudgets();
+  TestAutoAndPackState();
   TestMaskAndId();
   TestDistance();
   TestPlanBasics();

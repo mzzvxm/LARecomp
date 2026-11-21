@@ -97,6 +97,30 @@
   "comments": [],
   "pp_depth": 0
  },
+ "build_city_pack": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Builds the city pack (the city's geometry, for ray traced shadows) from your game files and closes, without starting the game: no \"\n    \"window, no graphics. The launcher runs this in its setup on a PC whose graphics card can ray trace, so that ray traced shadows are ready at the first start; \"\n    \"the game builds it itself in the background when it is missing and ray traced shadows are on. Progress is printed to the console; the log is \"\n    \"logs/city_pack_build.txt. Exit code 0 when the pack is in place.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "build_city_pack_force": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"With build_city_pack: build even when the pack in place is current.\"",
+  "traits": [
+   "rex::kRestart",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_native_gfx": {
   "type": "bool",
   "default": "false",
@@ -843,10 +867,9 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced sun shadows from the city's own triangles (the city pack the launcher builds from your game files). Rays go \"\n    \"from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp where it touches what casts it and \"\n    \"softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows (mcla_gpu_contact_shadows must be \"\n    \"on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a discrete graphics \"\n    \"card with 5.5 GiB of video memory or more, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand with less memory) in ray \"\n    \"tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1) and the city \"\n    \"pack; without them the game's shadows stand. Live.\"",
+  "help": "\"Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, \"\n    \"if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp \"\n    \"where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows \"\n    \"(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a \"\n    \"discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand \"\n    \"with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, \"\n    \"or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RAY TRACED SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")",
-   "rex::kDebugOnly"
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
   "comments": [],
   "pp_depth": 0

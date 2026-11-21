@@ -406,6 +406,7 @@ set(LARECOMP_SOURCES
     src/profile/larecomp_profile_picker.cpp
     src/bootprogress/larecomp_boot_progress.cpp
     src/bootprogress/larecomp_shader_build.cpp
+    src/bootprogress/larecomp_city_pack.cpp
     src/bootprogress/larecomp_pipeline_build.cpp
     src/mc_engine/ui/fonts/larecomp_embedded_fonts.cpp
     src/mc_engine/ui/imgui_theme.cpp
@@ -549,6 +550,13 @@ target_include_directories(larecomp_cli_rules_test PRIVATE src)
 add_executable(larecomp_pack_folder_test EXCLUDE_FROM_ALL
     src/bootprogress/pack_folder_rules_test.cpp)
 target_include_directories(larecomp_pack_folder_test PRIVATE src)
+
+# The city pack's start-up rules (src/bootprogress/city_pack_rules.h: which state the renderer is told, when the game builds the pack in the background and with how many
+# workers, the words of the log and the @citypack lines of --build_city_pack) have a check that needs no game:
+#   cmake --build <build dir> --target larecomp_city_pack_rules_test, then run <build dir>/larecomp_city_pack_rules_test (exit 0 = passed).
+add_executable(larecomp_city_pack_rules_test EXCLUDE_FROM_ALL
+    src/bootprogress/city_pack_rules_test.cpp)
+target_include_directories(larecomp_city_pack_rules_test PRIVATE src)
 
 # Which renderer each value of the SDK's gpu.driver means (src/gpu/renderer_choice.h: LARecomp's own, or the SDK's Xenia GPU), and the hidden
 # way back to the XENIA renderer (src/gpu/renderer_fallback.h: the debug row's picks, the box's words and its larecomp.toml write through the

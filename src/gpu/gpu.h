@@ -49,6 +49,7 @@
 #include <string>
 #include <vector>
 
+#include "city_pack_state.h"
 #include "render_scale.h"
 
 namespace rex {
@@ -435,6 +436,24 @@ bool MsaaKeptUnderUpscaler();
 // before the renderer has started and on a card or driver that cannot ray trace. The pause menu's
 // CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
 bool CarRtReflAvailable();
+
+// --- the city pack and the ray traced city shadows (CITY-RT M1) -------------------------------------
+// The ray traced sun shadows read the city pack (the city's geometry, built from the player's own game files: city_pack_state.h says how it comes to be there). The app tells the
+// renderer how the pack stands; the renderer never reads the game files or the stamp. UI thread, before Startup (LarecompApp::SetupPresentation, with the shader pack gate); the
+// hooks are called on the render thread.
+struct CityPackHooks {
+  // Which state the pack in CityPackFolder() is in for the player's game files (a few file stats, nothing hashed or decoded). `why` (may be null) gets the reason it is not current.
+  std::function<city_rt::PackState(std::string* why)> state;
+  // The renderer wants the pack and it is missing or stale: called once per session; the app builds it on a thread of its own and `state` answers "being built" from then on.
+  std::function<void()> request_build;
+};
+void SetCityPackHooks(CityPackHooks hooks);
+// Where the city pack and its stamp are: <ShaderPackFolder()>/city. Any thread; needs no renderer (the launcher's setup, --build_city_pack, builds there).
+std::filesystem::path CityPackFolder();
+// True when this device can ray trace the city's sun shadows: the same device test as the car's ray traced effects (CarRtSupported: Direct3D 12 with DXR 1.1 and shader model 6.5, or
+// Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RAY TRACED SHADOWS
+// row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
+bool CityRtShadowsAvailable();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

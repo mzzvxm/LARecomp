@@ -34,7 +34,7 @@ int g_failed = 0;
 struct FakeLookup {
   std::set<std::string> aliases = {"d3d12_adapter",  "vulkan_device",  "texture_cache_memory_limit_soft", "vsync",
                                    "fullscreen",     "log_file",       "mcla_gpu_ao",                     "debug_menu",
-                                   "build_shader_packs_force", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit",
+                                   "build_shader_packs_force", "build_city_pack_force", "keybind_a", "user_name", "mcla_gpu_vsync", "fps_limit",
                                    // the removed names (kRemovedNames in settings/larecomp_settings.cpp): an alias to "", no setting
                                    "mcla_gpu", "mcla_native_gfx_nocp"};
   std::map<std::string, std::string> full = {
@@ -47,13 +47,14 @@ struct FakeLookup {
       {"mcla_gpu_ao", "larecomp.mcla_gpu_ao"},
       {"debug_menu", "larecomp.debug_menu"},
       {"build_shader_packs_force", "larecomp.build_shader_packs_force"},
+      {"build_city_pack_force", "larecomp.build_city_pack_force"},
       {"mcla_gpu_vsync", "larecomp.mcla_gpu_vsync"},
       {"fps_limit", "larecomp.fps_limit"},
       // "keybind_a" and "user_name" are aliases only the SDK has
   };
   std::map<std::string, bool> registered_bool = {
       {"gpu.vsync", true},          {"ui.fullscreen", true},    {"larecomp.debug_menu", true},
-      {"larecomp.mcla_gpu_vsync", true}, {"larecomp.build_shader_packs_force", true},
+      {"larecomp.mcla_gpu_vsync", true}, {"larecomp.build_shader_packs_force", true}, {"larecomp.build_city_pack_force", true},
       {"larecomp.mcla_gpu_ao", false}, {"larecomp.fps_limit", false}, {"log.file_name", false},
   };
 
@@ -205,6 +206,11 @@ void TestLauncherFlags() {
   const std::vector<std::string_view> no_actions;
   CHECK(RouteOf("game_data_root", no_actions) == Route::kSdk);
   CHECK(Run("build_shader_packs_force", std::nullopt, kBatch).verdict == Verdict::kApply);
+  // ... and the city pack step (--build_city_pack, with its force switch): an action the SDK keeps, a setting for the force.
+  const std::vector<std::string_view> setup_actions = {"build_shader_packs", "precache_pipelines", "build_city_pack"};
+  CHECK(RouteOf("build_city_pack", setup_actions) == Route::kSdk && RouteOf("build_shader_packs", setup_actions) == Route::kSdk);
+  CHECK(RouteOf("build_city_pack_force", setup_actions) == Route::kSetting);
+  CHECK(Run("build_city_pack_force", std::nullopt, kBatch).verdict == Verdict::kApply);
   // Its "More options" box and the fork launcher's flags.
   CHECK(Run("log_file", "run.log", kPlume).verdict == Verdict::kApply);
   CHECK(Run("vsync", "false", kPlume).verdict == Verdict::kApply);
@@ -246,7 +252,7 @@ void TestSplit() {
                                        {"larecomp_restart_wait_pid", "123"},
                                        {"precache_pipelines", "true"}};
   const std::vector<std::string> positionals = {"extra.xex"};
-  const std::vector<std::string_view> actions = {"build_shader_packs", "precache_pipelines"};
+  const std::vector<std::string_view> actions = {"build_shader_packs", "precache_pipelines", "build_city_pack"};
   const Split split = SplitCommandLine(options, positionals, actions);
   // The SDK gets the actions, its path flags and the positionals, spelled as typed (a value with a blank stays one token).
   CHECK((split.sdk == std::vector<std::string>{"--build_shader_packs", "--game_data_root=C:/Games/My Game", "--precache_pipelines=true",

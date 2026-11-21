@@ -8,6 +8,8 @@
 {"breaking_frame_rate_limit", "MCLA/Performance"},
 {"build_shader_packs", "MCLA/GPU"},
 {"build_shader_packs_force", "MCLA/GPU"},
+{"build_city_pack", "MCLA/GPU"},
+{"build_city_pack_force", "MCLA/GPU"},
 {"button_prompts", "MCLA/UI"},
 {"cam_freelook", "MCLA/Camera"},
 {"cam_freelook_approach", "MCLA/Camera"},

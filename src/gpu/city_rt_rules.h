@@ -28,6 +28,7 @@
 #include <string_view>
 #include <vector>
 
+#include "city_pack_state.h"
 #include "gpu_class.h"
 
 namespace mcla::gpu::city_rt {
@@ -69,6 +70,10 @@ constexpr Level LevelFor(gpu_class::GpuClass cls, Choice choice) {
       return LevelOfCell(gpu_class::Cell(gpu_class::Effect::kRtShadows, cls));
   }
 }
+
+// What `auto` comes to on this device, for the pause menu's "AUTO (HIGH)" / "AUTO (OFF)": the class's cell where the device can trace (ray queries, the pass made:
+// gpu.h CityRtShadowsAvailable), else off: a High class card without ray queries (RDNA 1, a GTX 1080 Ti is Mid) would otherwise say HIGH and do nothing.
+constexpr Level AutoLevelFor(gpu_class::GpuClass cls, bool available) { return available ? LevelFor(cls, Choice::kAuto) : Level::kOff; }
 
 struct Budget {
   float hi_radius = 0.0f;           // metres from the camera to a sector's box: built at its full detail within it

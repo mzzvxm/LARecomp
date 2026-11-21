@@ -57,6 +57,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/car_shadow_map_rules.h"
+#include "gpu/city_rt_rules.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #include "gpu/latency.h"
@@ -1550,8 +1551,8 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   UPSCALING             UPSCALING, its mode row, SHARPNESS, FRAME GENERATION, FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT
 //                         (upscaling_menu.cpp, frame_generation_menu.cpp: UpscalingPageRows)
 //   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
-//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION, AO
-//                         INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS (kLightItems)
+//   LIGHTING AND SHADOWS  SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS, AMBIENT OCCLUSION,
+//                         AO INTENSITY, BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS, VOLUMETRIC LIGHT (kLightItems)
 //   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, FOLIAGE SHADOWS, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
@@ -1847,6 +1848,40 @@ std::string ContactLabel(int i) {
     }
 }
 constexpr RowDynamics kContactDynamics = {.str_label = ContactLabel};
+// Ray traced shadows (mcla_gpu_rt_shadows, gpu/city_rt_rules.h, gpu/city_rt_shadow.h, live): the sun's shadows traced from the city's own triangles (the city pack the launcher or the
+// game builds from the game files) through the contact shadows' pass, so a shadow is sharp where it touches what casts it, softer the farther it falls, with no cascade seams and
+// the long shadows of the evening that the game does not draw. OFF is the game's own shadows; HIGH keeps the buildings within 300 m (150 m on a smaller card) and ULTRA within 600 m
+// (more rays, more memory). AUTO says what it comes to on this graphics card: HIGH on a fast one that can ray trace, OFF on the rest (the same row for every API). The stored words
+// are the shown words. The row is grey, with the reason in its label, where the graphics card cannot ray trace (" (NO RT GPU)": Direct3D 12 with DXR 1.1, or Vulkan with ray
+// queries) or is too slow for it (the integrated class: " (GPU TOO SLOW)"), and without a value while the contact shadows are off: their march is what applies the traced shadows
+// (the CONTACT SHADOWS row above; AO INTENSITY and BOUNCE LIGHT are grey in the same way). The label is "RT SHADOWS" (10 characters, at most 25 with its longest suffix) with a value
+// of at most 12 ("AUTO (ULTRA)"): the page's widest pair stays 39.
+const char* const kNativeRtShadowsVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeRtShadowsNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+std::string RtShadowsLabel(int i) {
+    namespace rt = mcla::gpu::city_rt;
+    switch (i) {
+    case 0:  return mcla::gpu::gpu_class::AutoLabelOf(
+                 rt::LevelName(rt::AutoLevelFor(mcla::gpu::gpu_class::Current(), mcla::gpu::CityRtShadowsAvailable())));
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+bool ContactShadowsOn() {
+    const std::string mode = mcla::gpu::gpu_class::Resolve(mcla::gpu::gpu_class::Effect::kContactShadows,
+                                                           CvarGet("mcla_gpu_contact_shadows"));
+    return mode == "high" || mode == "ultra";
+}
+bool RtShadowsRuns() {
+    return mcla::gpu::CityRtShadowsAvailable() && mcla::gpu::gpu_class::Current() != mcla::gpu::gpu_class::GpuClass::kLow;
+}
+bool RtShadowsEnabled() { return RtShadowsRuns() && ContactShadowsOn(); }
+const char* RtShadowsSuffix() {
+    if (!mcla::gpu::CityRtShadowsAvailable()) return " (NO RT GPU)";
+    return mcla::gpu::gpu_class::Current() == mcla::gpu::gpu_class::GpuClass::kLow ? " (GPU TOO SLOW)" : "";
+}
+constexpr RowDynamics kRtShadowsDynamics = {.str_label = RtShadowsLabel, .enabled = RtShadowsEnabled, .suffix = RtShadowsSuffix};
 // Traffic shadows (mcla_gpu_traffic_shadows, gpu/traffic_shadow.h, mc_engine/hooks/traffic_shadow.cpp, live): the other cars
 // (traffic and opponents) cast into the sun's shadow map like the player's car, which the game does alone, so the ground under
 // them is dark. AUTO says what it comes to on this GPU (NEAR on a discrete card, OFF on an integrated one); NEAR is the nearest
@@ -2114,15 +2149,17 @@ const ItemDef kImageQualityItems[] = {
 // LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
 // (perf_no_shadows) is on both renderers: off is the biggest single FPS win and is live (render_phases.cpp). The rest are the NATIVE renderer's
 // graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the sun's shadows
-// (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the traffic cars' shadows and your car's
+// (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the sun's shadows traced from the city's own triangles
+// (RT SHADOWS: grey while CONTACT SHADOWS is off, and where the graphics card cannot ray trace), the traffic cars' shadows and your car's
 // (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
 // LIGHT SHADOWS, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, then the beams and the haze those lights show in). The ids and the
 // cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
 // grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes), BOUNCE LIGHT STRENGTH while the bounce light is off
 // (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); HEADLIGHTS and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 14 rows of the 24 a page can hold.
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 15 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs).
 // Width ("Page width" above ItemRowLabel): the longest label is "BOUNCE LIGHT STRENGTH" (21), then "AMBIENT OCCLUSION" (17); the longest value
-// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. No row has a suffix.
+// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 35 of the 41 a page can take. One row has a suffix: RT SHADOWS (" (NO RT GPU)",
+// " (GPU TOO SLOW)"), at most 25 with it: 39.
 const ItemDef kLightItems[] = {
     Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
 #if defined(LARECOMP_HAS_GPU)
@@ -2135,6 +2172,9 @@ const ItemDef kLightItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
                                 kNativeContactVals, kNativeContactNames, 4),
                             &kContactDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "RT SHADOWS: ",
+                                kNativeRtShadowsVals, kNativeRtShadowsNames, 4),
+                            &kRtShadowsDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
                                 kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4),
                             &kTrafficShadowsDynamics)),
@@ -3093,7 +3133,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "AUTO (OFF)"): 38 together.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 13 rows, no suffix): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
+// LIGHTING AND SHADOWS (kLightItems, 15 rows, one suffix: RT SHADOWS' " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, 39 with the longest value): labels at most 21 ("BOUNCE LIGHT STRENGTH"), then
 // "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS", "TRAFFIC SHADOWS" 15, "SHADOW DETAIL", "SHADOW FILTER" and "LIGHT SHADOWS" 13, "CAR
 // SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 35 together.
@@ -3251,8 +3291,8 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 12 rows
-// (kLightItems, 13); a page over the cap is refused whole (BuildNativeRows), so there is room.
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 15 rows
+// (kLightItems, 15); a page over the cap is refused whole (BuildNativeRows), so there is room.
 constexpr int kMaxRowsPerMenu = 24;
 
 struct NativeRows {

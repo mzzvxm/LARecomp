@@ -40,10 +40,16 @@ extern "C" double roundeven(double x) {
 static int LarecompMain(LarecompApp& app, const rex::CLIArgList& args) {
     // The actions end the process before any window or runtime exists, so the app has to know before Init (it decides
     // what systems to ask for). The launcher's setup passes both on one command line: the packs first, then the pipelines.
+    // --build_city_pack builds the city pack for the ray traced shadows (the launcher's setup, one process of its own); given with another action it runs after it.
+    const bool city_pack = args.Has("build_city_pack");
     if (args.Has("build_shader_packs")) {
         app.SetBatchMode(LarecompApp::BatchMode::kBuildShaderPacks);
+        app.SetAlsoBuildCityPack(city_pack);
     } else if (args.Has("precache_pipelines")) {
         app.SetBatchMode(LarecompApp::BatchMode::kPrecachePipelines);
+        app.SetAlsoBuildCityPack(city_pack);
+    } else if (city_pack) {
+        app.SetBatchMode(LarecompApp::BatchMode::kBuildCityPack);
     }
     // OnConfigure reads larecomp.toml before the command line is applied: tell it where, when the player says (--config_file).
     if (const auto config = args.Get("config_file"); config && !config->empty()) {

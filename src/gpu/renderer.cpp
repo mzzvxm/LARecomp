@@ -69,6 +69,8 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
 std::filesystem::path g_shader_pack_folder;
 // The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
 std::function<bool()> g_shader_pack_gate;
+// The app's say on the city pack (gpu.h SetCityPackHooks): set before Startup, read on the render thread.
+mcla::gpu::CityPackHooks g_city_pack_hooks;
 
 }  // namespace
 
@@ -214,7 +216,11 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // structures that join the car scene's top level, and the sun's shadows traced against them, read by the contact march. Both make nothing until the setting asks (mcla_gpu_rt_shadows;
     // auto is the High class), and nothing at all without ray queries.
     {
-      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, ShaderPackFolder() / "city" / larecomp::citypack::kPackFileName, gpu_class::Current());
+      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kPackFileName, gpu_class::Current());
+      if (g_city_pack_hooks.state) {
+        // The app decides whether the pack in place is the player's (stat only) and builds it in the background when it is not; without hooks (a build with no app) the pack is opened as it is.
+        city_rt_.SetPackProbe(g_city_pack_hooks.state, g_city_pack_hooks.request_build);
+      }
       car_rt_.SetCityScene(&city_rt_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
@@ -2294,6 +2300,14 @@ void SetShaderPackGate(std::function<bool()> gate) {
 
 std::filesystem::path ShaderPackFolder() {
   return ShaderStore::BuildFolder(g_shader_pack_folder);
+}
+
+void SetCityPackHooks(CityPackHooks hooks) {
+  g_city_pack_hooks = std::move(hooks);
+}
+
+std::filesystem::path CityPackFolder() {
+  return ShaderPackFolder() / "city";
 }
 
 bool ShaderPacksAttached() {

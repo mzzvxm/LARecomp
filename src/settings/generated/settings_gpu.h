@@ -21,6 +21,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, build_shader_packs_force, false, "With build_shader_packs: build even when the packs in place are current.", rex::kRestart, rex::kDebugOnly);
 
+  REX_SETTING(bool, build_city_pack, false, "Builds the city pack (the city's geometry, for ray traced shadows) from your game files and closes, without starting the game: no "
+    "window, no graphics. The launcher runs this in its setup on a PC whose graphics card can ray trace, so that ray traced shadows are ready at the first start; "
+    "the game builds it itself in the background when it is missing and ray traced shadows are on. Progress is printed to the console; the log is "
+    "logs/city_pack_build.txt. Exit code 0 when the pack is in place.", rex::kRestart, rex::kDebugOnly);
+
+  REX_SETTING(bool, build_city_pack_force, false, "With build_city_pack: build even when the pack in place is current.", rex::kRestart, rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_compare_effect, "bounce", "Developer tool (builds with LARECOMP_DEV_TOOLS only): which graphics effect the compare key flips off and on, to see "
     "what it does: bounce (the bounce light, the default), contact (contact shadows), shafts (sun shafts), occlusion "
     "(ambient occlusion), filter (the sun shadow filter), selfrefl (the car's reflection of its own body) or bloom (the glow "
@@ -267,13 +274,13 @@ class GPUSettings final : public rex::SettingOwner {
     "matrices, steer and spin included), not the body and the parts alone. The wheels are placed only after their placement has been checked against the draws of the cars the "
     "camera sees. off: no wheels. Live.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_rt_shadows, "auto", "Ray traced sun shadows from the city's own triangles (the city pack the launcher builds from your game files). Rays go "
-    "from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp where it touches what casts it and "
-    "softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows (mcla_gpu_contact_shadows must be "
-    "on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a discrete graphics "
-    "card with 5.5 GiB of video memory or more, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand with less memory) in ray "
-    "tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1) and the city "
-    "pack; without them the game's shadows stand. Live.", rex::Allowed("auto", "off", "high", "ultra"), rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_gpu_rt_shadows, "auto", "Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, "
+    "if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp "
+    "where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows "
+    "(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a "
+    "discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand "
+    "with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, "
+    "or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RAY TRACED SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(f64, mcla_gpu_city_rt_sun, 3.0, "Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to "
     "16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. "
@@ -1517,6 +1524,8 @@ inline GPUSettings g_gpu;
 
 inline auto& build_shader_packs = g_gpu.build_shader_packs;
 inline auto& build_shader_packs_force = g_gpu.build_shader_packs_force;
+inline auto& build_city_pack = g_gpu.build_city_pack;
+inline auto& build_city_pack_force = g_gpu.build_city_pack_force;
 inline auto& mcla_compare_effect = g_gpu.mcla_compare_effect;
 inline auto& mcla_compare_label_seconds = g_gpu.mcla_compare_label_seconds;
 inline auto& mcla_gpu_a2c_dither_all = g_gpu.mcla_gpu_a2c_dither_all;
