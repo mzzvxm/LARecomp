@@ -7408,6 +7408,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "join_server": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Multiplayer",
+  "help": "\"Launch argument, never saved: join a server by itself once the city is up. \"\n                      \"host[:port] = Cruise on it, host[:port],race = Race on it, \"\n                      \"host[:port],room:<gamertag> = the room that player hosts. Switches online on \"\n                      \"for this run, on that server (the same as mcla_online_enable and \"\n                      \"mcla_online_server on the command line). The result is in the log and in \"\n                      \"logs/join_server.txt.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "leaderboards_enabled": {
   "type": "bool",
   "default": "true",

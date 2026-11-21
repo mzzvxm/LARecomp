@@ -14,6 +14,13 @@ class MultiplayerSettings final : public rex::SettingOwner {
  public:
   MultiplayerSettings() : SettingOwner("larecomp") {}
 
+  REX_SETTING(std::string, join_server, "", "Launch argument, never saved: join a server by itself once the city is up. "
+                      "host[:port] = Cruise on it, host[:port],race = Race on it, "
+                      "host[:port],room:<gamertag> = the room that player hosts. Switches online on "
+                      "for this run, on that server (the same as mcla_online_enable and "
+                      "mcla_online_server on the command line). The result is in the log and in "
+                      "logs/join_server.txt.", rex::kDebugOnly);
+
   REX_SETTING(bool, leaderboards_diag, false, "Log every leaderboard read and write in detail.", rex::kDebugOnly);
 
   REX_SETTING(bool, leaderboards_enabled, true, "Leaderboards: serve the Xbox LIVE stats boards (race wins, battle modes, "
@@ -59,6 +66,7 @@ class MultiplayerSettings final : public rex::SettingOwner {
 
 inline MultiplayerSettings g_multiplayer;
 
+inline auto& join_server = g_multiplayer.join_server;
 inline auto& leaderboards_diag = g_multiplayer.leaderboards_diag;
 inline auto& leaderboards_enabled = g_multiplayer.leaderboards_enabled;
 inline auto& online_diag = g_multiplayer.online_diag;

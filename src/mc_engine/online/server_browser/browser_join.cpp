@@ -14,6 +14,8 @@
 #include "../online_common.h"
 #include "../system_link.h"
 #include "browser_join_core.h"
+#include "join_server.h"
+#include "join_server_core.h"
 #include "larecomp_guest.h"
 #include "mc_engine/menus/pause_menu.h"
 
@@ -21,6 +23,7 @@ namespace larecomp::browser {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+namespace reason = joinserver::reason;
 constexpr uint32_t kUiManagerPtr = 0x8286D804;      // *: mcUIManager; +52 -> root node
 constexpr uint32_t kFindStateFn = 0x82691650;       // (hsm, name) -> state
 constexpr uint32_t kActivateStateFn = 0x8268DD70;   // (state, hsm)
@@ -161,12 +164,15 @@ bool ActivateState(uint32_t hsm, const char* name) {
     return true;
 }
 
-void Finish(JoinPhase phase, std::string text) {
+// The join ends: failed (`reason` is one of join_server_core.h's words, `text` what the strip shows) or idle (handed over to the
+// game, which joined or hosts). --join_server follows it through JoinServerNoteFinish.
+void Finish(JoinPhase phase, const char* why, std::string text) {
     g_target_vip.store(0);
     g_phase = phase;
     g_start_step = 0;
     g_pause_gate.Reset();
-    SetStatus(phase, std::move(text));
+    SetStatus(phase, text);
+    JoinServerNoteFinish(phase == JoinPhase::kFailed, why, text);
 }
 
 std::string VipText(uint32_t vip) {
@@ -182,6 +188,12 @@ void RequestJoin(const JoinRequest& request) {
     g_request_new = true;
     g_status.phase = JoinPhase::kGoingOnline;
     g_status.text = "Preparing to join " + request.label + "...";
+}
+
+void ShowJoinFailure(const std::string& text) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    g_status.phase = JoinPhase::kFailed;
+    g_status.text = text;
 }
 
 void CancelJoin() {
@@ -221,6 +233,7 @@ void TickServerBrowserJoin() {
         frames = 0;
         g_world_ready.store(ProbeWorld(), std::memory_order_relaxed);
     }
+    JoinServerTick();  // --join_server: may file a RequestJoin, which the code below picks up in this same call
     JoinRequest req;
     bool fresh = false;
     {
@@ -258,7 +271,7 @@ void TickServerBrowserJoin() {
             g_phase_deadline = now + kWorldWait;
             SetStatus(JoinPhase::kStarting, "Opening " + std::string(req.lan ? "SYSTEM LINK" : "XBOX LIVE") + "...");
         } else if (now > g_phase_deadline) {
-            Finish(JoinPhase::kFailed, "The server did not answer: online could not be switched on");
+            Finish(JoinPhase::kFailed, reason::kOnlineFailed, "The server did not answer: online could not be switched on");
         }
         break;
 
@@ -268,7 +281,7 @@ void TickServerBrowserJoin() {
             // Boot screens, a load, the garage: wait for the city.
             if (g_start_step == 0) {
                 SetStatus(JoinPhase::kStarting, "Waiting for the city to load to join " + req.label + "...");
-                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, "Join cancelled: the city never loaded");
+                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kWorldTimeout, "Join cancelled: the city never loaded");
             }
             break;
         }
@@ -290,7 +303,7 @@ void TickServerBrowserJoin() {
                 const bool by_player = g_pause_gate.NeedsPlayer(now_ms);
                 SetStatus(JoinPhase::kStarting, (by_player ? "Close the pause menu to join " : "Closing the pause menu to join ") +
                                                     req.label + (by_player ? "" : "..."));
-                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, "Join cancelled: the pause menu stayed open");
+                if (now > g_phase_deadline) Finish(JoinPhase::kFailed, reason::kPauseOpen, "Join cancelled: the pause menu stayed open");
                 break;
             }
             if (waited) LARECOMP_APP_INFO("[browser] the pause menu is closed; the join starts from free roam");
@@ -309,7 +322,7 @@ void TickServerBrowserJoin() {
             if (in_target) {
                 LARECOMP_APP_INFO("[browser] already in '{}'; searching from it", net_state);
             } else if (!GotoState(hsm, net_state)) {
-                Finish(JoinPhase::kFailed, "The game's online menu could not be opened");
+                Finish(JoinPhase::kFailed, reason::kMenuUnavailable, "The game's online menu could not be opened");
                 break;
             }
             g_start_step = 1;
@@ -335,14 +348,14 @@ void TickServerBrowserJoin() {
     case JoinPhase::kSearching:
         if (now > g_phase_deadline) {
             if (req.any_room)
-                Finish(JoinPhase::kIdle, {});  // joined or hosting by now
+                Finish(JoinPhase::kIdle, "", {});  // joined or hosting by now
             else
-                Finish(JoinPhase::kFailed, req.label + " did not answer the search");
+                Finish(JoinPhase::kFailed, reason::kHostNoAnswer, req.label + " did not answer the search");
         }
         break;
 
     case JoinPhase::kJoining:
-        if (now > g_phase_deadline) Finish(JoinPhase::kIdle, {});
+        if (now > g_phase_deadline) Finish(JoinPhase::kIdle, "", {});
         break;
 
     default:
@@ -461,7 +474,7 @@ bool Hook_BrowserCreateGameVeto(PPCRegister& r27) {
     (void)r27;
     if (!g_target_vip.load(std::memory_order_relaxed)) return false;
     LARECOMP_APP_INFO("[browser] the picked room was not found; not hosting a game instead");
-    larecomp::browser::Finish(larecomp::browser::JoinPhase::kFailed,
+    larecomp::browser::Finish(larecomp::browser::JoinPhase::kFailed, larecomp::browser::reason::kRoomGone,
                               "Room not found (it closed, is full, or is in another mode)");
     return true;
 }

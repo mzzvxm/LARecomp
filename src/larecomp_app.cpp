@@ -67,8 +67,10 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/online/identity/identity_store.h"
 #include "mc_engine/online/identity/identity_ui.h"
+#include "mc_engine/online/online_platform.h"
 #include "mc_engine/online/online_toast.h"
 #include "mc_engine/online/server_browser/browser_ui.h"
+#include "mc_engine/online/server_browser/join_server_core.h"
 #include "mc_engine/menus/pause_menu.h"
 #include "mc_engine/core/restart.h"
 #include "mc_engine/core/save_protect.h"
@@ -334,7 +336,37 @@ rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
 
   // The setting options of the command line, at the layer the SDK would have used (it parses the rest, which has none of them).
   ApplyCommandLineSettings(settings);
+  ApplyJoinServerLaunch(settings);
   return rex::Ok();
+}
+
+// --join_server=host[:port][,cruise|race|room:<gamertag>]: the game goes online on that server for this run, as
+// --mcla_online_enable=true --mcla_online_server=host:port would, at the command line layer (never written to larecomp.toml, and a
+// larecomp.toml line cannot undo it). What the game does about the join once it runs is mc_engine/online/server_browser/join_server.cpp;
+// an argument that does not parse changes nothing here (it is reported there, in the log and in logs/join_server.txt).
+// Off Windows there is no online client: the game stays offline and says so there too.
+void LarecompApp::ApplyJoinServerLaunch(rex::SettingsRegistry& settings) {
+  namespace cli = larecomp::cli;
+  namespace js = larecomp::browser::joinserver;
+  const std::optional<std::string> value = cli::LastValueOf(cli_options_, "join_server");
+  if (!value || !larecomp::kOnlineAvailable) return;
+  const js::ParseResult parsed = js::Parse(*value);
+  if (!parsed.ok) return;
+  const std::string address = parsed.target.Address();
+  // The same two settings typed on the command line lose to it: the join has to go where the argument says.
+  if (const auto typed = cli::LastValueOf(cli_options_, "mcla_online_server"); typed && *typed != address) {
+    cli_notes_.push_back("--mcla_online_server=" + *typed + " is overridden by --join_server (" + address + ")");
+  }
+  if (const auto typed = cli::LastValueOf(cli_options_, "mcla_online_enable"); typed && *typed != "true") {
+    cli_notes_.push_back("--mcla_online_enable=" + *typed + " is overridden by --join_server (online is on for this run)");
+  }
+  const auto apply = [&](const char* flat_name, const std::string& text) {
+    if (auto set = settings.SetText(rex::SettingLayer::kCommandLine, ls::ResolveName(flat_name), text); !set) {
+      cli_notes_.push_back(std::string("--join_server: ") + flat_name + " not set: " + set.error().GetDescription());
+    }
+  };
+  apply("mcla_online_server", address);
+  apply("mcla_online_enable", "true");
 }
 
 // What the SDK does with a command line, minus its habit of stopping the start: each setting option goes to the registry at the
