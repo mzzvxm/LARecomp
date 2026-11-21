@@ -131,6 +131,7 @@ class BindlessHeap;
 class Device;
 class FrameRing;
 class GuestLayout;
+class LightManager;  // light_manager.h
 class PassTiming;
 
 // What the lit draws read: the atlas, as a bindless texture (a depth plane, one float) and its size.
@@ -178,6 +179,10 @@ class LocalShadow {
     light_picker_ = picker;
     picker_.SetPicker(picker ? &picker->shadow_cars : nullptr);
   }
+
+  // The light manager (light_manager.h): with mcla_gpu_light_frame bit 4 the replay picks its cars and makes its views from the manager's frame of lights instead of the rig's set (LIGHT-UNIFY
+  // U4c), the same lights bit for bit. Null (the default): the rig's set. Render thread.
+  void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
 
   // The Scene opened a frame's first list: reads the settings, forgets the last frame's draws.
   void BeginFrame();
@@ -308,6 +313,7 @@ class LocalShadow {
   uint32_t frame_views_ = 0;
   local_shadow::ViewPicker picker_;
   light_pick::LightPicker* light_picker_ = nullptr;  // the manager's (SetLightPicker)
+  LightManager* light_manager_ = nullptr;            // the manager's frame of lights (SetLightManager, LU-4c)
   std::string record_path_;  // mcla_gpu_light_pick_record: the pick's inputs of every frame, for light_pick_test (light_pick_record.h)
   std::ofstream record_file_;
   local_shadow::Camera last_camera_;

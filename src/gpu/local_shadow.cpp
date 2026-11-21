@@ -26,6 +26,8 @@
 #include "gpu_class.h"
 #include "headlight_rig.h"
 #include "layout.h"
+#include "light_manager.h"
+#include "light_project.h"
 #include "live_text.h"
 #include "menu_world.h"
 #include "pass_timing.h"
@@ -399,6 +401,20 @@ void LocalShadow::HandOver() {
   headlight_rig::SetLocalShadows(have ? &published_ : nullptr, have ? atlas_info_.slot : kInvalidBindlessSlot, kSamplerPointClamp);
 }
 
+// The lights of the rig's set as the replay's rules read them: each through MakeLight (finite, a direction that can be normalised, a cone with an angle), named for its place in the set, at
+// most four (the groups take four lights: BuildGroups). What PickViews always made; the light manager's frame makes the same ones (light_project.h ProjectShadowLights).
+static uint32_t LightsOfRigSet(rules::Light out[4]) {
+  const larecomp::gpu::HeadlightSet& set = larecomp::gpu::CurrentHeadlights();
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < set.count && i < set.lights.size() && count < 4; ++i) {
+    const larecomp::gpu::Headlight& h = set.lights[i];
+    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &out[count], h.lamp_offset)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 // The frame's lights, and which cars get a view: made once when the frame opens, so that the cone cull (which drops draws no view can see) and the replay
 // (which draws into the views) work from the same cars. The set does not change until the next guest present. The hysteresis (local_shadow_rules.h ViewPicker)
 // lives across frames.
@@ -407,12 +423,16 @@ void LocalShadow::PickViews() {
   frame_cars_ = 0;
   frame_views_ = 0;
   frame_plan_ = rules::ViewPlan{};
-  const larecomp::gpu::HeadlightSet& set = larecomp::gpu::CurrentHeadlights();
-  for (uint32_t i = 0; i < set.count && i < set.lights.size() && frame_light_count_ < 4; ++i) {  // the groups take four lights (BuildGroups)
-    const larecomp::gpu::Headlight& h = set.lights[i];
-    if (rules::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &frame_lights_[frame_light_count_], h.lamp_offset)) {
-      ++frame_light_count_;
+  // The lights: the rig's set, or (mcla_gpu_light_frame bit 4, LIGHT-UNIFY U4c) the light manager's frame, the same lights bit for bit. With the census on both are made and compared.
+  if (light_manager_ != nullptr && light_manager_->Serving(light_project::kFlipShadowLights)) {
+    frame_light_count_ = light_manager_->ShadowLights(frame_lights_);
+    if (light_manager_->Checking()) {
+      rules::Light legacy[4];
+      const uint32_t legacy_count = LightsOfRigSet(legacy);
+      light_manager_->CheckShadowLights(legacy, legacy_count, frame_lights_, frame_light_count_);
     }
+  } else {
+    frame_light_count_ = LightsOfRigSet(frame_lights_);
   }
   rules::PickContext context;
   if (last_camera_.valid) {
@@ -553,7 +573,10 @@ void LocalShadow::BeginFrame() {
   cone_cull_ = int(larecomp::settings::mcla_gpu_headlight_shadow_cone.Get());
   skirt_ = int(larecomp::settings::mcla_gpu_headlight_shadow_skirt.Get());
   wanted_ = choice_.level != rules::Level::kOff;
-  if (larecomp::gpu::CurrentHeadlights().count > 0) {
+  // A headlight is lit: the rig's set has one, or the light manager's frame (the same set) when the replay reads it (LU-4c).
+  const bool from_frame = light_manager_ != nullptr && light_manager_->Serving(light_project::kFlipShadowLights);
+  const uint32_t lit_lights = from_frame ? light_manager_->RigLightCount() : larecomp::gpu::CurrentHeadlights().count;
+  if (lit_lights > 0) {
     lit_frames_left_ = kLitGraceFrames;
   } else if (lit_frames_left_ > 0) {
     --lit_frames_left_;

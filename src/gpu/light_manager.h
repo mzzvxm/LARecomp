@@ -18,7 +18,7 @@
 // cars' frames are NOT passed yet (no frame of the renderer's own cars: `car_frames_` stays empty, so every car's frame is derived from its lamps), and nothing of it goes into the
 // LightFrame, so the self-checks and the GPU buffer are what they were: LU-3 puts the point lights and the per car bits in. Off (the setting 0): SetEnabled(false), the hook costs one
 // relaxed load.
-// It is PASSIVE: NO CONSUMER READS IT. The lit shaders' block, the volume's lamps and headlights and the replay's maps are made and read exactly as before; the manager only looks (its
+// It is PASSIVE UNLESS A FLIP IS ON (mcla_gpu_light_frame, below; default off): NO CONSUMER READS IT otherwise. The lit shaders' block, the volume's lamps and headlights and the replay's maps are made and read exactly as before; the manager only looks (its
 // calls take const references, the one non-const call is HeadlightRig::Block(), which rebuilds the block lazily if the replay's maps changed since: the same rebuild the first lit draw
 // would do, and the camera in the block is overwritten per draw). The COLLECTING does not pick: the lamps in the frame are the ones the volume's picker gave. The picking of the other two roles IS here since LU-3 (light_pick.h): the manager holds the picker of the
 // rig's four headlights and of the cars that get shadow views, and the one budget (Pickers(), always, with or without the census); the street lamps' pick (the volume's LampPicker, the lamp
@@ -40,11 +40,14 @@
 //
 // THREADING. Render thread only. Initialize and Shutdown on the lifecycle thread.
 //
-// WHERE IT IS CALLED (4 places; scene.cpp and volumetrics_inputs.cpp):
-//   Scene::BeginFrame           after the rig's and the replay's BeginFrame       -> BeginFrame   the frame's lights and the last trigger's maps; the block check at the start
-//   Scene::OnResolve            after the replay's OnResolve                      -> OnResolve    the trigger (this frame's maps); the block check after it
-//   VolumetricsInputs::Fill     at its end                                        -> NoteVolumeInputs   the lamps; the volume checks
+// WHERE IT IS CALLED (scene.cpp, volumetrics_inputs.cpp and the three flipped consumers; LU-4 added the first row and the Serving / projection calls):
+//   Scene::BeginFrame           BEFORE the replay's BeginFrame                    -> BeginLights  the settings; the frame's lights (the rig's set of this frame)
+//   Scene::BeginFrame           after the rig's and the replay's BeginFrame       -> BeginFrame   the last trigger's maps; the block checks at the start
+//   Scene::OnResolve            after the replay's OnResolve                      -> OnResolve    the trigger (this frame's maps); the block checks after it
+//   VolumetricsInputs::Fill     at its end (and, flipped, in place of its producer) -> NoteVolumeInputs / FillVolumeInputs   the census's look at the volume's inputs / the volume's lights from the frame
 //   Scene::OnPresent            before the rig makes the next frame's set         -> OnPresent    the frame's check, the upload, the census
+//   Scene::FillVariantBlock     per lit draw, flipped                             -> HeadlightBlock   the headlight block of the frame
+//   LocalShadow::PickViews      once a frame, flipped                             -> ShadowLights     the lights the replay picks cars and makes views from
 //
 // THE RUN PLAN (for the main session; nothing was run: CHECK all of it). No shader pack change (no variant text moved), no codegen: a normal build of this branch. Unit first:
 // larecomp_light_manager_test (7701 checks on main's headers, 7707 on feat/hl-combined's, where the block is 1072 B and a light has two views) and larecomp_light_frame_test.
@@ -119,6 +122,13 @@ class LightManager {
   // Call only when Serving(light_project::kFlipVolume).
   void FillVolumeInputs(const volumetrics::VolFrameContext& context, uint32_t limit, bool lamps_on, bool heads_on, volumetrics::VolInputs* out,
                         const std::vector<vol_lamps::GameLamp>* list);
+  // 4c (mcla_gpu_light_frame bit 4): the lights the shadow replay picks cars and makes views from, made from the frame: the rig's lights of this frame as local_shadow::Light (each named for
+  // its place in the rig), `out` has room for four; returns how many. Call only when Serving(light_project::kFlipShadowLights). RigLightCount() is how many lights the frame holds (the
+  // replay's "a headlight is lit" test, which the rig's set answered before).
+  uint32_t ShadowLights(local_shadow::Light out[4]);
+  uint32_t RigLightCount() const;
+  // 4c's proof, when Checking(): the lights the replay made from the rig's set (`legacy`) against the ones made from the frame, bit for bit.
+  void CheckShadowLights(const local_shadow::Light* legacy, uint32_t legacy_count, const local_shadow::Light* from_frame, uint32_t from_frame_count);
   // 4b's proof, when Checking(): what FillVolumeInputs made (`from_frame`) against what the volume's own producer made from the same entry (`legacy`), byte for byte.
   void CheckVolumeBytes(const volumetrics::VolInputs& from_frame, const volumetrics::VolInputs& legacy);
   // The volume's inputs of the frame, at the end of VolumetricsInputs::Fill: `first_lamp` = how many lamps `in` held before the producer put the game's in (the core's test lamp),
@@ -201,6 +211,7 @@ class LightManager {
   bool RefreshList();
 
   // LU-4b: the manager's own lamp pick for the volume (the pick of VolumetricsInputs::FillLamps, run here while the flip is on), and what it took
+  uint64_t shadow_picks_ = 0;       // 4c: picks the replay made from the frame
   volumetrics::VolumeLampPick vol_pick_;
   bool volume_from_frame_ = false;  // the volume's inputs of this frame were made from the frame: the frame's lamps are the pick's, not read back from the volume
   uint64_t volume_fills_ = 0;       // fills made from the frame

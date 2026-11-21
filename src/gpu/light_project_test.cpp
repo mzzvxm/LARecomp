@@ -13,6 +13,8 @@
 // (mcla_gpu_light_pick_record = <path>, <path>.rig.txt) the same chain runs over THOSE frames too (the tracker's inputs of a real night drive).
 //   4a  the headlight block: ProjectHeadlightBlock of the frame against HeadlightRig's block (MakeConstants over the rig's lamps and the remapped maps), 1072 bytes, before the trigger and
 //       after it, at every level, over every frame; the deliberate differences of every part of the block are found.
+//   4c  the shadow replay's lights: the lights ProjectShadowLights makes from the frame against the ones PickViews makes from the rig's set (bit for bit), and then the real view machinery
+//       (ViewPicker, PlanViews, FitCar, the publication of the maps) run on each over the drive: the same cars, plans, view specs and published maps, at all three levels.
 //   4b  the volume's light inputs: the lamps (the volume's real LampPicker through VolumeLampPick, the Collector's SetPickedLamps and ProjectVolumeLamps) against FillLamps' (the same
 //       picker run as VolumetricsInputs::FillLamps runs it), the headlights and shadow views (the frame's against FillHeadlights + ApplyHeadlightUnits + FillShadows), every part of VolInputs
 //       byte for byte over every frame, with the core's test lamp, a cut, a gap, level changes and a limit.
@@ -261,37 +263,52 @@ lg::LocalShadowView MakeView(uint32_t light_index, uint64_t frame, uint32_t view
 }
 
 // LocalShadow::PickViews' lights from the rig's set, the pick and the plan, and RecordMaps' publication of one entry for each light each planned view covers.
-lg::LocalShadowFrame PublishViews(Replay* r, const mcla::gpu::HeadlightSet& set, const Camera& cam, uint64_t frame) {
-  ls::Light lights[4];
+uint32_t LegacyShadowLights(const mcla::gpu::HeadlightSet& set, ls::Light out[4]) {
   uint32_t count = 0;
-  for (uint32_t i = 0; i < set.count && count < 4; ++i) {
+  for (uint32_t i = 0; i < set.count && count < 4; ++i) {  // LocalShadow::PickViews' loop (LightsOfRigSet)
     const mcla::gpu::Headlight& h = set.lights[i];
-    if (ls::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &lights[count], h.lamp_offset)) {
+    if (ls::MakeLight(h.pos, h.dir, h.cos_outer, h.range, h.car_key, h.is_player, i, &out[count], h.lamp_offset)) {
       ++count;
     }
   }
+  return count;
+}
+
+// What the replay made of one frame's lights: the cars that hold views, the plan, each car's cone-cull view and the maps it published.
+struct ReplayFrame {
+  uint32_t cars = 0;
+  ls::Group groups[4];
+  ls::ViewPlan plan;
+  std::array<ls::ViewSpec, 4> early{};
+  std::array<bool, 4> early_ok{};
+  lg::LocalShadowFrame published;
+};
+
+ReplayFrame PublishFromLights(Replay* r, const ls::Light* lights, uint32_t count, const Camera& cam, uint64_t frame) {
+  ReplayFrame out;
   ls::PickContext context;
   context.have_reference = true;
   for (int k = 0; k < 3; ++k) {
     context.reference[k] = cam.eye[k];
   }
   const lb::LightBudget budget = lb::BudgetFor(true, r->level, r->views_override, lb::Level::kOff, ls::kLevelTable);
-  ls::Group groups[4];
-  const uint32_t cars = r->picker.Pick(lights, count, budget.shadow_cars, context, groups);
-  ls::ViewPlan plan;
-  ls::PlanViews(lights, groups, cars, budget.shadow_lamp_cars, budget.shadow_views, &plan);
-  lg::LocalShadowFrame out;
+  out.cars = r->picker.Pick(lights, count, budget.shadow_cars, context, out.groups);
+  ls::PlanViews(lights, out.groups, out.cars, budget.shadow_lamp_cars, budget.shadow_views, &out.plan);
+  for (uint32_t c = 0; c < out.plan.cars && c < 4; ++c) {
+    out.early_ok[c] = ls::FitCar(out.plan, c, &out.early[c]);
+  }
+  const ls::ViewPlan& plan = out.plan;
   for (uint32_t v = 0; v < plan.count; ++v) {
     const ls::ViewSlot& view = plan.views[v];
-    for (uint32_t m = 0; m < view.group.count && out.count < out.views.size(); ++m) {
-      out.views[out.count++] = MakeView(view.lights[view.group.members[m]].index, frame, v, plan.count);
+    for (uint32_t m = 0; m < view.group.count && out.published.count < out.published.views.size(); ++m) {
+      out.published.views[out.published.count++] = MakeView(view.lights[view.group.members[m]].index, frame, v, plan.count);
     }
   }
   // each light's views one after the other?
   std::array<bool, 8> closed{};
   uint32_t last = ~0u;
-  for (uint32_t e = 0; e < out.count; ++e) {
-    const uint32_t li = out.views[e].light_index;
+  for (uint32_t e = 0; e < out.published.count; ++e) {
+    const uint32_t li = out.published.views[e].light_index;
     if (li != last) {
       if (li < closed.size() && closed[li]) {
         r->grouped = false;
@@ -303,6 +320,12 @@ lg::LocalShadowFrame PublishViews(Replay* r, const mcla::gpu::HeadlightSet& set,
     }
   }
   return out;
+}
+
+lg::LocalShadowFrame PublishViews(Replay* r, const mcla::gpu::HeadlightSet& set, const Camera& cam, uint64_t frame) {
+  ls::Light lights[4];
+  const uint32_t count = LegacyShadowLights(set, lights);
+  return PublishFromLights(r, lights, count, cam, frame).published;
 }
 
 lg::ShadowAtlasInfo MakeAtlas(uint32_t slot = 41) {
@@ -1193,6 +1216,161 @@ void TestVolumeMutations() {
   Check(sf.total_bad() == 0 && fb.shadow_view_count == 0 && fb.shadow_atlas_slot == vol::kNoSlot, "volume headlights: no readable view: no table, no atlas slot, the same as the legacy producer");
 }
 
+// ---------------------------------------------------------------------------
+// 4c: the shadow replay's lights
+// ---------------------------------------------------------------------------
+
+bool SameLight(const ls::Light& a, const ls::Light& b) {
+  return SameBytes(a.pos, b.pos, sizeof(a.pos)) && SameBytes(a.dir, b.dir, sizeof(a.dir)) && SameBytes(&a.cos_outer, &b.cos_outer, sizeof(double)) && SameBytes(&a.range, &b.range, sizeof(double)) &&
+         a.car_key == b.car_key && a.is_player == b.is_player && a.index == b.index && SameBytes(a.lamp_offset, b.lamp_offset, sizeof(a.lamp_offset));
+}
+
+bool SameViewSpec(const ls::ViewSpec& a, const ls::ViewSpec& b) {
+  return SameBytes(a.eye, b.eye, sizeof(a.eye)) && SameBytes(a.dir, b.dir, sizeof(a.dir)) && SameBytes(&a.fov, &b.fov, sizeof(double)) && SameBytes(&a.near_m, &b.near_m, sizeof(double)) &&
+         SameBytes(&a.far_m, &b.far_m, sizeof(double)) && SameBytes(&a.lamps_m, &b.lamps_m, sizeof(double));
+}
+
+struct ShadowRun {
+  uint64_t frames = 0, lit = 0, bad_lights = 0, bad_replay = 0, with_views = 0, refused = 0, cars_changes = 0;
+  std::string first;
+};
+
+// Over the drive: the lights of each frame made from the rig's set and from the frame, compared; then two replays (two ViewPickers with the hysteresis they keep across frames, one fed each)
+// are run on them and what they make is compared: the cars that hold views, their groups, the plan, the cone cull's view of each car and the published maps.
+ShadowRun RunShadowLights(const std::vector<DriveFrame>& frames, lb::Level level, bool corrupt_some) {
+  ShadowRun run;
+  Replay from_set, from_frame;
+  from_set.level = from_frame.level = level;
+  lm::Collector c;
+  c.Reset();
+  uint64_t last_signature = ~0ull;
+  for (const DriveFrame& f : frames) {
+    mcla::gpu::HeadlightSet set = f.set;
+    if (corrupt_some && set.count > 1 && f.frame % 11 == 0) {
+      set.lights[1].pos[1] = std::numeric_limits<float>::quiet_NaN();  // a light the rules refuse (the rig never makes one: the guard is what is tested)
+    }
+    if (corrupt_some && set.count > 2 && f.frame % 13 == 0) {
+      set.lights[2].lamp_offset[0] = 5.0f;  // a lamp offset longer than a car is wide: not believed, the light has one view
+    }
+    c.BeginFrame(uint32_t(f.frame), double(f.frame) / kFps, set);
+    c.SetShadows<lg::LocalShadowFrame>(nullptr, lg::ShadowAtlasInfo{});
+    ls::Light a[4], b[4];
+    const uint32_t na = LegacyShadowLights(set, a);
+    const uint32_t nb = lp::ProjectShadowLights(c.frame(), b);
+    lm::SelfCheck sc;
+    lp::CheckShadowLights(a, na, b, nb, &sc);
+    bool same = na == nb;
+    for (uint32_t i = 0; i < std::min(na, nb); ++i) {
+      same = same && SameLight(a[i], b[i]);
+    }
+    ++run.frames;
+    run.lit += na > 0 ? 1u : 0u;
+    run.refused += na < set.count ? 1u : 0u;
+    Check(same == (sc.total_bad() == 0), "shadow lights: the check agrees with a field by field compare");
+    if (!same || sc.total_bad() != 0) {
+      ++run.bad_lights;
+      if (run.first.empty()) {
+        run.first = "frame " + std::to_string(f.frame) + ": " + sc.TakeWindow().first;
+      }
+    }
+    Check(lp::RigLightsOf(c.frame()).count == set.count, "shadow lights: the frame holds as many rig lights as the set (the replay's 'a headlight is lit')");
+    const ReplayFrame ra = PublishFromLights(&from_set, a, na, f.camera, f.frame);
+    const ReplayFrame rb = PublishFromLights(&from_frame, b, nb, f.camera, f.frame);
+    bool replay_same = ra.cars == rb.cars && ra.plan.count == rb.plan.count && ra.plan.cars == rb.plan.cars && ra.published.count == rb.published.count &&
+                       SameBytes(&ra.published, &rb.published, sizeof(ra.published.views)) ;
+    for (uint32_t g = 0; g < ra.cars && replay_same; ++g) {
+      replay_same = ra.groups[g].car_key == rb.groups[g].car_key && ra.groups[g].count == rb.groups[g].count && ra.groups[g].is_player == rb.groups[g].is_player &&
+                    SameBytes(ra.groups[g].eye, rb.groups[g].eye, sizeof(ra.groups[g].eye)) && ra.groups[g].members == rb.groups[g].members;
+    }
+    for (uint32_t v = 0; v < ra.plan.count && replay_same; ++v) {
+      replay_same = ra.plan.views[v].car == rb.plan.views[v].car && ra.plan.views[v].side == rb.plan.views[v].side &&
+                    SameBytes(ra.plan.views[v].group.eye, rb.plan.views[v].group.eye, sizeof(ra.plan.views[v].group.eye)) && SameLight(ra.plan.views[v].lights[0], rb.plan.views[v].lights[0]);
+    }
+    for (uint32_t k = 0; k < 4 && replay_same; ++k) {
+      replay_same = ra.early_ok[k] == rb.early_ok[k] && (!ra.early_ok[k] || SameViewSpec(ra.early[k], rb.early[k]));
+    }
+    if (!replay_same) {
+      ++run.bad_replay;
+      if (run.first.empty()) {
+        run.first = "the views of frame " + std::to_string(f.frame) + " differ";
+      }
+    }
+    run.with_views += ra.published.count != 0 ? 1u : 0u;
+    uint64_t signature = ra.cars;  // which cars hold views: a change of the count or of any car
+    for (uint32_t g = 0; g < ra.cars; ++g) {
+      signature = signature * 1000003u + ra.groups[g].car_key;
+    }
+    run.cars_changes += signature != last_signature ? 1u : 0u;
+    last_signature = signature;
+    c.EndFrame();
+  }
+  return run;
+}
+
+void TestShadowLightsOverTheDrive(const std::vector<DriveFrame>& frames, const std::string& name) {
+  for (const lb::Level level : {lb::Level::kMedium, lb::Level::kHigh, lb::Level::kUltra}) {
+    for (const bool corrupt : {false, true}) {
+      const ShadowRun run = RunShadowLights(frames, level, corrupt);
+      const std::string at = " (" + name + ", " + LevelName(level) + (corrupt ? ", with lights the rules refuse and a lamp offset that is not believed" : "") + ")";
+      std::printf("INFO: shadow lights%s: %llu frames, %llu lit, %llu with maps published, %llu changes of the cars that hold views, %llu frames with a refused light\n", at.c_str(),
+                  (unsigned long long)run.frames, (unsigned long long)run.lit, (unsigned long long)run.with_views, (unsigned long long)run.cars_changes, (unsigned long long)run.refused);
+      Check(run.bad_lights == 0, "shadow lights: the lights made from the frame are the ones made from the rig's set bit for bit in each of " + std::to_string(run.frames) + " frames" + at + ", " +
+                                     std::to_string(run.bad_lights) + " differed: " + run.first);
+      Check(run.bad_replay == 0, "shadow lights: the cars, plans, cone cull views and published maps of two replays, one fed each, are the same in each frame" + at + ", " + std::to_string(run.bad_replay) +
+                                     " differed: " + run.first);
+      Check(run.with_views > run.lit / 2 && run.cars_changes > 5, "shadow lights: the drive has maps and changes of the cars that hold them" + at);
+      if (corrupt) {
+        Check(run.refused > 0, "shadow lights: the rules refused some light" + at);
+      }
+    }
+  }
+}
+
+// Every field of a replay light that is not the rig's is found.
+void TestShadowLightMutations() {
+  const mcla::gpu::HeadlightSet set = MakeSet(3);
+  lm::Collector c;
+  c.Reset();
+  c.BeginFrame(1, 1.0, set);
+  ls::Light legacy[4], mine[4];
+  const uint32_t n = LegacyShadowLights(set, legacy);
+  const uint32_t nm = lp::ProjectShadowLights(c.frame(), mine);
+  Check(n == 3 && nm == 3, "shadow light mutations: three lights each way");
+  const auto first = [&](const ls::Light* other, uint32_t count) {
+    lm::SelfCheck sc;
+    lp::CheckShadowLights(other, count, mine, nm, &sc);
+    return sc.TakeWindow().first;
+  };
+  Check(first(legacy, n).empty(), "shadow light mutations: the rig's lights pass");
+  const auto mutate = [&](const char* what, const char* part, auto&& edit) {
+    ls::Light l[4] = {legacy[0], legacy[1], legacy[2], legacy[3]};
+    edit(l);
+    const std::string f = first(l, n);
+    Check(!f.empty() && f.find(part) != std::string::npos, std::string("shadow light mutations: a difference in ") + what + " is found as '" + part + "' (" + f + ")");
+  };
+  mutate("a position by one unit in the last place", "its position", [](ls::Light* l) { l[1].pos[2] = std::nextafter(l[1].pos[2], 1.0e9); });
+  mutate("an axis", "its axis", [](ls::Light* l) { l[0].dir[1] += 1.0e-12; });
+  mutate("the cone", "its cone", [](ls::Light* l) { l[2].cos_outer -= 1.0e-9; });
+  mutate("the range", "its range", [](ls::Light* l) { l[0].range += 0.5; });
+  mutate("the car", "its car", [](ls::Light* l) { l[1].car_key += 1; });
+  mutate("the player flag", "player", [](ls::Light* l) { l[2].is_player = true; });
+  mutate("the place in the rig", "its place in the rig", [](ls::Light* l) { l[2].index = 1; });
+  mutate("the lamp offset", "its lamp offset", [](ls::Light* l) { l[0].lamp_offset[1] = 0.01; });
+  lm::SelfCheck sc;
+  lp::CheckShadowLights(legacy, 2, mine, nm, &sc);
+  Check(!sc.TakeWindow().first.empty(), "shadow light mutations: a light too few is found");
+  // a refused light in the middle keeps the places of the others
+  mcla::gpu::HeadlightSet holey = set;
+  holey.lights[1].dir[0] = holey.lights[1].dir[1] = holey.lights[1].dir[2] = 0.0f;  // no direction: refused
+  lm::Collector d;
+  d.Reset();
+  d.BeginFrame(1, 1.0, holey);
+  ls::Light a[4], b[4];
+  const uint32_t na = LegacyShadowLights(holey, a);
+  const uint32_t nb = lp::ProjectShadowLights(d.frame(), b);
+  Check(na == 2 && nb == 2 && a[1].index == 2 && b[1].index == 2 && SameLight(a[1], b[1]), "shadow lights: a refused light leaves the next one its own place in the rig (index 2), from the frame too");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1223,6 +1401,8 @@ int main(int argc, char** argv) {
   TestVolumeMutations();
   TestVolumeWithoutTrigger();
   TestVolumeHeadlightsOverTheDrive(frames, "the made-up drive");
+  TestShadowLightMutations();
+  TestShadowLightsOverTheDrive(frames, "the made-up drive");
 
   // the game's own recording, when given
   for (int a = 1; a < argc; ++a) {
@@ -1240,6 +1420,7 @@ int main(int argc, char** argv) {
         std::printf("INFO: %zu frames of %s\n", recorded.size(), path.c_str());
         TestBlockOverTheDrive(recorded, "the recording");
         TestVolumeHeadlightsOverTheDrive(recorded, "the recording");
+        TestShadowLightsOverTheDrive(recorded, "the recording");
       } else {
         Check(false, "the recording " + path + " is read: " + error);
       }

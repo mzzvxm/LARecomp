@@ -12,7 +12,7 @@
 //   4a  ProjectHeadlightBlock   the headlight variant's constant block (headlight_rig_rules.h HeadlightConstants, 1072 bytes), the camera as the caller gives it
 //   4b  ProjectVolumeLamps,     the volume's street lamps, headlights, shadow views and atlas (VolInputs: volumetrics_types.h), as VolumetricsInputs::FillLamps and FillHeadlightInputs
 //       ProjectVolumeHeadlights  make them
-//   4c  ProjectShadowLights     the lights the shadow replay's pick reads (local_shadow::Light), a later step of this package
+//   4c  ProjectShadowLights     the lights the shadow replay's pick reads (local_shadow::Light: the rig's lights in double, each with its place in the rig), as LocalShadow::PickViews makes them
 // and, for each, the check the manager runs while the census is on: the same data made by the legacy producer and by the projection, compared as bytes (CheckBlockBytes, ...).
 //
 // THE RIG'S LIGHTS OF A FRAME. The frame holds the rig's lights in slots of their own (a light keeps its slot while it lives), and the consumers want them in the RIG'S ORDER (the
@@ -38,6 +38,7 @@
 #include "light_convert.h"
 #include "light_frame.h"
 #include "light_manager_rules.h"
+#include "local_shadow_rules.h"
 #include "local_shadow_types.h"
 #include "volumetrics_headlights.h"
 #include "volumetrics_types.h"
@@ -48,6 +49,7 @@ namespace lg = ::larecomp::gpu;
 namespace lm = ::larecomp::gpu::light_manager;
 namespace hr = ::mcla::gpu::headlight_rules;
 namespace vol = ::mcla::gpu::volumetrics;
+namespace ls = ::mcla::gpu::local_shadow;
 
 // The A/B of the flips (mcla_gpu_light_frame, a bit mask): which consumers read the frame instead of their own producer. 0 (the default until the runs prove the bytes equal): none.
 inline constexpr uint32_t kFlipHeadlightBlock = 1u << 0;  // 4a: the lit shaders' headlight block
@@ -193,6 +195,25 @@ inline void ProjectVolumeHeadlights(const lg::LightFrame& frame, vol::VolInputs*
 }
 
 // ---------------------------------------------------------------------------
+// 4c: the lights the shadow replay picks its cars and makes its views from
+// ---------------------------------------------------------------------------
+
+// The rig's lights of the frame as the replay's rules read them (LocalShadow::PickViews): each through local_shadow::MakeLight (the rules' own validation and widening to double), named
+// for its place in the rig (LocalShadowView::light_index), with the lamp offset the light has. A light the rules refuse is left out and the next one still carries its own place, as in
+// PickViews. At most four (the groups take four). Returns how many are in `out`.
+inline uint32_t ProjectShadowLights(const lg::LightFrame& frame, ls::Light out[4]) {
+  const RigLights rig = RigLightsOf(frame);
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < rig.count && count < 4; ++i) {
+    const lg::Light& l = frame.lights[rig.slot[i]];
+    if (ls::MakeLight(l.pos, l.dir, l.cos_outer, l.range, l.car_key, (l.flags & lg::kLightFlagPlayer) != 0, i, &out[count], l.offset)) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
 // the checks: the legacy producer's bytes against the projection's
 // ---------------------------------------------------------------------------
 
@@ -298,6 +319,35 @@ inline void CheckVolumeBytes(const vol::VolInputs& projected, const vol::VolInpu
     }
   }
   sc->Note(lm::Check::kVolumeBytes, fail);
+}
+
+// 4c: the lights made from the frame against the ones PickViews made from the rig's set (`legacy`), field by field and bit for bit (doubles: the same arithmetic over the same floats). Names
+// the first light and field that differs.
+inline void CheckShadowLights(const ls::Light* legacy, uint32_t legacy_count, const ls::Light* projected, uint32_t projected_count, lm::SelfCheck* sc) {
+  std::string fail;
+  if (legacy_count != projected_count) {
+    fail = std::format("the frame gives {} lights to the replay, the rig's set {}", projected_count, legacy_count);
+  }
+  const auto same3 = [](const double* a, const double* b) {
+    return lm::detail::SameBits(a, b, 3 * sizeof(double));
+  };
+  for (uint32_t i = 0; i < std::min(legacy_count, projected_count) && fail.empty(); ++i) {
+    const ls::Light& a = legacy[i];
+    const ls::Light& b = projected[i];
+    const char* part = nullptr;
+    if (!same3(a.pos, b.pos)) part = "its position";
+    else if (!same3(a.dir, b.dir)) part = "its axis";
+    else if (!lm::detail::SameBits(&a.cos_outer, &b.cos_outer, sizeof(double))) part = "its cone";
+    else if (!lm::detail::SameBits(&a.range, &b.range, sizeof(double))) part = "its range";
+    else if (a.car_key != b.car_key) part = "its car";
+    else if (a.is_player != b.is_player) part = "whether it is the player's";
+    else if (a.index != b.index) part = "its place in the rig";
+    else if (!same3(a.lamp_offset, b.lamp_offset)) part = "its lamp offset";
+    if (part != nullptr) {
+      fail = std::format("light {} of {} differs from the rig's in {}", i, legacy_count, part);
+    }
+  }
+  sc->Note(lm::Check::kShadowLights, fail);
 }
 
 }  // namespace mcla::gpu::light_project

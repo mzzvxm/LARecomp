@@ -189,6 +189,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // The one picker of the lights (light_pick.h, LIGHT-UNIFY U3): the rig's four lights and the cars that get shadow views are picked by the manager's picker (mcla_gpu_light_pick).
     headlights_.SetLightPicker(&light_manager_.Pickers());
     local_shadow_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightManager(&light_manager_);  // the replay picks from the manager's frame of lights when mcla_gpu_light_frame bit 4 says so (LIGHT-UNIFY U4c)
     vol_inputs_.SetLightManager(&light_manager_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).

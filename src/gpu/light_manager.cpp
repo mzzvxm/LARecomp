@@ -112,6 +112,7 @@ void LightManager::Reset() {
   vol_pick_.Reset();
   volume_from_frame_ = false;
   volume_fills_ = 0;
+  shadow_picks_ = 0;
   volume_seen_ = false;
   presents_ = 0;
   frames_total_ = 0;
@@ -298,6 +299,24 @@ void LightManager::FillVolumeInputs(const volumetrics::VolFrameContext& context,
   volume_headlight_count_ = out->headlight_count;
 }
 
+uint32_t LightManager::ShadowLights(local_shadow::Light out[4]) {
+  if (!Serving(light_project::kFlipShadowLights)) {
+    return 0;
+  }
+  ++shadow_picks_;
+  return light_project::ProjectShadowLights(collector_.frame(), out);
+}
+
+uint32_t LightManager::RigLightCount() const { return light_project::RigLightsOf(collector_.frame()).count; }
+
+void LightManager::CheckShadowLights(const local_shadow::Light* legacy, uint32_t legacy_count, const local_shadow::Light* from_frame, uint32_t from_frame_count) {
+  if (!Checking()) {
+    return;
+  }
+  Cost cost(&frame_cpu_);
+  light_project::CheckShadowLights(legacy, legacy_count, from_frame, from_frame_count, &check_);
+}
+
 void LightManager::CheckVolumeBytes(const volumetrics::VolInputs& from_frame, const volumetrics::VolInputs& legacy) {
   if (!Checking()) {
     return;
@@ -461,9 +480,9 @@ void LightManager::Census() {
   // text above: block bytes, volume bytes, shadow lights).
   const auto flip_name = [&](uint32_t bit) { return (flips_ & bit) != 0 ? "the frame" : "its own producer"; };
   REXLOG_INFO("{} flips (LU-4, mcla_gpu_light_frame = {}): the headlight block reads {} ({} projections made, {} lit draws took one), the volume reads {} ({} fills from it, its lamp pick "
-              "here picked {} of a budget of {}), the shadow replay reads {}; the projections are compared with the legacy producers' bytes every frame while the census is on: {}",
+              "here picked {} of a budget of {}), the shadow replay reads {} ({} picks of its lights from it); the projections are compared with the legacy producers' bytes every frame while the census is on: {}",
               kPrefix, flips_, flip_name(light_project::kFlipHeadlightBlock), block_made_, block_draws_, flip_name(light_project::kFlipVolume), volume_fills_,
-              vol_pick_.picked().count, vol_pick_.room(), flip_name(light_project::kFlipShadowLights),
+              vol_pick_.picked().count, vol_pick_.room(), flip_name(light_project::kFlipShadowLights), shadow_picks_,
               w.Checks() == 0 ? std::string("no check made") : std::format("{} differed in the window", w.Bad()));
   window_ = Window{};
 }
