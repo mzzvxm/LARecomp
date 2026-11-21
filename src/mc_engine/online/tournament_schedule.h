@@ -31,6 +31,10 @@
 
 namespace tournament {
 
+// Weeks start on Monday 00:00 UTC; 1970-01-05 (the first Monday) is the start of week 0. Definition::week counts from there.
+inline constexpr int64_t kWeekSeconds = 7 * 24 * 3600;
+inline constexpr int64_t kFirstMondayUnix = 4 * 24 * 3600;
+
 inline constexpr uint32_t kDefinitionSize = 1556;
 inline constexpr uint32_t kDescriptionSize = 1536;
 inline constexpr uint32_t kAnyCar = 0xFFFFFFFFu;
@@ -88,6 +92,9 @@ Definition Current(int64_t now, const std::filesystem::path& dir);
 
 // The 1556-byte file as the game reads it.
 std::vector<uint8_t> EncodeGuest(const Definition& d);
+
+// The name the rotation gives a race key ("Hollywood Circuit 1"), "" for a key that is not in it.
+std::string RaceName(uint32_t race_key);
 
 // "Audi R8 + TIS rims + hydraulics" for a reward mask ("" for none).
 std::string RewardNames(uint32_t mask);

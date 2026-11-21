@@ -1241,12 +1241,21 @@ else()
     # details and rooms and its icon; one JSON document on stdout, see src/mc_engine/online/online_tool/README.md).
     # Built from the game's own protocol and browser code (server_browser/browser_query.cpp, relay_info.cpp), so the
     # game and the launcher read an answer the same way. Standalone like the servers above: no SDK.
-    add_executable(larecomp_online_tool
-        src/mc_engine/online/online_tool/online_tool_main.cpp
+    # The rmr, lb and tournament commands (online_tool_remote.cpp) read the Rate My Ride + leaderboards server with the game's
+    # own codecs (rmr_protocol, lb_protocol, tournament_schedule) and HTTP client (rmr_net).
+    set(LARECOMP_ONLINE_TOOL_COMMON
         src/mc_engine/online/online_tool/online_tool.cpp
+        src/mc_engine/online/online_tool/online_tool_remote.cpp
         src/mc_engine/online/server_browser/browser_query.cpp
         src/mc_engine/online/relay_info.cpp
         src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        src/mc_engine/online/rate_my_ride/rmr_protocol.cpp
+        src/mc_engine/online/leaderboards/lb_protocol.cpp
+        src/mc_engine/online/tournament_schedule.cpp
+    )
+    add_executable(larecomp_online_tool
+        src/mc_engine/online/online_tool/online_tool_main.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
     )
     if(WIN32)
         # shell32: CommandLineToArgvW, so a folder with an accent in its name reaches the tool as UTF-8.
@@ -1261,16 +1270,29 @@ else()
     # (exit 0 = passed).
     add_executable(larecomp_online_tool_test EXCLUDE_FROM_ALL
         src/mc_engine/online/online_tool/online_tool_test.cpp
-        src/mc_engine/online/online_tool/online_tool.cpp
-        src/mc_engine/online/server_browser/browser_query.cpp
-        src/mc_engine/online/relay_info.cpp
-        src/mc_engine/online/rate_my_ride/rmr_net.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
     )
     if(WIN32)
         target_link_libraries(larecomp_online_tool_test PRIVATE ws2_32)
     endif()
     if(Threads_FOUND)
         target_link_libraries(larecomp_online_tool_test PRIVATE Threads::Threads)
+    endif()
+    # The check of the rmr, lb and tournament commands: answers recorded from the real stores, hostile answers, and a
+    # loopback server made of the real larecomp_rmr_server's own store code (rmr_store, lb_store, tournament_awards;
+    # no SDK) on 127.0.0.1 only. Needs no game and no real server.
+    add_executable(larecomp_online_tool_remote_test EXCLUDE_FROM_ALL
+        src/mc_engine/online/online_tool/online_tool_remote_test.cpp
+        ${LARECOMP_ONLINE_TOOL_COMMON}
+        src/mc_engine/online/rate_my_ride/rmr_store.cpp
+        src/mc_engine/online/leaderboards/lb_store.cpp
+        src/mc_engine/online/tournament_awards.cpp
+    )
+    if(WIN32)
+        target_link_libraries(larecomp_online_tool_remote_test PRIVATE ws2_32)
+    endif()
+    if(Threads_FOUND)
+        target_link_libraries(larecomp_online_tool_remote_test PRIVATE Threads::Threads)
     endif()
 
     # The value steps and texts of the pause-menu rows the launcher also has (pause_parity_rows.h) have a

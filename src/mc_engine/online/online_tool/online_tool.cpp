@@ -10,8 +10,12 @@
 #include <set>
 
 #include "../../../larecomp_version.h"  // LARECOMP_VERSION_LABEL (plain macros, no other includes)
+#include "../leaderboards/lb_protocol.h"
 #include "../protocol/identity_protocol.h"
+#include "../rate_my_ride/rmr_net.h"
+#include "../rate_my_ride/rmr_protocol.h"
 #include "../relay_info.h"
+#include "../tournament_schedule.h"
 #include "json_writer.h"
 
 namespace larecomp::online_tool {
@@ -127,6 +131,7 @@ const char* UsageText() {
         "  larecomp_online_tool --version                 the tool's version and JSON schema\n"
         "  larecomp_online_tool --protocol                what it speaks: relay messages, commands, limits\n"
         "  larecomp_online_tool servers [options]         the server list with each relay's details and rooms\n"
+        "  larecomp_online_tool rmr|lb|tournament ...     Rate My Ride, leaderboards, the weekly tournament (below)\n"
         "\n"
         "servers options:\n"
         "  --master H[:P]           the server list to read (port 31003 when absent); there is no built-in one\n"
@@ -147,6 +152,9 @@ const char* CommandName(Command c) {
         case Command::kVersion: return "version";
         case Command::kProtocol: return "protocol";
         case Command::kServers: return "servers";
+        case Command::kRmr: return "rmr";
+        case Command::kLb: return "lb";
+        case Command::kTournament: return "tournament";
         case Command::kNone: break;
     }
     return "none";
@@ -155,6 +163,18 @@ const char* CommandName(Command c) {
 ParseResult ParseArgs(const std::vector<std::string>& v) {
     ParseResult r;
     Args& a = r.args;
+    // rmr, lb and tournament have their own words and options (online_tool_remote.cpp); the group comes first.
+    if (!v.empty() && IsRemoteCommand(v[0])) {
+        RemoteParse p = ParseRemoteArgs(v);
+        a.remote = p.args;
+        a.pretty = p.args.pretty;
+        a.command = p.args.group == RemoteGroup::kRmr ? Command::kRmr
+                    : p.args.group == RemoteGroup::kLb ? Command::kLb
+                                                       : Command::kTournament;
+        r.ok = p.ok;
+        r.error = std::move(p.error);
+        return r;
+    }
     auto fail = [&](std::string msg) {
         r.ok = false;
         r.error = std::move(msg);
@@ -243,7 +263,14 @@ std::string RenderProtocol(bool pretty) {
     BeginDocument(j, "protocol", true);
     j.Field("tool", kToolName);
     j.Field("version", kToolVersion);
-    j.Key("commands").BeginArray().String("servers").EndArray();
+    j.Key("commands").BeginArray().String("servers").String("rmr").String("lb").String("tournament").EndArray();
+    // The words after a command, and which of them change the player's data on a server (they need --confirm).
+    j.Key("subcommands").BeginObject();
+    j.Key("rmr").BeginArray().String("table").String("top").String("mine").String("photo").String("rate").EndArray();
+    j.Key("lb").BeginArray().String("views").String("size").String("top").String("around").String("owners").EndArray();
+    j.Key("tournament").BeginArray().String("current").String("standings").String("next").String("rewards").EndArray();
+    j.EndObject();
+    j.Key("writes").BeginArray().String("rmr rate").EndArray();
     j.Key("relay").BeginObject();
     {
         char magic[5] = {char(br::kMagic & 255), char((br::kMagic >> 8) & 255), char((br::kMagic >> 16) & 255),
@@ -277,6 +304,45 @@ std::string RenderProtocol(bool pretty) {
     j.Field("icon_max_side", int(br::kIconMaxSide));
     j.Field("default_relay_port", int(br::kDefaultRelayPort));
     j.Field("default_master_port", int(br::kMasterPort));
+    j.EndObject();
+    j.Key("remote").BeginObject();  // rmr, lb, tournament: the Rate My Ride + leaderboards server
+    j.Field("default_port", int(rmr::kDefaultPort));
+    j.Field("connect_timeout_ms", rmr::net::kConnectTimeoutMs);
+    j.Field("io_timeout_ms", rmr::net::kIoTimeoutMs);
+    j.Field("max_requests_per_call", kRemoteMaxRequests);
+    j.Key("rmr").BeginObject();
+    {
+        char magic[5] = {char(rmr::kWireMagic & 255), char((rmr::kWireMagic >> 8) & 255), char((rmr::kWireMagic >> 16) & 255),
+                         char((rmr::kWireMagic >> 24) & 255), 0};
+        j.Field("magic", magic);
+    }
+    j.Field("path", rmr::kHttpPath);
+    j.Field("max_page", kRmrMaxPage);
+    j.Field("min_ranked", rmr::kDefaultMinRanked);
+    j.Field("max_photo_bytes", rmr::kMaxPhotoBytes);
+    j.Field("photos_per_ride", kRmrMaxPhotoSlots);
+    j.EndObject();
+    j.Key("lb").BeginObject();
+    {
+        char magic[5] = {char(lb::kWireMagic & 255), char((lb::kWireMagic >> 8) & 255), char((lb::kWireMagic >> 16) & 255),
+                         char((lb::kWireMagic >> 24) & 255), 0};
+        j.Field("magic", magic);
+    }
+    j.Field("path", lb::kHttpPath);
+    j.Field("max_rows", kLbMaxRows);
+    j.Field("max_owners", lb::kMaxOwners);
+    j.Field("max_views_per_call", int(kLbMaxViewsPerCall));
+    j.EndObject();
+    j.Key("tournament").BeginObject();
+    j.Field("week_seconds", tournament::kWeekSeconds);
+    j.Field("first_monday", tournament::kFirstMondayUnix);
+    j.Field("definition_bytes", tournament::kDefinitionSize);
+    j.Key("slots").BeginArray().Int(13).Int(39).Int(351).Int(381).EndArray();  // 13..39 and 351..381
+    j.Key("rewards").BeginArray();
+    for (uint32_t i = 0; i < 3; ++i)
+        j.BeginObject().Field("bit", i).Field("name", tournament::RewardNames(1u << i)).EndObject();
+    j.EndArray();
+    j.EndObject();
     j.EndObject();
     j.EndObject();
     return j.str();

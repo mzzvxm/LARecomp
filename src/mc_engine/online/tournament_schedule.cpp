@@ -106,9 +106,8 @@ uint32_t SlotId(uint32_t i) {
 }
 bool ValidSlot(uint32_t id) { return (id >= 13 && id < 40) || (id >= 351 && id < 382); }
 
-// Weeks start on Monday 00:00 UTC; 1970-01-05 was the first Monday.
-constexpr int64_t kWeek = 7 * 24 * 3600;
-constexpr int64_t kFirstMonday = 4 * 24 * 3600;
+constexpr int64_t kWeek = kWeekSeconds;
+constexpr int64_t kFirstMonday = kFirstMondayUnix;
 
 // Consecutive weeks step through the races 29 at a time (29 and the race
 // count share no factor), so the district changes from one week to the next
@@ -252,6 +251,12 @@ std::vector<uint8_t> EncodeGuest(const Definition& d) {
   const std::string text = "en:" + (d.description.empty() ? BuildDescription(d) : d.description);
   std::memcpy(b.data() + 20, text.data(), std::min<size_t>(text.size(), 255));
   return b;
+}
+
+std::string RaceName(uint32_t race_key) {
+  for (const Race& r : kRaces)
+    if (r.key == race_key) return r.name;
+  return {};
 }
 
 std::string RewardNames(uint32_t mask) {

@@ -2,11 +2,13 @@
 //
 // A small JSON writer for larecomp_online_tool: one document per call on stdout, read by the launcher. Strings are
 // written as strictly valid UTF-8 (a byte that is not part of a valid sequence becomes U+FFFD, control characters
-// become \u00XX), so a hostile server's text can never make the document unreadable; numbers are plain integers;
-// there is no floating point.
+// become \u00XX), so a hostile server's text can never make the document unreadable; numbers are plain integers,
+// except a rating average or a float column of a leaderboard row (Double: a fixed number of significant digits, never
+// in the PC's own number format, never NaN or infinity).
 //
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +48,21 @@ public:
     JsonWriter& Uint(uint64_t v) {
         Value();
         out_ += std::to_string(v);
+        return *this;
+    }
+    // A finite number with `digits` significant digits (1..17), written with '.' whatever the PC's language is;
+    // NaN and infinity (which JSON cannot hold) become null.
+    JsonWriter& Double(double v, int digits = 9) {
+        Value();
+        if (!(v - v == 0.0)) {  // NaN or infinity
+            out_ += "null";
+            return *this;
+        }
+        char buf[40];
+        std::snprintf(buf, sizeof(buf), "%.*g", digits < 1 ? 1 : (digits > 17 ? 17 : digits), v);
+        for (char* p = buf; *p; ++p)
+            if (*p == ',') *p = '.';  // a PC that formats numbers with a decimal comma
+        out_ += buf;
         return *this;
     }
     JsonWriter& Bool(bool v) {
