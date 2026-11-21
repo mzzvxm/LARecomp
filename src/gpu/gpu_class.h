@@ -251,6 +251,9 @@ inline std::string AutoLabelFor(GpuClass c, Effect effect) {
 //     250 m. More cars are alive and simulated far away; 400 is the original and the ceiling that matters.
 //   * PEDESTRIANS and PARKED CARS are multiples of the game's own density (1 is the original; its pools are 64 pedestrians and 50
 //     parked cars, so more than 1 adds little): the ceiling is 1.
+// CHECK: these cells are estimates from the measurements named above: the traffic LOD's cost at 3x and the cost of the two densities and the
+// traffic range were never measured, and no weak CPU was measured with them. perf\scripts\chain-lod-defaults.ps1 measures every cell against the
+// old value per class (render thread, graphics card, memory, hitches, pictures); a cell is corrected from it, here and in gpu_class_test.cpp.
 // The class is only known once Plume has opened the device (Initialize); with the Xenia renderer (debug only) it never is, and until it
 // is known `auto` is the Low cell (the weakest class's, as for every setting whose auto differs between classes).
 inline constexpr double kCityLodAutoGame = 1.0;
