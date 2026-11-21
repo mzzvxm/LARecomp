@@ -68,6 +68,12 @@
 #include "fullscreen_vs.hlsl.dxil.h"
 #include "gbuffer_view_ms_ps.hlsl.dxil.h"
 #include "gbuffer_view_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ms_ps.hlsl.dxil.h"
+#include "gi_apply_lookup_ps.hlsl.dxil.h"
+#include "gi_apply_ms_ps.hlsl.dxil.h"
+#include "gi_apply_ps.hlsl.dxil.h"
+#include "gi_apply_up_ms_ps.hlsl.dxil.h"
+#include "gi_apply_up_ps.hlsl.dxil.h"
 #include "gi_field_reset_cs.hlsl.dxil.h"
 #include "gi_field_view_ps.hlsl.dxil.h"
 #include "gi_field_weights_cs.hlsl.dxil.h"
@@ -177,6 +183,12 @@
 #include "fullscreen_vs.hlsl.spirv.h"
 #include "gbuffer_view_ms_ps.hlsl.spirv.h"
 #include "gbuffer_view_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ms_ps.hlsl.spirv.h"
+#include "gi_apply_lookup_ps.hlsl.spirv.h"
+#include "gi_apply_ms_ps.hlsl.spirv.h"
+#include "gi_apply_ps.hlsl.spirv.h"
+#include "gi_apply_up_ms_ps.hlsl.spirv.h"
+#include "gi_apply_up_ps.hlsl.spirv.h"
 #include "gi_field_reset_cs.hlsl.spirv.h"
 #include "gi_field_view_ps.hlsl.spirv.h"
 #include "gi_field_weights_cs.hlsl.spirv.h"
@@ -320,6 +332,19 @@ inline HostShaderBlob GiFieldWeightsShader() {
 
 inline HostShaderBlob GiFieldViewShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(gi_field_view_ps);
+}
+
+// The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes
+// the net irradiance from the lookup's image, 5 the same over multisampled planes. All pixel shaders of one source (hlsl/gi_apply_ps.hlsl).
+inline HostShaderBlob GiApplyShader(uint32_t which) {
+  switch (which) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ps);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ms_ps);
+    case 2: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ps);
+    case 3: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_up_ms_ps);
+  }
 }
 
 // The deferred local light pass (local_lights.h, hlsl/local_light_ps.hlsl): planes and depth with one sample, or the host's MSAA level.

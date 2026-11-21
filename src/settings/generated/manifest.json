@@ -1436,6 +1436,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_gi_view": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, the dead band and the cap, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 11}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssr_strength": {
   "type": "f64",
   "default": "1.0",

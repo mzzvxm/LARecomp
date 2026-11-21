@@ -1,0 +1,273 @@
+// MCLA GPU renderer -- the probe field's apply (gi_apply.h, CITY-RT M3 package G3; the rules and the reasons are gi_apply_rules.h's comment, the maths gi_apply_common.hlsli).
+//
+// Two passes, one source:
+//   GIA_PASS 0  the LOOKUP, at the occlusion's traced size (half the picture's above 1080 lines), into an RGBA16F image: per texel the world position of the picture's pixel it stands for
+//               (2x, 2y: the normal and the depth are read there, so they agree) and the field's lookup there: rgb = E_net x the lookup's confidence, a = the linear depth the texel was
+//               looked up at (the upsample's depth test). A texel with no normal or no geometry holds 0.
+//   GIA_PASS 1  the APPLY, at the picture's size, ADDED to the main colour (blend ONE, ONE; the alpha is not written): albedo (RT2) x the field's net irradiance x the strength x the field's
+//               share x the lit weight x the occlusion's term, softly clipped to the room under the bounce light's ceiling. GIA_UP 1 takes the net irradiance from the lookup image (the four nearest
+//               texels weighted by depth and normal agreement, the visibility and the vehicle mark by the same weights); GIA_UP 0 looks the field up itself at the pixel (the traced size is the
+//               picture's). The pixel's own colour is never read.
+// A debug view (push.info.w bits 8-15, gi_apply_rules.h): the same pass in a pipeline whose blend is SRC_ALPHA / INV_SRC_ALPHA, drawing a colour with alpha 1 where there is something to show and
+// alpha 0 where there is not (a pixel with no normal, the sky): 1 E_surf, 2 the confidence, 3 the sky visibility, 5 the baseline, 6 the leak test, 9 the bounce added (alone on black, 4x), 10 E_net, 11 the
+// occlusion's term. The views 1, 2, 3, 5 and 6 look the field up at the picture's size.
+//
+// MSAA (GIA_MS 1): the depth plane and the G-buffer's planes are Texture2DMS read at the guest's sample 0 (push.info.z); the pass runs once a pixel and the add goes to every sample of the pixel.
+// The occlusion's images (linear depth, visibility) and the lookup image are single sample at the traced size.
+//
+// Layout (gi_apply.cpp): set 0 (space0) the bindless Texture2D<float4>[], set 1 (space1) the same set as Texture2DMS<float4>[], set 2 (space2) the samplers (0 = linear clamp), set 3 (space3) the
+// buffer of rows (t0: the field's 20 rows then the apply's 9), push constants (b0, space4), 32 bytes.
+
+#include "gbuffer_common.hlsli"
+
+#ifndef GIA_PASS
+#define GIA_PASS 1
+#endif
+#ifndef GIA_MS
+#define GIA_MS 0
+#endif
+#ifndef GIA_UP
+#define GIA_UP 0
+#endif
+
+Texture2D<float4> g_textures[] : register(t0, space0);
+Texture2DMS<float4> g_textures_ms[] : register(t0, space1);
+SamplerState g_samplers[] : register(s0, space2);
+ByteAddressBuffer g_rows : register(t0, space3);
+
+struct GiaPush
+{
+    uint4 slots;  // x the main depth plane's slot, y RT1's, z RT2's, w the occlusion's linear depth (level 0, traced size)
+    uint4 info;   // x the visibility image's slot (GIA_NO_SLOT: none), y the lookup image's slot, z the host sample that is the guest's sample 0, w flags | view << 8
+};
+
+#ifdef __spirv__
+[[vk::push_constant]] ConstantBuffer<GiaPush> g_push;
+#else
+ConstantBuffer<GiaPush> g_push : register(b0, space4);
+#endif
+
+#define GI_FRAME_ROW(i) g_rows.Load4((i) * 16u)
+#define GI_SAMPLE_IRRADIANCE(uv) g_textures[GiSlot(GI_PRODUCT_IRRADIANCE)].SampleLevel(g_samplers[0], (uv), 0.0f)
+#define GI_SAMPLE_MOMENTS(uv) g_textures[GiSlot(GI_PRODUCT_MOMENTS)].SampleLevel(g_samplers[0], (uv), 0.0f).xy
+#define GI_LOAD_PROBE_WEIGHT(px, py) g_textures[GiSlot(GI_PRODUCT_PROBE_WEIGHT)].Load(int3((int)(px), (int)(py), 0)).x
+#include "gi_common.hlsli"
+#include "gi_apply_common.hlsli"
+
+float4 GiaLoadPlane(uint slot, int2 p)
+{
+#if GIA_MS
+    return g_textures_ms[slot].Load(p, g_push.info.z);
+#else
+    return g_textures[slot].Load(int3(p, 0));
+#endif
+}
+
+uint GiaView()
+{
+    return (g_push.info.w >> 8u) & 0xFFu;
+}
+
+bool GiaHasVisibility()
+{
+    return (g_push.info.w & GIA_FLAG_VISIBILITY) != 0u && g_push.info.x != GIA_NO_SLOT;
+}
+
+// The depth pass marks a vehicle's pixel in the lowest bit of the level 0 linear depth (screen_frame.h kDepthMarkMask).
+float GiaVehicleMark(float depthRaw)
+{
+    return (asuint(depthRaw) & 1u) != 0u ? 1.0f : 0.0f;
+}
+
+float GiaDepthOf(float depthRaw)
+{
+    return asfloat(asuint(depthRaw) & 0xFFFFFFF8u);
+}
+
+#if GIA_PASS == 0
+
+float4 main(float4 position : SV_Position) : SV_Target
+{
+    int2 p = int2(position.xy);
+    GiaFrame fr = GiaLoadFrame();
+    int2 last = int2(fr.render) - 1;
+    int2 r = min(p * 2, last);
+    float2 rt1 = GiaLoadPlane(g_push.slots.y, r).xy;
+    if (!GbRt1Valid(rt1))
+    {
+        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    }
+#if GIA_MS
+    float stored = g_textures_ms[g_push.slots.x].Load(r, g_push.info.z).r;
+#else
+    float stored = g_textures[g_push.slots.x].Load(int3(r, 0)).r;
+#endif
+    float t = GiaLinearDepth(stored, fr.lin);
+    if (!(t < GIA_SKY))
+    {
+        return float4(0.0f, 0.0f, 0.0f, t);
+    }
+    float3 n = GbRt1Decode(rt1);
+    float3 pos = GiaWorldPosition(fr, (float)r.x + 0.5f, (float)r.y + 0.5f, fr.render.x, fr.render.y, t);
+    GiSample s = GiLookup(pos, n);
+    float3 e = GiaLookupNet(s, n, fr.deadBand);
+    return float4(e.x, e.y, e.z, t);
+}
+
+#else
+
+float3 GiaTone(float3 c)
+{
+    return c / (float3(1.0f, 1.0f, 1.0f) + c);
+}
+
+float4 main(float4 position : SV_Position) : SV_Target
+{
+    int2 pixel = int2(position.xy);
+    uint view = GiaView();
+    GiaFrame fr = GiaLoadFrame();
+    float4 none = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    // The surface: no normal, nothing to light (a family the G-buffer does not cover yet, the sky).
+    float2 rt1 = GiaLoadPlane(g_push.slots.y, pixel).xy;
+    if (!GbRt1Valid(rt1))
+    {
+        if (view != 0u)
+        {
+            return none;
+        }
+        discard;
+    }
+    float4 rt2 = GiaLoadPlane(g_push.slots.z, pixel);
+    if (view == 0u && (!any(rt2 > 0.0f) || !(rt2.w > 0.0f)))
+    {
+        discard;  // no albedo (a family that writes none yet, a road) or an emissive surface: it takes no bounce
+    }
+#if GIA_MS
+    float stored = g_textures_ms[g_push.slots.x].Load(pixel, g_push.info.z).r;
+#else
+    float stored = g_textures[g_push.slots.x].Load(int3(pixel, 0)).r;
+#endif
+    float t = GiaLinearDepth(stored, fr.lin);
+    if (!(t < GIA_SKY))
+    {
+        if (view != 0u)
+        {
+            return none;
+        }
+        discard;
+    }
+    float3 n = GbRt1Decode(rt1);
+    float3 pos = GiaWorldPosition(fr, (float)pixel.x + 0.5f, (float)pixel.y + 0.5f, fr.render.x, fr.render.y, t);
+
+    // The views that look at the field itself.
+    if (view == 1u || view == 2u || view == 3u || view == 5u || view == 6u)
+    {
+        GiSample s = GiLookup(pos, n);
+        float3 colour = float3(1.0f, 0.0f, 1.0f);
+        if (view == 1u)
+        {
+            colour = GiaTone(s.irradiance * fr.viewGain);
+        }
+        else if (view == 2u)
+        {
+            colour = float3(0.9f * (1.0f - s.confidence) + 0.1f * s.confidence, 0.1f * (1.0f - s.confidence) + 0.9f * s.confidence, 0.1f + 0.1f * s.confidence);
+        }
+        else if (view == 3u)
+        {
+            float v = saturate(s.skyVisibility);
+            colour = float3(0.02f + 0.98f * v, 0.05f + 0.95f * v, 0.35f + 0.65f * v);
+        }
+        else if (view == 5u)
+        {
+            colour = GiaTone(GiGroundBaseline(n) * fr.viewGain);
+        }
+        else
+        {
+            float g = GiaGuardShare(pos, n);
+            colour = float3(0.9f * g, 0.9f * (1.0f - g), 0.0f);
+        }
+        return float4(colour, 1.0f);
+    }
+
+    // The net irradiance, the vehicle share and the occlusion's visibility at the pixel.
+    float3 eNet = float3(0.0f, 0.0f, 0.0f);
+    float vehicle = 0.0f;
+    float ao = 1.0f;
+#if GIA_UP
+    {
+        float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f;
+        int2 q0 = int2(floor(q));
+        float2 f = q - float2(q0);
+        int2 tsize = int2(fr.traced);
+        int2 rlast = int2(fr.render) - 1;
+        float3 eSum = float3(0.0f, 0.0f, 0.0f);
+        float vSum = 0.0f;
+        float aoSum = 0.0f;
+        float wSum = 0.0f;
+        for (int j = 0; j < 2; ++j)
+        {
+            for (int i = 0; i < 2; ++i)
+            {
+                int2 c = clamp(q0 + int2(i, j), int2(0, 0), tsize - 1);
+                float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+                float4 look = g_textures[g_push.info.y].Load(int3(c, 0));
+                float2 nc1 = GiaLoadPlane(g_push.slots.y, min(c * 2, rlast)).xy;
+                if (!GbRt1Valid(nc1))
+                {
+                    continue;
+                }
+                float w = bilinear * max(GiaDepthWeight(t, look.w) * GiaNormalWeight(n, GbRt1Decode(nc1)), GIA_MIN_UPSAMPLE_WEIGHT);
+                eSum = eSum + float3(look.x, look.y, look.z) * w;
+                vSum = vSum + GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(c, 0)).x) * w;
+                if (GiaHasVisibility())
+                {
+                    aoSum = aoSum + g_textures[g_push.info.x].Load(int3(c, 0)).x * w;
+                }
+                wSum = wSum + w;
+            }
+        }
+        if (wSum > 1.0e-8f)
+        {
+            eNet = eSum * (1.0f / wSum);
+            vehicle = vSum / wSum;
+            ao = GiaHasVisibility() ? aoSum / wSum : 1.0f;
+        }
+    }
+#else
+    {
+        GiSample s = GiLookup(pos, n);
+        eNet = GiaLookupNet(s, n, fr.deadBand);
+        vehicle = GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(pixel, 0)).x);
+        if (GiaHasVisibility())
+        {
+            ao = g_textures[g_push.info.x].Load(int3(pixel, 0)).x;
+        }
+    }
+#endif
+
+    float aoTerm = GiaHasVisibility() ? GiaAoTerm(ao, vehicle, t, fr.aoStrength, fr.aoFadeEnd, fr.paintPower) : 1.0f;
+    float nDotL = saturate(dot(n, fr.sunDir));
+    float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
+    float3 add = GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap);
+
+    if (view == 9u)
+    {
+        return float4(add * (4.0f * GIA_VIEW_SCALE), 1.0f);
+    }
+    if (view == 10u)
+    {
+        return float4(GiaTone(eNet * fr.viewGain), 1.0f);
+    }
+    if (view == 11u)
+    {
+        return float4(aoTerm * GIA_VIEW_SCALE, aoTerm * GIA_VIEW_SCALE, aoTerm * GIA_VIEW_SCALE, 1.0f);
+    }
+    if (!any(add > 0.0f))
+    {
+        discard;
+    }
+    return float4(add.x, add.y, add.z, 0.0f);
+}
+
+#endif

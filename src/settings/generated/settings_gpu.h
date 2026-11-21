@@ -761,6 +761,8 @@ class GPUSettings final : public rex::SettingOwner {
     "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "
     "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
 
+  REX_SETTING(i32, mcla_gpu_rt_gi_view, 0, "Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, the dead band and the cap, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 11});
+
   REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
   REX_SETTING(f64, mcla_gpu_ssr_min_smooth, -1.0, "Diagnostic (screen-space reflections): a pixel rougher than this (0 rough to 1 mirror; the G-buffer's smoothness after the road's wetness raised it) is not reflected. -1: the default, 0.40 (a dry road at 0.30 is not, "
@@ -1723,6 +1725,7 @@ inline auto& mcla_gpu_screen_view = g_gpu.mcla_gpu_screen_view;
 inline auto& mcla_gpu_screen_view_level = g_gpu.mcla_gpu_screen_view_level;
 inline auto& mcla_gpu_ssr = g_gpu.mcla_gpu_ssr;
 inline auto& mcla_gpu_ssr_view = g_gpu.mcla_gpu_ssr_view;
+inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
 inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
 inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
 inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;

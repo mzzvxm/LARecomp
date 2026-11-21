@@ -78,6 +78,7 @@
 #include "hdr_scene.h"
 #include "hdr_tonemap.h"
 #include "host_passes.h"
+#include "gi_apply.h"
 #include "layout.h"
 #include "light_manager.h"
 #include "local_lights.h"
@@ -300,6 +301,7 @@ class Renderer final : public RenderThread::Executor {
   VolumetricsInputs vol_inputs_;  // render thread; the volumetric light's street lamps and headlights (volumetrics_inputs.h); before it: it outlives it
   Volumetrics volumetrics_;   // render thread; volumetric light: lamp and headlight beams, haze, sun through the cascades (volumetrics.h)
   GBuffer gbuffer_;           // render thread; the G-buffer's sidecar and debug view (gbuffer.h; debug-only settings in this branch)
+  GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   ScreenReflections ssr_;     // render thread; screen-space reflections (ssr.h; off by default); it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   ScreenShared screen_;       // render thread; the shared screen products: the AO's depth chain published, the Hi-Z, the debug view (screen_shared.h); the AO holds a pointer to it: Shutdown stops the AO first
   CarSelfRefl car_refl_;      // render thread; the car paint's self-reflection history (car_selfrefl.h, a debug-only prototype)

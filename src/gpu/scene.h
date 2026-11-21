@@ -94,6 +94,7 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class GiApply;
 class LocalLights;
 class ScreenReflections;
 class ScreenShared;
@@ -182,6 +183,9 @@ class Scene {
   void SetLocalLights(LocalLights* local_lights) { local_lights_ = local_lights; }
   // The screen-space reflections (ssr.h; null: none). Not owned.
   void SetScreenReflections(ScreenReflections* ssr) { ssr_ = ssr; }
+  // The probe field's apply (gi_apply.h; CITY-RT M3 G3): told of the frame's start (before the G-buffer's and the shared products', which read the wants it makes) and run at the mid-scene depth copy
+  // right after the ambient occlusion's apply and before the deferred lights. Null: none. Not owned.
+  void SetGiApply(GiApply* gi_apply) { gi_apply_ = gi_apply; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -514,6 +518,7 @@ class Scene {
   ScreenShared* screen_ = nullptr;
   LocalLights* local_lights_ = nullptr;
   ScreenReflections* ssr_ = nullptr;
+  GiApply* gi_apply_ = nullptr;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
   gbuffer::MaterialTable gbuffer_materials_;
   // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).

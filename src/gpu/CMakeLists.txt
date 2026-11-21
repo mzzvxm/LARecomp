@@ -47,6 +47,7 @@ add_library(larecomp_gpu OBJECT
     frame_trace.cpp
     frame.cpp
     gbuffer.cpp
+    gi_apply.cpp
     gi_field.cpp
     gbuffer_material.cpp
     gbuffer_materials.cpp
@@ -283,6 +284,11 @@ add_executable(larecomp_gi_frame_test EXCLUDE_FROM_ALL gi_frame_test.cpp)
 # against a brute force, and reads the three gi_field_*.hlsl files for their registers) likewise:
 #   cmake --build <build dir> --target larecomp_gi_field_rules_test, then run src/gpu/larecomp_gi_field_rules_test [-v] [<hlsl dir>] (exit 0 = passed).
 add_executable(larecomp_gi_field_rules_test EXCLUDE_FROM_ALL gi_field_rules_test.cpp)
+# The probe field's apply (gi_apply_rules.h, CITY-RT M3 package G3: the identity of an empty or open field, the ceiling and the cap, the parity with the screen-space bounce light's rules, the vehicle share,
+# the SSGI switch, the upsample's weights, the buffer's rows, the leak test; it compiles hlsl/gi_apply_common.hlsli together with gi_common.hlsli as C++ and compares them with the twin, and reads the
+# shader's registers, the CMake lines, host_shaders.h and the settings) likewise:
+#   cmake --build <dir> --target larecomp_gi_apply_test, then run src/gpu/larecomp_gi_apply_test [-v] [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_gi_apply_test EXCLUDE_FROM_ALL gi_apply_test.cpp)
 # The one light description (light_frame.h: Light, LightFrame, the 64 byte GpuLight and its bits; light_id.h: the ids, a street lamp's being the old LampKey / KeyOf; light_laws.h: the
 # headlight's, the game's lamp's and the volume's laws held to the rig's LampScale and the game's numbers; light_convert.h: the conversions from the headlight rig, the game's lamp
 # list, the shadow replay and into the volume's lamp; and it compiles hlsl/light_laws.hlsli as C++ and compares it with the twin) likewise:
@@ -860,6 +866,14 @@ larecomp_gpu_host_shader_rt(city_rt_shadow_cs cs_6_5)
 larecomp_gpu_host_shader(gi_field_reset_cs cs_6_0)
 larecomp_gpu_host_shader(gi_field_weights_cs cs_6_0)
 larecomp_gpu_host_shader(gi_field_view_ps ps_6_0)
+# The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
+# without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
+larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_lookup_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ps ps_6_0 DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=0)
+larecomp_gpu_host_shader(gi_apply_up_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=1)
+larecomp_gpu_host_shader(gi_apply_up_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=1)
 # M5.2b: the resolve memory -- a resolve's bytes (colour from the
 # product, depth from the EDRAM) and a texture decoded from them.
 larecomp_gpu_host_shader(resolve_memory_color_cs cs_6_0 SOURCE resolve_memory_cs

@@ -26,6 +26,7 @@
 #include "car_frame.h"
 #include "headlight_rig.h"
 #include "light_manager.h"
+#include "gi_apply.h"
 #include "local_lights.h"
 #include "local_shadow.h"
 #include "car_rt_scene.h"
@@ -833,6 +834,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   ++frame_serial_;
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+  }
+  if (gi_apply_) {
+    gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
   }
   if (gbuffer_) {
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
@@ -3622,6 +3626,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   //      visibility and the contact march, the apply onto the main colour. At the end of its depth chain the shared screen products (screen_shared.h) are
   //      published from it and the Hi-Z is made, when a consumer wants it (the occlusion runs a frame of the depth pass alone for that if it and the contact
   //      shadows are off);
+  //   3a. the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light added to the main colour, multiplied by the occlusion's visibility, only while a field runs;
   //   3b. the deferred local lights (local_lights.h): one additive draw per light from the G-buffer's planes and the main depth, after the apply, before the shafts;
   //   4. the sun shafts (shafts.h);
   //   4b. the volumetric light (volumetrics.h): its compute passes (inject, integrate) read the headlight shadow atlas of step 2b (so that step's
@@ -3650,6 +3655,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
     // below forgets for the next draw.
     ao_->OnResolve(record, summary, list, UpscalerRunning());
+  }
+  if (gi_apply_ && gi_apply_->wants_draws()) {
+    // Step 3a: the probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
+    // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
+    // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.
+    gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_);
   }
   if (local_lights_ && local_lights_->wants_draws()) {
     // Step 3b: the deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3 step 7): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
@@ -3912,6 +3923,9 @@ void Scene::OnPresent() {
   }
   if (ssr_) {
     ssr_->OnPresent();  // the reflections' history and idle count
+  }
+  if (gi_apply_) {
+    gi_apply_->OnPresent();  // the interval line and the lookup image's idle count
   }
   if (screen_) {
     screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)

@@ -197,6 +197,13 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_lights_.SetScreenShared(&screen_);
     local_lights_.SetAmbientOcclusion(&ao_);
     local_lights_.SetLightManager(&light_manager_);
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): makes nothing until a probe field runs (SetGiField: the integration, G4, gives it); reads the G-buffer's RT1 and RT2, the shared products' depth
+    // and camera, and the AO's visibility, light and pose. The AO asks it for the screen-space bounce light's share (SetGiApply).
+    gi_apply_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    gi_apply_.SetGBuffer(&gbuffer_);
+    gi_apply_.SetScreenShared(&screen_);
+    gi_apply_.SetAmbientOcclusion(&ao_);
+    ao_.SetGiApply(&gi_apply_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
@@ -271,6 +278,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
+    scene_.SetGiApply(&gi_apply_);
     scene_.SetCarRtScene(&car_rt_);
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -330,6 +338,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
     screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -512,6 +521,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
   screen_.Shutdown();  // the AO holds a pointer to it: after the AO
@@ -1704,6 +1714,7 @@ void Renderer::ReportFrameStats() {
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())

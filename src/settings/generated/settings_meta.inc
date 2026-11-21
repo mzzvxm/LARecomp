@@ -343,6 +343,7 @@
 {"mcla_gpu_screen_view_level", "MCLA/GPU"},
 {"mcla_gpu_ssr", "MCLA/GPU"},
 {"mcla_gpu_ssr_view", "MCLA/GPU"},
+{"mcla_gpu_rt_gi_view", "MCLA/GPU"},
 {"mcla_gpu_ssr_strength", "MCLA/GPU"},
 {"mcla_gpu_ssr_min_smooth", "MCLA/GPU"},
 {"mcla_gpu_ssr_stub", "MCLA/GPU"},
