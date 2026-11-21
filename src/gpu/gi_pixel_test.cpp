@@ -620,6 +620,9 @@ void TwinChecks() {
     const gi::Vec3 p = {rng.Range(0, 9), rng.Range(0, 9), rng.Range(0, 9)};
     const float w = rng.Next() > 0.3f ? rng.Next() : 0.0f;
     check(NearV(C3(hlsl_shim::GipMix(H3(c), H3(p), w)), gp::Mix(c, p, w), 1e-6, 1e-6));
+    const hlsl_shim::float3 junk = hlsl_shim::float3(std::nanf(""), INFINITY, 1e30f);
+    const hlsl_shim::float3 kept = hlsl_shim::GipMix(H3(c), junk, 0.0f);   // THE IDENTITY in the shader's own text: a weight of 0 is the field's bits, whatever the pixel term holds
+    check(SameBits(kept.x, c.x) && SameBits(kept.y, c.y) && SameBits(kept.z, c.z));
     const float bil = rng.Next(), dw = rng.Next(), nw = rng.Next(), td = rng.Next() > 0.3f ? rng.Range(0.1f, 50) : 0.0f;
     check(SameBits(hlsl_shim::GipTapWeight(bil, td, dw, nw), gp::TapWeight(bil, td, dw, nw)));
   }
@@ -697,7 +700,8 @@ void SourceChecks() {
   Check(Has(host_h, "RawOutput raw_output() const;") && Has(host_cpp, "out.signal = &signal_;") && Has(host_cpp, "out.hit = &hit_;") && Has(host_cpp, "plan_.raw"), "RAW: the signal and the hit distance image are handed out for a raw frame");
   Check(Has(host_cpp, "denoise_.Initialize(device, frames, heap, passes, /*instance=*/1, \"gi pixel\"") && Has(host_cpp, "RtDenoiseDiffuseShader(false)") && Has(host_cpp, "RtDenoiseDiffuseShader(true)") && Has(host_cpp, "denoise_.RecordTemporal(stage)") &&
             Has(host_cpp, "denoise_.RecordSpatial(stage)") && Has(host_cpp, "rt_denoise::plain::PatchFor()"), "DENOISER: RtDenoise instance 1 with the diffuse compile of the plain consumer, the temporal stage then the spatial one");
-  Check(At(host_cpp, "denoise_.RecordSpatial(stage)") < At(host_cpp, "const plume::RenderTextureBarrier reads[2]") && Has(host_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads, 2);"),
+  const size_t at_spatial = At(host_cpp, "denoise_.RecordSpatial(stage)"), at_reads = At(host_cpp, "const plume::RenderTextureBarrier reads[2]");
+  Check(at_spatial != std::string::npos && at_reads != std::string::npos && at_spatial < at_reads && Has(host_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads, 2);"),
         "DENOISER: the guides get the read state of both stages AFTER the denoiser's own compute-only barriers (D3D12 keeps the last state)");
   Check(Has(host_cpp, "rules::PickLights(lights_->Frame(), rules::kLightsMax, lights.data())") && Has(host_cpp, "HostPrecache::kGiPixel") && Has(host_cpp, "AddLive(") && Has(host_cpp, "history_ok_ = have_prev_ && prev_frame_ + 1 == in.frame") &&
             Has(host_cpp, "move.cut || move.relight") && Has(host_cpp, "const uint32_t scale = (in.traced[0] != in.render[0] || in.traced[1] != in.render[1]) ? 2u : 1u;"),
