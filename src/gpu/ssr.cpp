@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -285,6 +286,8 @@ void ScreenReflections::BeginFrame() {
   wet_override_ = wet >= 0.0 ? ClampSetting(wet, 0.0, 1.0, 0.0f) : -1.0f;
   const double history = larecomp::settings::mcla_gpu_ssr_history.Get();
   history_override_ = history >= 0.0 ? ClampSetting(history, 0.0, 0.98, 0.0f) : -1.0f;
+  fallback_setting_ = ClampSetting(larecomp::settings::mcla_gpu_ssr_fallback.Get(), 0.0, 1.0, 1.0f);
+  vehicle_rows_ = larecomp::settings::mcla_gpu_ssr_vehicle_rows.Get() != 0;
   const bool on = level_ != ssr::Level::kOff;
   // What the effect reads of the shared products and of the G-buffer (sticky; read at their next frame boundary): the Hi-Z, colour_post (its Want also makes the mip chain), the camera, and all
   // three planes (RT3 is written now, GB-W2: the class table decides; the stub only stands in for a frame without RT3, or when mcla_gpu_ssr_stub forces it).
@@ -301,7 +304,7 @@ void ScreenReflections::OnMainDraw(const temporal::MainMatch& match, const Const
   if (level_ == ssr::Level::kOff || trigger_done_ || !match || !match.color) {
     return;
   }
-  wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0));
+  wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1));
 }
 
 bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
@@ -420,16 +423,85 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
                 motion_known ? "uses the occlusion's camera motion" : "is off until the occlusion gives a camera motion (it is off, has no previous frame, or the camera cut)");
   }
 
-  // The wetness: the commonest value the frame's draws carried, smoothed (a forced value replaces it).
+  // The wetness: the commonest value the frame's draws carried (VS c43.x, the game's own scalar: 0.095 dry, 1.17 in rain), smoothed over about a second of TIME (GB-I2: not of frames), a forced value
+  // replacing it; and, with it, the strength the game shows its road view with (c43.y), which says how much of that view the fallback may take out.
+  const auto clock_now = std::chrono::steady_clock::now();
+  const float dt = wet_clock_valid_ ? float(std::chrono::duration<double>(clock_now - wet_clock_).count()) : 0.0f;
+  wet_clock_ = clock_now;
+  wet_clock_valid_ = true;
   if (wet_override_ >= 0.0f) {
     wet_ = wet_override_;
+    wet_strength_ = 1.0f;   // a forced wetness shows the road as the rain does
     wet_known_ = true;
   } else {
     float c43 = 0.0f;
-    if (wet_votes_.Pick(&c43)) {
+    float c43y = ssr::WetVotes::kDefaultGameStrength;
+    if (wet_votes_.Pick(&c43, &c43y)) {
       const float target = ssr::Wet01(c43);
-      wet_ = wet_known_ ? ssr::SmoothWet(wet_, target) : target;
+      wet_ = wet_known_ ? ssr::SmoothWetDt(wet_, target, dt) : target;
+      wet_strength_ = wet_known_ ? ssr::SmoothWetDt(wet_strength_, c43y, dt) : c43y;
       wet_known_ = true;
+      wet_raw_ = c43;
+    }
+  }
+
+  // GB-I2, the off-screen fallback: the game's own road reflection view (the whole screen drawn with the roads' mirrored geometry into a 256 x 256 target, side_views.h), which the trace reads at the
+  // pixel's screen position to take out of the road where it finds a reflection of its own (hlsl/ssr_trace_ps.hlsl). It is the host target of the view's identity, read as it stands at the trigger: the
+  // game drew and resolved it before the roads that read it. Found by the identity (ssr_rules.h roadview::), accepted only when the side view classification made it and this frame drew into it.
+  ssr::RoadViewFacts road;
+  road.share = ssr::FallbackShare(fallback_setting_, wet_strength_);
+  EdramKey road_key;
+  road_key.base_tiles = uint16_t(ssr::roadview::kColorBase);
+  road_key.pitch = uint16_t(ssr::roadview::kPitch);
+  road_key.depth = 0;
+  road_key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
+  road_key.samples = uint8_t(ssr::roadview::kGuestSamples);
+  road_key.reserved = 0;
+  EdramTargets::Target* road_target = nullptr;
+  uint32_t road_slot = screen::kNoSlot;
+  if (road.share > 0.0f) {
+    const EdramTargets::Target* road_found = edram_->Find(road_key);
+    if (road_found && road_found->texture) {
+      road.has_target = true;
+      road.is_reflection_class = road_found->side_view == SideView::kReflection;
+      road.drawn_this_frame = uint32_t(road_found->drawn_frame) == sf.frame_serial;
+      road.side = road_found->scale.Edge(ssr::roadview::kDeclared);
+      road.host_samples = road_found->host_samples;
+      if (road.is_reflection_class && road.drawn_this_frame) {
+        bool road_unset = false;
+        road_target = edram_->Get(road_key, road_found->height, road_found->scale, 0, list, &road_unset);
+        uint32_t road_stencil = screen::kNoSlot;
+        road.slot_ok = road_target && edram_->SampleSlots(*road_target, &road_slot, &road_stencil);
+      }
+    }
+  }
+  const ssr::RoadViewWhy road_why = ssr::DecideRoadView(road);
+  if (uint32_t(road_why) != road_logged_) {
+    road_logged_ = uint32_t(road_why);
+    REXLOG_INFO("{} the game's road reflection view (the fallback under the effect on roads): {}{} (logged when it changes)", kPrefix, ssr::RoadViewWhyName(road_why),
+                road_why == ssr::RoadViewWhy::kUsed ? std::format(": {}x{} host pixels, {} sample{}, {:.2f} of it taken out where a ray finds a reflection (the setting {:.2f} x the game's own strength {:.2f})", road.side, road.side,
+                                                                  road.host_samples, road.host_samples == 1 ? "" : "s", road.share, fallback_setting_, wet_strength_)
+                                                        : std::string());
+  }
+  uint32_t road_word = ssr::kNoRoadView;
+  if (road_why == ssr::RoadViewWhy::kUsed) {
+    edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ);   // the view was a colour target when the game drew it; the next frame's draws move it back themselves
+    road_word = ssr::PackRoadView(road_slot, road.host_samples, road.side);
+  }
+
+  // GB-I2, the vehicles: the AO's motion rows of this frame (its history pass drew them for its own use), for the temporal pass's reflected vehicles. None: they are taken as the world's.
+  uint32_t vehicle_table_slot = screen::kNoSlot;
+  if (vehicle_rows_ && ao_) {
+    AmbientOcclusion::VehicleTableOut table;
+    if (ao_->VehicleTableNow(&table)) {
+      vehicle_table_slot = table.slot;
+    }
+  }
+  if (vehicle_table_slot != screen::kNoSlot) {
+    ++vehicle_table_frames_;
+    if (!vehicle_table_logged_) {
+      vehicle_table_logged_ = true;
+      REXLOG_INFO("{} the AO's vehicle motion table is in the frame: a reflected vehicle's image moves with its own row", kPrefix);
     }
   }
 
@@ -460,7 +532,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   flags.view = uint32_t(view_);
   push.Set(pk::kFlags, ssr::PackFlags(flags));
   push.Set(pk::kFrame, uint32_t(frames_));
-  push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], screen::kNoSlot));
+  push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));   // the low half the depth chain's level 0, the high half (pk::kStencil) the depth target's stencil plane, for the vehicle a hit is on (GB-I2)
   push.SetFloat(pk::kTanX, sf.camera.tan_half_fov[0]);
   push.SetFloat(pk::kTanY, sf.camera.tan_half_fov[1]);
   push.SetFloat(pk::kLinX, sf.camera.lin[0]);
@@ -484,14 +556,18 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   edram_->Transition(list, depth, plume::RenderTextureLayout::SHADER_READ);
   // CHECK (not run): the three passes on both APIs with the Vulkan synchronisation validation on (the Hi-Z and the colour in the shader-read layout the owner left them in, the G-buffer's planes
   // as published, the depth plane, the new images' first use), MSAA 1, 2, 4 and 8, and the cost: the trace is the pass that matters (the walk's iterations, the class gate's early out).
+  ssr::Push trace_push = push;
+  trace_push.Set(pk::kRoadView, road_word);
+  trace_push.SetFloat(pk::kFallback, road_why == ssr::RoadViewWhy::kUsed ? road.share : 0.0f);
   pass_timing_->Mark(list, "ssr trace");
-  DrawPass(list, trace_, trace_pipeline, push);
+  DrawPass(list, trace_, trace_pipeline, trace_push);
 
   ssr::Push temporal = push;
   temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
   flags.history = use_history;
   temporal.Set(pk::kFlags, ssr::PackFlags(flags));
   temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
+  temporal.Set(pk::kVehTable, ssr::PackSlots(vehicle_table_slot, screen::kNoSlot));
   temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
   temporal.SetFloat(pk::kPrevTanY, last_tan_[1]);
   for (uint32_t i = 0; i < 12; ++i) {
@@ -503,6 +579,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // The apply: the main colour as a colour target in the middle of the frame (the occlusion's way: no depth, the next draw of the game moves things back itself).
   ssr::Push apply = push;
   apply.Set(pk::kSrc, ssr::PackSlots(accum_[write_].slot, trace_.slot));
+  apply.Set(pk::kRoadViewApply, road_word);
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
   EdramTargets::Target* only[1] = {colour};
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
@@ -535,10 +612,14 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first frame: {}x{} RGBA16F images (trace + two accumulated: {:.1f} MiB) for a {}x{} picture traced at {}x{} (Hi-Z level {} has the size), {} ray{} a pixel, up to {} Hi-Z "
-                "steps, {} host sample{}, colour_post {}x half size {}, the material from {}, the wetness {:.2f}",
+                "steps, {} host sample{}, colour_post {}x half size {}, the material from {}, the wetness {:.2f} (VS c43.x {:.2f}, the game's reflection strength c43.y {:.2f}), the fallback share {:.2f}, vehicle rows {}",
                 kPrefix, width, height, Mib(ssr::HeldBytes(width, height)), sf.render[0], sf.render[1], sf.traced[0], sf.traced[1], decision.size.hz, numbers.rays, numbers.rays == 1 ? "" : "s",
                 numbers.max_iterations, depth.host_samples, depth.host_samples == 1 ? "" : "s", sf.colour_post_levels, ssr::ColourIsHalf(sf.render[1]) ? "yes" : "no",
-                decision.stub ? "the stub" : "RT3", wet_);
+                decision.stub ? "the stub" : "RT3", wet_, wet_raw_, wet_strength_, road.share, vehicle_rows_ ? "on" : "off");
+  }
+  if (frames_run_ % 1800 == 0) {
+    REXLOG_INFO("{} {} frames ran: {} with a usable history, {} with the AO's vehicle table, wetness {:.2f} (c43.x {:.2f}, strength {:.2f}), road view: {}", kPrefix, frames_run_, history_frames_, vehicle_table_frames_, wet_,
+                wet_raw_, wet_strength_, ssr::RoadViewWhyName(road_why));
   }
   if (size_logged_[0] != width || size_logged_[1] != height) {
     if (size_logged_[0] != 0) {

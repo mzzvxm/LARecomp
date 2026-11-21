@@ -9,10 +9,12 @@
 //   Fresnel       the environment BRDF (SsrEnvBrdf) with F0 0.04, a metal's F0 its albedo (RT2) where the frame has it, saturated (the table overshoots to 1.04 at exactly grazing).
 //   the image     the accumulated reflection (the temporal pass's output, half size) read at the pixel's place with the four nearest texels, each weighted by the bilinear share times how well its
 //                 receiver depth agrees with this pixel's (the image's alpha): a texel of another surface, or one nothing was traced for (alpha 0), has no weight.
-// The term is image x Fresnel x the class gain x the strength. The colour is in the target's own units, as colour_post, so no exposure is applied.
+// The term is image x Fresnel x the class gain x the smoothness ramp x the strength. The colour is in the target's own units, as colour_post, so no exposure is applied.
 //
 // The game's own reflection (the road's planar view, the glass' env map) is already in the colour this adds to; where the rays missed, or the hit was near the picture's edge, the image is 0 and
-// the pixel is the game's alone.
+// the pixel is the game's alone. GB-I2: on a road the image is the DIFFERENCE between the reflection the rays found and the road view the game already put there (hlsl/ssr_trace_ps.hlsl), so the
+// term can be negative; it never takes more than kSsrGuard of the colour that was there (colour_post's, before this pass) away. The ramp (SsrSmoothRamp) takes the reflection in over the first 0.2
+// of smoothness above the floor: a road that is just wet enough to cross the floor does not jump to a whole reflection.
 //
 // Compilations: SSR_MS 0 / 1; the pipeline's blend (add, or replace for a view) is the pipeline's.
 
@@ -47,17 +49,25 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const int2 q = clamp(p / 2, int2(0, 0), ssr - 1);
     const float4 t = g_textures[trace_slot].Load(int3(q, 0));
     if (view == 3u) {
-      return float4(t.xyz * (1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f)), 0.0f);
+      return float4(max(t.xyz, float3(0.0f, 0.0f, 0.0f)) * (1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f)), 0.0f);   // the positive part: a road's trace is a difference and can be negative (view 6)
     }
     if (t.w == 0.0f) {
       return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
-    const float d = abs(t.w);
+    const float d = SsrHitDistance(t.w);
     if (d >= kSsrMissLength - 1.0f) {
       return float4(0.8f, 0.1f, 0.1f, 0.0f);   // a miss
     }
     const float g = saturate(log2(d + 1.0f) / 8.0f);
+    if (SsrHitIsVehicle(t.w)) {
+      return float4(0.4f + 0.6f * g, 0.25f + 0.35f * g, 0.05f, 0.0f);   // a hit on a vehicle: orange (an ID that is known is brighter in the red)
+    }
     return float4(g, g, 0.3f + 0.7f * g, 0.0f);
+  }
+  if (view == 5u) {
+    // GB-I2: the game's road reflection view as the trace reads it, stretched over the whole picture (black: no view in this frame)
+    const float2 screen_uv = (float2(p) + 0.5f) / float2(render);
+    return float4(SsrRoadViewAt(SsrW(SSR_W_ROAD_VIEW_APPLY), screen_uv) * (1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f)), 0.0f);
   }
 
   const float stored = SsrStoredAt(p);
@@ -71,8 +81,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float gain = SsrClassGain(surface.cls, surface.flags);
   const float smoothness = SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET));
   const bool reflects = gain > 0.0f && smoothness >= SsrF(SSR_W_MIN_SMOOTH);
+  const float ramp = SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH));
   if (view == 2u) {
-    return float4(DebugGate(reflects ? gain : 0.0f, stub, surface.cls, surface.flags, surface.cls != uint(GB_CLASS_NONE) || surface.flags != 0u), 0.0f);
+    return float4(DebugGate(reflects ? gain * ramp : 0.0f, stub, surface.cls, surface.flags, surface.cls != uint(GB_CLASS_NONE) || surface.flags != 0u), 0.0f);
   }
   if (!reflects) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -114,9 +125,20 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (!(total > 1.0e-3f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
-  const float3 term = sum / total * fresnel * (gain * SsrF(SSR_W_STRENGTH));
+  float3 term = sum / total * fresnel * (gain * ramp * SsrF(SSR_W_STRENGTH));
+  if (view == 6u) {
+    // GB-I2: the term's sign: green what is added, red what is taken out of the game's own reflection (the luminance of each)
+    const float scale = 1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f);
+    const float3 added = max(term, float3(0.0f, 0.0f, 0.0f));
+    const float3 taken = max(-term, float3(0.0f, 0.0f, 0.0f));
+    return float4(dot(taken, float3(0.3333f, 0.3333f, 0.3333f)) * scale, dot(added, float3(0.3333f, 0.3333f, 0.3333f)) * scale, 0.0f, 0.0f);
+  }
+  if (term.x < 0.0f || term.y < 0.0f || term.z < 0.0f) {
+    // the guard: a road view that was a worse estimate than the game's own must not black the road
+    term = SsrGuardTerm(term, SsrColour((float2(p) + 0.5f) / float2(render), 0.0f));
+  }
   if (view == 1u) {
-    return float4(term * (1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f)), 0.0f);
+    return float4(max(term, float3(0.0f, 0.0f, 0.0f)) * (1.0f / max(SsrF(SSR_W_CAP) * 0.25f, 1.0f)), 0.0f);
   }
   return float4(term, 0.0f);
 }

@@ -121,6 +121,66 @@ bool SsrVehicleAt(int cx, int cy) {
   return (asuint(g_textures[slot].Load(int3(cx, cy, 0)).x) & 1u) != 0u;
 }
 
+// GB-I2: the vehicle (stencil ID 1 to 23: the byte >> 2 the main view's draws write) on a texel of the Hi-Z's level 0, 0 where there is none or the stencil plane is not in the push. Where level 0 is
+// the picture's size the texel is the pixel; where it is half, the texel stands for a 2x2 block of the depth plane and the vehicle is the first of its four samples that is one (the AO's rule,
+// ao_temporal_ps.hlsl AoVehicleId: on a silhouette the block's first sample can be the other surface).
+uint SsrStencilId(uint slot, int2 p) {
+#if SSR_MS
+  const uint id = StencilOf(g_utextures_ms[slot].Load(p, SsrSample0())) >> 2;
+#else
+  const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
+#endif
+  return (id >= 1u && id <= 23u) ? id : 0u;
+}
+uint SsrVehicleIdAt(int cx, int cy) {
+  const uint slot = SsrHi(SsrW(SSR_W_STENCIL));
+  if (!SsrHasSlot(slot)) {
+    return 0u;
+  }
+  if (SsrFlag(SSR_FLAG_HZ)) {
+    return SsrStencilId(slot, int2(cx, cy));
+  }
+  const int2 last = SsrRender() - 1;
+  for (int k = 0; k < 4; ++k) {
+    const uint id = SsrStencilId(slot, min(int2(cx * 2 + (k & 1), cy * 2 + (k >> 1)), last));
+    if (id != 0u) {
+      return id;
+    }
+  }
+  return 0u;
+}
+
+// GB-I2: the game's road reflection view at a place of the picture. The view is the whole screen drawn with the roads' own mirrored geometry into a 256x256 target at the guest's size (an
+// integer multiple above it, side_views.h), whose top left corner is the picture's top left: `word` is SSR_W_ROAD_VIEW (slot, host samples, side), `uv` 0..1 over the picture. Bilinear by hand (the
+// samples of a multisampled target are averaged, as the resolve that makes the game's own texture does), the picture's own colour units. 0 where the word has no slot.
+float3 SsrRoadViewTexel(uint slot, uint samples, int side, int2 p) {
+  const int2 q = clamp(p, int2(0, 0), int2(side - 1, side - 1));
+  if (samples <= 1u) {
+    return g_textures[slot].Load(int3(q, 0)).rgb;
+  }
+  float3 sum = float3(0.0f, 0.0f, 0.0f);
+  [loop] for (uint s = 0u; s < samples; ++s) {
+    sum += g_textures_ms[slot].Load(q, s).rgb;
+  }
+  return sum * (1.0f / float(samples));
+}
+float3 SsrRoadViewAt(uint word, float2 uv) {
+  const uint slot = SsrRoadViewSlot(word);
+  const int side = int(SsrRoadViewSide(word));
+  if (!SsrHasSlot(slot) || side <= 0) {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  const uint samples = SsrRoadViewSamples(word);
+  const float2 pos = uv * float(side) - 0.5f;
+  const int2 p0 = int2(floor(pos));
+  const float2 f = pos - float2(p0);
+  const float3 a = SsrRoadViewTexel(slot, samples, side, p0);
+  const float3 b = SsrRoadViewTexel(slot, samples, side, p0 + int2(1, 0));
+  const float3 c = SsrRoadViewTexel(slot, samples, side, p0 + int2(0, 1));
+  const float3 d = SsrRoadViewTexel(slot, samples, side, p0 + int2(1, 1));
+  return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
 // ---- the colour (colour_post and its mips) ---------------------------------------------------------------------------------------------------------------------------------------------
 float3 SsrColourLevel(uint level, float2 uv) {
   if (level == 0u) {

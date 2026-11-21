@@ -1,6 +1,6 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- screen-space reflections (package GB-I1 of perf/LIGHT-UNIFY.md 11.2, perf/GBUFFER-SURVEY.md 4.2)
+// MCLA GPU renderer -- screen-space reflections (packages GB-I1 and GB-I2 of perf/LIGHT-UNIFY.md 11.2, perf/GBUFFER-SURVEY.md 4.2)
 // ===========================================================================
 // Reflections on the surfaces that show them in the screen's own picture: the wet road at night, the sidewalk, glass, metal, water. A Hi-Z ray march of the shared depth at HALF the picture's size, one
 // GGX-sampled ray a pixel (two at ultra), the colour of what it hits read from the shared colour_post, an accumulation over frames by the virtual image's reprojection, and an additive resolve into the
@@ -26,13 +26,27 @@
 //               accumulated image weighted by depth agreement
 // What no ray finds stays the game's own reflection (the road's planar view, the glass' env map); a car's paint and chrome never take the effect (the class gate), they keep their own.
 //
+// GB-I2 (the three parts that make it a finished effect):
+//   TEMPORAL     the accumulation clips the history to the trace's neighbourhood (mean +- 1.25 sigma inside its min / max: a variance clip), reads no history at the picture's edge, and moves a REFLECTED
+//                VEHICLE's image with the vehicle's own motion: the trace marks a hit on a vehicle's pixel with its stencil ID in the alpha, and the AO's vehicle table (VehicleTableNow: the very rows its own
+//                history uses, vehicle_motion.h) gives that ID's 3x4 (hlsl/ssr_common.hlsli SsrVehicleImage). No row: the image is the world's and the history keeps little (so a car does not smear).
+//   WET ROAD     the game's own scalar, VS c43.x (gReflectionParams.x: 0.095 dry, 1.17 in rain; the census says it is what the road shaders multiply their puddle mask and reflection by), as GB-I1 read it, now
+//                smoothed over a second of TIME (not of frames), with a smooth ramp of the term over the first 0.2 of smoothness above the floor (a road that has just crossed it does not jump to a whole
+//                reflection), and c43.y (the strength the game shows its road view with) next to it. Per-pixel puddles are the game's texture's: the effect has the wetness of the frame, not of the pixel.
+//   FALLBACK     on a ROAD the game's own reflection (the 256 x 256 planar view of the whole screen, side_views.h) is already in the colour. The trace reads that view (the host target of its identity,
+//                found by ScreenReflections::OnTrigger) at the pixel's screen position and brings the DIFFERENCE between the reflection a ray found and the view, so the sharp reflection replaces the
+//                soft one (no doubling) and where the ray found nothing, left the picture or hit a back face the difference is 0 and the game's reflection stays alone (no seam). The share taken out is
+//                mcla_gpu_ssr_fallback (1) times the strength the game shows the view with; 0 adds on top as GB-I1 did. A guard keeps a bad estimate from blacking the road. Other classes (glass, metal,
+//                sidewalk): the game's environment map stays under the term, which is only faded (its dual paraboloid mapping is the game's own and not reproduced here).
+//
 // THE ORDER (LIGHT-UNIFY 5.3): after the light pass (GB-H1: step 7) and the colour capture (8), so that the reflection shows the lights; before the volumetric composite and the glows, which are drawn
 // after the trigger. colour_post is made before the effect adds to the colour: a reflection is not a reflection of a reflection.
 //
 // WHEN IT RUNS (ssr_rules.h Decide): the setting, the pipelines made (in the background: a frame never waits), the play view's frame (not the pause menu's, the garage's or the map's world), the
 // G-buffer's normal plane, the Hi-Z and colour_post (with its mips) in the frame, a size the rule knows, one host sample count for the depth and the planes. The reason is logged when it changes.
 //
-// SETTINGS (all debug-only, live): mcla_gpu_ssr off | high | ultra; mcla_gpu_ssr_view 0..4; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history.
+// SETTINGS (all debug-only, live): mcla_gpu_ssr off | high | ultra; mcla_gpu_ssr_view 0..6; mcla_gpu_ssr_strength; mcla_gpu_ssr_min_smooth; mcla_gpu_ssr_stub; mcla_gpu_ssr_wet; mcla_gpu_ssr_history;
+// mcla_gpu_ssr_fallback (GB-I2); mcla_gpu_ssr_vehicle_rows (GB-I2).
 //
 // CHECK (nothing here was run against the game; ssr_test.cpp pins the maths, the shaders compile for DXIL and SPIR-V): the list is in the RUN PLAN of the commit and in notes\RUNPLAN-gb-i1.txt.
 //
@@ -40,6 +54,7 @@
 // ===========================================================================
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -143,6 +158,8 @@ class ScreenReflections {
   bool force_stub_ = false;
   float wet_override_ = -1.0f;
   float history_override_ = -1.0f;
+  float fallback_setting_ = 1.0f;     // GB-I2: mcla_gpu_ssr_fallback
+  bool vehicle_rows_ = true;          // GB-I2: mcla_gpu_ssr_vehicle_rows
 
   // the images: the trace, and the accumulated image twice (this frame's output and the last frame's)
   HostImage trace_;
@@ -158,6 +175,13 @@ class ScreenReflections {
   ssr::WetVotes wet_votes_;
   float wet_ = 0.0f;
   bool wet_known_ = false;
+  float wet_strength_ = 1.0f;         // GB-I2: VS c43.y, the strength the game shows its road view with (smoothed with the wetness)
+  float wet_raw_ = 0.0f;              // the commonest VS c43.x of the last frame that had a vote (the log)
+  std::chrono::steady_clock::time_point wet_clock_;   // the smoothing is in seconds
+  bool wet_clock_valid_ = false;
+  uint32_t road_logged_ = ~0u;        // the road view's last logged reason
+  bool vehicle_table_logged_ = false;
+  uint64_t vehicle_table_frames_ = 0;
   ssr::HistoryKey last_key_;          // the last frame that ran
   float last_tan_[2] = {0.0f, 0.0f};  // the lens it ran with
   uint64_t frames_ = 0;
