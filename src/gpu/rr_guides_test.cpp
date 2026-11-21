@@ -703,6 +703,12 @@ void RestChecks() {
   Check(hs::RrHitDistance(false, -3.0f) == 0.0f && hs::RrHitDistance(false, nan) == 0.0f && hs::RrHitDistance(false, inf) == 0.0f && hs::RrHitDistance(false, 65504.0f) == 0.0f &&
             rg::HitDistance(false, nan) == 0.0f && rg::HitDistance(false, inf) == 0.0f,
         "a negative, NaN, infinite or sky-sized writer's value is not a distance on a surface: 0");
+  // RR-4: two writers (the screen-space reflections' image and the cars' ray traced one) for a pixel: the larger, a NaN is the other's, none is 0, and the sky stays the sky's
+  Check(rg::CombineHitSources(0.0f, 0.0f) == 0.0f && rg::CombineHitSources(3.0f, 0.0f) == 3.0f && rg::CombineHitSources(0.0f, 2.5f) == 2.5f && rg::CombineHitSources(3.0f, 2.5f) == 3.0f &&
+            rg::CombineHitSources(nan, 2.5f) == 2.5f && rg::CombineHitSources(3.0f, nan) == 3.0f,
+        "RR-4: two hit distance writers for a pixel: the larger wins, a NaN is the other's, neither is 0");
+  Check(rg::HitDistance(false, rg::CombineHitSources(4096.0f, 0.0f)) == 4096.0f && rg::HitDistance(true, rg::CombineHitSources(4096.0f, 1.5f)) == 65504.0f && rg::HitDistance(false, rg::CombineHitSources(nan, nan)) == 0.0f,
+        "a writer's miss distance (4096) is a distance on a surface, the sky is the sky's whatever the writers say, two bad values are the surface's 0");
   Check(hs::RrResponsivity(0.0f, 0.0f) == 0.0f && hs::RrResponsivity(0.3f, 0.6f) == 0.6f && hs::RrResponsivity(0.9f, 0.1f) == 0.9f && hs::RrResponsivity(2.0f, 0.0f) == 1.0f &&
             rg::Responsivity(0.3f, 0.6f) == 0.6f && rg::Responsivity(-1.0f, -1.0f) == 0.0f,
         "the responsivity is the larger of the two masks, between 0 and 1");
@@ -891,6 +897,11 @@ void RulesChecks(const std::string& gpu) {
       Check(Has(cs, "g_responsivity[p] = sky ? 0.0f") && Has(cs, "g_hit[p] = RrHitDistance(sky, source)") && Has(cs, "const bool sky = !(stored > 0.0f);") && Has(cs, "g_normal[p] = float4(px.normal, px.roughness)") &&
                 Has(cs, "g_diffuse[p] = float4(px.diffuse, 1.0f)") && Has(cs, "g_specular[p] = float4(px.specular, 1.0f)"),
             "the pass writes every guide in every pixel: the sky is stored depth 0, the normal's alpha is the roughness, the albedos' alpha is 1");
+      Check(Has(cs, "if (g_push.slots2.z != kNone)") && Has(cs, "source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;") && Has(cs, "if (g_push.slots2.w != kNone)") && Has(cs, "source = max(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);") &&
+                Has(source, "push.slots2[2] = hit_used[0] ? hit_used[0]->slot : rr_guides::kNoSlot;") && Has(source, "push.slots2[3] = hit_used[1] ? hit_used[1]->slot : rr_guides::kNoSlot;") &&
+                Has(source, "plume::RenderTextureBarrier reads[8];") && Has(source, "hit->format == plume::RenderFormat::R16_FLOAT") && Has(source, "hit->width == width && hit->height == height") &&
+                Has(header, "const HostImage* hit[2] = {nullptr, nullptr};") && !Has(header, "hit_slot") && !Has(source, "hit_slot"),
+            "RR-4: the pass reads up to two hit distance writers' images (R16_FLOAT at the render size, each in the read state, the larger distance wins), and the old single slot is gone");
       Check(Has(cs, "g_textures_ms[slot].Load(p, g_push.info.z)") && Has(cs, "#if RR_MS"), "the multisampled variant reads the host sample that is the guest's sample 0 (info.z)");
       Check(Has(source, "push.info[2] = frame.sample0;") && Has(source, "frame.host_samples > 1"), "the host picks the variant by the planes' sample count and passes the guest's sample 0");
       // the pass is Want-driven and gated

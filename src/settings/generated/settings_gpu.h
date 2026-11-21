@@ -573,6 +573,18 @@ class GPUSettings final : public rex::SettingOwner {
     "Only while Ray Reconstruction is the plan (mcla_gpu_dlss_rr on). Live.",
     rex::kDebugOnly, rex::Range{0, 3});
 
+  REX_SETTING(i32, mcla_gpu_dlss_rr_ssr, 1, "Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4a): what the screen-space reflections do while Ray Reconstruction takes the frame. "
+    "1 (the default): they hand it their raw one-ray-a-pixel result straight into the colour (no accumulation over frames of their own: Ray Reconstruction is the denoiser) and write how far each ray went into "
+    "its hit distance guide. 0: they keep their own accumulation even then (the picture to compare with). With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, "
+    "whatever this says. Live.",
+    rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(i32, mcla_gpu_dlss_rr_car_refl, 1, "Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4b): what the ray traced reflections of the cars do while Ray Reconstruction takes the frame. "
+    "1 (the default): the paint reads the trace's raw image (the filter that takes the cone's grain out, mcla_gpu_car_selfrefl_rt_denoise, is skipped: Ray Reconstruction is the denoiser) and the distance of "
+    "each reflection's hits is written into its hit distance guide. 0: the filter runs even then (the picture to compare with). With Ray Reconstruction not the plan nothing changes, whatever "
+    "this says. Live.",
+    rex::kDebugOnly, rex::Range{0, 1});
+
   REX_SETTING(std::string, mcla_gpu_dlss_mode, "dlaa", "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
     "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
     "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
@@ -1697,6 +1709,8 @@ inline auto& mcla_gpu_dlss_mode = g_gpu.mcla_gpu_dlss_mode;
 inline auto& mcla_gpu_dlss_rr = g_gpu.mcla_gpu_dlss_rr;
 inline auto& mcla_gpu_dlss_rr_view = g_gpu.mcla_gpu_dlss_rr_view;
 inline auto& mcla_gpu_dlss_rr_test = g_gpu.mcla_gpu_dlss_rr_test;
+inline auto& mcla_gpu_dlss_rr_ssr = g_gpu.mcla_gpu_dlss_rr_ssr;
+inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;

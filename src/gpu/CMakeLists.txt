@@ -777,6 +777,10 @@ larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
+# RR-4a: the same resolve for a frame DLSS Ray Reconstruction takes (it reads the trace itself: the accumulation does not run), and the pass that writes the reflections' hit distance guide (an R16_FLOAT image
+# of the picture's size). Plain planes only: a raw frame has one host sample.
+larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)
+larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)

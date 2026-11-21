@@ -124,7 +124,7 @@ constexpr uint32_t Groups(uint32_t extent) { return (extent + kGroup - 1) / kGro
 
 struct GuidesPush {
   uint32_t slots[4];   // x RT1's bindless slot, y RT2's, z RT3's, w the kept depth's (R32_FLOAT, 1 near / 0 far)
-  uint32_t slots2[4];  // x the reactive mask's slot, y the transparency mask's (kNoSlot: none), z a hit distance writer's image (kNoSlot: none), w unused
+  uint32_t slots2[4];  // x the reactive mask's slot, y the transparency mask's (kNoSlot: none), z a hit distance writer's image, w a second writer's (kNoSlot: none; RR-4: the reflection effects')
   uint32_t info[4];    // x the width, y the height of the render size, z the host sample that is the guest's sample 0, w unused
   float right[4];      // xyz the camera's right axis in world space, w tan of half the horizontal field of view
   float up[4];         // xyz the up axis, w tan of half the vertical field of view
@@ -303,6 +303,14 @@ inline Pixel SurfacePixel(const float rt1[2], const float rt2[4], const float rt
 inline float HitDistance(bool sky, float source) {
   if (sky) return kSkyHitDistance;
   return (source > 0.0f && source < kSkyHitDistance) ? source : 0.0f;
+}
+
+// RR-4: what the pass makes of the two writers' values for a pixel (hlsl/rr_guides_cs.hlsl: source = max(first, second), HLSL's max keeps the other where one is NaN): the larger, so the screen-space
+// reflections' and the cars' ray traced ones, which never trace the same pixel, coexist; where neither wrote the value is 0 and HitDistance makes it the surface's.
+inline float CombineHitSources(float first, float second) {
+  if (std::isnan(first)) return second;
+  if (std::isnan(second)) return first;
+  return std::max(first, second);
 }
 
 // RrResponsivity.

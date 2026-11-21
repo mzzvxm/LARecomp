@@ -95,7 +95,8 @@ inline constexpr uint32_t kVolume = 1u << 20;        // the volumetric light's i
 inline constexpr uint32_t kShafts = 1u << 21;        // the sun shafts' light image (shafts.h)
 inline constexpr uint32_t kCarHistory = 1u << 22;    // the car self-reflection's history image and the ray traced reflection of its texels: read by the NEXT frame's car paint draws
 inline constexpr uint32_t kRrGuides = 1u << 23;      // DLSS Ray Reconstruction's five guide images at the render size, made at the anchor by the guide pass (rr_guides.h), only while it is wanted
-inline constexpr uint32_t kAll = (1u << 24) - 1;
+inline constexpr uint32_t kRrHitSsr = 1u << 24;      // RR-4a: the screen-space reflections' hit distance image (R16_FLOAT, the picture's size), written at the trigger in a frame DLSS Ray Reconstruction takes (raw mode), read by the guide pass
+inline constexpr uint32_t kAll = (1u << 25) - 1;
 constexpr const char* NameOf(uint32_t bit) {
   switch (bit) {
     case kLinDepth: return "lin_depth";
@@ -122,6 +123,7 @@ constexpr const char* NameOf(uint32_t bit) {
     case kShafts: return "shafts";
     case kCarHistory: return "car history";
     case kRrGuides: return "RR guides";
+    case kRrHitSsr: return "RR hit distance (SSR)";
     default: break;
   }
   return "?";
@@ -350,9 +352,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .label_file = "screen_shared.cpp", .label = "screen colour post", .makes = data::kColourPost | data::kHistory,
      .deps = {{{Step::kAoApply, "the colour as the occlusion left it"}, {Step::kLocalLights, "UNCAPPED and after the deferred lights: the reflections must see the lights"}}},
      .note = "made only while a consumer wants colour_post; before SSR adds to the colour (a reflection is not a reflection of a reflection)"},
-    {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list)",
+    {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list, raw_ssr)",
      .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr temporal", "ssr apply"}}, .closing_label = "after ssr",
-     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
+     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .makes = data::kRrHitSsr, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
      .deps = {{{Step::kColourPost, "reads the capture, which must be made before the effect adds to the colour"}, {Step::kLocalLights, "the reflection shows the lights"}}},
      .note = "the last pass that adds to the colour at the trigger: after the capture it reads and the light pass it shows, before the car history, whose vehicle-only image it does not touch (a vehicle's "
              "pixel takes none of the effect). GPU time: the labels 'ssr trace', 'ssr temporal', 'ssr apply' are its own (the chains sum the labels that start with 'ssr '), 'after ssr' closes the span and is "
@@ -377,13 +379,14 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     // ======================================================== the anchor (TemporalSystem::RecordUpscale) ===========================================
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",
-     .reads = data::kPlanes, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
+     .reads = data::kPlanes, .soft_reads = data::kRrHitSsr, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
      .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kShaftsComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
      .note = "RR-2: ONE compute pass, only while the plan wants the guides (the debug switch mcla_gpu_dlss_rr = on with DLSS, or a guide view): the planes (RT1 world normal, RT2 albedo, RT3 material, at the host "
              "sample that is the guest's sample 0), the kept depth and the upscaler's masks to the five guides (hlsl/rr_guides_common.hlsli). It runs right before the backend gets the frame, the guides in the "
              "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3: "
-             "RecordRrGuides hands the images (or their absence) to NoteRrGuides right after the pass; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes a reflection "
-             "effect's image (RR-4)"},
+             "RecordRrGuides hands the images (or their absence) to NoteRrGuides right after the pass; the hit distance is written by the pass (0 on a surface, 65504 in the sky) and takes the "
+             "reflection effects' images (RR-4: a soft read of kRrHitSsr, made at the trigger by the effect when it ran raw in this frame and handed over by Scene through "
+             "TemporalSystem::NoteRrHit; the larger distance wins where several hold one)"},
     {.step = Step::kUpscale, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "the upscaler's dispatch (Ray Reconstruction where its guides and context are there, else Super Resolution)",
      .file = "temporal.cpp", .call = "backend->Upscale(list, in)", .label_file = "temporal.cpp", .label = "temporal upscale", .soft_reads = data::kRrGuides,
      .deps = {{{Step::kRrGuides, "Ray Reconstruction takes the guides the pass made, in the state it left them"}}},

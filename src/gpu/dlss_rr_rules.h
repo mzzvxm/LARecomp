@@ -717,6 +717,86 @@ inline constexpr uint64_t kTestPhaseFrames = 30;
 constexpr bool TestPhaseActive(uint64_t frame) { return (frame / kTestPhaseFrames) % 2 == 1; }
 inline constexpr uint32_t kTestErrorFrames = FailureBook::kMaxErrors;
 
+// --- RR-4: the effects' raw modes ------------------------------------------------------------------------------------------------------------------------
+
+// Ray Reconstruction is the denoiser of what its frame holds noisy. While it takes the frame, an effect whose result is noisy by design hands it that result RAW: the current frame's own samples in
+// the colour, no filter of its own on the way (its temporal accumulation, its a-trous: RR cleans the picture, and filtering twice is blur), and, in the guide pass's hit distance input
+// (rr_guides.h Inputs::hit), how far the reflection it traced went from the surface, which is what RR moves the reflection's history by. The first two effects (RR-4a, RR-4b):
+//   kSsr      screen-space reflections: the trace's one ray a pixel straight into the colour, the accumulation skipped, the distance of the ray's hit written
+//   kCarRefl  the ray traced reflection of the player's car (and the cars beside it): the trace's image is read raw by the paint (the a-trous passes skipped), the distance of the cone's hits written
+// Each has its own debug switch (the A/B: mcla_gpu_dlss_rr_ssr, mcla_gpu_dlss_rr_car_refl: 1 is raw while RR takes the frame, 0 keeps the effect's own filter even then), and with the plan
+// not RR (Super Resolution, FSR, no upscaler, the row's OURS) nothing here is true, so the effect runs as it always did, the same passes with the same shaders.
+//
+// "RR takes the frame" is what the frame boundary can know: the plan says RR (and DLSS is the upscaler), nothing failed, the RR context is made, and this frame is upscaled at all (armed) and
+// is the play view (the pause, garage and map worlds carry no guides: a Super Resolution frame, whose noise nothing cleans). A frame that turns out to be Super Resolution's although these held
+// (the guide pass's pipeline was still being made, an evaluation failed and the backend gave it to SR in the same call) shows the raw noise for that frame: rare, counted by the census.
+enum class RawEffect : uint8_t { kSsr, kCarRefl, kCount };
+constexpr const char* RawEffectName(RawEffect e) {
+  switch (e) {
+    case RawEffect::kSsr: return "screen-space reflections";
+    case RawEffect::kCarRefl: return "the cars' ray traced reflections";
+    case RawEffect::kCount: break;
+  }
+  return "?";
+}
+
+struct RawFrame {
+  bool plan_rr = false;        // the plan (SelectDenoiser) says RR and the upscaler is DLSS
+  bool failed = false;         // RR was dropped for the session
+  bool context_ready = false;  // the RR context exists, its feature made
+  bool armed = false;          // this frame is upscaled (the upscaler's context is ready and the frame jitters)
+  bool play_view = false;      // the frame's main view is the play view (no pause, garage or map world)
+};
+enum class RawWhy : uint8_t {
+  kRaw,           // raw: RR takes this frame and the effect hands it its noise
+  kPlanOurs,      // the plan is not RR (Super Resolution, FSR, no upscaler, OURS, no consumer, no guides yet, no room ...)
+  kFailed,        // RR was dropped for the session
+  kNoContext,     // the RR context is being made (or was not asked for): Super Resolution takes the frames meanwhile
+  kNoRrFrame,     // this frame is not one RR takes: not upscaled, or not the play view
+  kSwitchOff,     // the effect's debug switch is 0: its own filter stays (the A/B)
+  kCount,
+};
+constexpr const char* RawWhyText(RawWhy w) {
+  switch (w) {
+    case RawWhy::kRaw: return "raw: Ray Reconstruction takes the frame and cleans the effect's noise";
+    case RawWhy::kPlanOurs: return "the plan is not Ray Reconstruction";
+    case RawWhy::kFailed: return "Ray Reconstruction failed in this session";
+    case RawWhy::kNoContext: return "the Ray Reconstruction context is not made yet";
+    case RawWhy::kNoRrFrame: return "this frame is not one Ray Reconstruction takes (not upscaled, or not the play view)";
+    case RawWhy::kSwitchOff: return "the effect's debug switch is 0 (it keeps its own filter)";
+    case RawWhy::kCount: break;
+  }
+  return "?";
+}
+// The first reason that applies is the answer; the switch is the last word, so a switch at 0 reads "the switch" only where raw would have been chosen.
+constexpr RawWhy RawWhyOf(const RawFrame& f, bool switch_on) {
+  if (!f.plan_rr) return RawWhy::kPlanOurs;
+  if (f.failed) return RawWhy::kFailed;
+  if (!f.context_ready) return RawWhy::kNoContext;
+  if (!f.armed || !f.play_view) return RawWhy::kNoRrFrame;
+  if (!switch_on) return RawWhy::kSwitchOff;
+  return RawWhy::kRaw;
+}
+struct RawModes {
+  RawWhy ssr = RawWhy::kPlanOurs;
+  RawWhy car_refl = RawWhy::kPlanOurs;
+  constexpr bool Ssr() const { return ssr == RawWhy::kRaw; }
+  constexpr bool CarRefl() const { return car_refl == RawWhy::kRaw; }
+  constexpr bool operator==(const RawModes&) const = default;
+};
+constexpr RawModes RawModesOf(const RawFrame& f, bool switch_ssr, bool switch_car_refl) { return {RawWhyOf(f, switch_ssr), RawWhyOf(f, switch_car_refl)}; }
+// The debug switches' value: 0 keeps the effect's filter, anything else (the default 1) is raw while RR takes the frame.
+constexpr bool RawSwitchOn(int value) { return value != 0; }
+
+// What a raw effect writes for a pixel: the guide pass's hit distance is 0 where the surface itself is the reflection (nothing traced), the ray's length where one hit, and kRawMissDistance where
+// the ray found nothing (the reflection is the environment's, far behind: the same 4096 the reflections' own virtual image takes, ssr_rules.h). Always under the sky's value, which is the sky's alone.
+inline constexpr float kRawMissDistance = 4096.0f;
+constexpr float RawHitDistance(bool traced, bool hit, float length) {
+  if (!traced) return 0.0f;
+  if (!hit) return kRawMissDistance;
+  return length > 0.0f ? (length < kRawMissDistance ? length : kRawMissDistance) : 0.0f;
+}
+
 // --- the plugin -------------------------------------------------------------------------------------------------------------------------------------------
 
 // The files RR needs next to the exe (cmake/FetchStreamline.cmake copies them): the plugin, checked for NVIDIA's signature before anything is loaded, and its network,

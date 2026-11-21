@@ -2969,6 +2969,30 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_dlss_rr_ssr": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4a): what the screen-space reflections do while Ray Reconstruction takes the frame. \"\n    \"1 (the default): they hand it their raw one-ray-a-pixel result straight into the colour (no accumulation over frames of their own: Ray Reconstruction is the denoiser) and write how far each ray went into \"\n    \"its hit distance guide. 0: they keep their own accumulation even then (the picture to compare with). With Ray Reconstruction not the plan (Super Resolution, FSR, no upscaler) nothing changes, \"\n    \"whatever this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_dlss_rr_car_refl": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (A/B, Ray Reconstruction, perf/DLSS-RR.md, RR-4b): what the ray traced reflections of the cars do while Ray Reconstruction takes the frame. \"\n    \"1 (the default): the paint reads the trace's raw image (the filter that takes the cone's grain out, mcla_gpu_car_selfrefl_rt_denoise, is skipped: Ray Reconstruction is the denoiser) and the distance of \"\n    \"each reflection's hits is written into its hit distance guide. 0: the filter runs even then (the picture to compare with). With Ray Reconstruction not the plan nothing changes, whatever \"\n    \"this says. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 1}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_dlss_mode": {
   "type": "std::string",
   "default": "\"dlaa\"",

@@ -114,8 +114,8 @@ void RrGuides::Shutdown() {
     passes_->precache().Stop();
   }
   if (passes_run_ != 0 || views_run_ != 0 || not_ready_ != 0 || refused_ != 0) {
-    REXLOG_INFO("{} {} guide pass(es), {} debug view(s); {} frame(s) waited for the pipeline, {} frame(s) had no guides (the gate: no G-buffer, a plane missing, the pause or map view)", kPrefix,
-                passes_run_, views_run_, not_ready_, refused_);
+    REXLOG_INFO("{} {} guide pass(es) ({} reflection hit distance image(s) read), {} debug view(s); {} frame(s) waited for the pipeline, {} frame(s) had no guides (the gate: no G-buffer, a plane missing, the pause or map view)",
+                kPrefix, passes_run_, hits_used_, views_run_, not_ready_, refused_);
   }
   // The GPU is idle and the heap goes later: the slots are not handed back (CarRtRefl::Shutdown).
   for (HostImage& image : images_) {
@@ -264,6 +264,15 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   const bool have_transparency = in.transparency && in.transparency->texture && in.transparency->slot != kInvalidBindlessSlot && in.transparency->width == width &&
                                  in.transparency->height == height;
 
+  // RR-4: the reflection effects' hit distance images of this frame, where they are the right ones (the render size, readable): up to two sources.
+  const HostImage* hit_used[2] = {nullptr, nullptr};
+  for (int i = 0; i < 2; ++i) {
+    const HostImage* hit = in.hit[i];
+    if (hit && hit->texture && hit->slot != kInvalidBindlessSlot && hit->width == width && hit->height == height && hit->format == plume::RenderFormat::R16_FLOAT) {
+      hit_used[i] = hit;
+    }
+  }
+
   rr_guides::GuidesPush push = {};
   push.slots[0] = frame.slot[gbuffer::kPlaneNormal];
   push.slots[1] = frame.slot[gbuffer::kPlaneAlbedo];
@@ -271,8 +280,8 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   push.slots[3] = in.depth->slot;
   push.slots2[0] = have_mask ? in.mask->slot : rr_guides::kNoSlot;
   push.slots2[1] = have_transparency ? in.transparency->slot : rr_guides::kNoSlot;
-  push.slots2[2] = in.hit_slot;
-  push.slots2[3] = 0;
+  push.slots2[2] = hit_used[0] ? hit_used[0]->slot : rr_guides::kNoSlot;
+  push.slots2[3] = hit_used[1] ? hit_used[1]->slot : rr_guides::kNoSlot;
   push.info[0] = width;
   push.info[1] = height;
   push.info[2] = frame.sample0;
@@ -289,7 +298,7 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   }
 
   // The planes, the kept depth and the masks are read by a compute shader here: the compute stage's read state (as RecordUpscale does for the depth and the vectors).
-  plume::RenderTextureBarrier reads[6];
+  plume::RenderTextureBarrier reads[8];
   uint32_t reads_count = 0;
   for (uint32_t plane = 0; plane < gbuffer::kPlaneCount; ++plane) {
     reads[reads_count++] = plume::RenderTextureBarrier(gbuffer_->PlaneTexture(gbuffer::Plane(plane)), Layout::SHADER_READ);
@@ -300,6 +309,11 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   }
   if (have_transparency) {
     reads[reads_count++] = plume::RenderTextureBarrier(in.transparency->texture.get(), Layout::SHADER_READ);
+  }
+  for (const HostImage* hit : hit_used) {
+    if (hit) {
+      reads[reads_count++] = plume::RenderTextureBarrier(hit->texture.get(), Layout::SHADER_READ);
+    }
   }
   plume::RenderTextureBarrier writes[rr_guides::kGuideCount];
   for (size_t i = 0; i < rr_guides::kGuideCount; ++i) {
@@ -344,6 +358,9 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   fill(guides_.responsivity, images_[size_t(rr_guides::Guide::kResponsivity)]);
   ready_ = true;
   ++passes_run_;
+  for (const HostImage* hit : hit_used) {
+    hits_used_ += hit ? 1u : 0u;
+  }
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first guide pass: frame {}, {}x{} render size, planes read at host sample {} of {}, the kept depth, {} and {} (reactive and transparency masks); five images {:.1f} MiB "

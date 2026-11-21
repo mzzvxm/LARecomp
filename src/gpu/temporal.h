@@ -293,6 +293,10 @@ class TemporalSystem {
     // view, +y down (zero when not armed). The projection of the vertex shader epilogue shifts
     // the image by +x to the right and +y down by that much.
     bool armed = false;
+    // RR-4: what the frame boundary knows of whether Ray Reconstruction takes this frame (RawModes adds the view); all false with the plan not RR.
+    rr::RawFrame raw;
+    bool raw_counted = false;   // RawModes counted this frame's answer already (the census)
+    bool raw_any = false;       // some effect was told to run raw in this frame
     uint32_t jitter_index = 0;  // 0 .. phase_count - 1
     uint32_t phase_count = kPhasesAtRatio1;
     float jitter[2] = {};
@@ -447,6 +451,16 @@ class TemporalSystem {
   }
   // The plan this frame: whether Ray Reconstruction does the denoising and the upscale (and why not).
   const rr::Plan& DenoiserPlan() const { return rr_plan_; }
+  // RR-4: which effects run RAW this frame, because Ray Reconstruction takes the frame and is their denoiser (dlss_rr_rules.h RawModes: the plan says RR, its context is made, nothing failed, the frame is
+  // upscaled and the play view, and the effect's own debug switch is on). Asked by the effects at their trigger (Scene), after the frame's main view is known; with the plan not RR it says "not raw" for
+  // every effect and nothing else happens (no log, no count). Logs the answer each time it changes once the plan has been RR. Render thread.
+  rr::RawModes RawModes();
+  // RR-4: the effects' hit distance images of this frame (R16_FLOAT at the render size; null where an effect did not write one), handed over by Scene after the trigger's passes and read by the guide
+  // pass at the anchor (rr_guides.h Inputs::hit): [0] the screen-space reflections', [1] the cars' ray traced reflections'. Forgotten at the next frame boundary.
+  void NoteRrHit(const HostImage* ssr, const HostImage* car_refl) {
+    rr_hit_[0] = ssr;
+    rr_hit_[1] = car_refl;
+  }
   // The guide pass (rr_guides.h, RR-2): made and owned by the Renderer, run by RecordUpscale right before the backend is given the frame, and asked at each frame boundary (UpdateDenoiserPlan) whether
   // it is wanted. RecordRrGuides passes its guides() and ready() to NoteRrGuides. Null: no guide pass (a build or a Renderer without one).
   void SetRrGuidePass(RrGuides* pass) { rr_pass_ = pass; }
@@ -514,6 +528,10 @@ class TemporalSystem {
     uint64_t rr_frames = 0;
     uint64_t rr_sr_frames[size_t(rr::DispatchWhy::kCount)] = {};
     uint64_t rr_backend_fallbacks = 0;
+    // RR-4: frames an effect was asked to run raw (by effect: rr::RawEffect), and of the frames that were asked for any effect the ones that Super Resolution took after all (the guide pass's pipeline
+    // was being made, the backend refused the guides or an evaluation failed: the noise of those frames is not cleaned).
+    uint64_t rr_raw_frames[size_t(rr::RawEffect::kCount)] = {};
+    uint64_t rr_raw_but_sr = 0;
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
@@ -797,6 +815,9 @@ class TemporalSystem {
   BackendRequest request_;
   // Ray Reconstruction: this frame's plan, the guide images the frame's guide pass handed over (NoteRrGuides) and the plan last logged.
   rr::Plan rr_plan_;
+  rr::RawModes rr_raw_last_;               // RR-4: the raw answer last logged
+  bool rr_raw_logged_ = false;
+  const HostImage* rr_hit_[2] = {nullptr, nullptr};   // RR-4: this frame's hit distance images (NoteRrHit)
   RrGuides* rr_pass_ = nullptr;  // the guide pass (SetRrGuidePass)
   TemporalGuides rr_guides_;
   bool rr_guides_ready_ = false;

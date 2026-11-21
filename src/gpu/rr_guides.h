@@ -17,7 +17,8 @@
 // WHAT IT HANDS OVER. guides() is the TemporalGuides the frame's evaluate path tags (temporal_backend.h), ready() says that this frame's images were made. TemporalSystem::RecordRrGuides passes both to
 // TemporalSystem::NoteRrGuides right after Record (RR-3): the frame's dispatch is Ray Reconstruction's only with them (and the plan, and the RR context: dlss_rr_rules.h ChooseDispatch), the next frame's
 // plan reads that they were there. The hit distance image is written by this pass (0 on a surface,
-// 65504 in the sky) and takes a writer's image through Inputs::hit_slot: the reflection effects of RR-4 draw their distances into an image of their own and hand its slot over.
+// 65504 in the sky) and takes up to two writers' images through Inputs::hit (RR-4: the screen-space reflections' and the cars' ray traced ones, each drawing its distances into an R16F image of its
+// own at the render size, written in the frame's trigger and handed over by TemporalSystem::NoteRrHit; the larger distance stays where both hold one).
 //
 // THE DEBUG VIEW (mcla_gpu_dlss_rr_view 1..6): after the upscaler has written its output, RecordView draws one guide over it (hlsl/rr_guides_view_cs.hlsl); the game's tone map and UI are drawn over
 // that as usual. It needs the guide pass to have run in the frame and an upscaler to be running.
@@ -62,7 +63,9 @@ class RrGuides {
     const HostImage* depth = nullptr;          // the kept depth: R32_FLOAT, render size, 1 near / 0 far, SHADER_READ
     const HostImage* mask = nullptr;           // the upscaler's reactive mask (R8_UNORM, render size), or null
     const HostImage* transparency = nullptr;   // the transparency and composition mask, or null
-    uint32_t hit_slot = rr_guides::kNoSlot;    // a hit distance writer's image (RR-4), or none
+    // RR-4: the hit distance writers' images of THIS frame (null: none): R16_FLOAT at the render size, the distance in x (0: nothing traced there), in SHADER_READ. [0] the screen-space reflections'
+    // (ssr.h), [1] the cars' ray traced reflections' (car_rt_refl.h). A writer's image that is not the render size, or has no texture or slot, is left out (the other still counts).
+    const HostImage* hit[2] = {nullptr, nullptr};
     // The camera of the frame's anchor: its axes in the world and the projection's numbers (temporal::Camera).
     float right[3] = {};
     float up[3] = {};
@@ -166,6 +169,7 @@ class RrGuides {
   std::array<bool, 8> refused_logged_{};
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
+  uint64_t hits_used_ = 0;   // hit distance images of the reflection effects the pass read (RR-4), summed over the frames
   uint64_t views_run_ = 0;
   uint64_t not_ready_ = 0;   // frames the pass was wanted and the pipeline was still being made
   uint64_t refused_ = 0;     // frames the pass was wanted and the frame could not have guides

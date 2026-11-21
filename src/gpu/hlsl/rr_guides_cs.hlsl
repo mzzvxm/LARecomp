@@ -7,7 +7,7 @@
 //   u0  diffuse albedo      RGBA16F, alpha 1
 //   u1  specular albedo     RGBA16F, alpha 1
 //   u2  normal + roughness  RGBA16F: the world normal, the linear roughness in alpha
-//   u3  hit distance        R16F: 0 on a surface, 65504 in the sky, a writer's distance where one is given (RR-4's reflections)
+//   u3  hit distance        R16F: 0 on a surface, 65504 in the sky, a writer's distance where one is given (RR-4's reflections: the screen-space reflections' image and the cars' ray traced one; the larger wins)
 //   u4  responsivity        R16F: the larger of the reactive and the transparency masks
 //
 // A pixel whose stored depth is 0 is the sky (the defaults of the integration guide). A surface pixel whose RT1 holds no normal (a shader with no G-buffer variant, a mirror) gets the normal of the
@@ -27,7 +27,7 @@ struct RrGuidesPush
 {
     // x RT1's bindless slot, y RT2's, z RT3's, w the kept depth's
     uint4 slots;
-    // x the reactive mask's slot, y the transparency mask's (0xFFFFFFFF: none), z a hit distance writer's image (0xFFFFFFFF: none), w unused
+    // x the reactive mask's slot, y the transparency mask's (0xFFFFFFFF: none), z a hit distance writer's image, w a second writer's (0xFFFFFFFF: none; R16F at the render size, the distance in x)
     uint4 slots2;
     // x the width, y the height of the render size, z the host sample that is the guest's sample 0
     uint4 info;
@@ -121,6 +121,12 @@ void main(uint3 id : SV_DispatchThreadID)
     if (g_push.slots2.z != kNone)
     {
         source = g_textures[g_push.slots2.z].Load(int3(p, 0)).x;
+    }
+    if (g_push.slots2.w != kNone)
+    {
+        // RR-4: a second writer (the cars' ray traced reflections beside the screen-space ones): where both hold a distance the larger stays (the two never trace the same pixel: a vehicle's pixel takes
+        // none of the screen-space effect). The max keeps the other one where a source is NaN.
+        source = max(source, g_textures[g_push.slots2.w].Load(int3(p, 0)).x);
     }
     const bool sky = !(stored > 0.0f);
     RrPixel px = RrSkyPixel();

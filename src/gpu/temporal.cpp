@@ -1554,6 +1554,8 @@ void TemporalSystem::RecordRrGuides(plume::RenderCommandList* list, const Tempor
   in.depth = kept.depth;
   in.mask = kept.mask;
   in.transparency = kept.transparency;
+  in.hit[0] = rr_hit_[0];  // RR-4: the reflection effects' hit distance images of this frame (the guide pass checks each one's size and format)
+  in.hit[1] = rr_hit_[1];
   in.pause_view = frame_.view == temporal::View::kPause;
   for (int i = 0; i < 3; ++i) {
     in.right[i] = float(cam.right[i]);
@@ -1678,6 +1680,14 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   // main view draw says so (StartRun).
   frame_.armed = ran_last_ && !ViewDisarmed(run_view_) && !VectorsOnly() &&
                  (effective_ == Upscaler::kOff || ready);
+  // RR-4: what the boundary knows of whether Ray Reconstruction takes this frame (RawModes adds the play view, known at the first main draw). Nothing is asked of Streamline or the backend unless the
+  // plan is RR: with Super Resolution, FSR or no upscaler the facts stay false.
+  frame_.raw.plan_rr = rr_plan_.use_rr && effective_ == Upscaler::kDlss;
+  if (frame_.raw.plan_rr) {
+    frame_.raw.failed = dlss::GetRayReconstructionFacts().failed;
+    frame_.raw.context_ready = ready && dlss_ && rr_context_asked_ && dlss_->CompanionReady(rr_request_);
+    frame_.raw.armed = frame_.armed;
+  }
   if (frame_.armed) {
     // The sequence's length follows the ratio of the last accepted frame (8 at 1, 18 at 1.5, 32 at
     // 2, 72 at 3): the upscaler's own count for its context when it has one.
@@ -1707,6 +1717,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
 }
 
 void TemporalSystem::UpdateDenoiserPlan() {
+  rr_hit_[0] = rr_hit_[1] = nullptr;  // RR-4: last frame's hit distance images are not this frame's
   rr::PlanInputs in;
   // The row DENOISER does not exist yet (package RR-5): the debug switch stands for it, "on" is the row's RR, the others leave AUTO.
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
@@ -1857,7 +1868,32 @@ rr::DispatchChoice TemporalSystem::ChooseRrDispatch() const {
   return rr::ChooseDispatch(in);
 }
 
+rr::RawModes TemporalSystem::RawModes() {
+  rr::RawFrame f = frame_.raw;
+  // The frame's own view is known from its first main draw (OnMainView); a frame that has seen none, and the pause, garage and map worlds, are not ones Ray Reconstruction takes (no guides there).
+  f.play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
+  const rr::RawModes modes = rr::RawModesOf(f, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_ssr.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_car_refl.Get())));
+  if (f.plan_rr || rr_raw_logged_) {
+    if (!rr_raw_logged_ || !(modes == rr_raw_last_)) {
+      rr_raw_logged_ = true;
+      rr_raw_last_ = modes;
+      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
+                  rr::RawEffectName(rr::RawEffect::kCarRefl), rr::RawWhyText(modes.car_refl));
+    }
+    if (!frame_.raw_counted) {
+      frame_.raw_counted = true;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kSsr)] += modes.Ssr() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)] += modes.CarRefl() ? 1 : 0;
+    }
+    frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl();
+  }
+  return modes;
+}
+
 void TemporalSystem::NoteRrDispatch(const rr::DispatchChoice& choice, bool used_rr, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height) {
+  if (frame_.raw_any && !used_rr) {
+    ++window_.rr_raw_but_sr;  // an effect handed its noise over raw in a frame that Super Resolution upscaled after all: nothing cleaned it
+  }
   if (used_rr) {
     ++window_.rr_frames;
     if (!rr_first_frame_logged_) {
@@ -2614,10 +2650,13 @@ void TemporalSystem::Report() {
                                 : (dlss_ && dlss_->CompanionReady(rr_request_)) ? std::format("made, about {} MB", rr_status.companion_bytes >> 20)
                                                                                  : std::string("being made");
     REXLOG_INFO("{} Ray Reconstruction: the plan is '{}' ({}); upscaled frames that were Ray Reconstruction's {}, Super Resolution's although the plan wanted RR (no guides {}, context not made "
-                "{}, dropped {}, refused by the backend {}) | context: {} | {}",
+                "{}, dropped {}, refused by the backend {}) | context: {} | {}{}",
                 kPrefix, rr_plan_last_.use_rr ? "Ray Reconstruction" : "ours", rr::WhyText(rr_plan_last_.why), w.rr_frames, w.rr_sr_frames[size_t(rr::DispatchWhy::kNoGuides)],
                 w.rr_sr_frames[size_t(rr::DispatchWhy::kContextNotReady)], w.rr_sr_frames[size_t(rr::DispatchWhy::kRrFailed)], w.rr_backend_fallbacks, context,
-                dlss_ ? dlss_->CompanionSummary() : std::string("no DLSS backend"));
+                dlss_ ? dlss_->CompanionSummary() : std::string("no DLSS backend"),
+                rr_raw_logged_ ? std::format(" | raw modes (RR-4): frames asked: screen-space reflections {}, the cars' reflections {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
+                                             w.rr_raw_frames[size_t(rr::RawEffect::kSsr)], w.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)], w.rr_raw_but_sr)
+                               : std::string());
   }
 }
 

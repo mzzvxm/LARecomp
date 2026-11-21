@@ -795,9 +795,75 @@ void CheckLiveSwitch() {
   Check(y.requests == 1 && y.log.back().kind == Dispatch::kRayReconstruction, "room again: the context is made and RR runs");
 }
 
+// RR-4: the effects' raw modes. The table over every frame and both switches, against a second statement of the rule (the conjunction, and the order of the reasons).
+void CheckRawModes() {
+  int raw_count = 0;
+  bool identity_when_plan_not_rr = true;
+  bool all_reasons_in_order = true;
+  bool agrees = true;
+  for (int bits = 0; bits < 32; ++bits) {
+    RawFrame f;
+    f.plan_rr = (bits & 1) != 0;
+    f.failed = (bits & 2) != 0;
+    f.context_ready = (bits & 4) != 0;
+    f.armed = (bits & 8) != 0;
+    f.play_view = (bits & 16) != 0;
+    for (int sw = 0; sw < 4; ++sw) {
+      const bool s_ssr = (sw & 1) != 0;
+      const bool s_car = (sw & 2) != 0;
+      const RawModes m = RawModesOf(f, s_ssr, s_car);
+      const bool want_ssr = f.plan_rr && !f.failed && f.context_ready && f.armed && f.play_view && s_ssr;
+      const bool want_car = f.plan_rr && !f.failed && f.context_ready && f.armed && f.play_view && s_car;
+      agrees = agrees && m.Ssr() == want_ssr && m.CarRefl() == want_car;
+      raw_count += int(m.Ssr()) + int(m.CarRefl());
+      if (!f.plan_rr) {
+        // the plan is not RR (Super Resolution, FSR, no upscaler, OURS): the effects run as they always did
+        identity_when_plan_not_rr = identity_when_plan_not_rr && !m.Ssr() && !m.CarRefl() && m.ssr == RawWhy::kPlanOurs && m.car_refl == RawWhy::kPlanOurs;
+      }
+      // the reasons come in a fixed order, and the switch is the last word
+      const RawWhy expect_ssr = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame : !s_ssr ? RawWhy::kSwitchOff : RawWhy::kRaw;
+      const RawWhy expect_car = !f.plan_rr ? RawWhy::kPlanOurs : f.failed ? RawWhy::kFailed : !f.context_ready ? RawWhy::kNoContext : (!f.armed || !f.play_view) ? RawWhy::kNoRrFrame : !s_car ? RawWhy::kSwitchOff : RawWhy::kRaw;
+      all_reasons_in_order = all_reasons_in_order && m.ssr == expect_ssr && m.car_refl == expect_car;
+    }
+  }
+  Check(agrees, "raw is exactly: the plan says RR, nothing failed, the context is made, the frame is upscaled and a play frame, and the effect's own switch is on (32 frames x 4 switch cells)");
+  Check(raw_count == 4, "one frame of the table is raw: in the four switch cells that is 2 + 2 raw effects (each effect is raw in the two cells where its own switch is on)");
+  Check(identity_when_plan_not_rr, "with the plan not RR no effect is raw, whatever else is true (Super Resolution, FSR, no upscaler, OURS: the effects run as they did)");
+  Check(all_reasons_in_order, "the reasons come in order: plan, failed, context, frame, switch");
+  {
+    RawFrame ok;
+    ok.plan_rr = ok.context_ready = ok.armed = ok.play_view = true;
+    const RawModes both = RawModesOf(ok, true, true);
+    const RawModes one = RawModesOf(ok, true, false);
+    const RawModes none = RawModesOf(ok, false, false);
+    Check(both.Ssr() && both.CarRefl() && one.Ssr() && !one.CarRefl() && one.car_refl == RawWhy::kSwitchOff && !none.Ssr() && !none.CarRefl(), "one switch at a time: each effect has its own, and 0 keeps its own filter while RR takes the frame");
+    Check(both == RawModesOf(ok, true, true) && !(both == one), "the modes compare");
+    RawFrame pause = ok;
+    pause.play_view = false;
+    RawFrame plain = ok;
+    plain.armed = false;
+    Check(RawModesOf(pause, true, true).ssr == RawWhy::kNoRrFrame && RawModesOf(plain, true, true).car_refl == RawWhy::kNoRrFrame, "the pause, garage and map worlds and an unarmed frame are not raw (a Super Resolution frame has nobody to clean the noise)");
+  }
+  Check(RawSwitchOn(1) && RawSwitchOn(2) && !RawSwitchOn(0), "the debug switches: 0 off, anything else on (the default is 1)");
+  for (int w = 0; w < int(RawWhy::kCount); ++w) {
+    const std::string text = RawWhyText(RawWhy(w));
+    Check(!text.empty() && text != "?", "raw reason " + std::to_string(w) + " has a text");
+  }
+  for (int e = 0; e < int(RawEffect::kCount); ++e) {
+    const std::string name = RawEffectName(RawEffect(e));
+    Check(!name.empty() && name != "?", "raw effect " + std::to_string(e) + " has a name");
+  }
+  // the hit distance a raw effect writes
+  Check(RawHitDistance(false, false, 0.0f) == 0.0f && RawHitDistance(false, true, 5.0f) == 0.0f, "nothing traced: 0 (the surface itself is the reflection)");
+  Check(RawHitDistance(true, true, 3.5f) == 3.5f && RawHitDistance(true, true, 0.0f) == 0.0f && RawHitDistance(true, true, -1.0f) == 0.0f, "a hit: the ray's length (0 for none)");
+  Check(RawHitDistance(true, false, 0.0f) == kRawMissDistance && kRawMissDistance == 4096.0f && kRawMissDistance < kSkyHitDistance, "a miss: far behind (4096, under the sky's 65504)");
+  Check(RawHitDistance(true, true, 60000.0f) == kRawMissDistance, "a hit beyond the cap is the cap");
+}
+
 }  // namespace
 
 int main() {
+  CheckRawModes();
   CheckIds();
   CheckFormats();
   CheckPlanHappyPaths();

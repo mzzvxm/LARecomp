@@ -101,6 +101,8 @@
 #include "screen_view_ps.hlsl.dxil.h"
 #include "ssr_apply_ms_ps.hlsl.dxil.h"
 #include "ssr_apply_ps.hlsl.dxil.h"
+#include "ssr_apply_raw_ps.hlsl.dxil.h"
+#include "ssr_hit_ps.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
 #include "ssr_trace_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_ps.hlsl.dxil.h"
@@ -209,6 +211,8 @@
 #include "screen_view_ps.hlsl.spirv.h"
 #include "ssr_apply_ms_ps.hlsl.spirv.h"
 #include "ssr_apply_ps.hlsl.spirv.h"
+#include "ssr_apply_raw_ps.hlsl.spirv.h"
+#include "ssr_hit_ps.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
 #include "ssr_trace_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_ps.hlsl.spirv.h"
@@ -330,14 +334,16 @@ inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
 }
 
 // The screen-space reflections (ssr.h, hlsl/ssr_*_ps.hlsl): 0 the trace, 1 the trace over multisampled planes, 2 the accumulation, 3 the resolve into the main colour, 4 the same over a multisampled colour
-// target and planes.
+// target and planes, 5 (RR-4a) the resolve that reads the trace itself (the frames DLSS Ray Reconstruction takes: no accumulation), 6 (RR-4a) the pass that writes their hit distance guide.
 inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ms_ps);
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(ssr_temporal_ps);
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_hit_ps);
   }
 }
 
