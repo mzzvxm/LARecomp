@@ -104,6 +104,16 @@ void TestTable_() {
             !chain::CanCompose(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureShadowFilter)) &&
             chain::HasTwin(chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer)),
         "the headlight and the G-buffer compose (and have the twin together), the headlight and the shadow filter do not");
+  // Where the pair's blocks are follows the rows' sizes (the layout adds the table up, no stage names the number): the headlight's block at 608, the G-buffer's right after it, which is byte
+  // 1680 (c105) with the headlight's 1072 bytes. The G-buffer stages' tests (gbuffer_night_test, gbuffer_day_test) hold the composed texts to the same number.
+  {
+    const uint32_t pair = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer);
+    const chain::FeatureInfo* headlight_row = chain::Find(sp::kFeatureHeadlight);
+    Check(headlight_row && chain::OffsetOf(pair, sp::kFeatureHeadlight) == chain::kSharedConstantsBytes &&
+              chain::OffsetOf(pair, sp::kFeatureGBuffer) == chain::kSharedConstantsBytes + headlight_row->constants_bytes && chain::OffsetOf(pair, sp::kFeatureGBuffer) == 1680 &&
+              chain::OffsetOf(chain::FeatureBit(sp::kFeatureGBuffer), sp::kFeatureGBuffer) == chain::kSharedConstantsBytes,
+          "the pair's layout: the G-buffer's block follows the headlight's (608 + its size = 1680), alone it is at 608");
+  }
 
   // A table that is not well formed says why.
   const auto bad = [](std::vector<chain::FeatureInfo> rows, std::string_view expected, const std::string& what) {

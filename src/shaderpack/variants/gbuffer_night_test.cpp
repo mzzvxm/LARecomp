@@ -11,7 +11,7 @@
 //   - IDENTITY: the transformed text is the game's text line by line with lines added (the DXIL block's last line gets a ` \` to continue), and no added line assigns one of the game's registers or
 //     names oC0: the colour is the game's. Alone, and composed with the headlight's stage (the chain's order: the headlight first), where the text left after the headlight is what is compared
 //   - the normal's source agrees where more than one anchor is there (the sun term's interpolant is the lamp sum's, the normalisation's: the shader is analysed again with its sun term hidden)
-//   - the composed text has both blocks (608 and 1280) once and the same normal
+//   - the composed text has both blocks (608 and 1680) once and the same normal
 //   - xCityDefault::PSMultiLight, which the spike's edits keep (gbuffer.cpp), gets the very same text from this stage
 // and pins the census' numbers. A third argument is a folder that receives the edited texts (`<name>.gb.hlsl`, and `<name>.hlgb.hlsl` composed with the headlight) for the compile with dxc
 // (perf/scripts/gbuffer_night_compile.py: DXIL and SPIR-V, the spec constants 0 and 2).
@@ -299,11 +299,11 @@ void CheckTransform() {
   Check(helper_at != std::string::npos && helper_at < r.hlsl.rfind("void main(") && r.hlsl.find("#define g_GBufferMode") < helper_at, "the declarations, the helper, then main");
   Check(r.hlsl.find("\tfloat3 gbNormal = r0.xyz;\n") > r.hlsl.find("void main(") && r.hlsl.find("\tfloat3 gbNormal = r0.xyz;\n") < r.hlsl.find(kSunDot), "the capture is in main, before the term");
   Check(AdditiveError(text, r.hlsl).empty(), "only lines were added: " + AdditiveError(text, r.hlsl));
-  // the block moves when the stage is composed after the headlight's 672 bytes
+  // the block moves when the stage is composed after the headlight's 1072 bytes
   const sp::StageContext after = sp::ContextIn(sp::kFeatureGBuffer, chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer));
   const sp::VariantTransformResult moved = sp::TransformGBufferNightHlsl(shader, text, kHelper, after);
-  Check(moved.ok && Count(moved.hlsl, "SharedConstants + 1280, 0x10)") == 1 && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
-        "composed after the headlight the block is at 1280 (c80)");
+  Check(moved.ok && Count(moved.hlsl, "SharedConstants + 1680, 0x10)") == 1 && Count(moved.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(moved.hlsl, "SharedConstants + 608") == 0,
+        "composed after the headlight the block is at 1680 (c105)");
   // a text with CRLF line ends is the same
   std::string crlf;
   for (const char c : text) {
@@ -429,7 +429,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
   // The real pair's stages, as the pack builder makes them.
   const std::vector<sp::VariantDef> defs = {sp::MakeHeadlightVariant(), sp::MakeGBufferVariantFromText(helper)};
   const uint32_t both = chain::FeatureBit(sp::kFeatureHeadlight) | chain::FeatureBit(sp::kFeatureGBuffer);
-  Check(chain::CanCompose(both) && chain::HasTwin(both) && chain::OffsetOf(both, sp::kFeatureGBuffer) == 1280, "the table composes the headlight and the G-buffer, the block at 1280");
+  Check(chain::CanCompose(both) && chain::HasTwin(both) && chain::OffsetOf(both, sp::kFeatureGBuffer) == 1680, "the table composes the headlight and the G-buffer, the block at 1680");
 
   std::printf("\n=== CENSUS of the night family on %s ===\n", folder.string().c_str());
   std::map<std::string, std::pair<int, int>> by_kind;  // kind -> (edited, left out)
@@ -488,9 +488,9 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
         Check(pair_identity.empty(), file->stem + ": composed, the headlight's text is the game's with lines added: " + pair_identity);
         const sp::NightAnalysis on_hl = sp::AnalyseGBufferNight(hl_alone.hlsl);
         Check(on_hl.found && on_hl.expression == a.expression && on_hl.interpolant == a.interpolant && on_hl.how == a.how, file->stem + ": the headlight's edits leave the normal where it was");
-        Check(Count(pair.hlsl, "float4 g_HlHeader : packoffset(c38);") == 1 && Count(pair.hlsl, "uint4 g_GBufferMode : packoffset(c80);") == 1 && Count(pair.hlsl, "SharedConstants + 1280, 0x10)") == 1 &&
+        Check(Count(pair.hlsl, "float4 g_HlHeader : packoffset(c38);") == 1 && Count(pair.hlsl, "uint4 g_GBufferMode : packoffset(c105);") == 1 && Count(pair.hlsl, "SharedConstants + 1680, 0x10)") == 1 &&
                   Count(pair.hlsl, "hlLight.") == Count(hl_alone.hlsl, "hlLight.") && Count(pair.hlsl, "oC1 = GbRt1Encode(" + a.expression + ");") == 1,
-              file->stem + ": composed: the blocks are at 608 and 1280, the headlight's term and the G-buffer's write are in");
+              file->stem + ": composed: the blocks are at 608 and 1680, the headlight's term and the G-buffer's write are in");
         if (!out.empty()) std::ofstream(out / (file->stem + ".hlgb.hlsl"), std::ios::binary) << pair.hlsl;
       }
     }
