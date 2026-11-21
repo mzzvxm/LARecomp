@@ -2709,10 +2709,10 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (the deferred local light pass, GB-H1): which lights it adds besides the lamps mcla_gpu_local_lights_ab hands it. A sum: 1 the lights of the frame that add surface light and \"\n    \"that the game's own shaders do not already light with (today the cars' headlights, which the forward headlight stage lights as well: the two add, so use it with HEADLIGHTS off), \"\n    \"2 a test lamp 8 m ahead of the camera and 4.5 m up. 0: only the A/B's lamps. Live.\"",
+  "help": "\"Diagnostic (the deferred local light pass, GB-H1 and GB-H3): which lights it adds besides the lamps mcla_gpu_local_lights_ab hands it. A sum: 1 the lights of the frame that add surface light and \"\n    \"that the game's own shaders do not already light with (today the cars' headlights, which the forward headlight stage lights as well: the two add, so use it with HEADLIGHTS off), \"\n    \"2 a test lamp 8 m ahead of the camera and 4.5 m up, 4 the police light bars (the game's own flash), 8 the headlights of the cars the forward headlight stage does not light, \"\n    \"16 the cars' brake, tail, turn and reverse lamps, 32 the lamps of a mod's lights.bin that the game's grid is not lighting (the camera is outside the mod's rectangle). The cars' and mods' classes \"\n    \"have a budget each that grows with the LIGHT SHADOWS level, 32 lights in all. 0: only the A/B's lamps. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 3}"
+   "rex::Range{0, 63}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2735,6 +2735,18 @@
   "default": "1.0",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic (the deferred local light pass, GB-H1): a multiplier on the light the pass adds (1: the game's units as read: the lamp's colour times the night light intensity and the height factor of the lit \"\n    \"shaders). The lamp A/B says whether 1 is right. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 16.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_local_lights_car_gain": {
+  "type": "f64",
+  "default": "1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (the deferred local light pass, GB-H3): a multiplier on the look of the cars' lights it adds (the police light bars, the head lamps of the cars the forward headlight stage does not light, \"\n    \"the brake, tail, turn and reverse lamps). Their colours and strengths are looks set by eye, not the game's units: this turns them up or down without a build. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 16.0}"

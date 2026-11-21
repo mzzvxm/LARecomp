@@ -354,6 +354,7 @@ void OnCityLights(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
         g_active = -1;
     }
     larecomp::gpu::mod_light_source::Global().Publish(nullptr);  // the city's grid again: SelectGrid hands a mod's out when the camera is over it
+    larecomp::gpu::mod_light_source::Global().PublishBuilt({});  // and no set is built until the grids below are (the deferred local light pass lights the sets the camera is not over)
     if (g_grids.empty() || !larecomp::settings::mod_lights.Get()) return;
 
     std::array<uint8_t, kPackBytes> pack;
@@ -366,6 +367,7 @@ void OnCityLights(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
         MC_INFO("[mod-lights] lamp A/B (mcla_gpu_local_lights_ab = {}): the mods' grids are built with their lamps OFF; {}", int(ab),
                 ab == larecomp::gpu::local_lights::Ab::kPass ? "the deferred local light pass adds them" : "nothing adds them (the control)");
     }
+    std::vector<larecomp::gpu::mod_light_source::SetPtr> built_sets;
     for (ModGrid& grid : g_grids) {
         uint32_t object = grid.object;  // written by this thread only
         std::array<uint8_t, kStateBytes> state{};
@@ -377,7 +379,9 @@ void OnCityLights(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
         grid.state = state;
         grid.built = built;
         grid.published = std::move(published);
+        if (grid.published) built_sets.push_back(grid.published);  // the same objects SelectGrid publishes: a reader tells the grid the camera is over by pointer
     }
+    larecomp::gpu::mod_light_source::Global().PublishBuilt(std::move(built_sets));
     std::memcpy(base + kPackBlock, pack.data(), kPackBytes);
 }
 

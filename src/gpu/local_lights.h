@@ -11,15 +11,20 @@
 // (ScreenShared::Want(kLocalLights, lin_depth): the AO runs its depth chain for it when it is off), and, with the frame's lights as a source, the light manager (LightManager::Want). Nothing
 // is made, bound or drawn while mcla_gpu_local_lights is off: the G-buffer has no consumer from it, the manager no consumer, the scene's draws are the game's.
 //
+// GB-H3 (local_lights_sources.h has the story and the budgets): the pass is also fed the police light bars (the game's own state of each lamp: its flash), the other cars' headlights the forward
+// headlight stage does not light (small spot lights), the cars' brake / tail / turn / reverse lamps (small red and orange lights) and the lamps of the mods the camera is not over (outside the
+// mod's rectangle no grid lights them); one budget a class and a tier (the light shadows' level words), 32 in all. The cars come from the light manager's car lights (the points of all 19 kinds;
+// the manager is told the camera so that it keeps the cars nearest to it), the mods from mod_light_source.h's built sets.
+//
 // WHAT IS NOT IN IT YET: shadows (GB-H2: the atlas read through the one lookup and the forward headlight's A/B and retirement), the specular lobe, the city's lamps (they are the game's grid: LU-3's
-// picker and GB-H4's shadow subtraction), police and mod lights outside the city (GB-H3), neon (not in v1: the owner's question). It is a debug feature (settings below), off by default: the owner
-// decides after THE LAMP A/B.
+// picker and GB-H4's shadow subtraction), neon (not in v1: the owner's question). It is a debug feature (settings below), off by default: the owner decides after THE LAMP A/B.
 //
 // THE LAMP A/B (local_lights_rules.h has the story): one mod lamp (lights.bin) through the game's grid (A), through this pass with the grid's copy OFF (B, mcla_gpu_local_lights_ab = 2), and through
 // neither (the control, 1). The A/B's lamps are read from the mod loader's published set (mod_light_source.h) whatever the sources mask says; mod_lights.cpp builds the grid with them off.
 //
-// SETTINGS (settings_gpu.h, all debug only): mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (1 the frame's surface lights, 2 a test lamp; default 0),
-// mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass; restart), mcla_gpu_local_lights_gain (a multiplier, 1).
+// SETTINGS (settings_gpu.h, all debug only): mcla_gpu_local_lights (the pass, default off, live), mcla_gpu_local_lights_sources (a sum: 1 the frame's surface lights, 2 a test lamp, 4 police,
+// 8 the cars' head lamps the forward stage does not light, 16 the cars' rear lamps, 32 the mods' lamps outside their grid; default 0), mcla_gpu_local_lights_ab (0 grid, 1 nowhere, 2 pass;
+// restart), mcla_gpu_local_lights_gain (a multiplier, 1), mcla_gpu_local_lights_car_gain (the cars' lights' look, a multiplier, 1).
 //
 // BINDING: its own pipeline layout (the host passes' four bindless texture sets at spaces 0-3, the buffer of the header and the lights at (t0, space4), the push block at (b0, space5)), a buffer and
 // a descriptor set per frame in flight, written at the trigger. The pipelines (one per host sample count, RGBA16F colour, blend ADD) are made on first use: the first frame with the pass on stutters.
@@ -40,7 +45,19 @@
 //        after the AO's apply; the debug layer and Vulkan validation clean.
 //   LL6  the camera: the frame's own pose (AmbientOcclusion::TriggerViewInverse) against the last frame's: no swim of a pool at speed; the interval line counts the frames with the own pose.
 //   LL7  the mod grid replaces the city's while the camera is over its rectangle, and a lamp written OFF with no intensity lights nothing in the game's builder (the control run C is the proof).
-//   LL8  mod_lights.cpp could not be compiled here (no simde): the hook is five lines.
+//   LL8  mod_lights.cpp could not be compiled here (no simde): the hook is five lines (GB-H3 adds two: the built sets' publish).
+// GB-H3, nothing run (the run plan: h11-work\gb-h3-notes\RUNPLAN-gb-h3.txt):
+//   LS1  THE POLICE KINDS: which of Police0 / 1 / 2 is red, blue or white, which side of the bar, the flash's rhythm and level (a police chase's [car-lights] census lines per kind say what
+//        is on); kind 8 is a siren only away from the headlights (the probe read it beside the headlights of every ordinary car, on all night: local_lights_sources.h kPoliceNearHeadlamp).
+//   LS2  the rear lamps: brake against tail glow, the turn signals' blink, a car's lamps as one light at their middle; the look (colour, I 2 to 3, reach 10 to 16 m) by eye.
+//   LS3  the uncovered cars' head lamps: the strength (half the rig's) and the reach against the forward stage, the cars the rig does not light (a fifth car; HEADLIGHTS off), the aim of a car
+//        whose frame is derived from its lamps (a traffic car's: the horizontal axis; kTrustOwnerlessDirection stays false).
+//   LS4  the cost: every light the camera is inside the reach of is a full picture draw (ScissorOfLight); the class caps per tier (6 / 10 / 16 police ...) and the pass's 32 are numbers to read
+//        from the pass timing "local lights" in a chase at 4K, 1080p, 720p.
+//   LS5  the manager's car reference: the cars are those nearest to the camera of the last present (one frame old): a police car among more than eight cars in sight must be kept.
+//   LS6  a mod lamp outside its rectangle: the pass lights it from any camera, and the grid takes over when the camera enters the rectangle: the pop at the border (the A/B holds the two
+//        within 10 per cent), and a lamp inside the city's rectangle that is not in the city's grid.
+//   LS7  the tier from the light shadows' level words (off and medium are the smallest): after LU-3 the same words are Level::kMedium / kHigh / kUltra.
 // ===========================================================================
 
 #include <array>
@@ -56,6 +73,7 @@
 #include "host_passes.h"
 #include "light_frame.h"
 #include "local_lights_rules.h"
+#include "local_lights_sources.h"
 #include "resolve.h"
 
 namespace mcla::gpu {
@@ -131,6 +149,8 @@ class LocalLights {
   uint32_t sources_ = 0;
   larecomp::gpu::local_lights::Ab ab_ = larecomp::gpu::local_lights::Ab::kGrid;
   float gain_ = 1.0f;
+  float car_gain_ = 1.0f;
+  larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
 
   // resources
   plume::RenderDescriptorSetBuilder set_builder_;
@@ -151,6 +171,7 @@ class LocalLights {
   bool trigger_seen_ = false;
   uint64_t frame_ = 0;
   std::vector<larecomp::gpu::Light> extras_;
+  larecomp::gpu::local_lights::Candidates candidates_;  // the cars' and the mods' lights of the frame (ranked, the unseen left out)
   std::array<uint8_t, larecomp::gpu::local_lights::kBufferAlloc> scratch_{};
 
   // the log
@@ -159,6 +180,9 @@ class LocalLights {
   uint64_t lights_drawn_ = 0;
   uint64_t pixels_scissored_ = 0;
   uint64_t frames_own_pose_ = 0;
+  std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_drawn_{};  // lights taken, by SourceClass
+  std::array<uint64_t, larecomp::gpu::local_lights::kSourceClassCount> class_cut_{};    // wanted and cut by the class's budget or the pass's 32
+  uint64_t cars_seen_ = 0;                                                               // sum over the frames of the cars the manager held
   bool first_logged_ = false;
   std::array<uint32_t, 4> last_units_bits_{};
   bool units_logged_ = false;
