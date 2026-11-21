@@ -180,8 +180,8 @@ inline V3 SunDirection(V3 to_sun, V3 normal, float sun_tan, float noise1, float 
   }
   return direction;
 }
-// How far off the surface a ray for the hit's light starts.
-inline float Lift(float view_distance) { return std::min(kLiftFloor + kLiftPerMetre * view_distance, kLiftCap); }
+// How far off the surface a ray for the hit's light starts (hlsl CityHitLift: the magnitude of the view z, which is negative for a hit behind the camera).
+inline float Lift(float view_distance) { return std::min(kLiftFloor + kLiftPerMetre * std::fabs(view_distance), kLiftCap); }
 
 // ---------------------------------------------------------------------------
 // the lamps

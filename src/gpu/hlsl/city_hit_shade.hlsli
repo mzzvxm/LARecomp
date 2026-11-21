@@ -436,10 +436,11 @@ float3 CityHitSunDirection(float3 toSun, float3 normal, float sunTan, float2 noi
     return direction;
 }
 
-// How far off the surface along its normal a ray for the hit's light starts.
+// How far off the surface along its normal a ray for the hit's light starts. The distance is the hit's view z, which is NEGATIVE for a hit behind the camera (the reflection of the street behind a
+// chase camera): its magnitude counts, else the lift goes below zero past 2 m and the origin sits under the surface, so the sun ray meets the surface it left and the hit is in shadow.
 float CityHitLift(float viewDistance)
 {
-    return min(kCityHitLiftFloor + kCityHitLiftPerMetre * viewDistance, kCityHitLiftCap);
+    return min(kCityHitLiftFloor + kCityHitLiftPerMetre * abs(viewDistance), kCityHitLiftCap);
 }
 
 // The sun's visibility at a hit (1 lit, 0 shadow): the game's cascades (where the params and the frame have them) and/or one ray toward the sun against the whole top level (the buildings' and the

@@ -251,6 +251,8 @@ void TwinChecks() {
   }
   Check(std::fabs(radius2 / 20000.0 - 0.5) < 0.02, Num("the disc sample is area uniform (mean r^2 %.3f)", radius2 / 20000.0));
   CHECK(Near(cs::Lift(0.0f), 0.006) && Near(cs::Lift(10.0f), 0.036) && Near(cs::Lift(1000.0f), 0.4));
+  // a hit behind the camera has a negative view z: the lift follows its magnitude (a negative lift puts the ray's origin under the surface and the hit in its own shadow), in the library too
+  CHECK(Near(cs::Lift(-10.0f), 0.036) && Near(cs::Lift(-1000.0f), 0.4) && Near(hlsl_shim::CityHitLift(-10.0f), 0.036) && Near(hlsl_shim::CityHitLift(-1000.0f), 0.4) && hlsl_shim::CityHitLift(-50.0f) > 0.0f);
 
   // the lamps: the game's laws
   CHECK(Near(cs::LampTerm(20.0f, 10.0f), 1.0) && Near(cs::LampTerm(20.0f, 20.0f), 1.0) && Near(cs::LampTerm(20.0f, 40.0f), 0.5) && Near(cs::LampTerm(55.0f, 5500.0f), 0.01));
