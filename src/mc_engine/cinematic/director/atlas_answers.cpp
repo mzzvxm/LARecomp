@@ -62,6 +62,7 @@ Json LightJson(const Light& l, double dist, double reach) {
     o.Set("spread", Round(l.spread, 2));
     o.Set("type", l.spot ? "spot" : "omni");
     o.Set("on", l.on);
+    o.Set("src", l.lamp ? "lamp" : "file");
     o.Set("dist", Round(dist, 2));
     o.Set("reach_m", Round(reach, 1));
     return o;
@@ -212,7 +213,12 @@ bool AnswerLights(const Index& index, const Json& args, const director::Snapshot
         *error = "kind is \"spot\" or \"omni\"";
         return false;
     }
-    const LightsAnswer a = NearLights(index, p.x, p.z, has_y, p.y, r, n, args.NumberOr("min_intensity", 0.0), kind);
+    const std::string src = args.StringOr("src", "");
+    if (!src.empty() && src != "lamp" && src != "file") {
+        *error = "src is \"lamp\" (the street lamps) or \"file\" (the file's own lights)";
+        return false;
+    }
+    const LightsAnswer a = NearLights(index, p.x, p.z, has_y, p.y, r, n, args.NumberOr("min_intensity", 0.0), kind, src);
     Json list = Json::Array();
     for (const LightHit& h : a.hits) list.Push(LightJson(index.world().lights[h.light], h.dist, h.reach));
     *result = Json::Object();
