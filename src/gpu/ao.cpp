@@ -1225,8 +1225,8 @@ void AmbientOcclusion::OnMainDraw(const MainDraw& draw, const ConstantBanks::Ban
   LightRaw light;
   const uint8_t* ps = banks.ps.data();
   const uint8_t* vs = banks.vs.data();
-  // The wetness, for the contact shadows' gate: counted in bins of 0.1 (PickWet).
-  if (contact_mode_ != Mode::kOff) {
+  // The wetness, for the contact shadows' gate and the ray tracing world frame's: counted in bins of 0.1 (PickWet).
+  if (contact_mode_ != Mode::kOff || world_light_wanted_) {
     const float wet = BankFloat(vs, kVsReflectionParams, 0);
     if (std::isfinite(wet) && wet >= 0.0f && wet <= 4.0f) {
       ++wet_bins_[uint32_t(wet * 10.0f + 0.5f)];

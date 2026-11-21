@@ -27,6 +27,7 @@ add_library(larecomp_gpu OBJECT
     city_rt_scene.cpp
     city_rt_shadow.cpp
     rt_scene_service.cpp
+    rt_world_frame.cpp
     city_texture_set.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
@@ -455,6 +456,17 @@ add_executable(larecomp_city_hit_shade_rules_test EXCLUDE_FROM_ALL city_hit_shad
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
 target_include_directories(larecomp_city_hit_shade_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)
+# The ray tracing world frame (CITY-RT package FRAME: rt_world_frame_rules.h, hlsl/rt_world_frame.hlsli compiled as C++ through hlsl_cpp_shim.h and checked against it: the two buffers' layout and
+# packing, the lamp schedule (the on hours and the night curve), the merge of the static lamp table with the game's live list, the budget, the 64 m grid, the lookup against brute force, the
+# lamp light through the grid against the library's twin; given the src folder it also reads the shader files' text, the descriptor counts of the car scene's set and the wiring):
+#   cmake --build <dir> --target larecomp_rt_world_frame_test, then run src/gpu/larecomp_rt_world_frame_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_world_frame_test EXCLUDE_FROM_ALL rt_world_frame_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_merge.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/lamp_table.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_rt_world_frame_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_world_frame_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:

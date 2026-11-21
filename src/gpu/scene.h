@@ -97,6 +97,7 @@ class PassTiming;
 class SunShafts;
 class GiApply;
 class GiIntegration;
+class RtWorldFrame;
 class LocalLights;
 class ScreenReflections;
 class ScreenShared;
@@ -191,6 +192,9 @@ class Scene {
   // The probe field's integration (gi_integration.h; CITY-RT M3 G4): told of the frame's start BEFORE the apply (the field's frame starts there) and run at the mid-scene depth copy BEFORE the occlusion's
   // OnResolve (the field's maintenance, the probe update and the weights: the occlusion asks whether the screen-space bounce light may be skipped while it plans). Null: none. Not owned.
   void SetGiIntegration(GiIntegration* gi_integration) { gi_integration_ = gi_integration; }
+  // The ray tracing world frame (rt_world_frame.h; CITY-RT FRAME): told of the frame's start, given the volumetric light's sun cascades and, at the mid-scene depth copy right after the car scene's
+  // OnResolve (which builds the top level and tells it the view), made: the world's rows and the lamps of the frame, car or no car. Null: none. Not owned.
+  void SetRtWorldFrame(RtWorldFrame* rt_world) { rt_world_ = rt_world; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -527,6 +531,7 @@ class Scene {
   frame_order::Recorder order_;
   GiApply* gi_apply_ = nullptr;
   GiIntegration* gi_integration_ = nullptr;
+  RtWorldFrame* rt_world_ = nullptr;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
   gbuffer::MaterialTable gbuffer_materials_;
   // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).
