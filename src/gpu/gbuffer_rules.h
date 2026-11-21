@@ -800,4 +800,11 @@ inline uint32_t MaterialFlagsOf(uint32_t word) { return FlagsOfByte(MaterialRt3C
 // The word with more flags (kMaterialFlag*) set: a draw whose pixel shader is the alpha test twin adds kMaterialFlagAlphaCovered.
 inline uint32_t MaterialWordWithFlags(uint32_t word, uint32_t flags) { return word | ((flags & 7u) << kMaterialFlagsShift); }
 
+// The metalness byte: bits 24..31 of the word, which the interface keeps for it (gbuffer_types.h "reserved"): 0 dielectric .. 255 metal. No plane carries it yet (RT3 is the smoothness and the
+// class: kMetal and kChrome mean F0 = albedo, which is what a consumer reads today); the per-texture table (gbuffer_materials.h) fills it so that the day a plane takes it the data is there.
+// Every reader of the word masks its own byte (hlsl/gbuffer_common.hlsli), so a word with this byte set reads the same everywhere else.
+inline constexpr uint32_t kMaterialMetalShift = 24;
+inline uint32_t MaterialMetalByte(uint32_t word) { return (word >> kMaterialMetalShift) & 255u; }
+inline uint32_t MaterialWordWithMetal(uint32_t word, float metal) { return (word & 0x00FFFFFFu) | (uint32_t(Saturate(metal) * 255.0f + 0.5f) << kMaterialMetalShift); }
+
 }  // namespace mcla::gpu::gbuffer

@@ -43,6 +43,10 @@ void NoteDestroyed(const uint8_t* base, uint32_t grc_texture);
 // false when none is known.
 bool Lookup(uint32_t base_page, Name* out);
 
+// Changes whenever a name is recorded or forgotten, so that whatever was worked out from a name (the G-buffer's per-texture material cache, gbuffer_materials.h) can tell it is stale
+// without asking again. Any thread.
+uint64_t Generation();
+
 // A string reduced to what a file or folder name can hold everywhere:
 // [A-Za-z0-9._-], the rest '_'; empty becomes `fallback`.
 std::string FileSafe(const std::string& s, const char* fallback);

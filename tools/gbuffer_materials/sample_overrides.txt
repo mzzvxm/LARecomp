@@ -1,0 +1,4 @@
+# the owner's rows (made up): read after the generated table at run time; author_materials.py --overrides only checks them
+shared/glass_storefront_01  rough=0.02                     # sharper than the rules say
+hash:5555555555555555       class=metal rough=0.3 metal=1  # a texture the census saw
+hash:DEADBEEFDEADBEEF       class=glass                    # a typo: the census has never seen this one

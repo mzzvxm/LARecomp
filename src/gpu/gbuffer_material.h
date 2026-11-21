@@ -18,7 +18,7 @@
 //      Registers verified against the translator's HLSL by gbuffer_material_test.cpp (given the folder of translated shaders).
 //   3. THE TABLE FILE (mcla_gbuffer_materials.v1.bin): what the shader pack build writes beside the variant pack, because the runtime knows shaders by IDENTITY (a hash of the
 //      microcode) and the names are only known while the pack is built from the player's own game files: one 16 byte record per shader (class, flags, default smoothness,
-//      lit weight, gloss bank and register) sorted by identity. The class and gloss tables above are compiled into the BUILDER; the renderer reads the file
+//      lit weight, gloss bank and register, the slot of the texture a per-texture row keys: gbuffer_materials.h) sorted by identity. The class and gloss tables above are compiled into the BUILDER; the renderer reads the file
 //      (MaterialTable). A game build that is not the retail one (names unknown) gets few or no records, and its draws the default word: world class, smoothness 0, lit.
 //
 // Where the word is made: Scene::FillVariantBlock's G-buffer case, per draw, from the draw's pixel and vertex shader identities and its constant banks (MaterialTable::WordFor).
@@ -52,7 +52,9 @@ namespace mcla::gpu::gbuffer {
 
 // Hand bumped when a table, a default or a rule below changes what a shader's record says (the builder's stamp line variants_gbuffer_material_version rebuilds the file; the
 // reader refuses a file with another number).
-inline constexpr uint32_t kMaterialRulesVersion = 1;
+// 2: the shader pack build also writes the shader names file (gbuffer_materials.h kShaderNamesFileName) beside the table, for GB-F2's census tool, and the table's records have the diffuse
+// slot (kMaterialTableVersion 2): a pack built with version 1 has neither.
+inline constexpr uint32_t kMaterialRulesVersion = 2;
 
 // ---------------------------------------------------------------------------
 // The defaults of a class
@@ -510,12 +512,108 @@ inline float GlossSmoothness(GlossBank bank, float exponent, float fallback) {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. The diffuse table: which fetch slot holds the texture of a draw that a per-texture row (gbuffer_materials.h) is keyed by
+// ---------------------------------------------------------------------------
+
+// The slot a shader's own "primary" texture is fetched from: its DiffuseSampler where it reads one, else its lowest used sampler that is not a reflection map. Almost every lit shader
+// has it at fetch slot 0 (they are not in the table: no row means slot 0); these classed pixel shaders have another: the windows, the tiles and the metal props put their reflection
+// maps first (SkyReflectionSampler, ReflectionSampler), the cars their front and spec maps, the tinted neon and lamp glass their tint maps. kNoDiffuseSlot: the shader reads nothing but
+// reflection maps (the prop glass). Generated from the translated HLSL of the retail game (shaderpackaseline: the sampler `X_Texture2DDescriptorIndex` defines give each sampler's
+// slot, the uses in the text tell which are read), sorted by name (byte order); gbuffer_material_test.cpp checks every row and every shader of a classed group against that text.
+inline constexpr uint8_t kNoDiffuseSlot = 255;
+struct DiffuseRow {
+  std::string_view name;  // "group__entry"
+  uint8_t slot = 0;
+};
+inline constexpr DiffuseRow kDiffuseRows[] = {
+    {"xAmbientBumpSpec__PSAmbientBumpSpec", 2},
+    {"xAmbientVehicle__PSMultiLight", 10},
+    {"xBumpSpecAlpha__PS_BumpSpec_false_true", 2},
+    {"xBumpSpecAlpha__PS_BumpSpec_true_true", 2},
+    {"xBumpSpecSkinned__PS_BumpSpec", 1},
+    {"xBumpSpec__PS_BumpSpec_true_true", 2},
+    {"xBumperSubframe__PS", 1},
+    {"xCharacter__PS", 1},
+    {"xCharacter_alpha__PSAlpha", 1},
+    {"xCharacter_alpha_doublesided__PSAlphaDoubleSided", 1},
+    {"xCharacter_alpha_normalmap__PSAlpha", 1},
+    {"xCharacter_alpha_normalmap_doublesided__PSAlphaDoubleSided", 1},
+    {"xCharacter_normalmap__PS", 1},
+    {"xCharacter_plastic__PS", 1},
+    {"xCharacter_plastic_normalmap__PS", 1},
+    {"xCharacter_skin__PS", 1},
+    {"xCharacter_skin_arm__PS_HighQualitySkin", 1},
+    {"xCharacter_skin_arm_normalmap__PS_HighQualitySkin", 1},
+    {"xCharacter_skin_blendshape__PS", 1},
+    {"xCharacter_skin_blendshape_normalmap__PS", 1},
+    {"xCharacter_skin_normalmap__PS", 1},
+    {"xCharacter_teeth__PS", 1},
+    {"xCharacter_teeth_normalmap__PS", 1},
+    {"xCharacter_visor__PS", 1},
+    {"xCharacter_visor_normalmap__PS", 1},
+    {"xCityGrimeMetalTint__PSCityGrimeMetalTint", 1},
+    {"xCityGrimeMetal__PSCityGrimeMetal", 3},
+    {"xCityGrimeMetal__PSMultiLight", 1},
+    {"xCityGrimeMetal__PSMultiLightInterior", 1},
+    {"xCityLampGlassTint__PSCityLampGlassTint", 13},
+    {"xCityLampGlassTint__PSMultiLight", 7},
+    {"xCityLampGlassTint__PSMultiLightInterior", 7},
+    {"xCityNeonTint__PSCityNeonTint", 13},
+    {"xCityNeonTint__PSMultiLight", 7},
+    {"xCityNeonTint__PSMultiLightInterior", 7},
+    {"xCityTunnelTile__PSCityTunnelTile", 3},
+    {"xCityTunnelTile__PSMultiLight", 1},
+    {"xCityTunnelTile__PSMultiLightInterior", 1},
+    {"xCityWindowDirt__PSCityWindowDirt", 2},
+    {"xCityWindowLOD__PSCityWindowLOD", 1},
+    {"xCityWindowLower__PSCityWindowLower", 2},
+    {"xCityWindowLower__PSMultiLight", 1},
+    {"xCityWindowLower__PSMultiLightInterior", 1},
+    {"xCityWindowUpper__PSCityWindowUpper", 2},
+    {"xCityWindowUpper__PSMultiLight", 1},
+    {"xCityWindowUpper__PSMultiLightInterior", 1},
+    {"xEngineBay__PS", 1},
+    {"xGrillOpaque__PS_BumpSpec_SpecMap", 2},
+    {"xGrillOpaque__PS_BumpSpec_false_true", 2},
+    {"xGrillOpaque__PS_BumpSpec_true_true", 2},
+    {"xGrill__PS_BumpSpec_SpecMap", 2},
+    {"xGrill__PS_BumpSpec_false_true", 2},
+    {"xGrill__PS_BumpSpec_true_true", 2},
+    {"xInteriorTexturedEmissiveAlpha__PS_EmissiveAlpha", 1},
+    {"xInteriorTexturedEmissive__PS_Emissive", 1},
+    {"xInteriorTrimAlpha__PS_BumpSpecAlpha", 1},
+    {"xInteriorTrim__PS_BumpSpec", 1},
+    {"xPropBrokenGlass__PSPropGlassBroken", 2},
+    {"xPropGlass__PSMultiLight", 255},
+    {"xPropGlass__PSMultiLightInterior", 255},
+    {"xPropGlass__PSPropGlass", 255},
+    {"xPropMetal__PSPropMetal", 1},
+    {"xPropNeonTint__PSMultiLight", 7},
+    {"xPropNeonTint__PSMultiLightInterior", 7},
+    {"xPropNeonTint__PSPropNeonTint", 13},
+    {"xRimBadge__PS_Badge", 1},
+    {"xUnderbody__PS", 1},
+    {"xWheelBrakeRotor__PS_BrakeRotor", 2},
+    {"xWheelRubber__PS_ParallaxRubber2_false", 1},
+    {"xWheelRubber__PS_ParallaxRubber2_true", 1},
+    {"xbrakecaliper__PS_BrakeCaliper", 2},
+};
+inline constexpr size_t kDiffuseRowCount = sizeof(kDiffuseRows) / sizeof(kDiffuseRows[0]);
+
+// The primary texture's fetch slot of a pixel shader by name: its row, else 0.
+inline uint8_t FindDiffuseSlot(std::string_view name) {
+  const DiffuseRow* end = kDiffuseRows + kDiffuseRowCount;
+  const DiffuseRow* at = std::lower_bound(kDiffuseRows, end, name, [](const DiffuseRow& row, std::string_view key) { return row.name < key; });
+  return at != end && at->name == name ? at->slot : uint8_t(0);
+}
+
+// ---------------------------------------------------------------------------
 // 3. The table file
 // ---------------------------------------------------------------------------
 
 inline constexpr char kMaterialTableMagic[4] = {'M', 'S', 'G', 'M'};
-inline constexpr uint32_t kMaterialTableVersion = 1;  // the file's layout
-inline constexpr const char* kMaterialTableFileName = "mcla_gbuffer_materials.v1.bin";
+inline constexpr uint32_t kMaterialTableVersion = 2;  // the file's layout (2: byte 15 of a record is the diffuse slot, the gloss register is one byte)
+inline constexpr const char* kMaterialTableFileName = "mcla_gbuffer_materials.v2.bin";
 inline constexpr uint32_t kMaterialTableHeaderBytes = 32;
 inline constexpr uint32_t kMaterialTableEntryBytes = 16;
 inline constexpr uint32_t kMaterialBankRegisters = 256;  // a constant bank is 256 registers (guest::kConstantBankBytes / 16)
@@ -523,8 +621,9 @@ inline constexpr uint32_t kMaterialBankRegisters = 256;  // a constant bank is 2
 //   header (32 bytes): magic "MSGM" | version u32 | entry count u32 | rules version u32 (kMaterialRulesVersion) | 16 reserved (0)
 //   entries (16 bytes, sorted by key, strictly increasing, little endian):
 //     key u64 | stage u8 ('p' or 'v') | class u8 | flags u8 (kMaterialFlag*, 3 bits) | smoothness u8 (the class default, unorm8) | lit u8 (unorm8) |
-//     gloss bank u8 (GlossBank) | gloss register u16 (0 with no bank)
-//   A pixel shader's record is its class and defaults and, when it reads SpecularExponent, the bank and register; a vertex shader's has a bank and register only (class 0).
+//     gloss bank u8 (GlossBank) | gloss register u8 (0 with no bank) | diffuse slot u8 (0..31, kNoDiffuseSlot; 255 in a vertex shader's)
+//   A pixel shader's record is its class and defaults and, when it reads SpecularExponent, the bank and register, and the fetch slot of its primary texture; a vertex shader's has a bank and
+//   register only (class 0).
 struct MaterialRecord {
   uint64_t key = 0;  // the shader's identity (FNV-1a 64 of the vertex-fetch normalised microcode: ShaderStore::Entry::key)
   bool pixel = true;
@@ -534,6 +633,7 @@ struct MaterialRecord {
   uint8_t lit = 255;
   GlossBank gloss_bank = GlossBank::kNone;
   uint16_t gloss_reg = 0;
+  uint8_t diffuse_slot = kNoDiffuseSlot;  // pixel shaders: the fetch slot of the texture a per-texture row is keyed by (FindDiffuseSlot)
 };
 
 // A shader of the game as the builder sees it.
@@ -563,6 +663,7 @@ inline std::vector<MaterialRecord> BuildMaterialRecords(std::span<const NamedSha
       record.flags = uint8_t(m.flags & 7u);
       record.smoothness = ToByte(m.smoothness);
       record.lit = ToByte(m.lit);
+      record.diffuse_slot = FindDiffuseSlot(shader.name);
     } else if (gloss == nullptr) {
       continue;
     }
@@ -578,10 +679,6 @@ inline std::vector<MaterialRecord> BuildMaterialRecords(std::span<const NamedSha
 }
 
 namespace material_detail {
-inline void Put16(std::vector<uint8_t>& out, uint32_t v) {
-  out.push_back(uint8_t(v));
-  out.push_back(uint8_t(v >> 8));
-}
 inline void Put32(std::vector<uint8_t>& out, uint32_t v) {
   for (int shift = 0; shift < 32; shift += 8) out.push_back(uint8_t(v >> shift));
 }
@@ -604,7 +701,7 @@ inline bool LayOutMaterialTable(std::span<const MaterialRecord> records, std::ve
       return false;
     }
     if (uint32_t(r.cls) > kClassMask || r.flags > 7 || uint32_t(r.gloss_bank) > uint32_t(GlossBank::kPixel) || r.gloss_reg >= kMaterialBankRegisters ||
-        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0)) {
+        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot)) {
       *error = "a material record has a field out of range";
       return false;
     }
@@ -624,7 +721,8 @@ inline bool LayOutMaterialTable(std::span<const MaterialRecord> records, std::ve
     out->push_back(r.smoothness);
     out->push_back(r.lit);
     out->push_back(uint8_t(r.gloss_bank));
-    Put16(*out, r.gloss_reg);
+    out->push_back(uint8_t(r.gloss_reg));
+    out->push_back(r.diffuse_slot);
   }
   return true;
 }
@@ -668,9 +766,10 @@ inline bool ParseMaterialTable(std::span<const uint8_t> bytes, std::vector<Mater
     r.smoothness = p[11];
     r.lit = p[12];
     r.gloss_bank = GlossBank(p[13]);
-    r.gloss_reg = uint16_t(Get16(p + 14));
+    r.gloss_reg = p[14];
+    r.diffuse_slot = p[15];
     if (uint32_t(r.cls) > kClassMask || r.flags > 7 || p[13] > uint8_t(GlossBank::kPixel) || r.gloss_reg >= kMaterialBankRegisters ||
-        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (i > 0 && !(out->back().key < r.key))) {
+        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot) || (i > 0 && !(out->back().key < r.key))) {
       *why = "an entry is out of range or out of order";
       out->clear();
       return false;
@@ -721,6 +820,13 @@ class MaterialTable {
     if (key == 0) return nullptr;
     const auto at = std::lower_bound(records_.begin(), records_.end(), key, [](const MaterialRecord& r, uint64_t k) { return r.key < k; });
     return at != records_.end() && at->key == key ? &*at : nullptr;
+  }
+
+  // The fetch slot of the texture a per-texture row is keyed by, for a draw made with pixel shader `ps_key`: kNoDiffuseSlot for a shader the table does not have (the draw has the default
+  // word, and no row), or one that reads no such texture.
+  uint32_t DiffuseSlotOf(uint64_t ps_key) const {
+    const MaterialRecord* record = Find(ps_key);
+    return record != nullptr && record->pixel ? record->diffuse_slot : kNoDiffuseSlot;
   }
 
   // The material word of a draw made with pixel shader `ps_key` and vertex shader `vs_key` (0: none), whose constant banks (raw big-endian guest registers) are `ps_bank` and

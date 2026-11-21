@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
@@ -355,6 +356,25 @@ std::vector<gb::NamedShader> SomeShaders() {
   };
 }
 
+uint8_t FindRow(std::string_view name) { return gb::FindDiffuseSlot(name); }
+
+void DiffuseTableChecks() {
+  Check(gb::kDiffuseRowCount == std::size(gb::kDiffuseRows) && gb::kDiffuseRowCount > 50, "the diffuse table has rows (" + std::to_string(gb::kDiffuseRowCount) + ")");
+  bool sorted = true, valid = true, known = true;
+  for (size_t i = 0; i < gb::kDiffuseRowCount; ++i) {
+    const gb::DiffuseRow& row = gb::kDiffuseRows[i];
+    if (i > 0) sorted = sorted && gb::kDiffuseRows[i - 1].name < row.name;
+    valid = valid && row.slot != 0 && (row.slot < 32 || row.slot == gb::kNoDiffuseSlot) && row.name.find("__") != std::string_view::npos;
+    const gb::ShaderMaterial m = gb::MaterialOfShaderName(row.name);
+    known = known && m.known && m.cls != gb::SurfaceClass::kNone;
+  }
+  Check(sorted, "the diffuse rows are sorted by name, strictly");
+  Check(valid, "no row says slot 0 (that is the default), every slot is 0..31 or none, every name is group__entry");
+  Check(known, "every row is a pixel shader of a classed group (the others never carry the G-buffer's word)");
+  Check(gb::FindDiffuseSlot("xCityDefault__PSMultiLight") == 0 && gb::FindDiffuseSlot("nonsense") == 0 && gb::FindDiffuseSlot("") == 0, "no row: slot 0");
+  Check(gb::FindDiffuseSlot("xCityWindowLower__PSMultiLight") == 1 && gb::FindDiffuseSlot("xPropGlass__PSPropGlass") == gb::kNoDiffuseSlot, "the window shader's slot 1, the prop glass's none");
+}
+
 void BuilderChecks() {
   const std::vector<gb::NamedShader> shaders = SomeShaders();
   const std::vector<gb::MaterialRecord> records = gb::BuildMaterialRecords(shaders);
@@ -377,6 +397,14 @@ void BuilderChecks() {
   Check(by_key.count(0x80) == 1 && by_key[0x80].gloss_bank == gb::GlossBank::kNone, "a gloss row of the other stage is not taken");
   Check(by_key[0x10].smoothness == gb::ToByte(gb::DefaultSmoothness(gb::SurfaceClass::kWorld)) && by_key[0x10].lit == 255, "the class defaults are in the record");
   Check(gb::BuildMaterialRecords({}).empty(), "no shaders, no records");
+  Check(by_key[0x10].diffuse_slot == 0 && by_key[0x30].diffuse_slot == gb::kNoDiffuseSlot, "a pixel shader's diffuse slot is 0 by default, a vertex shader has none");
+  {
+    const std::vector<gb::NamedShader> reflective = {{0x1, true, "xCityWindowLower__PSMultiLight"}, {0x2, true, "xPropGlass__PSPropGlass"}, {0x3, true, "xCityDefault__PSMultiLight"},
+                                                     {0x4, true, "xAmbientVehicle__PS_AmbientVehicle"}};
+    const std::vector<gb::MaterialRecord> r = gb::BuildMaterialRecords(reflective);
+    Check(r.size() == 4 && r[0].diffuse_slot == 1 && r[1].diffuse_slot == gb::kNoDiffuseSlot && r[2].diffuse_slot == 0 && r[3].diffuse_slot == FindRow("xAmbientVehicle__PS_AmbientVehicle"),
+          "the window shader reads its diffuse at slot 1 (slot 0 is its reflection map), the prop glass has none, an ordinary shader slot 0");
+  }
   // The order of the input does not matter.
   std::vector<gb::NamedShader> reversed(shaders.rbegin(), shaders.rend());
   const std::vector<gb::MaterialRecord> from_reversed = gb::BuildMaterialRecords(reversed);
@@ -402,7 +430,7 @@ void FileChecks() {
     const gb::MaterialRecord& a = records[i];
     const gb::MaterialRecord& b = parsed[i];
     equal = a.key == b.key && a.pixel == b.pixel && a.cls == b.cls && a.flags == b.flags && a.smoothness == b.smoothness && a.lit == b.lit && a.gloss_bank == b.gloss_bank &&
-            a.gloss_reg == b.gloss_reg;
+            a.gloss_reg == b.gloss_reg && a.diffuse_slot == b.diffuse_slot;
   }
   Check(equal, "every record survives the file");
   // an empty table is a file too
@@ -424,8 +452,11 @@ void FileChecks() {
   broken[0] = 'X';
   refuses(broken, "a wrong magic");
   broken = bytes;
-  broken[4] = 2;
+  broken[4] = uint8_t(gb::kMaterialTableVersion + 1);
   refuses(broken, "another layout version");
+  broken = bytes;
+  broken[4] = 1;
+  refuses(broken, "the first layout version (a pack built before the diffuse slot)");
   broken = bytes;
   broken[12] = uint8_t(gb::kMaterialRulesVersion + 1);
   refuses(broken, "another rules version");
@@ -450,9 +481,8 @@ void FileChecks() {
   broken[gb::kMaterialTableHeaderBytes + 13] = 3;
   refuses(broken, "an unknown bank");
   broken = bytes;
-  broken[gb::kMaterialTableHeaderBytes + 14] = 0;
-  broken[gb::kMaterialTableHeaderBytes + 15] = 1;  // register 256
-  refuses(broken, "a register outside the bank");
+  broken[gb::kMaterialTableHeaderBytes + 15] = 32;
+  refuses(broken, "a diffuse slot above 31 that is not 'none'");
   broken = bytes;
   // swap the first two records' keys: out of order
   for (uint32_t i = 0; i < 8; ++i) std::swap(broken[gb::kMaterialTableHeaderBytes + i], broken[gb::kMaterialTableHeaderBytes + gb::kMaterialTableEntryBytes + i]);
@@ -607,9 +637,55 @@ std::vector<std::string> SplitTabs(const std::string& line) {
   return fields;
 }
 
+// The fetch slot of a translated pixel shader's primary texture, from its text (the rule of gbuffer_material.h's diffuse table): the samplers' `X_Texture2DDescriptorIndex` defines give
+// each one's slot (the byte offset into the shared constants over 4; the 3D and cube defines are 128 and 256 bytes further), the uses outside the defines tell which are read; the
+// DiffuseSampler's slot where it is read, else the lowest used sampler that is not a reflection map, none (255) when only reflection maps are read. -1: no sampler is read at all.
+int PrimaryTextureSlot(const std::string& text) {
+  static const char* const kinds[] = {"_Texture2DDescriptorIndex", "_Texture3DDescriptorIndex", "_TextureCubeDescriptorIndex"};
+  std::map<std::string, uint32_t> slots;
+  std::set<std::pair<uint32_t, std::string>> used;
+  std::vector<std::string> body;
+  std::istringstream lines(text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.rfind("#define ", 0) == 0) {
+      for (const char* kind : kinds) {
+        const size_t at = line.find(kind);
+        const size_t offset_at = line.find("SharedConstants + ");
+        if (at == std::string::npos || offset_at == std::string::npos) continue;
+        const std::string name = line.substr(8, at - 8);
+        if (name.empty() || name.find(' ') != std::string::npos) continue;
+        slots.emplace(name, uint32_t(std::strtoul(line.c_str() + offset_at + std::strlen("SharedConstants + "), nullptr, 10) / 4 % 32));
+      }
+    } else {
+      body.push_back(line);
+    }
+  }
+  for (const std::string& text_line : body) {
+    for (const char* kind : kinds) {
+      for (size_t at = text_line.find(kind); at != std::string::npos; at = text_line.find(kind, at + 1)) {
+        size_t begin = at;
+        while (begin > 0 && (std::isalnum(static_cast<unsigned char>(text_line[begin - 1])) || text_line[begin - 1] == '_')) --begin;
+        const std::string name = text_line.substr(begin, at - begin);
+        const auto it = slots.find(name);
+        if (it != slots.end()) used.insert({it->second, name});
+      }
+    }
+  }
+  if (used.empty()) return -1;
+  for (const auto& [slot, name] : used) {
+    if (name == "DiffuseSampler") return int(slot);
+  }
+  for (const auto& [slot, name] : used) {
+    if (name.find("Reflection") == std::string::npos) return int(slot);
+  }
+  return int(gb::kNoDiffuseSlot);
+}
+
 void BaselineChecks(const std::string& baseline) {
   std::set<std::string> groups;
   std::map<std::string, std::pair<gb::GlossBank, uint32_t>> declared;  // name -> bank, register, from the HLSL
+  std::map<std::string, int> primary;  // pixel shader name -> PrimaryTextureSlot, from the HLSL
   std::vector<gb::NamedShader> named;
   std::vector<std::string> names;
   size_t shaders = 0;
@@ -648,6 +724,11 @@ void BaselineChecks(const std::string& baseline) {
         const uint32_t reg = uint32_t(std::strtoul(text.c_str() + at + std::strlen("float4 SpecularExponent : packoffset(c"), nullptr, 10));
         declared[name] = {f[c_stage] == "vs" ? gb::GlossBank::kVertex : gb::GlossBank::kPixel, reg};
       }
+      if (f[c_stage] != "vs") {
+        const int slot = PrimaryTextureSlot(text);
+        const auto [it, fresh] = primary.emplace(name, slot);
+        if (!fresh && it->second != slot) Check(false, "two translated shaders of one name read their primary texture from different slots: " + name);
+      }
       names.push_back(name);
       named.push_back({0, f[c_stage] != "vs", {}});
     }
@@ -669,6 +750,22 @@ void BaselineChecks(const std::string& baseline) {
     const auto it = declared.find(std::string(row.name));
     Check(it != declared.end(), "the gloss row " + std::string(row.name) + " is a shader that declares SpecularExponent");
   }
+  // the diffuse table: every classed pixel shader has the slot its text says (no row: slot 0, also for a shader that reads no sampler at all), and every row is such a shader
+  size_t classed = 0, off_zero = 0;
+  for (const auto& [name, slot] : primary) {
+    const gb::ShaderMaterial m = gb::MaterialOfShaderName(name);
+    if (!m.known || m.cls == gb::SurfaceClass::kNone) continue;
+    ++classed;
+    const int want = slot < 0 ? 0 : slot;
+    off_zero += want != 0 ? 1 : 0;
+    Check(int(gb::FindDiffuseSlot(name)) == want, "the diffuse slot of " + name + " is the text's: " + std::to_string(want));
+  }
+  for (const gb::DiffuseRow& row : gb::kDiffuseRows) {
+    const auto it = primary.find(std::string(row.name));
+    Check(it != primary.end() && it->second == int(row.slot), "the diffuse row " + std::string(row.name) + " is a pixel shader whose text reads its primary texture at slot " + std::to_string(int(row.slot)));
+  }
+  std::printf("baseline: %zu classed pixel shaders, %zu with a primary texture other than slot 0 (the table has %zu rows)%c", classed, off_zero, gb::kDiffuseRowCount, 10);
+  Check(off_zero == gb::kDiffuseRowCount, "the table has exactly the classed pixel shaders whose primary texture is not at slot 0");
   // every lit shader of a known group gets a record through the builder's own path: build the records the pack build would write for this game
   std::vector<gb::NamedShader> all;
   uint64_t key = 1;
@@ -701,6 +798,7 @@ void BaselineChecks(const std::string& baseline) {
 
 int main(int argc, char** argv) {
   TableShapeChecks();
+  DiffuseTableChecks();
   ClassSpotChecks();
   NameChecks();
   DefaultChecks();
