@@ -328,6 +328,7 @@ class Renderer final : public RenderThread::Executor {
   CityRtScene city_rt_;       // render thread; the city's geometry as ray tracing structures (city_rt_scene.h; CITY-RT M1), joins car_rt_'s top level
   CityHitScene city_hit_;     // render thread; the city's hit data (texture coordinates, materials) in the GPU: the pool the structures are built over (city_hit_scene.h; CITY-RT M2 H3)
   RtSceneService rt_scene_;   // render thread; who wants the ray tracing scene and what its top level holds, car or no car (rt_scene_service.h; CITY-RT M2 H3)
+  RtWorldFrame rt_world_;     // render thread; the world's rows and the lamps of every frame that has a top level, car or no car: t10 and t11 of car_rt_'s set (rt_world_frame.h; CITY-RT FRAME); it holds pointers to the AO, the car frame, the shared products and the city scene: Shutdown stops it first
   CityRtShadow city_shadow_;  // render thread; the city's ray traced sun shadows (city_rt_shadow.h), recorded by the occlusion's passes (ao.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames

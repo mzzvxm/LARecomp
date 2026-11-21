@@ -833,6 +833,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (rt_world_) {
+    rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
+  }
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
   }
@@ -3662,10 +3665,18 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
       }
     }
     car_rt_->SetSunCascades(cascades);
+    if (rt_world_) {
+      rt_world_->SetSunCascades(cascades);  // the world frame's hit rows hold the same cascades (CITY-RT FRAME)
+    }
     // The car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other cars. FIRST, before everything that traces: the
     // occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level.
     const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);
     order_.Note(frame_order::Step::kCarStructures, car_structures);
+    if (rt_world_) {
+      // CITY-RT FRAME: the top level's view space is known now (the builder said it, with or without the player's car): the world's light, the clock, the lamps, written into the slot's buffers. No GPU
+      // command and no pass of the frame order: host visible memory the passes below read through the car scene's set (rt_world_frame.h).
+      rt_world_->OnTrigger(slot_);
+    }
   }
   bool shadow_recorded = false;
   if (local_shadow_) {

@@ -991,8 +991,8 @@ int main(int argc, char** argv) {
                 Has(hlsli, "uv = float2(0.75 + c / (4.0 - 4.0 * b), 0.5 + a / (2.0 - 2.0 * b));"),
             "the shader's paraboloid mapping is EnvUv's");
       Check(Has(hlsli, "ByteAddressBuffer gCarRtUvs : register(t4, CAR_RT_SPACE_NAME);") && Has(hlsli, "StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);") &&
-                Has(scene, "addByteAddressBuffer(4)") && Has(scene, "addStructuredBuffer(5)") && Has(scene, "CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount, 0"),
-            "the shader's bindings 4 and 5 are the host's (a byte address buffer and a structured buffer; six views and the hit data's four in the set)");
+                Has(scene, "addByteAddressBuffer(4)") && Has(scene, "addStructuredBuffer(5)") && Has(scene, "CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount + RtWorldFrame::kBindingCount, 0"),
+            "the shader's bindings 4 and 5 are the host's (a byte address buffer and a structured buffer; six views, the hit data's four and the world frame's two in the set)");
       Check(Has(hlsli, "f16tof32(p0 & 0xFFFFu), f16tof32(p0 >> 16)"), "the shader reads a texture coordinate pair as PackUv packs it (u low)");
       Check(Has(hlsli, "return clamp(0.6 + 0.4 * dot(normal, f.axisY), 0.2, 1.0);") && Has(hlsli, "pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01))") &&
                 Has(hlsli, "result += albedo * (m.emissive * kRtHitEmissiveGain * f.night);") && Has(hlsli, "albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));"),

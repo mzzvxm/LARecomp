@@ -110,6 +110,7 @@
 #include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
 #include "city_hit_scene.h"
+#include "rt_world_frame.h"
 #include "frame.h"
 #include "host_passes.h"
 #include "records.h"
@@ -235,6 +236,9 @@ class CarRtScene final : public car_frame::Listener {
     service_ = service;
     hit_ = hit;
   }
+  // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car: descriptors t10 and t11 of the set. OnResolve tells it the view space the
+  // top level was built in (NoteView) and writes the two buffers into the slot's set (Bind), both paths. Null: none of it.
+  void SetWorldFrame(RtWorldFrame* world) { world_ = world; }
 
   // The video memory the structures, the shared buffers and the per-slot buffers hold now.
   uint64_t HeldBytes() const;
@@ -436,6 +440,8 @@ class CarRtScene final : public car_frame::Listener {
   RtSceneService* service_ = nullptr;  // who wants the top level (SetService), not owned
   CityHitScene* hit_ = nullptr;        // the hit data's pool: descriptors t6..t9 of the set (SetService), not owned
   CityHitScene::Bindings hit_bindings_;
+  RtWorldFrame* world_ = nullptr;  // t10 and t11 of the set (SetWorldFrame), not owned
+  RtWorldFrame::Bindings world_bindings_;
   std::unique_ptr<plume::RenderBuffer> standin_;  // zeroed, 256 bytes: what a binding of the set names where the car meshes that fill it do not exist (a city-only top level)
   // The cars the camera does not see (car_rt_memory_rules.h): the kits of the cars that were drawn, and this frame's placements.
   car_rt_memory::CarMemory memory_;

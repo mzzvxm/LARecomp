@@ -140,6 +140,10 @@ void ScreenShared::Shutdown() {
   passes_ = nullptr;
 }
 
+float ScreenShared::ExposureFactor() const {
+  return screen::ExposureOf(exp_bias_, exposure_known_);
+}
+
 void ScreenShared::BeginFrame(uint64_t frame_serial) {
   frame_serial_ = frame_serial;
   // The frame is empty until the AO's depth chain publishes it.

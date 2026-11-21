@@ -270,6 +270,18 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       city_rt_.SetHitScene(&city_hit_);
       rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
       car_rt_refl_.SetSceneService(&rt_scene_);  // CITY-RT M2 R1/R2: the city in the car paint's reflections asks the service for the structures, the hit data and the textures (city_refl.h)
+      // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car, in t10 and t11 of the car scene's set (the scene's builder tells it the view and
+      // binds the buffers; the scene writes them at the trigger). The AO's draw hook gives it the light, the car frame the sky and the environment map, the shared products the exposure, the pack the lamps.
+      {
+        RtWorldFrame::Sources world_sources;
+        world_sources.ao = &ao_;
+        world_sources.cars = &car_frame_;
+        world_sources.screen = &screen_;
+        world_sources.city = &city_rt_;
+        world_sources.service = &rt_scene_;
+        rt_world_.Initialize(device_, frames_, world_sources);
+        car_rt_.SetWorldFrame(&rt_world_);
+      }
       car_rt_.SetCityScene(&city_rt_);
       car_rt_.SetService(&rt_scene_, &city_hit_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
@@ -317,6 +329,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLocalLights(&local_lights_);
     scene_.SetGiApply(&gi_apply_);
     scene_.SetGiIntegration(&gi_integration_);
+    scene_.SetRtWorldFrame(&rt_world_);
     scene_.SetCarRtScene(&car_rt_);
     car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
@@ -383,6 +396,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
     ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
     gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
     gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
     gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
@@ -571,6 +585,7 @@ void Renderer::Shutdown() {
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
   ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
   gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
   gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
   gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
@@ -1753,7 +1768,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

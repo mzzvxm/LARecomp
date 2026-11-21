@@ -15,7 +15,7 @@ order of the phi nodes at the head of a block. dxc's output has no fixed phi ord
 labels are numbered by first appearance) and then compares, so a changed operand or constant or operation still fails.
 The entry points are the car's: car_rt_refl_cs (the player's pass), the same with CAR_RT_REFL_OPPONENTS=1 (the opponents' pass), car_rt_refl_denoise_cs, car_rt_ao_cs, car_rt_check_cs
 and the city's shadow pass city_rt_shadow_cs (which does not use the shared file; it is the control: it must not change either). The city hit library's reference consumer
-(city_hit_shade_check_cs) has no base: it is compiled for DXIL and SPIR-V and validated (spirv-val), nothing more.
+(city_hit_shade_check_cs) and the world frame's (rt_world_probe_cs, rt_world_lamp_light_cs) have no base: they are compiled for DXIL and SPIR-V and validated (spirv-val), nothing more.
 Exit 0 when every entry point is identical or equivalent, 1 when one is not (the first differing lines are printed), 2 when a tool or a source is missing.
 """
 import argparse
@@ -37,6 +37,8 @@ ENTRIES = [
     ('car_rt_check_cs', 'car_rt_check_cs.hlsl', []),
     ('city_rt_shadow_cs', 'city_rt_shadow_cs.hlsl', []),
     ('city_hit_shade_check_cs', 'city_hit_shade_check_cs.hlsl', []),  # the city hit library's reference consumer: new, it only has to compile and validate
+    ('rt_world_probe_cs', 'rt_world_probe_cs.hlsl', []),  # the world frame's reference consumer (CITY-RT FRAME, hlsl/rt_world_frame.hlsli): new, it only has to compile and validate
+    ('rt_world_lamp_light_cs', 'rt_world_lamp_light_cs.hlsl', []),  # the lamp term through the world frame's grid beside the city hit library (R7's loop): new, it only has to compile and validate
 ]
 
 

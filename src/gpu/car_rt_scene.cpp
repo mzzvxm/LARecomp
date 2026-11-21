@@ -148,9 +148,11 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
   uvs_index_ = set_builder_.addByteAddressBuffer(4);              // RT-HIT-SHADING: the texture coordinates ...
   materials_index_ = set_builder_.addStructuredBuffer(5);         // ... and the frame's lighting and the instances' materials
   hit_bindings_ = CityHitScene::AddBindings(set_builder_);  // CITY-RT M2 H3: t6 the pool, t7 the sector table, t8 the materials, t9 the textures (after rt-hit-shading's t4 and t5)
+  world_bindings_ = RtWorldFrame::AddBindings(set_builder_);  // CITY-RT FRAME: t10 the world's rows, t11 the lamps (rt_world_frame.h)
   set_builder_.end();
   for (SlotResources& slot : slots_) {
-    slot.set = device.CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount, 0, "car rt set");
+    // The views the ranges add up to: t0 the top level and t1..t5 (6), the hit data's four, the world frame's two. D3D12 sizes a set by this count, not by the ranges.
+    slot.set = device.CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount + RtWorldFrame::kBindingCount, 0, "car rt set");
     if (!slot.set) {
       REXLOG_ERROR("{} the descriptor set could not be made: no car ray tracing this session", kPrefix);
       Shutdown();
@@ -866,6 +868,10 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
       hit_->Bind(res.set.get(), hit_bindings_, slot);  // t6..t9: the hit data's pool and tables (city_hit_scene.h)
       hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);  // debug: reads them back through the set
     }
+    if (world_) {
+      world_->NoteView(frame.view, flip_z, /*car=*/true);  // CITY-RT FRAME: the top level's view space, and t10, t11 (the scene's trigger block fills them next: rt_world_frame.h)
+      world_->Bind(res.set.get(), world_bindings_, slot);
+    }
     view_.valid = true;
     view_.scene_valid = true;
     if (service_) {
@@ -956,6 +962,10 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   res.set->setBuffer(materials_index_, res.materials.get(), sizeof(uint32_t) * 4, &materials_view);
   hit_->Bind(res.set.get(), hit_bindings_, slot);
   hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);
+  if (world_) {
+    world_->NoteView(view, flip_z, /*car=*/false);  // CITY-RT FRAME: the predicted camera's view space, and t10, t11
+    world_->Bind(res.set.get(), world_bindings_, slot);
+  }
   view_.scene_valid = true;
   view_.set = res.set.get();
   view_.instance_count = count;

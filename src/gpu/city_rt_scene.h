@@ -103,6 +103,8 @@ class CityRtScene {
   bool wanted() const { return level_ != city_rt::Level::kOff; }
   // The pack is open and holds sectors (false before the first request, and when the pack is not there).
   bool pack_ready() const { return pack_.is_open(); }
+  // The open pack (its lamps section is what the ray tracing world frame's lamp table reads, rt_world_frame.h), null while none is open. Render thread; the pointer stays valid until the pack is given up.
+  const citypack::PackReader* pack_if_open() const { return pack_.is_open() ? &pack_ : nullptr; }
 
   // Called by CarRtScene::OnResolve in the frame's trigger, after the cars' instances are made and before the top level is described: reads, plan, builds (recorded on
   // `list`, outside any render pass; `slot` is the frame's slot), and the city's instances appended to `instances` (in the frame's view space). `view` is the frame's

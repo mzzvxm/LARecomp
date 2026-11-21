@@ -957,7 +957,7 @@ void SourceChecks(const std::string& gpu) {
   Check(Before(ao_cpp, "ran_this_frame_ = true;\n  PublishScreen(", "return true;\n}\n\nvoid AmbientOcclusion::PublishScreen"), "... right after it says the frame ran, as the last step of Run");
   Check(Has(ao_cpp, "screen_->Want(screen::Consumer::kAmbientOcclusion") && Has(ao_cpp, "screen_->Want(screen::Consumer::kContactShadows") && Has(ao_cpp, "screen_->Want(screen::Consumer::kBounceLight"),
         "the AO declares the three consumers' wants");
-  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_;"), "the AO runs for the screen products only with its depth pipelines made");
+  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_ || world_light_wanted_;"), "the AO runs for the screen products only with its depth pipelines made");
   Check(Has(ao_cpp, "plan.screen = screen_wants_ && !plan.occlusion && !contact;") && Has(ao_cpp, "if (!plan.probe && !plan.screen) {"), "a frame for the screen products is the census's probe frame without the readback");
   Check(Has(ao_cpp, "if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {"), "the AO does not give its images back while the screen products use them");
   Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame();"), "the Scene starts the screen frame before the AO's, which declares its wants after it");
