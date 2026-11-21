@@ -562,7 +562,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
     (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.size;
     // The hit data's row becomes valid (the sector table the GPU reads is copied at the descriptor writes that follow this call).
-    const bool committed = j.pooled && hit_->Commit(j.block, s.mesh.triangle_count(), s.mesh.opaque_triangles, 0);
+    const bool committed = j.pooled && hit_->Commit(j.block, s.mesh.triangle_count(), s.mesh.opaque_triangles, 0, s.distance);  // the distance is the sector's textures' priority
     (s.detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = committed ? city_hit::PoolAllocator::Round(j.block.plan.total_bytes) : 0;
     done_staged.push_back(uint32_t(j.staged_index));
     frames_->Retire(std::move(j.input));  // the structure needs none of it: the GPU is done with it when this frame is (a pooled job has none: the block stays)
@@ -623,6 +623,7 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
   PollLoads();
   Plan(camera_);
   recorded_ = BuildStaged(list, slot);
+  RefreshTexturePriorities();
 
   // The instances: one transform, the cars' own (a mesh in world space, identity model matrix).
   float transform[3][4];
@@ -648,6 +649,25 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
   instances_this_frame_ = added;
   LogState("");
   return added;
+}
+
+// The city textures of a sector are read nearest sector first (city_texture_set.h): the built sectors' distances from the camera are handed to the hit data every few frames.
+void CityRtScene::RefreshTexturePriorities() {
+  if (hit_ == nullptr || !camera_known_ || frame_ < next_priority_frame_) {
+    return;
+  }
+  next_priority_frame_ = frame_ + city_texture::kPriorityRefreshFrames;
+  for (uint32_t i = 0; i < built_.size(); ++i) {
+    const bool hi = built_[i].hi.structure != nullptr;
+    const bool lod = built_[i].lod.structure != nullptr;
+    if (!hi && !lod) {
+      continue;
+    }
+    const citypack::SectorRecord& rec = pack_.sector(i);
+    const float distance = city_rt::DistanceToBox(camera_, rec.aabb_min, rec.aabb_max);
+    if (hi) hit_->SetSectorDistance(i, false, distance);
+    if (lod) hit_->SetSectorDistance(i, true, distance);
+  }
 }
 
 float CityRtScene::SafeRange(float game_hi_radius) const {

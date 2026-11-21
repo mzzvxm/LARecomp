@@ -11,9 +11,16 @@
 // THE SETTING. mcla_gpu_rt_shadows (auto, off, high, ultra; live; the pause menu row RT SHADOWS on GRAPHICS > LIGHTING AND SHADOWS): auto is high on the
 // High class and off elsewhere (gpu_class.h), high or ultra by hand on any class with ray queries, never on Low. The level sets the class budget of the structures
 // (city_rt_rules.h BudgetFor) and the rays a pixel (2 or 4). It works where the contact march does (CONTACT SHADOWS on, which auto is on High): the march is the consumer.
-// The debug cvars: mcla_gpu_city_rt_sun (the sun's disc, times the real one; 3), _rays, _alpha (exclude, opaque, stochastic), _radius (the hi detail ring in metres), _range (the
-// most a shadow is applied to, metres), _check (the structures' check: primary rays against the depth, statistics in the log), _view (the check's picture as the contact
-// shadow view 7: white within 1 percent, grey within 5, black else).
+// The debug cvars: mcla_gpu_city_rt_sun (the sun's disc, times the real one; 3), _rays, _alpha (exact, stochastic, opaque, exclude), _alpha_ref (the exact mode's reference), _alpha_view (the
+// exact mode's picture and counters), _radius (the hi detail ring in metres), _range (the most a shadow is applied to, metres), _check (the structures' check: primary rays against the
+// depth, statistics in the log), _view (the check's picture as the contact shadow view 7: white within 1 percent, grey within 5, black else).
+//
+// THE CUT-OUTS (CITY-RT M1c). The fences, grates and neon cut-outs are the pack's non opaque triangles. In the exact mode, the default, a ray that meets one reads its alpha: the candidate's
+// texture coordinates come from the hit data's corner streams (city_hit_scene.h, the pool at t6..t9 of the ray tracing set) and its diffuse texture's alpha from the city texture set
+// (city_texture_set.h: the cut-outs' textures of the sectors in the ring, resident through the bindless heap, nearest first), at the level the ray's footprint calls for and not below the
+// lowest that keeps a cut-out's shape (hlsl/city_hit_alpha.hlsli, city_hit_alpha_rules.h); the ray is blocked where the alpha reaches the reference. This pass asks the scene service for the
+// hit data and the cut-out textures (Needs::hit, Needs::textures) in that mode only. A candidate whose alpha cannot be read (no hit file, no texture file, the texture not resident yet)
+// follows the stochastic rule, as before: nothing waits and nothing is wrong while a texture loads. The debug view (mcla_gpu_city_rt_alpha_view) shows which way each pixel went.
 //
 // WHAT IT ASKS FOR. BeginFrame asks CityRtScene (the structures) and CarRtScene (the top level, which the city's instances join) for this frame; the structures are built at
 // the history trigger before the occlusion's passes (scene.cpp OnResolve calls CarRtScene::OnResolve first), so Record finds them. A frame without them (the car is not found,
@@ -119,7 +126,7 @@ class CityRtShadow {
   bool PipelineReady();
   bool EnsureOutput(uint32_t width, uint32_t height);
   void RetireSet();
-  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t instances);
+  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t instances, bool check, bool alpha_view);
 
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;

@@ -1378,6 +1378,127 @@ void TestResidency() {
     };
     CHECK(run() == run() && !run().empty());
   }
+  {
+    // CITY-RT M1c: a block compressed texture keeps a whole block on each side at its first resident level (D3D12 refuses a BC texture of 2 x 128); a raw one has no such floor
+    const HitTexture strip = MakeRecord(8, 512, 7);  // 8x512, 4x256, 2x128, 1x64, 1x32, 1x16, 1x8
+    CHECK(FirstResidentMip(strip, 512) == 0 && FirstResidentMip(strip, 256) == 1 && FirstResidentMip(strip, 128) == 1 && FirstResidentMip(strip, 4) == 1 && FirstResidentMip(strip, 0) == 0);
+    const HitTexture raw_strip = MakeRecord(8, 512, 7, HitTextureFormat::kRgba8);
+    CHECK(FirstResidentMip(raw_strip, 128) == 2 && FirstResidentMip(raw_strip, 1) == 6);
+    const HitTexture square = MakeRecord(16, 16, 5);  // 16, 8, 4, 2, 1: the floor is the 4 x 4 level
+    CHECK(FirstResidentMip(square, 2) == 2 && FirstResidentMip(square, 8) == 1 && FirstResidentMip(MakeRecord(4, 4, 3), 1) == 0);
+    for (uint32_t cap : {0u, 1u, 2u, 4u, 8u, 16u, 64u, 128u, 256u, 512u, 4096u}) {
+      for (const HitTexture* tex : {&strip, &square, &big, &small, &flat}) {
+        const uint32_t first = FirstResidentMip(*tex, cap);
+        CHECK(first < tex->mip_count && (first == 0 || (std::max(uint32_t(tex->width) >> first, 1u) >= 4 && std::max(uint32_t(tex->height) >> first, 1u) >= 4)));
+      }
+    }
+
+    // the budget counts a texture in the allocator's two steps: 4 KiB when the first resident level is small, 64 KiB when it is not
+    const HitTexture wall = MakeRecord(512, 512, 4);  // 131072 + 32768 + 8192 + 2048 = 174080
+    CHECK(wall.ChainBytes(0) == 174080 && AccountedBytes(wall, 0, 4096) == 176128);
+    CHECK(AccountedBytes(wall, 0, 4096, 65536, 65536) == 196608 && AccountedBytes(wall, 1, 4096, 65536, 65536) == 45056 && AccountedBytes(wall, 2, 4096, 65536, 65536) == 12288);
+    CHECK(AccountedBytes(small, 0, 4096, 65536, 65536) == 4096 && AccountedBytes(small, 0, 1, 65536, 65536) == small.ChainBytes(0) && AccountedBytes(wall, 0, 4096, 0, 65536) == 176128);
+    {
+      // a residency that counts that way: two 512 x 512 textures do not fit 300 KiB (2 x 192 KiB), two 64 x 64 ones do
+      const std::vector<HitTexture> walls = {wall, wall, small, small};
+      TextureResidency r(walls);
+      ResidencyConfig c;
+      c.budget_bytes = 300 * 1024;
+      c.large_alignment = 65536;
+      c.small_base_limit = 65536;
+      r.Configure(c);
+      const uint16_t all[] = {0, 1, 2, 3};
+      r.AddSector(1, all, 4, 1.0f);
+      const TextureResidency::Plan p = r.Step(1);
+      CHECK(p.reads.size() == 3 && p.reads[0].index == 0 && p.reads[1].index == 2 && p.reads[2].index == 3);
+      CHECK(r.committed_bytes() == 196608 + 4096 + 4096 && r.committed_count() == 3);
+    }
+
+    // the materials as the GPU's words
+    std::vector<uint32_t> words(8 * 4, 0);
+    words[8 * 0 + 1] = 0xFFFFFFFFu;  // no texture, no layer
+    words[8 * 1 + 1] = 0xFFFF0002u;  // texture 2
+    words[8 * 2 + 1] = 0x00030000u;  // texture 0, second layer 3
+    words[8 * 3 + 1] = 0xFFFF0002u;  // texture 2
+    std::vector<HitRun> word_runs(4);
+    for (uint32_t i = 0; i < 4; ++i) word_runs[i].material = i;
+    word_runs[1].flags = kRunAlphaTested;
+    word_runs[3].flags = kRunAlphaTested;
+    CHECK(CollectTexturesOfWords(word_runs, words.data(), 4, false) == (std::vector<uint16_t>{0, 2, 3}));
+    CHECK(CollectTexturesOfWords(word_runs, words.data(), 4, true) == (std::vector<uint16_t>{2}));
+    word_runs[3].material = 99;
+    CHECK(CollectTexturesOfWords(word_runs, words.data(), 4, true) == (std::vector<uint16_t>{2}) && CollectTexturesOfWords(word_runs, words.data(), 4, false) == (std::vector<uint16_t>{0, 2, 3}));
+    CHECK(CollectTexturesOfWords({}, words.data(), 4, false).empty() && CollectTexturesOfWords(word_runs, nullptr, 0, false).empty() && CollectTexturesOfWords(word_runs, words.data(), 0, false).empty());
+    {
+      // the words and the records agree: the same textures from either
+      std::vector<HitMaterial> records(4);
+      records[1].texture = 2;
+      records[2].texture = 0;
+      records[2].layer = 3;
+      records[3].texture = 2;
+      std::vector<uint32_t> packed(8 * 4);
+      for (uint32_t m = 0; m < 4; ++m) records[m].Pack(&packed[8 * m]);
+      std::vector<HitRun> r4(4);
+      for (uint32_t i = 0; i < 4; ++i) r4[i].material = i;
+      CHECK(CollectTexturesOfWords(r4, packed.data(), 4, false) == CollectTextures(r4, records));
+    }
+  }
+  {
+    // at most max_uploads_per_frame textures are made in one frame, however many bytes the frame allows
+    TextureResidency r(t);
+    ResidencyConfig c;
+    c.upload_bytes_per_frame = one * 100;
+    c.max_uploads_per_frame = 2;
+    c.max_reads_in_flight = 6;
+    c.max_ready_bytes = one * 100;
+    r.Configure(c);
+    const uint16_t all[] = {0, 1, 2, 3, 4, 5};
+    r.AddSector(1, all, 6, 1.0f);
+    TextureResidency::Plan p = r.Step(1);
+    CHECK(p.reads.size() == 6);
+    for (const auto& rd : p.reads) r.ReadFinished(rd.index, true);
+    p = r.Step(2);
+    CHECK(p.uploads == (std::vector<uint32_t>{0, 1}));
+    p = r.Step(3);
+    CHECK(p.uploads == (std::vector<uint32_t>{2, 3}));
+    p = r.Step(4);
+    CHECK(p.uploads == (std::vector<uint32_t>{4, 5}) && r.resident_count() == 6);
+    c.max_uploads_per_frame = 0;  // 0: no limit
+    r.Configure(c);
+    CHECK(ResidencyConfig{}.max_textures == 0xFFFFFFFFu);  // and no limit on the textures held by default
+  }
+  {
+    // max_textures: the slots the bindless heap can spare. Three of the six textures at a time; a sector that leaves makes room for the next one
+    TextureResidency r(t);
+    ResidencyConfig c;
+    c.max_textures = 3;
+    c.upload_bytes_per_frame = one * 100;
+    c.idle_frames = 100000;
+    r.Configure(c);
+    const uint16_t near_set[] = {0, 1}, far_set[] = {2, 3};
+    r.AddSector(1, near_set, 2, 1.0f);
+    r.AddSector(2, far_set, 2, 9.0f);
+    TextureResidency::Plan p = r.Step(1);
+    CHECK(p.reads.size() == 3 && p.reads[0].index == 0 && p.reads[1].index == 1 && p.reads[2].index == 2 && r.committed_count() == 3);
+    for (const auto& rd : p.reads) r.ReadFinished(rd.index, true);
+    p = r.Step(2);
+    CHECK(p.uploads.size() == 3 && p.reads.empty() && p.evictions.empty() && r.state(3) == TextureState::kAbsent && r.committed_count() == 3);
+    // the near sector's textures are better than the far sector's: a texture of the near sector that comes later takes a worse one's place
+    r.RemoveSector(2);
+    const uint16_t more[] = {4};
+    r.AddSector(3, more, 1, 0.5f);
+    p = r.Step(3);
+    CHECK(p.evictions == (std::vector<uint32_t>{2}) && p.reads.size() == 1 && p.reads[0].index == 4 && r.committed_count() == 3);
+    // the count follows every way out: a failed read, a refused creation, an eviction
+    r.ReadFinished(4, false);
+    CHECK(r.committed_count() == 2);
+    c.max_textures = 0xFFFFFFFFu;
+    r.Configure(c);
+    p = r.Step(4);
+    CHECK(p.reads.empty() && r.committed_count() == 2);  // the failed read waits out its retry time
+    r.CreationFailed(0);
+    CHECK(r.committed_count() == 1);
+  }
 }
 
 // ---------------------------------------------------------------------------

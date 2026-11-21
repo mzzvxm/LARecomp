@@ -900,12 +900,35 @@
  },
  "mcla_gpu_city_rt_alpha": {
   "type": "std::string",
-  "default": "\"stochastic\"",
+  "default": "\"exact\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, some foliage: \"\n    \"4% of the city, kept apart in the city pack; their textures are not in the structures). exclude leaves them out, opaque makes them solid, stochastic (the default) \"\n    \"makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the upscaler average into a half tone. Live.\"",
+  "help": "\"Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, neon cut-outs: \"\n    \"4% of the city, kept apart in the city pack). exact (the default) reads the cut-out texture's alpha where the ray meets the triangle, from the city hit data and the \"\n    \"city textures, and blocks the ray where it reaches mcla_gpu_city_rt_alpha_ref; where those are not built or the texture is not loaded yet it does what stochastic does. \"\n    \"exclude leaves the cut-outs out, opaque makes them solid, stochastic makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the \"\n    \"upscaler average into a half tone. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Allowed(\"exclude\", \"opaque\", \"stochastic\")"
+   "rex::Allowed(\"exact\", \"exclude\", \"opaque\", \"stochastic\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha_ref": {
+  "type": "f64",
+  "default": "0.5",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the alpha at or above which a cut-out texel blocks a ray in the exact mode of mcla_gpu_city_rt_alpha, 0.02 to 0.98 \"\n    \"(the game's alpha test keeps a texel above its reference, mostly 0.5 for the city's cut-outs; the city pack does not know a draw's own). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.02, 0.98}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_alpha_view": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with the exact mode of mcla_gpu_city_rt_alpha, shows through the contact shadows' view 7 \"\n    \"(mcla_gpu_contact_shadows_view) which way each pixel's sun rays went through the cut-outs: white no cut-out met, 0.7 decided by the texture's alpha, 0.35 decided by the \"\n    \"stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the \"\n    \"levels read. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -964,6 +987,18 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_hit_textures": {
+  "type": "std::string",
+  "default": "\"off\"",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_city_hit_data on, asks for the city's textures to be resident as well, to test the loader without an effect reading them: off (the default), alpha (the cut-outs' textures of the sectors in the ring, what the ray traced shadows' exact alpha reads) or all (every texture of the sectors in the ring, what the reflections will read). The file is mcla_city_tex.v1.pack beside the hit file. The log says under [city tex] (the first texture, the video memory's pressure) and the city ray tracing census line has the textures' slots and accounted memory. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"off\", \"alpha\", \"all\")"
   ],
   "comments": [],
   "pp_depth": 0

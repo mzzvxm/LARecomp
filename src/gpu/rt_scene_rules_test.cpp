@@ -62,6 +62,31 @@ void TestNeeds() {
   const Needs m = Merge(Merge(CarsOnly(), CityAt(Level::kHigh, 120.0f)), Merge(HitAt(Level::kUltra), CityAt(Level::kHigh, 300.0f)));
   CHECK(m.cars && m.city == Level::kUltra && m.hit == Level::kUltra && m.city_radius == 300.0f);
   CHECK(Merge(Needs{}, Needs{}) == Needs{});
+  // CITY-RT M1c: the textures a consumer of the hit data needs resident; the widest scope wins, and a want of textures without hit data is no want of textures
+  Needs alpha = HitAt(Level::kHigh);
+  alpha.textures = TextureScope::kAlpha;
+  Needs everything = HitAt(Level::kHigh);
+  everything.textures = TextureScope::kAll;
+  Needs lonely = CityAt(Level::kHigh);
+  lonely.textures = TextureScope::kAll;
+  CHECK(Normalized(alpha).textures == TextureScope::kAlpha && Normalized(lonely).textures == TextureScope::kNone && Normalized(Needs{}).textures == TextureScope::kNone);
+  CHECK(Merge(alpha, Needs{}).textures == TextureScope::kAlpha && Merge(alpha, everything).textures == TextureScope::kAll && Merge(everything, alpha).textures == TextureScope::kAll);
+  CHECK(Merge(alpha, Normalized(lonely)).textures == TextureScope::kAlpha && Merge(Normalized(lonely), CarsOnly()).textures == TextureScope::kNone);
+  CHECK(!(alpha == everything) && alpha == alpha && !Needs{}.any() && !(alpha == HitAt(Level::kHigh)));
+  CHECK(MaxScope(TextureScope::kNone, TextureScope::kAlpha) == TextureScope::kAlpha && MaxScope(TextureScope::kAll, TextureScope::kAlpha) == TextureScope::kAll);
+  {
+    WantBoard board;
+    board.Want(Consumer::kCitySunShadow, alpha);
+    CHECK(board.Now().textures == TextureScope::kAlpha && board.Now().hit == Level::kHigh);
+    board.Want(Consumer::kCityReflections, everything);
+    CHECK(board.Now().textures == TextureScope::kAll);
+    board.EndFrame();
+    board.Want(Consumer::kCitySunShadow, alpha);  // the reflections' want counts one more frame, then the scope falls back to the shadows'
+    CHECK(board.Now().textures == TextureScope::kAll);
+    board.EndFrame();
+    board.Want(Consumer::kCitySunShadow, alpha);
+    CHECK(board.Now().textures == TextureScope::kAlpha);
+  }
   CHECK(MaxLevel(Level::kHigh, Level::kOff) == Level::kHigh && MaxLevel(Level::kOff, Level::kUltra) == Level::kUltra && MaxLevel(Level::kUltra, Level::kHigh) == Level::kUltra);
   CHECK(ConsumerName(Consumer::kCityGi) == "city gi" && ConsumerName(Consumer::kCars) == "car effects");
 }

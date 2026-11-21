@@ -9,7 +9,7 @@
 //   t6  gCityPool       ONE ByteAddressBuffer of 64 to 256 MiB (city_hit_pool_rules.h PoolBudgetFor): a block for every sector detail's indices, positions, run ids, run table and corners
 //   t7  gCitySectors    the sector table, two uint4 a slot (slot = InstanceID & 0x7FFFFF): where each block is; a slot of flags 0 has no hit data. A copy for every frame slot, written by the CPU
 //   t8  gCityMaterials  the global material table, from the file, uploaded once
-//   t9  gCityTextures   the texture table, one uint4 a texture: H2's loader writes a row (SetTextureRow) when a texture is uploaded or given back
+//   t9  gCityTextures   the texture table, one uint4 a texture: the texture set (city_texture_set.h, owned here) writes a row when a texture is uploaded or given back
 //
 // THE POOL IS THE BUILD'S INPUT. A sector detail with hit data is uploaded ONCE: the block holds the positions and the indices, and the bottom level structure is built over those very
 // bytes (the geometry names the pool at the block's offsets); nothing is given back after the build, as M1 did without hit data. The block is also what the hit shading reads.
@@ -18,12 +18,18 @@
 // it into staging), RecordCopy (staging to the pool), builds the structure over the block, Commit (the row is valid); Release calls Evict (the row is cleared now, the range comes back when
 // the GPU is done with the frames in flight). Record (once a frame, before the builds) uploads the material table when it is new and keeps the pool's barriers.
 //
-// WHO WANTS IT. BeginFrame(level) every frame, from the scene service (rt_scene_service.h): the level of the hit data the consumers asked for. Off for 600 frames and the pool and the
-// tables go back. A level change that changes the pool's size, or a pool that is made or dropped, changes epoch(): structures built under another epoch have no blocks (or blocks that
+// THE TEXTURES (city_texture_set.h, CITY-RT M2 H2 / M1c). When a consumer wants textures (the scope: the cut-outs' alpha for the ray traced shadows, every texture for the reflections), the
+// file beside the hit file (citypack::kTexFileName, built by the same tool) is opened and the textures of the sectors whose blocks are committed are made resident, nearest sector first,
+// through the bindless heap; the rows of t9 name their slots. A texture that is not resident, or no file at all, leaves the rows "not uploaded" and every consumer falls back (the shadows to
+// the stochastic cut-out rule). Reserve works out a sector's texture lists from its runs, Commit hands them to the set with the sector's distance, Evict takes them back, Record pumps the set.
+//
+// WHO WANTS IT. BeginFrame(level, scope) every frame, from the scene service (rt_scene_service.h): the level of the hit data and the textures the consumers asked for. Off for 600 frames and
+// the pool, the tables and the texture set go back. A level change that changes the pool's size, or a pool that is made or dropped, changes epoch(): structures built under another epoch have no blocks (or blocks that
 // are gone), so CityRtScene gives them back and builds them again.
 //
-// MEMORY. The pool's size is the class's, or less where the video memory has no room (city_hit_pool_rules.h FitCapacity: the level steps down, then to none, and the shadows go on).
-// HeldBytes() is what the renderer's census and VideoMemoryBudget's holder list say. The unit tests of the rules are city_hit_pool_rules_test.cpp.
+// MEMORY. The pool's size is the class's, or less where the video memory has no room (city_hit_pool_rules.h FitCapacity: the level steps down, then to none, and the shadows go on). The
+// textures' budget is the class's (city_texture_rules.h BudgetFor) and stops growing when the adapter is nearly full. HeldBytes() is what the renderer's census and VideoMemoryBudget's holder
+// list say: the pool, the tables, and the resident textures. The unit tests of the rules are city_hit_pool_rules_test.cpp.
 //
 // Threading: the render thread, except ReadBlob (the worker). Initialize and Shutdown on the lifecycle thread.
 // ===========================================================================
@@ -33,6 +39,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -41,6 +48,9 @@
 #include "citypack/pack_reader.h"
 #include "city_hit_pool_rules.h"
 #include "city_hit_probe.h"
+#include "city_texture_rules.h"
+#include "city_texture_scope.h"
+#include "city_texture_set.h"
 #include "frame.h"
 #include "upload.h"
 
@@ -76,15 +86,18 @@ class CityHitScene {
   CityHitScene(const CityHitScene&) = delete;
   CityHitScene& operator=(const CityHitScene&) = delete;
 
-  // `hit_file` is where the hit file should be (the shader pack folder's `city` folder, citypack::kHitFileName); it is opened when first wanted and the base pack is open.
-  bool Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, const std::filesystem::path& hit_file, gpu_class::GpuClass cls);
+  // `hit_file` is where the hit file should be (the shader pack folder's `city` folder, citypack::kHitFileName); it is opened when first wanted and the base pack is open. `texture_file`
+  // is the texture file beside it (citypack::kTexFileName), opened when a consumer wants textures.
+  bool Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, BindlessHeap& heap, const std::filesystem::path& hit_file, const std::filesystem::path& texture_file,
+                  gpu_class::GpuClass cls);
   // GPU idle and the FrameRing drained.
   void Shutdown();
   bool initialized() const { return device_ != nullptr; }
 
-  // Every frame: the level of hit data the consumers asked for (the scene service's merge). Makes and gives back the pool.
-  void BeginFrame(city_rt::Level level);
+  // Every frame: the level of hit data and the textures the consumers asked for (the scene service's merge). Makes and gives back the pool and the texture set.
+  void BeginFrame(city_rt::Level level, TextureScope textures = TextureScope::kNone);
   city_rt::Level level() const { return level_; }
+  TextureScope texture_scope() const { return scope_; }
   // The base pack is open (CityRtScene::OpenPack): the sector table's size and the check the hit file is matched to. Null again when the pack is given up.
   void SetBase(const larecomp::citypack::PackReader* base);
 
@@ -101,7 +114,7 @@ class CityHitScene {
   bool file_open() const { return reader_open_; }
 
   // --- the render thread: the frame ---
-  // Before the builds, outside any render pass: uploads the material table when it is new.
+  // Before the builds, outside any render pass: uploads the material table when it is new, and pumps the texture set (reads in, evictions, uploads).
   void Record(plume::RenderCommandList* list, uint32_t slot);
 
   // A block for a sector detail, planned, placed and written into staging.
@@ -118,6 +131,7 @@ class CityHitScene {
     uint32_t sector = 0;
     bool lod = false;
     bool copied = false;
+    city_texture::SectorTextures textures;  // the textures the sector detail's runs can show, for both scopes (handed to the texture set at Commit)
   };
   // `blob` null: the block holds the indices and positions only (no runs, no corners). The upload staging is the frame slot's.
   Reservation Reserve(uint32_t sector, bool lod, const larecomp::citypack::MeshData& mesh, const larecomp::citypack::HitBlob* blob, uint32_t frame_slot);
@@ -127,20 +141,24 @@ class CityHitScene {
   void EndUpload(plume::RenderCommandList* list);
   // The pool's buffer and the block's offsets for a structure's build geometry.
   plume::RenderBuffer* pool_buffer() const { return pool_.get(); }
-  // The structure over the block was built: the row becomes valid. False: refused (the block is given back at once).
-  bool Commit(const Reservation& reservation, uint32_t triangle_count, uint32_t opaque_triangles, uint32_t extra_flags);
+  // The structure over the block was built: the row becomes valid and the sector's textures are wanted (`distance_m`: the sector's distance from the camera, the textures' priority).
+  // False: refused (the block is given back at once).
+  bool Commit(const Reservation& reservation, uint32_t triangle_count, uint32_t opaque_triangles, uint32_t extra_flags, float distance_m = 0.0f);
   // A reservation that was never copied (the build was given up before): the range is free at once.
   void Abandon(const Reservation& reservation);
   // A block that was copied but whose structure was not built: the row stays invalid and the range comes back when the GPU is done.
   void Discard(const Reservation& reservation);
-  // The sector detail's structure was given back: the row is cleared now, the range later.
+  // The sector detail's structure was given back: the row is cleared now, the range later, and its textures are no longer wanted by it.
   void Evict(uint32_t sector, bool lod);
+  // The sector detail's distance from the camera changed (CityRtScene refreshes the built ones every few frames): its textures' priority.
+  void SetSectorDistance(uint32_t sector, bool lod, float distance_m);
 
   // --- the tables ---
-  // H2: the texture table (t9): one row a texture. Reset sizes it; Set writes a row (a texture uploaded: its slot; given back: kNoSlot).
+  // H2: the texture table (t9): one row a texture, written by the texture set through SetTextureRow (a texture uploaded: its slot; given back: kNoSlot).
   void ResetTextures(uint32_t count) { textures_.Reset(count); }
   void SetTextureRow(uint32_t index, const larecomp::citypack::GpuTextureRow& row) { textures_.Set(index, row); }
   uint32_t texture_count() const { return textures_.count(); }
+  const CityTextureSet& texture_set() const { return texture_set_; }
   // Writes t6..t9 of a frame slot's descriptor set (after the top level's own writes). The tables are copied into the slot's buffers when they changed. What is not there is bound to a
   // small zeroed stand-in, so that a shader that reads before the data exists finds "no hit data".
   void Bind(plume::RenderDescriptorSet* set, const Bindings& bindings, uint32_t slot);
@@ -188,9 +206,11 @@ class CityHitScene {
   };
 
   bool OpenFile();
+  bool OpenTextures();
   bool MakePool();
   void DeferFree(const city_hit::Block& block);
-  void DropPool(const char* why);
+  void DropPool(const char* why, bool give_back_textures);
+  void CloseTextures();
   bool EnsureTables(SlotTables& slot, uint32_t index);
   uint64_t SectorTableBytes() const;
   bool MakeStandin(Standin& s, uint64_t bytes, const void* fill, uint64_t fill_bytes, const char* name);
@@ -202,17 +222,30 @@ class CityHitScene {
   FrameRing* frames_ = nullptr;
   UploadRing* upload_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
   gpu_class::GpuClass class_ = gpu_class::GpuClass::kLow;
   std::filesystem::path hit_file_;
+  std::filesystem::path texture_file_;
 
   // The setting and the frame.
   city_rt::Level level_ = city_rt::Level::kOff;
+  TextureScope scope_ = TextureScope::kNone;
+  uint64_t textures_retry_frame_ = 0;  // the texture file is tried again at this frame
+  CityTextureSet texture_set_;
+  // The sector details whose blocks are committed, with their textures and distance: what the texture set is told when it opens after the blocks were made (a texture file built later).
+  struct CommittedSector {
+    city_texture::SectorTextures textures;
+    float distance_m = 0.0f;
+  };
+  std::unordered_map<uint32_t, CommittedSector> committed_;
   uint64_t frame_ = 0;
   uint64_t last_wanted_frame_ = 0;
   uint64_t epoch_ = 1;
   uint64_t retry_frame_ = 0;       // the file or the pool is tried again at this frame
   uint64_t requested_capacity_ = 0;  // the class's size for the level the pool was made for (before the video memory's say)
   int logged_state_ = -1;
+  int logged_texture_state_ = -1;
+  std::string texture_problem_;
 
   // The base pack and the file.
   const larecomp::citypack::PackReader* base_ = nullptr;

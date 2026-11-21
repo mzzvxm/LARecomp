@@ -21,7 +21,10 @@
 // car image's slot (kFlagCarImage), else 1. A pixel of the world takes the DARKER of this pass's visibility and the car image's g there (the car's own sun ray, in its region).
 // The rays hit the city and the cars' body, tyres and other cars (the push's mask), so the player's car shadows the road here too.
 //
-// ALPHA TESTED triangles (the pack's second geometry of a sector) come up as candidates: the push's AlphaMode says whether they block (city_rt_shadow_rules.h).
+// ALPHA TESTED triangles (the pack's second geometry of a sector) come up as candidates: the push's AlphaMode says whether they block (city_rt_shadow_rules.h). In the EXACT mode (the
+// default, CITY-RT M1c) a candidate of the city decodes its own UV from the hit data's corner streams (t6..t9 of the ray tracing set, hlsl/city_hit_common.hlsli) and reads the alpha of its
+// material's diffuse texture, resident through the bindless set (hlsl/city_hit_alpha.hlsli): the ray is blocked where the alpha reaches the reference (bits 12-19 of the flags), and goes
+// through the holes. Where that cannot be read (no hit data, the texture is not resident yet) the candidate follows the stochastic rule: today's behaviour.
 //
 // THE CHECK (kFlagCheck, mcla_gpu_city_rt_check): instead of the sun rays, one primary ray from the view-space origin through every city pixel of the depth image (not a vehicle,
 // not the sky) against the city's instances alone; its hit's distance is compared with the pixel's (the structures' geometry, the camera and the matrices are right when the
@@ -38,6 +41,12 @@
 #define CITY_RT_MASK_CITY 0x80  // city_rt_rules.h kMaskCity: the one bit of the instance mask the car scene does not use
 
 Texture2D<float4> g_textures[] : register(t0, space0);
+
+// The hit data (the car scene's set at registers t6..t9: the pool, the sector, material and texture tables) and the cut-outs' alpha through the bindless textures. A slot differs from a
+// lane to a lane (each ray meets its own fence), so the index is non uniform.
+#define CITY_HIT_SPACE 2
+#define CITY_HIT_ALPHA_TEXEL(slot, texel, level) g_textures[NonUniformResourceIndex((slot) & 0x7FFFFFFFu)].Load(int3(texel, int(level))).w
+#include "city_hit_alpha.hlsli"
 #ifdef __spirv__
 // Vulkan takes the format of a storage image from the shader: the image is R8G8B8A8_UNORM (city_rt_shadow.cpp EnsureOutput).
 [[vk::image_format("rgba8")]]
@@ -48,7 +57,7 @@ RWByteAddressBuffer g_stats : register(u1, space1);
 struct CityRtShadowPush
 {
     // x the linear depth image's bindless slot, y and z the image's width and height, w the flags (city_rt_shadow_rules.h kFlag*): bits 0-3 the rays a pixel, bits 4-5 the
-    // AlphaMode, bit 8 the car image is given, bit 29 the check's picture, bit 30 the check
+    // AlphaMode, bit 8 the car image is given, bits 12-19 the exact alpha's reference (unorm8), bit 28 the exact alpha's statistics and picture, bit 29 the check's picture, bit 30 the check
     uint4 slots;
     // x the frame's shift of the noise (0: a fixed pattern), y the ray mask (CITY_RT_MASK_CITY | the cars' parts), z the frame serial (the alpha hash), w the car image's slot
     uint4 noise;
@@ -76,6 +85,8 @@ static const float kAlphaCoverage = 0.5;
 static const float kMinAbove = 0.08;          // a ray is kept at least this far (as a cosine) above the point's tangent plane
 static const float kCheckTMin = 0.01;
 static const uint kFlagCarImage = 1u << 8;
+static const uint kFlagAlphaRefShift = 12;
+static const uint kFlagAlphaStats = 1u << 28;
 static const uint kFlagView = 1u << 29;
 static const uint kFlagCheck = 1u << 30;
 static const uint kStatPixels = 0;
@@ -86,6 +97,20 @@ static const uint kStatNoHit = 4;
 static const uint kStatLod = 5;
 static const uint kStatHi = 6;
 static const uint kStatHistogram = 8;
+static const uint kStatAlphaCandidates = 24;
+static const uint kStatAlphaExact = 25;
+static const uint kStatAlphaBlocked = 26;
+static const uint kStatAlphaPassed = 27;
+static const uint kStatAlphaFallback = 28;
+static const uint kStatAlphaLevels = 32;
+static const uint kAlphaLevelBins = 8;
+static const uint kPathCandidate = 1;
+static const uint kPathFallback = 2;
+static const uint kPathExact = 4;
+static const float kViewNoCandidate = 1.0;
+static const float kViewExact = 0.7;
+static const float kViewFallback = 0.35;
+static const uint kInstanceCity = 0x800000;  // city_rt_rules.h kInstanceIdFlag: the InstanceID of a city structure has it
 static const uint kHistogramBins = 16;
 static const float kHistogramStep = 0.005;
 
@@ -159,9 +184,29 @@ float2 DiscSample(uint k, uint rays, float noise1, float noise2)
     return float2(r * cos(angle), r * sin(angle));
 }
 
+// city_rt_shadow_rules.h AcceptCandidate: what a cut-out candidate does. Mode 0 never blocks, 1 always, 2 by the hash of the pixel, the triangle and the frame, 3 (exact) by the alpha it
+// read against the reference, and by the hash where it could not read one.
+bool AcceptCandidate(uint mode, bool known, float alpha, float reference, float hash)
+{
+    if (mode == 3u && known)
+    {
+        return CityHitAlphaBlocks(alpha, reference);
+    }
+    if (mode == 0u)
+    {
+        return false;
+    }
+    if (mode == 1u)
+    {
+        return true;
+    }
+    return hash < kAlphaCoverage;
+}
+
 // One yes or no ray: does anything of the mask lie within t_max of origin along direction? A first hit ends the search. A candidate of an alpha tested geometry (the city's
-// second geometry of a structure) is a blocker by the push's AlphaMode: 0 never, 1 always, 2 by the hash of the pixel, the triangle and the frame.
-bool Blocked(float3 origin, float3 direction, float t_max, uint2 pixel, uint salt)
+// second geometry of a structure) is a blocker by the push's AlphaMode (AcceptCandidate). `cone` is the width in metres of the pixel the ray started from; the width the alpha is read at
+// is that plus the sun disc's spread over the distance the ray travelled to the candidate. `path` collects what happened for the exact alpha's picture (kPath*).
+bool Blocked(float3 origin, float3 direction, float t_max, uint2 pixel, uint salt, float cone, inout uint path)
 {
     RayDesc ray;
     ray.Origin = origin;
@@ -170,15 +215,47 @@ bool Blocked(float3 origin, float3 direction, float t_max, uint2 pixel, uint sal
     ray.TMax = t_max;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(gCarRtTlas, RAY_FLAG_NONE, g_push.noise.y, ray);
-    const uint mode = (g_push.slots.w >> 4) & 3u;
+    const uint flags = g_push.slots.w;
+    const uint mode = (flags >> 4) & 3u;
+    const float reference = float((flags >> kFlagAlphaRefShift) & 255u) * (1.0 / 255.0);
+    const bool stats = (flags & kFlagAlphaStats) != 0u;
     while (query.Proceed())
     {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
         {
-            bool accept = mode == 1u;
-            if (mode == 2u)
+            bool known = false;
+            float alpha = 1.0;
+            uint level = 0u;
+            const uint instance = query.CandidateInstanceID();
+            if (mode == 3u && (instance & kInstanceCity) != 0u)
             {
-                accept = Hash01(pixel.x, pixel.y, query.CandidatePrimitiveIndex() + 7919u * salt, g_push.noise.z) < kAlphaCoverage;
+                const float width = cone + 2.0 * query.CandidateTriangleRayT() * g_push.light.w;
+                const CityHitAlpha a = CityHitAlphaOfCandidate(instance, query.CandidateGeometryIndex(), query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), width);
+                known = a.known != 0u;
+                alpha = a.alpha;
+                level = a.level;
+            }
+            float hash = 0.0;
+            if (mode >= 2u && !known)
+            {
+                hash = Hash01(pixel.x, pixel.y, query.CandidatePrimitiveIndex() + 7919u * salt, g_push.noise.z);
+            }
+            const bool accept = AcceptCandidate(mode, known, alpha, reference, hash);
+            path |= kPathCandidate | (known ? kPathExact : kPathFallback);
+            if (stats)
+            {
+                uint ignored;
+                g_stats.InterlockedAdd(kStatAlphaCandidates * 4u, 1u, ignored);
+                if (known)
+                {
+                    g_stats.InterlockedAdd(kStatAlphaExact * 4u, 1u, ignored);
+                    g_stats.InterlockedAdd((accept ? kStatAlphaBlocked : kStatAlphaPassed) * 4u, 1u, ignored);
+                    g_stats.InterlockedAdd((kStatAlphaLevels + min(level, kAlphaLevelBins - 1u)) * 4u, 1u, ignored);
+                }
+                else
+                {
+                    g_stats.InterlockedAdd(kStatAlphaFallback * 4u, 1u, ignored);
+                }
             }
             if (accept)
             {
@@ -212,6 +289,9 @@ float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
     float3 sx;
     float3 sy;
     Frame(to_sun, sx, sy);
+    // The width of the pixel the rays start from, in metres: what the exact alpha's level starts at.
+    const float cone = footprint_unit * t;
+    uint path = 0u;
     float blocked = 0.0;
     [loop]
     for (uint k = 0u; k < rays; ++k)
@@ -223,10 +303,15 @@ float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
         {
             direction = normalize(direction + (kMinAbove - above) * n);
         }
-        if (Blocked(origin, direction, g_push.lens.z, pixel, k))
+        if (Blocked(origin, direction, g_push.lens.z, pixel, k, cone, path))
         {
             blocked += 1.0;
         }
+    }
+    // The exact alpha's picture (mcla_gpu_city_rt_alpha_view): which way the pixel's rays went through the cut-outs, in the place of the visibility.
+    if ((g_push.slots.w & kFlagAlphaStats) != 0u)
+    {
+        return float4(1.0, path == 0u ? kViewNoCandidate : ((path & kPathFallback) != 0u ? kViewFallback : kViewExact), 1.0, 1.0);
     }
     return float4(1.0, 1.0 - blocked / float(rays), 1.0, 1.0);
 }

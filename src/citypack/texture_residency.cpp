@@ -7,19 +7,30 @@ namespace larecomp::citypack {
 
 uint32_t FirstResidentMip(const HitTexture& texture, uint32_t cap_px) {
   if (cap_px == 0 || texture.mip_count <= 1) return 0;
+  const bool block = texture.format != HitTextureFormat::kRgba8;
+  uint32_t last_valid = 0;
   for (uint32_t m = 0; m < texture.mip_count; ++m) {
-    const uint32_t side = std::max(std::max(uint32_t(texture.width) >> m, 1u), std::max(uint32_t(texture.height) >> m, 1u));
-    if (side <= cap_px) return m;
+    const uint32_t w = std::max(uint32_t(texture.width) >> m, 1u);
+    const uint32_t h = std::max(uint32_t(texture.height) >> m, 1u);
+    // A block compressed texture's top level must hold a whole block on each side; the levels only get smaller, so none after this one qualifies either.
+    if (block && m != 0 && (w < 4 || h < 4)) break;
+    last_valid = m;
+    if (std::max(w, h) <= cap_px) return m;
   }
-  return texture.mip_count - 1;
+  return last_valid;
 }
 
 uint64_t ResidentBytes(const HitTexture& texture, uint32_t first_mip) { return texture.ChainBytes(first_mip); }
 
-uint64_t AccountedBytes(const HitTexture& texture, uint32_t first_mip, uint64_t alignment) {
+uint64_t AccountedBytes(const HitTexture& texture, uint32_t first_mip, uint64_t alignment, uint64_t large_alignment, uint64_t small_base_limit) {
   const uint64_t bytes = texture.ChainBytes(first_mip);
-  if (alignment <= 1) return bytes;
-  return (bytes + alignment - 1) / alignment * alignment;
+  uint64_t unit = alignment;
+  if (large_alignment > 1 && first_mip < texture.mip_count) {
+    const uint64_t base = HitMipBytes(texture.format, std::max(uint32_t(texture.width) >> first_mip, 1u), std::max(uint32_t(texture.height) >> first_mip, 1u));
+    if (base > small_base_limit) unit = large_alignment;
+  }
+  if (unit <= 1) return bytes;
+  return (bytes + unit - 1) / unit * unit;
 }
 
 std::vector<UploadLevel> PlanUploadLevels(const HitTexture& texture, uint32_t first_mip, uint32_t pitch_alignment) {
@@ -68,6 +79,22 @@ std::vector<uint16_t> CollectTextures(const std::vector<HitRun>& runs, const std
   return out;
 }
 
+std::vector<uint16_t> CollectTexturesOfWords(const std::vector<HitRun>& runs, const uint32_t* material_words, size_t material_count, bool alpha_tested_only) {
+  std::vector<uint16_t> out;
+  if (!material_words) return out;
+  for (const HitRun& run : runs) {
+    if (alpha_tested_only && (run.flags & kRunAlphaTested) == 0) continue;
+    if (run.material >= material_count) continue;
+    const uint32_t word = material_words[size_t(run.material) * 8 + 1];
+    const uint16_t diffuse = uint16_t(word & 0xFFFFu), layer = uint16_t(word >> 16);
+    if (diffuse != kNoTexture) out.push_back(diffuse);
+    if (layer != kNoTexture) out.push_back(layer);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
 TextureResidency::TextureResidency(const std::vector<HitTexture>& table) : table_(table), states_(table.size()) {}
 
 void TextureResidency::Configure(const ResidencyConfig& config) {
@@ -109,7 +136,13 @@ void TextureResidency::Recompute() {
   dirty_ = false;
 }
 
-uint64_t TextureResidency::PlannedBytes(uint32_t index) const { return AccountedBytes(table_[index], FirstResidentMip(table_[index], config_.cap_px), config_.allocation_alignment); }
+uint64_t TextureResidency::PlannedBytes(uint32_t index) const {
+  return AccountedBytes(table_[index], FirstResidentMip(table_[index], config_.cap_px), config_.allocation_alignment, config_.large_alignment, config_.small_base_limit);
+}
+
+bool TextureResidency::Over(uint64_t need) const {
+  return (config_.budget_bytes != 0 && committed_ + need > config_.budget_bytes) || (uint64_t(committed_count_) + 1 > config_.max_textures);
+}
 
 void TextureResidency::Drop(uint32_t index, Plan* plan) {
   Tex& t = states_[index];
@@ -124,6 +157,7 @@ void TextureResidency::Drop(uint32_t index, Plan* plan) {
     default: return;
   }
   committed_ -= t.bytes;
+  --committed_count_;
   t.state = TextureState::kAbsent;
   t.bytes = 0;
   plan->evictions.push_back(index);
@@ -131,7 +165,7 @@ void TextureResidency::Drop(uint32_t index, Plan* plan) {
 }
 
 bool TextureResidency::MakeRoom(uint64_t need, float priority, Plan* plan) {
-  while (committed_ + need > config_.budget_bytes) {
+  while (Over(need)) {
     // 1. a resident texture no sector references, the one unused for longest
     uint32_t victim = 0xFFFFFFFFu;
     for (uint32_t i = 0; i < states_.size(); ++i) {
@@ -194,15 +228,16 @@ TextureResidency::Plan TextureResidency::Step(uint64_t frame) {
     if (reads_in_flight_ >= config_.max_reads_in_flight || reading_ + ready_ >= config_.max_ready_bytes) break;
     Tex& t = states_[index];
     const uint32_t first = FirstResidentMip(table_[index], config_.cap_px);
-    const uint64_t need = AccountedBytes(table_[index], first, config_.allocation_alignment);
+    const uint64_t need = AccountedBytes(table_[index], first, config_.allocation_alignment, config_.large_alignment, config_.small_base_limit);
     if (config_.budget_bytes != 0 && need > config_.budget_bytes) continue;  // can never fit
-    if (config_.budget_bytes != 0 && committed_ + need > config_.budget_bytes && !MakeRoom(need, t.priority, &plan)) continue;
+    if (Over(need) && !MakeRoom(need, t.priority, &plan)) continue;
     t.state = TextureState::kReading;
     t.first_mip = first;
     t.bytes = need;
     t.stale = false;
     reading_ += need;
     committed_ += need;
+    ++committed_count_;
     ++reads_in_flight_;
     plan.reads.push_back({index, first, ResidentBytes(table_[index], first)});
   }
@@ -220,6 +255,7 @@ TextureResidency::Plan TextureResidency::Step(uint64_t frame) {
   for (uint32_t index : ready) {
     Tex& t = states_[index];
     if (taken != 0 && taken + t.bytes > config_.upload_bytes_per_frame) break;
+    if (config_.max_uploads_per_frame != 0 && plan.uploads.size() >= config_.max_uploads_per_frame) break;
     taken += t.bytes;
     ready_ -= t.bytes;
     resident_ += t.bytes;
@@ -237,6 +273,7 @@ bool TextureResidency::ReadFinished(uint32_t index, bool ok) {
   reading_ -= t.bytes;
   if (!ok || t.stale) {
     committed_ -= t.bytes;
+    --committed_count_;
     t.state = TextureState::kAbsent;
     t.bytes = 0;
     t.stale = false;
@@ -257,6 +294,7 @@ void TextureResidency::CreationFailed(uint32_t index) {
   resident_ -= t.bytes;
   --resident_count_;
   committed_ -= t.bytes;
+  --committed_count_;
   t.state = TextureState::kAbsent;
   t.bytes = 0;
   t.retry_at = frame_ + config_.retry_frames;

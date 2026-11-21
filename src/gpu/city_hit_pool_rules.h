@@ -121,7 +121,8 @@ struct Held {
   uint64_t pool = 0;       // the pool buffer
   uint64_t materials = 0;  // the material table
   uint64_t tables = 0;     // the sector and texture tables, every frame slot's copy, and the stand-in buffers
-  uint64_t Total() const { return pool + materials + tables; }
+  uint64_t textures = 0;   // the resident city textures (city_texture_set.h), by the allocator's rule
+  uint64_t Total() const { return pool + materials + tables + textures; }
 };
 
 // ---------------------------------------------------------------------------

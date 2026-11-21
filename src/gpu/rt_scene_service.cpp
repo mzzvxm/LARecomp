@@ -26,6 +26,16 @@ LiveText& DebugHitSetting() {
   static LiveText text("mcla_gpu_city_hit_data");
   return text;
 }
+// mcla_gpu_city_hit_textures (debug): off, alpha, all: the city's textures resident beside the hit data, to test the loader without an effect.
+LiveText& DebugTexturesSetting() {
+  static LiveText text("mcla_gpu_city_hit_textures");
+  return text;
+}
+TextureScope ScopeOf(const std::string& text) {
+  if (text == "all") return TextureScope::kAll;
+  if (text == "alpha") return TextureScope::kAlpha;
+  return TextureScope::kNone;
+}
 }  // namespace
 
 void RtSceneService::Initialize(CarRtScene* cars, CityRtScene* city, CityHitScene* hit) {
@@ -105,6 +115,7 @@ void RtSceneService::EndFrame() {
     rt_scene::Needs needs;
     needs.city = debug;
     needs.hit = debug;
+    needs.textures = ScopeOf(DebugTexturesSetting().Get());
     board_.Want(rt_scene::Consumer::kCheck, needs);
   }
   board_.EndFrame();
@@ -112,7 +123,7 @@ void RtSceneService::EndFrame() {
   // city scene's budget sees whether the pool is there (CityHitScene::Adjust).
   const rt_scene::Needs needs = board_.Now();
   if (hit_ != nullptr) {
-    hit_->BeginFrame(needs.hit);
+    hit_->BeginFrame(needs.hit, needs.textures);
   }
   if (city_ != nullptr) {
     city_->BeginFrame(needs.city, needs.city_radius);

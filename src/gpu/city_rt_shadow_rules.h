@@ -95,17 +95,27 @@ inline uint32_t RaysFor(bool ultra, int32_t forced) {
 // ---------------------------------------------------------------------------
 // alpha tested triangles (the pack's second geometry of a sector)
 // ---------------------------------------------------------------------------
-// The pack keeps the triangles of cut-out shaders (fences, grates, foliage cards: 4.3% of the city's triangles) apart as a non opaque geometry. Their textures are
-// not in the ray tracing structures, so a ray that meets one cannot read its cut-out. Three rules, mcla_gpu_city_rt_alpha:
+// The pack keeps the triangles of cut-out shaders (fences, grates, foliage cards: 4.3% of the city's triangles) apart as a non opaque geometry. A ray that meets one needs its cut-out.
+// Four rules, mcla_gpu_city_rt_alpha:
 //   exclude     never a blocker: leaves a fence's shadow out (the game's cascades have it)
 //   opaque      always a blocker: a fence shadows as a wall
 //   stochastic  a blocker with probability kAlphaCoverage, chosen by a hash of the pixel, the triangle and the frame: a fence's shadow is a half tone that the filter and
-//               the upscaler average (the default: a true cut-out is somewhere between, and the cost is nothing)
-enum class AlphaMode : uint32_t { kExclude = 0, kOpaque = 1, kStochastic = 2 };
+//               the upscaler average (what the structures did without hit data: a true cut-out is somewhere between, and the cost is nothing)
+//   exact       (CITY-RT M1c, the default) the candidate's own alpha: its texture coordinates from the hit data's corner streams, its texture's alpha (hlsl/city_hit_alpha.hlsli,
+//               city_hit_alpha_rules.h) against the reference (kDefaultAlphaReference, mcla_gpu_city_rt_alpha_ref). Where the alpha cannot be read (the hit data is not there, the
+//               texture is not resident yet) the candidate follows the stochastic rule: AcceptCandidate. The shadow pass asks the scene service for the hit data and the cut-out
+//               textures (rt_scene_rules.h Needs::textures) only in this mode.
+enum class AlphaMode : uint32_t { kExclude = 0, kOpaque = 1, kStochastic = 2, kExact = 3 };
 inline constexpr float kAlphaCoverage = 0.5f;
+// The alpha at or above which a cut-out texel blocks a ray (the game's alpha test, RB_ALPHA_REF: the pack does not know the draw's own; 0.5 is where the cut-outs' edge is authored).
+inline constexpr float kDefaultAlphaReference = 0.5f;
+inline constexpr float kMinAlphaReference = 0.02f;
+inline constexpr float kMaxAlphaReference = 0.98f;
+inline float ClampAlphaReference(double reference) { return float(std::clamp(reference, double(kMinAlphaReference), double(kMaxAlphaReference))); }
 inline AlphaMode ParseAlphaMode(std::string_view text) {
   if (text == "exclude") return AlphaMode::kExclude;
   if (text == "opaque") return AlphaMode::kOpaque;
+  if (text == "exact") return AlphaMode::kExact;
   return AlphaMode::kStochastic;
 }
 
@@ -122,8 +132,14 @@ inline bool AcceptAlpha(AlphaMode mode, float hash01) {
   switch (mode) {
     case AlphaMode::kExclude: return false;
     case AlphaMode::kOpaque: return true;
-    default: return hash01 < kAlphaCoverage;
+    default: return hash01 < kAlphaCoverage;  // stochastic, and exact where its alpha could not be read (AcceptCandidate)
   }
+}
+// What the shader does with a cut-out candidate: in the exact mode, the alpha it read when it could read it (`known`), else the stochastic rule (today's behaviour); the other modes
+// as they were. `exact_alpha` is the alpha of the candidate's texel, `reference` the push's.
+inline bool AcceptCandidate(AlphaMode mode, bool known, float exact_alpha, float reference, float hash01) {
+  if (mode == AlphaMode::kExact && known) return exact_alpha >= reference;
+  return AcceptAlpha(mode, hash01);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,10 +148,16 @@ inline bool AcceptAlpha(AlphaMode mode, float hash01) {
 inline constexpr uint32_t kFlagRaysShift = 0;        // bits 0-3: the rays a pixel (1 to 8)
 inline constexpr uint32_t kFlagAlphaShift = 4;       // bits 4-5: AlphaMode
 inline constexpr uint32_t kFlagCarImage = 1u << 8;   // the car ray traced image's slot is in noise.w: the result is the darker of the two
+inline constexpr uint32_t kFlagAlphaRefShift = 12;   // bits 12-19: the alpha reference of the exact mode, unorm8
+inline constexpr uint32_t kFlagAlphaStats = 1u << 28;  // the exact alpha's statistics into the counters, and its picture as the g channel (mcla_gpu_city_rt_alpha_view)
 inline constexpr uint32_t kFlagCheck = 1u << 30;     // the check: primary rays against the depth image, statistics into the counters (mcla_gpu_city_rt_check)
 inline constexpr uint32_t kFlagView = 1u << 29;      // the traced value as the picture's g, b = the sector's colour code of the hit (debug)
-inline constexpr uint32_t PackFlags(uint32_t rays, AlphaMode alpha, bool car_image) {
-  return ((rays & 0xFu) << kFlagRaysShift) | (static_cast<uint32_t>(alpha) << kFlagAlphaShift) | (car_image ? kFlagCarImage : 0u);
+// The reference as the push carries it (unorm8) and back.
+inline uint32_t PackAlphaReference(float reference) { return uint32_t(std::lround(std::clamp(reference, 0.0f, 1.0f) * 255.0f)); }
+inline float UnpackAlphaReference(uint32_t flags) { return float((flags >> kFlagAlphaRefShift) & 0xFFu) * (1.0f / 255.0f); }
+inline uint32_t PackFlags(uint32_t rays, AlphaMode alpha, bool car_image, float alpha_reference = kDefaultAlphaReference, bool alpha_stats = false) {
+  return ((rays & 0xFu) << kFlagRaysShift) | (static_cast<uint32_t>(alpha) << kFlagAlphaShift) | (car_image ? kFlagCarImage : 0u) | (PackAlphaReference(alpha_reference) << kFlagAlphaRefShift) |
+         (alpha_stats ? kFlagAlphaStats : 0u);
 }
 
 // The check's statistics words (the counters buffer, uint32 each; the shader's atomics).
@@ -147,11 +169,57 @@ inline constexpr uint32_t kStatNoHit = 4;      // no triangle on the ray
 inline constexpr uint32_t kStatLod = 5;        // hits on a lod structure
 inline constexpr uint32_t kStatHi = 6;         // ... on a hi detail one
 inline constexpr uint32_t kStatHistogram = 8;  // 16 bins of the relative error of a hit (|t_hit - t| / t) in steps of 0.5 percent (the last bin: 7.5 percent and more)
-inline constexpr uint32_t kStatWords = 24;
+// The exact alpha's counters (kFlagAlphaStats; the shader's atomics, one per cut-out candidate a ray met):
+inline constexpr uint32_t kStatAlphaCandidates = 24;  // cut-out candidates met
+inline constexpr uint32_t kStatAlphaExact = 25;       // ... whose alpha was read from the texture
+inline constexpr uint32_t kStatAlphaBlocked = 26;     // ... of those, at or above the reference: the ray was blocked
+inline constexpr uint32_t kStatAlphaPassed = 27;      // ... below it: the ray went through a hole
+inline constexpr uint32_t kStatAlphaFallback = 28;    // candidates the stochastic rule decided (no hit data, no texture, the texture not resident)
+inline constexpr uint32_t kStatAlphaLevels = 32;      // 8 bins: the level read (counted from the first resident one), the last bin 7 and more
+inline constexpr uint32_t kAlphaLevelBins = 8;
+inline constexpr uint32_t kStatWords = 40;
 inline constexpr uint32_t kHistogramBins = 16;
 inline constexpr float kHistogramStep = 0.005f;
 inline constexpr float kCheckTMin = 0.01f;
 
+
+// The exact alpha's picture (kFlagAlphaStats): the g channel says which way the pixel's rays went through the cut-outs, instead of the visibility.
+inline constexpr uint32_t kPathCandidate = 1;  // some ray of the pixel met a cut-out candidate
+inline constexpr uint32_t kPathFallback = 2;   // ... and some candidate was decided by the stochastic rule
+inline constexpr uint32_t kPathExact = 4;      // ... and some candidate was decided by its alpha
+inline constexpr float kViewNoCandidate = 1.0f;
+inline constexpr float kViewExact = 0.7f;
+inline constexpr float kViewFallback = 0.35f;
+inline float AlphaViewValue(uint32_t path) {
+  if ((path & kPathCandidate) == 0) return kViewNoCandidate;
+  return (path & kPathFallback) != 0 ? kViewFallback : kViewExact;
+}
+
+struct AlphaSummary {
+  uint64_t candidates = 0, exact = 0, blocked = 0, passed = 0, fallback = 0;
+  uint64_t levels[kAlphaLevelBins] = {};
+  double exact_share = 0.0;    // exact / candidates
+  double blocked_share = 0.0;  // blocked / exact: the cut-outs' own coverage at the reference
+  double mean_level = 0.0;
+};
+inline AlphaSummary DecodeAlpha(const uint32_t words[kStatWords]) {
+  AlphaSummary a;
+  a.candidates = words[kStatAlphaCandidates];
+  a.exact = words[kStatAlphaExact];
+  a.blocked = words[kStatAlphaBlocked];
+  a.passed = words[kStatAlphaPassed];
+  a.fallback = words[kStatAlphaFallback];
+  uint64_t total = 0, weighted = 0;
+  for (uint32_t b = 0; b < kAlphaLevelBins; ++b) {
+    a.levels[b] = words[kStatAlphaLevels + b];
+    total += a.levels[b];
+    weighted += a.levels[b] * b;
+  }
+  a.exact_share = a.candidates ? double(a.exact) / double(a.candidates) : 0.0;
+  a.blocked_share = a.exact ? double(a.blocked) / double(a.exact) : 0.0;
+  a.mean_level = total ? double(weighted) / double(total) : 0.0;
+  return a;
+}
 
 // What the check's counters say (the readback's words, the difference between two readbacks when the buffer was not cleared).
 struct CheckSummary {

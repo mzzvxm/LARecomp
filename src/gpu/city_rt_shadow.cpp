@@ -232,6 +232,12 @@ void CityRtShadow::BeginFrame(bool contact_on) {
   rt_scene::Needs needs;
   needs.city = level_;
   needs.city_radius = float(larecomp::settings::mcla_gpu_city_rt_radius.Get());
+  // CITY-RT M1c: the exact cut-out alpha reads the hit data's texture coordinates (the pool) and the cut-outs' textures: asked of the scene service, which makes them where the hit file and
+  // the texture file are built and gives them back when nobody asks. Without them the candidates follow the stochastic rule.
+  if (rules::ParseAlphaMode(AlphaSetting().Get()) == rules::AlphaMode::kExact) {
+    needs.hit = level_;
+    needs.textures = TextureScope::kAlpha;
+  }
   service_->Want(rt_scene::Consumer::kCitySunShadow, needs);
   if (!PipelineReady()) {
     ++not_ready_;
@@ -288,6 +294,9 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   const bool check_view = check && larecomp::settings::mcla_gpu_city_rt_view.Get();
   const uint32_t rays = rules::RaysFor(level_ == city_rt::Level::kUltra, larecomp::settings::mcla_gpu_city_rt_rays.Get());
   const rules::AlphaMode alpha = rules::ParseAlphaMode(AlphaSetting().Get());
+  const float alpha_reference = rules::ClampAlphaReference(larecomp::settings::mcla_gpu_city_rt_alpha_ref.Get());
+  // The exact alpha's picture and counters (the check has its own): the contact shadows' view 7 shows which way the pixel's rays went through the cut-outs.
+  const bool alpha_view = !check && alpha == rules::AlphaMode::kExact && larecomp::settings::mcla_gpu_city_rt_alpha_view.Get();
   const float sun_scale = rules::ClampSunScale(larecomp::settings::mcla_gpu_city_rt_sun.Get());
   const float ray_length = rules::RayLength(sun_sin, city_scene_->FarRadius());
   const bool have_car = in.car_slot != kNoSlot;
@@ -296,7 +305,7 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   push.slots[0] = in.depth->slot;
   push.slots[1] = in.depth->width;
   push.slots[2] = in.depth->height;
-  push.slots[3] = rules::PackFlags(rays, alpha, have_car) | (check ? rules::kFlagCheck : 0u) | (check_view ? rules::kFlagView : 0u);
+  push.slots[3] = rules::PackFlags(rays, alpha, have_car, alpha_reference, alpha_view) | (check ? rules::kFlagCheck : 0u) | (check_view ? rules::kFlagView : 0u);
   push.noise[0] = in.sun_frame;
   push.noise[1] = city_rt::kMaskCity | car_rt_rules::kMaskBody | car_rt_rules::kMaskTyres | car_rt_rules::kMaskOthers;
   push.noise[2] = uint32_t(in.frame);
@@ -337,13 +346,13 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
     list->barriers(Stage::GRAPHICS, nullptr, 0, &read, 1);
     image_.layout = Layout::SHADER_READ;
   }
-  if (check && !readback_busy_ && in.frame >= next_readback_) {
+  if ((check || alpha_view) && !readback_busy_ && in.frame >= next_readback_) {
     list->barriers(plume::RenderBarrierStage::COPY, plume::RenderBufferBarrier(counters_.get(), plume::RenderBufferAccess::READ));
     list->copyBufferRegion(plume::RenderBufferReference(readback_.get(), 0), plume::RenderBufferReference(counters_.get(), 0), kCounterBytes);
     readback_busy_ = true;
     next_readback_ = in.frame + kReadbackEveryFrames;
-    frames_->RetireAction([this, frame = in.frame, generation = generation_, width = in.depth->width, height = in.depth->height, instances = city.instances] {
-      ProcessReadback(frame, generation, width, height, instances);
+    frames_->RetireAction([this, frame = in.frame, generation = generation_, width = in.depth->width, height = in.depth->height, instances = city.instances, check, alpha_view] {
+      ProcessReadback(frame, generation, width, height, instances, check, alpha_view);
     });
   }
 
@@ -355,7 +364,7 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
     result.recorded = true;
     result.slot = image_.slot;
   }
-  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u);
+  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20);
   if (!first_logged_ || state != last_state_) {
     first_logged_ = true;
     last_state_ = state;
@@ -363,8 +372,12 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
                 "{:.0f} m, {} instances in the top level ({} hi detail and {} lod sectors), the car's ray traced image {}{} (pass timing label \"city rt shadow\"; mcla_gpu_rt_shadows off compares; "
                 "mcla_gpu_contact_shadows_view 7 shows the term)",
                 kPrefix, in.frame, in.depth->width, in.depth->height, city_rt::LevelName(level_), rays, sun_scale,
-                alpha == rules::AlphaMode::kExclude ? "left out" : alpha == rules::AlphaMode::kOpaque ? "opaque" : "stochastic (half)", range, ray_length, city.instances, city.hi_resident,
-                city.lod_resident, have_car ? "is combined" : "is not there", check ? "; THE CHECK IS ON: primary rays against the depth, the sun's rays are not traced" : "");
+                alpha == rules::AlphaMode::kExclude ? "left out" : alpha == rules::AlphaMode::kOpaque ? "opaque" : alpha == rules::AlphaMode::kExact
+                    ? std::format("exact (the texture's alpha against {:.2f}; stochastic where the texture is not resident)", alpha_reference)
+                    : std::string("stochastic (half)"),
+                range, ray_length, city.instances, city.hi_resident, city.lod_resident, have_car ? "is combined" : "is not there",
+                check ? "; THE CHECK IS ON: primary rays against the depth, the sun's rays are not traced"
+                      : (alpha_view ? "; THE ALPHA VIEW IS ON: the contact shadows' view 7 shows the cut-outs' path (white none, 0.7 exact, 0.35 stochastic) and the log has the counters" : ""));
   }
   return result;
 }
@@ -414,7 +427,7 @@ void CityRtShadow::ReleaseImage() {
   image_for_[0] = image_for_[1] = 0;
 }
 
-void CityRtShadow::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t instances) {
+void CityRtShadow::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t instances, bool check, bool alpha_view) {
   readback_busy_ = false;
   if (generation != generation_ || !readback_) {
     return;
@@ -437,6 +450,22 @@ void CityRtShadow::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t
   uint32_t delta[rules::kStatWords];
   rules::CheckDelta(words, last_words_, delta);
   std::memcpy(last_words_, words, sizeof(last_words_));
+  if (alpha_view) {
+    // The exact alpha's counters (the readback's interval): how the cut-out candidates the rays met were decided. `exact` is the share read from a texture; the rest followed the stochastic rule
+    // (no hit data, the texture not resident). `blocked` of the exact ones is the cut-outs' own coverage at the reference.
+    const rules::AlphaSummary a = rules::DecodeAlpha(delta);
+    if (a.candidates == 0) {
+      REXLOG_INFO("{} alpha of frame {}: no cut-out candidate met by a sun ray in the last interval (no fence or grate in the picture's shadows, or the cut-outs are not in the structures)", kPrefix, frame);
+    } else {
+      REXLOG_INFO("{} alpha of frame {}: {} cut-out candidates over the last interval, {:.1f}% decided by the texture's alpha ({:.1f}% of those blocked the ray, {:.1f}% went through a hole), {} by the "
+                  "stochastic rule (no hit data or the texture not resident); mean level {:.2f} from the first resident one, levels 0..7+: {} {} {} {} {} {} {} {}",
+                  kPrefix, frame, a.candidates, a.exact_share * 100.0, a.blocked_share * 100.0, (a.exact ? 1.0 - a.blocked_share : 0.0) * 100.0, a.fallback, a.mean_level, a.levels[0], a.levels[1],
+                  a.levels[2], a.levels[3], a.levels[4], a.levels[5], a.levels[6], a.levels[7]);
+    }
+  }
+  if (!check) {
+    return;
+  }
   const rules::CheckSummary s = rules::DecodeCheck(delta);
   if (s.pixels == 0) {
     REXLOG_INFO("{} check of frame {}: no city pixel in the {}x{} depth image in the last interval (the camera sees no city surface, or the sun-less structures are not built)", kPrefix, frame, width, height);

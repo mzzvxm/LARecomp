@@ -34,6 +34,7 @@
 #include <string_view>
 
 #include "city_rt_rules.h"
+#include "city_texture_scope.h"
 #include "temporal_math.h"
 
 namespace mcla::gpu::rt_scene {
@@ -73,15 +74,17 @@ struct Needs {
   bool cars = false;          // the player's car's draws, the other cars (CarFrame collects them only while asked)
   Level city = Level::kOff;   // the city's structures at this level
   Level hit = Level::kOff;    // the city's hit data in the pool at this level (it needs the structures: Normalized)
+  TextureScope textures = TextureScope::kNone;  // which city textures the hit data's readers need resident (city_texture_scope.h; it needs the hit data: Normalized); the widest of the wants
   float city_radius = 0.0f;   // the debug radius of the hi detail ring (0: the class's); the largest of the wants
 
   constexpr bool any() const { return cars || city != Level::kOff || hit != Level::kOff; }
-  constexpr bool operator==(const Needs& o) const { return cars == o.cars && city == o.city && hit == o.hit && city_radius == o.city_radius; }
+  constexpr bool operator==(const Needs& o) const { return cars == o.cars && city == o.city && hit == o.hit && textures == o.textures && city_radius == o.city_radius; }
 };
 
 // Hit data is read by rays that hit the city's structures: a consumer of it has the structures at (at least) the same level.
 constexpr Needs Normalized(Needs n) {
   n.city = MaxLevel(n.city, n.hit);
+  if (n.hit == Level::kOff) n.textures = TextureScope::kNone;  // textures are the hit data's: without it there is nothing to read them
   return n;
 }
 
@@ -90,6 +93,7 @@ constexpr Needs Merge(const Needs& a, const Needs& b) {
   m.cars = a.cars || b.cars;
   m.city = MaxLevel(a.city, b.city);
   m.hit = MaxLevel(a.hit, b.hit);
+  m.textures = MaxScope(a.textures, b.textures);
   m.city_radius = std::max(a.city_radius, b.city_radius);
   return Normalized(m);
 }

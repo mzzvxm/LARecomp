@@ -28,13 +28,15 @@
 namespace larecomp::citypack {
 
 // The first level a class cap keeps (0 = the full size): the smallest level whose longer side is at most `cap_px`; the last level when none is (a single level texture bigger than the
-// cap); 0 when cap_px is 0 (no cap).
+// cap); 0 when cap_px is 0 (no cap). A block compressed texture is never made smaller than one block on a side at its first resident level (a level of 2 x 128 cannot be the top of a BC
+// texture on D3D12): an elongated texture that would need it keeps the last level that has both sides at 4 texels or more, which may be above the cap.
 uint32_t FirstResidentMip(const HitTexture& texture, uint32_t cap_px);
 // The bytes of the levels from `first_mip`: the block data, no padding (what the file read and the upload move).
 uint64_t ResidentBytes(const HitTexture& texture, uint32_t first_mip);
-// What the budget counts for it: the same, rounded up to the allocator's granularity (a texture is its own allocation: 4 KiB is what both backends' small-texture placement needs; the real
-// figure is read from the renderer's memory line, CHECK).
-uint64_t AccountedBytes(const HitTexture& texture, uint32_t first_mip, uint64_t alignment);
+// What the budget counts for it: the same, rounded up to the allocator's granularity (a texture is its own allocation: 4 KiB is what D3D12's small-texture placement needs; the real
+// figure is read from the renderer's memory line, CHECK). With `large_alignment` set a texture whose first resident level takes more than `small_base_limit` bytes is rounded to that
+// instead (D3D12MA places such a texture on 64 KiB: city_texture_rules.h AllocationBytes is the rule the renderer uses).
+uint64_t AccountedBytes(const HitTexture& texture, uint32_t first_mip, uint64_t alignment, uint64_t large_alignment = 0, uint64_t small_base_limit = 0);
 
 // How a texture's levels from `first_mip` are laid out for the upload: each level's rows copied into the staging memory on `pitch_alignment` bytes (D3D12's placement rule, which both
 // backends follow: 256), its place in the tightly packed bytes the file gives (ReadMips). A level smaller than a block counts as one block.
@@ -58,17 +60,24 @@ struct ResidentTotals {
 // Every texture of the table resident under `cap_px`.
 ResidentTotals TotalResidentBytes(const std::vector<HitTexture>& table, uint32_t cap_px);
 
-// The distinct texture indices the runs' materials name: the textures a sector's hits can show. `material_textures[m]` is material m's texture index (kNoTexture for none; HitMaterial::texture
-// and ::layer both count where the layer is not kNoTexture: pass them as two entries or call twice).
+// The distinct texture indices the runs' materials name: the textures a sector's hits can show (HitMaterial::texture, and ::layer where it is not kNoTexture).
 std::vector<uint16_t> CollectTextures(const std::vector<HitRun>& runs, const std::vector<HitMaterial>& materials);
+// The same from the material table as the GPU holds it (eight words a material, HitMaterial::Pack: word 1 is the diffuse in its low half and the second layer in its high half), the way the
+// renderer has it (HitReader::material_words), and optionally of the cut-out runs alone (HitRun::flags kRunAlphaTested): what the ray traced shadows read. A run whose material is not in
+// the table is skipped. Sorted, each index once.
+std::vector<uint16_t> CollectTexturesOfWords(const std::vector<HitRun>& runs, const uint32_t* material_words, size_t material_count, bool alpha_tested_only);
 
 struct ResidencyConfig {
   uint32_t cap_px = 0;                       // HitBudget::texture_cap_px
   uint64_t budget_bytes = 0;                 // HitBudget::texture_bytes; 0: no limit
   uint64_t upload_bytes_per_frame = 8u << 20;
   uint32_t max_reads_in_flight = 6;          // file reads the worker holds at once
+  uint32_t max_uploads_per_frame = 16;       // textures made in one frame (the bytes limit alone lets a few hundred small ones through at the first ring: CHECK 4 of city_texture_set.h)
+  uint32_t max_textures = 0xFFFFFFFFu;       // textures held at once (reading, waiting or resident); no limit by default, 0 holds none. The loader sets it from the bindless slots that are free (city_texture_rules.h)
   uint64_t max_ready_bytes = 32u << 20;      // read but not yet uploaded
-  uint64_t allocation_alignment = 4096;      // each texture counts against the budget rounded up to this (AccountedBytes)
+  uint64_t allocation_alignment = 4096;      // each texture counts against the budget rounded up to this (AccountedBytes) ...
+  uint64_t large_alignment = 0;              // ... or to this when its first resident level takes more than small_base_limit bytes (0: never)
+  uint64_t small_base_limit = 0;
   uint64_t idle_frames = 1800;               // a texture no sector references is kept this long (30 s at 60 FPS) when memory is not needed
   uint64_t retry_frames = 600;               // after a failed read
 };
@@ -113,6 +122,7 @@ class TextureResidency {
   uint32_t first_mip(uint32_t index) const { return states_[index].first_mip; }
   uint32_t referenced_by(uint32_t index) const { return states_[index].refs; }
   uint64_t committed_bytes() const { return committed_; }   // resident + reading + ready
+  uint32_t committed_count() const { return committed_count_; }
   uint64_t resident_bytes() const { return resident_; }
   uint32_t resident_count() const { return resident_count_; }
   uint32_t texture_count() const { return uint32_t(states_.size()); }
@@ -142,6 +152,7 @@ class TextureResidency {
   uint64_t PlannedBytes(uint32_t index) const;
   void Drop(uint32_t index, Plan* plan);
   bool MakeRoom(uint64_t need, float priority, Plan* plan);
+  bool Over(uint64_t need) const;
 
   const std::vector<HitTexture>& table_;
   ResidencyConfig config_;
@@ -156,6 +167,7 @@ class TextureResidency {
   uint64_t ready_ = 0;
   uint32_t reads_in_flight_ = 0;
   uint32_t resident_count_ = 0;
+  uint32_t committed_count_ = 0;
   uint64_t evicted_total_ = 0;
   uint64_t failed_reads_ = 0;
   uint64_t failed_creations_ = 0;

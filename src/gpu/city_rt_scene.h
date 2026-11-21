@@ -192,6 +192,7 @@ class CityRtScene {
   bool EnsureScratch(SlotResources& slot, uint32_t index, uint64_t bytes);
   // Uploads and builds the staged meshes the frame's schedule takes. True when anything was recorded.
   bool BuildStaged(plume::RenderCommandList* list, uint32_t slot);
+  void RefreshTexturePriorities();
   void LogState(const char* why);
 
   Device* device_ = nullptr;
@@ -219,6 +220,7 @@ class CityRtScene {
   bool recorded_ = false;
   double camera_[3] = {0, 0, 0};
   bool camera_known_ = false;
+  uint64_t next_priority_frame_ = 0;  // the sectors' distances go to the hit data's texture set again at this frame (CITY-RT M1c)
 
   // The pack and what is built of it.
   citypack::PackReader pack_;

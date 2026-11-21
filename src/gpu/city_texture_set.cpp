@@ -3,12 +3,14 @@
 #include "city_texture_set.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <format>
 #include <utility>
 
 #include <rex/logging/log_category.h>
 
+#include "backend.h"
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
@@ -20,6 +22,11 @@ namespace {
 
 constexpr const char* kPrefix = "[city tex]";
 namespace cp = larecomp::citypack;
+namespace ct = city_texture;
+
+// The rules header holds the numbers of the heap and the upload ring as constants of its own (it includes nothing of the renderer): they must be the renderer's.
+static_assert(ct::kSlotCapacity == kBindlessTextureCount - kFirstAllocatableTextureSlot, "the slot maths is the bindless heap's");
+static_assert(ct::kPitchAlignment == kTextureCopyPitchAlignment && ct::kOffsetAlignment == kTextureCopyOffsetAlignment, "the footprints follow the upload ring's placement rules");
 
 plume::RenderFormat HostFormat(cp::HitTextureFormat format) {
   switch (format) {
@@ -30,24 +37,23 @@ plume::RenderFormat HostFormat(cp::HitTextureFormat format) {
   }
 }
 
-// What a block of the format is: texels on a side (1 for the raw format) and bytes.
-uint32_t BlockSide(cp::HitTextureFormat format) { return format == cp::HitTextureFormat::kRgba8 ? 1u : 4u; }
-uint32_t BlockBytes(cp::HitTextureFormat format) { return format == cp::HitTextureFormat::kBc1 ? 8u : (format == cp::HitTextureFormat::kRgba8 ? 4u : 16u); }
-
 constexpr plume::RenderBarrierStages kReadStages = plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE);
+
+uint64_t NowNs() { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
 
 }  // namespace
 
 CityTextureSet::~CityTextureSet() { StopWorker(); }
 
-bool CityTextureSet::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload, const std::filesystem::path& texture_file,
-                                std::vector<cp::HitTexture> table, uint64_t hit_table_hash, std::string* error) {
+bool CityTextureSet::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, UploadRing& upload, const std::filesystem::path& texture_file, std::vector<cp::HitTexture> table,
+                                uint64_t hit_table_hash, RowSink sink, std::string* error) {
   Shutdown();
   const auto fail = [&](const std::string& why) {
     if (error) *error = why;
     REXLOG_WARN("{} {}", kPrefix, why);
     return false;
   };
+  if (table.empty()) return fail("the hit file has no textures");
   {
     cp::TextureFileReader check;
     std::string why;
@@ -57,29 +63,25 @@ bool CityTextureSet::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   frames_ = &frames;
   heap_ = &heap;
   upload_ = &upload;
+  sink_ = std::move(sink);
   file_ = texture_file;
   hit_table_hash_ = hit_table_hash;
   table_ = std::move(table);
   residency_ = std::make_unique<cp::TextureResidency>(table_);
   gpu_.clear();
   gpu_.resize(table_.size());
-  rows_cpu_.assign(std::max<size_t>(table_.size(), 1), cp::GpuTextureRow{});
-  for (uint32_t i = 0; i < table_.size(); ++i) rows_cpu_[i] = AbsentRow(i);
-  rows_buffer_ = device.CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(rows_buffer_bytes(), plume::RenderBufferFlag::STORAGE), "city texture rows");
-  if (!rows_buffer_) {
-    residency_.reset();
-    rows_cpu_.clear();
-    gpu_.clear();
-    table_.clear();
-    device_ = nullptr;
-    frames_ = nullptr;
-    heap_ = nullptr;
-    upload_ = nullptr;
-    return fail("the city texture rows buffer could not be made");
-  }
-  dirty_first_ = 0;
-  dirty_last_ = uint32_t(rows_cpu_.size() - 1);
+  sectors_.clear();
+  priorities_.clear();
+  ready_.clear();
+  budget_ = ct::TextureBudget{};
+  scope_ = TextureScope::kNone;
+  applied_scope_ = TextureScope::kNone;
+  growth_allowed_ = true;
+  next_pressure_check_ = 0;
+  slots_held_ = 0;
+  logged_pressure_ = false;
   stats_ = Stats{};
+  read_ns_.store(0);
   stop_.store(false);
   worker_ = std::thread([this] { WorkerMain(); });
   REXLOG_INFO("{} the texture file is open: {} textures, {:.1f} MiB, hit table hash {:016x}", kPrefix, table_.size(), double(std::filesystem::file_size(texture_file)) / (1024.0 * 1024.0),
@@ -90,18 +92,22 @@ bool CityTextureSet::Initialize(Device& device, FrameRing& frames, BindlessHeap&
 void CityTextureSet::Shutdown() {
   StopWorker();
   if (device_ && frames_ && heap_) {
-    for (uint32_t i = 0; i < gpu_.size(); ++i) Release(i);
+    uint32_t released = 0;
+    for (uint32_t i = 0; i < gpu_.size(); ++i) released += Release(i) ? 1u : 0u;
+    if (released != 0) REXLOG_INFO("{} the texture set is given back: {} textures, {}", kPrefix, released, CensusText());
   }
   ready_.clear();
-  rows_buffer_.reset();
-  rows_cpu_.clear();
+  sectors_.clear();
+  priorities_.clear();
   gpu_.clear();
   residency_.reset();
   table_.clear();
+  sink_ = nullptr;
   device_ = nullptr;
   frames_ = nullptr;
   heap_ = nullptr;
   upload_ = nullptr;
+  slots_held_ = 0;
 }
 
 void CityTextureSet::StopWorker() {
@@ -132,11 +138,13 @@ void CityTextureSet::WorkerMain() {
     }
     Result result;
     result.index = request.index;
+    const uint64_t t0 = NowNs();
     if (opened) {
       result.ok = reader.ReadMips(request.index, request.first_mip, &result.bytes, &result.error);
     } else {
       result.error = open_error;
     }
+    result.ns = NowNs() - t0;
     {
       std::lock_guard lock(mutex_);
       results_.push_back(std::move(result));
@@ -144,33 +152,83 @@ void CityTextureSet::WorkerMain() {
   }
 }
 
-void CityTextureSet::Configure(const larecomp::citypack::HitBudget& budget) {
+// ---------------------------------------------------------------------------
+// what is wanted
+// ---------------------------------------------------------------------------
+
+void CityTextureSet::Configure(const ct::TextureBudget& budget, TextureScope scope) {
   if (!residency_) return;
-  cp::ResidencyConfig config = residency_->config();
-  config.cap_px = budget.texture_cap_px;
-  config.budget_bytes = budget.texture_bytes;
-  config.upload_bytes_per_frame = budget.texture_upload_bytes;
-  residency_->Configure(config);
+  budget_ = budget;
+  scope_ = budget.on() ? scope : TextureScope::kNone;
 }
 
-void CityTextureSet::AddSector(uint32_t row, const uint16_t* textures, size_t count, float priority) {
-  if (residency_) residency_->AddSector(row, textures, count, priority);
+void CityTextureSet::RefreshSectors() {
+  // The lists of the scope in force, for every sector the set knows. Nothing is wanted while the budget is off.
+  for (const auto& [row, textures] : sectors_) {
+    const std::vector<uint16_t>& list = scope_ == TextureScope::kNone ? textures.alpha : textures.For(scope_);
+    const size_t count = scope_ == TextureScope::kNone ? 0 : list.size();
+    const auto p = priorities_.find(row);
+    residency_->AddSector(row, list.data(), count, p != priorities_.end() ? p->second : 0.0f);
+  }
+  applied_scope_ = scope_;
 }
+
+void CityTextureSet::AddSector(uint32_t row, ct::SectorTextures textures, float priority) {
+  if (!residency_) return;
+  const std::vector<uint16_t>& list = scope_ == TextureScope::kNone ? textures.alpha : textures.For(scope_);
+  const size_t count = scope_ == TextureScope::kNone ? 0 : list.size();
+  residency_->AddSector(row, list.data(), count, priority);
+  priorities_[row] = priority;
+  sectors_[row] = std::move(textures);
+}
+
 void CityTextureSet::SetSectorPriority(uint32_t row, float priority) {
-  if (residency_) residency_->SetSectorPriority(row, priority);
+  if (!residency_) return;
+  residency_->SetSectorPriority(row, priority);
+  const auto it = priorities_.find(row);
+  if (it != priorities_.end()) it->second = priority;
 }
+
 void CityTextureSet::RemoveSector(uint32_t row) {
-  if (residency_) residency_->RemoveSector(row);
+  if (!residency_) return;
+  residency_->RemoveSector(row);
+  sectors_.erase(row);
+  priorities_.erase(row);
+}
+
+void CityTextureSet::ClearSectors() {
+  if (!residency_) return;
+  for (const auto& entry : sectors_) residency_->RemoveSector(entry.first);
+  sectors_.clear();
+  priorities_.clear();
 }
 
 CityTextureSet::Stats CityTextureSet::stats() const {
   Stats s = stats_;
+  s.read_ns = read_ns_.load();
+  s.slots_held = slots_held_;
   if (residency_) {
     s.resident = residency_->resident_count();
-    s.held_bytes = residency_->committed_bytes();
+    s.held_bytes = residency_->resident_bytes();
+    s.committed_bytes = residency_->committed_bytes();
   }
   return s;
 }
+
+std::string CityTextureSet::CensusText() const {
+  if (!residency_) return {};
+  const Stats s = stats();
+  const uint32_t in_use = heap_ ? heap_->textures_in_use() : 0;
+  return std::format("city textures ({}, cap {}): {} resident of {}, {:.1f} MiB accounted ({:.1f} MiB of the budget), {} slots held of {} in use, {} reads ({:.0f} ms), {} uploads, {} evictions, {} failed reads, "
+                     "{} refused creations, {} deferred uploads, {} looks at a full video memory",
+                     ScopeName(scope_), budget_.cap_px == 0 ? std::string("full") : std::format("{} px", budget_.cap_px), s.resident, table_.size(), double(s.held_bytes) / (1024.0 * 1024.0),
+                     double(budget_.bytes) / (1024.0 * 1024.0), s.slots_held, in_use, s.reads, double(s.read_ns) / 1e6, s.uploads, s.evictions, s.read_failures, s.creation_failures,
+                     s.upload_deferred, s.growth_blocked_checks);
+}
+
+// ---------------------------------------------------------------------------
+// the rows and the objects
+// ---------------------------------------------------------------------------
 
 cp::GpuTextureRow CityTextureSet::AbsentRow(uint32_t index) const {
   const cp::HitTexture& t = table_[index];
@@ -181,20 +239,21 @@ cp::GpuTextureRow CityTextureSet::AbsentRow(uint32_t index) const {
   return row;
 }
 
-void CityTextureSet::SetRow(uint32_t index, const cp::GpuTextureRow& row) {
-  rows_cpu_[index] = row;
-  dirty_first_ = std::min(dirty_first_, index);
-  dirty_last_ = std::max(dirty_last_, index);
+void CityTextureSet::Publish(uint32_t index, const cp::GpuTextureRow& row) {
+  if (sink_) sink_(index, row);
 }
 
 bool CityTextureSet::Release(uint32_t index) {
   Gpu& g = gpu_[index];
   const bool had = g.slot != kInvalidBindlessSlot;
-  if (had) heap_->ReleaseTexture(g.slot, TextureDimension::k2D);  // the slot reads the null texture from now on; the view and the texture go after it
+  if (had) {
+    heap_->ReleaseTexture(g.slot, TextureDimension::k2D);  // the slot reads the null texture from now on; the view and the texture go after it
+    --slots_held_;
+  }
   frames_->Retire(std::move(g.view));
   frames_->Retire(std::move(g.texture));
   g = Gpu{};
-  if (had || rows_cpu_[index].slot != cp::kNoSlot) SetRow(index, AbsentRow(index));
+  if (had) Publish(index, AbsentRow(index));
   return had;
 }
 
@@ -205,6 +264,7 @@ void CityTextureSet::TakeResults() {
     done.swap(results_);
   }
   for (Result& r : done) {
+    read_ns_.fetch_add(r.ns);
     const bool keep = residency_->ReadFinished(r.index, r.ok);
     if (!r.ok) {
       if (++stats_.read_failures <= 5) REXLOG_WARN("{} texture {} could not be read: {}", kPrefix, r.index, r.error);
@@ -225,8 +285,6 @@ bool CityTextureSet::Upload(uint32_t index, plume::RenderCommandList* list, uint
   const uint32_t first = residency_->first_mip(index);
   const uint32_t levels = t.mip_count - first;
   const plume::RenderFormat format = HostFormat(t.format);
-  const uint32_t side = BlockSide(t.format);
-  const uint32_t block_bytes = BlockBytes(t.format);
 
   // The staging of every level first: if the upload memory is short nothing has been recorded and the bytes wait for the next frame.
   const std::vector<cp::UploadLevel> plan = cp::PlanUploadLevels(t, first, uint32_t(kTextureCopyPitchAlignment));
@@ -263,8 +321,10 @@ bool CityTextureSet::Upload(uint32_t index, plume::RenderCommandList* list, uint
     const cp::UploadLevel& c = plan[k];
     const UploadSpan& span = spans[k];
     for (uint32_t r = 0; r < c.rows; ++r) std::memcpy(span.cpu + uint64_t(r) * c.pitch, bytes.data() + c.source_offset + uint64_t(r) * c.row_bytes, c.row_bytes);
+    // the arguments the game's own texture cache gives (textures.cpp Upload): the level's size in texels, the staging row's width in texels (city_texture_rules.h FootprintOf)
+    const ct::Footprint fp = ct::FootprintOf(c, t.format);
     list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(texture.get(), k, 0),
-                            plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, format, c.width, c.height, 1, (c.pitch / block_bytes) * side, span.offset));
+                            plume::RenderTextureCopyLocation::PlacedFootprint(span.buffer, format, fp.width, fp.height, 1, fp.row_width, span.offset));
   }
   list->barriers(kReadStages, plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
 
@@ -286,31 +346,47 @@ bool CityTextureSet::Upload(uint32_t index, plume::RenderCommandList* list, uint
   g.texture = std::move(texture);
   g.view = std::move(view);
   g.slot = slot;
-  SetRow(index, cp::MakeTextureRow(t, slot, first));
+  ++slots_held_;
+  Publish(index, cp::MakeTextureRow(t, slot, first));  // the gamma bit is the texture's flag (bit 31 of the row's slot)
+  if (stats_.uploads == 0) {
+    REXLOG_INFO("{} the first texture is resident (frame {}): {} ({}x{}, {} levels from {}, bindless slot {})", kPrefix, frame_, index, t.width, t.height, levels, first, slot);
+  }
   ++stats_.uploads;
   stats_.upload_bytes += bytes.size();
   ready_.erase(bytes_it);
   return true;
 }
 
-void CityTextureSet::FlushRows(plume::RenderCommandList* list, uint32_t frame_slot) {
-  if (!rows_buffer_ || dirty_first_ > dirty_last_) return;
-  const uint64_t count = uint64_t(dirty_last_) - dirty_first_ + 1;
-  const uint64_t bytes = count * sizeof(cp::GpuTextureRow);
-  const UploadSpan span = upload_->Allocate(frame_slot, bytes, 16);
-  if (!span) return;  // no staging room: the rows go next frame, a texture whose row says "not resident" is just drawn from its average
-  std::memcpy(span.cpu, rows_cpu_.data() + dirty_first_, size_t(bytes));
-  list->barriers(plume::RenderBarrierStage::COPY, plume::RenderBufferBarrier(rows_buffer_.get(), plume::RenderBufferAccess::WRITE));
-  list->copyBufferRegion(plume::RenderBufferReference(rows_buffer_.get(), uint64_t(dirty_first_) * sizeof(cp::GpuTextureRow)), span.reference(), bytes);
-  list->barriers(kReadStages, plume::RenderBufferBarrier(rows_buffer_.get(), plume::RenderBufferAccess::READ));
-  dirty_first_ = 0xFFFFFFFFu;
-  dirty_last_ = 0;
+// ---------------------------------------------------------------------------
+// the frame
+// ---------------------------------------------------------------------------
+
+void CityTextureSet::Apply(uint64_t frame) {
+  // The pressure: a look at the adapter's video memory every few frames; when it is nearly full the set holds what it has.
+  if (frame >= next_pressure_check_) {
+    next_pressure_check_ = frame + ct::kPressureCheckFrames;
+    const backend::VideoMemory memory = device_->QueryVideoMemory();
+    const bool allowed = ct::GrowthAllowed(memory.used, memory.budget, ct::kGrowthMargin);
+    if (!allowed) ++stats_.growth_blocked_checks;
+    if (allowed != growth_allowed_ || (!allowed && !logged_pressure_)) {
+      logged_pressure_ = !allowed;
+      REXLOG_INFO("{} the video memory is {} ({} of {} MiB in use): the set {}", kPrefix, allowed ? "back under the line" : "nearly full", memory.used >> 20, memory.budget >> 20,
+                  allowed ? "may grow again" : "holds what it has and reads nothing new");
+    }
+    growth_allowed_ = allowed;
+  }
+  if (scope_ != applied_scope_) RefreshSectors();
+  // The slots: what the others leave beyond the reserve; the class's bytes, or what is held when the video memory is full. An off budget asks for nothing: one byte of budget reads nothing.
+  const uint32_t max_textures = ct::MaxTextures(scope_, heap_->textures_in_use(), slots_held_);
+  const uint64_t bytes = budget_.on() ? ct::EffectiveBytes(budget_.bytes, residency_->committed_bytes(), growth_allowed_) : 1;
+  residency_->Configure(ct::ConfigFor(budget_, max_textures, bytes));
 }
 
 void CityTextureSet::Pump(plume::RenderCommandList* list, uint32_t frame_slot, uint64_t frame) {
   if (!residency_ || !list) return;
   frame_ = frame;
   TakeResults();
+  Apply(frame);
   const cp::TextureResidency::Plan plan = residency_->Step(frame);
   for (const uint32_t index : plan.evictions) {
     Release(index);
@@ -326,7 +402,6 @@ void CityTextureSet::Pump(plume::RenderCommandList* list, uint32_t frame_slot, u
     wake_.notify_one();
   }
   for (const uint32_t index : plan.uploads) Upload(index, list, frame_slot);
-  FlushRows(list, frame_slot);
 }
 
 }  // namespace mcla::gpu

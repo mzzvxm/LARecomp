@@ -223,7 +223,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
       // CITY-RT M2 H3: the city's hit data (the file the hit data's builder writes beside the pack; nothing is made until a consumer wants it) and the scene service that every consumer asks for
       // the top level, the structures and the hit data (rt_scene_service.h).
-      city_hit_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kHitFileName, gpu_class::Current());
+      city_hit_.Initialize(device_, frames_, upload_, pass_timing_, heap_, CityPackFolder() / larecomp::citypack::kHitFileName, CityPackFolder() / larecomp::citypack::kTexFileName, gpu_class::Current());
       city_rt_.SetHitScene(&city_hit_);
       rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
       car_rt_.SetCityScene(&city_rt_);
@@ -1699,7 +1699,10 @@ void Renderer::ReportFrameStats() {
                                 ? ", city ray tracing " + mib(city_rt_.HeldBytes() + city_shadow_.HeldBytes())
                                 : std::string()) +
                            // CITY-RT M2 H3: the hit data's pool, the tables and the material table
-                           (city_hit_.HeldBytes() != 0 ? ", city hit data " + mib(city_hit_.HeldBytes()) : std::string()) +
+                           (city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes() != 0 ? ", city hit data " + mib(city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes())
+                                                                                               : std::string()) +
+                           // CITY-RT M2 H2: the resident city textures, as the allocator counts them (city_texture_rules.h AllocationBytes; the census line "[city tex]" has the rest)
+                           (city_hit_.texture_set().HeldBytes() != 0 ? ", city textures " + mib(city_hit_.texture_set().HeldBytes()) : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())

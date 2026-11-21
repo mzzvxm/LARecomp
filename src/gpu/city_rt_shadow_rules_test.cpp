@@ -143,6 +143,60 @@ void TestNumbers() {
   CHECK(kStatHistogram + kHistogramBins <= kStatWords);
 }
 
+// CITY-RT M1c: the exact alpha of the cut-outs (hlsl/city_hit_alpha.hlsli, city_hit_alpha_rules.h)
+void TestExactAlpha() {
+  CHECK(ParseAlphaMode("exact") == AlphaMode::kExact && static_cast<uint32_t>(AlphaMode::kExact) == 3 && static_cast<uint32_t>(AlphaMode::kStochastic) == 2);
+  CHECK(static_cast<uint32_t>(AlphaMode::kExact) < 4);  // the mode is two bits of the push's flags
+  // the decision of a candidate: the exact mode reads the alpha where it could, and follows the stochastic rule where not; the other modes are what they were
+  for (float hash : {0.0f, 0.3f, 0.49f, 0.5f, 0.9f}) {
+    for (float alpha : {0.0f, 0.2f, 0.5f, 0.8f, 1.0f}) {
+      CHECK(AcceptCandidate(AlphaMode::kExact, false, alpha, 0.5f, hash) == AcceptAlpha(AlphaMode::kStochastic, hash));  // not known: today's behaviour
+      CHECK(AcceptCandidate(AlphaMode::kExact, true, alpha, 0.5f, hash) == (alpha >= 0.5f));                                // known: the alpha decides, the hash does not
+      for (AlphaMode m : {AlphaMode::kExclude, AlphaMode::kOpaque, AlphaMode::kStochastic}) CHECK(AcceptCandidate(m, true, alpha, 0.5f, hash) == AcceptAlpha(m, hash));
+    }
+  }
+  CHECK(AcceptCandidate(AlphaMode::kExact, true, 0.3f, 0.25f, 0.9f) && !AcceptCandidate(AlphaMode::kExact, true, 0.3f, 0.35f, 0.1f));  // the reference moves the cut
+  // the reference
+  CHECK(kDefaultAlphaReference == 0.5f && ClampAlphaReference(0.0) == kMinAlphaReference && ClampAlphaReference(2.0) == kMaxAlphaReference && ClampAlphaReference(0.4) == 0.4f);
+  for (float r : {0.0f, 0.02f, 0.25f, 0.5f, 0.75f, 0.98f, 1.0f}) {
+    const uint32_t flags = PackFlags(3, AlphaMode::kExact, true, r, true);
+    CHECK(std::fabs(UnpackAlphaReference(flags) - r) <= 0.5f / 255.0f + 1e-6f);
+    CHECK((flags & 0xF) == 3 && ((flags >> kFlagAlphaShift) & 3u) == 3u && (flags & kFlagCarImage) != 0 && (flags & kFlagAlphaStats) != 0 && (flags & (kFlagCheck | kFlagView)) == 0);
+  }
+  const uint32_t plain = PackFlags(2, AlphaMode::kExact, false);
+  CHECK(UnpackAlphaReference(plain) == float(PackAlphaReference(kDefaultAlphaReference)) * (1.0f / 255.0f) && (plain & kFlagAlphaStats) == 0 && (plain & kFlagCarImage) == 0);
+  CHECK(PackAlphaReference(0.5f) == 128 && PackAlphaReference(-1.0f) == 0 && PackAlphaReference(7.0f) == 255);
+  // the flag bits do not overlap each other
+  const uint32_t fields[] = {0xFu << kFlagRaysShift, 3u << kFlagAlphaShift, kFlagCarImage, 0xFFu << kFlagAlphaRefShift, kFlagAlphaStats, kFlagView, kFlagCheck};
+  for (size_t i = 0; i < 7; ++i)
+    for (size_t j = i + 1; j < 7; ++j) CHECK((fields[i] & fields[j]) == 0);
+  // the picture: which way a pixel's rays went
+  CHECK(AlphaViewValue(0) == kViewNoCandidate && AlphaViewValue(kPathCandidate | kPathExact) == kViewExact && AlphaViewValue(kPathCandidate | kPathFallback) == kViewFallback &&
+        AlphaViewValue(kPathCandidate | kPathFallback | kPathExact) == kViewFallback);
+  CHECK(kViewNoCandidate > kViewExact && kViewExact > kViewFallback && kViewFallback > 0.0f);
+  // the counters
+  CHECK(kStatAlphaLevels + kAlphaLevelBins <= kStatWords && kStatAlphaFallback < kStatAlphaLevels && kStatHistogram + kHistogramBins <= kStatAlphaCandidates);
+  uint32_t words[kStatWords] = {};
+  words[kStatAlphaCandidates] = 1000;
+  words[kStatAlphaExact] = 800;
+  words[kStatAlphaBlocked] = 600;
+  words[kStatAlphaPassed] = 200;
+  words[kStatAlphaFallback] = 200;
+  words[kStatAlphaLevels + 0] = 500;
+  words[kStatAlphaLevels + 2] = 300;
+  const AlphaSummary a = DecodeAlpha(words);
+  CHECK(a.candidates == 1000 && a.exact == 800 && a.blocked == 600 && a.passed == 200 && a.fallback == 200 && a.levels[0] == 500 && a.levels[2] == 300);
+  CHECK(std::fabs(a.exact_share - 0.8) < 1e-12 && std::fabs(a.blocked_share - 0.75) < 1e-12 && std::fabs(a.mean_level - 0.75) < 1e-12);
+  const uint32_t empty[kStatWords] = {};
+  const AlphaSummary none = DecodeAlpha(empty);
+  CHECK(none.candidates == 0 && none.exact_share == 0.0 && none.blocked_share == 0.0 && none.mean_level == 0.0);
+  // the check's own words are not the alpha's
+  uint32_t check_only[kStatWords] = {};
+  check_only[kStatPixels] = 10;
+  check_only[kStatHistogram + 3] = 4;
+  CHECK(DecodeAlpha(check_only).candidates == 0);
+}
+
 void TestHash() {
   // golden values (the formula in Python)
   CHECK(Pcg(0u) == 0x9eca9cc6u || Pcg(0u) != 0u);  // not the identity at least; the golden check below is the real one
@@ -398,9 +452,15 @@ void TestShaderNumbers(const std::string& dir) {
   std::stringstream buffer;
   buffer << in.rdbuf();
   const std::string text = buffer.str();
+  const auto is_uint = [](const std::string& name) {
+    for (const char* prefix : {"kFlag", "kStat", "kPath"}) {
+      if (name.find(prefix) == 0) return true;
+    }
+    return name == "kHistogramBins" || name == "kAlphaLevelBins" || name == "kInstanceCity";
+  };
   const auto same = [&](const char* name, double want) {
     bool found = false;
-    const double have = ReadConstant(text, std::string("static const ") + (std::string(name).find("kFlag") == 0 || std::string(name).find("kStat") == 0 || std::string(name) == "kHistogramBins" ? "uint " : "float ") + name, &found);
+    const double have = ReadConstant(text, std::string("static const ") + (is_uint(name) ? "uint " : "float ") + name, &found);
     if (!found || std::fabs(have - want) > 2e-7 * std::max(1.0, std::fabs(want))) {  // the header's are floats, the shader's decimal
       ++g_failures;
       std::fprintf(stderr, "FAILED the shader's %s is %g (%s), the header's is %g\n", name, have, found ? "found" : "missing", want);
@@ -429,16 +489,37 @@ void TestShaderNumbers(const std::string& dir) {
   same("kStatHi", kStatHi);
   same("kStatHistogram", kStatHistogram);
   same("kHistogramBins", kHistogramBins);
+  // CITY-RT M1c
+  same("kFlagAlphaRefShift", kFlagAlphaRefShift);
+  same("kFlagAlphaStats", kFlagAlphaStats);
+  same("kStatAlphaCandidates", kStatAlphaCandidates);
+  same("kStatAlphaExact", kStatAlphaExact);
+  same("kStatAlphaBlocked", kStatAlphaBlocked);
+  same("kStatAlphaPassed", kStatAlphaPassed);
+  same("kStatAlphaFallback", kStatAlphaFallback);
+  same("kStatAlphaLevels", kStatAlphaLevels);
+  same("kAlphaLevelBins", kAlphaLevelBins);
+  same("kPathCandidate", kPathCandidate);
+  same("kPathFallback", kPathFallback);
+  same("kPathExact", kPathExact);
+  same("kViewNoCandidate", kViewNoCandidate);
+  same("kViewExact", kViewExact);
+  same("kViewFallback", kViewFallback);
+  same("kInstanceCity", 0x800000);
   // the hash's constants and the mask the host sends
   CHECK(text.find("747796405u") != std::string::npos && text.find("2891336453u") != std::string::npos && text.find("277803737u") != std::string::npos);
   CHECK(text.find("#define CITY_RT_MASK_CITY 0x80") != std::string::npos);
   CHECK(text.find("7919u * salt") != std::string::npos);  // the alpha hash's salt per ray, as the shader says
+  // the decision the shader makes of a candidate is AcceptCandidate's: mode 3 and known reads the alpha, mode 0 never, 1 always, else the hash
+  CHECK(text.find("if (mode == 3u && known)") != std::string::npos && text.find("return CityHitAlphaBlocks(alpha, reference);") != std::string::npos && text.find("return hash < kAlphaCoverage;") != std::string::npos);
+  CHECK(text.find("(flags >> kFlagAlphaRefShift) & 255u") != std::string::npos);  // the reference is the flags' bits 12-19, unorm8
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
   TestNumbers();
+  TestExactAlpha();
   TestHash();
   TestDiscSamples();
   TestPenumbra();

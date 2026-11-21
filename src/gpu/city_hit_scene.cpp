@@ -38,12 +38,15 @@ CityHitScene::Bindings CityHitScene::AddBindings(plume::RenderDescriptorSetBuild
   return out;
 }
 
-bool CityHitScene::Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, const std::filesystem::path& hit_file, gpu_class::GpuClass cls) {
+bool CityHitScene::Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, BindlessHeap& heap, const std::filesystem::path& hit_file,
+                              const std::filesystem::path& texture_file, gpu_class::GpuClass cls) {
   device_ = &device;
   frames_ = &frames;
   upload_ = &upload;
   pass_timing_ = &pass_timing;
+  heap_ = &heap;
   hit_file_ = hit_file;
+  texture_file_ = texture_file;
   class_ = cls;
   book_ = std::make_shared<city_hit::PoolBook>();
   textures_.Reset(1);  // one row, not uploaded: what a shader that reads the table before H2's loader has run finds
@@ -51,7 +54,8 @@ bool CityHitScene::Initialize(Device& device, FrameRing& frames, UploadRing& upl
 }
 
 void CityHitScene::Shutdown() {
-  DropPool("shutdown");
+  DropPool("shutdown", true);
+  CloseTextures();
   probe_.Shutdown();
   for (SlotTables& slot : slots_) {
     if (slot.sectors && slot.sectors_cpu) slot.sectors->unmap(0, nullptr);
@@ -72,6 +76,7 @@ void CityHitScene::Shutdown() {
   frames_ = nullptr;
   upload_ = nullptr;
   pass_timing_ = nullptr;
+  heap_ = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +90,9 @@ void CityHitScene::SetBase(const cf::PackReader* base) {
   reader_open_ = false;
   reader_ = cf::HitReader{};
   retry_frame_ = 0;
-  if (!base) DropPool("the base pack was given up");
+  textures_retry_frame_ = 0;
+  CloseTextures();  // the texture file belongs to a hit file, the hit file to a base pack: another pack, another table
+  if (!base) DropPool("the base pack was given up", true);
 }
 
 bool CityHitScene::OpenFile() {
@@ -117,6 +124,36 @@ bool CityHitScene::ReadBlob(uint32_t sector, cf::MeshKind kind, cf::HitBlob* out
     return false;
   }
   return reader_.ReadBlob(sector, kind, out, error);
+}
+
+// The texture file beside the hit file, for the texture set (city_texture_set.h). Not an error when it is not there: the hit data works without textures (every texture row says "not uploaded":
+// the shadows' cut-outs use the stochastic rule, the shading takes the materials' average colours), and the file is looked for again in a minute.
+bool CityHitScene::OpenTextures() {
+  if (texture_set_.is_open()) return true;
+  if (!reader_open_ || !heap_ || !device_ || reader_.textures().empty()) return false;
+  std::string error;
+  const bool opened = texture_set_.Initialize(
+      *device_, *frames_, *heap_, *upload_, texture_file_, reader_.textures(), reader_.header().table_hash,
+      [this](uint32_t index, const cf::GpuTextureRow& row) { textures_.Set(index, row); }, &error);
+  if (!opened) {
+    textures_retry_frame_ = frame_ + city_hit::kFileRetryFrames;
+    if (logged_texture_state_ != 1 || texture_problem_ != error) {
+      logged_texture_state_ = 1;
+      texture_problem_ = error;
+      REXLOG_INFO("{} the city textures are not used: {} (looked for {}); the hit data goes on without them (the cut-out shadows use the stochastic rule); the file is built beside the hit file "
+                  "(citypack_tool tex-build), looked for again in a minute",
+                  kPrefix, error, texture_file_.string());
+    }
+    return false;
+  }
+  logged_texture_state_ = 2;
+  for (const auto& [row, sector] : committed_) texture_set_.AddSector(row, sector.textures, city_texture::SectorPriority(sector.distance_m));  // blocks made before the file was there
+  return true;
+}
+
+void CityHitScene::CloseTextures() {
+  texture_set_.Shutdown();
+  textures_.Reset(std::max<uint32_t>(1, textures_.count()));  // every row "not uploaded" again
 }
 
 std::unique_ptr<plume::RenderBuffer> CityHitScene::MakeUpload(uint64_t bytes, uint8_t** cpu, const char* name) {
@@ -168,8 +205,15 @@ bool CityHitScene::MakePool() {
   return true;
 }
 
-void CityHitScene::DropPool(const char* why) {
+void CityHitScene::DropPool(const char* why, bool give_back_textures) {
   const bool had = pool_ != nullptr;
+  // The blocks are gone: no sector wants a texture for them any more. The textures themselves go back only when asked (a pool made again at another size keeps them).
+  committed_.clear();
+  if (give_back_textures) {
+    CloseTextures();
+  } else {
+    texture_set_.ClearSectors();
+  }
   if (pool_) frames_->Retire(std::move(pool_));
   if (materials_) frames_->Retire(std::move(materials_));
   if (book_) book_->Forget();  // the deferred frees of this pool are dropped with its generation
@@ -185,19 +229,21 @@ void CityHitScene::DropPool(const char* why) {
   }
 }
 
-void CityHitScene::BeginFrame(city_rt::Level level) {
+void CityHitScene::BeginFrame(city_rt::Level level, TextureScope textures) {
   ++frame_;
   if (!device_) return;
   level_ = level;
+  scope_ = level != city_rt::Level::kOff ? textures : TextureScope::kNone;
   copied_this_frame_ = false;
   if (level_ != city_rt::Level::kOff) {
     last_wanted_frame_ = frame_;
     const uint64_t wanted = city_hit::PoolBudgetFor(class_, level_).capacity;
-    if (pool_ && wanted != requested_capacity_) DropPool("the level changed");  // another size: the structures built over the old blocks are built again (epoch)
+    if (pool_ && wanted != requested_capacity_) DropPool("the level changed", false);  // another size: the structures built over the old blocks are built again (epoch)
     if (!pool_ && base_ && frame_ >= retry_frame_) MakePool();
+    if (pool_ && !texture_set_.is_open() && frame_ >= textures_retry_frame_) OpenTextures();  // open with the pool: the sectors' textures are registered as their blocks are committed
     return;
   }
-  if (pool_ && frame_ > last_wanted_frame_ + kIdleReleaseFrames) DropPool("no request for a while");
+  if (pool_ && frame_ > last_wanted_frame_ + kIdleReleaseFrames) DropPool("no request for a while", true);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +263,13 @@ void CityHitScene::SetPoolAccess(plume::RenderCommandList* list, Access access) 
 }
 
 void CityHitScene::Record(plume::RenderCommandList* list, uint32_t slot) {
-  if (!pool_ || !materials_ || !materials_pending_ || !list || slot >= kFramesInFlight) return;
+  if (!list || slot >= kFramesInFlight) return;
+  // The texture set: the budget and the scope of this frame, then reads in, evictions, uploads (a texture's row is written in the list that copies its levels).
+  if (texture_set_.is_open()) {
+    texture_set_.Configure(city_texture::BudgetFor(class_, level_, scope_), scope_);
+    texture_set_.Pump(list, slot, frame_);
+  }
+  if (!pool_ || !materials_ || !materials_pending_) return;
   // The material table, once: staged, copied, readable. The pool's blocks are copied after this in the same list.
   const uint64_t bytes = materials_bytes_;
   const UploadSpan span = upload_->Allocate(slot, bytes, 16);
@@ -264,6 +316,7 @@ CityHitScene::Reservation CityHitScene::Reserve(uint32_t sector, bool lod, const
   uint64_t samples = 0;
   r.checksum = city_hit::ProbeOfBlock(r.span.cpu, r.plan, mesh.triangle_count(), &samples);
   r.samples = uint32_t(samples);
+  if (blob != nullptr) r.textures = city_texture::CollectSector(blob->runs, reader_.material_words().data(), reader_.material_count());  // what the sector's hits can show, for both scopes
   r.ok = true;
   ++counts_.reserved;
   return r;
@@ -285,10 +338,14 @@ void CityHitScene::EndUpload(plume::RenderCommandList* list) {
   if (access_ == Access::kCopyWrite) SetPoolAccess(list, Access::kRead);
 }
 
-bool CityHitScene::Commit(const Reservation& r, uint32_t triangle_count, uint32_t opaque_triangles, uint32_t extra_flags) {
+bool CityHitScene::Commit(const Reservation& r, uint32_t triangle_count, uint32_t opaque_triangles, uint32_t extra_flags, float distance_m) {
   if (!r.ok || !book_) return false;
   if (!book_->Commit(r.sector, r.lod, r.plan, triangle_count, opaque_triangles, extra_flags, r.checksum, r.samples)) return false;
   ++counts_.committed;
+  // The sector's textures are wanted from now on (nearest sector first), by the scope the consumers asked for.
+  const uint32_t row = cf::SectorRowOf(r.sector, r.lod);
+  committed_[row] = CommittedSector{r.textures, distance_m};
+  texture_set_.AddSector(row, r.textures, city_texture::SectorPriority(distance_m));
   if (!first_block_logged_) {
     first_block_logged_ = true;
     REXLOG_INFO("{} the first hit data block is in the pool: sector {} {}, {} triangles, {} runs{}, {:.1f} KiB at offset {}", kPrefix, r.sector, r.lod ? "lod" : "hi", triangle_count,
@@ -311,7 +368,16 @@ void CityHitScene::Discard(const Reservation& r) {
   DeferFree(book_->Evict(r.sector, r.lod));
 }
 
+void CityHitScene::SetSectorDistance(uint32_t sector, bool lod, float distance_m) {
+  const uint32_t row = cf::SectorRowOf(sector, lod);
+  const auto it = committed_.find(row);
+  if (it != committed_.end()) it->second.distance_m = distance_m;
+  texture_set_.SetSectorPriority(row, city_texture::SectorPriority(distance_m));
+}
+
 void CityHitScene::Evict(uint32_t sector, bool lod) {
+  committed_.erase(cf::SectorRowOf(sector, lod));
+  texture_set_.RemoveSector(cf::SectorRowOf(sector, lod));  // whether or not the pool still holds the block
   if (!book_ || !book_->ready()) return;
   const city_hit::Block gone = book_->Evict(sector, lod);
   if (gone.present) {
@@ -455,15 +521,18 @@ city_hit::Held CityHitScene::Held() const {
   h.materials = materials_bytes_;
   for (const SlotTables& slot : slots_) h.tables += slot.sectors_bytes + slot.textures_bytes;
   h.tables += standin_bytes_ + probe_.HeldBytes();
+  h.textures = texture_set_.HeldBytes();  // the resident city textures, as the allocator counts them (city_texture_rules.h AllocationBytes)
   return h;
 }
 
 std::string CityHitScene::CensusText() const {
   if (!pool_) return {};
   const Stats s = stats();
-  return std::format("; city hit data: pool {:.0f} MiB, {:.1f} MiB in {} blocks, {} reserved, {} evicted, {} failed (no room {}, bad data {}, staging {}), fragmentation {}%",
-                     double(s.pool_bytes) / (1024.0 * 1024.0), double(s.committed_bytes) / (1024.0 * 1024.0), s.blocks, s.reserved, s.evicted,
-                     s.failures_no_room + s.failures_data + s.failures_staging, s.failures_no_room, s.failures_data, s.failures_staging, s.fragmentation);
+  std::string text = std::format("; city hit data: pool {:.0f} MiB, {:.1f} MiB in {} blocks, {} reserved, {} evicted, {} failed (no room {}, bad data {}, staging {}), fragmentation {}%",
+                                 double(s.pool_bytes) / (1024.0 * 1024.0), double(s.committed_bytes) / (1024.0 * 1024.0), s.blocks, s.reserved, s.evicted,
+                                 s.failures_no_room + s.failures_data + s.failures_staging, s.failures_no_room, s.failures_data, s.failures_staging, s.fragmentation);
+  if (texture_set_.is_open()) text += "; " + texture_set_.CensusText();
+  return text;
 }
 
 }  // namespace mcla::gpu

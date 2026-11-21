@@ -303,6 +303,24 @@ add_executable(larecomp_city_hit_pool_rules_test EXCLUDE_FROM_ALL city_hit_pool_
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
 target_include_directories(larecomp_city_hit_pool_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_hit_pool_rules_test PRIVATE cxx_std_23)
+# The city texture set's rules (city_texture_rules.h, CITY-RT M2 H2 finished for M1c: the bindless slot maths, the footprints of every level against Plume's D3D12 arithmetic, the memory a
+# texture takes, the budgets by class, level and scope, the pressure rule, a sector's two texture lists, and the loader's conversation with a fake device over a retail-sized table with
+# the residency's invariants held at every frame) likewise:
+#   cmake --build <dir> --target larecomp_city_texture_rules_test, then run src/gpu/larecomp_city_texture_rules_test (exit 0 = passed).
+add_executable(larecomp_city_texture_rules_test EXCLUDE_FROM_ALL city_texture_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/texture_residency.cpp")
+target_include_directories(larecomp_city_texture_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_texture_rules_test PRIVATE cxx_std_23)
+# The exact alpha of the city's cut-outs (hlsl/city_hit_alpha.hlsli compiled as C++ against its twin city_hit_alpha_rules.h on a synthetic city of fences, every way a candidate's alpha is not
+# known, the shadow shader's wiring read from its text); given the src/gpu folder it reads the shader sources:
+#   cmake --build <dir> --target larecomp_city_hit_alpha_rules_test, then run src/gpu/larecomp_city_hit_alpha_rules_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_city_hit_alpha_rules_test EXCLUDE_FROM_ALL city_hit_alpha_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_alpha_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_alpha_rules_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:

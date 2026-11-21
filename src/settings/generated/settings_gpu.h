@@ -289,10 +289,21 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_city_rt_rays, 0, "Debug: rays a pixel for the ray traced city shadows, 1 to 8; 0 (the default) is the level's (high 2, ultra 4). Live.", rex::kDebugOnly,
     rex::Range{0, 8});
 
-  REX_SETTING(std::string, mcla_gpu_city_rt_alpha, "stochastic", "Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, some foliage: "
-    "4% of the city, kept apart in the city pack; their textures are not in the structures). exclude leaves them out, opaque makes them solid, stochastic (the default) "
-    "makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the upscaler average into a half tone. Live.", rex::kDebugOnly,
-    rex::Allowed("exclude", "opaque", "stochastic"));
+  REX_SETTING(std::string, mcla_gpu_city_rt_alpha, "exact", "Debug: what the ray traced city shadows do with the city's cut-out triangles (fences, grates, neon cut-outs: "
+    "4% of the city, kept apart in the city pack). exact (the default) reads the cut-out texture's alpha where the ray meets the triangle, from the city hit data and the "
+    "city textures, and blocks the ray where it reaches mcla_gpu_city_rt_alpha_ref; where those are not built or the texture is not loaded yet it does what stochastic does. "
+    "exclude leaves the cut-outs out, opaque makes them solid, stochastic makes half of the rays that meet one a blocker, chosen by a hash, which the filter and the "
+    "upscaler average into a half tone. Live.", rex::kDebugOnly,
+    rex::Allowed("exact", "exclude", "opaque", "stochastic"));
+
+  REX_SETTING(f64, mcla_gpu_city_rt_alpha_ref, 0.5, "Debug: the alpha at or above which a cut-out texel blocks a ray in the exact mode of mcla_gpu_city_rt_alpha, 0.02 to 0.98 "
+    "(the game's alpha test keeps a texel above its reference, mostly 0.5 for the city's cut-outs; the city pack does not know a draw's own). Live.", rex::kDebugOnly,
+    rex::Range{0.02, 0.98});
+
+  REX_SETTING(bool, mcla_gpu_city_rt_alpha_view, false, "Debug: with the exact mode of mcla_gpu_city_rt_alpha, shows through the contact shadows' view 7 "
+    "(mcla_gpu_contact_shadows_view) which way each pixel's sun rays went through the cut-outs: white no cut-out met, 0.7 decided by the texture's alpha, 0.35 decided by the "
+    "stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the "
+    "levels read. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
     "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
@@ -312,6 +323,9 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_gpu_city_hit_data, "off", "Debug: asks for the city's hit data (the texture coordinates, vertex colours and materials of the city, in the GPU pool the structures are built over: mcla_city_hit.v1.pack beside the city pack) without any effect reading it, to test the pool: off (the default), high or ultra, which also brings the city's structures at that level (and, with no car in the picture, the city alone in the top level). The log says under [city hit] and [rt scene]. A hit file that is missing or stale leaves it off. Live.", rex::kDebugOnly,
     rex::Allowed("off", "high", "ultra"));
+
+  REX_SETTING(std::string, mcla_gpu_city_hit_textures, "off", "Debug: with mcla_gpu_city_hit_data on, asks for the city's textures to be resident as well, to test the loader without an effect reading them: off (the default), alpha (the cut-outs' textures of the sectors in the ring, what the ray traced shadows' exact alpha reads) or all (every texture of the sectors in the ring, what the reflections will read). The file is mcla_city_tex.v1.pack beside the hit file. The log says under [city tex] (the first texture, the video memory's pressure) and the city ray tracing census line has the textures' slots and accounted memory. Live.", rex::kDebugOnly,
+    rex::Allowed("off", "alpha", "all"));
 
   REX_SETTING(bool, mcla_gpu_city_hit_probe, false, "Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.", rex::kDebugOnly);
 
@@ -1574,11 +1588,14 @@ inline auto& mcla_gpu_rt_shadows = g_gpu.mcla_gpu_rt_shadows;
 inline auto& mcla_gpu_city_rt_sun = g_gpu.mcla_gpu_city_rt_sun;
 inline auto& mcla_gpu_city_rt_rays = g_gpu.mcla_gpu_city_rt_rays;
 inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
+inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
+inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
 inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
 inline auto& mcla_gpu_city_rt_view = g_gpu.mcla_gpu_city_rt_view;
 inline auto& mcla_gpu_city_hit_data = g_gpu.mcla_gpu_city_hit_data;
+inline auto& mcla_gpu_city_hit_textures = g_gpu.mcla_gpu_city_hit_textures;
 inline auto& mcla_gpu_city_hit_probe = g_gpu.mcla_gpu_city_hit_probe;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;
