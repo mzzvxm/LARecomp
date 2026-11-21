@@ -17,7 +17,7 @@
 //
 // A later frame in which the vehicle is in the list, within the radius, and NOT drawn (no seen car is matched to it) places every draw of its kit again with
 // the vehicle's matrix of that frame, P' = rel * M', and hands the draws to the instance list as the draws of a car (stencil ID kRememberedIdBase + slot,
-// OtherCar::remembered). Nothing else changes: the same class caps (High 4 cars within 14 m, Mid 2 within 10 m), counted with the drawn cars by the distance
+// OtherCar::remembered). Nothing else changes: the same class caps (High 4 cars within 20 m, Mid 2 within 14 m: the reflection's reach to another car and a car's half length, RT-HIT-SHADING part two), counted with the drawn cars by the distance
 // to the player (not by the screen), the same instance budget, the same structures (one bottom level per mesh key: a car that was seen once keeps its meshes
 // while it is placed), the same masks, boxes and rows.
 //

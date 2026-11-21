@@ -887,6 +887,17 @@ void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, c
   in.tuning.gain = float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get());
   in.tuning.ambient = float(larecomp::settings::mcla_gpu_car_rt_hit_ambient.Get());
   in.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
+  in.tuning.cascade = larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get();
+  in.cascades = sun_cascades_;
+  {
+    double camera[3];
+    if (car_rt_instances::CameraWorld(frame.view, camera)) {
+      in.camera_known = true;
+      for (int c = 0; c < 3; ++c) {
+        in.camera_world[c] = float(camera[c]);
+      }
+    }
+  }
   const double sun_length = std::sqrt(frame.to_sun[0] * frame.to_sun[0] + frame.to_sun[1] * frame.to_sun[1] + frame.to_sun[2] * frame.to_sun[2]);
   if (sun_length > 0.5 && std::isfinite(sun_length)) {
     in.sun_known = car_rt_instances::ViewVector(frame.view, flip_z, frame.to_sun, in.to_sun_view);
@@ -919,6 +930,7 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
   m.light_frames += frame.light.valid ? 1u : 0u;
   m.env_frames += frame.light.env_sharp != 0 ? 1u : 0u;
   m.sun_frames += (frame.to_sun[0] != 0.0 || frame.to_sun[1] != 0.0 || frame.to_sun[2] != 0.0) ? 1u : 0u;
+  m.cascade_frames += (words.size() > 3 && (words[3] & crm::kFrameCascade) != 0u) ? 1u : 0u;
   for (size_t i = 0; i < list.items.size(); ++i) {
     const uint32_t* row = words.data() + (size_t(crm::kFrameRows) + i * crm::kMaterialRows) * 4u;
     const crm::RowsDecoded decoded = crm::DecodeRows(reinterpret_cast<const uint32_t(*)[4]>(row));
@@ -964,9 +976,9 @@ void CarRtScene::NoteMaterials(const car_rt_instances::List& list, const std::ve
       }
     }
     REXLOG_INFO("{} materials, frames {}..{}: {} with a top level; instances a frame by class: {}; textured {:.1f} a frame, {:.1f}% found in the cache, {} not found; the lighting read from the "
-                "cars' draws in {} frames, the environment map's slot in {}, the sun's direction in {}; meshes read with texture coordinates {}, without {}",
+                "cars' draws in {} frames, the environment map's slot in {}, the sun's direction in {}, the game's sun cascades (the sun's shadow at a shaded hit) in {}; meshes read with texture coordinates {}, without {}",
                 kPrefix, m.first_frame, frame_, m.frames, classes.empty() ? std::string("none") : classes, double(m.textured) / double(m.frames),
-                m.textured != 0 ? 100.0 * double(m.resolved) / double(m.textured) : 100.0, m.unresolved, m.light_frames, m.env_frames, m.sun_frames, m.uv_meshes_read, m.no_uv_meshes_read);
+                m.textured != 0 ? 100.0 * double(m.resolved) / double(m.textured) : 100.0, m.unresolved, m.light_frames, m.env_frames, m.sun_frames, m.cascade_frames, m.uv_meshes_read, m.no_uv_meshes_read);
     const uint64_t first = frame_;
     material_stats_ = MaterialStats{};
     material_stats_.first_frame = first;

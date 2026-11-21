@@ -38,7 +38,7 @@
 //     normals, 1.1 MiB of indices and 5 to 8 MiB of structures.
 //   - OTHER CARS (car_rt_instances.h, perf/RT-CARS-DESIGN.md): the cars driving alongside (opponents, traffic, parked cars) are in the same top level.
 //     CarFrame recognises their draws (the same recipe of the vertex shader's microcode as the player's, told apart by their stencil IDs) and keeps
-//     the nearest few within a radius of the player's vehicle, by graphics class (Mid 2 cars within 10 m, High 4 within 14 m); OnOtherCarDraw reads
+//     the nearest few within a radius of the player's vehicle, by graphics class (Mid 2 cars within 14 m, High 4 within 20 m); OnOtherCarDraw reads
 //     the triangles of a mesh the scene has not seen within a budget of its own, and the instance list adds a draw of such a car as an instance of
 //     the SAME structure its model's other cars use (the key is the model's triangles in model space) with the mask CAR_RT_MASK_OTHERS: the
 //     reflection's rays hit it, the primary ray that finds the player's car never does. The other cars' share of the memory stops short of the
@@ -188,6 +188,9 @@ class CarRtScene final : public car_frame::Listener {
   bool ready() const { return ready_; }
   // The texture cache the materials' diffuse textures are asked of every frame (TextureCache::Peek2D). Null: no texture, the class colours only. Set once at the start.
   void SetTextureCache(TextureCache* textures) { textures_ = textures; }
+  // The game's sun cascades of this frame (Volumetrics::SunCascadesForOthers: the shadow collector's constants and the atlas), given before OnResolve in every frame: the frame's rows
+  // carry them to the reflection pass, whose shaded hits read the sun's visibility from them (car_rt_hit_rules.h). A frame that is not told has none (the cars' ray alone).
+  void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }
 
   // A user wants the structures: call it in every frame it needs them (any time in the frame). A request counts for the frame and the
   // next, and asks CarFrame to collect the car's draws.
@@ -507,6 +510,7 @@ class CarRtScene final : public car_frame::Listener {
 
   // RT-HIT-SHADING: the texture cache, the textures asked of it in this frame (by the fetch's dwords), and what the materials were (the window's totals and the log's firsts).
   TextureCache* textures_ = nullptr;
+  car_rt_material::SunCascades sun_cascades_;
   std::unordered_map<uint64_t, uint32_t> diffuse_slots_;
   struct MaterialStats {
     uint64_t frames = 0;
@@ -520,6 +524,7 @@ class CarRtScene final : public car_frame::Listener {
     uint64_t light_frames = 0;                               // frames with the lighting read from a draw
     uint64_t env_frames = 0;                                 // ... with the environment map's slot
     uint64_t sun_frames = 0;
+    uint64_t cascade_frames = 0;                             // frames whose rows carry the game's sun cascades
     uint64_t first_frame = 0;
   } material_stats_;
   std::array<bool, car_rt_material::kClassCount> material_class_logged_{};

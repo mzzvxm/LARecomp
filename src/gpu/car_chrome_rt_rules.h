@@ -10,7 +10,7 @@
 // draw's stencil ID, whose pixels are in the history: so another car's chrome has been taking the march all along. This is the ray traced version for it.
 //
 // WHAT THIS ADDS (where ray tracing runs: the RAY TRACED setting's devices, the car self-reflection on, mcla_gpu_car_rt_cars above 0, the other cars in the
-// top level of car_rt_scene.h: the nearest 2 within 10 m on Mid, 4 within 14 m on High):
+// top level of car_rt_scene.h: the nearest 2 within 14 m on Mid, 4 within 20 m on High):
 //  1. The instance of another car's draw of the chrome's shader carries a second mask bit, kMaskOtherChrome 0x20 (car_rt_instances_rules.h OtherMask), beside
 //     kMaskOthers 0x10, so every ray that hits another car still hits it (the reflection's 0x17, the occlusion's 0x15, the check's 0xFF).
 //  2. The reflection pass (hlsl/car_rt_refl_cs.hlsl) gives its primary ray the mask kPrimaryTraceParts (the player's body 0x01 and 0x20): a texel of the
@@ -39,6 +39,12 @@
 // world's depth would add nothing under a bumper, where only the car's own parts cover), and a FIXED DARKENING under a car's body box would darken tailpipes in
 // the open sun (the look must stay subtle there: an open tip reads open in the probes, a box has no idea). On the Low class nothing changes: it has no other
 // cars in the scene (car_rt_instances_rules.h ClassLimits) and no ray traced pass; it keeps the march for every car, whatever it does today.
+//
+// RT-HIT-SHADING PART TWO (car_rt_hit_rules.h) AND THE CHROME. The probes are OCCLUSION probes, not reflections: they say how much of the chrome's own sky reflection another part of the same
+// car covers within 25 cm (a tailpipe under a bumper), and the chrome variant darkens its reflection of the game's environment map by that weight; a probe has no colour to shade and its
+// reach is the geometry's, so the longer reach, the clear-coat ray and the hit shading of part two do not apply to it and it is unchanged. What another car's chrome shows of the cars round it
+// (a coloured reflection of the player's car in a tailpipe) is a colour the chrome variant would have to read from this image as the paint does; the image holds none for those texels (the
+// red channel is the sky probe's code): that is a change of the variant (shaderpack/variants/car_chrome.*), listed in the report of part two as a later item, not made here.
 //
 // COST. Texels of other cars' non-chrome parts cost what they did (the primary ray's mask skips their instances, as before); a chrome texel's primary ray now
 // HITS (it missed) and it casts five short rays against a tree of at most a few hundred instances. A car has 4 to 8 chrome draws (tips, badges, trim), at 1080p and 10 m

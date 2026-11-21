@@ -48,8 +48,10 @@
 //   albedo   paint: lerp(B, A, (N.V)^flop), over by the livery (vinyl) where its alpha says so; textured parts: the diffuse texture (bilinear in two mip levels, the
 //            level from the cone's footprint at the hit and the mesh's texel density, wrap addressing, the game's PWL gamma where the fetch asks) times the tint (A); the rest:
 //            the tint, which is the class colour where the draw's constants give none
-//   light    ambient x a hemisphere term (down-facing surfaces are darker) + the sun's colour x N.L x its visibility (one ray towards the sun against the whole scene,
-//            reach kSunReach metres: a car's own shadow on itself and on its neighbour; the world's shadows are not known here)
+//   light    ambient x a hemisphere term (down-facing surfaces are darker) + the sun's colour x N.L x its visibility: the game's own sun cascades at the hit's world point
+//            (SunCascades, CascadeLit: the shade of buildings, trees and bridges, with the collector's fade) and one ray towards the sun against the whole scene (reach kSunReach
+//            metres: a car's own shadow on itself and on its neighbour, which the cascades do not hold), the darker of the two (SunVisibility; RT-HIT-SHADING part two). Where the
+//            frame has no cascades (the volumetric light off, night, rain) the ray alone.
 //   spec     the game's environment map read at the reflected direction (turned into WORLD axes: the paraboloid mapping of EnvUv, decoded from xChrome::PS_Chrome), at a mip
 //            level of the class's gloss and the cone, times the fresnel (the paint's own DL1 numbers; the class's defaults otherwise) and the class's gain
 //   emissive the lights' and the lit interior's own glow, scaled by the night factor (1 - the sun's brightness, between two thresholds)
@@ -556,7 +558,19 @@ inline float FromBits(uint32_t b) {
 }
 
 inline constexpr uint32_t kMaterialRows = 2;
-inline constexpr uint32_t kFrameRows = 8;
+// The frame's rows: 0 to 7 the lighting (below), then the sun's cascades (SunCascades: the game's own shadow map of the world, so that the reflected car sits in the scene's light):
+//   8   x the atlas's bindless slot (kNoSlot: none), y the cascade count, z the depth bias (float bits), w the sun's fade (float bits: the visibility is lerp(lit, 1, fade))
+//   9   xyz the CAMERA's position in the game's world (the cascades' matrices take world points), w 0
+//   10  xyz the cascade boxes' right axis (the collector's c85), 11 xyz the top axis (c82)
+//   12 + 5 i .. 12 + 5 i + 3   cascade i's four matrix rows (c64 + 4 i .. c67 + 4 i), 12 + 5 i + 4 its box (c86.i, c87.i, c83.i, c84.i)
+inline constexpr uint32_t kMaxCascades = 4;
+inline constexpr uint32_t kCascadeHeaderRow = 8;
+inline constexpr uint32_t kCameraRow = 9;
+inline constexpr uint32_t kCascadeRightRow = 10;
+inline constexpr uint32_t kCascadeTopRow = 11;
+inline constexpr uint32_t kCascadeFirstRow = 12;
+inline constexpr uint32_t kCascadeRowsEach = 5;
+inline constexpr uint32_t kFrameRows = kCascadeFirstRow + kMaxCascades * kCascadeRowsEach;  // 32
 
 // What the host adds to a draw's material for one instance: the mesh's texture coordinates and their density.
 struct InstanceMaterial {
@@ -639,10 +653,12 @@ inline constexpr uint32_t kFrameShade = 1;    // hit shading is on
 inline constexpr uint32_t kFrameShadow = 2;   // the sun's visibility ray is cast
 inline constexpr uint32_t kFrameEnv = 4;      // the environment map's slot is valid
 inline constexpr uint32_t kFrameSun = 8;      // the direction to the sun is known
+inline constexpr uint32_t kFrameCascade = 16; // the game's sun cascades and the camera's world position are in the rows: the sun's visibility at a hit is read from them
 
 struct Tuning {
   bool enabled = true;
   bool shadow = true;
+  bool cascade = true;   // the sun's visibility also reads the game's cascades (where the frame has them)
   float gain = 1.0f;     // everything the shading adds, against the history's units
   float ambient = 1.0f;  // the ambient's share
   float spec = 1.0f;     // the environment reflection's share
@@ -658,8 +674,25 @@ struct FrameLight {
   uint32_t env_blur = 0;
 };
 
+// The game's sun shadow map of the world as the collector's draws told it (volumetrics.h SunCascadesForOthers): four nested cascades, each a light matrix and a box in the
+// collector's (right, top) axes, and the atlas the four share. The lookup is the collector's own (CascadeLit; hlsl/car_rt_hit_shade.hlsli CarMatCascadeLit is its twin).
+struct SunCascades {
+  bool valid = false;
+  uint32_t atlas_slot = kNoSlot;
+  uint32_t count = 0;
+  float fade = 0.0f;        // the collector's own fade: the visibility is lerp(lit, 1, fade)
+  float depth_bias = 0.0f;  // added to the receiver's depth before the compare
+  float right[3] = {};
+  float top[3] = {};
+  float rows[kMaxCascades][4][4] = {};  // cascade i's matrix rows, as the collector's constants hold them
+  float box[kMaxCascades][4] = {};
+};
+
 struct FrameInput {
   FrameLight light;
+  SunCascades cascades;
+  bool camera_known = false;
+  float camera_world[3] = {};  // the camera's place in the game's world: a hit's world point is this plus the view vector turned by the world's axes
   bool sun_known = false;
   float to_sun_view[3] = {0.0f, 1.0f, 0.0f};     // unit, in the frame's view space
   float world_axes_view[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};  // the world's x, y and z axes in the view space
@@ -673,6 +706,34 @@ inline float NightFactor(const float sun[3]) {
   const float t = std::clamp((mean - kNightLow) / (kNightHigh - kNightLow), 0.0f, 1.0f);
   const float s = t * t * (3.0f - 2.0f * t);
   return 1.0f - s;
+}
+
+// The cascades are worth reading: a slot, at least one cascade, finite numbers, and a box with an extent. The same judgement as Volumetrics::FillSun's (an empty or stale collector is
+// no sun shadow: the visibility is then the cars' ray alone).
+inline bool CascadesUsable(const SunCascades& s) {
+  if (!s.valid || s.atlas_slot == kNoSlot || s.count == 0 || s.count > kMaxCascades || !std::isfinite(s.fade) || !std::isfinite(s.depth_bias)) {
+    return false;
+  }
+  bool extent = false;
+  for (uint32_t i = 0; i < s.count; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      for (int c = 0; c < 4; ++c) {
+        if (!std::isfinite(s.rows[i][j][c])) {
+          return false;
+        }
+      }
+      if (!std::isfinite(s.box[i][j])) {
+        return false;
+      }
+    }
+    extent = extent || (s.box[i][1] > 0.0f && s.box[i][3] > 0.0f);
+  }
+  for (int c = 0; c < 3; ++c) {
+    if (!std::isfinite(s.right[c]) || !std::isfinite(s.top[c])) {
+      return false;
+    }
+  }
+  return extent;
 }
 
 inline void MakeFrameRows(const FrameInput& in, uint32_t rows[kFrameRows][4]) {
@@ -689,6 +750,28 @@ inline void MakeFrameRows(const FrameInput& in, uint32_t rows[kFrameRows][4]) {
   }
   if (in.sun_known) {
     flags |= kFrameSun;
+  }
+  if (in.tuning.cascade && CascadesUsable(in.cascades) && in.camera_known) {
+    flags |= kFrameCascade;
+    rows[kCascadeHeaderRow][0] = in.cascades.atlas_slot;
+    rows[kCascadeHeaderRow][1] = std::min<uint32_t>(in.cascades.count, kMaxCascades);
+    rows[kCascadeHeaderRow][2] = Bits(in.cascades.depth_bias);
+    rows[kCascadeHeaderRow][3] = Bits(std::clamp(in.cascades.fade, 0.0f, 1.0f));
+    for (int c = 0; c < 3; ++c) {
+      rows[kCameraRow][c] = Bits(in.camera_world[c]);
+      rows[kCascadeRightRow][c] = Bits(in.cascades.right[c]);
+      rows[kCascadeTopRow][c] = Bits(in.cascades.top[c]);
+    }
+    for (uint32_t i = 0; i < kMaxCascades; ++i) {
+      for (uint32_t j = 0; j < 4; ++j) {
+        for (uint32_t c = 0; c < 4; ++c) {
+          rows[kCascadeFirstRow + i * kCascadeRowsEach + j][c] = Bits(in.cascades.rows[i][j][c]);
+        }
+      }
+      for (uint32_t c = 0; c < 4; ++c) {
+        rows[kCascadeFirstRow + i * kCascadeRowsEach + 4][c] = Bits(in.cascades.box[i][c]);
+      }
+    }
   }
   for (int c = 0; c < 3; ++c) {
     rows[0][c] = Bits(in.to_sun_view[c]);
@@ -916,6 +999,70 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
 // What a hit shows where the history shows `visible` of it: the shaded colour where it does not, the history's where it does, no seam between (TraceRay's blend).
 inline float HitColour(float shaded, float seen, float visible) {
   return shaded + (seen - shaded) * std::clamp(visible, 0.0f, 1.0f);
+}
+
+// ---------------------------------------------------------------------------
+// the sun's visibility at a hit: the game's cascades and the cars' ray
+// ---------------------------------------------------------------------------
+
+// The distance along the surface's normal the cascade lookup is made at (hlsl/car_rt_hit_shade.hlsli kCascadeNormalOffset), metres: the cascades' texels are 1 to 25 cm and a point on
+// the surface itself would shadow itself at its own depth.
+inline constexpr float kCascadeNormalOffset = 0.03f;
+
+// A view-space vector `view` in the game's world: `camera` is the camera's place there, `axes` the world's x, y and z axes in view space (FrameInput::world_axes_view; unit and
+// orthogonal: the view matrix is a rigid motion), so the world coordinate along axis k is the vector's dot with it.
+inline void WorldPoint(const float camera[3], const float axes[3][3], const float view[3], float out[3]) {
+  for (int k = 0; k < 3; ++k) {
+    out[k] = camera[k] + Dot3(view, axes[k]);
+  }
+}
+
+// The fraction of the sun's light that reaches the world point `p` through the cascades: the collector's own lookup (the cascade is `count` minus the number of boxes that hold the
+// point, so the finest box that holds it; the atlas coordinates and the depth from that cascade's matrix; a bilinear weighted compare of the four depth texels around it, lit
+// where the stored depth is at least the receiver's), 1 where the frame has no cascades or the point is in none of the boxes. `load(x, y)` is the atlas's depth texel (x, y)
+// clamped to the atlas `w` x `h`. The shader's CarMatCascadeLit does this arithmetic (and volumetrics_inject_cs.hlsl CascadeLit, which it copies, the same).
+template <class LoadDepth>
+inline float CascadeLit(const SunCascades& s, const float p[3], uint32_t w, uint32_t h, LoadDepth&& load) {
+  if (!s.valid || s.count == 0 || s.atlas_slot == kNoSlot || w == 0 || h == 0) {
+    return 1.0f;
+  }
+  const float r = Dot3(p, s.right);
+  const float t = Dot3(p, s.top);
+  uint32_t inside = 0;
+  for (uint32_t i = 0; i < kMaxCascades; ++i) {
+    if (i < s.count) {
+      inside += (std::fabs(r + s.box[i][0]) < s.box[i][1] && std::fabs(t + s.box[i][2]) < s.box[i][3]) ? 1u : 0u;
+    }
+  }
+  if (inside == 0) {
+    return 1.0f;
+  }
+  const uint32_t index = s.count - inside;
+  const float(*m)[4] = s.rows[index];
+  const float u = p[0] * m[0][0] + p[1] * m[1][0] + p[2] * m[2][0] + m[3][0];
+  const float v = p[0] * m[0][1] + p[1] * m[1][1] + p[2] * m[2][1] + m[3][1];
+  const float depth = (p[0] * m[0][2] + p[1] * m[1][2] + p[2] * m[2][2] + m[3][2]) * (p[0] * m[0][3] + p[1] * m[1][3] + p[2] * m[2][3] + m[3][3]) + s.depth_bias;
+  const float tx = u * float(w) - 0.5f;
+  const float ty = v * float(h) - 0.5f;
+  const int x0 = int(std::floor(tx));
+  const int y0 = int(std::floor(ty));
+  const float fx = tx - float(x0);
+  const float fy = ty - float(y0);
+  const auto lit = [&](int x, int y) { return load(std::clamp(x, 0, int(w) - 1), std::clamp(y, 0, int(h) - 1)) >= depth ? 1.0f : 0.0f; };
+  const float s00 = lit(x0, y0);
+  const float s10 = lit(x0 + 1, y0);
+  const float s01 = lit(x0, y0 + 1);
+  const float s11 = lit(x0 + 1, y0 + 1);
+  const float a = s00 + (s10 - s00) * fx;
+  const float b = s01 + (s11 - s01) * fx;
+  return a + (b - a) * fy;
+}
+
+// What the shader makes of the two kinds of shadow (the cascades' fraction with the sun's fade, the cars' ray): the cars' own shadow falls on themselves and on each other where the
+// cascades have none (they hold the player's car at a low level of detail and no other car), and the world's shadows fall where the ray cannot see them. The darker of the two.
+inline float SunVisibility(float cascade_lit, float fade, float ray_lit) {
+  const float world = cascade_lit + (1.0f - cascade_lit) * std::clamp(fade, 0.0f, 1.0f);
+  return std::min(world, ray_lit);
 }
 
 // A line for the log: the material in words.

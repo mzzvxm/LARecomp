@@ -499,7 +499,7 @@ inline constexpr double kErrorUnit = 1000.0;
 inline constexpr double kNearFarTolerance = 0.02;
 
 // THE SCOPE: which vehicle pixels the scene is meant to hold. The scene keeps the player's car and the nearest few other cars of the frame (by the
-// class: High up to 4 within 14 m, Mid up to 2 within 10 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
+// class: High up to 4 within 20 m, Mid up to 2 within 14 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
 // is not a miss but not in the scene by design. The depth image says only "vehicle" (one bit), not which car, so the shader places the pixel's
 // view-space position (the ray's direction times the image's distance) in the boxes of the kept cars: the player's car's box (the transformed mesh
 // boxes of its listed instances, grown on the host) and each kept other car's box (the same, from the top level's table, grown in the shader), both

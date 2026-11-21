@@ -9504,7 +9504,7 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows are not \"\n    \"known there). Off: the sun lights every part that faces it. Live.\"",
+  "help": "\"Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows \"\n    \"come from the game's cascades: mcla_gpu_car_rt_hit_cascade). Off: the sun lights every part that faces it, but for the world's shadows. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -9543,6 +9543,41 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 8.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_reach": {
+  "type": "f64",
+  "default": "0.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). \"\n    \"The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours \"\n    \"(mcla_gpu_car_rt_cars_radius moves that). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.0, 20.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_clearcoat": {
+  "type": "f64",
+  "default": "-1.0",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's \"\n    \"fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); \"\n    \"0 off; above 0 on at that strength (1 is the High class's). Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{-1.0, 4.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_hit_cascade": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees \"\n    \"and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

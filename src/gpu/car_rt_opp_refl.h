@@ -5,7 +5,7 @@
 // The ray traced reflection pass (car_rt_refl.h) shades the player's car: at the history trigger one compute pass casts a primary ray at every vehicle texel of the history
 // image, finds the player's body, and casts a cone of reflection rays from it against the car's top level (car_rt_scene.h); the image it writes is read by the NEXT frame's
 // paint draws (the paint variant, version 6) in place of the screen-space march. The cars driving beside the player are in the same top level (the selection by stencil ID and distance
-// from the player's vehicle, the class's cap: High 4 cars within 14 m, Mid 2 within 10 m, none on Low) and show in the player's paint, but THEIR paint took the march, because the
+// from the player's vehicle, the class's cap: High 4 cars within 20 m, Mid 2 within 14 m, none on Low) and show in the player's paint, but THEIR paint took the march, because the
 // primary ray never finds another car's paint (mask 0x10 is the reflection ray's, not the primary's).
 //
 // This class is the same pass for them: a second dispatch of the same shader file (hlsl/car_rt_refl_cs.hlsl, built with CAR_RT_REFL_OPPONENTS=1 into car_rt_refl_opp_cs: the player's main
@@ -13,7 +13,7 @@
 // image the paint reads, and the denoise's aux image). Everything about it is in car_rt_opp_refl_rules.h (which pixels, each pixel's surface, the rays, the colour of a hit the history cannot show,
 // the blending: the paint variant's own, unchanged, the budget); this file is the host side:
 //
-//   - the pipeline: a layout of its own with the player's three sets (the history's bindless set, the two storage images, the scene's) and a push block of 96 bytes (the player's 80
+//   - the pipeline: a layout of its own with the player's three sets (the history's bindless set, the two storage images, the scene's) and a push block of 112 bytes (the player's 96
 //     and `opp`: x, y the first texel of the rectangle, z the row of the player's record in the instances' table, w the rays a texel casts). The pipeline is made ahead on the host
 //     builder thread where the reflection is on at the start (host_precache.h key (kCarRtRefl, 2)), in the background where it is switched on later, and is optional: a frame whose pipeline
 //     is not ready goes on without it (the opponents' paint takes the march), it is never waited for.
@@ -97,17 +97,18 @@ class CarRtOppRefl {
   std::string CensusText();
 
  private:
-  // The push block (hlsl/car_rt_refl_cs.hlsl CarRtReflPush with CAR_RT_REFL_OPPONENTS): the player's 80 bytes (CarRtRefl::Push) and opp.
+  // The push block (hlsl/car_rt_refl_cs.hlsl CarRtReflPush with CAR_RT_REFL_OPPONENTS): the player's 96 bytes (CarRtRefl::Push, RT-HIT-SHADING part two added coat) and opp.
   struct Push {
     uint32_t slots[4];
     float image[4];
     float lens[4];
     float tune[4];
     float up[4];
+    float coat[4];
     uint32_t opp[4];
   };
-  static_assert(sizeof(Push) == 96);
-  static constexpr uint32_t kBasePushBytes = 80;  // CarRtRefl::Push, checked at run time (the type is private to it)
+  static_assert(sizeof(Push) == 112);
+  static constexpr uint32_t kBasePushBytes = 96;  // CarRtRefl::Push, checked at run time (the type is private to it)
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;
   static constexpr uint32_t kSceneSet = 2;

@@ -16,10 +16,12 @@
 #include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "car_rt_hit_rules.h"
 #include "car_rt_scene.h"
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "gpu_class.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "live_text.h"
@@ -300,10 +302,16 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!pipeline || !EnsureOutput(history.width, history.height)) {
     return false;
   }
-  const float length = car_rt_refl::ClampedLength(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_length.Get()));
+  const float self_reach = car_rt_refl::ClampedLength(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_length.Get()));
   const uint32_t parts = uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_selfrefl_rt_parts.Get(), 1, int32_t(car_rt_refl::kPartAll)));
   const float gloss = car_rt_refl::ClampedGloss(float(larecomp::settings::mcla_gpu_car_selfrefl_rt_gloss.Get()));
   const float tan_half = car_rt_refl::ConeTan(gloss);
+  // RT-HIT-SHADING part two: the class's level (the reach to another car, the cone's rays, the clear coat), the two debug overrides on it. The ray is cast as far as the longer reach where the
+  // parts it may hit include another car; a hit's weight falls over the reach of the part it is on (the shader's coat.x and coat.y).
+  const car_rt_hit::Level level = car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),
+                                                        double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));
+  const float others_reach = level.others_reach > 0.0f ? car_rt_refl::ClampedLength(level.others_reach) : self_reach;
+  const float length = car_rt_hit::CastReach(parts, self_reach, others_reach);  // what is cast, and what the aux image and the denoise decode distances by
 
   // The denoise (car_rt_refl.h DENOISE): the passes this frame, where the setting asks for them, the cone has width, the pipeline is made and
   // the scratch image is there; else the raw trace is what the paint reads.
@@ -326,7 +334,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.slots[0] = history.slot;
   push.slots[1] = parts;
   push.slots[2] = chrome_others ? car_rt_refl::kPrimaryTraceParts : car_rt_refl::kPrimaryParts;
-  push.slots[3] = info.pattern_phase & 7u;
+  push.slots[3] = car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -343,6 +351,10 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   push.up[1] = view.up[1];
   push.up[2] = view.up[2];
   push.up[3] = car_selfrefl::ExpBiasUnits(info.exp_bias);
+  push.coat[0] = self_reach;
+  push.coat[1] = others_reach;
+  push.coat[2] = level.others_fade_from;
+  push.coat[3] = level.coat;
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -428,12 +440,15 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   ++passes_run_;
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m, "
-                "parts {}, {} rays over a cone of {} degrees{}; the other cars' chrome: {}; the colours the pass makes up from a paint constant are multiplied by "
-                "{} (the history's units over the paint's, the main target's exponent bias {})",
+    REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m (the player's own parts reach {} m, "
+                "another car {} m from {:.0f}% of it), parts {}, {} rays over a cone of {} degrees{}; the clear-coat ray: {}; the sun's shadow at a shaded hit: {}; the other cars' chrome: {}; "
+                "the colours the pass makes up from a paint constant are multiplied by {} (the history's units over the paint's, the main target's exponent bias {})",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
-                view.instance_count, length, parts, gloss > 0.0f ? car_rt_refl::kConeRays : 1, gloss,
+                view.instance_count, length, self_reach, others_reach, 100.0 * double(level.others_fade_from), parts,
+                gloss > 0.0f ? std::min<uint32_t>(level.cone_rays, car_rt_refl::kConeRays) : 1, gloss,
                 info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
+                level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4 ? std::format("on, strength {:.2f} (mcla_gpu_car_rt_clearcoat)", level.coat) : std::string("off"),
+                larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get() ? "the game's cascades with the cars' ray (when the volumetric light has the cascades)" : "the cars' ray alone",
                 chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version", push.up[3], info.exp_bias);
   }
   return true;

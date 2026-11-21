@@ -248,6 +248,11 @@ add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_r
 # hlsl/car_rt_hit_shade.hlsli, hlsl/car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_material_rules_test, then run src/gpu/larecomp_car_rt_material_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_material_rules_test EXCLUDE_FROM_ALL car_rt_material_rules_test.cpp)
+# RT-HIT-SHADING part two (car_rt_hit_rules.h: the level table by class and its overrides, the reach to another car and the weight of a hit by it, the scene's radius against the reach, the clear
+# coat's share by the paint's fresnel, the two lobes added (exact for the paint's blend), the aux image's word and the denoise's scale, the push block's packed word; and that
+# hlsl/car_rt_hit_shade.hlsli, the trace, the opponents' variant, the denoise, the host and the settings hold the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_hit_rules_test, then run src/gpu/larecomp_car_rt_hit_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_hit_rules_test EXCLUDE_FROM_ALL car_rt_hit_rules_test.cpp)
 # The car chrome's rules (car_chrome_rules.h: the numbers of the two short probes of the chrome variant and a reference march of them over
 # boxes: a tailpipe under a lip of the bumper, in the open, a plane of every slope) likewise:
 #   cmake --build <dir> --target larecomp_car_chrome_rules_test, then run src/gpu/larecomp_car_chrome_rules_test (exit 0 = passed).

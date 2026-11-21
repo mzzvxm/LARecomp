@@ -8,6 +8,9 @@
 // binding 4  gCarRtUvs        every mesh's texture coordinates: one uint a vertex, a half2 (u in the low half), the ranges the normals have
 // binding 5  gCarRtMaterials  the frame's rows (kMatFrameRows), then kMatRows rows an instance in the instances' order
 //
+// RT-HIT-SHADING part two (car_rt_hit_rules.h has the design): the sun's visibility at a hit also reads the game's own cascades (CarMatCascadeLit, frame rows 8 to 31: the
+// volumetric light's lookup, copied), the clear coat's helpers (CarCoatShare, CarCoatMix) are here so that the player's pass and the opponents' variant share them.
+//
 // CarHitShade returns false where there is nothing to shade with (hit shading off, no frame light, the instance's class is 0: the shader of that draw is not one the table
 // knows) and the caller keeps today's stand-in colour. The colour it makes is in the paint's units times `units` (2^exp_bias): the history's.
 //
@@ -40,8 +43,17 @@ StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);
 #define CAR_MAT_FRAME_SHADOW 2
 #define CAR_MAT_FRAME_ENV 4
 #define CAR_MAT_FRAME_SUN 8
+#define CAR_MAT_FRAME_CASCADE 16
 
-static const uint kMatFrameRows = 8;
+static const uint kMatFrameRows = 32;
+static const uint kMatCascadeHeaderRow = 8;
+static const uint kMatCameraRow = 9;
+static const uint kMatCascadeRightRow = 10;
+static const uint kMatCascadeTopRow = 11;
+static const uint kMatCascadeFirstRow = 12;
+static const uint kMatCascadeRowsEach = 5;
+static const uint kMatMaxCascades = 4;
+static const float kCascadeNormalOffset = 0.03;
 static const uint kMatRows = 2;
 static const uint kMatNoSlot = 0xFFFFFFFFu;
 static const float kMatTintMax = 2.0;
@@ -265,6 +277,65 @@ float2 CarMatEnvUv(float3 r)
     return uv;
 }
 
+// A depth texel of the cascade atlas, clamped to its size.
+float CarMatLoadDepth(Texture2D<float4> atlas, int2 texel, int2 size)
+{
+    return atlas.Load(int3(clamp(texel, int2(0, 0), size - 1), 0)).x;
+}
+
+// The fraction of the sun's light that reaches the WORLD point `p` through the game's cascades: the collector's own lookup, as volumetrics_inject_cs.hlsl CascadeLit has it and
+// car_rt_material_rules.h CascadeLit does (the finest box that holds the point, the atlas uv and depth from that cascade's matrix, a bilinear weighted compare: lit where the stored
+// depth is at least the receiver's). 1 where the point is in none of the boxes.
+float CarMatCascadeLit(float3 p)
+{
+    const uint4 header = gCarRtMaterials[kMatCascadeHeaderRow];
+    const uint cascades = min(header.y, kMatMaxCascades);
+    if (cascades == 0u || header.x == 0xFFFFFFFFu)
+    {
+        return 1.0;
+    }
+    const float3 right = asfloat(gCarRtMaterials[kMatCascadeRightRow].xyz);
+    const float3 top = asfloat(gCarRtMaterials[kMatCascadeTopRow].xyz);
+    const float r = dot(p, right);
+    const float t = dot(p, top);
+    uint inside = 0u;
+    [unroll]
+    for (uint i = 0u; i < kMatMaxCascades; ++i)
+    {
+        if (i < cascades)
+        {
+            const float4 box = asfloat(gCarRtMaterials[kMatCascadeFirstRow + i * kMatCascadeRowsEach + 4u]);
+            inside += (abs(r + box.x) < box.y && abs(t + box.z) < box.w) ? 1u : 0u;
+        }
+    }
+    if (inside == 0u)
+    {
+        return 1.0;  // outside every cascade: no shadow data
+    }
+    const uint base = kMatCascadeFirstRow + (cascades - inside) * kMatCascadeRowsEach;
+    const float4 r0 = asfloat(gCarRtMaterials[base]);
+    const float4 r1 = asfloat(gCarRtMaterials[base + 1u]);
+    const float4 r2 = asfloat(gCarRtMaterials[base + 2u]);
+    const float4 r3 = asfloat(gCarRtMaterials[base + 3u]);
+    const float u = dot(p, float3(r0.x, r1.x, r2.x)) + r3.x;
+    const float v = dot(p, float3(r0.y, r1.y, r2.y)) + r3.y;
+    const float depth = (dot(p, float3(r0.z, r1.z, r2.z)) + r3.z) * (dot(p, float3(r0.w, r1.w, r2.w)) + r3.w) + asfloat(header.z);
+    Texture2D<float4> atlas = g_textures[header.x];
+    uint w;
+    uint h;
+    uint levels;
+    atlas.GetDimensions(0, w, h, levels);
+    const int2 size = int2(int(w), int(h));
+    const float2 tc = float2(u, v) * float2(size) - 0.5;
+    const int2 i0 = int2(floor(tc));
+    const float2 fr = tc - float2(i0);
+    const float s00 = CarMatLoadDepth(atlas, i0, size) >= depth ? 1.0 : 0.0;
+    const float s10 = CarMatLoadDepth(atlas, i0 + int2(1, 0), size) >= depth ? 1.0 : 0.0;
+    const float s01 = CarMatLoadDepth(atlas, i0 + int2(0, 1), size) >= depth ? 1.0 : 0.0;
+    const float s11 = CarMatLoadDepth(atlas, i0 + int2(1, 1), size) >= depth ? 1.0 : 0.0;
+    return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);
+}
+
 // Is the point lit by the sun: one ray towards it against the whole scene, a few metres (a car's own shadow on itself and on its neighbour).
 float CarMatSunVisible(float3 origin, float3 toSun, float reach)
 {
@@ -327,11 +398,25 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const bool sunKnown = (f.flags & CAR_MAT_FRAME_SUN) != 0u;
     const float3 toSun = sunKnown ? f.toSun : up;
     const float ndl = saturate(dot(normal, toSun));
+    // The sun's visibility: the game's cascades at the hit's world point (the buildings', the trees', the bridges' shadows: the world the reflected car stands in), with the
+    // collector's own fade, and one ray towards the sun against the cars (a car's shadow on itself and on its neighbour, which the cascades do not hold). The darker of the two
+    // (car_rt_material_rules.h SunVisibility).
     float visible = 1.0;
     [branch]
-    if (ndl > 0.0 && (f.flags & CAR_MAT_FRAME_SHADOW) != 0u)
+    if (ndl > 0.0)
     {
-        visible = CarMatSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach);
+        if ((f.flags & CAR_MAT_FRAME_CASCADE) != 0u)
+        {
+            const float3 camera = asfloat(gCarRtMaterials[kMatCameraRow].xyz);
+            const float3 lifted = hit + normal * kCascadeNormalOffset;
+            const float3 world = camera + float3(dot(lifted, f.axisX), dot(lifted, f.axisY), dot(lifted, f.axisZ));
+            const float lit = CarMatCascadeLit(world);
+            visible = lit + (1.0 - lit) * saturate(asfloat(gCarRtMaterials[kMatCascadeHeaderRow].w));
+        }
+        if (visible > 0.0 && (f.flags & CAR_MAT_FRAME_SHADOW) != 0u)
+        {
+            visible = min(visible, CarMatSunVisible(hit + normal * (0.004 + 0.002 * hit.z), toSun, f.shadowReach));
+        }
     }
     const float3 light = f.ambient * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);
 
@@ -359,6 +444,53 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     }
     colour = max(result, 0.0) * (f.gain * units);
     return true;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the clear coat (car_rt_hit_rules.h: CoatShare, MixCoat, the aux image's w)
+// ---------------------------------------------------------------------------------------------------------------------
+
+static const float kCoatNormal = 0.45;
+static const float kCoatGrazing = 0.85;
+static const float kCoatMax = 0.9;
+static const float kCoatMinPower = 1.0;
+static const float kAuxSharpScale = 0.49;
+
+// The fresnel exponent of an instance's paint (its record's row 0, bits 24..31: the power times 16; the class's where the draw's constants say none).
+float CarMatFresnelPower(uint instance)
+{
+    return float((gCarRtMaterials[kMatFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;
+}
+
+// The share of a texel's reflection that is the clear coat's mirror (CoatShare).
+float CarCoatShare(float nv, float power, float gain)
+{
+    if (!(gain > 0.0))
+    {
+        return 0.0;
+    }
+    const float curve = pow(saturate(1.0 - nv), max(power, kCoatMinPower));
+    return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);
+}
+
+// The glossy cone's sums (the sum of the rays' weights, of their weights times their colours, of their weights times the share of the hit the history shows; over `rays` rays) and the
+// coat's ray (its weight, its colour, its weight times that share) added by `share` (MixCoat): the texel's weight; `colour` its mean colour, `visibleWeight` the part of the weight
+// on parts the camera sees, `sharp` the part of the weight that is the coat's. With a share of 0 it is the cone alone, as the pass always made it.
+float CarCoatMix(float coneWeightSum, float3 coneColourSum, float coneVisibleSum, float rays, float share, float coatWeight, float3 coatColour, float coatVisibleWeight,
+                 out float3 colour, out float visibleWeight, out float sharp)
+{
+    const float a = saturate(share);
+    const float coneWeight = min(coneWeightSum / rays, 1.0);
+    const float weight = (1.0 - a) * coneWeight + a * coatWeight;
+    visibleWeight = (1.0 - a) * min(coneVisibleSum / rays, 1.0) + a * coatVisibleWeight;
+    colour = float3(0.0, 0.0, 0.0);
+    sharp = 0.0;
+    if (weight > 0.0)
+    {
+        colour = ((1.0 - a) * coneColourSum / rays + a * coatWeight * coatColour) / weight;
+        sharp = saturate(a * coatWeight / weight);
+    }
+    return weight;
 }
 
 #endif  // CAR_RT_HIT_SHADE_HLSLI

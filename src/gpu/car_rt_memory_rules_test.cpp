@@ -518,11 +518,11 @@ void TestCoverage() {
 
 void TestClassCaps() {
   const ci::Limits mid = ci::ClassLimits(GpuClass::kMid);
-  Check(mid.cars == 2 && Near(mid.radius, 10.0), "the Mid class: 2 cars within 10 m");
+  Check(mid.cars == 2 && Near(mid.radius, 14.0), "the Mid class: 2 cars within 14 m");
   cm::CarMemory memory;
   cm::CarMemory::Output out;
-  // Four parked cars at 3, 5, 7 and 12 m from the player, all drawn once, then all culled.
-  const double distances[4] = {7.0, 3.0, 12.0, 5.0};
+  // Four parked cars at 3, 5, 7 and 16 m from the player, all drawn once, then all culled.
+  const double distances[4] = {7.0, 3.0, 16.0, 5.0};
   Frame f1;
   f1.guest_frame = 1;
   std::vector<cm::VehicleRead> vehicles;
@@ -542,12 +542,12 @@ void TestClassCaps() {
   memory.Update(InputOf(f2, mid), Resident{}, &out);
   Check(out.cars.size() == 2, "the Mid class places two");
   Check(Near(out.cars[0].distance, 3.0) && Near(out.cars[1].distance, 5.0), "the nearest two, nearest first, by the distance to the player");
-  Check(out.stats.out_of_range == 1, "the car at 12 m is beyond the Mid class's 10 m: kept, not placed");
+  Check(out.stats.out_of_range == 1, "the car at 16 m is beyond the Mid class's 14 m: kept, not placed");
   Frame f3;
   f3.guest_frame = 3;
   f3.vehicles = vehicles;
   memory.Update(InputOf(f3, High()), Resident{}, &out);
-  Check(out.cars.size() == 4 && Near(out.cars[3].distance, 12.0), "the High class places all four (the 12 m car is within its 14 m)");
+  Check(out.cars.size() == 4 && Near(out.cars[3].distance, 16.0), "the High class places all four (the 16 m car is within its 20 m)");
   ci::Limits two = High();
   two.cars = 3;
   Frame f4;
@@ -672,7 +672,7 @@ void TestDrops() {
     Frame f;
     f.guest_frame = 51;
     f.vehicles = {Vehicle(100, 4.0, 0.0, 5.0)};
-    f.player[0] = -12.0;  // the player drove off: the car is 16.8 m from him, beyond 14 m, within the scan 23 m
+    f.player[0] = -20.0;  // the player drove off: the car is 24.5 m from him, beyond 20 m, within the scan 32 m
     memory.Update(InputOf(f, limits), Resident{}, &out);
     Check(out.cars.empty() && out.stats.out_of_range == 1 && memory.kits().size() == 1, "beyond the radius, within the scan: kept, not placed");
     Frame g;

@@ -294,8 +294,8 @@ class GPUSettings final : public rex::SettingOwner {
     "the camera sees the part its own colour in the picture is used as before. Off: a part the camera does not see takes the stand-in colour (the colour the camera sees of that car, in shade, or "
     "its paint), as before. Needs the other cars in the scene (mcla_gpu_car_rt_cars). Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_car_rt_hit_shadow, true, "Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows are not "
-    "known there). Off: the sun lights every part that faces it. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_car_rt_hit_shadow, true, "Debug: the shaded hit on another car casts one ray towards the sun against the cars of the scene, so that a car's own shadow falls on itself and on its neighbour (the world's shadows "
+    "come from the game's cascades: mcla_gpu_car_rt_hit_cascade). Off: the sun lights every part that faces it, but for the world's shadows. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_car_rt_hit_gain, 1.0, "Debug: the brightness of the shaded hits on other cars against the colours the camera sees (1, the default). A flank that is too bright or too dark against the part of the same car "
     "the camera sees: move it. Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
@@ -304,6 +304,17 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_car_rt_hit_spec, 1.0, "Debug: the share of the environment map's reflection (the game's own 512x256 map, read at the reflected direction and scaled by the fresnel) in a shaded hit on another car (1, the "
     "default). Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
+
+  REX_SETTING(f64, mcla_gpu_car_rt_hit_reach, 0.0, "Debug: how far, in metres, the ray traced car reflection reaches to find ANOTHER car (0, the default: by the graphics card's class, 18 m on the High class and 12 m on the Mid class; at most 20). "
+    "The weight of a hit falls over this from three quarters of it. Your own car's parts keep mcla_gpu_car_selfrefl_rt_length (4 m). A car is in the scene only within this reach and two metres of yours "
+    "(mcla_gpu_car_rt_cars_radius moves that). Live.", rex::kDebugOnly, rex::Range{0.0, 20.0});
+
+  REX_SETTING(f64, mcla_gpu_car_rt_clearcoat, -1.0, "Debug: the clear-coat ray of the ray traced car reflection: one more ray along the exact mirror direction (no cone, no filter) beside the glossy cone, added to it by a share that follows the paint's "
+    "fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); "
+    "0 off; above 0 on at that strength (1 is the High class's). Live.", rex::kDebugOnly, rex::Range{-1.0, 4.0});
+
+  REX_SETTING(bool, mcla_gpu_car_rt_hit_cascade, true, "Debug: the shaded hit on another car also reads the game's own sun shadow map (its cascades) at the point, so that the reflected car stands in the light of the scene: the shade of buildings, trees "
+    "and bridges falls on it as it falls on the road. Off: only the cars' own shadows (mcla_gpu_car_rt_hit_shadow). Needs the volumetric light on (it reads the cascades the game draws). Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_car_rt_paint_gamma, 2.0, "Debug: the game's paint colours (what the player picks: an orange is 0.90, 0.49, 0.20) are raised to this power to be the colour the paint's light makes of them, for the "
     "colour another car shows in the ray traced reflection where the camera does not see the car (its paint, from the game's customisation record). 2: about what the "
@@ -1540,6 +1551,9 @@ inline auto& mcla_gpu_car_rt_hit_shadow = g_gpu.mcla_gpu_car_rt_hit_shadow;
 inline auto& mcla_gpu_car_rt_hit_gain = g_gpu.mcla_gpu_car_rt_hit_gain;
 inline auto& mcla_gpu_car_rt_hit_ambient = g_gpu.mcla_gpu_car_rt_hit_ambient;
 inline auto& mcla_gpu_car_rt_hit_spec = g_gpu.mcla_gpu_car_rt_hit_spec;
+inline auto& mcla_gpu_car_rt_hit_reach = g_gpu.mcla_gpu_car_rt_hit_reach;
+inline auto& mcla_gpu_car_rt_clearcoat = g_gpu.mcla_gpu_car_rt_clearcoat;
+inline auto& mcla_gpu_car_rt_hit_cascade = g_gpu.mcla_gpu_car_rt_hit_cascade;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;
 inline auto& mcla_gpu_car_rt_opp_refl = g_gpu.mcla_gpu_car_rt_opp_refl;
 inline auto& mcla_gpu_car_rt_opp_refl_rays = g_gpu.mcla_gpu_car_rt_opp_refl_rays;

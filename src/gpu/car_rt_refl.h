@@ -13,8 +13,11 @@
 //                                     car self-reflections (mcla_gpu_car_selfrefl) are on; off keeps the
 //                                     screen-space march everywhere. Live: it applies from the next frame. Where the device cannot,
 //                                     auto is the march, so nothing changes for it.
-//   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres (4 by default; the weight of a hit falls to
-//                                     nothing from 0.6 of it)
+//   mcla_gpu_car_selfrefl_rt_length   a debug override of the reflection ray's reach in metres for the player's OWN parts (4 by default; the weight of a hit falls to
+//                                     nothing from 0.6 of it). A hit on ANOTHER car has a reach of its own, the class's (18 m on the High class, 12 on the Mid class:
+//                                     mcla_gpu_car_rt_hit_reach moves it); the ray is cast as far as the longer when it may hit another car (car_rt_hit_rules.h CastReach).
+//   mcla_gpu_car_rt_clearcoat         a debug override of the clear-coat ray (car_rt_hit_rules.h): one ray along the exact mirror direction beside the cone, added to it by a share
+//                                     that follows the paint's fresnel; -1 (the default) by the class (High on, Mid off), 0 off, above 0 on at that strength
 //   mcla_gpu_car_selfrefl_rt_parts    a debug override of the parts the reflection ray hits: a mask of car_rt_common.hlsli's
 //                                     CAR_RT_MASK_* (1 body, 2 glass, 4 tyres, 8 the driver, 16 the other cars; 23 by default)
 //   mcla_gpu_car_selfrefl_rt_gloss    a debug override of the half angle, in degrees, of the cone the rays are spread over (2.5 by default; 0 = a
@@ -37,6 +40,9 @@
 // cars' draws saw and the sun (N.L and one visibility ray), the game's environment map by the fresnel, the lamps' glow at night. It replaces the stand-in colour described above
 // wherever the instance has a material; the history's colour is still the answer where the camera sees the part, and the two blend by the share of the hit the history shows.
 // mcla_gpu_car_rt_hit_shading (debug) is the A/B (off: the stand-in), mcla_gpu_car_rt_hit_gain, _ambient and _spec move the brightness.
+// RT-HIT-SHADING PART TWO (car_rt_hit_rules.h has the design, the numbers and the cost): the reach to another car (15 to 20 m, the class's level), the sharp clear-coat ray, the game's sun
+// cascades at the shaded hit (the frame rows of binding 5; Scene hands them over from the volumetric light's collector: CarRtScene::SetSunCascades) and the level table (High everything;
+// Mid a shorter reach, the cone's outer pair, no clear coat).
 // THE OPPONENTS' OWN PAINT (car_rt_opp_refl.h): the pass below is the player's car's. The paint of another car (an instance with CAR_RT_MASK_OTHER_PAINT, the draws of the customisable paint's
 // shader) is traced by a second dispatch of the same shader file (the variant hlsl/car_rt_refl_opp.hlsli) that CarRtRefl::OnHistory records right after this one, into the same images: the paint
 // variant reads an opponent's texel like the player's, so its door shows the cars round it too. mcla_gpu_car_rt_opp_refl (debug) is the A/B.
@@ -211,15 +217,16 @@ class CarRtRefl {
   std::string CensusText();
 
  private:
-  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 80 bytes.
+  // The push block of the pass (hlsl/car_rt_refl_cs.hlsl CarRtReflPush), 96 bytes.
   struct Push {
-    uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, the cone pattern's phase
+    uint32_t slots[4];  // history slot, the reflection ray's parts, the primary ray's parts, the cone pattern's phase (low three bits) and the level's cone rays (from bit 8)
     float image[4];     // the image's size, the picture's size
-    float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length
+    float lens[4];      // tan half field of view x and y, the divisor, the reflection ray's length (the longer of the two reaches where the parts include another car)
     float tune[4];      // the shade, the weight of a hidden hit, where the fade starts, the tangent of the cone's half angle
     float up[4];        // the world's up in view space (CarRtView::up: the chrome's sky probe), w the units: the history's over the paint's (2^exp_bias)
+    float coat[4];      // the reach of a hit on the player's own parts, the reach of a hit on another car, where its fade starts (a share of it), the clear-coat ray's gain (0: none)
   };
-  static_assert(sizeof(Push) == 80);
+  static_assert(sizeof(Push) == 96);
   // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
   struct DenoisePush {
     uint32_t slots[4];  // history slot, the image to filter, the aux image, the pass (0: taps one texel apart, 1: two)

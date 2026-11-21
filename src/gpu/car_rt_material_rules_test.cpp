@@ -689,6 +689,243 @@ int main(int argc, char** argv) {
     Check(cleared.materials.empty() && cleared.items.empty(), "Clear empties the materials with the items");
   }
 
+  // ---- the sun's cascades: the frame's rows, the collector's lookup, the world point ------------------------------------------------------------------
+  {
+    // the rows
+    crm::FrameInput in;
+    in.light.valid = true;
+    in.light.sun[0] = in.light.sun[1] = in.light.sun[2] = 1.0f;
+    in.sun_known = true;
+    in.camera_known = true;
+    in.camera_world[0] = 1234.5f;
+    in.camera_world[1] = 10.0f;
+    in.camera_world[2] = -987.25f;
+    crm::SunCascades& sc = in.cascades;
+    sc.valid = true;
+    sc.atlas_slot = 0x42;
+    sc.count = 4;
+    sc.fade = 0.25f;
+    sc.depth_bias = 0.001f;
+    sc.right[0] = 1.0f;
+    sc.top[2] = 1.0f;
+    for (uint32_t i = 0; i < 4; ++i) {
+      for (uint32_t j = 0; j < 4; ++j) {
+        for (uint32_t c = 0; c < 4; ++c) {
+          sc.rows[i][j][c] = float(100 * i + 10 * j + c);
+        }
+      }
+      sc.box[i][0] = 1.0f + float(i);
+      sc.box[i][1] = 10.0f * float(i + 1);
+      sc.box[i][2] = -2.0f;
+      sc.box[i][3] = 20.0f * float(i + 1);
+    }
+    uint32_t rows[crm::kFrameRows][4];
+    crm::MakeFrameRows(in, rows);
+    Check(crm::kFrameRows == 32 && crm::kFrameCascade == 16 && crm::kCascadeFirstRow + crm::kMaxCascades * crm::kCascadeRowsEach == crm::kFrameRows, "the frame has 32 rows: 8 of light, 4 of cascade header and axes, 4 cascades of 5");
+    Check((rows[0][3] & crm::kFrameCascade) != 0 && crm::CascadesUsable(sc), "a frame with the cascades and the camera's place has the cascade flag");
+    Check(rows[8][0] == 0x42 && rows[8][1] == 4 && Near(crm::FromBits(rows[8][2]), 0.001) && Near(crm::FromBits(rows[8][3]), 0.25), "row 8 holds the atlas's slot, the count, the depth bias and the fade");
+    Check(Near(crm::FromBits(rows[9][0]), 1234.5) && Near(crm::FromBits(rows[9][1]), 10.0) && Near(crm::FromBits(rows[9][2]), -987.25), "row 9 holds the camera's place in the world");
+    Check(Near(crm::FromBits(rows[10][0]), 1.0) && Near(crm::FromBits(rows[11][2]), 1.0) && Near(crm::FromBits(rows[10][2]), 0.0), "rows 10 and 11 hold the right and top axes");
+    bool matrices = true, boxes = true;
+    for (uint32_t i = 0; i < 4; ++i) {
+      for (uint32_t j = 0; j < 4; ++j) {
+        for (uint32_t c = 0; c < 4; ++c) {
+          matrices = matrices && Near(crm::FromBits(rows[crm::kCascadeFirstRow + 5 * i + j][c]), double(100 * i + 10 * j + c));
+        }
+      }
+      boxes = boxes && Near(crm::FromBits(rows[crm::kCascadeFirstRow + 5 * i + 4][0]), 1.0 + double(i)) && Near(crm::FromBits(rows[crm::kCascadeFirstRow + 5 * i + 4][3]), 20.0 * double(i + 1));
+    }
+    Check(matrices && boxes, "cascade i's four matrix rows are rows 12 + 5 i .. +3 and its box row 12 + 5 i + 4");
+    // the rows around it are untouched: the lighting is as before
+    Check(Near(crm::FromBits(rows[0][1]), 1.0) && Near(crm::FromBits(rows[1][0]), 1.0), "the lighting rows are as they were");
+    auto flags_of = [&](const crm::FrameInput& f) {
+      uint32_t r[crm::kFrameRows][4];
+      crm::MakeFrameRows(f, r);
+      return r[0][3];
+    };
+    crm::FrameInput x = in;
+    x.tuning.cascade = false;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "the switch off: no cascade flag");
+    x = in;
+    x.camera_known = false;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "no camera place: no cascade flag (a hit's world point is not known)");
+    x = in;
+    x.cascades.valid = false;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "cascades the collector did not give: no flag");
+    x = in;
+    x.cascades.atlas_slot = crm::kNoSlot;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "no atlas slot: no flag");
+    x = in;
+    x.cascades.count = 0;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "no cascade: no flag");
+    x = in;
+    x.cascades.rows[1][2][3] = std::nanf("");
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "a matrix that is not finite: no flag");
+    x = in;
+    for (uint32_t i = 0; i < 4; ++i) {
+      x.cascades.box[i][1] = 0.0f;
+    }
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "boxes with no extent (the cascades of a night or a storm: not drawn): no flag");
+    x = in;
+    x.cascades.count = 9;
+    Check((flags_of(x) & crm::kFrameCascade) == 0, "a count over the four: no flag");
+    // a frame with no cascade rows leaves rows 8 to 31 zero
+    crm::FrameInput none = in;
+    none.tuning.cascade = false;
+    uint32_t zero_rows[crm::kFrameRows][4];
+    crm::MakeFrameRows(none, zero_rows);
+    bool all_zero = true;
+    for (uint32_t r = 8; r < crm::kFrameRows; ++r) {
+      for (uint32_t c = 0; c < 4; ++c) {
+        all_zero = all_zero && zero_rows[r][c] == 0u;
+      }
+    }
+    Check(all_zero, "a frame without the cascade flag has rows 8 to 31 zero");
+  }
+  {
+    // the collector's lookup over a synthetic atlas: two nested cascades, a sun straight down
+    //   cascade 0: the box +-10 m around the origin on x and z, u = (x + 10) / 20, v = (z + 10) / 20, depth = 0.5 - 0.01 y
+    //   cascade 1: the box +-40 m, u = (x + 40) / 80, v = (z + 40) / 80, the same depth
+    // the atlas is 64 x 64: 1 (nothing drawn) everywhere but a block of texels 30..33 that holds an occluder at depth 0.3 (y = 20 m)
+    crm::SunCascades sc;
+    sc.valid = true;
+    sc.atlas_slot = 7;
+    sc.count = 2;
+    sc.right[0] = 1.0f;
+    sc.top[2] = 1.0f;
+    for (int i = 0; i < 2; ++i) {
+      const float half = i == 0 ? 10.0f : 40.0f;
+      sc.box[i][0] = 0.0f;
+      sc.box[i][1] = half;
+      sc.box[i][2] = 0.0f;
+      sc.box[i][3] = half;
+      sc.rows[i][0][0] = 1.0f / (2.0f * half);  // u from x
+      sc.rows[i][3][0] = 0.5f;
+      sc.rows[i][2][1] = 1.0f / (2.0f * half);  // v from z
+      sc.rows[i][3][1] = 0.5f;
+      sc.rows[i][1][2] = -0.01f;                // depth from y
+      sc.rows[i][3][2] = 0.5f;
+      sc.rows[i][3][3] = 1.0f;
+    }
+    auto atlas = [](int x, int y) { return (x >= 30 && x <= 33 && y >= 30 && y <= 33) ? 0.3f : 1.0f; };
+    auto lit = [&](float x, float y, float z) {
+      const float p[3] = {x, y, z};
+      return crm::CascadeLit(sc, p, 64, 64, atlas);
+    };
+    // texel coordinate = u * 64 - 0.5, u = (x + 10) / 20 in cascade 0: x = 0.15625 is texel 32 exactly
+    Check(Near(lit(0.15625f, 0.0f, 0.15625f), 0.0), "a point on the road under the occluder is shadowed");
+    Check(Near(lit(0.15625f, 30.0f, 0.15625f), 1.0), "a point above the occluder (a smaller depth than the stored one) is lit");
+    Check(Near(lit(-5.0f, 0.0f, -5.0f), 1.0), "a point away from the occluder is lit");
+    Check(Near(lit(-0.625f, 0.0f, 0.15625f), 0.5), "at the occluder's edge the compare is bilinear: half of the weights lit");
+    Check(Near(lit(20.0f, 0.0f, 0.0f), 1.0), "a point outside the first box and inside the second reads the second cascade (its texels there hold nothing)");
+    Check(Near(lit(100.0f, 0.0f, 0.0f), 1.0) && Near(lit(0.0f, 0.0f, 100.0f), 1.0), "a point in none of the boxes has no shadow data: lit");
+    // the finest box that holds the point: (-1, 0, -1) is in both boxes; its texel is 28.3 in cascade 0 (nothing drawn there) and 30.7 in cascade 1 (the occluder's)
+    {
+      const float p0[3] = {-1.0f, 0.0f, -1.0f};
+      const float tc0 = ((p0[0] + 10.0f) / 20.0f) * 64.0f - 0.5f;
+      const float tc1 = ((p0[0] + 40.0f) / 80.0f) * 64.0f - 0.5f;
+      Check(tc0 < 29.0 && tc1 > 30.0 && tc1 < 31.0, "the same point has a texel clear of the occluder in cascade 0 and the occluder's in cascade 1");
+      Check(Near(crm::CascadeLit(sc, p0, 64, 64, atlas), 1.0), "and the lookup takes cascade 0, the finest box that holds it (lit)");
+      crm::SunCascades only_coarse = sc;
+      only_coarse.box[0][1] = 0.1f;  // the first cascade's box no longer holds the point
+      Check(Near(crm::CascadeLit(only_coarse, p0, 64, 64, atlas), 0.0), "with the first box too small the second cascade answers (the occluder's texel: shadowed)");
+    }
+    // the box tests use the offsets: |r + box.x| < half
+    {
+      crm::SunCascades moved = sc;
+      moved.box[0][0] = -50.0f;  // |x - 50| < 10 holds for x in (40, 60)
+      const float inside[3] = {50.0f, 0.0f, 0.0f};
+      const float outside[3] = {0.15625f, 0.0f, 0.15625f};
+      uint32_t reads = 0;
+      auto counting = [&](int x, int y) {
+        ++reads;
+        return atlas(x, y);
+      };
+      (void)crm::CascadeLit(moved, inside, 64, 64, counting);
+      Check(reads == 4, "a lookup reads four depth texels");
+      Check(Near(crm::CascadeLit(moved, outside, 64, 64, atlas), 0.0), "the offset moves the box: the origin is in the second box now (shadowed there too)");
+    }
+    // the depth bias
+    {
+      crm::SunCascades biased = sc;
+      biased.depth_bias = -0.3f;
+      const float p[3] = {0.15625f, 0.0f, 0.15625f};
+      Check(Near(crm::CascadeLit(biased, p, 64, 64, atlas), 1.0), "a bias that takes the receiver in front of the occluder lights it");
+      biased.depth_bias = 0.25f;
+      Check(Near(crm::CascadeLit(biased, p, 64, 64, atlas), 0.0), "a positive bias keeps it in shadow");
+    }
+    // a texel off the atlas is clamped, as the shader's
+    {
+      const float edge[3] = {-9.9f, 0.0f, -9.9f};
+      Check(Near(crm::CascadeLit(sc, edge, 64, 64, atlas), 1.0), "the corner of the first cascade reads clamped texels (nothing there)");
+    }
+    crm::SunCascades empty;
+    const float q[3] = {0.0f, 0.0f, 0.0f};
+    Check(Near(crm::CascadeLit(empty, q, 64, 64, atlas), 1.0), "no cascades: lit");
+    // the sun's visibility: the cascades with the collector's fade, and the cars' ray; the darker
+    Check(Near(crm::SunVisibility(0.0f, 0.0f, 1.0f), 0.0) && Near(crm::SunVisibility(0.0f, 0.5f, 1.0f), 0.5) && Near(crm::SunVisibility(0.0f, 1.0f, 1.0f), 1.0),
+          "the collector's fade lights what the cascades shadow (visibility is lerp(lit, 1, fade))");
+    Check(Near(crm::SunVisibility(1.0f, 0.0f, 0.0f), 0.0) && Near(crm::SunVisibility(0.7f, 0.0f, 0.4f), 0.4) && Near(crm::SunVisibility(0.2f, 0.0f, 0.9f), 0.2), "the darker of the cascades' share and the cars' ray");
+  }
+  {
+    // the camera's place and the world point of a view-space point: a rigid motion, with and without the z flip
+    std::mt19937 rng(20261120);
+    std::uniform_real_distribution<double> unit(-1.0, 1.0);
+    bool camera_ok = true, round_trip = true, axes_ok = true;
+    double worst = 0.0;
+    for (int trial = 0; trial < 200; ++trial) {
+      // an orthonormal basis from two random vectors (Gram-Schmidt), the third their cross product
+      double a[3] = {unit(rng), unit(rng), unit(rng)}, b[3] = {unit(rng), unit(rng), unit(rng)};
+      auto norm = [](double v[3]) {
+        const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        for (int c = 0; c < 3; ++c) {
+          v[c] /= n;
+        }
+      };
+      norm(a);
+      const double d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      for (int c = 0; c < 3; ++c) {
+        b[c] -= d * a[c];
+      }
+      norm(b);
+      const double cr[3] = {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+      tp::Mat4 view = tp::Identity();
+      for (int c = 0; c < 3; ++c) {
+        view.m[0][c] = a[c];  // the rows of the matrix are what the world's axes become (a row vector times the matrix)
+        view.m[1][c] = b[c];
+        view.m[2][c] = cr[c];
+        view.m[3][c] = 5000.0 * unit(rng);
+      }
+      const bool flip = (trial & 1) != 0;
+      double cam[3];
+      camera_ok = camera_ok && ci::CameraWorld(view, cam);
+      float at_camera[3];
+      camera_ok = camera_ok && ci::ViewPoint(view, flip, cam, at_camera) && std::fabs(at_camera[0]) < 0.02 && std::fabs(at_camera[1]) < 0.02 && std::fabs(at_camera[2]) < 0.02;
+      float axes[3][3];
+      for (int k = 0; k < 3; ++k) {
+        const double e[3] = {k == 0 ? 1.0 : 0.0, k == 1 ? 1.0 : 0.0, k == 2 ? 1.0 : 0.0};
+        axes_ok = axes_ok && ci::ViewVector(view, flip, e, axes[k]);
+      }
+      const float camf[3] = {float(cam[0]), float(cam[1]), float(cam[2])};
+      for (int point = 0; point < 5; ++point) {
+        const double p[3] = {cam[0] + 40.0 * unit(rng), cam[1] + 40.0 * unit(rng), cam[2] + 40.0 * unit(rng)};
+        float v[3], w[3];
+        round_trip = round_trip && ci::ViewPoint(view, flip, p, v);
+        crm::WorldPoint(camf, axes, v, w);
+        for (int c = 0; c < 3; ++c) {
+          worst = std::max(worst, std::fabs(double(w[c]) - p[c]));
+        }
+      }
+    }
+    Check(camera_ok, "the camera's place is the world point whose view coordinates are 0 (flip or not)");
+    Check(axes_ok && round_trip && worst < 0.03, "a view-space point turned back by the camera's place and the world's axes in view space is the world point (within the float's own error at 5 km)");
+    std::printf("  the view -> world round trip: the largest error %.4f m over 1000 points at up to 5 km\n", worst);
+    tp::Mat4 broken = tp::Identity();
+    broken.m[3][1] = std::nan("");
+    double c3[3];
+    Check(!ci::CameraWorld(broken, c3), "a view matrix that is not finite has no camera place");
+  }
+
   // ---- the shaders, the host and the settings hold the numbers ------------------------------------------------------------------------------------
   {
     const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
@@ -709,8 +946,24 @@ int main(int argc, char** argv) {
                 crm::kFlagPaint == 1 && crm::kFlagDecal == 2 && crm::kFlagUv == 4 && crm::kFlagEmissive == 8,
             "the shader's material flags are the header's");
       Check(Has(hlsli, "#define CAR_MAT_FRAME_SHADE 1") && Has(hlsli, "#define CAR_MAT_FRAME_SHADOW 2") && Has(hlsli, "#define CAR_MAT_FRAME_ENV 4") && Has(hlsli, "#define CAR_MAT_FRAME_SUN 8") &&
-                crm::kFrameShade == 1 && crm::kFrameShadow == 2 && crm::kFrameEnv == 4 && crm::kFrameSun == 8,
+                Has(hlsli, "#define CAR_MAT_FRAME_CASCADE 16") && crm::kFrameShade == 1 && crm::kFrameShadow == 2 && crm::kFrameEnv == 4 && crm::kFrameSun == 8 && crm::kFrameCascade == 16,
             "the shader's frame flags are the header's");
+      Check(Near(Constant(hlsli, "static const uint kMatCascadeHeaderRow"), crm::kCascadeHeaderRow) && Near(Constant(hlsli, "static const uint kMatCameraRow"), crm::kCameraRow) &&
+                Near(Constant(hlsli, "static const uint kMatCascadeRightRow"), crm::kCascadeRightRow) && Near(Constant(hlsli, "static const uint kMatCascadeTopRow"), crm::kCascadeTopRow) &&
+                Near(Constant(hlsli, "static const uint kMatCascadeFirstRow"), crm::kCascadeFirstRow) && Near(Constant(hlsli, "static const uint kMatCascadeRowsEach"), crm::kCascadeRowsEach) &&
+                Near(Constant(hlsli, "static const uint kMatMaxCascades"), crm::kMaxCascades) && Near(Constant(hlsli, "static const float kCascadeNormalOffset"), crm::kCascadeNormalOffset),
+            "the shader's cascade rows and the normal offset of the lookup are the header's");
+      Check(Has(hlsli, "const float r = dot(p, right);") && Has(hlsli, "const float t = dot(p, top);") && Has(hlsli, "inside += (abs(r + box.x) < box.y && abs(t + box.z) < box.w) ? 1u : 0u;") &&
+                Has(hlsli, "const uint base = kMatCascadeFirstRow + (cascades - inside) * kMatCascadeRowsEach;") && Has(hlsli, "const float u = dot(p, float3(r0.x, r1.x, r2.x)) + r3.x;") &&
+                Has(hlsli, "const float v = dot(p, float3(r0.y, r1.y, r2.y)) + r3.y;") &&
+                Has(hlsli, "const float depth = (dot(p, float3(r0.z, r1.z, r2.z)) + r3.z) * (dot(p, float3(r0.w, r1.w, r2.w)) + r3.w) + asfloat(header.z);") &&
+                Has(hlsli, "const float2 tc = float2(u, v) * float2(size) - 0.5;") && Has(hlsli, ">= depth ? 1.0 : 0.0;") &&
+                Has(hlsli, "return lerp(lerp(s00, s10, fr.x), lerp(s01, s11, fr.x), fr.y);"),
+            "the shader's cascade lookup is CascadeLit's (the volumetric light's, copied): the boxes, the finest that holds the point, the matrix, the bilinear compare");
+      Check(Has(hlsli, "const float3 world = camera + float3(dot(lifted, f.axisX), dot(lifted, f.axisY), dot(lifted, f.axisZ));") && Has(hlsli, "const float3 lifted = hit + normal * kCascadeNormalOffset;") &&
+                Has(hlsli, "visible = lit + (1.0 - lit) * saturate(asfloat(gCarRtMaterials[kMatCascadeHeaderRow].w));") && Has(hlsli, "visible = min(visible, CarMatSunVisible(") &&
+                Has(hlsli, "asfloat(gCarRtMaterials[kMatCameraRow].xyz)"),
+            "the shader's sun visibility is SunVisibility's: the cascades at the hit's world point (WorldPoint), the collector's fade, the darker with the cars' ray");
       Check(Near(Constant(hlsli, "static const uint kMatFrameRows"), double(crm::kFrameRows)) && Near(Constant(hlsli, "static const uint kMatRows"), double(crm::kMaterialRows)) &&
                 Near(Constant(hlsli, "static const float kMatTintMax"), crm::kTintMax) && Near(Constant(hlsli, "static const float kConeLodScale"), crm::kConeLodScale) &&
                 Near(Constant(hlsli, "static const float kEmissiveGain"), crm::kEmissiveGain),
@@ -743,7 +996,7 @@ int main(int argc, char** argv) {
       Check(Has(hlsli, "const float hemisphere = clamp(0.6 + 0.4 * dot(normal, up), 0.2, 1.0);") && Has(hlsli, "pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01))") &&
                 Has(hlsli, "result += albedo * (m.emissive * kEmissiveGain * f.night);") && Has(hlsli, "albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));"),
             "the shader's lighting is ShadeReference's (the hemisphere term, the fresnel, the emissive, the paint's gradient)");
-      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, g_push.tune.w, g_push.up.w, shaded);") &&
+      Check(Has(refl, "#include \"car_rt_hit_shade.hlsli\"") && Has(refl, "static const bool kShadePlayerHits = true;") && Has(refl, "isShaded = CarHitShade(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, g_push.up.w, shaded);") &&
                 Has(refl, "if (seenShare < 1.0 && usable && (hitsOther || kShadePlayerHits))"),
             "the trace shades a hit on another car (and, in the opponents' variant, on the player's) only where the history does not show it in full");
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),
@@ -754,11 +1007,14 @@ int main(int argc, char** argv) {
       Check(Has(frame_cpp, "if (others_on_ && !skinned) {") && Has(frame_cpp, "out.material = MaterialOf(d);") && Has(frame_cpp, "ReadRegister(ps, 39, sun) && car_rt_material::ReadRegister(ps, 26, ambient)") &&
                 Has(frame_cpp, "car_rt_material::ReadRegister(ps, 57, sky)"),
             "the car frame reads the materials only while the other cars are asked for, and the light from the pixel constants c39, c26 and c57");
-      for (const char* name : {"mcla_gpu_car_rt_hit_shading", "mcla_gpu_car_rt_hit_shadow", "mcla_gpu_car_rt_hit_gain", "mcla_gpu_car_rt_hit_ambient", "mcla_gpu_car_rt_hit_spec"}) {
+      for (const char* name : {"mcla_gpu_car_rt_hit_shading", "mcla_gpu_car_rt_hit_shadow", "mcla_gpu_car_rt_hit_gain", "mcla_gpu_car_rt_hit_ambient", "mcla_gpu_car_rt_hit_spec", "mcla_gpu_car_rt_hit_cascade"}) {
         Check(Has(settings, std::string("REX_SETTING(") ) && Has(settings, std::string(", ") + name + ", ") && Has(settings, std::string("inline auto& ") + name + " = g_gpu." + name + ";") &&
                   Has(manifest, std::string("\"") + name + "\": {") && Has(scene, std::string("larecomp::settings::") + name),
               std::string("the setting ") + name + " is defined, aliased, in the manifest and read by the scene");
       }
+      Check(Has(scene, "crm::MakeFrameRows(in, rows);") && Has(scene, "in.cascades = sun_cascades_;") && Has(scene, "car_rt_instances::CameraWorld(frame.view, camera)") &&
+                Has(scene_h, "void SetSunCascades(const car_rt_material::SunCascades& cascades) { sun_cascades_ = cascades; }"),
+            "the scene puts the cascades it was given and the camera's world place into the frame's rows");
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_material_rules_test"), "the CMake file builds this test");
     }
   }

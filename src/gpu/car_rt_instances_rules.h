@@ -19,8 +19,9 @@
 // WHICH CARS (CarSelector): the distance that ranks a car is its distance from the PLAYER'S VEHICLE (the guest's own position of it, which the car
 // frame reads once a frame), not from the camera: every effect that traces against this scene starts its rays on the player's car (its reflection,
 // its ambient occlusion, its shadows), so a car matters by how near it is to that car, and a car that is near the camera but far from the player
-// (the traffic ahead of a chase camera's car) cannot be seen in it. The ray's own reach (the reflection's is 4 m from the panel) and the car's
-// size (a car is 4.5 m long) give the radius: a car whose centre is more than 10 to 14 m from the player's cannot touch a reflection ray.
+// (the traffic ahead of a chase camera's car) cannot be seen in it. The ray's own reach (the reflection's is 4 m from the panel for the
+// player's own parts, 18 m (High) or 12 m (Mid) to another car: car_rt_hit_rules.h) and the car's size (a car is 4.5 m long) give the radius: a car whose centre is more than
+// 14 to 20 m from the player's cannot touch a reflection ray.
 //
 // Matrices are row vectors (v' = v M) as in temporal_math.h. This header includes nothing of the renderer.
 // ===========================================================================
@@ -73,14 +74,16 @@ struct Limits {
 // structures and buffers and about 1 ms of the render thread's time on the frame it appears (the fingerprints of its meshes and the read
 // of their triangles): the weaker the class the fewer cars and the slower a new car is taken in (a few frames, the car appears in parts).
 //   Low   none: a graphics card of that class has no ray tracing worth the name (the self-reflection's own cell for it is `off`).
-//   Mid   2 cars within 10 m, no part under 15 triangles, 30,000 triangles and 384 KiB of fingerprints a frame for a new car (3 to 4 frames).
-//   High  4 cars within 14 m, every part, 60,000 triangles and 768 KiB a frame (about 2 frames).
+//   Mid   2 cars within 14 m, no part under 15 triangles, 30,000 triangles and 384 KiB of fingerprints a frame for a new car (3 to 4 frames).
+//   High  4 cars within 20 m, every part, 60,000 triangles and 768 KiB a frame (about 2 frames).
+// The radius is the reflection's reach to another car (car_rt_hit_rules.h Level::others_reach: High 18 m, Mid 12 m) and a car's half length: a car whose near end the reflection
+// reaches is in the scene (RT-HIT-SHADING part two; it was 14 m and 10 m for a 4 m reach).
 inline Limits ClassLimits(gpu_class::GpuClass cls) {
   Limits limits;
   switch (cls) {
     case gpu_class::GpuClass::kHigh:
       limits.cars = 4;
-      limits.radius = 14.0;
+      limits.radius = 20.0;
       limits.instances = 640;
       limits.min_indices = 0;
       limits.stage_triangles = 60000;
@@ -88,7 +91,7 @@ inline Limits ClassLimits(gpu_class::GpuClass cls) {
       break;
     case gpu_class::GpuClass::kMid:
       limits.cars = 2;
-      limits.radius = 10.0;
+      limits.radius = 14.0;
       limits.instances = 320;
       limits.min_indices = 45;
       limits.stage_triangles = 30000;
@@ -313,6 +316,19 @@ inline bool ViewPoint(const temporal::Mat4& view, bool flip_z, const double p[3]
   }
   for (int c = 0; c < 3; ++c) {
     out[c] = float(v[c]);
+  }
+  return true;
+}
+
+// The camera's place in the game's world: the point whose view coordinates are 0. The view matrix is a rigid motion (a rotation, possibly with the z flip, and a translation: row vector
+// p R + t), so the inverse of its rotation is its transpose and p = -t R^T. The reflection pass turns a hit's view-space point into a world point by it, for the game's sun cascades
+// (car_rt_material_rules.h WorldPoint). False where the matrix is not finite.
+inline bool CameraWorld(const temporal::Mat4& view, double out[3]) {
+  for (int k = 0; k < 3; ++k) {
+    out[k] = -(view.m[3][0] * view.m[k][0] + view.m[3][1] * view.m[k][1] + view.m[3][2] * view.m[k][2]);
+    if (!std::isfinite(out[k])) {
+      return false;
+    }
   }
   return true;
 }
