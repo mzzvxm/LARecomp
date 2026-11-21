@@ -23,7 +23,8 @@
 //              published BEFORE the AO plans, which asks whether the screen-space bounce light may be skipped) |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
 //              probe field's apply (additive, after the AO's apply) | deferred local lights (additive, after both) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
-//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the LAST pass that adds to the colour here) | car history + ray traced reflections | debug views
+//              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the last pass that adds to the colour here but one) | car history + ray traced reflections (+ the
+//              player's windows' additive reflection of the city, CITY-RT M2 R3b: the very last add) | debug views
 //   end of scene   the volumetric composite, the sun shafts' composite
 //   present    world classification | screen products trade their capture with the history | light manager checks and uploads | the rig makes the next frame's lights
 // WHERE THE REFLECTIONS STAND (GB-I3): after the capture they read (a reflection is not a reflection of a reflection) and after the light pass (they show the lights), before the car history (which holds
@@ -372,6 +373,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kAoApply, "the history is the colour the occlusion left"}, {Step::kSsr, "kept after SSR as the design has it; above 1080 lines (colour_post is half size) the history reads the main colour, which holds "
                                                                                                 "SSR's reflections by then, but the history keeps a vehicle's pixels only and SSR adds nothing to a vehicle's pixel (GB_FLAG_VEHICLE, the stub's stencil mark)"}}},
      .note = "the history image and the ray traced reflection of its texels (car_rt_refl.h, with this frame's top level) are read by the NEXT frame's car paint draws. "
+             "CITY-RT M2 R3b: inside this step, right after the history pass, the player's windows' reflection of the city is traced (the glass variant of the ray traced pass, car_rt_glass_refl.h) and ADDED to the "
+             "main colour by one full-screen draw (labels 'car glass refl', 'car glass apply', closed by 'after car glass'); the history was made before it, so it holds no glass reflection, and nothing at the trigger "
+             "adds to the colour after it. "
              "CHECK (run): the cars' pixels with the reflections on and off at 4K are the same (a car's glass over a road pixel could keep the road's class: the sidecar's mask rule)"},
     {.step = Step::kGBufferView, .phase = Phase::kTrigger, .kind = Kind::kScanned, .name = "G-buffer debug view", .call = "gbuffer_->DrawView(summary, list)",
      .label_file = "gbuffer.cpp", .label = "gbuffer view", .reads = data::kPlanes, .deps = {{{Step::kCarHistory, "the view replaces what the effects above drew"}}},

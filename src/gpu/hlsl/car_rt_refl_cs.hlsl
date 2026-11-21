@@ -69,6 +69,9 @@
 // by the fade of its distance over the city's reach, and counts as a hit whose colour is known in full (visible 1). The image's codes are unchanged: no variant of the paint changes. With the host's
 // clear-coat flag the hit counts as another car's for the mirror's rule and the paint's coat layer (the owner's goal: the city CLEARLY identifiable in the paint), else the soft cone alone.
 //
+// THE PLAYER'S GLASS (CITY-RT M2 R3b, hlsl/car_rt_refl_glass.hlsli, car_glass_rules.h): the glass variant of this file (CAR_RT_REFL_GLASS) has an entry point of its own that finds the pane at a pixel
+// with a primary ray against the player's glass alone, nearer than the picture's depth, casts one mirror ray through TraceRay and writes the reflection times the glass's Fresnel for an additive pass.
+//
 // Shader Model 6.5, inline ray queries (DXR tier 1.1). The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0:
 // the history), set 1 the outputs (u0 the image, u1 the aux, space 1), set 2 the car's acceleration structures (CAR_RT_SPACE 2), set 3 the city's
 // constants and counters (space 3), the push block (b0, space 4).
@@ -116,6 +119,11 @@ struct CarRtReflPush
     // the opponents' variant only (car_rt_opp_refl.h, hlsl/car_rt_refl_opp.hlsli): x, y the first image texel of the rectangle the dispatch covers, z the row of the player's car's
     // record in the instances' table (0: none), w the rays a texel casts (4, 2 or 1)
     uint4 opp;
+#endif
+#ifdef CAR_RT_REFL_GLASS
+    // the glass variant only (car_rt_glass_refl.h, hlsl/car_rt_refl_glass.hlsli): x, y the first image texel of the rectangle the dispatch covers (the group grid starts at it), z the strength (float
+    // bits: the glass's reflection is scaled by it), w reserved. The primary ray's parts (slots.z) are the player's glass alone there.
+    uint4 glass;
 #endif
 };
 
@@ -971,6 +979,9 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
 #ifdef CAR_RT_REFL_OPPONENTS
 #define main CarRtReflPlayerMain  // the opponents' variant has the entry point `main` of its own, below (hlsl/car_rt_refl_opp.hlsli)
 #endif
+#ifdef CAR_RT_REFL_GLASS
+#define main CarRtReflPlayerMain  // the glass variant has the entry point `main` of its own, below (hlsl/car_rt_refl_glass.hlsli)
+#endif
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
@@ -994,4 +1005,8 @@ void main(uint3 id : SV_DispatchThreadID)
 #ifdef CAR_RT_REFL_OPPONENTS
 #undef main
 #include "car_rt_refl_opp.hlsli"
+#endif
+#ifdef CAR_RT_REFL_GLASS
+#undef main
+#include "car_rt_refl_glass.hlsli"
 #endif

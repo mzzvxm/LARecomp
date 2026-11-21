@@ -31,6 +31,7 @@
 #include "shaderpack/variant_chain.h"
 #include "shaderpack/variant_compose.h"
 #include "shaderpack/variants/car_chrome.h"
+#include "shaderpack/variants/car_chrome_city.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/gbuffer_cars.h"
 #include "shaderpack/variants/gbuffer_day.h"
@@ -1014,6 +1015,36 @@ void CheckComposed(const std::filesystem::path& folder, const std::string& helpe
     if (!out.empty()) {
       std::filesystem::create_directories(out / "composed");
       std::ofstream(out / "composed" / (std::string(pair.name) + ".gbcars.hlsl"), std::ios::binary) << composed.hlsl;
+    }
+    if (pair.other != sp::kFeatureCarChrome) continue;
+    // CITY-RT M2 R3a: the chrome's city stage (feature 13) on top of the chrome's and the G-buffer's: the three in one text, the chrome's stage first (the chain's order), the city stage rewriting the
+    // line the chrome's stage wrote, the G-buffer's constants still at byte 720 (the city stage has no block).
+    const std::vector<sp::VariantDef> three = {pair.def, sp::MakeGBufferCarsStageFromText(helper), sp::MakeCarChromeCityVariant()};
+    const uint32_t triple = set | chain::FeatureBit(sp::kFeatureCarChromeCity);
+    const std::string triple_label = std::string(pair.name) + " + the G-buffer + the city stage";
+    Check(chain::CanCompose(triple) && chain::OffsetOf(triple, sp::kFeatureGBuffer) == chain::kSharedConstantsBytes + 112u && chain::LayoutConstants(triple).total_bytes == chain::kSharedConstantsBytes + 112u + 48u,
+          triple_label + ": the table composes the three and the city stage adds no bytes (the G-buffer's block at 720)");
+    const sp::VariantTransformResult all_three = sp::ComposeStages(three, triple, shader, text, chain::kFeatures);
+    Check(all_three.ok, triple_label + ": composes (" + all_three.error + ")");
+    if (!all_three.ok) continue;
+    Check(Count(all_three.hlsl, "float2 GbRt1Encode(float3 n)") == 1 && Count(all_three.hlsl, "oC1 : SV_Target1") == 1 && Count(all_three.hlsl, "oC0 = applyBlendPremult(oC0);") == 1 &&
+              Count(all_three.hlsl, "uint4 g_GBufferMode : packoffset(c45);") == 1 && Count(all_three.hlsl, "uint4 g_CarReflC : packoffset(c44);") == 1,
+          triple_label + ": the G-buffer's text and both blocks are in it once, as in the pair's");
+    Check(Count(all_three.hlsl, "r1.xyz = CarChromeCityEnv(r1.xyz, carChrome);") == 1 && Count(all_three.hlsl, "r1.xyz = CarChromeEnv(r1.xyz, carChrome);") == 0 &&
+              Count(all_three.hlsl, "float3 CarChromeCityEnv(float3 env, CarChrState s)") == 1,
+          triple_label + ": the city stage's call and helper are in it once");
+    Check(all_three.hlsl.size() > composed.hlsl.size(), triple_label + ": the text is the pair's plus the city stage's helper");
+    // the pair without the city stage (what a frame without the city draws) is the pair's text of before, whatever the city stage's presence in the chain
+    const sp::VariantTransformResult pair_again = sp::ComposeStages(three, set, shader, text, chain::kFeatures);
+    Check(pair_again.ok && pair_again.hlsl == composed.hlsl, triple_label + ": the chrome + G-buffer pair is the same text with the city stage in the chain or not");
+    // the stage with the G-buffer alone (the chrome's stage not in the text): the G-buffer's text, nothing rewritten
+    const uint32_t gbuf_city = gbuf | chain::FeatureBit(sp::kFeatureCarChromeCity);
+    const sp::VariantTransformResult without_chrome = sp::ComposeStages(three, gbuf_city, shader, text, chain::kFeatures);
+    const sp::VariantTransformResult gbuf_alone = sp::ComposeStages(three, gbuf, shader, text, chain::kFeatures);
+    Check(without_chrome.ok && gbuf_alone.ok && without_chrome.hlsl == gbuf_alone.hlsl, triple_label + ": with the G-buffer alone the city stage changes nothing");
+    if (!out.empty()) {
+      std::filesystem::create_directories(out / "composed");
+      std::ofstream(out / "composed" / (std::string(pair.name) + ".gbcars.city.hlsl"), std::ios::binary) << all_three.hlsl;
     }
   }
 }

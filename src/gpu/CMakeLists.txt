@@ -32,6 +32,7 @@ add_library(larecomp_gpu OBJECT
     car_shadow_map.cpp
     local_shadow.cpp
     car_rt_refl.cpp
+    car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
     city_refl.cpp
     capture_readback.cpp
@@ -462,6 +463,12 @@ target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)
 add_executable(larecomp_city_refl_rules_test EXCLUDE_FROM_ALL city_refl_rules_test.cpp)
 target_include_directories(larecomp_city_refl_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_refl_rules_test PRIVATE cxx_std_23)
+# The player's car windows reflecting the city (CITY-RT M2 R3b: car_glass_rules.h: the Fresnel, the primary ray's reach, the colour a pane adds, the dispatch's rectangle, the decision, the apply pass's
+# arithmetic; given the src folder it checks that the shaders, the host, the CMake files and the settings hold the header's numbers and are wired as the design says) likewise:
+#   cmake --build <dir> --target larecomp_car_glass_rules_test, then run src/gpu/larecomp_car_glass_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_car_glass_rules_test EXCLUDE_FROM_ALL car_glass_rules_test.cpp)
+target_include_directories(larecomp_car_glass_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_car_glass_rules_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:
@@ -963,6 +970,10 @@ larecomp_gpu_host_shader(car_rt_view_ps ps_6_0)
 larecomp_gpu_host_shader_rt(car_rt_refl_cs cs_6_5)
 # Its opponents' variant (car_rt_opp_refl.h): the same file with CAR_RT_REFL_OPPONENTS, whose entry point (hlsl/car_rt_refl_opp.hlsli) traces the pixels of the paint of the cars beside the player.
 larecomp_gpu_host_shader_rt(car_rt_refl_opp_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_OPPONENTS=1)
+# Its glass variant (car_rt_glass_refl.h, CITY-RT M2 R3b): the same file with CAR_RT_REFL_GLASS, whose entry point (hlsl/car_rt_refl_glass.hlsli) finds the player's windows with a primary ray and traces their
+# mirror reflection; and the additive pass that puts the result into the main colour (a host pass pixel shader, one per sample count of the target, the same blob).
+larecomp_gpu_host_shader_rt(car_rt_refl_glass_cs cs_6_5 SOURCE car_rt_refl_cs DEFINES CAR_RT_REFL_GLASS=1)
+larecomp_gpu_host_shader(car_glass_apply_ps ps_6_0)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)

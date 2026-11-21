@@ -55,6 +55,8 @@
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
+#include "car_rt_refl_glass_cs.hlsl.dxil.h"
+#include "car_glass_apply_ps.hlsl.dxil.h"
 #include "car_rt_refl_opp_cs.hlsl.dxil.h"
 #include "car_rt_view_ps.hlsl.dxil.h"
 #include "rt_bench_cs.hlsl.dxil.h"
@@ -172,6 +174,8 @@
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
+#include "car_rt_refl_glass_cs.hlsl.spirv.h"
+#include "car_glass_apply_ps.hlsl.spirv.h"
 #include "car_rt_refl_opp_cs.hlsl.spirv.h"
 #include "car_rt_view_ps.hlsl.spirv.h"
 #include "rt_bench_cs.hlsl.spirv.h"
@@ -627,6 +631,16 @@ inline HostShaderBlob CarRtReflDenoiseShader() {
 // The opponents' variant of the trace (car_rt_opp_refl.h): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_OPPONENTS (its own entry point, hlsl/car_rt_refl_opp.hlsli), the same kind as the trace.
 inline HostShaderBlob CarRtReflOppShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_opp_cs);
+}
+
+// The glass variant of the trace (car_rt_glass_refl.h, CITY-RT M2 R3b): hlsl/car_rt_refl_cs.hlsl built with CAR_RT_REFL_GLASS (its own entry point, hlsl/car_rt_refl_glass.hlsli), the same kind as the trace; and the
+// additive pass that puts its image into the main colour (hlsl/car_glass_apply_ps.hlsl, a host pass pixel shader).
+inline HostShaderBlob CarRtReflGlassShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_glass_cs);
+}
+
+inline HostShaderBlob CarGlassApplyShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(car_glass_apply_ps);
 }
 
 inline HostShaderBlob CarRtViewPixelShader() {

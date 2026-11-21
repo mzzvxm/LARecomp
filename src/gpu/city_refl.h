@@ -16,7 +16,11 @@
 //                  [city refl] gain frame N: solid 1.20, ground 0.95, glass 1.10, emissive 1.40, samples 5120
 //                every 120 frames while the pass runs and at its first stats frame, each number the mean of a stats frame of the window.
 //
-// DEBUG SETTINGS (all live): mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
+//   CHROME AND GLASS (CITY-RT M2 R3): the player's chrome takes the chrome variant's city stage (shaderpack/variants/car_chrome_city.h) while ChromeWanted() says so: a level above off, the pass active this
+//                frame and mcla_gpu_city_refl_chrome on (pipelines.cpp WantedFeatures reads it at every draw; the flag is set here, at the frame's start, like the paint's CarSelfRefl::Selected). The glass is a pass of its own
+//                (car_rt_glass_refl.h) that asks GlassWanted() of the same cell and mcla_gpu_city_refl_glass.
+//
+// DEBUG SETTINGS (all live): mcla_gpu_city_refl_chrome and mcla_gpu_city_refl_glass (false: the chrome / the glass as before, the A/B of R3), mcla_gpu_city_refl_screen (false: the picture's colour is never the answer, every hit is shaded: the A/B of the shortcut), mcla_gpu_city_refl_coat (false: a city hit is a soft
 // cone's hit as before, not a mirror's and the coat layer's), mcla_gpu_city_refl_reach (the cell's reach in metres, 0: the level's), mcla_gpu_city_refl_view (1 the hit's source, 2 its class, drawn in the
 // paint through mcla_gpu_car_selfrefl_view 2, the colour the ray sees).
 //
@@ -43,6 +47,10 @@ namespace mcla::gpu {
 
 class Device;
 class RtSceneService;
+
+// CITY-RT M2 R3a: whether the player's chrome draws of this frame take the chrome variant's city stage (pipelines.cpp WantedFeatures). Set at the frame's start by CityRefl::BeginFrame (false until a frame has
+// begun, false while the city is not in the reflections or mcla_gpu_city_refl_chrome is off); read by the draw recorder, any thread.
+bool CityReflChromeWanted();
 
 class CityRefl {
  public:
@@ -89,6 +97,8 @@ class CityRefl {
   // What the pass asks the screen owner for (screen_frame.h products), 0 while off.
   uint32_t ScreenProducts() const;
   bool on() const { return cell_.level != city_refl::Level::kOff && pass_active_; }
+  // CITY-RT M2 R3b: the player's glass reflects the city this frame (the city is on at a level that serves the glass and mcla_gpu_city_refl_glass is on).
+  bool glass_wanted() const { return glass_wanted_; }
   const city_refl::Cell& cell() const { return cell_; }
   // The level the cell came to for this frame's setting, the debug cells included (a log and a test read it).
   city_refl::Level level() const { return cell_.level; }
@@ -128,6 +138,7 @@ class CityRefl {
   // The frame.
   city_refl::Cell cell_;
   bool pass_active_ = false;
+  bool glass_wanted_ = false;
   bool wanted_logged_ = false;
   city_refl::Level last_level_ = city_refl::Level::kOff;  // the census lines name the level the pass last ran at
   float last_reach_ = 0.0f;

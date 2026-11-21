@@ -163,6 +163,7 @@
 
 #include <plume_render_interface.h>
 
+#include "car_rt_glass_refl.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_opp_refl.h"
 #include "car_rt_refl_rules.h"
@@ -214,10 +215,17 @@ class CarRtRefl {
     int32_t exp_bias = car_selfrefl::kMainTargetExpBias;  // the main colour target's exponent bias: the history's colour is the shaders' output times 2^exp_bias; the pass's own colours
                                                           // (a car's paint, the grey of a remembered car) are in the paint's units and are multiplied by 2^exp_bias (car_selfrefl_rules.h ExpBiasUnits)
     CityRefl::ScreenIn screen;                            // CITY-RT M2: lin_depth and colour_post's chain as the screen owner published them this frame (the city hits' screen shortcut); invalid: none
+    uint32_t colour_samples = 1;                          // CITY-RT M2 R3b: the main colour target's host samples (the glass's additive pass has a pipeline for each)
   };
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
   bool OnHistory(plume::RenderCommandList* list, const HistoryInfo& info);
+
+  // CITY-RT M2 R3b (car_rt_glass_refl.h): the player's windows' additive pass into the main colour, after OnHistory recorded this frame's trace of them (false otherwise). CarSelfRefl::RecordHistory calls it
+  // with the main view's colour target and the picture's size.
+  bool ApplyGlass(plume::RenderCommandList* list, EdramTargets& edram, EdramTargets::Target& colour, uint32_t render_width, uint32_t render_height) {
+    return glass_.Apply(list, edram, colour, render_width, render_height);
+  }
 
   // The bindless slot of the image the paint draws of the frame after `history_frame` read (the denoise's result: the trace's image after two
   // passes or none, the scratch image after one), or car_selfrefl::kNoRtImage when the pass did not run for that history.
@@ -350,6 +358,8 @@ class CarRtRefl {
 
   // The opponents' cars (car_rt_opp_refl.h): a second dispatch of the trace's shader file into the same images, after the player's.
   CarRtOppRefl opp_;
+  // The player's windows (car_rt_glass_refl.h, CITY-RT M2 R3b): a third dispatch of the same file, into an image of its own, and the additive pass that puts it into the main colour.
+  CarRtGlassRefl glass_;
   // The city in the reflections (city_refl.h): the setting, the rows and counters of set 3, the census.
   CityRefl city_;
 

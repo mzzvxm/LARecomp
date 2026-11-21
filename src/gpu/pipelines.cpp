@@ -27,6 +27,7 @@
 
 #include "backend.h"
 #include "car_selfrefl.h"
+#include "city_refl.h"
 #include "constants.h"
 #include "device.h"
 #include "edram.h"
@@ -107,7 +108,7 @@ bool GlowSoftSelected() {
 // auto resolved for the GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects
 // nothing), the car paint's self-reflection mcla_gpu_car_selfrefl (kFeatureCarSelfRefl, car_selfrefl.h), the chrome's occlusion by the
 // car's own parts (kFeatureCarChrome, shaderpack/variants/car_chrome.h: wherever the paint's is on, and
-// mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass mcla_gpu_luminance_scale_fix (the same picture at render scale 1:
+// mcla_gpu_car_chrome_occlusion) and, with it, while the city is in the reflections, its city stage (kFeatureCarChromeCity: CITY-RT M2 R3a) and the auto-exposure's sample pass mcla_gpu_luminance_scale_fix (the same picture at render scale 1:
 // the variant makes the game's own call there); the UI sharpening variant (kFeatureUiSharp, mcla_ui_sharp) is not chosen here: it
 // needs the draw (the UI phase, its target's scale and its textures' filters), so the Scene sets it on the key after this
 // (Scene::UiSharpDraw); each is read at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders
@@ -144,6 +145,11 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps) {
   // warns when a shader lands in two features that are not composed, and the chrome is in this one alone). The debug-only switch is its A/B.
   if (has(sp::kFeatureCarChrome) && CarSelfRefl::Selected() && larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
     want(sp::kFeatureCarChrome);
+    // CITY-RT M2 R3a: the chrome's reflection of the city, a stage on top of the chrome's (kFeatureCarChromeCity, shaderpack/variants/car_chrome_city.h), wanted only with it and only while the city is in the
+    // reflections (city_refl.h CityReflChromeWanted: a level above off and mcla_gpu_city_refl_chrome). Not wanted, the chrome's own words draw: the stage never touched them.
+    if (has(sp::kFeatureCarChromeCity) && CityReflChromeWanted()) {
+      want(sp::kFeatureCarChromeCity);
+    }
   }
   if (has(sp::kFeatureLuminanceScale) && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
     want(sp::kFeatureLuminanceScale);

@@ -252,8 +252,9 @@ void CheckVariantDef() {
   Check(def.feature == sp::kFeatureGBuffer && def.feature == 10, "its feature is the table's bit 10");
   const sp::chain::FeatureInfo* row = sp::chain::Find(def.feature);
   Check(row && row->name == def.name && row->spec_twin && row->constants_bytes == 48 &&
-            row->composes_with == (sp::chain::FeatureBit(sp::kFeatureHeadlight) | sp::chain::FeatureBit(sp::kFeatureCarSelfRefl) | sp::chain::FeatureBit(sp::kFeatureCarChrome)),
-        "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage and the two car variants");
+            row->composes_with == (sp::chain::FeatureBit(sp::kFeatureHeadlight) | sp::chain::FeatureBit(sp::kFeatureCarSelfRefl) | sp::chain::FeatureBit(sp::kFeatureCarChrome) |
+                                   sp::chain::FeatureBit(sp::kFeatureCarChromeCity)),
+        "the table's row: 48 bytes, the alpha test twin, composes with the headlight's stage, the two car variants and the chrome's city stage");
   Check(def.name == "gbuffer" && def.version == sp::kGBufferVariantVersion && def.needs_rpf, "the name, the version, and it reads the RPF");
   Check(def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 + std::size(sp::kGBufferNightSuffixes) + (sp::kGBufferDayShaderCount - 1) + sp::kGBufferCarShaderCount &&
             def.pixel_name_suffixes[0] == sp::kGBufferDayShader && def.pixel_name_suffixes[1] == sp::kGBufferNightShader && def.pixel_name_suffixes[2] == sp::kGBufferNightSuffixes[0],

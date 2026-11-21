@@ -44,7 +44,8 @@
 // car covers within 25 cm (a tailpipe under a bumper), and the chrome variant darkens its reflection of the game's environment map by that weight; a probe has no colour to shade and its
 // reach is the geometry's, so the longer reach, the clear-coat ray and the hit shading of part two do not apply to it and it is unchanged. What another car's chrome shows of the cars round it
 // (a coloured reflection of the player's car in a tailpipe) is a colour the chrome variant would have to read from this image as the paint does; the image holds none for those texels (the
-// red channel is the sky probe's code): that is a change of the variant (shaderpack/variants/car_chrome.*), listed in the report of part two as a later item, not made here.
+// red channel is the sky probe's code): that is a change of the variant (shaderpack/variants/car_chrome.*), listed in the report of part two as a later item, not made here. For the PLAYER's chrome it is
+// made by CITY-RT M2 R3a (the last section of this file; shaderpack/variants/car_chrome_city.h): the chrome reads the colour of the image where the cone found the city or a car beside the player.
 //
 // COST. Texels of other cars' non-chrome parts cost what they did (the primary ray's mask skips their instances, as before); a chrome texel's primary ray now
 // HITS (it missed) and it casts five short rays against a tree of at most a few hundred instances. A car has 4 to 8 chrome draws (tips, badges, trim), at 1080p and 10 m
@@ -246,6 +247,82 @@ inline ChromeRead ReadForChrome(const float wx[3], const float wy[3], const Chro
     out.sky = sky_other / known_other;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The chrome's reflection of the CITY and of the cars beside the player (CITY-RT M2 R3a; shaderpack/variants/car_chrome_city.h has the story)
+// ---------------------------------------------------------------------------------------------------------------------
+// The chrome's own stage (feature 7) reads the image for its WEIGHT alone: the share of the reflection cone that hit anything, taken for "a part of the car covers this chrome". Since the city is in
+// the image (city_refl.h) that share also holds the city's, and the colour of the hits was never read. The chrome's city stage (feature 13, on top of the chrome's) reads both and splits the cone by the
+// image's sign: alpha 1 + w the car's own parts, -(1 + w) another car or the city (the paint's clear-coat rule: car_rt_hit_rules.h, set for a city hit with the coat flag):
+//     whole = w x agreement,  city = whole x other,  own = whole - city
+//     env'  = lerp(env x (1 - kDark x saturate(own x strength)), min(colour x gain, kCityMaxColour), saturate(city x strength))
+// where `other` is the share of the weight with the other-car sign, `colour` the weighted mean of the hits' colours, `gain` the paint constants' colour gain (the history's units to the paint's) and
+// `strength` the self-reflection's. It applies only to the player's own texels (the chrome's state 5: the image answered) at the reflection level (mode 2, as the paint's replacement); every other
+// case keeps the chrome's own line, `Occlude(env, reflect_hit, strength)`. With no city and no car beside (other = 0) the arithmetic is the chrome's own, exactly.
+inline constexpr float kCityMaxColour = 64.0f;  // the paint's cap on a reflected colour, in the paint's units
+inline constexpr float kCityModeMin = 1.5f;     // g_CarReflA.x from which the self-reflection replaces colour (the paint's mode 2)
+
+struct CityTap {
+  float history_distance = 0.0f;
+  float alpha = 0.0f;
+  float red = 0.0f;
+  float rgb[3] = {0.0f, 0.0f, 0.0f};  // the image's colour (the red is also the first of these: `red` is rgb[0], kept apart for the tests' readability)
+};
+struct CityRead {
+  bool use = false;
+  float weight = 0.0f;   // the cone's share that hit anything (ReadForChrome's `reflect`, for the player's texels)
+  float other = 0.0f;    // the share of that weight with the other-car sign
+  float colour[3] = {0.0f, 0.0f, 0.0f};
+};
+inline CityRead ReadForChromeCity(const float wx[3], const float wy[3], const CityTap tap[9], float depth, float tolerance) {
+  float geometry = 0.0f, known = 0.0f, weight = 0.0f, other = 0.0f;
+  float colour[3] = {0.0f, 0.0f, 0.0f};
+  for (int k = 0; k < 9; ++k) {
+    const float wg = wx[k % 3] * wy[k / 3] * rt::MatchWeight(tap[k].history_distance, depth, tolerance);
+    geometry += wg;
+    const float code = std::fabs(tap[k].alpha);
+    if (!(code >= 0.5f) || tap[k].red < kChromeMarker) {
+      continue;  // no data, or another car's chrome (it holds no colour: its red is the sky probe's code)
+    }
+    const float wt = std::clamp(code - 1.0f, 0.0f, 1.0f);
+    known += wg;
+    weight += wg * wt;
+    other += tap[k].alpha < 0.0f ? wg * wt : 0.0f;
+    for (int c = 0; c < 3; ++c) {
+      colour[c] += wg * wt * tap[k].rgb[c];
+    }
+  }
+  CityRead out;
+  if (geometry > 1e-4f && known >= rt::kUseShare * geometry) {
+    out.use = true;
+    out.weight = weight / known;
+    out.other = weight > 1e-5f ? std::clamp(other / weight, 0.0f, 1.0f) : 0.0f;
+    for (int c = 0; c < 3; ++c) {
+      out.colour[c] = weight > 1e-5f ? colour[c] / weight : 0.0f;
+    }
+  }
+  return out;
+}
+
+// The chrome's `env` where the city stage is in the text. `player_texel`: the chrome's state 5 (the image answered for the player's own texel); `reflect_hit` what the chrome's own line uses (w x agreement
+// where the image answered, else the march's); `mode` g_CarReflA.x, `strength` g_CarReflA.w, `gain` g_CarReflB.z.
+inline void ChromeCityEnv(const float env[3], bool player_texel, float mode, float strength, float agreement, const CityRead& read, float gain, float reflect_hit, float out[3]) {
+  if (!player_texel || mode < kCityModeMin || !read.use || !(read.other > 0.0f)) {
+    for (int c = 0; c < 3; ++c) {
+      out[c] = cc::Occlude(env[c], reflect_hit, strength);  // the chrome's own line
+    }
+    return;
+  }
+  const float whole = read.weight * agreement;
+  const float city = whole * read.other;
+  const float own = whole - city;
+  const float city_weight = std::clamp(city * strength, 0.0f, 1.0f);
+  for (int c = 0; c < 3; ++c) {
+    const float base = env[c] * (1.0f - cc::kDark * std::clamp(own * strength, 0.0f, 1.0f));
+    const float seen = std::min(std::max(read.colour[c], 0.0f) * gain, kCityMaxColour);
+    out[c] = base + (seen - base) * city_weight;
+  }
 }
 
 }  // namespace mcla::gpu::car_chrome_rt

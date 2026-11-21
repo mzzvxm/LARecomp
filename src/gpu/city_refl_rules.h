@@ -15,7 +15,9 @@
 //   other cars' paint         R2  the opponents' variant (car_rt_refl_opp.hlsli) is the same shader file: the same trace, its own budget (OppTexels, OppRays: HIGH 250 k texels at 2 rays, ULTRA 500 k at
 //                             4: the pass's texel plan already spends 4, 2 or 1 ray a texel by the area and takes the smaller). Traffic and parked cars (RT-TRAFFIC-REFL, feat/rt-next) take
 //                             the same cell where that lands.
-//   chrome, glass             R3 (not in this package): kClassChrome / kClassGlass are in the mask table so that the cells can say them; ServedClasses() says what is wired.
+//   chrome, glass             R3 (CITY-RT M2 R3a, R3b; the player's own): the chrome variant's city stage reads the paint's image for the colour of the city and the cars beside (feature 13,
+//                             shaderpack/variants/car_chrome_city.h, wanted by pipelines.cpp while the level is not off and mcla_gpu_city_refl_chrome is on), and an additive pass over the pixels of the
+//                             car's windows (car_rt_glass_refl.h, mcla_gpu_city_refl_glass) puts the mirror reflection of the city in the glass by its Fresnel. Both are served at every level.
 //
 // THE LEVELS (the cvar mcla_gpu_rt_reflections: auto / off / high / ultra; live; the pause menu's row comes with R8): `auto` is the rt_tier.h cell of kRtReflections (off without ray tracing and on
 // a WEAK card, high on a strong one: the owner's goal is a strong card's look; a weak card may still be set to high or ultra by hand and runs the Mid class's cell). The cell holds the reach
@@ -60,14 +62,16 @@ using Choice = city_rt::Choice;
 inline constexpr uint32_t kPartCity = 0x80;
 static_assert(kPartCity == city_rt::kMaskCity, "the city's mask bit is the structures' own");
 
-// Which surfaces reflect the city. The paint of the player's car (R1) and of other cars (R2) are served; chrome and glass are R3.
+// Which surfaces reflect the city. The paint of the player's car (R1) and of other cars (R2), and the player's chrome and glass (R3) are served.
 inline constexpr uint32_t kClassPaintPlayer = 1;
 inline constexpr uint32_t kClassPaintOthers = 2;
 inline constexpr uint32_t kClassChrome = 4;
 inline constexpr uint32_t kClassGlass = 8;
-inline constexpr uint32_t kServedClasses = kClassPaintPlayer | kClassPaintOthers;
+inline constexpr uint32_t kServedClasses = kClassPaintPlayer | kClassPaintOthers | kClassChrome | kClassGlass;
 
 constexpr uint32_t ClassesFor(Level level) { return level == Level::kOff ? 0u : kServedClasses; }
+// Whether a class reflects the city at a level (the chrome's stage and the glass pass ask this, each with its debug switch).
+constexpr bool Serves(Level level, uint32_t cls) { return (ClassesFor(level) & cls) == cls; }
 
 // The reflection ray's parts with the city's bit set or taken away by the level.
 constexpr uint32_t ReflectionParts(uint32_t parts, Level level) { return level == Level::kOff ? (parts & ~kPartCity) : (parts | kPartCity); }

@@ -467,6 +467,94 @@ int main(int argc, char** argv) {
     Check(cases == 28 && worst < 0.05f, "a bare surface at 3 to 25 m and slopes 0 to 4: no probe hits its own surface (worst " + std::to_string(worst) + ")");
   }
 
+  // ---- CITY-RT M2 R3a: the chrome's reflection of the city (the arithmetic of shaderpack/variants/car_chrome_city.cpp) ---------------------------------------------------
+  {
+    const float wx[3] = {0.0f, 1.0f, 0.0f}, wy[3] = {0.0f, 1.0f, 0.0f};  // the whole footprint on the middle texel
+    const auto tap = [](float distance, float alpha, float r, float g, float b) {
+      crt::CityTap t;
+      t.history_distance = distance;
+      t.alpha = alpha;
+      t.red = r;
+      t.rgb[0] = r;
+      t.rgb[1] = g;
+      t.rgb[2] = b;
+      return t;
+    };
+    const auto to_chrome = [](const crt::CityTap* from, crt::ChromeTap* to) {
+      for (int k = 0; k < 9; ++k) to[k] = {from[k].history_distance, from[k].alpha, from[k].red};
+    };
+    crt::CityTap taps[9];
+    for (auto& t : taps) t = tap(7.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    const float tol = 0.05f;
+    const float env[3] = {0.6f, 0.7f, 0.9f};
+    float out[3];
+
+    // IDENTITY: texels of the car's own parts (alpha > 0) or none: the arithmetic is the chrome's own line, exactly, for every weight and strength.
+    float worst = 0.0f;
+    int cases = 0;
+    for (const float w : {0.0f, 0.25f, 0.5f, 0.75f, 1.0f}) {
+      for (const float strength : {0.0f, 0.5f, 1.0f, 2.0f}) {
+        for (const float agreement : {0.0f, 0.4f, 1.0f}) {
+          taps[4] = tap(7.0f, 1.0f + w, 0.2f, 0.3f, 0.4f);
+          const crt::CityRead read = crt::ReadForChromeCity(wx, wy, taps, 7.0f, tol);
+          crt::ChromeTap chrome_taps[9];
+          to_chrome(taps, chrome_taps);
+          const crt::ChromeRead old = crt::ReadForChrome(wx, wy, chrome_taps, 7.0f, tol);
+          Check(read.use == old.use && read.other == 0.0f && std::fabs(read.weight - old.reflect) < 1e-6f, "the city read's weight is the chrome's own read for own parts only");
+          const float reflect_hit = old.reflect * agreement;
+          crt::ChromeCityEnv(env, true, 2.0f, strength, agreement, read, 16.0f, reflect_hit, out);
+          for (int c = 0; c < 3; ++c) {
+            worst = std::max(worst, std::fabs(out[c] - cc::Occlude(env[c], reflect_hit, strength)));
+          }
+          ++cases;
+        }
+      }
+    }
+    Check(cases == 60 && worst == 0.0f, "no city, no car beside: the chrome's `env` is exactly the chrome's own Occlude (60 cases, worst difference " + std::to_string(worst) + ")");
+    // a texel of the city (alpha -(1 + 1)): weight 1, all of it other
+    taps[4] = tap(7.0f, -(1.0f + 1.0f), 0.8f, 0.5f, 0.2f);
+    const crt::CityRead city = crt::ReadForChromeCity(wx, wy, taps, 7.0f, tol);
+    Check(city.use && Near(city.weight, 1.0) && Near(city.other, 1.0) && Near(city.colour[0], 0.8) && Near(city.colour[1], 0.5) && Near(city.colour[2], 0.2),
+          "a texel of the city (alpha -(1 + 1)): weight 1, all of it other, its colour");
+    // the cases that keep the chrome's own line whatever the image holds: not the player's texel (the march, another car's chrome), the occlusion-only level, no read
+    for (int variant = 0; variant < 3; ++variant) {
+      const bool player = variant != 0;
+      const float mode = variant == 1 ? 1.0f : 2.0f;
+      const crt::CityRead read = variant == 2 ? crt::CityRead{} : city;
+      crt::ChromeCityEnv(env, player, mode, 1.0f, 1.0f, read, 16.0f, 0.7f, out);
+      bool same = true;
+      for (int c = 0; c < 3; ++c) same &= out[c] == cc::Occlude(env[c], 0.7f, 1.0f);
+      Check(same, std::string("the chrome keeps its own line where ") +
+                      (variant == 0 ? "the image did not answer for the player's texel (the march, another car's chrome)" : variant == 1 ? "the self-reflection is at its occlusion level" : "the read has no data"));
+    }
+    // A cone that is all city: the chrome shows the city's colour in full (the gain and the cap apply), not the sky's reflection and not a darkening.
+    crt::ChromeCityEnv(env, true, 2.0f, 1.0f, 1.0f, city, 16.0f, 1.0f, out);
+    Check(Near(out[0], 0.8 * 16.0) && Near(out[1], 0.5 * 16.0) && Near(out[2], 0.2 * 16.0), "a cone that is all city: the chrome shows the city's colour times the gain");
+    crt::CityRead bright = city;
+    bright.colour[0] = 1000.0f;
+    crt::ChromeCityEnv(env, true, 2.0f, 1.0f, 1.0f, bright, 16.0f, 1.0f, out);
+    Check(out[0] == crt::kCityMaxColour, "a reflected lamp is held to the paint's cap");
+    // the share: half of the weight on the car's own part and half on the city: the sky is occluded by the own half and replaced by the city's half
+    crt::CityTap mixed[9];
+    for (auto& t : mixed) t = tap(7.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    const float hx[3] = {0.5f, 0.5f, 0.0f}, hy[3] = {0.0f, 1.0f, 0.0f};
+    mixed[3] = tap(7.0f, 2.0f, 0.1f, 0.1f, 0.1f);
+    mixed[4] = tap(7.0f, -2.0f, 0.9f, 0.9f, 0.9f);
+    const crt::CityRead half = crt::ReadForChromeCity(hx, hy, mixed, 7.0f, tol);
+    Check(half.use && Near(half.weight, 1.0) && Near(half.other, 0.5) && Near(half.colour[0], 0.5), "a footprint half on the car's own part, half on the city: weight 1, other a half, the mean colour");
+    crt::ChromeCityEnv(env, true, 2.0f, 1.0f, 1.0f, half, 1.0f, 1.0f, out);
+    const float base0 = 0.6f * (1.0f - 0.9f * 0.5f);
+    Check(Near(out[0], base0 + (0.5f - base0) * 0.5f), "half own, half city: the sky occluded by the own half, then half of it the city's colour");
+    // another car's chrome texel (red under the marker) is not a colour: it is skipped
+    taps[4] = tap(7.0f, 2.0f, -1.5f, 0.0f, 0.0f);
+    Check(!crt::ReadForChromeCity(wx, wy, taps, 7.0f, tol).use, "a texel of another car's chrome (its red is the sky code) holds no colour and is not read for the player's");
+    // the strength 0 changes nothing of the sky
+    taps[4] = tap(7.0f, -2.0f, 0.8f, 0.5f, 0.2f);
+    crt::ChromeCityEnv(env, true, 2.0f, 0.0f, 1.0f, crt::ReadForChromeCity(wx, wy, taps, 7.0f, tol), 16.0f, 0.0f, out);
+    Check(out[0] == env[0] && out[1] == env[1] && out[2] == env[2], "the strength 0 leaves the game's reflection alone");
+    Check(crt::kCityMaxColour == 64.0f && crt::kCityModeMin == 1.5f, "the rules' numbers: cap 64, mode 1.5");
+  }
+
   // ---- the shaders and the host hold the numbers --------------------------------------------------------------------------------
   {
     const std::string refl = ReadFile(src + "/gpu/hlsl/car_rt_refl_cs.hlsl");
@@ -504,6 +592,24 @@ int main(int argc, char** argv) {
             "the chrome variant reads the texel by the header's rule (red under -0.5 is another car's chrome, the sky weight is -red - 1)");
       Check(Has(variant_h, "0x2D8CA0430FF88ED7ull") && Has(variant_h, "kCarChromeVariantVersion = 3"),
             "the chrome variant's identity is the header's kChromePs, and its version is 3");
+      // CITY-RT M2 R3a: the city stage's text holds the rules' arithmetic
+      const std::string city_variant = ReadFile(src + "/shaderpack/variants/car_chrome_city.cpp");
+      const std::string city_variant_h = ReadFile(src + "/shaderpack/variants/car_chrome_city.h");
+      if (city_variant.empty() || city_variant_h.empty()) {
+        std::printf("the chrome's city stage was not found under %s: its text checks are skipped\n", src.c_str());
+      } else {
+        Check(Has(city_variant, "static const float kCarChrCityMaxColour = 64.0;") && Has(city_variant, "static const float kCarChrCityModeMin = 1.5;"), "the city stage's cap and mode are the rules' (64, 1.5)");
+        Check(Has(city_variant, "if (code >= 0.5 && !(t.r < -0.5))") && Has(city_variant, "other += (t.a < 0.0) ? wg * wt : 0.0;") && Has(city_variant, "r.other = (weight > 1e-5) ? saturate(other / weight) : 0.0;") &&
+                  Has(city_variant, "r.colour = (weight > 1e-5) ? colour / weight : float3(0.0, 0.0, 0.0);"),
+              "the city stage reads the player's texels by the rules' ReadForChromeCity (the chrome's marker skipped, the other-car sign, the weighted mean colour)");
+        Check(Has(city_variant, "const float whole = c.weight * s.agreement;") && Has(city_variant, "const float city = whole * c.other;") && Has(city_variant, "const float own = whole - city;") &&
+                  Has(city_variant, "env * (1.0 - kCarChrDark * saturate(own * strength))") && Has(city_variant, "min(max(c.colour, 0.0) * g_CarReflB.z, kCarChrCityMaxColour)") &&
+                  Has(city_variant, "return lerp(base, seen, saturate(city * strength));"),
+              "the city stage's split is the rules' ChromeCityEnv");
+        Check(Has(city_variant, "if (s.state < 4.5 || s.state > 5.5 || g_CarReflA.x < kCarChrCityModeMin)") && Has(city_variant, "return CarChromeEnv(env, s);"),
+              "the city stage keeps the chrome's own line outside the image's answer for the player's texel and the reflection level");
+        Check(Has(city_variant_h, "kCarChromeCityVariantVersion = 1"), "the city stage's version is 1");
+      }
     }
   }
 

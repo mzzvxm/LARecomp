@@ -3,6 +3,7 @@
 #include "city_refl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -32,7 +33,12 @@ LiveText& Setting() {
   return text;
 }
 
+// CityReflChromeWanted: written by the render thread at the frame's start, read by whoever picks a draw's variant.
+std::atomic<bool> g_chrome_wanted{false};
+
 }  // namespace
+
+bool CityReflChromeWanted() { return g_chrome_wanted.load(std::memory_order_relaxed); }
 
 CityRefl::~CityRefl() = default;
 
@@ -83,6 +89,8 @@ void CityRefl::Shutdown() {
   frames_ = nullptr;
   ready_ = false;
   pass_active_ = false;
+  glass_wanted_ = false;
+  g_chrome_wanted.store(false, std::memory_order_relaxed);
   cell_ = cr::Cell{};
 }
 
@@ -92,6 +100,8 @@ void CityRefl::Shutdown() {
 
 void CityRefl::BeginFrame(bool pass_active) {
   pass_active_ = false;
+  glass_wanted_ = false;
+  g_chrome_wanted.store(false, std::memory_order_relaxed);
   cell_ = cr::Cell{};
   if (!ready_ || !pass_active) {
     return;
@@ -104,6 +114,9 @@ void CityRefl::BeginFrame(bool pass_active) {
   cell_ = cell;
   cell_.coat_layer = cell.coat_layer && larecomp::settings::mcla_gpu_city_refl_coat.Get();
   pass_active_ = true;
+  // CITY-RT M2 R3: the chrome's city stage and the glass pass, each by the level's served classes and its own debug switch (city_refl_rules.h Serves).
+  glass_wanted_ = cr::Serves(cell_.level, cr::kClassGlass) && larecomp::settings::mcla_gpu_city_refl_glass.Get();
+  g_chrome_wanted.store(cr::Serves(cell_.level, cr::kClassChrome) && larecomp::settings::mcla_gpu_city_refl_chrome.Get(), std::memory_order_relaxed);
   if (service_ != nullptr) {
     // The structures, the hit data and every texture at the level, and the cars (the pass is the car's): the scene service merges it with the other consumers' wants.
     const cr::Wants want = cr::WantsFor(cell_);

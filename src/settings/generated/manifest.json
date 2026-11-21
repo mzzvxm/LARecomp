@@ -1120,6 +1120,28 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_refl_chrome": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, the player's chrome (the tailpipes, the badges, the trim) reflects the city and the cars beside it from the ray traced image, as the paint does, instead of only being darkened where the car's own parts cover it. false: the chrome as before. Live (the chrome's shader changes at the next draw).\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_refl_glass": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: with mcla_gpu_rt_reflections on, the player's car windows reflect the city and the cars beside it: a ray traced pass adds the mirror reflection over the glass by its Fresnel (more at a grazing view), on top of the game's own. false: the glass as before. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_masks": {
   "type": "i32",
   "default": "0",

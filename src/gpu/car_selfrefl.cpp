@@ -527,8 +527,12 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     // While a scene runs the phase follows the scene's update number like the other noise (scene_noise.h): the same scene frame gets the same ray pattern.
     info.pattern_phase = upscaler_running_ ? uint32_t(scene_noise::Index(frame_) & 7u) : 0u;
     info.exp_bias = exp_bias_;
+    info.colour_samples = depth.host_samples;
     FillCityScreen(&info.screen);
     rt_->OnHistory(list, info);
+    // CITY-RT M2 R3b: the player's windows, traced inside OnHistory, are added to the main colour now (after the history pass above: the history holds no glass reflection; after the screen-space reflections: the
+    // last pass that adds to the colour at the trigger). Nothing is drawn where the trace did not run this frame.
+    rt_->ApplyGlass(list, *edram_, *colour, render_w, render_h);
   }
   return true;
 }

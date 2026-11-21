@@ -90,9 +90,11 @@ int main(int argc, char** argv) {
     Check(cr::CastLength(parts, 18.0f, 150.0f) == 18.0f && cr::CastLength(parts | 0x80, 18.0f, 150.0f) == 150.0f && cr::CastLength(parts | 0x80, 18.0f, 5.0f) == 18.0f,
           "the ray is cast as far as the longest reach of what it may hit");
   }
-  Check(cr::ClassesFor(cm::Level::kOff) == 0 && cr::ClassesFor(cm::Level::kHigh) == (cr::kClassPaintPlayer | cr::kClassPaintOthers) && cr::ClassesFor(cm::Level::kUltra) == cr::kServedClasses,
-        "the paint of the player's car and of other cars is served (chrome and glass are R3)");
-  Check((cr::kServedClasses & (cr::kClassChrome | cr::kClassGlass)) == 0, "chrome and glass are not served yet");
+  Check(cr::ClassesFor(cm::Level::kOff) == 0 && cr::ClassesFor(cm::Level::kHigh) == cr::kServedClasses && cr::ClassesFor(cm::Level::kUltra) == cr::kServedClasses,
+        "the paint of the player's car and of other cars, the chrome and the glass are served at high and ultra, nothing at off (R1, R2, R3)");
+  Check(cr::kServedClasses == (cr::kClassPaintPlayer | cr::kClassPaintOthers | cr::kClassChrome | cr::kClassGlass) && cr::Serves(cm::Level::kHigh, cr::kClassChrome) &&
+            cr::Serves(cm::Level::kUltra, cr::kClassGlass) && !cr::Serves(cm::Level::kOff, cr::kClassChrome) && !cr::Serves(cm::Level::kOff, cr::kClassGlass),
+        "chrome and glass are served (R3), by the level only: Serves says no at off");
 
   // ---- the level of a setting on every class and tier ----------------------------------------------------------------------------------------------
   int combos = 0;

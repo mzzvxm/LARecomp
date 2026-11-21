@@ -105,6 +105,8 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
   opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(),
                   reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
+  // The player's windows (car_rt_glass_refl.h): optional too, on the same layout of sets.
+  glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
   if (reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto) {
@@ -201,6 +203,7 @@ void CarRtRefl::Shutdown() {
   if (passes_) {
     passes_->precache().Stop();
   }
+  glass_.Shutdown();
   opp_.Shutdown();
   city_.Shutdown();
   // The GPU is idle and the heap goes later: the slot is not handed back (CarSelfRefl::Shutdown).
@@ -307,6 +310,7 @@ bool CarRtRefl::PipelineReady() {
 
 void CarRtRefl::BeginFrame(bool reflection_on) {
   active_ = false;
+  glass_.NewFrame();
   city_.BeginFrame(false);  // the city's want and cell are this frame's: reset until the pass is known to run
   if (!ready_ || !scene_) {
     return;
@@ -475,6 +479,29 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     opponents.frame = info.frame;
     opponents.city = &city;  // the city's set and cell: the opponents' paint reflects it within the cell's budget (CITY-RT M2 R2)
     opp_.Record(opponents);
+  }
+  // The player's windows (car_rt_glass_refl.h, CITY-RT M2 R3b): a third dispatch of the trace's file after the opponents', into an image of its own; the additive pass that adds it to the main colour is
+  // recorded by CarSelfRefl::RecordHistory (it has the colour target) through ApplyGlass. In the same stats frame (the city's counters count its rays too).
+  {
+    CarRtGlassRefl::Frame windows;
+    windows.list = list;
+    windows.view = &view;
+    windows.base_push = &push;
+    windows.base_push_bytes = sizeof(push);
+    windows.aux = &aux_;
+    windows.stats = stats_.get();
+    windows.city = &city;
+    windows.wanted = city_.glass_wanted();
+    windows.colour_samples = info.colour_samples;
+    windows.image_width = history.width;
+    windows.image_height = history.height;
+    windows.render_width = info.render_width;
+    windows.render_height = info.render_height;
+    windows.divisor = std::max<uint32_t>(info.divisor, 1);
+    windows.tan_x = info.tan_x;
+    windows.tan_y = info.tan_y;
+    windows.frame = info.frame;
+    glass_.Trace(windows);
   }
   if (city.stats) {
     city_.StatsEnd(list, info.frame);  // the city's counters to the readback once both dispatches are done
@@ -672,6 +699,7 @@ void CarRtRefl::ReleaseImage() {
   if (!passes_) {
     return;
   }
+  glass_.ReleaseImage();
   passes_->ReleaseImage(image_);
   passes_->ReleaseImage(aux_);
   passes_->ReleaseImage(scratch_);
@@ -686,7 +714,7 @@ uint64_t CarRtRefl::HeldBytes() const {
   for (const HostImage* held : {&image_, &aux_, &scratch_}) {
     bytes += held->texture ? TextureBytes(held->width, held->height, 1, held->format) : 0;
   }
-  return bytes;
+  return bytes + glass_.HeldBytes();
 }
 
 float CarRtRefl::HitStops() const { return larecomp::settings::mcla_gpu_car_rt_hit_calibrate.Get() ? hit_stops_ : 0.0f; }
@@ -738,7 +766,7 @@ std::string CarRtRefl::CensusText() {
   return std::format("; ray traced: {} passes since the start ({} in the interval, {} denoised), {} frames wanted but without the car's structures, {} "
                      "waiting for the pipeline",
                      passes_run_, interval, denoise_runs_, no_scene_, not_ready_) +
-         opp_.CensusText();
+         opp_.CensusText() + glass_.CensusText();
 }
 
 }  // namespace mcla::gpu
