@@ -79,6 +79,8 @@ void TestSetting() {
   Check(ra::SettingOf("contact") == ra::Setting::kContact, "contact is the sun ray only");
   Check(ra::SettingOf("") == ra::Setting::kAuto && ra::SettingOf("ultra") == ra::Setting::kAuto && ra::SettingOf("OFF") == ra::Setting::kAuto,
         "a word that is none of them is auto (the settings' rule)");
+  // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "both" on a strong card and "contact" on a weak one: both terms are the default
+  Check(ra::SettingOf("both") == ra::Setting::kAuto && ra::SettingOf("contact") == ra::Setting::kContact, "the tier's cells: both is the default, contact the sun ray alone");
 
   // Wanted(setting, device, occlusion, contact): the bounce light does not change it (its pass takes the traced term too)
   Check(!ra::Wanted(ra::Setting::kAuto, false, true, true).any(), "a device that cannot trace the car: nothing");

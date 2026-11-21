@@ -24,6 +24,7 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "rt_tier.h"
 #include "texture_bytes.h"
 
 
@@ -46,6 +47,12 @@ constexpr uint64_t kLogEvery = 3600;
 LiveText& Setting() {
   static LiveText text("mcla_gpu_ao_rt");
   return text;
+}
+
+// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is both terms on a strong card, the sun ray alone on a weak one, none with
+// no ray tracing; an own choice (off, ao, contact) stays.
+rules::Setting SettingNow() {
+  return rules::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarRtAo, Setting().Get()));
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }
@@ -91,7 +98,7 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   ready_ = true;
   // Listed with the start's precache only where the occlusion or the contact shadows are on at the start and the setting is not off; else it is made
   // in the background when first wanted (PipelineReady).
-  if (listed_at_start && rules::SettingOf(Setting().Get()) != rules::Setting::kOff) {
+  if (listed_at_start && SettingNow() != rules::Setting::kOff) {
     const uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     listed_ = true;
     passes.precache().Note("ray traced ambient occlusion and contact shadows: on (auto) where the occlusion or the contact shadows are", added);
@@ -205,7 +212,7 @@ void CarRtAo::BeginFrame(bool occlusion_on, bool contact_on) {
     ReleaseImage();
     idle_frames_ = 0;
   }
-  setting_ = rules::SettingOf(Setting().Get());
+  setting_ = SettingNow();
   // The coarse decision, from the effects' levels: the frame's own gates (the contact shadows' sun and rain, the bounce light) come with Record.
   const rules::Terms coarse = rules::Wanted(setting_, true, occlusion_on, contact_on);
   if (!coarse.any()) {
