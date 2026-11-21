@@ -171,11 +171,11 @@ inline float CoatShare(float nv, float fresnel_power, float gain) {
 }
 
 // One lobe's answer for a texel: its weight (0..1, the coverage by the rays that hit, each by its fade and visibility), its mean colour, and the part of the weight that is on
-// parts the camera sees (for the code's sign: hit or hidden).
+// another car (RT-HIT-SHADING-4: for the code's sign, which the paint reads as "add the clear coat's layer"; it said "on parts the camera sees" before).
 struct Lobe {
   float weight = 0.0f;
   float colour[3] = {};
-  float visible_weight = 0.0f;
+  float car_weight = 0.0f;
 };
 
 // The two lobes added: the glossy cone by (1 - share), the coat by share. Exact for the paint's blend (lerp(environment, colour, weight)): the weights and the weights' products with
@@ -185,7 +185,7 @@ inline Lobe MixCoat(const Lobe& cone, const Lobe& coat, float share, float* shar
   Lobe out;
   const float a = std::clamp(share, 0.0f, 1.0f);
   out.weight = (1.0f - a) * cone.weight + a * coat.weight;
-  out.visible_weight = (1.0f - a) * cone.visible_weight + a * coat.visible_weight;
+  out.car_weight = (1.0f - a) * cone.car_weight + a * coat.car_weight;
   if (out.weight > 0.0f) {
     for (int c = 0; c < 3; ++c) {
       out.colour[c] = ((1.0f - a) * cone.weight * cone.colour[c] + a * coat.weight * coat.colour[c]) / out.weight;
@@ -203,6 +203,64 @@ inline float EncodeAuxSharp(float sharp) { return 1.0f - kAuxSharpScale * std::c
 inline float DecodeAuxSharp(float w) { return std::clamp((1.0f - w) / kAuxSharpScale, 0.0f, 1.0f); }
 // What the denoise's strength is multiplied by: the cone's part of the texel is denoised, the mirror's is left alone.
 inline float DenoiseScale(float w) { return 1.0f - DecodeAuxSharp(w); }
+
+// ---------------------------------------------------------------------------
+// RT-HIT-SHADING-4: a reflected car that can be told apart (the mirror decides; the clear coat's layer)
+// ---------------------------------------------------------------------------
+// WHAT THE rthit2 PICTURES SHOWED (2026-11-21, perf\out\showcase-rt\showcase-rt-day-b-*, ports\run\rthit2-rt-day; the numbers are read off the 4K pictures in linear light, and from the code):
+//   the census says the hits ARE shaded (1.06 M took the history's colour, 1.38 M were shaded, 0.06 M blended), yet the door showed "a dim, blurry orange tint". Three numbers say why.
+//   1. THE WEIGHT IS NOT THE LIMIT. Fitting the ON picture against the OFF one over the door (luminance, cells of 150 px) gives a slope of 0.07 to 0.18 where the car is reflected: 82 to 93 % of
+//      the game's environment reflection of the buildings is replaced (the pass's weight of 0.85 to 1; the paint's own fresnel then scales the car as it scales the environment).
+//   2. THE AMPLITUDE. What replaces it goes through the paint's own reflectance for the environment, which at the door's grazing view (N.V 0.2 to 0.4) is 1 to 2 percent of what is reflected
+//      (the buildings: 0.0024 of 0.1 to 0.3; the sky: 0.006 of 0.3 to 0.4). The neighbour's flank in the shade of the player's own car is a quarter of its sunlit fender's radiance (the lower flank
+//      0.036 against the fender 0.19 in the same picture), so the car lands at L 0.0013 (8-bit codes 9, 3, 3) where the buildings it replaced were at 0.0049 (codes 8 to 25): over the pixels the
+//      neighbour changes the picture is 0.77 as bright as the environment it removed by day and 0.32 as bright at night. A silhouette against the sky's reflection is a step of 0.0005 of
+//      luminance: under two levels of an 8-bit picture. Nothing in the ray tracing is wrong; the paint's reflection of a car is as weak as its reflection of a building, and a shaded flank is darker.
+//   3. THE BLUR. A texel's reflection is the glossy cone (a half angle of 2.5 degrees: 4 rays, mcla_gpu_car_selfrefl_rt_gloss) by (1 - share) and the clear coat's mirror ray by share, and the
+//      share is 0.45 facing the camera to 0.85 at a grazing view by (1 - N.V)^power: 0.52 to 0.58 at the door. So 42 to 48 % of what the door shows of the car is the cone's, and on a flat panel
+//      a cone of 2.5 degrees is a blur of about 2.5 x 57 to 101 px = 140 to 250 px of the 4K picture (57 to 101 px a degree at the cameras' field of view of 38): the wheel arch, the windows and
+//      the rims of the neighbour are smaller than that, and its colour leaks over the door past its outline (the diff of the player's paint with the others on against off covers the whole door,
+//      the car a part of it). The game's environment map, for comparison, is 512 x 256 over a hemisphere: 0.35 degrees a texel, about 20 px at 4K.
+// THE FIX HAS TWO PARTS, both for a hit on ANOTHER CAR only (the player's own parts keep the soft cone and the paint's reflectance: that look stays):
+//   (1) THE MIRROR DECIDES (MirrorShare, ConeHitCounts): where the clear coat's exact mirror ray hits another car, a car is what the door shows there, as sharp as a mirror: the mirror's share of
+//       the texel is at least kOthersSharpShare (0.9: the base under a clear coat is dark, and a black paint has no glossy reflection of its own to speak of); where the mirror ray did not hit
+//       another car, the cone's rays that did are dropped (no colour leaking past the outline: the 140 to 250 px haze). A level with no mirror ray (the Mid class) keeps the cone alone.
+//   (2) THE CLEAR COAT'S LAYER (CoatLayerFresnel, CoatLayerAmount): the paint adds, on top of its own colour, the reflection of the car at the clear coat's own fresnel (Schlick, F0 0.04, power 5:
+//       0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2), by the share of the texel's weight that is on another car: lerp(paint, the car's colour, amount). The paint's own path stays (the environment
+//       replaced as before), so the player's own reflections and a car out of reach are untouched. That is a clear coat as a dielectric layer over the paint, which the game's paint has no term for; it is
+//       what makes the door read the neighbour at the strength a real black door shows at 12 to 25 degrees off its plane (about 10 times the paint's own). The picture carries it in the code's SIGN:
+//       alpha -(1 + w) is "mostly on another car" (it was "mostly on parts the camera does not see", which the paint only drew in a debug view).
+// THE PASS/RULE PAIR: car_rt_refl_cs.hlsl and car_rt_refl_opp.hlsli (MirrorShare, ConeHitCounts, the sign), car_rt_hit_shade.hlsli (their helpers); the paint: shaderpack/variants/car_selfrefl.cpp (version 8:
+// CarReflCoat, g_CarReflC.w bit 1 = kCoatLayerFlag of car_selfrefl_rules.h, debug views 6 and 7). Switch: mcla_gpu_car_rt_coat_layer (debug).
+// PASS RULE of the rerun (perf\scripts\showcase_rt_post.py, rows `bright`, `contrast`, `sharp`, verdict RT-HIT-SHADING-4; camera b, day and night, FAILS on any): over the pixels the neighbour changes (the player's paint with the
+// others on against off, outside the control's noise) (1) the median linear luminance of the player picture is at least 1.0 times the off picture's (rthit2: 0.29 day, 0.22 night; means 0.44, 0.18), (2) the
+// coefficient of variation of the luminance over the interior of those pixels is at least 1.0 times the off picture's (the buildings': rthit2 0.68, 0.47), (3) in the picture of the debug view 6 (the layer's amount) the car's
+// edge goes from a fifth to four fifths of its level over at most 30 px (the cone of rthit2 by the model of this header's test: 190 to 340 px).
+
+// The mirror's least share of a texel whose mirror ray hit another car.
+inline constexpr float kOthersSharpShare = 0.9f;
+// The share of a texel's reflection that is the mirror's: the class's CoatShare, and at least kOthersSharpShare where the mirror ray hit another car.
+inline float MirrorShare(float coat_share, bool mirror_on_car) {
+  return mirror_on_car ? std::max(coat_share, kOthersSharpShare) : coat_share;
+}
+// Does a cone ray's hit count? A hit on another car counts only where the mirror ray hit another car too (`have_mirror`: the level casts one); everything else counts as before.
+inline bool ConeHitCounts(bool cone_on_car, bool have_mirror, bool mirror_on_car) {
+  return !cone_on_car || !have_mirror || mirror_on_car;
+}
+
+// The clear coat's layer: Schlick's fresnel of a dielectric with the index 1.5 (F0 0.04, power 5), at the paint's own N.V, and the most of the paint it may take over.
+inline constexpr float kCoatLayerF0 = 0.04f;
+inline constexpr float kCoatLayerPower = 5.0f;
+inline constexpr float kCoatLayerMax = 0.6f;
+inline float CoatLayerFresnel(float nv) {
+  return std::min(kCoatLayerF0 + (1.0f - kCoatLayerF0) * std::pow(std::clamp(1.0f - nv, 0.0f, 1.0f), kCoatLayerPower), kCoatLayerMax);
+}
+// How much of the paint's colour the layer takes: the fresnel by the weight of the hit and the share of it that is on another car.
+inline float CoatLayerAmount(float nv, float weight, float car_share) {
+  return std::clamp(weight, 0.0f, 1.0f) * std::clamp(car_share, 0.0f, 1.0f) * CoatLayerFresnel(nv);
+}
+// The layer over the paint's colour (one channel): lerp(paint, car, amount).
+inline float CoatLayerMix(float paint, float car_colour, float amount) { return paint + (car_colour - paint) * amount; }
 
 // ---------------------------------------------------------------------------
 // the push block's packed word

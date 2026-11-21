@@ -488,13 +488,17 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first ray traced pass: frame {}, image {}x{} for a {}x{} picture (divisor {}), {} instances, reflection ray {} m (the player's own parts reach {} m, "
-                "another car {} m from {:.0f}% of it), parts {}, {} rays over a cone of {} degrees{}; the clear-coat ray: {}; the sun's shadow at a shaded hit: {}; the other cars' chrome: {}; "
+                "another car {} m from {:.0f}% of it), parts {}, {} rays over a cone of {} degrees{}; the clear-coat ray: {}{}; the sun's shadow at a shaded hit: {}; the other cars' chrome: {}; "
                 "the colours the pass makes up from a paint constant are multiplied by {} (the history's units over the paint's, the main target's exponent bias {})",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, self_reach, others_reach, 100.0 * double(level.others_fade_from), parts,
                 gloss > 0.0f ? std::min<uint32_t>(level.cone_rays, car_rt_refl::kConeRays) : 1, gloss,
                 info.pattern_phase != 0 || info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : "",
                 level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4 ? std::format("on, strength {:.2f} (mcla_gpu_car_rt_clearcoat)", level.coat) : std::string("off"),
+                level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4
+                    ? std::format(" (another car in the reflection: the mirror is at least {:.0f}% of the texel, the cone's hits on it are dropped where the mirror missed it; the paint's clear coat layer: {})",
+                                  100.0 * double(car_rt_hit::kOthersSharpShare), larecomp::settings::mcla_gpu_car_rt_coat_layer.Get() ? "on" : "off (mcla_gpu_car_rt_coat_layer)")
+                    : std::string(" (a level with no mirror ray: the cone alone for another car too)"),
                 larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get() ? "the game's cascades with the cars' ray (when the volumetric light has the cascades)" : "the cars' ray alone",
                 chrome_others ? "traced (mcla_gpu_car_chrome_rt_others)" : "left to the marched version", push.up[3], info.exp_bias);
   }

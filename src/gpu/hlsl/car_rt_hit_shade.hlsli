@@ -486,16 +486,30 @@ float CarCoatShare(float nv, float power, float gain)
     return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);
 }
 
-// The glossy cone's sums (the sum of the rays' weights, of their weights times their colours, of their weights times the share of the hit the history shows; over `rays` rays) and the
-// coat's ray (its weight, its colour, its weight times that share) added by `share` (MixCoat): the texel's weight; `colour` its mean colour, `visibleWeight` the part of the weight
-// on parts the camera sees, `sharp` the part of the weight that is the coat's. With a share of 0 it is the cone alone, as the pass always made it.
-float CarCoatMix(float coneWeightSum, float3 coneColourSum, float coneVisibleSum, float rays, float share, float coatWeight, float3 coatColour, float coatVisibleWeight,
-                 out float3 colour, out float visibleWeight, out float sharp)
+// RT-HIT-SHADING-4 (car_rt_hit_rules.h MirrorShare, ConeHitCounts): where the clear coat's mirror ray hits another car the mirror is at least kOthersSharpShare of the texel, and a cone ray that
+// hits another car where the mirror ray did not (and one was cast) is dropped: a car is as sharp as a mirror, with no haze of its colour past its outline.
+static const float kOthersSharpShare = 0.9;
+
+float MirrorShare(float coatShare, bool mirrorOnCar)
+{
+    return mirrorOnCar ? max(coatShare, kOthersSharpShare) : coatShare;
+}
+
+bool ConeHitCounts(bool coneOnCar, bool haveMirror, bool mirrorOnCar)
+{
+    return !coneOnCar || !haveMirror || mirrorOnCar;
+}
+
+// The glossy cone's sums (the sum of the rays' weights, of their weights times their colours, of their weights times the share of the hit that is on another car; over `rays` rays) and the
+// coat's ray (its weight, its colour, its weight times that share) added by `share` (MixCoat): the texel's weight; `colour` its mean colour, `carWeight` the part of the weight
+// on another car (the code's sign: the paint adds the clear coat's layer for it), `sharp` the part of the weight that is the coat's. With a share of 0 it is the cone alone, as the pass always made it.
+float CarCoatMix(float coneWeightSum, float3 coneColourSum, float coneCarSum, float rays, float share, float coatWeight, float3 coatColour, float coatCarWeight,
+                 out float3 colour, out float carWeight, out float sharp)
 {
     const float a = saturate(share);
     const float coneWeight = min(coneWeightSum / rays, 1.0);
     const float weight = (1.0 - a) * coneWeight + a * coatWeight;
-    visibleWeight = (1.0 - a) * min(coneVisibleSum / rays, 1.0) + a * coatVisibleWeight;
+    carWeight = (1.0 - a) * min(coneCarSum / rays, 1.0) + a * coatCarWeight;
     colour = float3(0.0, 0.0, 0.0);
     sharp = 0.0;
     if (weight > 0.0)

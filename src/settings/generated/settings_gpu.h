@@ -313,6 +313,10 @@ class GPUSettings final : public rex::SettingOwner {
     "fresnel, so that a car beside yours reads sharp in its paint (the way a clear coat does) on top of the glossy base. -1 (the default): by the graphics card's class (on the High class, off on the Mid class); "
     "0 off; above 0 on at that strength (1 is the High class's). Live.", rex::kDebugOnly, rex::Range{-1.0, 4.0});
 
+  REX_SETTING(bool, mcla_gpu_car_rt_coat_layer, true, "Debug (the fix's own switch): the paint adds the clear coat's layer over the reflection of ANOTHER CAR in the ray traced image: the car's colour by the coat's own fresnel "
+    "(0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2), so that a car beside yours reads in your door at the strength a real clear coat gives it (the game's own paint reflects a few percent of what it "
+    "reflects at a grazing view). Off: the car replaces the environment's reflection as before, which is as weak as the environment's. Your own car's parts are untouched either way. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_rt_hit_calibrate, true, "Debug (the fix's own switch): the shaded colour of another car's hidden parts is brought to the game's own exposure: where the reflection ray hits a part of another car's paint that the "
     "camera sees, the pass also shades it by its model and compares the brightness with the game's colour there, and the shading's gain follows (about a window of twenty frames: it follows the hour). Off: the model's own "
     "light, which does not follow the hour. The census line in the log ([car rt refl] hits) says the difference either way. Live.", rex::kDebugOnly);
@@ -394,9 +398,10 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_selfrefl_view, 0, "Diagnostic: shows a stage of the car self-reflection instead of the paint (only while the car self-reflections are on): "
     "1 the weight of the hit, 2 the colour the ray found, 3 the paint's baked vertex occlusion, 4 the state of the trace "
     "(red: the point is not found in the previous frame, blue: the ray left the picture, green: no hit, yellow: a hit, "
-    "orange where the hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the "
+    "orange where the march's hit is probably the hidden face of a part, the brighter the more of the reflection it takes), 5 the "
     "ray traced image at the paint's pixel (purple: no image this frame, cyan: no data there, so the march ran, green: no hit, "
-    "yellow: a hit on a part the camera sees, orange: on a part it does not). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 5});
+    "yellow: a hit on the player's own part, orange: on another car), 6 the clear coat's layer's amount (its fresnel by the share of the hit on another car, white is 1), "
+    "7 what that layer adds (the other car's colour by the amount). 2 is the ray traced reflection alone at full intensity. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
   REX_SETTING(std::string, mcla_gpu_car_shadow_map, "auto", "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it. The game's own sun shadows "
     "draw the car in a rough low-detail form into maps whose texels are 1 to 25 cm, so the wing, the mirrors, the sills and the "
@@ -1557,6 +1562,7 @@ inline auto& mcla_gpu_car_rt_hit_ambient = g_gpu.mcla_gpu_car_rt_hit_ambient;
 inline auto& mcla_gpu_car_rt_hit_spec = g_gpu.mcla_gpu_car_rt_hit_spec;
 inline auto& mcla_gpu_car_rt_hit_reach = g_gpu.mcla_gpu_car_rt_hit_reach;
 inline auto& mcla_gpu_car_rt_clearcoat = g_gpu.mcla_gpu_car_rt_clearcoat;
+inline auto& mcla_gpu_car_rt_coat_layer = g_gpu.mcla_gpu_car_rt_coat_layer;
 inline auto& mcla_gpu_car_rt_hit_calibrate = g_gpu.mcla_gpu_car_rt_hit_calibrate;
 inline auto& mcla_gpu_car_rt_hit_cascade = g_gpu.mcla_gpu_car_rt_hit_cascade;
 inline auto& mcla_gpu_car_rt_masks = g_gpu.mcla_gpu_car_rt_masks;

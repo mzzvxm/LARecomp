@@ -176,8 +176,8 @@ int main(int argc, char** argv) {
       hr::Lobe cone, coat;
       cone.weight = u01(rng) < 0.2f ? 0.0f : u01(rng);
       coat.weight = u01(rng) < 0.2f ? 0.0f : u01(rng);
-      cone.visible_weight = cone.weight * u01(rng);
-      coat.visible_weight = coat.weight * u01(rng);
+      cone.car_weight = cone.weight * u01(rng);
+      coat.car_weight = coat.weight * u01(rng);
       for (int c = 0; c < 3; ++c) {
         cone.colour[c] = colour(rng);
         coat.colour[c] = colour(rng);
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
           exact = exact && Near(mixed, two, 2e-4);
         }
       }
-      bounded = bounded && out.weight >= 0.0f && out.weight <= 1.0f + 1e-6f && out.visible_weight <= out.weight + 1e-6f;
+      bounded = bounded && out.weight >= 0.0f && out.weight <= 1.0f + 1e-6f && out.car_weight <= out.weight + 1e-6f;
       sharp_ok = sharp_ok && sharp >= 0.0f && sharp <= 1.0f && (out.weight > 0.0f ? Near(sharp, share * coat.weight / out.weight, 1e-4) : sharp == 0.0f);
       float s0;
       const hr::Lobe zero = hr::MixCoat(cone, coat, 0.0f, &s0);
@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
       }
     }
     Check(exact, "the two lobes added are exact for the paint's blend over its environment: environment + (1 - a) w_c (c_c - environment) + a w_s (c_s - environment)");
-    Check(bounded, "the weight stays in 0 .. 1 and the visible part of it is no more than the weight");
+    Check(bounded, "the weight stays in 0 .. 1 and the part of it on another car is no more than the weight");
     Check(sharp_ok, "the mirror's part of the weight is the share times its weight over the whole, in 0 .. 1");
     Check(share0, "with a share of 0 the texel is the cone's, as the pass always made it (the weight and the colour)");
     Check(share1, "with a share of 1 it is the coat's");
@@ -254,6 +254,112 @@ int main(int argc, char** argv) {
     const float own = 0.8f, blurred = 0.3f, strength = 1.0f;
     Check(Near(own + (blurred - own) * strength * hr::DenoiseScale(hr::EncodeAuxSharp(1.0f)), own), "a texel that is all mirror comes out of the denoise as it went in");
     Check(Near(own + (blurred - own) * strength * hr::DenoiseScale(hr::EncodeAuxSharp(0.0f)), blurred), "a texel with no mirror is denoised in full");
+  }
+
+  // ---- RT-HIT-SHADING-4: the mirror decides for another car, and the clear coat's layer ------------------------------------------------------------------
+  {
+    // the mirror's share
+    Check(hr::kOthersSharpShare == 0.9f && hr::kOthersSharpShare <= hr::kCoatMax, "a texel whose mirror ray hit another car is at least 0.9 the mirror's (the coat's own cap is 0.9: the cone stays a little of the texel)");
+    bool share_ok = true;
+    for (float nv : {0.05f, 0.2f, 0.3f, 0.42f, 0.6f, 0.9f, 1.0f}) {
+      const float share = hr::CoatShare(nv, 5.0f, 1.0f);
+      share_ok = share_ok && hr::MirrorShare(share, false) == share && hr::MirrorShare(share, true) >= hr::kOthersSharpShare && hr::MirrorShare(share, true) >= share;
+    }
+    Check(share_ok, "where the mirror hit another car the share is at least 0.9 and never less than the class's; where it did not, the class's");
+    Check(hr::MirrorShare(0.0f, false) == 0.0f && hr::MirrorShare(0.0f, true) == hr::kOthersSharpShare, "with no coat share (a level with no mirror ray) nothing changes when there was no mirror hit");
+
+    // which cone hits count
+    Check(hr::ConeHitCounts(false, true, false) && hr::ConeHitCounts(false, true, true) && hr::ConeHitCounts(false, false, false) && hr::ConeHitCounts(false, false, true),
+          "a cone ray's hit on the player's own part always counts");
+    Check(!hr::ConeHitCounts(true, true, false) && hr::ConeHitCounts(true, true, true), "a cone ray's hit on another car counts only where the mirror ray hit one too");
+    Check(hr::ConeHitCounts(true, false, false), "a level with no mirror ray (the Mid class) keeps the cone's hits on another car");
+
+    // the layer's fresnel: Schlick with F0 0.04, power 5
+    Check(Near(hr::CoatLayerFresnel(1.0f), 0.04) && Near(hr::CoatLayerFresnel(0.5f), 0.04 + 0.96 / 32.0, 1e-6) && Near(hr::CoatLayerFresnel(0.3f), 0.04 + 0.96 * std::pow(0.7, 5.0), 1e-6) &&
+              Near(hr::CoatLayerFresnel(0.2f), 0.04 + 0.96 * std::pow(0.8, 5.0), 1e-6) && Near(hr::CoatLayerFresnel(0.0f), hr::kCoatLayerMax),
+          "the layer's fresnel is Schlick's: 0.04 facing the camera, 0.07 at N.V 0.5, 0.20 at 0.3, 0.35 at 0.2, capped at 0.6");
+    bool monotone = true;
+    for (float nv = 0.01f; nv < 1.0f; nv += 0.01f) {
+      monotone = monotone && hr::CoatLayerFresnel(nv) >= hr::CoatLayerFresnel(nv + 0.01f) - 1e-7f && hr::CoatLayerFresnel(nv) <= hr::kCoatLayerMax && hr::CoatLayerFresnel(nv) >= hr::kCoatLayerF0;
+    }
+    Check(monotone, "the fresnel falls as the paint faces the camera and stays between 0.04 and the cap");
+    Check(Near(hr::CoatLayerAmount(0.3f, 1.0f, 1.0f), hr::CoatLayerFresnel(0.3f)) && hr::CoatLayerAmount(0.3f, 0.0f, 1.0f) == 0.0f && hr::CoatLayerAmount(0.3f, 1.0f, 0.0f) == 0.0f &&
+              Near(hr::CoatLayerAmount(0.3f, 0.5f, 0.5f), 0.25 * hr::CoatLayerFresnel(0.3f)) && Near(hr::CoatLayerAmount(0.3f, 7.0f, 3.0f), hr::CoatLayerFresnel(0.3f)),
+          "the layer's amount is the fresnel by the weight and by the share of the hit that is on another car (each clamped to 0..1): none where there is no hit or the hit is the player's own");
+    Check(Near(hr::CoatLayerMix(0.2f, 0.8f, 0.0f), 0.2) && Near(hr::CoatLayerMix(0.2f, 0.8f, 1.0f), 0.8) && Near(hr::CoatLayerMix(0.2f, 0.8f, 0.25), 0.35, 1e-6),
+          "the layer is a lerp: the paint's colour at amount 0, the car's at 1");
+
+    // WHAT THE FIX BUYS, in the numbers of the rthit2 door (day, camera b): the paint's own reflectance for the environment there is 0.0146 (the door's luminance over the buildings it
+    // reflects), and the layer's fresnel at the door's N.V (0.2 to 0.42) is 8 to 24 times that: the neighbour's flank (a quarter of its sunlit fender's radiance) lands over the
+    // buildings' 0.0049, not under it.
+    {
+      const double paint_reflectance = 0.0146;   // rthit2: 0.0024 of the buildings' 0.165
+      const double flank_over_fender = 0.25;     // the lower flank 0.062 / the fender 0.256 (red channel), in the shade of the player's car
+      const double fender = 0.19;                // the sunlit fender's luminance
+      const double buildings_in_door = 0.0049;   // OFF, mean luminance of the pixels the neighbour changes
+      const double before = flank_over_fender * fender * paint_reflectance + 0.0;  // through the paint's own path
+      double layer_low = 1e9, layer_high = 0.0;
+      for (double nv : {0.2, 0.3, 0.42}) {
+        const double amount = hr::CoatLayerFresnel(float(nv));
+        layer_low = std::min(layer_low, amount);
+        layer_high = std::max(layer_high, amount);
+      }
+      Check(layer_low / paint_reflectance > 5.0 && layer_high / paint_reflectance < 30.0, "the layer's fresnel at the door's N.V is 5 to 30 times the paint's own reflectance (about 8 to 24)");
+      const double after = before + flank_over_fender * fender * layer_low;
+      Check(before < 0.5 * buildings_in_door && after > buildings_in_door, "the neighbour's shaded flank in the door: under half the buildings' luminance through the paint's path alone, over it with the layer at the door's weakest view");
+    }
+
+    // THE EDGE: a straight edge of a reflected car at an angular distance `e` from the mirror direction. A texel's response is the cone's share by (1 - share) and the mirror's by share; the cone's four
+    // rays are turned by every texel's own angle (averaged here over 400 turns). Before: the response of the door's share (0.52 to 0.58) goes from 5 % to 95 % over about 3.2 degrees, and
+    // reaches 7 % half a cone outside the edge. After: a step (the mirror's), and nothing outside it. At 57 to 101 px a degree (the showcase cameras, 4K) 3.2 degrees are 180 to 320 px.
+    {
+      const double tan_half = std::tan(2.5 * 0.017453292519943295);
+      const int n_turns = 400;
+      auto cone_coverage = [&](double e) {
+        int hit = 0;
+        for (int t = 0; t < n_turns; ++t) {
+          for (int j = 0; j < 4; ++j) {
+            hit += tan_half * rt::ConeDisc(j, float(t) / float(n_turns)).x < e ? 1 : 0;
+          }
+        }
+        return double(hit) / double(n_turns * 4);
+      };
+      const int steps = 600;
+      std::vector<double> e(steps + 1), before(steps + 1), after(steps + 1);
+      const double share = hr::CoatShare(0.3f, 5.0f, 1.0f);  // the door's
+      Check(share > 0.5 && share < 0.6, "the class's coat share at the door's N.V of 0.3 is 0.5 to 0.6");
+      for (int i = 0; i <= steps; ++i) {
+        e[i] = (-3.0 + 6.0 * double(i) / double(steps)) * tan_half;
+        const double mirror_hit = e[i] > 0.0 ? 1.0 : 0.0;
+        const double cone = cone_coverage(e[i]);
+        before[i] = (1.0 - share) * cone + share * mirror_hit;
+        // after: the cone's hits on the car count only where the mirror hit it; the mirror's share is at least 0.9 there
+        const double a = hr::MirrorShare(float(share), mirror_hit > 0.0);
+        after[i] = mirror_hit > 0.0 ? (1.0 - a) * cone + a * 1.0 : 0.0;
+      }
+      auto angle = [](double tangent) { return std::atan(tangent) / 0.017453292519943295; };
+      auto width = [&](const std::vector<double>& response, double lo, double hi) {
+        int i_lo = 0, i_hi = 0;
+        while (i_lo < steps && !(response[i_lo] > lo)) ++i_lo;
+        while (i_hi < steps && !(response[i_hi] >= hi)) ++i_hi;
+        return angle(e[i_hi]) - angle(e[i_lo]);
+      };
+      const double w_before = width(before, 0.05, 0.95);
+      const double w_after = width(after, 0.05, 0.95);
+      Check(w_before > 3.0 && w_before < 3.6, "before: the door's reflected edge goes from 5 % to 95 % over 3 to 3.6 degrees (" + std::to_string(w_before) + ")");
+      Check(w_after < 0.05, "after: a step (" + std::to_string(w_after) + " degrees at the model's 0.025 degree grid)");
+      int outside = 0;
+      for (int i = 0; i <= steps; ++i) {
+        outside += (e[i] < 0.0 && before[i] > 0.05) ? 1 : 0;
+      }
+      const double haze_degrees = double(outside) * (6.0 * 2.5 / double(steps));  // the grid's step is 0.025 degrees
+      Check(outside > 0 && haze_degrees > 0.5, "before: the car's colour reaches past the edge into the environment's reflection");
+      bool clean = true;
+      for (int i = 0; i <= steps; ++i) {
+        clean = clean && (e[i] > 0.0 || after[i] == 0.0);
+      }
+      Check(clean, "after: no weight at all outside the mirror's own edge");
+    }
   }
 
   // ---- the push block's packed word -----------------------------------------------------------------------------------------------------
@@ -425,7 +531,7 @@ int main(int argc, char** argv) {
       Check(Has(hlsli, "const float curve = pow(saturate(1.0 - nv), max(power, kCoatMinPower));") && Has(hlsli, "return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);") &&
                 Has(hlsli, "return float((gCarRtMaterials[kMatFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;"),
             "the shader's coat share is CoatShare's, read from the paint's fresnel exponent in the instance's row (bits 24..31, x 16)");
-      Check(Has(hlsli, "const float weight = (1.0 - a) * coneWeight + a * coatWeight;") && Has(hlsli, "visibleWeight = (1.0 - a) * min(coneVisibleSum / rays, 1.0) + a * coatVisibleWeight;") &&
+      Check(Has(hlsli, "const float weight = (1.0 - a) * coneWeight + a * coatWeight;") && Has(hlsli, "carWeight = (1.0 - a) * min(coneCarSum / rays, 1.0) + a * coatCarWeight;") &&
                 Has(hlsli, "colour = ((1.0 - a) * coneColourSum / rays + a * coatWeight * coatColour) / weight;") && Has(hlsli, "sharp = saturate(a * coatWeight / weight);") &&
                 Has(hlsli, "const float coneWeight = min(coneWeightSum / rays, 1.0);"),
             "the shader's mix of the two lobes is MixCoat's");
@@ -434,13 +540,13 @@ int main(int argc, char** argv) {
                 Has(refl, "const float faded = 1.0 - smoothstep(hitFadeFrom * hitReach, hitReach, distance);"),
             "the trace's reach is the push's: the player's own parts' coat.x from tune.z of it, another car's coat.y from coat.z of it (HitFade), the cone's rays from slots.w bit 8 (RaysOf)");
       Check(Has(refl, "ConeRotation(texel, g_push.slots.w & 7u)") && Has(opp, "ConeRotation(texel, g_push.slots.w & 7u)"), "the pattern's phase is the low three bits of slots.w in both variants (PhaseOf)");
-      Check(Has(refl, "if (g_push.coat.w > 0.0 && tanHalf > 0.0 && levelRays >= 4u)") && Has(refl, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
+      Check(Has(refl, "const bool haveMirror = g_push.coat.w > 0.0 && tanHalf > 0.0 && levelRays >= 4u;") && Has(refl, "if (haveMirror)") && Has(refl, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
                 Has(refl, "ConeDirection(mirror, normal, 0.0, 0, 0.0), reach, 0.0, primaryInstance") && Has(refl, "bool found = coatHit;") && Has(refl, "if (slot >= int(levelRays))") &&
-                Has(refl, "aux.w = 1.0 - kAuxSharpScale * sharp;") && Has(refl, "const float weight = CarCoatMix(weightSum, colourSum, visibleSum, rays, coatShare, coatWeight, coatColour, coatWeight * coatVisible, mixed, mixedVisible, sharp);"),
+                Has(refl, "aux.w = 1.0 - kAuxSharpScale * sharp;") && Has(refl, "const float weight = CarCoatMix(weightSum, colourSum, carSum, rays, MirrorShare(coatShare, mirrorOnCar), coatWeight, coatColour, coatCar ? coatWeight : 0.0, mixed, mixedCar, sharp);"),
             "the trace casts the clear coat's ray (the exact mirror direction, cone tangent 0) at the whole cone only, mixes it by the share and says the mirror's part in the aux's w");
-      Check(Has(opp, "if (g_push.coat.w > 0.0 && tanHalf > 0.0 && maxRays >= 4u)") && Has(opp, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
+      Check(Has(opp, "const bool haveMirror = g_push.coat.w > 0.0 && tanHalf > 0.0 && maxRays >= 4u;") && Has(opp, "if (haveMirror)") && Has(opp, "coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);") &&
                 Has(opp, "bool found = coatHit;") && Has(opp, "aux.w = 1.0 - kAuxSharpScale * sharp;") &&
-                Has(opp, "const float weight = CarCoatMix(weightSum, colourSum, visibleSum, rays, coatShare, coatWeight, coatColour, coatWeight * coatVisible, mixed, mixedVisible, sharp);") &&
+                Has(opp, "const float weight = CarCoatMix(weightSum, colourSum, carSum, rays, MirrorShare(coatShare, mirrorOnCar), coatWeight, coatColour, coatCar ? coatWeight : 0.0, mixed, mixedCar, sharp);") &&
                 Has(opp, "TraceRay(history, origin, direction2, reach, tanHalf, primaryInstance"),
             "the opponents' variant does the same for the opponents' paint (at the budget's full cone)");
       Check(Has(denoise, "const float sharp = saturate((1.0 - ownAux.w) / kAuxSharpScale);") && Has(denoise, "* (1.0 - sharp);") && Has(denoise, "!(ownAux.w > 0.5)"),
@@ -457,7 +563,7 @@ int main(int argc, char** argv) {
       Check(Has(scene, "vol_->CurrentSun(&sun, &fade)") && Has(scene, "car_rt_->SetSunCascades(cascades);") && Has(vol_h, "bool CurrentSun(volumetrics::VolSun* sun, float* fade) const;") &&
                 Has(vol_cpp, "bool Volumetrics::CurrentSun(vol::VolSun* sun, float* fade) const {") && Has(vol_cpp, "bool Volumetrics::FillSun(vol::VolSun* out) const {"),
             "Scene hands the volumetric light's collector sun to the car scene before the trace's top level is built");
-      for (const char* name : {"mcla_gpu_car_rt_hit_reach", "mcla_gpu_car_rt_clearcoat", "mcla_gpu_car_rt_hit_cascade"}) {
+      for (const char* name : {"mcla_gpu_car_rt_hit_reach", "mcla_gpu_car_rt_clearcoat", "mcla_gpu_car_rt_hit_cascade", "mcla_gpu_car_rt_coat_layer"}) {
         Check(Has(settings, std::string(", ") + name + ", ") && Has(settings, std::string("inline auto& ") + name + " = g_gpu." + name + ";") && Has(manifest, std::string("\"") + name + "\": {") &&
                   Has(meta, std::string("{\"") + name + "\", \"MCLA/GPU\"}"),
               std::string("the setting ") + name + " is defined, aliased, in the manifest and in the meta list");
@@ -503,6 +609,28 @@ int main(int argc, char** argv) {
         Check(Has(settings, std::string(", ") + name + ", ") && Has(settings, std::string("inline auto& ") + name + " = g_gpu." + name + ";") && Has(manifest, std::string("\"") + name + "\": {") &&
                   Has(meta, std::string("{\"") + name + "\", \"MCLA/GPU\"}"),
               "the setting mcla_gpu_car_rt_hit_calibrate is defined, aliased, in the manifest and in the meta list");
+      }
+      // RT-HIT-SHADING-4: the shaders', the variant's and the host's copies
+      {
+        const std::string variant = ReadFile(src + "/shaderpack/variants/car_selfrefl.cpp");
+        const std::string selfrefl_cpp = ReadFile(src + "/gpu/car_selfrefl.cpp");
+        Check(Near(Constant(hlsli, "static const float kOthersSharpShare"), hr::kOthersSharpShare) && Has(hlsli, "return mirrorOnCar ? max(coatShare, kOthersSharpShare) : coatShare;") &&
+                  Has(hlsli, "return !coneOnCar || !haveMirror || mirrorOnCar;"),
+              "the shaders' MirrorShare and ConeHitCounts are the header's");
+        Check(Has(refl, "const bool mirrorOnCar = coatHit && coatCar;") && Has(refl, "if (fade[q] > 0.0 && !ConeHitCounts(car[q], haveMirror, mirrorOnCar))") &&
+                  Has(refl, "carSum += car[j] ? w : 0.0;") && Has(refl, "return float4(colour, mixedCar >= 0.5 * weight ? -(1.0 + min(weight, 1.0)) : 1.0 + min(weight, 1.0));"),
+              "the player's trace drops a cone ray's hit on another car where the mirror did not hit one, sums the weight on cars and signs the code by its majority");
+        Check(Has(opp, "const bool mirrorOnCar = coatHit && coatCar;") && Has(opp, "if (fade[q] > 0.0 && !ConeHitCounts(car[q], haveMirror, mirrorOnCar))") &&
+                  Has(opp, "carSum += car[j] ? w : 0.0;") && Has(opp, "return float4(colour, mixedCar >= 0.5 * weight ? -(1.0 + min(weight, 1.0)) : 1.0 + min(weight, 1.0));"),
+              "the opponents' trace does the same");
+        Check(Has(refl, "out bool other, out float3 hidden, out bool car)") && Has(refl, "car = hitsCar;") && Has(refl, "bool hitsCar = hitsOther;") &&
+                  Has(refl, "hitsCar = !hitsOther || hitInstance.draw != CarRtLoadInstance(originInstance).draw;"),
+              "TraceRay's `car`: another car in the player's pass; in the opponents' variant the player's car and the other opponents, not the opponent's own other parts");
+        Check(Near(Constant(variant, "static const float kCarReflCoatF0"), hr::kCoatLayerF0) && Near(Constant(variant, "static const float kCarReflCoatPower"), hr::kCoatLayerPower) &&
+                  Near(Constant(variant, "static const float kCarReflCoatMax"), hr::kCoatLayerMax),
+              "the paint variant's layer numbers are the header's");
+        Check(Has(variant, "(g_CarReflC.w & 2u) == 0u") && Has(selfrefl_cpp, "larecomp::settings::mcla_gpu_car_rt_coat_layer.Get()") && Has(selfrefl_cpp, "car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer);"),
+              "the paint's layer is switched by the constants' bit 1, which the host sets from mcla_gpu_car_rt_coat_layer");
       }
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_hit_rules_test"), "the CMake file builds this test");
     }

@@ -24,10 +24,13 @@
 //                                     perfect mirror, one ray: the first version's razor edge, for a picture to compare with)
 //   mcla_gpu_car_selfrefl_rt_denoise  a debug override of the passes of the filter that takes the cone's grain out of the image before the paint
 //                                     reads it (2 by default; 1 one pass; 0 none: the raw trace, for a picture to compare with). See DENOISE.
+//   mcla_gpu_car_rt_coat_layer        a debug switch (RT-HIT-SHADING-4, on by default): the paint adds the clear coat's layer over the reflection of another car (the image's sign says which
+//                                     texels: car_rt_hit_rules.h CoatLayerAmount; the variant's CarReflCoat)
 //   mcla_gpu_car_selfrefl_view = 5    the debug view of this pass's image at the paint's pixel (car_selfrefl.h): purple no image this frame,
 //                                     cyan the image has no data there (the march ran), green the ray hits nothing of the car, yellow a hit
-//                                     on a part the camera sees, orange a hit on a part it does not (the fallback colour), brighter the
-//                                     heavier the weight; red: the shaded point is not in the history (as view 4)
+//                                     on the player's own part, orange a hit on another car (the sign of the code; before RT-HIT-SHADING-4: on a part the camera does not see),
+//                                     brighter the heavier the weight; red: the shaded point is not in the history (as view 4). View 2 is this pass's colour alone at full intensity
+//                                     (no weight, no fresnel); 6 the clear coat's layer's amount, 7 what it adds
 //
 // OTHER CARS: the scene (car_rt_scene.h) also holds the cars driving alongside, so the paint and the chrome reflect an opponent or a car of the traffic beside
 // the player's car. The reflection ray hits them (the parts' mask, 16); the primary ray never does, so the effect stays the player's own car's. What a hit on

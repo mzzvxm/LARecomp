@@ -7,7 +7,7 @@
 // WHAT IT DOES. It is the player's TraceTexel for a texel of ANOTHER car's paint: the primary ray's mask is the push's z (CAR_RT_MASK_OTHER_PAINT: only the instances of
 // another car's draws of the paint's shader), so the hit is the opponent's own panel at the pixel, with its mesh normal; the cone of rays goes from it against the push's parts
 // (the player's body, glass and tyres and every other car, the opponent's own other instances among them), and the texel is written in the player's codes (alpha 0 no data,
-// 1 + w a hit on parts the camera sees, -(1 + w) on parts it does not, rgb the colour; the aux image: hit distance, an instance code of its own, N.V, 1). What differs from
+// 1 + w a hit on the opponent's own parts (or nothing of another car), -(1 + w) a hit on ANOTHER CAR (the player's, another opponent's: RT-HIT-SHADING-4), rgb the colour; the aux image: hit distance, an instance code of its own, N.V, 1). What differs from
 // the player's texel:
 //   - the colour of a hit on the PLAYER's car the history does not show. The player's pass takes the pixel's own surface in shade for it (the pixel IS the player's car); here
 //     the pixel is the opponent's, so the player's car has a record in the instances' table (List::player_row, the row in the push's opp.z) and OtherCarColour reads it as it
@@ -114,13 +114,15 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     float coatDistance = 0.0;
     bool coatOther = false;
     float3 coatHidden = float3(0.0, 0.0, 0.0);
+    bool coatCar = false;
     bool coatHit = false;
+    const bool haveMirror = g_push.coat.w > 0.0 && tanHalf > 0.0 && maxRays >= 4u;
     [branch]
-    if (g_push.coat.w > 0.0 && tanHalf > 0.0 && maxRays >= 4u)
+    if (haveMirror)
     {
         coatShare = CarCoatShare(nv, CarMatFresnelPower(primaryInstance), g_push.coat.w);
         coatHit = TraceRay(history, origin, ConeDirection(mirror, normal, 0.0, 0, 0.0), reach, 0.0, primaryInstance, primaryPrimitive, normal, coatFade, coatVisible, coatSeen,
-                           coatDistance, coatOther, coatHidden);
+                           coatDistance, coatOther, coatHidden, coatCar);
     }
     float fade[4] = {0.0, 0.0, 0.0, 0.0};
     float visible[4] = {0.0, 0.0, 0.0, 0.0};
@@ -128,6 +130,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     float distances[4] = {0.0, 0.0, 0.0, 0.0};
     float3 hidden[4] = {float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 0.0)};
     bool other[4] = {false, false, false, false};  // a hit on another car (the opponent's own other parts and the other opponents): `hidden` is its colour
+    bool car[4] = {false, false, false, false};    // a hit on a vehicle other than the opponent's own (the player's car, the other opponents): TraceRay's `car`, the code's sign and the mirror's rule
     bool found = coatHit;  // the mirror ray found a part: the cone's inner pair is cast too
     [unroll]
     for (int slot = 0; slot < 4; ++slot)
@@ -152,7 +155,8 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
         float d = 0.0;
         bool o = false;
         float3 hc = float3(0.0, 0.0, 0.0);
-        if (TraceRay(history, origin, direction2, reach, tanHalf, primaryInstance, primaryPrimitive, normal, f, v, c, d, o, hc))
+        bool k = false;
+        if (TraceRay(history, origin, direction2, reach, tanHalf, primaryInstance, primaryPrimitive, normal, f, v, c, d, o, hc, k))
         {
             fade[ray] = f;
             visible[ray] = v;
@@ -160,12 +164,23 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
             distances[ray] = d;
             other[ray] = o;
             hidden[ray] = hc;
+            car[ray] = k;
             found = true;
         }
     }
     if (!found)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // nothing of any car in the reflection: the environment stays
+    }
+    // RT-HIT-SHADING-4, as the player's texel: the mirror decides for another car (the player's car, the other opponents)
+    const bool mirrorOnCar = coatHit && coatCar;
+    [unroll]
+    for (int q = 0; q < 4; ++q)
+    {
+        if (fade[q] > 0.0 && !ConeHitCounts(car[q], haveMirror, mirrorOnCar))
+        {
+            fade[q] = 0.0;
+        }
     }
 
     // 3. what the hits show. A hit on another car: TraceRay made the colour of its hidden part. A hit on the PLAYER's car (not `other`): the history's colour where the camera
@@ -185,7 +200,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
         playerColour *= g_push.tune.x;
     }
     float weightSum = 0.0;
-    float visibleSum = 0.0;
+    float carSum = 0.0;
     float3 colourSum = float3(0.0, 0.0, 0.0);
     [unroll]
     for (int j = 0; j < 4; ++j)
@@ -208,7 +223,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
         }
         const float w = fade[j] * (g_push.tune.y + (1.0 - g_push.tune.y) * visible[j]);
         weightSum += w;
-        visibleSum += w * visible[j];
+        carSum += car[j] ? w : 0.0;
         colourSum += w * (standIn + (seen[j] - standIn) * visible[j]);
     }
     // the coat's lobe (a hit on the player's car by the same rule as the cone's rays above), then the two lobes added by the share
@@ -231,9 +246,9 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     const float coatWeight = coatHit ? coatFade * (g_push.tune.y + (1.0 - g_push.tune.y) * coatVisible) : 0.0;
     const float3 coatColour = coatStandIn + (coatSeen - coatStandIn) * coatVisible;
     float3 mixed;
-    float mixedVisible;
+    float mixedCar;
     float sharp;
-    const float weight = CarCoatMix(weightSum, colourSum, visibleSum, rays, coatShare, coatWeight, coatColour, coatWeight * coatVisible, mixed, mixedVisible, sharp);
+    const float weight = CarCoatMix(weightSum, colourSum, carSum, rays, MirrorShare(coatShare, mirrorOnCar), coatWeight, coatColour, coatCar ? coatWeight : 0.0, mixed, mixedCar, sharp);
     if (weight < 1.0 / 512.0)
     {
         return float4(0.0, 0.0, 0.0, 1.0);
@@ -254,7 +269,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     }
     aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);
     aux.w = 1.0 - kAuxSharpScale * sharp;  // the denoise leaves the mirror's part of the texel alone
-    return float4(colour, mixedVisible >= 0.5 * weight ? 1.0 + min(weight, 1.0) : -(1.0 + min(weight, 1.0)));
+    return float4(colour, mixedCar >= 0.5 * weight ? -(1.0 + min(weight, 1.0)) : 1.0 + min(weight, 1.0));  // the sign: mostly on another car
 }
 
 [numthreads(8, 8, 1)]

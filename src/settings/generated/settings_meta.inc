@@ -253,6 +253,7 @@
 {"mcla_gpu_car_rt_check", "MCLA/GPU"},
 {"mcla_gpu_car_rt_clearcoat", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_ambient", "MCLA/GPU"},
+{"mcla_gpu_car_rt_coat_layer", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_calibrate", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_cascade", "MCLA/GPU"},
 {"mcla_gpu_car_rt_hit_gain", "MCLA/GPU"},
