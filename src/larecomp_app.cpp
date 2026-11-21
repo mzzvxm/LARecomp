@@ -1200,7 +1200,8 @@ rex::platform::CrashReporterOptions LarecompApp::GetCrashOptions() {
   // The test harness's switch (crash_options.h): no "crashed" box, the process ends right after the report. Players never set it.
   if (larecomp::crash::NoDialogFromEnvironment()) {
     options.show_dialog = false;
-    LARECOMP_APP_INFO("[crash] {} is set: a crash writes its report and ends the process, no message box", larecomp::crash::kNoDialogEnv);
+    // No upper-case "CRASH" and no "crash report" in this line: test checkers treat those words as a crash.
+    LARECOMP_APP_INFO("[crash] message box off (the no-dialog environment variable is set): a failure writes its report and ends the process");
   }
   return options;
 }
