@@ -78,6 +78,7 @@
 #include "host_passes.h"
 #include "layout.h"
 #include "light_manager.h"
+#include "local_lights.h"
 #include "memory_census.h"
 #include "occlusion.h"
 #include "overlay.h"
@@ -302,6 +303,7 @@ class Renderer final : public RenderThread::Executor {
   CarFrame car_frame_;        // render thread; the player car's draws of every frame a car effect asks for them (car_frame.h)
   HeadlightRig headlights_;   // render thread; the cars' headlights as lights for the lit shaders at night (headlight_rig.h)
   LocalShadow local_shadow_;  // render thread; the headlight shadow maps (local_shadow.h), recorded at the history trigger before the car shadow map's and the AO's passes
+  LocalLights local_lights_;  // render thread; the deferred local light pass (local_lights.h, mcla_gpu_local_lights): reads the G-buffer, the shared screen products, the AO's camera and the light manager
   LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them

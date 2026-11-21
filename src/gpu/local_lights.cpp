@@ -1,0 +1,458 @@
+// MCLA GPU renderer -- the deferred local light pass. See local_lights.h; the rules (the lights taken, the camera, the units, the scissor, the buffer) are in local_lights_rules.h and tested
+// without a renderer, the pixel maths in hlsl/local_light.hlsli and hlsl/local_light_ps.hlsl.
+
+#include "local_lights.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <format>
+#include <string>
+
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+
+#include "ao.h"
+#include "descriptors.h"
+#include "device.h"
+#include "gbuffer.h"
+#include "host_shaders.h"
+#include "light_manager.h"
+#include "mod_light_source.h"
+#include "pass_timing.h"
+#include "records.h"
+#include "screen_shared.h"
+#include "temporal_identities.h"
+
+namespace mcla::gpu {
+
+namespace ll = larecomp::gpu::local_lights;
+namespace mls = larecomp::gpu::mod_light_source;
+
+namespace {
+
+constexpr const char* kPrefix = "[local-lights]";
+constexpr uint32_t kIntervalFrames = 600;
+// The registers the units come from, as the translated lit shaders name them (xCityDefault__PSMultiLight: ShaderGlobals packoffset(c63), OcclusionInfo packoffset(c56)): PS float constants.
+constexpr uint32_t kPsOcclusionInfo = 56;
+constexpr uint32_t kPsShaderGlobals = 63;
+constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) | uint8_t(plume::RenderColorWriteEnable::GREEN) | uint8_t(plume::RenderColorWriteEnable::BLUE);
+
+const char* SkipName(uint32_t why) {
+  switch (why) {
+    case 0: return "no G-buffer planes";
+    case 1: return "no camera";
+    case 2: return "no colour target";
+    case 3: return "no lights";
+    case 4: return "no pipeline";
+    case 5: return "no buffer";
+    default: return "recorded";
+  }
+}
+
+// The empty frame the pass reads when the manager is not running (a LightFrame is about 12 KB: made once).
+const larecomp::gpu::LightFrame& EmptyFrame() {
+  static const larecomp::gpu::LightFrame frame{};
+  return frame;
+}
+
+}  // namespace
+
+LocalLights::~LocalLights() = default;
+
+void LocalLights::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
+  device_ = &device;
+  frames_ = &frames;
+  heap_ = &heap;
+  passes_ = &passes;
+  edram_ = &edram;
+  pass_timing_ = &pass_timing;
+  resources_failed_ = false;
+  pipelines_failed_ = false;
+}
+
+void LocalLights::Shutdown() {
+  // The GPU is idle and the FrameRing drained: the framebuffers the draws used belong to the EDRAM's cache, the rest goes at once.
+  pipelines_.clear();
+  shaders_ = {};
+  for (Slot& slot : slots_) {
+    slot.set.reset();
+    slot.buffer.reset();
+  }
+  layout_.reset();
+  gbuffer_ = nullptr;
+  screen_ = nullptr;
+  ao_ = nullptr;
+  manager_ = nullptr;
+  device_ = nullptr;
+  frames_ = nullptr;
+  heap_ = nullptr;
+  passes_ = nullptr;
+  edram_ = nullptr;
+  pass_timing_ = nullptr;
+  enabled_ = false;
+}
+
+uint64_t LocalLights::HeldBytes() const {
+  uint64_t bytes = 0;
+  for (const Slot& slot : slots_) {
+    bytes += slot.buffer ? ll::kBufferAlloc : 0u;
+  }
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// resources
+// ---------------------------------------------------------------------------
+
+bool LocalLights::EnsureResources() {
+  if (layout_ && shaders_[0] && shaders_[1]) {
+    return true;
+  }
+  if (resources_failed_ || !device_ || !passes_ || !heap_) {
+    return false;
+  }
+  // The host passes' four bindless texture sets (spaces 0-3: the planes and the depth, plain and multisampled), the lights' buffer (space 4), the push block (b0, space 5) for the pixel
+  // stage: the layout of the fused resolve (resolve_memory.cpp), with this pass's set in place of the memory.
+  set_builder_.begin();
+  set_builder_.addByteAddressBuffer(0);  // t0, space 4: the header and the lights
+  set_builder_.end();
+  plume::RenderPipelineLayoutBuilder builder;
+  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  for (uint32_t set = 0; set < 4; ++set) {
+    builder.addDescriptorSet(heap_->texture_set_builder());
+  }
+  builder.addDescriptorSet(set_builder_);
+  builder.addPushConstant(0, 5, sizeof(ll::PassPush), plume::RenderShaderStageFlag::PIXEL);
+  builder.end();
+  layout_ = device_->CreatePipelineLayout(builder, "local lights layout");
+  bool ok = layout_ != nullptr;
+  for (uint32_t i = 0; ok && i < 2; ++i) {
+    const HostShaderBlob blob = LocalLightPixelShader(i != 0);
+    shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
+    ok = shaders_[i] != nullptr;
+  }
+  if (!ok) {
+    REXLOG_ERROR("{} the layout or a shader could not be made: no local light pass this session", kPrefix);
+    shaders_ = {};
+    layout_.reset();
+    resources_failed_ = true;
+    return false;
+  }
+  return true;
+}
+
+bool LocalLights::EnsureSlot(uint32_t frame_slot) {
+  if (frame_slot >= kFramesInFlight || !device_) {
+    return false;
+  }
+  Slot& slot = slots_[frame_slot];
+  if (slot.set) {
+    return true;
+  }
+  slot.buffer = device_->CreateBuffer(plume::RenderBufferDesc::UploadBuffer(ll::kBufferAlloc, plume::RenderBufferFlag::STORAGE), "local lights buffer");
+  if (!slot.buffer) {
+    return false;
+  }
+  slot.set = device_->CreateDescriptorSet(set_builder_, 1, 0, "local lights set");
+  if (!slot.set) {
+    slot.buffer.reset();
+    return false;
+  }
+  slot.set->setBuffer(0, slot.buffer.get(), ll::kBufferAlloc);
+  return true;
+}
+
+plume::RenderPipeline* LocalLights::PipelineFor(plume::RenderFormat format, uint32_t samples) {
+  for (PipelineEntry& entry : pipelines_) {
+    if (entry.format == format && entry.samples == samples) {
+      return entry.pipeline.get();
+    }
+  }
+  if (pipelines_failed_ || !layout_ || !shaders_[samples > 1 ? 1 : 0]) {
+    return nullptr;
+  }
+  // ADD (ONE, ONE) on the colour, the alpha never written; no depth. Made here, on first use (a short stutter: the first frame with the pass on).
+  plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+  blend.blendEnabled = true;
+  blend.srcBlend = plume::RenderBlend::ONE;
+  blend.dstBlend = plume::RenderBlend::ONE;
+  blend.blendOp = plume::RenderBlendOperation::ADD;
+  blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+  blend.dstBlendAlpha = plume::RenderBlend::ONE;
+  blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
+  blend.renderTargetWriteMask = kWriteRgb;
+  PipelineEntry entry;
+  entry.format = format;
+  entry.samples = samples;
+  entry.pipeline = passes_->CreatePipeline(*layout_, *shaders_[samples > 1 ? 1 : 0], format, blend, samples, "local lights");
+  if (!entry.pipeline) {
+    pipelines_failed_ = true;
+    REXLOG_ERROR("{} the pipeline could not be made ({} host samples): no local light pass this session (reported once)", kPrefix, samples);
+    return nullptr;
+  }
+  plume::RenderPipeline* raw = entry.pipeline.get();
+  pipelines_.push_back(std::move(entry));
+  return raw;
+}
+
+// ---------------------------------------------------------------------------
+// the frame
+// ---------------------------------------------------------------------------
+
+void LocalLights::BeginFrame() {
+  namespace st = larecomp::settings;
+  const bool on = st::mcla_gpu_local_lights.Get();
+  sources_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_local_lights_sources.Get()), 0, 3)) & ll::kSourceMask;
+  ab_ = ll::AbOf(int(st::mcla_gpu_local_lights_ab.Get()));
+  gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
+  ++frame_;
+  if (on != enabled_) {
+    enabled_ = on;
+    if (on) {
+      REXLOG_INFO("{} on (mcla_gpu_local_lights, live): at the mid-scene depth copy, after the occlusion's apply, one scissored additive draw per light from the G-buffer's normal and albedo "
+                  "and the main depth; sources {} (1 the frame's surface lights, 2 a test lamp), lamp A/B {} (0 grid, 1 nowhere, 2 pass), gain {:.2f}",
+                  kPrefix, sources_, int(ab_), gain_);
+      EnsureResources();  // the pipelines are made on the first frame that records
+    } else {
+      REXLOG_INFO("{} off", kPrefix);
+    }
+  }
+  // The wants (sticky; the G-buffer and the shared products read them at their own BeginFrame, which the Scene runs after this): with the pass off nothing asks for any plane or product,
+  // so no sidecar is made and the AO's depth chain runs for nobody.
+  if (gbuffer_ != nullptr) {
+    gbuffer_->Want(gbuffer::Consumer::kLocalLights,
+                   enabled_ ? (gbuffer::PlaneBit(gbuffer::kPlaneNormal) | gbuffer::PlaneBit(gbuffer::kPlaneAlbedo) | gbuffer::PlaneBit(gbuffer::kPlaneMaterial)) : 0u);
+  }
+  if (screen_ != nullptr) {
+    screen_->Want(screen::Consumer::kLocalLights, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0u);
+  }
+  if (manager_ != nullptr) {
+    manager_->Want(enabled_ && (sources_ & ll::kSourceFrame) != 0);
+  }
+  votes_.Reset();
+  trigger_seen_ = false;
+}
+
+void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
+  if (!enabled_ || !colour || trigger_seen_) {
+    return;
+  }
+  // The registers the units come from: every colour draw of the main view before the trigger votes with what its banks hold (a draw whose shader does not use them leaves what an earlier one set).
+  const uint8_t* ps = banks.ps.data();
+  votes_.Add({LoadBe32(ps + size_t(kPsShaderGlobals) * 16 + 12), LoadBe32(ps + size_t(kPsOcclusionInfo) * 16), LoadBe32(ps + size_t(kPsOcclusionInfo) * 16 + 4),
+              LoadBe32(ps + size_t(kPsOcclusionInfo) * 16 + 8)});
+}
+
+bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+  (void)record;
+  if (!enabled_ || !list || trigger_seen_ || !gbuffer_published || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
+    return false;
+  }
+  trigger_seen_ = true;  // once a frame
+  const gbuffer::GBufferFrame& gb = gbuffer_->frame();
+  if (!gb.Has(gbuffer::kPlaneNormal) || !gb.Has(gbuffer::kPlaneAlbedo)) {
+    Count(Skip::kNoPlanes);
+    return false;
+  }
+
+  // The camera: the frame's own pose where the AO trusts the vertex constants for it, else the last frame's; the lens and the projection's depth rows from the shared products' camera.
+  const screen::ScreenFrame& sf = screen_->Frame();
+  if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || (sf.flags & screen::kFramePause) != 0 || !(sf.camera.tan_half_fov[0] > 0.0f) ||
+      !(sf.camera.tan_half_fov[1] > 0.0f)) {
+    Count(Skip::kNoCamera);
+    return false;
+  }
+  float pose[16];
+  bool own_pose = false;
+  if (ao_ == nullptr || !ao_->TriggerViewInverse(pose, &own_pose)) {
+    std::memcpy(pose, sf.camera.view_inverse, sizeof(pose));
+  }
+  ll::Rows rows;
+  if (!ll::RowsFromViewInverse(pose, &rows)) {
+    Count(Skip::kNoCamera);
+    return false;
+  }
+
+  // The main view's colour: the identity of the draws that wrote the depth, at the same samples and scale (ao.cpp RecordApply, gbuffer.cpp DrawView).
+  EdramTargets::Target& depth = *summary.source;
+  EdramKey key;
+  key.base_tiles = temporal::kMainColorBase;
+  key.pitch = temporal::kMainPitch;
+  key.depth = 0;
+  key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
+  key.samples = summary.source_key.samples;
+  const EdramTargets::Target* found = edram_->Find(key);
+  if (!found || !found->texture || found->host_samples != gb.host_samples || depth.host_samples != gb.host_samples || found->scale.Edge(found->width) != gb.width ||
+      found->scale.Edge(found->height) != gb.height) {
+    Count(Skip::kNoTarget);
+    return false;
+  }
+
+  // The lights: the frame's (when the sources say so), the lamp A/B's, the test lamp.
+  extras_.clear();
+  if (ab_ == ll::Ab::kPass) {
+    if (const std::shared_ptr<const mls::Set> set = mls::Global().Current()) {
+      std::vector<larecomp::gpu::Light> lamps;
+      mls::Candidates(*set, rows.position, ll::kMaxPassLights, &lamps);
+      for (const larecomp::gpu::Light& lamp : lamps) {
+        extras_.push_back(ll::AsPassLight(lamp));
+      }
+    }
+  }
+  if ((sources_ & ll::kSourceTest) != 0) {
+    extras_.push_back(ll::MakeTestLamp(rows));
+  }
+  const larecomp::gpu::LightFrame& frame = (manager_ != nullptr && manager_->active()) ? manager_->Frame() : EmptyFrame();
+  const ll::Selection selection = ll::SelectLights(frame, sources_, extras_.data(), uint32_t(extras_.size()));
+  if (selection.count == 0) {
+    Count(Skip::kNoLights);
+    return false;
+  }
+  std::array<ll::PixelRect, ll::kMaxPassLights> rects;
+  uint32_t visible = 0;
+  for (uint32_t i = 0; i < selection.count; ++i) {
+    rects[i] = ll::ScissorOfLight(selection.lights[i], rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height);
+    visible += rects[i].Empty() ? 0u : 1u;
+  }
+  if (visible == 0) {
+    Count(Skip::kNoLights);  // every light is off the picture
+    return false;
+  }
+
+  plume::RenderPipeline* pipeline = EnsureResources() ? PipelineFor(found->format, gb.host_samples) : nullptr;
+  if (!pipeline) {
+    Count(Skip::kNoPipeline);
+    if (!no_pipeline_logged_) {
+      no_pipeline_logged_ = true;
+      REXLOG_WARN("{} frame {}: no layout, shader or pipeline: the pass does not run (reported once)", kPrefix, frame_);
+    }
+    return false;
+  }
+  if (!EnsureSlot(frame_slot)) {
+    Count(Skip::kNoBuffer);
+    return false;
+  }
+
+  // The units from the frame's vote and the buffer.
+  std::array<uint32_t, 4> bits{};
+  const bool voted = votes_.Best(&bits);
+  ll::PassInputs in;
+  in.rows = rows;
+  in.tan_x = sf.camera.tan_half_fov[0];
+  in.tan_y = sf.camera.tan_half_fov[1];
+  for (int i = 0; i < 4; ++i) {
+    in.lin[i] = sf.camera.lin[i];
+  }
+  in.width = gb.width;
+  in.height = gb.height;
+  in.units = voted ? ll::UnitsFromBits(bits, gain_) : ll::Units{};
+  in.units.gain = gain_;
+  in.units.exposure = (std::isfinite(sf.camera.exposure_bias) && sf.camera.exposure_bias > 0.0f) ? sf.camera.exposure_bias : 1.0f;
+  in.flags = gb.Has(gbuffer::kPlaneMaterial) ? ll::kFlagMaterial : 0u;
+  ll::BuildBuffer(in, selection, scratch_.data());
+  Slot& slot = slots_[frame_slot];
+  void* mapped = slot.buffer->map();
+  if (mapped == nullptr) {
+    Count(Skip::kNoBuffer);
+    return false;
+  }
+  std::memcpy(mapped, scratch_.data(), ll::kBufferAlloc);
+  slot.buffer->unmap();
+
+  // The colour is drawn into; the depth plane, the G-buffer's planes (published in the shader-read layout) are read. After the pass the game's next draws bind their own layouts again.
+  bool unset = false;
+  EdramTargets::Target* colour = edram_->Get(key, found->height, found->scale, 0, list, &unset);
+  if (!colour) {
+    Count(Skip::kNoTarget);
+    return false;
+  }
+  edram_->Transition(list, depth, plume::RenderTextureLayout::SHADER_READ);
+  edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
+  EdramTargets::Target* only[1] = {colour};
+  plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
+  if (!framebuffer) {
+    Count(Skip::kNoTarget);
+    return false;
+  }
+  pass_timing_->Mark(list, "local lights");
+  list->setFramebuffer(framebuffer);
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(gb.width), float(gb.height)};
+  list->setViewports(&viewport, 1);
+  list->setGraphicsPipelineLayout(layout_.get());
+  for (uint32_t set = 0; set < 4; ++set) {
+    list->setGraphicsDescriptorSet(heap_->texture_set(), set);
+  }
+  list->setGraphicsDescriptorSet(slot.set.get(), 4);
+  list->setPipeline(pipeline);
+  ll::PassPush push = {};
+  push.slots[0] = summary.sample_slot;
+  push.slots[1] = gb.slot[gbuffer::kPlaneNormal];
+  push.slots[2] = gb.slot[gbuffer::kPlaneAlbedo];
+  push.slots[3] = gb.Has(gbuffer::kPlaneMaterial) ? gb.slot[gbuffer::kPlaneMaterial] : larecomp::gpu::kNoLightSlot;
+  push.info[2] = gb.sample0;
+  uint32_t drawn = 0;
+  for (uint32_t i = 0; i < selection.count; ++i) {
+    if (rects[i].Empty()) {
+      continue;
+    }
+    const plume::RenderRect scissor(rects[i].x0, rects[i].y0, rects[i].x1, rects[i].y1);
+    list->setScissors(&scissor, 1);
+    push.info[0] = i;
+    list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+    list->drawInstanced(3, 1, 0, 0);
+    ++drawn;
+    pixels_scissored_ += rects[i].Area();
+  }
+  list->setFramebuffer(nullptr);
+  pass_timing_->Mark(list, "after local lights");
+
+  Count(Skip::kRecorded);
+  lights_drawn_ += drawn;
+  frames_own_pose_ += own_pose ? 1u : 0u;
+  if (!first_logged_) {
+    first_logged_ = true;
+    REXLOG_INFO("{} frame {}: the first run: {} lights drawn of {} ({} from the frame, {} handed over: lamp A/B {} / test lamp {}), the picture {}x{} at {} host samples, G-buffer planes {} "
+                "(RT3 {}), the camera {} (lens {:.3f} x {:.3f}), the units: night {:.3f}, height factor {}, exposure {:.1f}, gain {:.2f} ({} colour draws voted, {} distinct values)",
+                kPrefix, frame_, drawn, selection.count, selection.from_frame, selection.from_extra, int(ab_), (sources_ & ll::kSourceTest) != 0 ? "on" : "off", gb.width, gb.height,
+                gb.host_samples, gb.valid, gb.Has(gbuffer::kPlaneMaterial) ? "there" : "not written yet", own_pose ? "the frame's own" : "the last frame's", in.tan_x, in.tan_y,
+                in.units.night,
+                in.units.occ[3] > 0.0f ? std::format("on (x {:.1f} y {:.4f} z {:.3f})", in.units.occ[0], in.units.occ[1], in.units.occ[2]) : std::string("not known"), in.units.exposure, in.units.gain,
+                votes_.draws(), votes_.distinct());
+  }
+  if (voted && (!units_logged_ || bits != last_units_bits_)) {
+    units_logged_ = true;
+    last_units_bits_ = bits;
+    REXLOG_INFO("{} frame {}: the units' vote: night light intensity (PS c63.w) {:.3f}, OcclusionInfo (PS c56) {:.4f} {:.5f} {:.4f}; {} colour draws, {} distinct values{} (logged when it changes)", kPrefix, frame_,
+                ll::BitsToFloat(bits[0]), ll::BitsToFloat(bits[1]), ll::BitsToFloat(bits[2]), ll::BitsToFloat(bits[3]), votes_.draws(), votes_.distinct(),
+                votes_.overflow() != 0 ? std::format(" ({} draws had values past the table)", votes_.overflow()) : std::string());
+  }
+  return true;
+}
+
+void LocalLights::OnPresent() {
+  if (!enabled_) {
+    return;
+  }
+  ++frames_run_;
+  if (frames_run_ % kIntervalFrames == 0) {
+    LogInterval();
+  }
+}
+
+void LocalLights::LogInterval() {
+  std::string why;
+  for (uint32_t i = 0; i < uint32_t(Skip::kCount); ++i) {
+    if (counts_[i] != 0) {
+      why += std::format("{}{} {}", why.empty() ? "" : ", ", SkipName(i), counts_[i]);
+    }
+  }
+  REXLOG_INFO("{} {} frames with the pass on: {} lights drawn, {:.1f} MPixels scissored; the trigger frames: {}; the frame's own camera pose in {} frames; buffers {} B", kPrefix, kIntervalFrames,
+              lights_drawn_, double(pixels_scissored_) * 1.0e-6, why.empty() ? std::string("none") : why, frames_own_pose_, HeldBytes());
+  counts_.fill(0);
+  lights_drawn_ = 0;
+  pixels_scissored_ = 0;
+  frames_own_pose_ = 0;
+}
+
+}  // namespace mcla::gpu

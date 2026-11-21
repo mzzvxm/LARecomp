@@ -122,9 +122,9 @@ void LightManager::Reset() {
 
 void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
   const int every = larecomp::settings::mcla_gpu_lights_census.Get();
-  if (every <= 0 || rig_ == nullptr || shadow_ == nullptr) {
+  if ((every <= 0 && !wanted_) || rig_ == nullptr || shadow_ == nullptr) {
     if (active_) {
-      REXLOG_INFO("{} off (mcla_gpu_lights_census = {})", kPrefix, every);
+      REXLOG_INFO("{} off (mcla_gpu_lights_census = {}, no consumer of the frame)", kPrefix, every);
       Reset();
     }
     return;
@@ -133,10 +133,10 @@ void LightManager::BeginFrame(uint64_t frame, uint32_t upload_slot) {
     Reset();
     active_ = true;
     cars_.SetEnabled(true);  // the hook now notes every kind of every car's light points (LU-7); polled at the present
-    REXLOG_INFO("{} on (mcla_gpu_lights_census = {}, live): collects the headlight rig's lights, the replay's shadow views and the volume's street lamps into one frame every guest frame, "
+    REXLOG_INFO("{} on (mcla_gpu_lights_census = {}{}, live): collects the headlight rig's lights, the replay's shadow views and the volume's street lamps into one frame every guest frame, "
                 "checks it against the headlight block and the volume's inputs, uploads {} bytes of GpuLights a frame, polls the cars' light points of all 19 kinds; nothing reads it "
                 "(the picture is unchanged)",
-                kPrefix, every, sizeof(larecomp::gpu::GpuLightBuffer));
+                kPrefix, every, wanted_ ? ", a consumer of the frame is on" : "", sizeof(larecomp::gpu::GpuLightBuffer));
   }
   every_ = every;
   upload_slot_ = upload_slot;  // the latest list's: the upload is made at the present, into the slot that is being recorded
@@ -226,7 +226,9 @@ void LightManager::OnPresent() {
   {
     Cost cost(&frame_cpu_);
     lm::CheckFrameInvariants(collector_.frame(), collector_.has_previous() ? &collector_.previous() : nullptr, &check_);
-    Upload();
+    if (every_ > 0) {
+      Upload();  // the census's own run (a consumer of the frame reads Frame(), not this buffer)
+    }
     PollCars();
     collector_.EndFrame();
   }
@@ -250,7 +252,7 @@ void LightManager::OnPresent() {
   window_.cpu_max_ns = std::max(window_.cpu_max_ns, ns);
   frame_cpu_ = {};
   begun_ = false;
-  if (!lights_seen_ && st.headlights + st.lamps != 0) {
+  if (every_ > 0 && !lights_seen_ && st.headlights + st.lamps != 0) {
     lights_seen_ = true;
     Census();  // the first frame with a light: the line is there at once, and the window starts again after it
   } else if (every_ > 0 && presents_ % uint64_t(every_) == 0) {

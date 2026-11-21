@@ -62,6 +62,7 @@ add_library(larecomp_gpu OBJECT
     latency_streamline.cpp
     layout.cpp
     light_manager.cpp
+    local_lights.cpp
     memory_census.cpp
     msaa_level.cpp
     native_window.cpp
@@ -287,6 +288,11 @@ add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_
 # deliberate difference found) likewise:
 #   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
 add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
+# The deferred local light pass's rules (local_lights_rules.h: which lights the pass takes from the frame and from the lamp A/B, the camera's rows and a pixel's world position, the game's night
+# light intensity and height factor, the votes that pick them from the draws' constants, the scissor of a light, the buffer and the push block the shader reads; it compiles
+# hlsl/local_light.hlsli as C++ and compares it with the twin, and reads the sources it is given: the shaders' CMake lines, the settings, the A/B's hook in mod_lights.cpp) likewise:
+#   cmake --build <dir> --target larecomp_local_lights_test, then run src/gpu/larecomp_local_lights_test <src dir> (exit 0 = passed).
+add_executable(larecomp_local_lights_test EXCLUDE_FROM_ALL local_lights_test.cpp)
 # The vehicles' light points, all 19 kinds (light_points.h: the hook's decoder and the table keyed by the light object; car_lights.h: the cars, their frames, sides, directions, bits and levels,
 # the omni lights the lamps make, the census line; mod_light_source.h: a mod's lamps as candidates) held to the night probe's recorded points (the player, two racers, three traffic cars) likewise:
 #   cmake --build <dir> --target larecomp_car_lights_test, then run src/gpu/larecomp_car_lights_test (exit 0 = passed).
@@ -703,6 +709,10 @@ larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DE
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
+# The deferred local light pass (local_lights.h, GB-H1): one scissored additive draw per light into the main colour, the surface from the G-buffer and the main depth; once for planes with one
+# sample, once for the host's MSAA level.
+larecomp_gpu_host_shader(local_light_ps ps_6_0 DEFINES LL_PASS_MS=0)
+larecomp_gpu_host_shader(local_light_ms_ps ps_6_0 SOURCE local_light_ps DEFINES LL_PASS_MS=1)
 # The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
 larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
 # ... and the colour captures: colour_post's level 0 from the main colour (plain or multisampled) and a mip level of it.

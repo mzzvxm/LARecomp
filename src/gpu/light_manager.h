@@ -96,6 +96,9 @@ class LightManager {
   // The guest present, BEFORE the rig makes the next frame's set: the frame's own check, the upload, the census.
   void OnPresent();
 
+  // A consumer of Frame() (the deferred local light pass, local_lights.h) asks for the frame while it is on: the manager then runs although mcla_gpu_lights_census is 0 (it collects, checks and
+  // keeps the frame; no census line and no GPU upload, which the census's own run adds). Sticky: set it when the consumer's setting changes. Read at the next BeginFrame.
+  void Want(bool wanted) { wanted_ = wanted; }
   // Whether the manager is running (the setting was on at the last BeginFrame): the volume asks before it hands its inputs over.
   bool active() const { return active_; }
   // The frame as it is now. Valid on the render thread between BeginFrame and OnPresent (the frame is complete once the volume has filled).
@@ -125,6 +128,7 @@ class LightManager {
   larecomp::gpu::light_manager::SelfCheck check_;
 
   int every_ = 0;
+  bool wanted_ = false;       // a consumer of the frame asked for it (Want)
   bool active_ = false;
   bool begun_ = false;        // a frame has been opened and not yet presented
   bool volume_seen_ = false;  // the volume filled in this frame

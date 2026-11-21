@@ -1282,6 +1282,22 @@ class GPUSettings final : public rex::SettingOwner {
     "light's inputs hold, and uploads it; nothing reads it, so the picture does not change. Every Nth guest frame one log line says what was collected and how many "
     "checks found a difference. 0: off (the manager is not called). Live.", rex::kDebugOnly, rex::Range{0, 100000});
 
+  REX_SETTING(bool, mcla_gpu_local_lights, false, "Diagnostic (the deferred local light pass, LIGHT-UNIFY GB-H1; off until the lamp A/B is judged): at the game's mid-scene depth copy, after the ambient occlusion, one draw per light adds "
+    "the light to the main colour from the G-buffer's normal, albedo and lit weight and the depth, in the city's units (a lamp here is a lamp of the game's own light grid: "
+    "mcla_gpu_local_lights_ab holds one lamp through both to compare them). While it is on the main view's draws also write the G-buffer's normal and albedo (a small cost, paid only then). "
+    "Which lights it adds is mcla_gpu_local_lights_sources and mcla_gpu_local_lights_ab; with both at 0 it adds none. Not in the 4x views behind the pause menu and the map, nor in a cutscene. Live.", rex::kDebugOnly);
+
+  REX_SETTING(i32, mcla_gpu_local_lights_sources, 0, "Diagnostic (the deferred local light pass, GB-H1): which lights it adds besides the lamps mcla_gpu_local_lights_ab hands it. A sum: 1 the lights of the frame that add surface light and "
+    "that the game's own shaders do not already light with (today the cars' headlights, which the forward headlight stage lights as well: the two add, so use it with HEADLIGHTS off), "
+    "2 a test lamp 8 m ahead of the camera and 4.5 m up. 0: only the A/B's lamps. Live.", rex::kDebugOnly, rex::Range{0, 3});
+
+  REX_SETTING(i32, mcla_gpu_local_lights_ab, 0, "Diagnostic (the lamp A/B of the deferred local light pass, GB-H1): what happens to the lamps of a mod's lights.bin (mod_lights.cpp; while the camera is over the mod's rectangle the game lights the scene "
+    "with that lamp set alone). 0: the game's own light grid lights them (A). 2: the grid is built with them off and the local light pass adds the same lamps (B; needs mcla_gpu_local_lights). "
+    "1: neither (the control: A and B each minus the control are the lamp's own light in each path). Read when the city's lights are loaded: it applies at the next start.", rex::kDebugOnly, rex::kRestart, rex::Range{0, 2});
+
+  REX_SETTING(f64, mcla_gpu_local_lights_gain, 1.0, "Diagnostic (the deferred local light pass, GB-H1): a multiplier on the light the pass adds (1: the game's units as read: the lamp's colour times the night light intensity and the height factor of the lit "
+    "shaders). The lamp A/B says whether 1 is right. Live.", rex::kDebugOnly, rex::Range{0.0, 16.0});
+
   REX_SETTING(bool, mcla_gpu_sync_builds, false, "Trailer toolkit (M2d): while on, nothing is left out for a pipeline that is still being made. "
     "A draw whose pipeline a builder thread has not finished (\"skipped [pipeline pending ...]\" in "
     "the scene lines), and the second draws of the HDR scene and the upscaler masks, wait for it "
@@ -1729,6 +1745,10 @@ inline auto& mcla_gpu_vol_lamp_limit = g_gpu.mcla_gpu_vol_lamp_limit;
 inline auto& mcla_gpu_vol_stable = g_gpu.mcla_gpu_vol_stable;
 inline auto& mcla_gpu_vol_view = g_gpu.mcla_gpu_vol_view;
 inline auto& mcla_gpu_lights_census = g_gpu.mcla_gpu_lights_census;
+inline auto& mcla_gpu_local_lights = g_gpu.mcla_gpu_local_lights;
+inline auto& mcla_gpu_local_lights_sources = g_gpu.mcla_gpu_local_lights_sources;
+inline auto& mcla_gpu_local_lights_ab = g_gpu.mcla_gpu_local_lights_ab;
+inline auto& mcla_gpu_local_lights_gain = g_gpu.mcla_gpu_local_lights_gain;
 inline auto& mcla_gpu_temporal_jitter_hold = g_gpu.mcla_gpu_temporal_jitter_hold;
 inline auto& mcla_gpu_texture_decode_selftest = g_gpu.mcla_gpu_texture_decode_selftest;
 inline auto& mcla_gpu_texture_decode_threads = g_gpu.mcla_gpu_texture_decode_threads;
