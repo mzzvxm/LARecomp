@@ -300,7 +300,8 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kGiField, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's frame (maintenance, update, weights)", .call = "gi_integration_->OnResolve(summary, list, slot_)",
      .label_file = "gi_field.cpp", .label = "gi reset", .more_labels = {{"gi weights"}}, .soft_reads = data::kCarStructures, .makes = data::kProbeField,
      .note = "(CITY-RT M3 G4, gi_integration.h) outside any render pass, BEFORE the AO plans: the occlusion asks GiApply::TakeSsgiShare while it plans, so the field must be published by then (a frame whose field is "
-             "not published yet leaves the screen-space bounce light whole). Reads the city's structures for its safe range (M1) and, with the probe update (G2), its rays; records nothing while no field runs"},
+             "not published yet leaves the screen-space bounce light whole). Reads the city's structures for its safe range (M1) and, with the probe update (G2), its rays; records nothing while no field runs. "
+             "CHECK (run, RT BOUNCE LIGHT on with the dry run cvar or G2's update): the census line of the first frame lists this step before the AO's frame and the field's apply after it, and no finding is logged"},
     {.step = Step::kAo, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "the AO's frame (occlusion, bounce light, contact shadows, screen products)",
      .call = "ao_->OnResolve(record, summary, list, UpscalerRunning())", .label_file = "ao.cpp", .label = "ao depth", .soft_reads = data::kProbeField,
      .wants_planes = detail::kNormalPlane, .wants_screen = data::kLinDepth | data::kNormal | data::kColourPre,
