@@ -873,7 +873,7 @@ void TestSources(const std::string& dir) {
             Count(shaders, "gi_update_trace_cs.hlsl.") == 2 && Count(shaders, "gi_update_blend_cs.hlsl.") == 2,
         "host_shaders.h has both shaders' blobs for both backends");
   const std::string precache = ReadFile(dir + "/host_precache.h");
-  Check(Has(precache, "kGiUpdate = 31,"), "the precache has the update's owner key");
+  Check(Has(precache, "kGiUpdate = 33,"), "the precache has the update's owner key");
 
   const std::string cpp = ReadFile(dir + "/gi_update.cpp");
   Check(Count(cpp, "pass_set_builder_.add") == int(gu::kSetViews) && Has(cpp, "CreateDescriptorSet(pass_set_builder_, kSetViews, 0,") && gu::kSetViews == 7,

@@ -101,11 +101,11 @@ class HostPrecache {
     kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
     kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
     kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant)
-    kGiUpdate = 31,         // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant)
     kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
     kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
     kRrGuides = 31,           // RrGuides: its guide pass (single-sample and multisampled planes) and the debug view's pass (rr_guides.h); 25 to 30 are left for other packages' owners
     kRtDenoise = 32,          // RtDenoise: a consumer's spatial and temporal compute passes, the consumer's number (0 to 15) << 4 | the stage (rt_denoise.h)
+    kGiUpdate = 33,           // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant); 31 is the guide pass's and 32 RtDenoise's, which were free of it when the update was written
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

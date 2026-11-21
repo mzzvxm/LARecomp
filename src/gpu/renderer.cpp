@@ -1792,7 +1792,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + gi_update_.CensusText() + ssr_.RtCensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }
