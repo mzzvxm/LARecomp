@@ -195,6 +195,8 @@ void LARECOMP_Discord_Init() {
   StartWorkerLocked();
 }
 
+// CHECK: with a Discord client open, `set larecomp_discord_rpc false` (console or F4) clears the presence within about a second and `true` brings
+// the current state back, in a menu, the garage and a race, and a game started with it false starts the worker when it is turned on.
 // Per frame (RpcOnRaceTick, the game's thread): the switch changed. Off needs nothing: the worker shows a presence only while the switch is on
 // and clears it by itself. On starts the worker (a game that started with it off) or sends the kept text again (it was turned off and on).
 void LARECOMP_Discord_Poll() {
