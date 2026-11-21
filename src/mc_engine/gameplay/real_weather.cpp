@@ -110,6 +110,7 @@ std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
 
 // Linux: the system's libcurl, loaded when it is first needed (os/curl_get.h). Before this the setting WEATHER: REAL did nothing here. The host and path are ASCII
 // (the two services' own); anything else is refused. One log line per different failure, not one every five minutes.
+// CHECK: libcurl itself is exercised by os/curl_get_test (a local server); the two real services were not asked from Linux, and libcurl.so.4 on SteamOS is assumed (Steam needs it).
 std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
     std::string url = "https://";
     for (const wchar_t* part : {host, path}) {

@@ -110,6 +110,8 @@ bool Patch_FenceSpinThrottle() {
         }
     }
 #elif defined(__linux__)
+    // CHECK: written on Windows and run only as a unit test of the rule (fence_spin_test) and a compile; not measured on a Linux GPU run. On the Steam Deck compare the
+    // render thread's CPU use and the package power at 45 and 60 FPS with fence_spin_throttle on and off (MCLA_SPIN_COUNTERS=1 counts the polls and the yields).
     static thread_local uint32_t s_spin_count = 0;
     if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
 #if defined(__x86_64__)
