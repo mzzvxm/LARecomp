@@ -707,6 +707,30 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), "
     "each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
+  REX_SETTING(std::string, mcla_gpu_ssr, "off", "Diagnostic (screen-space reflections, perf/GBUFFER-SURVEY.md 4.2; off by default until the owner has seen it): reflections on the surfaces the G-buffer's class table says reflect (wet roads, sidewalks, "
+    "metal, glass, water): a ray march of the screen's own picture at half its size (the shared Hi-Z and colour_post), one ray a pixel with the surface's roughness, accumulated over frames, added to the "
+    "colour. A car's paint and chrome keep their own reflections; what the rays miss, and what is near the picture's edge, stays the game's own reflection (the road's planar view, the env map). off, high "
+    "(one ray a pixel, 40 steps) or ultra (two rays, 64 steps, a longer history). Needs the G-buffer's planes (asked for while this is on). Until the material plane (RT3) is written every pixel whose world "
+    "normal points up is taken for a road (the stub). Live.", rex::kDebugOnly, rex::Allowed("off", "high", "ultra"));
+
+  REX_SETTING(i32, mcla_gpu_ssr_view, 0, "Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate "
+    "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "
+    "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, red a ray that found nothing, black not traced). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 4});
+
+  REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
+
+  REX_SETTING(f64, mcla_gpu_ssr_min_smooth, -1.0, "Diagnostic (screen-space reflections): a pixel rougher than this (0 rough to 1 mirror; the G-buffer's smoothness after the road's wetness raised it) is not reflected. -1: the default, 0.40 (a dry road at 0.30 is not, "
+    "a wet one at 0.92 is). Live.", rex::kDebugOnly, rex::Range{-1.0, 1.0});
+
+  REX_SETTING(i32, mcla_gpu_ssr_stub, 0, "Diagnostic (screen-space reflections): 0 uses the G-buffer's material plane (RT3) where the frame has it and the stub where it does not (every pixel whose world normal points up and is no vehicle is a road of "
+    "smoothness 0.85); 1 always the stub. Live.", rex::kDebugOnly, rex::Range{0, 1});
+
+  REX_SETTING(f64, mcla_gpu_ssr_wet, -1.0, "Diagnostic (screen-space reflections): the road's wetness, 0 dry to 1 pouring rain: it raises a road's and a sidewalk's smoothness. -1: what the game says (the vertex constant c43.x of the main view's draws, "
+    "0.095 dry and 1.17 in rain, smoothed over about a second). A value forces it, to look at the wet road without rain. Live.", rex::kDebugOnly, rex::Range{-1.0, 1.0});
+
+  REX_SETTING(f64, mcla_gpu_ssr_history, -1.0, "Diagnostic (screen-space reflections): the share of the last frames the accumulation keeps, 0 to 0.98 (0.9 is a mean of about ten frames; 0 draws the raw ray, noise and all). -1: the level's (high 0.90, ultra 0.92). "
+    "Live.", rex::kDebugOnly, rex::Range{0.0, 0.98});
+
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.", rex::kDebugOnly);
@@ -1618,6 +1642,13 @@ inline auto& mcla_gpu_gbuffer_attach = g_gpu.mcla_gpu_gbuffer_attach;
 inline auto& mcla_gpu_gbuffer_view = g_gpu.mcla_gpu_gbuffer_view;
 inline auto& mcla_gpu_screen_view = g_gpu.mcla_gpu_screen_view;
 inline auto& mcla_gpu_screen_view_level = g_gpu.mcla_gpu_screen_view_level;
+inline auto& mcla_gpu_ssr = g_gpu.mcla_gpu_ssr;
+inline auto& mcla_gpu_ssr_view = g_gpu.mcla_gpu_ssr_view;
+inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
+inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
+inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;
+inline auto& mcla_gpu_ssr_wet = g_gpu.mcla_gpu_ssr_wet;
+inline auto& mcla_gpu_ssr_history = g_gpu.mcla_gpu_ssr_history;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;

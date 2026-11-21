@@ -93,6 +93,7 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class ScreenReflections;
 class ScreenShared;
 class Volumetrics;
 class CarSelfRefl;
@@ -174,6 +175,8 @@ class Scene {
   // The shared screen products (screen_shared.h): told of the frame's start (before the ambient occlusion's, which declares its wants after it) and asked to draw their debug view
   // at the mid-scene depth copy, after the other effects. Their frame is published by the ambient occlusion's depth chain. Null: none.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  // The screen-space reflections (ssr.h; null: none). Not owned.
+  void SetScreenReflections(ScreenReflections* ssr) { ssr_ = ssr; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -501,6 +504,7 @@ class Scene {
   LightManager* light_manager_ = nullptr;
   GBuffer* gbuffer_ = nullptr;
   ScreenShared* screen_ = nullptr;
+  ScreenReflections* ssr_ = nullptr;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
   gbuffer::MaterialTable gbuffer_materials_;
   CarRtScene* car_rt_ = nullptr;
