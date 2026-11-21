@@ -331,6 +331,22 @@ add_executable(larecomp_city_hit_alpha_rules_test EXCLUDE_FROM_ALL city_hit_alph
     "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
 target_include_directories(larecomp_city_hit_alpha_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_city_hit_alpha_rules_test PRIVATE cxx_std_23)
+# What every hit shading shares (CITY-RT M2 H4: rt_hit_frame.h and hlsl/rt_hit_frame.hlsli + hlsl/rt_hit_sample.hlsli compiled as C++ through hlsl_cpp_shim.h and checked against it: the frame's rows,
+# the cascades' lookup, the environment map's mapping, a texture read by slot with the game's gamma; the exposure calibration of rt_hit_calibration.h, the car's numbers unchanged and the city's
+# per class gains); given the src folder it also reads the shader files' text:
+#   cmake --build <dir> --target larecomp_rt_hit_frame_test, then run src/gpu/larecomp_rt_hit_frame_test <src dir> (exit 0 = passed).
+add_executable(larecomp_rt_hit_frame_test EXCLUDE_FROM_ALL rt_hit_frame_test.cpp)
+target_include_directories(larecomp_rt_hit_frame_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_rt_hit_frame_test PRIVATE cxx_std_23)
+# The city hit library (hlsl/city_hit_shade.hlsli compiled as C++ against its twin city_hit_shade_rules.h on a synthetic city of a wall, a road, glass, a lamp lens, metal, a wet road, water, a neon
+# sign and a lit window, thousands of random rays, frames and parameters: CityHitShade, CityHitResolve, the rays they cast, the calibration's counters; the twin's laws: the texture's level, the lamps'
+# laws and the estimator of the lamp choice, the sun ray, the fresnel, the screen's weight, the mix, the lamp's GPU record); given the src folder it also reads the library's text:
+#   cmake --build <dir> --target larecomp_city_hit_shade_rules_test, then run src/gpu/larecomp_city_hit_shade_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_city_hit_shade_rules_test EXCLUDE_FROM_ALL city_hit_shade_rules_test.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/city_hit_format.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../citypack/pack_format.cpp")
+target_include_directories(larecomp_city_hit_shade_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_hit_shade_rules_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:

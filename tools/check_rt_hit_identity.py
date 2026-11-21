@@ -1,6 +1,6 @@
 r"""check_rt_hit_identity.py: do the car's ray traced shaders still compile to the same thing?  (dev only; runs dxc, builds nothing of the game)
 
-  python -I tools\check_rt_hit_identity.py --base <git ref> [--src <src dir>] [--dxc <dxc.exe>] [--spirv-opt <spirv-opt.exe>] [--spirv-val <spirv-val.exe>] [--spirv-dis <spirv-dis.exe>] [--keep <dir>] [-v]
+  python -I tools\check_rt_hit_identity.py (--base <git ref> | --selftest) [--src <src dir>] [--dxc <dxc.exe>] [--spirv-opt <spirv-opt.exe>] [--spirv-val <spirv-val.exe>] [--spirv-dis <spirv-dis.exe>] [--keep <dir>] [-v]
 
 CITY-RT M2 package H4 moved what every hit shading shares out of the car's hit shading (hlsl/car_rt_hit_shade.hlsli) into hlsl/rt_hit_common.hlsli (CarMat* became RtHit*, bodies
 unchanged). The car's picture must not change by a bit. This tool is the proof, and the one to run again after any later edit of the shared file: it takes the shader sources of
@@ -14,7 +14,8 @@ order of the phi nodes at the head of a block. dxc's output has no fixed phi ord
 `scale` and `offset` did when the shared code moved), which changes no value and no operation; the check canonicalises it away (a block's phi run is sorted by its text, the values and
 labels are numbered by first appearance) and then compares, so a changed operand or constant or operation still fails.
 The entry points are the car's: car_rt_refl_cs (the player's pass), the same with CAR_RT_REFL_OPPONENTS=1 (the opponents' pass), car_rt_refl_denoise_cs, car_rt_ao_cs, car_rt_check_cs
-and the city's shadow pass city_rt_shadow_cs (which does not use the shared file; it is the control: it must not change either).
+and the city's shadow pass city_rt_shadow_cs (which does not use the shared file; it is the control: it must not change either). The city hit library's reference consumer
+(city_hit_shade_check_cs) has no base: it is compiled for DXIL and SPIR-V and validated (spirv-val), nothing more.
 Exit 0 when every entry point is identical or equivalent, 1 when one is not (the first differing lines are printed), 2 when a tool or a source is missing.
 """
 import argparse
@@ -35,6 +36,7 @@ ENTRIES = [
     ('car_rt_ao_cs', 'car_rt_ao_cs.hlsl', []),
     ('car_rt_check_cs', 'car_rt_check_cs.hlsl', []),
     ('city_rt_shadow_cs', 'city_rt_shadow_cs.hlsl', []),
+    ('city_hit_shade_check_cs', 'city_hit_shade_check_cs.hlsl', []),  # the city hit library's reference consumer: new, it only has to compile and validate
 ]
 
 
@@ -171,10 +173,42 @@ def disassemble(spirv_dis, path):
     return p.stdout.split('\n')
 
 
+def selftest():
+    """The comparison must call a renumbering and a phi swap the same and a changed operand, constant or operation different (no dxc needed)."""
+    base = ['define void @main() {', '; <label>:1', '  %5 = phi float [ 1.0, %2 ], [ 2.0, %3 ]', '  %6 = phi float [ 3.0, %2 ], [ 4.0, %3 ]', '  %7 = fmul fast float %5, %6', '  %8 = fadd fast float %7, 1.0',
+            '  call void @dx.op.storeOutput.f32(i32 5, float %8)', '}']
+    renumbered = [l.replace('%5', '%50').replace('%6', '%60').replace('%7', '%70').replace('%8', '%80') for l in base]
+    swapped = list(base)
+    swapped[2], swapped[3] = base[3].replace('%6', '%5'), base[2].replace('%5', '%6')
+    swapped[4] = '  %7 = fmul fast float %6, %5'
+    operand = list(base)
+    operand[4] = '  %7 = fmul fast float %5, %5'
+    constant = list(base)
+    constant[5] = '  %8 = fadd fast float %7, 1.5'
+    operation = list(base)
+    operation[5] = '  %8 = fsub fast float %7, 1.0'
+    ok = True
+    ok = ok and canonical(base, ' = phi ') == canonical(renumbered, ' = phi ')
+    ok = ok and canonical(base, ' = phi ') == canonical(swapped, ' = phi ')
+    ok = ok and canonical(base, ' = phi ') != canonical(operand, ' = phi ')
+    ok = ok and canonical(base, ' = phi ') != canonical(constant, ' = phi ')
+    ok = ok and canonical(base, ' = phi ') != canonical(operation, ' = phi ')
+    spv = ['OpCapability Shader', 'OpDecorate %3 DescriptorSet 0', 'OpDecorate %3 Binding 1', '%1 = OpTypeFloat 32', '%2 = OpConstant %1 0.5', '%4 = OpConstant %1 2', '%3 = OpVariable %1 UniformConstant',
+           '%9 = OpFunction %1 None %1', '%10 = OpLabel', '%11 = OpLoad %1 %3', '%12 = OpFAdd %1 %11 %2', '%13 = OpFMul %1 %12 %4', 'OpReturnValue %13', 'OpFunctionEnd']
+    spv_moved = [spv[0], spv[1], spv[2], spv[3], spv[5].replace('%4', '%40'), spv[4], spv[6], spv[7], spv[8], spv[9].replace('%3', '%3'), spv[10], spv[11].replace('%4', '%40'), spv[12], spv[13]]
+    spv_moved = [l.replace('%4 ', '%40 ') if l.startswith('%4 ') else l for l in spv_moved]
+    spv_changed = [l.replace('%2 = OpConstant %1 0.5', '%2 = OpConstant %1 0.25') for l in spv]
+    ok = ok and canonical_spirv(spv) == canonical_spirv(spv_moved)
+    ok = ok and canonical_spirv(spv) != canonical_spirv(spv_changed)
+    print('selftest: %s' % ('passed' if ok else 'FAILED'))
+    return 0 if ok else 1
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
-    ap.add_argument('--base', required=True, help='the git ref of the shaders before the change')
+    ap.add_argument('--base', help='the git ref of the shaders before the change')
+    ap.add_argument('--selftest', action='store_true', help='check the comparison itself on made-up listings and exit')
     ap.add_argument('--src', default=os.path.join(os.path.dirname(here), 'src'))
     ap.add_argument('--dxc', default=DEFAULT_DXC)
     ap.add_argument('--spirv-opt', default=os.path.join(DEFAULT_SPIRV_BIN, 'spirv-opt.exe'))
@@ -183,6 +217,10 @@ def main():
     ap.add_argument('--keep', default='')
     ap.add_argument('-v', action='store_true')
     a = ap.parse_args()
+    if a.selftest:
+        return selftest()
+    if not a.base:
+        ap.error('--base is required')
     for tool in (a.dxc, a.spirv_opt, a.spirv_val, a.spirv_dis):
         if not os.path.exists(tool):
             print('missing tool: %s' % tool)
@@ -215,7 +253,7 @@ def main():
             results[tag] = base_name if ok else None
         if results.get('base') is None or results.get('new') is None:
             if results.get('base') is None and results.get('new') is not None:
-                print('%-24s the base does not have this entry point or does not compile: skipped (new compiles)' % name)
+                print('%-24s the base does not have this entry point: not compared; the new one compiles (DXIL, SPIR-V) and validates' % name)
                 continue
             print('%-24s NOT COMPARED (a compile failed)' % name)
             bad += 1
