@@ -1797,8 +1797,7 @@ const ItemDef kWorldDetailItems[] = {
     Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    // Live: the hook reads the cvar on every pass (graphics.cpp). The row shows ON when the setting (disable_imposter_shadows) is false,
-    // which is the default: trees cast shadows on every graphics card (settings_patches.h).
+    // Live: the hook reads the cvar on every pass (graphics.cpp).
     Bool("PM_RxFoliage",     "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
     WithDynamics(Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC LOD: ", kTrafficLodVals,
                      int(sizeof(kTrafficLodVals) / sizeof(kTrafficLodVals[0])), "%gX"),

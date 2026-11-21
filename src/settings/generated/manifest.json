@@ -5341,19 +5341,16 @@
  },
  "disable_imposter_shadows": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/Patches",
-  "help": "\"Trees and plants do not cast shadows. Off (the default) lets them cast shadows; on is a little faster \"\n    \"on a weak graphics card.\"",
+  "help": "\"Performance Mode: Foliage won't cast shadows.\"",
   "traits": [],
   "comments": [
    "// Live: Patch_DisableImposterShadows reads this on every pass through its site in the imposter",
    "// shadow submission (sub_8230C860) and nothing keeps a copy; the same hook is a plain, switchable",
    "// toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during",
    "// play). It was tagged kRequiresRestart, and its pause row said \"(RESTART)\".",
-   "// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.",
-   "// The default is false (foliage casts shadows) since 2026-11-20, the owner's LOD defaults pass: the fork measured foliage shadows at -0.07 ms of 8.3 on an RTX 5080 and",
-   "// -0.09 to -0.10 ms of 39 to 43 on the 2-CU integrated GPU (launcher/dev/aniso-2026-10-27.md, the detail options table), so the shadows of",
-   "// trees are on for every graphics card. CHECK: a tree-heavy scene on the integrated GPU (perf\\scripts\\chain-lod-defaults.ps1, arm foliage)."
+   "// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart."
   ],
   "pp_depth": 0
  },
