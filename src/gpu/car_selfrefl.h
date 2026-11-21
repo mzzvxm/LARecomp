@@ -24,7 +24,8 @@
 //                                part of the march's, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
 //                                traced image at the paint's pixel (car_rt_refl.h: purple no image, cyan no data there, green no
 //                                hit, yellow a hit on the player's own part, orange on another car), 6 the clear coat's layer's
-//                                amount, 7 what it adds (version 8 of the variant; 2 is the ray traced reflection alone at full intensity)
+//                                amount (written 64 times the target's unit so that a script can read it, RT-HIT-SHADING-6: it shows as about itself),
+//                                7 what it adds (version 8 of the variant; 2 is the ray traced reflection alone at full intensity)
 //   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
 //                                the march of this file is the fallback and the other devices' version
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
