@@ -35,6 +35,7 @@ add_library(larecomp_gpu OBJECT
     car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
     city_refl.cpp
+    city_refl_setting.cpp
     capture_readback.cpp
     choice_box.cpp
     constants.cpp
@@ -469,6 +470,14 @@ target_compile_features(larecomp_city_refl_rules_test PRIVATE cxx_std_23)
 add_executable(larecomp_car_glass_rules_test EXCLUDE_FROM_ALL car_glass_rules_test.cpp)
 target_include_directories(larecomp_car_glass_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_car_glass_rules_test PRIVATE cxx_std_23)
+
+# The city reflections' setting and its pause row (city_refl_setting.h, CITY-RT M2 package R8: what a word comes to on each class and ray tracing tier, the gate that greys the row and what it says, how the
+# state of the city's files becomes a word, the interplay with the ray traced CAR SELF-REFLECTIONS row, AUTO's label, the page width; it also reads the scenes, the host, pause_menu.cpp, the settings and the CMake
+# lines for the wiring) likewise:
+#   cmake --build <dir> --target larecomp_city_refl_setting_test, then run src/gpu/larecomp_city_refl_setting_test [-v] [<src dir>] (exit 0 = passed).
+add_executable(larecomp_city_refl_setting_test EXCLUDE_FROM_ALL city_refl_setting_test.cpp city_refl_setting.cpp)
+target_include_directories(larecomp_city_refl_setting_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_city_refl_setting_test PRIVATE cxx_std_23)
 # The city's ray traced sun shadows' maths (city_rt_shadow_rules.h: the sun, the disc samples, the lift, the alpha rule, the noise hash; a brute force tracer over made-up
 # triangles checks the penumbra of a roof's edge against the exact disc integral, contact hardening, no acne on a plane at every sun height; given the src/gpu folder it also
 # checks that hlsl/city_rt_shadow_cs.hlsl holds the header's numbers) likewise:

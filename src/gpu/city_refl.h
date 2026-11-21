@@ -5,9 +5,11 @@
 // city_refl_rules.h has the design, the levels and the numbers; hlsl/city_refl.hlsli and hlsl/car_rt_refl_cs.hlsl the shader. This class is what the pass needs from the host that is not the pass
 // itself (car_rt_refl.h records that, and the opponents' variant, car_rt_opp_refl.h, the same):
 //
-//   THE SETTING  mcla_gpu_rt_reflections (auto, off, high, ultra; debug-only until R8 gives it its row; live): BeginFrame resolves it to a Cell (city_refl_rules.h LevelFor, CellFor: `auto` is rt_tier.h's
-//                cell for kRtReflections, off without ray tracing and on a weak card, high on a strong one) and tells the scene service what the pass needs (Want(kCityReflections): the cars, the
-//                city's structures and hit data at the level, every texture) and CarRtRefl what the screen owner must make (ScreenProducts: colour_post with its mip chain and lin_depth).
+//   THE SETTING  mcla_gpu_rt_reflections (auto, off, high, ultra; the pause menu's RT CITY REFLECTIONS row since R8, city_refl_setting.h; live): BeginFrame resolves it to a Cell (city_refl_setting.h Decide,
+//                city_refl_rules.h LevelFor, CellFor: `auto` is rt_tier.h's cell for kRtReflections, off without ray tracing and on a weak card, high on a strong one) and tells the scene service
+//                what the pass needs (Want(kCityReflections): the cars, the city's structures and hit data at the level, every texture) and CarRtRefl what the screen owner must make (ScreenProducts:
+//                colour_post with its mip chain and lin_depth). The wants go out as soon as the word comes to something above off; the pass itself (the cell, the rows, the screen products) waits until
+//                the city's data stands (city_refl_setting.h Data: the pack's and the hit file's probes, published by the two scenes; the game builds the files in the background when they are missing).
 //   THE ROWS     a set of its own (set 3 of the pass's layout: t0 the constants rows, city_refl_rules.h kRows; u1 the counters), a copy for each frame slot, the rows written by Prepare at the
 //                history trigger: the level, the picture's slots and sizes, the reach, the class gains, the debug view. An off frame writes zero rows (the shader sees flags 0 and the pass is as it was).
 //   THE CENSUS   the counters of a stats frame (the same frames as the cars' census: one in twenty) are read back; the calibration's part moves the class gains (rt_hit_calibration.h ClassGains, one a class of
@@ -39,6 +41,7 @@
 #include <plume_render_interface.h>
 
 #include "city_refl_rules.h"
+#include "city_refl_setting.h"
 #include "frame.h"
 #include "rt_hit_calibration.h"
 #include "screen_frame.h"
@@ -121,6 +124,7 @@ class CityRefl {
     std::unique_ptr<plume::RenderDescriptorSet> set;
   };
   bool EnsureSlot(uint32_t frame_slot);
+  void NoteGate(const city_refl_setting::Decision& decision);
   void ProcessStats(uint64_t frame, uint64_t generation);
 
   Device* device_ = nullptr;
@@ -140,6 +144,7 @@ class CityRefl {
   bool pass_active_ = false;
   bool glass_wanted_ = false;
   bool wanted_logged_ = false;
+  int last_gate_state_ = -1;  // the last decision the log said (gate, data, level): one line a change
   city_refl::Level last_level_ = city_refl::Level::kOff;  // the census lines name the level the pass last ran at
   float last_reach_ = 0.0f;
 

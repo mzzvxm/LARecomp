@@ -119,6 +119,44 @@ void Labels() {
   Check(widest == 17 && 20 + widest <= 41, "the widest value is 17 and the row fits the page");
 }
 
+// RayTracedRuns (the RT CITY REFLECTIONS row's "needs the car's ray traced reflection"): the pair of settings as the RENDERER reads it (car_rt_refl.cpp: the pass is wanted when mcla_gpu_car_selfrefl
+// resolves to on, mcla_gpu_car_selfrefl_rt is not "off" (car_rt_refl_rules.h SettingOf: anything else is auto) and the device can trace), written out here without ChoiceOf, for every pair.
+bool RendererWantsPass(const std::string& selfrefl, const std::string& rt, bool auto_is_on, bool available) {
+  const bool reflection_on = selfrefl == "on" || (selfrefl != "off" && auto_is_on);  // `auto` and any other word resolve by the class
+  const bool rt_setting_auto = rt != "off";
+  return rt_setting_auto && available && reflection_on;
+}
+
+void RayTraced() {
+  int combos = 0;
+  for (const char* s : {"auto", "off", "on", "low", "high", ""})
+    for (const char* r : {"auto", "off", "maybe", ""})
+      for (const bool auto_on : {false, true})
+        for (const bool available : {false, true}) {
+          ++combos;
+          Check(RayTracedRuns(s, r, auto_on, available) == RendererWantsPass(s, r, auto_on, available),
+                std::string("RayTracedRuns is what the renderer's pass does for ") + s + "/" + r + (auto_on ? " auto on" : " auto off") + (available ? ", can run" : ", cannot run"));
+        }
+  Check(combos == 6 * 4 * 2 * 2, "every pair was looked at");
+  // the four values of the row: what each one writes runs the pass or not (AUTO by what it comes to)
+  for (const bool auto_on : {false, true}) {
+    for (const bool available : {false, true}) {
+      for (int i = 0; i < Count(available); ++i) {
+        const Choice c = At(i);
+        const Writes w = WritesOf(c);
+        const std::string selfrefl = w.selfrefl ? w.selfrefl : "auto";  // OFF leaves the ray traced setting where it was: any value
+        const std::string rt = w.rt ? w.rt : "auto";
+        const bool runs = RayTracedRuns(selfrefl, rt, auto_on, available);
+        const bool expect = c == Choice::kRayTraced ? available : (c == Choice::kAuto ? (auto_on && available) : false);
+        Check(runs == expect, std::string("the value ") + LabelOf(c, auto_on, available) + (available ? " (can run)" : " (cannot run)") + (runs ? " runs the pass" : " does not run the pass"));
+      }
+    }
+  }
+  Check(!RayTracedRuns("off", "auto", true, true) && !RayTracedRuns("on", "off", true, true), "OFF and ON are not ray traced");
+  Check(RayTracedRuns("on", "auto", false, true), "RAY TRACED runs on a card where AUTO comes to off");
+  Check(!RayTracedRuns("auto", "auto", false, true), "AUTO that comes to off does not");
+}
+
 }  // namespace
 
 int main() {
@@ -127,6 +165,7 @@ int main() {
   RoundTrip();
   ReadBack();
   Labels();
+  RayTraced();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed ? 1 : 0;
 }

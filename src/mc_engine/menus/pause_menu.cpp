@@ -58,6 +58,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/car_shadow_map_rules.h"
+#include "gpu/city_refl_setting.h"
 #include "gpu/city_rt_rules.h"
 #include "gpu/gi_setting.h"
 #include "gpu/gpu.h"
@@ -1558,7 +1559,7 @@ constexpr RowDynamics kHdrHighlightDynamics = {
 //   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS,
 //                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS,
 //                         VOLUMETRIC LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
-//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
+//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, REFLECTIONS ON SURFACES (kReflectionItems)
 //   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
 //                         (kWorldDetailItems)
 // On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT), UPSCALING (RENDER SCALE), IMAGE QUALITY (MSAA,
@@ -2192,6 +2193,42 @@ constexpr RowDynamics kCarSelfReflDynamics = {.str_label = CarSelfReflLabel,
                                               .value_count = CarSelfReflCount,
                                               .value_index = CarSelfReflIndex,
                                               .set_value = CarSelfReflSet};
+// RT city reflections (mcla_gpu_rt_reflections, gpu/city_refl_setting.h, gpu/city_refl.h, gpu/city_refl_rules.h, live): the player's car paint (and the other cars') reflects the REAL street, found by rays in the
+// city's own triangles: the building across the road, the lamp posts and lamp heads (small and sharp, not two glowing blobs), signs, the car beside you, with the sky where there is sky; the game's blurred
+// environment map stays for the sky and for where the data is not there. It rides on the car's own ray traced pass, so the row is right after CAR SELF-REFLECTIONS and is grey with " (NEEDS CAR RT)" until
+// that row is RAY TRACED (or AUTO that comes to it). AUTO says what it comes to on this graphics card: HIGH where the ray tracing tier is strong, OFF on the rest (the weaker ray tracing cards can switch
+// it on by hand, with a shorter reach: 60 m, two rays). The stored words are the shown words (no level is called low). The row is grey, with the reason after a SHORT label, where the card cannot trace
+// rays (" (NO RT GPU)"), is too slow for it (the integrated class, " (TOO SLOW)"), the car's ray traced reflection is not on (" (NEEDS CAR RT)") or the city's data cannot be had this session (" (NOT READY)");
+// while the game builds the city pack and the hit data from the game files in the background (the launcher's setup has them ready at the first start) the label says " (BUILDING DATA)" and the row
+// stays on: the setting is kept and the city comes into the paint by itself when the data is done. Width ("Page width" above ItemRowLabel): the whole label "RT CITY REFLECTIONS" is 19; the reasons
+// follow "RT CITY" (7), at most 23 as a label ("RT CITY (BUILDING DATA)"), so the page stays as wide as REFLECTIONS ON SURFACES makes it (23 + 17 = 40 of the 41).
+const char* const kNativeRtCityVals[]  = {"auto", "off", "high", "ultra"};
+const char* const kNativeRtCityNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+bool CarRtReflRunsNow() {
+    return mcla_menu::selfrefl::RayTracedRuns(CvarGet("mcla_gpu_car_selfrefl"), CvarGet(kCarSelfReflRtCvar),
+                                              CarSelfReflAutoIsOn(), mcla::gpu::CarRtReflAvailable());
+}
+mcla::gpu::city_refl_setting::Decision RtCityDecision() {
+    namespace gc = mcla::gpu::gpu_class;
+    return mcla::gpu::city_refl_setting::Decide(gc::Known() ? gc::Current() : gc::GpuClass::kLow, gc::CurrentRtTier(),
+                                                CvarGet("mcla_gpu_rt_reflections"), CarRtReflRunsNow(),
+                                                mcla::gpu::city_refl_setting::DataNow());
+}
+std::string RtCityValueLabel(int i) {
+    namespace gc = mcla::gpu::gpu_class;
+    switch (i) {
+    case 0:  return mcla::gpu::city_refl_setting::AutoLabel(gc::Known() ? gc::Current() : gc::GpuClass::kLow,
+                                                            gc::CurrentRtTier());
+    case 1:  return "OFF";
+    case 2:  return "HIGH";
+    default: return "ULTRA";
+    }
+}
+bool RtCityEnabled() { return mcla::gpu::city_refl_setting::RowEnabled(RtCityDecision().gate); }
+const char* RtCityLabel() { return mcla::gpu::city_refl_setting::RowLabel(RtCityDecision().gate); }
+const char* RtCitySuffix() { return mcla::gpu::city_refl_setting::RowSuffix(RtCityDecision().gate); }
+constexpr RowDynamics kRtCityDynamics = {.str_label = RtCityValueLabel, .enabled = RtCityEnabled, .suffix = RtCitySuffix,
+                                         .label = RtCityLabel};
 // Anisotropic filtering (M6d.1, live): the game's own or forced.
 const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
@@ -2305,10 +2342,10 @@ const ItemDef kLightItems[] = {
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint, the car itself and the surfaces of the street reflect: ROAD REFLECTIONS, CAR REFLECTIONS,
-// CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection) and REFLECTIONS ON SURFACES (the screen-space reflections of wet roads, sidewalks, glass and
-// metal). Every row is live and has an AUTO that follows the graphics card. Width: the longest label is "REFLECTIONS ON SURFACES" (23), the longest value "AUTO (RAY TRACED)" (17):
-// 40 of the 41 a page can take.
+// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint, the car itself, the city and the surfaces of the street reflect: ROAD REFLECTIONS, CAR REFLECTIONS,
+// CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection), RT CITY REFLECTIONS (the real street in the paint, traced; it rides on the ray traced car reflection and is
+// grey while that is not on) and REFLECTIONS ON SURFACES (the screen-space reflections of wet roads, sidewalks, glass and metal). Every row is live and has an AUTO that follows the graphics
+// card. Width: the longest label is "REFLECTIONS ON SURFACES" (23; RT CITY REFLECTIONS is 19 and 23 at most with a reason), the longest value "AUTO (RAY TRACED)" (17): 40 of the 41 a page can take.
 const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4),
@@ -2319,6 +2356,9 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(WithDynamics(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
                                 "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1),
                             &kCarSelfReflDynamics)),
+    NativeOnly(WithDynamics(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",
+                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 4),
+                            &kRtCityDynamics)),
     NativeOnly(WithDynamics(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
                                 kNativeSsrVals, kNativeSsrNames, 4),
                             &kSsrDynamics)),
@@ -2855,7 +2895,7 @@ const MenuDef kMenus[] = {
      "RxLightingMenu",
      kLightItems, int(sizeof(kLightItems) / sizeof(kLightItems[0]))},
 #if defined(LARECOMP_HAS_GPU)
-    {"PM_RxTabReflections", "REFLECTIONS", "Road, car and self reflections.",
+    {"PM_RxTabReflections", "REFLECTIONS", "Road, car, city and surface reflections.",
      "RxReflectionsMenu",
      kReflectionItems, int(sizeof(kReflectionItems) / sizeof(kReflectionItems[0]))},
 #endif
@@ -3237,8 +3277,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 12 ("AUTO (ULTRA)", "AUTO
 // (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
 // SHADOWS: 27 and 3.
-// REFLECTIONS (kReflectionItems, 4 rows): "REFLECTIONS ON SURFACES" 23, "CAR SELF-REFLECTIONS" 20, "ROAD
-// REFLECTIONS" 16, "CAR REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 40. WORLD DETAIL (kWorldDetailItems): "PROP
+// REFLECTIONS (kReflectionItems, 5 rows): "REFLECTIONS ON SURFACES" 23, "RT CITY (BUILDING DATA)" 23, "RT CITY (NEEDS CAR RT)" 22, "CAR SELF-REFLECTIONS" 20, "RT CITY
+// REFLECTIONS" 19, "ROAD REFLECTIONS" 16, "CAR REFLECTIONS" 15; values at most 17 ("AUTO (RAY TRACED)"): 40. WORLD DETAIL (kWorldDetailItems): "PROP
 // DRAW DIST" 14, "AUTO (2X)" 9: 23.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two

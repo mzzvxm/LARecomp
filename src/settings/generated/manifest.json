@@ -1066,9 +1066,8 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches 150 m, ultra 1,000 m. Needs the city pack and the city hit data (built from your game files) and ray queries; without them the paint keeps the game's reflection. The pause menu's row comes later. Live.\"",
+  "help": "\"Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches 150 m, ultra 1,000 m. Rides on the ray traced car self-reflections (mcla_gpu_car_selfrefl with mcla_gpu_car_selfrefl_rt: the row is grey until that one is on RAY TRACED), needs ray queries and needs the city pack and the city hit data, which the launcher's setup builds from your game files (the game builds them in the background if they are not there, and the row says BUILDING DATA until they are done); without them the paint keeps the game's reflection. The pause menu's RT CITY REFLECTIONS row (GRAPHICS > REFLECTIONS). Live.\"",
   "traits": [
-   "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
   "comments": [],

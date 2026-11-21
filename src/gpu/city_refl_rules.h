@@ -19,7 +19,7 @@
 //                             shaderpack/variants/car_chrome_city.h, wanted by pipelines.cpp while the level is not off and mcla_gpu_city_refl_chrome is on), and an additive pass over the pixels of the
 //                             car's windows (car_rt_glass_refl.h, mcla_gpu_city_refl_glass) puts the mirror reflection of the city in the glass by its Fresnel. Both are served at every level.
 //
-// THE LEVELS (the cvar mcla_gpu_rt_reflections: auto / off / high / ultra; live; the pause menu's row comes with R8): `auto` is the rt_tier.h cell of kRtReflections (off without ray tracing and on
+// THE LEVELS (the cvar mcla_gpu_rt_reflections: auto / off / high / ultra; live; the pause menu's row RT CITY REFLECTIONS is city_refl_setting.h's, R8): `auto` is the rt_tier.h cell of kRtReflections (off without ray tracing and on
 // a WEAK card, high on a strong one: the owner's goal is a strong card's look; a weak card may still be set to high or ultra by hand and runs the Mid class's cell). The cell holds the reach
 // (HIGH 150 m, ULTRA 1,000 m with the weight full to 300 m: the structures' far level of detail; a Mid class by hand 60 m, 150 m at ultra), the cone's rays, the opponents' budget and the
 // texture scope (all: a reflection shades a hit from its diffuse). Reach, rays and texture cap are CITY-RT-M2.md section 8; the opponents' texel budgets are this package's (CHECK: cost).

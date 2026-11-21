@@ -468,7 +468,7 @@ int main(int argc, char** argv) {
                 Has(opp_host_h, "kPushSpace = CityRefl::kPushSpace"),
             "car_rt_opp_refl: the city's set, the cell's budget and rays, the push space");
       Check(Has(host, "set_builder_.addByteAddressBuffer(0);") && Has(host, "set_builder_.addReadWriteByteAddressBuffer(1);") && Has(host, "CreateDescriptorSet(set_builder_, 2, 0, \"city refl set\")"), "city_refl.cpp: the set's two views, t0 and u1");
-      Check(Has(host, "rt_scene::Consumer::kCityReflections") && Has(host, "cr::WantsFor(cell_)") && Has(host, "screen::ProductBit(screen::kColourPost) | screen::ProductBit(screen::kLinDepth)"), "city_refl.cpp: the wants");
+      Check(Has(host, "rt_scene::Consumer::kCityReflections") && Has(host, "cr::WantsFor(cell)") && Has(host, "screen::ProductBit(screen::kColourPost) | screen::ProductBit(screen::kLinDepth)"), "city_refl.cpp: the wants");
       Check(Has(host, "gpu_class::CurrentRtClass()") && Has(host, "gpu_class::CurrentRtTier()") && Has(host, "LiveText text(\"mcla_gpu_rt_reflections\")"), "city_refl.cpp: the setting is read live and the cell is the RT class's");
       Check(Has(host, "constexpr uint32_t kCloseEveryStats = 4;") && Has(host, "cr::kLogEveryFrames"), "city_refl.cpp: the calibration's window and the census's period");
       Check(Has(selfrefl, "screen_->Want(screen::Consumer::kCarRtRefl, rt_->ScreenProducts());") && Has(selfrefl, "FillCityScreen(&info.screen);"), "car_selfrefl.cpp: the screen wants and the picture's products");
@@ -476,7 +476,7 @@ int main(int argc, char** argv) {
       Check(Has(cmake, "city_refl.cpp") && Has(cmake, "larecomp_city_refl_rules_test"), "CMakeLists.txt: the source and the test");
       Check(Has(screen_rules, "wants.Of(Consumer::kCarRtRefl) & (1u << kColourPost)"), "screen_rules.h: the car ray traced reflections' want makes colour_post's mips");
       Check(Has(tier, "{\"mcla_gpu_rt_reflections\", \"off\", \"off\", \"high\"},"), "rt_tier.h: the cells of the reflections row");
-      // the settings: in the header, the manifest and the meta, debug-only, with the aliases
+      // the settings: in the header, the manifest and the meta, with the aliases (the city's own switch is not debug-only since R8, which gave it the row RT CITY REFLECTIONS: city_refl_setting_test.cpp)
       const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h");
       const std::string manifest = ReadFile(src + "/settings/generated/manifest.json");
       const std::string meta = ReadFile(src + "/settings/generated/settings_meta.inc");
@@ -486,9 +486,10 @@ int main(int argc, char** argv) {
         Check(Has(manifest, "\"" + n + "\": {") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},"), "the manifest and the meta list " + n);
       }
       const size_t at = settings.find("std::string, mcla_gpu_rt_reflections, \"auto\", ");
-      Check(at != std::string::npos && settings.find("rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")", at) != std::string::npos &&
-                settings.find("rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")", at) < at + 2000,
-            "mcla_gpu_rt_reflections is debug-only (its row comes with R8), auto by default, with the four words");
+      const size_t next = at == std::string::npos ? std::string::npos : settings.find("\n  REX_SET" "TING(", at);
+      const std::string def = at == std::string::npos ? "" : settings.substr(at, next == std::string::npos ? std::string::npos : next - at);
+      Check(!def.empty() && def.find("rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")") != std::string::npos && def.find("kDebugOnly") == std::string::npos,
+            "mcla_gpu_rt_reflections is auto by default, with the four words, and not debug-only (R8 gave it its row)");
     }
   }
 
