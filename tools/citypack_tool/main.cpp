@@ -15,9 +15,11 @@
 //                          the textures: where package H2's texture set is built in (citypack/texture_set.h), build-hit builds it first (the dictionaries of common, lod_0 and the 439 sectors:
 //                          mcla_city_tex.v1.pack beside the hit pack, its table in the hit file, the materials' pictures, keys and averages); --no-textures leaves it out
 //                          --uv-step N (the texture coordinate step is never finer than 2^-N of a repeat; 0 = the full 16 bits), --ao-bits N, --tint-bits N (8 = lossless): hit_collect.h HitRules
+//                          --zstd N (zstd level of the hit file's corner streams and of the texture file's chains, 1..19, 0 = stored as they are; default 9: city_zstd.h)
 //   citypack_tool check-hit --game <folder> --out <folder> [--rows <table file>]... [--deep]
 //                          stat only: is the hit pack current? (exit 0 = yes); --deep also decodes every blob and compares it with the city pack (exit 0 = whole)
 //   citypack_tool info <hit pack file> [sector number | sector name --out <the city pack's folder>]
+//   citypack_tool check-tex --out <folder>                                 the texture file against the hit pack beside it: every picture read and unpacked (exit 0 = whole), timed
 //   citypack_tool tex-census --game <folder> [--threads N]                 the city texture set (CITY-RT M2 H2): read every dictionary (common.xtd, lod_0.xtd, the sectors' own), decode,
 //                                                                          dedupe, print the counts, the formats and the size at each class's cap; writes nothing
 //   citypack_tool tex-build  --game <folder> --out <folder> [--threads N]  the same, then the texture file mcla_city_tex.v1.pack (its hit table hash is 0: a development file; the
@@ -25,6 +27,7 @@
 //
 // Reads the player's own game files; the pack it writes is game-derived and is never shipped or committed.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -73,6 +76,7 @@ struct Args {
   std::string game, out, mods, positions, keep;
   std::vector<std::string> rows;
   int uv_step = -1, ao_bits = -1, tint_bits = -1;  // build-hit: the precision rules (hit_collect.h HitRules); -1: the defaults
+  int zstd = -1;                                   // build-hit, tex-census, tex-build: the zstd level (city_zstd.h); -1: the default
   uint32_t threads = 0;
   bool force = false;
   bool census = false;
@@ -103,6 +107,7 @@ bool ParseArgs(int argc, char** argv, int first, Args* args) {
     else if (a == "--uv-step") { std::string t; if (!value(&t)) return false; args->uv_step = std::atoi(t.c_str()); }
     else if (a == "--ao-bits") { std::string t; if (!value(&t)) return false; args->ao_bits = std::atoi(t.c_str()); }
     else if (a == "--tint-bits") { std::string t; if (!value(&t)) return false; args->tint_bits = std::atoi(t.c_str()); }
+    else if (a == "--zstd") { std::string t; if (!value(&t)) return false; args->zstd = std::atoi(t.c_str()); }
     else if (a == "--deep") args->deep = true;
     else if (a == "--no-textures") args->no_textures = true;
     else if (!a.empty() && a[0] == '-') { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return false; }
@@ -275,6 +280,7 @@ int TextureSetCommand(const Args& args, bool write) {
   request.mods_rpf = base.mods_rpf;
   request.lzx = base.lzx;
   request.threads = args.threads;
+  if (args.zstd >= 0) request.zstd_level = args.zstd;
   PrintSink sink;
   const TextureSetResult result = BuildTextureSet(request, &sink);
   if (!result.ok) {
@@ -292,6 +298,10 @@ int TextureSetCommand(const Args& args, bool write) {
   std::printf("formats: BC1 %u, BC2 %u, BC3 %u, RGBA8 %u; single level %u; gamma %u; alpha is coverage %u; damaged %u; decode failed %u\n", s.by_format[0], s.by_format[1], s.by_format[2], s.by_format[3],
               s.single_level, s.gamma, s.with_alpha, s.damaged, s.decode_failed);
   std::printf("texture file %.1f MB (%llu bytes); built in %.1f s\n", mb(result.set.file_bytes()), static_cast<unsigned long long>(result.set.file_bytes()), s.seconds);
+  if (s.zstd_level != 0) {
+    std::printf("  zstd level %d: the chains %.1f MB -> %.1f MB (%.1f percent), %u of %u pictures stored as frames, compression %.2f s (wall)\n", s.zstd_level, mb(s.plain_bytes), mb(s.data_bytes),
+                100.0 * double(s.data_bytes) / double(std::max<uint64_t>(s.plain_bytes, 1)), s.zstd_pictures, s.distinct, s.compress_seconds);
+  }
   std::printf("resident (the whole set at a class's cap, block data): ");
   for (const uint32_t cap : {0u, 512u, 256u, 128u}) {
     const ResidentTotals t = TotalResidentBytes(result.set.textures, cap);
@@ -305,9 +315,11 @@ int TextureSetCommand(const Args& args, bool write) {
     return 1;
   }
   std::vector<std::string> problems;
+  const auto read_started = std::chrono::steady_clock::now();
   const uint32_t bad = ValidateTextureFile(path, result.set.textures, 0, &problems);
+  const double read_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - read_started).count();
   for (const std::string& p : problems) std::fprintf(stderr, "  %s\n", p.c_str());
-  std::printf("wrote %s; read back: %u problems\n", path.string().c_str(), bad);
+  std::printf("wrote %s; read back (every picture's whole chain, unpacked, one thread): %u problems in %.2f s\n", path.string().c_str(), bad, read_seconds);
   return bad == 0 ? 0 : 1;
 }
 
@@ -315,7 +327,7 @@ int TextureSetCommand(const Args& args, bool write) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(stderr, "citypack_tool build|census|check|validate|info|build-hit|check-hit|tex-census|tex-build (see the top of main.cpp)\n");
+    std::fprintf(stderr, "citypack_tool build|census|check|validate|info|build-hit|check-hit|check-tex|tex-census|tex-build (see the top of main.cpp)\n");
     return 2;
   }
   const std::string command = argv[1];
@@ -323,6 +335,24 @@ int main(int argc, char** argv) {
   if (!ParseArgs(argc, argv, 2, &args)) return 2;
 
   if (command == "info") return Info(args);
+  if (command == "check-tex") {
+    if (args.out.empty()) {
+      std::fprintf(stderr, "--out (the folder with the hit pack and the texture file) is required\n");
+      return 2;
+    }
+    HitPackReader hit;
+    std::string error;
+    if (!hit.Open(fs::path(args.out) / kHitFileName, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    std::vector<std::string> problems;
+    const uint32_t bad = ValidateTextureFile(fs::path(args.out) / kTexFileName, hit.textures(), hit.header().table_hash, &problems);
+    for (const std::string& p : problems) std::fprintf(stderr, "  %s\n", p.c_str());
+    std::printf("%u problems in %.2f s (%zu pictures)\n", bad, std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), hit.textures().size());
+    return bad == 0 ? 0 : 1;
+  }
   if (command == "tex-census") return TextureSetCommand(args, false);
   if (command == "tex-build") return TextureSetCommand(args, true);
   if (command == "validate") {
@@ -358,6 +388,7 @@ int main(int argc, char** argv) {
     if (args.uv_step >= 0) hit.rules.uv_step_log2 = uint32_t(args.uv_step);
     if (args.ao_bits >= 0) hit.rules.ao_bits = uint32_t(args.ao_bits);
     if (args.tint_bits >= 0) hit.rules.tint_bits = uint32_t(args.tint_bits);
+    if (args.zstd >= 0) hit.zstd_level = args.zstd;
 #if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
     CityTextureSource texture_source;  // starts with no set: its identity is all the currency check needs
     TextureSetResult texture_result;
@@ -390,14 +421,15 @@ int main(int argc, char** argv) {
       texture_request.mods_rpf = request.mods_rpf;
       texture_request.lzx = request.lzx;
       texture_request.threads = request.threads;
+      if (args.zstd >= 0) texture_request.zstd_level = args.zstd;
       texture_result = BuildTextureSet(texture_request, &sink);
       if (!texture_result.ok) {
         std::fprintf(stderr, "failed: the texture set: %s\n", texture_result.error.c_str());
         return 1;
       }
-      std::printf("texture set: %u pictures (%llu data bytes) from %llu dictionary entries, %u distinct names, %.1f s\n", texture_result.stats.distinct,
-                  static_cast<unsigned long long>(texture_result.stats.data_bytes), static_cast<unsigned long long>(texture_result.stats.entries), texture_result.stats.distinct_names,
-                  texture_result.stats.seconds);
+      std::printf("texture set: %u pictures (%llu data bytes, %llu without zstd; zstd level %d took %.2f s) from %llu dictionary entries, %u distinct names, %.1f s\n", texture_result.stats.distinct,
+                  static_cast<unsigned long long>(texture_result.stats.data_bytes), static_cast<unsigned long long>(texture_result.stats.plain_bytes), texture_result.stats.zstd_level,
+                  texture_result.stats.compress_seconds, static_cast<unsigned long long>(texture_result.stats.entries), texture_result.stats.distinct_names, texture_result.stats.seconds);
       texture_source.SetTextureSet(&texture_result.set);
     }
 #endif

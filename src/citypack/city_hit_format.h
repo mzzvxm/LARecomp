@@ -59,6 +59,9 @@
 // Only UV set 0 in version 1 (CHECK C3: which groups read a second set). A corner stream has two encodings (CornerEncoding): raw (the GPU's own bytes) and delta (below; the plan's
 // estimate is about 2.5 bytes a corner on the city's meshes [E], H1 measures it: the colour is constant over a run, the uv changes by a small step from one corner to the next).
 // The builder keeps whichever of the two is smaller for a blob (the decoder takes either).
+// Measured on the retail game (H1) neither reaches the owner's budget: the builder writes the corner stream as the INDEXED stream of hit_corner_codec.h (stream id 3, appended as
+// this header allows) and, since CITY-HIT-SIZE, as a ZSTD FRAME of it (the stream entry's encoding 2, city_zstd.h): 174 MB for the retail corners, 110 MB with the frames. A reader goes
+// through DecodeHitBlobAny and sees the same HitBlob whatever the stream was.
 //
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // THE GPU LAYOUT (what H3 builds from the files, what hlsl/city_hit_common.hlsli reads; the C++ twin of the decode is DecodeHit)
@@ -93,7 +96,8 @@
 //   words 5, 6   the diffuse texture's XXH3-64 key (low, high): the number GB-F2's per-texture rows ("hash:<hex>") and the texture dumps name a texture by; the GPU never reads it
 //   word 7   the shader hash (rage hash of "<group>/<preset>", as the pack's runs): the census and the per-shader rules; the GPU never reads it
 // THE TEXTURE RECORD (HitTexture, 32 bytes): key (XXH3-64 of the base level, the same number), width and height (the file's full size), format, mip count, flags (kTextureGamma: the
-// game's piecewise-linear gamma where the fetch constant asks, kTextureAlpha), the data's offset and size in the texture file. The GPU's row (GpuTextureRow): slot (bit 31 the gamma bit as
+// game's piecewise-linear gamma where the fetch constant asks, kTextureAlpha), the data's offset and size in the texture file (size = the chain's; the last word, stored_size, is what
+// the texture takes IN the file when that is a zstd frame of the chain: city_zstd.h, TexHeader::flags kTexFlagZstd; 0 = the chain as it is). The GPU's row (GpuTextureRow): slot (bit 31 the gamma bit as
 // descriptors.h kTextureGammaBit, as the cars' diffuse slot), the full size, the number of resident mips and the first resident one (the class's cap drops the top levels), flags.
 //
 // WHAT THE HLSL KNOWS: the decode of all the above for a ray's hit: CityHitDecode(InstanceID, GeometryIndex, PrimitiveIndex, barycentrics) -> the triangle's three object space positions
@@ -169,6 +173,8 @@ inline constexpr uint32_t kHitSectionAlignment = 16;
 
 inline constexpr uint32_t kHitStreamRuns = 1;
 inline constexpr uint32_t kHitStreamCorners = 2;
+inline constexpr uint32_t kTexFlagZstd = 1;       // TexHeader::flags: textures may be stored as zstd frames (HitTexture::stored_size); a reader refuses a flag it does not know
+inline constexpr uint32_t kTexFlagsKnown = kTexFlagZstd;
 inline constexpr uint32_t kHitBlobHasCorners = 1;  // HitBlobHeader::flags: the corner stream is there (a blob may hold runs alone: materials without texture coordinates)
 
 inline constexpr uint32_t kDefaultMaterial = 0;      // material 0 is always the default: a world surface, a mid grey
@@ -262,8 +268,12 @@ struct HitTexture {
   HitTextureFormat format = HitTextureFormat::kBc1;
   uint8_t mip_count = 0;  // levels in the file, from the full size down to 1x1 (or the last whole block)
   uint8_t flags = 0;
-  uint64_t data_offset = 0;  // in the texture file: the mips, the full size first, each tightly packed after the one before
-  uint32_t data_size = 0;
+  uint64_t data_offset = 0;  // in the texture file: where the stored bytes start (see stored_size)
+  uint32_t data_size = 0;    // the chain's size: the mips, the full size first, each tightly packed after the one before (ChainBytes(0))
+  // CITY-HIT-SIZE (an APPENDED field, the record's last word; the format version stays): the bytes the texture takes IN THE FILE. 0 and data_size mean the chain as it is; any other value
+  // (< data_size) is a zstd frame of the chain's levels split into BC planes (city_zstd.h CompressTextureChain), which the reader unpacks into the chain. The texture file's header says
+  // kTexFlagZstd when a texture may be like that.
+  uint32_t stored_size = 0;
 
   void Pack(uint32_t words[8]) const;
   static HitTexture Unpack(const uint32_t words[8]);
@@ -272,6 +282,9 @@ struct HitTexture {
   // Bytes of the levels [first_mip, mip_count), and where level `mip` starts inside the data (0 for the first).
   uint64_t ChainBytes(uint32_t first_mip = 0) const;
   uint64_t MipOffset(uint32_t mip) const;
+  // What the texture takes in the texture file, and whether that is a zstd frame (not the chain itself).
+  uint64_t StoredBytes() const { return stored_size != 0 ? stored_size : data_size; }
+  bool IsCompressed() const { return stored_size != 0 && stored_size != data_size; }
 };
 // Bytes of one level of `format` at width x height (a block format rounds each side up to whole blocks).
 uint64_t HitMipBytes(HitTextureFormat format, uint32_t width, uint32_t height);

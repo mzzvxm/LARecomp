@@ -113,11 +113,19 @@ struct HitMesh {
   }
 };
 
+// What a corner stream came to: its encoding (kIndexedCornersVersion, or kIndexedCornersZstd), its size before zstd and the time zstd took.
+struct CornerCoding {
+  uint32_t encoding = kIndexedCornersVersion;
+  uint64_t plain_bytes = 0;
+  double compress_seconds = 0.0;
+};
+
 struct HitSectorResult {
   bool failed = false;
   bool has_blob = false;
   HitBlob blob;                          // the runs (local material numbers); its corners are moved into `corner_stream`
-  std::vector<uint8_t> corner_stream;    // EncodeIndexedCorners of the blob's corners (empty: the blob has none)
+  std::vector<uint8_t> corner_stream;    // EncodeIndexedCornersZ of the blob's corners (empty: the blob has none)
+  CornerCoding corner_coding;
   uint64_t corner_count = 0;
   std::vector<MaterialDef> locals;
   std::vector<MaterialFacts> facts;
@@ -128,17 +136,22 @@ struct HitSectorResult {
   std::string problem;
 };
 
-// The blob's corners into the indexed stream; the words are dropped (they are the biggest thing a worker holds).
-void CodeCorners(HitBlob* blob, std::vector<uint8_t>* stream, uint64_t* corner_count) {
+// The blob's corners into the indexed stream (a zstd frame of it where that is smaller); the words are dropped (they are the biggest thing a worker holds).
+void CodeCorners(HitBlob* blob, int zstd_level, std::vector<uint8_t>* stream, uint64_t* corner_count, CornerCoding* coding) {
   *corner_count = blob->corners.size() / 2;
   stream->clear();
+  *coding = CornerCoding{};
   if (!blob->has_corners()) return;
-  *stream = EncodeIndexedCorners(blob->corners.data(), blob->corners.size() / 2);
+  std::vector<uint8_t> plain = EncodeIndexedCorners(blob->corners.data(), blob->corners.size() / 2);
   std::vector<uint32_t>().swap(blob->corners);
+  coding->plain_bytes = plain.size();
+  const auto t = Clock::now();
+  *stream = CompressIndexedCornerStream(std::move(plain), zstd_level, &coding->encoding);
+  coding->compress_seconds = SecondsSince(t);
 }
 
 HitSectorResult ProcessHitSector(const Archives& archives, const SectorInfo& sector, const SectorRecord& base, const BuildRequest& request, uint32_t drop_mask,
-                                 const HitRules& rules) {
+                                 const HitRules& rules, int zstd_level) {
   HitSectorResult result;
   auto t = Clock::now();
   std::vector<uint8_t> file;
@@ -180,7 +193,7 @@ HitSectorResult ProcessHitSector(const Archives& archives, const SectorInfo& sec
   result.locals = std::move(mesh.locals);
   result.facts = std::move(mesh.facts);
   result.stats = mesh.hit.stats();
-  if (result.has_blob) CodeCorners(&result.blob, &result.corner_stream, &result.corner_count);
+  if (result.has_blob) CodeCorners(&result.blob, zstd_level, &result.corner_stream, &result.corner_count, &result.corner_coding);
   result.parse_seconds += SecondsSince(t);
   return result;
 }
@@ -389,11 +402,13 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
 
   HitCensus census;
   census.sectors = count;
+  census.zstd_level = request.zstd_level;
   MaterialSet set;
   std::vector<MaterialFacts> set_facts(1);  // material 0: the default
   std::vector<HitBlob> lod_blobs(count);
   std::vector<std::vector<uint8_t>> lod_streams(count);
   std::vector<uint64_t> lod_corner_counts(count, 0);
+  std::vector<CornerCoding> lod_codings(count);
   std::vector<std::vector<MaterialDef>> lod_locals(count);
   std::vector<std::vector<MaterialFacts>> lod_facts(count);
   std::vector<char> lod_has(count, 0);
@@ -417,7 +432,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
       bool has_blob = false;
       if (!meshes[i].Finish(rec.lod_triangles, kAnyOpaque, rec.has_lod(), &lod_blobs[i], &has_blob, &problem, ("lod of " + sectors[i].name).c_str())) return fail(problem);
       lod_has[i] = has_blob ? 1 : 0;
-      if (has_blob) CodeCorners(&lod_blobs[i], &lod_streams[i], &lod_corner_counts[i]);
+      if (has_blob) CodeCorners(&lod_blobs[i], request.zstd_level, &lod_streams[i], &lod_corner_counts[i], &lod_codings[i]);
       lod_locals[i] = std::move(meshes[i].locals);
       lod_facts[i] = std::move(meshes[i].facts);
       census.collect.Add(meshes[i].hit.stats());
@@ -457,8 +472,8 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
 
   // Maps a blob's local material numbers to the table's and puts the blob together: the runs and the indexed corner stream a worker made (a blob without corners is H0's plain one).
   // `dictionary` is what the blob's texture names are seen from (hit_material.h): the sector's own for a detail blob, the far level of detail's for a far one.
-  const auto encode = [&](HitBlob* blob, const std::vector<uint8_t>& corner_stream, uint64_t corner_count, const std::vector<MaterialDef>& locals, const std::vector<MaterialFacts>& facts,
-                          uint32_t dictionary, uint32_t* run_count) {
+  const auto encode = [&](HitBlob* blob, const std::vector<uint8_t>& corner_stream, const CornerCoding& coding, uint64_t corner_count, const std::vector<MaterialDef>& locals,
+                          const std::vector<MaterialFacts>& facts, uint32_t dictionary, uint32_t* run_count) {
     const auto t = Clock::now();
     std::vector<uint32_t> global(locals.size());
     for (size_t l = 0; l < locals.size(); ++l) {
@@ -476,8 +491,11 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
     census.raw_equivalent_bytes += kHitBlobHeaderBytes + (corner_count != 0 ? 2u : 1u) * kStreamEntryBytes + uint64_t(blob->runs.size()) * kHitRunBytes + corner_count * 8u;
     std::vector<uint8_t> bytes;
     if (corner_count != 0) {
-      bytes = AssembleIndexedHitBlob(*blob, corner_stream);
+      bytes = AssembleIndexedHitBlob(*blob, corner_stream, coding.encoding);
       census.corner_stream_bytes += corner_stream.size();
+      census.corner_stream_plain_bytes += coding.plain_bytes;
+      census.compress_seconds += coding.compress_seconds;
+      if (coding.encoding == kIndexedCornersZstd) ++census.corner_streams_zstd;
     } else {
       bytes = EncodeHitBlob(*blob, CornerEncoding::kRaw);
       ++census.blobs_without_corners;
@@ -511,7 +529,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
           cv_space.wait(lock, [&] { return stop.load() || i < written + window; });
           if (stop.load()) return;
         }
-        HitSectorResult r = ProcessHitSector(archives, sectors[i], base.sector(i), base_request, drop_mask, request.rules);
+        HitSectorResult r = ProcessHitSector(archives, sectors[i], base.sector(i), base_request, drop_mask, request.rules, request.zstd_level);
         {
           std::lock_guard lock(mutex);
           results[i] = std::move(r);
@@ -546,7 +564,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
       if (census.problems.size() < 40) census.problems.push_back(r.problem);
     } else {
       if (r.has_blob) {
-        std::vector<uint8_t> bytes = encode(&r.blob, r.corner_stream, r.corner_count, r.locals, r.facts, HitDictionaryOfSector(i), &rec.hi_runs);
+        std::vector<uint8_t> bytes = encode(&r.blob, r.corner_stream, r.corner_coding, r.corner_count, r.locals, r.facts, HitDictionaryOfSector(i), &rec.hi_runs);
         if (!write_blob(bytes, &rec.hi_offset)) write_failed = true;
         rec.hi_size = uint32_t(bytes.size());
         census.hi_blob_bytes += bytes.size();
@@ -555,7 +573,7 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
         census.hi_runs += rec.hi_runs;
       }
       if (lod_has[i] != 0) {
-        std::vector<uint8_t> bytes = encode(&lod_blobs[i], lod_streams[i], lod_corner_counts[i], lod_locals[i], lod_facts[i], kHitDictionaryLod, &rec.lod_runs);
+        std::vector<uint8_t> bytes = encode(&lod_blobs[i], lod_streams[i], lod_codings[i], lod_corner_counts[i], lod_locals[i], lod_facts[i], kHitDictionaryLod, &rec.lod_runs);
         if (!write_blob(bytes, &rec.lod_offset)) write_failed = true;
         rec.lod_size = uint32_t(bytes.size());
         census.lod_blob_bytes += bytes.size();
@@ -908,9 +926,20 @@ std::string HitCensus::Report() const {
   out << "  runs: " << collect.runs << " in all, " << collect.runs_split << " made by cutting a geometry whose texture coordinates range wider than " << kMaxRunUvRange
       << ", triangles clamped into a transform: " << collect.triangles_uv_clamped << "\n";
   out << "sizes:\n";
-  golden("hit file bytes (default rules)", file_bytes, textures != 0 ? kGoldenFileBytesTextured : kGoldenFileBytes);
+  // the golden is the file without zstd (what the default rules make of the retail game's corners); with zstd the blobs' 16 byte alignment moves by a few bytes, so only the size is shown
+  if (zstd_level == 0) {
+    golden("hit file bytes (default rules)", file_bytes, textures != 0 ? kGoldenFileBytesTextured : kGoldenFileBytes);
+  } else {
+    out << "  hit file bytes without zstd would be about " << file_bytes + corner_stream_plain_bytes - corner_stream_bytes << " (golden " << (textures != 0 ? kGoldenFileBytesTextured : kGoldenFileBytes)
+        << ")\n";
+  }
   out << "  the hit file: " << file_bytes << " bytes (" << mib(file_bytes) << "): head " << head_bytes << ", detail blobs " << hi_blob_bytes << " (" << mib(hi_blob_bytes) << "), far blobs "
       << lod_blob_bytes << "\n";
+  if (zstd_level != 0) {
+    out << "  zstd level " << zstd_level << ": the corner streams " << corner_stream_plain_bytes << " -> " << corner_stream_bytes << " bytes (" << mib(corner_stream_plain_bytes) << " -> "
+        << mib(corner_stream_bytes) << ", " << (corner_stream_plain_bytes != 0 ? 100.0 * double(corner_stream_bytes) / double(corner_stream_plain_bytes) : 0.0) << " percent), " << corner_streams_zstd
+        << " of " << (hi_blobs + lod_blobs - blobs_without_corners) << " streams kept as frames, " << compress_seconds << " s of the workers' time\n";
+  }
   out << "  the same blobs with the raw corner encoding: " << raw_equivalent_bytes << " bytes (" << mib(raw_equivalent_bytes) << "); the indexed corner streams are " << corner_stream_bytes
       << " bytes (" << mib(corner_stream_bytes) << "); " << blobs_without_corners << " blobs have no corners\n";
   if (corners != 0) out << "  " << double(hi_blob_bytes + lod_blob_bytes) / double(corners) << " bytes a corner in all (raw 8), " << double(corner_stream_bytes) / double(corners) << " in the corner streams\n";

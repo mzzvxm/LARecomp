@@ -28,6 +28,7 @@
 
 #include "citypack/builder.h"
 #include "citypack/city_hit_format.h"
+#include "citypack/city_zstd.h"
 #include "citypack/hit_collect.h"
 #include "citypack/hit_corner_codec.h"
 #include "citypack/hit_material.h"
@@ -38,7 +39,8 @@ namespace larecomp::citypack {
 inline constexpr uint32_t kHitStampFormat = 1;
 // The hit builder's own revision (the rules of the runs, the materials and the corner coding below city_hit_format.h's frozen builder version): bump it by hand when what the builder
 // writes for the same inputs changes. It is in the stamp.
-inline constexpr uint32_t kHitBuilderRevision = 1;
+// 2: the corner streams are zstd frames (city_zstd.h, hit_corner_codec.h kIndexedCornersZstd) and the texture file's chains are too (texture_set.h kTextureRulesVersion 2).
+inline constexpr uint32_t kHitBuilderRevision = 2;
 
 struct HitBuildRequest {
   // What the base pack was built with and from: source_rpf, mods_rpf, out_dir (the base pack's folder: the hit pack goes there too), lzx, threads, worker_start, force,
@@ -50,6 +52,8 @@ struct HitBuildRequest {
   std::vector<std::filesystem::path> texture_rows;
   // How much the corners may lose to stay inside the disk budget (hit_collect.h); in the stamp.
   HitRules rules;
+  // zstd level of the blobs' corner streams (city_zstd.h; 0: stored as they are). The level is the builder's choice: every level's file reads alike, so it is not in the stamp.
+  int zstd_level = kZstdLevelDefault;
 };
 
 struct HitCensus {
@@ -65,7 +69,11 @@ struct HitCensus {
   uint64_t hi_blob_bytes = 0;
   uint64_t lod_blob_bytes = 0;
   uint64_t raw_equivalent_bytes = 0;  // what the blobs would be with the raw corner encoding (8 bytes a corner + the runs): the indexed stream's gain
-  uint64_t corner_stream_bytes = 0;   // the indexed corner streams' bytes (the rest of the blobs is the runs and the containers)
+  uint64_t corner_stream_bytes = 0;   // the indexed corner streams' bytes IN THE FILE (zstd frames where they are smaller; the rest of the blobs is the runs and the containers)
+  uint64_t corner_stream_plain_bytes = 0;  // the same streams before zstd
+  uint32_t corner_streams_zstd = 0;   // streams kept as zstd frames
+  int zstd_level = 0;                 // the level they were made with (0: none)
+  double compress_seconds = 0.0;      // summed over the workers: zstd on the corner streams
   uint32_t blobs_without_corners = 0;
   uint32_t materials = 0;             // the table's size, the default included
   uint32_t textures = 0;              // the texture table's size

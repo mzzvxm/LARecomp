@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "citypack/builder.h"
+#include "citypack/city_zstd.h"
 #include "citypack/hit_builder.h"
 #include "citypack/hit_collect.h"
 #include "citypack/hit_corner_codec.h"
@@ -531,6 +532,90 @@ void TestIndexedCorners() {
     flipped[flipped.size() - 9] ^= 0x10;
     CHECK(!DecodeHitBlobAny(flipped.data(), flipped.size(), &any, &error));
     CHECK(!DecodeHitBlobAny(bytes.data(), bytes.size() - 4, &any, &error));
+  }
+}
+
+// CITY-HIT-SIZE: the corner stream as a zstd frame (stream entry encoding kIndexedCornersZstd): the same blob to the reader, a smaller file, damage caught.
+void TestZstdCorners() {
+  std::string error;
+  std::vector<uint32_t> back;
+  // the frame of the stream, and the stream itself where a frame would not be smaller
+  {
+    const std::vector<uint32_t> words = RandomCorners(30000, 5, 400);
+    uint32_t encoding = 99;
+    const std::vector<uint8_t> plain = EncodeIndexedCorners(words.data(), 30000);
+    const std::vector<uint8_t> z = EncodeIndexedCornersZ(words.data(), 30000, kZstdLevelDefault, &encoding);
+    CHECK(encoding == kIndexedCornersZstd && z.size() < plain.size());
+    std::vector<uint8_t> unpacked;
+    CHECK(ZstdDecompressSelfSized(z.data(), z.size(), kMaxIndexedCornerStreamBytes, &unpacked, &error) && unpacked == plain);
+    const std::vector<uint8_t> stored = EncodeIndexedCornersZ(words.data(), 30000, 0, &encoding);  // level 0: no compression
+    CHECK(encoding == kIndexedCornersVersion && stored == plain);
+    const uint32_t one[2] = {0x00050007u, 0xFF102030u};
+    const std::vector<uint8_t> tiny = EncodeIndexedCornersZ(one, 1, kZstdLevelMax, &encoding);  // a few bytes: a frame's own header is more than it saves
+    CHECK(encoding == kIndexedCornersVersion && tiny == EncodeIndexedCorners(one, 1));
+  }
+  HitBlob blob;
+  blob.triangle_count = 4000;
+  blob.opaque_triangles = 3000;
+  blob.flags = kHitBlobHasCorners;
+  HitRun r0;
+  r0.first_triangle = 0;
+  r0.triangle_count = 3000;
+  r0.material = 7;
+  r0.flags = kRunHasUv | kRunHasColour;
+  HitRun r1;
+  r1.first_triangle = 3000;
+  r1.triangle_count = 1000;
+  r1.material = 2;
+  r1.flags = kRunAlphaTested | kRunHasUv;
+  blob.runs = {r0, r1};
+  blob.corners = RandomCorners(12000, 3, 900);
+  uint32_t encoding = 0;
+  const std::vector<uint8_t> frame = EncodeIndexedCornersZ(blob.corners.data(), 12000, 3, &encoding);
+  CHECK(encoding == kIndexedCornersZstd);
+  const std::vector<uint8_t> plain_blob = AssembleIndexedHitBlob(blob, EncodeIndexedCorners(blob.corners.data(), 12000));
+  const std::vector<uint8_t> z_blob = AssembleIndexedHitBlob(blob, frame, encoding);
+  CHECK(z_blob.size() < plain_blob.size());
+  HitBlob a, b;
+  CHECK(DecodeHitBlobAny(plain_blob.data(), plain_blob.size(), &a, &error));
+  CHECK(DecodeHitBlobAny(z_blob.data(), z_blob.size(), &b, &error));
+  CHECK(b.has_corners() && b.corners == blob.corners && b.corners == a.corners && b.runs.size() == 2 && b.runs[0].material == 7 && b.triangle_count == 4000 && b.opaque_triangles == 3000);
+  CHECK((b.flags & kHitBlobHasIndexedCorners) == 0 && (b.flags & kHitBlobHasCorners) != 0);
+  {  // the old reader (city_hit_format.h's own) sees the runs and no corners, as for the plain indexed stream
+    HitBlob old;
+    CHECK(DecodeHitBlob(z_blob.data(), z_blob.size(), &old, &error) && !old.has_corners() && old.runs.size() == 2);
+  }
+  // damage: a flipped byte in the frame is caught by the blob's hash; with the hash repaired, by the frame's checksum or its decoder; a cut; a stated size that is not the corner count's
+  {
+    std::vector<uint8_t> flipped = z_blob;
+    flipped[flipped.size() / 2 + 40] ^= 0x04;
+    CHECK(!DecodeHitBlobAny(flipped.data(), flipped.size(), &b, &error));
+    CHECK(!DecodeHitBlobAny(z_blob.data(), z_blob.size() - 8, &b, &error));
+    // every byte of the frame flipped in turn, the blob's hash recomputed: a decode returns true or false and never reads outside its stream (the frame's checksum catches a damaged payload)
+    const uint32_t frame_start = uint32_t(z_blob.size()) - uint32_t(frame.size());
+    HitBlob none;
+    int accepted = 0, tried = 0;
+    for (size_t at = frame_start; at < z_blob.size(); at += 7) {
+      std::vector<uint8_t> f = z_blob;
+      f[at] ^= 0x01;
+      ByteWriter tail;  // the blob's hash covers [kHitBlobHeaderBytes, end): recompute it so that the frame's own checks are what is tested
+      tail.Bytes(f.data() + kHitBlobHeaderBytes, f.size() - kHitBlobHeaderBytes);
+      const uint64_t h = Fnv1a64(tail.bytes().data(), tail.size());
+      for (int k = 0; k < 8; ++k) f[24 + size_t(k)] = uint8_t(h >> (8 * k));
+      ++tried;
+      if (DecodeHitBlobAny(f.data(), f.size(), &none, &error)) ++accepted;  // a byte of the frame's padding can be harmless; a payload byte never is (checksum)
+    }
+    CHECK(tried > 10 && accepted * 20 < tried);
+  }
+  {  // an encoding this build does not know is refused (not skipped)
+    std::vector<uint8_t> unknown = AssembleIndexedHitBlob(blob, frame, 7);
+    CHECK(!DecodeHitBlobAny(unknown.data(), unknown.size(), &b, &error) && error.find("encoding") != std::string::npos);
+  }
+  {  // a plain stream labelled as a frame, and a frame labelled as plain: refused
+    const std::vector<uint8_t> lie1 = AssembleIndexedHitBlob(blob, EncodeIndexedCorners(blob.corners.data(), 12000), kIndexedCornersZstd);
+    CHECK(!DecodeHitBlobAny(lie1.data(), lie1.size(), &b, &error));
+    const std::vector<uint8_t> lie2 = AssembleIndexedHitBlob(blob, frame, kIndexedCornersVersion);
+    CHECK(!DecodeHitBlobAny(lie2.data(), lie2.size(), &b, &error));
   }
 }
 
@@ -1101,6 +1186,38 @@ void TestBuilder() {
   }
   hit.base.threads = 1;
 
+  // CITY-HIT-SIZE: the default level and level 0 (the corner streams as they are) give the same blobs to the reader; level 0 says it made no frame; a bigger level reads the same
+  {
+    CHECK(one.census.zstd_level == kZstdLevelDefault && one.census.corner_stream_plain_bytes >= one.census.corner_stream_bytes);
+    for (const int level : {0, 1, kZstdLevelMax}) {
+      HitBuildRequest other_level = hit;
+      other_level.zstd_level = level;
+      other_level.base.out_dir = g_scratch / ("out_z" + std::to_string(level));
+      other_level.base.force = true;
+      fs::create_directories(other_level.base.out_dir);
+      fs::copy_file(request.out_dir / kPackFileName, other_level.base.out_dir / kPackFileName, fs::copy_options::overwrite_existing);
+      fs::copy_file(request.out_dir / kStampFileName, other_level.base.out_dir / kStampFileName, fs::copy_options::overwrite_existing);
+      FakeTextures fake;
+      other_level.textures = &fake;
+      const HitBuildResult z = BuildCityHitPack(other_level, &sink);
+      CHECK(z.ok && z.census.zstd_level == level && (level != 0 || (z.census.corner_streams_zstd == 0 && z.census.corner_stream_plain_bytes == z.census.corner_stream_bytes)));
+      CHECK(z.census.corner_stream_plain_bytes == one.census.corner_stream_plain_bytes && z.census.corners == one.census.corners);
+      HitPackReader zr;
+      CHECK(zr.Open(z.hit_path, &error));
+      bool same = zr.sector_count() == reader.sector_count() && zr.materials().size() == reader.materials().size();
+      for (uint32_t s = 0; same && s < reader.sector_count(); ++s) {
+        for (const MeshKind kind : {MeshKind::kHi, MeshKind::kLod}) {
+          HitBlob x, y;
+          const bool have_x = reader.ReadHitBlob(s, kind, &x, &error), have_y = zr.ReadHitBlob(s, kind, &y, &error);
+          same = same && have_x == have_y;
+          if (have_x && have_y) same = same && x.corners == y.corners && x.runs.size() == y.runs.size() && x.triangle_count == y.triangle_count && x.opaque_triangles == y.opaque_triangles && x.flags == y.flags;
+        }
+      }
+      CHECK(same);
+      CHECK(ValidateHitPack(zr, base_reader, nullptr) == 0);
+    }
+  }
+
   // the stamp notices other rules, another texture set, other rows, a changed base pack, a missing file
   {
     HitBuildRequest changed = hit;
@@ -1224,6 +1341,7 @@ int main(int argc, char** argv) {
   TestLayouts();
   TestQuantisation();
   TestIndexedCorners();
+  TestZstdCorners();
   TestMaterials();
 #if defined(LARECOMP_HIT_HAS_TEXTURE_SET)
   TestTextureAdapter();

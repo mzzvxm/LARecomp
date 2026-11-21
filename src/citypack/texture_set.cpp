@@ -98,6 +98,15 @@ ResolvedTexture TextureSet::ResolveEntry(uint32_t dictionary, uint32_t name_hash
   return ResolveExactEntry(dictionary == kDictionaryLod ? kDictionaryCommon : kDictionaryLod, name_hash);
 }
 
+bool TextureSet::ReadChain(uint32_t index, std::vector<uint8_t>* chain, std::string* error) const {
+  if (index >= textures.size() || index >= blobs.size()) {
+    if (error) *error = "no such texture";
+    return false;
+  }
+  std::vector<uint8_t> scratch;
+  return UnpackTextureChain(textures[index], blobs[index].data(), blobs[index].size(), 0, chain, &scratch, error);
+}
+
 std::vector<uint32_t> TextureSet::PicturesOf(uint32_t dictionary) const {
   std::vector<uint32_t> out;
   std::vector<char> seen(textures.size(), 0);
@@ -246,7 +255,6 @@ TextureSetResult BuildTextureSet(const TextureSetRequest& request, ProgressSink*
   std::unordered_map<uint32_t, uint32_t> first_by_name;  // name hash -> the first picture any dictionary gave it
   std::unordered_map<uint64_t, uint32_t> by_content;     // content -> table index
   std::vector<Entry*> table_entries;                     // the entry whose data a table row holds
-  uint64_t data_size = 0;
   for (uint32_t source = 0; source < source_count; ++source) {
     SourceResult& r = results[source];
     if (r.failed) {
@@ -268,8 +276,6 @@ TextureSetResult BuildTextureSet(const TextureSetRequest& request, ProgressSink*
         if (fresh) {
           if (table_entries.size() >= kMaxTextures) return fail("the texture set has more pictures than a 16 bit texture index holds");
           table_entries.push_back(entry);
-          data_size = (data_size + kTextureDataAlignment - 1) / kTextureDataAlignment * kTextureDataAlignment;
-          data_size += entry->decoded.data.size();
         } else {
           stats.duplicate_bytes += entry->decoded.data.size();
           std::vector<uint8_t>().swap(entry->decoded.data);  // the same picture as an earlier entry: only its key is kept
@@ -290,14 +296,13 @@ TextureSetResult BuildTextureSet(const TextureSetRequest& request, ProgressSink*
   }
   if (table_entries.empty()) return fail("no texture could be read from the city's dictionaries");
 
-  set.textures.resize(table_entries.size());
-  set.average.resize(table_entries.size());
-  set.alpha_mean.resize(table_entries.size());
-  set.blobs.resize(table_entries.size());
-  uint64_t offset = 0;
-  for (uint32_t i = 0; i < table_entries.size(); ++i) {
-    DecodedTexture& d = table_entries[i]->decoded;
-    offset = (offset + kTextureDataAlignment - 1) / kTextureDataAlignment * kTextureDataAlignment;
+  const uint32_t picture_count = uint32_t(table_entries.size());
+  set.textures.resize(picture_count);
+  set.average.resize(picture_count);
+  set.alpha_mean.resize(picture_count);
+  set.blobs.resize(picture_count);
+  for (uint32_t i = 0; i < picture_count; ++i) {
+    const DecodedTexture& d = table_entries[i]->decoded;
     HitTexture& t = set.textures[i];
     t.key = d.key;
     t.width = uint16_t(d.width);
@@ -305,21 +310,98 @@ TextureSetResult BuildTextureSet(const TextureSetRequest& request, ProgressSink*
     t.format = d.format;
     t.mip_count = uint8_t(d.mip_count);
     t.flags = uint8_t(d.flags);
-    t.data_offset = kTexHeaderBytes + offset;
     t.data_size = uint32_t(d.data.size());
     set.average[i] = {d.average[0], d.average[1], d.average[2]};
     set.alpha_mean[i] = d.alpha_mean;
-    offset += d.data.size();
     ++stats.by_format[size_t(d.format)];
     if (d.mip_count == 1) ++stats.single_level;
     if ((d.flags & kTextureAlpha) != 0) ++stats.with_alpha;
     if ((d.flags & kTextureGamma) != 0) ++stats.gamma;
     if (d.damaged_levels != 0) ++stats.damaged;
-    set.blobs[i] = std::move(d.data);  // the table owns it now
   }
-  set.data_bytes = data_size;
-  stats.distinct = uint32_t(set.textures.size());
-  stats.data_bytes = data_size;
+
+  // The chains as the file holds them: each picture compressed on its own (workers; the same bytes whatever the thread count), then laid out in the table's order.
+  const bool zstd = request.zstd_level > 0;
+  std::vector<std::vector<uint8_t>> stored(zstd ? picture_count : 0);
+  if (zstd) {
+    const auto compress_started = std::chrono::steady_clock::now();
+    sink.BeginPhase("city texture files", int(picture_count));
+    std::vector<char> compressed(picture_count, 0);
+    std::vector<char> compress_failed(picture_count, 0);
+    std::mutex compress_mutex;
+    std::condition_variable compress_cv;
+    std::atomic<uint32_t> next_picture{0};
+    std::atomic<bool> stop_compress{false};
+    std::vector<std::thread> pool;
+    for (uint32_t w = 0; w < threads; ++w) {
+      pool.emplace_back([&] {
+        if (request.worker_start) request.worker_start();
+        for (;;) {
+          const uint32_t i = next_picture.fetch_add(1);
+          if (i >= picture_count || stop_compress.load()) return;
+          std::vector<uint8_t>& data = table_entries[i]->decoded.data;
+          const bool ok = CompressTextureChain(set.textures[i], data.data(), request.zstd_level, &stored[i]);
+          std::vector<uint8_t>().swap(data);  // the frame (or the chain, copied) is the picture now
+          {
+            std::lock_guard lock(compress_mutex);
+            compressed[i] = 1;
+            compress_failed[i] = ok ? 0 : 1;
+          }
+          compress_cv.notify_all();
+        }
+      });
+    }
+    bool broke = false;
+    for (uint32_t i = 0; i < picture_count; ++i) {
+      {
+        std::unique_lock lock(compress_mutex);
+        compress_cv.wait(lock, [&] { return compressed[i] != 0; });
+      }
+      if (i % 256 == 255 || i + 1 == picture_count) sink.Step(std::to_string(i + 1) + " of " + std::to_string(picture_count));
+      if (compress_failed[i] != 0) {
+        broke = true;
+        stop_compress.store(true);
+        break;
+      }
+      if (sink.Cancelled()) {
+        stop_compress.store(true);
+        result.cancelled = true;
+        break;
+      }
+    }
+    for (std::thread& t : pool) t.join();
+    if (broke) return fail("a texture could not be compressed");
+    if (result.cancelled) {
+      result.stats.seconds = SecondsSince(started);
+      return result;
+    }
+    stats.compress_seconds = SecondsSince(compress_started);
+    stats.zstd_level = request.zstd_level;
+  }
+  uint64_t offset = 0;
+  uint64_t plain_offset = 0;
+  for (uint32_t i = 0; i < picture_count; ++i) {
+    HitTexture& t = set.textures[i];
+    offset = (offset + kTextureDataAlignment - 1) / kTextureDataAlignment * kTextureDataAlignment;
+    plain_offset = (plain_offset + kTextureDataAlignment - 1) / kTextureDataAlignment * kTextureDataAlignment;
+    t.data_offset = kTexHeaderBytes + offset;
+    plain_offset += t.data_size;
+    if (zstd) {
+      set.blobs[i] = std::move(stored[i]);
+      if (set.blobs[i].size() != t.data_size) {
+        t.stored_size = uint32_t(set.blobs[i].size());  // a frame; 0 (the default) means the chain as it is
+        ++stats.zstd_pictures;
+      }
+    } else {
+      set.blobs[i] = std::move(table_entries[i]->decoded.data);  // the table owns it now
+    }
+    offset += set.blobs[i].size();
+  }
+  set.zstd = stats.zstd_pictures != 0;
+  set.data_bytes = offset;
+  stats.plain_bytes = plain_offset;
+  stats.distinct = picture_count;
+  stats.data_bytes = offset;
   stats.seconds = SecondsSince(started);
   result.ok = true;
   return result;
@@ -332,6 +414,7 @@ bool WriteTextureFile(const std::filesystem::path& path, const TextureSet& set, 
   };
   TexHeader header;
   header.texture_count = uint32_t(set.textures.size());
+  header.flags = set.zstd ? kTexFlagZstd : 0;
   header.hit_table_hash = hit_table_hash;
   header.data_offset = kTexHeaderBytes;
   header.file_size = kTexHeaderBytes + set.data_bytes;
@@ -387,10 +470,14 @@ bool TextureFileReader::Open(const std::filesystem::path& path, const std::vecto
   std::error_code ec;
   const uint64_t actual = std::filesystem::file_size(path, ec);
   if (ec || actual != header.file_size) return fail("the texture file's size is not the one its header says (cut or replaced)");
+  if ((header.flags & ~kTexFlagsKnown) != 0) return fail("the texture file has an encoding this build does not know (another version)");
   if (header.texture_count != table.size()) return fail("the texture file and the hit file's texture table have different counts (another build)");
   if (header.hit_table_hash != expected_hit_table_hash) return fail("the texture file belongs to another hit file (its table hash differs)");
   for (const HitTexture& t : table) {
-    if (t.data_offset < header.data_offset || t.data_offset + t.data_size > header.file_size || t.data_size != t.ChainBytes(0)) return fail("a texture record points outside the texture file or has the wrong size");
+    if (t.data_offset < header.data_offset || t.data_offset + t.StoredBytes() > header.file_size || t.data_size != t.ChainBytes(0) || t.stored_size > t.data_size) {
+      return fail("a texture record points outside the texture file or has the wrong size");
+    }
+    if (t.IsCompressed() && (header.flags & kTexFlagZstd) == 0) return fail("a texture record says it is compressed in a file that says it is not");
   }
   path_ = path;
   table_ = table;
@@ -408,10 +495,17 @@ bool TextureFileReader::ReadMips(uint32_t index, uint32_t first_mip, std::vector
   if (!open_ || index >= table_.size()) return fail("no such texture");
   const HitTexture& t = table_[index];
   if (first_mip >= t.mip_count) return fail("no such mip level");
+  in_->clear();
+  if (t.IsCompressed()) {  // one frame: read it whole, unpack the levels from first_mip on
+    stored_.resize(size_t(t.stored_size));
+    in_->seekg(std::streamoff(t.data_offset), std::ios::beg);
+    in_->read(reinterpret_cast<char*>(stored_.data()), std::streamsize(stored_.size()));
+    if (in_->gcount() != std::streamsize(stored_.size())) return fail("the texture file was cut short");
+    return UnpackTextureChain(t, stored_.data(), stored_.size(), first_mip, out, &scratch_, error);
+  }
   const uint64_t bytes = t.ChainBytes(first_mip);
   const uint64_t at = t.data_offset + t.MipOffset(first_mip);
   out->resize(size_t(bytes));
-  in_->clear();
   in_->seekg(std::streamoff(at), std::ios::beg);
   in_->read(reinterpret_cast<char*>(out->data()), std::streamsize(bytes));
   if (in_->gcount() != std::streamsize(bytes)) return fail("the texture file was cut short");
@@ -437,7 +531,7 @@ uint32_t ValidateTextureFile(const std::filesystem::path& path, const std::vecto
       note("texture " + std::to_string(i) + ": " + error);
       continue;
     }
-    covered += bytes.size();
+    covered += table[i].StoredBytes();  // the file's bytes, not the unpacked chain's
     if (table[i].mip_count == 0 || table[i].width == 0 || table[i].height == 0) note("texture " + std::to_string(i) + " has no levels or no size");
   }
   if (covered > reader.file_size()) note("the textures cover more than the file");

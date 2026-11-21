@@ -29,6 +29,11 @@
 //   uv                M x (varint zigzag(du), varint zigzag(dv)): the entry's u and v (the 16 bit words of the corner's first word) against the entry before (the first against 0)
 //   colour index      M x varint: the entry's colour as an index into the palette
 // An entry is the PAIR (uv word, colour word): two corners are "equal" when both words are. The decoder checks every number against the stream's sizes and never reads past them.
+//
+// COMPRESSED (CITY-HIT-SIZE; city_zstd.h): the stream above is tokens, varints and a palette, and still compresses to 62 percent (the colour indices and the escapes are the part that
+// does not). The builders therefore keep the stream as ONE ZSTD FRAME, marked by the stream table's `encoding` = kIndexedCornersZstd (2) instead of kIndexedCornersVersion (1); the frame
+// holds the version 1 stream byte for byte and states its size. Which of the two a blob has is the stream entry's business alone: the container, the flags, the blob hash (over the
+// compressed bytes) and DecodeHitBlobAny's result are the same, so the format version does not change and a blob of either encoding reads.
 // ===========================================================================
 
 #include <cstddef>
@@ -42,17 +47,25 @@ namespace larecomp::citypack {
 
 inline constexpr uint32_t kHitStreamCornersIndexed = 3;     // a stream id of a hit blob (city_hit_format.h has 1 and 2)
 inline constexpr uint32_t kHitBlobHasIndexedCorners = 2;    // HitBlob::flags bit 1, in the file only: the corner stream is stream 3
-inline constexpr uint32_t kIndexedCornersVersion = 1;
+inline constexpr uint32_t kIndexedCornersVersion = 1;       // StreamEntry::encoding: the stream as described above
+inline constexpr uint32_t kIndexedCornersZstd = 2;          // StreamEntry::encoding: one zstd frame of that stream
 inline constexpr uint32_t kIndexedCornerHeaderBytes = 28;
+inline constexpr size_t kMaxIndexedCornerStreamBytes = size_t(1) << 30;  // what a compressed stream may state for its size (a blob has at most 2^28 triangles: far less in fact)
 
 // `words`: two uint32 a corner (the layout of city_hit_format.h), `corners` corners. The stream's bytes.
 std::vector<uint8_t> EncodeIndexedCorners(const uint32_t* words, size_t corners);
+// A zstd frame of `stream` (an EncodeIndexedCorners result) at `zstd_level` when that is smaller, else the stream itself (level 0: always the stream). `*encoding` says what came back:
+// kIndexedCornersVersion or kIndexedCornersZstd; pass it to AssembleIndexedHitBlob.
+std::vector<uint8_t> CompressIndexedCornerStream(std::vector<uint8_t> stream, int zstd_level, uint32_t* encoding);
+// EncodeIndexedCorners and CompressIndexedCornerStream in one.
+std::vector<uint8_t> EncodeIndexedCornersZ(const uint32_t* words, size_t corners, int zstd_level, uint32_t* encoding);
 // False (with `error`) for a stream that is cut, inconsistent or damaged. `out` gets two words a corner.
 bool DecodeIndexedCorners(const uint8_t* data, size_t size, size_t corners, std::vector<uint32_t>* out, std::string* error);
 
 // A hit blob whose corner stream is the indexed one: the container of city_hit_format.h (header, stream table, the runs, then stream 3 = `corner_stream`, an EncodeIndexedCorners
-// result for 3 corners a triangle). `blob.corners` is ignored; `blob.flags` gets kHitBlobHasIndexedCorners instead of kHitBlobHasCorners.
-std::vector<uint8_t> AssembleIndexedHitBlob(const HitBlob& blob, const std::vector<uint8_t>& corner_stream);
+// result for 3 corners a triangle, or an EncodeIndexedCornersZ result with its `encoding`). `blob.corners` is ignored; `blob.flags` gets kHitBlobHasIndexedCorners instead of
+// kHitBlobHasCorners.
+std::vector<uint8_t> AssembleIndexedHitBlob(const HitBlob& blob, const std::vector<uint8_t>& corner_stream, uint32_t encoding = kIndexedCornersVersion);
 
 // DecodeHitBlob, and the indexed corner stream when the blob has one: the HitBlob has its corners (two words each) and kHitBlobHasCorners.
 bool DecodeHitBlobAny(const uint8_t* data, size_t size, HitBlob* out, std::string* error);

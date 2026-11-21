@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "citypack/city_zstd.h"
+
 namespace larecomp::citypack {
 
 namespace {
@@ -107,6 +109,22 @@ std::vector<uint8_t> EncodeIndexedCorners(const uint32_t* words, size_t n) {
   return std::move(out.bytes());
 }
 
+std::vector<uint8_t> CompressIndexedCornerStream(std::vector<uint8_t> stream, int zstd_level, uint32_t* encoding) {
+  *encoding = kIndexedCornersVersion;
+  if (zstd_level > 0) {
+    std::vector<uint8_t> frame;
+    if (ZstdCompress(stream.data(), stream.size(), zstd_level, &frame) && frame.size() < stream.size()) {
+      *encoding = kIndexedCornersZstd;
+      return frame;
+    }
+  }
+  return stream;
+}
+
+std::vector<uint8_t> EncodeIndexedCornersZ(const uint32_t* words, size_t n, int zstd_level, uint32_t* encoding) {
+  return CompressIndexedCornerStream(EncodeIndexedCorners(words, n), zstd_level, encoding);
+}
+
 bool DecodeIndexedCorners(const uint8_t* data, size_t size, size_t n, std::vector<uint32_t>* out, std::string* error) {
   const auto fail = [&](const char* why) {
     if (error) *error = why;
@@ -180,7 +198,7 @@ bool DecodeIndexedCorners(const uint8_t* data, size_t size, size_t n, std::vecto
   return true;
 }
 
-std::vector<uint8_t> AssembleIndexedHitBlob(const HitBlob& blob, const std::vector<uint8_t>& corner_stream) {
+std::vector<uint8_t> AssembleIndexedHitBlob(const HitBlob& blob, const std::vector<uint8_t>& corner_stream, uint32_t encoding) {
   constexpr uint32_t kStreams = 2;
   const uint32_t body_start = kHitBlobHeaderBytes + kStreams * kStreamEntryBytes;
   ByteWriter body;
@@ -205,7 +223,7 @@ std::vector<uint8_t> AssembleIndexedHitBlob(const HitBlob& blob, const std::vect
     body.Align(4);
     StreamEntry e;
     e.id = kHitStreamCornersIndexed;
-    e.encoding = kIndexedCornersVersion;
+    e.encoding = encoding;
     e.offset = body_start + uint32_t(body.size());
     e.count = blob.triangle_count * 3u;
     e.element_bytes = 0;
@@ -253,7 +271,15 @@ bool DecodeHitBlobAny(const uint8_t* data, size_t size, HitBlob* out, std::strin
     if (!StreamEntry::Read(r, &e)) return fail("a hit blob's stream table is cut short");
     if (e.id != kHitStreamCornersIndexed) continue;
     if (e.count != blob.triangle_count * 3u || uint64_t(e.offset) + e.size > size) return fail("a hit blob's indexed corner stream does not fit the blob");
-    if (!DecodeIndexedCorners(data + e.offset, e.size, e.count, &blob.corners, error)) return false;
+    if (e.encoding == kIndexedCornersVersion) {
+      if (!DecodeIndexedCorners(data + e.offset, e.size, e.count, &blob.corners, error)) return false;
+    } else if (e.encoding == kIndexedCornersZstd) {
+      std::vector<uint8_t> stream;
+      if (!ZstdDecompressSelfSized(data + e.offset, e.size, kMaxIndexedCornerStreamBytes, &stream, error)) return false;
+      if (!DecodeIndexedCorners(stream.data(), stream.size(), e.count, &blob.corners, error)) return false;
+    } else {
+      return fail("a hit blob's indexed corner stream has an encoding this build does not know");
+    }
     blob.flags = (blob.flags & ~kHitBlobHasIndexedCorners) | kHitBlobHasCorners;
     *out = std::move(blob);
     return true;

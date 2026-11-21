@@ -190,7 +190,7 @@ void HitTexture::Pack(uint32_t words[8]) const {
   words[4] = uint32_t(data_offset);
   words[5] = uint32_t(data_offset >> 32);
   words[6] = data_size;
-  words[7] = 0;
+  words[7] = stored_size;
 }
 
 HitTexture HitTexture::Unpack(const uint32_t words[8]) {
@@ -203,6 +203,7 @@ HitTexture HitTexture::Unpack(const uint32_t words[8]) {
   t.flags = uint8_t((words[3] >> 16) & 0xFFu);
   t.data_offset = uint64_t(words[4]) | (uint64_t(words[5]) << 32);
   t.data_size = words[6];
+  t.stored_size = words[7];
   return t;
 }
 

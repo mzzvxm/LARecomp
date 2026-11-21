@@ -15,6 +15,7 @@ add_library(larecomp_citypack STATIC
     hit_material.cpp
     hit_params.cpp
     city_texture.cpp
+    city_zstd.cpp
     guest_hash.cpp
     material_class.cpp
     mesh_builder.cpp
@@ -53,6 +54,33 @@ if(NOT _larecomp_citypack_xxhash_include)
         "git submodule update --init --recursive). Set LARECOMP_XXHASH_INCLUDE_DIR.")
 endif()
 target_include_directories(larecomp_citypack SYSTEM PRIVATE "${_larecomp_citypack_xxhash_include}")
+
+# zstd (BSD-3-Clause, Meta Platforms; https://github.com/facebook/zstd) for city_zstd.cpp: the hit pack's corner streams and the texture file's chains are stored as zstd frames (CITY-HIT-SIZE:
+# 419 MB -> about 250 MB on the retail game). The sources are LAR-XenosRecomp's thirdparty/zstd (a nested submodule that is checked out already, as xxHash above: no new submodule); the
+# static library has the library's three folders only (common, compress, decompress): no assembly, no threads (the builders run their own workers), no legacy formats, no dictionary
+# builder; third-party C, its warnings off. LARECOMP_ZSTD_DIR (the folder with lib/zstd.h) names another checkout.
+set(LARECOMP_ZSTD_DIR "" CACHE PATH "Folder with zstd's lib/ (empty: LAR-XenosRecomp's thirdparty/zstd)")
+set(_larecomp_citypack_zstd_root "${LARECOMP_ZSTD_DIR}")
+if(NOT _larecomp_citypack_zstd_root)
+    set(_larecomp_citypack_zstd_root "${LARECOMP_XENOSRECOMP_DIR}/thirdparty/zstd")
+endif()
+if(NOT EXISTS "${_larecomp_citypack_zstd_root}/lib/zstd.h")
+    message(FATAL_ERROR
+        "larecomp_citypack: zstd not found (looked for ${_larecomp_citypack_zstd_root}/lib/zstd.h: "
+        "git submodule update --init --recursive). Set LARECOMP_ZSTD_DIR.")
+endif()
+if(NOT TARGET larecomp_zstd)
+    file(GLOB _larecomp_zstd_sources CONFIGURE_DEPENDS
+        "${_larecomp_citypack_zstd_root}/lib/common/*.c"
+        "${_larecomp_citypack_zstd_root}/lib/compress/*.c"
+        "${_larecomp_citypack_zstd_root}/lib/decompress/*.c")
+    add_library(larecomp_zstd STATIC ${_larecomp_zstd_sources})
+    target_include_directories(larecomp_zstd PUBLIC "${_larecomp_citypack_zstd_root}/lib")
+    target_compile_definitions(larecomp_zstd PRIVATE ZSTD_DISABLE_ASM=1 ZSTD_LEGACY_SUPPORT=0)
+    target_compile_options(larecomp_zstd PRIVATE -w)
+    set_target_properties(larecomp_zstd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+target_link_libraries(larecomp_citypack PRIVATE larecomp_zstd)
 if(WIN32)
     target_compile_definitions(larecomp_citypack PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()

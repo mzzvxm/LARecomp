@@ -16,6 +16,10 @@
 //   FILE      mcla_city_tex.v1.pack: TexHeader, then each picture's levels, the stored mip chain (the full size first, each level tightly packed, BC1 / BC2 / BC3 blocks) on 16 bytes. FULL
 //             detail, whatever the graphics class: the class's cap (city_hit_format.h HitBudget::texture_cap_px) is applied when a texture is made resident, from the first mip it keeps
 //             (texture_residency.h), reading only the levels it needs from the file. The owner's answer of 2026-11-21: 200 to 300 MB on disk for the hit data pack is fine.
+//   ZSTD      (CITY-HIT-SIZE, kTextureRulesVersion 2) a picture's chain is stored as ONE zstd frame of its levels split into BC planes (city_zstd.h) when that is smaller than the chain
+//             (HitTexture::stored_size says how many bytes the picture takes in the file; TexHeader::flags has kTexFlagZstd): the retail set's 244 MB is 138 MB at the default level 6, and a picture
+//             is still read on its own. The reader unpacks the whole chain (a chain is 29 KB on average) and keeps the levels a class's cap wants. The table, the keys, the data_size
+//             (the CHAIN's size) and every consumer's view are the same as without it; only data_offset and the file's size differ.
 //   NAMES     a shader names a texture by the hash of its file name (xtd_reader.h TextureNameHash); ResolveEntry(dictionary, hash) says which picture that is, and its key: the dictionary of
 //             the sector the shader is in first (the sector's own textures), then common.xtd, then lod_0.xtd (the far level of detail names lod_0 first, then common). H1 calls it for each
 //             material. In the retail files all but a few dozen of the names are the same picture in every dictionary that has them; those few are different pictures under one name, each
@@ -39,13 +43,14 @@
 #include "citypack/builder.h"
 #include "citypack/city_hit_format.h"
 #include "citypack/city_texture.h"
+#include "citypack/city_zstd.h"
 #include "citypack/rsc_image.h"
 #include "citypack/xtd_reader.h"
 
 namespace larecomp::citypack {
 
-// What the texture set is built by (the stamp of the hit file holds it): a change of how a texture is read, averaged, deduplicated or ordered bumps it.
-inline constexpr uint32_t kTextureRulesVersion = 1;
+// What the texture set is built by (the stamp of the hit file holds it): a change of how a texture is read, averaged, deduplicated, ordered or stored bumps it. 2: chains stored as zstd frames.
+inline constexpr uint32_t kTextureRulesVersion = 2;
 
 // The dictionaries a name is resolved in.
 inline constexpr uint32_t kDictionaryCommon = 0;
@@ -74,7 +79,11 @@ struct TextureSetStats {
   uint32_t single_level = 0;              // pictures with only a base level
   uint32_t with_alpha = 0;                // kTextureAlpha (the alpha is coverage: city_texture.h AlphaIsCoverage)
   uint32_t gamma = 0;                     // kTextureGamma
-  uint64_t data_bytes = 0;                // the data section: every picture's levels
+  uint64_t data_bytes = 0;                // the data section: every picture as the file holds it (zstd frames where they are smaller)
+  uint64_t plain_bytes = 0;               // the same without zstd: the chains one after the other, each on kTextureDataAlignment
+  uint32_t zstd_pictures = 0;             // pictures stored as frames
+  int zstd_level = 0;                     // the level they were made with (0: none)
+  double compress_seconds = 0.0;          // wall time of the compression phase
   double seconds = 0.0;
 };
 
@@ -90,9 +99,13 @@ struct TextureSet {
   std::vector<HitTexture> textures;                 // the table, offsets into the texture file included
   std::vector<std::array<float, 3>> average;        // linear mean colour, 0..1
   std::vector<float> alpha_mean;
-  std::vector<std::vector<uint8_t>> blobs;          // each picture's levels (textures[i].data_size bytes), in the table's order
+  std::vector<std::vector<uint8_t>> blobs;          // each picture as the file holds it (textures[i].StoredBytes() bytes: the chain, or a zstd frame of it), in the table's order
   uint64_t data_bytes = 0;                          // the file's data section: the blobs, each on kTextureDataAlignment
   uint32_t sector_count = 0;
+  bool zstd = false;                                // TexHeader::flags kTexFlagZstd: a picture may be a frame
+
+  // The picture's whole chain (textures[index].data_size bytes: the levels, the full size first), unpacked from its blob. False (with `error`) for a damaged frame.
+  bool ReadChain(uint32_t index, std::vector<uint8_t>* chain, std::string* error) const;
 
   // The picture a name is, as seen from `dictionary` (kDictionaryCommon, kDictionaryLod, DictionaryOfSector(i)), with the fallbacks above; not found where no dictionary has it.
   ResolvedTexture ResolveEntry(uint32_t dictionary, uint32_t name_hash) const;
@@ -121,6 +134,8 @@ struct TextureSetRequest {
   LzxFunction lzx;                   // required
   uint32_t threads = 0;              // 0: the PC's hardware threads less one, at least one
   std::function<void()> worker_start;
+  // zstd level of the pictures' chains (city_zstd.h; 0: stored as they are). The level is the builder's choice: every level's file reads alike (not in the stamp).
+  int zstd_level = kZstdLevelDefault;
 };
 
 struct TextureSetResult {
@@ -139,7 +154,8 @@ TextureSetResult BuildTextureSet(const TextureSetRequest& request, ProgressSink*
 bool WriteTextureFile(const std::filesystem::path& path, const TextureSet& set, uint64_t hit_table_hash, std::string* error);
 
 // The reader of the runtime: Open checks the header against the hit file's texture table and its table hash; ReadMips reads the levels [first_mip, mip_count) of a texture, tightly packed
-// (the bytes a texture of `mip_count - first_mip` levels is uploaded from). One reader is used by one thread at a time (it keeps the file open).
+// (the bytes a texture of `mip_count - first_mip` levels is uploaded from), unpacking a zstd frame when the texture is one. One reader is used by one thread at a time (it keeps the file
+// open and a scratch buffer).
 class TextureFileReader {
  public:
   bool Open(const std::filesystem::path& path, const std::vector<HitTexture>& table, uint64_t expected_hit_table_hash, std::string* error);
@@ -153,6 +169,8 @@ class TextureFileReader {
   uint64_t file_size_ = 0;
   bool open_ = false;
   std::unique_ptr<std::ifstream> in_;
+  std::vector<uint8_t> stored_;   // what a read brought, and the room a frame unpacks in
+  std::vector<uint8_t> scratch_;
 };
 
 // Every texture of the file read and checked (sizes against the table, the chain's bytes, the file's end); the tool's validate. The number of problems (the first few in `problems`).

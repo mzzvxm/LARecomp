@@ -25,6 +25,7 @@
 #include "citypack/builder.h"
 #include "citypack/city_hit_format.h"
 #include "citypack/city_texture.h"
+#include "citypack/city_zstd.h"
 #include "citypack/guest_hash.h"
 #include "citypack/material_class.h"
 #include "citypack/rsc_image.h"
@@ -168,6 +169,7 @@ struct SynthTex {
   bool gamma = false;
   uint32_t seed = 1;
   bool tweak_padding = false;  // change a byte of the tile's padding: the same picture with another guest key
+  bool smooth = false;         // blocks with structure (a compressor finds it) instead of noise
 };
 
 uint32_t BytesPerBlock(uint32_t format) { return format == xenos::kFormatDxt1 ? 8u : 16u; }
@@ -176,7 +178,16 @@ mm::BlockFormat HostFormat(uint32_t format) { return format == xenos::kFormatDxt
 // The linear blocks of level `l` of a synthetic texture (what the reader must give back).
 std::vector<uint8_t> LevelBlocks(const SynthTex& t, uint32_t l) {
   const uint32_t w = std::max(t.w >> l, 1u), h = std::max(t.h >> l, 1u);
-  return RandomBytes(t.seed * 977u + l * 31u + 7u, size_t((w + 3) / 4) * ((h + 3) / 4) * BytesPerBlock(t.format));
+  const size_t bytes = size_t((w + 3) / 4) * ((h + 3) / 4) * BytesPerBlock(t.format);
+  if (!t.smooth) return RandomBytes(t.seed * 977u + l * 31u + 7u, bytes);
+  const uint32_t bpb = BytesPerBlock(t.format);
+  std::vector<uint8_t> out(bytes);
+  const std::vector<uint8_t> noise = RandomBytes(t.seed * 31u + l, 64);
+  for (size_t i = 0; i < bytes; ++i) {
+    const size_t block = i / bpb, within = i % bpb;
+    out[i] = within < 4 ? uint8_t(0x20 + (block / 32) % 16 + t.seed) : (within < 8 ? noise[block % 8] : uint8_t(0x55 ^ (block % 4)));
+  }
+  return out;
 }
 
 // Adds a texture with levels 0..levels-1 (every level on its own tile image: the shorter side must be above 16 << (levels - 1) / 2 so that no level is in a packed tail, which the caller
@@ -765,6 +776,7 @@ void TestSetBuilder(const fs::path& scratch) {
   request.lzx = [](const uint8_t*, size_t, std::vector<uint8_t>&, size_t) { return false; };
   CountingSink sink;
   request.threads = 1;
+  request.zstd_level = 0;  // the plain chains: the checks below compare the blobs with the bytes that went in (TestCompressedSet has the frames)
   TextureSetResult one = BuildTextureSet(request, &sink);
   CHECK(one.ok);
   if (!one.ok) {
@@ -775,7 +787,7 @@ void TestSetBuilder(const fs::path& scratch) {
   const TextureSetResult four = BuildTextureSet(request, nullptr);
   CHECK(four.ok);
   CHECK(sink.phases == 1 && sink.planned == 5 && sink.steps == 5);  // common, lod, three sectors
-
+  CHECK(!one.set.zstd && one.stats.zstd_level == 0 && one.stats.zstd_pictures == 0 && one.stats.plain_bytes == one.stats.data_bytes);
   const TextureSetStats& s = one.stats;
   CHECK(s.sources == 5 && s.sectors == 3 && s.sources_failed == 1);                  // s_missing has no file
   CHECK(s.entries == 10 && s.distinct == 8 && s.key_variants == 9 && s.decode_failed == 0 && s.damaged == 0);  // common 2 + lod 1 + s_a 4 + s_b 3; "shared" is one entry, "alias" a
@@ -900,6 +912,245 @@ void TestSetBuilder(const fs::path& scratch) {
   bad = request;
   bad.source_rpf = scratch / "no_such_archive.rpf";
   CHECK(!BuildTextureSet(bad, nullptr).ok);
+}
+
+// ---------------------------------------------------------------------------
+// the compressed set and file (CITY-HIT-SIZE)
+// ---------------------------------------------------------------------------
+
+SynthTex Smooth(const char* name, uint32_t w, uint32_t h, uint32_t format, uint32_t levels, uint32_t seed, bool gamma = false) {
+  SynthTex t = Tex(name, w, h, format, levels, seed, gamma);
+  t.smooth = true;
+  return t;
+}
+
+// The BC planes and the frame of a chain, on their own and on a set built from a synthetic archive: the chains come back exactly, from every first mip; pictures that do not shrink stay
+// as they are; the file says so and refuses what it does not know.
+void TestCompression() {
+  // the planes: reversible, for every format and for sizes that are not a whole number of anything
+  for (const HitTextureFormat format : {HitTextureFormat::kBc1, HitTextureFormat::kBc2, HitTextureFormat::kBc3, HitTextureFormat::kRgba8}) {
+    const size_t unit = format == HitTextureFormat::kBc1 ? 8 : (format == HitTextureFormat::kRgba8 ? 4 : 16);
+    for (const size_t blocks : {size_t(0), size_t(1), size_t(2), size_t(7), size_t(1000)}) {
+      const std::vector<uint8_t> in = RandomBytes(uint32_t(blocks * 13 + unit), blocks * unit);
+      std::vector<uint8_t> planes(in.size()), back(in.size());
+      BcSplitPlanes(format, in.data(), in.size(), planes.data());
+      BcMergePlanes(format, planes.data(), planes.size(), back.data());
+      CHECK(back == in);
+      if (blocks > 1 && format != HitTextureFormat::kRgba8) CHECK(planes != in);  // the planes are a different order
+    }
+  }
+  {  // BC1 by hand: two blocks, the endpoints of both first, then the indices of both
+    const uint8_t in[16] = {1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18};
+    uint8_t out[16];
+    BcSplitPlanes(HitTextureFormat::kBc1, in, 16, out);
+    const uint8_t want[16] = {1, 2, 3, 4, 11, 12, 13, 14, 5, 6, 7, 8, 15, 16, 17, 18};
+    CHECK(std::memcmp(out, want, 16) == 0);
+    // BC3: the alpha endpoints (2), the alpha indices (6), the colour endpoints (4), the colour indices (4) of each block
+    uint8_t in3[32], out3[32], want3[32];
+    for (int i = 0; i < 32; ++i) in3[i] = uint8_t(i);
+    BcSplitPlanes(HitTextureFormat::kBc3, in3, 32, out3);
+    const int order[4][2] = {{0, 2}, {2, 6}, {8, 4}, {12, 4}};
+    int at = 0;
+    for (const auto& group : order) {
+      for (int block = 0; block < 2; ++block) {
+        for (int k = 0; k < group[1]; ++k) want3[at++] = in3[block * 16 + group[0] + k];
+      }
+    }
+    CHECK(std::memcmp(out3, want3, 32) == 0);
+  }
+  // the frame: the exact size, the checksum, the refusals
+  {
+    const std::vector<uint8_t> data = RandomBytes(5, 5000);
+    std::vector<uint8_t> noisy_frame, smooth_frame;
+    CHECK(ZstdCompress(data.data(), data.size(), 3, &noisy_frame));
+    std::vector<uint8_t> flat(20000, 0x37);
+    CHECK(ZstdCompress(flat.data(), flat.size(), kZstdLevelDefault, &smooth_frame) && smooth_frame.size() < 100);
+    std::vector<uint8_t> out(flat.size());
+    std::string error;
+    CHECK(ZstdDecompress(smooth_frame.data(), smooth_frame.size(), out.data(), out.size(), &error) && out == flat);
+    std::vector<uint8_t> small(flat.size() - 1);
+    CHECK(!ZstdDecompress(smooth_frame.data(), smooth_frame.size(), small.data(), small.size(), &error));  // another size than the frame's
+    std::vector<uint8_t> big(flat.size() + 1);
+    CHECK(!ZstdDecompress(smooth_frame.data(), smooth_frame.size(), big.data(), big.size(), &error));
+    CHECK(!ZstdDecompress(smooth_frame.data(), 0, out.data(), out.size(), &error) && !ZstdDecompress(data.data(), data.size(), out.data(), out.size(), &error));  // empty; not a frame
+    CHECK(!ZstdDecompress(smooth_frame.data(), smooth_frame.size() - 1, out.data(), out.size(), &error));                                                      // cut
+    std::vector<uint8_t> noisy_out(data.size());
+    CHECK(ZstdDecompress(noisy_frame.data(), noisy_frame.size(), noisy_out.data(), noisy_out.size(), &error) && noisy_out == data);
+    noisy_frame[noisy_frame.size() / 2] ^= 0x10;  // damaged: the checksum or the decoder says so
+    CHECK(!ZstdDecompress(noisy_frame.data(), noisy_frame.size(), noisy_out.data(), noisy_out.size(), &error));
+    std::vector<uint8_t> sized;
+    CHECK(ZstdDecompressSelfSized(smooth_frame.data(), smooth_frame.size(), 1 << 20, &sized, &error) && sized == flat);
+    CHECK(!ZstdDecompressSelfSized(smooth_frame.data(), smooth_frame.size(), 1000, &sized, &error));  // more than the caller accepts
+  }
+  // a chain: compressed and unpacked from every first mip; noise is stored as it is
+  for (const HitTextureFormat format : {HitTextureFormat::kBc1, HitTextureFormat::kBc3}) {
+    HitTexture t;
+    t.width = 256;
+    t.height = 64;
+    t.format = format;
+    t.mip_count = 9;  // 256 x 64 down to 1 x 1: the last levels are one block
+    t.data_size = uint32_t(t.ChainBytes(0));
+    std::vector<uint8_t> chain(t.data_size);
+    for (uint32_t i = 0; i < chain.size(); ++i) chain[i] = uint8_t((i / 8) % 5 * 3 + (i % 8 < 4 ? 40 : 7));
+    std::vector<uint8_t> stored, out, scratch;
+    std::string error;
+    CHECK(CompressTextureChain(t, chain.data(), kZstdLevelDefault, &stored) && stored.size() < chain.size() / 2);
+    for (uint32_t first = 0; first < t.mip_count; ++first) {
+      CHECK(UnpackTextureChain(t, stored.data(), stored.size(), first, &out, &scratch, &error));
+      CHECK(out.size() == t.ChainBytes(first) && std::memcmp(out.data(), chain.data() + t.MipOffset(first), out.size()) == 0);
+    }
+    CHECK(!UnpackTextureChain(t, stored.data(), stored.size(), t.mip_count, &out, &scratch, &error));  // no such level
+    std::vector<uint8_t> padded = stored;
+    padded.push_back(0);
+    CHECK(!UnpackTextureChain(t, padded.data(), padded.size(), 0, &out, &scratch, &error));              // a size that is not the frame's
+    CHECK(!UnpackTextureChain(t, stored.data(), stored.size() - 1, 0, &out, &scratch, &error));
+    HitTexture wrong = t;
+    wrong.data_size += 16;  // a record that does not match its levels
+    CHECK(!UnpackTextureChain(wrong, stored.data(), stored.size(), 0, &out, &scratch, &error) && !CompressTextureChain(wrong, chain.data(), 3, &stored));
+    const std::vector<uint8_t> noise = RandomBytes(77, chain.size());
+    std::vector<uint8_t> noise_stored;
+    CHECK(CompressTextureChain(t, noise.data(), kZstdLevelDefault, &noise_stored) && noise_stored == noise);  // not smaller: the chain itself
+    CHECK(UnpackTextureChain(t, noise_stored.data(), noise_stored.size(), 2, &out, &scratch, &error) && out.size() == t.ChainBytes(2) &&
+          std::memcmp(out.data(), noise.data() + t.MipOffset(2), out.size()) == 0);
+  }
+}
+
+class PhaseCancelSink final : public ProgressSink {
+ public:
+  void BeginPhase(const std::string&, int) override { ++phases; }
+  bool Cancelled() const override { return phases >= 2; }
+  int phases = 0;
+};
+
+void TestCompressedSet(const fs::path& scratch) {
+  fs::create_directories(scratch);
+  const fs::path rpf = scratch / "xarchive_cache.rpf";
+  mm::Rpf3Writer writer;
+  const auto add = [&](const std::string& path, std::vector<uint8_t> file, uint32_t type) {
+    const uint32_t flag = (uint32_t(file[8]) << 24) | (uint32_t(file[9]) << 16) | (uint32_t(file[10]) << 8) | uint32_t(file[11]);
+    writer.Add(path, std::move(file), flag, type & 0xFF);
+  };
+  add(kCityTablePath, MakeCityTable({{"s_a"}, {"s_b"}}), 50);
+  add(kCommonDictionaryPath, MakeDictionaryFile({Smooth("smooth_a", 256, 256, xenos::kFormatDxt1, 5, 3), Smooth("smooth_b", 128, 128, xenos::kFormatDxt45, 4, 4), Tex("noise", 64, 64, xenos::kFormatDxt1, 3, 9)}), 1);
+  add(kLodDictionaryPath, MakeDictionaryFile({Smooth("lod_t", 256, 256, xenos::kFormatDxt1, 1, 2, true)}), 1);
+  add(SectorArchivePath("s_a"), MakeSectorFile({Smooth("a", 512, 256, xenos::kFormatDxt1, 6, 5, true), Smooth("shared", 128, 128, xenos::kFormatDxt45, 3, 7), Tex("noise_a", 128, 64, xenos::kFormatDxt1, 2, 11)}), 1);
+  add(SectorArchivePath("s_b"), MakeSectorFile({Smooth("shared", 128, 128, xenos::kFormatDxt45, 3, 7), Smooth("b", 512, 512, xenos::kFormatDxt1, 6, 8)}), 1);
+  CHECK(writer.Write(rpf));
+
+  TextureSetRequest request;
+  request.source_rpf = rpf;
+  request.lzx = [](const uint8_t*, size_t, std::vector<uint8_t>&, size_t) { return false; };
+  CountingSink sink;
+  request.threads = 1;
+  request.zstd_level = 0;
+  const TextureSetResult plain = BuildTextureSet(request, nullptr);
+  request.zstd_level = kZstdLevelDefault;
+  const TextureSetResult one = BuildTextureSet(request, &sink);
+  request.threads = 4;
+  const TextureSetResult four = BuildTextureSet(request, nullptr);
+  request.zstd_level = kZstdLevelMax;
+  const TextureSetResult max = BuildTextureSet(request, nullptr);
+  CHECK(plain.ok && one.ok && four.ok && max.ok);
+  if (!(plain.ok && one.ok && four.ok && max.ok)) {
+    std::fprintf(stderr, "compressed set build failed: %s %s\n", plain.error.c_str(), one.error.c_str());
+    return;
+  }
+  CHECK(sink.phases == 2 && sink.planned == int(one.set.textures.size()) && sink.steps >= 3 + 1);  // the sources (common, lod, two sectors), then the pictures' files
+  // the same bytes whatever the thread count; the frames of other levels are other bytes with the same pictures
+  CHECK(one.set.blobs == four.set.blobs && one.set.data_bytes == four.set.data_bytes && one.set.zstd == four.set.zstd);
+  CHECK(max.set.data_bytes <= one.set.data_bytes + one.set.textures.size() * 64);
+  // the table: the same pictures, only the places differ; the set is smaller; some pictures are frames and the noise is not
+  CHECK(plain.set.textures.size() == one.set.textures.size() && one.set.zstd && one.stats.zstd_pictures >= 4 && one.stats.zstd_pictures < one.set.textures.size());
+  CHECK(one.stats.plain_bytes == plain.stats.data_bytes && one.stats.data_bytes < one.stats.plain_bytes / 2 && one.stats.zstd_level == kZstdLevelDefault);
+  uint32_t frames = 0, raws = 0;
+  for (size_t i = 0; i < one.set.textures.size(); ++i) {
+    const HitTexture &p = plain.set.textures[i], &z = one.set.textures[i];
+    CHECK(p.key == z.key && p.width == z.width && p.height == z.height && p.format == z.format && p.mip_count == z.mip_count && p.flags == z.flags && p.data_size == z.data_size);
+    CHECK(z.data_offset >= kTexHeaderBytes && z.data_offset % kTextureDataAlignment == 0 && z.StoredBytes() == one.set.blobs[i].size() && z.StoredBytes() <= z.data_size);
+    CHECK(z.stored_size == 0 || z.stored_size < z.data_size);  // a raw picture has 0, a frame is smaller than the chain
+    if (z.IsCompressed()) ++frames; else ++raws;
+    std::vector<uint8_t> chain;
+    std::string error;
+    CHECK(one.set.ReadChain(uint32_t(i), &chain, &error) && chain == plain.set.blobs[i]);  // every picture, exactly
+    CHECK(max.set.ReadChain(uint32_t(i), &chain, &error) && chain == plain.set.blobs[i]);
+  }
+  CHECK(frames == one.stats.zstd_pictures && raws >= 2);  // the noise pictures stay as they are
+  CHECK(one.set.ResolveExact(DictionaryOfSector(0), TextureNameHash("a")) == plain.set.ResolveExact(DictionaryOfSector(0), TextureNameHash("a")) && one.set.names == plain.set.names);
+  CHECK(!plain.set.ReadChain(9999, nullptr, nullptr));
+
+  // the file: the flag, the sizes, a read of every picture from every first mip, the refusals
+  const fs::path file_path = scratch / "out" / kTexFileName;
+  const uint64_t hit_hash = 0x0123456789ABCDEFull;
+  std::string error;
+  CHECK(WriteTextureFile(file_path, one.set, hit_hash, &error) && fs::file_size(file_path) == one.set.file_bytes() && one.set.file_bytes() < plain.set.file_bytes() / 2);
+  {
+    std::vector<uint8_t> raw = ReadAll(file_path);
+    ByteReader r(raw.data(), raw.size());
+    TexHeader header;
+    CHECK(TexHeader::Read(r, &header, &error) && header.flags == kTexFlagZstd && header.file_size == raw.size());
+  }
+  const fs::path plain_path = scratch / "out" / "plain.pack";
+  CHECK(WriteTextureFile(plain_path, plain.set, hit_hash, &error));
+  {
+    std::vector<uint8_t> raw = ReadAll(plain_path);
+    ByteReader r(raw.data(), raw.size());
+    TexHeader header;
+    CHECK(TexHeader::Read(r, &header, &error) && header.flags == 0);  // a set without frames does not claim any
+  }
+  std::vector<std::string> problems;
+  CHECK(ValidateTextureFile(file_path, one.set.textures, hit_hash, &problems) == 0);
+  TextureFileReader reader, plain_reader;
+  CHECK(reader.Open(file_path, one.set.textures, hit_hash, &error) && plain_reader.Open(plain_path, plain.set.textures, hit_hash, &error));
+  for (size_t i = 0; i < one.set.textures.size(); ++i) {
+    for (uint32_t first = 0; first < one.set.textures[i].mip_count; ++first) {
+      std::vector<uint8_t> a, b;
+      CHECK(reader.ReadMips(uint32_t(i), first, &a, &error) && plain_reader.ReadMips(uint32_t(i), first, &b, &error) && a == b && a.size() == one.set.textures[i].ChainBytes(first));
+    }
+  }
+  CHECK(!reader.ReadMips(uint32_t(one.set.textures.size()), 0, nullptr, &error));
+  // refusals: a table that says frames in a file that does not, a flag this build does not know, a stored size that does not fit, a damaged frame, a cut file
+  {
+    TextureFileReader other;
+    std::vector<HitTexture> wrong = plain.set.textures;
+    for (HitTexture& t : wrong) {
+      if (t.data_size > 64) {
+        t.stored_size = t.data_size / 2;
+        break;
+      }
+    }
+    CHECK(!other.Open(plain_path, wrong, hit_hash, &error) && error.find("compressed") != std::string::npos);  // frames claimed, none in the file
+    wrong = one.set.textures;
+    wrong[0].stored_size = wrong[0].data_size + 16;
+    CHECK(!other.Open(file_path, wrong, hit_hash, &error));  // bigger than its chain
+    std::vector<uint8_t> raw = ReadAll(file_path);
+    raw[8 + 4 + 4 + 4] |= 0x40;  // TexHeader::flags (after the magic, the version, the builder version, the count): a bit this build does not know
+    const fs::path flagged = scratch / "out" / "flagged.pack";
+    std::ofstream(flagged, std::ios::binary).write(reinterpret_cast<const char*>(raw.data()), std::streamsize(raw.size()));
+    CHECK(!other.Open(flagged, one.set.textures, hit_hash, &error) && error.find("encoding") != std::string::npos);
+    // the first frame's bytes flipped: opens (the table is fine), but reading that picture says it is damaged
+    raw = ReadAll(file_path);
+    size_t victim = 0;
+    while (victim < one.set.textures.size() && !one.set.textures[victim].IsCompressed()) ++victim;
+    CHECK(victim < one.set.textures.size());
+    raw[size_t(one.set.textures[victim].data_offset) + size_t(one.set.textures[victim].stored_size) / 2] ^= 0x08;
+    const fs::path damaged = scratch / "out" / "damaged.pack";
+    std::ofstream(damaged, std::ios::binary).write(reinterpret_cast<const char*>(raw.data()), std::streamsize(raw.size()));
+    CHECK(other.Open(damaged, one.set.textures, hit_hash, &error));
+    std::vector<uint8_t> bytes;
+    CHECK(!other.ReadMips(uint32_t(victim), 0, &bytes, &error) && !error.empty());
+    CHECK(ValidateTextureFile(damaged, one.set.textures, hit_hash, &problems) == 1);
+    raw = ReadAll(file_path);
+    raw.resize(raw.size() - 64);
+    const fs::path cut = scratch / "out" / "cut.pack";
+    std::ofstream(cut, std::ios::binary).write(reinterpret_cast<const char*>(raw.data()), std::streamsize(raw.size()));
+    CHECK(!other.Open(cut, one.set.textures, hit_hash, &error));
+  }
+  // a cancelled compression phase leaves nothing and says so
+  PhaseCancelSink stopper;  // cancels once the second phase (the pictures' files) has begun
+  request.threads = 2;
+  request.zstd_level = kZstdLevelDefault;
+  const TextureSetResult stopped = BuildTextureSet(request, &stopper);
+  CHECK(stopped.cancelled && !stopped.ok);
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,6 +1394,7 @@ void TestRetailArchive(const fs::path& game, const fs::path& scratch) {
   TextureSetRequest request;
   request.source_rpf = rpf;
   request.lzx = [](const uint8_t* src, size_t n, std::vector<uint8_t>& dst, size_t dn) { return mm::LzxDecompress(src, n, dst, dn); };
+  request.zstd_level = 0;  // the plain chains: the golden sizes below are the data's; the compressed set is checked at the end
   CountingSink sink;
   const TextureSetResult r = BuildTextureSet(request, &sink);
   CHECK(r.ok);
@@ -1294,6 +1546,37 @@ void TestRetailArchive(const fs::path& game, const fs::path& scratch) {
   std::vector<std::string> problems;
   CHECK(ValidateTextureFile(file, r.set.textures, 0xABCDEFull, &problems) == 0);
   fs::remove_all(scratch / "retail");
+
+  // CITY-HIT-SIZE: the same set with its chains as zstd frames (the default level): every one of the 8,342 pictures unpacks to the plain set's bytes, and the file is the size the owner's
+  // 200 to 300 MB for both files wants (the hit file is 110 MB beside it: 248 MB in all at level 6)
+  {
+    TextureSetRequest zrequest = request;
+    zrequest.zstd_level = kZstdLevelDefault;
+    const TextureSetResult z = BuildTextureSet(zrequest, nullptr);
+    CHECK(z.ok);
+    if (z.ok) {
+      CHECK(z.set.textures.size() == r.set.textures.size() && z.set.zstd && z.stats.plain_bytes == r.stats.data_bytes && z.set.names == r.set.names);
+      uint64_t equal = 0;
+      for (size_t i = 0; i < r.set.textures.size(); ++i) {
+        std::vector<uint8_t> chain;
+        std::string why;
+        if (z.set.ReadChain(uint32_t(i), &chain, &why) && chain == r.set.blobs[i] && z.set.textures[i].key == r.set.textures[i].key && z.set.textures[i].data_size == r.set.textures[i].data_size) ++equal;
+      }
+      CHECK(equal == r.set.textures.size());
+      const double plain_mb = double(r.set.file_bytes()) / 1e6, zstd_mb = double(z.set.file_bytes()) / 1e6;
+      std::printf("  zstd level %d: texture file %.1f MB -> %.1f MB (%.1f percent), %u of %zu pictures as frames, %.2f s (wall) for the frames, every picture unpacks to its plain chain: %llu of %zu\n", z.stats.zstd_level,
+                  plain_mb, zstd_mb, 100.0 * zstd_mb / plain_mb, z.stats.zstd_pictures, z.set.textures.size(), z.stats.compress_seconds, (unsigned long long)equal, r.set.textures.size());
+      CHECK(z.set.file_bytes() * 100 < r.set.file_bytes() * 65);  // at most 65 percent of the plain file (the retail data gives 56)
+      const fs::path zfile = scratch / "retail_z" / kTexFileName;
+      std::string error2;
+      CHECK(WriteTextureFile(zfile, z.set, 0xABCDEFull, &error2));
+      std::vector<std::string> zproblems;
+      const auto read_started = std::chrono::steady_clock::now();
+      CHECK(ValidateTextureFile(zfile, z.set.textures, 0xABCDEFull, &zproblems) == 0);  // every picture read and unpacked from the file
+      std::printf("  the compressed file read back whole (one thread, every picture unpacked): %.2f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - read_started).count());
+      fs::remove_all(scratch / "retail_z");
+    }
+  }
 }
 #endif
 
@@ -1313,6 +1596,8 @@ int main(int argc, char** argv) {
   TestDecodeCityTexture();
   TestRaw8888();
   TestSetBuilder(scratch / "synthetic");
+  TestCompression();
+  TestCompressedSet(scratch / "compressed");
   TestResidency();
 #if defined(LARECOMP_TEXTURE_SET_TEST_REAL_LZX)
   if (argc > 2) TestRetailArchive(argv[2], scratch);
