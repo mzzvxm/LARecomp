@@ -83,6 +83,7 @@ struct Budget {
   uint32_t build_triangles = 0;     // triangles built into structures in one frame (a sector bigger than this is built alone)
   uint32_t loads_in_flight = 0;     // pack reads being decoded at once
   uint64_t upload_bytes = 0;        // bytes staged for the structures' builds in one frame
+  uint64_t pool_cap = 0;            // CITY-RT M2 H3: bytes of the hit data's pool (city_hit_pool_rules.h) the sectors may hold; 0 = no hit data, the pool is not counted
   bool on() const { return hi_radius > 0.0f; }
 };
 
@@ -137,6 +138,8 @@ struct SectorInfo {
   float box_max[3] = {0, 0, 0};
   uint32_t hi_triangles = 0;     // 0: the sector has no hi mesh
   uint32_t lod_triangles = 0;    // 0: no lod mesh
+  uint64_t hi_pool = 0;          // CITY-RT M2 H3: the estimate of the sector detail's pool block (city_hit_pool_rules.h EstimateBlockBytes); counted only while the budget has a pool_cap
+  uint64_t lod_pool = 0;
   bool has_hi() const { return hi_triangles != 0; }
   bool has_lod() const { return lod_triangles != 0; }
 };
@@ -155,6 +158,8 @@ struct SectorState {
   uint64_t lod_bytes = 0;
   uint64_t hi_retry_frame = 0;   // for kFailed
   uint64_t lod_retry_frame = 0;
+  uint64_t hi_pool_held = 0;     // what the sector detail's pool block holds (the estimate while loading, the block's real size once built); 0 with no hit data
+  uint64_t lod_pool_held = 0;
 };
 
 // The distance from a point to a box (0 inside): the same measure the game's own sector cull uses (sub_822D7D00: the box's distance), so the ring is the one the
@@ -184,7 +189,9 @@ struct Plan {
   uint32_t wanted_hi = 0;
   uint32_t wanted_lod = 0;
   uint64_t resident_bytes = 0;
+  uint64_t resident_pool_bytes = 0;  // the pool blocks of what is built (0 with no pool cap)
   bool over_cap = false;           // something wanted could not be had for the cap
+  bool over_pool_cap = false;      // ... and the pool's cap was the one in the way (it can also be both)
 };
 
 struct PlanInput {
@@ -254,30 +261,38 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     Detail detail;
     float distance;
     uint64_t bytes;
+    uint64_t pool;  // the pool block's bytes (0 without a pool cap)
     bool resident;  // built (false: still loading)
     bool wanted;
   };
+  const bool pooled = b.pool_cap != 0;
   std::vector<Candidate> load_hi, load_lod;
   std::vector<Candidate> held;  // resident or loading, wanted or not
   uint64_t held_bytes = 0;
+  uint64_t held_pool = 0;
   for (uint32_t i = 0; i < sectors.size(); ++i) {
     const SectorInfo& s = sectors[i];
     const SectorState& st = states[i];
     const float d = DistanceToBox(in.camera, s.box_min, s.box_max);
-    const auto consider = [&](Detail detail, bool has, Residency residency, uint64_t bytes, uint64_t retry, uint32_t triangles, float radius) {
+    const auto consider = [&](Detail detail, bool has, Residency residency, uint64_t bytes, uint64_t pool_held, uint64_t retry, uint32_t triangles, uint64_t pool_estimate, float radius) {
       const bool present = residency == Residency::kResident || residency == Residency::kLoading;
       const bool wanted = has && d <= (present ? radius + b.hysteresis : radius);
       if (wanted) (detail == Detail::kHi ? plan.wanted_hi : plan.wanted_lod) += 1;
       if (present) {
-        held.push_back({i, detail, d, bytes, residency == Residency::kResident, wanted});
+        const uint64_t pool = pooled ? pool_held : 0;
+        held.push_back({i, detail, d, bytes, pool, residency == Residency::kResident, wanted});
         held_bytes += bytes;
-        if (residency == Residency::kResident) plan.resident_bytes += bytes;
+        held_pool += pool;
+        if (residency == Residency::kResident) {
+          plan.resident_bytes += bytes;
+          plan.resident_pool_bytes += pool;
+        }
       } else if (wanted && (residency == Residency::kNone || (residency == Residency::kFailed && in.frame >= retry))) {
-        (detail == Detail::kHi ? load_hi : load_lod).push_back({i, detail, d, EstimateStructureBytes(triangles), false, true});
+        (detail == Detail::kHi ? load_hi : load_lod).push_back({i, detail, d, EstimateStructureBytes(triangles), pooled ? pool_estimate : 0, false, true});
       }
     };
-    consider(Detail::kHi, s.has_hi(), st.hi, st.hi_bytes, st.hi_retry_frame, s.hi_triangles, b.hi_radius);
-    consider(Detail::kLod, s.has_lod(), st.lod, st.lod_bytes, st.lod_retry_frame, s.lod_triangles, b.far_radius);
+    consider(Detail::kHi, s.has_hi(), st.hi, st.hi_bytes, st.hi_pool_held, st.hi_retry_frame, s.hi_triangles, s.hi_pool, b.hi_radius);
+    consider(Detail::kLod, s.has_lod(), st.lod, st.lod_bytes, st.lod_pool_held, st.lod_retry_frame, s.lod_triangles, s.lod_pool, b.far_radius);
   }
   const auto nearest_first = [](const Candidate& a, const Candidate& c) { return a.distance != c.distance ? a.distance < c.distance : a.sector < c.sector; };
   std::sort(load_hi.begin(), load_hi.end(), nearest_first);
@@ -288,9 +303,11 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     if (c.wanted || !c.resident) continue;
     plan.evictions.push_back({c.sector, c.detail, c.distance});
     held_bytes -= std::min(held_bytes, c.bytes);
+    held_pool -= std::min(held_pool, c.pool);
     c.resident = false;
     c.wanted = false;
     c.bytes = 0;
+    c.pool = 0;
   }
 
   // 2. The reads: the lod first, then the hi detail, nearest first, within the reads in flight and the cap. A wanted hi structure farther than the one that
@@ -305,17 +322,22 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
   const auto ask = [&](const std::vector<Candidate>& list) {
     for (const Candidate& c : list) {
       if (slots == 0) return;
-      while (held_bytes + c.bytes > b.memory_cap && next_tradable < tradable.size() && held[tradable[next_tradable]].distance > c.distance) {
+      // Room: the structures' memory and, with hit data, the pool's. Either may be the one that is short; a victim gives back both.
+      const auto short_of_room = [&] { return held_bytes + c.bytes > b.memory_cap || (pooled && held_pool + c.pool > b.pool_cap); };
+      while (short_of_room() && next_tradable < tradable.size() && held[tradable[next_tradable]].distance > c.distance) {
         const Candidate& victim = held[tradable[next_tradable++]];
         plan.evictions.push_back({victim.sector, victim.detail, victim.distance});
         held_bytes -= std::min(held_bytes, victim.bytes);
+        held_pool -= std::min(held_pool, victim.pool);
       }
-      if (held_bytes + c.bytes > b.memory_cap) {
+      if (short_of_room()) {
         plan.over_cap = true;
+        plan.over_pool_cap = plan.over_pool_cap || (pooled && held_pool + c.pool > b.pool_cap);
         continue;  // no room for this one; a smaller or nearer one behind it may still fit
       }
       plan.loads.push_back({c.sector, c.detail, c.distance});
       held_bytes += c.bytes;
+      held_pool += c.pool;
       --slots;
     }
   };
