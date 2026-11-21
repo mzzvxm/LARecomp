@@ -92,7 +92,7 @@ struct FeatureInfo {
 };
 
 // The existing variants of version 2, ported: none composes with another (each edits shaders no other one does:
-// shaderpack/variants/variant_overlap_test.cpp checks it on the retail text), so every one is built alone, as before.
+// shaderpack/variants/variant_overlap_test.cpp checks it on the retail text), so every one is built alone, as before; the G-buffer's stage is the exception below.
 // A feature that is added here and composes lists the partners in BOTH rows.
 inline constexpr FeatureInfo kFeatures[] = {
     {kFeatureHdrScene, "hdr_scene", Stage::kPixel, 16, 0, false, 0},
@@ -100,16 +100,19 @@ inline constexpr FeatureInfo kFeatures[] = {
     {kFeatureEnvMap, "env_map", Stage::kPixel, 0, 0, false, 0},
     {kFeatureShadowFilter, "shadow_filter", Stage::kPixel, 16, 0, false, 0},
     {kFeatureGlowSoft, "glow_soft", Stage::kPixel, 0, 0, false, 0},
-    {kFeatureCarSelfRefl, "car_selfrefl", Stage::kPixel, 112, 0, false, 0},
+    {kFeatureCarSelfRefl, "car_selfrefl", Stage::kPixel, 112, FeatureBit(kFeatureGBuffer), false, 0},
     {kFeatureLuminanceScale, "luminance_scale", Stage::kPixel, 0, 0, false, 0},
-    {kFeatureCarChrome, "car_chrome", Stage::kPixel, 112, 0, false, 0},
+    {kFeatureCarChrome, "car_chrome", Stage::kPixel, 112, FeatureBit(kFeatureGBuffer), false, 0},
     {kFeatureUiSharp, "ui_sharp", Stage::kPixel, 16, 0, true, 0},
     // The headlights and the G-buffer's normal plane compose: both edit the city's PSMultiLight shaders (xCityDefault's night shader among them), so the builder makes the
     // pair in one text for those (the chain's order: the headlight's edits first, the G-buffer's on the text they leave: shaderpack/variants/gbuffer.h anchors on lines the
     // headlight does not rewrite). Their variants are in feat/headlights (variants/headlight.cpp) and feat/gbuffer-spike (variants/gbuffer.cpp): a row whose variant is not in the
     // tree is harmless (nothing builds it, nothing picks it). 672 bytes: src/gpu/headlight_rig_rules.h HeadlightConstants; 48 bytes: src/gpu/gbuffer_types.h GBufferConstants.
     {kFeatureHeadlight, "headlight", Stage::kPixel, 672, FeatureBit(kFeatureGBuffer), true, 0},
-    {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight), true, 0},
+    {kFeatureGBuffer, "gbuffer", Stage::kPixel, 48, FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureCarSelfRefl) | FeatureBit(kFeatureCarChrome), true, 0},
+    // The G-buffer's car family (variants/gbuffer_cars.h, GB-G1) also composes with the two car variants, which edit two shaders it edits: car_selfrefl the player's paint
+    // (xCarPaintCustomizable::PS_CarPaint) and car_chrome the chrome (xChrome::PS_Chrome). The car variant's edits come first (the lower index) and its 112 bytes come first in the block, the
+    // G-buffer's 48 after them (byte 720); neither car variant has the alpha test twin, so the composed pair has none either: an alpha tested draw of one of those two shaders takes the G-buffer's twin alone (and has no car variant).
     // kFeatureLampShadow (11) is reserved: its row comes with its variant, and names the headlight and the G-buffer in composes_with (in all three rows).
     // The G-buffer's vertex stage (variants/gbuffer_day.h): a vertex shader that also writes the vertex normal to TEXCOORD15. It composes with nothing, has no block of constants and the
     // vertex shader's spec variant 1 twin. No pixel stage lists it in needs_vs: the G-buffer's pixel words read the export where it is and fall back to a derivative normal where it is
