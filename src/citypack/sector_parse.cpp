@@ -18,7 +18,7 @@ constexpr uint32_t kCityEntryBytes = 304;
 constexpr uint32_t kCityModelBytes = 80;
 
 // The shader table: group and preset names, read once.
-void ReadShaders(RscCursor& c, uint32_t group_pointer, std::vector<ShaderNames>* out, ParseStats* stats) {
+void ReadShaders(RscCursor& c, uint32_t group_pointer, std::vector<ShaderNames>* out, ParseStats* stats, bool read_params) {
   out->clear();
   if (!c.IsPointer(group_pointer)) return;
   const uint32_t array = c.U32(group_pointer + 8);
@@ -39,6 +39,11 @@ void ReadShaders(RscCursor& c, uint32_t group_pointer, std::vector<ShaderNames>*
     if (c.IsPointer(group)) (*out)[i].group = c.CString(group);
     if (c.IsPointer(preset)) (*out)[i].preset = c.CString(preset);
     c.ClearBad();
+    if (read_params) {
+      auto params = std::make_shared<ShaderParams>();
+      if (ReadShaderParams(c, shader, params.get())) (*out)[i].params = std::move(params);
+      c.ClearBad();
+    }
   }
   stats->shaders = count;
 }
@@ -88,7 +93,16 @@ void ParseModel(RscCursor& c, uint32_t model, uint32_t model_index, const std::v
     const uint32_t index_buffer_count = c.U32(ib + 4);
     const uint32_t index_data = c.U32(ib + 8);
     uint32_t fvf = 1;  // a declaration that cannot be read counts as "position at 0": the range and box checks decide
-    if (c.IsPointer(declaration)) fvf = c.U32(declaration);
+    uint64_t fvf_sizes = 0;
+    if (c.IsPointer(declaration)) {
+      fvf = c.U32(declaration);
+      fvf_sizes = (uint64_t(c.U32(declaration + 8)) << 32) | c.U32(declaration + 12);
+      if (c.bad()) {  // a declaration at the very end of the image: no channel table, the fvf word stands
+        c.ClearBad();
+        fvf_sizes = 0;
+        fvf = c.U32(declaration);
+      }
+    }
     if (c.bad() || stride < 12 || stride > kMaxStride) {
       c.ClearBad();
       ++stats->skipped_bad_range;
@@ -130,6 +144,7 @@ void ParseModel(RscCursor& c, uint32_t model, uint32_t model_index, const std::v
     geometry.stride = stride;
     geometry.index_count = index_count;
     geometry.fvf = fvf;
+    geometry.fvf_sizes = fvf_sizes;
     geometry.bucket_mask = bucket;
     geometry.vertices = vertices;
     geometry.indices = indices;
@@ -172,7 +187,7 @@ bool ParseCityTable(const RscImage& image, std::vector<SectorInfo>* out, std::st
   return true;
 }
 
-bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error) {
+bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error, bool read_shader_params) {
   RscCursor c(image);
   const auto fail = [&](const char* why) {
     if (error) *error = why;
@@ -183,7 +198,7 @@ bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const
   const uint32_t group = c.U32(drawable + 8);
   const uint32_t dictionary = c.U32(drawable + 12);
   if (c.bad() || !c.IsPointer(dictionary)) return fail("the sector has no model dictionary");
-  ReadShaders(c, group, shaders, stats);
+  ReadShaders(c, group, shaders, stats, read_shader_params);
 
   const uint32_t hashes = c.U32(dictionary + 16);
   const uint32_t model_count = c.U16(dictionary + 20);
@@ -233,7 +248,7 @@ bool ParseSector(const RscImage& image, std::vector<ShaderNames>* shaders, const
   return true;
 }
 
-bool ParseLod(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error) {
+bool ParseLod(const RscImage& image, std::vector<ShaderNames>* shaders, const GeometryCallback& on_geometry, ParseStats* stats, std::string* error, bool read_shader_params) {
   RscCursor c(image);
   const uint32_t group = c.U32(kRoot + 8);
   const uint32_t models = c.U32(kRoot + 12);
@@ -242,7 +257,7 @@ bool ParseLod(const RscImage& image, std::vector<ShaderNames>* shaders, const Ge
     if (error) *error = "lod.xmd does not have a model array where the layout has it";
     return false;
   }
-  ReadShaders(c, group, shaders, stats);
+  ReadShaders(c, group, shaders, stats, read_shader_params);
   for (uint32_t i = 0; i < count; ++i) {
     const uint32_t model = c.U32(models + 4 * i);
     if (c.bad() || !c.IsPointer(model)) {

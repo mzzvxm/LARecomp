@@ -351,6 +351,23 @@ void RecordChecks() {
     ByteReader r(w.bytes().data(), w.size());
     HitTexture read;
     Check(w.size() == kHitTextureBytes && HitTexture::Read(r, &read) && read.key == t.key, "a texture record writes 32 bytes and reads");
+    // CITY-HIT-SIZE: the record's last word is the stored size (0: the chain as it is); a record written before it (word 7 = 0) reads as a plain one
+    Check(words[7] == 0 && u.stored_size == 0 && !u.IsCompressed() && u.StoredBytes() == t.data_size && read.stored_size == 0, "a texture record without a stored size is a plain chain");
+    HitTexture z = t;
+    z.stored_size = t.data_size / 2;
+    uint32_t zwords[8];
+    z.Pack(zwords);
+    const HitTexture zu = HitTexture::Unpack(zwords);
+    Check(zwords[7] == z.stored_size && zu.stored_size == z.stored_size && zu.IsCompressed() && zu.StoredBytes() == z.stored_size && zu.data_size == t.data_size && zu.key == t.key &&
+              zu.data_offset == t.data_offset,
+          "a texture record with a stored size packs and unpacks it in the last word, the rest unchanged");
+    ByteWriter zw;
+    z.Write(zw);
+    ByteReader zr(zw.bytes().data(), zw.size());
+    HitTexture zread;
+    Check(zw.size() == kHitTextureBytes && HitTexture::Read(zr, &zread) && zread.stored_size == z.stored_size, "a texture record with a stored size writes 32 bytes and reads");
+    z.stored_size = z.data_size;
+    Check(!z.IsCompressed() && z.StoredBytes() == z.data_size, "a stored size equal to the chain's size means the chain as it is");
     words[3] = (words[3] & ~0xFFu) | 9u;  // a format this build does not know
     ByteWriter w2;
     for (uint32_t v : words) w2.U32(v);
@@ -700,6 +717,15 @@ void FileChecks() {
   tbytes[8] = 3;
   ByteReader tr2(tbytes.data(), tbytes.size());
   Check(!TexHeader::Read(tr2, &tb, &error), "a texture file of another version is refused");
+  // CITY-HIT-SIZE: the flags word carries kTexFlagZstd; a flag this build does not know is the reader's to refuse (TextureFileReader::Open)
+  Check(t.flags == 0 && kTexFlagsKnown == kTexFlagZstd && kTexFlagZstd == 1, "the texture file's flags: none, and zstd is the one known bit");
+  TexHeader tz = t;
+  tz.flags = kTexFlagZstd | 0x80u;
+  ByteWriter tzw;
+  tz.Write(tzw);
+  ByteReader tzr(tzw.bytes().data(), tzw.size());
+  TexHeader tzb;
+  Check(TexHeader::Read(tzr, &tzb, &error) && tzb.flags == (kTexFlagZstd | 0x80u), "the texture file's flags word reads back whole (the reader of the file decides what it knows)");
 }
 
 // ---------------------------------------------------------------------------

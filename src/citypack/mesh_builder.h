@@ -29,12 +29,14 @@ class MeshBuilder {
  public:
   MeshBuilder();
   // One geometry: `positions` are vertex_count x 3 floats (already host order), `indices` a triangle list of index_count entries addressing them.
-  // `material` decides the list (alpha tested or opaque) and the run. Returns the triangles kept.
+  // `material` decides the list (alpha tested or opaque) and the run. Returns the triangles kept. `kept_triangles`, when given, receives the number (within this
+  // geometry's own triangle list) of each triangle kept, in the order they were appended to the list: the hit data's builder (hit_collect.h) reads the corners of exactly those
+  // triangles, so that its corner stream is the mesh's triangle list triangle for triangle.
   uint32_t AddGeometry(const float* positions, uint32_t vertex_count, const uint16_t* indices, uint32_t index_count, MaterialClass material,
-                       uint16_t shader_index, uint32_t shader_hash);
+                       uint16_t shader_index, uint32_t shader_hash, std::vector<uint32_t>* kept_triangles = nullptr);
   // The same with 32 bit indices (the tests, a later source).
   uint32_t AddGeometry(const float* positions, uint32_t vertex_count, const uint32_t* indices, uint32_t index_count, MaterialClass material,
-                       uint16_t shader_index, uint32_t shader_hash);
+                       uint16_t shader_index, uint32_t shader_hash, std::vector<uint32_t>* kept_triangles = nullptr);
   // The finished mesh: opaque triangles first, runs merged, bounds of the kept vertices. The builder is empty afterwards.
   MeshData Finish();
   const WeldStats& stats() const { return stats_; }
@@ -54,7 +56,7 @@ class MeshBuilder {
   };
   template <typename Index>
   uint32_t Add(const float* positions, uint32_t vertex_count, const Index* indices, uint32_t index_count, MaterialClass material, uint16_t shader_index,
-               uint32_t shader_hash);
+               uint32_t shader_hash, std::vector<uint32_t>* kept_triangles);
   uint32_t Weld(float x, float y, float z);
 
   std::vector<float> positions_;

@@ -27,6 +27,7 @@ add_library(larecomp_gpu OBJECT
     city_rt_scene.cpp
     city_rt_shadow.cpp
     rt_scene_service.cpp
+    city_texture_set.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
     local_shadow.cpp
