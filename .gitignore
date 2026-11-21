@@ -9,7 +9,8 @@ generated_xeo3/
 # which has to travel with the history it backs up, the tool that builds
 # the starter pipeline list in assets/, and the shader pack builder's command
 # line (it builds from src/shaderpack), the city pack builder's (src/citypack), and the settings exposure check with its
-# exception list (every cvar is a row, an exception or debug-only).
+# exception list (every cvar is a row, an exception or debug-only), and the check that the car's ray traced shaders compile to the same thing after the hit shading's shared code moved
+# (check_rt_hit_identity.py).
 tools/*
 !tools/backup/
 !tools/pipelines/
@@ -17,6 +18,7 @@ tools/*
 !tools/citypack_tool/
 !tools/check_settings_exposure.py
 !tools/settings_exposure.toml
+!tools/check_rt_hit_identity.py
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle

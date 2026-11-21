@@ -504,7 +504,8 @@ int main(int argc, char** argv) {
 
   // ---- the shaders, the host and the settings hold the numbers ------------------------------------------------------------------------------
   {
-    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
+    // the car's file and the two halves of what every hit shading shares (hlsl/rt_hit_frame.hlsli, rt_hit_sample.hlsli)
+    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_frame.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_sample.hlsli");
     const std::string refl = ReadFile(src + "/gpu/hlsl/car_rt_refl_cs.hlsl");
     const std::string opp = ReadFile(src + "/gpu/hlsl/car_rt_refl_opp.hlsli");
     const std::string denoise = ReadFile(src + "/gpu/hlsl/car_rt_refl_denoise_cs.hlsl");
@@ -529,7 +530,7 @@ int main(int argc, char** argv) {
                 Near(Constant(hlsli, "static const float kAuxSharpScale"), hr::kAuxSharpScale) && Near(Constant(denoise, "static const float kAuxSharpScale"), hr::kAuxSharpScale),
             "the shaders' clear-coat numbers and the aux's scale are the header's");
       Check(Has(hlsli, "const float curve = pow(saturate(1.0 - nv), max(power, kCoatMinPower));") && Has(hlsli, "return clamp(gain * (kCoatNormal + (kCoatGrazing - kCoatNormal) * curve), 0.0, kCoatMax);") &&
-                Has(hlsli, "return float((gCarRtMaterials[kMatFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;"),
+                Has(hlsli, "return float((gCarRtMaterials[kRtHitFrameRows + instance * kMatRows].x >> 24) & 0xFFu) / 16.0;"),
             "the shader's coat share is CoatShare's, read from the paint's fresnel exponent in the instance's row (bits 24..31, x 16)");
       Check(Has(hlsli, "const float weight = (1.0 - a) * coneWeight + a * coatWeight;") && Has(hlsli, "carWeight = (1.0 - a) * min(coneCarSum / rays, 1.0) + a * coatCarWeight;") &&
                 Has(hlsli, "colour = ((1.0 - a) * coneColourSum / rays + a * coatWeight * coatColour) / weight;") && Has(hlsli, "sharp = saturate(a * coatWeight / weight);") &&
@@ -592,8 +593,8 @@ int main(int argc, char** argv) {
         Check(Has(refl, "if (hitsOther && usable)") && Has(refl, "CensusCalibrate(instance, primitive, query.CommittedTriangleBarycentrics(), hitNormal, direction, hit, footprint, coneTan, seen);") &&
                   Has(refl, "if (gCarHitClass == CAR_MAT_CLASS_PAINT)") && Has(refl, "CensusShaded(seenShare, shaded);") && Has(refl, "StatAdd(kStatDropped, 1u);") && Has(refl, "StatAdd(kStatStandIn, 1u);"),
               "the exposure's samples are hits on another car's parts the history shows in full (the player's own car in the opponents' pass is no sample), the paint's drive the gain; every outcome is counted");
-        Check(Near(Constant(hlsli, "static const float kFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * kFillShare);") &&
-                  Has(hlsli, "const float3 light = fill * (f.ambientGain * hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
+        Check(Near(Constant(hlsli, "static const float kRtHitFillShare"), crm::kFillShare) && Has(hlsli, "const float3 fill = max(f.ambient, f.sun * kRtHitFillShare);") &&
+                  Has(hlsli, "return fill * (f.ambientGain * hemisphere);") && Has(hlsli, "const float3 light = RtHitAmbientLight(f, hemisphere) + f.sun * (ndl * visible);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? f.night : 0.0;"),
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
                   Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(info.pattern_phase, level.cone_rays), stats_frame);") &&

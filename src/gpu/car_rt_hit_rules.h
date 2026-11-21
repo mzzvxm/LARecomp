@@ -74,6 +74,7 @@
 #include <string>
 
 #include "car_rt_material_rules.h"
+#include "rt_hit_calibration.h"
 #include "car_rt_refl_rules.h"
 #include "gpu_class.h"
 
@@ -327,25 +328,23 @@ inline constexpr uint64_t kStatsFirst = 4;
 // The line in the log: every this many stats frames.
 inline constexpr uint64_t kLogEveryStats = 15;
 
+// The fixed point log, the calibration's range and its arithmetic are shared with the city hit library (rt_hit_calibration.h: CITY-RT M2 H4); the numbers are the car's, unchanged.
 // A luminance as a fixed-point log: (log2(max(l, kLogFloor)) + kLogBias) x kLogScale, clamped to 0 .. kLogMax (a sum over a million rays stays under 2^32; a step is a sixty-fourth of a stop).
-inline constexpr float kLogFloor = 1e-4f;
-inline constexpr float kLogBias = 16.0f;
-inline constexpr float kLogScale = 64.0f;
-inline constexpr uint32_t kLogMax = 2047;
-inline uint32_t FixedLog2(float luminance) {
-  const float v = (std::log2(std::max(luminance, kLogFloor)) + kLogBias) * kLogScale;
-  return uint32_t(std::clamp(v, 0.0f, float(kLogMax)));
-}
-inline float FromFixedLog2(float mean_fixed) { return std::exp2(mean_fixed / kLogScale - kLogBias); }
+inline constexpr float kLogFloor = rt_hit_cal::kLogFloor;
+inline constexpr float kLogBias = rt_hit_cal::kLogBias;
+inline constexpr float kLogScale = rt_hit_cal::kLogScale;
+inline constexpr uint32_t kLogMax = rt_hit_cal::kLogMax;
+inline uint32_t FixedLog2(float luminance) { return rt_hit_cal::FixedLog2(luminance); }
+inline float FromFixedLog2(float mean_fixed) { return rt_hit_cal::FromFixedLog2(mean_fixed); }
 
 // The calibration's samples count only where both colours are over this (in the history's units): a black part (glass, a tyre in shade) has no brightness to compare.
-inline constexpr float kCalFloor = 0.02f;
-inline constexpr uint32_t kCalMinSamples = 48;  // fewer samples in a window and the gain stays where it was
-inline constexpr float kCalMinStops = -3.0f;    // the gain's range, in stops (a factor of 1/8 to 8)
-inline constexpr float kCalMaxStops = 3.0f;
-inline constexpr float kCalRate = 0.5f;         // the share of the way to the new measurement a window moves the gain (in stops)
-inline constexpr float kLuma[3] = {0.2126f, 0.7152f, 0.0722f};
-inline float Luminance(const float rgb[3]) { return kLuma[0] * rgb[0] + kLuma[1] * rgb[1] + kLuma[2] * rgb[2]; }
+inline constexpr float kCalFloor = rt_hit_cal::kCarParams.floor;
+inline constexpr uint32_t kCalMinSamples = rt_hit_cal::kCarParams.min_samples;  // fewer samples in a window and the gain stays where it was
+inline constexpr float kCalMinStops = rt_hit_cal::kCarParams.min_stops;         // the gain's range, in stops (a factor of 1/8 to 8)
+inline constexpr float kCalMaxStops = rt_hit_cal::kCarParams.max_stops;
+inline constexpr float kCalRate = rt_hit_cal::kCarParams.rate;                  // the share of the way to the new measurement a window moves the gain (in stops)
+inline constexpr const float(&kLuma)[3] = rt_hit_cal::kLuma;
+inline float Luminance(const float rgb[3]) { return rt_hit_cal::Luminance(rgb); }
 
 // A window's counters (64 bits: several frames' sums).
 struct Totals {
@@ -361,19 +360,12 @@ inline void Add(Totals* sum, const uint32_t words[kWords]) {
 }
 
 // The mean of the log2 luminance difference (history over model) of a calibration's samples in stops, and whether there were enough of them to say.
-inline bool CalibrationStops(uint64_t count, uint64_t seen_sum, uint64_t model_sum, float* stops) {
-  if (count < kCalMinSamples) {
-    return false;
-  }
-  const float diff = (float(double(seen_sum) - double(model_sum)) / float(count)) / kLogScale;
-  *stops = std::clamp(diff, kCalMinStops, kCalMaxStops);
-  return true;
-}
+inline bool CalibrationStops(uint64_t count, uint64_t seen_sum, uint64_t model_sum, float* stops) { return rt_hit_cal::Stops(rt_hit_cal::kCarParams, count, seen_sum, model_sum, stops); }
 
 // The new gain (in stops) from the old one and a window's measurement. The shader shades the comparison's hits WITH the gain in force, so the measurement is what is left to correct (the
 // history's over the model's, in stops): the gain moves kCalRate of the way to cancel it, so it settles where the measurement is 0 and follows the hour as it changes.
-inline float NextStops(float previous, float residual) { return std::clamp(previous + residual * kCalRate, kCalMinStops, kCalMaxStops); }
-inline float GainOf(float stops) { return std::exp2(std::clamp(stops, kCalMinStops, kCalMaxStops)); }
+inline float NextStops(float previous, float residual) { return rt_hit_cal::NextStops(rt_hit_cal::kCarParams, previous, residual); }
+inline float GainOf(float stops) { return rt_hit_cal::GainOf(rt_hit_cal::kCarParams, stops); }
 
 // Is the trigger at `frame` a stats frame? (the first at kStatsFirst, then every kStatsEvery after the last)
 inline bool StatsDue(uint64_t frame, uint64_t last_stats_frame, bool ever) { return ever ? frame >= last_stats_frame + kStatsEvery : frame >= kStatsFirst; }
