@@ -978,6 +978,8 @@ bool LocalShadow::RecordPass(Plan& plan, plume::RenderCommandList* list, uint32_
         s.pos_scale[2] = 1.0f;
         s.pos_scale[3] = 1.0f;
         s.pos_offset[0] = s.pos_offset[1] = s.pos_offset[2] = s.pos_offset[3] = 0.0f;
+        // One sample, no 2 x 2 dither: a draw that has alpha to mask on gets the solid offsets (local_shadow_rules.h kAtlasAlphaToMask: the game's pattern would be one missing texel in two).
+        s.alpha_to_mask = rules::AtlasAlphaToMask(s.alpha_to_mask);
         std::memcpy(span.cpu, &s, sizeof(s));
       }
     }

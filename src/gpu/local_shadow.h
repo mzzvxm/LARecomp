@@ -13,9 +13,10 @@
 //                                mcla_gpu_headlight_shadows, which stays as an alias; local_shadow_rules.h kLevelTable has the rows and is the one place to change:
 //                                the three level shape, owner 2026-11-20, after the cost runs of a view for each headlamp). The levels differ by how many cars are
 //                                shadowed, by how many of them have a view for EACH HEADLAMP, and by how sharp. medium: the player's car and the nearest other car,
-//                                one view for each car, 2 views of 512 x 512 (4 MiB of video memory); high: the same two cars, the player's car with a view for
-//                                each lamp and the other car with one, 3 views of 512 x 512 (6 MiB); ultra: the player's car and the two nearest other cars, every
-//                                car with a view for each lamp, 6 views of 1024 x 1024 (48 MiB). `auto` is medium on Mid, ultra on High, off on Low (gpu_class.h
+//                                one view for each car, 2 views of 768 x 768 (9 MiB of video memory); high: the same two cars, the player's car with a view for
+//                                each lamp and the other car with one, 3 views of 1024 x 1024 (24 MiB); ultra: the player's car and the two nearest other cars, every
+//                                car with a view for each lamp, 6 views of 1280 x 1280 (75 MiB). The sizes are chosen so that a texel is 1.3 to 1.9 cm in the world at
+//                                10 m from the lamps (the first version's 512 gave 3.5 cm and lost every shadow thinner than 3 texels: HL-SHADOW-QUALITY, 2026-11-21). `auto` is medium on Mid, ultra on High, off on Low (gpu_class.h
 //                                Effect::kLightShadows). Live: a change applies at the next frame.
 //                                A CAR'S LIGHT IS ONE TERM (the middle of its two lamps: headlight_types.h) AND ITS SHADOW IS THE MEAN OF ITS LAMPS' VIEWS: a
 //                                pole in front of the car that both lamps light casts two shadows, each half as dark where only one lamp is blocked, and the
@@ -94,7 +95,8 @@
 //
 // THE GLUE. After the maps of a frame are recorded (and whenever they are given up) HandOver() tells headlight_rig::SetLocalShadows the views and the
 // atlas's bindless slot with the fixed point/clamp sampler (kSamplerPointClamp): the lit shaders of the headlight variant compare the texels themselves, as the
-// share of a box of 3 x 3 texels that is lit (headlight_rig_rules.h SoftShadow: a soft edge, not a staircase).
+// share of a kernel of 1 to 3 texels that is lit, read by four gathers of the 4 x 4 footprint and compared at the receiver's own plane, with a penumbra that is sharp at a
+// contact and widens with the distance from the blocker (light_shadow_filter.h ViewLit is the CPU twin; headlight_rig_rules.h SoftShadow is the first version's 3 x 3 box).
 // The rig copies the views and moves them to the lights of the set that reads them by the car (headlight_rig_rules.h RemapShadowViews).
 //
 // Threading: render thread only. Initialize and Shutdown on the lifecycle thread. The pipelines are made on the host builder thread.

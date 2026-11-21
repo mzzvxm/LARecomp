@@ -119,11 +119,11 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // the early-out box keeps every other pixel to a few), so the setting has one level, `on`: every card but the integrated one (Low: the scene alone is
     // 100+ ms there) gets it. The cost is the owner's to measure (perf/HEADLIGHT-LIGHT-RUNPLAN.md), a cell is corrected from it.
     {"mcla_gpu_headlights", "off", "on", "on"},
-    // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 512 (medium, high)
-    // or 1024 (ultra) texels a view. THREE LEVELS (the three level shape, local_shadow_rules.h kThreeLevelShape, owner 2026-11-20, after the cost runs of perf/out/HL-PER-LAMP.txt): medium
-    // shadows the player's car's headlights and the nearest other car's with one view for each car (2 views, 4 MiB); high gives the player's car a view for each HEADLAMP (a pole in front of
-    // a car casts a shadow from each of its two lamps) and the nearest other car one view (3 views, 6 MiB); ultra shadows the next nearest car's too and gives all three cars a view for each
-    // lamp (6 views of 1024, 48 MiB). Mid gets medium, High gets ultra, shared memory nothing (the scene alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time
+    // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 768 (medium), 1024 (high)
+    // or 1280 (ultra) texels a view (HL-SHADOW-QUALITY: a texel stays 1.3 to 1.9 cm in the world at 10 m from the lamps). THREE LEVELS (the three level shape, local_shadow_rules.h kThreeLevelShape, owner 2026-11-20, after the cost runs of perf/out/HL-PER-LAMP.txt): medium
+    // shadows the player's car's headlights and the nearest other car's with one view for each car (2 views, 9 MiB); high gives the player's car a view for each HEADLAMP (a pole in front of
+    // a car casts a shadow from each of its two lamps) and the nearest other car one view (3 views, 24 MiB); ultra shadows the next nearest car's too and gives all three cars a view for each
+    // lamp (6 views of 1280, 75 MiB). Mid gets medium, High gets ultra, shared memory nothing (the scene alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time
     // (the size barely counts) and 0.05 to 0.1 ms of render thread time (a pass over the frame's draws), measured on the RTX 5080 (the headlights runs of 2026-11-20); a view for each lamp
     // instead of one for the car adds 0.05 to 0.15 ms of graphics card time and 0.04 to 0.16 ms of render thread time there, and a weaker PC pays several times that, so the lamps' views
     // are for the levels above Mid's cell.

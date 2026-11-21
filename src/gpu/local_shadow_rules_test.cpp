@@ -102,19 +102,19 @@ void CheckSetting() {
     }
     Check(in_table, "the class's auto is a level of the table in use");
   }
-  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "the tile is 512 on high and 1024 on ultra");
+  Check(ls::TileSize(ls::Level::kOff) == 0 && ls::TileSize(ls::Level::kHigh) == 1024 && ls::TileSize(ls::Level::kUltra) == 1280, "the tile is 1024 on high and 1280 on ultra");
   Check(ls::MaxViews(ls::Level::kOff, 0) == 0 && ls::MaxViews(ls::Level::kOff, 2) == 0 && ls::MaxCars(ls::Level::kOff) == 0, "off draws no view, whatever the override");
   Check(ls::MaxCars(ls::Level::kHigh) == 2 && ls::MaxCars(ls::Level::kUltra) == 3, "high shadows two cars (the player's and the nearest other car's), ultra three");
   Check(ls::kThreeLevelShape && ls::kLevelTable.size() == 3 && ls::kLevelTable[0].word == "medium" && ls::kLevelTable[1].word == "high" && ls::kLevelTable[2].word == "ultra",
         "the shape in use is the three level one: medium, high, ultra (owner, 2026-11-20)");
   Check(ls::MaxViews(ls::Level::kMedium, 0) == 2 && ls::MaxViews(ls::Level::kHigh, 0) == 3 && ls::MaxViews(ls::Level::kUltra, 0) == 6,
         "in use: medium 2 views (one for each car), high 3 (the player's lamps and the nearest car), ultra 6 (every car's lamps)");
-  Check(ls::TileSize(ls::Level::kMedium) == 512 && ls::TileSize(ls::Level::kHigh) == 512 && ls::TileSize(ls::Level::kUltra) == 1024, "in use: 512 on medium and high, 1024 on ultra");
+  Check(ls::TileSize(ls::Level::kMedium) == 768 && ls::TileSize(ls::Level::kHigh) == 1024 && ls::TileSize(ls::Level::kUltra) == 1280, "in use: 768 on medium, 1024 on high, 1280 on ultra (HL-SHADOW-QUALITY)");
   Check(ls::LampCars(ls::Level::kMedium, 0) == 0 && ls::LampCars(ls::Level::kHigh, 0) == 1 && ls::LampCars(ls::Level::kUltra, 0) == 3, "in use: lamp views for no car on medium, the player's on high, all three on ultra");
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
-  Check(text.find("512x512") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
-  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("512") == std::string::npos, "an off level has no size in its line");
+  Check(text.find("768x768") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
+  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("768") == std::string::npos, "an off level has no size in its line");
   // No level is called low.
   for (const char* c : {"off", "medium", "high", "ultra"}) {
     Check(std::string(ls::LevelName(ls::Resolve(gc::GpuClass::kHigh, c).level)).find("low") == std::string::npos, "no level is called low");
@@ -1276,12 +1276,12 @@ void CheckLevels() {
   Check(ls::MaxViews(ls::Level::kHigh, 2, two) == 4 && ls::MaxViews(ls::Level::kUltra, 2, two) == 6 && ls::MaxViews(ls::Level::kHigh, 9, two) == 4 && ls::MaxViews(ls::Level::kUltra, -3, two) == 6,
         "the override 2 (and more) is a view for each lamp, a negative one is the level's");
   // THE THREE LEVEL SHAPE (the fallback): medium is the first version's high, high gives the player's car its lamps' views, ultra every shadowed car's.
-  Check(ls::MaxViews(ls::Level::kMedium, 0, three) == 2 && ls::LampCars(ls::Level::kMedium, 0, three) == 0 && ls::TileSize(ls::Level::kMedium, three) == 512,
-        "three level shape: medium is two cars, one view each, 512");
+  Check(ls::MaxViews(ls::Level::kMedium, 0, three) == 2 && ls::LampCars(ls::Level::kMedium, 0, three) == 0 && ls::TileSize(ls::Level::kMedium, three) == 768,
+        "three level shape: medium is two cars, one view each, 768");
   Check(ls::MaxViews(ls::Level::kHigh, 0, three) == 3 && ls::LampCars(ls::Level::kHigh, 0, three) == 1 && ls::MaxCars(ls::Level::kHigh, three) == 2,
         "three level shape: high is two cars, the player's with a view for each lamp (3 views)");
-  Check(ls::MaxViews(ls::Level::kUltra, 0, three) == 6 && ls::LampCars(ls::Level::kUltra, 0, three) == 3 && ls::TileSize(ls::Level::kUltra, three) == 1024,
-        "three level shape: ultra is three cars, every one with a view for each lamp (6 views of 1024)");
+  Check(ls::MaxViews(ls::Level::kUltra, 0, three) == 6 && ls::LampCars(ls::Level::kUltra, 0, three) == 3 && ls::TileSize(ls::Level::kUltra, three) == 1280,
+        "three level shape: ultra is three cars, every one with a view for each lamp (6 views of 1280)");
   Check(ls::MaxViews(ls::Level::kMedium, 2, three) == 4 && ls::MaxViews(ls::Level::kHigh, 1, three) == 2, "three level shape: the override works on any row");
   // Both shapes are well formed: ascending levels, a tile, a car, no more lamp cars than cars, words that are the setting's.
   for (const ls::LevelTable table : {two, three}) {
@@ -1348,9 +1348,9 @@ void CheckLevels() {
   Check(ultra.width() == 3072 && ultra.height() == 2048 && ultra.cols == 3 && ultra.rows == 2, "ultra: 3072 x 2048, six tiles of 1024 in three columns");
   CheckNear(ls::Mib(ls::AtlasBytes(high)), 8.0, 1e-9, "high holds 8 MiB");
   CheckNear(ls::Mib(ls::AtlasBytes(ultra)), 48.0, 1e-9, "ultra holds 48 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kMedium, 0, three))), 4.0, 1e-9, "three level shape: medium holds 4 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 0, three))), 6.0, 1e-9, "three level shape: high holds 6 MiB");
-  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 0, three))), 48.0, 1e-9, "three level shape: ultra holds 48 MiB");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kMedium, 0, three))), 9.0, 1e-9, "three level shape: medium holds 9 MiB (2 views of 768)");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 0, three))), 24.0, 1e-9, "three level shape: high holds 24 MiB (3 views of 1024)");
+  CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 0, three))), 75.0, 1e-9, "three level shape: ultra holds 75 MiB (6 views of 1280)");
   CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kUltra, 1, two))), 24.0, 1e-9, "ultra with one view for a car (the override 1) is the first version's 24 MiB");
   CheckNear(ls::Mib(ls::AtlasBytes(ls::AtlasFor(ls::Level::kHigh, 1, two))), 4.0, 1e-9, "... and high's 4 MiB");
   Check(ls::AtlasBytes(ls::AtlasFor(ls::Level::kOff, 0)) == 0 && !ls::AtlasFor(ls::Level::kOff, 0).valid(), "off holds nothing");
@@ -1358,22 +1358,22 @@ void CheckLevels() {
   Check(ls::AtlasFor(ls::Level::kUltra, 0, two).views == 6 && ls::AtlasFor(ls::Level::kHigh, 0, two).views == 4, "the atlas has a tile for every view of its level");
   // What the log says.
   const std::string text = ls::Describe(ls::Choice{ls::Level::kUltra, true, false}, gc::GpuClass::kHigh);
-  Check(text.find("ultra") != std::string::npos && text.find("1024x1024") != std::string::npos, "Describe says the level and the size: " + text);
-  Check(text.find("up to 6 views of 1024x1024") != std::string::npos && text.find("3 car(s), a view for each lamp") != std::string::npos, "Describe says six views of 1024, a view for each lamp: " + text);
+  Check(text.find("ultra") != std::string::npos && text.find("1280x1280") != std::string::npos, "Describe says the level and the size: " + text);
+  Check(text.find("up to 6 views of 1280x1280") != std::string::npos && text.find("3 car(s), a view for each lamp") != std::string::npos, "Describe says six views of 1280, a view for each lamp: " + text);
   const std::string mid = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "auto"), gc::GpuClass::kMid);
   if (ls::kThreeLevelShape) {
     // The shape in use: Mid's auto is medium (two views of 512, one for each car); high is three views, the player's car's lamps and one for the other car; the override 1 and 2 reach every level.
-    Check(mid.find("light shadows medium") != std::string::npos && mid.find("up to 2 views of 512x512") != std::string::npos && mid.find("2 car(s), one view for each") != std::string::npos &&
+    Check(mid.find("light shadows medium") != std::string::npos && mid.find("up to 2 views of 768x768") != std::string::npos && mid.find("2 car(s), one view for each") != std::string::npos &&
               mid.find("auto on the mid class") != std::string::npos,
-          "Describe says two views of 512, one for each car, on the Mid class: " + mid);
+          "Describe says two views of 768, one for each car, on the Mid class: " + mid);
     const std::string high_text = ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid);
-    Check(high_text.find("up to 3 views of 512x512") != std::string::npos && high_text.find("2 car(s), a view for each lamp of the first 1") != std::string::npos && high_text.find("(set)") != std::string::npos,
-          "Describe says three views of 512, the first car's lamps, for a set high: " + high_text);
-    Check(ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("up to 3 views of 1024x1024") != std::string::npos &&
+    Check(high_text.find("up to 3 views of 1024x1024") != std::string::npos && high_text.find("2 car(s), a view for each lamp of the first 1") != std::string::npos && high_text.find("(set)") != std::string::npos,
+          "Describe says three views of 1024, the first car's lamps, for a set high: " + high_text);
+    Check(ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("up to 3 views of 1280x1280") != std::string::npos &&
               ls::Describe(ls::Resolve(gc::GpuClass::kHigh, "ultra"), gc::GpuClass::kHigh, 1).find("one view for each") != std::string::npos,
           "Describe follows the override");
     Check(ls::AtlasFor(ls::Level::kMedium, 0).views == 2 && ls::AtlasFor(ls::Level::kHigh, 0).views == 3 && ls::AtlasFor(ls::Level::kUltra, 0).views == 6, "in use: the atlas has a tile for every view of its level");
-    Check(ls::AtlasFor(ls::Level::kHigh, 0).width() == 1536 && ls::AtlasFor(ls::Level::kHigh, 0).height() == 512, "in use: high is a row of three tiles of 512");
+    Check(ls::AtlasFor(ls::Level::kHigh, 0).width() == 3072 && ls::AtlasFor(ls::Level::kHigh, 0).height() == 1024, "in use: high is a row of three tiles of 1024");
   } else {
     Check(mid.find("up to 4 views of 512x512") != std::string::npos && mid.find("2 car(s)") != std::string::npos, "Describe says four views of 512: " + mid);
     Check(ls::Describe(ls::Resolve(gc::GpuClass::kMid, "high"), gc::GpuClass::kMid, 1).find("up to 2 views of 512x512") != std::string::npos &&
@@ -1942,7 +1942,7 @@ void CheckLampViewsCover() {
         for (const double d : {6.0, 10.0, 20.0, 40.0}) {
           for (int step = 0; step < 24; ++step) {
             const double phi = 2.0 * ls::kPi * step / 24.0;
-            const double theta = ls::Rad(outer) * 0.99;  // the light's cone, its edge, seen from the light
+            const double theta = ls::Rad(std::min(outer, ls::kShadowConeCapDegrees)) * 0.99;  // the light's cone, its edge (held to the shadow views' cap: kShadowConeCapDegrees), seen from the light
             const double p[3] = {cars[0].pos[0] + d * std::sin(theta) * std::cos(phi), cars[0].pos[1] + d * std::sin(theta) * std::sin(phi), cars[0].pos[2] + d * std::cos(theta)};
             Check(InsideClip(clip, p), at + ": the light's cone edge at " + std::to_string(int(d)) + " m (azimuth step " + std::to_string(step) + ") is in lamp view " + std::to_string(k));
           }

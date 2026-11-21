@@ -38,24 +38,35 @@ static const float kHlCutLow = 0.10;
 static const float kHlCutHigh = 0.38;
 static const float kHlNearStart = 0.8;
 static const float kHlNearSpan = 1.5;
-static const float kHlShadowKernel = 3.0;
+static const float kHlPcfMinRadius = 0.5;
+static const float kHlPcfMaxRadius = 1.5;
+static const float kHlLampRadius = 0.07;
+static const float kHlMaxSlope = 60.0;
+static const float kHlSlopeBias = 0.15;
+static const float kHlBorderFade = 0.05;
+static const float kHlDegenerate = 1.0e-3;
 static const uint kHlNoView = 0xFFFFFFFFu;
 #ifndef __spirv__
 #define g_HlLight(INDEX) g_HlLights[INDEX]
 #define g_HlShadow(INDEX) g_HlShadowArr[INDEX]
 #endif
 
-// One texel of the map against the receiver's depth: 1 lit, 0 in shadow (the game's `>=`).
-float HeadlightShadowTexel(uint4 atlas, float2 uv, float depth)
+// One Gather quad of the map against the receiver's plane: `stored` is the four texels GatherRed returns (x = (0, 1), y = (1, 1), z = (1, 0), w = (0, 0) of the quad), `rx` and
+// `ry` the receiver's offset from each texel's centre in texels; the receiver's depth at a texel is its own plus the plane's slope times the offset. 1 lit, 0 in shadow (the game's
+// `>=`; a stored 1 is nothing drawn, which no depth of the plane beats).
+float4 HeadlightQuadLit(float4 stored, float depth, float2 slope, float4 rx, float4 ry)
 {
-    return tfetch2DLod(atlas.x, atlas.y, uv, float2(0.0, 0.0), 0.0).x >= depth ? 1.0 : 0.0;
+    float4 need = min(depth + slope.x * rx + slope.y * ry, 1.0);
+    return float4(stored >= need);
 }
 
-// The share of a light the shadow views let through at a world point: the share of a box kHlShadowKernel texels square, centred on the point's place in the map,
-// whose texels are lit (the game's `>=`, the depth moved toward the lamp by the view's bias), each texel counted by the part of it the box covers. The box covers
-// 4 x 4 texels: the four outer ones are compared first and when they agree the box is inside a lit area or a shadow and that is the answer. A point outside the
-// view's rectangle or depth range is lit. (src/gpu/headlight_rig_rules.h SoftShadow is the CPU twin.)
-float HeadlightShadow(uint view, float3 world)
+// The share of a light one view lets through at a world point with the surface's unit normal: 1 lit, 0 in shadow. (src/gpu/light_shadow_filter.h ViewLit is the CPU twin; its
+// header says what was wrong with the box of 3 x 3 texels this replaces.) A point outside the view's rectangle or depth range is lit. FOUR GATHERS read the 4 x 4 texels around
+// the point, each compared with the receiver's depth AT ITS OWN PLANE (the slope of the surface in the map from the normal and the view's matrix: a road at a grazing angle compares
+// equal to its stored self in every texel, so the bias is tiny); the kernel is a box of 2 r texels, r from the penumbra of a lamp the size kHlLampRadius seen through the
+// average blocker (0.5 at a contact, 1.5 at most: the footprint holds a box of half width 1.5 wherever the point is in its texel), each texel counted by the part of it the box
+// covers; the shadow fades out over the last kHlBorderFade of the tile. No screen position is read: there is no noise for anything to resolve.
+float HeadlightShadow(uint view, float3 world, float3 normal)
 {
     float4 row0 = g_HlShadow(view * 6u + 0u);
     float4 row1 = g_HlShadow(view * 6u + 1u);
@@ -67,35 +78,74 @@ float HeadlightShadow(uint view, float3 world)
     float4 clip = float4(dot(row0, p), dot(row1, p), dot(row2, p), dot(row3, p));
     if (clip.w <= 0.0)
         return 1.0;
-    float3 s = clip.xyz / clip.w;
+    float invW = 1.0 / clip.w;
+    float3 s = clip.xyz * invW;
     if (s.x < rect.x || s.y < rect.y || s.x > rect.z || s.y > rect.w || s.z < 0.0 || s.z > 1.0)
         return 1.0;
-    float depth = s.z - shadowParams.x;
+    float2 tile = rect.zw - rect.xy;
+    float2 t = tile * shadowParams.y;  // one texel of the tile in atlas uv, on each axis (the atlas is a few tiles wide, not as many tall)
+    float2 border = min(s.xy - rect.xy, rect.zw - s.xy) / tile;
+    float fade = saturate(min(border.x, border.y) * (1.0 / kHlBorderFade));
+    if (fade <= 0.0)
+        return 1.0;
+    // The receiver's plane: the Jacobians of (u, v, z) with respect to the world point (u and v in texels), then the depth's change over one texel along u and along v.
+    float3 axis = row3.xyz;
+    float3 ju = (row0.xyz - s.x * axis) * (invW / t.x);
+    float3 jv = (row1.xyz - s.y * axis) * (invW / t.y);
+    float3 jz = (row2.xyz - s.z * axis) * invW;
+    float lenU = length(ju);
+    float lenV = length(jv);
+    float scaleA = dot(row2.xyz, axis) / dot(axis, axis);  // A = f / (f - n): z/w = A (1 - n / w)
+    float2 limit = kHlMaxSlope * (scaleA - s.z) * invW / float2(lenU, lenV);
+    float3 vn = cross(jv, normal);
+    float det = dot(ju, vn);
+    float2 slope = float2(0.0, 0.0);
+    if (abs(det) > kHlDegenerate * lenU * lenV)
+        slope = clamp(float2(dot(jz, vn), dot(jz, cross(normal, ju))) / det, -limit, limit);
+    float depth = s.z - (shadowParams.x + kHlSlopeBias * (abs(slope.x) + abs(slope.y)));
+    // The footprint: texels first .. first + 3 on each axis, four gathers at the corners the quads share (their lowest texels are first and first + 2).
+    float2 c = s.xy / t;
+    float2 first = floor(c - 0.5) - 1.0;
+    float2 corner = (first + 1.0) * t;
     uint4 atlas = g_HlAtlas;
-    float2 t = (rect.zw - rect.xy) * shadowParams.y;  // one texel of the tile in atlas uv, on each axis (the atlas is two tiles wide, not two tall)
-    // The box's low corner in texels of the atlas (a tile starts at a whole number of its own texels, so the atlas's texel grid is the tile's), and the weights
-    // of the 4 texels it covers along each axis: its first and last only in part.
-    float2 low = s.xy / t - 0.5 * kHlShadowKernel;
-    float2 base = floor(low);
-    float2 f = low - base;
-    float4 wx = float4(1.0 - f.x, 1.0, 1.0, f.x);
-    float4 wy = float4(1.0 - f.y, 1.0, 1.0, f.y);
-    float2 uv0 = (base + 0.5) * t;  // the centre of the first texel
-    float corners = HeadlightShadowTexel(atlas, uv0, depth) + HeadlightShadowTexel(atlas, uv0 + float2(3.0, 0.0) * t, depth) +
-                    HeadlightShadowTexel(atlas, uv0 + float2(0.0, 3.0) * t, depth) + HeadlightShadowTexel(atlas, uv0 + float2(3.0, 3.0) * t, depth);
-    if (corners == 0.0 || corners == 4.0)
-        return corners * 0.25;
-    float lit = 0.0;
-    [unroll]
-    for (int j = 0; j < 4; ++j)
-    {
-        float row = 0.0;
-        [unroll]
-        for (int i = 0; i < 4; ++i)
-            row += wx[i] * HeadlightShadowTexel(atlas, uv0 + float2(float(i), float(j)) * t, depth);
-        lit += wy[j] * row;
-    }
-    return lit * (1.0 / 9.0);
+    Texture2D<float4> map = g_Texture2DDescriptorHeap[TFETCH_INDEX(atlas.x)];
+    SamplerState mapSampler = g_SamplerDescriptorHeap[atlas.y];
+    float4 q00 = map.GatherRed(mapSampler, corner);
+    float4 q10 = map.GatherRed(mapSampler, corner + float2(2.0 * t.x, 0.0));
+    float4 q01 = map.GatherRed(mapSampler, corner + float2(0.0, 2.0 * t.y));
+    float4 q11 = map.GatherRed(mapSampler, corner + 2.0 * t);
+    float2 o0 = first + 0.5 - c;  // the point's offset from the centre of the first texel
+    float4 ox = o0.x + float4(0.0, 1.0, 2.0, 3.0);
+    float4 oy = o0.y + float4(0.0, 1.0, 2.0, 3.0);
+    float4 l00 = HeadlightQuadLit(q00, depth, slope, float4(ox.x, ox.y, ox.y, ox.x), float4(oy.y, oy.y, oy.x, oy.x));
+    float4 l10 = HeadlightQuadLit(q10, depth, slope, float4(ox.z, ox.w, ox.w, ox.z), float4(oy.y, oy.y, oy.x, oy.x));
+    float4 l01 = HeadlightQuadLit(q01, depth, slope, float4(ox.x, ox.y, ox.y, ox.x), float4(oy.w, oy.w, oy.z, oy.z));
+    float4 l11 = HeadlightQuadLit(q11, depth, slope, float4(ox.z, ox.w, ox.w, ox.z), float4(oy.w, oy.w, oy.z, oy.z));
+    float4 b00 = 1.0 - l00;
+    float4 b10 = 1.0 - l10;
+    float4 b01 = 1.0 - l01;
+    float4 b11 = 1.0 - l11;
+    float blockers = dot(b00 + b10 + b01 + b11, float4(1.0, 1.0, 1.0, 1.0));
+    if (blockers < 0.5)
+        return 1.0;
+    if (blockers > 15.5)
+        return lerp(1.0, 0.0, fade);
+    // Contact hardening: the lamp's disc through the average blocker. R |ju| (z - z_blocker) / (A - z) texels, held to [kHlPcfMinRadius, kHlPcfMaxRadius].
+    float blockerSum = dot(q00, b00) + dot(q10, b10) + dot(q01, b01) + dot(q11, b11);
+    float radius = kHlLampRadius * 0.5 * (lenU + lenV) * (s.z - blockerSum / blockers) / max(scaleA - s.z, 1.0e-6);
+    radius = clamp(radius, kHlPcfMinRadius, kHlPcfMaxRadius);
+    // The box [c - r, c + r] over the texel intervals [e, e + 1]: each texel by the part of it the box covers (the weights along an axis sum to 2 r).
+    float4 edgeX = first.x + float4(0.0, 1.0, 2.0, 3.0);
+    float4 edgeY = first.y + float4(0.0, 1.0, 2.0, 3.0);
+    float4 wx = saturate(min(edgeX + 1.0, c.x + radius) - max(edgeX, c.x - radius));
+    float4 wy = saturate(min(edgeY + 1.0, c.y + radius) - max(edgeY, c.y - radius));
+    float4 row0Lit = float4(l00.w, l00.z, l10.w, l10.z);  // the footprint's rows, columns 0 to 3
+    float4 row1Lit = float4(l00.x, l00.y, l10.x, l10.y);
+    float4 row2Lit = float4(l01.w, l01.z, l11.w, l11.z);
+    float4 row3Lit = float4(l01.x, l01.y, l11.x, l11.y);
+    float share = wy.x * dot(wx, row0Lit) + wy.y * dot(wx, row1Lit) + wy.z * dot(wx, row2Lit) + wy.w * dot(wx, row3Lit);
+    share = saturate(share / (4.0 * radius * radius));
+    return lerp(1.0, share, fade);
 }
 
 // The headlights' light at a world point, rgb (the same units as a lamp's term: the shader adds it to the lamps and the ambient). Called at the start of
@@ -152,12 +202,12 @@ float4 HeadlightLight(float3 world)
             float views = 0.0;
             if (viewA != kHlNoView)
             {
-                seen += HeadlightShadow(viewA, world);
+                seen += HeadlightShadow(viewA, world, normal);
                 views += 1.0;
             }
             if (viewB != kHlNoView)
             {
-                seen += HeadlightShadow(viewB, world);
+                seen += HeadlightShadow(viewB, world, normal);
                 views += 1.0;
             }
             if (views > 0.0)
