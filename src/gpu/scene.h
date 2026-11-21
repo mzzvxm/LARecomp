@@ -67,6 +67,7 @@
 #include "edram.h"
 #include "frame_layers.h"
 #include "gbuffer_material.h"
+#include "gbuffer_materials.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
 #include "geometry.h"
@@ -306,6 +307,9 @@ class Scene {
     uint32_t gbuffer_variant = 0;
     uint32_t gbuffer_planes = 0;  // the planes the key carries (PlaneCount: the colour slots after the guest's)
     gbuffer::PlaneMode gbuffer_mode = gbuffer::PlaneMode::kNone;
+    // The per-texture material row of the texture the draw reads in its pixel shader's diffuse slot (gbuffer_materials.h): found in Prepare for a draw that writes the planes, applied to the
+    // draw's material word in FillVariantBlock. Empty when there is no table, no census, or no such texture.
+    gbuffer::TextureMaterials::Hit gbuffer_texture;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
@@ -493,6 +497,8 @@ class Scene {
   GBuffer* gbuffer_ = nullptr;
   // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
   gbuffer::MaterialTable gbuffer_materials_;
+  // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).
+  gbuffer::TextureMaterials gbuffer_texmat_;
   CarRtScene* car_rt_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;

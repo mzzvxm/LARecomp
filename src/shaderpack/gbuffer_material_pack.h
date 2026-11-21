@@ -8,6 +8,9 @@
 // mcla_gbuffer_materials.v1.bin (gpu/gbuffer_material.h kMaterialTableFileName), beside the variant pack, written by the variant step right after the variant pack (variant_pack.cpp
 // BuildChecked) from the same containers; the renderer reads it once (gpu/gbuffer_material.h MaterialTable, Scene::FillVariantBlock's G-buffer case).
 //
+// Beside it goes the shader names file (mcla_gbuffer_shader_names.v1.tsv, gpu/gbuffer_materials.h FormatShaderNamesTsv): every shader's identity, group, entry and class, which
+// tools/gbuffer_materials/census_merge.py joins to the identities the renderer's texture census logs. Nothing reads it at run time.
+//
 // Failure never fails the step: without the file every draw takes the default material word (world class, smoothness 0, lit), which is what the G-buffer did before this existed.
 // The step's stamp has the line variants_gbuffer_material_version (gpu/gbuffer_material.h kMaterialRulesVersion, hand bumped when a table changes), so an edit to the tables
 // rebuilds the variant pack and this file, and nothing else.

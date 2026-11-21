@@ -53,6 +53,8 @@ inline float3 operator*(float3 a, float3 b) { return float3(a.x * b.x, a.y * b.y
 inline float abs(float v) { return std::fabs(v); }
 inline float sqrt(float v) { return std::sqrt(v); }
 inline float saturate(float v) { return std::min(std::max(v, 0.0f), 1.0f); }
+inline float max(float a, float b) { return std::max(a, b); }
+inline float min(float a, float b) { return std::min(a, b); }
 inline float3 sqrt(float3 v) { return float3(std::sqrt(v.x), std::sqrt(v.y), std::sqrt(v.z)); }
 inline float3 saturate(float3 v) { return float3(saturate(v.x), saturate(v.y), saturate(v.z)); }
 inline float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -948,7 +950,8 @@ void HlslDefinesChecks(const std::string& text) {
       {"GB_CLASS_MASK", long(gb::kClassMask)},                  {"GB_FLAG_SSR", long(gb::kMaterialFlagSsr)},
       {"GB_FLAG_ALPHA_COVERED", long(gb::kMaterialFlagAlphaCovered)}, {"GB_FLAG_VEHICLE", long(gb::kMaterialFlagVehicle)},
       {"GB_MATERIAL_CLASS_SHIFT", long(gb::kMaterialClassShift)}, {"GB_MATERIAL_FLAGS_SHIFT", long(gb::kMaterialFlagsShift)},
-      {"GB_MATERIAL_LIT_SHIFT", long(gb::kMaterialLitShift)},   {"GB_MODE_WRITE_NORMAL", long(gb::kModeWriteNormal)},
+      {"GB_MATERIAL_LIT_SHIFT", long(gb::kMaterialLitShift)},   {"GB_MATERIAL_METAL_SHIFT", long(gb::kMaterialMetalShift)},
+      {"GB_MODE_WRITE_NORMAL", long(gb::kModeWriteNormal)},
       {"GB_MODE_WRITE_ALBEDO", long(gb::kModeWriteAlbedo)},     {"GB_MODE_WRITE_MATERIAL", long(gb::kModeWriteMaterial)},
       {"GB_MODE_FLIP_BACKFACE", long(gb::kModeFlipBackface)},   {"GB_MODE_DERIVATIVE_NORMAL", long(gb::kModeDerivativeNormal)},
   };
@@ -1014,6 +1017,44 @@ void HlslAgainstTwinChecks() {
   Check(albedo_mismatch == 0, "GbAlbedoEncode and GbAlbedoDecode equal the twin");
   Check(word_mismatch == 0, "GbMaterialWord equals the twin");
   Check(rt3_mismatch == 0, "GbMaterialRt3, GbMaterialLit and the RT3 readers equal the twin and decode what was packed");
+  // the gloss functions and the metalness byte (GB-F2): the .hlsli against the twin, and the formulas against their definitions
+  {
+    double worst_alpha = 0.0, worst_smooth = 0.0, worst_back = 0.0, worst_power = 0.0;
+    int metal_mismatch = 0, metal_keeps = 0, rt3_alpha = 0;
+    for (int i = 0; i < 100000; ++i) {
+      const float power = std::pow(10.0f, rng.Range(-1.0f, 6.0f)) * (i % 7 == 0 ? 0.0f : 1.0f);
+      const float alpha = rng.Next();
+      const float s = rng.Next();
+      worst_alpha = std::max(worst_alpha, double(MaxAbs(GbGgxAlphaOfPower(power), g::GgxAlphaOfPower(power))));
+      worst_power = std::max(worst_power, double(MaxAbs(GbSmoothnessOfPower(power), g::SmoothnessOfPower(power))));
+      worst_smooth = std::max(worst_smooth, double(std::max(MaxAbs(GbSmoothnessOfAlpha(alpha), g::SmoothnessOfAlpha(alpha)), MaxAbs(GbAlphaOfSmoothness(s), g::AlphaOfSmoothness(s)))));
+      worst_back = std::max(worst_back, double(MaxAbs(GbAlphaOfSmoothness(GbSmoothnessOfAlpha(alpha)), alpha)));
+      const uint32_t byte = uint32_t(rng.Range(0.0f, 255.99f));
+      const float2 rt3 = float2(float(byte) / 255.0f, rng.Next());
+      if (MaxAbs(GbRt3Alpha(rt3), g::AlphaOfByte(byte)) > 1e-5f) ++rt3_alpha;
+      const uint32_t word = g::MaterialWord(s, uint32_t(rng.Range(0.0f, 31.99f)), uint32_t(rng.Range(0.0f, 7.99f)), rng.Next());
+      const float metal = rng.Next();
+      const uint32_t with_h = GbMaterialWithMetal(word, metal);
+      const uint32_t with_t = g::MaterialWordWithMetal(word, metal);
+      if (with_h != with_t || MaxAbs(GbMaterialMetal(with_t), float(g::MaterialMetalByte(with_t)) / 255.0f) > 1e-6f) ++metal_mismatch;
+      if ((with_t & 0x00FFFFFFu) != (word & 0x00FFFFFFu) || GbMaterialLit(with_t) != GbMaterialLit(word) || GbMaterialRt3(with_t).x != GbMaterialRt3(word).x ||
+          GbMaterialRt3(with_t).y != GbMaterialRt3(word).y) {
+        ++metal_keeps;
+      }
+    }
+    Check(worst_alpha < 1e-6, Num("GbGgxAlphaOfPower equals the twin to %.2e", worst_alpha));
+    Check(worst_power < 1e-6, Num("GbSmoothnessOfPower equals the twin to %.2e", worst_power));
+    Check(worst_smooth < 1e-6, Num("GbSmoothnessOfAlpha and GbAlphaOfSmoothness equal the twin to %.2e", worst_smooth));
+    Check(worst_back < 1e-4, Num("alpha -> smoothness -> alpha comes back to %.2e", worst_back));
+    Check(rt3_alpha == 0, "GbRt3Alpha equals the twin's AlphaOfByte");
+    Check(metal_mismatch == 0, "GbMaterialWithMetal and GbMaterialMetal equal the twin");
+    Check(metal_keeps == 0, "setting the metalness byte leaves the smoothness, class, flags and lit weight alone in the .hlsli and in the twin");
+    // the definitions, in the .hlsli: a mirror, a chalk, the middle, and the two ends
+    Check(GbAlphaOfSmoothness(1.0f) == 0.0f && GbAlphaOfSmoothness(0.0f) == 1.0f, ".hlsli: smoothness 1 is alpha 0 and smoothness 0 is alpha 1");
+    Check(std::fabs(GbAlphaOfSmoothness(0.5f) - 0.25f) < 1e-7f, ".hlsli: smoothness 0.5 is alpha 0.25 (alpha = (1 - s)^2)");
+    Check(std::fabs(GbGgxAlphaOfPower(2.0f) - 0.70710678f) < 1e-6f && GbGgxAlphaOfPower(0.0f) == 1.0f, ".hlsli: power 2 is alpha 0.707, power 0 is alpha 1");
+    Check(GbSmoothnessOfPower(1e30f) > 0.999f && GbSmoothnessOfPower(1e30f) <= 1.0f, ".hlsli: a huge power is a mirror, not above 1");
+  }
   for (int i = 0; i < 20000; ++i) {
     const g::Quat q = RandomQuat(rng);
     const g::Vec3 v = rng.Direction() * rng.Range(0.1f, 50.0f);

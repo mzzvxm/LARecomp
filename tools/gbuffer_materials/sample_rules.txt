@@ -1,0 +1,12 @@
+# The rules of the tools' tests (made up: no game names beyond the shader groups). test_gbuffer_materials.py runs census_merge.py and author_materials.py on
+# sample_census_log.txt + sample_shader_names.tsv with these rules and compares the result with sample_census.tsv and sample_table.txt; src/gpu/gbuffer_materials_test.cpp parses
+# sample_table.txt with the renderer's own parser.
+
+glass-world:     name~glass,window  novehicle                         => class=glass rough=0.05 ssr=1
+chrome-vehicle:  name~chrome        vehicle                           => class=chrome rough=0.05 metal=1 ssr=0
+puddles:         name~puddle        class=road,world,sidewalk         => class=wetroad rough=0.10 ssr=1
+tiny-flat:       unnamed size<=8                                      => rough=0.5
+reviewed-glass:  hash=00B2E7B3C830B0E7                                => class=glass rough=0.08 ssr=1
+reviewed-metal:  hash=C0FFEE0000000001,C0FFEE0000000002               => class=metal rough=0.45 metal=1 ssr=1
+tire-skip:       group=xAmbientTire                                   => skip
+tire-rough:      unnamed group=xAmbientTire draws>=1000               => rough=0.9

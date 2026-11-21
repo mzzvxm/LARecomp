@@ -1647,6 +1647,22 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
   PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active()) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
+  // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
+  // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
+  // CHECK: not compiled with the rest of Scene (no build in this package).
+  d.gbuffer_texture = {};
+  if (d.gbuffer_attached && d.gbuffer_variant != 0 && d.ps && textures_) {
+    gbuffer_materials_.EnsureLoaded(shaders_.folder());
+    const uint32_t diffuse_slot = gbuffer_materials_.DiffuseSlotOf(d.ps->key);
+    if (diffuse_slot < 32 && (d.ps->texture_fetch_mask & (1u << diffuse_slot)) != 0) {
+      uint32_t diffuse_dwords[6];
+      view.FetchGroup(diffuse_slot, diffuse_dwords);
+      const TextureFetch diffuse = ReadTextureFetch(diffuse_dwords);
+      if (diffuse.is_texture) {
+        d.gbuffer_texture = gbuffer_texmat_.Resolve(*textures_, shaders_.folder(), diffuse.key, frame_serial_);
+      }
+    }
+  }
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
@@ -2452,6 +2468,8 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       // CHECK: this hunk was not compiled with the rest of Scene (no build in this package); the table's own code, the builder's file and the tests were.
       gbuffer_materials_.EnsureLoaded(shaders_.folder());
       block.material = gbuffer_materials_.WordFor(d.ps ? d.ps->key : 0, d.vs ? d.vs->key : 0, banks.ps, banks.vs, sp::chain::SpecOf(d.key.ps_variant) != 0);
+      // The texture's row on top of it (gbuffer_materials.h): a texture that says it is glass, chrome or wet asphalt, or how rough it is; the census counts the draw.
+      block.material = gbuffer_texmat_.Finish(block.material, d.gbuffer_texture, d.ps ? d.ps->key : 0, d.geometry.count);
       block.frame = uint32_t(frame_serial_);
       std::memcpy(out, &block, sizeof(block));
       return;

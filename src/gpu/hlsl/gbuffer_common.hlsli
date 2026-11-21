@@ -42,6 +42,7 @@
 #define GB_MATERIAL_CLASS_SHIFT 8
 #define GB_MATERIAL_FLAGS_SHIFT 13
 #define GB_MATERIAL_LIT_SHIFT 16
+#define GB_MATERIAL_METAL_SHIFT 24
 
 #define GB_MODE_WRITE_NORMAL 1
 #define GB_MODE_WRITE_ALBEDO 2
@@ -148,6 +149,44 @@ uint GbRt3Class(float2 rt3) {
 }
 uint GbRt3Flags(float2 rt3) {
   return (uint(rt3.y * 255.0f + 0.5f) >> 5u) & 7u;
+}
+
+// ---- the gloss: smoothness, the GGX alpha, the game's Blinn-Phong power (the twin: gbuffer_rules.h part 3) --------------------------------------
+
+// RT3.r and the word's bits 0..7 hold the PERCEPTUAL smoothness s of the lobe: its GGX (Trowbridge-Reitz) alpha is (1 - s)^2. The game's own Blinn-Phong lobe, (N.H)^n, has the
+// alpha sqrt(2 / (n + 2)) (the usual fit: the lobes' widths agree), so a shader that has a power puts GbSmoothnessOfPower(n) in the word and a consumer that shades with GGX takes
+// GbRt3Alpha(rt3) back out. A power that is not above 0 (a NaN too) is a chalk: alpha 1.
+float GbGgxAlphaOfPower(float power) {
+  float n = power > 0.0f ? power : 0.0f;
+  return sqrt(2.0f / (n + 2.0f));
+}
+
+float GbSmoothnessOfAlpha(float alpha) {
+  return 1.0f - sqrt(saturate(alpha));
+}
+
+float GbAlphaOfSmoothness(float smoothness) {
+  float r = 1.0f - saturate(smoothness);
+  return r * r;
+}
+
+float GbSmoothnessOfPower(float power) {
+  return GbSmoothnessOfAlpha(GbGgxAlphaOfPower(power));
+}
+
+// The GGX alpha a consumer shades with, from the RT3 texel (a unorm value).
+float GbRt3Alpha(float2 rt3) {
+  return GbAlphaOfSmoothness(GbRt3Smoothness(rt3));
+}
+
+// The metalness byte of the word (bits 24..31; no plane carries it yet, see gbuffer_rules.h kMaterialMetalShift) and the word with it set.
+float GbMaterialMetal(uint word) {
+  return float((word >> uint(GB_MATERIAL_METAL_SHIFT)) & 255u) * (1.0f / 255.0f);
+}
+
+uint GbMaterialWithMetal(uint word, float metal) {
+  uint m = uint(saturate(metal) * 255.0f + 0.5f);
+  return (word & 0x00FFFFFFu) | (m << uint(GB_MATERIAL_METAL_SHIFT));
 }
 
 // ---- the derivative normal ---------------------------------------------------------------------------------------------------------------
