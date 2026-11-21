@@ -116,6 +116,9 @@
 #include "ssr_apply_ps.hlsl.dxil.h"
 #include "ssr_apply_raw_ps.hlsl.dxil.h"
 #include "ssr_hit_ps.hlsl.dxil.h"
+#include "ssr_denoise_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
 #include "ssr_rt_select_cs.hlsl.dxil.h"
 #include "ssr_rt_trace_cs.hlsl.dxil.h"
@@ -244,6 +247,9 @@
 #include "ssr_apply_ps.hlsl.spirv.h"
 #include "ssr_apply_raw_ps.hlsl.spirv.h"
 #include "ssr_hit_ps.hlsl.spirv.h"
+#include "ssr_denoise_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_plain_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
 #include "ssr_rt_select_cs.hlsl.spirv.h"
 #include "ssr_rt_trace_cs.hlsl.spirv.h"
@@ -421,6 +427,15 @@ inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_cs);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
   }
+}
+
+// RtDenoise (rt_denoise.h, CITY-RT R6): the screen-space reflections' spatial pass (hlsl/ssr_denoise_spatial_cs.hlsl over plain planes), and the plain-guide compiles of the two stages the other
+// consumers start from (hlsl/rt_denoise_plain_consumer.hlsli). Plain Shader Model 6.0 compute.
+inline HostShaderBlob SsrDenoiseSpatialShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(ssr_denoise_spatial_cs);
+}
+inline HostShaderBlob RtDenoisePlainShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_plain_spatial_cs);
 }
 
 // DLSS Ray Reconstruction's guide pass (rr_guides.h, hlsl/rr_guides_cs.hlsl): over planes with one sample, or the host's MSAA level; and its debug view over the upscaler's output

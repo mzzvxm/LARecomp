@@ -97,6 +97,7 @@ add_library(larecomp_gpu OBJECT
     rt_bench.cpp
     rt_tier.cpp
     rr_guides.cpp
+    rt_denoise.cpp
     samplers.cpp
     scene.cpp
     screen_shared.cpp
@@ -340,6 +341,10 @@ add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
 # hlsl/ssr_rt_common.hlsli as C++ and compares it with the twins, and reads the fallback's sources) likewise:
 #   cmake --build <dir> --target larecomp_ssr_rt_rules_test, then run src/gpu/larecomp_ssr_rt_rules_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)
+# RtDenoise (rt_denoise_rules.h: the radius law, the weights, the temporal rules; ssr_denoise_rules.h: the reflections' use, the decision, the setting, the census; it compiles
+# hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
+#   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_rt_denoise_test EXCLUDE_FROM_ALL rt_denoise_test.cpp)
 # The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
 # Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
 # frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's
@@ -913,6 +918,11 @@ larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_
 # of the picture's size). Plain planes only: a raw frame has one host sample.
 larecomp_gpu_host_shader(ssr_apply_raw_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=0 SSR_RAW=1)
 larecomp_gpu_host_shader(ssr_hit_ps ps_6_0 DEFINES SSR_MS=0)
+# RtDenoise (rt_denoise.h, CITY-RT R6): the bilateral a-trous over the reflections' accumulated image (the screen-space reflections' use; plain planes only), and the two plain-guide compiles the other
+# consumers start from (the probe field's detail pass, CITY-RT M3 G5): the spatial pass and the temporal pass over guides that are plain images. Shader Model 6.0 compute for both backends.
+larecomp_gpu_host_shader(ssr_denoise_spatial_cs cs_6_0 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader(rt_denoise_plain_spatial_cs cs_6_0)
+larecomp_gpu_host_shader(rt_denoise_plain_temporal_cs cs_6_0)
 # DLSS Ray Reconstruction's guide pass (rr_guides.h, RR-2): the five guide images from the G-buffer's planes in one compute pass at the anchor (over planes with one sample and over the host's MSAA
 # level), and the debug view that draws one of them over the upscaler's output. Plain Shader Model 6.0 compute for both backends.
 larecomp_gpu_host_shader(rr_guides_cs cs_6_0 DEFINES RR_MS=0)
