@@ -1672,6 +1672,18 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssr_rt": {
+  "type": "std::string",
+  "default": "\"auto\"",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at \"\n    \"the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. \"\n    \"auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, \"\n    \"two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card \"\n    \"takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than \"\n    \"their share of the frame. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ghost_log_interval": {
   "type": "u32",
   "default": "0",

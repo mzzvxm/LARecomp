@@ -884,6 +884,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
+  REX_SETTING(std::string, mcla_gpu_ssr_rt, "auto", "Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at "
+    "the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. "
+    "auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, "
+    "two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card "
+    "takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than "
+    "their share of the frame. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
+
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.", rex::kDebugOnly);
@@ -1886,6 +1893,7 @@ inline auto& mcla_gpu_ssr_wet = g_gpu.mcla_gpu_ssr_wet;
 inline auto& mcla_gpu_ssr_history = g_gpu.mcla_gpu_ssr_history;
 inline auto& mcla_gpu_ssr_fallback = g_gpu.mcla_gpu_ssr_fallback;
 inline auto& mcla_gpu_ssr_vehicle_rows = g_gpu.mcla_gpu_ssr_vehicle_rows;
+inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;

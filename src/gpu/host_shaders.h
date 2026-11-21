@@ -114,8 +114,13 @@
 #include "ssr_apply_ms_ps.hlsl.dxil.h"
 #include "ssr_apply_ps.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
+#include "ssr_rt_select_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_cs.hlsl.dxil.h"
+#include "ssr_rt_trace_ms_cs.hlsl.dxil.h"
 #include "ssr_trace_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ms_ps.hlsl.dxil.h"
+#include "ssr_trace_rt_ps.hlsl.dxil.h"
 #include "shafts_add_ps.hlsl.dxil.h"
 #include "shafts_blur_ps.hlsl.dxil.h"
 #include "shafts_sky_ms_ps.hlsl.dxil.h"
@@ -231,8 +236,13 @@
 #include "ssr_apply_ms_ps.hlsl.spirv.h"
 #include "ssr_apply_ps.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
+#include "ssr_rt_select_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_cs.hlsl.spirv.h"
+#include "ssr_rt_trace_ms_cs.hlsl.spirv.h"
 #include "ssr_trace_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ms_ps.hlsl.spirv.h"
+#include "ssr_trace_rt_ps.hlsl.spirv.h"
 #include "shafts_add_ps.hlsl.spirv.h"
 #include "shafts_blur_ps.hlsl.spirv.h"
 #include "shafts_sky_ms_ps.hlsl.spirv.h"
@@ -375,14 +385,26 @@ inline HostShaderBlob ScreenColourPixelShader(uint32_t pass) {
 }
 
 // The screen-space reflections (ssr.h, hlsl/ssr_*_ps.hlsl): 0 the trace, 1 the trace over multisampled planes, 2 the accumulation, 3 the resolve into the main colour, 4 the same over a multisampled colour
-// target and planes.
+// target and planes; 5 and 6 (CITY-RT R4) the trace and the multisampled trace with the confidence as a second target, for a frame the ray traced fallback follows (ssr_rt.h).
 inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ps);
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_ms_ps);
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(ssr_temporal_ps);
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ps);
-    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 4: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_ms_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);
+  }
+}
+
+// The ray traced fallback's compute passes (ssr_rt.h, CITY-RT R4): 0 the candidates' tile list, 1 the rays into the city's top level, 2 the same over multisampled planes (inline ray queries: Shader Model 6.5,
+// SPIR-V 1.5 on Vulkan).
+inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_select_cs);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_cs);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
   }
 }
 

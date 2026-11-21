@@ -285,6 +285,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       car_rt_.SetService(&rt_scene_, &city_hit_);
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
+      // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.
+      ssr_.InitializeRt(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &rt_scene_, &rt_world_);
       // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
       gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
     }
@@ -1767,7 +1769,7 @@ void Renderer::ReportCityCensus() {
   if (presented_ % kCityCensusPresents != 0) {
     return;
   }
-  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText();
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText();
   if (!text.empty()) {
     REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
   }

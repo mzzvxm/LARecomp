@@ -99,6 +99,7 @@ add_library(larecomp_gpu OBJECT
     scene.cpp
     screen_shared.cpp
     ssr.cpp
+    ssr_rt.cpp
     shaders.cpp
     shadow_atlas.cpp
     shadow_filter.cpp
@@ -333,6 +334,10 @@ add_executable(larecomp_screen_shared_test EXCLUDE_FROM_ALL screen_shared_test.c
 # gate, the BRDF, the GGX sampling, the virtual image's reprojection, the Hi-Z march against analytic scenes and a brute force march) likewise; it reads the sources it is given:
 #   cmake --build <dir> --target larecomp_ssr_test, then run src/gpu/larecomp_ssr_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
+# The ray traced fallback of those reflections (ssr_rt_rules.h: the class groups, the confidence target, the candidates and the cap, the levels' decision and cells, the governor, the census; it compiles
+# hlsl/ssr_rt_common.hlsli as C++ and compares it with the twins, and reads the fallback's sources) likewise:
+#   cmake --build <dir> --target larecomp_ssr_rt_rules_test, then run src/gpu/larecomp_ssr_rt_rules_test <src/gpu dir> [--print] (exit 0 = passed).
+add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)
 # The frame's order (frame_order.h, LIGHT-UNIFY U9: the one table of every pass that makes or reads the shared screen and light data, what each makes, reads, must follow and Wants, and the recorder the
 # Scene notes its trigger passes in) held to itself (every read has an earlier maker, every step moved before what it needs is found), to the consumers' own wants (gbuffer_rules.h, screen_rules.h), to a model of
 # frames with passes missing and every kind of mistake, and, given the src/gpu folder (it defaults to the one the test is in), to scene.cpp, ao.cpp and the consumers' sources (the calls stand in the table's
@@ -877,6 +882,13 @@ larecomp_gpu_host_shader(screen_view_ps ps_6_0)
 # The screen-space reflections (ssr.h): the trace (over plain and multisampled planes), the accumulation, the resolve into the main colour (plain and multisampled).
 larecomp_gpu_host_shader(ssr_trace_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1)
+# ... the same two with the confidence as a second target (SSR_RT=1), for a frame the ray traced fallback follows (ssr_rt.h, CITY-RT R4), and the fallback's compute passes: the candidates' tile list (no rays,
+# Shader Model 6.0) and the rays into the city's top level (inline ray queries: Shader Model 6.5, SPIR-V 1.5 on Vulkan), the latter over plain and multisampled planes.
+larecomp_gpu_host_shader(ssr_trace_rt_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1)
+larecomp_gpu_host_shader(ssr_trace_rt_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1)
+larecomp_gpu_host_shader(ssr_rt_select_cs cs_6_0)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_cs cs_6_5 DEFINES SSR_MS=0)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1)
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)

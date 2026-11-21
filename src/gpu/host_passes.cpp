@@ -136,6 +136,31 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   return device_->CreateGraphicsPipeline(desc, name);
 }
 
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    const plume::RenderFormat* formats, uint32_t count, const char* name) {
+  if (!formats || count < 2 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  plume::RenderGraphicsPipelineDesc desc;
+  desc.pipelineLayout = &layout;
+  desc.vertexShader = vertex_shader_.get();
+  desc.pixelShader = &pixel_shader;
+  desc.depthClipEnabled = false;
+  desc.depthEnabled = false;
+  desc.depthWriteEnabled = false;
+  desc.cullMode = plume::RenderCullMode::NONE;
+  desc.fillMode = plume::RenderFillMode::SOLID;
+  desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+  desc.multisampling.sampleCount = plume::RenderSampleCount::COUNT_1;
+  for (uint32_t i = 0; i < count; ++i) {
+    desc.renderTargetFormat[i] = formats[i];
+    desc.renderTargetBlend[i] = plume::RenderBlendDesc::Copy();
+  }
+  desc.renderTargetCount = count;
+  return device_->CreateGraphicsPipeline(desc, name);
+}
+
 void HostPasses::Bind(plume::RenderCommandList* list) const {
   list->setGraphicsPipelineLayout(layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {

@@ -361,12 +361,14 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kAoApply, "the colour as the occlusion left it"}, {Step::kLocalLights, "UNCAPPED and after the deferred lights: the reflections must see the lights"}}},
      .note = "made only while a consumer wants colour_post; before SSR adds to the colour (a reflection is not a reflection of a reflection)"},
     {.step = Step::kSsr, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "screen-space reflections (additive)", .call = "ssr_->OnTrigger(summary, list)",
-     .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr temporal", "ssr apply"}}, .closing_label = "after ssr",
-     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
+     .label_file = "ssr.cpp", .label = "ssr trace", .more_labels = {{"ssr rt", "ssr temporal", "ssr apply"}}, .closing_label = "after ssr",
+     .reads = data::kHizMin | data::kColourPost | data::kPlanes, .soft_reads = data::kCarStructures, .wants_planes = detail::kAllPlaneBits, .wants_screen = data::kHizMin | data::kColourPost,
      .deps = {{{Step::kColourPost, "reads the capture, which must be made before the effect adds to the colour"}, {Step::kLocalLights, "the reflection shows the lights"}}},
      .note = "the last pass that adds to the colour at the trigger: after the capture it reads and the light pass it shows, before the car history, whose vehicle-only image it does not touch (a vehicle's "
              "pixel takes none of the effect). GPU time: the labels 'ssr trace', 'ssr temporal', 'ssr apply' are its own (the chains sum the labels that start with 'ssr '), 'after ssr' closes the span and is "
-             "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame"},
+             "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame. CITY-RT R4: on a card that "
+             "traces rays, with the effect on, the label 'ssr rt' (written between the trace and the accumulation, only in a frame the ray traced fallback follows: ssr_rt.h) covers its two compute passes "
+             "(the candidates' tile list and the rays into this frame's top level, which the car structures' step built: a soft read); with no ray tracing the label is not there and nothing else changes"},
     {.step = Step::kCarHistory, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car self-reflection history and ray traced reflection", .call = "car_refl_->OnResolve(record, summary, list)",
      .label_file = "car_selfrefl.cpp", .label = "car history", .soft_reads = data::kColourPost | data::kCarStructures, .makes = data::kCarHistory, .wants_screen = data::kColourPost,
      .deps = {{{Step::kAoApply, "the history is the colour the occlusion left"}, {Step::kSsr, "kept after SSR as the design has it; above 1080 lines (colour_post is half size) the history reads the main colour, which holds "
@@ -404,7 +406,7 @@ constexpr const Row& RowOf(Step step) { return kRows[size_t(step)]; }
 // default) is the GPU class's cell, off everywhere until the owner has seen the pictures, so it is no arm: a run names the level. What each arm must show, in the pass timing and in the order census:
 //   off     none of the SSR labels, no capture (no 'screen colour post', no 'screen hiz': nothing else asks for them at the defaults), no G-buffer planes (the sidecar needs a consumer), no held images:
 //           the effect costs nothing, which is what the defaults' cost runs (P9) check
-//   high    the SSR row's labels (its own time: 'ssr trace' + 'ssr temporal' + 'ssr apply'), plus the products that exist only for it: 'screen hiz' and 'screen colour post', plus the sidecar's cost in the
+//   high    the SSR row's labels (its own time: 'ssr trace' + 'ssr rt' (only where the ray traced fallback follows) + 'ssr temporal' + 'ssr apply'), plus the products that exist only for it: 'screen hiz' and 'screen colour post', plus the sidecar's cost in the
 //           draws and the planes' memory; the census names the capture and the reflections after the light pass
 //   ultra   the same labels, the trace with two rays and 64 steps (ssr_rules.h NumbersOf): the trace label costs more, the others about the same
 // A chain that wants the effect's whole cost reads: the own labels + the product labels + the frame's difference to the off arm (the planes). frame_order_test.cpp holds the words to ssr_rules.h, the
