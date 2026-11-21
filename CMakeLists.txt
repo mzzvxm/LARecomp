@@ -156,6 +156,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/road_reflection_cars_test.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
+    src/mc_engine/hooks/checkpoint_effect_fade.cpp
     src/mc_engine/hooks/neon_pulse.cpp
     src/mc_engine/hooks/inflate_fast.cpp
     src/mc_engine/hooks/vol_lamps.cpp
@@ -438,6 +439,11 @@ target_include_directories(larecomp_hud_track_test PRIVATE src src/mc_engine/cin
 add_executable(larecomp_bound_node_guard_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/bound_node_guard_test.cpp)
 target_include_directories(larecomp_bound_node_guard_test PRIVATE src/mc_engine/hooks)
+# The fade of a released particle effect (src/mc_engine/hooks/effect_fade.h: the closed checkpoint's smoke held to the console's decay per second) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_effect_fade_test, then run <build dir>/larecomp_effect_fade_test (exit 0 = passed).
+add_executable(larecomp_effect_fade_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/effect_fade_test.cpp)
+target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks)
 # The pure part of the pad reader of the dialogs (src/mc_engine/ui/pad_feed_core.h: merging pads, the dead zone, the back-off of empty
 # XInput slots, when SDL's gamepad list is looked at again) has a check that needs no game:
 #   cmake --build <build dir> --target larecomp_pad_feed_test, then run <build dir>/larecomp_pad_feed_test (exit 0 = passed).

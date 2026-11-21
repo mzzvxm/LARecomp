@@ -5542,6 +5542,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_fix_checkpoint_fade": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Fix: the smoke of a closed race checkpoint dissipates over about half a second at every frame \"\n    \"rate. The game fades it by dt x 25 at every update, which is 0.83 per update on the console's 30 updates a \"\n    \"second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the \"\n    \"same decay per second as the console at any frame rate. Off: the game's own number at every update.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_fix_neon_30hz": {
   "type": "bool",
   "default": "true",
